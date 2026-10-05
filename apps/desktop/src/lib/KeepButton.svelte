@@ -66,8 +66,9 @@
   .keep:disabled {
     cursor: default;
   }
-  .keep.keeping {
-    opacity: 0.6;
+  /* Waiting on a conversion, or copying: not pressable yet. */
+  .keep:disabled:not(.kept) {
+    opacity: 0.55;
   }
   .keep.kept {
     border-style: solid;
