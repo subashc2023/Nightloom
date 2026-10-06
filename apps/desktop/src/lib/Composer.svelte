@@ -130,6 +130,7 @@
   import { clips, recordImage, recordText } from "./clipRing.svelte";
   import type { CouncilPrefs } from "./council";
   import { foldToFit } from "./fold";
+  import { Marks, chipMotion, prefersReducedMotion } from "./chipFade";
   import { launch } from "./sendMotion";
   import { composerConnectHint, launch as launchState } from "./launch.svelte";
   import { hasQuoteLine, insertQuote, mirrorLines, replyRequest, takeReply } from "./replyQuote.svelte";
@@ -1272,14 +1273,34 @@
     }
   }
 
+  /*
+   * Item 312: a chip made from text fades in; Undo fades it out. The marks
+   * are one-shot and never saved, so a chip that mounts because the chat
+   * changed, or an image or file, appears as before. The transitions are
+   * `|global` because the first chip also creates the chip row around it.
+   */
+  const fadeInNames = new Marks<string>();
+  const fadeOutIds = new Marks<number>();
+  function chipIn(_node: Element, a: Attachment) {
+    return chipMotion(fadeInNames.take(a.name), prefersReducedMotion());
+  }
+  function chipOut(_node: Element, a: Attachment) {
+    return chipMotion(fadeOutIds.take(a.id), prefersReducedMotion());
+  }
+
   /** Pasted text as a chip, by item 277's text route (`accept`): named
    *  "Pasted text", its words on the chip, kept with the draft. */
   async function attachPastedText(raw: string): Promise<Attachment | null> {
     const body = normalizeNewlines(raw);
     const chatKey = key;
     const name = pastedName(readDraft(chatKey).attachments.map((a) => a.name));
+    // Item 312: this chip came from text, so it fades in.
+    fadeInNames.mark(name);
     const [chip] = await accept([pastedFile(body, name)]);
-    if (!chip) return null;
+    if (!chip) {
+      fadeInNames.unmark(name);
+      return null;
+    }
     updateAttachment(chatKey, chip.id, {
       pasted: true,
       ...(chip.kind === "document" ? { label: pastedLabel(body) } : {}),
@@ -1340,6 +1361,7 @@
     converted = null;
     if (!canUndo(c, text, attachments.map((a) => a.id))) return false;
     const r = undoConverted(c);
+    fadeOutIds.mark(c.chipId);
     removeAttachment(key, c.chipId);
     setDraftText(key, r.text);
     void tick().then(() => {
@@ -2233,7 +2255,7 @@
   {#if attachments.length > 0}
     <div class="attachments">
       {#each attachments as a (a.id)}
-        <div class="attachment">
+        <div class="attachment" in:chipIn|global={a} out:chipOut|global={a}>
           <div class="attachment-face">
             {#if a.kind === "image"}
               <img src={`data:${a.media_type};base64,${a.data}`} alt={a.name} />
