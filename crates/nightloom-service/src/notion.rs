@@ -80,8 +80,11 @@ impl Notion {
         Self {
             base: base.trim_end_matches('/').to_string(),
             token,
+            // No redirects (review 2026-10-06): the token goes to the
+            // base URL and nowhere a response points.
             http: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .unwrap_or_default(),
         }
@@ -756,6 +759,8 @@ mod tests {
                 "Method::{upper} in notion.rs"
             );
         }
+        // Nor a method by name (review 2026-10-06): `.request(Method…)`.
+        assert!(!body.contains(".request("), ".request( in notion.rs");
         assert_eq!(body.matches(".post(").count(), 1, "one POST: the search");
         assert!(body.contains(".post(format!(\"{}/v1/search\""));
     }
