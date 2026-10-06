@@ -21,3 +21,21 @@ export function sendJumps(distance: number, viewport: number): boolean {
   if (!Number.isFinite(distance) || !Number.isFinite(viewport) || viewport <= 0) return false;
   return Math.max(0, distance) <= SEND_JUMP_SCREENS * viewport;
 }
+
+/**
+ * The distance the view would have had with the message box at rest (313
+ * review). A tall paste grows the box and shrinks the transcript's view by
+ * the same amount, so read at Send the view is `grown` px shorter and the
+ * foot `grown` px further — a paste of ten lines put a Send from half a
+ * screen up out of range. The box shrinks back a frame after the Send; with
+ * the view's height then (`nowHeight`) and `scrollTop` unchanged, the
+ * reader's distance is the Send-time distance less what the view grew by.
+ */
+export function restDistance(
+  preDistance: number,
+  preHeight: number,
+  nowHeight: number,
+): { distance: number; viewport: number } {
+  const grown = Math.max(0, nowHeight - preHeight);
+  return { distance: Math.max(0, preDistance - grown), viewport: Math.max(preHeight, nowHeight) };
+}
