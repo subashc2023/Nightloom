@@ -30,7 +30,7 @@
   import { HIDDEN_THINKING_TITLE, thinkingToggleDead } from "./activity";
   import { toggleTranscriptPref, transcript } from "./transcriptPrefs.svelte";
   import { composerFormat, toggleComposerFormat } from "./composerFormat.svelte";
-  import { boxElement, type ComposerBox } from "./composerEditor";
+  import { LiveBoxHandle, boxElement, type ComposerBox } from "./composerEditor";
   import LiveBox from "./LiveBox.svelte";
   import { isMac } from "./platform";
   import {
@@ -130,6 +130,9 @@
   import { clips, recordImage, recordText } from "./clipRing.svelte";
   import type { CouncilPrefs } from "./council";
   import { foldToFit } from "./fold";
+  import { Marks, chipMotion, prefersReducedMotion } from "./chipFade";
+  import { codePasteLanguage, fenced, findFences, layerLines, withFenceLanguage } from "./codeDetect";
+  import { LANGUAGES } from "./codeHighlight";
   import { launch } from "./sendMotion";
   import { composerConnectHint, launch as launchState } from "./launch.svelte";
   import { hasQuoteLine, insertQuote, mirrorLines, replyRequest, takeReply } from "./replyQuote.svelte";
@@ -353,7 +356,16 @@
     mirror.style.width = ta.clientWidth + "px";
     mirror.style.height = ta.clientHeight + "px";
     mirror.scrollTop = ta.scrollTop;
+    // Item 315: each code block's label rides on its opening fence line,
+    // hidden while that line is scrolled out of the box.
+    const tops: (number | null)[] = [];
+    for (const el of mirror.querySelectorAll<HTMLElement>("[data-fence]")) {
+      const top = el.offsetTop - mirror.scrollTop;
+      tops[Number(el.dataset.fence)] = top >= 0 && top < mirror.clientHeight - 4 ? top : null;
+    }
+    fenceTops = tops;
   }
+  let fenceTops = $state<(number | null)[]>([]);
   // Drag events fire per element, so a boolean flickers as the pointer crosses
   // children; count enters against leaves instead.
   let dragDepth = $state(0);
@@ -891,6 +903,10 @@
   });
 
   const quoted = $derived(hasQuoteLine(text));
+  // Item 315: fenced code drawn coloured in the same layer as quotes.
+  const fences = $derived(findFences(text));
+  const codeLayer = $derived(fences.length > 0 ? layerLines(text) : []);
+  const layered = $derived(quoted || fences.length > 0);
   // The layer follows the box: its size (a drag, the 40% line, a resized
   // window) and its text (the scroll after a keystroke) — item 223.
   $effect(() => {
@@ -916,6 +932,12 @@
     if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "z" && undoable) {
       e.preventDefault();
       undoConvert();
+      return;
+    }
+    // Item 315: ⌘Z right after a code paste takes the fence off.
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "z" && codeUndoable) {
+      e.preventDefault();
+      undoCodeWrap();
       return;
     }
     if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && (e.code === "KeyV" || e.key.toLowerCase() === "v")) {
@@ -1223,6 +1245,19 @@
       else addToast("The clipboard holds no text to attach");
       return;
     }
+    // Item 315: code goes in as a fenced block with its language. A long
+    // paste is left to the attachment offer below (codePasteLanguage).
+    if (pastedText && files.length === 0 && ta) {
+      const at = Math.min(ta.selectionStart, ta.selectionEnd);
+      const lang = codePasteLanguage(pastedText, text, at);
+      if (lang) {
+        e.preventDefault();
+        pasteAsCode(normalizeNewlines(pastedText), lang);
+        offer = null;
+        converted = null;
+        return;
+      }
+    }
     // A long ⌘V paste: the text goes in as always, and an offer under the
     // box can move it into an attachment.
     if (pastedText && files.length === 0) {
@@ -1236,6 +1271,71 @@
     if (!pastedText) e.preventDefault();
     void accept(files).then((chips) => {
       for (const c of chips) if (c.kind === "image") recordImage("pasted", c);
+    });
+  }
+
+  /*
+   * Item 315: a code paste goes in fenced. ⌘Z right after gives back the
+   * paste as it came (no fence); the formatted box does it with its own
+   * history (two steps), the textarea through `codeWrap` — WebKit merges
+   * scripted edits with his typing into one undo step, so the textarea's
+   * own undo cannot be trusted with it. The pasted characters are not
+   * touched; the fence adds lines round them.
+   */
+  let codeWrap = $state<{ raw: string; wrapped: string; caret: number } | null>(null);
+  const codeUndoable = $derived(codeWrap !== null && codeWrap.wrapped === text);
+  function pasteAsCode(raw: string, lang: string): void {
+    if (!ta) return;
+    if (ta instanceof LiveBoxHandle) {
+      ta.pasteAsCode(raw, (before, after) => fenced(raw, lang, before, after));
+      return;
+    }
+    const from = Math.min(ta.selectionStart, ta.selectionEnd);
+    const to = Math.max(ta.selectionStart, ta.selectionEnd);
+    const before = text.slice(0, from);
+    const after = text.slice(to);
+    const block = fenced(raw, lang, before, after);
+    const wrapped = before + block + after;
+    codeWrap = { raw: before + raw + after, wrapped, caret: from + raw.length };
+    setDraftText(key, wrapped);
+    void tick().then(() => {
+      if (!ta) return;
+      ta.selectionStart = ta.selectionEnd = from + block.length;
+      autogrow();
+    });
+  }
+  function undoCodeWrap(): boolean {
+    const w = codeWrap;
+    codeWrap = null;
+    if (!w || w.wrapped !== text) return false;
+    setDraftText(key, w.raw);
+    void tick().then(() => {
+      if (!ta) return;
+      ta.focus();
+      ta.selectionStart = ta.selectionEnd = w.caret;
+      autogrow();
+    });
+    return true;
+  }
+  $effect(() => {
+    void key;
+    codeWrap = null;
+  });
+  /** The block's label changed: only the fence's info string is rewritten. */
+  function relabel(k: number, lang: string): void {
+    const f = findFences(text)[k];
+    if (!f || !ta) return;
+    if (ta instanceof LiveBoxHandle) {
+      ta.replaceRange(f.infoFrom, f.infoTo, lang);
+      return;
+    }
+    const caret = ta.selectionStart;
+    const shift = lang.length - (f.infoTo - f.infoFrom);
+    setDraftText(key, withFenceLanguage(text, f, lang));
+    void tick().then(() => {
+      if (!ta) return;
+      const back = caret >= f.infoTo ? caret + shift : Math.min(caret, f.infoFrom);
+      ta.selectionStart = ta.selectionEnd = back;
     });
   }
 
@@ -1272,14 +1372,34 @@
     }
   }
 
+  /*
+   * Item 312: a chip made from text fades in; Undo fades it out. The marks
+   * are one-shot and never saved, so a chip that mounts because the chat
+   * changed, or an image or file, appears as before. The transitions are
+   * `|global` because the first chip also creates the chip row around it.
+   */
+  const fadeInNames = new Marks<string>();
+  const fadeOutIds = new Marks<number>();
+  function chipIn(_node: Element, a: Attachment) {
+    return chipMotion(fadeInNames.take(a.name), prefersReducedMotion());
+  }
+  function chipOut(_node: Element, a: Attachment) {
+    return chipMotion(fadeOutIds.take(a.id), prefersReducedMotion());
+  }
+
   /** Pasted text as a chip, by item 277's text route (`accept`): named
    *  "Pasted text", its words on the chip, kept with the draft. */
   async function attachPastedText(raw: string): Promise<Attachment | null> {
     const body = normalizeNewlines(raw);
     const chatKey = key;
     const name = pastedName(readDraft(chatKey).attachments.map((a) => a.name));
+    // Item 312: this chip came from text, so it fades in.
+    fadeInNames.mark(name);
     const [chip] = await accept([pastedFile(body, name)]);
-    if (!chip) return null;
+    if (!chip) {
+      fadeInNames.unmark(name);
+      return null;
+    }
     updateAttachment(chatKey, chip.id, {
       pasted: true,
       ...(chip.kind === "document" ? { label: pastedLabel(body) } : {}),
@@ -1340,6 +1460,7 @@
     converted = null;
     if (!canUndo(c, text, attachments.map((a) => a.id))) return false;
     const r = undoConverted(c);
+    fadeOutIds.mark(c.chipId);
     removeAttachment(key, c.chipId);
     setDraftText(key, r.text);
     void tick().then(() => {
@@ -1355,10 +1476,10 @@
   // can be undone (macOS: the menu takes ⌘Z before the box sees it).
   $effect(() => {
     const take = (id: string): boolean => {
-      if (id !== "undo_app" || !undoable) return false;
+      if (id !== "undo_app" || !(undoable || codeUndoable)) return false;
       const box = boxElement(ta);
       if (!box || !box.contains(document.activeElement)) return false;
-      return undoConvert();
+      return undoable ? undoConvert() : undoCodeWrap();
     };
     menuInterceptors.push(take);
     return () => {
@@ -2233,7 +2354,7 @@
   {#if attachments.length > 0}
     <div class="attachments">
       {#each attachments as a (a.id)}
-        <div class="attachment">
+        <div class="attachment" in:chipIn|global={a} out:chipOut|global={a}>
           <div class="attachment-face">
             {#if a.kind === "image"}
               <img src={`data:${a.media_type};base64,${a.data}`} alt={a.name} />
@@ -2463,15 +2584,35 @@
         onresize={autogrow}
       />
     {:else}
-    {#if quoted}
+    {#if layered}
       <!-- Item 223: the draft drawn behind the textarea, quote lines as the
            bubble draws them. An empty line holds a zero-width space so it
-           keeps its height, as the textarea's does. -->
-      <div class="ta-mirror" aria-hidden="true" bind:this={mirror}>{#each mirrorLines(text) as l, i (i)}<div class="ml" class:q={l.quote}>{#if l.quote}<span class="qm">{l.marker}</span>{l.rest}{:else}{l.rest || "\u200b"}{/if}</div>{/each}</div>
+           keeps its height, as the textarea's does. Item 315: a fenced
+           block's lines on a code ground, the body coloured, the same
+           characters in the same font so nothing moves. -->
+      <div class="ta-mirror" aria-hidden="true" bind:this={mirror}>{#each mirrorLines(text) as l, i (i)}{@const c = codeLayer[i]}{#if c && c.kind === "body"}<div class="ml code">{#each c.segs as sg, j (j)}<span class={sg.cls}>{sg.text}</span>{/each}{#if c.segs.length === 0}{"\u200b"}{/if}</div>{:else if c}<div class="ml code fence" data-fence={c.kind === "open" ? c.fence : undefined}>{l.marker}{l.rest || "\u200b"}</div>{:else}<div class="ml" class:q={l.quote}>{#if l.quote}<span class="qm">{l.marker}</span>{l.rest}{:else}{l.rest || "\u200b"}{/if}</div>{/if}{/each}</div>
+      {#each fences as f, k (k)}
+        {#if fenceTops[k] != null}
+          <!-- Item 315: the block's language; a pick rewrites only the
+               fence's info string. -->
+          <select
+            class="code-lang mono"
+            style:top="{fenceTops[k]}px"
+            aria-label="Code block language"
+            use:tip={"The block's language — the fence's ```name"}
+            value={f.lang ?? f.info}
+            onmousedown={(e) => e.stopPropagation()}
+            onchange={(e) => relabel(k, (e.currentTarget as HTMLSelectElement).value)}
+          >
+            {#if !f.lang}<option value={f.info}>{f.info || "code"}</option>{/if}
+            {#each LANGUAGES as lg (lg.id)}<option value={lg.id}>{lg.label}</option>{/each}
+          </select>
+        {/if}
+      {/each}
     {/if}
     <textarea
       bind:this={ta}
-      class:quoted
+      class:quoted={layered}
       bind:value={() => text, (v) => setDraftText(key, v)}
       onscroll={syncMirror}
       rows="1"
@@ -3419,6 +3560,36 @@
   }
   .qm {
     opacity: 0.45;
+  }
+  /* Item 315: a fenced block in the box — a code ground under its lines
+     (out into the gutter, as a quote's bar), the fence lines dimmed. The
+     font stays the textarea's: the layer must match its glyphs. */
+  .ml.code {
+    margin-left: -10px;
+    padding-left: 10px;
+    background: var(--well);
+  }
+  .ml.fence {
+    color: var(--dim);
+  }
+  .code-lang {
+    position: absolute;
+    right: 8px;
+    z-index: 2;
+    height: 1.35rem;
+    margin-top: 0.1rem;
+    padding: 0 0.3rem;
+    border: 1px solid var(--line2);
+    border-radius: 6px;
+    background: var(--sheet);
+    color: var(--ink2);
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    cursor: pointer;
+  }
+  .code-lang:hover {
+    color: var(--ink);
+    border-color: var(--dim);
   }
   textarea:focus {
     outline: none;

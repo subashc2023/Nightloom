@@ -1,0 +1,30 @@
+<!doctype html>
+<!-- Item 312: the real Composer, app state stubbed, the Tauri bridge faked, driven by the page into a chip
+     made from text (⌥⌘V, Make this an attachment, Undo) and frozen ?t= ms into its fade, for nightshift-code
+     bin/snap (WebKit). ?rm=1 answers prefers-reduced-motion as reduce. The caption says what it measured. -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      body { margin: 0; background: var(--paper, #111); }
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+      #root { position: relative; display: flex; flex-direction: column; justify-content: flex-end; width: 900px; height: 360px; }
+      #cap { font: 12px/1.5 ui-monospace, monospace; color: #ddd; background: #000; padding: 6px 8px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="cap"></div>
+    <script>
+      // Before any module reads the drafts store: each state starts empty but `reloaded`.
+      localStorage.removeItem("nightloom.drafts");
+      if (new URLSearchParams(location.search).get("rm") === "1") {
+        const real = window.matchMedia.bind(window);
+        window.matchMedia = (q) => (q.includes("prefers-reduced-motion") ? { matches: true, media: q, addEventListener() {}, removeEventListener() {} } : real(q));
+      }
+      window.addEventListener("error", (e) => (document.getElementById("cap").textContent = "error: " + e.message));
+      window.addEventListener("unhandledrejection", (e) => (document.getElementById("cap").textContent = "rejection: " + e.reason));
+    </script>
+    <script type="module" src="./chip312.ts"></script>
+  </body>
+</html>
