@@ -4,6 +4,8 @@
   import { badgeOf } from "./attachKinds";
   import { decodeText, pastedLabel } from "./pasteAttach";
   import { splitQuotes } from "./replyQuote.svelte";
+  import { splitFences } from "./codeDetect";
+  import { languageOf, segments } from "./codeHighlight";
   import KeepButton from "./KeepButton.svelte";
   import { canKeep, imageName, keepKey, leafOf, savedFilePaths } from "./keep";
   import { app } from "./state.svelte";
@@ -155,7 +157,9 @@
   {:else if text}
     <!-- `> ` lines are quotes he placed with Reply (backlog 215), drawn as
          quotes where they sit in his words. -->
-    <div class="user-text">{#each splitQuotes(text) as seg, k (k)}{#if seg.kind === "quote"}<blockquote class="user-quote">{seg.text}</blockquote>{:else}{seg.text}{/if}{/each}</div>
+    <!-- Item 315: a ``` fenced block is drawn as code, coloured, its
+         language on a label; the rest of his words stay plain text. -->
+    <div class="user-text">{#each splitFences(text) as part, p (p)}{#if part.kind === "code"}<div class="user-code"><span class="user-code-lang mono">{languageOf(part.info)?.label ?? (part.info || "code")}</span><pre><code>{#each segments(part.code, part.info) as sg, j (j)}<span class={sg.cls}>{sg.text}</span>{/each}</code></pre></div>{:else}{#each splitQuotes(part.text) as seg, k (k)}{#if seg.kind === "quote"}<blockquote class="user-quote">{seg.text}</blockquote>{:else}{seg.text}{/if}{/each}{/if}{/each}</div>
   {/if}
   {@render extra?.()}
 </div>
@@ -183,6 +187,32 @@
   .user-bubble :global(.user-text) {
     white-space: pre-wrap;
     word-break: break-word;
+  }
+  /* Item 315: his fenced code, in the reply's code face. */
+  .user-code {
+    position: relative;
+    margin: 0.35rem 0;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--well);
+  }
+  .user-code pre {
+    margin: 0;
+    padding: 1.5rem 0.75rem 0.55rem;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 0.82em;
+    line-height: 1.5;
+    white-space: pre;
+  }
+  .user-code-lang {
+    position: absolute;
+    top: 0.3rem;
+    left: 0.75rem;
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.03em;
+    color: var(--dim);
   }
   .user-quote {
     margin: 0.3rem 0;

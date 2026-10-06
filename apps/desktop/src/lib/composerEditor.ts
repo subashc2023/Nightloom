@@ -20,7 +20,9 @@ import { EditorSelection, EditorState, Prec, StateEffect, StateField, type Exten
 import { Decoration, EditorView, WidgetType, keymap, type DecorationSet } from "@codemirror/view";
 import { LanguageSupport, ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import { markdownLanguage } from "@codemirror/lang-markdown";
-import { history, historyKeymap, insertNewline, standardKeymap } from "@codemirror/commands";
+import { history, historyKeymap, insertNewline, isolateHistory, standardKeymap } from "@codemirror/commands";
+import { findFences } from "./codeDetect";
+import { LANGUAGES, segments } from "./codeHighlight";
 import { findMath, type MathSpan } from "./math";
 import { renderMathHtml } from "./markdown";
 import { quoteLine } from "./replyQuote.svelte";
@@ -291,6 +293,61 @@ const shown = Decoration.mark({ class: "cm-cmark" });
 /** A formula's source while it is open: set as code, so it reads as TeX. */
 const source = Decoration.mark({ class: "cm-cmathsrc" });
 
+/**
+ * A code block's language label (item 315), at the end of its opening
+ * fence line: a pick rewrites only the fence's info string — the change a
+ * keystroke would make, so it is in the box's undo like one.
+ */
+class CodeLangWidget extends WidgetType {
+  constructor(
+    readonly info: string,
+    readonly lang: string | null,
+  ) {
+    super();
+  }
+  eq(o: CodeLangWidget): boolean {
+    return o.info === this.info && o.lang === this.lang;
+  }
+  toDOM(view: EditorView): HTMLElement {
+    const sel = document.createElement("select");
+    sel.className = "cm-ccodelang";
+    sel.setAttribute("aria-label", "Code block language");
+    const opts = this.lang ? [] : [{ id: this.info, label: this.info || "code" }];
+    for (const o of [...opts, ...LANGUAGES]) {
+      const el = document.createElement("option");
+      el.value = o.id;
+      el.textContent = o.label;
+      sel.append(el);
+    }
+    sel.value = this.lang ?? this.info;
+    sel.addEventListener("mousedown", (e) => e.stopPropagation());
+    sel.addEventListener("change", () => {
+      const at = view.posAtDOM(sel);
+      const line = view.state.doc.lineAt(at);
+      const f = findFences(view.state.doc.toString()).find((x) => x.start === line.from);
+      if (f) view.dispatch({ changes: { from: f.infoFrom, to: f.infoTo, insert: sel.value }, userEvent: "input" });
+    });
+    return sel;
+  }
+  ignoreEvent(): boolean {
+    return true;
+  }
+}
+
+/** Item 315: each fenced block's body coloured and its label on the fence. */
+function codeDecorations(state: EditorState, out: Range<Decoration>[]): void {
+  const text = state.doc.toString();
+  for (const f of findFences(text)) {
+    const firstLine = state.doc.lineAt(f.start);
+    out.push(Decoration.widget({ widget: new CodeLangWidget(f.info, f.lang), side: 1 }).range(firstLine.to));
+    let at = f.bodyFrom;
+    for (const sg of segments(text.slice(f.bodyFrom, f.bodyTo), f.info)) {
+      if (sg.cls) out.push(Decoration.mark({ class: sg.cls }).range(at, at + sg.text.length));
+      at += sg.text.length;
+    }
+  }
+}
+
 /** The decorations for the state as it stands, drawn from `liveSpans`. */
 export function composerDecorations(state: EditorState): DecorationSet {
   const doc = state.doc;
@@ -396,6 +453,7 @@ export function composerDecorations(state: EditorState): DecorationSet {
       }
     }
   }
+  codeDecorations(state, out);
   return Decoration.set(out, true);
 }
 
@@ -507,6 +565,19 @@ export const composerTheme = EditorView.theme({
     background: "var(--well)",
   },
   ".cm-cfence": { color: "var(--dim)" },
+  ".cm-ccodelang": {
+    float: "right",
+    height: "1.35rem",
+    margin: "0.05rem 6px 0 0",
+    padding: "0 0.3rem",
+    border: "1px solid var(--line2)",
+    borderRadius: "6px",
+    background: "var(--sheet)",
+    color: "var(--ink2)",
+    fontFamily: "var(--mono)",
+    fontSize: "0.7rem",
+    cursor: "pointer",
+  },
   // The quote line as the plain box's layer draws it (item 223).
   ".cm-cquote": {
     marginLeft: "-10px",
@@ -633,6 +704,34 @@ export class LiveBoxHandle implements ComposerBox {
   }
   closest(selector: string): Element | null {
     return this.view.dom.closest(selector);
+  }
+  /**
+   * Item 315: a code paste as two undo steps — the paste as it came, then
+   * `wrap`'s fenced form of it (given the text either side) — so ⌘Z right
+   * after gives back the raw paste.
+   */
+  pasteAsCode(raw: string, wrap: (before: string, after: string) => string): void {
+    const { from, to } = this.view.state.selection.main;
+    this.view.dispatch({
+      changes: { from, to, insert: raw },
+      selection: EditorSelection.cursor(from + raw.length),
+      userEvent: "input.paste",
+      annotations: isolateHistory.of("full"),
+      scrollIntoView: true,
+    });
+    const doc = this.view.state.doc;
+    const block = wrap(doc.sliceString(0, from), doc.sliceString(from + raw.length));
+    this.view.dispatch({
+      changes: { from, to: from + raw.length, insert: block },
+      selection: EditorSelection.cursor(from + block.length),
+      userEvent: "input",
+      annotations: isolateHistory.of("full"),
+      scrollIntoView: true,
+    });
+  }
+  /** Replace `[from, to)` as one undoable edit, the caret kept where it was. */
+  replaceRange(from: number, to: number, insert: string): void {
+    this.view.dispatch({ changes: { from, to, insert }, userEvent: "input" });
   }
   getBoundingClientRect(): DOMRect {
     return this.view.dom.getBoundingClientRect();
