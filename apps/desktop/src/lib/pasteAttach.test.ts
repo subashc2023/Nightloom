@@ -184,3 +184,16 @@ describe("the pasted chip keeps with the draft", () => {
     expect(out.chat.attachments.map((a: Attachment) => a.name)).toEqual(["Pasted text"]);
   });
 });
+
+describe("item 318: dismissing the long-paste offer", () => {
+  it("a dismissed offer (null) stays gone for the same paste, whatever the box does", () => {
+    const pasted = Array.from({ length: LONG_PASTE_WORDS + 5 }, () => "w").join(" ");
+    const box = "intro " + pasted;
+    const o = followOffer(longPasteOffer(pasted, 6), box);
+    expect(o).not.toBeNull();
+    // The × or Esc sets the offer to null; only a new paste makes one.
+    expect(followOffer(null, box)).toBeNull();
+    expect(followOffer(null, box + " more")).toBeNull();
+    expect(followOffer(null, box)).toBeNull();
+  });
+});

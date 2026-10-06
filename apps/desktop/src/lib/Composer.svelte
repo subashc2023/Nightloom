@@ -33,6 +33,7 @@
   import { LiveBoxHandle, boxElement, type ComposerBox } from "./composerEditor";
   import LiveBox from "./LiveBox.svelte";
   import { isMac } from "./platform";
+  import { BoxHistory, editKind, historyInput } from "./boxHistory";
   import {
     RE_ASK,
     abortWrapUp,
@@ -934,10 +935,13 @@
       undoConvert();
       return;
     }
-    // Item 315: ⌘Z right after a code paste takes the fence off.
-    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "z" && codeUndoable) {
+    // Blocker 1210: ⌘Z, ⌘⇧Z and ⌘Y in the box are the box's own history,
+    // never WebKit's (see `boxHistory.ts`). Stopped here so the window's
+    // ⌘⇧Z (`App.svelte`) does not redo a second time.
+    const step = boxHistoryKey(e);
+    if (step && boxStep(step)) {
       e.preventDefault();
-      undoCodeWrap();
+      e.stopPropagation();
       return;
     }
     if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && (e.code === "KeyV" || e.key.toLowerCase() === "v")) {
@@ -1009,6 +1013,15 @@
         slashDismissed = true;
         return;
       }
+    }
+    // Item 318: Esc while the long-paste offer is up dismisses it; the
+    // paste stays in the box as text.
+    // Not an Esc the input method takes to cancel a composition (review).
+    if (e.key === "Escape" && offer && offer.after !== null && !composing && !e.isComposing && e.keyCode !== 229) {
+      e.preventDefault();
+      e.stopPropagation();
+      dismissOffer();
+      return;
     }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -1277,13 +1290,11 @@
   /*
    * Item 315: a code paste goes in fenced. ⌘Z right after gives back the
    * paste as it came (no fence); the formatted box does it with its own
-   * history (two steps), the textarea through `codeWrap` — WebKit merges
-   * scripted edits with his typing into one undo step, so the textarea's
-   * own undo cannot be trusted with it. The pasted characters are not
-   * touched; the fence adds lines round them.
+   * history (two steps), the textarea with the box's history (blocker
+   * 1210, `boxHistory.ts`): two steps, the paste as it came and then the
+   * fence. The pasted characters are not touched; the fence adds lines
+   * round them.
    */
-  let codeWrap = $state<{ raw: string; wrapped: string; caret: number } | null>(null);
-  const codeUndoable = $derived(codeWrap !== null && codeWrap.wrapped === text);
   function pasteAsCode(raw: string, lang: string): void {
     if (!ta) return;
     if (ta instanceof LiveBoxHandle) {
@@ -1296,7 +1307,9 @@
     const after = text.slice(to);
     const block = fenced(raw, lang, before, after);
     const wrapped = before + block + after;
-    codeWrap = { raw: before + raw + after, wrapped, caret: from + raw.length };
+    hist.select(from, to);
+    hist.external(before + raw + after, from + raw.length);
+    hist.external(wrapped, from + block.length);
     setDraftText(key, wrapped);
     void tick().then(() => {
       if (!ta) return;
@@ -1304,23 +1317,123 @@
       autogrow();
     });
   }
-  function undoCodeWrap(): boolean {
-    const w = codeWrap;
-    codeWrap = null;
-    if (!w || w.wrapped !== text) return false;
-    setDraftText(key, w.raw);
+
+  /*
+   * Blocker 1210: the textarea's undo history is the box's own
+   * (`boxHistory.ts`), because WebKit's goes stale after any edit the page
+   * makes by setting the text and then redoes text he typed long ago. His
+   * keystrokes are recorded from `beforeinput` / `input`; every other
+   * change to the draft (a chat switch, a send, a fence, a quote, a clip)
+   * is seen here and recorded as a step of its own, or starts a fresh
+   * history for a new chat or after a send.
+   */
+  const hist = new BoxHistory(untrack(() => text));
+  let histKey = untrack(() => key);
+  $effect(() => {
+    const k = key;
+    const t = text;
+    untrack(() => {
+      if (k !== histKey) {
+        histKey = k;
+        hist.reset(t);
+        composing = false;
+      } else if (t !== hist.current.text) {
+        if (t === "") hist.reset("");
+        else hist.external(t);
+      }
+    });
+  });
+
+  function boxSnap(el: HTMLTextAreaElement) {
+    return { text: el.value, start: el.selectionStart, end: el.selectionEnd };
+  }
+
+  function onboxbeforeinput(e: InputEvent): void {
+    if (!(ta instanceof HTMLTextAreaElement)) return;
+    const h = historyInput(e.inputType);
+    if (h) {
+      // WebKit's own undo (the context menu's, a key the composer did not
+      // see): never applied — its stack is the stale one — but answered
+      // from the box's history. One native command can fire several of
+      // these in one task; only the first steps.
+      e.preventDefault();
+      if (!nativeStepped) {
+        nativeStepped = true;
+        const mc = new MessageChannel();
+        mc.port1.onmessage = () => (nativeStepped = false);
+        mc.port2.postMessage(0);
+        boxStep(h);
+      }
+      return;
+    }
+    hist.before(boxSnap(ta));
+  }
+  let nativeStepped = false;
+  /** An input method's composition is open in the box (marked text). */
+  let composing = false;
+
+  /** A history step that is 284's conversion, carrying its chip. */
+  interface ConvertTag {
+    convert: true;
+    chip: Attachment;
+    before: string;
+    after: string;
+    caret: number;
+  }
+  function isConvertTag(t: unknown): t is ConvertTag {
+    return typeof t === "object" && t !== null && (t as { convert?: unknown }).convert === true;
+  }
+
+  function onboxinput(e: Event): void {
+    if (!(ta instanceof HTMLTextAreaElement)) return;
+    hist.input(editKind((e as InputEvent).inputType ?? ""), boxSnap(ta));
+  }
+
+  /** The box's undo / redo key, or null: ⌘Z, ⌘⇧Z and ⌘Y (Ctrl off the
+   *  Mac). */
+  function boxHistoryKey(e: KeyboardEvent): "undo" | "redo" | null {
+    const primary = isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+    if (!primary || e.altKey) return null;
+    if (e.code === "KeyZ" || e.key.toLowerCase() === "z") return e.shiftKey ? "redo" : "undo";
+    if (!e.shiftKey && (e.code === "KeyY" || e.key.toLowerCase() === "y")) return "redo";
+    return null;
+  }
+
+  /** One undo or redo in the textarea. False when the box is the
+   *  formatted editor, whose own history answers. */
+  function boxStep(dir: "undo" | "redo"): boolean {
+    if (!(ta instanceof HTMLTextAreaElement)) return false;
+    // Review (2026-10-06): not while marked text is showing — setting the
+    // box under the input method would drop his words or put the commit
+    // in the wrong place. The key is swallowed; WebKit does the same.
+    if (composing) return true;
+    const s = dir === "undo" ? hist.undo() : hist.redo();
+    if (!s) return true;
+    // 284's conversion: the chip goes with its undo and comes back with
+    // its redo, so the pasted words are always in the box or in the chip.
+    if (isConvertTag(s.tag)) {
+      const t = s.tag;
+      const has = attachments.some((a) => a.id === t.chip.id);
+      if (dir === "undo") {
+        converted = null;
+        if (has) {
+          fadeOutIds.mark(t.chip.id);
+          removeAttachment(key, t.chip.id);
+        }
+      } else {
+        if (!has) addAttachment(key, t.chip);
+        converted = { before: t.before, after: t.after, chipId: t.chip.id, caret: t.caret };
+      }
+    }
+    setDraftText(key, s.text);
     void tick().then(() => {
-      if (!ta) return;
+      if (!(ta instanceof HTMLTextAreaElement)) return;
       ta.focus();
-      ta.selectionStart = ta.selectionEnd = w.caret;
+      ta.setSelectionRange(s.start, s.end);
       autogrow();
     });
     return true;
   }
-  $effect(() => {
-    void key;
-    codeWrap = null;
-  });
   /** The block's label changed: only the fence's info string is rewritten. */
   function relabel(k: number, lang: string): void {
     const f = findFences(text)[k];
@@ -1444,6 +1557,12 @@
       removeAttachment(chatKey, chip.id);
       return;
     }
+    // Blocker 1210: a step of the box's history that carries the chip, so
+    // ⌘Z takes the chip away with the text and ⌘⇧Z brings both back.
+    if (chatKey === key) {
+      const tag: ConvertTag = { convert: true, chip: $state.snapshot(chip) as Attachment, before: now, after, caret: o.start };
+      hist.external(after, o.start, tag);
+    }
     setDraftText(chatKey, after);
     if (chatKey !== key) return;
     converted = { before: now, after, chipId: chip.id, caret: o.start };
@@ -1455,13 +1574,25 @@
     });
   }
 
+  /** Item 318: the offer's × (or Esc): the paste stays in the box as
+   *  text, and this paste is not offered again — the offer only comes
+   *  from a paste, never from an undo or redo. */
+  function dismissOffer(): void {
+    offer = null;
+  }
+
   function undoConvert(): boolean {
     const c = converted;
     converted = null;
     if (!canUndo(c, text, attachments.map((a) => a.id))) return false;
+    // Blocker 1210: the conversion is the box's last step — undo it there,
+    // so ⌘⇧Z can bring it back.
+    const tag = hist.undoTag;
+    if (isConvertTag(tag) && tag.chip.id === c.chipId) return boxStep("undo");
     const r = undoConverted(c);
     fadeOutIds.mark(c.chipId);
     removeAttachment(key, c.chipId);
+    hist.external(r.text, r.caret);
     setDraftText(key, r.text);
     void tick().then(() => {
       if (!ta) return;
@@ -1476,10 +1607,12 @@
   // can be undone (macOS: the menu takes ⌘Z before the box sees it).
   $effect(() => {
     const take = (id: string): boolean => {
-      if (id !== "undo_app" || !(undoable || codeUndoable)) return false;
+      if (id !== "undo_app" && id !== "redo_app") return false;
       const box = boxElement(ta);
       if (!box || !box.contains(document.activeElement)) return false;
-      return undoable ? undoConvert() : undoCodeWrap();
+      if (id === "undo_app" && undoable) return undoConvert();
+      // Blocker 1210: the textarea's own history, not `execCommand`.
+      return boxStep(id === "undo_app" ? "undo" : "redo");
     };
     menuInterceptors.push(take);
     return () => {
@@ -2621,10 +2754,18 @@
       spellcheck="false"
       placeholder={app.connection ? boxPlaceholder : ""}
       disabled={!app.connection}
-      oninput={() => {
+      oninput={(e) => {
+        // Blocker 1210: his edit, into the box's own undo history.
+        onboxinput(e);
         // A keystroke is presence, for the hand-off's away rule (backlog 086).
         noteActivity();
         autogrow();
+      }}
+      onbeforeinput={onboxbeforeinput}
+      oncompositionstart={() => (composing = true)}
+      oncompositionend={() => {
+        composing = false;
+        hist.close();
       }}
       {onpaste}
       {onkeydown}
@@ -2641,6 +2782,14 @@
           use:tip={"Move the pasted text out of the box into an attachment — Undo puts it back. ⌥⌘V pastes as an attachment from the start."}
           onmousedown={(e) => e.preventDefault()}
           onclick={() => void convertLongPaste()}>Make this an attachment</button
+        >
+        <!-- Item 318: keep the paste as text; the offer goes for this paste. -->
+        <button
+          class="offer-x"
+          aria-label="Dismiss — keep the paste as text"
+          use:tip={"Keep it as text (Esc)"}
+          onmousedown={(e) => e.preventDefault()}
+          onclick={dismissOffer}>×</button
         >
       </div>
     {:else if undoable}
@@ -3265,6 +3414,23 @@
     gap: 0.5rem;
     padding: 2px 10px 4px;
     font-size: 12px;
+  }
+  /* Item 318: the offer's dismiss, a small × beside it. */
+  .offer-x {
+    width: 1.15rem;
+    height: 1.15rem;
+    padding: 0;
+    background: none;
+    color: var(--dim);
+    border: 1px solid transparent;
+    border-radius: 50%;
+    font-size: 0.85rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .offer-x:hover {
+    color: var(--text);
+    border-color: var(--border);
   }
   /* The queue tray: joined to the top of the card, dashed so it reads as
      "not sent yet" (backlog 089). Plain rows; the real design is the
