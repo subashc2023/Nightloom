@@ -1335,6 +1335,7 @@
       if (k !== histKey) {
         histKey = k;
         hist.reset(t);
+        composing = false;
       } else if (t !== hist.current.text) {
         if (t === "") hist.reset("");
         else hist.external(t);
@@ -1367,6 +1368,8 @@
     hist.before(boxSnap(ta));
   }
   let nativeStepped = false;
+  /** An input method's composition is open in the box (marked text). */
+  let composing = false;
 
   /** A history step that is 284's conversion, carrying its chip. */
   interface ConvertTag {
@@ -1399,6 +1402,10 @@
    *  formatted editor, whose own history answers. */
   function boxStep(dir: "undo" | "redo"): boolean {
     if (!(ta instanceof HTMLTextAreaElement)) return false;
+    // Review (2026-10-06): not while marked text is showing — setting the
+    // box under the input method would drop his words or put the commit
+    // in the wrong place. The key is swallowed; WebKit does the same.
+    if (composing) return true;
     const s = dir === "undo" ? hist.undo() : hist.redo();
     if (!s) return true;
     // 284's conversion: the chip goes with its undo and comes back with
@@ -2754,6 +2761,11 @@
         autogrow();
       }}
       onbeforeinput={onboxbeforeinput}
+      oncompositionstart={() => (composing = true)}
+      oncompositionend={() => {
+        composing = false;
+        hist.close();
+      }}
       {onpaste}
       {onkeydown}
       onblur={() => (clipOpen = false)}

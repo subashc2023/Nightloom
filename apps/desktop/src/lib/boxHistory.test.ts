@@ -16,7 +16,11 @@ describe("boxHistory (blocker 1210)", () => {
   it("classifies input types", () => {
     expect(editKind("insertText")).toBe("type");
     expect(editKind("insertLineBreak")).toBe("type");
-    expect(editKind("insertCompositionText")).toBe("type");
+    expect(editKind("insertCompositionText")).toBe("compose");
+    expect(editKind("deleteCompositionText")).toBe("compose");
+    expect(editKind("insertFromComposition")).toBe("commit");
+    expect(editKind("deleteByDrag")).toBe("drag");
+    expect(editKind("insertFromDrop")).toBe("drop");
     expect(editKind("deleteContentBackward")).toBe("delete");
     expect(editKind("deleteWordBackward")).toBe("delete");
     expect(editKind("deleteByCut")).toBe("other");
@@ -25,6 +29,41 @@ describe("boxHistory (blocker 1210)", () => {
     expect(historyInput("historyUndo")).toBe("undo");
     expect(historyInput("historyRedo")).toBe("redo");
     expect(historyInput("insertText")).toBeNull();
+  });
+
+  // Review 2026-10-06: ⌘Z after an input method's word never shows
+  // half-composed text, and after a drag never leaves the words out.
+  it("a composition is one step, its commit included, and the next is another", () => {
+    const h = new BoxHistory();
+    typeEnd(h, "a ");
+    for (const [t, s0, e0] of [["a k", 2, 2], ["a か", 2, 3], ["a かn", 2, 3], ["a かんじ", 2, 4]] as const) {
+      h.before(snap(h.current.text, s0, e0));
+      h.input("compose", snap(t));
+    }
+    h.before(snap("a かんじ", 2, 5));
+    h.input("compose", snap("a "));
+    h.before(snap("a "));
+    h.input("commit", snap("a 漢字"));
+    h.close();
+    h.before(snap("a 漢字"));
+    h.input("compose", snap("a 漢字k"));
+    h.close();
+    expect(h.undo()?.text).toBe("a 漢字");
+    expect(h.undo()?.text).toBe("a ");
+    expect(h.undo()?.text).toBe("");
+    expect(h.redo()?.text).toBe("a ");
+    expect(h.redo()?.text).toBe("a 漢字");
+  });
+
+  it("a drag inside the box is one step", () => {
+    const h = new BoxHistory();
+    typeEnd(h, "alpha beta gamma");
+    h.before(snap("alpha beta gamma", 6, 11));
+    h.input("drag", snap("alpha gamma", 6));
+    h.before(snap("alpha gamma"));
+    h.input("drop", snap("alpha gamma beta"));
+    expect(h.undo()?.text).toBe("alpha beta gamma");
+    expect(h.redo()?.text).toBe("alpha gamma beta");
   });
 
   it("a run of typing is one step; a caret move starts another", () => {

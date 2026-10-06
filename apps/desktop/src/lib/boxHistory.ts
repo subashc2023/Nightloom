@@ -29,6 +29,9 @@ export interface Snap {
 interface Step {
   before: Snap;
   after: Snap;
+  /** The kind of edit that made it (review 2026-10-06: a composition's
+   *  commit joins the step it finishes). */
+  kind?: EditKind;
   /** What the composer did beside the text, for it to undo and redo too
    *  (284's conversion: the chip). Opaque here. */
   tag?: unknown;
@@ -40,14 +43,21 @@ export interface Moved extends Snap {
 }
 
 /** What kind of edit an `input` event was, for coalescing. */
-export type EditKind = "type" | "delete" | "other";
+export type EditKind = "type" | "delete" | "compose" | "commit" | "drag" | "drop" | "other";
 
-/** By the event's `inputType`: typing (and composing an accent or IME
- *  text) and deleting coalesce into runs; everything else stands alone. */
+/** By the event's `inputType`: typing and deleting coalesce into runs; a
+ *  composition (an accent popup, Japanese or Chinese input) is one step
+ *  from its first marked letter to its commit, as in WebKit, so ⌘Z never
+ *  shows half-composed text ("かんj"); a drag inside the box (its delete,
+ *  then its drop) is one step, so ⌘Z never leaves the dragged words out
+ *  of the box. Everything else stands alone. (Review, 2026-10-06.) */
 export function editKind(inputType: string): EditKind {
   if (inputType === "insertText" || inputType === "insertLineBreak" || inputType === "insertParagraph") return "type";
-  if (inputType === "insertCompositionText" || inputType === "insertFromComposition") return "type";
-  if (inputType.startsWith("delete") && inputType !== "deleteByCut" && inputType !== "deleteByDrag") return "delete";
+  if (inputType === "insertCompositionText" || inputType === "deleteCompositionText") return "compose";
+  if (inputType === "insertFromComposition") return "commit";
+  if (inputType === "deleteByDrag") return "drag";
+  if (inputType === "insertFromDrop") return "drop";
+  if (inputType.startsWith("delete") && inputType !== "deleteByCut") return "delete";
   return "other";
 }
 
@@ -130,18 +140,27 @@ export class BoxHistory {
       return;
     }
     const top = this.past[this.past.length - 1];
-    const runs =
-      kind !== "other" &&
-      this.open === kind &&
-      top !== undefined &&
-      top.after.text === before.text &&
-      before.start === before.end &&
-      before.start === top.after.end;
+    const joins = top !== undefined && top.after.text === before.text;
+    let runs: boolean;
+    if (kind === "type" || kind === "delete")
+      runs = joins && this.open === kind && before.start === before.end && before.start === top.after.end;
+    // The marked text is replaced on every update, wherever the caret is.
+    else if (kind === "compose") runs = joins && this.open === "compose";
+    // The commit finishes its composition, even after `compositionend`.
+    else if (kind === "commit") runs = joins && top.kind === "compose";
+    else if (kind === "drop") runs = joins && this.open === "drag";
+    else runs = false;
     if (runs) top.after = after;
-    else this.push({ before, after });
-    this.open = kind === "other" ? null : kind;
+    else this.push({ before, after, kind });
+    this.open = kind === "type" || kind === "delete" || kind === "compose" || kind === "drag" ? kind : null;
     this.future = [];
     this.cur = after;
+  }
+
+  /** A composition ended (`compositionend`): the next one is a step of
+   *  its own. */
+  close(): void {
+    if (this.open === "compose") this.open = null;
   }
 
   /**
