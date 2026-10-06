@@ -1738,8 +1738,9 @@ impl ClaudeCodeAgent {
             None
         };
         let warm_start = taken.is_some();
+        let warm_age = taken.as_ref().map(|(_, age)| *age);
         let mut child = match taken {
-            Some(child) => child,
+            Some((child, _)) => child,
             None => key
                 .command(stdin)
                 .spawn()
@@ -1755,6 +1756,9 @@ impl ClaudeCodeAgent {
         if let Some(t) = &timing {
             t.mark(crate::turn_timing::Mark::Spawned);
             t.set_warm(warm_start);
+            if let Some(age) = warm_age {
+                t.set_warm_age(age);
+            }
         }
         let mut init_seen = timing.is_none();
         let mut event_seen = timing.is_none();

@@ -25,7 +25,10 @@
 //!
 //! After the stages, `spawn warm` or `spawn cold` (2026-10-03): whether the
 //! turn took the process started while he typed (`agent::warm`) or
-//! started its own. Absent when no process was reached.
+//! started its own. Absent when no process was reached. A warm one says
+//! how long it had been running when the turn took it (`spawn warm, 412 ms
+//! old`; item 301, 2026-10-06): one younger than the CLI's start-up (~1.2 s
+//! idle) is still starting, and its `init` comes as late as a cold one's.
 //!
 //! On `serve` there is no window: `sent`, `invoked` and `painted` are
 //! absent (`-`), never zero, and the offsets count from `entered`. No
@@ -95,6 +98,8 @@ pub struct Stages {
     /// The turn took the waiting process (`Some(true)`) or spawned its
     /// own (`Some(false)`); `None` when no process was reached.
     pub warm: Option<bool>,
+    /// How long the waiting process had run when the turn took it (ms).
+    pub warm_age: Option<u64>,
 }
 
 impl Stages {
@@ -140,10 +145,11 @@ pub fn line(host: &str, chat: &str, stages: &Stages, outcome: &str) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     let chat = if chat.is_empty() { "-" } else { chat };
-    let spawn = match stages.warm {
-        Some(true) => "; spawn warm",
-        Some(false) => "; spawn cold",
-        None => "",
+    let spawn = match (stages.warm, stages.warm_age) {
+        (Some(true), Some(age)) => format!("; spawn warm, {age} ms old"),
+        (Some(true), None) => "; spawn warm".into(),
+        (Some(false), _) => "; spawn cold".into(),
+        (None, _) => String::new(),
     };
     format!("turn {host} chat {chat}: from {from}; {parts} ms{spawn}; {outcome}")
 }
@@ -188,6 +194,7 @@ struct Inner {
     end: Option<(u64, String)>,
     written: bool,
     warm: Option<bool>,
+    warm_age: Option<u64>,
 }
 
 /// One turn's marks, shared by the command, the turn and the agent.
@@ -221,6 +228,7 @@ impl TurnTiming {
                 end: None,
                 written: false,
                 warm: None,
+                warm_age: None,
             }),
         });
         t.mark(Mark::Entered);
@@ -263,6 +271,15 @@ impl TurnTiming {
         }
     }
 
+    /// How long the waiting process had run when the turn took it (item
+    /// 301); the first call wins.
+    pub fn set_warm_age(&self, age: std::time::Duration) {
+        let mut inner = self.lock();
+        if inner.warm_age.is_none() {
+            inner.warm_age = Some(age.as_millis() as u64);
+        }
+    }
+
     pub fn set_chat(&self, chat: &str) {
         self.lock().chat = chat.to_string();
     }
@@ -285,6 +302,7 @@ impl TurnTiming {
             painted: w.and_then(|w| w.painted),
             end: inner.end.as_ref().map(|e| e.0),
             warm: inner.warm,
+            warm_age: inner.warm_age,
         }
     }
 
@@ -414,6 +432,7 @@ mod tests {
             painted: None,
             end: Some(3200),
             warm: Some(true),
+            warm_age: None,
         };
         assert_eq!(
             line(DESKTOP, "c-1", &s, "ok"),
@@ -426,6 +445,12 @@ mod tests {
             ..s.clone()
         };
         assert!(line(DESKTOP, "c-1", &cold, "ok").ends_with("ms; spawn cold; ok"));
+        // Item 301: a warm process says how long it had been running.
+        let aged = Stages {
+            warm_age: Some(412),
+            ..s.clone()
+        };
+        assert!(line(DESKTOP, "c-1", &aged, "ok").ends_with("ms; spawn warm, 412 ms old; ok"));
     }
 
     #[test]

@@ -154,11 +154,14 @@ impl WarmSlot {
     }
 
     /// The waiting process, if it is exactly the one `key` would spawn,
-    /// still running and young enough; any other is killed.
-    pub fn take(&self, key: &Key) -> Option<Child> {
+    /// still running and young enough, with how long it has run (item 301:
+    /// one younger than the CLI's start-up is still starting); any other
+    /// is killed.
+    pub fn take(&self, key: &Key) -> Option<(Child, Duration)> {
         let mut w = self.lock().warm.take()?;
-        (w.key == *key && w.born.elapsed() < MAX_AGE && matches!(w.child.try_wait(), Ok(None)))
-            .then_some(w.child)
+        let age = w.born.elapsed();
+        (w.key == *key && age < MAX_AGE && matches!(w.child.try_wait(), Ok(None)))
+            .then_some((w.child, age))
     }
 
     /// Whether a process is waiting (for tests and the report).
@@ -212,7 +215,8 @@ mod tests {
         assert!(!slot.waiting());
         // Refilled, then taken by its own key.
         assert!(slot.fill(key.clone()).unwrap());
-        let child = slot.take(&key).expect("the same command");
+        let (child, age) = slot.take(&key).expect("the same command");
+        assert!(age < MAX_AGE);
         assert!(child.id().is_some());
         assert!(!slot.waiting());
     }
@@ -253,6 +257,8 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns"
             assert_eq!(out.text, "hi");
             let s = timing.stages();
             assert_eq!(s.warm, Some(want_warm));
+            // Item 301: a taken process says how long it had run.
+            assert_eq!(s.warm_age.is_some(), want_warm);
             assert!(s.first_event.is_some() && s.first_text.is_some());
             // Taken: nothing waits after the turn.
             assert!(!agent.warm.waiting());
@@ -324,6 +330,52 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns"
                 "{shape}: median send→init {} ms, send→first text {} ms",
                 median(init).unwrap(),
                 median(text).unwrap()
+            );
+        }
+    }
+
+    /// Item 301 with the real CLI (`cargo test -p nightloom-service --lib
+    /// measure_init_by_age -- --ignored --nocapture`): Send → `init` for a
+    /// waiting process taken `age` ms after it was started, and one cold
+    /// spawn first as the baseline. Haiku, no session kept; bills one
+    /// one-word reply per row. `NIGHTLOOM_301_AGES` (ms, comma-separated)
+    /// overrides the ages.
+    #[tokio::test]
+    #[ignore]
+    async fn measure_init_by_age_with_the_real_cli() {
+        use crate::agent::ClaudeCodeAgent;
+        use crate::turn_timing::{self, TurnTiming};
+        let ages: Vec<u64> = std::env::var("NIGHTLOOM_301_AGES")
+            .ok()
+            .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+            .unwrap_or_else(|| vec![0, 250, 500, 1000, 1500, 2500, 5000]);
+        let dir = scratch();
+        let mut spec = AgentSpec::new(&dir);
+        spec.binary = "claude".into();
+        spec.model = Some("haiku".into());
+        spec.no_session_persistence = true;
+        let mut agent = ClaudeCodeAgent::new(spec.clone());
+        let prompt = "Reply with the single word: ok";
+        for age in std::iter::once(None).chain(ages.into_iter().map(Some)) {
+            if let Some(age) = age {
+                assert!(agent.prewarm().unwrap());
+                tokio::time::sleep(Duration::from_millis(age)).await;
+            }
+            let timing = TurnTiming::begin(turn_timing::SERVE, None, None);
+            agent.set_timing(Some(timing.clone()));
+            let cancel = tokio_util::sync::CancellationToken::new();
+            agent.run_turn(prompt, &cancel, &mut |_| {}).await.unwrap();
+            agent.set_timing(None);
+            let s = timing.stages();
+            let at = |x: Option<u64>| x.map(|x| x as i64 - s.entered.unwrap() as i64);
+            println!(
+                "301 row: age {} ms (taken at {:?} ms), warm {:?}, init {:?}, first event {:?}, first text {:?}",
+                age.map_or("cold".into(), |a| a.to_string()),
+                s.warm_age,
+                s.warm,
+                at(s.init),
+                at(s.first_event),
+                at(s.first_text)
             );
         }
     }
