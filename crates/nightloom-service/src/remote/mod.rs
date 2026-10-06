@@ -557,8 +557,9 @@ impl Server {
         // HTTPS when `tailscale cert`'s files are in `<config>/remote/`
         // (item 246 wave 3, blocker 660); plain HTTP otherwise, as before.
         // Unreadable files are an error, not a silent fall back to HTTP.
+        // While it runs, the listener renews them daily (`tls::keep_fresh`).
         let tls = crate::tls::dir()
-            .and_then(|d| crate::tls::load(&d))
+            .and_then(|d| crate::tls::Certs::load(&d))
             .transpose()
             .map_err(|e| Error::Bind {
                 addr,
@@ -604,7 +605,7 @@ impl Server {
         addr: SocketAddr,
         token: String,
         host: Arc<dyn Host>,
-        tls: Option<Arc<rustls::ServerConfig>>,
+        tls: Option<Arc<crate::tls::Certs>>,
     ) -> Result<Self, Error> {
         let listener = tokio::net::TcpListener::bind(addr)
             .await
@@ -622,8 +623,18 @@ impl Server {
             items: resent::Resent::default(),
         }));
         let https = tls.is_some();
+        let closing_for_renewal = closing.clone();
         let task = match tls {
-            Some(config) => tokio::spawn(async move {
+            Some(certs) => tokio::spawn(async move {
+                // Renewal lives and ends with the listener: `closing` is
+                // cancelled by `stop` and on drop.
+                let config = certs.server_config();
+                tokio::spawn(crate::tls::keep_fresh(
+                    certs,
+                    crate::tls::RENEW_EVERY,
+                    closing_for_renewal,
+                    crate::tls::renew_from_tailscale,
+                ));
                 let _ = axum::serve(crate::tls::TlsListener::new(listener, config), app)
                     .with_graceful_shutdown(async {
                         let _ = rx.await;

@@ -45,6 +45,9 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 # A WebSocket client for the voice socket's tests (`remote/voice_ws.rs`);
 # the same version axum's `ws` feature already compiles.
 tokio-tungstenite = "0.29"
+# The roots for `voice_ws`'s by-hand test against a live HTTPS listener
+# (wss://); the version reqwest's rustls already compiles.
+webpki-roots = "1"
 
 [features]
 default = ["keyring"]
