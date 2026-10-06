@@ -92,6 +92,8 @@
   import { ensureForkInfo, openVersion, versionsOf } from "./versions.svelte";
   import { versionPlace } from "./versions";
   import { arrive, hasLaunch } from "./sendMotion";
+  // A Send near the foot lands at the bottom (item 313).
+  import { restDistance, sendJumps } from "./sendScroll";
   // The first-paint mark of the message's timing line (item 256).
   import { hasText, turnClock } from "./turnTiming";
 
@@ -845,6 +847,44 @@
   let enterFrom = $state(Infinity);
   let enterKey: string | null = null;
   let enterLen = 0;
+  // Item 313: how far above the foot the view was just before the log
+  // grew — read before the DOM takes the new turn, so the distance is the
+  // reader's, not the reader's plus the sent bubble's height.
+  let preDistance = 0;
+  let preHeight = 0;
+  let preTop = 0;
+  $effect.pre(() => {
+    void evs.length;
+    untrack(() => {
+      if (!viewport) return;
+      preDistance = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
+      preHeight = viewport.clientHeight;
+      preTop = viewport.scrollTop;
+    });
+  });
+  // 313 review: a tall paste had grown the box, so the view read at Send
+  // was shorter and the foot further by the box's growth — out of range
+  // for a Send from half a screen up. The box shrinks back on the frame
+  // after the Send (`afterSend`'s rAF, queued first); read again then, as
+  // the reader's place with the box at rest. This late land skips the
+  // fly-in (the bubble was below the view when `fly` measured it).
+  function recheckSendJump(key: string | null): void {
+    const top = preTop;
+    const d = preDistance;
+    const h = preHeight;
+    requestAnimationFrame(() => {
+      if (pinned || !viewport || sessionKey !== key || viewport.scrollTop !== top) return;
+      const now = viewport.clientHeight;
+      if (now <= h) return;
+      const r = restDistance(d, h, now);
+      if (!sendJumps(r.distance, r.viewport)) return;
+      pinned = true;
+      jumpDown = false;
+      scrollingSelf = true;
+      viewport.scrollTop = viewport.scrollHeight;
+      requestAnimationFrame(() => (scrollingSelf = false));
+    });
+  }
   $effect(() => {
     const key = sessionKey;
     const len = evs.length;
@@ -863,7 +903,23 @@
       enterLen = len;
       return;
     }
-    if (len > enterLen && live) enterFrom = enterLen;
+    if (len > enterLen && live) {
+      enterFrom = enterLen;
+      // Item 313: a Send from within one screen of the foot lands at the
+      // bottom and follows the reply; from further up the place is kept.
+      // Re-pinning is enough: the follow-the-bottom effect above, run by
+      // the same `evs.length` change, lands on the foot after this flush's
+      // tick — instantly, as a Send at the foot always has, so the new
+      // bubble is in view when `sendMotion` measures it a frame later and
+      // the fly-in plays (the ⌄'s smooth ride would leave it below the
+      // view then, and `fly` skips a bubble out of view).
+      if (!pinned && sendJumps(preDistance, preHeight)) {
+        pinned = true;
+        jumpDown = false;
+      } else if (!pinned) {
+        recheckSendJump(key);
+      }
+    }
     enterLen = len;
   });
 
