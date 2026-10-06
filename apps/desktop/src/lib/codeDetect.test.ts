@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { codePasteLanguage, detectCode, fenced, findFences, layerLines, splitFences, withFenceLanguage } from "./codeDetect";
-import { htmlToSegments, languageOf, segmentLines, segments } from "./codeHighlight";
+import { HIGHLIGHT_MAX_CHARS, htmlToSegments, languageOf, segmentLines, segments } from "./codeHighlight";
 
 export const PY = `def fib(n: int) -> int:
     """Return the n-th Fibonacci number."""
@@ -175,5 +175,26 @@ describe("layerLines", () => {
   });
   it("an open fence colours to the end", () => {
     expect(layerLines("```js\nlet a = 1\nlet b").map((x) => x?.kind ?? null)).toEqual(["open", "body", "body"]);
+  });
+});
+
+// Review fixes, 2026-10-05.
+describe("review fixes", () => {
+  it("a Python traceback, if fenced, is labelled Python (highlight.js guessed Java)", () => {
+    const t = `Traceback (most recent call last):\n  File "main.py", line 3, in <module>\n    foo()\n  File "main.py", line 2, in foo\n    raise ValueError("x")\nValueError: x`;
+    const v = detectCode(t);
+    expect(v.code ? v.lang : "python").toBe("python");
+  });
+  it("a block he is not typing in keeps its very line objects (the layer skips it)", () => {
+    const body = "def f():\n    return 1";
+    const a = layerLines(`hi\n\`\`\`py\n${body}\n\`\`\`\nbye`);
+    const b = layerLines(`hiX\n\`\`\`py\n${body}\n\`\`\`\nbye`);
+    expect(b[2]).toBe(a[2]);
+    expect(b[3]).toBe(a[3]);
+  });
+  it("a block past the size cap is drawn plain, its characters unchanged", () => {
+    const code = "x = 1\n".repeat(Math.ceil(HIGHLIGHT_MAX_CHARS / 6) + 1);
+    const segs = segments(code, "python");
+    expect(segs).toEqual([{ text: code, cls: "" }]);
   });
 });

@@ -1,0 +1,29 @@
+<!doctype html>
+<html><head><meta charset="UTF-8"><style>body{background:#fff;font:14px monospace}textarea{width:600px;height:150px}#cap{white-space:pre-wrap}</style></head>
+<body><textarea id="t"></textarea><div id="cap"></div>
+<script>
+// Review of 315: WebKit's own undo stack, a plain textarea. Variant ?v=set (the build: value set by script) or
+// ?v=native (two execCommand insertText steps, the selection set between them).
+const v = new URLSearchParams(location.search).get("v") || "native";
+const ta = document.getElementById("t"), cap = document.getElementById("cap");
+const out = []; const say = (l) => { out.push(l); cap.textContent = out.join("\n"); };
+const J = JSON.stringify;
+ta.focus();
+document.execCommand("insertText", false, "hello ");
+const raw = "def f(x):\n    return x";
+const from = ta.selectionStart;
+const block = "\n```python\n" + raw + "\n```";
+if (v === "set") {
+  ta.value = "hello " + block; ta.selectionStart = ta.selectionEnd = ta.value.length;
+} else {
+  ta.setSelectionRange(from, from);
+  document.execCommand("insertText", false, raw);
+  ta.setSelectionRange(from, from + raw.length);
+  document.execCommand("insertText", false, block);
+}
+say("after paste: " + J(ta.value));
+document.execCommand("insertText", false, "X");
+say("typed X: " + J(ta.value));
+for (let i = 1; i <= 4; i++) { document.execCommand("undo"); say("undo " + i + ": " + J(ta.value)); }
+for (let i = 1; i <= 4; i++) { document.execCommand("redo"); say("redo " + i + ": " + J(ta.value)); }
+</script></body></html>

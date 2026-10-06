@@ -48,7 +48,8 @@ const SIGNATURES: [string, RegExp][] = [
   ["java", /\bpublic\s+(static\s+)?(final\s+)?(class|interface|enum|void)\b|System\.(out|err)\.print|\bString\[\]\s+args\b|^\s*import\s+java\./m],
   ["cpp", /#include\s*<(iostream|vector|string|map|unordered_map|memory|algorithm|cstdio|cstdlib)>|\bstd::|\bcout\s*<<|\btemplate\s*<|\bnullptr\b/],
   ["c", /#include\s*<\w+\.h>|\bprintf\s*\(|\bmalloc\s*\(/],
-  ["python", /^\s*def\s+\w+\s*\(.*\)\s*(->\s*[^:]+)?:\s*$|^\s*(from\s+[\w.]+\s+)?import\s+[\w.]+(\s+as\s+\w+)?\s*$|__name__\s*==|^\s*elif\b|\bself\.\w+\s*=/m],
+  // A Python traceback (review fix: highlight.js called one Java).
+  ["python", /^Traceback \(most recent call last\):$|^\s*def\s+\w+\s*\(.*\)\s*(->\s*[^:]+)?:\s*$|^\s*(from\s+[\w.]+\s+)?import\s+[\w.]+(\s+as\s+\w+)?\s*$|__name__\s*==|^\s*elif\b|\bself\.\w+\s*=/m],
   ["rust", /\bfn\s+\w+\s*(<[^>]*>)?\s*\(.*\)\s*(->\s*[^{]+)?\{|\blet\s+mut\b|\b(println|vec|format)!\s*[([]|\bimpl\b.*\{/],
   ["go", /^package\s+\w+\s*$|\bfunc\s+(\(\w+\s+\*?\w+\)\s*)?\w+\s*\(.*\)\s*[\w*([\]]*\s*\{|\bfmt\.\w+\(/m],
   ["kotlin", /\bfun\s+\w+\s*\(|\bval\s+\w+\s*(:\s*\w+)?\s*=/],
@@ -216,6 +217,26 @@ export type LayerLine =
   | { kind: "close" }
   | { kind: "body"; segs: Seg[] };
 
+/*
+ * A block's body lines, kept while the block is unchanged (review fix,
+ * 2026-10-05): the box redraws its layer on every keystroke, and handing
+ * it the very same line objects for a block he is not typing in lets the
+ * redraw skip the block. Without it a keystroke above a 2,000-line block
+ * took ~340 ms in WebKit.
+ */
+const bodyMemo = new Map<string, LayerLine[]>();
+function bodyLines(body: string, info: string, count: number): LayerLine[] {
+  const k = `${count}\u0000${info}\u0000${body}`;
+  const hit = bodyMemo.get(k);
+  if (hit) return hit;
+  const lines = segmentLines(segments(body, info));
+  const out: LayerLine[] = [];
+  for (let i = 0; i < count; i++) out.push({ kind: "body", segs: lines[i] ?? [] });
+  if (bodyMemo.size > 16) bodyMemo.delete(bodyMemo.keys().next().value!);
+  bodyMemo.set(k, out);
+  return out;
+}
+
 /** One entry per line of `text`: null outside every fence. */
 export function layerLines(text: string): (LayerLine | null)[] {
   const n = text.split("\n").length;
@@ -225,8 +246,8 @@ export function layerLines(text: string): (LayerLine | null)[] {
     const body = text.slice(f.bodyFrom, f.bodyTo);
     const end = f.close ?? n;
     if (end > f.open + 1) {
-      const lines = segmentLines(segments(body, f.info));
-      for (let i = f.open + 1; i < end; i++) out[i] = { kind: "body", segs: lines[i - f.open - 1] ?? [] };
+      const lines = bodyLines(body, f.info, end - f.open - 1);
+      for (let i = f.open + 1; i < end; i++) out[i] = lines[i - f.open - 1];
     }
     if (f.close !== null) out[f.close] = { kind: "close" };
   });

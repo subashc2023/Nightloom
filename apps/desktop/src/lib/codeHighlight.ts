@@ -118,9 +118,13 @@ export function segments(code: string, info: string): Seg[] {
   memo.set(k, segs);
   return segs;
 }
+/** Past this many characters a block is drawn plain (review fix,
+ *  2026-10-05): highlighting a 2,000-line block on every keystroke in it
+ *  cost ~70 ms in WebKit. ~500 lines of typical code are still coloured. */
+export const HIGHLIGHT_MAX_CHARS = 20_000;
 function segmentsUncached(code: string, info: string): Seg[] {
   const lang = languageOf(info);
-  if (!lang || !code) return code ? [{ text: code, cls: "" }] : [];
+  if (!lang || !code || code.length > HIGHLIGHT_MAX_CHARS) return code ? [{ text: code, cls: "" }] : [];
   try {
     const segs = htmlToSegments(hljs.highlight(code, { language: lang.hl, ignoreIllegals: true }).value);
     // A guard, not an expectation: never draw characters that are not his.
