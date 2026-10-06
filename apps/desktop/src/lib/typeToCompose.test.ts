@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   focusKindOf,
+  inFocusedPane,
   isPrintable,
   sendsToComposer,
   TYPE_BLOCKERS,
@@ -140,5 +141,18 @@ describe("TYPE_BLOCKERS", () => {
   it("covers modals, dialogs, menus, the find bar and the palette", () => {
     for (const s of ['[aria-modal="true"]', '[role="dialog"]', '[role="menu"]', ".find-bar", ".pal", ".settings-overlay"])
       expect(TYPE_BLOCKERS).toContain(s);
+  });
+});
+
+describe("inFocusedPane (316 review)", () => {
+  const composer = {};
+  it("the composer's pane is the focused one", () => {
+    expect(inFocusedPane(composer, { contains: (el) => el === composer })).toBe(true);
+  });
+  it("the other pane is focused (a click on a note's text there): left alone", () => {
+    expect(inFocusedPane(composer, { contains: () => false })).toBe(false);
+  });
+  it("no pane marked focused reads as yes", () => {
+    expect(inFocusedPane(composer, null)).toBe(true);
   });
 });

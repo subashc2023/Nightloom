@@ -20,7 +20,8 @@
  * - the focus in anything he types in (search, the find bar, a note, a
  *   rename, the question card's Other field, the terminal, an aside's box);
  * - the focus outside the chat's pane (the sidebar, the other pane), or in
- *   a floating aside card (its own box is the one he means);
+ *   a floating aside card (its own box is the one he means); with two
+ *   panes, the chat's pane not the focused one (`inFocusedPane`);
  * - a modal, menu, popover, scrim, the palette or the find bar open;
  * - no chat composer drawn (Settings over it, a note or web tab).
  *
@@ -130,6 +131,21 @@ export function focusKindOf(
   return "content";
 }
 
+/**
+ * Whether the chat's composer is in the focused pane. With two panes, a
+ * click on plain text in the other pane (a note, a project page) focuses
+ * that pane but leaves the focus on the body; the keystroke is that pane's,
+ * not the chat box's in the pane beside it (316 review). No pane marked
+ * focused (none drawn yet) reads as yes.
+ */
+export function inFocusedPane(
+  composer: unknown,
+  focusedPane: { contains(el: unknown): boolean } | null,
+): boolean {
+  if (!focusedPane) return true;
+  return focusedPane.contains(composer);
+}
+
 /** What blocks the rule: everything that blocks the composer's own auto-focus, and the palette. */
 export const TYPE_BLOCKERS = `${AUTO_FOCUS_BLOCKERS}, ${CMD_L_BLOCKERS}`;
 
@@ -172,7 +188,7 @@ export function typeToComposeKeydown(e: KeyboardEvent, endOfEditor?: (el: HTMLEl
   const active = doc.activeElement as (HTMLElement & FocusEl) | null;
   const region = found ? (found.root.closest<HTMLElement>("section.pane") ?? found.root.parentElement) : null;
   const ctx: ComposeContext = {
-    composer: found !== null,
+    composer: found !== null && inFocusedPane(found.root, doc.querySelector("section.pane.focused")),
     blocked: !!doc.querySelector(TYPE_BLOCKERS),
     focus: focusKindOf(active, active === doc.body || active === doc.documentElement, region),
   };
