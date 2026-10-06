@@ -35,6 +35,13 @@ describe("cardBox — the question card", () => {
     expect(cardBox("question", false, null, 0, 0).maxHeight).toBeNull();
     expect(cardBox("question", true, null, 549, 780).maxHeight).toBeNull();
   });
+
+  it("treats NaN or infinite heights as not measured", () => {
+    expect(cardBox("question", false, null, NaN, NaN).maxHeight).toBeNull();
+    expect(cardBox("question", false, null, NaN, 780).maxHeight).toBe(468);
+    expect(cardBox("question", false, null, Infinity, 780).maxHeight).toBe(468);
+    expect(cardBox("plan", false, NaN, 549, 780)).toMatchObject({ height: null, maxHeight: 366 });
+  });
 });
 
 describe("cardBox — the plan card and the permission prompt are unchanged", () => {

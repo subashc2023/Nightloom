@@ -189,6 +189,37 @@ async function run() {
     const sent = approved[0] as { decision?: string; answer?: { answers?: unknown } } | undefined;
     log.push(`approve_call: ${sent ? `${sent.decision} ${JSON.stringify(sent.answer?.answers)}` : "not called"}`);
   }
+  if (q.get("act") === "kbd" && card) {
+    // The keyboard path (314 review): what Tab visits, in order, and that a
+    // focused radio rings its row. Synthetic Tab cannot move focus, so the
+    // order is the DOM's sequential-focus order (tabindex >= 0, not disabled);
+    // a radio group is one stop, arrows move inside it.
+    const stops = [...card.querySelectorAll<HTMLElement>("input, button, textarea, select, a[href], [tabindex]")].filter(
+      (el) => el.tabIndex >= 0 && !(el as HTMLButtonElement).disabled,
+    );
+    const seen = new Set<string>();
+    const order: string[] = [];
+    for (const el of stops) {
+      const inp = el as HTMLInputElement;
+      if (inp.type === "radio") {
+        if (seen.has(inp.name)) continue;
+        seen.add(inp.name);
+        order.push(`radio group ${inp.name}`);
+      } else
+        order.push(
+          `${el.tagName.toLowerCase()}${inp.type ? `[${inp.type}]` : ""} "${(el.textContent || inp.placeholder || "").trim().slice(0, 24)}"`,
+        );
+    }
+    log.push(`tab stops: ${order.join(" → ")}`);
+    const first = card.querySelector<HTMLInputElement>(".opt input[type=radio]");
+    first?.focus({ preventScroll: true });
+    await tick();
+    const row = first?.closest(".opt") as HTMLElement | null;
+    const rs = row ? getComputedStyle(row) : null;
+    log.push(
+      `focused: ${document.activeElement === first}; :focus-visible ${first?.matches(":focus-visible")}; row outline: ${rs ? `${rs.outlineStyle} ${rs.outlineWidth}` : "?"}`,
+    );
+  }
   if (unknown.size) log.push(`unstubbed: ${[...unknown].join(", ")}`);
   if (q.get("cap") !== "0") cap.textContent += log.join("\n");
   else console.log(log.join("\n"));

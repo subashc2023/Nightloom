@@ -42,6 +42,10 @@ export function cardBox(
   viewportH: number,
   windowH: number,
 ): CardBox {
+  // A height that is not a finite positive number counts as not measured.
+  if (!(viewportH > 0) || !Number.isFinite(viewportH)) viewportH = 0;
+  if (!(windowH > 0) || !Number.isFinite(windowH)) windowH = 0;
+  if (dragged !== null && !Number.isFinite(dragged)) dragged = null;
   if (kind === "call") return { height: null, maxHeight: null, scrollsWhole: false, draggable: false };
   if (kind === "question") {
     if (folded || windowH <= 0) return { height: null, maxHeight: null, scrollsWhole: true, draggable: false };
