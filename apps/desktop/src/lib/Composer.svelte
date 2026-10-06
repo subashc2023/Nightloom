@@ -1016,7 +1016,8 @@
     }
     // Item 318: Esc while the long-paste offer is up dismisses it; the
     // paste stays in the box as text.
-    if (e.key === "Escape" && offer && offer.after !== null) {
+    // Not an Esc the input method takes to cancel a composition (review).
+    if (e.key === "Escape" && offer && offer.after !== null && !composing && !e.isComposing && e.keyCode !== 229) {
       e.preventDefault();
       e.stopPropagation();
       dismissOffer();
