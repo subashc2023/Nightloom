@@ -24,6 +24,8 @@
     send,
     onkeep,
     reply,
+    approvals = [],
+    onanswer = undefined,
   }: {
     token: string | null;
     chat: string | null;
@@ -39,6 +41,10 @@
     /** The chat's last reply as speakable text, read fresh (wave 3 B2's
      *  "Speak it"); null while there is none or a turn still runs. */
     reply?: () => Promise<string | null>;
+    /** The chat's waiting approval prompts and their answer, for voice
+     *  mode's card (backlog 317). */
+    approvals?: import("../../lib/types").ApprovalRequest[];
+    onanswer?: (req: import("../../lib/types").ApprovalRequest, decision: "allow" | "deny") => void;
   } = $props();
 
   let open = $state(false);
@@ -113,7 +119,7 @@
 {#if open && token}
   <!-- Item 302: no reload for a scheme change while the orb is open. -->
   <span data-reload-hold hidden></span>
-  <Voice {token} {chat} {title} {ctx} {still} onclose={closed} {onkeep} {reply} />
+  <Voice {token} {chat} {title} {ctx} {still} onclose={closed} {onkeep} {reply} {approvals} {onanswer} />
 {/if}
 
 <style>

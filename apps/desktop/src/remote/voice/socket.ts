@@ -23,6 +23,7 @@ export type HostFrame =
   | { t: "held"; text: string | null }
   | { t: "sent"; status: "sent" | "queued" }
   | { t: "audio"; seq: number; sentence: string; bytes?: number; since_end_ms?: number; first_text_ms?: number | null }
+  | { t: "approval"; id: string; name: string; text: string }
   | { t: "reply_end" }
   | { t: "error"; text: string; message?: string };
 
@@ -50,6 +51,11 @@ export function parseFrame(text: string): HostFrame | null {
       return { t: "sent", status: f.status === "queued" ? "queued" : "sent" };
     case "audio":
       return typeof f.seq === "number" ? (f as HostFrame) : null;
+    case "approval":
+      // Backlog 317: the spoken turn waits on an approval.
+      return typeof f.id === "string"
+        ? { t: "approval", id: f.id, name: String(f.name ?? ""), text: String(f.text ?? "It's waiting for your OK.") }
+        : null;
     case "reply_end":
       return { t: "reply_end" };
     case "error":

@@ -146,6 +146,37 @@ pub fn mcp_name(tool: &str) -> String {
     format!("mcp__{SERVER_NAME}__{tool}")
 }
 
+/// Every tool this server can serve, with its [`Effect`] — the same value
+/// the tool's own `effect()` returns, which a test holds this table to.
+///
+/// Here because the Claude Code engine's approval card had no other way to
+/// know it (nightshift backlog 317, 2026-10-06): a deferred call arrives as
+/// a bare name, and every one was labelled `mutating` — `search_chats`, a
+/// local read, among them.
+const OWN_EFFECTS: &[(&str, Effect)] = &[
+    ("search_chats", Effect::ReadOnly),
+    ("read_chat", Effect::ReadOnly),
+    ("remember", Effect::Session),
+    ("fetch_page", Effect::Mutating),
+    ("context_status", Effect::ReadOnly),
+    ("memory_where", Effect::ReadOnly),
+    ("ask", Effect::ReadOnly),
+    ("propose_instructions", Effect::Mutating),
+];
+
+/// The effect of a call by the name the CLI reports it under: this
+/// server's own tools by the table above, anything else — the CLI's own
+/// tools, another server's — `Mutating`, the default every unclassified
+/// tool gets (`approval.rs`).
+pub fn effect_of(cli_name: &str) -> Effect {
+    cli_name
+        .strip_prefix("mcp__")
+        .and_then(|rest| rest.strip_prefix(SERVER_NAME))
+        .and_then(|rest| rest.strip_prefix("__"))
+        .and_then(|tool| OWN_EFFECTS.iter().find(|(n, _)| *n == tool))
+        .map_or(Effect::Mutating, |(_, e)| *e)
+}
+
 /// What `initialize` says, for the tool set it is serving.
 fn instructions_for(tools: &[Box<dyn Tool>]) -> String {
     if tools.len() == 1 && tools[0].def().name == "propose_instructions" {
@@ -2029,6 +2060,42 @@ mod tests {
     /// it serves that dream on stdin/stdout until EOF, the way
     /// `run_blocking` would. The harness's own lines on stdout are the
     /// fake's problem, and the fake reads none of them.
+    /// Backlog 317: the table the approval card reads a deferred call's
+    /// effect from says what each served tool's own `effect()` says, and
+    /// names every tool any server here serves — so `search_chats` is
+    /// read-only on the card, and a tool added without a row fails here
+    /// rather than showing as `mutating`. Anything not ours is `Mutating`.
+    #[test]
+    fn the_effect_table_matches_every_served_tool() {
+        let (config, id) = fixture("effect-table");
+        let mut served = tools_in(&config, Some(&id), true).unwrap();
+        served.extend(dream_tools(&dream_target(&config)));
+        served.push(Box::new(crate::agent::ask::PromptTool));
+        for tool in &served {
+            let name = tool.def().name;
+            assert_eq!(
+                effect_of(&mcp_name(&name)),
+                tool.effect(),
+                "{name}: the table disagrees with the tool"
+            );
+            assert!(
+                OWN_EFFECTS.iter().any(|(n, _)| *n == name),
+                "{name} has no row"
+            );
+        }
+        for (name, _) in OWN_EFFECTS {
+            assert!(
+                served.iter().any(|t| t.def().name == *name),
+                "{name} is in the table but served nowhere"
+            );
+        }
+        assert_eq!(effect_of("mcp__nightloom__search_chats"), Effect::ReadOnly);
+        assert_eq!(effect_of("search_chats"), Effect::Mutating);
+        assert_eq!(effect_of("mcp__other__search_chats"), Effect::Mutating);
+        assert_eq!(effect_of("mcp__nightloomx__search_chats"), Effect::Mutating);
+        assert_eq!(effect_of("Bash"), Effect::Mutating);
+    }
+
     #[test]
     fn dream_server_entry() {
         let Ok(json) = std::env::var("NIGHTLOOM_TEST_DREAM") else {

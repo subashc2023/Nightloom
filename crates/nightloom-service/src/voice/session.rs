@@ -42,6 +42,10 @@
 //!   Sequence 0 also carries `since_end_ms` (end-of-speech frame to this
 //!   audio) and `first_text_ms` (end-of-speech to the reply's first text):
 //!   the latency the design budgets, logged on every spoken turn.
+//! - `{"t":"approval","id","name","text"}` — the spoken turn stopped for
+//!   an approval (backlog 317, 2026-10-06): `text` is the sentence also
+//!   spoken as reply audio; the page shows the card over the orb. Once per
+//!   prompt id.
 //! - `{"t":"reply_end"}` — the turn is over.
 //! - `{"t":"error","text","message"?}` — `message` is his words when it
 //!   was the send that failed, so the page can keep them.
@@ -251,6 +255,8 @@ pub async fn run(deps: Deps, mut inbound: mpsc::Receiver<Inbound>, out: mpsc::Se
     let mut ended: Option<Instant> = None;
     let mut first_text: Option<Instant> = None;
     let mut held: Option<String> = None;
+    // Approval prompts already spoken (the relay may repeat one).
+    let mut announced: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     loop {
         tokio::select! {
@@ -392,7 +398,7 @@ pub async fn run(deps: Deps, mut inbound: mpsc::Receiver<Inbound>, out: mpsc::Se
                         continue;
                     }
                 };
-                if !replying || ev.name != "turn-event" {
+                if !replying || (ev.name != "turn-event" && ev.name != "tool-approval") {
                     continue;
                 }
                 let Ok(v) = serde_json::from_str::<Value>(&ev.payload) else { continue };
@@ -402,6 +408,35 @@ pub async fn run(deps: Deps, mut inbound: mpsc::Receiver<Inbound>, out: mpsc::Se
                     continue;
                 }
                 seen_running = true;
+                if ev.name == "tool-approval" {
+                    // Backlog 317: the turn waits on him. Say what came
+                    // before, then that it waits — even after a hush, since
+                    // this is news, not the reply he talked over — and
+                    // tell the page, which shows the card in voice mode.
+                    let id = v["id"].as_str().unwrap_or("").to_string();
+                    if id.is_empty() || !announced.insert(id.clone()) {
+                        continue;
+                    }
+                    let name = v["name"].as_str().unwrap_or("");
+                    let line = approval_line(name);
+                    let _ = out.send(frame(json!({"t": "approval", "id": id, "name": name, "text": line}))).await;
+                    let mut lines = splitter.flush();
+                    if hushed {
+                        lines.clear();
+                    }
+                    lines.push(line);
+                    for s in lines {
+                        let _ = say_tx.send(Line {
+                            reply: current_reply.load(Ordering::SeqCst),
+                            seq,
+                            sentence: s,
+                            ended,
+                            first_text,
+                        });
+                        seq += 1;
+                    }
+                    continue;
+                }
                 let sentences = match v["type"].as_str().unwrap_or("") {
                     "text_delta" => {
                         if first_text.is_none() {
@@ -467,6 +502,35 @@ pub async fn run(deps: Deps, mut inbound: mpsc::Receiver<Inbound>, out: mpsc::Se
         }
     }
     speaker.abort();
+}
+
+/// The sentence a spoken turn says when it stops for an approval (backlog
+/// 317): what it wants in plain words, and where to answer. Never the
+/// call's input — that is on the card, and a path or a command read aloud
+/// helps no one.
+fn approval_line(name: &str) -> String {
+    const WHERE: &str = "it's on your screen.";
+    match name {
+        "AskUserQuestion" => return format!("I have a question for you — {WHERE}"),
+        "ExitPlanMode" => return format!("My plan is ready for your OK — {WHERE}"),
+        _ => {}
+    }
+    // `mcp__<server>__<tool>`: the tool's own name.
+    let bare = name
+        .strip_prefix("mcp__")
+        .and_then(|rest| rest.split_once("__").map(|(_, tool)| tool))
+        .unwrap_or(name);
+    let what = match bare {
+        "Bash" => "run a command".to_string(),
+        "Write" | "Edit" | "MultiEdit" | "NotebookEdit" | "write_file" | "edit_file" => {
+            "change a file".to_string()
+        }
+        "WebFetch" | "fetch_page" | "web_fetch" => "read a web page".to_string(),
+        "WebSearch" | "web_search" => "search the web".to_string(),
+        "" => "use a tool".to_string(),
+        other => format!("use {}", other.replace('_', " ")),
+    };
+    format!("I need your OK to {what} — {WHERE}")
 }
 
 async fn refuse(out: &mpsc::Sender<Outbound>) {
@@ -758,6 +822,74 @@ mod tests {
         assert_eq!(a2["sentence"], crate::voice::split::CODE_ON_SCREEN);
         r.turns.busy.store(false, Ordering::SeqCst);
         r.until("reply_end").await;
+    }
+
+    /// Backlog 317: a spoken turn that stops for an approval is not
+    /// silent. The words before it are spoken, then one sentence saying it
+    /// waits, and the page gets an `approval` frame — once per prompt, and
+    /// never for another chat's.
+    #[tokio::test]
+    async fn an_approval_is_spoken_and_shown_once() {
+        let mut r = rig();
+        r.hello().await;
+        r.speech(1, 1200).await;
+        r.say(json!({"t": "end"})).await;
+        r.until("sent").await;
+        r.delta("Let me look");
+        let approval = |chat: &str, id: &str| Event {
+            name: "tool-approval".into(),
+            payload: json!({"id": id, "name": "mcp__nightloom__search_chats",
+                "input": {"query": "weather"}, "effect": "read_only", "chat": chat})
+            .to_string(),
+        };
+        let _ = r.relay.send(approval("elsewhere", "t0"));
+        let _ = r.relay.send(approval("c1", "t1"));
+        let _ = r.relay.send(approval("c1", "t1"));
+        let f = r.until("approval").await;
+        assert_eq!(f["id"], "t1", "the other chat's prompt is not ours");
+        assert_eq!(f["name"], "mcp__nightloom__search_chats");
+        let said = "I need your OK to use search chats — it's on your screen.";
+        assert_eq!(f["text"], said);
+        let a0 = r.until("audio").await;
+        assert_eq!(a0["sentence"], "Let me look");
+        let a1 = r.until("audio").await;
+        assert_eq!(a1["sentence"], said);
+        // The repeat is not spoken or shown again: the turn's end comes next.
+        r.turns.busy.store(false, Ordering::SeqCst);
+        loop {
+            let f = tokio::time::timeout(Duration::from_secs(3), r.from_host.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if let Outbound::Text(t) = f {
+                let v: Value = serde_json::from_str(&t).unwrap();
+                assert_ne!(v["t"], "approval", "{v}");
+                assert_ne!(v["t"], "audio", "{v}");
+                if v["t"] == "reply_end" {
+                    break;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_approval_sentence_names_the_want_not_the_input() {
+        assert_eq!(
+            approval_line("Bash"),
+            "I need your OK to run a command — it's on your screen."
+        );
+        assert_eq!(
+            approval_line("mcp__nightloom__fetch_page"),
+            "I need your OK to read a web page — it's on your screen."
+        );
+        assert_eq!(
+            approval_line("AskUserQuestion"),
+            "I have a question for you — it's on your screen."
+        );
+        assert_eq!(
+            approval_line("mcp__nightloom__notion_search"),
+            "I need your OK to use notion search — it's on your screen."
+        );
     }
 
     #[tokio::test]

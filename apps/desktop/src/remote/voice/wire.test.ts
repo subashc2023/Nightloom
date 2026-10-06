@@ -73,6 +73,13 @@ describe("socket", () => {
     expect(parseFrame('{"t":"held","text":null}')).toEqual({ t: "held", text: null });
     expect(parseFrame('{"t":"sent","status":"queued"}')).toEqual({ t: "sent", status: "queued" });
     expect(parseFrame('{"t":"error","text":"x","message":"his words"}')).toEqual({ t: "error", text: "x", message: "his words" });
+    expect(parseFrame('{"t":"approval","id":"t1","name":"Bash","text":"I need your OK"}')).toEqual({
+      t: "approval",
+      id: "t1",
+      name: "Bash",
+      text: "I need your OK",
+    });
+    expect(parseFrame('{"t":"approval","name":"no id"}')).toBeNull();
     expect(parseFrame('{"t":"audio","sentence":"no seq"}')).toBeNull();
     expect(parseFrame('{"t":"what"}')).toBeNull();
     expect(parseFrame("not json")).toBeNull();
