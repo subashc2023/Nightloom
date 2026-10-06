@@ -279,4 +279,145 @@ mod tests {
         );
         server.stop().await;
     }
+
+    /// A live listener over `wss://`, as his phone reaches it (246, the
+    /// Mac's HTTPS): the fixture paced as the phone sends it (20 ms
+    /// frames), the end frame, then the real turn's reply until its first
+    /// audio. Run by hand against a running `nightloom serve` or desktop:
+    ///
+    /// ```text
+    /// NIGHTLOOM_VOICE_TEST=1 NIGHTLOOM_VOICE_URL=wss://<machine>.<tailnet>.ts.net:<port>/api/voice \
+    /// NIGHTLOOM_VOICE_TOKEN_FILE=<file holding the token> \
+    /// cargo test -p nightloom-service live_wss -- --ignored --nocapture
+    /// ```
+    ///
+    /// The certificate is checked against the public roots, as Safari does.
+    /// `NIGHTLOOM_VOICE_FIXTURE` picks the fixture (default `weather`),
+    /// `NIGHTLOOM_VOICE_FIXTURE_DIR` where it is (default the setup's).
+    /// The chat the host has open hears it; a reply that asks to use a
+    /// tool waits for an approval no one gives here, so pick a question
+    /// that needs none.
+    #[tokio::test]
+    #[ignore = "needs a live HTTPS listener and NIGHTLOOM_VOICE_TEST=1"]
+    async fn live_wss_hears_the_fixture_and_speaks_the_reply() {
+        if std::env::var("NIGHTLOOM_VOICE_TEST").ok().as_deref() != Some("1") {
+            return;
+        }
+        use tungstenite::Message as M;
+        let url = std::env::var("NIGHTLOOM_VOICE_URL").expect("NIGHTLOOM_VOICE_URL");
+        let token = std::fs::read_to_string(
+            std::env::var("NIGHTLOOM_VOICE_TOKEN_FILE").expect("NIGHTLOOM_VOICE_TOKEN_FILE"),
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        let name = std::env::var("NIGHTLOOM_VOICE_FIXTURE").unwrap_or_else(|_| "weather".into());
+        let dir = std::env::var_os("NIGHTLOOM_VOICE_FIXTURE_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(std::env::var("HOME").unwrap())
+                    .join(".nightloom/voice/fixtures")
+            });
+        let said = std::fs::read_to_string(dir.join(format!("{name}.txt"))).unwrap();
+        let (_, pcm) =
+            crate::voice::wav::decode(&std::fs::read(dir.join(format!("{name}.wav"))).unwrap())
+                .unwrap();
+
+        // TLS by hand: tokio-tungstenite is built without a TLS feature.
+        let uri: tungstenite::http::Uri = url.parse().unwrap();
+        let host = uri.host().unwrap().to_string();
+        let port = uri.port_u16().unwrap_or(443);
+        let mut roots = rustls::RootCertStore::empty();
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+        let started = std::time::Instant::now();
+        let tcp = tokio::net::TcpStream::connect((host.as_str(), port))
+            .await
+            .unwrap();
+        let tls = tokio_rustls::TlsConnector::from(Arc::new(config))
+            .connect(
+                rustls::pki_types::ServerName::try_from(host.clone()).unwrap(),
+                tcp,
+            )
+            .await
+            .expect("the certificate verifies against the public roots");
+        let (mut ws, _) = tokio_tungstenite::client_async(url.as_str(), tls)
+            .await
+            .unwrap();
+        println!(
+            "connected (TCP + TLS + upgrade): {} ms",
+            started.elapsed().as_millis()
+        );
+        ws.send(M::Text(
+            serde_json::json!({"t": "hello", "token": token})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+        let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
+        let (mut tx, mut rx) = ws.split();
+        let ended: Arc<std::sync::OnceLock<std::time::Instant>> = Arc::default();
+        let reader = tokio::spawn({
+            let ended = ended.clone();
+            async move {
+                let mut heard = String::new();
+                loop {
+                    let m = tokio::time::timeout(std::time::Duration::from_secs(120), rx.next())
+                        .await
+                        .expect("a frame within two minutes")
+                        .expect("open")
+                        .unwrap();
+                    let M::Text(t) = m else { continue };
+                    let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+                    let at = ended.get().map(|e| e.elapsed().as_millis());
+                    println!("{t}  [after the end frame: {at:?} ms]");
+                    match v["t"].as_str().unwrap_or("") {
+                        "final" => heard = v["text"].as_str().unwrap_or("").to_string(),
+                        "audio" => return heard,
+                        "error" | "dropped" => panic!("{t}"),
+                        _ => {}
+                    }
+                }
+            }
+        });
+        for frame in bytes.chunks(640) {
+            tx.send(M::Binary(frame.to_vec().into())).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let _ = ended.set(std::time::Instant::now());
+        tx.send(M::Text(r#"{"t":"end"}"#.into())).await.unwrap();
+        let heard = reader.await.unwrap();
+        println!(
+            "end frame to first audio (wall clock here): {} ms",
+            ended.get().unwrap().elapsed().as_millis()
+        );
+        let words = |s: &str| -> Vec<String> {
+            s.split_whitespace()
+                .map(|w| {
+                    w.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'')
+                        .to_lowercase()
+                })
+                .filter(|w| !w.is_empty())
+                .collect()
+        };
+        let got = words(&heard);
+        let want = words(&said);
+        let hit = want.iter().filter(|w| got.contains(w)).count();
+        println!(
+            "recall {}/{} = {:.0}%: said {:?}, heard {:?}",
+            hit,
+            want.len(),
+            100.0 * hit as f64 / want.len() as f64,
+            said.trim(),
+            heard
+        );
+        assert!(hit * 10 >= want.len() * 9, "under 90% of the words");
+    }
 }

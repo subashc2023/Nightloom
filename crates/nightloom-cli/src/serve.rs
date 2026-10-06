@@ -80,14 +80,22 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         config.display(),
         lock.path().display()
     );
-    println!(
-        "phone setup: {}",
-        token::setup_url(
+    // With HTTPS the page must be opened by the certificate's name, not
+    // the bare address (item 246, the Mac's HTTPS).
+    let name = if server.https() {
+        nightloom_service::tls::tailnet_domain().await
+    } else {
+        None
+    };
+    let setup = match name {
+        Some(name) => format!("https://{name}:{}/#token=<token>", server.addr().port()),
+        None => token::setup_url(
             &server.addr().ip().to_string(),
             server.addr().port(),
-            "<token>"
-        )
-    );
+            "<token>",
+        ),
+    };
+    println!("phone setup: {setup}");
     println!("Ctrl-C stops it; the desktop app can open once it has.");
     tokio::signal::ctrl_c()
         .await

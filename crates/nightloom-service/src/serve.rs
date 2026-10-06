@@ -390,7 +390,14 @@ pub struct ServeHost {
     pause: Mutex<Option<Pause>>,
     resume: Mutex<Option<Scheduled>>,
     pause_gen: std::sync::atomic::AtomicU64,
+    /// The voice engine over `<home>/voice/` (item 246 wave 3), found on
+    /// the first ask, as the desktop's host does; `None` until
+    /// `bin/voice-setup.sh` has run there.
+    voice: Mutex<Option<Arc<crate::voice::Engine>>>,
 }
+
+/// How long the voice programs stay up with no one talking.
+const VOICE_IDLE: std::time::Duration = std::time::Duration::from_secs(600);
 
 impl ServeHost {
     pub fn new(cfg: ServeConfig, registry: Registry) -> Arc<Self> {
@@ -423,6 +430,7 @@ impl ServeHost {
                 pause: Mutex::new(None),
                 resume: Mutex::new(None),
                 pause_gen: std::sync::atomic::AtomicU64::new(1),
+                voice: Mutex::new(None),
             }
         })
     }
@@ -2058,6 +2066,21 @@ impl Host for ServeHost {
 
     fn sync(&self) -> Option<Arc<crate::sync::SyncServer>> {
         Some(self.sync.clone())
+    }
+
+    /// The engine over `<home>/voice/`, looked for again while it is
+    /// absent so running the setup script needs no restart. Finding it
+    /// starts no program — the socket's `hello` does.
+    fn voice(&self) -> Option<Arc<crate::voice::Engine>> {
+        let mut slot = self.voice.lock().unwrap_or_else(|p| p.into_inner());
+        if slot.is_none() {
+            let engine = crate::voice::Engine::find()?;
+            if tokio::runtime::Handle::try_current().is_ok() {
+                engine.spawn_idle_reaper(VOICE_IDLE);
+            }
+            *slot = Some(engine);
+        }
+        slot.clone()
     }
 
     fn kind(&self) -> &'static str {
