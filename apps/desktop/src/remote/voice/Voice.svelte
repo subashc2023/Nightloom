@@ -98,6 +98,17 @@
    *  arrives in `approvals` or is answered. */
   let waiting = $state<{ id: string; text: string } | null>(null);
   const card = $derived(approvals[0] ?? null);
+  /** The card's id once its buttons take a tap (review 2026-10-06): a
+   *  card that slides in under a finger — the next prompt after one is
+   *  answered — waits a moment, so a double tap cannot allow it. */
+  let armed = $state<string | null>(null);
+  $effect(() => {
+    const id = card?.id ?? null;
+    armed = null;
+    if (!id) return;
+    const t = setTimeout(() => (armed = id), 600);
+    return () => clearTimeout(t);
+  });
   $effect(() => {
     // The card is here (or was answered): the frame's note has done its job.
     if (waiting && approvals.some((a) => a.id === waiting?.id)) waiting = null;
@@ -458,6 +469,7 @@
   }
 
   function decide(req: ApprovalRequest, decision: "allow" | "deny") {
+    if (armed !== req.id) return;
     waiting = null;
     onanswer?.(req, decision);
   }
@@ -500,8 +512,8 @@
           <p class="ask">Allow <b>{w.name}</b>?</p>
           {#if w.arg}<p class="arg">{w.arg}</p>{/if}
           <div class="row">
-            <button class="yes" onclick={() => decide(card, "allow")}>Allow</button>
-            <button class="no" onclick={() => decide(card, "deny")}>Deny</button>
+            <button class="yes" disabled={armed !== card.id} onclick={() => decide(card, "allow")}>Allow</button>
+            <button class="no" disabled={armed !== card.id} onclick={() => decide(card, "deny")}>Deny</button>
           </div>
         {:else}
           <p class="ask">{cardKind(card) === "question" ? "A question is waiting for you" : "A plan is waiting for your OK"}</p>
@@ -677,6 +689,9 @@
     border-radius: 22px;
     font: inherit;
     font-size: 16px;
+  }
+  .approval button:disabled {
+    opacity: 0.5;
   }
   .approval .yes {
     border: 1px solid #3b82f6;
