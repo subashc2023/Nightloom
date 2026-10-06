@@ -42,6 +42,8 @@
   import { Player, earcon } from "./player";
   import { VoiceSocket, type HostFrame } from "./socket";
   import { Vad } from "./vad";
+  import type { ApprovalRequest } from "../../lib/types";
+  import { cardKind } from "../client";
 
   let {
     token,
@@ -53,6 +55,8 @@
     onclose,
     onkeep,
     reply = undefined,
+    approvals = [],
+    onanswer = undefined,
   }: {
     token: string;
     chat: string | null;
@@ -67,6 +71,12 @@
     /** The chat's last reply as speakable text, read fresh from the host
      *  (`speakText`); null while there is none or the turn still runs. */
     reply?: () => Promise<string | null>;
+    /** The approval prompts waiting in this chat (backlog 317): the first
+     *  is shown over the orb, so a spoken turn that stopped for one can be
+     *  answered without leaving voice mode. */
+    approvals?: ApprovalRequest[];
+    /** Answer a plain call's prompt, as the chat's own card does. */
+    onanswer?: (req: ApprovalRequest, decision: "allow" | "deny") => void;
   } = $props();
 
   // Shown.
@@ -84,6 +94,25 @@
   /** The reply that finished while the page was away, offered as
    *  "Speak it" (design §2.6). */
   let speakable = $state<string | null>(null);
+  /** The host's `approval` frame (backlog 317), until the prompt itself
+   *  arrives in `approvals` or is answered. */
+  let waiting = $state<{ id: string; text: string } | null>(null);
+  const card = $derived(approvals[0] ?? null);
+  /** The card's id once its buttons take a tap (review 2026-10-06): a
+   *  card that slides in under a finger — the next prompt after one is
+   *  answered — waits a moment, so a double tap cannot allow it. */
+  let armed = $state<string | null>(null);
+  $effect(() => {
+    const id = card?.id ?? null;
+    armed = null;
+    if (!id) return;
+    const t = setTimeout(() => (armed = id), 600);
+    return () => clearTimeout(t);
+  });
+  $effect(() => {
+    // The card is here (or was answered): the frame's note has done its job.
+    if (waiting && approvals.some((a) => a.id === waiting?.id)) waiting = null;
+  });
 
   // The machinery (not drawn).
   let socket: VoiceSocket | null = null;
@@ -151,6 +180,9 @@
         }, 220);
         if (f.status === "queued") note = "The Mac is mid-turn — it goes when that ends";
         settleLeave?.();
+        break;
+      case "approval":
+        if (!approvals.some((a) => a.id === f.id)) waiting = { id: f.id, text: f.text };
         break;
       case "reply_end":
         replyOver = true;
@@ -426,6 +458,22 @@
     if (!preview) teardown();
   });
 
+  /** What the waiting call wants, in a line: its name and its first
+   *  argument (a command, a path, a query). */
+  function wants(req: ApprovalRequest): { name: string; arg: string } {
+    const name = req.name.replace(/^mcp__.+?__/, "").replaceAll("_", " ");
+    const input = req.input && typeof req.input === "object" ? (req.input as Record<string, unknown>) : {};
+    const first = Object.values(input).find((v) => typeof v === "string") as string | undefined;
+    const arg = first ? (first.length > 120 ? `${first.slice(0, 120)}…` : first) : "";
+    return { name, arg };
+  }
+
+  function decide(req: ApprovalRequest, decision: "allow" | "deny") {
+    if (armed !== req.id) return;
+    waiting = null;
+    onanswer?.(req, decision);
+  }
+
   const secs = (ms: number) => (ms % 1000 === 0 ? `${ms / 1000}` : (ms / 1000).toFixed(1));
 </script>
 
@@ -455,6 +503,30 @@
         <span class="held-text">{held}</span>
         <span class="held-meta">goes when the reply ends · tap to cancel</span>
       </button>
+    {/if}
+    {#if card}
+      {@const w = wants(card)}
+      <!-- Backlog 317: the turn waits on him; answer it here. -->
+      <div class="approval" role="group" aria-label="Waiting for your approval">
+        {#if cardKind(card) === "call"}
+          <p class="ask">Allow <b>{w.name}</b>?</p>
+          {#if w.arg}<p class="arg">{w.arg}</p>{/if}
+          <div class="row">
+            <button class="yes" disabled={armed !== card.id} onclick={() => decide(card, "allow")}>Allow</button>
+            <button class="no" disabled={armed !== card.id} onclick={() => decide(card, "deny")}>Deny</button>
+          </div>
+        {:else}
+          <p class="ask">{cardKind(card) === "question" ? "A question is waiting for you" : "A plan is waiting for your OK"}</p>
+          <div class="row">
+            <button class="yes" onclick={() => void leave(false)}>Answer in the chat</button>
+          </div>
+        {/if}
+      </div>
+    {:else if waiting}
+      <p class="note">
+        {waiting.text}
+        <button class="speak-it" onclick={() => void leave(false)}>Show it</button>
+      </p>
     {/if}
     {#if problem}
       <p class="problem">{problem}</p>
@@ -584,6 +656,52 @@
     font: inherit;
     font-size: 15px;
     vertical-align: middle;
+  }
+  .approval {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    max-width: 34ch;
+    padding: 12px 16px;
+    border-radius: 14px;
+    border: 1px solid rgba(147, 197, 253, 0.35);
+    background: rgba(30, 64, 175, 0.24);
+  }
+  .approval .ask {
+    font-size: 17px;
+    color: #f2f6ff;
+  }
+  .approval .arg {
+    font-size: 13px;
+    color: #9fb0cf;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    overflow-wrap: anywhere;
+  }
+  .approval .row {
+    display: flex;
+    gap: 12px;
+  }
+  .approval button {
+    min-height: 44px;
+    min-width: 96px;
+    padding: 0 18px;
+    border-radius: 22px;
+    font: inherit;
+    font-size: 16px;
+  }
+  .approval button:disabled {
+    opacity: 0.5;
+  }
+  .approval .yes {
+    border: 1px solid #3b82f6;
+    background: #3b82f6;
+    color: #fff;
+  }
+  .approval .no {
+    border: 1px solid rgba(248, 113, 113, 0.6);
+    background: transparent;
+    color: #fecaca;
   }
   .problem {
     font-size: 15px;

@@ -361,7 +361,9 @@ async fn turn_body(
             id: &call.id,
             name: &call.name,
             input: &call.input,
-            effect: nightloom_core::Effect::Mutating,
+            // Nightloom's own tools by their own effect (backlog 317);
+            // every other deferred call is `Mutating`, as before.
+            effect: crate::mcp_server::effect_of(&call.name),
             outside,
             chat: Some(chat_id),
         });

@@ -3019,6 +3019,8 @@
             send={() => void sendNow()}
             onkeep={(t) => setDraft(draft.trim() ? `${draft}\n${t}` : t)}
             reply={lastReply}
+            approvals={pendingHere}
+            onanswer={(req, decision) => void answer(req, decision)}
           />
           {#if busyHere && link === "online" && !draft.trim()}
             <button class="send stop" onclick={stop} aria-label="Stop the turn">{@render icon("stop")}</button>

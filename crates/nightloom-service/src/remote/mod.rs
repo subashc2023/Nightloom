@@ -765,6 +765,10 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/remote.html", get(page))
         .route("/assets/{*path}", get(asset_under_assets))
         .route("/remote/{*path}", get(asset_under_remote))
+        // 321: where iOS looks for a Home Screen icon when the page's own
+        // links are not used; no token, like the page.
+        .route("/apple-touch-icon.png", get(touch_icon))
+        .route("/apple-touch-icon-precomposed.png", get(touch_icon))
         // Outside the bearer layer: the socket's first frame carries the
         // token (a browser WebSocket cannot send the header), checked
         // before any audio is read (voice_ws.rs).
@@ -1357,6 +1361,31 @@ async fn asset_under_remote(
     serve_asset(&shared, &format!("remote/{path}"), false)
 }
 
+async fn touch_icon(State(shared): State<Arc<Shared>>) -> Response {
+    serve_asset(&shared, TOUCH_ICON, false)
+}
+
+/// The 180 px Home Screen icon (321).
+const TOUCH_ICON: &str = "remote/apple-touch-icon.png";
+
+/// The type a file is served as, by its name, where the host's own guess
+/// is wrong or missing: the desktop's asset resolver called the manifest
+/// `text/html` (321, measured over the tailnet), and a manifest iOS cannot
+/// read as one is no manifest.
+fn type_by_name(path: &str) -> Option<&'static str> {
+    match path.rsplit('.').next()? {
+        "webmanifest" => Some("application/manifest+json"),
+        "png" => Some("image/png"),
+        _ => None,
+    }
+}
+
+/// Files with a fixed name (not a build's hashed asset), which a new build
+/// may change: re-checked rather than kept a year.
+fn fixed_name(path: &str) -> bool {
+    path.starts_with("remote/")
+}
+
 /// A file of the page. Only the three roots above are reachable, so the
 /// desktop's own `index.html` and anything else in the bundle stay
 /// unserved; a path with `..` in it is refused before the resolver sees it.
@@ -1368,14 +1397,15 @@ fn serve_asset(shared: &Shared, path: &str, is_page: bool) -> Response {
         Some(asset) => {
             let mut resp = Response::new(Body::from(asset.bytes));
             let headers = resp.headers_mut();
-            if let Ok(v) = HeaderValue::from_str(&asset.mime) {
+            let mime = type_by_name(path).unwrap_or(&asset.mime);
+            if let Ok(v) = HeaderValue::from_str(mime) {
                 headers.insert(header::CONTENT_TYPE, v);
             }
             // The page is re-fetched each open so a new build lands; its
             // hashed files can be kept.
             headers.insert(
                 header::CACHE_CONTROL,
-                HeaderValue::from_static(if is_page {
+                HeaderValue::from_static(if is_page || fixed_name(path) {
                     "no-cache"
                 } else {
                     "public, max-age=31536000, immutable"
@@ -1590,6 +1620,16 @@ mod tests {
                 "assets/remote-1.js" => Some(Asset {
                     bytes: b"console.log(1)".to_vec(),
                     mime: "text/javascript".into(),
+                }),
+                // As the desktop's resolver answered them (321): the
+                // manifest's type wrong.
+                "remote/manifest.webmanifest" => Some(Asset {
+                    bytes: b"{}".to_vec(),
+                    mime: "text/html".into(),
+                }),
+                "remote/apple-touch-icon.png" => Some(Asset {
+                    bytes: b"\x89PNG".to_vec(),
+                    mime: "image/png".into(),
                 }),
                 _ => None,
             }
@@ -2030,6 +2070,25 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r.status(), 200);
+        // 321: the manifest as a manifest, the Home Screen icon at the
+        // root under both names iOS asks for, none of it needing the token.
+        let r = c
+            .get(format!("{base}/remote/manifest.webmanifest"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        assert_eq!(
+            r.headers()[header::CONTENT_TYPE],
+            "application/manifest+json"
+        );
+        assert_eq!(r.headers()[header::CACHE_CONTROL], "no-cache");
+        for icon in ["apple-touch-icon.png", "apple-touch-icon-precomposed.png"] {
+            let r = c.get(format!("{base}/{icon}")).send().await.unwrap();
+            assert_eq!(r.status(), 200, "{icon}");
+            assert_eq!(r.headers()[header::CONTENT_TYPE], "image/png", "{icon}");
+            assert_eq!(r.bytes().await.unwrap().as_ref(), b"\x89PNG");
+        }
         // Nothing outside the page's roots, and no walking up.
         let r = c.get(format!("{base}/index.html")).send().await.unwrap();
         assert_eq!(r.status(), 404);

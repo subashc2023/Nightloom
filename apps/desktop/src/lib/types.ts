@@ -1011,7 +1011,9 @@ export type Effect = "read_only" | "session" | "mutating";
 /**
  * A tool call parked at the approval gate, from the `tool-approval` event.
  * The backend's policy answers `read_only` and `session` calls itself, so
- * in practice `effect` is always "mutating" here.
+ * on the API engine `effect` is always "mutating" here. A Claude Code
+ * deferred call carries Nightloom's own tools' real effect (backlog 317),
+ * so `read_only` can appear — a label only; nothing auto-answers it.
  */
 export interface ApprovalRequest {
   /** The tool_use_id; `approve_call` keys the answer on it. */

@@ -122,7 +122,9 @@ const INSTRUCTIONS: &str = "Nightloom's tools. For the whole text of a page use 
      the message points outside this chat (an earlier decision, 'as we discussed', a name you \
      have no context for), not on every turn; recent chats rank first. context_status says \
      how full your context window was when this turn began. When the user asks where \
-     memory says something, use memory_where.";
+     memory says something, use memory_where. For the user's Notion pages use notion_search, \
+     then notion_read_page or notion_list_children — read-only, and only the page tree the \
+     user shared; a page outside it is not found.";
 
 /// The last sentence of [`INSTRUCTIONS`], present only when the tool is: a
 /// server started for an incognito chat (`--no-remember`) must not tell the
@@ -144,6 +146,40 @@ const DREAM_INSTRUCTIONS: &str = "Nightloom's dream server: one tool, propose_in
 /// shorter.
 pub fn mcp_name(tool: &str) -> String {
     format!("mcp__{SERVER_NAME}__{tool}")
+}
+
+/// Every tool this server can serve, with its [`Effect`] — the same value
+/// the tool's own `effect()` returns, which a test holds this table to.
+///
+/// Here because the Claude Code engine's approval card had no other way to
+/// know it (nightshift backlog 317, 2026-10-06): a deferred call arrives as
+/// a bare name, and every one was labelled `mutating` — `search_chats`, a
+/// local read, among them.
+const OWN_EFFECTS: &[(&str, Effect)] = &[
+    ("search_chats", Effect::ReadOnly),
+    ("read_chat", Effect::ReadOnly),
+    ("remember", Effect::Session),
+    ("fetch_page", Effect::Mutating),
+    ("context_status", Effect::ReadOnly),
+    ("memory_where", Effect::ReadOnly),
+    ("ask", Effect::ReadOnly),
+    ("propose_instructions", Effect::Mutating),
+    ("notion_search", Effect::ReadOnly),
+    ("notion_read_page", Effect::ReadOnly),
+    ("notion_list_children", Effect::ReadOnly),
+];
+
+/// The effect of a call by the name the CLI reports it under: this
+/// server's own tools by the table above, anything else — the CLI's own
+/// tools, another server's — `Mutating`, the default every unclassified
+/// tool gets (`approval.rs`).
+pub fn effect_of(cli_name: &str) -> Effect {
+    cli_name
+        .strip_prefix("mcp__")
+        .and_then(|rest| rest.strip_prefix(SERVER_NAME))
+        .and_then(|rest| rest.strip_prefix("__"))
+        .and_then(|tool| OWN_EFFECTS.iter().find(|(n, _)| *n == tool))
+        .map_or(Effect::Mutating, |(_, e)| *e)
 }
 
 /// What `initialize` says, for the tool set it is serving.
@@ -241,6 +277,10 @@ pub fn tools_in(
     tools.push(Box::new(crate::memory_where::MemoryWhere::new(
         crate::memory_where::MemoryRoots::discover(config, workspace),
     )));
+    // Read-only Notion (nightshift backlog 319): served always, the token
+    // read only when a call needs one — a server that read the keychain at
+    // start would do it on every turn. Nothing here can write to Notion.
+    tools.extend(crate::notion::tools(crate::notion::Notion::from_store()));
     Ok(tools)
 }
 
@@ -1682,7 +1722,10 @@ mod tests {
                 "remember",
                 "fetch_page",
                 "context_status",
-                "memory_where"
+                "memory_where",
+                "notion_search",
+                "notion_read_page",
+                "notion_list_children"
             ]
         );
         // The MCP spelling, not the trait's: a host reads `inputSchema`.
@@ -1847,7 +1890,10 @@ mod tests {
                 "remember",
                 "fetch_page",
                 "context_status",
-                "memory_where"
+                "memory_where",
+                "notion_search",
+                "notion_read_page",
+                "notion_list_children"
             ]
         );
         assert_eq!(
@@ -1857,7 +1903,10 @@ mod tests {
                 "read_chat",
                 "fetch_page",
                 "context_status",
-                "memory_where"
+                "memory_where",
+                "notion_search",
+                "notion_read_page",
+                "notion_list_children"
             ]
         );
         let with = instructions_for(&tools_in(&config, Some(&id), true).unwrap());
@@ -2017,6 +2066,86 @@ mod tests {
                 .starts_with("Not proposed"),
         );
         assert_eq!(crate::proposal::list_in(&config).len(), 2);
+    }
+
+    /// Backlog 319: asked to edit a Notion page, the server has nothing
+    /// to do it with — every write a Notion MCP offers is an unknown tool
+    /// here, and the listing holds only the three readers.
+    #[tokio::test]
+    async fn an_edit_to_a_notion_page_is_an_unknown_tool() {
+        let (config, id) = fixture("notion-write");
+        let (r, mut w) = start(config, Some(id));
+        let mut lines = BufReader::new(r).lines();
+        send(&mut w, r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).await;
+        let list = recv(&mut lines).await;
+        let notion: Vec<&str> = list["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .filter(|n| n.contains("notion"))
+            .collect();
+        assert_eq!(
+            notion,
+            ["notion_search", "notion_read_page", "notion_list_children"]
+        );
+        for (n, name) in [
+            "notion_update_page",
+            "notion_create_page",
+            "notion_append_block_children",
+            "notion_update_block",
+            "notion_delete_block",
+            "API-patch-page",
+        ]
+        .iter()
+        .enumerate()
+        {
+            send(
+                &mut w,
+                &json!({"jsonrpc": "2.0", "id": 10 + n, "method": "tools/call",
+                    "params": {"name": name, "arguments": {"page_id": "x", "properties": {}}}})
+                .to_string(),
+            )
+            .await;
+            let refused = recv(&mut lines).await;
+            assert_eq!(refused["error"]["code"], -32602, "{name}: {refused}");
+        }
+    }
+
+    /// Backlog 317: the table the approval card reads a deferred call's
+    /// effect from says what each served tool's own `effect()` says, and
+    /// names every tool any server here serves — so `search_chats` is
+    /// read-only on the card, and a tool added without a row fails here
+    /// rather than showing as `mutating`. Anything not ours is `Mutating`.
+    #[test]
+    fn the_effect_table_matches_every_served_tool() {
+        let (config, id) = fixture("effect-table");
+        let mut served = tools_in(&config, Some(&id), true).unwrap();
+        served.extend(dream_tools(&dream_target(&config)));
+        served.push(Box::new(crate::agent::ask::PromptTool));
+        for tool in &served {
+            let name = tool.def().name;
+            assert_eq!(
+                effect_of(&mcp_name(&name)),
+                tool.effect(),
+                "{name}: the table disagrees with the tool"
+            );
+            assert!(
+                OWN_EFFECTS.iter().any(|(n, _)| *n == name),
+                "{name} has no row"
+            );
+        }
+        for (name, _) in OWN_EFFECTS {
+            assert!(
+                served.iter().any(|t| t.def().name == *name),
+                "{name} is in the table but served nowhere"
+            );
+        }
+        assert_eq!(effect_of("mcp__nightloom__search_chats"), Effect::ReadOnly);
+        assert_eq!(effect_of("search_chats"), Effect::Mutating);
+        assert_eq!(effect_of("mcp__other__search_chats"), Effect::Mutating);
+        assert_eq!(effect_of("mcp__nightloomx__search_chats"), Effect::Mutating);
+        assert_eq!(effect_of("Bash"), Effect::Mutating);
     }
 
     /// Not a test: the dream's server, for [`crate::dream`]'s end-to-end

@@ -221,9 +221,148 @@ mod tests {
         server.stop().await;
     }
 
+    /// Backlog 317 over a real WebSocket (this module's pumps, loopback
+    /// `ws://` — `wss://` adds only TLS, which the live test below covers):
+    /// a spoken turn whose model calls a tool that waits for approval says
+    /// so — an `approval` frame, then the sentence as reply audio — where
+    /// before the socket said nothing for minutes. Stand-ins hear the
+    /// fixture's words and speak text as its bytes.
+    #[tokio::test]
+    async fn a_turn_that_calls_a_tool_says_so_over_the_socket() {
+        use crate::voice::{Hear, Pass, Speak};
+        struct Ear;
+        #[async_trait::async_trait]
+        impl Hear for Ear {
+            async fn transcribe(&self, _: &[i16], _: Pass) -> Result<String, String> {
+                Ok("What's the weather like on the away server?".into())
+            }
+        }
+        struct Mouth;
+        #[async_trait::async_trait]
+        impl Speak for Mouth {
+            async fn speak(&self, text: &str) -> Result<Vec<u8>, String> {
+                Ok(text.as_bytes().to_vec())
+            }
+        }
+        struct Chat {
+            tx: broadcast::Sender<Event>,
+            busy: AtomicBool,
+        }
+        #[async_trait::async_trait]
+        impl Turns for Chat {
+            async fn send_spoken(&self, _: Option<&str>, _: &str) -> Result<Handed, String> {
+                self.busy.store(true, Ordering::SeqCst);
+                // The fixture's turn: the model reaches for a tool, and the
+                // engine parks the call at the approval gate.
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    let _ = tx.send(Event {
+                        name: "turn-event".into(),
+                        payload: serde_json::json!({"chat": "c1", "type": "tool_call",
+                            "id": "t1", "name": "mcp__nightloom__search_chats"})
+                        .to_string(),
+                    });
+                    let _ = tx.send(Event {
+                        name: "tool-approval".into(),
+                        payload: serde_json::json!({"id": "t1",
+                            "name": "mcp__nightloom__search_chats",
+                            "input": {"query": "away server weather"},
+                            "effect": "read_only", "chat": "c1"})
+                        .to_string(),
+                    });
+                });
+                Ok(Handed::Sent)
+            }
+            async fn state(&self) -> RemoteState {
+                RemoteState {
+                    active_chat: Some("c1".into()),
+                    busy: self.busy.load(Ordering::SeqCst),
+                    ..RemoteState::default()
+                }
+            }
+            fn events(&self) -> broadcast::Receiver<Event> {
+                self.tx.subscribe()
+            }
+        }
+        let (tx, _) = broadcast::channel(64);
+        let chat = Arc::new(Chat {
+            tx,
+            busy: AtomicBool::new(false),
+        });
+        let closing = CancellationToken::new();
+        let app = axum::Router::new().route(
+            "/api/voice",
+            axum::routing::get({
+                let chat = chat.clone();
+                let closing = closing.clone();
+                move |ws: WebSocketUpgrade| async move {
+                    let deps = Deps {
+                        token: "tok".into(),
+                        hear: Arc::new(Ear),
+                        speak: Arc::new(Mouth),
+                        turns: chat,
+                        warm: None,
+                        timing: session::Timing::default(),
+                    };
+                    ws.on_upgrade(move |socket| serve(socket, deps, closing))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await });
+
+        use tungstenite::Message as M;
+        let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/api/voice"))
+            .await
+            .unwrap();
+        ws.send(M::Text(r#"{"t":"hello","token":"tok"}"#.into()))
+            .await
+            .unwrap();
+        // A second of speech, in the phone's 20 ms frames.
+        let pcm = vec![500i16; 16_000];
+        let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
+        for frame in bytes.chunks(640) {
+            ws.send(M::Binary(frame.to_vec().into())).await.unwrap();
+        }
+        ws.send(M::Text(r#"{"t":"end"}"#.into())).await.unwrap();
+        let said = "I need your OK to use search chats — it's on your screen.";
+        let (mut shown, mut spoken) = (false, false);
+        while !(shown && spoken) {
+            let m = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
+                .await
+                .expect("the socket is not silent")
+                .expect("open")
+                .unwrap();
+            match m {
+                M::Text(t) => {
+                    let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+                    assert_ne!(v["t"], "error", "{v}");
+                    if v["t"] == "approval" {
+                        assert_eq!(v["id"], "t1");
+                        assert_eq!(v["text"], said);
+                        shown = true;
+                    }
+                    if v["t"] == "audio" {
+                        assert_eq!(v["sentence"], said);
+                    }
+                }
+                M::Binary(b) => {
+                    assert_eq!(b.as_ref(), said.as_bytes());
+                    spoken = true;
+                }
+                _ => {}
+            }
+        }
+        closing.cancel();
+    }
+
     /// The whole road with the real programs: hello, the fixture's audio,
     /// the end frame, the words sent spoken to the host. Run by hand like
     /// `voice::real` (NIGHTLOOM_VOICE_TEST=1, --ignored).
+    ///
+    /// (Backlog 317's socket test is [`a_turn_that_calls_a_tool_says_so_over_the_socket`].)
     #[tokio::test]
     #[ignore = "needs bin/voice-setup.sh and NIGHTLOOM_VOICE_TEST=1"]
     async fn a_real_socket_hears_the_fixture_and_sends_it_spoken() {
@@ -294,9 +433,12 @@ mod tests {
     /// The certificate is checked against the public roots, as Safari does.
     /// `NIGHTLOOM_VOICE_FIXTURE` picks the fixture (default `weather`),
     /// `NIGHTLOOM_VOICE_FIXTURE_DIR` where it is (default the setup's).
-    /// The chat the host has open hears it; a reply that asks to use a
+    /// The chat the host has open hears it. ~~A reply that asks to use a
     /// tool waits for an approval no one gives here, so pick a question
-    /// that needs none.
+    /// that needs none.~~ (2026-10-06, backlog 317: such a reply now sends
+    /// an `approval` frame and speaks that it waits, so the first audio
+    /// still comes — the weather fixture, which calls `search_chats`, ends
+    /// here on that sentence. The approval itself is left unanswered.)
     #[tokio::test]
     #[ignore = "needs a live HTTPS listener and NIGHTLOOM_VOICE_TEST=1"]
     async fn live_wss_hears_the_fixture_and_speaks_the_reply() {

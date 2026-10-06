@@ -302,6 +302,31 @@ pub fn set_remote_token(token: &str) -> Result<(), CredentialError> {
     store::set(REMOTE_TOKEN_ENTRY, token)
 }
 
+// ---------------------------------------------------------------------------
+// The Notion integration's token (nightshift backlog 319, 2026-10-06)
+// ---------------------------------------------------------------------------
+
+/// The credential-store entry for the read-only Notion integration's token:
+/// service `nightloom`, account `notion:token` in the macOS keychain.
+pub const NOTION_TOKEN_ENTRY: &str = "notion:token";
+
+/// The environment variable read when the store has no token.
+pub const NOTION_TOKEN_ENV: &str = "NIGHTLOOM_NOTION_TOKEN";
+
+/// The Notion token, stored first, then the environment — the order every
+/// other key here follows. Read only by the Notion tools, at the moment a
+/// call needs it, and never written anywhere: no setter exists, because
+/// he stores it himself (the keychain entry above) and the app must never
+/// show or copy it.
+pub fn notion_token() -> Option<String> {
+    store::get(NOTION_TOKEN_ENTRY).or_else(|| {
+        std::env::var(NOTION_TOKEN_ENV)
+            .ok()
+            .map(|k| k.trim().to_string())
+            .filter(|k| !k.is_empty())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
