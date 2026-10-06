@@ -7,6 +7,7 @@
   import { renderMarkdown } from "./markdown";
   import { inputFields } from "./toolinput";
   import Icon from "./Icon.svelte";
+  import { cardBox, MIN_HEIGHT } from "./askSizing";
   import type { ApprovalRequest, AskQuestion, FolderGrant } from "./types";
 
   let { req }: { req: ApprovalRequest } = $props();
@@ -115,22 +116,24 @@
     }
   }
 
-  // ---- fold, cap, drag edge (pass 2) ------------------------------------
+  // ---- fold, cap, drag edge (pass 2; the question card since 314) ---------
   // A chevron folds the card to its header row; it stays inline at the
-  // foot of the paused turn (blocker 118's default). The question form is
-  // capped at a third of the transcript viewport, the plan card at two
-  // thirds — "takes up the space of the entire chat and then I can't even
-  // see anything anymore" — and the body scrolls inside. The edge at the
-  // foot drags a height for this chat, kept in localStorage; double-click
-  // forgets it.
+  // foot of the paused turn (blocker 118's default). The plan card is
+  // capped at two thirds of the transcript viewport — "takes up the space
+  // of the entire chat and then I can't even see anything anymore" — its
+  // body scrolls inside, and the edge at its foot drags a height for this
+  // chat, kept in localStorage; double-click forgets it. The question card
+  // (backlog 314) grows with its content to 60 % of the window, then the
+  // whole card scrolls; it has no drag edge and keeps no height — a third
+  // of the transcript left its question one line tall and its options out
+  // of sight. The rule is `cardBox` (askSizing.ts).
   let folded = $state(false);
-  const CAP = { question: 1 / 3, plan: 2 / 3, call: 0 } as const;
-  const MIN_HEIGHT = 160;
   let viewportH = $state(0);
+  let windowH = $state(0);
   let dragged = $state<number | null>(null);
 
   const heightKey = $derived(`nightloom.ask.height.${app.activeSessionId ?? "pending"}.${kind}`);
-  const capPx = $derived(CAP[kind] > 0 && viewportH > 0 ? Math.round(viewportH * CAP[kind]) : null);
+  const sized = $derived(cardBox(kind, folded, dragged, viewportH, windowH));
 
   function loadHeight(key: string): number | null {
     try {
@@ -150,26 +153,33 @@
     }
   }
 
+  // Only the plan card keeps a dragged height; a question's saved one
+  // (from before 314) is left in storage and not read.
   $effect(() => {
-    dragged = loadHeight(heightKey);
+    dragged = kind === "plan" ? loadHeight(heightKey) : null;
   });
 
-  // The transcript viewport is the scroll region the card sits in; its
-  // height is the cap's base. Measured on mount and whenever it resizes.
+  // The transcript viewport is the scroll region the card sits in, and the
+  // window the question card's base; both measured on mount and whenever
+  // they resize.
   $effect(() => {
-    if (!box || CAP[kind] === 0) return;
+    if (!box || kind === "call") return;
     const vp = box.closest(".transcript") as HTMLElement | null;
     const read = () => {
       viewportH = vp?.clientHeight || window.innerHeight;
+      windowH = window.innerHeight;
     };
     read();
-    if (vp && typeof ResizeObserver !== "undefined") {
-      const ro = new ResizeObserver(read);
-      ro.observe(vp);
-      return () => ro.disconnect();
-    }
     window.addEventListener("resize", read);
-    return () => window.removeEventListener("resize", read);
+    let ro: ResizeObserver | null = null;
+    if (vp && typeof ResizeObserver !== "undefined") {
+      ro = new ResizeObserver(read);
+      ro.observe(vp);
+    }
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener("resize", read);
+    };
   });
 
   function clampHeight(n: number): number {
@@ -342,7 +352,7 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="grip"
-    use:tip={`drag to resize · double-click resets to ${kind === 'plan' ? 'two thirds' : 'a third'} of the transcript`}
+    use:tip={"drag to resize · double-click resets to two thirds of the transcript"}
     onpointerdown={onGripDown}
     ondblclick={resetHeight}
   >
@@ -351,15 +361,17 @@
 {/snippet}
 
 {#if kind === "question"}
+  <!-- The question card (backlog 314): a small label, the question in the
+       transcript's face at full width, the options as stacked buttons; the
+       card grows to its content up to the cap and then scrolls as one. -->
   <div
-    class="ask"
+    class="ask qcard"
     class:folded
     bind:this={box}
     tabindex="-1"
     role="group"
     aria-label="the model asks {questions.length} question{questions.length === 1 ? '' : 's'}"
-    style:height={!folded && dragged !== null ? `${dragged}px` : null}
-    style:max-height={!folded && dragged === null && capPx !== null ? `${capPx}px` : null}
+    style:max-height={sized.maxHeight !== null ? `${sized.maxHeight}px` : null}
   >
     <div class="head">
       <span class="mark" aria-hidden="true">?</span>
@@ -371,31 +383,36 @@
     </div>
 
     {#if !folded}
-      <div class="scr">
+      <div class="qs">
         {#each questions as q, i (i)}
-          <fieldset class="question">
-            <legend class="q-title">
-              <span class="key">{i + 1} / {questions.length}{q.header ? ` · ${q.header}` : ""}</span>
-              {q.question}
-              {#if q.multiSelect}<span class="effect">pick any</span>{/if}
-            </legend>
-            {#each q.options as o (o.label)}
-              <label class="option">
-                <input
-                  type={q.multiSelect ? "checkbox" : "radio"}
-                  name="q{i}"
-                  checked={(picks[i] ?? []).includes(o.label)}
-                  onchange={() => toggle(i, o.label, !!q.multiSelect)}
-                />
-                <span class="o-label">{o.label}</span>
-                {#if o.description}<span class="o-desc">{o.description}</span>{/if}
+          <div class="question" role="group" aria-labelledby="{req.id}-q{i}">
+            <div class="q-label">
+              Question {i + 1} of {questions.length}{q.header ? ` · ${q.header}` : ""}{q.multiSelect
+                ? " · pick any"
+                : ""}
+            </div>
+            <div class="q-text" id="{req.id}-q{i}">{q.question}</div>
+            <div class="opts">
+              {#each q.options as o (o.label)}
+                <label class="opt" class:on={(picks[i] ?? []).includes(o.label)}>
+                  <input
+                    type={q.multiSelect ? "checkbox" : "radio"}
+                    name="{req.id}-q{i}"
+                    checked={(picks[i] ?? []).includes(o.label)}
+                    onchange={() => toggle(i, o.label, !!q.multiSelect)}
+                  />
+                  <span class="o-text">
+                    <span class="o-label">{o.label}</span>
+                    {#if o.description}<span class="o-desc">{o.description}</span>{/if}
+                  </span>
+                </label>
+              {/each}
+              <label class="opt other-opt" class:on={(others[i] ?? "").trim() !== ""}>
+                <span class="o-label">Other</span>
+                <input class="other" type="text" bind:value={others[i]} placeholder="type an answer…" />
               </label>
-            {/each}
-            <label class="option">
-              <span class="o-label">Other</span>
-              <input class="other" type="text" bind:value={others[i]} placeholder="type an answer…" />
-            </label>
-          </fieldset>
+            </div>
+          </div>
         {/each}
       </div>
 
@@ -410,7 +427,6 @@
         </button>
         <span class="keys">{questionStatus} · answers go back as the tool's input</span>
       </div>
-      {@render grip()}
     {/if}
   </div>
 {:else if kind === "plan"}
@@ -421,8 +437,8 @@
     tabindex="-1"
     role="group"
     aria-label="plan approval"
-    style:height={!folded && dragged !== null ? `${dragged}px` : null}
-    style:max-height={!folded && dragged === null && capPx !== null ? `${capPx}px` : null}
+    style:height={sized.height !== null ? `${sized.height}px` : null}
+    style:max-height={sized.maxHeight !== null ? `${sized.maxHeight}px` : null}
   >
     <div class="head">
       <span class="mark" aria-hidden="true">⚑</span>
@@ -975,42 +991,120 @@
   .grip:hover i {
     background: var(--accent);
   }
-  /* The question form: plain rows, the existing tokens. */
-  .question {
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 0.45rem 0.6rem;
-    margin: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 0.3rem;
+  /* The question card (backlog 314): the card itself scrolls once it
+     reaches its cap, so nothing inside it may shrink. */
+  .ask.qcard {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .ask.qcard > * {
     flex: none;
   }
-  .q-title {
-    font-size: 0.84rem;
-    color: var(--text);
-    padding: 0 0.25rem;
+  .qs {
     display: flex;
-    align-items: baseline;
-    gap: 0.45rem;
+    flex-direction: column;
+    gap: 14px;
+    padding-top: 2px;
   }
-  .option {
+  .question {
     display: flex;
-    align-items: baseline;
-    gap: 0.45rem;
-    font-size: 0.8rem;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+  }
+  /* "Question 1 of 1 · Help style": a small label above, the UI face. */
+  .q-label {
+    font-family: var(--sans);
+    font-size: 11.5px;
+    letter-spacing: 0.02em;
+    color: var(--dim);
+  }
+  /* The question is model text: the transcript's face, full width, wrapping. */
+  .q-text {
+    font-family: var(--transcript-font, var(--sans));
+    font-size: var(--transcript-size, 16px);
+    line-height: 1.5;
+    color: var(--ink);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    margin-bottom: 4px;
+  }
+  .opts {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  /* Each option a full-width button: its box, the label, the description
+     under it; picked → the accent border and a tint. */
+  .opt {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 7px 12px;
+    border: 1px solid var(--line2);
+    border-radius: 8px;
+    background: var(--paper);
     cursor: pointer;
+    min-width: 0;
+    transition:
+      border-color 0.12s,
+      background 0.12s;
+  }
+  .opt:hover {
+    border-color: var(--accent);
+  }
+  .opt.on {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 12%, var(--paper));
+  }
+  .opt:has(input:focus-visible) {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  .opt input[type="radio"],
+  .opt input[type="checkbox"] {
+    flex: none;
+    margin: 3px 0 0;
+    accent-color: var(--accent);
+  }
+  .opt input:focus-visible {
+    outline: none;
+  }
+  /* The description beside the label while the row has room, under it
+     when it does not — a two-line question and four options fit the cap
+     in his 780-px window without the card scrolling. */
+  .o-text {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: 10px;
+    row-gap: 2px;
+    min-width: 0;
+  }
+  .o-label {
+    font-family: var(--sans);
+    font-size: 14px;
+    color: var(--ink);
+  }
+  .o-desc {
+    font-family: var(--sans);
+    font-size: 12.5px;
+    line-height: 1.4;
+    color: var(--dim);
+  }
+  .other-opt {
+    align-items: center;
   }
   .other {
     flex: 1;
     min-width: 0;
-    background: var(--paper);
+    background: var(--sheet);
     color: var(--ink);
     border: 1px solid var(--line2);
     border-radius: 6px;
     padding: 0.3rem 0.5rem;
-    font-size: 0.8rem;
-    font-family: inherit;
+    font-size: 13px;
+    font-family: var(--sans);
   }
   .other::placeholder {
     color: var(--dim);
@@ -1019,9 +1113,14 @@
     outline: none;
     border-color: var(--accent);
   }
-  .o-desc {
-    font-size: 0.72rem;
-    color: var(--dim);
+  /* The status line under the buttons wraps in a narrow pane rather than
+     running out of the card. */
+  .ask.qcard .actions {
+    flex-wrap: wrap;
+  }
+  .ask.qcard .actions .keys {
+    white-space: normal;
+    min-width: 0;
   }
   /* The plan: model text in the transcript's face, then a rule before the
      form (round 2: "separate the plan from the note"). */
