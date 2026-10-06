@@ -30,6 +30,7 @@ pub mod memory_where;
 pub mod model_list;
 pub mod nightshift;
 pub mod note_edit;
+pub mod notion;
 pub mod observe;
 pub mod pass_lock;
 pub mod plan_usage;

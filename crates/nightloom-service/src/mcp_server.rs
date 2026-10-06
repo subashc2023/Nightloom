@@ -122,7 +122,9 @@ const INSTRUCTIONS: &str = "Nightloom's tools. For the whole text of a page use 
      the message points outside this chat (an earlier decision, 'as we discussed', a name you \
      have no context for), not on every turn; recent chats rank first. context_status says \
      how full your context window was when this turn began. When the user asks where \
-     memory says something, use memory_where.";
+     memory says something, use memory_where. For the user's Notion pages use notion_search, \
+     then notion_read_page or notion_list_children — read-only, and only the page tree the \
+     user shared; a page outside it is not found.";
 
 /// The last sentence of [`INSTRUCTIONS`], present only when the tool is: a
 /// server started for an incognito chat (`--no-remember`) must not tell the
@@ -162,6 +164,9 @@ const OWN_EFFECTS: &[(&str, Effect)] = &[
     ("memory_where", Effect::ReadOnly),
     ("ask", Effect::ReadOnly),
     ("propose_instructions", Effect::Mutating),
+    ("notion_search", Effect::ReadOnly),
+    ("notion_read_page", Effect::ReadOnly),
+    ("notion_list_children", Effect::ReadOnly),
 ];
 
 /// The effect of a call by the name the CLI reports it under: this
@@ -272,6 +277,10 @@ pub fn tools_in(
     tools.push(Box::new(crate::memory_where::MemoryWhere::new(
         crate::memory_where::MemoryRoots::discover(config, workspace),
     )));
+    // Read-only Notion (nightshift backlog 319): served always, the token
+    // read only when a call needs one — a server that read the keychain at
+    // start would do it on every turn. Nothing here can write to Notion.
+    tools.extend(crate::notion::tools(crate::notion::Notion::from_store()));
     Ok(tools)
 }
 
@@ -1713,7 +1722,10 @@ mod tests {
                 "remember",
                 "fetch_page",
                 "context_status",
-                "memory_where"
+                "memory_where",
+                "notion_search",
+                "notion_read_page",
+                "notion_list_children"
             ]
         );
         // The MCP spelling, not the trait's: a host reads `inputSchema`.
@@ -1878,7 +1890,10 @@ mod tests {
                 "remember",
                 "fetch_page",
                 "context_status",
-                "memory_where"
+                "memory_where",
+                "notion_search",
+                "notion_read_page",
+                "notion_list_children"
             ]
         );
         assert_eq!(
@@ -1888,7 +1903,10 @@ mod tests {
                 "read_chat",
                 "fetch_page",
                 "context_status",
-                "memory_where"
+                "memory_where",
+                "notion_search",
+                "notion_read_page",
+                "notion_list_children"
             ]
         );
         let with = instructions_for(&tools_in(&config, Some(&id), true).unwrap());
@@ -2050,16 +2068,50 @@ mod tests {
         assert_eq!(crate::proposal::list_in(&config).len(), 2);
     }
 
-    /// Not a test: the dream's server, for [`crate::dream`]'s end-to-end
-    /// test. That test stands in a shell script for `claude`, and the
-    /// script needs a real server process to call `propose_instructions`
-    /// on — this crate builds no binary, so the test binary is it. Run
-    /// under `cargo test` with nothing set, this passes and does nothing;
-    /// run as `<test exe> --exact mcp_server::tests::dream_server_entry
-    /// --nocapture` with `NIGHTLOOM_TEST_DREAM` holding the `--dream` JSON,
-    /// it serves that dream on stdin/stdout until EOF, the way
-    /// `run_blocking` would. The harness's own lines on stdout are the
-    /// fake's problem, and the fake reads none of them.
+    /// Backlog 319: asked to edit a Notion page, the server has nothing
+    /// to do it with — every write a Notion MCP offers is an unknown tool
+    /// here, and the listing holds only the three readers.
+    #[tokio::test]
+    async fn an_edit_to_a_notion_page_is_an_unknown_tool() {
+        let (config, id) = fixture("notion-write");
+        let (r, mut w) = start(config, Some(id));
+        let mut lines = BufReader::new(r).lines();
+        send(&mut w, r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).await;
+        let list = recv(&mut lines).await;
+        let notion: Vec<&str> = list["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .filter(|n| n.contains("notion"))
+            .collect();
+        assert_eq!(
+            notion,
+            ["notion_search", "notion_read_page", "notion_list_children"]
+        );
+        for (n, name) in [
+            "notion_update_page",
+            "notion_create_page",
+            "notion_append_block_children",
+            "notion_update_block",
+            "notion_delete_block",
+            "API-patch-page",
+        ]
+        .iter()
+        .enumerate()
+        {
+            send(
+                &mut w,
+                &json!({"jsonrpc": "2.0", "id": 10 + n, "method": "tools/call",
+                    "params": {"name": name, "arguments": {"page_id": "x", "properties": {}}}})
+                .to_string(),
+            )
+            .await;
+            let refused = recv(&mut lines).await;
+            assert_eq!(refused["error"]["code"], -32602, "{name}: {refused}");
+        }
+    }
+
     /// Backlog 317: the table the approval card reads a deferred call's
     /// effect from says what each served tool's own `effect()` says, and
     /// names every tool any server here serves — so `search_chats` is
@@ -2096,6 +2148,16 @@ mod tests {
         assert_eq!(effect_of("Bash"), Effect::Mutating);
     }
 
+    /// Not a test: the dream's server, for [`crate::dream`]'s end-to-end
+    /// test. That test stands in a shell script for `claude`, and the
+    /// script needs a real server process to call `propose_instructions`
+    /// on — this crate builds no binary, so the test binary is it. Run
+    /// under `cargo test` with nothing set, this passes and does nothing;
+    /// run as `<test exe> --exact mcp_server::tests::dream_server_entry
+    /// --nocapture` with `NIGHTLOOM_TEST_DREAM` holding the `--dream` JSON,
+    /// it serves that dream on stdin/stdout until EOF, the way
+    /// `run_blocking` would. The harness's own lines on stdout are the
+    /// fake's problem, and the fake reads none of them.
     #[test]
     fn dream_server_entry() {
         let Ok(json) = std::env::var("NIGHTLOOM_TEST_DREAM") else {
