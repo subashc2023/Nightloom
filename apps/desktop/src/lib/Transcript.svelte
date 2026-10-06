@@ -92,6 +92,8 @@
   import { ensureForkInfo, openVersion, versionsOf } from "./versions.svelte";
   import { versionPlace } from "./versions";
   import { arrive, hasLaunch } from "./sendMotion";
+  // A Send near the foot lands at the bottom (item 313).
+  import { sendJumps } from "./sendScroll";
   // The first-paint mark of the message's timing line (item 256).
   import { hasText, turnClock } from "./turnTiming";
 
@@ -845,6 +847,19 @@
   let enterFrom = $state(Infinity);
   let enterKey: string | null = null;
   let enterLen = 0;
+  // Item 313: how far above the foot the view was just before the log
+  // grew — read before the DOM takes the new turn, so the distance is the
+  // reader's, not the reader's plus the sent bubble's height.
+  let preDistance = 0;
+  let preHeight = 0;
+  $effect.pre(() => {
+    void evs.length;
+    untrack(() => {
+      if (!viewport) return;
+      preDistance = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
+      preHeight = viewport.clientHeight;
+    });
+  });
   $effect(() => {
     const key = sessionKey;
     const len = evs.length;
@@ -863,7 +878,21 @@
       enterLen = len;
       return;
     }
-    if (len > enterLen && live) enterFrom = enterLen;
+    if (len > enterLen && live) {
+      enterFrom = enterLen;
+      // Item 313: a Send from within one screen of the foot lands at the
+      // bottom and follows the reply; from further up the place is kept.
+      // Re-pinning is enough: the follow-the-bottom effect above, run by
+      // the same `evs.length` change, lands on the foot after this flush's
+      // tick — instantly, as a Send at the foot always has, so the new
+      // bubble is in view when `sendMotion` measures it a frame later and
+      // the fly-in plays (the ⌄'s smooth ride would leave it below the
+      // view then, and `fly` skips a bubble out of view).
+      if (!pinned && sendJumps(preDistance, preHeight)) {
+        pinned = true;
+        jumpDown = false;
+      }
+    }
     enterLen = len;
   });
 
