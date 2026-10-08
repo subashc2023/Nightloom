@@ -265,6 +265,23 @@ impl Translator {
             Line::System(s) => self.system(s),
             Line::Result(r) => self.result(r),
             Line::RateLimitEvent { rate_limit_info } => {
+                // Item 323: the turn's start reading, and the end of any
+                // turn that finished before it (`turn_usage`). Only for a
+                // chat's turn (the sink is its ask directory).
+                if let Some(dir) = &self.usage_sink {
+                    let w = rate_limit_info.unified_windows.as_ref();
+                    let fh = w.and_then(|w| w.five_hour.as_ref());
+                    let sd = w.and_then(|w| w.seven_day.as_ref());
+                    if let Some(r) = crate::turn_usage::Reading::from_shares(
+                        fh.and_then(|f| f.utilization),
+                        fh.and_then(|f| f.resets_at),
+                        sd.and_then(|f| f.utilization),
+                        sd.and_then(|f| f.resets_at),
+                        chrono::Utc::now().timestamp_millis(),
+                    ) {
+                        crate::turn_usage::reading(Some(dir), r);
+                    }
+                }
                 if let Some(dir) = &self.usage_sink {
                     let fh = rate_limit_info
                         .unified_windows
