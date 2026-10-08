@@ -40,6 +40,7 @@ import {
   emptyThread,
   parseThreads,
   priorExchanges,
+  priorExchangeCount,
   serializeThreads,
   today,
   undoable,
@@ -183,6 +184,7 @@ export async function runNoteEdit(scope: NoteScope, name: string, before: string
   if (!request || runningTurn(key)) return;
   // The exchanges before this one, taken before it joins the thread.
   const history = priorExchanges(t.turns);
+  const historyTotal = priorExchangeCount(t.turns);
   const seq = nextSeq++;
   const turn: NoteEditTurn = {
     id: seq,
@@ -214,6 +216,7 @@ export async function runNoteEdit(scope: NoteScope, name: string, before: string
       today: today(),
       seq,
       history,
+      historyTotal,
       binary: d.agentBinary.trim() || undefined,
       model: d.agentModel.trim() || undefined,
       safeMode: d.agentSafeMode,

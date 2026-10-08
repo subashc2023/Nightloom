@@ -123,8 +123,11 @@
   /** The proposal card, for the edit panel's "Show the proposal". */
   let reviewEl = $state<HTMLDivElement | null>(null);
   let reviewFlash = $state(false);
+  let reviewFlashTimer: ReturnType<typeof setTimeout> | null = null;
   /** Bring the proposal card into view, focus its first live button, and
-   *  flash it for a moment so the eye finds it. */
+   *  flash it for a moment so the eye finds it. A second click restarts
+   *  the flash's 1.2 s: the earlier timer is cleared, so it cannot end the
+   *  new flash early (w3 review finding 5, 2026-10-08). */
   function showProposal() {
     const el = reviewEl;
     if (!el) return;
@@ -132,7 +135,11 @@
     const first = el.querySelector<HTMLButtonElement>(".actions button:not(:disabled)");
     first?.focus();
     reviewFlash = true;
-    setTimeout(() => (reviewFlash = false), 1200);
+    if (reviewFlashTimer !== null) clearTimeout(reviewFlashTimer);
+    reviewFlashTimer = setTimeout(() => {
+      reviewFlash = false;
+      reviewFlashTimer = null;
+    }, 1200);
   }
   /** Dismiss asks first: the badge goes with it, and a click must not lose
    *  something the user has not read (the never-lose-work rule). */

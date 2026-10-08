@@ -68,8 +68,10 @@ pub struct NoteEditResult {
 
 /// Edit one note to fit `request` — or answer it in words when it is a
 /// question (backlog 326) — on the Claude Code engine with the
-/// rail's binary, model and safe mode. `history` is the thread's earlier
-/// exchanges, oldest first. `text` is the note as the editor
+/// rail's binary and model (and always with no settings file of his —
+/// safe mode's flags whatever the rail's switch says, nightshift item 327).
+/// `history` is the thread's earlier exchanges, oldest first;
+/// `history_total` how many it holds in all. `text` is the note as the editor
 /// holds it — the buffer, draft included — because that is what he is
 /// looking at when he asks: when it differs from the file, it is written
 /// to the file first, so the model edits what he sees.
@@ -87,6 +89,9 @@ pub async fn edit_note_by_prompt(
     today: String,
     seq: u64,
     history: Option<Vec<note_edit::PriorExchange>>,
+    // How many exchanges the thread holds in all (the window sends only
+    // its newest few), so "N older left out" is right (w3 review finding 4).
+    history_total: Option<usize>,
     binary: Option<String>,
     model: Option<String>,
     safe_mode: Option<bool>,
@@ -132,13 +137,15 @@ pub async fn edit_note_by_prompt(
         .map_err(|e| format!("could not make the note editor's scratch folder: {e}"))?;
     let spec = note_edit::spec_for(&pass, &scratch, &file);
     // The thread's earlier exchanges (backlog 326); the service bounds them.
-    let instruction = note_edit::compose_instruction(
+    let history = history.unwrap_or_default();
+    let instruction = note_edit::compose_instruction_of(
         &name,
         &file,
         &request,
         strike,
         &today,
-        history.as_deref().unwrap_or(&[]),
+        &history,
+        history_total.unwrap_or(history.len()),
     );
     // Awake while the turn runs (nightshift backlog 101).
     let _awake = power.acquire();

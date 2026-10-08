@@ -10,6 +10,7 @@ import {
   editTotals,
   parseThreads,
   priorExchanges,
+  priorExchangeCount,
   serializeThreads,
   today,
   undoable,
@@ -181,6 +182,12 @@ describe("priorExchanges", () => {
     const h = priorExchanges(many);
     expect(h).toHaveLength(HISTORY_TURNS);
     expect(h[h.length - 1].request).toBe("r19");
+  });
+  it("counts every earlier exchange, past HISTORY_TURNS, but not kept copies or a running turn", () => {
+    const many = Array.from({ length: 20 }, (_, i) => turn({ request: `r${i}`, status: "unchanged" }));
+    many.push(turn({ request: "k", status: "kept" }), turn({ request: "now", status: "running" }));
+    expect(priorExchangeCount(many)).toBe(20);
+    expect(priorExchanges(many)).toHaveLength(HISTORY_TURNS);
   });
   it("caps the changed lines and says how many more", () => {
     const before = Array.from({ length: 100 }, (_, i) => `line ${i}`).join("\n");
