@@ -1217,6 +1217,10 @@ export type TurnEvent =
   /** A message he sent while the turn ran reached it (nightshift backlog
    *  328): `id` is the queued row's uuid, `after` where it landed, in words. */
   | { type: "message_delivered"; id: string; text: string; after: string }
+  /** The main reply ended with subagents it started still running
+   *  (nightshift backlog 329): their descriptions. The turn waits for them
+   *  unless he stops them. */
+  | { type: "still_running"; tasks: string[] }
   /** An event of a subagent's own turn on the Claude Code engine, carrying
    *  the id of the `Agent` call that spawned it (nightshift backlog 075);
    *  `event` is the child's text, thinking, call or result as the main

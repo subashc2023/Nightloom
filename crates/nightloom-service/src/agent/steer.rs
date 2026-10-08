@@ -47,6 +47,10 @@ pub struct Queued {
     /// For a main-thread copy: what the subagent is called, for the words.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub about: Option<String>,
+    /// Nightloom's own words rather than his (backlog 329's nested-spawn
+    /// report to the main thread): delivered as they are, unwrapped.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub raw: bool,
 }
 
 /// A note that went.
@@ -192,7 +196,9 @@ pub fn words(notes: &[Queued], main: bool) -> Option<String> {
     let mut out = Vec::new();
     for n in notes {
         let when = clock(n.at_ms);
-        out.push(if main {
+        out.push(if n.raw {
+            n.text.trim().to_string()
+        } else if main {
             format!(
                 "Swaraag (the user) sent a note at {when} to your subagent{} while it runs; it reaches the \
                  subagent on its next tool call. His note: {}",
@@ -240,6 +246,7 @@ mod tests {
             text: text.into(),
             at_ms: 1_000,
             about: None,
+            raw: false,
         }
     }
 

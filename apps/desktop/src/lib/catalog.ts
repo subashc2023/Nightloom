@@ -769,6 +769,9 @@ export interface SubagentLimits {
   /** Which limits he switched off (nightshift backlog 253): the number is
    *  kept, the limit does not apply (`brief::SubagentLimits::effective`). */
   off: LimitsOff;
+  /** Nightshift backlog 329: subagents one subagent may start of its own
+   *  (default 2, blocker 1290); each is reported to the main agent. */
+  nested: number;
 }
 
 /** One switch per limit (backlog 253); `slow` is the slow-at / to pair. */
@@ -780,6 +783,7 @@ export interface LimitsOff {
   slow: boolean;
   stop_at: boolean;
   budget_pct: boolean;
+  nested: boolean;
 }
 export const LIMIT_SWITCHES: readonly (keyof LimitsOff)[] = [
   "per_turn",
@@ -789,6 +793,7 @@ export const LIMIT_SWITCHES: readonly (keyof LimitsOff)[] = [
   "slow",
   "stop_at",
   "budget_pct",
+  "nested",
 ];
 /** The switch a limit's number answers to: the slow pair shares one. */
 export function switchOf(k: string): keyof LimitsOff | null {
@@ -796,7 +801,7 @@ export function switchOf(k: string): keyof LimitsOff | null {
   return (LIMIT_SWITCHES as readonly string[]).includes(k) ? (k as keyof LimitsOff) : null;
 }
 export function allOn(): LimitsOff {
-  return { per_turn: false, concurrent: false, depth: false, per_day: false, slow: false, stop_at: false, budget_pct: false };
+  return { per_turn: false, concurrent: false, depth: false, per_day: false, slow: false, stop_at: false, budget_pct: false, nested: false };
 }
 
 /** `choose` leaves a spawn's model as the parent wrote it (the Subagents
@@ -831,6 +836,7 @@ export const DEFAULT_LIMITS: SubagentLimits = Object.freeze({
   budget_pct: 35,
   model: "choose",
   off: Object.freeze(allOn()),
+  nested: 2,
 }) as SubagentLimits;
 
 /** A saved limits object, each number a whole number in range or the

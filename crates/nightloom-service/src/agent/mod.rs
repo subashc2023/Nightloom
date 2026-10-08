@@ -34,6 +34,7 @@ pub mod cli_session;
 pub mod connectors;
 pub mod fork;
 pub mod inbox;
+pub mod nested;
 mod protocol;
 mod record;
 pub mod steer;
@@ -1878,8 +1879,52 @@ impl ClaudeCodeAgent {
                                     after,
                                 });
                             }
-                            Some(inbox::Effect::Result { .. }) => after_result = true,
+                            Some(inbox::Effect::Result { running, .. }) => {
+                                after_result = true;
+                                // The reply ended with its subagents still
+                                // running (backlog 329): the window asks him
+                                // whether to wait or stop them.
+                                if !running.is_empty() {
+                                    on_event(TurnEvent::StillRunning { tasks: running });
+                                }
+                            }
                             None => {}
+                        }
+                    }
+                    // A nested spawn's report for an idle main thread
+                    // (backlog 329): the hook queued it for the main
+                    // thread's next call, and an idle main thread makes
+                    // none — so it goes on stdin, after the hook has run
+                    // (the spawn's `task_started`, or its refusal's result).
+                    if let Some(inbox) = &inbox
+                        && inbox.idle_with_agents()
+                        && (line.contains(r#""subtype":"task_started""#)
+                            || (line.starts_with(r#"{"type":"user""#)
+                                && line.contains(r#""is_error":true"#)))
+                        && let Some(dir) = spec.brief.as_ref().map(|b| b.dir.clone())
+                        && !dir.as_os_str().is_empty()
+                        && let Some(note) = steer::take(
+                            &dir,
+                            steer::MAIN,
+                            "stdin",
+                            "",
+                            chrono::Utc::now().timestamp_millis(),
+                        )
+                    {
+                        // Not taken after all (a Stop closed the feed):
+                        // back for the main thread's next call.
+                        if !inbox.note_if_idle(&note) {
+                            let _ = steer::queue(
+                                &dir,
+                                steer::MAIN,
+                                steer::Queued {
+                                    id: format!("nested-back-{}", uuid::Uuid::new_v4()),
+                                    text: note,
+                                    at_ms: chrono::Utc::now().timestamp_millis(),
+                                    about: None,
+                                    raw: true,
+                                },
+                            );
                         }
                     }
                     for event in translator.push(&line) {

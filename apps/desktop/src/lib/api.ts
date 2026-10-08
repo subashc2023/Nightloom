@@ -931,6 +931,12 @@ export function injectMessage(turn: string, id: string, text: string): Promise<b
   return invoke("inject_message", { turn, id, text });
 }
 
+/** Stop the subagents still running in a turn whose reply ended (backlog
+ *  329); how many were asked to stop. */
+export function stopSubagents(turn: string): Promise<number> {
+  return invoke("stop_subagents", { turn });
+}
+
 /** Take back a message sent into the running turn (backlog 328). */
 export function takeBackInjected(turn: string, id: string): Promise<"cancelled" | "delivered"> {
   return invoke("take_back_injected", { turn, id });

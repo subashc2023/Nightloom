@@ -5456,6 +5456,7 @@ async fn steer_subagent(
         text,
         at_ms: now,
         about,
+        raw: false,
     };
     tokio::task::spawn_blocking(move || {
         steer::queue(&dir, &agent_id, note.clone())?;
@@ -5517,6 +5518,20 @@ async fn take_back_injected(
         Some(inbox) => inbox.take_back(&id).await,
         None => nightloom_service::agent::inbox::TakeBack::Cancelled,
     })
+}
+
+/// Stop the subagents still running in a turn whose reply has ended
+/// (nightshift backlog 329, his "wait or stop them?"): the CLI's
+/// `stop_task` for each. How many were asked to stop.
+#[tauri::command]
+async fn stop_subagents(state: State<'_, AppState>, turn: String) -> Result<usize, String> {
+    let inbox = state
+        .inboxes
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(&turn)
+        .cloned();
+    Ok(inbox.map_or(0, |i| i.stop_agents()))
 }
 
 /// The chat's steering notes, queued and delivered (backlog 295), for
@@ -7964,6 +7979,7 @@ fn main() {
             steer_subagent,
             inject_message,
             take_back_injected,
+            stop_subagents,
             steer_state,
             unsteer_subagent,
             checkpoint,

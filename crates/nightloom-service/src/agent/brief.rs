@@ -172,6 +172,12 @@ pub struct SubagentLimits {
     /// switches it back on; [`SubagentLimits::effective`] is what acts.
     #[serde(default)]
     pub off: LimitsOff,
+    /// Nightshift backlog 329 (2026-10-08, default applied — blocker
+    /// 1290): how many subagents one subagent may start of its own. Past
+    /// it the spawn is refused with a note to do the work itself or ask
+    /// the main agent; each one let through is reported to the main agent.
+    #[serde(default = "d_nested")]
+    pub nested: usize,
 }
 
 /// One switch per limit (backlog 253); `slow` covers the `slow_at` /
@@ -186,6 +192,7 @@ pub struct LimitsOff {
     pub slow: bool,
     pub stop_at: bool,
     pub budget_pct: bool,
+    pub nested: bool,
 }
 
 /// "No limit" for the CLI's own two (backlog 253, blocker 610 answered
@@ -275,6 +282,10 @@ fn d_depth() -> usize {
 fn d_per_day() -> usize {
     0
 }
+
+fn d_nested() -> usize {
+    2
+}
 fn d_slow_at() -> u8 {
     70
 }
@@ -298,6 +309,7 @@ impl Default for SubagentLimits {
             budget_pct: d_budget_pct(),
             model: SubagentModel::default(),
             off: LimitsOff::default(),
+            nested: d_nested(),
         }
     }
 }
@@ -335,6 +347,9 @@ impl SubagentLimits {
         }
         if l.off.budget_pct {
             l.budget_pct = 0;
+        }
+        if l.off.nested {
+            l.nested = usize::MAX;
         }
         l
     }
@@ -1005,6 +1020,7 @@ pub fn begin_turn(dir: &Path, limits: &SubagentLimits, phase: TurnPhase) {
         return;
     }
     reset_spawns(dir);
+    super::nested::reset(dir);
     let now_ms = chrono::Utc::now().timestamp_millis();
     let b = start_turn_budget(
         read_turn_budget(dir),
@@ -1928,6 +1944,10 @@ struct HookInput {
     /// beside `agent_type` on the child's `Read`).
     #[serde(default)]
     agent_id: Option<String>,
+    /// Beside `agent_id` on a child's call: its type, for the main
+    /// thread's nested-spawn note (backlog 329).
+    #[serde(default)]
+    agent_type: Option<String>,
     /// The call's id (backlog 295: a steering note records the call it
     /// rode on, so the window draws it after that call).
     #[serde(default)]
@@ -2091,6 +2111,48 @@ fn decide_holding(
                 .into(),
         );
     }
+    // A subagent's own spawn (backlog 329): counted against its parent,
+    // refused past the cap, and reported to the main thread either way —
+    // before the turn's count, so a refused one does not use it up.
+    if subagent {
+        let cap = limits.effective().nested;
+        let parent = input
+            .agent_type
+            .as_deref()
+            .filter(|t| !t.is_empty())
+            .unwrap_or(who)
+            .to_string();
+        let task = super::nested::task_of(&input.tool_input);
+        let claimed = super::nested::claim(dir, who, cap);
+        let turn_spawns = std::fs::read_to_string(dir.join(SPAWNS_FILE))
+            .ok()
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        let (refused, count, total) = match claimed {
+            Ok((n, t)) => (false, n, t),
+            Err(n) => (true, n, 0),
+        };
+        let note = super::steer::Queued {
+            id: format!("nested-{}", input.tool_use_id),
+            text: super::nested::main_note(
+                &parent,
+                &task,
+                refused,
+                count,
+                cap,
+                total,
+                // This spawn is claimed into the turn's count just below.
+                turn_spawns + usize::from(!refused),
+            ),
+            at_ms: now_ms,
+            about: None,
+            raw: true,
+        };
+        let _ = super::steer::queue(dir, super::steer::MAIN, note);
+        if refused {
+            return HookReply::deny(super::nested::refused_reason(cap));
+        }
+    }
     // Under his override the stop line does not refuse the spawn either;
     // the turn's cap at that window still counts.
     let cap = if overridden {
@@ -2209,6 +2271,51 @@ mod tests {
         assert!(r.reason().is_some_and(|s| s.contains("do it yourself")));
         super::reset_spawns(&dir);
         assert_eq!(super::decide_with(&dir, call, None).decision(), "allow");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Backlog 329: a subagent's own spawns — two allowed (the default),
+    /// the third refused with "do this part of the work yourself", and
+    /// every one, refused or not, reported to the main thread's next call.
+    #[test]
+    fn a_subagents_own_spawns_are_capped_and_reported_to_the_main_thread() {
+        let dir = std::env::temp_dir().join(format!("nightloom-nested-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        super::write(
+            &dir,
+            "<nightloom-subagent-brief>x</nightloom-subagent-brief>",
+        )
+        .unwrap();
+        let call = |n: u32| {
+            format!(
+                r#"{{"tool_name":"Agent","tool_input":{{"description":"scan part {n}","prompt":"go"}},"agent_id":"a1","agent_type":"Explore","tool_use_id":"t{n}"}}"#
+            )
+        };
+        assert_eq!(super::decide_with(&dir, &call(1), None).decision(), "allow");
+        assert_eq!(super::decide_with(&dir, &call(2), None).decision(), "allow");
+        let r = super::decide_with(&dir, &call(3), None);
+        assert_eq!(r.decision(), "deny");
+        assert!(
+            r.reason().is_some_and(|s| s.contains("yourself")),
+            "{:?}",
+            r.reason()
+        );
+        // Another subagent has its own two.
+        let other = r#"{"tool_name":"Agent","tool_input":{"description":"x"},"agent_id":"a2","tool_use_id":"t9"}"#;
+        assert_ne!(super::decide_with(&dir, other, None).decision(), "deny");
+        // The main thread's next call carries the reports.
+        let main =
+            super::super::steer::take(&dir, super::super::steer::MAIN, "Read", "m1", 0).unwrap();
+        assert!(
+            main.contains(
+                "\u{201c}Explore\u{201d} started a subagent of its own: \u{201c}scan part 1\u{201d}"
+            ),
+            "{main}"
+        );
+        assert!(main.contains("2 of the 2 it may start"), "{main}");
+        assert!(main.contains("was refused"), "{main}");
+        assert!(main.contains("TaskStop"), "{main}");
+        assert!(!main.contains("Swaraag (the user) sent"), "{main}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3415,6 +3522,7 @@ mod tests {
             slow: true,
             stop_at: true,
             budget_pct: true,
+            nested: true,
         };
         let l = super::SubagentLimits {
             per_day: 5,
@@ -3920,6 +4028,7 @@ mod tests {
             text: text.into(),
             at_ms: chrono::Utc::now().timestamp_millis(),
             about: Some("Survey".into()),
+            raw: false,
         };
         super::super::steer::queue(&dir, "a1", n("n1", "also check the docs")).unwrap();
         let main = r#"{"tool_name":"Read","tool_input":{},"tool_use_id":"t0"}"#;

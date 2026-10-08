@@ -87,6 +87,12 @@ struct State {
     idle: bool,
     replies: HashMap<String, oneshot::Sender<bool>>,
     seq: u64,
+    /// Subagents running now (backlog 329): `task_id` and description,
+    /// from the CLI's `task_started` (`task_type: "local_agent"`) to its
+    /// `task_notification`. Measured (2.1.294): the process outlives the
+    /// main `result` while one runs, and its end wakes the main agent as a
+    /// second command — so the stdin stays open for him meanwhile.
+    agents: Vec<(String, String)>,
 }
 
 /// The chat's inbox, shared between its agent (which runs the turn) and the
@@ -107,6 +113,8 @@ pub enum Effect {
     /// The turn's `result` — and whether the inbox closed the stdin on it.
     Result {
         closed: bool,
+        /// Subagents still running at this reply's end (backlog 329).
+        running: Vec<String>,
     },
 }
 
@@ -205,6 +213,10 @@ impl Inbox {
             1
         } else if line.starts_with(r#"{"type":"result""#) || line.contains(r#""type":"result""#) {
             2
+        } else if line.contains(r#""subtype":"task_started""#)
+            || line.contains(r#""subtype":"task_notification""#)
+        {
+            3
         } else {
             return None;
         };
@@ -247,6 +259,31 @@ impl Inbox {
                 let _ = tx.send(cancelled);
                 None
             }
+            3 => {
+                let id = v.get("task_id")?.as_str()?.to_string();
+                match v.get("subtype")?.as_str()? {
+                    "task_started" => {
+                        if v.get("task_type").and_then(|t| t.as_str()) == Some("local_agent") {
+                            let what = v
+                                .get("description")
+                                .and_then(|d| d.as_str())
+                                .unwrap_or("a subagent")
+                                .to_string();
+                            s.agents.push((id, what));
+                        }
+                    }
+                    _ => {
+                        s.agents.retain(|(a, _)| *a != id);
+                        // The last one ended with nothing else holding the
+                        // process: the EOF now (the CLI still wakes the main
+                        // agent for it — measured with an early EOF).
+                        if s.idle && s.agents.is_empty() && s.waiting.is_empty() {
+                            s.tx = None;
+                        }
+                    }
+                }
+                None
+            }
             _ => {
                 // Only the main thread's result: a line nested in a
                 // subagent never is one, but say so.
@@ -260,13 +297,17 @@ impl Inbox {
                 if v.get("stop_reason").and_then(|r| r.as_str()) == Some("tool_deferred") {
                     drop(s);
                     self.stop();
-                    return Some(Effect::Result { closed: true });
+                    return Some(Effect::Result {
+                        closed: true,
+                        running: Vec::new(),
+                    });
                 }
-                let closed = s.waiting.is_empty();
+                let running: Vec<String> = s.agents.iter().map(|(_, d)| d.clone()).collect();
+                let closed = s.waiting.is_empty() && running.is_empty();
                 if closed {
                     s.tx = None;
                 }
-                Some(Effect::Result { closed })
+                Some(Effect::Result { closed, running })
             }
         }
     }
@@ -300,6 +341,61 @@ impl Inbox {
             }
         }
         self.close()
+    }
+
+    /// Stop every subagent still running (backlog 329, his "Stop them"):
+    /// the CLI's `stop_task` control request for each — measured on
+    /// 2.1.294: the agent is `stopped` at once and the main agent is woken
+    /// to say so. How many were asked; 0 when no turn runs.
+    pub fn stop_agents(&self) -> usize {
+        let mut s = self.lock();
+        let Some(tx) = s.tx.clone() else {
+            return 0;
+        };
+        let ids: Vec<String> = s.agents.iter().map(|(id, _)| id.clone()).collect();
+        for id in &ids {
+            s.seq += 1;
+            let line = serde_json::json!({
+                "type": "control_request",
+                "request_id": format!("nightloom-stop-task-{}", s.seq),
+                "request": { "subtype": "stop_task", "task_id": id },
+            });
+            let _ = tx.send(format!("{line}\n"));
+        }
+        ids.len()
+    }
+
+    /// Nightloom's own note to an idle main thread whose subagents still
+    /// run (backlog 329: a nested spawn reported "at its next step" when
+    /// the main thread has no next tool call to carry it). Written as a
+    /// user line with no uuid — not his, so not tracked as his and never
+    /// recorded as his message; the CLI starts it as the next command, as
+    /// it does any message that arrives while it is idle (measured run e).
+    /// `false` when the main thread is not idle or no turn takes input.
+    pub fn note_if_idle(&self, text: &str) -> bool {
+        let mut s = self.lock();
+        if !s.idle || s.agents.is_empty() {
+            return false;
+        }
+        let Some(tx) = &s.tx else {
+            return false;
+        };
+        let line = serde_json::json!({
+            "type": "user",
+            "message": { "role": "user", "content": [{ "type": "text", "text": text }] },
+            "parent_tool_use_id": serde_json::Value::Null,
+        });
+        if tx.send(format!("{line}\n")).is_err() {
+            return false;
+        }
+        s.idle = false;
+        true
+    }
+
+    /// Whether the main thread is idle while subagents still run.
+    pub fn idle_with_agents(&self) -> bool {
+        let s = self.lock();
+        s.idle && !s.agents.is_empty() && s.tx.is_some()
     }
 
     /// The ids the turn took since it began.
@@ -353,7 +449,13 @@ mod tests {
         );
         assert_eq!(inbox.taken(), vec![ID.to_string()]);
         // Nothing waits: the result closes the stdin.
-        assert_eq!(inbox.on_line(RESULT), Some(Effect::Result { closed: true }));
+        assert_eq!(
+            inbox.on_line(RESULT),
+            Some(Effect::Result {
+                closed: true,
+                running: vec![]
+            })
+        );
         assert!(!inbox.is_open());
     }
 
@@ -366,14 +468,23 @@ mod tests {
         // Measured run e: the CLI runs it next, in the same process.
         assert_eq!(
             inbox.on_line(RESULT),
-            Some(Effect::Result { closed: false })
+            Some(Effect::Result {
+                closed: false,
+                running: vec![]
+            })
         );
         assert!(inbox.is_open());
         assert!(matches!(
             inbox.on_line(&lifecycle("started")),
             Some(Effect::Taken(_))
         ));
-        assert_eq!(inbox.on_line(RESULT), Some(Effect::Result { closed: true }));
+        assert_eq!(
+            inbox.on_line(RESULT),
+            Some(Effect::Result {
+                closed: true,
+                running: vec![]
+            })
+        );
     }
 
     #[test]
@@ -383,6 +494,55 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel();
         inbox.open(tx);
         assert_eq!(inbox.send("not-a-uuid", "x"), Err(SendError::BadId));
+    }
+
+    #[test]
+    fn a_note_goes_only_to_an_idle_main_thread_with_agents_running() {
+        let inbox = Inbox::default();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        inbox.open(tx);
+        assert!(
+            !inbox.note_if_idle("x"),
+            "busy main thread: the hook carries it"
+        );
+        inbox.on_line(r#"{"type":"system","subtype":"task_started","task_id":"a1","description":"d","task_type":"local_agent"}"#);
+        inbox.on_line(RESULT);
+        assert!(inbox.idle_with_agents());
+        assert!(inbox.note_if_idle("[Nightloom] your subagent started one"));
+        let line = rx.try_recv().unwrap();
+        assert!(
+            line.contains("your subagent started one") && !line.contains("uuid"),
+            "{line}"
+        );
+        // Not his: nothing waits, nothing is taken.
+        assert!(inbox.taken().is_empty());
+        assert!(!inbox.idle_with_agents(), "the note starts a command");
+    }
+
+    #[test]
+    fn a_running_subagent_keeps_the_process_open_and_its_end_closes_it() {
+        let inbox = Inbox::default();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        inbox.open(tx);
+        // Measured shapes (329-measurements, 2.1.294).
+        inbox.on_line(r#"{"type":"system","subtype":"task_started","task_id":"a8bb","tool_use_id":"t","description":"Run delayed echo command","task_type":"local_agent"}"#);
+        inbox.on_line(r#"{"type":"system","subtype":"task_started","task_id":"b5o5","description":"sleep","task_type":"local_bash"}"#);
+        assert_eq!(
+            inbox.on_line(RESULT),
+            Some(Effect::Result {
+                closed: false,
+                running: vec!["Run delayed echo command".into()]
+            })
+        );
+        assert!(inbox.is_open());
+        assert_eq!(inbox.stop_agents(), 1);
+        let line = rx.try_recv().unwrap();
+        assert!(
+            line.contains(r#""subtype":"stop_task""#) && line.contains("a8bb"),
+            "{line}"
+        );
+        inbox.on_line(r#"{"type":"system","subtype":"task_notification","task_id":"a8bb","status":"stopped"}"#);
+        assert!(!inbox.is_open());
     }
 
     #[tokio::test]

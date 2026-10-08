@@ -969,11 +969,11 @@
         <div class="row limits">
           <span class="lbl">Subagent limits</span>
           <Hint
-            text="Per turn: how many subagents one reply may spawn (Nightloom's hook; the seventh is refused in words). At once and depth: Claude Code's own concurrency and nesting caps, passed to it. Per day: a running count for this chat across turns. Slow at / to: past this share of the 5-hour window, the per-turn cap drops to this number. Stop at: past this share every spawn — and, mid-flight, every tool call — is refused with the reset time. Budget: the share of the 5-hour window one message may spend, counting the main thread, every subagent and every council seat; past it every further tool call is refused with 'stop and report', and the chip in the top bar shows the spend as it runs. The window is the freshest of the gauge and the turn's own readings. Subagents use: the chat's own model, or Sonnet for read-heavy scans. The small switch beside each limit turns it off: that limit does not apply at all, and its number is kept for when you switch it back on (slow at and to share one switch). At once and depth off: no limit either — Claude Code has no off value, so Nightloom passes it a million."
+            text="Per turn: how many subagents one reply may spawn (Nightloom's hook; the seventh is refused in words). At once and depth: Claude Code's own concurrency and nesting caps, passed to it. Per day: a running count for this chat across turns. Slow at / to: past this share of the 5-hour window, the per-turn cap drops to this number. Stop at: past this share every spawn — and, mid-flight, every tool call — is refused with the reset time. Budget: the share of the 5-hour window one message may spend, counting the main thread, every subagent and every council seat; past it every further tool call is refused with 'stop and report', and the chip in the top bar shows the spend as it runs. The window is the freshest of the gauge and the turn's own readings. Each may start: how many subagents one subagent may start of its own; past it the spawn is refused with a note to do the work itself or ask the main agent, and every one let through is reported to the main agent, which answers for it against the task's size. Subagents use: the chat's own model, or Sonnet for read-heavy scans. The small switch beside each limit turns it off: that limit does not apply at all, and its number is kept for when you switch it back on (slow at and to share one switch). At once and depth off: no limit either — Claude Code has no off value, so Nightloom passes it a million."
           />
         </div>
         <div class="limits-grid">
-          {#each [["per_turn", "per turn"], ["concurrent", "at once"], ["depth", "depth"], ["per_day", "per day"], ["slow_at", "slow at %"], ["slow_to", "to"], ["stop_at", "stop at %"], ["budget_pct", "budget %"]] as [k, label] (k)}
+          {#each [["per_turn", "per turn"], ["concurrent", "at once"], ["depth", "depth"], ["per_day", "per day"], ["slow_at", "slow at %"], ["slow_to", "to"], ["stop_at", "stop at %"], ["budget_pct", "budget %"], ["nested", "each may start"]] as [k, label] (k)}
             <!-- Backlog 253: a small switch per limit; off, the limit does not
                  apply at all (the number is kept for switching it back on).
                  The slow pair shares the switch on "slow at". A div, not a
@@ -1004,7 +1004,7 @@
                 max={k === "slow_at" || k === "stop_at" || k === "budget_pct" ? 100 : undefined}
                 step="1"
                 aria-label={`subagents ${label}`}
-                bind:value={app.draft.agentLimits[k as "per_turn" | "concurrent" | "depth" | "per_day" | "slow_at" | "slow_to" | "stop_at" | "budget_pct"]}
+                bind:value={app.draft.agentLimits[k as "per_turn" | "concurrent" | "depth" | "per_day" | "slow_at" | "slow_to" | "stop_at" | "budget_pct" | "nested"]}
                 onchange={apply}
                 disabled={locked || isOff}
               />

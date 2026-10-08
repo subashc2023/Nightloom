@@ -109,6 +109,13 @@ pub enum TurnEvent {
         text: String,
         after: String,
     },
+    /// The main thread's reply ended while subagents it started still run
+    /// (nightshift backlog 329): their descriptions. The turn waits for
+    /// them (the CLI wakes the main agent as each ends) unless he stops
+    /// them. Claude Code engine only.
+    StillRunning {
+        tasks: Vec<String>,
+    },
     /// An event of a subagent's own turn — one the Claude Code CLI spawned
     /// through its `Agent` tool — carrying the id of the call that spawned
     /// it (2026-09-16, nightshift backlog 075; `--forward-subagent-text`).

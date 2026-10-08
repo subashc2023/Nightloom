@@ -5841,6 +5841,8 @@ export function stopTarget(t: { chat: string | null; key: string } | null): stri
 
 /** The turn on screen (or parked), if one runs. */
 let fg: TurnCtx | null = null;
+/** The "still running" asks already toasted (backlog 329), by turn and tasks. */
+const stillRunningAsked = new Set<string>();
 
 /**
  * A message he queued while the chat on screen runs a turn, sent into that
@@ -7993,9 +7995,41 @@ export function applyTurnEventTo(host: TurnHost, ev: TurnEvent & { chat?: string
       // the same way, so its transcript outlives the live message — above,
       // before the live message is asked for (backlog 160).
       const parent = findCall(segments, ev.parent_tool_use_id);
+      // A subagent starting one of its own (backlog 329): said in the main
+      // reply — who, its task, how many run — as the main agent is told.
+      if (ev.event.type === "tool_call" && (ev.event.name === "Agent" || ev.event.name === "Task")) {
+        const who = subagentRow(ev.parent_tool_use_id)?.description ?? "a subagent";
+        const input = ev.event.input as { description?: unknown; prompt?: unknown } | null;
+        const task = typeof input?.description === "string" ? input.description : typeof input?.prompt === "string" ? input.prompt.split("\n")[0] : "";
+        const running = rowsOf(app.subagents, host.chat).filter((r) => subagentRunning(r)).length;
+        closeThinking(segments);
+        segments.push({
+          kind: "notice",
+          text: `subagent “${who}” started a subagent of its own${task ? `: “${task}”` : ""} — ${running + 1} running · the main agent is told`,
+        });
+      }
       if (!parent) break;
       parent.children ??= [];
       applyToSegments(parent.children, ev.event);
+      break;
+    }
+    case "still_running": {
+      // The main reply ended with its subagents still running (backlog
+      // 329): the turn waits for them — the CLI wakes the main agent as
+      // each ends — unless he stops them.
+      const n = ev.tasks.length;
+      const what = ev.tasks.map((t) => `“${t}”`).join(", ");
+      const text = `${n} subagent${n === 1 ? "" : "s"} still running (${what}) — wait for ${n === 1 ? "it" : "them"}, or stop ${n === 1 ? "it" : "them"}?`;
+      closeThinking(segments);
+      segments.push({ kind: "notice", text });
+      const key = onScreen ? fg?.key : undefined;
+      // One toast per turn per set of tasks: the main agent replies again
+      // after each report or wake-up, and each such reply says so too.
+      const seen = `${key ?? host.chat}:${ev.tasks.join("|")}`;
+      if (stillRunningAsked.has(seen)) break;
+      stillRunningAsked.add(seen);
+      if (key) addToast(text, { label: n === 1 ? "Stop it" : "Stop them", run: () => void api.stopSubagents(key) });
+      else addToast(text);
       break;
     }
     case "round_limit":

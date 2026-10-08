@@ -648,6 +648,31 @@ pub fn subagent_rules_body(rules: &SubagentRules<'_>) -> String {
         ),
         "No per-message share of the five-hour window.",
     );
+    line(
+        &mut out,
+        !l.off.nested,
+        format!(
+            "Each subagent may start at most {} subagent{} of its own; past that it is refused \
+             and told to do the work itself or report what is left to you.",
+            l.nested,
+            if l.nested == 1 { "" } else { "s" }
+        ),
+        "No cap on how many subagents one subagent may start.",
+    );
+    // Backlog 329, his words: the main agent "should be notified of that
+    // every time and it should be responsible for ensuring that those
+    // decisions are in line with the size of the problem and the usage
+    // the given task should take" — and must not end its turn silently
+    // while its subagents still run.
+    out.push_str(
+        "- You answer for every subagent under you, including the ones your subagents start: \
+         each such start reaches you as a note on your next step. Weigh it against the task's \
+         size and the usage it should take; stop one that is out of proportion (TaskStop) and do \
+         that part yourself or tell the user.\n\
+         - Never end your reply silently while subagents you started are still running: say how \
+         many still run and what each is doing, and ask the user whether to wait for them or \
+         stop them.\n",
+    );
     out.push_str(match l.model {
         SubagentModel::Choose => "- Subagents' model: yours to choose on each launch.\n",
         SubagentModel::Same => "- Subagents' model: always this chat's; Nightloom sets it.\n",
