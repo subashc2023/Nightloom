@@ -1,0 +1,23 @@
+<!doctype html>
+<!-- Wave 3 review: does a pinned transcript follow a pushed event? The real Transcript over a fixture log;
+     a user message is pushed into app.events in place (as state.svelte.ts's send does) and the gap from the
+     foot is measured before and after. Snapped with nightshift-code bin/snap (WebKit). -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      body { margin: 0; background: #111; }
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+      #root { position: relative; display: flex; flex-direction: column; width: 960px; height: 600px; }
+      #cap { position: fixed; top: 0; left: 0; right: 0; z-index: 99999; font: 14px/1.5 ui-monospace, monospace; color: #fff; background: #000; padding: 6px 8px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <div id="cap">running…</div>
+    <div id="root"></div>
+    <script>
+      window.addEventListener("error", (e) => (document.getElementById("cap").textContent = "error: " + e.message));
+    </script>
+    <script type="module" src="./follow3r.ts"></script>
+  </body>
+</html>
