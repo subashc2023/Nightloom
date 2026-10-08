@@ -26,5 +26,5 @@ route behind it).
 
 Voice (item 246 part 4C): the image's `voice` stage runs `bin/voice-setup.sh` into
 `/opt/nightloom/voice` (whisper.cpp's server built with `-DGGML_NATIVE=OFF`, `base.en` + `small.en`,
-Piper in a venv, `en_US-lessac-medium`; ~850 MB); the entrypoint links `/data/nightloom/voice` to it
+Piper in a venv, `en_US-lessac-medium`; ~0.9 GB); the entrypoint links `/data/nightloom/voice` to it
 unless a real folder is there. `/api/state` then reports `voice`, and `/api/voice` works.
