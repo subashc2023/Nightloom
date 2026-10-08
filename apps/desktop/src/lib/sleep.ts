@@ -20,6 +20,7 @@
  * Everything below `SleepWatch` is pure so the suite can pin the rule.
  */
 import * as api from "./api";
+import { installWebviewFit } from "./webviewFit";
 
 export interface SleepPrefs {
   /** Hold a power assertion while a turn, dream, capture or aside runs. */
@@ -86,6 +87,9 @@ export function saveSleepPrefs(p: SleepPrefs): void {
  * new flags.
  */
 export async function pushPowerPrefs(p?: SleepPrefs): Promise<void> {
+  // The start-up call (no argument) also puts in the page's half of the
+  // wake refit (backlog 324): the page drawn in a corner after a wake.
+  if (!p) installWebviewFit();
   const prefs = p ?? loadSleepPrefs();
   try {
     await api.setPowerPrefs({

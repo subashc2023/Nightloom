@@ -77,6 +77,8 @@ mod startup_log;
 mod terminal;
 /// Web tabs: a clicked link as a child webview in a pane (backlog 172).
 mod webtab;
+/// The page fills the window again after a wake (nightshift backlog 324).
+mod webview_fit;
 
 struct AppState {
     /// The provider engine (the API key's loop). ~~Held for a whole turn
@@ -7707,6 +7709,9 @@ fn main() {
             // the app.
             app.manage(power::Holder::default());
             power::watch_wake(app.handle().clone());
+            // A debug build's measurement of item 324's refit, only with
+            // NIGHTLOOM_DEBUG_WEBVIEW_FIT=1; a release build never runs it.
+            webview_fit::maybe_self_test(app.handle());
             // The phone page's host and relay (nightshift backlog 091): the
             // listener itself is off until Settings → Remote switches it on.
             remote::Remote::install(app.handle());
@@ -7870,6 +7875,7 @@ fn main() {
             notify_usage_refreshed,
             set_power_prefs,
             set_zoom,
+            webview_fit::refit_webview,
             remote::remote_status,
             remote::remote_start,
             remote::remote_stop,
@@ -7953,6 +7959,14 @@ fn main() {
                 event: tauri::WindowEvent::CloseRequested { api, .. },
                 ..
             } if label == "main" && !quit_guard::close_requested(app) => api.prevent_close(),
+            // The page fills the window again (backlog 324): a resize, a
+            // change of screen scale or the window coming forward sets a
+            // stale webview frame back to the window's; no-op when equal.
+            tauri::RunEvent::WindowEvent { label, event, .. } if label == "main" => {
+                if let Some(t) = webview_fit::trigger(&event) {
+                    webview_fit::refit(app, t);
+                }
+            }
             _ => {}
         });
 }

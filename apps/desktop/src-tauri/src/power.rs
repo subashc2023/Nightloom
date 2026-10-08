@@ -238,6 +238,9 @@ pub fn watch_wake(app: tauri::AppHandle) {
             let now = wall_ms();
             if let Some(woke) = wake_between(prev, now) {
                 let _ = app.emit("system-woke", woke);
+                // A wake can leave the page drawn in a corner of the
+                // window (backlog 324): set its frame back.
+                crate::webview_fit::refit(&app, "system-woke");
             }
             prev = now;
         }
