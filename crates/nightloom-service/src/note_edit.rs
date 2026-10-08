@@ -156,8 +156,12 @@ pub fn bound_history(history: &[PriorExchange]) -> (Vec<PriorExchange>, usize) {
 }
 
 /// The earlier exchanges as the prompt shows them, or "" when none.
-fn history_block(history: &[PriorExchange]) -> String {
-    let (kept, dropped) = bound_history(history);
+/// `total` is how many the thread holds (the window sends only its newest
+/// few), so "N older left out" counts what the window trimmed as well as
+/// what [`bound_history`] trims here (w3 review finding 4, 2026-10-08).
+fn history_block(history: &[PriorExchange], total: usize) -> String {
+    let (kept, _) = bound_history(history);
+    let dropped = total.max(history.len()) - kept.len();
     if kept.is_empty() {
         return String::new();
     }
@@ -204,6 +208,21 @@ pub fn compose_instruction(
     today: &str,
     history: &[PriorExchange],
 ) -> String {
+    compose_instruction_of(name, note, request, strike, today, history, history.len())
+}
+
+/// [`compose_instruction`] for a `history` that is the newest part of a
+/// thread holding `total` exchanges in all (the window's count; a smaller
+/// number than `history.len()` is read as `history.len()`).
+pub fn compose_instruction_of(
+    name: &str,
+    note: &Path,
+    request: &str,
+    strike: bool,
+    today: &str,
+    history: &[PriorExchange],
+    total: usize,
+) -> String {
     let superseded = if strike {
         format!(
             "Where a line is no longer true, do not delete it: strike it through as \
@@ -239,7 +258,7 @@ pub fn compose_instruction(
          The user's request:\n\
          <request>\n{request}\n</request>\n",
         path = note.display(),
-        earlier = history_block(history),
+        earlier = history_block(history, total),
         request = request.trim(),
     )
 }
@@ -476,6 +495,22 @@ mod tests {
         let m = compose_instruction("a.md", Path::new("/n/a.md"), "y", true, "2026-10-08", &big);
         assert!(m.len() < HISTORY_BUDGET + 4_000, "{}", m.len());
         assert!(m.contains(&format!("({dropped} older exchanges left out")));
+    }
+
+    /// W3 review finding 4: the window sends its newest 8 of a 12-exchange
+    /// thread; the prompt says 4 were left out, not 0.
+    #[test]
+    fn the_left_out_count_includes_what_the_window_trimmed() {
+        let h: Vec<PriorExchange> = (0..8)
+            .map(|i| ex(&format!("r{i}"), "ok", "", "edited"))
+            .collect();
+        let m = compose_instruction_of("a.md", Path::new("/n/a.md"), "go", true, "d", &h, 12);
+        assert!(m.contains("(4 older exchanges left out"), "{m}");
+        let m = compose_instruction_of("a.md", Path::new("/n/a.md"), "go", true, "d", &h, 8);
+        assert!(!m.contains("left out"), "{m}");
+        // A count below what was sent is read as what was sent.
+        let m = compose_instruction_of("a.md", Path::new("/n/a.md"), "go", true, "d", &h, 3);
+        assert!(!m.contains("left out"), "{m}");
     }
 
     #[test]

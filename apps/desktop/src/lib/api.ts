@@ -331,6 +331,8 @@ export function editNoteByPrompt(args: {
   seq: number;
   /** The thread's earlier exchanges, oldest first (backlog 326). */
   history?: PriorExchange[];
+  /** How many earlier exchanges the thread holds in all (w3 review 4). */
+  historyTotal?: number;
   binary?: string;
   model?: string;
   safeMode?: boolean;

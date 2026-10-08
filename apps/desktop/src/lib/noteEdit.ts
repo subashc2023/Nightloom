@@ -255,12 +255,25 @@ export function changeDigest(before: string, after: string): string {
   return out.join("\n");
 }
 
+/** Whether a turn counts as an earlier exchange: not a `kept` copy, not
+ *  running, and with a request. */
+function isPrior(t: NoteEditTurn): boolean {
+  return t.status !== "kept" && t.status !== "running" && !!t.request.trim();
+}
+
+/** How many earlier exchanges the thread holds in all — sent beside the
+ *  newest `HISTORY_TURNS` so the prompt's "N older left out" is right
+ *  (w3 review finding 4, 2026-10-08). */
+export function priorExchangeCount(turns: NoteEditTurn[]): number {
+  return turns.filter(isPrior).length;
+}
+
 /** The thread's earlier exchanges for the next request, oldest first: no
  *  `kept` copies, nothing running, at most `HISTORY_TURNS`. */
 export function priorExchanges(turns: NoteEditTurn[]): PriorExchange[] {
   const out: PriorExchange[] = [];
   for (const t of turns) {
-    if (t.status === "kept" || t.status === "running" || !t.request.trim()) continue;
+    if (!isPrior(t)) continue;
     const changed = t.after !== undefined && t.after !== t.before;
     const outcome =
       t.status === "applied"

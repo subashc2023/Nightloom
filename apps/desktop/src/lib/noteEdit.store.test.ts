@@ -205,6 +205,7 @@ describe("runNoteEdit", () => {
     setRequestDraft(key, "we dropped the neutral folder");
     await runNoteEdit("knowledge", "plan.md", BEFORE);
     expect(edit.mock.calls[0][0].history).toEqual([]);
+    expect(edit.mock.calls[0][0].historyTotal).toBe(0);
     const landedAfterFirst = landed.length;
     expect(landedAfterFirst).toBeGreaterThan(0);
 
@@ -216,6 +217,7 @@ describe("runNoteEdit", () => {
     expect(edit).toHaveBeenCalledTimes(2);
     const h = edit.mock.calls[1][0].history ?? [];
     expect(h).toHaveLength(1);
+    expect(edit.mock.calls[1][0].historyTotal).toBe(1);
     expect(h[0]).toMatchObject({
       request: "we dropped the neutral folder",
       reply: "Struck the neutral folder.",
