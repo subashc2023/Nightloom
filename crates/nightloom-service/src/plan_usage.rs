@@ -302,12 +302,36 @@ fn run_usage_command(now_ms: i64) -> Option<Sample> {
 /// the reset times); if the run's figure is newer than what they hold,
 /// the run's figure wins with source `cli-usage`.
 pub fn read_fresh(max_age: std::time::Duration) -> PlanUsage {
-    let first = read();
-    let fresh_enough = first
+    read_fresh_after(max_age, None)
+}
+
+/// Whether the files' reading can stand: young enough, and — when
+/// `after_ms` is given (a reply's end, item 323 review) — sampled at or
+/// after that moment, so it can close the reply's usage line.
+pub fn fresh_enough(
+    first: &PlanUsage,
+    max_age: std::time::Duration,
+    after_ms: Option<i64>,
+) -> bool {
+    let young = first
         .age_seconds
         .map(|a| a <= max_age.as_secs_f64())
         .unwrap_or(false);
-    if fresh_enough {
+    let late_enough = match after_ms {
+        None => true,
+        Some(t) => first.sampled_at_ms.is_some_and(|s| s >= t),
+    };
+    young && late_enough
+}
+
+/// [`read_fresh`], with `after_ms`: the files' reading counts as fresh only
+/// when it was sampled at or after that moment, so the reading taken at a
+/// reply's end runs `/usage` rather than return a sample from before the
+/// reply ended (his answer on blocker 1270, 2026-10-08). The process-wide
+/// once-a-minute gap still holds: within it, the last run's sample is used.
+pub fn read_fresh_after(max_age: std::time::Duration, after_ms: Option<i64>) -> PlanUsage {
+    let first = read();
+    if fresh_enough(&first, max_age, after_ms) {
         return first;
     }
     let now_ms = chrono::Utc::now().timestamp_millis();
@@ -481,6 +505,31 @@ pub fn read() -> PlanUsage {
 
 #[cfg(test)]
 mod tests {
+    /// Item 323 review: a reading sampled before a reply ended is not fresh
+    /// enough for that reply's end, however young; one after it is.
+    #[test]
+    fn a_reading_from_before_the_reply_ended_is_not_fresh_enough_for_its_end() {
+        let max = std::time::Duration::from_secs(60);
+        let u = super::PlanUsage {
+            sampled_at_ms: Some(1_000),
+            age_seconds: Some(5.0),
+            ..Default::default()
+        };
+        assert!(super::fresh_enough(&u, max, None));
+        assert!(super::fresh_enough(&u, max, Some(1_000)));
+        assert!(!super::fresh_enough(&u, max, Some(1_001)));
+        let old = super::PlanUsage {
+            age_seconds: Some(61.0),
+            ..u.clone()
+        };
+        assert!(!super::fresh_enough(&old, max, Some(500)));
+        let unsampled = super::PlanUsage {
+            sampled_at_ms: None,
+            ..u
+        };
+        assert!(!super::fresh_enough(&unsampled, max, Some(1)));
+    }
+
     /// The cross-process stamp (backlog 165, pass 2): a run's sample round
     /// trips through the one line every hook reads, a torn line is none,
     /// and the merged reading carries the stamp's real age — a two-minute

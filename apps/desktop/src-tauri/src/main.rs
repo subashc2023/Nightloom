@@ -5499,11 +5499,18 @@ async fn turn_usage(
 /// the files are over a minute old (nightshift backlog 166, blocker 264):
 /// exact, zero tokens, ~12 s. The front end calls it every five minutes
 /// while the Claude Code engine is connected.
+///
+/// `after_ms` (item 323 review): the reading taken at a reply's end — a
+/// files' sample from before that moment does not count as fresh, so the
+/// reading can close the reply's usage line.
 #[tauri::command]
-async fn plan_usage_refresh() -> Result<nightloom_service::plan_usage::PlanUsage, String> {
-    tokio::task::spawn_blocking(|| {
-        observed(nightloom_service::plan_usage::read_fresh(
+async fn plan_usage_refresh(
+    after_ms: Option<i64>,
+) -> Result<nightloom_service::plan_usage::PlanUsage, String> {
+    tokio::task::spawn_blocking(move || {
+        observed(nightloom_service::plan_usage::read_fresh_after(
             std::time::Duration::from_secs(60),
+            after_ms,
         ))
     })
     .await

@@ -853,8 +853,10 @@ export function planUsage(): Promise<PlanUsage> {
 /** The figure refreshed through the CLI's print-mode `/usage` when the
  *  files are over a minute old (backlog 166, blocker 264): exact, zero
  *  tokens, ~12 s on the backend. */
-export function planUsageRefresh(): Promise<PlanUsage> {
-  return invoke("plan_usage_refresh");
+export function planUsageRefresh(afterMs?: number): Promise<PlanUsage> {
+  // `afterMs` (item 323 review): a reading for a reply's end — a sample
+  // from before that moment is not fresh, so `/usage` runs.
+  return invoke("plan_usage_refresh", afterMs === undefined ? {} : { afterMs });
 }
 
 /** Claude Code's version against the release feed, with the models the

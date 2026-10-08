@@ -1776,6 +1776,7 @@ export async function refreshDreamStatus(): Promise<void> {
  * moved on Nightloom's account of it.
  */
 export async function refreshPlanUsage(live = false): Promise<void> {
+  planReadsInFlight++;
   try {
     // A turn that brought its own rate-limit figure is the account's
     // number at that moment (source `turn`); a live `/usage` within the
@@ -1804,7 +1805,44 @@ export async function refreshPlanUsage(live = false): Promise<void> {
     app.planUsage = fresh;
   } catch {
     // A failed read keeps the last reading, whose age the chip shows.
+  } finally {
+    planReadsInFlight--;
   }
+}
+
+/** Plan readings under way (`refreshPlanUsage`, `readPlanAtReplyEnd`). */
+let planReadsInFlight = 0;
+
+/**
+ * The plan reading at a reply's end (item 323 review; his answer on
+ * blocker 1270, 2026-10-08): taken at once, so the reply's usage line
+ * closes now rather than at the next reading. Unlike `refreshPlanUsage(true)`
+ * it does not stand on the turn's own figure (that is the reply's start),
+ * and it asks the backend for a sample from after `endedAtMs`, which runs
+ * the CLI's `/usage` (zero tokens; the backend's once-a-minute gap still
+ * holds). Skipped while another reading is in flight; that one, or the
+ * next, closes the line. Resolves to whether it ran.
+ */
+export async function readPlanAtReplyEnd(endedAtMs: number = Date.now()): Promise<boolean> {
+  if (planReadsInFlight > 0) return false;
+  planReadsInFlight++;
+  try {
+    const fresh = await api.planUsageRefresh(endedAtMs);
+    const held = app.planUsage;
+    if (
+      held?.sampled_at_ms != null &&
+      fresh.sampled_at_ms != null &&
+      fresh.sampled_at_ms < held.sampled_at_ms
+    ) {
+      return true;
+    }
+    app.planUsage = fresh;
+  } catch {
+    // A failed read keeps the last reading; the next one closes the line.
+  } finally {
+    planReadsInFlight--;
+  }
+  return true;
 }
 
 /**
@@ -6414,7 +6452,9 @@ function endBackground(t: TurnCtx, failed: string | null, res: AgentTurnResult |
     // on its own turn, a hold, or another provider turn).
     void providerDrains.at(-1)?.();
   } else {
-    void refreshPlanUsage(true);
+    // Item 323 review: the reading at the reply's end closes its usage
+    // line now (`readPlanAtReplyEnd`; skipped while one is in flight).
+    void readPlanAtReplyEnd();
     // ~~`app.connection?.contextLimit`~~ — the connection at the turn's
     // end, possibly another engine's (A4 review): the turn's own.
     noteAgentTurnEnd(id, used, t.contextLimit !== undefined ? t.contextLimit : (app.connection?.contextLimit ?? null), null);
@@ -7111,7 +7151,9 @@ async function sendAgent(
     // (his ask, 2026-09-18: "whenever the response finishes hit /usage so
     // the number reflects that"); zero tokens, a few seconds, in the
     // background.
-    void refreshPlanUsage(true);
+    // Item 323 review: the reading at the reply's end closes its usage
+    // line now (`readPlanAtReplyEnd`; skipped while one is in flight).
+    void readPlanAtReplyEnd();
     // The hand-off reads the gauge's pair at each turn's end (backlog 086),
     // and the log, for the start prompt in the wrap-up's own reply (pass 2).
     noteAgentTurnEnd(
