@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tip } from "./tip";
+  import { isImeKey } from "./imeKey";
   /**
    * The small chat on the right of a note (nightshift backlog 151): he says
    * what changed, a model edits the note's file to fit (the Edit tool, on
@@ -76,7 +77,7 @@
   }
 
   function onkeydown(e: KeyboardEvent) {
-    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+    if (e.key === "Enter" && !e.shiftKey && !isImeKey(e)) {
       e.preventDefault();
       send();
     }
