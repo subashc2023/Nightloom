@@ -25,7 +25,12 @@
 # download_voices.py names. Nothing is fetched from anywhere else.
 #
 # NIGHTLOOM_VOICE overrides the voice (default en_US-lessac-medium, blocker
-# 663's "a Piper US-English medium voice").
+# 663's "a Piper US-English medium voice"). NIGHTLOOM_VOICE_MODELS picks the
+# whisper models (default "base.en small.en"; the service uses one for both
+# passes when only one is there). WHISPER_CMAKE_ARGS adds cmake flags to the
+# off-macOS build: the Fly image (deploy/Dockerfile) passes
+# -DGGML_NATIVE=OFF so the program does not use the build machine's own CPU
+# features, which the machine it runs on may lack.
 set -euo pipefail
 
 home="${NIGHTLOOM_HOME:-$HOME/.nightloom}"
@@ -33,6 +38,8 @@ dir="$home/voice"
 voice="${NIGHTLOOM_VOICE:-en_US-lessac-medium}"
 piper_version="1.8.0"
 whisper_tag="v1.9.4"
+read -r -a models <<<"${NIGHTLOOM_VOICE_MODELS:-base.en small.en}"
+read -r -a cmake_extra <<<"${WHISPER_CMAKE_ARGS:-}"
 check_only=0
 [[ "${1:-}" == "--check" ]] && check_only=1
 
@@ -45,7 +52,7 @@ have_whisper_server() {
 status() {
   local ok=1
   if have_whisper_server; then say_ "whisper-server: $(command -v whisper-server || echo "$dir/bin/whisper-server")"; else say_ "whisper-server: missing"; ok=0; fi
-  for m in base.en small.en; do
+  for m in "${models[@]}"; do
     if [[ -s "$dir/models/ggml-$m.bin" ]]; then say_ "model $m: $(du -h "$dir/models/ggml-$m.bin" | cut -f1)"; else say_ "model $m: missing"; ok=0; fi
   done
   if [[ -x "$dir/piper/bin/python3" ]] && "$dir/piper/bin/python3" -c 'import piper' 2>/dev/null; then say_ "piper: $dir/piper"; else say_ "piper: missing"; ok=0; fi
@@ -70,7 +77,10 @@ if ! have_whisper_server; then
     src="$(mktemp -d)"
     curl -fsSL "https://github.com/ggml-org/whisper.cpp/archive/refs/tags/$whisper_tag.tar.gz" \
       | tar xz -C "$src" --strip-components 1
-    cmake -S "$src" -B "$src/build" -DCMAKE_BUILD_TYPE=Release -DWHISPER_BUILD_EXAMPLES=ON >/dev/null
+    # Static libraries, so the one program copied out runs without the
+    # build tree's libwhisper/libggml shared objects beside it.
+    cmake -S "$src" -B "$src/build" -DCMAKE_BUILD_TYPE=Release -DWHISPER_BUILD_EXAMPLES=ON \
+      -DWHISPER_BUILD_TESTS=OFF -DBUILD_SHARED_LIBS=OFF ${cmake_extra[@]+"${cmake_extra[@]}"} >/dev/null
     cmake --build "$src/build" -j --config Release --target whisper-server >/dev/null
     cp "$src/build/bin/whisper-server" "$dir/bin/whisper-server"
     rm -rf "$src"
@@ -81,7 +91,7 @@ if ! have_whisper_server; then
 fi
 
 # 2. The ggml models.
-for m in base.en small.en; do
+for m in "${models[@]}"; do
   f="$dir/models/ggml-$m.bin"
   if [[ ! -s "$f" ]]; then
     say_ "fetching the whisper model $m"

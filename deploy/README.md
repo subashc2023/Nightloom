@@ -1,7 +1,8 @@
 # Nightloom's away server on Fly.io
 
 The phone page and Claude Code turns while the Mac sleeps (nightshift item 268 step 2). One
-machine, `nightloom-away-swaraag`, region `lax`, shared-cpu-1x / 1 GB, stopped when idle and
+machine, `nightloom-away-swaraag`, region `lax`, shared-cpu-2x / 2 GB (was 1x / 1 GB until voice; blocker
+1187 holds that deploy), stopped when idle and
 started by the next request; a 1 GB volume `nightloom_data` at `/data` holds the Nightloom home
 (`/data/nightloom`), the CLI's HOME and session files (`/data/user`) and the work folder
 (`/data/work`).
@@ -21,4 +22,9 @@ bearer; the Mac keeps a copy in `~/.nightloom/remote/away-token`, mode 0600). Th
 
 `serve` binds `0.0.0.0` only because the image sets `NIGHTLOOM_SERVE_PUBLIC=1`
 (`Server::start_public`: plain HTTP behind Fly's TLS, a token of 32+ characters, every `/api`
-route behind it). No voice (whisper/Piper) on this image.
+route behind it).
+
+Voice (item 246 part 4C): the image's `voice` stage runs `bin/voice-setup.sh` into
+`/opt/nightloom/voice` (whisper.cpp's server built with `-DGGML_NATIVE=OFF`, `base.en` + `small.en`,
+Piper in a venv, `en_US-lessac-medium`; ~850 MB); the entrypoint links `/data/nightloom/voice` to it
+unless a real folder is there. `/api/state` then reports `voice`, and `/api/voice` works.
