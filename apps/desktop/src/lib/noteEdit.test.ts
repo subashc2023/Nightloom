@@ -172,6 +172,10 @@ describe("priorExchanges", () => {
     expect(h[1].changes).toBe("");
     expect(h[3].reply).toBe("the CLI failed");
   });
+  it("a failed turn whose summary came back empty carries its error as the reply", () => {
+    const h = priorExchanges([turn({ request: "x", status: "failed", summary: "", error: "the CLI failed" })]);
+    expect(h[0].reply).toBe("the CLI failed");
+  });
   it("keeps only the newest HISTORY_TURNS", () => {
     const many = Array.from({ length: 20 }, (_, i) => turn({ request: `r${i}`, status: "unchanged" }));
     const h = priorExchanges(many);

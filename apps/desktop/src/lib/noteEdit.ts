@@ -274,7 +274,9 @@ export function priorExchanges(turns: NoteEditTurn[]): PriorExchange[] {
               : "no edit";
     out.push({
       request: t.request,
-      reply: (t.summary ?? t.error ?? "").trim(),
+      // `||`: a failed turn lands with summary "" (the service always sends
+      // one), and its error is then the reply.
+      reply: (t.summary || t.error || "").trim(),
       changes: changed ? changeDigest(t.before, t.after as string) : "",
       outcome,
     });
