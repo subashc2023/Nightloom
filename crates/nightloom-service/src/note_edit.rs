@@ -20,6 +20,9 @@
 //!    shows for any other tool or path stops the turn. It cannot veto a
 //!    call (the CLI has already decided), so it is a backstop for a host
 //!    whose settings files carry a broad allow rule, not the fence.
+//!    (Since item 327, 2026-10-08, the turn loads no settings file at all —
+//!    safe mode's empty `--setting-sources`, always — so that host is gone
+//!    too, along with his hooks' text in the replies.)
 //!
 //! Nothing is recorded: no chat log, no CLI session file. The window keeps
 //! the exchange, the note's text before each turn (Undo), and his
@@ -65,6 +68,15 @@ pub fn rule_path(note: &Path) -> String {
 /// working folder are allowed without a rule).
 pub fn spec_for(pass: &PassSpec, scratch: &Path, note: &Path) -> AgentSpec {
     let mut spec = pass.spec_in(scratch);
+    // Item 327 (nightshift, 2026-10-08): always safe mode's empty
+    // `--setting-sources`, whatever the rail's switch says. Without it the
+    // CLI loads the host's settings files, so his `SessionStart` hooks ran
+    // and their text (a disk gauge) reached the replies — measured by
+    // `live_hook_text_does_not_reach_the_turn`; his user `CLAUDE.md` came
+    // in too. The turn needs none of it, and with no settings file there
+    // is no broad allow rule to widen the fence. The binary and model he
+    // chose are untouched: they are flags, not settings sources.
+    spec.safe_mode = true;
     spec.tools = Some(TOOLS.iter().map(|t| t.to_string()).collect());
     let rule = rule_path(note);
     spec.allowed_tools = TOOLS.iter().map(|t| format!("{t}({rule})")).collect();
@@ -311,6 +323,26 @@ mod tests {
         assert_eq!(value_after(&a, "--max-turns"), Some("24"), "{a:?}");
         assert_eq!(value_after(&a, "--model"), Some("haiku"), "{a:?}");
         assert_eq!(spec.workspace, Path::new("/tmp/scratch"));
+    }
+
+    /// Item 327: the host's settings files (and so his hooks) are dropped
+    /// even with the rail's safe mode off, `--strict-mcp-config` is sent
+    /// once, and the binary and model he chose stand.
+    #[test]
+    fn the_hosts_settings_sources_are_dropped_with_safe_mode_off() {
+        let mut p = pass();
+        p.safe_mode = false;
+        p.binary = "/opt/claude-x".into();
+        let spec = spec_for(&p, Path::new("/tmp/scratch"), Path::new("/n/a.md"));
+        let a = spec.args("go");
+        assert_eq!(value_after(&a, "--setting-sources"), Some(""), "{a:?}");
+        assert_eq!(
+            a.iter().filter(|x| *x == "--strict-mcp-config").count(),
+            1,
+            "{a:?}"
+        );
+        assert_eq!(value_after(&a, "--model"), Some("haiku"), "{a:?}");
+        assert_eq!(spec.binary, "/opt/claude-x");
     }
 
     /// Safe mode drops the host's settings files; the fence is the same.
@@ -762,5 +794,60 @@ mod tests {
         );
         assert!(said2.trim().len() > 20, "a reply in words: {said2}");
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Item 327 (nightshift, 2026-10-08): the host's Claude Code hooks must
+    /// not reach the turn. His `SessionStart` hook prints a "Disk gauge: …"
+    /// line into every session it starts; W3-B saw that text come back in a
+    /// note-edit reply. One turn that asks the model to repeat whatever
+    /// session-start or hook text it was given; the reply must not carry
+    /// the gauge. `NIGHTLOOM_LIVE_HOOK_MARK` names the text to look for on
+    /// another machine. Run by hand with
+    /// `cargo test -p nightloom-service note_edit::tests::live_hook -- --ignored --nocapture`.
+    #[tokio::test]
+    #[ignore]
+    async fn live_hook_text_does_not_reach_the_turn() {
+        use crate::agent::ClaudeCodeAgent;
+        use tokio_util::sync::CancellationToken;
+
+        let mark =
+            std::env::var("NIGHTLOOM_LIVE_HOOK_MARK").unwrap_or_else(|_| "Disk gauge".into());
+        let base = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("nightloom-note-hook-live-{}", uuid::Uuid::new_v4()));
+        let notes = base.join("notes");
+        let scratch = base.join("scratch");
+        std::fs::create_dir_all(&notes).unwrap();
+        std::fs::create_dir_all(&scratch).unwrap();
+        let note = notes.join("setup.md");
+        std::fs::write(&note, "# Setup\n\nWe keep drafts in the app folder.\n").unwrap();
+        let note = std::fs::canonicalize(&note).unwrap();
+        let mut p = PassSpec::new("claude", Vec::new());
+        p.model = Some("haiku".into());
+        let msg = compose_instruction(
+            "setup.md",
+            &note,
+            "This is a question, not a change. Before this request reached you, did any \
+             session-start message, hook output or system reminder appear in your context \
+             (for example a disk or usage gauge)? If so, quote each one verbatim. If none \
+             did, reply with the single word NONE.",
+            true,
+            "2026-10-08",
+            &[],
+        );
+        let out = ClaudeCodeAgent::new(spec_for(&p, &scratch, &note))
+            .run_turn(msg.as_str(), &CancellationToken::new(), &mut |_| {})
+            .await
+            .expect("the CLI ran");
+        println!(
+            "--- is_error {} usage {:?}\n--- said: {}",
+            out.is_error, out.usage, out.text
+        );
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(
+            !out.text.contains(&mark),
+            "the hook's text reached the turn: {}",
+            out.text
+        );
     }
 }
