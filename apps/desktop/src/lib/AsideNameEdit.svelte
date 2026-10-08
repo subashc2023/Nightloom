@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isImeKey } from "./imeKey";
   /**
    * The box an aside is renamed in (item 265): the aside tab's title, a
    * sidebar row, a row of the asides list. Enter or leaving the box keeps
@@ -52,6 +53,8 @@
   onclick={(e) => e.stopPropagation()}
   onkeydown={(e) => {
     e.stopPropagation();
+    // Item 322: Enter committing an input method's word is not the name's commit.
+    if (isImeKey(e)) return;
     if (e.key === "Enter") {
       e.preventDefault();
       commit();

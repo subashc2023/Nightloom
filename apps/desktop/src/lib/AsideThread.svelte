@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isImeKey } from "./imeKey";
   import { tip } from "./tip";
   import { copyText } from "./clipRing.svelte";
   import { arrive } from "./sendMotion";
@@ -121,6 +122,9 @@
     editing = { index: i, text: t.question };
   }
   function editKeys(e: KeyboardEvent): void {
+    // Item 322: the input method's keys (Enter committing a composition,
+    // Esc cancelling one) are its own, never a send or a close.
+    if (isImeKey(e)) return;
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();

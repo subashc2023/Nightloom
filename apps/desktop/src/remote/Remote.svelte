@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isImeKey } from "../lib/imeKey";
   /**
    * The phone page (nightshift backlog 091, Shape B; redesigned in item 246
    * toward the Claude app): a top bar (menu, the chat's title, new chat), a
@@ -3000,7 +3001,7 @@
             onkeydown={(e) => {
               // A phone's Return is a new line; a hardware keyboard's
               // Return sends, as on the desktop.
-              if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !matchMedia("(pointer: coarse)").matches) {
+              if (e.key === "Enter" && !e.shiftKey && !isImeKey(e) && !matchMedia("(pointer: coarse)").matches) {
                 e.preventDefault();
                 void sendNow();
               }
