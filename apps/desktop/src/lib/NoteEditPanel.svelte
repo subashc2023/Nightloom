@@ -11,7 +11,7 @@
   import { onMount, tick } from "svelte";
   import { app, noteDraftKey } from "./state.svelte";
   import type { NoteScope } from "./types";
-  import { editTotals, undoable, type NoteEditTurn } from "./noteEdit";
+  import { blockWords, editTotals, undoable, type EditBlock, type NoteEditTurn } from "./noteEdit";
   import {
     initNoteEditEvents,
     noteEditUi,
@@ -29,8 +29,20 @@
     scope,
     name,
     text,
-    disabled = false,
-  }: { scope: NoteScope; name: string; text: string; disabled?: boolean } = $props();
+    blocked = null,
+    onShowBlock,
+  }: {
+    scope: NoteScope;
+    name: string;
+    text: string;
+    /** Why nothing can be sent or undone now (backlog 325); null when
+     *  nothing blocks. */
+    blocked?: EditBlock | null;
+    /** Bring the thing that blocks into view (the proposal card). */
+    onShowBlock?: () => void;
+  } = $props();
+
+  const disabled = $derived(blocked !== null);
 
   const key = $derived(noteDraftKey(scope, name));
   const t = $derived(noteEdits[key]);
@@ -93,7 +105,9 @@
       <p class="hint">
         Say what changed — "we dropped the neutral folder; update everything that assumes it" —
         and the model edits the note to fit; each edit shows as it lands. It can read and edit
-        this note's file and nothing else. Each request can be undone in one step.
+        this note's file and nothing else. Each request can be undone in one step. It remembers
+        this thread, so you can follow up or ask about the note ("summarize what changed") and
+        get an answer without an edit.
       </p>
     {/if}
     {#each turns as turn (turn.id)}
@@ -113,7 +127,7 @@
             >
           {:else if turn.status === "unchanged"}
             <p>{turn.summary || "Nothing needed to change."}</p>
-            <span class="meta">no change</span>
+            <span class="meta">no edit</span>
           {:else if turn.status === "draft"}
             {#if turn.summary}<p>{turn.summary}</p>{/if}
             <span class="meta warn">{turn.error}</span>
@@ -157,11 +171,19 @@
   </div>
 
   <footer>
+    {#if blocked && !running}
+      <p class="blocked" role="status">
+        {blockWords(blocked)}
+        {#if blocked === "proposal" && onShowBlock}
+          <button class="link" onclick={onShowBlock}>Show the proposal</button>
+        {/if}
+      </p>
+    {/if}
     <textarea
       bind:this={box}
       aria-label="What changed"
       rows="3"
-      placeholder="What changed?"
+      placeholder="What changed? Or ask about the note"
       value={draft}
       oninput={(e) => setRequestDraft(key, (e.currentTarget as HTMLTextAreaElement).value)}
       {onkeydown}
@@ -175,7 +197,12 @@
       {#if running}
         <button class="stop" onclick={() => void stopNoteEdit(key)}>Stop</button>
       {:else}
-        <button class="send" disabled={disabled || !draft.trim()} onclick={send}>Send</button>
+        <button
+          class="send"
+          use:tip={blocked ? blockWords(blocked) : draft.trim() ? "Send (Enter)" : "Type a request or a question first"}
+          disabled={disabled || !draft.trim()}
+          onclick={send}>Send</button
+        >
       {/if}
     </div>
     <span class="model">on {model} · reads and edits this file only</span>
@@ -256,6 +283,8 @@
   }
   .said p {
     margin: 0 0 0.2rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
   .meta {
     color: var(--dim);
@@ -348,6 +377,16 @@
     font-size: 0.7rem;
     color: var(--dim);
     cursor: pointer;
+  }
+  .blocked {
+    margin: 0;
+    font-size: 0.72rem;
+    line-height: 1.4;
+    color: var(--dim);
+  }
+  .blocked .link {
+    margin-left: 0.25rem;
+    color: var(--accent);
   }
   .model {
     font-size: 0.64rem;

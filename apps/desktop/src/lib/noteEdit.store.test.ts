@@ -12,6 +12,7 @@ import {
   undoNoteEdit,
   type Landed,
 } from "./noteEdit.svelte";
+import { undoable } from "./noteEdit";
 
 // Edit a note by prompt (nightshift backlog 151, pass 2), the live part:
 // the model edits the file; each landed Edit shows while the turn runs;
@@ -196,5 +197,40 @@ describe("runNoteEdit", () => {
     const turns = noteEdits[key].turns;
     expect(turns.map((t) => t.status)).toEqual(["undone", "kept"]);
     expect(turns[1].before).toBe(typed);
+  });
+
+  // Backlog 326: a real back-and-forth (mocked turns: 2).
+  it("the second request carries the first exchange; a question gets words, no edit, nothing to undo", async () => {
+    edit.mockResolvedValueOnce(result(AFTER));
+    setRequestDraft(key, "we dropped the neutral folder");
+    await runNoteEdit("knowledge", "plan.md", BEFORE);
+    expect(edit.mock.calls[0][0].history).toEqual([]);
+    const landedAfterFirst = landed.length;
+    expect(landedAfterFirst).toBeGreaterThan(0);
+
+    edit.mockResolvedValueOnce(
+      result(AFTER, { edits: 0, summary: "You dropped the neutral folder; I struck its line and added the new one." }),
+    );
+    setRequestDraft(key, "summarize what changed");
+    await runNoteEdit("knowledge", "plan.md", AFTER);
+    expect(edit).toHaveBeenCalledTimes(2);
+    const h = edit.mock.calls[1][0].history ?? [];
+    expect(h).toHaveLength(1);
+    expect(h[0]).toMatchObject({
+      request: "we dropped the neutral folder",
+      reply: "Struck the neutral folder.",
+      outcome: "edited",
+    });
+    expect(h[0].changes).toContain("- - use the neutral folder");
+    expect(h[0].changes).toContain("+ - no neutral folder");
+
+    const turns = noteEdits[key].turns;
+    expect(turns[1]).toMatchObject({ status: "unchanged", edits: 0, request: "summarize what changed" });
+    expect(turns[1].summary).toMatch(/struck its line/);
+    // Undo still applies to the first exchange, not the question.
+    expect(undoable(turns)?.id).toBe(turns[0].id);
+    // Nobody in the window wrote the note, and the question landed nothing.
+    expect(save).not.toHaveBeenCalled();
+    expect(landed).toHaveLength(landedAfterFirst);
   });
 });

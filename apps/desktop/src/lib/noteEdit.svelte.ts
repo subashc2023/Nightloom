@@ -23,6 +23,12 @@
  *   Edit to land over; the request box stays his;
  * - Undo over text that differs from what the model left keeps that text
  *   as a `kept` entry first.
+ *
+ * A back-and-forth (backlog 326): each request carries the thread's earlier
+ * exchanges (`priorExchanges` — his requests, the model's replies, each
+ * edit's changed lines), bounded again by the service. A question gets an
+ * answer in words and no edit: the turn lands as `unchanged`, nothing to
+ * undo.
  */
 import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
@@ -33,6 +39,7 @@ import {
   changedLines,
   emptyThread,
   parseThreads,
+  priorExchanges,
   serializeThreads,
   today,
   undoable,
@@ -174,6 +181,8 @@ export async function runNoteEdit(scope: NoteScope, name: string, before: string
   const t = thread(key);
   const request = t.draft.trim();
   if (!request || runningTurn(key)) return;
+  // The exchanges before this one, taken before it joins the thread.
+  const history = priorExchanges(t.turns);
   const seq = nextSeq++;
   const turn: NoteEditTurn = {
     id: seq,
@@ -204,6 +213,7 @@ export async function runNoteEdit(scope: NoteScope, name: string, before: string
       strike: row.strike,
       today: today(),
       seq,
+      history,
       binary: d.agentBinary.trim() || undefined,
       model: d.agentModel.trim() || undefined,
       safeMode: d.agentSafeMode,

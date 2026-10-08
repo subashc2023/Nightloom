@@ -175,3 +175,109 @@ export function undoable(turns: NoteEditTurn[]): NoteEditTurn | null {
   }
   return null;
 }
+
+// ---- why Send is off (backlog 325) ----------------------------------------
+
+/**
+ * Why the panel cannot send, when it cannot: the note is still being read,
+ * it could not be read, a dream's proposed change is open on it (the card
+ * stands in for the editor, so an edit would land under it), or no note's
+ * text is in the editor. `null` when nothing blocks.
+ */
+export type EditBlock = "loading" | "error" | "proposal" | "no-note";
+
+export function editBlock(s: {
+  loading: boolean;
+  error: boolean;
+  reviewing: boolean;
+  hasBuffer: boolean;
+}): EditBlock | null {
+  if (s.loading) return "loading";
+  if (s.error) return "error";
+  if (s.reviewing) return "proposal";
+  if (!s.hasBuffer) return "no-note";
+  return null;
+}
+
+/** The one line the panel shows for each reason. */
+export function blockWords(b: EditBlock): string {
+  switch (b) {
+    case "proposal":
+      return "A dream's proposed change is open on this note — Accept or Dismiss it first.";
+    case "loading":
+      return "The note is still being read — Send turns on when it opens.";
+    case "error":
+      return "This note could not be read, so it cannot be edited — the message is in the note's pane.";
+    case "no-note":
+      return "No note's text is in the editor, so there is nothing to edit.";
+  }
+}
+
+// ---- the earlier exchanges (backlog 326) ----------------------------------
+
+/**
+ * One earlier exchange as the next request carries it: what he asked, what
+ * the model said, and what its edits changed (a compact line diff). The
+ * service bounds the whole history again, so a long thread cannot blow the
+ * prompt whatever the window sends.
+ */
+export interface PriorExchange {
+  request: string;
+  reply: string;
+  /** `- old` / `+ new` lines, capped; empty when nothing changed. */
+  changes: string;
+  /** edited | undone | no edit | stopped | failed */
+  outcome: string;
+}
+
+/** Exchanges carried, newest kept; the service trims further by size. */
+export const HISTORY_TURNS = 8;
+/** Changed lines carried per exchange, and characters. */
+export const HISTORY_CHANGE_LINES = 40;
+export const HISTORY_CHANGE_CHARS = 3000;
+
+/** The changed lines between two texts, `- `/`+ ` prefixed, capped. */
+export function changeDigest(before: string, after: string): string {
+  const out: string[] = [];
+  let more = 0;
+  let chars = 0;
+  for (const row of lineDiff(before, after)) {
+    if (row.kind === "ctx") continue;
+    const line = `${row.kind === "del" ? "-" : "+"} ${row.text}`;
+    if (out.length >= HISTORY_CHANGE_LINES || chars + line.length > HISTORY_CHANGE_CHARS) {
+      more++;
+      continue;
+    }
+    out.push(line);
+    chars += line.length + 1;
+  }
+  if (more > 0) out.push(`… ${more} more changed line${more === 1 ? "" : "s"}`);
+  return out.join("\n");
+}
+
+/** The thread's earlier exchanges for the next request, oldest first: no
+ *  `kept` copies, nothing running, at most `HISTORY_TURNS`. */
+export function priorExchanges(turns: NoteEditTurn[]): PriorExchange[] {
+  const out: PriorExchange[] = [];
+  for (const t of turns) {
+    if (t.status === "kept" || t.status === "running" || !t.request.trim()) continue;
+    const changed = t.after !== undefined && t.after !== t.before;
+    const outcome =
+      t.status === "applied"
+        ? "edited"
+        : t.status === "undone"
+          ? "undone"
+          : t.status === "failed"
+            ? "failed"
+            : t.status === "stopped"
+              ? "stopped"
+              : "no edit";
+    out.push({
+      request: t.request,
+      reply: (t.summary ?? t.error ?? "").trim(),
+      changes: changed ? changeDigest(t.before, t.after as string) : "",
+      outcome,
+    });
+  }
+  return out.slice(-HISTORY_TURNS);
+}

@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   MAX_TURNS,
+  HISTORY_CHANGE_LINES,
+  HISTORY_TURNS,
+  blockWords,
+  changeDigest,
   changedLines,
+  editBlock,
   editTotals,
   parseThreads,
+  priorExchanges,
   serializeThreads,
   today,
   undoable,
@@ -114,5 +120,69 @@ describe("undoable", () => {
     expect(undoable([turn(1, "stopped", { after: "x" })])?.id).toBe(1);
     expect(undoable([turn(1, "stopped", { after: "before 1" })])).toBeNull();
     expect(undoable([])).toBeNull();
+  });
+});
+
+// Backlog 325: Send off with text typed says why, each reason in its own words.
+describe("editBlock", () => {
+  const none = { loading: false, error: false, reviewing: false, hasBuffer: true };
+  it("is null when nothing blocks", () => {
+    expect(editBlock(none)).toBeNull();
+  });
+  it("names each reason, the read first", () => {
+    expect(editBlock({ ...none, reviewing: true })).toBe("proposal");
+    expect(editBlock({ ...none, loading: true, hasBuffer: false })).toBe("loading");
+    expect(editBlock({ ...none, error: true, hasBuffer: false })).toBe("error");
+    expect(editBlock({ ...none, hasBuffer: false })).toBe("no-note");
+    // A proposal still loading reads as loading; one that failed to read, as the error.
+    expect(editBlock({ ...none, loading: true, reviewing: true })).toBe("loading");
+    expect(editBlock({ ...none, error: true, reviewing: true })).toBe("error");
+  });
+  it("gives every reason its own one line", () => {
+    const all = (["proposal", "loading", "error", "no-note"] as const).map(blockWords);
+    expect(new Set(all).size).toBe(4);
+    for (const w of all) expect(w).not.toContain("\n");
+    expect(blockWords("proposal")).toMatch(/proposed change is open on this note.*Accept or Dismiss/);
+  });
+});
+
+// Backlog 326: the earlier exchanges each request carries.
+describe("priorExchanges", () => {
+  const turn = (over: Partial<NoteEditTurn>): NoteEditTurn => ({
+    id: Math.random(),
+    request: "r",
+    strike: true,
+    at: "2026-10-08T00:00:00Z",
+    status: "applied",
+    before: "a\nb\n",
+    ...over,
+  });
+  it("carries requests, replies, outcomes and changed lines, oldest first; skips kept and running", () => {
+    const h = priorExchanges([
+      turn({ request: "one", after: "a\nB\n", summary: "Changed b." }),
+      turn({ request: "", status: "kept", summary: "kept copy" }),
+      turn({ request: "two?", status: "unchanged", summary: "An answer." }),
+      turn({ request: "three", status: "undone", after: "x\n", summary: "Rewrote." }),
+      turn({ request: "four", status: "failed", error: "the CLI failed" }),
+      turn({ request: "five", status: "running" }),
+    ]);
+    expect(h.map((x) => x.request)).toEqual(["one", "two?", "three", "four"]);
+    expect(h.map((x) => x.outcome)).toEqual(["edited", "no edit", "undone", "failed"]);
+    expect(h[0]).toEqual({ request: "one", reply: "Changed b.", changes: "- b\n+ B", outcome: "edited" });
+    expect(h[1].changes).toBe("");
+    expect(h[3].reply).toBe("the CLI failed");
+  });
+  it("keeps only the newest HISTORY_TURNS", () => {
+    const many = Array.from({ length: 20 }, (_, i) => turn({ request: `r${i}`, status: "unchanged" }));
+    const h = priorExchanges(many);
+    expect(h).toHaveLength(HISTORY_TURNS);
+    expect(h[h.length - 1].request).toBe("r19");
+  });
+  it("caps the changed lines and says how many more", () => {
+    const before = Array.from({ length: 100 }, (_, i) => `line ${i}`).join("\n");
+    const after = Array.from({ length: 100 }, (_, i) => `LINE ${i}`).join("\n");
+    const d = changeDigest(before, after).split("\n");
+    expect(d).toHaveLength(HISTORY_CHANGE_LINES + 1);
+    expect(d[d.length - 1]).toBe(`… ${200 - HISTORY_CHANGE_LINES} more changed lines`);
   });
 });

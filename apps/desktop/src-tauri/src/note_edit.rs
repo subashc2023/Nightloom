@@ -66,8 +66,10 @@ pub struct NoteEditResult {
     notices: Vec<String>,
 }
 
-/// Edit one note to fit `request`, on the Claude Code engine with the
-/// rail's binary, model and safe mode. `text` is the note as the editor
+/// Edit one note to fit `request` — or answer it in words when it is a
+/// question (backlog 326) — on the Claude Code engine with the
+/// rail's binary, model and safe mode. `history` is the thread's earlier
+/// exchanges, oldest first. `text` is the note as the editor
 /// holds it — the buffer, draft included — because that is what he is
 /// looking at when he asks: when it differs from the file, it is written
 /// to the file first, so the model edits what he sees.
@@ -84,6 +86,7 @@ pub async fn edit_note_by_prompt(
     strike: bool,
     today: String,
     seq: u64,
+    history: Option<Vec<note_edit::PriorExchange>>,
     binary: Option<String>,
     model: Option<String>,
     safe_mode: Option<bool>,
@@ -128,7 +131,15 @@ pub async fn edit_note_by_prompt(
     std::fs::create_dir_all(&scratch)
         .map_err(|e| format!("could not make the note editor's scratch folder: {e}"))?;
     let spec = note_edit::spec_for(&pass, &scratch, &file);
-    let instruction = note_edit::compose_instruction(&name, &file, &request, strike, &today);
+    // The thread's earlier exchanges (backlog 326); the service bounds them.
+    let instruction = note_edit::compose_instruction(
+        &name,
+        &file,
+        &request,
+        strike,
+        &today,
+        history.as_deref().unwrap_or(&[]),
+    );
     // Awake while the turn runs (nightshift backlog 101).
     let _awake = power.acquire();
     let mut said = String::new();
