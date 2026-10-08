@@ -3571,7 +3571,7 @@ fn turn_timing_window(key: String, sent: u64, invoked: Option<u64>, painted: Opt
 /// item 256, `agent::warm`): the CLI, his hooks and the MCP servers are
 /// then done by Send, and the message's first text comes ~1 s sooner
 /// (measured 2026-10-03). The window calls this as the composer gets a
-/// draft. Nothing waits: a chat whose turn or aside holds its agent, or
+/// draft, and as the open chat's turn ends (blocker 1240). Nothing waits: a chat whose turn or aside holds its agent, or
 /// whose log is busy, is skipped (`false`), and the turn spawns as before.
 /// The ask folder is pointed as `send_agent` points it, so the chat's
 /// first message after opening it is the same command too.

@@ -156,7 +156,14 @@
   import { asideDraftKey } from "./asides";
   import { composerShows } from "./asideControls";
   import { scheduleAsideSave } from "./asides.svelte";
-  import { prewarmer, wantsWarm } from "./prewarm";
+  import {
+    prewarmAfterTurn,
+    prewarmer,
+    turnEnded,
+    wantsWarm,
+    wantsWarmAtTurnEnd,
+    type TurnView,
+  } from "./prewarm";
 
   /**
    * `floating` drops the docked chrome (top border, panel fill) for the
@@ -263,6 +270,19 @@
   // finds the CLI, his hooks and the MCP servers already done.
   $effect(() => {
     if (wantsWarm({ engine: app.connection?.engine, busy: app.busy, aside: !!aside, text })) prewarmer.poke();
+  });
+  // Blocker 1240: and the moment the open chat's turn ends, so a message
+  // pasted or dictated and sent at once still finds it started.
+  let lastTurn: TurnView = { busy: false, chat: null };
+  $effect(() => {
+    const now: TurnView = { busy: app.busy, chat: app.activeSessionId };
+    const prev = lastTurn;
+    lastTurn = now;
+    if (!turnEnded(prev, now)) return;
+    const draft = untrack(() => text);
+    if (wantsWarmAtTurnEnd({ engine: app.connection?.engine, aside: !!aside, text: draft })) {
+      void prewarmAfterTurn();
+    }
   });
   /**
    * The draft's live token estimate (nightshift backlog 155): characters ÷ 4,

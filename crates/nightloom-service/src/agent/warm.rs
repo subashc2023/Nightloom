@@ -14,8 +14,10 @@
 //! first stdin line arrives, waits idle for it (two minutes tested), and
 //! reads the resumed session file only when the line comes — a turn
 //! another process added meanwhile is seen. So the window asks for a
-//! process as soon as the open chat's composer holds a draft
-//! ([`WarmSlot::fill`]), and the turn takes it ([`WarmSlot::take`]) when
+//! process ([`WarmSlot::fill`]) as soon as the open chat's composer holds
+//! a draft, and again the moment the open chat's turn ends (blocker 1240,
+//! 2026-10-08: a message pasted or dictated and sent at once otherwise
+//! found a process still starting), and the turn takes it ([`WarmSlot::take`]) when
 //! its command line, environment and folder are exactly the ones the turn
 //! would have spawned — anything else (another model, a granted folder, a
 //! new session id after a turn) and the warm one is killed and a fresh one
@@ -164,6 +166,15 @@ impl WarmSlot {
             .then_some((w.child, age))
     }
 
+    /// Whether the waiting process has exited (tests).
+    #[cfg(test)]
+    fn exited(&self) -> bool {
+        self.lock()
+            .warm
+            .as_mut()
+            .is_some_and(|w| !matches!(w.child.try_wait(), Ok(None)))
+    }
+
     /// Whether a process is waiting (for tests and the report).
     pub fn waiting(&self) -> bool {
         self.lock().warm.is_some()
@@ -228,7 +239,15 @@ mod tests {
         let slot = WarmSlot::default();
         let key = Key::of(&spec, &spec.stdin_args());
         slot.fill(key.clone()).unwrap();
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        // Until it has exited — a fixed 300 ms was too short with the
+        // machine under load (load average ~245, 2026-10-08).
+        for _ in 0..200 {
+            if slot.exited() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(slot.exited());
         assert!(slot.take(&key).is_none());
     }
 
@@ -263,6 +282,30 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns"
             // Taken: nothing waits after the turn.
             assert!(!agent.warm.waiting());
         }
+    }
+
+    /// Blocker 1240: the window asks for the next process the moment a
+    /// turn ends, after `follow_on` has adopted the turn's session id. That
+    /// process is the next turn's exact command, so the next turn takes it.
+    #[tokio::test]
+    async fn a_process_started_at_turn_end_is_taken_by_the_next_turn() {
+        use crate::agent::ClaudeCodeAgent;
+        use crate::turn_timing::{self, TurnTiming};
+        let dir = scratch();
+        let mut agent = ClaudeCodeAgent::new(spec_with(&dir, READS_THEN_ANSWERS));
+        let cancel = tokio_util::sync::CancellationToken::new();
+        // The first turn: nothing waiting, so a cold spawn.
+        let out = agent.run_turn("hello", &cancel, &mut |_| {}).await.unwrap();
+        agent.follow_on(&out);
+        assert_eq!(agent.spec().resume.as_deref(), Some("s-1"));
+        // Turn end: one started for the resumed session.
+        assert!(agent.prewarm().unwrap());
+        let timing = TurnTiming::begin(turn_timing::SERVE, None, None);
+        agent.set_timing(Some(timing.clone()));
+        let out = agent.run_turn("again", &cancel, &mut |_| {}).await.unwrap();
+        agent.set_timing(None);
+        assert_eq!(out.text, "hi");
+        assert_eq!(timing.stages().warm, Some(true));
     }
 
     #[test]
@@ -332,6 +375,81 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns"
                 median(text).unwrap()
             );
         }
+    }
+
+    /// Blocker 1240 with the real CLI (`cargo test -p nightloom-service
+    /// --lib measure_turn_end -- --ignored --nocapture`): Send → `init`
+    /// for a message pasted or dictated and sent at once, with the process
+    /// asked for only by the draft (`before`: started `NIGHTLOOM_1240_PASTE`
+    /// ms, default 300, before Send) against one asked for at the previous
+    /// turn's end (`after`: started then, Send `NIGHTLOOM_1240_READ` ms
+    /// later, default 5000). The two alternate, `NIGHTLOOM_1240_N` rounds
+    /// each (default 10), so both see the same machine load. Haiku, no
+    /// session kept; bills one one-word reply per turn.
+    #[tokio::test]
+    #[ignore]
+    async fn measure_turn_end_prewarm_with_the_real_cli() {
+        use crate::agent::ClaudeCodeAgent;
+        use crate::turn_timing::{self, TurnTiming, median};
+        let env = |k: &str, d: u64| {
+            std::env::var(k)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d)
+        };
+        let n = env("NIGHTLOOM_1240_N", 10) as usize;
+        let paste = env("NIGHTLOOM_1240_PASTE", 300);
+        let read = env("NIGHTLOOM_1240_READ", 5000);
+        let dir = scratch();
+        let mut spec = AgentSpec::new(&dir);
+        spec.binary = "claude".into();
+        spec.model = Some("haiku".into());
+        spec.no_session_persistence = true;
+        let mut agent = ClaudeCodeAgent::new(spec);
+        let prompt = "Reply with the single word: ok";
+        let cancel = tokio_util::sync::CancellationToken::new();
+        // A first turn, so every measured one follows a turn end.
+        agent.run_turn(prompt, &cancel, &mut |_| {}).await.unwrap();
+        let (mut before, mut after) = (Vec::new(), Vec::new());
+        for round in 0..n {
+            for at_end in [false, true] {
+                if at_end {
+                    // The turn has just ended: asked for now, then he reads.
+                    agent.prewarm().unwrap();
+                    tokio::time::sleep(Duration::from_millis(read)).await;
+                } else {
+                    // He reads with nothing waiting, then pastes and sends.
+                    tokio::time::sleep(Duration::from_millis(read)).await;
+                    agent.prewarm().unwrap();
+                    tokio::time::sleep(Duration::from_millis(paste)).await;
+                }
+                let timing = TurnTiming::begin(turn_timing::SERVE, None, None);
+                agent.set_timing(Some(timing.clone()));
+                agent.run_turn(prompt, &cancel, &mut |_| {}).await.unwrap();
+                agent.set_timing(None);
+                let s = timing.stages();
+                let init = s.init.unwrap() as i64 - s.entered.unwrap() as i64;
+                let text = s.first_text.unwrap() as i64 - s.entered.unwrap() as i64;
+                println!(
+                    "1240 row {round} {}: warm {:?}, age {:?}, init {init} ms, first text {text} ms",
+                    if at_end { "after" } else { "before" },
+                    s.warm,
+                    s.warm_age
+                );
+                if at_end {
+                    after.push(init);
+                } else {
+                    before.push(init);
+                }
+            }
+        }
+        println!("1240 before (draft only, {paste} ms old): send→init {before:?}");
+        println!("1240 after (asked at turn end, {read} ms old): send→init {after:?}");
+        println!(
+            "1240 medians: before {} ms, after {} ms",
+            median(before).unwrap(),
+            median(after).unwrap()
+        );
     }
 
     /// Item 301 with the real CLI (`cargo test -p nightloom-service --lib
