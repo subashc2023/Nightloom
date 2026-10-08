@@ -924,6 +924,18 @@ export function steerState(session: string): Promise<SteerState> {
   return invoke("steer_state", { session });
 }
 
+/** A message he sent while the turn runs, into that turn (backlog 328):
+ *  `turn` is the window's turn key. `false` when no turn takes it now —
+ *  it stays queued for the next turn. */
+export function injectMessage(turn: string, id: string, text: string): Promise<boolean> {
+  return invoke("inject_message", { turn, id, text });
+}
+
+/** Take back a message sent into the running turn (backlog 328). */
+export function takeBackInjected(turn: string, id: string): Promise<"cancelled" | "delivered"> {
+  return invoke("take_back_injected", { turn, id });
+}
+
 /** Take back a note not yet delivered; `false` when it had already gone. */
 export function unsteerSubagent(session: string, agentId: string, id: string): Promise<boolean> {
   return invoke("unsteer_subagent", { session, agentId, id });

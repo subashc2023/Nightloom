@@ -22,6 +22,10 @@ import {
   UNFILED,
   draftKey,
   enqueueMessage,
+  clearInjected,
+  markDelivered,
+  markInjected,
+  settleInjected,
   moveDraft,
   newDraftKey,
   nextAttachmentId,
@@ -5837,6 +5841,29 @@ export function stopTarget(t: { chat: string | null; key: string } | null): stri
 
 /** The turn on screen (or parked), if one runs. */
 let fg: TurnCtx | null = null;
+
+/**
+ * A message he queued while the chat on screen runs a turn, sent into that
+ * turn (nightshift backlog 328): the CLI takes it at the turn's next step,
+ * as Claude Code does, instead of holding it for the turn's end. Text only
+ * — a row with files waits for the next turn as before (backlog 089). The
+ * row stays in the queue, marked, until the turn takes it; one the turn
+ * never takes is sent as the next message (`settleInjected`).
+ */
+export async function injectIntoTurn(key: string, q: { id: number; text: string; attachments: unknown[] }): Promise<void> {
+  const turn = fg;
+  if (!turn || !app.busy || app.parked || q.attachments.length > 0 || !q.text.trim()) return;
+  const id = crypto.randomUUID();
+  // Marked first: a delivery event can come back before the call does.
+  markInjected(key, q.id, { id, turn: turn.key });
+  let sent = false;
+  try {
+    sent = await api.injectMessage(turn.key, id, q.text);
+  } catch {
+    sent = false;
+  }
+  if (!sent && readDraft(key).queue.find((r) => r.id === q.id)?.inject?.id === id) clearInjected(key, q.id);
+}
 /** The turns in `app.background`, by chat. */
 const bgTurns = new Map<string, TurnCtx>();
 
@@ -7061,6 +7088,8 @@ async function sendAgent(
   budgetTyped = turnTyped;
   startBudgetPoll(app.activeSessionId, turnTyped);
   let failed: string | null = null;
+  // The uuids of what he sent mid-turn that it took (backlog 328).
+  let delivered: string[] = [];
   try {
     turnClock.invoked(turn.key);
     const res = await api.sendAgent(
@@ -7072,6 +7101,7 @@ async function sendAgent(
       spoken || undefined,
       files.length > 0 ? files : undefined,
     );
+    delivered = res.delivered ?? [];
     // Off screen at its end (A2): the chat on screen is another's, and
     // nothing below is about it.
     if (turn.detached) {
@@ -7111,6 +7141,9 @@ async function sendAgent(
     }
     app.error = failed;
   } finally {
+    // What he sent into it (328): taken → in the chat; not → queued again,
+    // before the queue's drain reads it.
+    settleInjected(turn.key, delivered);
     // The window's timing marks, if no paint sent them (item 256).
     turnClock.ended(turn.key);
     if (!turn.detached) await endForeground();
@@ -7988,6 +8021,19 @@ export function applyTurnEventTo(host: TurnHost, ev: TurnEvent & { chat?: string
       // chat on screen's composer only.
       if (onScreen) app.suggestion = ev.text;
       break;
+    case "message_delivered": {
+      // His mid-turn message reached the turn (backlog 328): its queue row
+      // says where, and the reply shows it in place until the turn's end
+      // re-reads the log, where it is his own message.
+      markDelivered(ev.id, ev.after);
+      closeThinking(segments);
+      const first = ev.text.split("\n")[0] ?? "";
+      segments.push({
+        kind: "notice",
+        text: `your message reached the turn ${ev.after}: “${first.length > 120 ? first.slice(0, 119) + "…" : first}”`,
+      });
+      break;
+    }
     default:
       // Unknown turn-event types are ignored by contract.
       break;

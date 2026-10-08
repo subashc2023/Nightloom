@@ -226,6 +226,9 @@ export interface AgentTurnResult {
   /** The rail's folder list, refreshed, when the approval card granted a
    *  folder this turn; null otherwise. */
   folders: FolderInfo[] | null;
+  /** The uuids of the messages sent mid-turn that the turn took (backlog
+   *  328); the others stay in the queue. Absent from older backends. */
+  delivered?: string[];
 }
 
 /** A reviewer as the rail shows it: the name the model asks for, and the
@@ -1211,6 +1214,9 @@ export type TurnEvent =
   /** The CLI's predicted next prompt, after the result (nightshift backlog
    *  083); the composer's ghost line. */
   | { type: "prompt_suggestion"; text: string }
+  /** A message he sent while the turn ran reached it (nightshift backlog
+   *  328): `id` is the queued row's uuid, `after` where it landed, in words. */
+  | { type: "message_delivered"; id: string; text: string; after: string }
   /** An event of a subagent's own turn on the Claude Code engine, carrying
    *  the id of the `Agent` call that spawned it (nightshift backlog 075);
    *  `event` is the child's text, thinking, call or result as the main

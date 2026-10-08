@@ -122,6 +122,11 @@ export interface QueuedMessage {
   id: number;
   text: string;
   attachments: Attachment[];
+  /** Sent into the running turn (nightshift backlog 328): its uuid, the
+   *  turn's key, and — once the turn took it — where (`after`). A row with
+   *  no `after` when the turn ends goes back to being an ordinary held
+   *  message, sent as the next turn; nothing is lost. */
+  inject?: { id: string; turn: string; after?: string };
 }
 
 /**
@@ -521,6 +526,60 @@ export function takeBackQueued(key: string, id?: number): QueuedMessage | null {
   d.attachments.push(...q!.attachments);
   schedule();
   return q!;
+}
+
+/** The row went into the running turn (backlog 328). */
+export function markInjected(key: string, qid: number, inject: { id: string; turn: string }): void {
+  const q = drafts[key]?.queue.find((r) => r.id === qid);
+  if (!q) return;
+  q.inject = { ...inject };
+  schedule();
+}
+
+/** The turn took the row whose uuid is `id` (backlog 328), `after` the
+ *  step named; the row stays, marked, until the turn ends. */
+export function markDelivered(id: string, after: string): boolean {
+  for (const d of Object.values(drafts)) {
+    const q = d.queue.find((r) => r.inject?.id === id);
+    if (q && q.inject) {
+      q.inject.after = after;
+      schedule();
+      return true;
+    }
+  }
+  return false;
+}
+
+/** No longer sent (taken back, or refused): an ordinary held row again. */
+export function clearInjected(key: string, qid: number): void {
+  const q = drafts[key]?.queue.find((r) => r.id === qid);
+  if (!q?.inject) return;
+  delete q.inject;
+  schedule();
+}
+
+/**
+ * The turn `turn` ended (backlog 328): the rows it took (`delivered`, or
+ * marked by their event) leave the queue — they are in the chat now — and
+ * every other row sent into it is an ordinary held message again, which
+ * the queue sends as the next turn. Across every key: the chat on screen
+ * may be another by now.
+ */
+export function settleInjected(turn: string, delivered: string[]): void {
+  let changed = false;
+  for (const [key, d] of Object.entries(drafts)) {
+    const before = d.queue.length;
+    d.queue = d.queue.filter((q) => !(q.inject?.turn === turn && (q.inject.after !== undefined || delivered.includes(q.inject.id))));
+    for (const q of d.queue) {
+      if (q.inject?.turn === turn) {
+        delete q.inject;
+        changed = true;
+      }
+    }
+    if (d.queue.length !== before) changed = true;
+    if (!d.text && d.attachments.length === 0 && d.queue.length === 0) delete drafts[key];
+  }
+  if (changed) schedule();
 }
 
 /** Drop a held message. His click, not the app's. */

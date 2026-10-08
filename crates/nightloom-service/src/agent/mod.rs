@@ -33,6 +33,7 @@ pub mod brief;
 pub mod cli_session;
 pub mod connectors;
 pub mod fork;
+pub mod inbox;
 mod protocol;
 mod record;
 pub mod steer;
@@ -984,6 +985,13 @@ impl AgentSpec {
             Shape::Stdin => {
                 a.push("--input-format".into());
                 a.push("stream-json".into());
+                // The CLI's receipts for each stdin message (nightshift
+                // backlog 328, measured on 2.1.294): `command_lifecycle`
+                // lines `queued` / `started` / `completed` by the line's
+                // uuid, which is how the window learns a message he sent
+                // mid-turn reached the turn ([`inbox`]). The replayed
+                // `user` line itself translates to nothing.
+                a.push("--replay-user-messages".into());
             }
             Shape::Resume => {}
         }
@@ -1355,6 +1363,8 @@ pub struct ClaudeCodeAgent {
     /// The next message's process, started while he types (item 256,
     /// [`warm`]); taken by [`Self::run_turn`] when it is the same command.
     warm: warm::WarmSlot,
+    /// Messages he sends into the running turn (backlog 328, [`inbox`]).
+    inbox: inbox::Inbox,
 }
 
 impl ClaudeCodeAgent {
@@ -1366,7 +1376,15 @@ impl ClaudeCodeAgent {
             chair: std::sync::Mutex::new(None),
             timing: None,
             warm: warm::WarmSlot::default(),
+            inbox: inbox::Inbox::default(),
         }
+    }
+
+    /// The chat's inbox (backlog 328): what he sends while a turn runs
+    /// goes into that turn through it. Shared — the window holds a clone
+    /// for the turn's length.
+    pub fn inbox(&self) -> inbox::Inbox {
+        self.inbox.clone()
     }
 
     /// Start the next message's `claude` process now, so the start-up
@@ -1772,19 +1790,40 @@ impl ClaudeCodeAgent {
         // the handle is the EOF that tells the CLI the turn's input is
         // complete; without it the process stays open waiting for a second
         // message.
+        //
+        // The chat's own turn keeps its stdin open while it runs (backlog
+        // 328): the writer takes lines from a feed, the opening message
+        // first, then whatever he sends mid-turn through [`inbox`], and
+        // the feed's end is the EOF — at a `result` with nothing of his
+        // waiting, at a Stop, or when the process ends.
+        let inbox = (chat && piped).then(|| self.inbox.clone());
         if piped
             && let Some(input) = &input
             && let Some(mut stdin) = child.stdin.take()
         {
-            let line = protocol::user_line(input);
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+            let _ = tx.send(protocol::user_line(input));
+            match &inbox {
+                Some(inbox) => inbox.open(tx),
+                // Any other process takes its one message and the EOF.
+                None => drop(tx),
+            }
             tokio::spawn(async move {
                 // A child that exits before reading — a bad flag, a failed
                 // login — closes the pipe first, and the write error says no
                 // more than the exit status and stderr tail already will.
-                let _ = stdin.write_all(line.as_bytes()).await;
+                while let Some(line) = rx.recv().await {
+                    if stdin.write_all(line.as_bytes()).await.is_err() {
+                        break;
+                    }
+                    let _ = stdin.flush().await;
+                }
                 let _ = stdin.shutdown().await;
             });
         }
+        // The last main-thread call, for where a mid-turn message landed.
+        let mut last_call: Option<String> = None;
+        let mut after_result = false;
 
         let stdout = child.stdout.take().expect("stdout piped");
         let mut stderr = child.stderr.take().expect("stderr piped");
@@ -1821,7 +1860,32 @@ impl ClaudeCodeAgent {
                             t.mark(crate::turn_timing::Mark::FirstEvent);
                         }
                     }
+                    if let Some(inbox) = &inbox {
+                        match inbox.on_line(&line) {
+                            Some(inbox::Effect::Taken(t)) => {
+                                let after = if after_result {
+                                    "after the reply".to_string()
+                                } else {
+                                    match &last_call {
+                                        Some(name) => format!("after {name}"),
+                                        None => "at the start".to_string(),
+                                    }
+                                };
+                                after_result = false;
+                                on_event(TurnEvent::MessageDelivered {
+                                    id: t.id,
+                                    text: t.text,
+                                    after,
+                                });
+                            }
+                            Some(inbox::Effect::Result { .. }) => after_result = true,
+                            None => {}
+                        }
+                    }
                     for event in translator.push(&line) {
+                        if let TurnEvent::ToolCall { name, .. } = &event {
+                            last_call = Some(name.clone());
+                        }
                         if !text_seen && matches!(event, TurnEvent::TextDelta { .. }) {
                             text_seen = true;
                             if let Some(t) = &timing {
@@ -1840,6 +1904,12 @@ impl ClaudeCodeAgent {
         // How the stop went, for the one notice the turn shows: the CLI
         // closed the turn on the interrupt, or had to be killed.
         let mut stop = "interrupted";
+        // A Stop takes back what he sent that the turn has not taken yet
+        // (measured run f: cancel, EOF, SIGINT — the CLI cancels it and
+        // exits). It is still in the window's queue.
+        if interrupted && let Some(inbox) = &inbox {
+            inbox.stop();
+        }
         if interrupted {
             // Interrupt first (2026-09-16, nightshift backlog 074), kill
             // only if that does not end the process. On the interrupt the
@@ -1885,6 +1955,10 @@ impl ClaudeCodeAgent {
             }
         }
 
+        // Whatever is still waiting went nowhere: the window keeps it.
+        if let Some(inbox) = &inbox {
+            inbox.close();
+        }
         let status = child.wait().await?;
         // A killed CLI can leave a grandchild holding its stderr open —
         // the pipe's end never comes, and the tail is not worth the wait.
@@ -2527,7 +2601,9 @@ mod tests {
         let argv = s.args("hi");
         let stdin = s.stdin_args();
         // `-p hi` versus `-p --input-format stream-json`, then identical.
-        assert_eq!(argv[2..], stdin[3..]);
+        // …plus the receipts flag the stdin shape alone carries (328).
+        assert_eq!(stdin[3], "--replay-user-messages");
+        assert_eq!(argv[2..], stdin[4..]);
     }
 
     /// The stdin line is the Agent SDK's user message: a `user` line whose

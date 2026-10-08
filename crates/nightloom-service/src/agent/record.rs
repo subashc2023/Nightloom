@@ -268,6 +268,20 @@ impl<'a> Recorder<'a> {
                 // was in; the last result of the round is the bound kept.
                 self.sent_at = Utc::now();
             }
+            // His message, taken mid-turn (backlog 328): the round so far
+            // closes, his words follow it, and the next round answers
+            // them — the order the model saw.
+            TurnEvent::MessageDelivered { text, .. } => {
+                let reason = if self.open.is_empty() {
+                    Some("end_turn")
+                } else {
+                    Some("tool_use")
+                };
+                self.flush_assistant(reason);
+                self.session.record_user(text.clone());
+                self.wrote = true;
+                self.sent_at = Utc::now();
+            }
             TurnEvent::Usage { usage } => self.usage.add(*usage),
             TurnEvent::Subagent {
                 parent_tool_use_id,
@@ -567,6 +581,67 @@ mod tests {
 
         // And it is a valid request: every call has its result.
         assert_eq!(s.messages().len(), 4);
+    }
+
+    /// The log's conversation events by kind, for order checks (328).
+    fn kinds(s: &Session) -> Vec<&'static str> {
+        s.events()
+            .iter()
+            .filter_map(|e| match e {
+                SessionEvent::UserMessage { .. } => Some("user"),
+                SessionEvent::AssistantMessage { .. } => Some("assistant"),
+                SessionEvent::ToolResult { .. } => Some("result"),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Backlog 328: his message taken mid-turn lands where the model saw
+    /// it — after the round's results, before the round that answers it.
+    #[test]
+    fn a_message_taken_mid_turn_is_his_between_the_rounds() {
+        let mut s = Session::new();
+        s.record_user("run three commands");
+        let mut r = Recorder::new(&mut s, "claude-haiku-5-5");
+        r.push(&call("c1"));
+        r.push(&result("c1"));
+        r.push(&TurnEvent::MessageDelivered {
+            id: "u".into(),
+            text: "also echo PINEAPPLE".into(),
+            after: "after Bash".into(),
+        });
+        r.push(&TurnEvent::TextDelta {
+            text: "PINEAPPLE".into(),
+        });
+        assert!(r.finish(Some("end_turn")));
+        assert_eq!(
+            kinds(&s),
+            ["user", "assistant", "result", "user", "assistant"]
+        );
+        assert!(s.events().iter().any(
+            |e| matches!(e, SessionEvent::UserMessage { text, .. } if text == "also echo PINEAPPLE")
+        ));
+    }
+
+    /// And one taken after the reply closes the reply first.
+    #[test]
+    fn a_message_taken_after_the_reply_follows_it() {
+        let mut s = Session::new();
+        s.record_user("a story");
+        let mut r = Recorder::new(&mut s, "claude-haiku-5-5");
+        r.push(&TurnEvent::TextDelta {
+            text: "Once.".into(),
+        });
+        r.push(&TurnEvent::MessageDelivered {
+            id: "u".into(),
+            text: "end with PINEAPPLE".into(),
+            after: "after the reply".into(),
+        });
+        r.push(&TurnEvent::TextDelta {
+            text: "PINEAPPLE".into(),
+        });
+        assert!(r.finish(Some("end_turn")));
+        assert_eq!(kinds(&s), ["user", "assistant", "user", "assistant"]);
     }
 
     #[test]

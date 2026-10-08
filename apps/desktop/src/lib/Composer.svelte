@@ -61,10 +61,10 @@
     noteThread,
   } from "./handoff.svelte";
   import ThreadPicker from "./ThreadPicker.svelte";
-  import { chatThread, refreshThreadFlags } from "./state.svelte";
+  import { chatThread, refreshThreadFlags, injectIntoTurn } from "./state.svelte";
   import { draftEstimate, draftEstimateTitle, draftExact, draftExactTitle, EXACT_TOKENS_FROM, fmtTokens } from "./tokens";
   import { exactCounter, type ExactResult } from "./draftCount";
-  import { countDraftTokens, officeConverter, pasteIntoFocus, prepareOfficeAttachment } from "./api";
+  import { countDraftTokens, officeConverter, pasteIntoFocus, prepareOfficeAttachment, takeBackInjected } from "./api";
   import KeepButton from "./KeepButton.svelte";
   import { keepKey } from "./keep";
   import { menuInterceptors } from "./state.svelte";
@@ -106,6 +106,7 @@
     draftKey,
     draftSelection,
     dropQueued,
+    clearInjected,
     enqueueMessage,
     historyFor,
     nextAttachmentId,
@@ -1035,7 +1036,7 @@
       // The CLI's rule: Up in an empty input takes the newest held
       // message back. With text in the box, Up is the caret's.
       e.preventDefault();
-      takeBack();
+      void takeBack();
     }
   }
 
@@ -1803,12 +1804,15 @@
     if (!t && attachments.length === 0) return;
     // A held message carries finished chips only (item 277).
     if (!(await conversionsDone(key))) return;
-    enqueueMessage(key, readDraft(key).text, readDraft(key).attachments.slice());
+    const held = enqueueMessage(key, readDraft(key).text, readDraft(key).attachments.slice());
     clearDraft(key);
     if (aside) {
       afterSend(key);
       return;
     }
+    // Into the running turn, at its next step (backlog 328); the row stays
+    // until the turn takes it, and goes as the next message if it never does.
+    if (app.busy && !app.parked) void injectIntoTurn(key, held);
     if (app.parked) addToast(queuedElsewhereToast(runningChatName()));
     else if (!app.busy) {
       const elsewhere = providerElsewhereName();
@@ -1817,10 +1821,40 @@
     afterSend(key);
   }
 
-  function takeBack(id?: number): void {
+  /** A row sent into the running turn is asked back from the CLI first
+   *  (backlog 328): it comes back only if the turn has not taken it. */
+  async function unsend(id: number | undefined): Promise<boolean> {
+    const q = id === undefined ? queue[queue.length - 1] : queue.find((r) => r.id === id);
+    const inj = q?.inject;
+    if (!q || !inj) return true;
+    if (inj.after !== undefined) {
+      addToast(`already reached the turn ${inj.after}`);
+      return false;
+    }
+    let r: "cancelled" | "delivered" = "cancelled";
+    try {
+      r = await takeBackInjected(inj.turn, inj.id);
+    } catch {
+      r = "delivered";
+    }
+    if (r === "delivered") {
+      addToast("already reached the turn");
+      return false;
+    }
+    clearInjected(key, q.id);
+    return true;
+  }
+
+  async function takeBack(id?: number): Promise<void> {
+    if (!(await unsend(id))) return;
     takeBackQueued(key, id);
     requestAnimationFrame(autogrow);
     ta?.focus();
+  }
+
+  async function dropRow(id: number): Promise<void> {
+    if (!(await unsend(id))) return;
+    dropQueued(key, id);
   }
 
   async function submitAside() {
@@ -2483,8 +2517,11 @@
         <div class="queue-row" role="listitem" data-queue-id={q.id}>
           <span class="queue-n mono">{i + 1}</span>
           <span class="queue-text" use:tip={q.text} data-find-text={q.text}>{#if handoffHere && q.id === handoff.queuedId}<span class="ns-chip mono" use:tip={"Put here by Nightloom: the window crossed this chat's hand-off mark while you were away. × takes it back."}>wrap-up · queued while you were away</span> {/if}{firstLine(q.text) || "(no text)"}{#if q.attachments.length > 0} <span class="ns-chip mono">{q.attachments.length} {q.attachments.length === 1 ? "file" : "files"}</span>{/if}</span>
-          <button class="ns-btn ghost small" use:tip={"Back into the message box"} onclick={() => takeBack(q.id)}>take back</button>
-          <button class="remove" use:tip={"drop this message"} aria-label="drop queued message {i + 1}" onclick={() => dropQueued(key, q.id)}>×</button>
+          {#if q.inject}<span class="ns-chip mono" data-inject={q.inject.after !== undefined ? "delivered" : "sent"} use:tip={q.inject.after !== undefined ? "The running turn took this message; it is in the chat when the turn ends." : "Sent into the running turn: Claude reads it at its next step. Take back works until then."}>{q.inject.after !== undefined ? `delivered ${q.inject.after}` : "sent · at the next step"}</span>{/if}
+          {#if q.inject?.after === undefined}
+            <button class="ns-btn ghost small" use:tip={"Back into the message box"} onclick={() => void takeBack(q.id)}>take back</button>
+            <button class="remove" use:tip={"drop this message"} aria-label="drop queued message {i + 1}" onclick={() => void dropRow(q.id)}>×</button>
+          {/if}
         </div>
       {/each}
     </div>

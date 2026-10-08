@@ -118,6 +118,10 @@ struct AppState {
     /// chats running, Stop in one must stop that one. `cancel` still holds
     /// the latest turn's token, for the callers that name no chat.
     turn_cancels: std::sync::Mutex<HashMap<String, CancellationToken>>,
+    /// Each running agent turn's inbox (nightshift backlog 328), by chat
+    /// and by turn key, as `turn_cancels`: a message he sends while it runs
+    /// goes into the turn through it.
+    inboxes: std::sync::Mutex<HashMap<String, nightloom_service::agent::inbox::Inbox>>,
     /// Stops asked for by a turn key (`turn:…`, the window's name for a
     /// turn whose chat it does not know yet) before that turn registered
     /// (backlog 159, A3): the turn cancels itself on registering.
@@ -504,6 +508,37 @@ fn hold_early_stop(stops: &std::sync::Mutex<std::collections::HashSet<String>>, 
         held.clear();
     }
     held.insert(key.to_string());
+}
+
+/// A running turn's inbox in [`AppState::inboxes`] for the turn's length
+/// (backlog 328), removed when the guard drops.
+struct InboxReg<'a> {
+    map: &'a std::sync::Mutex<HashMap<String, nightloom_service::agent::inbox::Inbox>>,
+    names: Vec<String>,
+}
+
+impl<'a> InboxReg<'a> {
+    fn register(
+        map: &'a std::sync::Mutex<HashMap<String, nightloom_service::agent::inbox::Inbox>>,
+        names: Vec<String>,
+        inbox: &nightloom_service::agent::inbox::Inbox,
+    ) -> Self {
+        let mut m = map.lock().unwrap_or_else(|p| p.into_inner());
+        for n in &names {
+            m.insert(n.clone(), inbox.clone());
+        }
+        drop(m);
+        Self { map, names }
+    }
+}
+
+impl Drop for InboxReg<'_> {
+    fn drop(&mut self) {
+        let mut m = self.map.lock().unwrap_or_else(|p| p.into_inner());
+        for n in &self.names {
+            m.remove(n);
+        }
+    }
 }
 
 impl Drop for TurnStop<'_> {
@@ -3144,6 +3179,9 @@ struct AgentTurn {
     /// The rail's folder list, refreshed, when the approval card granted
     /// a folder this turn; absent otherwise (the connect's list stands).
     folders: Option<Vec<FolderInfo>>,
+    /// The ids of the messages he sent mid-turn that the turn took
+    /// (backlog 328); any other he sent is still his queue's.
+    delivered: Vec<String>,
 }
 
 /// An office file made sendable (nightshift item 277): a PDF through
@@ -3363,6 +3401,15 @@ async fn send_agent(
     {
         cancel.cancel();
     }
+    // What he sends while it runs goes into it (backlog 328).
+    let inbox = agent.inbox();
+    let _inbox = InboxReg::register(
+        &state.inboxes,
+        std::iter::once(chat_id.clone())
+            .chain(stop_key.clone())
+            .collect(),
+        &inbox,
+    );
 
     // The Ask position's files live beside the chat's log, per chat
     // (`agent::ask`): `<log dir>/ask/<chat id>/`. An ephemeral chat has no
@@ -3434,6 +3481,7 @@ async fn send_agent(
                 is_error: false,
                 refused: Vec::new(),
                 folders: None,
+                delivered: Vec::new(),
             });
         }
         AgentTurnEnd::Done {
@@ -3499,6 +3547,7 @@ async fn send_agent(
         is_error: outcome.is_error,
         refused,
         folders,
+        delivered: inbox.taken(),
     })
 }
 
@@ -5418,6 +5467,56 @@ async fn steer_subagent(
     .await
     .map_err(|e| format!("queueing the note failed: {e}"))?
     .map_err(|e| format!("queueing the note failed: {e}"))
+}
+
+/// A message he sent while the chat's turn runs (nightshift backlog 328),
+/// into that turn: the CLI takes it at the turn's next step, and a
+/// `message_delivered` turn event says so. `turn` is the chat's id or the
+/// window's turn key. `false` when no turn takes messages now (none runs,
+/// or it has no stdin) — the window keeps it queued for the next turn.
+#[tauri::command]
+async fn inject_message(
+    state: State<'_, AppState>,
+    turn: String,
+    id: String,
+    text: String,
+) -> Result<bool, String> {
+    use nightloom_service::agent::inbox::SendError;
+    let inbox = state
+        .inboxes
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(&turn)
+        .cloned();
+    let Some(inbox) = inbox else {
+        return Ok(false);
+    };
+    match inbox.send(&id, &text) {
+        Ok(()) => Ok(true),
+        Err(SendError::NotRunning) => Ok(false),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Take back a message sent into the running turn (backlog 328):
+/// `cancelled` when it never reached the model (it is his again),
+/// `delivered` when the turn had already taken it.
+#[tauri::command]
+async fn take_back_injected(
+    state: State<'_, AppState>,
+    turn: String,
+    id: String,
+) -> Result<nightloom_service::agent::inbox::TakeBack, String> {
+    let inbox = state
+        .inboxes
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(&turn)
+        .cloned();
+    Ok(match inbox {
+        Some(inbox) => inbox.take_back(&id).await,
+        None => nightloom_service::agent::inbox::TakeBack::Cancelled,
+    })
 }
 
 /// The chat's steering notes, queued and delivered (backlog 295), for
@@ -7708,6 +7807,7 @@ fn main() {
                 agents: agents::Agents::default(),
                 agent_live: std::sync::atomic::AtomicBool::new(false),
                 turn_cancels: std::sync::Mutex::new(HashMap::new()),
+                inboxes: std::sync::Mutex::new(HashMap::new()),
                 early_stops: std::sync::Mutex::new(std::collections::HashSet::new()),
                 chats: chats::Chats::default(),
                 pending_mode: tokio::sync::Mutex::new(ChatMode::Normal),
@@ -7862,6 +7962,8 @@ fn main() {
             note_presence,
             budget_override,
             steer_subagent,
+            inject_message,
+            take_back_injected,
             steer_state,
             unsteer_subagent,
             checkpoint,

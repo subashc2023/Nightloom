@@ -100,6 +100,15 @@ pub enum TurnEvent {
     PromptSuggestion {
         text: String,
     },
+    /// A message he sent while the turn ran reached it (nightshift backlog
+    /// 328): the CLI took it at its next step. `id` is the window's id for
+    /// the queued message; `after` says where, in words ("after Bash",
+    /// "after the reply"). Claude Code engine only.
+    MessageDelivered {
+        id: String,
+        text: String,
+        after: String,
+    },
     /// An event of a subagent's own turn — one the Claude Code CLI spawned
     /// through its `Agent` tool — carrying the id of the call that spawned
     /// it (2026-09-16, nightshift backlog 075; `--forward-subagent-text`).
