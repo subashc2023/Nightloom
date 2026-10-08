@@ -5463,9 +5463,36 @@ async fn unsteer_subagent(
 
 #[tauri::command]
 async fn plan_usage() -> Result<nightloom_service::plan_usage::PlanUsage, String> {
-    tokio::task::spawn_blocking(nightloom_service::plan_usage::read)
+    tokio::task::spawn_blocking(|| observed(nightloom_service::plan_usage::read()))
         .await
         .map_err(|e| format!("reading the plan usage failed: {e}"))
+}
+
+/// A plan reading is also the end reading of any reply that finished
+/// before its sample was taken (item 323, `turn_usage`).
+fn observed(
+    u: nightloom_service::plan_usage::PlanUsage,
+) -> nightloom_service::plan_usage::PlanUsage {
+    if let Some(r) = nightloom_service::turn_usage::Reading::from_plan(&u) {
+        nightloom_service::turn_usage::reading(None, r);
+    }
+    u
+}
+
+/// The chat's per-reply share of the plan's windows (item 323): the lines
+/// of `<log dir>/ask/<chat>/turn-usage.jsonl`, oldest first.
+#[tauri::command]
+async fn turn_usage(
+    state: State<'_, AppState>,
+    session: String,
+) -> Result<Vec<nightloom_service::turn_usage::TurnUsageLine>, String> {
+    if session.is_empty() || session.contains('/') || session.contains("..") {
+        return Ok(Vec::new());
+    }
+    let dir = state.log_dir().await.join("ask").join(session);
+    tokio::task::spawn_blocking(move || nightloom_service::turn_usage::read_lines(&dir))
+        .await
+        .map_err(|e| format!("reading the reply usage failed: {e}"))
 }
 
 /// The plan's figure refreshed through the CLI's print-mode `/usage` when
@@ -5475,7 +5502,9 @@ async fn plan_usage() -> Result<nightloom_service::plan_usage::PlanUsage, String
 #[tauri::command]
 async fn plan_usage_refresh() -> Result<nightloom_service::plan_usage::PlanUsage, String> {
     tokio::task::spawn_blocking(|| {
-        nightloom_service::plan_usage::read_fresh(std::time::Duration::from_secs(60))
+        observed(nightloom_service::plan_usage::read_fresh(
+            std::time::Duration::from_secs(60),
+        ))
     })
     .await
     .map_err(|e| format!("refreshing the plan usage failed: {e}"))
@@ -7822,6 +7851,7 @@ fn main() {
             cli_version_check,
             cli_update,
             turn_budget,
+            turn_usage,
             note_presence,
             budget_override,
             steer_subagent,

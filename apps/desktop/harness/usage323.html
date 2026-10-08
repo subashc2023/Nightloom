@@ -1,0 +1,25 @@
+<!doctype html>
+<!-- Item 323: the real Transcript over a fixture log, the backend's turn_usage lines stubbed, snapped with
+     nightshift-code bin/snap (WebKit). Four turns: measured, shared, estimated (+0 measured), and one
+     with no line (nothing shown). The caption lists each reply footer's plan figure and its hover text.
+   -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      body { margin: 0; background: var(--paper, #111); }
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+      #root { position: relative; display: flex; flex-direction: column; width: 960px; height: 700px; }
+      #cap { font: 12px/1.5 ui-monospace, monospace; color: #ddd; background: #000; padding: 6px 8px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="cap"></div>
+    <script>
+      window.addEventListener("error", (e) => (document.getElementById("cap").textContent = "error: " + e.message));
+      window.addEventListener("unhandledrejection", (e) => (document.getElementById("cap").textContent = "rejection: " + e.reason));
+    </script>
+    <script type="module" src="./usage323.ts"></script>
+  </body>
+</html>

@@ -193,6 +193,10 @@ async fn turn_body(
     if let Some(c) = &council {
         c.validate().map_err(|e| e.to_string())?;
     }
+    // Item 323: the turn's share of the plan's windows, read from its own
+    // `rate_limit_event` and the next reading after it (`turn_usage`).
+    // Dropped on any other way out, it records nothing.
+    let usage_turn = ask_dir.as_deref().map(crate::turn_usage::begin);
     // Sampled before the first append of the turn: a log that seals during
     // it says so once, as a notice.
     let sealed_before = session.write_failure().is_some();
@@ -510,6 +514,12 @@ async fn turn_body(
                     env.notice(format!("context status not written: {e}"));
                 }
             }
+            if let Some(u) = usage_turn {
+                u.end(
+                    crate::turn_usage::last_reply(session.events()),
+                    outcome.cost_usd,
+                );
+            }
             Ok(AgentTurnEnd::Done {
                 outcome: Box::new(outcome),
                 granted_any,
@@ -707,5 +717,82 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns"
                 d(&|s| (s.entered, s.end)),
             );
         }
+    }
+
+    /// Item 323 end to end: a chat's turn takes its start from its own
+    /// `rate_limit_event` and its end from the next turn's; the line lands
+    /// beside the turn budget under the first turn's last reply.
+    #[tokio::test]
+    async fn a_turn_s_plan_share_is_written_once_the_next_turn_reads_the_window() {
+        let root = std::env::temp_dir().join(format!("nightloom-323-{}", uuid::Uuid::new_v4()));
+        let logs = root.join("sessions");
+        std::fs::create_dir_all(&logs).unwrap();
+        // The stand-in reports the five-hour window at 41 %, then 43 %.
+        let body = r##"#!/bin/sh
+n=$(cat "$0.count" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "$0.count"
+u=$([ "$n" = 1 ] && echo 0.41 || echo 0.43)
+printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"claude-haiku-4-5","permissionMode":"default","session_id":"s-1"}'
+printf '%s\n' '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1791493200,"rateLimitType":"five_hour","unifiedWindows":{"five_hour":{"utilization":'"$u"',"resetsAt":1791493200},"seven_day":{"utilization":0.12,"resetsAt":1791972000}}}}'
+printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}},"parent_tool_use_id":null,"session_id":"s-1"}'
+printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]},"parent_tool_use_id":null}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"hi","session_id":"s-1","stop_reason":"end_turn","total_cost_usd":0.25,"usage":{"input_tokens":3,"output_tokens":2}}'
+"##;
+        let bin = root.join("claude-stand-in");
+        std::fs::write(&bin, body).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut session = Session::start(&logs, ChatMode::Normal, ChatKind::Build).unwrap();
+        let ask_dir = root.join("ask").join(&session.id);
+        let mut spec = AgentSpec::new(&root);
+        spec.binary = bin.to_string_lossy().into_owned();
+        spec.brief = Some(crate::agent::BriefSpec {
+            hook: vec!["/usr/bin/true".into()],
+            dir: PathBuf::new(),
+            text: "brief".into(),
+        });
+        let mut agent = ClaudeCodeAgent::new(spec);
+        agent.set_ask_dir(ask_dir.clone());
+        let ask = AskGate::new();
+        let chat = session.id.clone();
+        let mut first_reply = None;
+        for _ in 0..2 {
+            let timing = TurnTiming::begin(turn_timing::DESKTOP, None, None);
+            let env = Env { timing };
+            let cancel = CancellationToken::new();
+            let end = run_agent_turn(
+                AgentTurnRun {
+                    agent: &mut agent,
+                    session: &mut session,
+                    chat_id: &chat,
+                    input: TurnInput::from("hello"),
+                    spoken: false,
+                    wire_note: None,
+                    council: None,
+                    cancel: &cancel,
+                    ask_dir: Some(ask_dir.clone()),
+                    ask: &ask,
+                },
+                &env,
+            )
+            .await;
+            assert!(
+                matches!(end, Ok(AgentTurnEnd::Done { .. })),
+                "{:?}",
+                end.as_ref().err()
+            );
+            first_reply = first_reply.or(crate::turn_usage::last_reply(session.events()));
+        }
+        let lines = crate::turn_usage::read_lines(&ask_dir);
+        assert_eq!(
+            lines.len(),
+            1,
+            "the second turn waits for a later reading: {lines:?}"
+        );
+        let l = &lines[0];
+        assert_eq!(Some(l.target), first_reply);
+        assert_eq!(l.five_hour.map(|s| (s.start, s.end)), Some((41.0, 43.0)));
+        assert_eq!(l.seven_day.map(|s| s.delta()), Some(0.0));
+        assert_eq!(l.cost_usd, Some(0.25));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

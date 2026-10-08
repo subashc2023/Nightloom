@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
   import Icon from "./Icon.svelte";
+  import { isImeKey } from "./imeKey";
   import Kbd from "./Kbd.svelte";
   import ResizeHandle from "./ResizeHandle.svelte";
   import { dragHeight, growHeight, loadBoxHeight, saveBoxHeight } from "./boxGrow";
@@ -944,6 +945,10 @@
       e.stopPropagation();
       return;
     }
+    // Item 322: a key the input method holds (Enter committing Japanese or
+    // Chinese entry, the accent popup) is the input method's — never a
+    // send, a menu pick or a dismissal. The Enter after the commit sends.
+    if (isImeKey(e)) return;
     if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && (e.code === "KeyV" || e.key.toLowerCase() === "v")) {
       e.preventDefault();
       clipOpen = !clipOpen;

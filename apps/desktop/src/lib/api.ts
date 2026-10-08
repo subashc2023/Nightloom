@@ -80,6 +80,7 @@ import type {
 } from "./types";
 import type { CouncilRequest } from "./council";
 import type { PriorExchange } from "./noteEdit";
+import type { TurnUsageLine } from "./replyUsage";
 
 // All backend errors reject with a plain string.
 
@@ -873,6 +874,12 @@ export function cliUpdate(binary: string | null): Promise<CliUpdateResult> {
  *  the chat's `turn-budget.json`, or null before its first turn. */
 export function turnBudget(session: string): Promise<TurnBudget | null> {
   return invoke("turn_budget", { session });
+}
+
+/** Each reply's share of the plan's windows (item 323): the chat's
+ *  `turn-usage.jsonl`, one line per turn, oldest first. */
+export function turnUsage(session: string): Promise<TurnUsageLine[]> {
+  return invoke("turn_usage", { session });
 }
 
 /** The window saw him in this chat (backlog 189): open and focused, or

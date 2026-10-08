@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isImeKey } from "./imeKey";
   import { tip } from "./tip";
   /**
    * A subagent's transcript as a tab (nightshift backlog 152, 2026-09-17):
@@ -103,7 +104,7 @@
     }
   }
   function onKey(e: KeyboardEvent): void {
-    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+    if (e.key === "Enter" && !e.shiftKey && !isImeKey(e)) {
       e.preventDefault();
       void ask();
     }

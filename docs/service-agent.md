@@ -582,6 +582,17 @@ the fresher wins, `bin/usagectl.py`'s rule in the nightshift repo) before
 the first turn and on a CLI that sends no figure. The percentages are
 server-computed and account-wide; nothing here estimates a denominator.
 
+**Per reply (nightshift item 323, 2026-10-08).** Measured on CLI 2.1.294 with a Haiku turn of four API
+calls: **one** `rate_limit_event` per turn, after its first response, whole percents. So a turn's own
+event is its *start* reading only; `turn_usage.rs` keeps the ended turn in memory until the next reading
+the app takes (the next turn's event in any chat, or the plan chip's refresh with a sample newer than
+the turn's end) and then appends one line to `<log dir>/ask/<chat>/turn-usage.jsonl`, keyed by the
+turn's last `assistant_message` index: both windows' start and end, `shared` when another chat's turn
+in this process ran inside the span, the CLI's API-equivalent cost, and an estimate at the
+percent-per-dollar fitted over lone replies (`<config>/usage-fit.json`, once five exist). The reply
+footer shows "5h +N% · week +M%" (`replyUsage.ts`); a turn that never got its end reading (the app quit
+first) has no line and shows nothing. Use outside the process is in the figure and cannot be flagged.
+
 **`context_status`**, the fifth tool on Nightloom's MCP server
 (`mcp_server.rs`): `{session_id, model, used, window, pct, turns, at}` from
 the last turn that completed in this chat. The server is its own process

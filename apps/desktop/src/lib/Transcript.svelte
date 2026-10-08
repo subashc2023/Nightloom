@@ -58,6 +58,8 @@
   import { PREFERRED_CARD_HEIGHT, chooseSide, offsetsOf, type AsideAnchor } from "./asideCard";
   import { isMac } from "./platform";
   import { fmtShare, shareOf, turnSizes, userFigure } from "./tokens";
+  import { replyUsageView } from "./replyUsage";
+  import { loadReplyUsage, replyUsageOf } from "./replyUsage.svelte";
   import { cacheState } from "./cache";
   import { moveScroll, recallScroll, rememberScroll, scrollKey, NEW_SCROLL_KEY } from "./scroll.svelte";
   import { stashEdit, takeEdit } from "./drafts.svelte";
@@ -378,6 +380,19 @@
   // connected model's window, which the picker rows carry and the top-bar
   // gauge already scales by. Null window: the figure, no bar.
   const sizes = $derived(turnSizes(evs, liveFlags(evs)));
+
+  // Each reply's share of the plan (item 323): the chat's lines, re-read
+  // on a chat switch, when a turn ends (`busy` falls) and when the plan
+  // reading changes — a turn's line is written by the next reading after
+  // it, which is the next turn's first response or the chip's refresh.
+  const usageChat = $derived(chat ?? app.activeSessionId);
+  const usageLines = $derived(replyUsageOf(usageChat));
+  $effect(() => {
+    const id = usageChat;
+    void app.busy;
+    void app.planUsage;
+    void loadReplyUsage(id);
+  });
   const windowLimit = $derived(app.connection?.contextLimit ?? null);
 
   // Runs of replies (nightshift backlog 121): a reply that follows a reply
@@ -723,7 +738,6 @@
   }
 
   $effect(() => {
-    void evs.length;
     void app.liveVersion;
     void approvalsNow.length;
     // A pane follows its chat's stream off screen too (piece 5).
@@ -854,7 +868,6 @@
   let preHeight = 0;
   let preTop = 0;
   $effect.pre(() => {
-    void evs.length;
     untrack(() => {
       if (!viewport) return;
       preDistance = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
@@ -992,7 +1005,6 @@
   // the anchor is measured against the ghost and the swap is one flush.
   $effect.pre(() => {
     void evs;
-    void evs.length;
     const key = sessionKey;
     untrack(() => {
       if (!ghost) return;
@@ -1747,6 +1759,7 @@
               headed={!continued[i]}
               onedit={editable && item.editable ? () => beginEdit(item) : null}
               onremoveturn={editable ? () => void removeTurn(item.index) : null}
+              planUsage={replyUsageView(usageLines.get(item.index))}
             />
             {#if item.original !== null && item.removed}
               <details class="original">

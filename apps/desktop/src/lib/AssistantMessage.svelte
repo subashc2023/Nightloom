@@ -60,6 +60,7 @@
   import { hitsOfCalls } from "./memoryHits";
   import { memoryRefs, openMemoryEdit } from "./memoryOpen";
   import { memoryEditOf, type MemoryEdit } from "./memoryEdits";
+  import type { ReplyUsageView } from "./replyUsage";
 
   interface Footer {
     model: string;
@@ -174,6 +175,7 @@
     headed = true,
     onedit = null,
     onremoveturn = null,
+    planUsage = null,
   }: {
     segs: Segment[];
     footer?: Footer | null;
@@ -213,6 +215,9 @@
     /** Edit this reply in place, from the pencil in the footer row (the
      *  transcript's `beginEdit`); null when the reply cannot be edited. */
     onedit?: (() => void) | null;
+    /** This reply's share of the plan's five-hour window and week (item
+     *  323), on the turn's last reply; null when no readings say. */
+    planUsage?: ReplyUsageView | null;
     /** Remove this whole reply from the context, from the footer row;
      *  null when the turn cannot be acted on. */
     onremoveturn?: (() => void) | null;
@@ -799,6 +804,11 @@
       <button class="ns-btn ghost small" onclick={() => void copy()}>{copied ? "Copied" : "Copy"}</button>
       {#if !footer.bare}
         <span class="meta" use:tip={footerTitle(footer, size)}>{fmtFigure(footer.usage, size)}{fmtCost(footer.cost)}</span>
+      {/if}
+      {#if planUsage}
+        <!-- The turn's share of the plan (item 323): the five-hour window
+             and the week, measured or ≈ estimated; hover says how. -->
+        <span class="meta plan" use:tip={planUsage.title}>{planUsage.text}</span>
       {/if}
       {#if footer.stop_reason?.startsWith("error: ")}
         <!-- Why the reply stopped (backlog 202): the API error the CLI
@@ -1432,6 +1442,10 @@
   .meta.stopped {
     font-family: var(--sans);
     color: var(--failed);
+  }
+  .meta.plan {
+    cursor: default;
+    white-space: nowrap;
   }
   .meta.share {
     display: inline-flex;
