@@ -738,6 +738,7 @@
   }
 
   $effect(() => {
+    void evs.length;
     void app.liveVersion;
     void approvalsNow.length;
     // A pane follows its chat's stream off screen too (piece 5).
@@ -868,6 +869,7 @@
   let preHeight = 0;
   let preTop = 0;
   $effect.pre(() => {
+    void evs.length;
     untrack(() => {
       if (!viewport) return;
       preDistance = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
@@ -1005,6 +1007,7 @@
   // the anchor is measured against the ghost and the swap is one flush.
   $effect.pre(() => {
     void evs;
+    void evs.length;
     const key = sessionKey;
     untrack(() => {
       if (!ghost) return;
