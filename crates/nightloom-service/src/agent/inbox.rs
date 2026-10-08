@@ -191,8 +191,10 @@ impl Inbox {
         match answer {
             Ok(Ok(true)) => {
                 s.waiting.retain(|w| w.id != id);
-                // An idle process kept open only for this message ends now.
-                if s.idle && s.waiting.is_empty() {
+                // An idle process kept open only for this message ends now
+                // — not while subagents run: their stdin carries Stop them
+                // and the nested-spawn notes (329).
+                if s.idle && s.waiting.is_empty() && s.agents.is_empty() {
                     s.tx = None;
                 }
                 TakeBack::Cancelled
@@ -572,6 +574,36 @@ mod tests {
         ));
         assert_eq!(answer.await.unwrap(), TakeBack::Cancelled);
         assert!(!inbox.is_open(), "an idle process kept open for it ends");
+    }
+
+    /// Review of wave 4: a Take back while the main thread is idle with
+    /// subagents running leaves the stdin open, so "Stop them" and the
+    /// nested-spawn notes still reach the CLI.
+    #[tokio::test]
+    async fn take_back_while_subagents_run_keeps_the_stdin_open() {
+        let inbox = Inbox::default();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        inbox.open(tx);
+        inbox.on_line(r#"{"type":"system","subtype":"task_started","task_id":"a1","description":"d","task_type":"local_agent"}"#);
+        inbox.send(ID, "x").unwrap();
+        let _ = rx.try_recv();
+        inbox.on_line(RESULT);
+        let i2 = inbox.clone();
+        let answer = tokio::spawn(async move { i2.take_back(ID).await });
+        let req = loop {
+            if let Ok(l) = rx.try_recv() {
+                break l;
+            }
+            tokio::task::yield_now().await;
+        };
+        let v: serde_json::Value = serde_json::from_str(&req).unwrap();
+        let rid = v["request_id"].as_str().unwrap().to_string();
+        inbox.on_line(&format!(
+            r#"{{"type":"control_response","response":{{"subtype":"success","request_id":"{rid}","response":{{"cancelled":true}}}}}}"#
+        ));
+        assert_eq!(answer.await.unwrap(), TakeBack::Cancelled);
+        assert!(inbox.is_open(), "a subagent still runs");
+        assert_eq!(inbox.stop_agents(), 1);
     }
 
     #[tokio::test]
