@@ -11,7 +11,7 @@
   import { onMount, tick } from "svelte";
   import { app, noteDraftKey } from "./state.svelte";
   import type { NoteScope } from "./types";
-  import { editTotals, undoable, type NoteEditTurn } from "./noteEdit";
+  import { blockWords, editTotals, undoable, type EditBlock, type NoteEditTurn } from "./noteEdit";
   import {
     initNoteEditEvents,
     noteEditUi,
@@ -29,8 +29,20 @@
     scope,
     name,
     text,
-    disabled = false,
-  }: { scope: NoteScope; name: string; text: string; disabled?: boolean } = $props();
+    blocked = null,
+    onShowBlock,
+  }: {
+    scope: NoteScope;
+    name: string;
+    text: string;
+    /** Why nothing can be sent or undone now (backlog 325); null when
+     *  nothing blocks. */
+    blocked?: EditBlock | null;
+    /** Bring the thing that blocks into view (the proposal card). */
+    onShowBlock?: () => void;
+  } = $props();
+
+  const disabled = $derived(blocked !== null);
 
   const key = $derived(noteDraftKey(scope, name));
   const t = $derived(noteEdits[key]);
@@ -157,6 +169,14 @@
   </div>
 
   <footer>
+    {#if blocked && !running}
+      <p class="blocked" role="status">
+        {blockWords(blocked)}
+        {#if blocked === "proposal" && onShowBlock}
+          <button class="link" onclick={onShowBlock}>Show the proposal</button>
+        {/if}
+      </p>
+    {/if}
     <textarea
       bind:this={box}
       aria-label="What changed"
@@ -175,7 +195,12 @@
       {#if running}
         <button class="stop" onclick={() => void stopNoteEdit(key)}>Stop</button>
       {:else}
-        <button class="send" disabled={disabled || !draft.trim()} onclick={send}>Send</button>
+        <button
+          class="send"
+          use:tip={blocked ? blockWords(blocked) : draft.trim() ? "Send (Enter)" : "Type a request or a question first"}
+          disabled={disabled || !draft.trim()}
+          onclick={send}>Send</button
+        >
       {/if}
     </div>
     <span class="model">on {model} · reads and edits this file only</span>
@@ -348,6 +373,16 @@
     font-size: 0.7rem;
     color: var(--dim);
     cursor: pointer;
+  }
+  .blocked {
+    margin: 0;
+    font-size: 0.72rem;
+    line-height: 1.4;
+    color: var(--dim);
+  }
+  .blocked .link {
+    margin-left: 0.25rem;
+    color: var(--accent);
   }
   .model {
     font-size: 0.64rem;

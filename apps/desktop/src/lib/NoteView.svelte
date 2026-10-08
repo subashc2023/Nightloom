@@ -35,7 +35,7 @@
   import { fieldScrollTop } from "./find";
   import NoteEditPanel from "./NoteEditPanel.svelte";
   import { noteEditUi, onLanded, runningTurn } from "./noteEdit.svelte";
-  import { changedLines } from "./noteEdit";
+  import { changedLines, editBlock } from "./noteEdit";
   import { lineOffset } from "./memoryHits";
 
   /**
@@ -120,6 +120,20 @@
     else delete app.proposalEdits[r.entry.id];
   });
   let accepting = $state(false);
+  /** The proposal card, for the edit panel's "Show the proposal". */
+  let reviewEl = $state<HTMLDivElement | null>(null);
+  let reviewFlash = $state(false);
+  /** Bring the proposal card into view, focus its first live button, and
+   *  flash it for a moment so the eye finds it. */
+  function showProposal() {
+    const el = reviewEl;
+    if (!el) return;
+    el.scrollIntoView({ block: "nearest" });
+    const first = el.querySelector<HTMLButtonElement>(".actions button:not(:disabled)");
+    first?.focus();
+    reviewFlash = true;
+    setTimeout(() => (reviewFlash = false), 1200);
+  }
   /** Dismiss asks first: the badge goes with it, and a click must not lose
    *  something the user has not read (the never-lose-work rule). */
   let confirmDismiss = $state(false);
@@ -134,6 +148,10 @@
    * previous note's unsaved text as a draft under the next note's name.
    */
   let bufferKey = $state<string | null>(null);
+  /** Why the edit panel cannot send (backlog 325), or null. */
+  const editBlocked = $derived(
+    editBlock({ loading, error: !!error, reviewing: !!reviewing, hasBuffer: bufferKey !== null }),
+  );
 
   /**
    * Mirror the buffer into `app.noteDrafts` while it differs from the saved
@@ -603,7 +621,7 @@
     <!-- The proposal: why, the diff with its proposed side editable, four
          ways out. The editor and its buffer are behind this, untouched,
          until Accept or Open in the editor (backlog 184). -->
-    <div class="review">
+    <div class="review" class:flash={reviewFlash} bind:this={reviewEl}>
       <div class="why">
         <span class="label">why</span>
         <p>{reviewing.entry.proposal.why}</p>
@@ -727,7 +745,8 @@
       scope={open.scope}
       name={open.name}
       {text}
-      disabled={loading || !!error || !!reviewing || bufferKey === null}
+      blocked={editBlocked}
+      onShowBlock={showProposal}
     />
   {/if}
   </div>
@@ -890,6 +909,12 @@
     display: flex;
     flex-direction: column;
     background: var(--bg);
+    outline: 2px solid transparent;
+    outline-offset: -2px;
+    transition: outline-color 0.3s;
+  }
+  .review.flash {
+    outline-color: var(--accent);
   }
   .why {
     flex-shrink: 0;

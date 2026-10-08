@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   MAX_TURNS,
+  blockWords,
   changedLines,
+  editBlock,
   editTotals,
   parseThreads,
   serializeThreads,
@@ -114,5 +116,28 @@ describe("undoable", () => {
     expect(undoable([turn(1, "stopped", { after: "x" })])?.id).toBe(1);
     expect(undoable([turn(1, "stopped", { after: "before 1" })])).toBeNull();
     expect(undoable([])).toBeNull();
+  });
+});
+
+// Backlog 325: Send off with text typed says why, each reason in its own words.
+describe("editBlock", () => {
+  const none = { loading: false, error: false, reviewing: false, hasBuffer: true };
+  it("is null when nothing blocks", () => {
+    expect(editBlock(none)).toBeNull();
+  });
+  it("names each reason, the read first", () => {
+    expect(editBlock({ ...none, reviewing: true })).toBe("proposal");
+    expect(editBlock({ ...none, loading: true, hasBuffer: false })).toBe("loading");
+    expect(editBlock({ ...none, error: true, hasBuffer: false })).toBe("error");
+    expect(editBlock({ ...none, hasBuffer: false })).toBe("no-note");
+    // A proposal still loading reads as loading; one that failed to read, as the error.
+    expect(editBlock({ ...none, loading: true, reviewing: true })).toBe("loading");
+    expect(editBlock({ ...none, error: true, reviewing: true })).toBe("error");
+  });
+  it("gives every reason its own one line", () => {
+    const all = (["proposal", "loading", "error", "no-note"] as const).map(blockWords);
+    expect(new Set(all).size).toBe(4);
+    for (const w of all) expect(w).not.toContain("\n");
+    expect(blockWords("proposal")).toMatch(/proposed change is open on this note.*Accept or Dismiss/);
   });
 });
