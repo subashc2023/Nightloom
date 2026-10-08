@@ -79,6 +79,7 @@ import type {
   WireView,
 } from "./types";
 import type { CouncilRequest } from "./council";
+import type { PriorExchange } from "./noteEdit";
 
 // All backend errors reject with a plain string.
 
@@ -327,6 +328,8 @@ export function editNoteByPrompt(args: {
   strike: boolean;
   today: string;
   seq: number;
+  /** The thread's earlier exchanges, oldest first (backlog 326). */
+  history?: PriorExchange[];
   binary?: string;
   model?: string;
   safeMode?: boolean;

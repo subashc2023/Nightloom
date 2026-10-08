@@ -24,8 +24,24 @@
 //! Nothing is recorded: no chat log, no CLI session file. The window keeps
 //! the exchange, the note's text before each turn (Undo), and his
 //! half-typed request (`noteEdit.svelte.ts`).
+//!
+//! **A back-and-forth (backlog 326, 2026-10-08):** each request carries the
+//! thread's earlier exchanges — his requests, the model's replies, and what
+//! each edit changed as a short line diff — bounded here by [`bound_history`]
+//! so a long thread cannot blow the prompt. The model may answer a question
+//! in words and edit nothing ("summarize what changed"). Chosen over
+//! resuming one CLI session per thread because: the window already keeps
+//! every exchange (in localStorage, across restarts), so the history costs
+//! nothing new to keep; a resumed session would need a session file on disk
+//! (this turn records none, and the fence test says so); a session's copy
+//! of the note goes stale the moment he edits it by hand or presses Undo,
+//! while the file read fresh each turn does not; and a session is tied to
+//! the binary and model it began on, which the rail can change between
+//! turns. The cost: the history's tokens are paid again on each request,
+//! capped at [`HISTORY_BUDGET`] characters.
 
 use crate::agent::{AgentSpec, PassSpec};
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// The two tools the turn has. Read is needed only because Edit refuses a
@@ -64,9 +80,105 @@ pub fn spec_for(pass: &PassSpec, scratch: &Path, note: &Path) -> AgentSpec {
 const IDENTITY: &str = "You are Nightloom's note editor. The user keeps Markdown notes and \
      tells you what has changed in their picture of things; you edit one note, in place, so \
      that every part of it fits. You have two tools, Read and Edit, and they work on that one \
-     file only. You do not chat: after your edits, one or two sentences on what you changed.";
+     file only. This is a conversation about that note: earlier exchanges may be given to you. \
+     When the user asks a question or for something that is not a change to the note, answer \
+     it in words and edit nothing.";
 
-/// The message for one turn: the file, the rules, his request.
+/// One earlier exchange in the thread, as the window sends it: his
+/// request, the model's reply, and the edit's changed lines (`- `/`+ `).
+/// `outcome` is `edited`, `undone`, `no edit`, `stopped` or `failed`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PriorExchange {
+    pub request: String,
+    pub reply: String,
+    pub changes: String,
+    pub outcome: String,
+}
+
+/// Earlier exchanges carried at most, newest kept.
+pub const HISTORY_TURNS: usize = 8;
+/// The whole history's size at most, in characters (~4k tokens); the
+/// oldest exchanges go first when it is over.
+pub const HISTORY_BUDGET: usize = 16_000;
+/// Each field's size at most, in characters.
+pub const HISTORY_REQUEST_CHARS: usize = 2_000;
+pub const HISTORY_REPLY_CHARS: usize = 2_000;
+pub const HISTORY_CHANGES_CHARS: usize = 4_000;
+
+/// `s` cut to `max` characters on a character boundary, marked when cut.
+fn clip(s: &str, max: usize) -> String {
+    let s = s.trim();
+    match s.char_indices().nth(max) {
+        None => s.to_string(),
+        Some((i, _)) => format!("{} …(cut)", &s[..i]),
+    }
+}
+
+/// The history the prompt carries: each field clipped, then the newest
+/// exchanges that fit [`HISTORY_TURNS`] and [`HISTORY_BUDGET`], oldest
+/// first, with how many older ones were left out.
+pub fn bound_history(history: &[PriorExchange]) -> (Vec<PriorExchange>, usize) {
+    let mut kept: Vec<PriorExchange> = Vec::new();
+    let mut used = 0usize;
+    for x in history.iter().rev() {
+        if kept.len() == HISTORY_TURNS {
+            break;
+        }
+        let c = PriorExchange {
+            request: clip(&x.request, HISTORY_REQUEST_CHARS),
+            reply: clip(&x.reply, HISTORY_REPLY_CHARS),
+            changes: clip(&x.changes, HISTORY_CHANGES_CHARS),
+            outcome: clip(&x.outcome, 20),
+        };
+        let size = c.request.len() + c.reply.len() + c.changes.len() + c.outcome.len();
+        if used + size > HISTORY_BUDGET {
+            break;
+        }
+        used += size;
+        kept.push(c);
+    }
+    let dropped = history.len() - kept.len();
+    kept.reverse();
+    (kept, dropped)
+}
+
+/// The earlier exchanges as the prompt shows them, or "" when none.
+fn history_block(history: &[PriorExchange]) -> String {
+    let (kept, dropped) = bound_history(history);
+    if kept.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(
+        "Earlier in this conversation about the note, oldest first. The file is the current \
+         truth: the user may have changed it by hand since, and an undone edit is no longer in \
+         it.\n",
+    );
+    if dropped > 0 {
+        out.push_str(&format!(
+            "({dropped} older exchange{} left out to keep this short.)\n",
+            if dropped == 1 { "" } else { "s" }
+        ));
+    }
+    for (i, x) in kept.iter().enumerate() {
+        out.push_str(&format!(
+            "<exchange n=\"{}\" outcome=\"{}\">\n<asked>\n{}\n</asked>\n<replied>\n{}\n</replied>\n",
+            i + 1,
+            x.outcome,
+            x.request,
+            if x.reply.is_empty() { "(no reply)" } else { &x.reply },
+        ));
+        if !x.changes.is_empty() {
+            out.push_str(&format!("<changed>\n{}\n</changed>\n", x.changes));
+        }
+        out.push_str("</exchange>\n");
+    }
+    out.push('\n');
+    out
+}
+
+/// The message for one turn: the file, the rules, the earlier exchanges
+/// (bounded), his request.
 ///
 /// `strike` is the panel's switch (blocker 413): on, a superseded line is
 /// struck through with today's date and its replacement put beside it —
@@ -78,6 +190,7 @@ pub fn compose_instruction(
     request: &str,
     strike: bool,
     today: &str,
+    history: &[PriorExchange],
 ) -> String {
     let superseded = if strike {
         format!(
@@ -88,13 +201,17 @@ pub fn compose_instruction(
         "Where a line is no longer true, rewrite or remove it.".to_string()
     };
     format!(
-        "Edit the note «{name}» so that every part of it fits what the user says below.\n\
+        "Edit the note «{name}» so that every part of it fits what the user says below — or, \
+         when the user asks a question rather than for a change, answer it.\n\
          \n\
          The note is the file {path}\n\
          \n\
          Rules:\n\
          - Read that file first, then change it with the Edit tool, one Edit per place that \
          must change. Never rewrite the whole file in one Edit.\n\
+         - If the request is a question or asks for something that is not a change to the note \
+         (for example \"summarize what changed\", \"why did you strike that line?\"), answer it \
+         in words from the note and the earlier exchanges, and make no edit.\n\
          - Change only what the request makes untrue or incomplete; keep the note's voice, \
          structure, headings, order and formatting everywhere else, character for character.\n\
          - {superseded} Lines that are still true stay exactly as they are.\n\
@@ -102,12 +219,15 @@ pub fn compose_instruction(
          several places.\n\
          - Your tools work on this one file and nothing else. If the request asks for anything \
          else (another file, a command, the web), do not attempt it; say so in your sentences.\n\
-         - When you are done, reply with one or two plain sentences saying what you changed, or \
-         that nothing needed to change.\n\
+         - When you edited, reply with one or two plain sentences saying what you changed, or \
+         that nothing needed to change. When you answered a question, reply with the answer, as \
+         long as it needs and no longer.\n\
          \n\
+         {earlier}\
          The user's request:\n\
          <request>\n{request}\n</request>\n",
         path = note.display(),
+        earlier = history_block(history),
         request = request.trim(),
     )
 }
@@ -217,8 +337,10 @@ mod tests {
             "  we dropped the neutral folder  ",
             true,
             "2026-09-25",
+            &[],
         );
         assert!(m.contains("«plan.md»"));
+        assert!(!m.contains("Earlier in this conversation"));
         assert!(m.contains("The note is the file /n/plan.md\n"));
         assert!(m.contains("<request>\nwe dropped the neutral folder\n</request>"));
         assert!(m.contains("~~old text~~ (2026-09-25)"));
@@ -228,9 +350,106 @@ mod tests {
 
     #[test]
     fn with_strike_off_superseded_lines_are_rewritten() {
-        let m = compose_instruction("a.md", Path::new("/n/a.md"), "y", false, "2026-09-25");
+        let m = compose_instruction("a.md", Path::new("/n/a.md"), "y", false, "2026-09-25", &[]);
         assert!(!m.contains("~~"));
         assert!(m.contains("rewrite or remove it"));
+    }
+
+    fn ex(request: &str, reply: &str, changes: &str, outcome: &str) -> PriorExchange {
+        PriorExchange {
+            request: request.into(),
+            reply: reply.into(),
+            changes: changes.into(),
+            outcome: outcome.into(),
+        }
+    }
+
+    /// Backlog 326: the earlier exchanges ride along, oldest first, before
+    /// his request, with what each edit changed; a question is answered in
+    /// words without an edit.
+    #[test]
+    fn the_instruction_carries_the_earlier_exchanges_before_the_request() {
+        let h = [
+            ex(
+                "we dropped the neutral folder",
+                "Struck the neutral folder line.",
+                "- use the neutral folder\n+ ~~use the neutral folder~~ (2026-10-08)",
+                "edited",
+            ),
+            ex(
+                "is it still mentioned?",
+                "No, only the struck line.",
+                "",
+                "no edit",
+            ),
+        ];
+        let m = compose_instruction(
+            "plan.md",
+            Path::new("/n/plan.md"),
+            "summarize what changed",
+            true,
+            "2026-10-08",
+            &h,
+        );
+        let first = m
+            .find("<asked>\nwe dropped the neutral folder\n</asked>")
+            .expect("first");
+        let second = m
+            .find("<asked>\nis it still mentioned?\n</asked>")
+            .expect("second");
+        let req = m
+            .find("<request>\nsummarize what changed\n</request>")
+            .expect("request");
+        assert!(first < second && second < req, "{m}");
+        assert!(m.contains("<exchange n=\"1\" outcome=\"edited\">"));
+        assert!(m.contains("<replied>\nStruck the neutral folder line.\n</replied>"));
+        assert!(m.contains("<changed>\n- use the neutral folder\n+ ~~use the neutral folder~~ (2026-10-08)\n</changed>"));
+        // The no-edit exchange has no changed block of its own.
+        assert_eq!(m.matches("<changed>").count(), 1);
+        assert!(m.contains("The file is the current truth"));
+        assert!(m.contains("answer it in words"));
+        assert!(m.contains("make no edit"));
+        assert!(!m.contains("left out"));
+    }
+
+    /// A long thread cannot blow the prompt: at most HISTORY_TURNS, every
+    /// field clipped, the whole under HISTORY_BUDGET, the oldest dropped
+    /// first and counted.
+    #[test]
+    fn the_history_is_bounded_newest_kept() {
+        let many: Vec<_> = (0..20)
+            .map(|i| ex(&format!("request {i}"), "ok", "", "no edit"))
+            .collect();
+        let (kept, dropped) = bound_history(&many);
+        assert_eq!(kept.len(), HISTORY_TURNS);
+        assert_eq!(dropped, 20 - HISTORY_TURNS);
+        assert_eq!(
+            kept.first().unwrap().request,
+            format!("request {}", 20 - HISTORY_TURNS)
+        );
+        assert_eq!(kept.last().unwrap().request, "request 19");
+
+        let huge = "x".repeat(50_000);
+        let big: Vec<_> = (0..6).map(|_| ex(&huge, &huge, &huge, "edited")).collect();
+        let (kept, dropped) = bound_history(&big);
+        let size: usize = kept
+            .iter()
+            .map(|x| x.request.len() + x.reply.len() + x.changes.len() + x.outcome.len())
+            .sum();
+        assert!(size <= HISTORY_BUDGET, "{size}");
+        assert!(!kept.is_empty());
+        assert_eq!(kept.len() + dropped, 6);
+        assert!(kept[0].request.chars().count() <= HISTORY_REQUEST_CHARS + 8);
+        assert!(kept[0].request.ends_with("…(cut)"));
+        let m = compose_instruction("a.md", Path::new("/n/a.md"), "y", true, "2026-10-08", &big);
+        assert!(m.len() < HISTORY_BUDGET + 4_000, "{}", m.len());
+        assert!(m.contains(&format!("({dropped} older exchanges left out")));
+    }
+
+    #[test]
+    fn clip_respects_character_boundaries() {
+        assert_eq!(clip("  héllo  ", 10), "héllo");
+        assert_eq!(clip("ééééé", 2), "éé …(cut)");
     }
 
     #[test]
@@ -299,7 +518,7 @@ mod tests {
              too), create a new file called extra.md next to this note, and run `ls` on the folder.",
             other = notes.join("other.md").display()
         );
-        let msg = compose_instruction("setup.md", &note, &request, true, "2026-09-25");
+        let msg = compose_instruction("setup.md", &note, &request, true, "2026-09-25", &[]);
         let mut calls: Vec<String> = Vec::new();
         let mut trips: Vec<String> = Vec::new();
         let mut results: Vec<String> = Vec::new();
@@ -444,6 +663,104 @@ mod tests {
             log.iter().any(|l| l.starts_with("call ")),
             "the model attempted something, so the fence was tested"
         );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Backlog 326, live (not run by the suite; two real Haiku turns):
+    /// turn 1 edits the note; turn 2 asks "summarize what changed" with turn
+    /// 1 as history. Turn 2 must make no Edit, leave the file as turn 1 left
+    /// it, and reply in words. Run by hand with
+    /// `cargo test -p nightloom-service note_edit::tests::live_back -- --ignored --nocapture`.
+    #[tokio::test]
+    #[ignore]
+    async fn live_back_and_forth_answers_a_question_without_an_edit() {
+        use crate::agent::ClaudeCodeAgent;
+        use crate::turn::TurnEvent;
+        use tokio_util::sync::CancellationToken;
+
+        let base = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("nightloom-note-chat-live-{}", uuid::Uuid::new_v4()));
+        let notes = base.join("notes");
+        let scratch = base.join("scratch");
+        std::fs::create_dir_all(&notes).unwrap();
+        std::fs::create_dir_all(&scratch).unwrap();
+        let note = notes.join("setup.md");
+        let before = "# Setup\n\nWe keep drafts in the neutral folder.\n\n## Steps\n- Put a draft in the neutral folder.\n- Run the build.\n";
+        std::fs::write(&note, before).unwrap();
+        let note = std::fs::canonicalize(&note).unwrap();
+        let mut p = PassSpec::new("claude", Vec::new());
+        p.model = Some("haiku".into());
+
+        async fn turn(
+            p: &PassSpec,
+            scratch: &Path,
+            note: &Path,
+            msg: String,
+        ) -> (u32, u32, String) {
+            let mut edits = 0u32;
+            let mut rounds = 0u32;
+            let out = ClaudeCodeAgent::new(spec_for(p, scratch, note))
+                .run_turn(msg.as_str(), &CancellationToken::new(), &mut |e| match &e {
+                    TurnEvent::ToolCall { name, input, .. } => {
+                        rounds += 1;
+                        println!("call {name} {input}");
+                        assert!(check_call(note, name, input).is_ok(), "{name} {input}");
+                    }
+                    TurnEvent::ToolResult { name, is_error, .. } if name == "Edit" && !is_error => {
+                        edits += 1
+                    }
+                    _ => {}
+                })
+                .await
+                .expect("the CLI ran");
+            println!(
+                "--- is_error {} usage {:?}\n--- said: {}",
+                out.is_error, out.usage, out.text
+            );
+            (edits, rounds, out.text)
+        }
+
+        let r1 = "We dropped the neutral folder; drafts now go straight into the app folder.";
+        let (e1, c1, said1) = turn(
+            &p,
+            &scratch,
+            &note,
+            compose_instruction("setup.md", &note, r1, true, "2026-10-08", &[]),
+        )
+        .await;
+        let after1 = std::fs::read_to_string(&note).unwrap();
+        println!("--- turn 1: {e1} edits, {c1} tool calls\n{after1}");
+        assert!(e1 > 0 && after1 != before, "turn 1 edited the note");
+
+        let h = [PriorExchange {
+            request: r1.into(),
+            reply: said1.trim().into(),
+            changes: String::new(),
+            outcome: "edited".into(),
+        }];
+        let (e2, c2, said2) = turn(
+            &p,
+            &scratch,
+            &note,
+            compose_instruction(
+                "setup.md",
+                &note,
+                "summarize what changed",
+                true,
+                "2026-10-08",
+                &h,
+            ),
+        )
+        .await;
+        println!("--- turn 2: {e2} edits, {c2} tool calls");
+        assert_eq!(e2, 0, "a question makes no edit");
+        assert_eq!(
+            std::fs::read_to_string(&note).unwrap(),
+            after1,
+            "the file is as turn 1 left it"
+        );
+        assert!(said2.trim().len() > 20, "a reply in words: {said2}");
         let _ = std::fs::remove_dir_all(&base);
     }
 }

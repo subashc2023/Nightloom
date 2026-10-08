@@ -105,7 +105,9 @@
       <p class="hint">
         Say what changed — "we dropped the neutral folder; update everything that assumes it" —
         and the model edits the note to fit; each edit shows as it lands. It can read and edit
-        this note's file and nothing else. Each request can be undone in one step.
+        this note's file and nothing else. Each request can be undone in one step. It remembers
+        this thread, so you can follow up or ask about the note ("summarize what changed") and
+        get an answer without an edit.
       </p>
     {/if}
     {#each turns as turn (turn.id)}
@@ -125,7 +127,7 @@
             >
           {:else if turn.status === "unchanged"}
             <p>{turn.summary || "Nothing needed to change."}</p>
-            <span class="meta">no change</span>
+            <span class="meta">no edit</span>
           {:else if turn.status === "draft"}
             {#if turn.summary}<p>{turn.summary}</p>{/if}
             <span class="meta warn">{turn.error}</span>
@@ -181,7 +183,7 @@
       bind:this={box}
       aria-label="What changed"
       rows="3"
-      placeholder="What changed?"
+      placeholder="What changed? Or ask about the note"
       value={draft}
       oninput={(e) => setRequestDraft(key, (e.currentTarget as HTMLTextAreaElement).value)}
       {onkeydown}
@@ -281,6 +283,8 @@
   }
   .said p {
     margin: 0 0 0.2rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
   .meta {
     color: var(--dim);

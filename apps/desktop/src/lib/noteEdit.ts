@@ -212,3 +212,72 @@ export function blockWords(b: EditBlock): string {
       return "No note's text is in the editor, so there is nothing to edit.";
   }
 }
+
+// ---- the earlier exchanges (backlog 326) ----------------------------------
+
+/**
+ * One earlier exchange as the next request carries it: what he asked, what
+ * the model said, and what its edits changed (a compact line diff). The
+ * service bounds the whole history again, so a long thread cannot blow the
+ * prompt whatever the window sends.
+ */
+export interface PriorExchange {
+  request: string;
+  reply: string;
+  /** `- old` / `+ new` lines, capped; empty when nothing changed. */
+  changes: string;
+  /** edited | undone | no edit | stopped | failed */
+  outcome: string;
+}
+
+/** Exchanges carried, newest kept; the service trims further by size. */
+export const HISTORY_TURNS = 8;
+/** Changed lines carried per exchange, and characters. */
+export const HISTORY_CHANGE_LINES = 40;
+export const HISTORY_CHANGE_CHARS = 3000;
+
+/** The changed lines between two texts, `- `/`+ ` prefixed, capped. */
+export function changeDigest(before: string, after: string): string {
+  const out: string[] = [];
+  let more = 0;
+  let chars = 0;
+  for (const row of lineDiff(before, after)) {
+    if (row.kind === "ctx") continue;
+    const line = `${row.kind === "del" ? "-" : "+"} ${row.text}`;
+    if (out.length >= HISTORY_CHANGE_LINES || chars + line.length > HISTORY_CHANGE_CHARS) {
+      more++;
+      continue;
+    }
+    out.push(line);
+    chars += line.length + 1;
+  }
+  if (more > 0) out.push(`… ${more} more changed line${more === 1 ? "" : "s"}`);
+  return out.join("\n");
+}
+
+/** The thread's earlier exchanges for the next request, oldest first: no
+ *  `kept` copies, nothing running, at most `HISTORY_TURNS`. */
+export function priorExchanges(turns: NoteEditTurn[]): PriorExchange[] {
+  const out: PriorExchange[] = [];
+  for (const t of turns) {
+    if (t.status === "kept" || t.status === "running" || !t.request.trim()) continue;
+    const changed = t.after !== undefined && t.after !== t.before;
+    const outcome =
+      t.status === "applied"
+        ? "edited"
+        : t.status === "undone"
+          ? "undone"
+          : t.status === "failed"
+            ? "failed"
+            : t.status === "stopped"
+              ? "stopped"
+              : "no edit";
+    out.push({
+      request: t.request,
+      reply: (t.summary ?? t.error ?? "").trim(),
+      changes: changed ? changeDigest(t.before, t.after as string) : "",
+      outcome,
+    });
+  }
+  return out.slice(-HISTORY_TURNS);
+}
