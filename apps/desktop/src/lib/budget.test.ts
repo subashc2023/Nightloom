@@ -34,6 +34,15 @@ describe("the budget meter", () => {
     expect(budgetTitle(ledger({ stopped: "why" }))).toContain("Stopped: why");
   });
 
+  // Backlog 331: with no budget set the Running-tasks line read "spent 3%
+  // of 0%"; no budget, no budget words.
+  it("says nothing about a budget when none is set", () => {
+    expect(budgetChip(ledger({ budget_pct: 0 }))).toBe("");
+    expect(budgetTitle(ledger({ budget_pct: 0 }))).toBe("");
+    expect(budgetChip(ledger({ budget_pct: 0, stopped: "past the stop line" }))).toBe("stopped");
+    expect(budgetChip(ledger({ budget_pct: 0, wrap_at_ms: 9 }))).not.toContain("of 0%");
+  });
+
   // The override when he is present (nightshift backlog 189).
   it("says when a call is held for him, and when he let the message past the line", () => {
     const held = ledger({ latest_pct: 90, start_pct: 70, pending_since_ms: 5 });

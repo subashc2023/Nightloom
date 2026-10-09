@@ -95,12 +95,38 @@ export function latestAgents(
   const mine = rowsOf(rows, session);
   if (mine.length === 0) return { rows: [], running: 0, tokens: 0 };
   const turn = Math.max(...mine.map((r) => r.turn));
-  const latest = mine.filter((r) => r.turn === turn);
+  // One source with the Running-tasks page (backlog 331): the latest
+  // send's rows plus every row still running from an earlier send — the
+  // page's Running and "Finished, latest send" groups — so the chip's
+  // running count is the page's. It read "1 agent · done" over a page
+  // that said 10 running.
+  const latest = mine.filter((r) => r.turn === turn || r.status === "running");
   return {
     rows: latest,
     running: latest.filter((r) => r.status === "running").length,
     tokens: latest.reduce((n, r) => n + r.tokens, 0),
   };
+}
+
+/** The word a row gets when its turn's process ended under it (backlog
+ *  331) — the CLI stops what is still running when it exits. */
+export const ENDED_WITH_TURN = "stopped";
+
+/**
+ * Close a chat's rows still `running` when its turn has ended (backlog
+ * 331): the process that hosted them is gone, so nothing will ever report
+ * them finished, and they sat "running 23m" with no tokens. Returns how
+ * many it closed.
+ */
+export function closeRunningRows(rows: SubagentRow[], session: string | null, now = Date.now()): number {
+  let n = 0;
+  for (const r of rows) {
+    if (r.session !== session || r.status !== "running") continue;
+    r.status = ENDED_WITH_TURN;
+    r.updatedAt = now;
+    n += 1;
+  }
+  return n;
 }
 
 /**

@@ -627,7 +627,9 @@
         <span class="figure">
           {#if chipAgents.rows.length > 0}
             <span>{chipAgents.rows.length} agent{chipAgents.rows.length === 1 ? "" : "s"}</span>
-            {#if chipAgents.running === 0}<span class="of fold1">· done</span>{/if}
+            <!-- Running or done, from the same rows the Running-tasks page
+                 counts (backlog 331). -->
+            {#if chipAgents.running === 0}<span class="of fold1">· done</span>{:else}<span class="of">· {chipAgents.running} running</span>{/if}
           {/if}
           <!-- Chats running off screen (A4). -->
           {#if offScreen > 0}<span class:of={chipAgents.rows.length > 0}>{chipAgents.rows.length > 0 ? "· " : ""}{offScreen} chat{offScreen === 1 ? "" : "s"} running</span>{/if}
@@ -636,7 +638,7 @@
           {#if chipAgents.tokens > 0}<span class="of fold3">· {tokens(chipAgents.tokens)}</span>{/if}
           <!-- The message's budget meter (backlog 165, pass 2): spent of
                budget, in window percent, as the hook's ledger moves. -->
-          {#if app.turnBudget}<span class="of budget" class:stopped={!!app.turnBudget.stopped}>· {budgetChip(app.turnBudget)}</span>{/if}
+          {#if app.turnBudget && budgetChip(app.turnBudget)}<span class="of budget" class:stopped={!!app.turnBudget.stopped}>· {budgetChip(app.turnBudget)}</span>{/if}
         </span>
       </button>
     {/if}

@@ -21,6 +21,9 @@ export function budgetChip(b: TurnBudget | null, now = Date.now()): string {
   if (!b) return "";
   const spent = spentPct(b);
   if (heldNow(b, now)) return `held at ${b.stop_at}% · waiting for you`;
+  // No budget set (backlog 331): no budget words — it read "spent 3% of
+  // 0%". A stop still says so; the rest has nothing to be a share of.
+  if (!(b.budget_pct > 0)) return b.stopped ? "stopped" : "";
   if (b.stopped) return `stopped · ${spent ?? "?"}% of ${b.budget_pct}%`;
   if (b.wrap_at_ms) return `wrapping up · spent ${spent ?? "?"}% of ${b.budget_pct}%`;
   if (b.override_at_ms) return `past ${b.stop_at}% on your word · spent ${spent ?? "?"}% of ${b.budget_pct}%`;
@@ -32,6 +35,11 @@ export function budgetChip(b: TurnBudget | null, now = Date.now()): string {
 export function budgetTitle(b: TurnBudget | null): string {
   if (!b) return "";
   const spent = spentPct(b);
+  // No budget (backlog 331): only what still applies — the stop line.
+  if (!(b.budget_pct > 0)) {
+    if (heldNow(b)) return `Held: a call past the ${b.stop_at}% stop line is waiting for your answer in the chat.`;
+    return b.stopped ? `Stopped: ${b.stopped}` : "";
+  }
   const lines = [
     `This message's share of the 5-hour window: ${spent == null ? "no reading yet" : `${spent}% spent`} of a ${b.budget_pct}% budget` +
       (b.start_pct != null && b.latest_pct != null ? ` (window ${b.start_pct}% → ${b.latest_pct}%)` : ""),

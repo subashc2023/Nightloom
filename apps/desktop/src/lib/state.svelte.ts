@@ -111,7 +111,7 @@ import {
 } from "./browse";
 import { SEARCH_COLUMN_MAX, searchGrowth } from "./search.svelte";
 import * as tabs from "./tabs";
-import { adoptPending, latestAgents, mergeRows, rowsFromLog, rowsOf } from "./subagentRows";
+import { adoptPending, closeRunningRows, latestAgents, mergeRows, rowsFromLog, rowsOf } from "./subagentRows";
 import { cli, startCliClock } from "./cliUpdate.svelte";
 import { chatIsCold, loadLayerPrefs, reconnectBeforeTurn, saveLayerPrefs } from "./promptVersions";
 import { CONNECT_DEADLINE_MS, withDeadline } from "./deadline";
@@ -7146,6 +7146,10 @@ async function sendAgent(
     // What he sent into it (328): taken → in the chat; not → queued again,
     // before the queue's drain reads it.
     settleInjected(turn.key, delivered);
+    // The turn's process is gone (backlog 331): whatever of its subagents
+    // the CLI never reported finished ran inside it, and is not running.
+    closeRunningRows(app.subagents, turn.chat ?? (turn.detached ? null : app.activeSessionId));
+    if (turn.chat === null) closeRunningRows(app.subagents, null);
     // The window's timing marks, if no paint sent them (item 256).
     turnClock.ended(turn.key);
     if (!turn.detached) await endForeground();

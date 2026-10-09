@@ -8,6 +8,7 @@ import {
   agentCallContent,
   agentRowLine,
   isAgentCall,
+  closeRunningRows,
   latestAgents,
   mergeRows,
   rowsFromLog,
@@ -157,5 +158,28 @@ describe("rows rebuilt from a reopened chat's log (backlog 160)", () => {
     expect(merged[0]).toBe(live);
     const same = [live];
     expect(mergeRows(same, [])).toBe(same);
+  });
+});
+
+describe("rows and the turn that hosted them (backlog 331)", () => {
+  it("the chip counts a row still running from an earlier send, as the page does", () => {
+    const rows = [
+      row({ tool_use_id: "old", turn: 2, status: "running" }),
+      row({ tool_use_id: "new", turn: 5, status: "completed" }),
+    ];
+    const t = latestAgents(rows, "c1");
+    expect(t.rows.map((r) => r.tool_use_id).sort()).toEqual(["new", "old"]);
+    expect(t.running).toBe(1);
+  });
+  it("a turn's end closes its chat's running rows and no other chat's", () => {
+    const rows = [
+      row({ tool_use_id: "a", status: "running" }),
+      row({ tool_use_id: "b", status: "completed" }),
+      row({ tool_use_id: "c", session: "other", status: "running" }),
+    ];
+    expect(closeRunningRows(rows, "c1", 99)).toBe(1);
+    expect(rows.map((r) => r.status)).toEqual(["stopped", "completed", "running"]);
+    expect(rows[0].updatedAt).toBe(99);
+    expect(latestAgents(rows, "c1").running).toBe(0);
   });
 });
