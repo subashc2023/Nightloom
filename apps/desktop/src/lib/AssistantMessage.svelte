@@ -61,6 +61,7 @@
   import { memoryRefs, openMemoryEdit } from "./memoryOpen";
   import { memoryEditOf, type MemoryEdit } from "./memoryEdits";
   import type { ReplyUsageView } from "./replyUsage";
+  import { hasUsage, stopNote } from "./replyFooter";
 
   interface Footer {
     model: string;
@@ -802,7 +803,9 @@
     {@const share = size ? shareOf(size.tokens, limit) : null}
     <div class="footer">
       <button class="ns-btn ghost small" onclick={() => void copy()}>{copied ? "Copied" : "Copy"}</button>
-      {#if !footer.bare}
+      {#if !footer.bare && (size || hasUsage(footer.usage))}
+        <!-- No figure without usage (backlog 332): a reply cut off before
+             its result has none, and "0 out" under its words was wrong. -->
         <span class="meta" use:tip={footerTitle(footer, size)}>{fmtFigure(footer.usage, size)}{fmtCost(footer.cost)}</span>
       {/if}
       {#if planUsage}
@@ -810,10 +813,11 @@
              and the week, measured or ≈ estimated; hover says how. -->
         <span class="meta plan" use:tip={planUsage.title}>{planUsage.text}</span>
       {/if}
-      {#if footer.stop_reason?.startsWith("error: ")}
+      {#if stopNote(footer.stop_reason)}
         <!-- Why the reply stopped (backlog 202): the API error the CLI
-             ended it with, as the log recorded it. -->
-        <span class="meta stopped">stopped · {footer.stop_reason.slice(7)}</span>
+             ended it with, as the log recorded it — or that its stream
+             ended before the reply did (backlog 332). -->
+        <span class="meta stopped">{stopNote(footer.stop_reason)}</span>
       {/if}
       {#if fmtShare(share)}
         <!-- The reply's share of the window (backlog 090), the gauge's bar

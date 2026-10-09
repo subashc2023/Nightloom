@@ -460,10 +460,13 @@ async fn turn_body(
                 recorder.set_model(model.clone());
             }
             // The reason rides in the stop reason (backlog 202).
-            let reason = match (&outcome.api_error, outcome.is_error) {
-                (Some(e), true) => format!("error: {e}"),
-                (None, true) => "error".to_string(),
-                (_, false) => "end_turn".to_string(),
+            let reason = match (&outcome.api_error, outcome.is_error, &outcome.cut_off) {
+                (Some(e), true, _) => format!("error: {e}"),
+                (None, true, _) => "error".to_string(),
+                // Ended before its `result` (backlog 332): the footer
+                // says "cut off · <why>" instead of a silent "0 out".
+                (_, false, Some(why)) => format!("cut off: {why}"),
+                (_, false, None) => "end_turn".to_string(),
             };
             recorder.finish(Some(&reason));
             // After the turn: an id from a run that failed to start is a

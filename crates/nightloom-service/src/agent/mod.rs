@@ -1798,6 +1798,7 @@ impl ClaudeCodeAgent {
         // the feed's end is the EOF — at a `result` with nothing of his
         // waiting, at a Stop, or when the process ends.
         let inbox = (chat && piped).then(|| self.inbox.clone());
+        let mut held_stdin: Option<tokio::sync::mpsc::UnboundedSender<String>> = None;
         if piped
             && let Some(input) = &input
             && let Some(mut stdin) = child.stdin.take()
@@ -1806,8 +1807,13 @@ impl ClaudeCodeAgent {
             let _ = tx.send(protocol::user_line(input));
             match &inbox {
                 Some(inbox) => inbox.open(tx),
-                // Any other process takes its one message and the EOF.
-                None => drop(tx),
+                // Any other process takes its one message, and the EOF once
+                // its `result` is read (backlog 332): a CLI whose stdin ends
+                // exits after its reply, and on its way out it drops what
+                // it has not yet written to a reader running behind
+                // (measured: 65,536 bytes arrived, the rest and the result
+                // never did — `w5a-report.md`).
+                None => held_stdin = Some(tx),
             }
             tokio::spawn(async move {
                 // A child that exits before reading — a bad flag, a failed
@@ -1835,8 +1841,11 @@ impl ClaudeCodeAgent {
             stderr_tail(&text).to_string()
         });
 
-        let mut lines = BufReader::new(stdout).lines();
+        let mut lines = LossyLines::new(stdout);
         let mut interrupted = false;
+        // Why the read loop ended early, when it did (backlog 332).
+        let mut read_error: Option<String> = None;
+        let mut any_line = false;
 
         loop {
             let next = tokio::select! {
@@ -1849,6 +1858,7 @@ impl ClaudeCodeAgent {
             };
             match next {
                 Ok(Some(line)) => {
+                    any_line = true;
                     if !init_seen && line.contains(r#""subtype":"init""#) {
                         init_seen = true;
                         if let Some(t) = &timing {
@@ -1927,6 +1937,9 @@ impl ClaudeCodeAgent {
                             );
                         }
                     }
+                    if held_stdin.is_some() && line.starts_with(r#"{"type":"result""#) {
+                        held_stdin = None;
+                    }
                     for event in translator.push(&line) {
                         if let TurnEvent::ToolCall { name, .. } = &event {
                             last_call = Some(name.clone());
@@ -1941,10 +1954,15 @@ impl ClaudeCodeAgent {
                     }
                 }
                 Ok(None) => break,
-                // A broken pipe says no more than the exit status will.
-                Err(_) => break,
+                // A broken pipe says no more than the exit status will —
+                // but a reply that ends here is cut off, and says so below.
+                Err(e) => {
+                    read_error = Some(e.to_string());
+                    break;
+                }
             }
         }
+        drop(held_stdin);
 
         // How the stop went, for the one notice the turn shows: the CLI
         // closed the turn on the interrupt, or had to be killed.
@@ -2033,6 +2051,14 @@ impl ClaudeCodeAgent {
             outcome.notices.push(stop.into());
             return Ok(outcome);
         }
+        // A stream that ended before its `result` line (backlog 332): what
+        // arrived is kept, and the reply says it was cut off and why,
+        // rather than ending silently mid-word with no usage.
+        if !outcome.result_seen && any_line {
+            let reason = cut_off_reason(read_error.as_deref(), &status.to_string());
+            outcome.notices.push(format!("cut off — {reason}"));
+            outcome.cut_off = Some(reason);
+        }
         // An API error the CLI ended the turn with (backlog 202) is said
         // out loud; the stop reason in the log carries it too.
         if let Some(e) = &outcome.api_error
@@ -2053,6 +2079,46 @@ impl ClaudeCodeAgent {
             });
         }
         Ok(outcome)
+    }
+}
+
+/// Why a reply ended before its `result` line (backlog 332), in his words.
+fn cut_off_reason(read_error: Option<&str>, status: &str) -> String {
+    match read_error {
+        Some(e) => format!("reading Claude Code's output failed ({e})"),
+        None => format!("Claude Code's output ended before the reply finished ({status})"),
+    }
+}
+
+/// The CLI's stdout, line by line, never failing on a byte that is not
+/// UTF-8 (backlog 332): `lines()` turns one such byte — a line cut
+/// mid-character, say — into an error that ended the turn; this replaces
+/// it with U+FFFD and reads on.
+struct LossyLines<R> {
+    inner: BufReader<R>,
+    buf: Vec<u8>,
+}
+
+impl<R: tokio::io::AsyncRead + Unpin> LossyLines<R> {
+    fn new(r: R) -> Self {
+        Self {
+            inner: BufReader::new(r),
+            buf: Vec::new(),
+        }
+    }
+
+    /// Cancel safe, as `lines()` was: a read dropped mid-line (the
+    /// `select!` on Stop) leaves its bytes in `buf` for the next call.
+    async fn next_line(&mut self) -> std::io::Result<Option<String>> {
+        self.inner.read_until(b'\n', &mut self.buf).await?;
+        if self.buf.is_empty() {
+            return Ok(None);
+        }
+        let mut line = std::mem::take(&mut self.buf);
+        while matches!(line.last(), Some(b'\n' | b'\r')) {
+            line.pop();
+        }
+        Ok(Some(String::from_utf8_lossy(&line).into_owned()))
     }
 }
 
@@ -3790,6 +3856,89 @@ wait
             vec!["interrupted — Claude Code ended the turn".to_string()],
             "one notice, one toast"
         );
+    }
+
+    /// The stream shape of backlog 332 (synthetic text, the same shape as
+    /// the 10/8 turn): `init`, the reply's text deltas — non-ASCII among
+    /// them — and then the end of the output with no `assistant` line and
+    /// no `result`, as when the CLI exits holding output it never wrote.
+    #[cfg(unix)]
+    const CUT_BEFORE_RESULT: &str = r###"printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"claude-opus-5-5","permissionMode":"auto","session_id":"cut-1"}'
+printf '%s\n' '{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":2,"output_tokens":1}}}}'
+printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}'
+printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"## Findings\n\nA €50M fund — "}}}'
+printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"rolling, replies in a week; the rest appro"}}}'
+exit 0
+"###;
+
+    /// Backlog 332: a reply whose output ends before its `result` keeps
+    /// every word that arrived, and the outcome says it was cut off and
+    /// why — the stop reason the footer shows — instead of ending silently.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stream_that_ends_before_its_result_keeps_the_text_and_says_cut_off() {
+        let dir = std::env::temp_dir().join(format!("nightloom-cut-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = AgentSpec::new(&dir);
+        s.binary = stand_in(&dir, CUT_BEFORE_RESULT);
+        let agent = ClaudeCodeAgent::new(s);
+        let cancel = CancellationToken::new();
+        let mut text = String::new();
+        let outcome = agent
+            .run_turn("go", &cancel, &mut |e| {
+                if let TurnEvent::TextDelta { text: t } = e {
+                    text.push_str(&t);
+                }
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            text,
+            "## Findings\n\nA €50M fund — rolling, replies in a week; the rest appro"
+        );
+        assert!(!outcome.result_seen);
+        let why = outcome.cut_off.as_deref().expect("said to be cut off");
+        assert!(why.contains("ended before the reply finished"), "{why}");
+        assert!(
+            outcome.notices.iter().any(|n| n.starts_with("cut off — ")),
+            "{:?}",
+            outcome.notices
+        );
+        assert_eq!(outcome.session_id.as_deref(), Some("cut-1"));
+    }
+
+    /// Backlog 332: a byte that is not UTF-8 no longer ends the read (it
+    /// was an `Err` from `lines()`, and the turn ended there, silently);
+    /// the line is read lossily and the reply runs on to its `result`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_line_that_is_not_utf8_does_not_end_the_reply() {
+        let dir = std::env::temp_dir().join(format!("nightloom-utf-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = AgentSpec::new(&dir);
+        s.binary = stand_in(
+            &dir,
+            r##"printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"m","permissionMode":"auto","session_id":"u-1"}'
+printf '{"type":"stream_event","bad":"\377"}\n'
+printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"after the bad byte"}}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"after the bad byte","session_id":"u-1","stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":4}}'
+"##,
+        );
+        let agent = ClaudeCodeAgent::new(s);
+        let cancel = CancellationToken::new();
+        let mut text = String::new();
+        let outcome = agent
+            .run_turn("go", &cancel, &mut |e| {
+                if let TurnEvent::TextDelta { text: t } = e {
+                    text.push_str(&t);
+                }
+            })
+            .await
+            .unwrap();
+        assert_eq!(text, "after the bad byte");
+        assert!(outcome.result_seen);
+        assert!(outcome.cut_off.is_none());
+        assert_eq!(outcome.usage.output_tokens, 4);
     }
 
     /// A turn the API's content filter stopped (backlog 202; the synthetic

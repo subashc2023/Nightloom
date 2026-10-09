@@ -67,6 +67,12 @@ pub struct AgentOutcome {
     /// The CLI's own sentence, for a notice and the log's stop reason; a
     /// turn stopped this way otherwise ends silently.
     pub api_error: Option<String>,
+    /// The CLI's `result` line was read (backlog 332). A stream that ends
+    /// without one lost its tail somewhere — the reply was cut off.
+    pub result_seen: bool,
+    /// Why the reply ended before its `result` line (backlog 332), set by
+    /// the driver: the text that arrived is kept, and this says so.
+    pub cut_off: Option<String>,
 }
 
 /// The usage limit that stopped a turn (nightshift backlog 164).
@@ -621,6 +627,7 @@ impl Translator {
     }
 
     fn result(&mut self, r: ResultLine) -> Vec<TurnEvent> {
+        self.outcome.result_seen = true;
         // The backstop for an error no assistant line named (backlog 202):
         // a failed turn the CLI calls a `success` subtype carries its
         // reason only as `result`. Not a stop (`error_during_execution`)
