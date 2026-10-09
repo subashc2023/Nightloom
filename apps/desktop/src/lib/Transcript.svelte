@@ -28,7 +28,7 @@
     loadPaneLog,
     paneChat,
   } from "./state.svelte";
-  import type { Segment, ToolCallView } from "./state.svelte";
+  import type { Segment } from "./state.svelte";
   import { checkpointLine, checkpointOwner } from "./checkpoint";
   import { pauseLabel, resetLabel, resumeDelayMs } from "./limit";
   import {
@@ -48,7 +48,7 @@
   } from "./edit";
   import { toolInputSummary } from "./transcriptPrefs.svelte";
   import { forkLine } from "./edit";
-  import { parseSubagentBlock } from "./subagent";
+  import { parseSubagentBlock, placeSubagentBlock } from "./subagent";
   import { splitAdopted } from "./subagentAsk";
   import { councilOfTurn, rosterLabel } from "./council";
   import { wordDiff } from "./textdiff";
@@ -263,14 +263,14 @@
               // subagent, in an earlier one of the turn for a background
               // one — as one text segment of the narrative; it is not the
               // reply's own prose and never counts as `said`.
+              // Placed in an agent's box, always (backlog 330) — never
+              // the reply's prose, whose wall of `▸`/`↳` lines it was
+              // when its call sat past his next message or inside
+              // another subagent.
               const sub = parseSubagentBlock(b.text);
               if (sub && !whole) {
-                const parent = findCallIn(segs, sub.parent) ?? findCallBack(out, sub.parent);
-                if (parent) {
-                  parent.children ??= [];
-                  parent.children.push({ kind: "text", text: sub.body });
-                  break;
-                }
+                placeSubagentBlock(sub, segs, earlierSegs(out));
+                break;
               }
               said.push(b.text);
               if (whole) {
@@ -332,32 +332,18 @@
     return out;
   });
 
-  /** The tool call with `id` in `segs`, at any depth. */
-  function findCallIn(segs: Segment[], id: string): ToolCallView | null {
-    for (let i = segs.length - 1; i >= 0; i--) {
-      const seg = segs[i];
-      if (seg.kind !== "tool" && seg.kind !== "removed_tool") continue;
-      if (seg.call.id === id) return seg.call;
-      if (seg.call.children) {
-        const inner = findCallIn(seg.call.children, id);
-        if (inner) return inner;
-      }
-    }
-    return null;
-  }
-  /** The same, searching back through the assistant messages already
-   *  projected — a background subagent's block lands after its parent's
-   *  message (backlog 075). */
-  function findCallBack(items: Item[], id: string): ToolCallView | null {
+  // ~~`findCallIn`~~ moved to `subagent.ts` with the placing (backlog 330).
+  /** The assistant messages already projected, newest first — a
+   *  background subagent's block lands after its parent's message
+   *  (backlog 075), past his next message too (backlog 330:
+   *  ~~stopped at the first user message~~). */
+  function earlierSegs(items: Item[]): Segment[][] {
+    const out: Segment[][] = [];
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
-      if (it.kind === "user") return null;
-      if (it.kind === "assistant") {
-        const call = findCallIn(it.segs, id);
-        if (call) return call;
-      }
+      if (it.kind === "assistant") out.push(it.segs);
     }
-    return null;
+    return out;
   }
 
   /**
