@@ -10,6 +10,8 @@ vi.mock("./state.svelte", async (orig) => {
     ...actual,
     sendEdit: vi.fn(async (...args: unknown[]) => {
       sent.push(args.slice(0, 4));
+      // The fork request is a round trip: a second press lands during it.
+      await Promise.resolve();
       const onForked = args[4] as ((p: string | null, f: string) => void) | null;
       const parent = actual.app.activeSessionId;
       actual.app.activeSessionId = "fork1";
@@ -119,6 +121,15 @@ describe("retryReply", () => {
     setDraftText("fork1", "there already");
     await retryReply(2);
     expect(readDraft("fork1").text).toBe("there already\nmine");
+  });
+
+  it("forks once when pressed twice before the fork comes back", async () => {
+    const [a, b] = await Promise.all([retryReply(5), retryReply(5)]);
+    expect([a, b]).toEqual([true, false]);
+    expect(sent).toHaveLength(1);
+    // Once the fork is open, Retry works again.
+    expect(await retryReply(5)).toBe(true);
+    expect(sent).toHaveLength(2);
   });
 
   it("does nothing mid-turn", async () => {
