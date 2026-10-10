@@ -1,0 +1,27 @@
+<!doctype html>
+<!-- Review of 318 + 1210: the real Composer with app state stubbed, driven by the page itself through
+     undo/redo sequences, for nightshift-code bin/snap (WebKit). The caption says what the page did and what it
+     measured. ?s= seq1210 | convert | fuzz | dismiss ; ?r= menu | key | native | mix (the route ⌘Z / ⌘⇧Z take). -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      body { margin: 0; background: var(--paper, #111); }
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+      #root { position: relative; display: flex; flex-direction: column; justify-content: flex-end; width: 900px; height: 360px; }
+      #cap { font: 12px/1.5 ui-monospace, monospace; color: #ddd; background: #000; padding: 6px 8px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="cap"></div>
+    <script>
+      localStorage.removeItem("nightloom.drafts");
+      // As main.rs sets it on the Mac window: the box's keys are ⌘, not Ctrl.
+      window.__NIGHTLOOM_PLATFORM__ = "macos";
+      window.addEventListener("error", (e) => (document.getElementById("cap").textContent += "\nerror: " + e.message));
+      window.addEventListener("unhandledrejection", (e) => (document.getElementById("cap").textContent += "\nrejection: " + e.reason));
+    </script>
+    <script type="module" src="./review1210.ts"></script>
+  </body>
+</html>

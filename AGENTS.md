@@ -18,7 +18,11 @@ over it.
 
 ```sh
 cargo build                      # build workspace
-cargo test                       # all tests (538 at last count)
+cargo test                       # all tests (592 at last count)
+#   macOS: `credentials::tests::a_missing_store_reads_as_no_key_rather_than_a_panic`
+#   reads the login keychain from the UNSIGNED test binary, so it raises a keychain
+#   prompt that hangs the run until someone answers it. Unattended (a subagent, a
+#   night), run `cargo test -- --skip a_missing_store_reads_as_no_key` instead.
 cargo test -p nightloom-core     # one crate
 cargo clippy --workspace         # must be clean
 cargo fmt
@@ -31,6 +35,8 @@ cargo run -p nightloom-cli -- eval              # agentic task suite
 
 npm install --prefix apps/desktop        # once
 cargo tauri dev                          # desktop, from the repo root
+#   (macOS: .cargo/config.toml routes the run through scripts/macos-sign-and-run.sh,
+#    which signs the binary so keychain "Always Allow" survives rebuilds — docs/desktop.md)
 npm run check --prefix apps/desktop      # svelte-check
 ```
 
@@ -95,10 +101,12 @@ The event log is the source of truth. The provider message list
   than failing loudly. **Never put a clock, a date, or git status in
   `prompt.rs`.**
 - **Anything that supersedes conversation state is a marker, not a mutation.**
-  `Compaction`, `Rewind`, `Elide`/`Unelide` all leave the log append-only and
-  change only what the projection reads. A fourth follows the same three rules:
-  the log keeps the content, a UI can show what was hidden, and a `Rewind` that
-  supersedes the marker undoes it for free.
+  `Compaction`, `Rewind`, `Elide`/`Unelide` and `Edit` all leave the log
+  append-only and change only what the projection reads. A fifth follows the
+  same three rules: the log keeps the content, a UI can show what was hidden,
+  and a `Rewind` that supersedes the marker undoes it for free. On the Claude
+  Code engine the same edits reach the CLI's history **by copy** — a new
+  session file under a new id, the original never written to.
 - **Two note stores, and the line between them matters.** *Project notes* live
   in `<workspace>/.agents` — about the code, committable, inside the tree the
   file tools are rooted at, so `grep`/`glob` find one in an ordinary walk. The

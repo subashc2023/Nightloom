@@ -4,16 +4,19 @@
 name: `files.rs` (`read_file` / `write_file` / `edit_file` / `list_dir`),
 `search.rs` (`glob` / `grep`), `shell.rs` (`bash`), `todo.rs` (`todo_write`),
 `compact.rs` (`compact_context`), `task.rs` (`task`), `review.rs` (`review`),
-`web.rs` (`web_fetch` / `web_search`), `remember.rs` (`remember`), and
-`current_time` inline in `mod.rs`. `builtin_in(root)` is the whole set in one
-call.
+`web.rs` (`web_fetch` / `web_search`), `remember.rs` (`remember`), `chats.rs`
+(`search_chats` / `read_chat`), and `current_time` inline in `mod.rs`.
+`builtin_in(root)` is the whole set in one call; `remember` and the two chat
+tools are added by the shells, which know where the inbox and the logs are.
 
 ## Classification and descriptions
 
 **Effect classification is part of adding a tool**, and a test pins the whole
 table: `ReadOnly` for `read_file` / `list_dir` / `glob` / `grep` /
-`current_time` and for `review`, which is read-only because its sub-chat is
-stripped to read-only tools; `Session` for `todo_write` / `compact_context` and
+`current_time`, for `search_chats` / `read_chat` (a read of the user's own logs
+on this machine, which no `Root` confines — the row is what makes widening what
+they return deliberate), and for `review`, which is read-only because its
+sub-chat is stripped to read-only tools; `Session` for `todo_write` / `compact_context` and
 for `remember`, a durable write that is still `Session` because the inbox is
 quarantine and the dream pass is the gate; `Mutating` (the default) for
 `write_file` / `edit_file` / `bash`, for `task`, which can reach anything its
@@ -111,6 +114,20 @@ why the alias has to be *emitted* rather than merely accepted.
 `builtin()` roots at cwd; `builtin_in(root)` takes anything `Into<Root>`, so a
 shell attaches the vault with `Root::new(ws).with_vault(dir)` and everything
 downstream is unchanged.
+
+**Extra folders (2026-09-17, nightshift backlog 143).** ~~A workspace, plus at
+most one named tree — never an open-ended set~~: the set is still closed and
+named, but no longer at most one. `Root::with_extra(path)` / `add_extra(path)`
+grant a further tree under `@<alias>/…`, the alias the folder's leaf name
+lower-cased with anything but letters, digits, `-` and `_` turned to `-`
+(`folder_alias`: `Value Gen` → `@value-gen`), made unique in order of grant
+(`@notes`, `@notes-2`; `@kb` stays the vault's). `resolve` answers the vault's
+alias first, then an extra's, then the workspace and every tree by absolute
+spelling; an `@name` that is no grant is an ordinary workspace path as `@kbd/…`
+always was. `show` emits the alias so it round-trips; `path_hint()` (now a
+`String`) names each granted folder with its real path in every path-taking
+tool's description, and the refusal message lists them. The two checks run
+against whichever tree the alias picked — `@value-gen/../secret` is refused.
 
 **It is a guard rail, not a sandbox**: TOCTOU is uncovered, and `bash` is not
 confined at all — only its working directory is set, and its description says so
@@ -281,9 +298,32 @@ whitespace (a fetched code sample being the common case), and that links keep
 their URLs **resolved against the landed URL** so the next call has somewhere to
 go.
 
-Where it gives up it says so — a page that extracts to nothing is assembled by
-JavaScript, and reporting that is the difference between the model trying the
-site's API and trying the same URL three more times.
+Where it gives up it says so — a page that extracts to nothing ~~is assembled
+by JavaScript~~ **beyond its `<title>` is a JavaScript shell (2026-09-17,
+nightshift backlog 125)**, and reporting that is the difference between the
+model trying the site's API and trying the same URL three more times.
+
+**The shell guard discounts the title, and the user agent declares a bot
+(2026-09-17, nightshift backlog 125).** Measured on Obsidian's help site (an
+Obsidian Publish app): the HTML is a 2.9 KB shell whose only text is the
+45-character `<title>`; the guard fired under 40 characters of *any* text, so
+the tool returned a success holding a title, twice, and the model worked out
+for itself that the page was empty. Now `shell_verdict` compares the extracted
+text against the `<title>` rendered the way the extractor renders it (entities
+decoded, whitespace collapsed) and calls the page a shell when fewer than 40
+characters remain beyond it and the HTML is over 2 KB; the verdict still
+quotes the title, since it is the one thing the shell does say. The same
+measurement showed the site serving the **pre-rendered article** (6.1 KB) to
+any user agent with `bot` in it — `Googlebot`, `Claude-User`, `Nightloom/0.1.0
+(bot)` — and the shell to `curl`, to a Chrome string, and to the bare
+`Nightloom/0.1.0` this tool used until then; the project URL alone, without
+`bot`, got the shell too. So the agent is now `Nightloom/<version>
+(+https://github.com/subashc2023/Nightloom; bot)`: a declared bot is what a
+prerender-for-crawlers site keys on, and it is also the honest name for a
+program fetching one page a model asked for. It is not a crawler — one URL per
+call, no link-following — which is the one assumption a site may make of a
+`bot` that does not hold here. The choice is Swaraag's (nightshift blocker
+192); this is the default taken.
 
 Two whitespace rules are pinned by tests because both are invisible in the markup
 and very visible in the output: inserting a space the source did not have turns
@@ -350,6 +390,115 @@ rephrase until the round limit.
 
 Keys are `TAVILY_API_KEY` / `BRAVE_API_KEY` / `EXA_API_KEY`, or the desktop's
 credential store.
+
+## Other chats (`tools/chats.rs`)
+
+`search_chats` and `read_chat` are cross-chat retrieval as a tool call: a
+ranked search over what the user's other chats said, plus a window onto one
+log. No embeddings, no automatic injection — a lookup is a tool call the user
+sees in the transcript, and the description tells the model to cite the chat by
+title and date when it uses what it found. ~~Passages reaching the model on their
+own is a separate item (blocker 052).~~ **Blocker 052 answered 2026-09-14: there
+is no automatic injection, on or off.** The model decides, the way it decides
+to search the web — the tool's description and the Claude Code engine note say
+"when the message points outside this chat (an earlier decision, 'as we
+discussed', a name you have no context for), not on every turn". What changed
+with the answer is the ranking below: recency is a prior.
+
+**Recent first.** A chat's BM25 score is multiplied by `1 / (1 + age/30 days)`,
+age measured from the log's last write — half at a month, a quarter at three, a
+thirteenth at a year (`RECENCY_HALF_LIFE_DAYS` in `store/index.rs`). His rule:
+"chats that are referenced should be very close to the actual chat we're
+involved in … I don't really need chats from a year ago which happened to
+pattern match." A prior, never a cut: an old chat with no younger competitor
+still comes back, only lower, and the description tells the model to read
+further down the list when the user says it was a while ago.
+
+**Ranked, through an index.** `search_chats` ranks by BM25 through
+`store::index::ChatIndex`, the `.index.json` kept beside each directory's logs
+on the listing cache's terms ([service-data.md](service-data.md), "The chat
+index"): the query's words, whole and lowercased with one plural ending folded,
+scored by how rare each is across the directory and how often the chat says it,
+the title's words counting three times, long chats discounted. A chat that says
+none of the words is not returned. Each call brings the index up to date first
+— a stat per log, a re-tokenise of the ones that grew from where their record
+stopped, a rebuild of the file if it is missing or malformed — so nothing else
+has to keep it. A query with no word in it (a lone symbol, a single letter) goes
+to `store::search`, the sidebar's substring scan, newest first, which is what
+the first version did for everything; the header says so. In `all` scope each
+directory is ranked by its own index and the lists are merged by score as they
+are, a known unfairness between a small project and a large one.
+
+~~The cheap version: `store::search`, which already answers "which chat was
+that" for the sidebar, put in the model's hands. No index.~~ — the first
+version, 2026-09-14, superseded the same day by the index above once it was
+measured (below).
+
+**Neither ever returns a tool result.** Both go through the same `store::said`
+filter as the sidebar search — user messages, assistant text blocks, titles —
+so thinking and tool output are invisible to them. `search` makes the
+false-positive argument (a tool result is whatever file a chat read); the tools
+add a confinement one: another chat's tool results are file contents, and a
+window onto them would be a second `read_file` that no `Root` roots.
+
+**Scope.** `search_chats` takes `scope: project` (default; the directory the
+sidebar lists — the open project's, or the unfiled chats') or `all` (every
+registered project plus the unfiled chats, each hit tagged with its project's
+name). `read_chat` takes no scope: an id is already unambiguous, so it is
+resolved in every directory the tools can see, and a prefix that matches in two
+is refused the way one that matches two logs in one directory is. The shell
+passes both as a `ChatDirs { active, all: Vec<ChatDir { name, dir }> }`, taken
+at connect time like the rest of `ChatSpec`. An empty search names its scope,
+for the reason `grep`'s does.
+
+**Shape.** A search returns one line per chat, best first, at most `limit`
+(default 10, clamped to 25): short id · title · date last active · score ·
+excerpt around the first of the query's words the chat says, the sidebar's
+`you:`/`model:` relabelled `user:`/`assistant:` for a reader who is the model.
+The score is the BM25 number to one decimal, there so the model can see a clear
+winner from a flat field. The index keeps counts and not positions, so the
+excerpt comes from one scan of each returned chat; when no word is found as
+text (the ranking matched on the title, which the line already shows) the
+chat's opening stands in. The substring fallback keeps the first version's line
+(matching messages instead of a score, newest first). `read_chat`
+returns a header naming the chat's title and date, then a `max_chars` window
+(default 6000, clamped to 20000) centred on the first message containing
+`query`, or the start of the conversation without one; each message is prefixed
+with its speaker and timestamp, and a window that opens mid-message repeats
+that message's prefix marked *continued*.
+
+**What was measured** (release build, 2026-09-14, the three `#[ignore]`d tests
+in `chats.rs`). The first version, `store::search` on every call: over 933
+logs (55 MB) **~330 ms** warm, ~510 ms first run; over 32 logs **~30 ms**; in a
+debug build — which `cargo tauri dev` is — **~6 s**. Over ten hand-picked
+questions on a 32-chat project, newest-first put the expected chat in the top
+five for eight, three of them by title alone; the two misses were topics many
+chats mention in passing, where a substring has no way to prefer the chat that
+was *about* it. The index, same corpus and the same ten query strings: **all
+ten in the top five, eight at rank 1** (was three), the two misses at ranks 2
+and 1. The index's own cost is in [service-data.md](service-data.md) — a cold
+build over 933 logs ~1.1–1.6 s once, then ~90 ms per call to find nothing
+changed, plus one scan per returned chat for its excerpt. The full table with
+both rankings side by side is
+`nightshift-code/notes/runner-design/chat-index-report-2026-09-14.md`.
+
+**The chat asking can find itself.** Its log is in the active directory and the
+tools are built before a session exists, so a hit in the current chat costs a
+row rather than a wrong answer and is left alone in this version.
+
+**An incognito chat is refused, both ways (2026-09-15).** Search never returns
+one: the ranked path cannot — the index holds no term for such a log
+([service-data.md](service-data.md) "The chat index") — and the substring
+fallback drops any hit whose `summary.mode` is unread by others, since the
+sidebar's scan it borrows finds the chat for the *user*, who owns it.
+`read_chat` refuses by id, short or full, before scanning the log
+(`store::mode_of` on the first line): *"that chat is incognito: it was started
+so that no other chat can read it, and this one cannot"* — a refusal that
+names no content, so a model holding the id from the user, or from a result
+line older than the mode, still gets no window. An ephemeral chat has no log
+and nothing to refuse. Both tools are served to an incognito chat itself —
+it may read the others; they may not read it. The test is
+`an_incognito_chat_is_hidden_from_search_and_refused_by_read`.
 
 ## Killing a shell is not killing the command (`tools/shell.rs`)
 

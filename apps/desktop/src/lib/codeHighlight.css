@@ -1,0 +1,58 @@
+/* Item 315: code colours in the message box and his sent message. Drawn
+   from the palette's own tokens (the status and diff colours are shared by
+   all four palettes), so a block reads the same on every palette. */
+.hljs-keyword,
+.hljs-meta .hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-doctag {
+  color: var(--accent-ink);
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-char,
+.hljs-template-string,
+.hljs-meta .hljs-string {
+  color: var(--done);
+}
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet {
+  color: var(--partial);
+}
+.hljs-comment,
+.hljs-quote {
+  color: var(--dim);
+  font-style: italic;
+}
+.hljs-title,
+.hljs-title.function_,
+.hljs-section,
+.hljs-selector-id,
+.hljs-selector-class {
+  color: var(--live);
+}
+.hljs-type,
+.hljs-built_in,
+.hljs-title.class_,
+.hljs-class .hljs-title {
+  color: var(--add-fg);
+}
+.hljs-attr,
+.hljs-attribute,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-params,
+.hljs-property {
+  color: var(--ink2);
+}
+.hljs-meta,
+.hljs-tag,
+.hljs-name {
+  color: var(--del-fg);
+}
+.hljs-subst,
+.hljs-punctuation,
+.hljs-operator {
+  color: var(--ink);
+}

@@ -1,0 +1,24 @@
+<!doctype html>
+<!-- Backlog 234: the real LaunchScreen (the rolling moon), served by vite on a spare port and snapped with
+     nightshift-code bin/snap (WebKit).  ?t=<ms> holds every animation at that time, since an offscreen
+     WKWebView does not tick them (backlog 233's finding), so two snaps at two times show the roll's two frames.
+     &project=<name> -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      body { margin: 0; }
+      #root { position: relative; width: 100vw; height: calc(100vh - 40px); }
+      #cap { font: 12px/1.5 ui-monospace, monospace; color: #ddd; background: #000; padding: 6px 8px; white-space: pre; height: 28px; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="cap"></div>
+    <script>
+      window.addEventListener("error", (e) => (document.getElementById("cap").textContent = "error: " + e.message));
+      window.addEventListener("unhandledrejection", (e) => (document.getElementById("cap").textContent = "rejection: " + e.reason));
+    </script>
+    <script type="module" src="./launch.ts"></script>
+  </body>
+</html>

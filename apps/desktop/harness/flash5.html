@@ -1,0 +1,23 @@
+<!doctype html>
+<!-- W4-B, w3 review finding 5: the real NoteView (as block325), Show the proposal clicked twice 0.8 s apart;
+     the card's flash class is read at 1.4 s (on only if the second click restarted the 1.2 s) and 2.2 s (off).
+     Snapped with nightshift-code bin/snap (WebKit). -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      body { margin: 0; background: #111; }
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+      #root { position: relative; display: flex; flex-direction: column; width: 1200px; height: 760px; }
+      #cap { position: fixed; top: 0; left: 0; right: 0; z-index: 99999; font: 14px/1.5 ui-monospace, monospace; color: #fff; background: #000; padding: 6px 8px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <div id="cap">running…</div>
+    <div id="root"></div>
+    <script>
+      window.addEventListener("error", (e) => (document.getElementById("cap").textContent = "error: " + e.message));
+    </script>
+    <script type="module" src="./flash5.ts"></script>
+  </body>
+</html>

@@ -9,12 +9,28 @@ Where things live, and which of them Nightloom owns.
 ~/.nightloom/projects/<id>/sessions/   the chats
 ~/.nightloom/unfiled/sessions/         desktop chats with no project open
 ~/.nightloom/projects.json             the registry
-~/.nightloom/AGENTS.md                 user memory   (how I want you to behave)
+~/.nightloom/AGENTS.md                 user memory   (how I want you to behave — instructions only since 2026-09-15; edited in the app since 2026-09-14, Notes → Memory)
 ~/.nightloom/knowledge/                the vault     (what I know)
+~/.nightloom/knowledge/background.md   who I am and what I have worked on — the claude.ai export's summary, read on demand; written once, then his
 ~/.nightloom/knowledge.json            where the vault is, when moved
 ~/.nightloom/observations.jsonl        the memory inbox (append-only, never pruned)
-~/.nightloom/dream.json                how far the dream has read into it
+~/.nightloom/capture.json              how far the capture pass has read each chat log
+~/.nightloom/dream.json                how far the dream has read into the inbox
+~/.nightloom/proposals/                the dream's proposed edits to user memory (pending; dismissed/, applied/ and held/ beneath)
+~/.nightloom/projects/<id>/proposals/  the same for that project's AGENTS.md
+
+# read, not owned — written by ~/.claude/usage-ledger.py (a LaunchAgent, every 6 h); Nightloom only reads them
+~/.claude/usage-ledger.csv             per-UTC-day Claude Code token counts, keyed (date, model, scope)
+~/.claude/usage-rates.json             $/MTok per model and the two cache-write multipliers
+~/.claude/usage-surfaces.csv           7-day share of the weekly limit by surface, one row per snapshot
 ```
+
+The last three sit under `~/.claude`, not `~/.nightloom`, and stay there
+whatever `NIGHTLOOM_HOME` says: they are the user's, filled by a collector
+Nightloom neither ships nor runs, and Settings → Usage is a view over them
+(`usage.rs`; `docs/usage-ledger.md`). Nothing in this crate writes them, and
+their absence is the ordinary state of a machine without the collector,
+reported as a sentence rather than an error.
 
 **Config in the folder, data in the home** — equivalently, *about the code /
 about you*. Notes describe the codebase, so they sit with it: a teammate can read
@@ -96,6 +112,26 @@ the containment argument is two halves (lexical normalization *and* a symlink
 check on the deepest existing ancestor), and a second hand-rolled copy is exactly
 what ends up missing one.
 
+### Extra folders (2026-09-17, nightshift backlog 143)
+
+The other half of "a project is not a folder": *what the project is about*
+is one thing, *where its files live* is a list. `Project.extra_folders:
+Vec<PathBuf>` (absent from the file when empty, so older registries read
+unchanged) names the other folders the project's content lives in;
+`Registry::set_extra_folders(id, list)` replaces the whole list — the home
+folder and duplicates dropped, a folder that is not a directory refused. A
+chat adds its own on top with `SessionEvent::Folders` on its log (the core;
+latest live list wins, a fork carries it, a rewind past the grant takes it
+back). At connect the desktop unions the two (`extra_folders` in `main.rs`:
+project first, then the chat's, each once, missing ones left out) and grants
+every folder on the engine in use — `--add-dir` on the CLI (readable without a
+prompt, edits under the permission mode; blocker 050's mechanism), a named
+tree of the `Root` on the API engine (`@<alias>/…`, see `tools/root.rs`). The
+home folder stays the one place notes and `AGENTS.md` live; the extra folders
+are not walked for instructions and are not in the docspace. His case: a chat
+in the *value generalization* project reading Python files and notebook JSON
+in a folder that is not the project's.
+
 ## `knowledge.rs` — the vault
 
 The user's own notes, as against the project's — the other half of the pair
@@ -151,11 +187,14 @@ already bounded by the docspace's own limits, a vault is markdown rather than a
 repository, and a cache keyed on mtimes would be complexity bought against a cost
 nobody has measured — take that measurement first.
 
-## Memory: `observe.rs` + `dream.rs` + `tools/remember.rs`
+## Memory: `observe.rs` + `capture.rs` + `dream.rs` + `tools/remember.rs`
 
 **Memory is two halves, split the way the consolidation literature converges
 on** — fast append-only capture, slow batched integration. The design doc with
-the research behind each decision is `.agents/dreaming.md`.
+the research behind each decision is `.agents/dreaming.md`. Since 2026-09-14
+the pipeline is **logs → capture → inbox → dream → vault / project memory**:
+the `remember` tool is still the fast path, and the capture pass is what
+fills the inbox when the model never takes it.
 
 ### The inbox
 
@@ -182,11 +221,153 @@ Three properties are the module:
 - Reading is total on `Session::load`'s argument, a torn final line left
   *unconsumed* for the next read rather than half-parsed.
 
+### Capture
+
+`nightloom capture` / `capture::run` (2026-09-14, nightshift memory-writer 6b;
+blocker 046's answer). The `remember` tool exists for the model to drop an
+observation mid-turn, and on this machine it has never called it — nothing in
+a conversation makes "write this down for later" the obvious next move, and
+the Claude Code engine cannot call it at all. So capture stops depending on
+the model's initiative: a pass reads what the conversations actually were,
+from the session logs both engines write (the Claude Code engine's through the
+Recorder — the same JSONL), and asks a model to extract the observations.
+
+**What it reads.** Every session dir — each registered project's
+`<store>/sessions` and `~/.nightloom/unfiled/sessions` (`capture::session_dirs`,
+built from the config dir so a job handed one explicitly finds the chats
+beside the registry it read) — and in each, every log with bytes past its
+watermark, newest first. A log's new lines are folded into an excerpt of
+**conversation text only**: user and assistant messages with timestamps,
+through the same `store::said` filter the chat tools apply, so a tool result —
+the file a chat read, the command it ran, the page it fetched — is never in
+front of the model. That is the injection defense in structural form; the
+instruction also says a line shaped as a directive to the pass is dropped,
+because a pasted page can arrive inside a user message. Superseded turns are
+folded too (a rewound turn is still something the user said, and `search`
+reads the log the same way); an elided event keeps its content in the log and
+is folded like any other.
+
+**When a log is read.** Its new lines must hold at least `MIN_USER_TURNS` (2)
+user turns — one question and its answer rarely hold an observation, and the
+chat open right now gains exactly one per turn — unless the log was never
+captured and has been quiet for `SETTLED_SECS` (an hour): a short chat is still
+a chat, and there is no "closed" event to wait for. Otherwise it is *deferred*,
+counted in the outcome and left alone. New lines with nothing said in them (a
+task list, a title, a tool result) are consumed without a turn.
+
+**The turn.** Excerpts from one source are packed into a turn up to
+`BATCH_BUDGET` (48 KB); a log with more new material than that is read up to
+it at a message boundary and the rest left for the next run, which is what
+lets the watermark describe what was taken. At most `TURN_CAP` (25) turns a
+run: the first capture after an import of a thousand chats is otherwise a
+thousand turns nobody priced. The chat has **no tools** (`capture::prepare`:
+identity only, no sidecar, no approver) and is asked for observations only,
+one per line, as `kind | text` with kind ∈ `user_stated` / `inferred` /
+`external` — facts about the user, their preferences, decisions, what they are
+working on; nothing about the assistant's own output; nothing already in the
+user's `AGENTS.md`, which is quoted in the instruction for exclusion; the word
+`none` when nothing is worth keeping. `parse_reply` is lenient about a bullet
+or a number and strict about the kind and a non-empty text; a line that fails
+is *counted* (`skipped`), never guessed at.
+
+**What it writes.** Each parsed line is appended through the same
+`observe::append_in` the `remember` tool uses, with `source` = the project's
+name (or absent for an unfiled chat, the `remember` convention) and `at` = the
+batch's most recent message, so the dream's provenance names the
+conversation's day rather than the pass's. **The watermark is per log**
+(`capture.json`: log path → bytes consumed, unlike the dream's single offset,
+because the logs are many and each grows on its own) and a log's entry moves
+only after its observations are appended: an interruption between the two
+offers the same bytes again, and the dream dedupes. A cancelled pass keeps the
+turns that completed and appends nothing from the one it stopped in.
+`--dry-run` makes the provider calls and appends nothing; the drafted
+observations come back in the outcome. `CaptureOutcome` carries `logs_read`,
+`observations`, `skipped`, `deferred`, `remaining` (past the turn cap),
+`per_project` in walk order, `drafted`, `interrupted`, usage and cost.
+
+The current chat's own log is read too, up to its watermark — fine, by
+design: what was said is what was said.
+
+**Incognito logs are stepped over (2026-09-15).** Before a log is folded the
+walk reads its mode off the first line (`store::mode_of`, one small read —
+the watermark may be past that line) and a log whose mode is `unread_by_others`
+is skipped without a turn, counted in `CaptureOutcome.incognito`, and its
+watermark moved to the end of the file: nothing was read, nothing ever will
+be, and a log that stays "unread" forever is a pending count beside the
+Capture button that never clears. A dry run counts it and moves nothing. The
+test pins that the incognito text is in no request the scripted provider was
+sent. The dream needs no skip of its own — it reads the inbox, which only
+`remember` (absent from such a chat) and this pass (skipping it) fill, and its
+tool set has no `search_chats`/`read_chat` (`dream_tools_are_files_and_search_only`
+now pins that too).
+
 ### The dream
 
 `nightloom dream` / `dream::run` builds a chat whose *workspace is the vault*,
 hands it the unconsolidated batch as read-only evidence, and instructs it to
 file, connect, supersede and abstract.
+
+**Two layers, one pass (2026-09-14, nightshift memory-writer 6a).** An
+observation carries the project it was recorded in (`source`: the project's
+name, or the workspace's folder name when no project is open — the CLI always
+sends the folder name). What is true of one project belongs with that project,
+not in the vault every chat reads, so `run` groups the batch by source: an
+observation whose source names a registered project
+(`Registry::find_by_name` — exact name, then case-insensitive, then the
+workspace's folder name) is consolidated into that project's memory folder,
+`<workspace>/.agents/memory/` (`Project::memory_dir`, the folder the claude.ai
+import already writes — one `project::MEMORY_DIR` for both writers), and the
+rest into the vault. One provider turn per target, projects in order of first
+appearance and the vault last, each its own session with `prepare` run on the
+chat per target (the shells no longer prepare it themselves), and
+`BATCH_BUDGET` is per turn. The batch stays a *prefix* of the backlog because
+the watermark is one byte offset: the walk stops at the first observation whose
+group is full, even when another group has room. The watermark advances only
+when every turn completed; an interruption in the second turn leaves the whole
+batch pending, and the project turn that finished dedupes against what it wrote
+when the batch is offered again.
+
+A project's turn is told whose memory it is filing and that cross-project facts
+— about the user, how they work — belong in the vault; **it is also told to
+file them there anyway and name them in its summary.** There is no mechanism
+to hand an observation from a project's turn to the vault's (a `defer_to_vault`
+tool was considered and refused): the pass files what it is given, and a fact
+under the wrong roof is corrected by a later dream's supersede rule, whereas a
+fact bounced between turns is one nobody filed.
+
+Git per target: the vault as before; a workspace only if it is itself a
+repository, and then **`.agents/` alone** — `git add`/`commit`/`status` take the
+pathspec, so the user's uncommitted source is never swept into a dream's
+commit, and something else they had staged stays in their index. `GitNote`
+gained `Untouched` for a folder the pass never reached. `DreamOutcome.filed`
+carries the split (project name or `None` for the vault, count, both
+snapshots) in turn order; the CLI line and the desktop toast read
+"consolidated 3 into Lanternfish, 2 into the vault", with one rollback clause
+per folder.
+
+**Two engines, one pass (2026-09-16, nightshift backlog 070).** Every dream
+before this ran through the provider layer and billed an API key, on a
+machine where ~95% of chats run on the Claude Code engine and bill the
+subscription (blocker 055). `dream::run_on_agent` beside `run` is the same
+pass as one `claude -p` turn per target — `run` and `run_on_agent` share one
+private `run_with`, so the grouping, the prefix batch, the snapshots, the
+watermark and the outcome are one code path and the engine is the only thing
+that differs. On the CLI the confinement is the working directory (the vault,
+or the project's memory folder) and `--permission-mode acceptEdits`, the tools
+are `--tools Read Write Edit Glob Grep`, the instruction is the same
+`compose_instruction` text with the `<current-instructions>` block, and
+`propose_instructions` arrives over MCP from Nightloom's own server in its
+`--dream` mode. `AGENTS.md` stays out of reach for the same reason as before —
+it is not under the working directory, and an edit above it is routed to a
+prompt nobody answers (measured; the flags, the MCP gating and the runs are in
+[service-agent.md](service-agent.md) "Dreams and captures on this engine").
+"Did this turn propose" is read as the proposal ids new in the store after the
+turn rather than off the tool's slot, since the tool ran in another process;
+`DreamOutcome.cost_usd` is `None` on this engine — nothing is billed per token,
+and the usage ledger ([usage-ledger.md](usage-ledger.md)) is where the turn's
+tokens show, read from the session file the CLI writes. Capture has the same
+pair, `capture::run_on_agent`: one no-tool `claude -p` per batch, the reply
+parsed as before.
 
 **Sessions append and read; the dream is the only writer of consolidated
 notes** — Letta's sleep-time inversion, and the one choke point where "should
@@ -213,30 +394,146 @@ folder the user owns.
 files-and-search tools only (no `bash`, no web — egress from an unattended job
 over personal notes — no `task` / `review` / `todo_write`), filtered from
 `builtin_in` by *keep-list* so a future built-in is absent until someone decides
-it belongs; no sidecar; `approver: None`, because the job is unattended by
-construction and the gate is the git diff.
+it belongs, rooted at the target's folder; no sidecar; `approver: None`, because
+the job is unattended by construction and the gate is the git diff.
 
 The watermark (`dream.json`, a **byte offset** so the log never needs rewriting
 to record progress) advances only when the turn completes uninterrupted — a
 failed or cancelled pass offers the same batch again, and re-dreaming is the safe
 direction to fail in since the pass dedupes against the vault it already wrote.
 
+The tidy (2026-09-16 evening, nightshift backlog 069/072) is the dream's
+housekeeping twin, not a dream: `dream::tidy_targets` walks the same targets
+— the vault, every registered project's memory folder — with `tidy.rs`'s
+rules and snapshots each folder it changed under its own `nightloom: tidy —`
+subject; the bell lists only the `nightloom: dream —` commits
+(`centre::DREAM_SUBJECT`), so a tidy's snapshot is a rollback point, not a
+notice. It never reads the inbox, never calls a model, and never touches
+`archive/`. "Scheduling" below has the daily pass it runs in.
+
 Batching is the point, not a convenience: the abstraction step ("do several
 observations across sessions point at one conclusion none of them states?") only
 exists across sessions, and per-session consolidation is fast writing wearing
 consolidation's name.
 
+**One pass at a time, across processes (nightshift backlog 133, 2026-09-17).**
+The desktop's own guard against a dream overlapping a capture was a mutex of
+its own process; the dev app beside the installed app, or the CLI's
+`nightloom dream` at the same hour, each had their own, so both ran a dream
+over the one vault — every observation consolidated twice, two proposals for
+one file, a pre-dream snapshot committing the other dream's half-written
+notes under its name. `pass_lock.rs` is the lock they share: an advisory
+lock on `<config>/pass.lock` (`std::fs::File::try_lock`, `flock` on macOS
+and Linux, `LockFileEx` on Windows), taken by `dream::run`, `capture::run`
+and a tidy that applies, held for the pass's length, released when the guard
+drops — on a panic too, and by the OS when the process dies. The loser gets
+one sentence ("a dream, a capture or a tidy is already running in another
+Nightloom…"), which the daily pass shows as its line for the day rather than
+running nothing silently (the same review found that a failed pass left no
+trace at all; it is now the pass's line and toast, and a *Run now* within
+twelve hours of the hour counts as that day's pass instead of being followed
+by a second one at the hour). Two smaller things from the same review:
+`dream.json`, the dream's watermark, is written to a temp file and renamed
+over (a quit between a plain write's truncate and its write left it empty,
+and an empty watermark re-dreamed the whole log one billed batch at a time);
+and the centre's Revert runs git only in the vault or a registered project's
+folder (`centre::dream_repo`), never in whatever path the window names, and
+refuses when a *later* commit changed the same file — a newer dream's, a
+tidy's, a pre-dream snapshot of his own edit — naming the commits, since the
+checkout of the dream's parent would undo those too (blocker 204's default;
+a second click on a Revert already done still reads "already as it was").
+
+### Proposals — the always-loaded files are proposed to, never written
+
+`proposal.rs` (2026-09-14, nightshift memory-writer 6c; blocker 046's answer).
+Each target has one file the preamble reads *whole* into every conversation —
+a project's `<workspace>/AGENTS.md`, the user's `~/.nightloom/AGENTS.md` for the
+vault — and it is the one file the dream may not touch. A note filed wrong is
+read on demand and corrected by the next pass; a line in this file shapes every
+turn from the next chat on, so its gate is the user, not git. The tools are
+rooted at the memory folder or the vault, neither of which contains the file,
+so the pass has no path to it; the test
+`agents_md_is_byte_identical_after_a_dream_that_proposes` pins the bytes.
+
+What the pass gets instead: the instruction quotes the file's current text
+under the preamble's own 32 KiB cap (`<current-instructions>`, or a sentence
+saying there is no file yet), says the file costs every turn, and gives the
+turn one tool, **`propose_instructions`** (`{ text: full replacement, why: one
+paragraph }`), added by `dream::prepare` and by nothing else — it is not in
+`tools::builtin_in`, so no ordinary chat can reach it. The instruction and the
+tool description say: call it at most once, only when an observation
+contradicts or extends the file, never to restate what the on-demand notes
+hold, keep it under about 4,000 characters (the hard stop is the 32 KiB cap,
+refused with a sentence). A second call in a turn replaces the first. Both
+targets may propose: the project turn for the project's file, the vault turn
+for the user's.
+
+A proposal is one JSON file, `<store>/proposals/<stamp>.json` — the store is
+`~/.nightloom/projects/<id>/` for a project and `~/.nightloom/` for the user,
+built from the config dir the dream was handed so a job files beside the
+registry it read; the stamp is RFC 3339 with `-` for `:`, since a colon is not
+a Windows filename. `Proposal { v, at, target: project{id,name} | user, why,
+text, from_dream }`; `list_in` (newest first, unparseable files skipped, the
+record folders not walked), `read`, `dismiss` (moves under
+`proposals/dismissed/`, stamped) and `applied` (moves under
+`proposals/applied/` with `fnv1a64:` of the text the user *saved*, which the
+draft let them edit first). **Moved, never deleted:** what the pass suggested
+and what the user did with it is information, the supersede-don't-erase
+argument again. `DreamOutcome.filed[i].proposed` says which turns proposed;
+`dream::proposed_line` is the one clause both shells print ("proposed a change
+to Lanternfish's instructions and to your memory — review it under Notes"), so
+the CLI and the toast cannot drift.
+
+Applying is the desktop's job and goes through the editor: the pinned row
+shows `1 proposed`, the review shows `why` and a diff, and *Load into editor*
+puts the text in the buffer as a **draft** — `● draft`, Revert restores the
+file, Save writes it by the ordinary `save_note` and only then calls
+`mark_applied`. The CLI prints the clause and nothing more.
+
+**The user's file is instructions only (2026-09-15, nightshift backlog 055).**
+The vault turn's instruction says so — behaviour in the file, facts about the
+user in the vault (`profile.md`, a topic note, `background.md`), never a
+section like the claude.ai export's `Work context`, `Personal context`, `Top
+of mind` or `Brief history` — and the tool holds the line behind the prompt:
+a replacement for the user's memory that *adds* one of those headings (judged
+against the file's current text, in either the export's bold spelling or a
+`#` heading) is written under `proposals/held/` with a `held: { at, why }`
+note, never into the pending queue, so the app never offers it as a draft;
+the model is told what was held and why, and may call again with an
+instructions-only text. An earlier offer in the same turn stands — a refused
+replacement replaces nothing. `DreamOutcome.filed[i].proposed` stays false for
+a held turn, and the pass's own summary is where the user reads that it
+happened. A section the file already carries is not one the proposal adds, so
+a memory from before the split can still be proposed to — including the
+proposal that moves the section out.
+
 ### Scheduling
 
-**Deliberately manual** — a dream spends real money unattended — and both shells
+**Deliberately manual** — ~~a dream spends real money unattended~~ **(struck
+2026-09-16, nightshift backlog 070: a dream bills whatever engine runs it, and
+on the Claude Code engine that is the subscription, not a key — see "The dream"
+above and [service-agent.md](service-agent.md) "Dreams and captures on this
+engine"; ~~the passes still run unattended, which is the reason they stay
+manual~~ — struck 2026-09-16 evening, nightshift backlog 069: they no longer
+have to be, see "The daily pass" at the end of this section)** — and both shells
 surface the backlog as the nudge: the CLI startup line names the pending count,
 and the desktop's Notes panel shows a `Dream · N` button in the Knowledge bar
 (hidden at zero; `dream_status` / `dream` / `cancel_dream` commands; progress as
 `dream-event`s on their own channel so a running chat and a running dream cannot
-interleave; outcome as a toast carrying the git line; one dream at a time via
+interleave; outcome as a toast carrying the split by target and the git line
+per folder; one dream at a time via
 `try_lock`, the second click getting a sentence rather than a queued bill; and
 the dream's cancel token **separate** from the turn's, since stopping the chat
-must not stop the dream and vice versa).
+must not stop the dream and vice versa). Beside it, since 2026-09-14, a
+`Capture · N` button that is **always visible** — N is the number of logs with
+bytes past their capture watermark (`capture_status`, directory scans only),
+which the inbox count says nothing about — running `capture` on the dream's
+connection (the Settings model, else the rail's), sharing the dream's
+one-at-a-time lock because the two are one pipeline and a dream started
+mid-capture would read half an inbox, and the same cancel token
+(`cancel_capture`) since they never overlap; progress as `capture-event`s;
+outcome as a toast, *capture: captured 4 observations from 3 chats — 3 from
+Lanternfish, 1 unfiled*.
 
 **Automation is opt-in, and the trigger is a compaction, not a wall clock** — the
 moment a conversation's detail is already being traded for a summary, so the
@@ -247,12 +544,61 @@ model that dreams, validated at launch: a typo found out at the first compaction
 hours in and unattended, is the wrong moment. The desktop's toggle is in Settings
 → Knowledge beside a dream-model override, a localStorage preference
 (`nightloom.dream`) consulted by both the Dream button and the trigger — one knob
-answers "which model dreams", and it is also what lets the agent engine dream at
-all, having no provider of its own to lend. Both shells stay silent and spend
-nothing when the inbox is empty.
+answers "which engine dreams", ~~and it is also what lets the agent engine dream at
+all, having no provider of its own to lend~~ **(2026-09-16: the dropdown's
+"Claude Code (subscription)" is a real engine for the pass, its model box a
+CLI alias, and "the rail's connection" while the rail is on Claude Code runs
+the pass there with the rail's alias — `passTargetFor` in `state.svelte.ts`,
+`pass_engine` in the desktop's `main.rs`; the auto-after-compaction trigger
+takes the same route)**. Both shells stay silent and spend
+nothing when the inbox is empty. The desktop's trigger runs **capture first,
+then the dream**, on the same model: without the capture the inbox it would
+consolidate is empty on a machine where the model never calls `remember`. The
+CLI's `--auto-dream` is unchanged and runs the dream alone; `nightloom capture`
+is a separate command there.
+
+**The daily pass (2026-09-16 evening, nightshift backlog 069).** The clause
+struck above said the passes stay manual because they run unattended. His
+answer on the item was that they should run on their own once a day and he
+should find the results waiting — so the desktop now has a wall-clock trigger
+beside the compaction one, off by default. Settings → Knowledge → *Every day*
+holds a switch, an hour (default 04:00), a *macOS notification* switch (off;
+blocker 106) and *Run the daily pass now*; the preference is `nightloom.daily`
+(`on`, `hour`, `notifyMac`) and the last run's stamp is `nightloom.daily.last`.
+The pass is `runDailyPass` in `state.svelte.ts`: **capture → dream → tidy**
+on the connection `passTargetFor` picks, so it runs on the subscription
+engine or a provider alike, under the buttons' one-at-a-time lock; capture
+is skipped when no chat has bytes past its watermark and the dream when the
+inbox is empty, so a quiet day spends nothing. The due rule is `dailyDue`
+(`centre.ts`, pinned): the switch is on, today's hour has come, and no pass
+has run since that hour; a minute clock fires it while the app is open, and
+start-up and the wake watcher's `system-woke` (backlog 101) fire it when the
+hour passed closed or asleep. The stamp is written at the *start* of a run,
+so a pass that fails waits for the next day or the button rather than
+retrying every minute. The tidy step is `dream::tidy_targets` — the Rust
+twin of Nightshift's `bin/tidy_struck.py` in `tidy.rs`, same rules and the
+same fixture: a `~~struck~~` span dated older than thirty days moves
+verbatim to `archive/struck/<same path>.md` with a `[struck DATE ->
+archive/struck/…]` pointer left in place; undated, unterminated and fenced
+spans never move; the archive is never walked. It runs over the vault and
+every project's memory folder and snapshots a folder that shed something
+(`nightloom: tidy — archived N struck lines …`), with the same "no rollback"
+clause as the dream when the folder is not a repository (blocker 091's
+default; blocker 167: it runs in the daily pass only, there is no Tidy
+button). The dream's prompt is told not to un-archive a pointer
+(`compose_instruction`, "Supersede, don't erase"). The CLI is unchanged:
+`nightloom capture` and `nightloom dream` are still separate commands and
+`--auto-dream` still rides compaction. What the pass leaves behind — the
+proposals, the dream's commits, the tidy's — is what the bell lists
+([desktop-ui.md](desktop-ui.md) "The bell and the daily pass"); the reading
+side is `centre.rs` (`proposals_in`, `dream_commits_in`, `dream_diff`,
+`revert_dream_file`, `exe_modified`).
 
 The desktop's `remember` rides the rail's knowledge switch and is absent from
-reviewers, whose spec already clears `knowledge`.
+reviewers, whose spec already clears `knowledge`. The two chat tools
+(`search_chats` / `read_chat`, [service-tools.md](service-tools.md)) ride
+`tools` alone — chats are not the vault — and reviewers and subagents inherit
+them with the rest of the set.
 
 ### Two things that were measured, not guessed
 
@@ -418,11 +764,61 @@ default. `Option` fields are left alone, null being already what they are for, a
 id has no session filename and no idempotency key and genuinely cannot be
 imported.
 
+### The memory export maps onto the two note stores
+
+Current archives also carry `memories/<account uuid>.json`: one summary of the
+user across every conversation, one summary per project, and the memory files
+claude.ai keeps behind both (`/profile.md`, `/projects/<uuid>/overview.md`, …).
+Nothing new is stored for it either. ~~The user summary is the user memory
+(`~/.nightloom/AGENTS.md`)~~ — **superseded 2026-09-15 (nightshift backlog
+055): the user summary goes to the vault as `background.md`, whole, under
+frontmatter in the vault's style, and the user memory gets only the
+"Background, on demand" paragraph that points at it, once.** The summary is
+biography (work context, personal context, top of mind, a history), and the
+memory file is loaded into every chat; a fitness question was paying for the
+research context on every turn. The global files go to the vault at their own
+paths, a project's files go under its docspace at `.agents/memory/`, and the
+project summary goes there whole as `summary.md` **and** under a dated `##
+Memory (imported from claude.ai …)` heading appended to the project's
+`AGENTS.md`. Every destination follows the docspace's never-overwrite rule
+— ~~**except `background.md`**, which is the export's text and not the user's and
+is replaced by a re-import~~ **`background.md` included, since the same
+evening**: he said he would correct it by hand (nightshift backlog 058), so a
+re-import that finds it different keeps it and says so. The heading is the append's idempotency check —
+a second run finds it and adds nothing — and the pointer paragraph's heading is
+the same check for the user memory. A user memory that still carries the
+export's sections (an import from before the split) is not edited, but the
+report names them on every run. The CLI's `memories:` line names the vault note
+when a run wrote it.
+
+One decision is new. A project summary over **4,000 characters** is not inlined:
+`AGENTS.md` is loaded on every turn of every chat in the project, the export's
+summaries run to 13k, and what hurts is growth with nothing capping it. The
+section then points at the full text in `summary.md` and the report lists the
+project as needing a condensed version — on every run until the pointer is
+replaced, since a nag that stops after one report is one that gets missed. The
+import does not write the condensed version itself: which 4,000 characters of a
+project's memory matter is a judgement, not a truncation.
+
+The file is read a field at a time for the same reason the arrays are read an
+element at a time: a null or a wrong type in one project's summary costs that
+summary, not the profile and the seventy files beside it. A path in
+`memory_files` is resolved through `Root` before anything is written, the
+export being a zip that arrived by email.
+
 ## `store.rs` — session-log discovery
 
 `list` → `SessionSummary`, `find_by_prefix`, `latest`, plus `search` and `delete`
 (by id or prefix). `SessionSummary::label` is title-or-opening-message, so two
 shells listing the same directory cannot disagree about what a chat is called.
+
+A fork (`Session::fork_from`, [core.md](core.md) "Forks") lists as a chat of
+its own with `SessionSummary::forked_from` — the parent's id and the cut,
+read off the creation line like the mode, through the cache too
+(`LISTING_VERSION` 3) — so a picker can say "from <parent>"; the parent's
+name is the parent's row's business, and a parent since deleted is said,
+not hidden. Its `user_turns` count the copied turns, since they are the
+fork's conversation too.
 
 `search` is case-insensitive substring over **the conversation only** — user
 messages, assistant text and the title, never tool results. A tool result is
@@ -503,12 +899,133 @@ Every *other* error still propagates: quietly returning a short list is the
 silent-truncation bug, not the fix for it.
 
 `search` is not cached and not cacheable this way: it needs the text a summary
-throws away. What would help it is a full-text index, which is a much larger
-thing — and search is something a user asks for, where listing happens on its
-own. Both now read bytes rather than `read_to_string`, so one byte that is not
-UTF-8 costs that line instead of returning an empty picker.
+throws away. ~~What would help it is a full-text index, which is a much larger
+thing~~ — the `search_chats` tool now has one (next section); the sidebar's
+`search` stays a scan, since it is something a user asks for, where listing
+happens on its own. Both read bytes rather than `read_to_string`, so one byte
+that is not UTF-8 costs that line instead of returning an empty picker.
+
+`scan`, `said`, `find_fold` and `excerpt_around` are `pub(crate)` for the
+`search_chats` / `read_chat` tools (`tools/chats.rs`), which apply exactly this
+"conversation only" filter to what they hand the model: it is the definition of
+what a chat said, and two readers of one log must not be able to disagree about
+what a tool result is. `Said` carries the event's timestamp for `read_chat`,
+which dates each message so a quotation can carry one; `search` ignores it and
+dates the whole chat by its file.
+
+### What is and is not written, per chat mode (2026-09-15)
+
+A chat's mode (`ChatMode`, [core.md](core.md)) is on its log's first line and
+decides what the store does with it:
+
+| | normal | incognito | ephemeral |
+|---|---|---|---|
+| log on disk | yes | yes, `"mode":"incognito"` on the creation line | **none** — `Session::ephemeral()` is in memory; nothing under the sessions dir, ever |
+| listing (`store::list`, the sidebar) | yes | yes, `SessionSummary.mode` marks the row (`LISTING_VERSION` ~~2~~ 3 — bumped for the fork line later on 2026-09-15; corrected here 2026-09-16) | never — there is no file to list |
+| the user's own sidebar search (`store::search`) | yes | yes — it is hidden from other *chats*, not from him | — |
+| chat index (`ChatIndex`) | admitted | a record with **no terms**, outside `n`/`df`/`len` (`INDEX_VERSION` 2) | — |
+| `search_chats` / `read_chat` | yes | never returned; refused by id ([service-tools.md](service-tools.md)) | — |
+| capture | read | skipped and counted (above) | — |
+| `remember` | served | not served, on either engine | not served |
+| title call | yes | yes | never (it is in no list) |
+
+`store::mode_of(path)` reads the first line and nothing else, for the walkers
+that decide before opening a log properly; a log it cannot read is `Normal`,
+the reading every stage gave before the field existed, and the walker then
+fails or skips on its own terms. Both derived files bumped their version
+rather than migrating: a cache entry or an index record written without the
+mode would read an incognito log as normal, which is the one thing neither
+may do.
+
+### The chat index is kept on the listing's terms (`store/index.rs`)
+
+`ChatIndex`, an `.index.json` beside the logs next to `.listing.json`, is what
+the `search_chats` tool ranks through: per log, how many times each word is
+said (`tf`), how many words the chat holds, and the listing fields; per
+directory, how many logs say each word (`df`), the count and the mean length.
+That is everything BM25 — the ranking function every full-text engine defaults
+to — needs, and nothing more: **counts, not positions**, so the index ranks and
+a scan of each returned chat still makes the excerpt. Words are lowercased runs
+of alphanumeric characters, two or more long, with one plural ending folded
+(`competitors` and `competitor` are one word — Harman's S-stemmer, three rules,
+applied to the query too); the title's words count three times. It is built
+from `said`, the same "conversation only" filter as everything else here, so a
+word that only ever appeared in a tool result is not in it, and a test pins
+that.
+
+**An incognito log has a record and no terms** (2026-09-15): `Indexed::saw`
+folds the creation line first and, once it says the log is unread by others,
+counts nothing that follows — so the record exists for the cache to validate
+the file against (a log with no record would be re-read on every load) and is
+outside the corpus (`admitted()` drives `recount`, `len` and `is_empty`). A
+query for a word only such a chat says finds nothing, cold, warm, or after the
+log grew; the test is `an_incognito_log_is_never_admitted`.
+
+It is **derived data on exactly the listing's terms**, and the argument is the
+same one: every record is re-validated against its log's size and mtime on
+each load, a log that grew is tokenised from the byte offset the record stopped
+at (a rename takes the old name's words back out first), a log that is gone
+drops out, and a file that is missing, malformed or from another `version` is
+rebuilt from the logs. The file is rewritten only when something changed,
+through a process-named temp file and a rename. Beside the logs rather than in
+the config dir (blocker 051), so a project moved with its folder keeps its
+index and a deleted directory takes it along.
+
+Measured 2026-09-14 (`index_timings_over_the_real_corpora`, `#[ignore]`d),
+release build: a cold build over 933 logs / 55 MB takes **1.1–1.6 s** and
+writes a **14 MB** file; a warm load with nothing changed — a stat per log and
+one parse of that file — **~90 ms**; one ranking under 0.3 ms. Over 32 logs:
+~100 ms cold, ~9 ms warm, 1.3 MB. In a debug build the warm load is ~490 ms
+over 933 logs, which is what `cargo tauri dev` will show. The warm cost is the
+JSON parse of the whole file; if it comes to matter, the two remedies are an
+in-memory copy per directory revalidated by stat, or a smaller on-disk shape —
+neither built.
 
 ## `lib.rs::connect`
 
 Builds a provider (explicit `api_key` wins over env), resolves the model, wraps
 in `Retry`, and re-exports `list_models`.
+
+### A creation line this build cannot read is read closed (nightshift backlog 134, 2026-09-17)
+
+A log's first line names the chat's `mode` and `kind`. Strictly parsed, a
+value this build does not know — a newer build's, after a rollback; or one
+renamed without an alias — failed the whole line, and every reader then
+fell back to *normal + build*: an incognito chat written under the new
+value was listed as normal, indexed, found by other chats' `search_chats`
+and captured by the daily pass. `store::peek` now re-reads such a line with
+the two fields as plain strings (`peek_created_closed`): a known value maps
+to itself, an unknown mode reads as **incognito** (kept and listed, written
+nothing, read by nothing) and an unknown kind as the read-only **chat** —
+the answers that give nothing away — and the chat keeps its own id. The
+index folds the same closed reading, so the log is a record with no terms.
+~~What is not done here: `Session::load` itself (nightloom-core) still turns
+the line into `Unknown` and mints a fresh uuid for the id — the shell then
+opens such a chat under a name that matches no file; the `#[serde(other)]`
+catch-all on the two enums is the fix there (a patch note in the day's
+report, the core file being another agent's today).~~ Done later the same
+day (pass 2): `Session::load` reads a first line that fails the strict
+parse through the same closed reading (`closed_creation` in `session.rs` —
+the chat's own id, its `at`, its `forked_from`, an unknown mode as
+incognito, an unknown kind as a Chat) and **reports it**:
+`LoadReport::closed_creation`, which `is_clean()` counts and `summary()`
+names ("its first line names a mode or kind this version does not know …
+opened as incognito and read-only"), so the shell's open-chat notice says
+why. Not a `#[serde(other)]` variant: a third value on `ChatMode` and
+`ChatKind` would have reached every `== ChatKind::Chat` in the shell and
+the front end's unions for a state that should never be seen as its own —
+the closed reading maps it to the values every reader already handles. A
+creation line damaged outright keeps the file's stem as the id instead of
+a fresh uuid, so the ask directory and the listing still match it.
+`project::move_tree` (the same review, FC-f) reads each entry's own type
+before deciding: a symlink is renamed whole (the link, not its target) or,
+across volumes, left and named in `skipped` — never followed into another
+folder's files.
+
+Two smaller things from the same review: the `context_status` file the MCP
+tool reads is refreshed from the chat's own log *before* each turn
+(`mcp_server::refresh_context_status`) — its newest reading, or removed for
+a chat with no completed turn — so a new chat's first turn no longer reads
+the previous chat's figure; and `restore_session` checks the id it is sent
+against `store::is_log_id` (a file stem, never a path) before it builds a
+file name from it.

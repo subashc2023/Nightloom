@@ -41,6 +41,15 @@ Anthropic `display` is sent as `summarized` on adaptive thinking. Its default is
 you get a signature and no text, and a thinking UI renders nothing on the
 default model.
 
+*2026-09-16 (nightshift backlog 097):* checked before adding anything — the
+summary is already asked for on every Claude 5 request, so no new parameter
+was added. The transcript now draws a thinking block that arrived empty as
+`✦ thought · hidden by the model` rather than a button ([desktop-ui.md](desktop-ui.md)
+"Thinking the model kept to itself"); that is what the Claude Code engine
+sends, since the CLI runs with `display` omitted (measured on CLI 2.1.263,
+Haiku 4.5). Whether the always-on summary should get an off switch is
+nightshift blocker 093.
+
 ## Registry and management plane
 
 - **`registry.rs`**: `ProviderKind` is the single place mapping provider name →

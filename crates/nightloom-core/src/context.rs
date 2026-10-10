@@ -197,6 +197,15 @@ pub struct WireSegment {
     pub name: String,
     pub preview: String,
     pub truncated: bool,
+    /// The whole segment, unlike a [`WireBlock`], which carries a preview
+    /// only. The asymmetry is deliberate: a tool result is the item a reader
+    /// pages *past*, and the system prompt is the item they came to read —
+    /// "what does the model know at the start of this chat" has no answer
+    /// at 280 characters. It is also bounded where a block is not: every
+    /// layer is capped at assembly (32 KB per instruction file, 4 KB for the
+    /// vault index), so the sum is a few tens of kilobytes at the outside,
+    /// and a view refreshed per turn can afford it.
+    pub text: String,
     pub size: Size,
     /// Whether this segment carries a cache breakpoint. Worth surfacing: a
     /// reader looking at a context that is re-uploading in full every turn
@@ -209,6 +218,13 @@ pub struct WireSegment {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WireView {
     pub system: Vec<WireSegment>,
+    /// The system prompt as one string — [`SystemPrompt::render_flat`], so
+    /// it is the exact bytes a single-field vendor receives and the exact
+    /// text an array-of-blocks vendor receives, block by block. Rendered
+    /// here rather than joined by a shell from `system`, so the join rule
+    /// lives in one place and "show me what was sent" cannot drift from
+    /// what was. `None` when there is no system prompt at all.
+    pub system_text: Option<String>,
     pub messages: Vec<WireMessage>,
     /// Sum over system and messages both, which is the number that should be
     /// compared against `context_limit` — a gauge that counted only the
@@ -236,6 +252,7 @@ impl WireView {
     ) -> Self {
         let mut totals = ContextTotals::default();
 
+        let system_prompt = system;
         let system: Vec<WireSegment> = system
             .map(|p| p.segments())
             .unwrap_or_default()
@@ -249,11 +266,13 @@ impl WireView {
                     name: seg.name.clone(),
                     preview,
                     truncated,
+                    text: seg.text.clone(),
                     size,
                     cache_anchor: seg.cache_anchor,
                 }
             })
             .collect();
+        let system_text = system_prompt.and_then(SystemPrompt::render_flat);
 
         let elided = session.elide_flags();
         let messages: Vec<WireMessage> = session
@@ -281,6 +300,7 @@ impl WireView {
 
         Self {
             system,
+            system_text,
             messages,
             totals,
             context_limit,

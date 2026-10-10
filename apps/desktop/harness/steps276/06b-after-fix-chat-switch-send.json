@@ -1,0 +1,44 @@
+[
+ {
+  "label": "A after reload: draft restored",
+  "doc": "p is $$\\hat{p}$$. Pasted: if $x^2$ and $$\\int_0^1 f$$ then **done**\nand a new line with $5 and $10 more\nx\ny $$\\frac{1}{1+\\frac{1}{x}}$$",
+  "anchor": 135,
+  "head": 135
+ },
+ {
+  "label": "switched to B",
+  "doc": "zz",
+  "anchor": 2,
+  "head": 2
+ },
+ {
+  "label": "B half-typed formula (unclosed: text)",
+  "doc": "zzB has $$\\hat{q}",
+  "anchor": 17,
+  "head": 17
+ },
+ {
+  "label": "back to A: draft intact",
+  "doc": "p is $$\\hat{p}$$. Pasted: if $x^2$ and $$\\int_0^1 f$$ then **done**\nand a new line with $5 and $10 more\nx\ny $$\\frac{1}{1+\\frac{1}{x}}$$",
+  "anchor": 135,
+  "head": 135
+ },
+ {
+  "label": "back to B: half-typed kept",
+  "doc": "zzB has $$\\hat{q}",
+  "anchor": 17,
+  "head": 17
+ },
+ {
+  "label": "B closed: drawn",
+  "doc": "zzB has $$\\hat{q}$$",
+  "anchor": 19,
+  "head": 19
+ },
+ {
+  "label": "Enter: send; no backend, so the words come back",
+  "doc": "zzB has $$\\hat{q}$$",
+  "anchor": 19,
+  "head": 19
+ }
+]

@@ -217,6 +217,17 @@ describe("loadLastConnection", () => {
     expect(loadLastConnection()!.selfCompact).toBe(false);
   });
 
+  it("reads an absent effort as the CLI's default, which sends no flag", () => {
+    // The whole-project review of 2026-09-16 (F15): a rail saved before the
+    // Effort segment existed must not read back as `high`, a choice he
+    // never made, and the default position is the one that sends nothing.
+    save({ provider: "anthropic", engine: "claude-code" });
+    expect(loadLastConnection()!.agentEffort).toBe("");
+    expect(defaultDraft().agentEffort).toBe("");
+    save({ provider: "anthropic", engine: "claude-code", agentEffort: "max" });
+    expect(loadLastConnection()!.agentEffort).toBe("max");
+  });
+
   it("reads the engine strictly, defaulting to provider", () => {
     // A stray value would land the rail on an engine with no controls
     // showing. A draft from before the agent engine has no field, and the
@@ -266,5 +277,61 @@ describe("loadLastConnection", () => {
 
   it("returns null when nothing was ever saved", () => {
     expect(loadLastConnection()).toBeNull();
+  });
+});
+
+// The subagent limits on the draft (nightshift backlog 165): a saved
+// draft from before them, or a field that is not a whole number in
+// range, reads as that field's default.
+import { DEFAULT_LIMITS, allOn, readLimits, switchOf } from "./catalog";
+
+describe("the subagent limits (backlog 165)", () => {
+  it("defaults each field that is missing or malformed, and keeps the rest", () => {
+    expect(readLimits(undefined)).toEqual(DEFAULT_LIMITS);
+    expect(readLimits({ per_turn: 4, stop_at: 95 })).toEqual({ ...DEFAULT_LIMITS, per_turn: 4, stop_at: 95 });
+    expect(readLimits({ per_turn: 2.5, slow_at: 140, depth: -1, per_day: "9", budget_pct: 101, model: "opus" })).toEqual(DEFAULT_LIMITS);
+    // Pass 2 (2026-09-22): 4 at once (279), 35 % a message (278), the chat's model (280).
+    expect(DEFAULT_LIMITS).toEqual({ per_turn: 6, concurrent: 4, depth: 3, per_day: 0, slow_at: 70, slow_to: 4, stop_at: 85, budget_pct: 35, model: "choose", off: allOn(), nested: 2 });
+    expect(readLimits({ budget_pct: 20, model: "sonnet" })).toEqual({ ...DEFAULT_LIMITS, budget_pct: 20, model: "sonnet" });
+    // 257 (blockers 584, 585): three settings; the old `chat` reads as `choose`.
+    expect(readLimits({ model: "same" }).model).toBe("same");
+    expect(readLimits({ model: "chat" }).model).toBe("choose");
+    expect(readLimits({ model: "opus" }).model).toBe("choose");
+    // A draft saved before pass 2 reads the new fields as their defaults.
+    expect(readLimits({ per_turn: 6, concurrent: 20 })).toEqual({ ...DEFAULT_LIMITS, concurrent: 20 });
+  });
+
+  it("reads each limit's off switch, all on when missing (backlog 253)", () => {
+    const l = readLimits({ per_turn: 3, off: { per_turn: true, slow: true, depth: "yes", bogus: true } });
+    expect(l.per_turn).toBe(3);
+    expect(l.off).toEqual({ ...allOn(), per_turn: true, slow: true });
+    expect(readLimits({ per_turn: 3 }).off).toEqual(allOn());
+    // Each read has its own record, never the frozen default's.
+    readLimits(undefined).off.stop_at = true;
+    expect(DEFAULT_LIMITS.off.stop_at).toBe(false);
+    expect(switchOf("slow_to")).toBe("slow");
+    expect(switchOf("budget_pct")).toBe("budget_pct");
+    expect(switchOf("model")).toBeNull();
+  });
+});
+
+// The composer's model chip (nightshift backlog 204): a turn's end writes
+// the CLI's resolved id into the connection; the chip keeps the alias.
+import { modelChipLabel } from "./catalog";
+
+describe("modelChipLabel (backlog 204)", () => {
+  it("names the alias on Claude Code after a turn resolved it to a full id", () => {
+    const chip = (agentModel: string, connected: string | null) =>
+      modelChipLabel({ agentMode: true, agentModel, model: "", connected });
+    expect(chip("haiku", "claude-haiku-4-5-20251001")).toBe("haiku");
+    expect(chip(" haiku ", "haiku")).toBe("haiku");
+    expect(chip("", "claude-sonnet-5-20260801")).toBe("default");
+    expect(chip("claude-opus-5-5", "claude-opus-5-5")).toBe("claude-opus-5-5");
+  });
+
+  it("names the connection's model on the provider engine, else the draft's", () => {
+    expect(modelChipLabel({ agentMode: false, agentModel: "", model: "gpt-x", connected: "gpt-x-2026" })).toBe("gpt-x-2026");
+    expect(modelChipLabel({ agentMode: false, agentModel: "", model: " gpt-x ", connected: null })).toBe("gpt-x");
+    expect(modelChipLabel({ agentMode: false, agentModel: "", model: "", connected: undefined })).toBe("model");
   });
 });

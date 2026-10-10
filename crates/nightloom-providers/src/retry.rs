@@ -1,4 +1,4 @@
-use nightloom_core::{ChatRequest, EventStream, Provider, ProviderError};
+use nightloom_core::{CacheTtl, ChatRequest, EventStream, Provider, ProviderError};
 use std::time::Duration;
 
 /// Called before each retry sleep with the error and the attempt number
@@ -59,6 +59,10 @@ fn retryable(e: &ProviderError) -> bool {
 impl Provider for Retry {
     fn name(&self) -> &'static str {
         self.inner.name()
+    }
+
+    fn cache_ttl(&self) -> Option<CacheTtl> {
+        self.inner.cache_ttl()
     }
 
     async fn stream_chat(&self, request: ChatRequest) -> Result<EventStream, ProviderError> {

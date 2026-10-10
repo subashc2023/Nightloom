@@ -1,0 +1,48 @@
+# Nightloom's away server on Fly.io (nightshift item 268 step 2). One machine that stops when idle;
+# the Nightloom home, the CLI's HOME and the work folder on a volume. See deploy/README.md.
+app = "nightloom-away-swaraag"
+primary_region = "lax" # Keepsake's region, nearest to Irvine
+kill_signal = "SIGINT" # `nightloom serve` stops on Ctrl-C's signal
+kill_timeout = "10s"
+# Overflow memory on the machine's own disk: a spike during a turn slows it instead of killing it
+# (Keepsake's blocker 020).
+swap_size_mb = 512
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  # The model every turn asks for (his pick, 2026-09-30, blocker 675). Per-chat switching is
+  # wave 3's A1; this stays the default.
+  NIGHTLOOM_SERVE_MODEL = "claude-sonnet-5-5"
+  # NIGHTLOOM_REMOTE_TOKEN and CLAUDE_CODE_OAUTH_TOKEN are Fly secrets, never here.
+
+[[mounts]]
+  source = "nightloom_data"
+  destination = "/data"
+  initial_size = "1gb"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Stops when idle, starts on the next request: nothing runs, nothing costs, while the phone is
+  # not using it. A turn's open event stream keeps it up until the turn ends.
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    grace_period = "15s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/" # the phone page needs no token; every /api route does
+
+[[vm]]
+  # The image carries voice (item 246 part 4C): with voice warm, the two whisper servers and
+  # Piper hold ~1.2 GB resident (measured 2026-10-06 in the amd64 image under Docker: 659 MB
+  # small.en + 249 MB base.en + 284 MB Piper, serve 27 MB), and one `claude` turn peaked at
+  # ~285 MB (Keepsake's measure) — past 1 GB, so blocker 668's size. Deploying it waits on his
+  # yes (blocker 1187): it raises what Fly bills. Was shared-cpu-1x 1gb.
+  size = "shared-cpu-2x"
+  memory = "2gb"

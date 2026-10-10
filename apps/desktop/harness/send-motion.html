@@ -1,0 +1,105 @@
+<!doctype html>
+<!--
+  The send motion's harness (nightshift backlog 194). Not a build entry:
+  served only by `vite --port 1434` from apps/desktop, rendered by
+  nightshift-code's bin/snap (WebKit). A stand-in transcript and composer
+  with the app's tokens and bubble look; the real `sendMotion.ts` flies.
+    ?shape=c   the shipped motion (default); a = plain slide, b = in place
+    ?t=<ms>    hold the motion at that instant (a still frame)
+    ?reduce=1  as under prefers-reduced-motion
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="color-scheme" content="dark" />
+    <title>send motion harness</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: var(--paper); color: var(--ink); font-family: var(--sans, system-ui); }
+      .pane { display: flex; flex-direction: column; height: 100vh; }
+      .viewport { flex: 1; overflow-y: auto; min-height: 0; }
+      .inner { max-width: 440px; margin: 0 auto; padding: 16px 20px 20px; display: flex; flex-direction: column; gap: 14px; }
+      .user-turn { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+      .user-key { font-family: var(--mono, monospace); font-size: 10px; color: var(--dim); }
+      .user-bubble { background: color-mix(in srgb, var(--sheet) 88%, var(--ink)); border: 1px solid transparent; border-radius: 18px;
+        padding: 12px 18px; max-width: 320px; font-size: 15px; line-height: 1.5; }
+      .user-text { white-space: pre-wrap; word-break: break-word; }
+      .reply { font-size: 15px; line-height: 1.55; color: var(--ink2); }
+      .composer { padding: 10px 16px 14px; }
+      .box { max-width: 440px; margin: 0 auto; border: 1px solid var(--line2); border-radius: 14px; background: var(--sheet); padding: 4px; }
+      textarea { display: block; width: 100%; box-sizing: border-box; resize: none; border: 0; background: transparent; color: var(--ink);
+        font: inherit; font-size: 15px; line-height: 1.5; padding: 10px 12px; outline: none; }
+      .meta { position: fixed; left: 8px; top: 6px; font: 10px/1.3 var(--mono, monospace); color: var(--dim); z-index: 2147483647; }
+    </style>
+  </head>
+  <body>
+    <div class="meta" id="meta"></div>
+    <div class="pane">
+      <div class="viewport" id="vp">
+        <div class="inner" id="inner">
+          <div class="user-turn"><span class="user-key">You</span><div class="user-bubble"><div class="user-text">What does the dream pass keep?</div></div></div>
+          <div class="reply">It keeps what it can cite: each claim with the note it came from, struck lines archived after a month.</div>
+        </div>
+      </div>
+      <div class="composer"><div class="box"><textarea id="ta" rows="2"></textarea></div></div>
+    </div>
+    <script type="module">
+      import "/src/app.css";
+      import { arrive, launch, FLIGHT_MS, easeOutCubic } from "/src/lib/sendMotion.ts";
+      const q = new URLSearchParams(location.search);
+      const shape = q.get("shape") ?? "c";
+      const hold = q.has("t") ? Number(q.get("t")) : null;
+      if (q.get("reduce") === "1") window.__sendMotionReduce = true;
+      if (hold !== null) window.__sendMotionHold = hold;
+      const TEXT = "Can the morning page say which notes it drew from?";
+      const ta = document.getElementById("ta");
+      const inner = document.getElementById("inner");
+      const vp = document.getElementById("vp");
+      ta.value = TEXT;
+      vp.scrollTop = vp.scrollHeight;
+      await document.fonts.ready;
+
+      const prev = inner.querySelector(".reply");
+      const node = document.createElement("div");
+      node.className = "user-turn";
+      node.innerHTML = '<span class="user-key">You</span><div class="user-bubble"><div class="user-text"></div></div>';
+      node.querySelector(".user-text").textContent = TEXT;
+      const bubble = node.querySelector(".user-bubble");
+
+      // The send: where the words were, then the box clears and the turn lands.
+      if (shape === "c") launch("chat", ta);
+      const boxRect = ta.getBoundingClientRect();
+      ta.value = "";
+      inner.appendChild(node);
+      vp.scrollTop = vp.scrollHeight;
+      const layoutBefore = { prev: prev.getBoundingClientRect().top, node: node.getBoundingClientRect().top };
+
+      const ms = hold ?? 0;
+      if (shape === "c") {
+        arrive(node, { channel: "chat", bubble: ".user-bubble", riseWithout: true });
+      } else if (window.__sendMotionReduce) {
+        // nothing moves
+      } else if (shape === "a") {
+        // A — a plain slide: the finished bubble slides straight up from the box.
+        const t = Math.min(1, ms / FLIGHT_MS), e = easeOutCubic(t);
+        const to = bubble.getBoundingClientRect();
+        const dx = (boxRect.left - to.left) * (1 - e), dy = (boxRect.top - to.top) * (1 - e);
+        bubble.style.transform = `translate(${dx}px, ${dy}px)`;
+        bubble.style.position = "relative"; bubble.style.zIndex = "5";
+        node.querySelector(".user-key").style.opacity = String(t);
+        vp.style.overflow = "visible"; // board only: the real transcript clips this, the reason A was not taken
+      } else if (shape === "b") {
+        // B — in place, the Claude app's settle: the bubble fades and sharpens where it lands.
+        const t = Math.min(1, ms / FLIGHT_MS), e = easeOutCubic(t);
+        node.style.opacity = String(e);
+        bubble.style.filter = `blur(${(1 - e) * 6}px)`;
+        bubble.style.transform = `scale(${0.97 + 0.03 * e})`;
+        bubble.style.transformOrigin = "100% 100%";
+      }
+      const layoutAfter = { prev: prev.getBoundingClientRect().top, node: node.getBoundingClientRect().top };
+      const shift = Math.max(Math.abs(layoutAfter.prev - layoutBefore.prev), Math.abs(layoutAfter.node - layoutBefore.node));
+      document.getElementById("meta").textContent =
+        `shape ${shape.toUpperCase()} · t=${hold ?? "live"} ms${window.__sendMotionReduce ? " · reduced motion" : ""} · layout shift ${shift.toFixed(1)} px`;
+      window.__layoutShift = shift;
+    </script>
+  </body>
+</html>
