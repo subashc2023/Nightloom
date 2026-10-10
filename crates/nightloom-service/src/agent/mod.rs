@@ -49,7 +49,7 @@ pub use protocol::{DeniedCall, RateLimitInfo};
 pub use record::{
     Recorder, SUBAGENT_CLOSE, SUBAGENT_OPEN, carry_messages, carry_transcript, subagent_block,
 };
-pub use translate::{AgentOutcome, LimitHit, Translator};
+pub use translate::{AgentOutcome, LimitHit, StoppedAgent, Translator};
 
 use crate::{TurnEvent, TurnInput};
 use nightloom_core::{ChatKind, ChatMode};

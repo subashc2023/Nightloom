@@ -1907,8 +1907,8 @@
       <div class="limit-card" role="status">
         <div class="limit-head">
           <span class="ns-chip mono">{pauseLabel(pause)}</span>
-          {#if pause.subagents.length > 0}
-            <span class="limit-sub">{pause.subagents.length === 1 ? "one subagent" : `${pause.subagents.length} subagents`} died on it · resumed, not relaunched</span>
+          {#if pause.agents.length > 0}
+            <span class="limit-sub" use:tip={pause.agents.map((a) => a.description || a.agent_id || a.tool_use_id).join(" · ")}>{pause.agents.length === 1 ? "one subagent" : `${pause.agents.length} subagents`} stopped before returning · resumed, not relaunched</span>
           {/if}
         </div>
         <div class="limit-text">{pause.text}</div>

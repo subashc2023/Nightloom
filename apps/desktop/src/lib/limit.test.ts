@@ -36,11 +36,30 @@ describe("the limit pause (backlog 164)", () => {
   });
 
   it("names the subagents that died and says to resume, not relaunch", () => {
-    const one = resumeMessage({ subagents: ["toolu_01Lg"], text: "" });
-    expect(one).toContain("One subagent died on the limit (spawned by `toolu_01Lg`)");
-    expect(one).toContain("resume it with SendMessage");
-    const two = resumeMessage({ subagents: ["a", "b"], text: "" });
-    expect(two).toContain("2 subagents died on the limit (spawned by `a`, `b`)");
-    expect(resumeMessage({ subagents: [], text: "" })).not.toContain("subagent");
+    // A result from before pass 2 (no `agents`): named by the spawning call.
+    const one = resumeMessage({ subagents: ["toolu_01Lg"] });
+    expect(one).toContain("One subagent stopped on the limit before returning: the one spawned by `toolu_01Lg`.");
+    expect(one).toContain("Resume it with SendMessage to its agent id");
+    const two = resumeMessage({ subagents: ["a", "b"] });
+    expect(two).toContain("2 subagents stopped on the limit before returning: the one spawned by `a`, the one spawned by `b`.");
+    expect(resumeMessage({ subagents: [] })).not.toContain("subagent");
+  });
+
+  // Pass 2 (2026-10-09): the agent id SendMessage takes, from the stream's
+  // `task_started`, and a child no line of its own named.
+  it("names each stopped child by its agent id, and matches serve.rs word for word", () => {
+    const agents = [
+      { tool_use_id: "toolu_a", agent_id: "a1", description: "law scan", status: "running" },
+      { tool_use_id: "toolu_b", agent_id: "", description: "", status: "" },
+    ];
+    const p = limitPauseFrom({ limit: { ...res.limit, subagents: ["toolu_a"], agents } }, "chat1", now)!;
+    expect(p.agents).toEqual(agents);
+    // The same sentence `serve.rs`'s `the_resume_message_is_limit_ts_word_for_word` pins.
+    expect(resumeMessage(p)).toContain(
+      " 2 subagents stopped on the limit before returning: `a1` (law scan; spawned by `toolu_a`), the one spawned by `toolu_b`. Resume each with SendMessage to its agent id",
+    );
+    expect(resumeMessage({ subagents: [], agents: [agents[0]] })).toContain(
+      " One subagent stopped on the limit before returning: `a1` (law scan; spawned by `toolu_a`). Resume it with",
+    );
   });
 });

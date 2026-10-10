@@ -326,24 +326,32 @@ fn wait_words(secs: i64) -> String {
 
 /// What Resume sends — `limit.ts`'s `resumeMessage`, word for word: the
 /// turn was cut by the limit, the window has opened, and the subagents
-/// that died are resumed by SendMessage, not relaunched.
-pub fn resume_message(subagents: &[String]) -> String {
+/// that had not returned are continued by SendMessage to their agent ids
+/// (backlog 164, pass 2), not relaunched.
+pub fn resume_message(stopped: &[crate::agent::StoppedAgent]) -> String {
     let head = "The last turn was paused by the plan's usage limit and the window has now reset. Continue exactly where it stopped; everything before the limit stands.";
-    if subagents.is_empty() {
+    if stopped.is_empty() {
         return head.to_string();
     }
-    let ids = subagents
+    let names = stopped
         .iter()
-        .map(|id| format!("`{id}`"))
+        .map(|a| {
+            let call = format!("spawned by `{}`", a.tool_use_id);
+            match (a.agent_id.is_empty(), a.description.is_empty()) {
+                (true, _) => format!("the one {call}"),
+                (false, true) => format!("`{}` ({call})", a.agent_id),
+                (false, false) => format!("`{}` ({}; {call})", a.agent_id, a.description),
+            }
+        })
         .collect::<Vec<_>>()
         .join(", ");
-    let one = subagents.len() == 1;
+    let one = stopped.len() == 1;
     format!(
-        "{head} {} died on the limit (spawned by {ids}): resume {} with SendMessage by id or name rather than launching a new one; if that fails, read its transcript (this session's subagents folder under ~/.claude/projects, agent-<id>.jsonl, the .meta.json beside it names the spawning call) and take up from its last result instead of repeating the search.",
+        "{head} {} stopped on the limit before returning: {names}. Resume {} with SendMessage to its agent id rather than launching a new one; if that fails, read its transcript (agent-<id>.jsonl in this session's subagents folder under ~/.claude/projects; the .meta.json beside it names the spawning call) and take up from its last result instead of repeating the search.",
         if one {
             "One subagent".to_string()
         } else {
-            format!("{} subagents", subagents.len())
+            format!("{} subagents", stopped.len())
         },
         if one { "it" } else { "each" },
     )
@@ -1062,7 +1070,7 @@ impl ServeHost {
             .send_with(
                 Some(&p.chat),
                 SendRequest {
-                    text: resume_message(&p.hit.subagents),
+                    text: resume_message(&p.hit.agents),
                     ..SendRequest::default()
                 },
             )
@@ -3848,11 +3856,20 @@ esac
             resume_message(&[]),
             "The last turn was paused by the plan's usage limit and the window has now reset. Continue exactly where it stopped; everything before the limit stands."
         );
-        let two = resume_message(&["toolu_a".into(), "toolu_b".into()]);
-        assert!(two.contains(" 2 subagents died on the limit (spawned by `toolu_a`, `toolu_b`): resume each with SendMessage"), "{two}");
-        let one = resume_message(&["toolu_a".into()]);
+        let a = |t: &str, id: &str, d: &str| crate::agent::StoppedAgent {
+            tool_use_id: t.into(),
+            agent_id: id.into(),
+            description: d.into(),
+            status: "running".into(),
+        };
+        let two = resume_message(&[a("toolu_a", "a1", "law scan"), a("toolu_b", "", "")]);
         assert!(
-            one.contains(" One subagent died on the limit (spawned by `toolu_a`): resume it with"),
+            two.contains(" 2 subagents stopped on the limit before returning: `a1` (law scan; spawned by `toolu_a`), the one spawned by `toolu_b`. Resume each with SendMessage to its agent id"),
+            "{two}"
+        );
+        let one = resume_message(&[a("toolu_a", "a1", "")]);
+        assert!(
+            one.contains(" One subagent stopped on the limit before returning: `a1` (spawned by `toolu_a`). Resume it with"),
             "{one}"
         );
         assert_eq!(wait_words(30), "in under a minute");
