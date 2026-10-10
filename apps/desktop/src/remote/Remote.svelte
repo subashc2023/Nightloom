@@ -98,6 +98,8 @@
   import RunningSheet from "./RunningSheet.svelte";
   import UsageLine from "./UsageLine.svelte";
   import MicButton from "./voice/MicButton.svelte";
+  // Item 334: the speech test panel, behind a link in the Hosts sheet.
+  import SpeechTest from "./voice/SpeechTest.svelte";
   import NotesSheet from "./NotesSheet.svelte";
   import NightshiftSheet from "./NightshiftSheet.svelte";
   import AsideSheet from "./AsideSheet.svelte";
@@ -275,6 +277,7 @@
     | "hosts"
     | "compact"
     | "nightshift"
+    | "speech"
   >(null);
   // ---- wave 2C: notes, asides, council, new project, search, gestures ----
   /** The notes sheet opens on this note (a search hit), else its list. */
@@ -3370,6 +3373,10 @@
               retry();
             }}
           />
+          <!-- Item 334: off his normal flow — a quiet link, not a button. -->
+          <button class="speech-link" data-act="speech-test" onclick={() => ((sheet = "speech"), (sheetTall = true))}>Speech test</button>
+        {:else if sheet === "speech"}
+          <SpeechTest onclose={closeSheet} />
         {:else if sheet === "running"}
           <RunningSheet
             {running}
@@ -4649,6 +4656,16 @@
     background: var(--line2);
     margin: 0 auto 6px;
     flex: none;
+  }
+  /* Item 334: the Hosts sheet's way into the speech test. */
+  .speech-link {
+    all: unset;
+    cursor: pointer;
+    align-self: center;
+    font-size: 13px;
+    color: var(--dim);
+    text-decoration: underline;
+    padding: 8px;
   }
   .sheet-title {
     font-weight: 600;
