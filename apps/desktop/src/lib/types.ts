@@ -216,6 +216,9 @@ export interface AgentTurnResult {
     text: string;
     /** The spawning calls of the subagents that died on it. */
     subagents: string[];
+    /** Every child that had not returned (backlog 164, pass 2), with the
+     *  agent id SendMessage takes; absent from results before it. */
+    agents?: StoppedAgent[];
   } | null;
   notices: string[];
   is_error: boolean;
@@ -1976,4 +1979,16 @@ export interface RemoteStatus {
   token: string | null;
   setup_url: string | null;
   qr_svg: string | null;
+}
+
+/** A subagent the usage limit stopped before it returned (nightshift
+ *  backlog 164, pass 2) — `agent::StoppedAgent`. */
+export interface StoppedAgent {
+  /** The spawning call's id, as the transcript's `<subagent>` blocks carry it. */
+  tool_use_id: string;
+  /** The CLI's agent id (`agent-<id>.jsonl`), what SendMessage takes;
+   *  empty when the stream never announced the child. */
+  agent_id: string;
+  description: string;
+  status: string;
 }

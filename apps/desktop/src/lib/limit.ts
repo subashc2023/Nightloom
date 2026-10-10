@@ -16,7 +16,7 @@
  *
  * Pure over its inputs, so the suite pins the message and the timing.
  */
-import type { AgentTurnResult } from "./types";
+import type { AgentTurnResult, StoppedAgent } from "./types";
 
 export interface LimitPause {
   /** The chat the turn ran in; null for the pending chat. */
@@ -30,6 +30,9 @@ export interface LimitPause {
   text: string;
   /** The `tool_use_id`s of the subagents that died on it. */
   subagents: string[];
+  /** Every child that had not returned, with its agent id (backlog 164,
+   *  pass 2): what Resume names. */
+  agents: StoppedAgent[];
   /** When the turn ended. */
   hitAtMs: number;
 }
@@ -52,6 +55,7 @@ export function limitPauseFrom(
     window: l.window ?? null,
     text: l.text,
     subagents: l.subagents ?? [],
+    agents: stoppedOf(l),
     hitAtMs: nowMs,
   };
 }
@@ -83,20 +87,38 @@ export function pauseLabel(p: Pick<LimitPause, "resetsAtMs" | "window">, nowMs: 
     : `paused by the ${which} limit · resumes at ${when}`;
 }
 
+/** The stopped children of a result; one from before pass 2 (no
+ *  `agents`) is named by its spawning calls alone. */
+function stoppedOf(l: { subagents?: string[]; agents?: StoppedAgent[] }): StoppedAgent[] {
+  if (l.agents) return l.agents;
+  return (l.subagents ?? []).map((id) => ({ tool_use_id: id, agent_id: "", description: "", status: "" }));
+}
+
+/** How the card and the message name one stopped child. */
+export function stoppedName(a: StoppedAgent): string {
+  const call = `spawned by \`${a.tool_use_id}\``;
+  if (!a.agent_id) return `the one ${call}`;
+  return a.description ? `\`${a.agent_id}\` (${a.description}; ${call})` : `\`${a.agent_id}\` (${call})`;
+}
+
 /**
- * What Resume sends: the model is told the turn was cut by the limit and
- * the window has opened, and which subagents died — by their spawning
- * call ids, which the transcript's `<subagent parent="…">` blocks carry —
- * with the rule: continue them, do not relaunch.
+ * What Resume sends — `serve.rs`'s `resume_message`, word for word: the
+ * model is told the turn was cut by the limit and the window has opened,
+ * and which subagents had not returned — by the agent id SendMessage
+ * takes, with the description and the spawning call the transcript's
+ * `<subagent parent="…">` blocks carry (pass 2, 2026-10-09: pass 1 named
+ * the spawning call alone, which SendMessage does not take) — with the
+ * rule: continue them, do not relaunch.
  */
-export function resumeMessage(p: Pick<LimitPause, "subagents" | "text">): string {
+export function resumeMessage(p: Pick<LimitPause, "subagents"> & { agents?: StoppedAgent[] }): string {
   const head =
     "The last turn was paused by the plan's usage limit and the window has now reset. Continue exactly where it stopped; everything before the limit stands.";
-  if (p.subagents.length === 0) return head;
-  const ids = p.subagents.map((id) => `\`${id}\``).join(", ");
+  const stopped = stoppedOf(p);
+  if (stopped.length === 0) return head;
+  const one = stopped.length === 1;
   return (
-    `${head} ${p.subagents.length === 1 ? "One subagent" : `${p.subagents.length} subagents`} died on the limit ` +
-    `(spawned by ${ids}): resume ${p.subagents.length === 1 ? "it" : "each"} with SendMessage by id or name rather than launching a new one; ` +
-    "if that fails, read its transcript (this session's subagents folder under ~/.claude/projects, agent-<id>.jsonl, the .meta.json beside it names the spawning call) and take up from its last result instead of repeating the search."
+    `${head} ${one ? "One subagent" : `${stopped.length} subagents`} stopped on the limit before returning: ` +
+    `${stopped.map(stoppedName).join(", ")}. Resume ${one ? "it" : "each"} with SendMessage to its agent id rather than launching a new one; ` +
+    "if that fails, read its transcript (agent-<id>.jsonl in this session's subagents folder under ~/.claude/projects; the .meta.json beside it names the spawning call) and take up from its last result instead of repeating the search."
   );
 }

@@ -88,6 +88,30 @@ pub struct LimitHit {
     /// the order they died — a resume names them so the parent continues
     /// them rather than relaunching.
     pub subagents: Vec<String>,
+    /// Every child that had not returned when the limit ended the turn
+    /// (backlog 164, pass 2): those in `subagents`, then any other whose
+    /// last status was not `completed` — a background child's own lines
+    /// need not reach this stream. Each with the agent id SendMessage
+    /// takes, which the parent never got for a child whose call failed.
+    /// Filled by [`Translator::finish`].
+    pub agents: Vec<StoppedAgent>,
+}
+
+/// A subagent the usage limit stopped before it returned (backlog 164,
+/// pass 2), as the stream named it.
+#[derive(Debug, Default, Clone, PartialEq, Serialize)]
+pub struct StoppedAgent {
+    /// The spawning call's id — what the transcript's `<subagent>` blocks
+    /// carry.
+    pub tool_use_id: String,
+    /// The CLI's agent id (`system/task_started`'s `task_id`, the
+    /// `agent-<id>.jsonl` name): what SendMessage takes. Empty when no
+    /// `task_started` line was seen for the call.
+    pub agent_id: String,
+    /// The spawning call's description, when the CLI gave one.
+    pub description: String,
+    /// The child's last status on the stream (`running`, `failed`, …).
+    pub status: String,
 }
 
 /// The CLI's synthetic message for a refused request, as it begins.
@@ -104,6 +128,9 @@ pub struct Translator {
     /// 152): what [`TurnEvent::SubagentStatus`] is drawn from, kept whole
     /// so every emission carries the row entire.
     subagents: HashMap<String, SubagentLedger>,
+    /// The ledgers' keys in the order first seen (backlog 164, pass 2), so
+    /// the children a limit stopped are named in the order they started.
+    subagent_order: Vec<String>,
     /// Where each `rate_limit_event`'s five-hour figure is written for the
     /// Agent hook (backlog 165, `brief::USAGE_FILE`); `None` writes nothing.
     pub usage_sink: Option<std::path::PathBuf>,
@@ -222,6 +249,34 @@ impl SubagentLedger {
     }
 }
 
+/// The children a limit stopped (backlog 164, pass 2): first those whose
+/// own line carried the limit, in the order they died, then every other
+/// child seen whose last status is not `completed`, in the order it
+/// started. A child that completed is not named — its result reached the
+/// parent.
+fn stopped_agents(
+    died: &[String],
+    order: &[String],
+    ledgers: &HashMap<String, SubagentLedger>,
+) -> Vec<StoppedAgent> {
+    let open = order
+        .iter()
+        .filter(|id| !died.contains(id))
+        .filter(|id| ledgers.get(*id).is_some_and(|l| l.status != "completed"));
+    died.iter()
+        .chain(open)
+        .map(|id| {
+            let l = ledgers.get(id).cloned().unwrap_or_default();
+            StoppedAgent {
+                tool_use_id: id.clone(),
+                agent_id: l.task_id,
+                description: l.description,
+                status: l.status,
+            }
+        })
+        .collect()
+}
+
 /// What goes between prose ending in `tail` and a new text block starting
 /// with `next`, so they read as two paragraphs (backlog 152): nothing when
 /// the break is already there, one newline to finish it, else two.
@@ -337,8 +392,19 @@ impl Translator {
     }
 
     /// The accumulated outcome. Call after the stream ends.
-    pub fn finish(self) -> AgentOutcome {
+    pub fn finish(mut self) -> AgentOutcome {
+        if let Some(hit) = self.outcome.limit.as_mut() {
+            hit.agents = stopped_agents(&hit.subagents, &self.subagent_order, &self.subagents);
+        }
         self.outcome
+    }
+
+    /// The ledger of the child spawned by `id`, opened on first sight.
+    fn ledger(&mut self, id: &str) -> &mut SubagentLedger {
+        if !self.subagents.contains_key(id) {
+            self.subagent_order.push(id.to_string());
+        }
+        self.subagents.entry(id.to_string()).or_default()
     }
 
     fn stream_event(&mut self, event: StreamEv) -> Vec<TurnEvent> {
@@ -404,7 +470,7 @@ impl Translator {
         if let Some(parent) = &nested
             && let (Some(id), Some(raw)) = (&message.id, &message.usage)
         {
-            let ledger = self.subagents.entry(parent.clone()).or_default();
+            let ledger = self.ledger(parent);
             if ledger.status.is_empty() {
                 ledger.status = "running".into();
             }
@@ -535,7 +601,7 @@ impl Translator {
                 is_backgrounded,
                 prompt,
             } => {
-                let ledger = self.subagents.entry(tool_use_id.clone()).or_default();
+                let ledger = self.ledger(&tool_use_id);
                 ledger.task_id = task_id;
                 ledger.description = description;
                 ledger.subagent_type = subagent_type;
@@ -545,7 +611,7 @@ impl Translator {
                 return vec![ledger.event(&tool_use_id)];
             }
             SystemLine::TaskProgress { tool_use_id, usage } => {
-                let ledger = self.subagents.entry(tool_use_id.clone()).or_default();
+                let ledger = self.ledger(&tool_use_id);
                 if ledger.status.is_empty() {
                     ledger.status = "running".into();
                 }
@@ -557,7 +623,7 @@ impl Translator {
                 status,
                 usage,
             } => {
-                let ledger = self.subagents.entry(tool_use_id.clone()).or_default();
+                let ledger = self.ledger(&tool_use_id);
                 ledger.task(usage);
                 ledger.status = if status.is_empty() {
                     "completed".into()
@@ -1369,6 +1435,87 @@ mod tests {
         assert!(limit.api_error.is_none());
         let (_, fine) = drive(&[RESULT]);
         assert!(fine.api_error.is_none());
+    }
+
+    // Pass 2 of 164 (2026-10-09): a whole turn replayed, synthetic but in
+    // the shapes measured above and in 152 (`task_started` / `task_notification`
+    // as in `TASK_STARTED` here; the child's 429 line as `LIMIT_CHILD_TEXT`).
+    // Two foreground children: one completes, one dies on the limit; then
+    // the main thread's own request is refused. The `task_notification`
+    // status of a child killed by the limit was never caught live — the
+    // stopped list does not depend on it (the child's own line names it).
+    const SPAWN_TWO: &str = r#"{"type":"assistant","message":{"id":"m_spawn","model":"claude-opus-5-5","role":"assistant","content":[{"type":"tool_use","id":"toolu_LAW","name":"Agent","input":{"description":"Law and jurisprudence scan","prompt":"scan","subagent_type":"general-purpose"}},{"type":"tool_use","id":"toolu_ART","name":"Agent","input":{"description":"Art scan","prompt":"scan","subagent_type":"general-purpose"}}],"usage":{"input_tokens":10,"output_tokens":5}},"parent_tool_use_id":null,"session_id":"0a35e04d"}"#;
+    const STARTED_LAW: &str = r#"{"type":"system","subtype":"task_started","task_id":"ad35855f8406e281e","tool_use_id":"toolu_LAW","description":"Law and jurisprudence scan","subagent_type":"general-purpose","is_backgrounded":false,"prompt":"scan"}"#;
+    const STARTED_ART: &str = r#"{"type":"system","subtype":"task_started","task_id":"a0000000000000a2t","tool_use_id":"toolu_ART","description":"Art scan","subagent_type":"general-purpose","is_backgrounded":false,"prompt":"scan"}"#;
+    const LAW_ROUND: &str = r#"{"type":"assistant","message":{"id":"m_law1","model":"claude-opus-5-5","role":"assistant","content":[{"type":"text","text":"Searching."}],"usage":{"input_tokens":900,"output_tokens":3}},"parent_tool_use_id":"toolu_LAW","session_id":"0a35e04d"}"#;
+    const LAW_429: &str = r#"{"type":"assistant","message":{"id":"m_law2","model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"You've hit your session limit · resets 11:50pm (America/Los_Angeles)"}],"usage":{"input_tokens":0,"output_tokens":0}},"parent_tool_use_id":"toolu_LAW","error":"rate_limit","apiErrorStatus":429,"quotaLimits":{"status":"rejected","resetsAt":1789714200,"rateLimitType":"five_hour"},"session_id":"0a35e04d"}"#;
+    const DONE_ART: &str = r#"{"type":"system","subtype":"task_notification","task_id":"a0000000000000a2t","tool_use_id":"toolu_ART","status":"completed","usage":{"total_tokens":4000,"tool_uses":2,"duration_ms":9000}}"#;
+    const ART_RESULT: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"Art: three findings.","tool_use_id":"toolu_ART"}]},"parent_tool_use_id":null}"#;
+    const LAW_RESULT: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"You've hit your session limit · resets 11:50pm (America/Los_Angeles)","is_error":true,"tool_use_id":"toolu_LAW"}]},"parent_tool_use_id":null}"#;
+
+    #[test]
+    fn a_replayed_limit_names_the_dead_child_by_its_agent_id_and_not_the_one_that_finished() {
+        let (events, outcome) = drive(&[
+            SPAWN_TWO,
+            STARTED_LAW,
+            STARTED_ART,
+            LAW_ROUND,
+            DONE_ART,
+            ART_RESULT,
+            LAW_429,
+            LAW_RESULT,
+            LIMIT_MAIN_429,
+            RESULT_LIMIT,
+        ]);
+        // What the transcript sees: the dead child's call fails with the
+        // CLI's sentence; the finished one's result stands.
+        assert!(events.iter().any(|e| matches!(e,
+            TurnEvent::ToolResult { tool_use_id, is_error: true, name, content }
+                if tool_use_id == "toolu_LAW" && name == "Agent" && content.starts_with("You've hit your"))));
+        let hit = outcome.limit.expect("the limit");
+        assert_eq!(hit.subagents, vec!["toolu_LAW".to_string()]);
+        assert_eq!(
+            hit.agents,
+            vec![StoppedAgent {
+                tool_use_id: "toolu_LAW".into(),
+                agent_id: "ad35855f8406e281e".into(),
+                description: "Law and jurisprudence scan".into(),
+                status: "running".into(),
+            }]
+        );
+        assert_eq!(hit.resets_at, Some(1789714200));
+    }
+
+    #[test]
+    fn a_child_that_never_returned_is_named_though_its_own_lines_never_came() {
+        // A background child: started, its lines not on the parent's
+        // stream, no notification before the main thread's 429.
+        let bg = STARTED_LAW.replace(r#""is_backgrounded":false"#, r#""is_backgrounded":true"#);
+        let failed = DONE_ART.replace("completed", "failed");
+        let (_, outcome) = drive(&[&bg, STARTED_ART, &failed, LIMIT_MAIN_429, RESULT_LIMIT]);
+        let hit = outcome.limit.expect("the limit");
+        assert!(hit.subagents.is_empty(), "no child line carried the limit");
+        let named: Vec<(&str, &str)> = hit
+            .agents
+            .iter()
+            .map(|a| (a.agent_id.as_str(), a.status.as_str()))
+            .collect();
+        assert_eq!(
+            named,
+            vec![
+                ("ad35855f8406e281e", "running"),
+                ("a0000000000000a2t", "failed")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_limit_line_from_a_child_never_announced_is_named_by_its_call_alone() {
+        let (_, outcome) = drive(&[LIMIT_CHILD_TEXT, RESULT_LIMIT]);
+        let hit = outcome.limit.expect("the limit");
+        assert_eq!(hit.agents.len(), 1);
+        assert_eq!(hit.agents[0].tool_use_id, "toolu_01LgezcY45B8rbkKB4rGMVzE");
+        assert!(hit.agents[0].agent_id.is_empty());
     }
 
     #[test]
