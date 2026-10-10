@@ -92,6 +92,8 @@
   import Navigator from "./Navigator.svelte";
   // Edits as versions (item 299): ‹ n/N › under an edited message.
   import { ensureForkInfo, openVersion, versionsOf } from "./versions.svelte";
+  import { endsTurn } from "./retry";
+  import { retryReply } from "./retry.svelte";
   import { versionPlace } from "./versions";
   import { arrive, hasLaunch } from "./sendMotion";
   // A Send near the foot lands at the bottom (item 313).
@@ -395,6 +397,9 @@
       })),
     ),
   );
+
+  // Retry (item 333) rides the last reply of each turn.
+  const turnEnds = $derived(endsTurn(items.map((it) => ({ kind: it.kind, superseded: it.superseded }))));
 
   // Rewound turns are not drawn (backlog 247): one quiet line stands where
   // each run of them was (blocker 582).
@@ -1749,6 +1754,7 @@
               onedit={editable && item.editable ? () => beginEdit(item) : null}
               onremoveturn={editable ? () => void removeTurn(item.index) : null}
               planUsage={replyUsageView(usageLines.get(item.index))}
+              onretry={editable && turnEnds[i] && app.activeSessionId ? () => void retryReply(item.index) : null}
             />
             {#if item.original !== null && item.removed}
               <details class="original">

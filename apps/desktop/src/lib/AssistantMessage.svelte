@@ -177,6 +177,7 @@
     onedit = null,
     onremoveturn = null,
     planUsage = null,
+    onretry = null,
   }: {
     segs: Segment[];
     footer?: Footer | null;
@@ -222,6 +223,9 @@
     /** Remove this whole reply from the context, from the footer row;
      *  null when the turn cannot be acted on. */
     onremoveturn?: (() => void) | null;
+    /** Run this reply's prompt again in a fork from it (item 333), on a
+     *  turn's last reply; null where Retry is not offered. */
+    onretry?: (() => void) | null;
   } = $props();
 
   // Per-block clicks, keyed by the block's stable id (`segmentIds`) rather
@@ -803,6 +807,17 @@
     {@const share = size ? shareOf(size.tokens, limit) : null}
     <div class="footer">
       <button class="ns-btn ghost small" onclick={() => void copy()}>{copied ? "Copied" : "Copy"}</button>
+      {#if onretry}
+        <!-- Retry (item 333): the prompt again, in a fork from it; this
+             reply stays where it is, a version (‹ ›) away. -->
+        <button
+          class="ns-btn ghost small"
+          use:tip={"Run your message again in a fork from it. This reply stays here; ‹ › under your message flips between the two."}
+          onclick={() => onretry?.()}
+        >
+          Retry
+        </button>
+      {/if}
       {#if !footer.bare && (size || hasUsage(footer.usage))}
         <!-- No figure without usage (backlog 332): a reply cut off before
              its result has none, and "0 out" under its words was wrong. -->

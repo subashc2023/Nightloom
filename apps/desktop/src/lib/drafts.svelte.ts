@@ -619,6 +619,29 @@ export function moveDraft(from: string, to: string): void {
   moveHistory(from, to);
 }
 
+/**
+ * The box's words and chips follow him into a fork (item 333's Retry):
+ * what `from` held is appended to whatever `to` holds, as `moveDraft`
+ * does, but held messages stay where they were queued — they were meant
+ * for that chat. Nothing is dropped: an empty `from` changes nothing.
+ */
+export function carryDraft(from: string, to: string): void {
+  if (from === to) return;
+  const src = drafts[from];
+  if (!src || (!src.text && src.attachments.length === 0)) return;
+  const dst = draftFor(to);
+  dst.text = dst.text ? (src.text ? `${dst.text}\n${src.text}` : dst.text) : src.text;
+  dst.attachments.push(...src.attachments);
+  if (!dst.sel && src.sel) dst.sel = { ...src.sel };
+  if (src.queue.length === 0) delete drafts[from];
+  else {
+    src.text = "";
+    src.attachments = [];
+    delete src.sel;
+  }
+  schedule();
+}
+
 // ---- the draft history, per chat (backlog 158) ------------------------------
 
 /** One text that left a box, and when. */

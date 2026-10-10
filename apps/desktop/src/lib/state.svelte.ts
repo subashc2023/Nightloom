@@ -8923,14 +8923,19 @@ export async function sendEdit(
   text: string,
   images: ImageInput[] = [],
   documents: DocumentInput[] = [],
+  /** Called once the fork is the open chat, before the send (item 333:
+   *  Retry carries the box's draft into it). */
+  onForked: ((parent: string | null, fork: string) => void) | null = null,
 ): Promise<boolean> {
   if (app.busy) return false;
   try {
+    const parent = app.activeSessionId;
     const res = await api.editMessage(index, text, "send");
     app.events = res.events;
     // The fork starts with no asides; the parent keeps its own (backlog 203).
     switchAside(res.session);
     app.activeSessionId = res.session;
+    onForked?.(parent, res.session);
     app.error = null;
     app.agentTurn = null;
   } catch (e) {
