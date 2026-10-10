@@ -22,7 +22,7 @@ vi.mock("./state.svelte", async (orig) => {
 });
 
 import { app } from "./state.svelte";
-import { drafts, enqueueMessage, readDraft, setDraftText, addAttachment } from "./drafts.svelte";
+import { drafts, enqueueMessage, readDraft, setDraftText, addAttachment, removeAttachment, updateAttachment } from "./drafts.svelte";
 import { endsTurn, retryPrompt } from "./retry";
 import { retryReply } from "./retry.svelte";
 
@@ -114,6 +114,18 @@ describe("retryReply", () => {
     expect(readDraft("fork1").attachments).toHaveLength(1);
     expect(readDraft("chat1").text).toBe("");
     expect(readDraft("chat1").queue.map((q) => q.text)).toEqual(["held"]);
+  });
+
+  it("a chip still converting finishes (or fails) in the fork it was carried to", async () => {
+    addAttachment("chat1", { id: 7, kind: "document", name: "a.docx", data: "", pending: true } as never);
+    addAttachment("chat1", { id: 8, kind: "document", name: "b.pptx", data: "", pending: true } as never);
+    await retryReply(5);
+    // The conversion reports under the key it was dropped in.
+    expect(updateAttachment("chat1", 7, { data: "QUJD", pending: false })).toBe(true);
+    removeAttachment("chat1", 8);
+    expect(readDraft("fork1").attachments).toEqual([
+      expect.objectContaining({ id: 7, data: "QUJD", pending: false }),
+    ]);
   });
 
   it("appends to what the fork's box already holds rather than replace it", async () => {

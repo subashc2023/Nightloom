@@ -419,10 +419,19 @@ export function addAttachment(key: string, a: Attachment): void {
   schedule();
 }
 
+/** The draft whose box holds chip `id`: `key`'s, else whichever box it
+ *  moved to — Retry's `carryDraft` (item 333) moves a chip whose
+ *  conversion is still running into the fork (wave 5 review). Chip ids are
+ *  unique across drafts (`attachSeq`), so the search cannot mistake one. */
+function holderOf(key: string, id: number): Draft | undefined {
+  if (drafts[key]?.attachments.some((a) => a.id === id)) return drafts[key];
+  return Object.values(drafts).find((d) => d.attachments.some((a) => a.id === id));
+}
+
 /** Change a chip in place — a conversion finishing (item 277). A chip
  *  removed meanwhile stays removed; `false` says so. */
 export function updateAttachment(key: string, id: number, patch: Partial<Attachment>): boolean {
-  const a = drafts[key]?.attachments.find((x) => x.id === id);
+  const a = holderOf(key, id)?.attachments.find((x) => x.id === id);
   if (!a) return false;
   Object.assign(a, patch);
   schedule();
@@ -430,7 +439,7 @@ export function updateAttachment(key: string, id: number, patch: Partial<Attachm
 }
 
 export function removeAttachment(key: string, id: number): void {
-  const d = drafts[key];
+  const d = holderOf(key, id);
   if (!d) return;
   const i = d.attachments.findIndex((a) => a.id === id);
   if (i >= 0) d.attachments.splice(i, 1);
