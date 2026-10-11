@@ -39,6 +39,7 @@
     editButtons,
     editChanges,
     editLine,
+    editorKey,
     editParts,
     editReduce,
     editTexts,
@@ -622,17 +623,17 @@
     await sendEdit(index, draft, item.images, item.documents);
   }
   function editorKeys(e: KeyboardEvent, item: Item) {
-    // Enter is a newline here — an edit is usually to a long paste — and
-    // the modifier sends or saves: ⌘/Ctrl-Enter saves in place, ⌘/Ctrl-
-    // Shift-Enter sends into a fork, Escape cancels.
-    if (e.key === "Escape") {
-      e.preventDefault();
-      cancelEdit();
-    } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-      e.preventDefault();
-      if (e.shiftKey) void commitSend(item);
-      else void commitSave();
-    }
+    // ~~Enter is a newline here; ⌘/Ctrl-Enter saves, ⌘/Ctrl-Shift-Enter
+    // sends~~ (2026-10-11, item 337): in a user turn's editor Enter sends
+    // as the composer's does, Shift+Enter is a newline, and Save is its
+    // button only; a reply's editor keeps Enter a newline and ⌘/Ctrl-Enter
+    // to save. The mapping is `editorKey` (edit.ts), IME-safe (item 322).
+    const action = editorKey(e, item.kind !== "user");
+    if (!action) return;
+    e.preventDefault();
+    if (action === "cancel") cancelEdit();
+    else if (action === "send") void commitSend(item);
+    else void commitSave();
   }
   // A turn starting closes the editor rather than leave it over a
   // transcript changing under it — but the draft is kept (backlog 137: a

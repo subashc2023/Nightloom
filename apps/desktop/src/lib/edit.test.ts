@@ -10,6 +10,7 @@ import {
   editLine,
   editParts,
   editReduce,
+  editorKey,
   editTexts,
   elideFlags,
   forkLine,
@@ -291,5 +292,36 @@ describe("the editor's state machine", () => {
     expect(editReduce(s, { type: "busy" })).toBeNull();
     // A draft with nothing open stays nothing.
     expect(editReduce(null, { type: "draft", text: "x" })).toBeNull();
+  });
+});
+
+describe("the editor's keys (item 337)", () => {
+  const k = (key: string, extra: Record<string, unknown> = {}) => ({ key, ...extra });
+  it("Enter in a user turn's editor sends, as Send does", () => {
+    expect(editorKey(k("Enter"), false)).toBe("send");
+  });
+  it("Shift+Enter is a newline, not a send", () => {
+    expect(editorKey(k("Enter", { shiftKey: true }), false)).toBeNull();
+  });
+  it("Save has no key in a user turn's editor: ⌘/Ctrl-Enter sends", () => {
+    expect(editorKey(k("Enter", { metaKey: true }), false)).toBe("send");
+    expect(editorKey(k("Enter", { ctrlKey: true }), false)).toBe("send");
+    expect(editorKey(k("Enter", { metaKey: true, shiftKey: true }), false)).toBe("send");
+  });
+  it("an Enter the input method holds only commits (item 322)", () => {
+    expect(editorKey(k("Enter", { isComposing: true }), false)).toBeNull();
+    expect(editorKey(k("Enter", { keyCode: 229 }), false)).toBeNull();
+    expect(editorKey(k("Escape", { isComposing: true }), false)).toBeNull();
+  });
+  it("Escape cancels", () => {
+    expect(editorKey(k("Escape"), false)).toBe("cancel");
+    expect(editorKey(k("Escape"), true)).toBe("cancel");
+  });
+  it("a reply's editor keeps Enter a newline and ⌘/Ctrl-Enter to save", () => {
+    expect(editorKey(k("Enter"), true)).toBeNull();
+    expect(editorKey(k("Enter", { metaKey: true }), true)).toBe("save");
+  });
+  it("other keys do nothing", () => {
+    expect(editorKey(k("a"), false)).toBeNull();
   });
 });

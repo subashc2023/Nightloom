@@ -1,6 +1,7 @@
 import type { ContentBlock, SessionEvent, SessionMeta } from "./types";
 import { liveFlags } from "./state.svelte";
 import { remainingText, type CacheState } from "./cache";
+import { isImeKey } from "./imeKey";
 
 /**
  * Editing past turns (nightshift backlog 062, 2026-09-15): the projections
@@ -315,4 +316,38 @@ export function editButtons(state: EditState): { save: boolean; send: boolean } 
     save: draft.length > 0 && draft !== state.original.trim(),
     send: draft.length > 0,
   };
+}
+
+/**
+ * What a key in the editor does (item 337, his "clicking enter should
+ * still send it. if i wanted to jus save i'd click save"). In a user
+ * turn's editor Enter sends into a fork, as the composer's Enter sends;
+ * Shift+Enter is a newline; ⌘/Ctrl+Enter (with or without Shift) sends
+ * too, the old send chord kept working; Save has no key — only its
+ * button. An Enter the input method holds (item 322, `isImeKey`) only
+ * commits the composition. A reply's editor has no Send (a fork cuts
+ * only at a user turn), so there Enter stays a newline and ⌘/Ctrl+Enter
+ * saves, as before. Escape cancels in both.
+ */
+export type EditorKey = "send" | "save" | "cancel" | null;
+
+export interface EditorKeyLike {
+  key: string;
+  shiftKey?: boolean;
+  metaKey?: boolean;
+  ctrlKey?: boolean;
+  altKey?: boolean;
+  isComposing?: boolean;
+  keyCode?: number;
+}
+
+export function editorKey(e: EditorKeyLike, reply: boolean): EditorKey {
+  if (isImeKey(e)) return null;
+  if (e.key === "Escape") return "cancel";
+  if (e.key !== "Enter") return null;
+  const chord = !!(e.metaKey || e.ctrlKey);
+  if (reply) return chord ? "save" : null;
+  if (chord) return "send";
+  if (e.shiftKey || e.altKey) return null;
+  return "send";
 }

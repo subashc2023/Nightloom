@@ -1054,8 +1054,14 @@ the buttons:
   on, by an `edit` marker on the log; the turn shows an `edited` mark and
   "the original" unfolds under it, greyed. Live only when the text changed
   and is not blank (`editButtons`); blank is what Remove is for.
-- **Cancel**, and Escape. Enter is a newline in the editor — an edit is
-  usually to a long paste — ⌘/Ctrl-Enter saves, ⌘/Ctrl-Shift-Enter sends.
+- **Cancel**, and Escape. ~~Enter is a newline in the editor — an edit is
+  usually to a long paste — ⌘/Ctrl-Enter saves, ⌘/Ctrl-Shift-Enter sends.~~
+  Since 2026-10-11 (item 337, his "clicking enter should still send it. if i
+  wanted to jus save i'd click save"): in a user turn's editor Enter sends
+  (as Send), Shift+Enter is a newline, ⌘/Ctrl-Enter also sends, and Save
+  has no key — only its button; an Enter the input method holds only
+  commits (item 322). A reply's editor has no Send, so Enter stays a
+  newline there and ⌘/Ctrl-Enter saves (`editorKey`).
   One turn is open at a time (`editReduce`); a turn starting to stream
   closes it.
 
