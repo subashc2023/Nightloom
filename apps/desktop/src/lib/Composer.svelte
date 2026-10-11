@@ -61,7 +61,7 @@
     noteThread,
   } from "./handoff.svelte";
   import ThreadPicker from "./ThreadPicker.svelte";
-  import { chatThread, refreshThreadFlags, injectIntoTurn } from "./state.svelte";
+  import { chatThread, refreshThreadFlags, injectIntoTurn, sendNowRow } from "./state.svelte";
   import { draftEstimate, draftEstimateTitle, draftExact, draftExactTitle, EXACT_TOKENS_FROM, fmtTokens } from "./tokens";
   import { exactCounter, type ExactResult } from "./draftCount";
   import { countDraftTokens, officeConverter, pasteIntoFocus, prepareOfficeAttachment, takeBackInjected } from "./api";
@@ -2537,7 +2537,10 @@
         <div class="queue-row" role="listitem" data-queue-id={q.id}>
           <span class="queue-n mono">{i + 1}</span>
           <span class="queue-text" use:tip={q.text} data-find-text={q.text}>{#if handoffHere && q.id === handoff.queuedId}<span class="ns-chip mono" use:tip={"Put here by Nightloom: the window crossed this chat's hand-off mark while you were away. × takes it back."}>wrap-up · queued while you were away</span> {/if}{firstLine(q.text) || "(no text)"}{#if q.attachments.length > 0} <span class="ns-chip mono">{q.attachments.length} {q.attachments.length === 1 ? "file" : "files"}</span>{/if}</span>
-          {#if q.inject}<span class="ns-chip mono" data-inject={q.inject.after !== undefined ? "delivered" : "sent"} use:tip={q.inject.after !== undefined ? "The running turn took this message; it is in the chat when the turn ends." : "Sent into the running turn: Claude reads it at its next step. Take back works until then."}>{q.inject.after !== undefined ? `delivered ${q.inject.after}` : "sent · at the next step"}</span>{/if}
+          {#if q.inject}<span class="ns-chip mono" data-inject={q.inject.after !== undefined ? "delivered" : q.inject.now ? "now" : "sent"} use:tip={q.inject.after !== undefined ? "The running turn took this message; it is in the chat when the turn ends." : q.inject.now ? "Send now: Claude stops the step it is in and reads this at once. Take back works until then." : "Sent into the running turn: Claude reads it at its next step. Take back works until then."}>{q.inject.after !== undefined ? `delivered ${q.inject.after}` : q.inject.now ? "sending now · stopping the current step" : "sent · at the next step"}</span>{/if}
+          {#if q.inject && q.inject.after === undefined && !q.inject.now}
+            <button class="ns-btn ghost small" data-send-now use:tip={"Stop the step Claude is in (a long command, say) and give it this message at once — as Claude Code's own send now does. The turn goes on."} onclick={() => void sendNowRow(key, q.id)}>send now</button>
+          {/if}
           {#if q.inject?.after === undefined}
             <button class="ns-btn ghost small" use:tip={"Back into the message box"} onclick={() => void takeBack(q.id)}>take back</button>
             <button class="remove" use:tip={"drop this message"} aria-label="drop queued message {i + 1}" onclick={() => void dropRow(q.id)}>×</button>

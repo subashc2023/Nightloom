@@ -108,6 +108,22 @@ pub enum TurnEvent {
         id: String,
         text: String,
         after: String,
+        /// Its files (backlog 339), for the log; the window has them.
+        #[serde(skip)]
+        images: Vec<nightloom_core::ImageInput>,
+        #[serde(skip)]
+        documents: Vec<nightloom_core::DocumentInput>,
+    },
+    /// The main model passed a message on to a running subagent with
+    /// SendMessage (nightshift backlog 339): `agent_id` is the running
+    /// agent it named, `ok` whether the CLI accepted it ("queued for
+    /// delivery at its next tool round"). Claude Code engine only.
+    Relayed {
+        to: String,
+        agent_id: Option<String>,
+        text: String,
+        ok: bool,
+        detail: String,
     },
     /// The main thread's reply ended while subagents it started still run
     /// (nightshift backlog 329): their descriptions. The turn waits for

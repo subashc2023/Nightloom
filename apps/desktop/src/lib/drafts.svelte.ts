@@ -126,7 +126,7 @@ export interface QueuedMessage {
    *  turn's key, and — once the turn took it — where (`after`). A row with
    *  no `after` when the turn ends goes back to being an ordinary held
    *  message, sent as the next turn; nothing is lost. */
-  inject?: { id: string; turn: string; after?: string };
+  inject?: { id: string; turn: string; after?: string; now?: boolean };
 }
 
 /**
@@ -557,6 +557,15 @@ export function markDelivered(id: string, after: string): boolean {
     }
   }
   return false;
+}
+
+/** Send now went out for the row (backlog 339): the CLI stops the step
+ *  it is in and takes it at once. */
+export function markSendNow(key: string, qid: number): void {
+  const q = drafts[key]?.queue.find((r) => r.id === qid);
+  if (!q?.inject) return;
+  q.inject.now = true;
+  schedule();
 }
 
 /** No longer sent (taken back, or refused): an ordinary held row again. */

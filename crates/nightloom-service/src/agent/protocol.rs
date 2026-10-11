@@ -579,6 +579,19 @@ impl RawUsage {
 /// left for the CLI to default — whether it would is not something that was
 /// checked, and matching the SDK's shape exactly costs one key.
 pub(super) fn user_line(input: &crate::TurnInput) -> String {
+    let line = serde_json::json!({
+        "type": "user",
+        "message": { "role": "user", "content": user_content(input) },
+        "parent_tool_use_id": Value::Null,
+    });
+    // NDJSON: the newline is the frame, and the CLI waits for it.
+    format!("{line}\n")
+}
+
+/// The content blocks of a user line: caption, images, documents (see
+/// [`user_line`]). Also what a mid-turn message with files carries
+/// (nightshift backlog 339, [`super::inbox`]).
+pub(super) fn user_content(input: &crate::TurnInput) -> Vec<Value> {
     let mut content = vec![serde_json::json!({ "type": "text", "text": input.text })];
     content.extend(input.images.iter().map(|img| {
         serde_json::json!({
@@ -600,11 +613,5 @@ pub(super) fn user_line(input: &crate::TurnInput) -> String {
             "title": doc.name,
         })
     }));
-    let line = serde_json::json!({
-        "type": "user",
-        "message": { "role": "user", "content": content },
-        "parent_tool_use_id": Value::Null,
-    });
-    // NDJSON: the newline is the frame, and the CLI waits for it.
-    format!("{line}\n")
+    content
 }

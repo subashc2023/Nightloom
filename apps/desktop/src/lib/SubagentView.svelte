@@ -33,6 +33,7 @@
     type Steered,
   } from "./subagentAsk.svelte";
   import { clock12 } from "./awaySettings";
+  import { relayArrived, relays } from "./relay.svelte";
 
   let { content }: { content: Extract<TabContent, { kind: "subagent" }> } = $props();
 
@@ -67,6 +68,8 @@
   function arrivedLabel(n: Steered): string {
     return `Your note · reached it ${clock12(n.deliveredAt ?? null)}${n.tool ? ` with its ${shortToolName(n.tool)} call` : ""}${n.tellMain ? " · the main chat was told too" : ""}`;
   }
+  // What the main model passed on to it with SendMessage (backlog 339).
+  const relayed = $derived(row?.task_id ? (relays[row.task_id] ?? []) : []);
   const adopted = $derived(row ? adoptedChat(row) : null);
   let followUps = $state<FollowUp[]>([]);
   $effect(() => {
@@ -164,6 +167,18 @@
         <div class="arrived">
           <span class="arrived-label">{arrivedLabel(n)}</span>
           <span class="arrived-text">{n.text}</span>
+        </div>
+      {/each}
+      {#each relayed as r, k (k)}
+        <div class={r.ok && relayArrived(r, row?.segments ?? []) ? "arrived" : "held"} data-relay={!r.ok ? "failed" : relayArrived(r, row?.segments ?? []) ? "arrived" : "relayed"}>
+          <span class="arrived-label"
+            >{!r.ok
+              ? `The main chat tried to pass this on at ${clock12(new Date(r.at).toISOString())} — the CLI refused: ${r.detail.slice(0, 120)}`
+              : relayArrived(r, row?.segments ?? [])
+                ? `From the main chat (your mid-turn message) · relayed ${clock12(new Date(r.at).toISOString())} · arrived — it has taken a step since`
+                : `From the main chat (your mid-turn message) · relayed ${clock12(new Date(r.at).toISOString())} · reaches it at its next step`}</span
+          >
+          <span class="arrived-text">{r.text}</span>
         </div>
       {/each}
       {#each onTheWay as n (n.id)}

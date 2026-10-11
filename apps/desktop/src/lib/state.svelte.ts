@@ -25,6 +25,7 @@ import {
   clearInjected,
   markDelivered,
   markInjected,
+  markSendNow,
   settleInjected,
   moveDraft,
   newDraftKey,
@@ -111,6 +112,8 @@ import {
 } from "./browse";
 import { SEARCH_COLUMN_MAX, searchGrowth } from "./search.svelte";
 import * as tabs from "./tabs";
+import { midTurnWire, chipsFromInputs } from "./midTurn";
+import { recordRelay } from "./relay.svelte";
 import { adoptPending, closeRunningRows, latestAgents, mergeRows, rowsFromLog, rowsOf } from "./subagentRows";
 import { cli, startCliClock } from "./cliUpdate.svelte";
 import { chatIsCold, loadLayerPrefs, reconnectBeforeTurn, saveLayerPrefs } from "./promptVersions";
@@ -5847,24 +5850,53 @@ const stillRunningAsked = new Set<string>();
 /**
  * A message he queued while the chat on screen runs a turn, sent into that
  * turn (nightshift backlog 328): the CLI takes it at the turn's next step,
- * as Claude Code does, instead of holding it for the turn's end. Text only
- * — a row with files waits for the next turn as before (backlog 089). The
- * row stays in the queue, marked, until the turn takes it; one the turn
- * never takes is sent as the next message (`settleInjected`).
+ * as Claude Code does, instead of holding it for the turn's end. ~~Text only
+ * — a row with files waits for the next turn as before (backlog 089).~~
+ * Since backlog 339 (2026-10-11) its images and documents go too, as the
+ * opening line's content blocks; only a `file` chip, or one still
+ * converting, waits for the turn's end (`midTurnWire`). The row stays in
+ * the queue, marked, until the turn takes it; one the turn never takes is
+ * sent as the next message (`settleInjected`).
  */
-export async function injectIntoTurn(key: string, q: { id: number; text: string; attachments: unknown[] }): Promise<void> {
+export async function injectIntoTurn(key: string, q: { id: number; text: string; attachments: Attachment[] }): Promise<void> {
   const turn = fg;
-  if (!turn || !app.busy || app.parked || q.attachments.length > 0 || !q.text.trim()) return;
+  if (!turn || !app.busy || app.parked) return;
+  const wire = midTurnWire(q.attachments);
+  if (!wire || (!q.text.trim() && wire.images.length + wire.documents.length === 0)) return;
   const id = crypto.randomUUID();
   // Marked first: a delivery event can come back before the call does.
   markInjected(key, q.id, { id, turn: turn.key });
   let sent = false;
   try {
-    sent = await api.injectMessage(turn.key, id, q.text);
+    sent = await api.injectMessage(turn.key, id, q.text, wire.images, wire.documents);
   } catch {
     sent = false;
   }
   if (!sent && readDraft(key).queue.find((r) => r.id === q.id)?.inject?.id === id) clearInjected(key, q.id);
+}
+
+/**
+ * Send now (nightshift backlog 339): a row already sent into the running
+ * turn is re-sent with the CLI's `priority: "now"`, which stops the step
+ * it is in — a long Bash, say — and delivers it at once, the turn going
+ * on (measured on CLI 2.1.296). Without it the row goes at the next step,
+ * as before. Returns what he is told.
+ */
+export async function sendNowRow(key: string, qid: number): Promise<"sent" | "delivered" | "not_running"> {
+  const inj = readDraft(key).queue.find((r) => r.id === qid)?.inject;
+  if (!inj) return "not_running";
+  if (inj.after !== undefined) return "delivered";
+  if (inj.now) return "sent";
+  let r: "sent" | "delivered" | "not_running" = "not_running";
+  try {
+    r = await api.sendNowInjected(inj.turn, inj.id);
+  } catch {
+    r = "not_running";
+  }
+  if (r === "sent") markSendNow(key, qid);
+  else if (r === "delivered") addToast("already reached the turn");
+  else addToast("no turn is running to take it now — it goes as the next message");
+  return r;
 }
 /** The turns in `app.background`, by chat. */
 const bgTurns = new Map<string, TurnCtx>();
@@ -6766,7 +6798,6 @@ export async function remoteSend(
   council: CouncilRequest | null = null,
   spoken = false,
 ): Promise<"sent" | "queued"> {
-  const extras = images.length > 0 || documents.length > 0 || council !== null;
   if (chat && chat !== app.activeSessionId) {
     if (app.busy) throw new Error("the desktop is busy in another chat — held on the phone until it is free");
     await openSession(chat);
@@ -6775,10 +6806,17 @@ export async function remoteSend(
     }
   }
   if (app.busy || providerElsewhere()) {
-    // The Mac's queue holds `Attachment`s, not the phone's `ImageInput`s:
-    // a message with files or a council stays on the phone until the turn ends.
-    if (extras) throw new Error("this chat is running a turn on the Mac — the message and its files are held on the phone until it ends");
-    enqueueMessage(draftKey(app.activeSessionId, app.project?.id, app.pendingMode), text, []);
+    // ~~The Mac's queue holds `Attachment`s, not the phone's `ImageInput`s:
+    // a message with files or a council stays on the phone until the turn ends.~~
+    // Backlog 339: into the running turn at its next step, as a typed
+    // one goes — files too, as queue chips. A council, or files while the
+    // engine is busy in another chat, still wait on the phone.
+    const chips = chipsFromInputs(images, documents, nextAttachmentId);
+    if (council !== null || (chips.length > 0 && (!app.busy || app.parked)))
+      throw new Error("this chat is running a turn on the Mac — the message and its files are held on the phone until it ends");
+    const key = draftKey(app.activeSessionId, app.project?.id, app.pendingMode);
+    const row = enqueueMessage(key, text, chips);
+    if (app.busy && !app.parked) void injectIntoTurn(key, row);
     return "queued";
   }
   if (!app.connection) throw new Error("no engine is connected on the desktop — connect one there first");
@@ -8059,6 +8097,23 @@ export function applyTurnEventTo(host: TurnHost, ev: TurnEvent & { chat?: string
       // chat on screen's composer only.
       if (onScreen) app.suggestion = ev.text;
       break;
+    case "relayed": {
+      // The main model passed his words on to a running subagent (backlog
+      // 339): the agent's box shows it, and the reply says so in place.
+      const row = ev.agent_id ? app.subagents.find((r) => r.task_id === ev.agent_id) : undefined;
+      if (row && ev.agent_id)
+        recordRelay(ev.agent_id, { text: ev.text, at: Date.now(), ok: ev.ok, detail: ev.detail, segAt: row.segments.length });
+      closeThinking(segments);
+      const first = ev.text.split("\n")[0] ?? "";
+      const what = `“${first.length > 100 ? first.slice(0, 99) + "…" : first}”`;
+      segments.push({
+        kind: "notice",
+        text: ev.ok
+          ? `passed on to the subagent ${row ? `“${row.description}”` : ev.to}: ${what} — it reaches it at its next step`
+          : `could not pass it on to ${ev.to}: ${ev.detail.slice(0, 160)}`,
+      });
+      break;
+    }
     case "message_delivered": {
       // His mid-turn message reached the turn (backlog 328): its queue row
       // says where, and the reply shows it in place until the turn's end
