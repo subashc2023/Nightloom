@@ -63,6 +63,8 @@ mod model_list;
 mod nightshift;
 /// Edit a note by prompt (nightshift backlog 151).
 mod note_edit;
+/// A debug build's off-screen window for live tests (backlog 339).
+mod offscreen;
 /// Sleep-safe turns: the power assertion and the wake watcher.
 mod power;
 /// A changed prompt layer waits for the chat's cold moment (backlog 174).
@@ -7363,6 +7365,11 @@ fn build_window(app: &tauri::App) -> tauri::Result<()> {
     {
         win = win.decorations(false);
     }
+    // Built hidden for a debug live test (backlog 339): `offscreen::apply`
+    // moves it off screen before it is ever ordered in.
+    if offscreen::on() {
+        win = win.visible(false).focused(false);
+    }
 
     win.build()?;
     Ok(())
@@ -7906,7 +7913,14 @@ fn main() {
             // first paint calls straight into `providers` and `list_sessions`,
             // which resolve `State<AppState>` and panic if nothing has managed
             // it yet.
+            // A debug live test's off-screen window (backlog 339): no Dock
+            // icon, no menu bar, never the active app — his screen untouched.
+            #[cfg(target_os = "macos")]
+            if offscreen::on() {
+                app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            }
             build_window(app)?;
+            offscreen::apply(app.handle());
             // Quitting while work runs asks first (backlog 308): the
             // delegate's `applicationShouldTerminate:`, after tao set it.
             quit_guard::install(app.handle());
