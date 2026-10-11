@@ -721,7 +721,53 @@ struct ProjectsFolderFile {
 /// The setting if one is recorded, else [`default_projects_folder`]. `None`
 /// only when there is no user config dir at all.
 pub fn projects_folder(registry: &Registry) -> Option<PathBuf> {
-    config_dir().map(|config| projects_folder_in(&config, registry))
+    config_dir().map(|config| projects_folder_at(&config, registry))
+}
+
+/// Whether `NIGHTLOOM_HOME` names the home (a dev build's scratch home, a
+/// sandbox, the Fly volume) rather than the default `~/.nightloom`.
+pub fn named_home() -> bool {
+    std::env::var_os("NIGHTLOOM_HOME").is_some_and(|h| !h.is_empty())
+}
+
+/// The projects folder for the config dir this process runs on: the named
+/// home's rule ([`projects_folder_in_named_home`]) when `NIGHTLOOM_HOME` is
+/// set (item 335), else [`projects_folder_in`]. What every caller that
+/// creates or shows the folder uses, so a scratch home never makes a
+/// project in his real `~/Documents/Nightloom/projects`.
+pub fn projects_folder_at(config: &Path, registry: &Registry) -> PathBuf {
+    if named_home() {
+        projects_folder_in_named_home(config, registry)
+    } else {
+        projects_folder_in(config, registry)
+    }
+}
+
+/// Where a new project's folder goes on a home `NIGHTLOOM_HOME` names (item
+/// 300 H1, item 335): the home's own `projects-folder.json`, else the
+/// registry's hint when that folder lies inside the home, else
+/// `<home>/projects`. The desktop's last fallback,
+/// `~/Documents/Nightloom/projects`, is his real folder and never this
+/// one — nor is a hint from a copied registry pointing there.
+pub fn projects_folder_in_named_home(home: &Path, registry: &Registry) -> PathBuf {
+    if let Some(chosen) = read_projects_folder(home) {
+        return chosen;
+    }
+    // Workspaces are stored canonical (`/private/tmp`, not `/tmp`), so the
+    // home is compared both as given and canonical.
+    let canonical = normalize(home);
+    let inside = |dir: &Path| dir.starts_with(home) || dir.starts_with(&canonical);
+    registry
+        .projects
+        .iter()
+        .filter_map(|p| {
+            let parent = p.workspace.as_deref()?.parent()?;
+            (parent.file_name()? == "projects" && inside(parent))
+                .then(|| (p.created, parent.to_path_buf()))
+        })
+        .max_by_key(|(created, _)| *created)
+        .map(|(_, parent)| parent)
+        .unwrap_or_else(|| home.join("projects"))
 }
 
 /// The projects folder for a given config dir — the override if one is
@@ -2248,6 +2294,71 @@ mod tests {
         // An unreadable file costs the setting, not the feature.
         fs::write(config.join(PROJECTS_FOLDER_FILE), "{not json").unwrap();
         assert!(is_default_projects_folder_in(&config));
+        fs::remove_dir_all(&config).ok();
+    }
+
+    /// Item 335: a dev build on a scratch `NIGHTLOOM_HOME` with no
+    /// `projects-folder.json` made New project's folder in his real
+    /// `~/Documents/Nightloom/projects`. Under a named home it goes in
+    /// `<home>/projects` — even when the home holds a copy of his registry,
+    /// whose hint points at his real folder.
+    #[test]
+    fn a_named_home_with_no_setting_creates_new_projects_inside_it() {
+        let home = temp_dir("named-home-335");
+        let real = PathBuf::from("/Users/someone/Documents/Nightloom/projects");
+        let copied = a_registry_like_his(&real, Path::new("/repos/thing"));
+        assert_eq!(
+            projects_folder_in_named_home(&home, &copied),
+            home.join("projects"),
+            "a hint outside the home is not followed"
+        );
+
+        // New project, end to end: the folder is made under the home.
+        let mut reg = Registry::load_from(home.join("projects.json"));
+        let folder = projects_folder_in_named_home(&home, &reg);
+        let target = NewProjectPath::resolve("Scratch Thing", &folder);
+        let made = reg
+            .new_project(
+                "Scratch Thing",
+                NewProjectFolder::Resolved(target.path.clone()),
+                None,
+            )
+            .unwrap();
+        let ws = made.workspace.clone().unwrap();
+        assert!(ws.starts_with(normalize(&home)), "{}", ws.display());
+        assert!(ws.is_dir());
+        assert_eq!(ws, normalize(&home.join("projects").join("Scratch-Thing")));
+
+        // A hint inside the home is still followed, and a recorded setting
+        // still wins over everything.
+        assert_eq!(
+            projects_folder_in_named_home(&home, &reg),
+            normalize(&home.join("projects"))
+        );
+        let chosen = home.join("chosen");
+        set_projects_folder_in(&home, Some(&chosen)).unwrap();
+        assert_eq!(
+            projects_folder_in_named_home(&home, &reg),
+            normalize(&chosen)
+        );
+        fs::remove_dir_all(&home).ok();
+    }
+
+    /// Item 335's other half: with `NIGHTLOOM_HOME` unset the installed
+    /// app's rule is untouched — `projects_folder_at` is `projects_folder_in`.
+    #[test]
+    fn with_no_named_home_the_projects_folder_rule_is_unchanged() {
+        if named_home() {
+            return; // the suite was run under a named home; nothing to show
+        }
+        let config = temp_dir("unnamed-home-335");
+        let base = PathBuf::from("/x/Documents/Nightloom/projects");
+        let reg = a_registry_like_his(&base, Path::new("/repos/thing"));
+        assert_eq!(projects_folder_at(&config, &reg), base);
+        assert_eq!(
+            projects_folder_at(&config, &reg),
+            projects_folder_in(&config, &reg)
+        );
         fs::remove_dir_all(&config).ok();
     }
 
