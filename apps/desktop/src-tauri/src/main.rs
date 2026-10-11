@@ -5115,7 +5115,7 @@ impl ProjectsFolderInfo {
     /// `None` on a machine with no config directory.
     fn current(registry: &Registry) -> Option<Self> {
         let config = project::config_dir()?;
-        let dir = project::projects_folder_in(&config, registry);
+        let dir = project::projects_folder_at(&config, registry);
         Some(Self {
             exists: dir.is_dir(),
             is_default: project::is_default_projects_folder_in(&config),

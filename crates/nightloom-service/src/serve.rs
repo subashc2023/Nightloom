@@ -254,19 +254,8 @@ fn explicit_home() -> bool {
 /// sits in), else `<home>/projects`. The desktop's last fallback,
 /// `~/Documents/Nightloom/projects`, is his real folder and never this one.
 pub fn projects_folder_in_home(home: &Path, registry: &Registry) -> PathBuf {
-    if !project::is_default_projects_folder_in(home) {
-        return project::projects_folder_in(home, registry);
-    }
-    registry
-        .projects()
-        .iter()
-        .filter_map(|p| {
-            let parent = p.workspace.as_deref()?.parent()?;
-            (parent.file_name()? == "projects").then(|| (p.created, parent.to_path_buf()))
-        })
-        .max_by_key(|(created, _)| *created)
-        .map(|(_, parent)| parent)
-        .unwrap_or_else(|| home.join("projects"))
+    // The rule lives in `project` since item 335, shared with the desktop.
+    project::projects_folder_in_named_home(home, registry)
 }
 
 /// The project id `serve` lists for its unfiled chats ("No project"), so
