@@ -579,14 +579,34 @@ impl RawUsage {
 /// left for the CLI to default — whether it would is not something that was
 /// checked, and matching the SDK's shape exactly costs one key.
 pub(super) fn user_line(input: &crate::TurnInput) -> String {
-    let mut content = vec![serde_json::json!({ "type": "text", "text": input.text })];
-    content.extend(input.images.iter().map(|img| {
+    let content = user_content(&input.text, &input.images, &input.documents);
+    let line = serde_json::json!({
+        "type": "user",
+        "message": { "role": "user", "content": content },
+        "parent_tool_use_id": Value::Null,
+    });
+    // NDJSON: the newline is the frame, and the CLI waits for it.
+    format!("{line}\n")
+}
+
+/// A user turn's `content` block list as [`user_line`] sends it — caption,
+/// images, documents. Also what an edit that changes a past turn's
+/// attachments writes into the CLI's copy of that turn (2026-10-11,
+/// nightshift item 336, `CliSession::rewrite_user`), so the edited turn
+/// reads in the CLI's history as if it had been sent that way.
+pub(crate) fn user_content(
+    text: &str,
+    images: &[nightloom_core::ImageInput],
+    documents: &[nightloom_core::DocumentInput],
+) -> Vec<Value> {
+    let mut content = vec![serde_json::json!({ "type": "text", "text": text })];
+    content.extend(images.iter().map(|img| {
         serde_json::json!({
             "type": "image",
             "source": { "type": "base64", "media_type": img.media_type, "data": img.data },
         })
     }));
-    content.extend(input.documents.iter().map(|doc| {
+    content.extend(documents.iter().map(|doc| {
         // A text attachment goes as text, as on every provider (item 277).
         if doc.is_text() {
             return serde_json::json!({
@@ -600,11 +620,5 @@ pub(super) fn user_line(input: &crate::TurnInput) -> String {
             "title": doc.name,
         })
     }));
-    let line = serde_json::json!({
-        "type": "user",
-        "message": { "role": "user", "content": content },
-        "parent_tool_use_id": Value::Null,
-    });
-    // NDJSON: the newline is the frame, and the CLI waits for it.
-    format!("{line}\n")
+    content
 }

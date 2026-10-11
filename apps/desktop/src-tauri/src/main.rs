@@ -3820,6 +3820,12 @@ async fn unrewind(state: State<'_, AppState>, of: usize) -> Result<Vec<SessionEv
 /// (`Session::edit_block`; on Claude Code `CliSession::rewrite_block`, the
 /// block found by its count among the reply's text nodes). Absent, a
 /// reply's first text block, as before; meaningless on a user message.
+///
+/// `attachments` (2026-10-11, nightshift item 336): on a `save` of a user
+/// message, its whole set of images and documents from here on — the edit
+/// box's chips, sent only when they changed. On Claude Code the turn's
+/// node is rebuilt with them (`CliSession::rewrite_user`). `send` ignores
+/// it: the fork's first message carries the chips itself.
 #[tauri::command]
 async fn edit_message(
     state: State<'_, AppState>,
@@ -3827,6 +3833,7 @@ async fn edit_message(
     text: String,
     mode: String,
     block: Option<usize>,
+    attachments: Option<nightloom_core::EditedAttachments>,
 ) -> Result<MessageEdit, String> {
     match mode.as_str() {
         "save" => {
@@ -3840,6 +3847,7 @@ async fn edit_message(
                 index,
                 text,
                 block,
+                attachments,
             )?;
             Ok(MessageEdit {
                 events: session.events().to_vec(),

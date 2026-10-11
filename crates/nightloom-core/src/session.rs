@@ -195,6 +195,21 @@ pub struct ForkedFrom {
     pub reason: Option<String>,
 }
 
+/// A user message's attachments as an edit sets them (2026-10-11,
+/// nightshift item 336, his "being able to attach an image while editing a
+/// previous message"): the whole set from that edit on, replacing the
+/// turn's own — the turn's images and documents less any removed, plus any
+/// added. The whole set rather than a change list because the log already
+/// holds an edit's text whole, and a reader then needs only the latest
+/// marker.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EditedAttachments {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageInput>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub documents: Vec<DocumentInput>,
+}
+
 /// One entry in a session's append-only event log.
 ///
 /// The log is the source of truth; the message list sent to a provider and
@@ -590,6 +605,13 @@ pub enum SessionEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         block: Option<usize>,
         text: String,
+        /// A user message's attachments from here on (2026-10-11, item
+        /// 336), the whole set. Absent where the edit left them as they
+        /// were — every reply's edit, every edit before the field — so a
+        /// text-only edit is the line it always was; a later marker without
+        /// it does not undo an earlier one's set.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attachments: Option<EditedAttachments>,
         at: DateTime<Utc>,
     },
     /// A log entry this build cannot read: an event written by a newer
@@ -1355,12 +1377,14 @@ impl Session {
                     target,
                     block,
                     text,
+                    attachments,
                     at,
                 } => match renumber.get(target) {
                     Some(target) => SessionEvent::Edit {
                         target: *target,
                         block: *block,
                         text: text.clone(),
+                        attachments: attachments.clone(),
                         at: *at,
                     },
                     None => continue,
@@ -2402,11 +2426,73 @@ impl Session {
                     target,
                     block: None,
                     text,
+                    attachments: None,
                     at: Utc::now(),
                 });
                 Ok(())
             }
         }
+    }
+
+    /// Record that the user message at `target` says `text` and carries
+    /// `attachments` from here on (2026-10-11, nightshift item 336): the
+    /// edit box's Save with its chips changed. On [`edit`](Self::edit)'s
+    /// terms — blank text refused, a removed or rewound turn refused — and
+    /// a reply is refused outright, its attachments being none of the
+    /// user's.
+    pub fn edit_with_attachments(
+        &mut self,
+        target: usize,
+        text: impl Into<String>,
+        attachments: EditedAttachments,
+    ) -> Result<(), String> {
+        let text = text.into();
+        if !matches!(
+            self.events.get(target),
+            Some(SessionEvent::UserMessage { .. })
+        ) {
+            return Err(format!(
+                "event {target} is not a user message; only a message's attachments can be edited"
+            ));
+        }
+        self.check_editable(target, &text)?;
+        self.record(SessionEvent::Edit {
+            target,
+            block: None,
+            text,
+            attachments: Some(attachments),
+            at: Utc::now(),
+        });
+        Ok(())
+    }
+
+    /// What each user message carries now (2026-10-11, item 336): the set
+    /// of the latest live [`SessionEvent::Edit`] aimed at it that named
+    /// one, or `None` where it carries its own. Live markers only, as
+    /// [`edit_texts`](Self::edit_texts), so a rewind past the edit puts the
+    /// originals back.
+    pub fn edit_attachments(&self) -> Vec<Option<&EditedAttachments>> {
+        let live = self.live_flags();
+        let mut sets = vec![None; self.events.len()];
+        for (i, e) in self.events.iter().enumerate() {
+            if !live[i] {
+                continue;
+            }
+            if let SessionEvent::Edit {
+                target,
+                attachments: Some(set),
+                ..
+            } = e
+                && matches!(
+                    self.events.get(*target),
+                    Some(SessionEvent::UserMessage { .. })
+                )
+                && let Some(slot) = sets.get_mut(*target)
+            {
+                *slot = Some(set);
+            }
+        }
+        sets
     }
 
     /// Record that text block `block` of the reply at `target` says `text`
@@ -2443,6 +2529,7 @@ impl Session {
             target,
             block: Some(block),
             text,
+            attachments: None,
             at: Utc::now(),
         });
         Ok(())
@@ -2923,6 +3010,7 @@ impl Session {
     fn project_sourced(&self) -> Vec<SourcedMessage> {
         let elided = self.elide_flags();
         let edited = self.edit_texts();
+        let edited_sets = self.edit_attachments();
         let block_edits = self.block_edits();
         let gone = self.block_elisions();
         let removed_calls = self.removed_calls(&gone);
@@ -2962,6 +3050,11 @@ impl Session {
                     // below, size estimate included: the marker describes
                     // what the wire would have carried.
                     let text = edited[i].unwrap_or(text.as_str());
+                    // And an edit's attachments for the turn's own (item 336).
+                    let (images, documents) = match edited_sets[i] {
+                        Some(set) => (&set.images, &set.documents),
+                        None => (images, documents),
+                    };
                     let content = if elided[i] {
                         vec![SourcedBlock::event(
                             ContentBlock::Text {
@@ -5361,6 +5454,94 @@ mod tests {
             Usage::default(),
         );
         s
+    }
+
+    /// Item 336: an edit can set a user message's attachments — the whole
+    /// set, the originals kept in the log — and the request carries the
+    /// set; a later text-only edit keeps it, a fork copies it, and a reply
+    /// is refused. (Liveness under a rewind is `live_flags`, shared with
+    /// `edit_texts` and pinned by its tests.)
+    #[test]
+    fn an_edit_can_set_a_user_messages_attachments() {
+        let png = |d: &str| ImageInput {
+            media_type: "image/png".into(),
+            data: d.into(),
+        };
+        let mut s = Session::new();
+        let u = s.events().len();
+        s.record_user_with_attachments("look at these", vec![png("AAAA"), png("BBBB")], vec![]);
+        s.record_assistant(
+            "m",
+            vec![ContentBlock::Text {
+                text: "two pictures".into(),
+            }],
+            None,
+            Usage::default(),
+        );
+        let images_sent = |s: &Session| -> Vec<String> {
+            s.messages()[0]
+                .content
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Image { data, .. } => Some(data.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(images_sent(&s), ["AAAA", "BBBB"]);
+
+        // Remove the first image, add a document, reword.
+        let set = EditedAttachments {
+            images: vec![png("BBBB")],
+            documents: vec![DocumentInput {
+                media_type: "application/pdf".into(),
+                name: "notes.pdf".into(),
+                data: "JVBERi0=".into(),
+            }],
+        };
+        s.edit_with_attachments(u, "look at this one", set).unwrap();
+        assert_eq!(images_sent(&s), ["BBBB"]);
+        assert!(
+            s.messages()[0]
+                .content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Document { .. }))
+        );
+        assert_eq!(s.messages()[0].text(), "look at this one");
+        // The original is in the log, untouched.
+        assert!(matches!(
+            &s.events()[u],
+            SessionEvent::UserMessage { images, .. } if images.len() == 2
+        ));
+
+        // The marker round-trips; a text-only edit's line stays as it was.
+        let line = serde_json::to_string(s.events().last().unwrap()).unwrap();
+        assert!(line.contains(r#""attachments""#), "{line}");
+        let again: SessionEvent = serde_json::from_str(&line).unwrap();
+        assert!(matches!(
+            again,
+            SessionEvent::Edit { attachments: Some(ref a), .. } if a.images.len() == 1
+        ));
+        s.edit(u, "look at this one, please").unwrap();
+        let plain = serde_json::to_string(s.events().last().unwrap()).unwrap();
+        assert!(!plain.contains("attachments"), "{plain}");
+        // ...and does not undo the earlier set.
+        assert_eq!(images_sent(&s), ["BBBB"]);
+
+        // A fork cut after the edit carries the marker.
+        s.record_user("and then?");
+        let dir = std::env::temp_dir().join(format!("nightloom-edit-att-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let last = s.events().len() - 1;
+        let fork = s.fork_from(&dir, last).unwrap();
+        assert!(fork.edit_attachments()[u].is_some());
+        let _ = fs::remove_dir_all(&dir);
+
+        // A reply has no attachments to set.
+        assert!(
+            s.edit_with_attachments(u + 1, "x", EditedAttachments::default())
+                .is_err()
+        );
     }
 
     /// An edit projects the new text, keeps the original in the log, and

@@ -160,6 +160,7 @@ import type {
   ChatMode,
   DocumentInput,
   FileInput,
+  EditedAttachments,
   FolderGrant,
   FolderInfo,
   ImageInput,
@@ -8884,11 +8885,18 @@ function currentText(index: number): string {
  * the CLI's history by copy, or refused with a notice and recorded
  * nothing. Refused mid-turn on `rewindTo`'s reasoning.
  */
-export async function saveEdit(index: number, text: string): Promise<boolean> {
+export async function saveEdit(
+  index: number,
+  text: string,
+  /** Item 336: the user message's whole set of attachments from here on —
+   *  the edit box's chips, passed only when they changed. */
+  attachments: EditedAttachments | null = null,
+): Promise<boolean> {
   if (app.busy) return false;
   const previous = currentText(index);
+  const previousSet = attachments ? currentAttachments(index) : null;
   try {
-    const res = await api.editMessage(index, text, "save");
+    const res = await editSaved(index, text, attachments);
     app.events = res.events;
     app.error = null;
   } catch (e) {
@@ -8896,17 +8904,39 @@ export async function saveEdit(index: number, text: string): Promise<boolean> {
     return false;
   }
   // An edit is undone by an edit back to what the turn said before: the
-  // same marker, the same CLI copy on Claude Code, the original kept.
-  const editTo = async (t: string) => {
-    const res = await api.editMessage(index, t, "save");
+  // same marker, the same CLI copy on Claude Code, the original kept — and,
+  // when the attachments changed, back to the set it carried (item 336).
+  const editTo = async (t: string, set: EditedAttachments | null) => {
+    const res = await editSaved(index, t, set);
     app.events = res.events;
   };
   pushUndo(chatScope(), {
     label: "edit",
-    undo: () => editTo(previous),
-    redo: () => editTo(text),
+    undo: () => editTo(previous, previousSet),
+    redo: () => editTo(text, attachments),
   });
   return true;
+}
+
+/** `edit_message` "save", with the attachments only when there are some
+ *  to set — a text-only Save is the call it always was. */
+function editSaved(index: number, text: string, set: EditedAttachments | null) {
+  return set ? api.editMessage(index, text, "save", set) : api.editMessage(index, text, "save");
+}
+
+/** What the user turn at `index` carries now (item 336): the latest live
+ *  edit's set, else its own images and documents — what an undo of an
+ *  attachment edit puts back. `editAttachments` in edit.ts, inline here
+ *  as `currentText` is. */
+function currentAttachments(index: number): EditedAttachments {
+  const e = app.events[index];
+  if (e?.event !== "user_message") return { images: [], documents: [] };
+  const live = liveFlags(app.events);
+  for (let i = app.events.length - 1; i > index; i--) {
+    const m = app.events[i];
+    if (live[i] && m.event === "edit" && m.target === index && m.attachments) return m.attachments;
+  }
+  return { images: e.images ?? [], documents: e.documents ?? [] };
 }
 
 /**
@@ -8926,6 +8956,9 @@ export async function sendEdit(
   /** Called once the fork is the open chat, before the send (item 333:
    *  Retry carries the box's draft into it). */
   onForked: ((parent: string | null, fork: string) => void) | null = null,
+  /** Files for the Claude Code engine (item 277) the edit box attached
+   *  (item 336); the log keeps none, so a past turn never carries one. */
+  files: FileInput[] = [],
 ): Promise<boolean> {
   if (app.busy) return false;
   try {
@@ -8943,7 +8976,7 @@ export async function sendEdit(
     return false;
   }
   void refreshSessions();
-  await send(text, images, documents);
+  await send(text, images, documents, null, files);
   return true;
 }
 

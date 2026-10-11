@@ -557,6 +557,37 @@ impl CliSession {
         }
     }
 
+    /// A copy with the user turn at `target` saying `text` and carrying
+    /// exactly `images` and `documents` (2026-10-11, nightshift item 336):
+    /// the node's content rebuilt as the turn would have been sent
+    /// (`protocol::user_content`), so an image removed in the edit box is
+    /// gone from what the model reads on `--resume` and one added is there.
+    /// A reply is refused; its attachments are none of the user's.
+    pub fn rewrite_user(
+        &self,
+        target: &Target,
+        text: &str,
+        images: &[nightloom_core::ImageInput],
+        documents: &[nightloom_core::DocumentInput],
+    ) -> Result<Self, CliSessionError> {
+        let Target::User { .. } = target else {
+            return Err(CliSessionError::Locate(
+                "only a user message's attachments can be edited; nothing was changed".into(),
+            ));
+        };
+        let found = self.locate(target)?;
+        let mut copy = self.clone();
+        let line = &mut copy.lines[found[0]];
+        let Some(content) = line.content_mut() else {
+            return Err(CliSessionError::Locate(
+                "that message has no content in Claude Code's history; nothing was changed".into(),
+            ));
+        };
+        *content = Value::Array(super::protocol::user_content(text, images, documents));
+        line.dirty = true;
+        Ok(copy)
+    }
+
     /// The text nodes of a located reply, in order.
     fn text_nodes(&self, found: &[usize]) -> Vec<usize> {
         found
@@ -1294,6 +1325,62 @@ mod tests {
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0]["text"], "look at this");
         assert_eq!(blocks[1]["type"], "image");
+    }
+
+    /// Item 336: an edit that sets the attachments rebuilds the turn's
+    /// node as it would have been sent — the removed image gone, the added
+    /// PDF and text file there, the caption first — and touches no other
+    /// node. A reply is refused.
+    #[test]
+    fn a_user_edit_can_replace_the_attachments() {
+        let text = fixture().replace(
+            r#""content":"second""#,
+            r#""content":[{"type":"text","text":"second"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"BBBB"}}]"#,
+        );
+        let s = CliSession::parse(&text).unwrap();
+        let target = Target::User {
+            from_last: 0,
+            text: "second".into(),
+        };
+        let images = [nightloom_core::ImageInput {
+            media_type: "image/png".into(),
+            data: "BBBB".into(),
+        }];
+        let documents = [
+            nightloom_core::DocumentInput {
+                media_type: "application/pdf".into(),
+                name: "notes.pdf".into(),
+                data: "JVBERi0=".into(),
+            },
+            nightloom_core::DocumentInput {
+                media_type: "text/plain".into(),
+                name: "a.txt".into(),
+                data: "aGk=".into(),
+            },
+        ];
+        let out = s
+            .rewrite_user(&target, "this one", &images, &documents)
+            .unwrap()
+            .render_as("new");
+        let lines = parsed(&out);
+        let u2 = lines.iter().find(|o| o["uuid"] == "u2").unwrap();
+        let blocks = u2["message"]["content"].as_array().unwrap().clone();
+        assert_eq!(blocks.len(), 4, "{blocks:?}");
+        assert_eq!(blocks[0]["text"], "this one");
+        assert_eq!(blocks[1]["source"]["data"], "BBBB");
+        assert_eq!(blocks[2]["type"], "document");
+        assert_eq!(blocks[2]["title"], "notes.pdf");
+        assert_eq!(blocks[3]["type"], "text");
+        assert!(blocks[3]["text"].as_str().unwrap().contains("hi"));
+        let u1 = lines.iter().find(|o| o["uuid"] == "u1").unwrap();
+        assert_eq!(u1["message"]["content"], "first");
+        assert_eq!(uuids(&out), uuids(&text), "no node added or dropped");
+
+        let reply = Target::Assistant {
+            from_last: 1,
+            text: "one".into(),
+        };
+        assert!(s.rewrite_user(&reply, "x", &[], &[]).is_err());
     }
 
     #[test]

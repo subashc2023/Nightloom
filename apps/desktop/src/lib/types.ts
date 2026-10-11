@@ -974,6 +974,13 @@ export interface ImageInput {
  * four wire dialects require a filename on the part, and it is what the
  * model has to say back when it refers to the file.
  */
+/** A user message's attachments as an edit sets them (item 336;
+ *  `nightloom_core::EditedAttachments`). */
+export interface EditedAttachments {
+  images?: ImageInput[];
+  documents?: DocumentInput[];
+}
+
 export interface DocumentInput {
   media_type: string;
   name: string;
@@ -1181,7 +1188,16 @@ export type SessionEvent =
   // the reply's `blocks`; absent on a user message and on a reply edited
   // before the field existed, which reads as its first text block. See
   // `blockEdits`.
-  | { event: "edit"; target: number; block?: number; text: string; at: string }
+  | {
+      event: "edit";
+      target: number;
+      block?: number;
+      text: string;
+      /** A user message's whole set of attachments from this edit on
+       *  (item 336); absent where the edit left them as they were. */
+      attachments?: EditedAttachments;
+      at: string;
+    }
   | { event: "compaction"; summary: string; at: string }
   // A log entry the backend could not read: an event from a newer build, or a
   // line the disk damaged. It holds its index so that `rewind` and `elide`,

@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AsideResult,
+  EditedAttachments,
   AsideSendOptions,
   CliStatus,
   CliUpdateResult,
@@ -559,8 +560,11 @@ export function editMessage(
   index: number,
   text: string,
   mode: "save" | "send",
+  /** Item 336: on a `save`, the user message's whole set of attachments
+   *  from here on; absent leaves them as they are. */
+  attachments: EditedAttachments | null = null,
 ): Promise<MessageEdit> {
-  return invoke("edit_message", { index, text, mode });
+  return invoke("edit_message", attachments ? { index, text, mode, attachments } : { index, text, mode });
 }
 
 /**

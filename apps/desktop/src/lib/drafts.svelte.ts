@@ -836,3 +836,15 @@ export function takeEdit(key: string): EditStash | null {
 export function hasEdit(key: string): boolean {
   return edits.has(key);
 }
+
+/**
+ * Where a chat's open edit box keeps its chips (item 336): a drafts-store
+ * key of its own, so the composer's attach code (`acceptFiles`) puts them
+ * there, a conversion finishing finds them by id, and they outlive a chat
+ * switch, an unmount and a reload as a box's chips do. One per chat, as
+ * one editor is open per chat; the editor's words stay in `stashEdit`.
+ */
+export const EDIT_DRAFT_PREFIX = "edit:";
+export function editDraftKey(chatKey: string): string {
+  return `${EDIT_DRAFT_PREFIX}${chatKey}`;
+}

@@ -7,6 +7,7 @@
   import { onDestroy, tick, untrack } from "svelte";
   import {
     app,
+    addToast,
     denialReason,
     draftAside,
     liveFlags,
@@ -40,9 +41,14 @@
     editChanges,
     editLine,
     editorKey,
+    chipPrint,
+    chipsOf,
+    editDirty,
     editParts,
     editReduce,
     editTexts,
+    editAttachments,
+    chipsChanged,
     elideFlags,
     isEditable,
     type EditState,
@@ -63,7 +69,17 @@
   import { loadReplyUsage, replyUsageOf } from "./replyUsage.svelte";
   import { cacheState } from "./cache";
   import { moveScroll, recallScroll, rememberScroll, scrollKey, NEW_SCROLL_KEY } from "./scroll.svelte";
-  import { stashEdit, takeEdit } from "./drafts.svelte";
+  import {
+    editDraftKey,
+    nextAttachmentId,
+    readDraft,
+    setDraftAttachments,
+    stashEdit,
+    takeEdit,
+  } from "./drafts.svelte";
+  import { acceptFiles, conversionJobs, filesBlocked, splitChips } from "./attachFiles.svelte";
+  import EditAttachments from "./EditAttachments.svelte";
+  import ConfirmDialog from "./ConfirmDialog.svelte";
   // For its effect: the aside threads' keeper (backlog 137).
   import "./asides.svelte";
   import {
@@ -210,6 +226,8 @@
     const out: Item[] = [];
     const live = liveFlags(evs);
     const edited = editTexts(evs);
+    // Item 336: an edit's attachments stand in for the turn's own.
+    const editedSets = editAttachments(evs);
     const removed = elideFlags(evs);
     const edits = blockEdits(evs);
     const gone = blockElisions(evs);
@@ -233,8 +251,8 @@
           {
             kind: "user",
             text: removed[index] ? REMOVED_PLACEHOLDER : (text ?? e.text),
-            images: removed[index] ? [] : (e.images ?? []),
-            documents: removed[index] ? [] : (e.documents ?? []),
+            images: removed[index] ? [] : (editedSets[index]?.images ?? e.images ?? []),
+            documents: removed[index] ? [] : (editedSets[index]?.documents ?? e.documents ?? []),
             at: e.at,
           },
           removed[index] ? (text ?? e.text) : text != null ? e.text : null,
@@ -552,13 +570,27 @@
     }
   }
   function beginEdit(item: Item) {
+    // Opening a second turn closes the first: ask before that drops a
+    // changed edit (practices §7, item 336).
+    if (editing && editing.index !== item.index && editDirty(editing, editChipsFor(editing))) {
+      dropAsk = { what: "open", run: () => openEditor(item) };
+      return;
+    }
+    openEditor(item);
+  }
+  function openEditor(item: Item) {
     const text = item.kind === "user" ? item.text : item.kind === "assistant" ? textOf(item.segs) : "";
     const parts =
       item.kind === "assistant"
         ? editParts(evs, item.index, (b) => `${b.name} ${toolInputSummary(b.input)}`.trim())
         : undefined;
+    // Item 336: a user turn's editor opens on its own attachments as chips
+    // (his report: the image vanished from the edit box). A reply's has none.
+    const chips = item.kind === "user" ? chipsOf(item.images, item.documents, nextAttachmentId) : [];
+    setDraftAttachments(editKey, chips);
+    const chipsAt = item.kind === "user" ? chips.map(chipPrint) : undefined;
     void keepPlace(item.index, () => {
-      editing = editReduce(editing, { type: "begin", index: item.index, text, parts });
+      editing = editReduce(editing, { type: "begin", index: item.index, text, parts, chipsAt });
       editCacheLine = editLine(cacheState(evs, Date.now()));
     }).then(() => {
       const first = editorEl ?? editorEls.find((el) => el);
@@ -594,33 +626,106 @@
   function grow(node: HTMLTextAreaElement) {
     autogrow(node);
   }
+  /** The chips that count for `state`: a user turn's; none for a reply. */
+  function editChipsFor(state: EditState) {
+    return state && !state.parts ? editChips : undefined;
+  }
+  /** A pending "drop this edit?" question (practices §7, item 336). */
+  let dropAsk = $state<{ what: "cancel" | "open"; run: () => void } | null>(null);
   function cancelEdit(): void {
+    if (!editing) return;
+    // A changed edit is not dropped on one key: Cancel and Escape ask.
+    if (editDirty(editing, editChipsFor(editing))) {
+      dropAsk = { what: "cancel", run: closeEditor };
+      return;
+    }
+    closeEditor();
+  }
+  function closeEditor(): void {
     if (!editing) return;
     void keepPlace(editing.index, () => {
       editing = editReduce(editing, { type: "cancel" });
       stashEdit(sessionKey, null);
+      setDraftAttachments(editKey, []);
     });
   }
+  /** Files pasted or dropped on a user turn's editor (item 336): chips,
+   *  as the composer makes them. Pasted text goes in as text. */
+  function editorPaste(e: ClipboardEvent): void {
+    const files = Array.from(e.clipboardData?.files ?? []);
+    if (files.length === 0) return;
+    if (!e.clipboardData?.getData("text/plain")) e.preventDefault();
+    void acceptFiles(editKey, files);
+  }
+  function editorDragOver(e: DragEvent): void {
+    if (!e.dataTransfer?.types.includes("Files")) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  }
+  function editorDrop(e: DragEvent): void {
+    const files = Array.from(e.dataTransfer?.files ?? []);
+    if (files.length === 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    void acceptFiles(editKey, files);
+  }
+  /** Wait for the edit box's office conversions, saying so; false when
+   *  the editor closed or moved meanwhile. */
+  async function editConversions(index: number): Promise<boolean> {
+    const jobs = conversionJobs(editKey);
+    if (jobs.length === 0) return true;
+    const names = editChips.filter((a) => a.pending).map((a) => a.name);
+    addToast(`Converting ${names.join(", ")} — the message sends when ${names.length === 1 ? "it is" : "they are"} ready`);
+    await Promise.all(jobs);
+    return editing?.index === index;
+  }
   async function commitSave() {
-    if (!editing || !editButtons(editing).save) return;
+    if (!editing || !editButtons(editing, editChipsFor(editing)).save) return;
+    if (!editing.parts) {
+      // Item 336: a converting chip is waited for; a file for Claude Code
+      // has no place in a past turn (the log keeps none), so it goes by Send.
+      if (!(await editConversions(editing.index)) || !editing) return;
+      const files = editChips.filter((a) => a.kind === "file");
+      if (files.length > 0) {
+        addToast(
+          `${files.map((f) => f.name).join(", ")}: a file Claude Code opens itself can go only with a new message — Send starts a fork with it, or remove it to Save`,
+        );
+        return;
+      }
+    }
     const { index, draft, parts } = editing;
     const changes = editChanges(editing);
     await keepPlace(index, async () => {
-      const ok = parts ? await saveReplyEdit(index, changes) : await saveEdit(index, draft);
+      // Item 336: a user turn's chips go with the Save when they changed —
+      // the whole set, the turn's own less the removed plus the added.
+      const set = !parts && chipsChanged(editing, editChips) ? splitChips($state.snapshot(editChips)) : null;
+      const ok = parts
+        ? await saveReplyEdit(index, changes)
+        : await saveEdit(index, draft, set ? { images: set.images, documents: set.documents } : null);
       if (ok) {
         editing = editReduce(editing, { type: "done" });
         stashEdit(sessionKey, null);
+        setDraftAttachments(editKey, []);
       }
     });
   }
   async function commitSend(item: Item) {
-    if (!editing || !editButtons(editing).send || item.kind !== "user") return;
-    const { index, draft } = editing;
+    if (!editing || !editButtons(editing, editChips).send || item.kind !== "user") return;
+    const { index } = editing;
+    // Item 336: the fork's first message carries the edit box's chips —
+    // the turn's own, less any removed, plus any added — not the turn's
+    // originals. An office file still converting is waited for first.
+    if (!(await editConversions(index)) || !editing) return;
+    const chips = $state.snapshot(editChips) as typeof editChips;
+    if (filesBlocked(chips)) return;
+    const { draft } = editing;
+    const wire = splitChips(chips);
     await keepPlace(index, () => {
       editing = editReduce(editing, { type: "done" });
       stashEdit(sessionKey, null);
+      setDraftAttachments(editKey, []);
     });
-    await sendEdit(index, draft, item.images, item.documents);
+    await sendEdit(index, draft, wire.images, wire.documents, null, wire.files);
   }
   function editorKeys(e: KeyboardEvent, item: Item) {
     // ~~Enter is a newline here; ⌘/Ctrl-Enter saves, ⌘/Ctrl-Shift-Enter
@@ -767,6 +872,10 @@
   // transcript is on screen (the composer's `blank` test mounts it on the
   // send), and the entry follows the key rather than being restored.
   const sessionKey = $derived(scrollKey(chatId));
+  /** The edit box's chips (item 336): the chat's `editDraftKey` in the
+   *  drafts store, where the composer's attach code puts them. */
+  const editKey = $derived(editDraftKey(sessionKey));
+  const editChips = $derived(readDraft(editKey).attachments);
   let lastKey: string | null = null;
   let scrollFrame = 0;
 
@@ -1369,6 +1478,26 @@
 
 <svelte:document onselectionchange={placePill} />
 <svelte:window onkeydown={asideChord} />
+{#if dropAsk}
+  <!-- Practices §7 (item 336): a changed edit — words or chips — is not
+       dropped on one key or one click elsewhere; Keep editing is the default. -->
+  <ConfirmDialog
+    title="Discard this edit?"
+    lead={dropAsk.what === "open"
+      ? "Another message's editor is open with changes; opening this one drops them."
+      : "The changed text and attachments in the edit box are dropped; the message stays as it was."}
+    confirmLabel="Discard edit"
+    onconfirm={() => {
+      const run = dropAsk?.run;
+      dropAsk = null;
+      run?.();
+    }}
+    onclose={() => {
+      dropAsk = null;
+      void tick().then(() => editorEl?.focus({ preventScroll: true }));
+    }}
+  />
+{/if}
 
 <!-- The viewport takes ⌥↑ / ⌥↓ (backlog 065); it is a scroll region, not
      a control, and the lint has no role for that. -->
@@ -1430,7 +1559,8 @@
                  figure is under the reply. -->
           </div>
           {#if editing?.index === item.index}
-            <div class="editor">
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div class="editor" ondragover={editorDragOver} ondrop={editorDrop}>
               <textarea
                 bind:this={editorEl}
                 use:grow
@@ -1440,16 +1570,20 @@
                   autogrow();
                 }}
                 onkeydown={(e) => editorKeys(e, item)}
+                onpaste={editorPaste}
                 aria-label="Edit this message"
                 autocorrect="off"
                 autocapitalize="off"
                 spellcheck="false"
               ></textarea>
+              <!-- Item 336: the turn's attachments as chips, × to remove,
+                   Attach (and paste, drop) to add. -->
+              <EditAttachments key={editKey} />
               <div class="editor-line">{editCacheLine}</div>
               <div class="editor-row">
                 <button
                   class="ns-btn small"
-                  disabled={!editButtons(editing).send}
+                  disabled={!editButtons(editing, editChips).send}
                   use:tip={"Start a fork from here with this text as its next message; this chat stays as it is"}
                   onclick={() => void commitSend(item)}
                 >
@@ -1457,7 +1591,7 @@
                 </button>
                 <button
                   class="ns-btn ghost small"
-                  disabled={!editButtons(editing).save}
+                  disabled={!editButtons(editing, editChips).save}
                   use:tip={"Keep this chat, with this message reworded from here on"}
                   onclick={() => void commitSave()}
                 >

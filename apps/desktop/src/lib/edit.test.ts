@@ -11,6 +11,11 @@ import {
   editParts,
   editReduce,
   editorKey,
+  chipPrint,
+  chipsChanged,
+  chipsOf,
+  editAttachments,
+  editDirty,
   editTexts,
   elideFlags,
   forkLine,
@@ -323,5 +328,77 @@ describe("the editor's keys (item 337)", () => {
   });
   it("other keys do nothing", () => {
     expect(editorKey(k("a"), false)).toBeNull();
+  });
+});
+
+describe("the edit box's attachments (item 336)", () => {
+  let n = 0;
+  const id = () => ++n;
+  const img = { media_type: "image/png", data: "AAAA" };
+  const pdf = { media_type: "application/pdf", name: "notes.pdf", data: "JVBERi0=" };
+  const txt = { media_type: "text/plain", name: "a.txt", data: "aGk=" };
+
+  it("opens on the turn's own images and documents as chips (his report: the image vanished)", () => {
+    const chips = chipsOf([img], [pdf, txt], id);
+    expect(chips.map((c) => [c.kind, c.name])).toEqual([
+      ["image", "image"],
+      ["document", "notes.pdf"],
+      ["document", "a.txt"],
+    ]);
+    expect(chips[2].label).toBe("text");
+    expect(new Set(chips.map((c) => c.id)).size).toBe(3);
+  });
+
+  it("counts a removed or added chip as a change, and the same set as none", () => {
+    const chips = chipsOf([img], [pdf], id);
+    const state = editReduce(null, { type: "begin", index: 1, text: "look", chipsAt: chips.map(chipPrint) });
+    expect(chipsChanged(state, chips)).toBe(false);
+    expect(chipsChanged(state, chips.slice(1))).toBe(true);
+    expect(chipsChanged(state, [...chips, { kind: "image", media_type: "image/png", name: "b", data: "BBBB" }])).toBe(true);
+    // A chip still converting is new, so a change.
+    expect(chipsChanged(state, [...chips, { kind: "document", media_type: "application/pdf", name: "s.pptx", data: "", pending: true }])).toBe(true);
+  });
+
+  it("Save and Send come alive on a chip change with the words untouched", () => {
+    const chips = chipsOf([img], [], id);
+    const state = editReduce(null, { type: "begin", index: 1, text: "look", chipsAt: chips.map(chipPrint) });
+    expect(editButtons(state, chips)).toEqual({ save: false, send: true });
+    expect(editButtons(state, [])).toEqual({ save: true, send: true });
+  });
+
+  it("Send can go with chips alone; Save still needs words", () => {
+    const chips = chipsOf([img], [], id);
+    const state = editReduce(
+      editReduce(null, { type: "begin", index: 1, text: "look", chipsAt: [] }),
+      { type: "draft", text: "  " },
+    );
+    expect(editButtons(state, chips)).toEqual({ save: false, send: true });
+    expect(editButtons(state, [])).toEqual({ save: false, send: false });
+  });
+
+  it("an editor before 336 (no chips passed) behaves as it did", () => {
+    const state = editReduce(null, { type: "begin", index: 1, text: "look" });
+    expect(editButtons(state)).toEqual({ save: false, send: true });
+  });
+
+  it("asks before dropping: dirty on changed words or chips, clean otherwise", () => {
+    const chips = chipsOf([img], [], id);
+    const state = editReduce(null, { type: "begin", index: 1, text: "look", chipsAt: chips.map(chipPrint) });
+    expect(editDirty(state, chips)).toBe(false);
+    expect(editDirty(state, [])).toBe(true);
+    expect(editDirty(editReduce(state, { type: "draft", text: "look!" }), chips)).toBe(true);
+    expect(editDirty(null)).toBe(false);
+  });
+
+  it("the transcript draws the latest live edit's set, and a text-only edit leaves it standing", () => {
+    const at = "2026-10-11T00:00:00Z";
+    const events = [
+      { event: "user_message", text: "look", images: [img, img], at },
+      { event: "edit", target: 0, text: "look at one", attachments: { images: [img] }, at },
+      { event: "edit", target: 0, text: "look at this one", at },
+    ] as unknown as Parameters<typeof editAttachments>[0];
+    const sets = editAttachments(events);
+    expect(sets[0]?.images).toHaveLength(1);
+    expect(sets[1]).toBeNull();
   });
 });

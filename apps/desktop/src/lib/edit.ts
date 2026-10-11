@@ -1,4 +1,12 @@
-import type { ContentBlock, SessionEvent, SessionMeta } from "./types";
+import type {
+  Attachment,
+  ContentBlock,
+  DocumentInput,
+  EditedAttachments,
+  ImageInput,
+  SessionEvent,
+  SessionMeta,
+} from "./types";
 import { liveFlags } from "./state.svelte";
 import { remainingText, type CacheState } from "./cache";
 import { isImeKey } from "./imeKey";
@@ -32,6 +40,22 @@ export function editTexts(events: SessionEvent[]): (string | null)[] {
     if (events[e.target]?.event === "user_message") texts[e.target] = e.text;
   });
   return texts;
+}
+
+/**
+ * What each user message carries now (item 336): the set of the latest
+ * live `edit` marker aimed at it that named one, or null where it carries
+ * its own — `Session::edit_attachments`. A text-only edit after it leaves
+ * the set standing.
+ */
+export function editAttachments(events: SessionEvent[]): (EditedAttachments | null)[] {
+  const live = liveFlags(events);
+  const sets: (EditedAttachments | null)[] = events.map(() => null);
+  events.forEach((e, i) => {
+    if (!live[i] || e.event !== "edit" || !e.attachments) return;
+    if (events[e.target]?.event === "user_message") sets[e.target] = e.attachments;
+  });
+  return sets;
 }
 
 /**
@@ -235,10 +259,15 @@ export type EditState = {
   original: string;
   draft: string;
   parts?: EditPart[];
+  /** A user turn's attachments as the editor opened on them (item 336),
+   *  one `chipPrint` each, in order: what "changed" is measured against.
+   *  The chips themselves live in the drafts store under the chat's
+   *  `editDraftKey`, where the composer's attach code puts them. */
+  chipsAt?: string[];
 } | null;
 
 export type EditAction =
-  | { type: "begin"; index: number; text: string; parts?: EditPart[] }
+  | { type: "begin"; index: number; text: string; parts?: EditPart[]; chipsAt?: string[] }
   /** A draft for the one text (a user turn), or for text block `block`
    *  of a reply. */
   | { type: "draft"; text: string; block?: number }
@@ -252,8 +281,10 @@ export type EditAction =
 export function editReduce(state: EditState, action: EditAction): EditState {
   switch (action.type) {
     case "begin":
-      return action.parts
-        ? { index: action.index, original: action.text, draft: action.text, parts: action.parts }
+      if (action.parts)
+        return { index: action.index, original: action.text, draft: action.text, parts: action.parts };
+      return action.chipsAt
+        ? { index: action.index, original: action.text, draft: action.text, chipsAt: action.chipsAt }
         : { index: action.index, original: action.text, draft: action.text };
     case "draft":
       if (!state) return null;
@@ -300,7 +331,7 @@ export function editChanges(state: EditState): { block: number; text: string }[]
  * reply emptied whole is what Remove is for; there is no Send, a fork
  * cutting only at a user turn.
  */
-export function editButtons(state: EditState): { save: boolean; send: boolean } {
+export function editButtons(state: EditState, chips?: ChipLike[]): { save: boolean; send: boolean } {
   if (!state) return { save: false, send: false };
   if (state.parts) {
     const changed = editChanges(state).length > 0;
@@ -311,11 +342,80 @@ export function editButtons(state: EditState): { save: boolean; send: boolean } 
     );
     return { save: changed && left, send: false };
   }
+  // Item 336: a user turn's attachments count as content and as a change —
+  // an image-only message can be sent or saved, and adding or removing a
+  // chip is an edit even with the words untouched. `chips` absent: the
+  // editor before 336, words only.
   const draft = state.draft.trim();
-  return {
-    save: draft.length > 0 && draft !== state.original.trim(),
-    send: draft.length > 0,
-  };
+  const content = draft.length > 0 || (chips?.length ?? 0) > 0;
+  const changed = draft !== state.original.trim() || (chips != null && chipsChanged(state, chips));
+  // Save still needs words: the log refuses a blank edit (blank is what
+  // Remove is for); Send can go with chips alone, as the composer's can.
+  return { save: draft.length > 0 && changed, send: content };
+}
+
+/** The part of an attachment `chipPrint` reads. */
+export type ChipLike = Pick<Attachment, "kind" | "media_type" | "name" | "data"> & { pending?: boolean };
+
+/**
+ * One attachment as a short fingerprint (item 336): its kind, type, name,
+ * size and the two ends of its data — enough to tell a removed or added
+ * chip from the ones the message had, without holding a second copy of
+ * every image in the editor's state. A chip still converting prints as
+ * pending: it is a change, since the message never had it.
+ */
+export function chipPrint(a: ChipLike): string {
+  if (a.pending) return `${a.kind}|pending|${a.name}`;
+  return `${a.kind}|${a.media_type}|${a.name}|${a.data.length}|${a.data.slice(0, 48)}|${a.data.slice(-48)}`;
+}
+
+/** Whether the editor's chips differ from the turn's own (item 336). */
+export function chipsChanged(state: EditState, chips: ChipLike[]): boolean {
+  const at = state?.chipsAt ?? [];
+  if (at.length !== chips.length) return true;
+  return chips.some((c, i) => chipPrint(c) !== at[i]);
+}
+
+/**
+ * Whether closing the editor would lose something typed (practices §7,
+ * item 336): a user turn's words or chips changed, or a reply's block
+ * drafts. Cancel and Escape ask before dropping such an edit.
+ */
+export function editDirty(state: EditState, chips?: ChipLike[]): boolean {
+  if (!state) return false;
+  if (state.parts) return editChanges(state).length > 0;
+  return state.draft !== state.original || (chips != null && chipsChanged(state, chips));
+}
+
+/**
+ * A user turn's attachments as the editor's chips (item 336), so the box
+ * opens showing them — his report: the image vanished from the edit box,
+ * so he could neither see nor remove it. Images first, then documents,
+ * the order the log keeps and the request builds. An image has no name in
+ * the log; it is "image N". A text document is labelled "text", as the
+ * composer labels one.
+ */
+export function chipsOf(
+  images: ImageInput[],
+  documents: DocumentInput[],
+  nextId: () => number,
+): Attachment[] {
+  const out: Attachment[] = [];
+  images.forEach((img, i) =>
+    out.push({
+      id: nextId(),
+      kind: "image",
+      media_type: img.media_type,
+      name: images.length === 1 ? "image" : `image ${i + 1}`,
+      data: img.data,
+    }),
+  );
+  for (const d of documents) {
+    const chip: Attachment = { id: nextId(), kind: "document", media_type: d.media_type, name: d.name, data: d.data };
+    if (d.media_type.startsWith("text/")) chip.label = "text";
+    out.push(chip);
+  }
+  return out;
 }
 
 /**

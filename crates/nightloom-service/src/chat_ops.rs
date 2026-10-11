@@ -19,7 +19,7 @@
 
 use std::path::{Path, PathBuf};
 
-use nightloom_core::{ChatKind, ChatMode, Session, SessionEvent};
+use nightloom_core::{ChatKind, ChatMode, EditedAttachments, Session, SessionEvent};
 use serde::{Deserialize, Serialize};
 
 use crate::agent::ClaudeCodeAgent;
@@ -67,15 +67,21 @@ fn split(cli: Option<OnCli<'_>>) -> (Option<PathBuf>, Option<&mut ClaudeCodeAgen
 /// marker on the log — on the turn, or on one text block of a reply — and,
 /// on Claude Code, the CLI's history rewritten by copy first. The desktop's
 /// `edit_message` with `mode: "save"`; `"send"` is a [`fork`].
+/// `attachments` (2026-10-11, item 336): a user message's whole set from
+/// here on, the edit box's chips; `None` leaves them as they are.
 pub fn edit_saved(
     session: &mut Session,
     cli: Option<OnCli<'_>>,
     index: usize,
     text: String,
     block: Option<usize>,
+    attachments: Option<EditedAttachments>,
 ) -> Result<(), String> {
     if text.trim().is_empty() {
         return Err("an edit cannot be empty; remove the turn instead".into());
+    }
+    if attachments.is_some() && block.is_some() {
+        return Err("a reply's block has no attachments to edit".into());
     }
     if !session.is_editable(index) {
         return Err(
@@ -98,16 +104,24 @@ pub fn edit_saved(
                 None => None,
             };
             let new_text = text.clone();
-            edit_on_cli(session, cwd, move |cli| match nth {
-                Some(nth) => cli.rewrite_block(&target, nth, &new_text).map(Some),
-                None => cli.rewrite(&target, &new_text).map(Some),
+            // Item 336: an edit that sets the attachments rebuilds the
+            // turn's node whole — caption, images, documents — as it would
+            // have been sent.
+            let set = attachments.clone();
+            edit_on_cli(session, cwd, move |cli| match (nth, set) {
+                (_, Some(set)) => cli
+                    .rewrite_user(&target, &new_text, &set.images, &set.documents)
+                    .map(Some),
+                (Some(nth), None) => cli.rewrite_block(&target, nth, &new_text).map(Some),
+                (None, None) => cli.rewrite(&target, &new_text).map(Some),
             })?
         }
         None => CliChange::Untouched,
     };
-    match block {
-        Some(b) => session.edit_block(index, b, text)?,
-        None => session.edit(index, text)?,
+    match (block, attachments) {
+        (_, Some(set)) => session.edit_with_attachments(index, text, set)?,
+        (Some(b), None) => session.edit_block(index, b, text)?,
+        (None, None) => session.edit(index, text)?,
     }
     change.adopt(session, agent);
     Ok(())

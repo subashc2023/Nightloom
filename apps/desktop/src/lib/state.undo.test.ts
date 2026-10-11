@@ -118,6 +118,17 @@ describe("one inverse per operation", () => {
     expect(api.editMessage).toHaveBeenLastCalledWith(1, "one, edited", "save");
   });
 
+  it("an attachment edit (item 336) → an edit back to the set the turn carried", async () => {
+    const set = { images: [{ media_type: "image/png", data: "AAAA" }], documents: [] };
+    await saveEdit(1, "one, edited", set);
+    expect(api.editMessage).toHaveBeenLastCalledWith(1, "one, edited", "save", set);
+    await undo();
+    // Turn 1 had none of its own: the undo sets the empty set back.
+    expect(api.editMessage).toHaveBeenLastCalledWith(1, "one", "save", { images: [], documents: [] });
+    await redo();
+    expect(api.editMessage).toHaveBeenLastCalledWith(1, "one, edited", "save", set);
+  });
+
   it("remove → restore of the same turn", async () => {
     await removeTurn(2);
     await undo();

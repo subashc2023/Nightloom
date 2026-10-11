@@ -1064,6 +1064,23 @@ the buttons:
   newline there and ⌘/Ctrl-Enter saves (`editorKey`).
   One turn is open at a time (`editReduce`); a turn starting to stream
   closes it.
+- **Attachments** (item 336, 2026-10-11, his "being able to attach an image
+  while editing a previous message"): a user turn's editor opens on its own
+  images and documents as chips (before, the bubble that drew them was
+  replaced by the bare textarea, so they seemed to vanish — they were still
+  sent). × removes one; Attach, paste and drop add more through the
+  composer's own code (`attachFiles.svelte.ts`: routes, caps, office
+  conversion chips). The chips live in the drafts store under
+  `editDraftKey(chat)`, so a chat switch, an unmount or a running turn keeps
+  them. **Send** carries the edited set into the fork (a file for Claude
+  Code included). **Save** with the set changed records it on the `edit`
+  marker (`attachments`, the whole set; `Session::edit_attachments`), which
+  the request and the transcript then draw instead of the turn's own; on
+  Claude Code the turn's node in the CLI's copy is rebuilt with them
+  (`CliSession::rewrite_user`). Save still needs words, and a file for
+  Claude Code goes only by Send (the log keeps none). Undo puts the set
+  back. Cancel, Escape, and opening another turn's editor ask before
+  dropping a changed edit (`editDirty`).
 
 **Remove** asks nothing: it is the same `elide` marker the context panel
 records, and the transcript now draws a removed turn as its placeholder

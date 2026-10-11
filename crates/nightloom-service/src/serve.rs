@@ -1318,7 +1318,7 @@ impl ServeHost {
                 block,
             } => {
                 let c = cli();
-                chat_ops::edit_saved(&mut session, c, index, text, block)?;
+                chat_ops::edit_saved(&mut session, c, index, text, block, None)?;
                 Ok(here(&session))
             }
             ChatAction::Remove { index } => {
@@ -2606,7 +2606,8 @@ esac
                 Box::new({
                     let cli = cli.clone();
                     move |s| {
-                        chat_ops::edit_saved(s, cli(), 1, "first, better".into(), None).unwrap()
+                        chat_ops::edit_saved(s, cli(), 1, "first, better".into(), None, None)
+                            .unwrap()
                     }
                 }),
             ),
@@ -2614,7 +2615,10 @@ esac
                 serde_json::json!({"op": "edit", "index": 2, "text": "a2 better", "mode": "save", "block": 1}),
                 Box::new({
                     let cli = cli.clone();
-                    move |s| chat_ops::edit_saved(s, cli(), 2, "a2 better".into(), Some(1)).unwrap()
+                    move |s| {
+                        chat_ops::edit_saved(s, cli(), 2, "a2 better".into(), Some(1), None)
+                            .unwrap()
+                    }
                 }),
             ),
             (
