@@ -307,10 +307,19 @@ describe("remote-send", () => {
     // would, and says so.
     await expect(remoteSend("y", "for y")).resolves.toBe("queued");
     expect(readDraft("y").queue.map((q) => q.text)).toEqual(["for y"]);
-    // A photo is held on the phone, not queued: the Mac's queue holds
-    // attachments, not the phone's images (item 246, 1B's patch note 1).
-    await expect(remoteSend("y", "look", [{ media_type: "image/png", data: "AA" }])).rejects.toThrow(/held on the phone/);
-    expect(readDraft("y").queue.map((q) => q.text)).toEqual(["for y"]);
+    // ~~A photo is held on the phone, not queued: the Mac's queue holds
+    // attachments, not the phone's images (item 246, 1B's patch note 1).~~
+    // Since backlog 339 (2026-10-11) a photo queues too, as a chip with
+    // its bytes, and goes into the running turn like a typed one.
+    await expect(remoteSend("y", "look", [{ media_type: "image/png", data: "AA" }])).resolves.toBe("queued");
+    expect(readDraft("y").queue.map((q) => [q.text, q.attachments.map((a) => a.kind)])).toEqual([
+      ["for y", []],
+      ["look", ["image"]],
+    ]);
+    // A council still waits on the phone.
+    await expect(
+      remoteSend("y", "ask all", [], [], { members: [] } as unknown as Parameters<typeof remoteSend>[4]),
+    ).rejects.toThrow(/held on the phone/);
     app.busy = false;
     // Idle, a chat that will not open is refused with the reason.
     vi.mocked(api.openSession).mockRejectedValueOnce("no such chat");

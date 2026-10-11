@@ -1874,7 +1874,14 @@ impl ClaudeCodeAgent {
                     if let Some(inbox) = &inbox {
                         match inbox.on_line(&line) {
                             Some(inbox::Effect::Taken(t)) => {
-                                let after = if after_result {
+                                let after = if t.now {
+                                    // Send now (339): the CLI stopped the
+                                    // step it was in and took it at once.
+                                    match &last_call {
+                                        Some(name) => format!("at once, stopping {name}"),
+                                        None => "at once".to_string(),
+                                    }
+                                } else if after_result {
                                     "after the reply".to_string()
                                 } else {
                                     match &last_call {
@@ -1887,6 +1894,17 @@ impl ClaudeCodeAgent {
                                     id: t.id,
                                     text: t.text,
                                     after,
+                                    images: t.images,
+                                    documents: t.documents,
+                                });
+                            }
+                            Some(inbox::Effect::Relayed(r)) => {
+                                on_event(TurnEvent::Relayed {
+                                    to: r.to,
+                                    agent_id: r.agent_id,
+                                    text: r.text,
+                                    ok: r.ok,
+                                    detail: r.detail,
                                 });
                             }
                             Some(inbox::Effect::Result { running, .. }) => {

@@ -593,7 +593,9 @@ pub(super) fn user_line(input: &crate::TurnInput) -> String {
 /// images, documents. Also what an edit that changes a past turn's
 /// attachments writes into the CLI's copy of that turn (2026-10-11,
 /// nightshift item 336, `CliSession::rewrite_user`), so the edited turn
-/// reads in the CLI's history as if it had been sent that way.
+/// reads in the CLI's history as if it had been sent that way. Also what a
+/// mid-turn message with files carries (nightshift backlog 339,
+/// [`super::inbox`]).
 pub(crate) fn user_content(
     text: &str,
     images: &[nightloom_core::ImageInput],

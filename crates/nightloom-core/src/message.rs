@@ -108,7 +108,7 @@ pub enum ContentBlock {
 /// `Vec<ContentBlock>` there would also admit thinking blocks and tool
 /// results, which the projection would then have to police at read time
 /// instead of the type ruling them out at write time.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImageInput {
     pub media_type: String,
     /// Base64-encoded bytes, with no `data:` URL prefix.
@@ -169,7 +169,7 @@ pub fn text_attachment(name: &str, text: &str) -> String {
 /// turn as a caption plus attachments, and a `Vec<ContentBlock>` there would
 /// admit thinking blocks and tool results the projection would then have to
 /// police at read time.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DocumentInput {
     pub media_type: String,
     pub name: String,

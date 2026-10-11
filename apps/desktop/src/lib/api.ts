@@ -933,8 +933,28 @@ export function steerState(session: string): Promise<SteerState> {
 /** A message he sent while the turn runs, into that turn (backlog 328):
  *  `turn` is the window's turn key. `false` when no turn takes it now —
  *  it stays queued for the next turn. */
-export function injectMessage(turn: string, id: string, text: string): Promise<boolean> {
-  return invoke("inject_message", { turn, id, text });
+export function injectMessage(
+  turn: string,
+  id: string,
+  text: string,
+  images: ImageInput[] = [],
+  documents: DocumentInput[] = [],
+): Promise<boolean> {
+  // Files ride along since backlog 339; text-only calls send none.
+  return invoke("inject_message", {
+    turn,
+    id,
+    text,
+    ...(images.length ? { images } : {}),
+    ...(documents.length ? { documents } : {}),
+  });
+}
+
+/** Send now (backlog 339): the CLI stops the step it is in and takes the
+ *  message at once. `delivered` when the turn had already taken it,
+ *  `not_running` when no turn takes it. */
+export function sendNowInjected(turn: string, id: string): Promise<"sent" | "delivered" | "not_running"> {
+  return invoke("send_now_injected", { turn, id });
 }
 
 /** Stop the subagents still running in a turn whose reply ended (backlog

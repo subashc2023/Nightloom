@@ -1236,6 +1236,10 @@ export type TurnEvent =
   /** A message he sent while the turn ran reached it (nightshift backlog
    *  328): `id` is the queued row's uuid, `after` where it landed, in words. */
   | { type: "message_delivered"; id: string; text: string; after: string }
+  /** The main model passed a message on to a running subagent with
+   *  SendMessage (nightshift backlog 339): `agent_id` is the running agent
+   *  it named (its `task_id`), `ok` whether the CLI accepted it. */
+  | { type: "relayed"; to: string; agent_id: string | null; text: string; ok: boolean; detail: string }
   /** The main reply ended with subagents it started still running
    *  (nightshift backlog 329): their descriptions. The turn waits for them
    *  unless he stops them. */

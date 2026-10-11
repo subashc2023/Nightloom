@@ -271,14 +271,23 @@ impl<'a> Recorder<'a> {
             // His message, taken mid-turn (backlog 328): the round so far
             // closes, his words follow it, and the next round answers
             // them — the order the model saw.
-            TurnEvent::MessageDelivered { text, .. } => {
+            TurnEvent::MessageDelivered {
+                text,
+                images,
+                documents,
+                ..
+            } => {
                 let reason = if self.open.is_empty() {
                     Some("end_turn")
                 } else {
                     Some("tool_use")
                 };
                 self.flush_assistant(reason);
-                self.session.record_user(text.clone());
+                self.session.record_user_with_attachments(
+                    text.clone(),
+                    images.clone(),
+                    documents.clone(),
+                );
                 self.wrote = true;
                 self.sent_at = Utc::now();
             }
@@ -609,6 +618,8 @@ mod tests {
             id: "u".into(),
             text: "also echo PINEAPPLE".into(),
             after: "after Bash".into(),
+            images: Vec::new(),
+            documents: Vec::new(),
         });
         r.push(&TurnEvent::TextDelta {
             text: "PINEAPPLE".into(),
@@ -621,6 +632,32 @@ mod tests {
         assert!(s.events().iter().any(
             |e| matches!(e, SessionEvent::UserMessage { text, .. } if text == "also echo PINEAPPLE")
         ));
+    }
+
+    /// Backlog 339: a mid-turn message with files is logged with them.
+    #[test]
+    fn a_mid_turn_message_with_files_is_logged_with_them() {
+        let mut s = Session::new();
+        s.record_user("run a command");
+        let mut r = Recorder::new(&mut s, "claude-haiku-5-5");
+        r.push(&call("c1"));
+        r.push(&result("c1"));
+        r.push(&TurnEvent::MessageDelivered {
+            id: "u".into(),
+            text: "see the picture".into(),
+            after: "at once, stopping Bash".into(),
+            images: vec![nightloom_core::ImageInput {
+                media_type: "image/png".into(),
+                data: "iVBORw0KGgo=".into(),
+            }],
+            documents: Vec::new(),
+        });
+        r.push(&TurnEvent::TextDelta { text: "ok".into() });
+        assert!(r.finish(Some("end_turn")));
+        assert!(s.events().iter().any(|e| matches!(
+            e,
+            SessionEvent::UserMessage { text, images, .. } if text == "see the picture" && images.len() == 1
+        )));
     }
 
     /// And one taken after the reply closes the reply first.
@@ -636,6 +673,8 @@ mod tests {
             id: "u".into(),
             text: "end with PINEAPPLE".into(),
             after: "after the reply".into(),
+            images: Vec::new(),
+            documents: Vec::new(),
         });
         r.push(&TurnEvent::TextDelta {
             text: "PINEAPPLE".into(),

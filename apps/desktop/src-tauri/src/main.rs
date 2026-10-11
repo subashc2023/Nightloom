@@ -63,6 +63,8 @@ mod model_list;
 mod nightshift;
 /// Edit a note by prompt (nightshift backlog 151).
 mod note_edit;
+/// A debug build's off-screen window for live tests (backlog 339).
+mod offscreen;
 /// Sleep-safe turns: the power assertion and the wake watcher.
 mod power;
 /// A changed prompt layer waits for the chat's cold moment (backlog 174).
@@ -5489,6 +5491,8 @@ async fn inject_message(
     turn: String,
     id: String,
     text: String,
+    images: Option<Vec<nightloom_core::ImageInput>>,
+    documents: Option<Vec<nightloom_core::DocumentInput>>,
 ) -> Result<bool, String> {
     use nightloom_service::agent::inbox::SendError;
     let inbox = state
@@ -5500,7 +5504,13 @@ async fn inject_message(
     let Some(inbox) = inbox else {
         return Ok(false);
     };
-    match inbox.send(&id, &text) {
+    // Files ride along (backlog 339), as on a turn's opening line.
+    match inbox.send_with(
+        &id,
+        &text,
+        images.unwrap_or_default(),
+        documents.unwrap_or_default(),
+    ) {
         Ok(()) => Ok(true),
         Err(SendError::NotRunning) => Ok(false),
         Err(e) => Err(e.to_string()),
@@ -5525,6 +5535,28 @@ async fn take_back_injected(
     Ok(match inbox {
         Some(inbox) => inbox.take_back(&id).await,
         None => nightloom_service::agent::inbox::TakeBack::Cancelled,
+    })
+}
+
+/// Send now (nightshift backlog 339): a message already sent into the
+/// running turn is re-sent with the CLI's `priority: "now"`, which stops
+/// the step it is in and delivers the message at once. `delivered` when
+/// the turn had already taken it, `not_running` when no turn takes it.
+#[tauri::command]
+async fn send_now_injected(
+    state: State<'_, AppState>,
+    turn: String,
+    id: String,
+) -> Result<nightloom_service::agent::inbox::SendNow, String> {
+    let inbox = state
+        .inboxes
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(&turn)
+        .cloned();
+    Ok(match inbox {
+        Some(inbox) => inbox.send_now(&id).await,
+        None => nightloom_service::agent::inbox::SendNow::NotRunning,
     })
 }
 
@@ -7341,6 +7373,11 @@ fn build_window(app: &tauri::App) -> tauri::Result<()> {
     {
         win = win.decorations(false);
     }
+    // Built hidden for a debug live test (backlog 339): `offscreen::apply`
+    // moves it off screen before it is ever ordered in.
+    if offscreen::on() {
+        win = win.visible(false).focused(false);
+    }
 
     win.build()?;
     Ok(())
@@ -7884,7 +7921,14 @@ fn main() {
             // first paint calls straight into `providers` and `list_sessions`,
             // which resolve `State<AppState>` and panic if nothing has managed
             // it yet.
+            // A debug live test's off-screen window (backlog 339): no Dock
+            // icon, no menu bar, never the active app — his screen untouched.
+            #[cfg(target_os = "macos")]
+            if offscreen::on() {
+                app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            }
             build_window(app)?;
+            offscreen::apply(app.handle());
             // Quitting while work runs asks first (backlog 308): the
             // delegate's `applicationShouldTerminate:`, after tao set it.
             quit_guard::install(app.handle());
@@ -7987,6 +8031,7 @@ fn main() {
             steer_subagent,
             inject_message,
             take_back_injected,
+            send_now_injected,
             stop_subagents,
             steer_state,
             unsteer_subagent,
