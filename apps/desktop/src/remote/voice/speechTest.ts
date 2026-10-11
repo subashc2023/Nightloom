@@ -61,6 +61,76 @@ export function fmtMs(n: number | null | undefined): string {
   return n < 1000 ? `${Math.round(n)} ms` : `${(n / 1000).toFixed(2)} s`;
 }
 
+/** How long a download may go without progress, or Piper playback without an end, before the panel gives up. */
+export const STALL_MS = 60_000;
+
+/** A library (transformers.js, piper-tts-web) failed to load — a network failure, not the engine's. */
+export class LibraryLoadError extends Error {}
+/** Nothing happened for {@link STALL_MS}: a stalled download. */
+export class StallError extends Error {}
+
+/**
+ * A one-time load whose failure is not remembered (334 review finding 3):
+ * `p ??= import(…)` kept a rejected promise, so after one offline tap every
+ * later tap failed at once until the page reloaded. A failed load clears the
+ * slot so the next call tries again; `reset()` clears it by hand (a stall).
+ */
+export function retryable<T>(load: () => Promise<T>): { get(): Promise<T>; reset(): void } {
+  let slot: Promise<T> | null = null;
+  return {
+    get() {
+      if (!slot) {
+        const made = load();
+        slot = made;
+        made.catch(() => {
+          if (slot === made) slot = null;
+        });
+      }
+      return slot;
+    },
+    reset() {
+      slot = null;
+    },
+  };
+}
+
+/**
+ * A watchdog for a download (334 review finding 5): `race(p)` rejects with a
+ * {@link StallError} once `ms` pass with no `kick()` (each progress event
+ * kicks it), so a download that stalls mid-way ends the run with a message
+ * instead of leaving the panel "loading" with its buttons disabled.
+ */
+export function stallTimer(ms: number, message: string) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let fire: (e: Error) => void = () => {};
+  const tripped = new Promise<never>((_, reject) => (fire = reject));
+  tripped.catch(() => {});
+  const kick = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fire(new StallError(message)), ms);
+  };
+  kick();
+  return {
+    kick,
+    stop: () => clearTimeout(timer),
+    race: <T>(p: Promise<T>): Promise<T> => Promise.race([p, tripped]),
+  };
+}
+
+/** The note a failed run shows: a library that did not load says to reload (WebKit may cache the failed fetch). */
+export function failureNote(e: unknown): string {
+  const msg = String((e as Error)?.message ?? e);
+  if (e instanceof StallError) return `gave up: ${msg}; tap again to retry`;
+  if (e instanceof LibraryLoadError) return `failed: ${msg} — reload the page and try again`;
+  return `failed: ${msg}`;
+}
+
+function importLibrary(url: string, name: string): Promise<Any> {
+  return import(/* @vite-ignore */ url).catch((e) => {
+    throw new LibraryLoadError(`could not load ${name}: ${String((e as Error)?.message ?? e)}`);
+  });
+}
+
 /**
  * Bytes fetched, from transformers.js progress events: the largest `total`
  * seen per file among `progress` events. Files read from the cache report
@@ -227,14 +297,13 @@ export function runSynthesis(text: string): Promise<Run> {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
-let tjs: Promise<Any> | null = null;
+const tjs = retryable(() => importLibrary(TRANSFORMERS_URL, "transformers.js"));
 const asr = new Map<string, Promise<Any>>();
 /** Each model's file total, kept from its first load (a memoized pipeline reports none). */
 const modelBytes = new Map<string, number>();
 
 function transformers(): Promise<Any> {
-  tjs ??= import(/* @vite-ignore */ TRANSFORMERS_URL);
-  return tjs;
+  return tjs.get();
 }
 
 /** Whether the model's files are already in the Cache API (a second visit). */
@@ -268,9 +337,14 @@ export async function runWhisper(
   const tally = new DownloadTally();
   const tLoad = performance.now();
   let lastPct = -1;
+  const stall = stallTimer(STALL_MS, "the download stalled (nothing arrived for 60 s)");
+  let phase: "library" | "model" | "run" = "library";
   try {
     const wasCached = await whisperCached(model);
-    const T = await transformers();
+    stall.kick();
+    const T = await stall.race(transformers());
+    phase = "model";
+    stall.kick();
     let p = asr.get(model + device);
     if (!p) {
       const made: Promise<Any> = T.pipeline("automatic-speech-recognition", model, {
@@ -282,6 +356,7 @@ export async function runWhisper(
         // transcribes correctly.
         session_options: { graphOptimizationLevel: "disabled" },
         progress_callback: (e: Any) => {
+          stall.kick();
           tally.on(e);
           if (e.status === "progress" && typeof e.progress === "number") {
             const pct = Math.floor(e.progress);
@@ -293,10 +368,15 @@ export async function runWhisper(
         },
       });
       asr.set(model + device, made);
-      made.catch(() => asr.delete(model + device));
+      // Only this load's own entry: a stall may have replaced it already.
+      made.catch(() => {
+        if (asr.get(model + device) === made) asr.delete(model + device);
+      });
       p = made;
     }
-    const pipe = await p;
+    const pipe = await stall.race(p);
+    stall.stop();
+    phase = "run";
     run.loadMs = performance.now() - tLoad;
     // transformers.js reports "download" for cache reads too: the cache's
     // own state before the load is what says whether bytes came over the air.
@@ -320,8 +400,14 @@ export async function runWhisper(
     run.note += `; ${(audio.length / 16000).toFixed(1)} s of audio`;
     return { ...run };
   } catch (e) {
+    stall.stop();
+    // A stalled load must not be awaited again by the next tap.
+    if (e instanceof StallError) {
+      if (phase === "library") tjs.reset();
+      if (phase === "model") asr.delete(model + device);
+    }
     run.supported = false;
-    run.note = `failed: ${String((e as Error)?.message ?? e)}`;
+    run.note = failureNote(e);
     run.downloaded = tally.downloaded;
     return { ...run };
   }
@@ -347,7 +433,10 @@ export async function decode16k(bytes: ArrayBuffer): Promise<Float32Array> {
 }
 
 export async function sampleClip(): Promise<Float32Array> {
-  const r = await fetch(SAMPLE_CLIP);
+  // A stalled fetch would leave "Fetching the sample clip" up for good.
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(new StallError("the sample clip did not arrive within 60 s")), STALL_MS);
+  const r = await fetch(SAMPLE_CLIP, { signal: abort.signal }).finally(() => clearTimeout(timer));
   if (!r.ok) throw new Error(`sample clip: HTTP ${r.status}`);
   return decode16k(await r.arrayBuffer());
 }
@@ -364,7 +453,7 @@ export function framesToFloat(frames: Int16Array[]): Float32Array {
 
 // ---- Piper in the page (piper-tts-web) ----
 
-let piperMod: Promise<Any> | null = null;
+const piperMod = retryable(() => importLibrary(PIPER_URL, "piper-tts-web"));
 let piperSession: Promise<Any> | null = null;
 /** The voice's size, kept from the download for later runs' notes. */
 let piperBytes = 0;
@@ -378,16 +467,20 @@ export async function runPiper(text: string, onUpdate: (r: Run, status: string) 
   run.text = text;
   let bytes = 0;
   const t0 = performance.now();
+  const stall = stallTimer(STALL_MS, "the download stalled (nothing arrived for 60 s)");
+  let phase: "library" | "voice" | "run" = "library";
   try {
-    piperMod ??= import(/* @vite-ignore */ PIPER_URL);
-    const tts = await piperMod;
+    const tts = await stall.race(piperMod.get());
+    phase = "voice";
+    stall.kick();
     const stored: string[] = await tts.stored().catch(() => []);
     const cached = stored.includes(PIPER_VOICE);
     if (!piperSession) {
-      piperSession = tts.TtsSession.create({
+      const made: Promise<Any> = tts.TtsSession.create({
         voiceId: PIPER_VOICE,
         wasmPaths: { ...tts.TtsSession.WASM_LOCATIONS, onnxWasm: PIPER_ORT_WASM },
         progress: (p: { url: string; loaded: number; total: number }) => {
+          stall.kick();
           if (p.total > 1) {
             bytes = Math.max(bytes, p.total);
             piperBytes = bytes;
@@ -395,9 +488,14 @@ export async function runPiper(text: string, onUpdate: (r: Run, status: string) 
           }
         },
       });
-      piperSession!.catch(() => (piperSession = null));
+      piperSession = made;
+      made.catch(() => {
+        if (piperSession === made) piperSession = null;
+      });
     }
-    const session = await piperSession;
+    const session = await stall.race(piperSession!);
+    stall.stop();
+    phase = "run";
     run.loadMs = performance.now() - t0;
     run.downloaded = cached ? 0 : bytes;
     onUpdate({ ...run }, "synthesizing");
@@ -411,23 +509,64 @@ export async function runPiper(text: string, onUpdate: (r: Run, status: string) 
       return { ...run };
     }
     const audio = new Audio(URL.createObjectURL(wav));
-    await new Promise<void>((resolve, reject) => {
-      audio.onplaying = () => {
-        run.firstMs = performance.now() - tSyn;
-        onUpdate({ ...run }, "playing");
-      };
-      audio.onended = () => resolve();
-      audio.onerror = () => reject(new Error("playback failed"));
-      audio.play().catch(reject);
+    const ended = await playCapped(audio, STALL_MS, () => {
+      run.firstMs = performance.now() - tSyn;
+      onUpdate({ ...run }, "playing");
     });
-    run.totalMs = performance.now() - tSyn;
     URL.revokeObjectURL(audio.src);
+    if (!ended) {
+      run.note += run.firstMs == null ? "; no playback within 60 s" : "; started, but no end event within 60 s";
+      return { ...run };
+    }
+    run.totalMs = performance.now() - tSyn;
     return { ...run };
   } catch (e) {
+    stall.stop();
+    if (e instanceof StallError) {
+      if (phase === "library") piperMod.reset();
+      if (phase === "voice") piperSession = null;
+    }
     run.supported = false;
-    run.note = `failed: ${String((e as Error)?.message ?? e)}`;
+    run.note = failureNote(e);
     return { ...run };
   }
+}
+
+/** The bits of `HTMLAudioElement` playback needs — a stand-in in tests. */
+export interface Playable {
+  onplaying: unknown;
+  onended: unknown;
+  onerror: unknown;
+  play(): Promise<void>;
+  pause(): void;
+}
+
+/**
+ * Play to the end, or give up after `ms` (334 review finding 5): WebKit can
+ * leave `ended` unfired (measured for speechSynthesis off screen,
+ * 2026-10-09), which kept the panel "playing" for good. Resolves true on
+ * `ended`, false on the cap (playback paused); rejects on an error.
+ */
+export function playCapped(audio: Playable, ms: number, onPlaying: () => void): Promise<boolean> {
+  return new Promise<boolean>((resolve, reject) => {
+    const cap = setTimeout(() => {
+      audio.pause();
+      resolve(false);
+    }, ms);
+    audio.onplaying = () => onPlaying();
+    audio.onended = () => {
+      clearTimeout(cap);
+      resolve(true);
+    };
+    audio.onerror = () => {
+      clearTimeout(cap);
+      reject(new Error("playback failed"));
+    };
+    audio.play().catch((e) => {
+      clearTimeout(cap);
+      reject(e);
+    });
+  });
 }
 
 /** The page's facts that decide what can work at all. */
