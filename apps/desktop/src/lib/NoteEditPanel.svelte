@@ -12,7 +12,14 @@
   import { onMount, tick } from "svelte";
   import { app, noteDraftKey } from "./state.svelte";
   import type { NoteScope } from "./types";
-  import { blockWords, editTotals, undoable, type EditBlock, type NoteEditTurn } from "./noteEdit";
+  import {
+    blockWords,
+    editTotals,
+    PROPOSAL_OPEN_WORDS,
+    undoable,
+    type EditBlock,
+    type NoteEditTurn,
+  } from "./noteEdit";
   import {
     initNoteEditEvents,
     noteEditUi,
@@ -31,6 +38,7 @@
     name,
     text,
     blocked = null,
+    proposalOpen = false,
     onShowBlock,
   }: {
     scope: NoteScope;
@@ -39,7 +47,10 @@
     /** Why nothing can be sent or undone now (backlog 325); null when
      *  nothing blocks. */
     blocked?: EditBlock | null;
-    /** Bring the thing that blocks into view (the proposal card). */
+    /** A dream's proposed change is open on the note: said, nothing
+     *  turned off (backlog 345). */
+    proposalOpen?: boolean;
+    /** Bring the proposal card into view. */
     onShowBlock?: () => void;
   } = $props();
 
@@ -175,7 +186,11 @@
     {#if blocked && !running}
       <p class="blocked" role="status">
         {blockWords(blocked)}
-        {#if blocked === "proposal" && onShowBlock}
+      </p>
+    {:else if proposalOpen && !running}
+      <p class="blocked" role="status">
+        {PROPOSAL_OPEN_WORDS}
+        {#if onShowBlock}
           <button class="link" onclick={onShowBlock}>Show the proposal</button>
         {/if}
       </p>
@@ -185,6 +200,9 @@
       aria-label="What changed"
       rows="3"
       placeholder="What changed? Or ask about the note"
+      autocorrect="off"
+      autocapitalize="off"
+      spellcheck="false"
       value={draft}
       oninput={(e) => setRequestDraft(key, (e.currentTarget as HTMLTextAreaElement).value)}
       {onkeydown}

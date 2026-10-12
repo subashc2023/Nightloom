@@ -176,25 +176,28 @@ export function undoable(turns: NoteEditTurn[]): NoteEditTurn | null {
   return null;
 }
 
-// ---- why Send is off (backlog 325) ----------------------------------------
+// ---- why Send is off (backlog 325; 345) ----------------------------------
 
 /**
  * Why the panel cannot send, when it cannot: the note is still being read,
- * it could not be read, a dream's proposed change is open on it (the card
- * stands in for the editor, so an edit would land under it), or no note's
- * text is in the editor. `null` when nothing blocks.
+ * it could not be read, or no note's text is in the editor. `null` when
+ * nothing blocks.
+ *
+ * A dream's proposed change open on the note no longer blocks (backlog 345,
+ * his "why the fuck does it still have the send button blurred out"): the
+ * edit lands on the file as it would without one, the proposal stays
+ * pending and untouched, and its card shows the diff against the file as
+ * edited. The pane shows the edit streaming in over the card while it runs.
  */
-export type EditBlock = "loading" | "error" | "proposal" | "no-note";
+export type EditBlock = "loading" | "error" | "no-note";
 
 export function editBlock(s: {
   loading: boolean;
   error: boolean;
-  reviewing: boolean;
   hasBuffer: boolean;
 }): EditBlock | null {
   if (s.loading) return "loading";
   if (s.error) return "error";
-  if (s.reviewing) return "proposal";
   if (!s.hasBuffer) return "no-note";
   return null;
 }
@@ -202,8 +205,6 @@ export function editBlock(s: {
 /** The one line the panel shows for each reason. */
 export function blockWords(b: EditBlock): string {
   switch (b) {
-    case "proposal":
-      return "A dream's proposed change is open on this note — Accept or Dismiss it first.";
     case "loading":
       return "The note is still being read — Send turns on when it opens.";
     case "error":
@@ -212,6 +213,11 @@ export function blockWords(b: EditBlock): string {
       return "No note's text is in the editor, so there is nothing to edit.";
   }
 }
+
+/** The line the panel shows, without turning anything off, while a dream's
+ *  proposed change is open on the note (backlog 345). */
+export const PROPOSAL_OPEN_WORDS =
+  "A dream's proposed change is open on this note. An edit here lands on the file; the proposal stays pending.";
 
 // ---- the earlier exchanges (backlog 326) ----------------------------------
 

@@ -7,6 +7,7 @@ import {
   changeDigest,
   changedLines,
   editBlock,
+  PROPOSAL_OPEN_WORDS,
   editTotals,
   parseThreads,
   priorExchanges,
@@ -125,25 +126,26 @@ describe("undoable", () => {
 });
 
 // Backlog 325: Send off with text typed says why, each reason in its own words.
+// Backlog 345: a dream's proposal open on the note is not a reason.
 describe("editBlock", () => {
-  const none = { loading: false, error: false, reviewing: false, hasBuffer: true };
+  const none = { loading: false, error: false, hasBuffer: true };
   it("is null when nothing blocks", () => {
     expect(editBlock(none)).toBeNull();
   });
   it("names each reason, the read first", () => {
-    expect(editBlock({ ...none, reviewing: true })).toBe("proposal");
     expect(editBlock({ ...none, loading: true, hasBuffer: false })).toBe("loading");
     expect(editBlock({ ...none, error: true, hasBuffer: false })).toBe("error");
     expect(editBlock({ ...none, hasBuffer: false })).toBe("no-note");
-    // A proposal still loading reads as loading; one that failed to read, as the error.
-    expect(editBlock({ ...none, loading: true, reviewing: true })).toBe("loading");
-    expect(editBlock({ ...none, error: true, reviewing: true })).toBe("error");
   });
   it("gives every reason its own one line", () => {
-    const all = (["proposal", "loading", "error", "no-note"] as const).map(blockWords);
-    expect(new Set(all).size).toBe(4);
+    const all = (["loading", "error", "no-note"] as const).map(blockWords);
+    expect(new Set(all).size).toBe(3);
     for (const w of all) expect(w).not.toContain("\n");
-    expect(blockWords("proposal")).toMatch(/proposed change is open on this note.*Accept or Dismiss/);
+    for (const w of all) expect(w).not.toMatch(/Accept or Dismiss/);
+  });
+  it("says a proposal is open without asking him to clear it first (345)", () => {
+    expect(PROPOSAL_OPEN_WORDS).toMatch(/proposal stays pending/);
+    expect(PROPOSAL_OPEN_WORDS).not.toMatch(/first/);
   });
 });
 
