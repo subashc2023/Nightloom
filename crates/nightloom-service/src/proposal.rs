@@ -734,7 +734,13 @@ fn screen_words(line: &str) -> Option<&'static str> {
     if has(SECRET_WORDS) || SECRET_FRAGMENTS.iter().any(|f| compact.contains(f)) {
         return Some("words about secrets, keys or tokens");
     }
-    if has(SEND_WORDS) {
+    // "He pushed back on long replies" is the commonest feedback note a
+    // dream writes, and not a git push (review 2026-10-12, item 349): a push
+    // word followed by "back" is not a send word.
+    let sends = words.iter().enumerate().any(|(i, w)| {
+        SEND_WORDS.contains(w) && !(w.starts_with("push") && words.get(i + 1) == Some(&"back"))
+    });
+    if sends {
         return Some("words about sending, emailing or posting");
     }
     None
@@ -1393,6 +1399,13 @@ mod tests {
                 "dropping {line:?} was screened"
             );
         }
+        // "Pushed back" is feedback, not a git push (review 2026-10-12),
+        // added or removed; "push to main" still is.
+        let feedback = format!("{before}He pushed back on long replies.\n");
+        assert!(screen_added(Some(before), &feedback).is_none());
+        assert!(screen_added(Some(&feedback), before).is_none());
+        let push = screen_added(Some(before), &format!("{before}Push to main when done.\n"));
+        assert!(push.is_some_and(|w| w.contains("sending")));
         // Moved, not removed.
         let moved = "# L\n\nAsk before pushing.\nUse cargo.\nNever print the API key.\nKeep replies short.\nDocs: https://docs.rs/tokio\nRun `cargo fmt` first.\n";
         assert!(screen_added(Some(before), moved).is_none());
