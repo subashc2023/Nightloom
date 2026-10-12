@@ -13,6 +13,10 @@ import "@fontsource/ibm-plex-mono/latin-400.css";
 import "@fontsource/ibm-plex-mono/latin-500.css";
 import "./app.css";
 import { app as state, applyPalette } from "./lib/state.svelte";
+import { installMathCopy } from "./lib/mathCopy";
+
+// Item 352: copying a rendered formula gives its TeX.
+installMathCopy();
 
 // The saved palette, before the first paint.
 applyPalette(state.palette);

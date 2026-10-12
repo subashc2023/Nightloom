@@ -27,6 +27,7 @@
  */
 import { app, chatMode } from "./state.svelte";
 import { EditorView } from "@codemirror/view";
+import { mathSelection } from "./mathCopy";
 
 export type ClipSource = "copied" | "pasted" | "sent";
 
@@ -179,7 +180,10 @@ function selectedText(): string {
   const cm = el instanceof HTMLElement ? el.closest<HTMLElement>(".cm-editor") : null;
   const view = cm ? EditorView.findFromDOM(cm) : null;
   if (view) return view.state.selection.ranges.map((r) => view.state.sliceDoc(r.from, r.to)).join("\n");
-  return window.getSelection()?.toString() ?? "";
+  // Item 352: a selection with rendered math is remembered as the copy
+  // gives it — each formula's TeX — not KaTeX's flattened glyphs.
+  const sel = window.getSelection();
+  return mathSelection(sel)?.text ?? sel?.toString() ?? "";
 }
 
 if (typeof window !== "undefined") {
