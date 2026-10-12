@@ -469,7 +469,10 @@ mod tests {
             assert!(err.contains("plain name"), "{name:?}: {err}");
         }
         assert!(!store.exists(), "nothing was copied");
-        assert_eq!(locate_in(&[store.clone()], &"a".repeat(32), "a\nb"), None);
+        assert_eq!(
+            locate_in(std::slice::from_ref(&store), &"a".repeat(32), "a\nb"),
+            None
+        );
         std::fs::write(root.join("ok.pdf"), b"x").unwrap();
         let text = result_text(&deliver(&root, &store, "ok.pdf", None).unwrap());
         assert!(parse_marker(&format!("{text}\n\n")).is_some());
