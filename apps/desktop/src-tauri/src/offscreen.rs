@@ -73,6 +73,8 @@ mod macos {
             let win: &AnyObject = &*win;
             // NSWindowStyleMaskBorderless = 0: not constrained to a screen.
             let _: () = msg_send![win, setStyleMask: 0usize];
+            // CanJoinAllSpaces | Stationary: still drivable when he switches Spaces (blocker 1385).
+            let _: () = msg_send![win, setCollectionBehavior: (1usize << 0) | (1usize << 4)];
             let _: () = msg_send![win, setFrameOrigin: CGPoint { x: -20000.0, y: -20000.0 }];
             let _: () = msg_send![win, orderFrontRegardless];
             eprintln!("[offscreen] window at (-20000, -20000); occlusion detection off: {can}");
