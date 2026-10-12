@@ -6838,6 +6838,38 @@ async fn centre_dream_diff(
     .await
 }
 
+/// The dream's writes to an `AGENTS.md` that no git commit carries
+/// (backlog 344) — the user's own file, a project outside git — listed
+/// beside the dream commits as *Show the diff*.
+#[tauri::command]
+async fn centre_applied(
+    limit: Option<usize>,
+) -> Result<Vec<nightloom_service::centre::AppliedNotice>, String> {
+    let Some(config) = project::config_dir() else {
+        return Ok(Vec::new());
+    };
+    let limit = limit.unwrap_or(10).clamp(1, 50);
+    blocking(move || Ok::<_, String>(nightloom_service::centre::applied_in(&config, limit))).await
+}
+
+/// One such write's diff: the copy kept from before against the text
+/// written. `project` is `None` for the user's file.
+#[tauri::command]
+async fn centre_applied_diff(project: Option<String>, id: String) -> Result<String, String> {
+    let config = project::config_dir().ok_or("no config folder")?;
+    blocking(move || nightloom_service::centre::applied_diff(&config, project.as_deref(), &id))
+        .await
+}
+
+/// Put the file back from the copy kept before the dream wrote it. The
+/// frontend confirms first; the sentence returned is the toast.
+#[tauri::command]
+async fn centre_revert_applied(project: Option<String>, id: String) -> Result<String, String> {
+    let config = project::config_dir().ok_or("no config folder")?;
+    blocking(move || nightloom_service::centre::revert_applied(&config, project.as_deref(), &id))
+        .await
+}
+
 /// The repository a `repo` from the window may name: the vault or a
 /// registered project's folder, as `centre::dream_repo` resolves it —
 /// never any other repository on the machine (review 2026-09-17 FB3,
@@ -8103,6 +8135,9 @@ fn main() {
             cancel_capture,
             centre_proposals,
             centre_dream_commits,
+            centre_applied,
+            centre_applied_diff,
+            centre_revert_applied,
             centre_dream_diff,
             centre_revert_file,
             build_stamp,

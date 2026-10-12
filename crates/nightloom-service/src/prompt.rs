@@ -74,7 +74,7 @@ pub(crate) const INSTRUCTION_FILE: &str = "AGENTS.md";
 
 /// Per-file ceiling. A runaway instruction file should cost tokens, not the
 /// whole context window.
-const FILE_LIMIT: usize = 32 * 1024;
+pub(crate) const FILE_LIMIT: usize = 32 * 1024;
 
 /// Which layers to assemble, and from where.
 #[derive(Debug, Clone)]

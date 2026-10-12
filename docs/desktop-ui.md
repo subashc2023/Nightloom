@@ -2060,6 +2060,24 @@ lists each kind with a count and a *Dismiss all*, each row with *Dismiss*:
   `nightloom: reverted <file> from dream <sha>` — blocker 168's default,
   so the vault's history stays a straight line and the dream's version is
   still in it.
+- **A dream's change to an `AGENTS.md`** (2026-10-12, nightshift backlog
+  344: the dream applies its proposal itself; his ask was "apply
+  immediately and then … a show the diff button where you can … revert it
+  or make changes"). A project's `AGENTS.md` in a repository rides in the
+  dream's own commit, so it is a file in the row above — the row's title
+  names "Lanternfish's instructions", and that file gets **Open in editor**
+  (switches project if it must, opens it in `NoteView`) beside its Revert.
+  A write no commit carries — his `~/.nightloom/AGENTS.md` (the config
+  folder is not a repository), or a project outside git — is its own row,
+  *A dream changed your memory (AGENTS.md)* (`centre_applied`, from the
+  `proposals/applied/` records): *Show the diff* draws the copy kept from
+  before against the text written (`centre_applied_diff`, `git diff
+  --no-index`), with **Open in editor** and a **Revert** that puts the copy
+  back (`centre_revert_applied`; refused if he edited the file since) and
+  takes the row away. ~~*Review the diff* under Proposals is how every
+  change to an `AGENTS.md` arrived~~ (struck 2026-10-12): it now appears
+  only for a proposal the dream could not apply — one made against a file
+  that changed during the turn, or past the preamble's cap.
 - **Morning pages** unread and **Blockers** open — from the Nightshift
   rows every project already reports (`nightshift_projects`, the same
   counts as the tab badges). *Read it* / *Answer* open the Review tab on

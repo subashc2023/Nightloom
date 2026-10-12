@@ -50,19 +50,35 @@
 //! model notices in a project's batch is named in its summary and filed
 //! there anyway.
 //!
-//! **The always-loaded files are proposed to, never written (2026-09-14).**
+//! **The always-loaded files are proposed to, ~~never written~~ (2026-09-14;
+//! struck 2026-10-12 — see the next paragraph).**
 //! Each target has one file the preamble reads *whole* into every
 //! conversation — a project's `AGENTS.md`, the user's
 //! `~/.nightloom/AGENTS.md` for the vault — and it is the one file the pass
 //! cannot reach: the tools are rooted at the memory folder or the vault,
 //! neither of which contains it. Instead the turn is shown the file's
 //! current text and given `propose_instructions` ([`crate::proposal`]),
-//! which writes a proposal beside the store; the app shows it as a diff and
+//! which writes a proposal beside the store; ~~the app shows it as a diff and
 //! the user loads it into the editor as a draft, or dismisses it. A note
 //! filed wrong is read on demand and corrected later; a line in this file
 //! shapes every turn from the next chat on, so its gate is the user, not
 //! git. The test `agents_md_is_byte_identical_after_a_dream_that_proposes`
-//! pins it.
+//! pins it.~~ (struck 2026-10-12, backlog 344.)
+//!
+//! **…and then applied by the dream (2026-10-12, nightshift backlog 344).**
+//! His ask: "they just apply immediately and then it's like a show the diff
+//! button where you can look at it and then you can revert it or make
+//! changes". The tools still cannot reach the file and the tool's guard
+//! still holds back what it refuses; what changed is the end of a completed
+//! turn: [`apply_turns_proposal`] writes the turn's own proposal to the
+//! file, keeps a copy of the file as it was beside the applied record, and
+//! the after-dream snapshot commits it with the notes where the project is
+//! a repository — so the bell lists it under *Show the diff* with Revert
+//! (git's, or the copy's where there is no git: the user's file lives in
+//! the config folder, which is not one) and Open in editor. A proposal made
+//! against a file that changed during the turn, or one the preamble's cap
+//! truncated, stays pending as before. The test
+//! `agents_md_is_applied_and_committed_after_a_dream_that_proposes` pins it.
 //!
 //! **Two engines, one pass (2026-09-16, nightshift backlog 070).** Every
 //! dream before this ran through the provider layer and billed an API key,
@@ -495,6 +511,11 @@ pub struct Filed {
     /// (`crate::proposal`). Reported even when the turn was then
     /// interrupted: the file is on disk and the app will show it.
     pub proposed: bool,
+    /// The dream wrote that proposal to the file itself (backlog 344): it
+    /// is under `proposals/applied/` and the bell shows it as *Show the
+    /// diff*. `false` with `proposed` set means it stayed pending — the
+    /// file changed during the turn, or the cap had truncated it.
+    pub applied: bool,
     pub git_before: GitNote,
     pub git_after: GitNote,
 }
@@ -503,25 +524,35 @@ pub struct Filed {
 /// the clause both shells append to their outcome line, or `None` when no
 /// turn proposed. One function so the CLI and the toast cannot drift.
 pub fn proposed_line(filed: &[Filed]) -> Option<String> {
-    let names: Vec<String> = filed
+    let described = |f: &Filed| match &f.project {
+        Some(name) => ProposalTarget::Project {
+            id: String::new(),
+            name: name.clone(),
+        }
+        .described(),
+        None => ProposalTarget::User.described(),
+    };
+    // Applied by the dream (backlog 344), and proposed but left pending.
+    let applied: Vec<String> = filed.iter().filter(|f| f.applied).map(described).collect();
+    let pending: Vec<String> = filed
         .iter()
-        .filter(|f| f.proposed)
-        .map(|f| match &f.project {
-            Some(name) => ProposalTarget::Project {
-                id: String::new(),
-                name: name.clone(),
-            }
-            .described(),
-            None => ProposalTarget::User.described(),
-        })
+        .filter(|f| f.proposed && !f.applied)
+        .map(described)
         .collect();
-    if names.is_empty() {
-        return None;
+    let mut clauses = Vec::new();
+    if !applied.is_empty() {
+        clauses.push(format!(
+            "changed {} — Show the diff under the bell to read or revert it",
+            applied.join(" and ")
+        ));
     }
-    Some(format!(
-        "proposed a change to {} — review it under Notes",
-        names.join(" and to ")
-    ))
+    if !pending.is_empty() {
+        clauses.push(format!(
+            "proposed a change to {} — review it under Notes",
+            pending.join(" and to ")
+        ));
+    }
+    (!clauses.is_empty()).then(|| clauses.join("; "))
 }
 
 /// What a git snapshot found. `NotARepo` is a state to report, not an error:
@@ -702,6 +733,7 @@ async fn run_with(
             project: g.target.project_name().map(String::from),
             consolidated: 0,
             proposed: false,
+            applied: false,
             git_before: GitNote::Untouched,
             git_after: GitNote::Untouched,
         })
@@ -743,6 +775,14 @@ async fn run_with(
             .into_iter()
             .collect();
         let notes_before = snapshot_notes(&dir);
+        // The pending proposals before the turn, so the one this dream
+        // applies is its own and never one an earlier dream left (backlog
+        // 344): a difference of listings, the same on both engines.
+        let store = g.target.proposal_target().store_in(config);
+        let pending_before: Vec<String> = proposal::list_in(&store)
+            .into_iter()
+            .map(|e| e.id)
+            .collect();
 
         let mut forward = |event: TurnEvent| {
             if let TurnEvent::TextDelta { text } = &event {
@@ -817,13 +857,24 @@ async fn run_with(
                 snapshot_target(&g.target, "nightloom: dream interrupted (nothing consumed)");
             break;
         }
-        filed[i].git_after = snapshot_target(
+        // The always-loaded file, written by the dream itself (backlog
+        // 344) — after the tool's guard, which held back what it refused,
+        // and only on a completed turn; then committed with the notes.
+        let applied = apply_turns_proposal(&g.target, config, &pending_before, current.as_deref());
+        filed[i].applied = applied.is_some();
+        filed[i].git_after = snapshot_target_with(
             &g.target,
             &format!(
                 "nightloom: dream — consolidated {} observations",
                 g.batch.len()
             ),
+            applied.is_some(),
         );
+        if let (Some(record), Target::Project { workspace, .. }) = (&applied, &g.target)
+            && let Some(hash) = head_carrying(workspace, Path::new(INSTRUCTION_FILE))
+        {
+            let _ = proposal::set_commit(record, &hash);
+        }
     }
 
     if !interrupted {
@@ -1051,8 +1102,9 @@ pub fn compose_instruction(
          establishes something every conversation should know from its first turn. Do not \
          restate what the notes in {home} hold — those are read on demand, and a line here \
          is paid for on every turn. Keep the replacement under about 4,000 characters. You \
-         cannot write the file: the proposal is shown to the user as a diff in the app, and \
-         only they apply it; a second call in this pass replaces the first.\n\n"
+         cannot write the file with the file tools; the proposal is written to it when this \
+         pass ends and shown to the user as a diff they can revert, so propose only what \
+         you would stand behind unreviewed. A second call in this pass replaces the first.\n\n"
     );
     if matches!(target, Target::Vault(_)) {
         // The user's file is instructions only (backlog 055). Said here,
@@ -1325,39 +1377,77 @@ pub fn tidy_threads(
 /// The rollback argument still holds for what is committed — a memory note
 /// the dream is about to amend loses its uncommitted edit otherwise.
 fn snapshot_target(target: &Target, message: &str) -> GitNote {
+    snapshot_target_with(target, message, false)
+}
+
+/// [`snapshot_target`], and for a project whose `AGENTS.md` the dream just
+/// wrote (`with_instructions`, backlog 344) that file too — the one path
+/// outside `.agents/` the pass ever commits, and only on the dream that
+/// wrote it. The user's own file lives in the config folder, outside the
+/// vault, so the flag means nothing for the vault.
+fn snapshot_target_with(target: &Target, message: &str, with_instructions: bool) -> GitNote {
     match target {
         Target::Vault(dir) => snapshot(dir, message),
         Target::Project { workspace, .. } => {
-            snapshot_in(workspace, Some(Path::new(AGENTS_DIR)), message)
+            let agents = Path::new(AGENTS_DIR);
+            let file = Path::new(INSTRUCTION_FILE);
+            if with_instructions {
+                snapshot_in(workspace, &[agents, file], message)
+            } else {
+                snapshot_in(workspace, &[agents], message)
+            }
         }
     }
 }
 
 /// Commit whatever is in the vault's worktree, if the vault is a repository.
 fn snapshot(vault: &Path, message: &str) -> GitNote {
-    snapshot_in(vault, None, message)
+    snapshot_in(vault, &[], message)
 }
 
 /// Commit what is under `pathspec` in `repo`'s worktree (everything when
-/// `None`), if `repo` is a repository.
+/// empty), if `repo` is a repository.
 ///
 /// Best-effort by design: a missing `git` binary or a failing hook costs one
 /// reported line, never the pass. `.git` may be a file (a worktree or
 /// submodule), so the check is existence, not is-dir. With a pathspec,
 /// `commit` is given it too, so the commit carries only those paths even
 /// when the user had something else staged — their index is theirs.
-fn snapshot_in(repo: &Path, pathspec: Option<&Path>, message: &str) -> GitNote {
+fn snapshot_in(repo: &Path, pathspec: &[&Path], message: &str) -> GitNote {
     if !repo.join(".git").exists() {
         return GitNote::NotARepo;
     }
+    // Only the pathspecs with something to commit go to `add` and
+    // `commit`: one naming nothing on disk and nothing tracked (an empty
+    // `.agents/` beside an `AGENTS.md` the dream wrote, backlog 344) makes
+    // both fail with "did not match any files".
+    let dirty = |p: &Path| {
+        Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["status", "--porcelain", "--"])
+            .arg(p)
+            .output()
+            .map(|o| !o.stdout.is_empty())
+            .unwrap_or(true)
+    };
+    let given = !pathspec.is_empty();
+    let pathspec: Vec<&Path> = if pathspec.len() > 1 {
+        pathspec.iter().copied().filter(|p| dirty(p)).collect()
+    } else {
+        pathspec.to_vec()
+    };
     let run = |args: &[&str]| {
         let mut cmd = Command::new("git");
         cmd.arg("-C").arg(repo).args(args);
-        if let Some(p) = pathspec {
-            cmd.arg("--").arg(p);
+        if !pathspec.is_empty() {
+            cmd.arg("--").args(&pathspec);
         }
         cmd.output()
     };
+    if given && pathspec.is_empty() {
+        return GitNote::Clean;
+    }
     let status = match run(&["status", "--porcelain"]) {
         Err(e) => return GitNote::Failed(format!("git did not run: {e}")),
         Ok(out) if !out.status.success() => {
@@ -1396,6 +1486,93 @@ fn snapshot_in(repo: &Path, pathspec: Option<&Path>, message: &str) -> GitNote {
             paths,
         },
     }
+}
+
+// ---- the dream applies its proposal (nightshift backlog 344) ---------------
+
+/// Write this turn's proposal to the always-loaded file, if the turn made
+/// one: the newest pending proposal that was not there before the turn.
+/// An earlier one from the same dream (the first look's, when a second
+/// look proposed again) is moved to `dismissed/`, superseded. Returns the
+/// applied record's path, or `None` when there was nothing to apply or it
+/// stays pending — the file changed on disk during the turn, or it was
+/// longer than the preamble's cap, so the replacement was written against
+/// text that is not the file's (whole-file replacement would drop the part
+/// the pass never saw). In a project that is a repository, an uncommitted
+/// edit of the user's to the file is committed first as a pre-dream
+/// snapshot, the same rule the notes have: the Revert then restores it.
+fn apply_turns_proposal(
+    target: &Target,
+    config: &Path,
+    before: &[String],
+    quoted: Option<&str>,
+) -> Option<PathBuf> {
+    let store = target.proposal_target().store_in(config);
+    let new: Vec<proposal::Entry> = proposal::list_in(&store)
+        .into_iter()
+        .filter(|e| !before.contains(&e.id))
+        .collect();
+    let (newest, older) = new.split_first()?;
+    let file = target.instructions_path(config);
+    if !unchanged_since_quoted(&file, quoted) {
+        return None;
+    }
+    for e in older {
+        let _ = proposal::dismiss(&store, &e.id);
+    }
+    if let Target::Project { workspace, .. } = target {
+        let _ = snapshot_in(
+            workspace,
+            &[Path::new(INSTRUCTION_FILE)],
+            "nightloom: pre-dream snapshot",
+        );
+    }
+    proposal::apply_now(&store, &newest.id, &file).ok()
+}
+
+/// The file is what the pass was shown: the same text, whole (a capped
+/// quote ends in "… (truncated)" and never equals the file), or absent or
+/// blank on both sides. A file that is there but not UTF-8 is never
+/// replaced.
+fn unchanged_since_quoted(file: &Path, quoted: Option<&str>) -> bool {
+    let now = match std::fs::read(file) {
+        Ok(bytes) => match String::from_utf8(bytes) {
+            Ok(text) => Some(text),
+            Err(_) => return false,
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => return false,
+    };
+    match (now, quoted) {
+        (None, None) => true,
+        (Some(now), None) => now.trim().is_empty(),
+        (Some(now), Some(q)) => now == q,
+        (None, Some(_)) => false,
+    }
+}
+
+/// HEAD's full sha when HEAD is the commit that last touched `path` and the
+/// file is clean — i.e. the dream's commit carries the write. `None`
+/// otherwise (not a repo, ignored file, a failed commit).
+fn head_carrying(repo: &Path, path: &Path) -> Option<String> {
+    if !repo.join(".git").exists() {
+        return None;
+    }
+    let run = |args: &[&str], with_path: bool| {
+        let mut cmd = Command::new("git");
+        cmd.arg("-C").arg(repo).args(args);
+        if with_path {
+            cmd.arg("--").arg(path);
+        }
+        cmd.output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+    let head = run(&["rev-parse", "HEAD"], false)?;
+    let last = run(&["log", "-1", "--format=%H"], true)?;
+    let dirty = run(&["status", "--porcelain"], true)?;
+    (!head.is_empty() && head == last && dirty.is_empty()).then_some(head)
 }
 
 // ---- the no-invention check (nightshift item 280) -------------------------
@@ -1981,7 +2158,7 @@ mod tests {
         assert!(text.contains("~/.nightloom/AGENTS.md"));
         assert!(text.contains("propose_instructions"));
         assert!(text.contains("under about 4,000 characters"));
-        assert!(text.contains("only they apply it"));
+        assert!(text.contains("written to it when this pass ends"));
         assert!(
             text.contains(
                 "<current-instructions>\n# Me\n\nShort replies.\n\n</current-instructions>"
@@ -2327,22 +2504,45 @@ mod tests {
         tool_call("propose_instructions", json!({ "text": text, "why": why }))
     }
 
-    /// The guarantee, pinned: a dream in which both turns propose leaves
-    /// both `AGENTS.md` files byte-for-byte as they were, and the proposals
-    /// are where the app looks for them — the project's under its store,
-    /// the user's in the config dir — with the outcome saying which turn
-    /// proposed.
+    /// The rule, pinned (backlog 344, 2026-10-12; until then this test was
+    /// `agents_md_is_byte_identical_after_a_dream_that_proposes` and pinned
+    /// the opposite — that the dream never wrote either file, because the
+    /// user applied every proposal by hand. He asked for the write.) A dream
+    /// in which both turns propose leaves both `AGENTS.md` files changed;
+    /// the project's, in a repository, is in the dream's own commit beside
+    /// the notes and the record names that commit; the user's, in the
+    /// config folder (no git), has its old text kept beside the record; no
+    /// proposal is left pending; and the outcome says what changed.
     #[tokio::test]
-    async fn agents_md_is_byte_identical_after_a_dream_that_proposes() {
+    async fn agents_md_is_applied_and_committed_after_a_dream_that_proposes() {
         let (config, vault, workspace) = fixture("propose", "Lanternfish");
         let project_id = Registry::load_in(&config)
             .find_by_name("Lanternfish")
             .unwrap()
             .id
             .clone();
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&workspace)
+                .args(args)
+                .output()
+                .expect("git runs");
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "dream@test"]);
+        git(&["config", "user.name", "dream"]);
         let project_file = workspace.join(INSTRUCTION_FILE);
         let user_file = config.join(INSTRUCTION_FILE);
         fs::write(&project_file, "# Lanternfish\n\nUse cargo.\n").unwrap();
+        git(&["add", "AGENTS.md"]);
+        git(&["commit", "-q", "-m", "his instructions"]);
         fs::write(&user_file, "# Me\n\nBe terse.\n").unwrap();
         append(&config, "Switched the build to tokio.", Some("Lanternfish"));
         append(&config, "Prefers long replies now.", None);
@@ -2359,48 +2559,121 @@ mod tests {
             .unwrap()
             .expect("a batch was pending");
 
-        // The files the pass may not write.
+        // Both files are written.
         assert_eq!(
-            fs::read(&project_file).unwrap(),
-            b"# Lanternfish\n\nUse cargo.\n"
-        );
-        assert_eq!(fs::read(&user_file).unwrap(), b"# Me\n\nBe terse.\n");
-
-        // The proposals, each beside its store.
-        let project_store = config.join(crate::project::PROJECTS_DIR).join(&project_id);
-        let listed = crate::proposal::list_in(&project_store);
-        assert_eq!(listed.len(), 1);
-        assert_eq!(
-            listed[0].proposal.text,
+            fs::read_to_string(&project_file).unwrap(),
             "# Lanternfish\n\nUse cargo and tokio.\n"
         );
         assert_eq!(
-            listed[0].proposal.target,
+            fs::read_to_string(&user_file).unwrap(),
+            "# Me\n\nBe expansive.\n"
+        );
+
+        // Nothing waits pending; each record is under applied/ in its store.
+        let project_store = config.join(crate::project::PROJECTS_DIR).join(&project_id);
+        assert!(crate::proposal::list_in(&project_store).is_empty());
+        assert!(crate::proposal::list_in(&config).is_empty());
+        let applied = crate::proposal::applied_by_dream_in(&project_store);
+        assert_eq!(applied.len(), 1);
+        let a = applied[0].proposal.applied.clone().unwrap();
+        assert_eq!(
+            a.hash,
+            crate::proposal::content_hash("# Lanternfish\n\nUse cargo and tokio.\n")
+        );
+        assert_eq!(
+            applied[0].proposal.target,
             ProposalTarget::Project {
                 id: project_id.clone(),
                 name: "Lanternfish".into(),
             }
         );
-        let listed = crate::proposal::list_in(&config);
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].proposal.text, "# Me\n\nBe expansive.\n");
-        assert_eq!(listed[0].proposal.target, ProposalTarget::User);
-        // Neither leaked into the other's store, nor into the folders the
-        // tools are rooted at.
+
+        // The project's write is in the dream's commit, with nothing left
+        // uncommitted, and the record names the commit; the bell lists it.
+        let head = git(&["rev-parse", "HEAD"]);
+        assert_eq!(a.commit.as_deref(), Some(head.as_str()));
+        assert!(git(&["log", "-1", "--format=%s"]).starts_with(crate::centre::DREAM_SUBJECT));
+        let files = git(&["show", "--name-only", "--format=", "HEAD"]);
+        assert!(files.lines().any(|l| l == "AGENTS.md"), "{files}");
+        assert_eq!(git(&["status", "--porcelain", "--", "AGENTS.md"]), "");
+        let listed = crate::centre::dream_commits_in(&config, &vault, 10);
+        assert!(
+            listed
+                .iter()
+                .any(|c| c.hash == head && c.files.iter().any(|f| f.path == "AGENTS.md")),
+            "{listed:?}"
+        );
+        // And git's Revert puts it back.
+        crate::centre::revert_dream_file(&workspace, &head, "AGENTS.md").unwrap();
+        assert_eq!(
+            fs::read_to_string(&project_file).unwrap(),
+            "# Lanternfish\n\nUse cargo.\n"
+        );
+
+        // The user's file: no git, so the old text is kept beside the record
+        // and the copy's Revert restores it.
+        let applied = crate::proposal::applied_by_dream_in(&config);
+        assert_eq!(applied.len(), 1);
+        let a = applied[0].proposal.applied.clone().unwrap();
+        assert!(a.commit.is_none());
+        let before = a.before.expect("a copy from before");
+        let applied_dir = crate::proposal::dir_in(&config).join(crate::proposal::APPLIED_DIR);
+        assert_eq!(
+            fs::read_to_string(applied_dir.join(&before)).unwrap(),
+            "# Me\n\nBe terse.\n"
+        );
+        crate::proposal::revert_applied(&config, &applied[0].id, &user_file).unwrap();
+        assert_eq!(
+            fs::read_to_string(&user_file).unwrap(),
+            "# Me\n\nBe terse.\n"
+        );
+
+        // Neither leaked into the folders the tools are rooted at.
         assert!(!vault.join(crate::proposal::PROPOSALS_DIR).exists());
         assert!(!workspace.join(crate::proposal::PROPOSALS_DIR).exists());
 
         assert!(!outcome.interrupted);
         assert_eq!(outcome.consolidated, 2);
-        assert!(outcome.filed.iter().all(|f| f.proposed));
+        assert!(outcome.filed.iter().all(|f| f.proposed && f.applied));
         assert_eq!(
             proposed_line(&outcome.filed).unwrap(),
-            "proposed a change to Lanternfish's instructions and to your memory — review it under Notes"
+            "changed Lanternfish's instructions and your memory — Show the diff under the bell to read or revert it"
         );
     }
 
-    /// Two calls in one turn are one proposal, the later text; a turn that
-    /// does not call leaves nothing and reports nothing.
+    /// A proposal made against text that is not the whole file is not
+    /// applied: here the file is past the preamble's cap, so the pass saw
+    /// a truncated quote (a file edited during the turn trips the same
+    /// comparison). It stays pending, the file is untouched, and the line
+    /// says "proposed".
+    #[tokio::test]
+    async fn a_proposal_against_text_that_is_not_the_whole_file_stays_pending() {
+        let (config, vault, _) = fixture("propose-partial", "Lanternfish");
+        let user_file = config.join(INSTRUCTION_FILE);
+        let long = format!("# Me\n\n{}\n", "x".repeat(crate::prompt::FILE_LIMIT + 10));
+        fs::write(&user_file, &long).unwrap();
+        append(&config, "Prefers long replies now.", None);
+        let mut chat = chat_scripted(vec![
+            propose("# Me\n\nBe expansive.\n", "Observation 1."),
+            says("done"),
+        ]);
+        let cancel = CancellationToken::new();
+        let outcome = run(&mut chat, &vault, &config, &cancel, &mut |_| {})
+            .await
+            .unwrap()
+            .expect("a batch was pending");
+        assert_eq!(fs::read_to_string(&user_file).unwrap(), long);
+        assert_eq!(crate::proposal::list_in(&config).len(), 1);
+        assert!(outcome.filed[0].proposed && !outcome.filed[0].applied);
+        assert_eq!(
+            proposed_line(&outcome.filed).unwrap(),
+            "proposed a change to your memory — review it under Notes"
+        );
+    }
+
+    /// Two calls in one turn are one proposal, the later text — the one
+    /// applied (backlog 344); a turn that does not call leaves nothing and
+    /// reports nothing.
     #[tokio::test]
     async fn a_second_proposal_in_a_turn_replaces_the_first() {
         let (config, vault, _) = fixture("propose-twice", "Lanternfish");
@@ -2415,29 +2688,36 @@ mod tests {
             .await
             .unwrap()
             .expect("a batch was pending");
-        let listed = crate::proposal::list_in(&config);
+        assert!(crate::proposal::list_in(&config).is_empty());
+        let listed = crate::proposal::applied_by_dream_in(&config);
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].proposal.text, "second");
-        assert!(outcome.filed[0].proposed);
+        assert_eq!(
+            fs::read_to_string(config.join(INSTRUCTION_FILE)).unwrap(),
+            "second"
+        );
+        assert!(outcome.filed[0].proposed && outcome.filed[0].applied);
 
-        // A dream that proposes nothing: no file, no clause — and the
-        // proposal the earlier dream left is not mistaken for this one's.
+        // A dream that proposes nothing: no file, no clause — and nothing
+        // an earlier dream left is mistaken for this one's.
         append(&config, "Another.", None);
         let mut chat = chat_scripted(vec![says("nothing to propose")]);
         let outcome = run(&mut chat, &vault, &config, &cancel, &mut |_| {})
             .await
             .unwrap()
             .expect("a batch was pending");
-        assert!(!outcome.filed[0].proposed);
+        assert!(!outcome.filed[0].proposed && !outcome.filed[0].applied);
         assert!(proposed_line(&outcome.filed).is_none());
-        assert_eq!(crate::proposal::list_in(&config).len(), 1);
+        assert!(crate::proposal::list_in(&config).is_empty());
+        assert_eq!(crate::proposal::applied_by_dream_in(&config).len(), 1);
     }
 
     /// The guard (backlog 055): a vault turn that proposes a user memory
     /// with one of the export's biographical sections leaves nothing in the
     /// pending queue and no clause in the outcome — the text is a record
     /// under `proposals/held/` with the reason, the file is untouched, and
-    /// a corrected second call in the same turn is offered as usual.
+    /// a corrected second call in the same turn is applied as usual
+    /// (offered, before backlog 344).
     #[tokio::test]
     async fn a_proposal_that_adds_a_background_section_is_held_not_offered() {
         let (config, vault, _) = fixture("propose-held", "Lanternfish");
@@ -2472,7 +2752,7 @@ mod tests {
         assert!(why.contains("**Personal context**"), "{why}");
         assert!(why.contains("instructions only"), "{why}");
 
-        // The same turn, corrected: instructions only, and it is offered.
+        // The same turn, corrected: instructions only, and it is applied.
         append(&config, "Wants answers in metric.", None);
         let mut chat = chat_scripted(vec![
             propose("# Me\n\n**Top of mind**\n\nExams.\n", "wrong"),
@@ -2483,10 +2763,14 @@ mod tests {
             .await
             .unwrap()
             .expect("a batch was pending");
-        assert!(outcome.filed[0].proposed);
-        let listed = crate::proposal::list_in(&config);
+        assert!(outcome.filed[0].proposed && outcome.filed[0].applied);
+        let listed = crate::proposal::applied_by_dream_in(&config);
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].proposal.text, "# Me\n\nBe terse. Metric units.\n");
+        assert_eq!(
+            fs::read_to_string(&user_file).unwrap(),
+            "# Me\n\nBe terse. Metric units.\n"
+        );
         assert_eq!(fs::read_dir(&held_dir).unwrap().count(), 2);
     }
 
@@ -2704,9 +2988,11 @@ printf '%s\n' '{"type":"stream_event","event":{"type":"message_delta","delta":{"
 printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns":3,"result":"filed one note and proposed","session_id":"fake-session","total_cost_usd":0.001,"usage":{"input_tokens":100,"output_tokens":7}}'
 "##;
 
-    /// The guarantee on this engine, pinned end to end with [`STAND_IN`]:
-    /// afterwards both `AGENTS.md` files are byte-for-byte as they were,
-    /// the note is in each target's own folder and nowhere above it, the
+    /// The rule on this engine, pinned end to end with [`STAND_IN`]:
+    /// afterwards both `AGENTS.md` files carry the proposal — applied by the
+    /// pass after the turn (backlog 344, 2026-10-12; until then this test
+    /// was `agents_md_is_byte_identical_after_an_agent_dream_that_proposes`
+    /// and pinned that neither file changed) — the note is in each target's own folder and nowhere above it, the
     /// proposals are beside their stores — written by the server the pass
     /// started from its own `--mcp-config` — the outcome says both turns
     /// proposed, the cost is unpriced, and the batch is consumed. What a
@@ -2715,7 +3001,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns"
     /// (docs/service-agent.md).
     #[cfg(unix)]
     #[tokio::test]
-    async fn agents_md_is_byte_identical_after_an_agent_dream_that_proposes() {
+    async fn agents_md_is_applied_after_an_agent_dream_that_proposes() {
         use std::os::unix::fs::PermissionsExt;
 
         let (config, vault, workspace) = fixture("agent-propose", "Lanternfish");
@@ -2756,12 +3042,15 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns"
         .unwrap()
         .expect("a batch was pending");
 
-        // The files the pass may not write.
+        // The files the tools cannot reach, written by the pass afterwards.
         assert_eq!(
-            fs::read(&project_file).unwrap(),
-            b"# Lanternfish\n\nUse cargo.\n"
+            fs::read_to_string(&project_file).unwrap(),
+            "# proposed by the stand-in\n"
         );
-        assert_eq!(fs::read(&user_file).unwrap(), b"# Me\n\nBe terse.\n");
+        assert_eq!(
+            fs::read_to_string(&user_file).unwrap(),
+            "# proposed by the stand-in\n"
+        );
 
         // The note landed in each target's own folder — the cwd — and not
         // in the workspace root beside the instructions file.
@@ -2775,9 +3064,11 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns"
         assert!(!config.join("filed.md").exists());
 
         // The proposals, each beside its store, written by the server the
-        // pass started.
+        // pass started, and applied: nothing pending.
         let project_store = config.join(crate::project::PROJECTS_DIR).join(&project_id);
-        let listed = crate::proposal::list_in(&project_store);
+        assert!(crate::proposal::list_in(&project_store).is_empty());
+        assert!(crate::proposal::list_in(&config).is_empty());
+        let listed = crate::proposal::applied_by_dream_in(&project_store);
         assert_eq!(listed.len(), 1, "the project's proposal");
         assert_eq!(listed[0].proposal.text, "# proposed by the stand-in\n");
         assert_eq!(
@@ -2787,7 +3078,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns"
                 name: "Lanternfish".into(),
             }
         );
-        let listed = crate::proposal::list_in(&config);
+        let listed = crate::proposal::applied_by_dream_in(&config);
         assert_eq!(listed.len(), 1, "the user's proposal");
         assert_eq!(listed[0].proposal.target, ProposalTarget::User);
 
@@ -2795,13 +3086,13 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns"
         assert_eq!(outcome.consolidated, 2);
         assert_eq!(outcome.filed.len(), 2);
         assert!(
-            outcome.filed.iter().all(|f| f.proposed),
+            outcome.filed.iter().all(|f| f.proposed && f.applied),
             "{:?}",
             outcome.filed
         );
         assert_eq!(
             proposed_line(&outcome.filed).unwrap(),
-            "proposed a change to Lanternfish's instructions and to your memory — review it under Notes"
+            "changed Lanternfish's instructions and your memory — Show the diff under the bell to read or revert it"
         );
         assert!(outcome.summary.contains("filed one note and proposed"));
         assert_eq!(outcome.usage.input_tokens, 200);
@@ -2822,7 +3113,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns"
         assert!(observe::backlog_in(&config).pending.is_empty());
 
         // A dream that proposes nothing is not told it did by the proposal
-        // an earlier dream left pending.
+        // an earlier dream applied (was: left pending, before backlog 344).
         append(&config, "Another.", None);
         fs::write(
             &fake,
@@ -2833,13 +3124,15 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns"
             .await
             .unwrap()
             .expect("a batch was pending");
-        assert!(!outcome.filed[0].proposed);
-        assert_eq!(crate::proposal::list_in(&config).len(), 1);
+        assert!(!outcome.filed[0].proposed && !outcome.filed[0].applied);
+        assert!(crate::proposal::list_in(&config).is_empty());
+        assert_eq!(crate::proposal::applied_by_dream_in(&config).len(), 1);
     }
 
     /// A section the file already has is not one the proposal adds: a
-    /// replacement that keeps it — or moves it out — is offered, so a
-    /// memory from before the split can still be proposed to.
+    /// replacement that keeps it — or moves it out — is applied (offered,
+    /// before backlog 344), so a memory from before the split can still be
+    /// proposed to.
     #[tokio::test]
     async fn a_section_the_memory_already_has_does_not_hold_the_proposal() {
         let (config, vault, _) = fixture("propose-kept", "Lanternfish");
@@ -2862,8 +3155,8 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns"
             .await
             .unwrap()
             .expect("a batch was pending");
-        assert!(outcome.filed[0].proposed);
-        assert_eq!(crate::proposal::list_in(&config).len(), 1);
+        assert!(outcome.filed[0].proposed && outcome.filed[0].applied);
+        assert_eq!(crate::proposal::applied_by_dream_in(&config).len(), 1);
         assert!(
             !crate::proposal::dir_in(&config)
                 .join(crate::proposal::HELD_DIR)

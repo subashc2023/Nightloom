@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildNotices, countsOf, dailyDue, parseDailyPrefs, type NoticeSources } from "./centre";
+import { buildNotices, countsOf, dailyDue, isInstructionsFile, parseDailyPrefs, type NoticeSources } from "./centre";
 import type { NightshiftRow } from "./types";
 
 const at = (h: number, m = 0, day = 16) => new Date(2026, 8, day, h, m);
@@ -125,5 +125,46 @@ describe("the notices", () => {
     expect(more.some((x) => x.id === "blocker:p1:3")).toBe(true);
     // The same stamp as seen: no release notice.
     expect(buildNotices({ ...base, seenStamp: base.stamp!.exe_modified }).some((x) => x.kind === "release")).toBe(false);
+  });
+
+  // Backlog 344: a dream applies its AGENTS.md change itself. In a project's
+  // repository it rides in the dream's commit; outside git it is its own row.
+  it("names a project's instructions in a dream commit, and lists a write no commit carries", () => {
+    const commit = {
+      project: { id: "p1", name: "Lanternfish" },
+      repo: "/w",
+      hash: "def",
+      at: "2026-10-12T03:00:00-07:00",
+      subject: "nightloom: dream — consolidated 1 observations",
+      files: [
+        { path: ".agents/memory/stack.md", added: 1, removed: 0 },
+        { path: "AGENTS.md", added: 1, removed: 1 },
+      ],
+    };
+    const applied = {
+      project: null,
+      file: "/home/.nightloom/AGENTS.md",
+      entry: {
+        id: "2026-10-12T04",
+        proposal: {
+          v: 1,
+          at: "2026-10-12T04:00:00Z",
+          target: { kind: "user" as const },
+          why: "metric units",
+          text: "x",
+          from_dream: true,
+          applied: { at: "2026-10-12T04:00:01Z", hash: "fnv1a64:0", by_dream: true, before: "b" },
+        },
+      },
+    };
+    const n = buildNotices({ ...base, proposals: [], commits: [commit], applied: [applied], rows: [], stamp: null });
+    expect(n.map((x) => x.id)).toEqual(["applied:user:2026-10-12T04", "dream:def"]);
+    expect(n[0].title).toBe("A dream changed your memory (AGENTS.md)");
+    expect(n[0].detail).toBe("metric units");
+    expect(n[0].applied?.file).toBe("/home/.nightloom/AGENTS.md");
+    expect(n[1].title).toBe("A dream changed Lanternfish's instructions and 1 note in Lanternfish's memory");
+    expect(isInstructionsFile(commit, "AGENTS.md")).toBe(true);
+    expect(isInstructionsFile(commit, ".agents/memory/stack.md")).toBe(false);
+    expect(isInstructionsFile({ ...commit, project: null }, "AGENTS.md")).toBe(false);
   });
 });

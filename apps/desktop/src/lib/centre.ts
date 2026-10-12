@@ -8,7 +8,7 @@
  * pass; `NotificationCentre.svelte` draws the list. Nothing here touches
  * the store, so every rule below is pinned by `centre.test.ts`.
  */
-import type { BuildStamp, CliStatus, DreamCommit, NightshiftRow, ProjectRef, ProposalNotice } from "./types";
+import type { AppliedNotice, BuildStamp, CliStatus, DreamCommit, NightshiftRow, ProjectRef, ProposalNotice } from "./types";
 import { cliNoticeDetail, cliNoticeId, cliNoticeTitle, offersUpdate } from "./cliUpdate";
 
 // ---- the daily switch ----
@@ -131,6 +131,9 @@ export interface Notice {
   proposal?: ProposalNotice;
   /** The commit, for a `dream` notice. */
   commit?: DreamCommit;
+  /** For a `dream` notice no commit carries (backlog 344): the dream's
+   *  write to an `AGENTS.md` outside git, reverted from its copy. */
+  applied?: AppliedNotice;
   /** The version check, for a `cli` notice (nightshift backlog 182). */
   cli?: CliStatus;
 }
@@ -149,6 +152,8 @@ export const KIND_ORDER: NoticeKind[] = ["proposal", "dream", "morning", "blocke
 export interface NoticeSources {
   proposals: ProposalNotice[];
   commits: DreamCommit[];
+  /** The dream's `AGENTS.md` writes no commit carries (backlog 344). */
+  applied?: AppliedNotice[];
   /** Every registered project's row; those without a contract contribute nothing. */
   rows: NightshiftRow[];
   /** Morning pages opened, by project id (the Nightshift `read` map). */
@@ -163,6 +168,12 @@ export interface NoticeSources {
   /** The Anthropic ids the provider engine's picker lists, for naming a
    *  new model it lacks. */
   curated?: string[];
+}
+
+/** A file in a dream commit that is the project's always-loaded
+ *  `AGENTS.md` (backlog 344) — the row that gets *Open in editor*. */
+export function isInstructionsFile(c: DreamCommit, path: string): boolean {
+  return c.project !== null && path === "AGENTS.md";
 }
 
 export function proposalNoticeId(p: ProposalNotice): string {
@@ -195,15 +206,31 @@ export function buildNotices(s: NoticeSources): Notice[] {
   }
   for (const c of s.commits) {
     const where = c.project ? `${c.project.name}'s memory` : "the vault";
-    const n = c.files.length;
+    // A project's AGENTS.md rides in the dream's commit since backlog 344;
+    // it is the instructions, not a note.
+    const instructions = c.files.some((f) => isInstructionsFile(c, f.path));
+    const n = c.files.length - (instructions ? 1 : 0);
+    const notes = n > 0 ? `${n} note${n === 1 ? "" : "s"} in ${where}` : "";
+    const both = c.project && instructions ? `${c.project.name}'s instructions` : "";
     out.push({
       kind: "dream",
       id: `dream:${c.hash}`,
-      title: `A dream changed ${n} note${n === 1 ? "" : "s"} in ${where}`,
+      title: `A dream changed ${[both, notes].filter(Boolean).join(" and ") || `0 notes in ${where}`}`,
       detail: c.files.map((f) => f.path).join(", "),
       at: c.at,
       project: c.project,
       commit: c,
+    });
+  }
+  for (const a of s.applied ?? []) {
+    out.push({
+      kind: "dream",
+      id: `applied:${a.project?.id ?? "user"}:${a.entry.id}`,
+      title: a.project ? `A dream changed ${a.project.name}'s instructions` : "A dream changed your memory (AGENTS.md)",
+      detail: a.entry.proposal.why,
+      at: a.entry.proposal.applied?.at ?? a.entry.proposal.at,
+      project: a.project,
+      applied: a,
     });
   }
   for (const r of s.rows) {

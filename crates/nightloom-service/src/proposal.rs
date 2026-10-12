@@ -2,16 +2,31 @@
 //!
 //! Two files are read *whole* into every conversation's system prompt — a
 //! project's `AGENTS.md` and the user's `~/.nightloom/AGENTS.md` — which is
-//! exactly why the dream may not touch them. Every other note the pass files
+//! ~~exactly why the dream may not touch them~~ (struck 2026-10-12: see
+//! below). Every other note the pass files
 //! is read on demand and can be wrong quietly; a line in one of these shapes
 //! every turn from the next chat on, and a consolidation pass that rewrote
 //! it unattended would be the one writer whose mistake nobody reviewed
 //! before it took effect. So the pass **proposes**: it writes a file beside
 //! the store, the app shows the proposal as a diff against the current
 //! text, and the user loads it into the editor as a draft — still theirs to
-//! edit or revert — and saves it, or dismisses it. Nothing here opens either
+//! edit or revert — and saves it, or dismisses it. ~~Nothing here opens either
 //! `AGENTS.md` for writing, and `dream.rs` pins that with a byte-for-byte
-//! test.
+//! test.~~ (struck 2026-10-12, backlog 344: [`apply_now`] writes it, and the
+//! pinned test now pins the write, the copy and the commit.)
+//!
+//! **The dream applies its own proposal (2026-10-12, nightshift backlog
+//! 344).** Swaraag's ask: "they just apply immediately and then it's like a
+//! show the diff button where you can look at it and then you can revert it
+//! or make changes". So the pass still *proposes* — the tool, its guard and
+//! its held records are unchanged — but at the end of a completed turn the
+//! dream writes the proposal to the file ([`apply_now`]), keeps a copy of
+//! the file as it was, commits it where the file is in a repository, and
+//! files the record under `applied/` with `by_dream` set. The bell shows it
+//! as *Show the diff* with Revert and Open in editor. A proposal the guard
+//! holds back is still held and never written; one made against a file that
+//! changed during the turn, or one the preamble's cap truncated, stays
+//! pending as before.
 //!
 //! One proposal is one JSON file, `<store>/proposals/<stamp>.json`, where
 //! the store is `~/.nightloom/projects/<id>/` for a project and
@@ -152,6 +167,23 @@ pub struct Applied {
     pub at: DateTime<Utc>,
     /// `fnv1a64:<hex>` over the saved bytes.
     pub hash: String,
+    /// Written by the dream itself at the end of its turn ([`apply_now`],
+    /// nightshift backlog 344), not saved by the user from a draft.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub by_dream: bool,
+    /// The copy of the file as it was before the dream wrote it, a file name
+    /// under `applied/` (`<id>.before-AGENTS.md`); `None` when the file did
+    /// not exist. What Revert restores when git cannot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<String>,
+    /// The full sha of the dream's commit that carries the write, when the
+    /// file is in a git repository and the commit took it. Revert is then
+    /// git's (`centre::revert_dream_file`) and the bell lists the commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    /// When the user's Revert put the backup back ([`revert_applied`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reverted_at: Option<DateTime<Utc>>,
 }
 
 /// A pending proposal as a shell lists it: its file's stem (the handle every
@@ -234,8 +266,13 @@ fn read_at(path: &Path) -> Result<Proposal, String> {
 /// file must not hide the rest — and the subfolders (dismissed, applied,
 /// held) are not walked: they are the record, not the queue.
 pub fn list_in(store: &Path) -> Vec<Entry> {
-    let dir = dir_in(store);
-    let Ok(entries) = std::fs::read_dir(&dir) else {
+    list_dir(&dir_in(store))
+}
+
+/// The proposals directly in `dir`, newest first — [`list_in`]'s walk, also
+/// used over `applied/`.
+fn list_dir(dir: &Path) -> Vec<Entry> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
     let mut out: Vec<Entry> = entries
@@ -288,10 +325,162 @@ pub fn applied(store: &Path, id: &str, saved: &str) -> Result<PathBuf, String> {
     proposal.applied = Some(Applied {
         at: Utc::now(),
         hash: content_hash(saved),
+        by_dream: false,
+        before: None,
+        commit: None,
+        reverted_at: None,
     });
     let to = dir_in(store).join(APPLIED_DIR).join(format!("{id}.json"));
     move_to(&from, &to, &proposal)?;
     Ok(to)
+}
+
+/// The name of the copy kept beside an applied record: `<id>.before-<file>`
+/// (the file as it was), `<id>.after-<file>` (what the dream wrote — the
+/// diff's right side), `<id>.reverted-<file>` (a file the dream created,
+/// moved aside by Revert rather than deleted).
+fn beside(id: &str, which: &str, file: &Path) -> String {
+    let name = file
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("AGENTS.md");
+    format!("{id}.{which}-{name}")
+}
+
+/// The dream applies its own proposal (nightshift backlog 344, 2026-10-12;
+/// was: the user applied it from a draft). Writes the proposal's text to
+/// `file`, keeps the file as it was as `applied/<id>.before-<name>` (and the
+/// text written as `<id>.after-<name>`, the diff's two sides), and moves the
+/// record under `applied/` with `by_dream` set. The copies are kept whether
+/// or not the file is in a repository: git is the rollback when it can be,
+/// and the copy is the rollback when it cannot. Returns the record's path.
+pub fn apply_now(store: &Path, id: &str, file: &Path) -> Result<PathBuf, String> {
+    let from = path_of(store, id)?;
+    let mut proposal = read_at(&from)?;
+    let applied_dir = dir_in(store).join(APPLIED_DIR);
+    std::fs::create_dir_all(&applied_dir)
+        .map_err(|e| format!("could not create {}: {e}", applied_dir.display()))?;
+    let before = match std::fs::read(file) {
+        Ok(bytes) => {
+            let name = beside(id, "before", file);
+            std::fs::write(applied_dir.join(&name), bytes)
+                .map_err(|e| format!("could not keep a copy of {}: {e}", file.display()))?;
+            Some(name)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(format!("could not read {}: {e}", file.display())),
+    };
+    let after = applied_dir.join(beside(id, "after", file));
+    std::fs::write(&after, &proposal.text)
+        .map_err(|e| format!("could not write {}: {e}", after.display()))?;
+    // Written beside and renamed over, so a reader never sees half a file.
+    let tmp = file.with_extension("md.nightloom-tmp");
+    std::fs::write(&tmp, &proposal.text)
+        .map_err(|e| format!("could not write {}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, file).map_err(|e| format!("could not write {}: {e}", file.display()))?;
+    proposal.applied = Some(Applied {
+        at: Utc::now(),
+        hash: content_hash(&proposal.text),
+        by_dream: true,
+        before,
+        commit: None,
+        reverted_at: None,
+    });
+    let to = applied_dir.join(format!("{id}.json"));
+    move_to(&from, &to, &proposal)?;
+    Ok(to)
+}
+
+/// Note the commit that carries an applied write (full sha).
+pub fn set_commit(record: &Path, hash: &str) -> Result<(), String> {
+    let mut proposal = read_at(record)?;
+    if let Some(a) = proposal.applied.as_mut() {
+        a.commit = Some(hash.to_string());
+    }
+    write_at(record, &proposal)
+}
+
+/// Every record the dream applied itself in `store`, newest first.
+pub fn applied_by_dream_in(store: &Path) -> Vec<Entry> {
+    list_dir(&dir_in(store).join(APPLIED_DIR))
+        .into_iter()
+        .filter(|e| e.proposal.applied.as_ref().is_some_and(|a| a.by_dream))
+        .collect()
+}
+
+/// One applied record by handle.
+pub fn read_applied(store: &Path, id: &str) -> Result<Proposal, String> {
+    check_id(id)?;
+    read_at(&dir_in(store).join(APPLIED_DIR).join(format!("{id}.json")))
+}
+
+/// The two sides of an applied write, as paths: the copy from before
+/// (`None` when the file did not exist) and the text written.
+pub fn applied_sides(
+    store: &Path,
+    id: &str,
+    file: &Path,
+) -> Result<(Option<PathBuf>, PathBuf), String> {
+    let record = read_applied(store, id)?;
+    let a = record
+        .applied
+        .ok_or_else(|| format!("{id} is not an applied proposal"))?;
+    let dir = dir_in(store).join(APPLIED_DIR);
+    let after = dir.join(beside(id, "after", file));
+    if !after.exists() {
+        std::fs::write(&after, &record.text)
+            .map_err(|e| format!("could not write {}: {e}", after.display()))?;
+    }
+    Ok((a.before.map(|b| dir.join(b)), after))
+}
+
+/// Put `file` back as it was before the dream applied `id` — the Revert of
+/// a write git cannot roll back. Refused when the file has changed since
+/// the dream wrote it (his edit would be lost; the same rule as the git
+/// Revert's "edited since"). A file the dream created is moved aside as
+/// `<id>.reverted-<name>`, never deleted. Returns the toast's sentence.
+pub fn revert_applied(store: &Path, id: &str, file: &Path) -> Result<String, String> {
+    check_id(id)?;
+    let record_path = dir_in(store).join(APPLIED_DIR).join(format!("{id}.json"));
+    let mut record = read_at(&record_path)?;
+    let Some(a) = record.applied.clone().filter(|a| a.by_dream) else {
+        return Err(format!("{id} was not applied by a dream"));
+    };
+    let shown = file.display();
+    if a.reverted_at.is_some() {
+        return Ok(format!("{shown} was already as it was before the dream"));
+    }
+    let now = std::fs::read_to_string(file).unwrap_or_default();
+    if content_hash(&now) != a.hash {
+        return Err(format!(
+            "{shown} has been edited since the dream wrote it; reverting now would lose that \
+             edit — open it in the editor instead"
+        ));
+    }
+    let dir = dir_in(store).join(APPLIED_DIR);
+    let said = match &a.before {
+        Some(name) => {
+            let bytes = std::fs::read(dir.join(name))
+                .map_err(|e| format!("the copy from before the dream is missing: {e}"))?;
+            std::fs::write(file, bytes).map_err(|e| format!("could not write {shown}: {e}"))?;
+            format!("{shown} restored to before the dream")
+        }
+        None => {
+            let aside = dir.join(beside(id, "reverted", file));
+            std::fs::rename(file, &aside)
+                .or_else(|_| std::fs::copy(file, &aside).and_then(|_| std::fs::remove_file(file)))
+                .map_err(|e| format!("could not move {shown} aside: {e}"))?;
+            format!(
+                "{shown} (added by the dream) moved aside to {}",
+                aside.display()
+            )
+        }
+    };
+    if let Some(applied) = record.applied.as_mut() {
+        applied.reverted_at = Some(Utc::now());
+    }
+    write_at(&record_path, &record)?;
+    Ok(said)
 }
 
 /// Write the updated record at `to`, then remove `from` — in that order, so
@@ -322,9 +511,9 @@ const PROPOSE_DESC: &str = "Propose a full replacement for the always-loaded ins
      something the file says or establishes something every conversation should know from its \
      first turn; never to restate what the notes here already hold, which are read on demand. \
      The file is read whole into every conversation's system prompt, so keep the replacement \
-     under about 4,000 characters. You cannot write the file: the proposal is shown to the user \
-     in the app as a diff against the current text, and only they apply it. At most one \
-     proposal per pass — a second call replaces the first. The user's memory file is \
+     under about 4,000 characters. The proposal is written to the file when your turn ends and \
+     the user sees it as a diff they can revert, so propose only what you would stand behind \
+     unreviewed. At most one proposal per pass — a second call replaces the first. The user's memory file is \
      instructions only: how to behave, everywhere. Facts about the user — who they are, what \
      they work on, what happened — belong in the vault's profile.md, a topic note or \
      background.md, never in this file; a replacement that adds a Work context, Personal \
@@ -538,8 +727,8 @@ impl Tool for ProposeInstructions {
         write_at(&path, &proposal)?;
         slot.written = Some(path);
         Ok(format!(
-            "Proposed{}. The user will see it in the app as a diff against the current file \
-             and decide; nothing was written to the file itself.",
+            "Proposed{}. It is written to the file when this pass ends, and the user sees it \
+             in the app as a diff against the old text, with Revert.",
             if replaced {
                 " — replacing this pass's earlier proposal"
             } else {
@@ -619,7 +808,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(reply.contains("nothing was written to the file itself"));
+        assert!(reply.contains("written to the file when this pass ends"));
         assert!(!reply.contains("replacing"));
 
         let path = slot.path().expect("the slot knows the file");

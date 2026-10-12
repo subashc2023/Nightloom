@@ -426,6 +426,16 @@ export interface Proposal {
   /** The full replacement text. */
   text: string;
   from_dream: boolean;
+  /** Set once applied — by the user from a draft, or by the dream itself
+   *  (`by_dream`, backlog 344). */
+  applied?: {
+    at: string;
+    hash: string;
+    by_dream?: boolean;
+    before?: string;
+    commit?: string;
+    reverted_at?: string;
+  };
 }
 
 /** A pending proposal as the backend lists it: the handle every other call
@@ -486,6 +496,16 @@ export interface DreamCommit {
   at: string;
   subject: string;
   files: ChangedFile[];
+}
+
+/** A dream's write to an `AGENTS.md` that no git commit carries (backlog
+ *  344): the user's own file, or a project outside git. Revert restores
+ *  the copy kept from before. */
+export interface AppliedNotice {
+  project: ProjectRef | null;
+  entry: ProposalEntry;
+  /** The file that was written. */
+  file: string;
 }
 
 /** What build is running; a change between launches is a release. */

@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::project::{AGENTS_DIR, Registry};
+use crate::prompt::INSTRUCTION_FILE;
 use crate::proposal;
 
 /// The project a notice belongs to; `None` on a notice means the user.
@@ -105,19 +106,20 @@ pub struct DreamCommit {
 }
 
 /// The newest `limit` dream commits per target: the vault's repository, then
-/// each registered project's workspace restricted to its `.agents/`. A
+/// each registered project's workspace restricted to its `.agents/` and its
+/// `AGENTS.md` (which the dream writes since backlog 344). A
 /// folder that is not a repository, or has no such commit, contributes
 /// nothing — the pass reported "no rollback" at the time, and there is no
 /// diff to show now.
 pub fn dream_commits_in(config: &Path, vault: &Path, limit: usize) -> Vec<DreamCommit> {
-    let mut out = commits_in(vault, None, limit, None);
+    let mut out = commits_in(vault, &[], limit, None);
     for p in Registry::load_in(config).projects() {
         let Some(workspace) = p.workspace.clone() else {
             continue;
         };
         out.extend(commits_in(
             &workspace,
-            Some(Path::new(AGENTS_DIR)),
+            &[Path::new(AGENTS_DIR), Path::new(INSTRUCTION_FILE)],
             limit,
             Some(ProjectRef {
                 id: p.id.clone(),
@@ -159,10 +161,18 @@ pub fn dream_repo(config: &Path, vault: &Path, repo: &Path) -> Result<PathBuf, S
 }
 
 fn git(repo: &Path, args: &[&str], pathspec: Option<&Path>) -> Result<String, String> {
+    match pathspec {
+        Some(p) => git_paths(repo, args, &[p]),
+        None => git_paths(repo, args, &[]),
+    }
+}
+
+/// [`git`] with any number of pathspecs (none: the whole repository).
+fn git_paths(repo: &Path, args: &[&str], pathspec: &[&Path]) -> Result<String, String> {
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(repo).args(args);
-    if let Some(p) = pathspec {
-        cmd.arg("--").arg(p);
+    if !pathspec.is_empty() {
+        cmd.arg("--").args(pathspec);
     }
     let out = cmd.output().map_err(|e| format!("git did not run: {e}"))?;
     if !out.status.success() {
@@ -178,7 +188,7 @@ fn git(repo: &Path, args: &[&str], pathspec: Option<&Path>) -> Result<String, St
 
 fn commits_in(
     repo: &Path,
-    pathspec: Option<&Path>,
+    pathspec: &[&Path],
     limit: usize,
     project: Option<ProjectRef>,
 ) -> Vec<DreamCommit> {
@@ -189,7 +199,7 @@ fn commits_in(
     // `--grep` is a regex; the em dash is literal either way, but
     // `--fixed-strings` says so. The subject is checked again below, so a
     // commit merely *mentioning* the phrase in its body is not listed.
-    let log = match git(
+    let log = match git_paths(
         repo,
         &[
             "log",
@@ -229,8 +239,8 @@ fn commits_in(
 
 /// `git show --numstat` for one commit: `added\tremoved\tpath`, a `-` on a
 /// binary file, which counts as zero.
-fn numstat(repo: &Path, hash: &str, pathspec: Option<&Path>) -> Vec<ChangedFile> {
-    let Ok(out) = git(repo, &["show", "--numstat", "--format=", hash], pathspec) else {
+fn numstat(repo: &Path, hash: &str, pathspec: &[&Path]) -> Vec<ChangedFile> {
+    let Ok(out) = git_paths(repo, &["show", "--numstat", "--format=", hash], pathspec) else {
         return Vec::new();
     };
     out.lines()
@@ -385,6 +395,113 @@ pub fn revert_dream_file(repo: &Path, hash: &str, file: &str) -> Result<String, 
     })
 }
 
+// ---- what the dream applied where git cannot roll it back (backlog 344) ----
+
+/// One `AGENTS.md` write the dream made that no git commit carries — the
+/// user's `~/.nightloom/AGENTS.md` (the config folder is not a repository),
+/// or a project's whose workspace is not one. Shown beside the dream
+/// commits as *Show the diff*, with a Revert that restores the copy kept
+/// from before ([`proposal::revert_applied`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AppliedNotice {
+    /// `None` for the user's own file.
+    pub project: Option<ProjectRef>,
+    pub entry: proposal::Entry,
+    /// The file that was written.
+    pub file: PathBuf,
+}
+
+/// The store and the file of an applied record's target: the user's
+/// (`project` `None`) or a registered project's.
+fn applied_target(
+    config: &Path,
+    project: Option<&str>,
+) -> Result<(PathBuf, PathBuf, Option<ProjectRef>), String> {
+    match project {
+        None => Ok((config.to_path_buf(), config.join(INSTRUCTION_FILE), None)),
+        Some(id) => {
+            let registry = Registry::load_in(config);
+            let p = registry
+                .find(id)
+                .ok_or_else(|| format!("no project {id:?} is registered"))?;
+            let target = proposal::ProposalTarget::Project {
+                id: p.id.clone(),
+                name: p.name.clone(),
+            };
+            Ok((
+                target.store_in(config),
+                p.workspace_dir().join(INSTRUCTION_FILE),
+                Some(ProjectRef {
+                    id: p.id.clone(),
+                    name: p.name.clone(),
+                }),
+            ))
+        }
+    }
+}
+
+/// The newest `limit` dream-applied writes per store that no commit
+/// carries and that were not reverted: the user's, then each project's.
+pub fn applied_in(config: &Path, limit: usize) -> Vec<AppliedNotice> {
+    let open = |e: &proposal::Entry| {
+        e.proposal
+            .applied
+            .as_ref()
+            .is_some_and(|a| a.commit.is_none() && a.reverted_at.is_none())
+    };
+    let mut out = Vec::new();
+    let mut targets: Vec<Option<String>> = vec![None];
+    targets.extend(
+        Registry::load_in(config)
+            .projects()
+            .into_iter()
+            .map(|p| Some(p.id)),
+    );
+    for t in targets {
+        let Ok((store, file, project)) = applied_target(config, t.as_deref()) else {
+            continue;
+        };
+        out.extend(
+            proposal::applied_by_dream_in(&store)
+                .into_iter()
+                .filter(open)
+                .take(limit)
+                .map(|entry| AppliedNotice {
+                    project: project.clone(),
+                    entry,
+                    file: file.clone(),
+                }),
+        );
+    }
+    out
+}
+
+/// What a dream-applied write changed, as a unified diff of the copy from
+/// before against the text written — `git diff --no-index`, which needs no
+/// repository (an absent "before" diffs against `/dev/null`).
+pub fn applied_diff(config: &Path, project: Option<&str>, id: &str) -> Result<String, String> {
+    let (store, file, _) = applied_target(config, project)?;
+    let (before, after) = proposal::applied_sides(&store, id, &file)?;
+    let left = before.unwrap_or_else(|| PathBuf::from("/dev/null"));
+    let out = Command::new("git")
+        .args(["diff", "--no-index", "--"])
+        .arg(&left)
+        .arg(&after)
+        .output()
+        .map_err(|e| format!("git did not run: {e}"))?;
+    // Exit 1 is "they differ", the expected answer; 0 is "the same".
+    match out.status.code() {
+        Some(0) | Some(1) => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
+        _ => Err(String::from_utf8_lossy(&out.stderr).trim().to_string()),
+    }
+}
+
+/// Revert a dream-applied write from its copy; the sentence is the toast.
+pub fn revert_applied(config: &Path, project: Option<&str>, id: &str) -> Result<String, String> {
+    let (store, file, _) = applied_target(config, project)?;
+    proposal::revert_applied(&store, id, &file)
+}
+
 /// When the running binary was last written — the one fact that changes on
 /// every release roll and on nothing else, so "a release was installed" is
 /// "this stamp differs from the one the window last saw". RFC 3339, or
@@ -448,7 +565,7 @@ mod tests {
             "my own commit mentioning nightloom: dream — in the body",
         );
 
-        let commits = commits_in(&dir, None, 10, None);
+        let commits = commits_in(&dir, &[], 10, None);
         assert_eq!(commits.len(), 1, "{commits:?}");
         assert_eq!(commits[0].hash, dream);
         assert!(commits[0].project.is_none());
@@ -505,7 +622,7 @@ mod tests {
         );
 
         // The revert commits are not dream commits.
-        assert_eq!(commits_in(&dir, None, 10, None).len(), 1);
+        assert_eq!(commits_in(&dir, &[], 10, None).len(), 1);
     }
 
     #[test]
@@ -596,7 +713,62 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("nightloom-centre-plain-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
-        assert!(commits_in(&dir, None, 5, None).is_empty());
+        assert!(commits_in(&dir, &[], 5, None).is_empty());
         assert!(revert_dream_file(&dir, "abc", "a.md").is_err());
+    }
+
+    /// The user's file has no git (backlog 344): a dream's write is listed
+    /// from its record, its diff is the copy against the text written, an
+    /// edit since refuses the Revert, and a Revert restores the copy and
+    /// takes the row away.
+    #[test]
+    fn a_write_no_commit_carries_is_listed_diffed_and_reverted_from_its_copy() {
+        let config = crate::tools::test_dir("centre-applied");
+        let file = config.join(INSTRUCTION_FILE);
+        fs::write(&file, "# Me\n\nBe terse.\n").unwrap();
+        let p = proposal::Proposal {
+            v: 1,
+            at: chrono::Utc::now(),
+            target: proposal::ProposalTarget::User,
+            why: "Observation 1.".into(),
+            text: "# Me\n\nBe expansive.\n".into(),
+            from_dream: true,
+            applied: None,
+            dismissed_at: None,
+            held: None,
+        };
+        let dir = proposal::dir_in(&config);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("p1.json"), serde_json::to_string(&p).unwrap()).unwrap();
+        proposal::apply_now(&config, "p1", &file).unwrap();
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            "# Me\n\nBe expansive.\n"
+        );
+
+        let listed = applied_in(&config, 10);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].entry.id, "p1");
+        assert!(listed[0].project.is_none());
+        assert_eq!(listed[0].file, file);
+
+        let diff = applied_diff(&config, None, "p1").unwrap();
+        assert!(diff.contains("-Be terse."), "{diff}");
+        assert!(diff.contains("+Be expansive."), "{diff}");
+
+        // His edit since the dream: Revert would lose it, so it refuses.
+        fs::write(&file, "# Me\n\nBe expansive. Metric.\n").unwrap();
+        let err = revert_applied(&config, None, "p1").unwrap_err();
+        assert!(err.contains("edited since"), "{err}");
+        fs::write(&file, "# Me\n\nBe expansive.\n").unwrap();
+
+        let said = revert_applied(&config, None, "p1").unwrap();
+        assert!(said.contains("restored"), "{said}");
+        assert_eq!(fs::read_to_string(&file).unwrap(), "# Me\n\nBe terse.\n");
+        assert!(applied_in(&config, 10).is_empty());
+        // The record stays, marked; nothing was deleted.
+        let record = proposal::read_applied(&config, "p1").unwrap();
+        assert!(record.applied.unwrap().reverted_at.is_some());
+        assert!(revert_applied(&config, Some("nope"), "p1").is_err());
     }
 }

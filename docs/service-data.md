@@ -443,17 +443,44 @@ tidy's, a pre-dream snapshot of his own edit — naming the commits, since the
 checkout of the dream's parent would undo those too (blocker 204's default;
 a second click on a Revert already done still reads "already as it was").
 
-### Proposals — the always-loaded files are proposed to, never written
+### Proposals — the always-loaded files are proposed to, ~~never written~~ and then applied by the dream
+
+**Superseded in part 2026-10-12 (nightshift backlog 344).** His ask: "they just
+apply immediately and then it's like a show the diff button where you can look
+at it and then you can revert it or make changes". The tool, its guard and the
+held records below are unchanged; what changed is the end of a completed turn.
+`dream::apply_turns_proposal` takes the turn's own new pending proposal (the
+pending listing before the turn subtracted, both engines alike), checks the file
+on disk is exactly the text the pass was quoted (else it stays pending: the file
+changed during the turn, or the cap truncated the quote), and
+`proposal::apply_now` writes it — keeping `applied/<id>.before-AGENTS.md` and
+`<id>.after-AGENTS.md` and moving the record under `applied/` with `applied:
+{ at, hash, by_dream: true, before }`. In a project that is a repository an
+uncommitted edit of his to `AGENTS.md` is first committed as a pre-dream
+snapshot, and the after-dream snapshot commits `AGENTS.md` with `.agents/`, so
+the bell lists it under *Show the diff* with git's Revert; the record gets the
+commit's sha. Where no commit carries it (his `~/.nightloom/AGENTS.md`; a
+project outside git) the bell lists the record (`centre::applied_in`), diffs the
+two copies, and Revert restores the before-copy (`proposal::revert_applied`,
+refused if the file changed since). `Filed.applied` says which turns' proposals
+were applied; `proposed_line` says "changed Lanternfish's instructions and your
+memory — Show the diff under the bell to read or revert it", and "proposed a
+change … — review it under Notes" only for one left pending. The pinned test is
+now `agents_md_is_applied_and_committed_after_a_dream_that_proposes`. Struck
+below where it no longer holds.
 
 `proposal.rs` (2026-09-14, nightshift memory-writer 6c; blocker 046's answer).
 Each target has one file the preamble reads *whole* into every conversation —
 a project's `<workspace>/AGENTS.md`, the user's `~/.nightloom/AGENTS.md` for the
-vault — and it is the one file the dream may not touch. A note filed wrong is
+vault — and it is the one file ~~the dream may not touch~~ the dream's tools
+cannot reach (2026-10-12). ~~A note filed wrong is
 read on demand and corrected by the next pass; a line in this file shapes every
-turn from the next chat on, so its gate is the user, not git. The tools are
+turn from the next chat on, so its gate is the user, not git.~~ (struck
+2026-10-12, backlog 344.) The tools are
 rooted at the memory folder or the vault, neither of which contains the file,
-so the pass has no path to it; the test
-`agents_md_is_byte_identical_after_a_dream_that_proposes` pins the bytes.
+so the pass has no path to it; ~~the test
+`agents_md_is_byte_identical_after_a_dream_that_proposes` pins the bytes~~
+(renamed and inverted 2026-10-12, see above).
 
 What the pass gets instead: the instruction quotes the file's current text
 under the preamble's own 32 KiB cap (`<current-instructions>`, or a sentence
@@ -484,7 +511,8 @@ argument again. `DreamOutcome.filed[i].proposed` says which turns proposed;
 to Lanternfish's instructions and to your memory — review it under Notes"), so
 the CLI and the toast cannot drift.
 
-Applying is the desktop's job and goes through the editor: the pinned row
+~~Applying is the desktop's job~~ (2026-10-12: only for a proposal left
+pending) and goes through the editor: the pinned row
 shows `1 proposed`, the review shows `why` and a diff, and *Load into editor*
 puts the text in the buffer as a **draft** — `● draft`, Revert restores the
 file, Save writes it by the ordinary `save_note` and only then calls

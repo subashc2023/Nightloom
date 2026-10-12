@@ -2185,9 +2185,10 @@ export async function stopDream(): Promise<void> {
  */
 let centreSeen: Set<string> | null = null;
 export async function refreshCentre(): Promise<void> {
-  const [proposals, commits, rows, stamp] = await Promise.all([
+  const [proposals, commits, applied, rows, stamp] = await Promise.all([
     api.centreProposals().catch(() => []),
     api.centreDreamCommits(10).catch(() => []),
+    api.centreApplied(10).catch(() => []),
     api.nightshiftProjects().catch(() => [] as NightshiftRow[]),
     api.buildStamp().catch(() => null),
   ]);
@@ -2195,6 +2196,7 @@ export async function refreshCentre(): Promise<void> {
   app.centre.notices = buildNotices({
     proposals,
     commits,
+    applied,
     rows,
     read: app.nightshift.read,
     stamp,
@@ -2280,6 +2282,30 @@ export async function revertDreamFile(n: Notice, file: string): Promise<boolean>
   // In the background (backlog 211): the revert is done when it returns.
   void refreshWithin("reverting " + file, [refreshNotes]);
   return true;
+}
+
+/** Revert a dream's write to an `AGENTS.md` no commit carries (backlog
+ *  344), from the copy kept before it; the row goes once it is done. */
+export async function revertApplied(n: Notice): Promise<boolean> {
+  if (!n.applied) return false;
+  try {
+    addToast(await api.centreRevertApplied(n.applied.project?.id ?? null, n.applied.entry.id));
+  } catch (e) {
+    addToast(`revert failed: ${String(e)}`);
+    return false;
+  }
+  void refreshWithin("reverting AGENTS.md", [refreshNotes, refreshCentre]);
+  return true;
+}
+
+/** Open the always-loaded file a dream changed (backlog 344) in the app's
+ *  editor: the project's instructions, or the user's memory. */
+export async function openInstructions(n: Notice): Promise<void> {
+  app.centre.open = false;
+  if (n.project && app.project?.id !== n.project.id) {
+    await useProject(n.project.id);
+  }
+  showNote(n.project ? "instructions" : "memory", AGENTS_MD);
 }
 
 export function setDailyPrefs(p: DailyPrefs): void {

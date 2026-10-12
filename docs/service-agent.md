@@ -423,12 +423,15 @@ is: one prompt, no tool, so nothing changes in what the model can see or
 touch, no server runs, and `remember` stays unreachable.
 
 **What a stand-in pins and what it cannot.** The service test
-`agents_md_is_byte_identical_after_an_agent_dream_that_proposes` runs
+`agents_md_is_applied_after_an_agent_dream_that_proposes` (renamed
+2026-10-12, backlog 344; was `…_is_byte_identical_after_…`) runs
 `run_on_agent` with a shell script for `claude` that writes one note into
 its cwd, starts the MCP server exactly as its `--mcp-config` says (the test
 binary's own `mcp_server::tests::dream_server_entry`, since the crate builds
 no binary), calls `propose_instructions` on it, and prints a real turn's
-stream-json lines: both `AGENTS.md` files are byte-identical afterwards, the
+stream-json lines: ~~both `AGENTS.md` files are byte-identical afterwards~~
+both `AGENTS.md` files carry the proposal afterwards, applied by the pass
+after the turn (2026-10-12), the
 note is in each target's folder and nowhere above, the proposals are beside
 their stores, both turns read as proposed, the cost is unpriced, the batch is
 consumed. What no stand-in can pin is the CLI refusing a write above cwd —

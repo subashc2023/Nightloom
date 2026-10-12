@@ -59,6 +59,7 @@ import type {
   ProposalScope,
   ProviderInfo,
   DreamCommit,
+  AppliedNotice,
   BuildStamp,
   TidyOutcome,
   ThreadInfo,
@@ -1350,6 +1351,21 @@ export function centreDreamDiff(repo: string, hash: string, file?: string): Prom
  *  sentence returned is the toast. */
 export function centreRevertFile(repo: string, hash: string, file: string): Promise<string> {
   return invoke("centre_revert_file", { repo, hash, file });
+}
+
+/** The dream's `AGENTS.md` writes that no commit carries (backlog 344). */
+export function centreApplied(limit?: number): Promise<AppliedNotice[]> {
+  return invoke("centre_applied", { limit });
+}
+
+/** One such write's diff: the copy from before against the text written. */
+export function centreAppliedDiff(project: string | null, id: string): Promise<string> {
+  return invoke("centre_applied_diff", { project, id });
+}
+
+/** Put the file back from the copy kept before the dream; the sentence is the toast. */
+export function centreRevertApplied(project: string | null, id: string): Promise<string> {
+  return invoke("centre_revert_applied", { project, id });
 }
 
 /** The running build's version and binary stamp. */

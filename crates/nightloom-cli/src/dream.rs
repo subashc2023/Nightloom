@@ -238,9 +238,11 @@ pub async fn consolidate(spec: DreamSpec) -> Result<()> {
             }
         );
     }
-    // A proposed change to an always-loaded file is never applied here:
-    // the app shows it as a diff, and the user decides. The line says so
-    // rather than leaving the file to be found in `proposals/`.
+    // ~~A proposed change to an always-loaded file is never applied here:
+    // the app shows it as a diff, and the user decides.~~ (struck
+    // 2026-10-12, backlog 344: the pass applies it and the app's bell shows
+    // the diff with Revert.) The line says what changed, or what stayed
+    // pending, rather than leaving it to be found in `proposals/`.
     if let Some(line) = dream::proposed_line(&outcome.filed) {
         println!("{DIM}{line} in the app{RESET}");
     }

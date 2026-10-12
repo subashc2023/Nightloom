@@ -15,12 +15,14 @@
     app,
     centreCount,
     dismissNotice,
+    openInstructions,
     openNotice,
     refreshCentre,
+    revertApplied,
     revertDreamFile,
     runDailyPass,
   } from "./state.svelte";
-  import { KIND_LABEL, KIND_ORDER, countsOf, type Notice, type NoticeKind } from "./centre";
+  import { KIND_LABEL, KIND_ORDER, countsOf, isInstructionsFile, type Notice, type NoticeKind } from "./centre";
   import { relativeTime } from "./time";
   import DiffView from "./DiffView.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
@@ -98,7 +100,7 @@
   });
 
   async function showDiff(n: Notice) {
-    if (!n.commit) return;
+    if (!n.commit && !n.applied) return;
     if (shown === n.id) {
       shown = null;
       return;
@@ -108,7 +110,9 @@
     diffError = null;
     diffLoading = true;
     try {
-      diff = await api.centreDreamDiff(n.commit.repo, n.commit.hash);
+      diff = n.commit
+        ? await api.centreDreamDiff(n.commit.repo, n.commit.hash)
+        : await api.centreAppliedDiff(n.applied!.project?.id ?? null, n.applied!.entry.id);
     } catch (e) {
       diffError = String(e);
     } finally {
@@ -117,7 +121,7 @@
   }
 
   function revert(n: Notice, file: string) {
-    if (!n.commit) return;
+    if (!n.commit && !n.applied) return;
     pendingRevert = { notice: n, file };
   }
 
@@ -127,7 +131,11 @@
     pendingRevert = null;
     reverting = p.file;
     try {
-      await revertDreamFile(p.notice, p.file);
+      if (p.notice.applied) {
+        if (await revertApplied(p.notice)) shown = null;
+      } else {
+        await revertDreamFile(p.notice, p.file);
+      }
     } finally {
       reverting = null;
     }
@@ -201,6 +209,29 @@
                   {/if}
                   <button class="ns-btn ghost small" onclick={() => dismissNotice(n.id)}>Dismiss</button>
                 </div>
+                {#if n.kind === "dream" && shown === n.id && n.applied}
+                  <!-- A dream's AGENTS.md write no commit carries (backlog
+                       344): Revert restores the copy kept from before. -->
+                  <div class="centre-files">
+                    <div class="centre-file">
+                      <span class="mono centre-path" use:tip={n.applied.file}>{n.applied.file}</span>
+                      <button
+                        class="ns-btn ghost small"
+                        use:tip={"Open the instructions in the editor, to change them by hand"}
+                        onclick={() => void openInstructions(n)}>Open in editor</button
+                      >
+                      <button
+                        class="ns-btn ghost small"
+                        disabled={reverting !== null}
+                        use:tip={"Put this file back as it was before the dream (from the copy kept then)"}
+                        onclick={() => void revert(n, n.applied!.file)}>{reverting === n.applied.file ? "…" : "Revert"}</button
+                      >
+                    </div>
+                  </div>
+                  <div class="centre-diff">
+                    <DiffView text={diff} loading={diffLoading} error={diffError} leftLabel="before the dream" rightLabel="after" />
+                  </div>
+                {/if}
                 {#if n.kind === "dream" && shown === n.id && n.commit}
                   <!-- The snapshot's diff, and Revert per file: `git checkout
                        <hash>^ -- <file>` committed (blocker 168's default). -->
@@ -209,6 +240,13 @@
                       <div class="centre-file">
                         <span class="mono centre-path">{f.path}</span>
                         <span class="centre-pm"><span class="plus">+{f.added}</span> <span class="minus">−{f.removed}</span></span>
+                        {#if isInstructionsFile(n.commit, f.path)}
+                          <button
+                            class="ns-btn ghost small"
+                            use:tip={"Open the instructions in the editor, to change them by hand"}
+                            onclick={() => void openInstructions(n)}>Open in editor</button
+                          >
+                        {/if}
                         <button
                           class="ns-btn ghost small"
                           disabled={reverting !== null}
@@ -233,11 +271,15 @@
              tests DOM containment, and the dialog's fixed scrim is a child. -->
         <ConfirmDialog
           title="Put this file back as it was before the dream?"
-          lead="The restore is a commit of its own, so the dream's version stays in git and nothing is lost either way."
-          facts={[
-            ["file", pendingRevert.file],
-            ["dream", pendingRevert.notice.commit?.hash.slice(0, 7) ?? ""],
-          ]}
+          lead={pendingRevert.notice.applied
+            ? "The file goes back to the copy kept before the dream wrote it; the dream's version stays in its record, so nothing is lost either way."
+            : "The restore is a commit of its own, so the dream's version stays in git and nothing is lost either way."}
+          facts={pendingRevert.notice.applied
+            ? [["file", pendingRevert.file]]
+            : [
+                ["file", pendingRevert.file],
+                ["dream", pendingRevert.notice.commit?.hash.slice(0, 7) ?? ""],
+              ]}
           confirmLabel="Revert"
           onconfirm={() => void confirmRevert()}
           onclose={() => (pendingRevert = null)}
