@@ -81,6 +81,25 @@ describe("mathPasteText", () => {
       '<p>A &amp; B:</p><ol><li>first <span class="katex"><span class="katex-mathml"><math><semantics><mi>a</mi><annotation encoding="application/x-tex">a</annotation></semantics></math></span></span></li><li>second</li></ol>';
     expect(mathPasteText(html)).toBe("A & B:\n\n1. first $a$\n2. second");
   });
+
+  // Review 2026-10-12: the output was rebuilt with end-anchored regexes after
+  // every piece — 1.4 MB of display math took 28 s, a `<pre>` of 200k spaces
+  // 82 s, freezing the paste. Each case here took seconds before the fix.
+  it("a huge or malformed paste returns quickly and never throws", () => {
+    const cases = [
+      katexDisplay.repeat(5000),
+      '<span class="katex">x</span><pre>' + " ".repeat(200000) + "a</pre><p>b</p>",
+      '<span class="katex">x</span>' + "<a b".repeat(50000),
+      '<span class="katex">x</span>' + `<ol>${"<li>i</li>".repeat(20000)}</ol>`,
+    ];
+    for (const html of cases) {
+      const t = performance.now();
+      expect(typeof mathPasteText(html)).toBe("string");
+      expect(performance.now() - t).toBeLessThan(2000);
+    }
+    // Nested deeper than the stack: no conversion, the paste goes in as usual.
+    expect(mathPasteText('<span class="katex">x</span>' + "<span>".repeat(200000) + "a")).toBeNull();
+  });
 });
 
 describe("mathmlToTex", () => {

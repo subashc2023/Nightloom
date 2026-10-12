@@ -65,7 +65,10 @@ function parseAttrs(src: string): Record<string, string> {
 export function parseHtml(html: string): El {
   const root: El = { tag: "#root", attrs: {}, children: [], parent: null };
   let cur = root;
-  const re = /<!--[\s\S]*?-->|<![^>]*>|<\?[^>]*>|<\/([a-zA-Z][^\s>/]*)\s*>|<([a-zA-Z][^\s>/]*)((?:"[^"]*"|'[^']*'|[^'">])*)>/g;
+  // A tag's unquoted part stops at the next `<` (review 2026-10-12): an
+  // unclosed `<a b…` no longer scans to the end of the paste at every `<`.
+  const re = /<!--[\s\S]*?-->|<![^>]*>|<\?[^>]*>|<\/([a-zA-Z][^\s>/]*)\s*>|<([a-zA-Z][^\s>/]*)((?:"[^"]*"|'[^']*'|[^'"<>])*)>/g;
+  const lower = html.toLowerCase(); // once, not per `<script>` (review 2026-10-12)
   let at = 0;
   let m: RegExpExecArray | null;
   while ((m = re.exec(html))) {
@@ -86,7 +89,7 @@ export function parseHtml(html: string): El {
       cur.children.push(el);
       if (VOID.has(tag) || /\/\s*$/.test(rest)) continue;
       if (RAW.has(tag)) {
-        const end = html.toLowerCase().indexOf(`</${tag}`, at);
+        const end = lower.indexOf(`</${tag}`, at);
         const stop = end < 0 ? html.length : end;
         el.children.push(html.slice(at, stop));
         const close = html.indexOf(">", stop);
@@ -380,8 +383,26 @@ const PARA = new Set(["p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "pre"
 const LINE = new Set(["div", "li", "tr", "section", "article", "header", "footer", "dt", "dd", "figcaption", "caption", "main", "nav", "aside"]);
 const WORD = /[A-Za-z0-9_]$/;
 
+/** Spaces and tabs off the end of `s`, by a loop: `/[ \t]+$/` is quadratic
+ *  on a long run of spaces that is not at the end. */
+function trimSpaces(s: string): string {
+  let j = s.length;
+  while (j > 0 && (s[j - 1] === " " || s[j - 1] === "\t")) j--;
+  return j === s.length ? s : s.slice(0, j);
+}
+
 export function mathPasteText(html: string): string | null {
   if (!html || !/katex|<math|mjx-container|math\/tex|MathJax|mwe-math/i.test(html)) return null;
+  // Review 2026-10-12: any failure (a paste nested deeper than the stack)
+  // leaves the paste to go in as it always did.
+  try {
+    return convert(html);
+  } catch {
+    return null;
+  }
+}
+
+function convert(html: string): string | null {
   const root = parseHtml(html);
   // MathJax v2 pairs: frame id `MathJax-Element-3-Frame` ↔ script id `MathJax-Element-3`.
   const scripts = new Map<string, El>();
@@ -391,26 +412,55 @@ export function mathPasteText(html: string): string | null {
   };
   collect(root);
 
-  let out = "";
+  // The output as pieces, read only at its end (review 2026-10-12): a
+  // string read with end-anchored regexes after every piece was quadratic —
+  // a 1.4 MB paste of display math took 28 s, a `<pre>` of 200k spaces 82 s.
+  const parts: string[] = [];
+  const last = (): string => {
+    for (let i = parts.length - 1; i >= 0; i--) if (parts[i]) return parts[i][parts[i].length - 1];
+    return "";
+  };
+  const put = (s: string) => {
+    if (s) parts.push(s);
+  };
   let found = 0;
   let glue = false; // the last thing written was inline math: a word after it needs a space
   const nl = (n: 1 | 2) => {
-    if (!out) return;
-    out = out.replace(/[ \t]+$/, "");
-    const have = /\n*$/.exec(out)?.[0].length ?? 0;
-    if (have < n) out += "\n".repeat(n - have);
+    if (!last()) return;
+    while (parts.length) {
+      const t = trimSpaces(parts[parts.length - 1]);
+      if (t) {
+        parts[parts.length - 1] = t;
+        break;
+      }
+      parts.pop();
+    }
+    let have = 0;
+    for (let i = parts.length - 1; i >= 0 && have < n; i--) {
+      const p = parts[i];
+      let j = p.length;
+      while (j > 0 && p[j - 1] === "\n" && have < n) {
+        j--;
+        have++;
+      }
+      if (j > 0) break;
+    }
+    if (have < n) put("\n".repeat(n - have));
     glue = false;
   };
   const text = (s: string, pre: boolean) => {
     if (!pre) {
       s = s.replace(/\s+/g, " ");
-      if (!out || /[\n ]$/.test(out)) s = s.replace(/^ /, "");
+      const l = last();
+      if (!l || l === "\n" || l === " ") s = s.replace(/^ /, "");
     }
     if (!s) return;
-    if (glue && /^[A-Za-z0-9_$]/.test(s)) out += " ";
+    if (glue && /^[A-Za-z0-9_$]/.test(s)) put(" ");
     glue = false;
-    out += s;
+    put(s);
   };
+  // Each `<ol>` item's place, worked out once per list rather than per item.
+  const items = new Map<El, Map<El, number>>();
   const walk = (e: El, pre: boolean) => {
     for (const c of e.children) {
       if (!isEl(c)) {
@@ -425,11 +475,12 @@ export function mathPasteText(html: string): string | null {
         if (!tex) continue;
         if (f.display) {
           nl(1);
-          out += `$$${tex}$$`;
+          put(`$$${tex}$$`);
           nl(1);
         } else {
-          if (WORD.test(out) || out.endsWith("$")) out += " ";
-          out += `$${tex}$`;
+          const l = last();
+          if (WORD.test(l) || l === "$") put(" ");
+          put(`$${tex}$`);
           glue = true;
         }
         if (c.attrs.id?.endsWith("-Frame")) {
@@ -449,20 +500,26 @@ export function mathPasteText(html: string): string | null {
       if (c.tag === "li") {
         const list = c.parent;
         if (list?.tag === "ol") {
-          const n = kids(list).filter((x) => x.tag === "li").indexOf(c) + Number(list.attrs.start ?? 1);
-          out += `${n}. `;
-        } else out += "- ";
+          let place = items.get(list);
+          if (!place) {
+            place = new Map(kids(list).filter((x) => x.tag === "li").map((x, i) => [x, i]));
+            items.set(list, place);
+          }
+          const n = (place.get(c) ?? -1) + Number(list.attrs.start ?? 1);
+          put(`${n}. `);
+        } else put("- ");
       }
-      if ((c.tag === "td" || c.tag === "th") && out && !out.endsWith("\n")) out += "\t";
+      if ((c.tag === "td" || c.tag === "th") && last() && last() !== "\n") put("\t");
       walk(c, pre || c.tag === "pre");
       if (block) nl(block);
     }
   };
   walk(root, false);
   if (found === 0) return null;
-  return out
+  return parts
+    .join("")
     .split("\n")
-    .map((l) => l.replace(/[ \t]+$/, ""))
+    .map(trimSpaces)
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
