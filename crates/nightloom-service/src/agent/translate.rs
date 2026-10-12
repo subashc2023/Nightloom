@@ -1573,6 +1573,23 @@ mod tests {
         );
     }
 
+    /// Wave 7 review (2026-10-12) of 346: a Bash call still running when
+    /// the limit lands (its `task_started` with `local_bash`, no end line)
+    /// is not named as a stopped agent; a `local_agent` child beside it is.
+    #[test]
+    fn a_running_bash_task_is_not_named_among_the_stopped_agents() {
+        const BASH: &str = r#"{"type":"system","subtype":"task_started","task_id":"bo0ek5knp","tool_use_id":"toolu_BASH","description":"Sleep 20 seconds","is_backgrounded":false,"task_type":"local_bash"}"#;
+        let law = STARTED_LAW.replace(
+            r#""prompt":"scan"}"#,
+            r#""prompt":"scan","task_type":"local_agent"}"#,
+        );
+        let (_, outcome) = drive(&[BASH, &law, LIMIT_MAIN_429, RESULT_LIMIT]);
+        let hit = outcome.limit.expect("the limit");
+        let named: Vec<&str> = hit.agents.iter().map(|a| a.tool_use_id.as_str()).collect();
+        assert_eq!(named, vec!["toolu_LAW"]);
+        assert_eq!(hit.agents[0].agent_id, "ad35855f8406e281e");
+    }
+
     #[test]
     fn a_limit_line_from_a_child_never_announced_is_named_by_its_call_alone() {
         let (_, outcome) = drive(&[LIMIT_CHILD_TEXT, RESULT_LIMIT]);
