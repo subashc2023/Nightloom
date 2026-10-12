@@ -319,7 +319,9 @@ export function defaultDraft(): ConnectionDraft {
     thinkingMode: "default",
     budget: 8192,
     system: "",
-    tools: false,
+    // On (backlog 350): a fresh install's first chat can read, run and edit;
+    // the approval gate below still asks before the risky calls.
+    tools: true,
     preamble: true,
     sidecar: true,
     approval: true,

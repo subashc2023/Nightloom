@@ -278,6 +278,14 @@ describe("loadLastConnection", () => {
   it("returns null when nothing was ever saved", () => {
     expect(loadLastConnection()).toBeNull();
   });
+
+  it("starts with Tools on, and keeps a saved Tools off (backlog 350)", () => {
+    // Nothing saved: a fresh install's chat gets the default, which is on.
+    expect(defaultDraft().tools).toBe(true);
+    // A draft saved with Tools off still loads as off.
+    save({ provider: "anthropic", tools: false });
+    expect(loadLastConnection()?.tools).toBe(false);
+  });
 });
 
 // The subagent limits on the draft (nightshift backlog 165): a saved
