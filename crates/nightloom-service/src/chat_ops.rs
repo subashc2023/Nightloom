@@ -107,7 +107,15 @@ pub fn edit_saved(
             // Item 336: an edit that sets the attachments rebuilds the
             // turn's node whole — caption, images, documents — as it would
             // have been sent.
-            let set = attachments.clone();
+            // Item 340: a words-only Save on a user turn that carries
+            // attachments rebuilds it with the set it carries now, since
+            // `rewrite` keeps only the first text block and a text
+            // attachment travels as a second one.
+            let set = match (&attachments, block) {
+                (Some(set), _) => Some(set.clone()),
+                (None, None) => current_attachments(session, index),
+                (None, Some(_)) => None,
+            };
             edit_on_cli(session, cwd, move |cli| match (nth, set) {
                 (_, Some(set)) => cli
                     .rewrite_user(&target, &new_text, &set.images, &set.documents)
@@ -125,6 +133,25 @@ pub fn edit_saved(
     }
     change.adopt(session, agent);
     Ok(())
+}
+
+/// The images and documents the user message at `index` carries now — the
+/// latest live edit's set, else its own — or `None` for a reply or a turn
+/// with none (2026-10-11, nightshift item 340).
+fn current_attachments(session: &Session, index: usize) -> Option<EditedAttachments> {
+    let set = match session.edit_attachments().get(index).copied().flatten() {
+        Some(set) => set.clone(),
+        None => match session.events().get(index) {
+            Some(SessionEvent::UserMessage {
+                images, documents, ..
+            }) => EditedAttachments {
+                images: images.clone(),
+                documents: documents.clone(),
+            },
+            _ => return None,
+        },
+    };
+    (!set.images.is_empty() || !set.documents.is_empty()).then_some(set)
 }
 
 /// Remove the turn at `index` from the context (backlog 062): the `Elide`
@@ -766,4 +793,53 @@ pub fn restore_cli_file(
     cli_session::write_copy(&path, &restored)
         .map(CliChange::Resume)
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nightloom_core::{DocumentInput, ImageInput};
+
+    fn text_doc() -> DocumentInput {
+        DocumentInput {
+            media_type: "text/plain".into(),
+            name: "a.txt".into(),
+            data: "aGk=".into(),
+        }
+    }
+
+    // Item 340: a words-only Save rebuilds the CLI's copy with what the
+    // turn carries now — its own set, or the latest edit's — and leaves a
+    // turn with none to the plain rewrite.
+    #[test]
+    fn a_words_only_save_finds_the_turns_current_attachments() {
+        let mut s = Session::new();
+        s.record_user("plain");
+        s.record_user_with_attachments("with a file", vec![], vec![text_doc()]);
+        let users: Vec<usize> = (0..s.events().len())
+            .filter(|&i| matches!(s.events()[i], SessionEvent::UserMessage { .. }))
+            .collect();
+        let (plain, filed) = (users[0], users[1]);
+        assert!(
+            current_attachments(&s, plain).is_none(),
+            "no attachments, no rebuild"
+        );
+        let own = current_attachments(&s, filed).unwrap();
+        assert_eq!(own.documents.len(), 1);
+        assert_eq!(own.documents[0].name, "a.txt");
+
+        let edited = EditedAttachments {
+            images: vec![ImageInput {
+                media_type: "image/png".into(),
+                data: "BBBB".into(),
+            }],
+            documents: vec![],
+        };
+        s.edit_with_attachments(filed, "with a picture", edited)
+            .unwrap();
+        let now = current_attachments(&s, filed).unwrap();
+        assert_eq!(now.images.len(), 1, "the edit's set, not the turn's own");
+        assert!(now.documents.is_empty());
+        assert!(current_attachments(&s, 999).is_none());
+    }
 }

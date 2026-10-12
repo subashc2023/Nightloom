@@ -198,6 +198,20 @@ impl Line {
             _ => String::new(),
         }
     }
+    /// The first text block alone — a user turn's caption, without the
+    /// text attachments sent after it (2026-10-11, nightshift item 340).
+    fn caption(&self) -> String {
+        match self.content() {
+            Some(Value::String(s)) => s.clone(),
+            Some(Value::Array(blocks)) => blocks
+                .iter()
+                .find(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+                .and_then(|b| b.get("text").and_then(Value::as_str))
+                .unwrap_or_default()
+                .to_string(),
+            _ => String::new(),
+        }
+    }
     /// Put `text` where the text was: a string content becomes the text;
     /// in a block list the first `text` block takes it and any further
     /// `text` block goes, while images and documents keep their place.
@@ -460,7 +474,12 @@ impl CliSession {
         match target {
             Target::User { from_last, text } => {
                 let i = self.prompt_from_last(*from_last)?;
-                if self.lines[i].text().trim() != text.trim() {
+                // The caption is the first text block; a text attachment
+                // follows it as another (item 277), which the log keeps
+                // apart from the words — so either reading matches (item
+                // 340: a turn with a text file was refused every edit).
+                let line = &self.lines[i];
+                if line.text().trim() != text.trim() && line.caption().trim() != text.trim() {
                     return Err(CliSessionError::Locate(
                         "that turn reads differently in Claude Code's history than in this chat's log; nothing was changed".into(),
                     ));
@@ -1325,6 +1344,52 @@ mod tests {
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0]["text"], "look at this");
         assert_eq!(blocks[1]["type"], "image");
+    }
+
+    /// Item 340: a text attachment travels as a second text block, which
+    /// `rewrite` drops (it keeps the first text block only); a words-only
+    /// Save therefore goes by `rewrite_user` with the turn's current set,
+    /// and the attachment's block stays.
+    #[test]
+    fn a_words_only_save_keeps_a_text_attachment_when_rebuilt() {
+        let doc = nightloom_core::DocumentInput {
+            media_type: "text/plain".into(),
+            name: "a.txt".into(),
+            data: "aGk=".into(),
+        };
+        let blocks =
+            super::super::protocol::user_content("second", &[], std::slice::from_ref(&doc));
+        let text = fixture().replace(
+            r#""content":"second""#,
+            &format!(r#""content":{}"#, serde_json::Value::Array(blocks)),
+        );
+        let s = CliSession::parse(&text).unwrap();
+        let target = Target::User {
+            from_last: 0,
+            text: "second".into(),
+        };
+        let content_of = |out: &str| {
+            let lines = parsed(out);
+            let u2 = lines.iter().find(|o| o["uuid"] == "u2").unwrap();
+            u2["message"]["content"].as_array().unwrap().clone()
+        };
+
+        let dropped = content_of(&s.rewrite(&target, "new words").unwrap().render_as("a"));
+        assert_eq!(
+            dropped.len(),
+            1,
+            "the plain rewrite loses the attachment: {dropped:?}"
+        );
+
+        let kept = content_of(
+            &s.rewrite_user(&target, "new words", &[], std::slice::from_ref(&doc))
+                .unwrap()
+                .render_as("b"),
+        );
+        assert_eq!(kept.len(), 2, "{kept:?}");
+        assert_eq!(kept[0]["text"], "new words");
+        assert_eq!(kept[1]["type"], "text");
+        assert!(kept[1]["text"].as_str().unwrap().contains("hi"));
     }
 
     /// Item 336: an edit that sets the attachments rebuilds the turn's
