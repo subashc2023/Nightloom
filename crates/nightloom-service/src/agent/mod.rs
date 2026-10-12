@@ -517,13 +517,31 @@ const CHAT_POLICY_KEPT: [&str; 7] = [
 /// on it. Narrowed, the Ask hook pauses only what a Chat may still run
 /// (the web, Nightloom's own server); empty when nothing of the matcher
 /// survives (the plan exit's), and then no Ask entry is registered.
-fn ask_matcher_under_chat_policy(matcher: &str) -> String {
+///
+/// With the Browser on (nightshift backlog 353 review) the `mcp__.*`
+/// alternative becomes [`ASK_MCP_LESS_BROWSER`]: the browser's tools are
+/// refused by their own deny entry under the policy, and the CLI runs
+/// every matching entry, so an Ask hook still naming them showed an
+/// approval card for a call already refused — backlog 147's bug again.
+fn ask_matcher_under_chat_policy(matcher: &str, browser: bool) -> String {
     matcher
         .split('|')
         .filter(|alt| CHAT_POLICY_KEPT.iter().any(|kept| alt.starts_with(kept)))
+        .map(|alt| {
+            if browser && alt == "mcp__.*" {
+                ASK_MCP_LESS_BROWSER
+            } else {
+                alt
+            }
+        })
         .collect::<Vec<_>>()
         .join("|")
 }
+
+/// The Ask hook's `mcp__` alternative under the Chat policy with the
+/// Browser on: every MCP tool but Claude in Chrome's, by the same
+/// JavaScript negative lookahead [`CHAT_POLICY_MATCHER`] uses.
+const ASK_MCP_LESS_BROWSER: &str = "mcp__(?!claude-in-chrome__).*";
 
 /// The deny hook's command line. Single-quoted for the POSIX shell the CLI
 /// runs hooks through on macOS and Linux. On Windows, `cmd.exe`'s `echo`
@@ -1116,7 +1134,7 @@ impl AgentSpec {
             // policy leaves (backlog 147): a call both hooks match would
             // show a prompt whose answer cannot matter.
             let matcher = if self.chat_policy {
-                ask_matcher_under_chat_policy(ask.mode.matcher())
+                ask_matcher_under_chat_policy(ask.mode.matcher(), self.browser)
             } else {
                 ask.mode.matcher().to_string()
             };
@@ -2704,6 +2722,35 @@ mod tests {
             ask::MATCHER,
             "mcp__claude-in-chrome__navigate"
         ));
+
+        // Review: beside the Ask hook, a Chat's Ask entry no longer names
+        // the browser's tools — both entries matching would show an
+        // approval card for a call the deny entry has already refused
+        // (backlog 147). Nightloom's own server still asks.
+        chat.ask = Some(AskSpec {
+            hook: vec!["/app/nightloom-desktop".into(), "--permission-hook".into()],
+            dir: PathBuf::from("/logs/ask/chat-1"),
+            mode: AskMode::Ask,
+            subagents_auto: true,
+        });
+        let pre = entries(&chat);
+        let asks: Vec<&str> = pre
+            .iter()
+            .filter_map(|e| e["matcher"].as_str())
+            .filter(|m| *m != CHAT_POLICY_MATCHER && *m != BROWSER_TOOLS_MATCHER)
+            .collect();
+        assert_eq!(
+            asks,
+            ["WebFetch|WebSearch|mcp__(?!claude-in-chrome__).*"],
+            "{pre:?}"
+        );
+        chat.browser = false;
+        let pre = entries(&chat);
+        assert!(
+            pre.iter()
+                .any(|e| e["matcher"] == "WebFetch|WebSearch|mcp__.*"),
+            "{pre:?}"
+        );
     }
 
     /// The Ask matcher's `mcp__.*` alternative covers a browser tool name.
@@ -3311,7 +3358,7 @@ mod tests {
         // Narrowed beside the policy (backlog 147): see the next test.
         assert_eq!(
             pre[0]["matcher"],
-            ask_matcher_under_chat_policy(ask::MATCHER)
+            ask_matcher_under_chat_policy(ask::MATCHER, false)
         );
         assert_eq!(pre[1]["matcher"], CHAT_POLICY_MATCHER);
         assert_eq!(v["autoMemoryEnabled"], false);
@@ -3343,7 +3390,7 @@ mod tests {
     /// `cmd.exe` would read as its own, so the unquoted Windows form holds.
     #[test]
     fn under_the_chat_policy_the_ask_hook_names_only_what_the_policy_leaves() {
-        let narrowed = ask_matcher_under_chat_policy(ask::MATCHER);
+        let narrowed = ask_matcher_under_chat_policy(ask::MATCHER, false);
         assert_eq!(narrowed, "WebFetch|WebSearch|mcp__.*");
         for withdrawn in [
             "Bash",
@@ -3355,7 +3402,7 @@ mod tests {
         ] {
             assert!(!narrowed.split('|').any(|t| t == withdrawn), "{withdrawn}");
         }
-        assert_eq!(ask_matcher_under_chat_policy(ask::EXIT_PLAN_MATCHER), "");
+        assert_eq!(ask_matcher_under_chat_policy(ask::EXIT_PLAN_MATCHER, false), "");
 
         let mut s = spec();
         s.apply_kind(ChatKind::Build);

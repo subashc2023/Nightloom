@@ -1140,7 +1140,10 @@ approval card like any MCP tool ("Run `mcp__claude-in-chrome__navigate`?");
 on Auto they run unasked. Under the Chat policy, whose matcher lets every
 `mcp__` tool through, a second deny hook on `mcp__claude-in-chrome__.*`
 refuses them (blocker 1414) — by hook, so the tool list and the cached
-prefix stay the same. Flipping the switch on a running chat changes the tool
+prefix stay the same. Beside it the Ask entry's `mcp__.*` becomes
+`mcp__(?!claude-in-chrome__).*` (review, 2026-10-12): with both entries
+matching, a refused browser call still raised an approval card, the
+backlog-147 bug for `Bash`. Flipping the switch on a running chat changes the tool
 list (34 → 56 in the measurement), so the next turn re-writes the prefix once.
 
 ## What `--append-system-prompt` carries
