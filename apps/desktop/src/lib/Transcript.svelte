@@ -720,12 +720,27 @@
     if (filesBlocked(chips)) return;
     const { draft } = editing;
     const wire = splitChips(chips);
+    const before = editing;
+    const line = editCacheLine;
+    const key = sessionKey;
+    const chipsKey = editKey;
     await keepPlace(index, () => {
       editing = editReduce(editing, { type: "done" });
       stashEdit(sessionKey, null);
       setDraftAttachments(editKey, []);
     });
-    await sendEdit(index, draft, wire.images, wire.documents, null, wire.files);
+    const ok = await sendEdit(index, draft, wire.images, wire.documents, null, wire.files);
+    // The fork refused (an error toast, or a turn started meanwhile): the
+    // edit comes back — words and chips — rather than vanish on one Enter
+    // (practices §7; w6-review 2026-10-11).
+    if (!ok && sessionKey === key) {
+      setDraftAttachments(chipsKey, chips);
+      if (app.busy) stashEdit(key, { editing: before, line });
+      else if (!editing) {
+        editing = before;
+        editCacheLine = line;
+      }
+    }
   }
   function editorKeys(e: KeyboardEvent, item: Item) {
     // ~~Enter is a newline here; ⌘/Ctrl-Enter saves, ⌘/Ctrl-Shift-Enter
