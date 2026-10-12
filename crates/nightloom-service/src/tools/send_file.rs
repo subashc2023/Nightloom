@@ -88,10 +88,14 @@ pub struct SentFile {
 }
 
 /// The [`SentFile`] a result carries, if it carries one.
+/// Only the last non-empty line counts, as [`result_text`] writes it (343
+/// review, 2026-10-12): a marker the model put in an argument and a
+/// message quoted back mid-text is not a sent file.
 pub fn parse_marker(text: &str) -> Option<SentFile> {
     text.lines()
         .rev()
-        .find_map(|l| l.strip_prefix(MARKER))
+        .find(|l| !l.trim().is_empty())
+        .and_then(|l| l.strip_prefix(MARKER))
         .and_then(|json| serde_json::from_str(json).ok())
 }
 
@@ -101,14 +105,20 @@ fn valid_id(id: &str) -> bool {
     id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// Whether `name` is one plain file name: no separator, not `.` or `..`.
+/// Whether `name` is one plain file name: no separator, not `.` or `..`,
+/// and no control or bidirectional-override character (343 review,
+/// 2026-10-12) — a newline breaks the result's lines and a header, and a
+/// right-to-left override makes `report\u{202e}fdp.exe` read as a PDF on
+/// the chip.
 fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name != "."
         && name != ".."
         && !name.contains('/')
         && !name.contains('\\')
-        && !name.contains('\0')
+        && !name.chars().any(|c| {
+            c.is_control() || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+        })
 }
 
 /// The stores a copy may be in: the config dir's, then the scratch one.
@@ -280,7 +290,13 @@ pub fn deliver(
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .filter(|n| valid_name(n))
-        .ok_or_else(|| format!("\"{arg}\" has no file name to send it under."))?;
+        .ok_or_else(|| {
+            format!(
+                "\"{arg}\" has no file name it can be sent under: a name with a control \
+                 character (such as a newline) or a text-direction character is refused. \
+                 Rename or copy it to a plain name first."
+            )
+        })?;
     let id = uuid::Uuid::new_v4().simple().to_string();
     let dir = store.join(&id);
     std::fs::create_dir_all(&dir)
@@ -439,6 +455,25 @@ mod tests {
             deliver(&root, &store, "inner.txt", None).unwrap().name,
             "inner.txt"
         );
+    }
+
+    /// 343 review: a name that would break the result's lines or disguise
+    /// its extension is refused before anything is copied, and the marker
+    /// is read from the last line only.
+    #[test]
+    fn a_name_with_a_newline_or_a_direction_override_is_refused() {
+        let (root, store) = setup("names");
+        for name in ["a\nb.pdf", "report\u{202e}fdp.exe", "tab\t.txt"] {
+            std::fs::write(root.join(name), b"x").unwrap();
+            let err = deliver(&root, &store, name, None).unwrap_err();
+            assert!(err.contains("plain name"), "{name:?}: {err}");
+        }
+        assert!(!store.exists(), "nothing was copied");
+        assert_eq!(locate_in(&[store.clone()], &"a".repeat(32), "a\nb"), None);
+        std::fs::write(root.join("ok.pdf"), b"x").unwrap();
+        let text = result_text(&deliver(&root, &store, "ok.pdf", None).unwrap());
+        assert!(parse_marker(&format!("{text}\n\n")).is_some());
+        assert_eq!(parse_marker(&format!("{text}\nthen more")), None);
     }
 
     #[test]
