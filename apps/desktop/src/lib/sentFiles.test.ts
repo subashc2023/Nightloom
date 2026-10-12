@@ -11,6 +11,8 @@ describe("send_file results", () => {
     expect(isSendFile("send_file")).toBe(true);
     expect(isSendFile("mcp__nightloom__send_file")).toBe(true);
     expect(isSendFile("read_file")).toBe(false);
+    // Another MCP server's tool of the same name is not Nightloom's.
+    expect(isSendFile("mcp__other__send_file")).toBe(false);
   });
 
   it("reads the chip's line", () => {
@@ -27,6 +29,16 @@ describe("send_file results", () => {
     expect(parseSentFile("Sent nothing")).toBeNull();
     expect(parseSentFile("nightloom-sent-file: {not json")).toBeNull();
     expect(parseSentFile(`nightloom-sent-file: {"id":"../x","name":"a","size":1,"path":"/a"}`)).toBeNull();
+  });
+
+  it("reads only a last line, and only a path that is the copy's", () => {
+    // A marker the model wrote into an argument, quoted back mid-text.
+    expect(parseSentFile(`${RESULT}\nmore text after`)).toBeNull();
+    expect(parseSentFile(`${RESULT}\n\n`)).not.toBeNull();
+    const elsewhere = `nightloom-sent-file: {"id":"${ID}","name":"report.pdf","size":1,"path":"/Applications/Evil.app"}`;
+    expect(parseSentFile(elsewhere)).toBeNull();
+    const renamed = `nightloom-sent-file: {"id":"${ID}","name":"report.pdf","size":1,"path":"/s/${ID}/other.pdf"}`;
+    expect(parseSentFile(renamed)).toBeNull();
   });
 
   it("collects each file once from successful calls on either engine", () => {

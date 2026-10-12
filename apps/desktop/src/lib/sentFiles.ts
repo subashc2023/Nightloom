@@ -21,18 +21,24 @@ export interface SentFile {
 
 export const SENT_MARKER = "nightloom-sent-file: ";
 
-/** The tool on either engine: `send_file`, or `mcp__nightloom__send_file`. */
+/** The tool on either engine: `send_file`, or `mcp__nightloom__send_file`.
+ *  Exactly those two (343 review, 2026-10-12): another MCP server's
+ *  `mcp__<server>__send_file` is not Nightloom's, and a chip drawn from its
+ *  result would point Open and Reveal wherever that server said. */
 export function isSendFile(name: string): boolean {
-  return name === "send_file" || name.endsWith("__send_file");
+  return name === "send_file" || name === "mcp__nightloom__send_file";
 }
 
-/** The file one result carries, or null for anything else. */
+/** The file one result carries, or null for anything else. The marker
+ *  must be the result's last non-empty line, as `result_text` writes it —
+ *  not any line (343 review): a line the model put in an argument that a
+ *  message quotes back must never be read as a chip. */
 export function parseSentFile(text: string): SentFile | null {
   const line = text
     .split("\n")
-    .reverse()
-    .find((l) => l.startsWith(SENT_MARKER));
-  if (!line) return null;
+    .filter((l) => l.trim() !== "")
+    .pop();
+  if (!line || !line.startsWith(SENT_MARKER)) return null;
   let v: unknown;
   try {
     v = JSON.parse(line.slice(SENT_MARKER.length));
@@ -47,7 +53,11 @@ export function parseSentFile(text: string): SentFile | null {
     typeof o.name !== "string" ||
     !o.name ||
     typeof o.size !== "number" ||
-    typeof o.path !== "string"
+    typeof o.path !== "string" ||
+    // The copy is always `<store>/<id>/<name>` (343 review): a path that
+    // is not is not a copy this tool made.
+    !o.path.endsWith(`/${o.id}/${o.name}`) ||
+    o.name.includes("/")
   )
     return null;
   const out: SentFile = { id: o.id, name: o.name, size: o.size, path: o.path };
