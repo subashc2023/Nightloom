@@ -3402,7 +3402,10 @@ mod tests {
         ] {
             assert!(!narrowed.split('|').any(|t| t == withdrawn), "{withdrawn}");
         }
-        assert_eq!(ask_matcher_under_chat_policy(ask::EXIT_PLAN_MATCHER, false), "");
+        assert_eq!(
+            ask_matcher_under_chat_policy(ask::EXIT_PLAN_MATCHER, false),
+            ""
+        );
 
         let mut s = spec();
         s.apply_kind(ChatKind::Build);
