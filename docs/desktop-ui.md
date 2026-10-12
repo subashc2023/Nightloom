@@ -2445,6 +2445,9 @@ On the Claude Code rail, after *claude.ai connectors*: **Browser**, off by
 default. On, the chat can drive his own Chrome through the Claude in Chrome
 extension (`--chrome`); off sends `--no-chrome`. Each browser call shows the
 usual approval card on Ask, runs unasked on Auto, and is refused in a Chat.
-Saved with the rest of the rail (`loadLastConnection`; absent reads as off).
+Saved with the rest of the rail (`loadLastConnection`; absent reads as off). It is the rail's, not the chat's (review, 2026-10-12): like *claude.ai
+connectors* it stays as set when another chat is opened, and that chat's
+next turn reconnects with it; the hint says so. On Ask a subagent's browser
+call is refused (nightshift blocker 1415).
 The measurements and the flag spelling are in `service-agent.md`, *Browser:
 Claude in Chrome per chat*.

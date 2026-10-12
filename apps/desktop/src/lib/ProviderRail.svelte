@@ -1231,7 +1231,7 @@
            default; on sends --chrome, off --no-chrome. -->
       <label class="swq">
         <span class="t">Browser</span>
-        <Hint text="Off (the default): this chat has no browser. On: Claude Code drives your own Chrome through the Claude in Chrome extension — your tabs, logged in as you — to open pages, click, fill forms and read what they show. Chrome must be running with the extension. On Ask each browser call shows an approval card first; on Auto they run without asking. A Chat refuses them. Safe mode keeps the browser if this is on. Flipping it on a running chat re-writes its cached prefix once." />
+        <Hint text="Off (the default): this chat has no browser. On: Claude Code drives your own Chrome through the Claude in Chrome extension — your tabs, logged in as you — to open pages, click, fill forms and read what they show. Chrome must be running with the extension. On Ask each browser call shows an approval card first, and a subagent's is refused; on Auto they run without asking. A Chat refuses them. Safe mode keeps the browser if this is on. Like the other switches here it belongs to the rail, not the chat: it stays as set when you open another chat, and that chat's next turn has the browser too. Flipping it on a running chat re-writes its cached prefix once." />
         <input
           type="checkbox"
           class="sw"
