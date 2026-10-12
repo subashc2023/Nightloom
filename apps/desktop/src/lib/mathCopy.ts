@@ -155,10 +155,25 @@ function inEditable(sel: Selection): boolean {
   return !!el?.closest('[contenteditable=""], [contenteditable="true"], .cm-editor');
 }
 
+let memo: { key: unknown[]; out: { text: string; html: string } | null } | null = null;
+
 /** What a copy of the page's selection should put on the clipboard, or
  *  null when the selection holds no rendered formula. */
 export function mathSelection(sel: Selection | null): { text: string; html: string } | null {
   if (!sel || sel.rangeCount === 0 || sel.isCollapsed || inEditable(sel)) return null;
+  // One ⌘C asks twice — this module's copy handler and the clip ring's
+  // (`clipRing.svelte.ts`) — and a ⌘A over a long chat takes ~0.5 s each
+  // (review 2026-10-12): the answer is kept for the rest of the event.
+  const r0 = sel.getRangeAt(0);
+  const key = [sel.rangeCount, r0.startContainer, r0.startOffset, r0.endContainer, r0.endOffset];
+  if (memo && memo.key.every((k, i) => k === key[i])) return memo.out;
+  const out = computeSelection(sel);
+  memo = { key, out };
+  setTimeout(() => (memo = null), 0);
+  return out;
+}
+
+function computeSelection(sel: Selection): { text: string; html: string } | null {
   const parts: string[] = [];
   for (let i = 0; i < sel.rangeCount; i++) parts.push(rangeHtml(sel.getRangeAt(i)));
   const html = parts.join("\n");
