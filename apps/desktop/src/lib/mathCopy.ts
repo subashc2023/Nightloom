@@ -29,14 +29,37 @@ function formulaOf(node: Node): Element | null {
   return el?.closest(".katex-display") ?? el?.closest(".katex") ?? null;
 }
 
+/** Whether any of a formula's drawn glyphs lie between two points. KaTeX's
+ *  struts and zero-width spaces do not count; neither does the hidden
+ *  MathML copy, which sits before the drawing. */
+function drawnBetween(from: (r: Range) => void, to: (r: Range) => void): boolean {
+  const r = document.createRange();
+  from(r);
+  to(r); // a `to` before `from` collapses the range: nothing between
+  return r.toString().replace(/[\s​]/g, "") !== "";
+}
+
 /** The range's HTML, widened to whole formulas at either end — half a
- *  formula has no source to give. */
+ *  formula has no source to give. An end that touches a formula without
+ *  taking any of its glyphs (a triple-click ending at the next block, which
+ *  is a display formula; a drag from just after one) leaves it out instead
+ *  (review 2026-10-12: it was pulled in whole). */
 function rangeHtml(range: Range): string {
   const r = range.cloneRange();
   const start = formulaOf(r.startContainer);
   const end = formulaOf(r.endContainer);
-  if (start) r.setStartBefore(start);
-  if (end) r.setEndAfter(end);
+  if (start) {
+    const drawn = start.querySelector(".katex-html") ?? start;
+    const taken = drawnBetween((x) => x.setStart(range.startContainer, range.startOffset), (x) => x.setEndAfter(drawn));
+    if (taken) r.setStartBefore(start);
+    else r.setStartAfter(start);
+  }
+  if (end) {
+    const drawn = end.querySelector(".katex-html") ?? end;
+    const taken = drawnBetween((x) => x.setStartBefore(drawn), (x) => x.setEnd(range.endContainer, range.endOffset));
+    if (taken) r.setEndAfter(end);
+    else r.setEndBefore(end);
+  }
   const box = document.createElement("div");
   box.appendChild(r.cloneContents());
   return box.innerHTML;
