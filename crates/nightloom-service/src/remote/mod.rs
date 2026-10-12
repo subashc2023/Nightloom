@@ -1047,9 +1047,22 @@ async fn sent_file(Path((id, name)): Path<(String, String)>) -> Response {
             }
         })
         .collect();
-    if let Ok(v) = HeaderValue::from_str(&format!("inline; filename=\"{ascii}\"")) {
+    // 343 review (2026-10-12): what is not a type a browser shows safely
+    // goes out as an attachment, not `inline` — HTML and SVG among them —
+    // and every copy carries a sandbox policy, so a file opened straight
+    // from this URL runs no script on the page's origin whatever it is.
+    let disposition = if kind == "application/octet-stream" {
+        "attachment"
+    } else {
+        "inline"
+    };
+    if let Ok(v) = HeaderValue::from_str(&format!("{disposition}; filename=\"{ascii}\"")) {
         h.insert(header::CONTENT_DISPOSITION, v);
     }
+    h.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'"),
+    );
     resp
 }
 
@@ -2748,6 +2761,18 @@ mod tests {
         assert_eq!(r.headers()[header::CONTENT_TYPE], "application/pdf");
         assert_eq!(r.bytes().await.unwrap().as_ref(), b"%PDF-1.4 x");
 
+        // 343 review: a page or a picture that can carry script goes out
+        // as an attachment, never inline, and every copy is sandboxed.
+        assert!(
+            r_headers_ok(&c, &url, &token, "inline").await,
+            "a PDF is shown in place, sandboxed"
+        );
+        for name in ["page.html", "pic.svg"] {
+            std::fs::write(dir.join(name), b"<script>1</script>").unwrap();
+            let u = format!("{base}/api/sent-files/{id}/{name}");
+            assert!(r_headers_ok(&c, &u, &token, "attachment").await, "{name}");
+        }
+
         for bad in [
             format!("{base}/api/sent-files/{id}/other.pdf"),
             format!("{base}/api/sent-files/not-an-id/report.pdf"),
@@ -2757,6 +2782,23 @@ mod tests {
             assert_eq!(r.status(), 404, "{bad}");
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A sent file's response is 200, sandboxed, and has the disposition
+    /// `how` (backlog 343's review).
+    async fn r_headers_ok(c: &reqwest::Client, url: &str, token: &str, how: &str) -> bool {
+        let r = c.get(url).bearer_auth(token).send().await.unwrap();
+        let h = r.headers();
+        r.status() == 200
+            && h[header::CONTENT_DISPOSITION]
+                .to_str()
+                .unwrap()
+                .starts_with(how)
+            && h[header::CONTENT_SECURITY_POLICY]
+                .to_str()
+                .unwrap()
+                .starts_with("sandbox")
+            && (how == "inline" || h[header::CONTENT_TYPE] == "application/octet-stream")
     }
 
     async fn get_json(c: &reqwest::Client, url: String, token: &str) -> (u16, serde_json::Value) {
