@@ -97,6 +97,12 @@
 //! the outcome line ("kept a change to … for your review: an added line
 //! has a web link ("…") — review it under Notes"). Both engines, since
 //! the screen runs in [`apply_turns_proposal`]. Everything else applies.
+//! ~~"only those; what the file already says was his"~~ (struck 2026-10-12,
+//! item 349, blocker 1403 "both"): the lines the replacement *removes* are
+//! read too, for the tool, permission, secret and send words only (not
+//! links or commands) — dropping "Ask before pushing" loosens a rule with
+//! no added line — and a hit keeps it pending the same way, the reason
+//! naming the removed line ("a removed line had words about …").
 //!
 //! **Two engines, one pass (2026-09-16, nightshift backlog 070).** Every
 //! dream before this ran through the provider layer and billed an API key,
@@ -1539,7 +1545,8 @@ fn snapshot_in(repo: &Path, pathspec: &[&Path], message: &str) -> GitNote {
 /// An earlier one from the same dream (the first look's, when a second
 /// look proposed again) is moved to `dismissed/`, superseded. Returns the
 /// applied record's path, or `None` when there was nothing to apply or it
-/// stays pending — the screen found an added line it keeps for review
+/// stays pending — the screen found an added line it keeps for review, or
+/// a removed one with tool/permission/secret/send words (item 349)
 /// ([`proposal::screen_added`], blocker 1404), the file changed on disk during the turn, or it was
 /// longer than the preamble's cap, so the replacement was written against
 /// text that is not the file's (whole-file replacement would drop the part
@@ -1577,7 +1584,8 @@ fn apply_turns_proposal(
     // sending keeps the proposal pending — the review card, as before 344
     // — with the reason on the record and in the outcome line. The file
     // equals `quoted` here, so the lines it judges as added are exactly
-    // the ones the write would add.
+    // the ones the write would add. Removed lines are read too, for the
+    // word classes only (item 349, blocker 1403 "both", 2026-10-12).
     if let Some(why) = proposal::screen_added(quoted, &newest.proposal.text) {
         let _ = proposal::mark_screened(&store, &newest.id, &why);
         *screened = Some(why);
@@ -2777,7 +2785,8 @@ mod tests {
     /// carries it is not written — the file is as it was, the proposal is
     /// pending (not held) with the reason on the record, and the outcome
     /// line says why. A plain added line beside a link the file already had
-    /// is applied: the screen reads added lines only.
+    /// is applied: the screen reads added lines only for links (removed
+    /// lines get the word classes since item 349 — the next test).
     #[tokio::test]
     async fn a_screened_proposal_stays_pending_with_its_reason_and_a_plain_one_applies() {
         let before = "# Lanternfish\n\nUse cargo.\n";
@@ -2861,6 +2870,49 @@ mod tests {
             .expect("a batch was pending");
         assert_eq!(fs::read_to_string(&file).unwrap(), text);
         assert!(outcome.filed[0].applied && outcome.filed[0].screened.is_none());
+    }
+
+    /// Item 349 (blocker 1403, his "both"), end to end on the provider
+    /// engine: a replacement that drops "Ask before pushing" is not written
+    /// and stays pending with a reason naming the removed line; one that
+    /// drops a plain style line is applied.
+    #[tokio::test]
+    async fn a_replacement_dropping_a_permission_rule_stays_pending_and_a_style_line_applies() {
+        let before = "# Lanternfish\n\nUse cargo.\nAsk before pushing.\nKeep replies short.\n";
+        for (n, (drop, kept)) in [
+            ("Ask before pushing.", true),
+            ("Keep replies short.", false),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (config, vault, workspace) = fixture(&format!("screen-removed-{n}"), "Lanternfish");
+            let file = workspace.join(INSTRUCTION_FILE);
+            fs::write(&file, before).unwrap();
+            append(&config, "Switched the build to tokio.", Some("Lanternfish"));
+            let text = before.replace(&format!("{drop}\n"), "");
+            let mut chat = chat_scripted(vec![propose(&text, "Observation 1."), says("done")]);
+            let cancel = CancellationToken::new();
+            let outcome = run(&mut chat, &vault, &config, &cancel, &mut |_| {})
+                .await
+                .unwrap()
+                .expect("a batch was pending");
+            let f = &outcome.filed[0];
+            if kept {
+                assert_eq!(fs::read_to_string(&file).unwrap(), before);
+                assert!(f.proposed && !f.applied);
+                let why = f.screened.as_deref().expect("the reason");
+                assert!(
+                    why.starts_with("a removed line had ") && why.contains(drop),
+                    "{why}"
+                );
+                let said = proposed_line(&outcome.filed).unwrap();
+                assert!(said.contains("a removed line had "), "{said}");
+            } else {
+                assert_eq!(fs::read_to_string(&file).unwrap(), text);
+                assert!(f.applied && f.screened.is_none());
+            }
+        }
     }
 
     /// The screen on the Claude Code engine: the stand-in's proposal, given

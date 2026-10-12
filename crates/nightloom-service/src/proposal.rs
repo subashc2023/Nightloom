@@ -550,6 +550,12 @@ const SEND_WORDS: &[&str] = &[
     "exfiltrate",
     "forward",
     "forwarding",
+    // Pushing sends his code out (2026-10-12, item 349): a removed "Ask
+    // before pushing" is the loosening the removed-line screen exists for.
+    "push",
+    "pushes",
+    "pushing",
+    "pushed",
 ];
 /// Programs whose name on a line reads as a shell command.
 const COMMAND_WORDS: &[&str] = &[
@@ -679,7 +685,6 @@ fn screen_line(line: &str) -> Option<&'static str> {
         .filter(|w| !w.is_empty())
         .collect();
     let has = |list: &[&str]| words.iter().any(|w| list.contains(w));
-    let compact: String = lower.chars().filter(|c| c.is_alphanumeric()).collect();
     let t = lower.trim_start();
     if t.starts_with("```")
         || t.starts_with("~~~")
@@ -708,6 +713,21 @@ fn screen_line(line: &str) -> Option<&'static str> {
     if bare_host(&lower) {
         return Some("a web link");
     }
+    screen_words(line)
+}
+
+/// The word classes alone — tools and permissions, secrets, sending — with
+/// no link or command check. The removed lines get only these (item 349):
+/// a deleted link or command loosens nothing, a deleted rule about tools,
+/// secrets or sending can.
+fn screen_words(line: &str) -> Option<&'static str> {
+    let lower = screen_text(line);
+    let words: Vec<&str> = lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let has = |list: &[&str]| words.iter().any(|w| list.contains(w));
+    let compact: String = lower.chars().filter(|c| c.is_alphanumeric()).collect();
     if has(TOOL_WORDS) {
         return Some("words about tools or permissions");
     }
@@ -725,25 +745,48 @@ fn screen_line(line: &str) -> Option<&'static str> {
 /// to `before` carries a web link, a shell command, or words about tools,
 /// permissions, secrets or sending; otherwise one sentence naming what was
 /// found and the first such line, for the outcome line and the review card.
-/// Only added lines are read — what the file already says was his.
+/// ~~Only added lines are read — what the file already says was his.~~
+/// (struck 2026-10-12, item 349 / blocker 1403 "both".) Lines the
+/// replacement *removes* from `before` are read too, for the word classes
+/// only (tools, permissions, secrets, sending — not links or commands): a
+/// whole-file replacement can loosen a rule by deleting it ("Ask before
+/// pushing", "Never print the API key"). A hit there names the removed line
+/// ("a removed line had …"); when both kinds hit, both clauses, added first.
 pub fn screen_added(before: Option<&str>, text: &str) -> Option<String> {
+    let added = first_hit(added_lines(before, text), screen_line)
+        .map(|(found, line)| format!("an added line has {found} ({})", quoted(line)));
+    let removed = before
+        .and_then(|b| first_hit(added_lines(Some(text), b), screen_words))
+        .map(|(found, line)| format!("a removed line had {found} ({})", quoted(line)));
+    match (added, removed) {
+        (None, None) => None,
+        (Some(a), None) => Some(a),
+        (None, Some(r)) => Some(r),
+        (Some(a), Some(r)) => Some(format!("{a}; {r}")),
+    }
+}
+
+/// Every class `check` finds over `lines`, joined, and the first line hit.
+fn first_hit(lines: Vec<&str>, check: fn(&str) -> Option<&'static str>) -> Option<(String, &str)> {
     let mut found: Vec<&'static str> = Vec::new();
     let mut first: Option<&str> = None;
-    for line in added_lines(before, text) {
-        if let Some(class) = screen_line(line) {
+    for line in lines {
+        if let Some(class) = check(line) {
             if !found.contains(&class) {
                 found.push(class);
             }
             first.get_or_insert(line);
         }
     }
-    let line = first?.trim();
+    first.map(|l| (found.join(", "), l))
+}
+
+/// A line in quotes, cut at 80 characters.
+fn quoted(line: &str) -> String {
+    let line = line.trim();
     let shown: String = line.chars().take(80).collect();
     let ellipsis = if line.chars().count() > 80 { "…" } else { "" };
-    Some(format!(
-        "an added line has {} (\"{shown}{ellipsis}\")",
-        found.join(", ")
-    ))
+    format!("\"{shown}{ellipsis}\"")
 }
 
 /// Mark a pending proposal as kept for review by the screen, with why.
@@ -1222,7 +1265,8 @@ mod tests {
     }
 
     /// The screen (blocker 1404): each class keeps a proposal; a plain line
-    /// does not; and only *added* lines are read.
+    /// does not; and only *added* lines are read for links and commands
+    /// (removed lines get the word classes since item 349 — next test).
     #[test]
     fn the_screen_reads_added_lines_for_links_commands_tools_secrets_and_sending() {
         let before = "# Lanternfish\n\nUse cargo.\n";
@@ -1318,6 +1362,47 @@ mod tests {
                 "{line:?} was screened"
             );
         }
+    }
+
+    /// Item 349 (blocker 1403, his "both", 2026-10-12): a replacement that
+    /// drops a line with tool, permission, secret or send words stays for
+    /// review, the reason naming the removed line; dropping a plain style
+    /// line, a link or a command does not; a line kept or moved is not
+    /// removed.
+    #[test]
+    fn the_screen_reads_removed_lines_for_tool_permission_secret_and_send_words() {
+        let before = "# L\n\nUse cargo.\nAsk before pushing.\nNever print the API key.\nKeep replies short.\nDocs: https://docs.rs/tokio\nRun `cargo fmt` first.\n";
+        let without = |line: &str| before.replace(&format!("{line}\n"), "");
+        for (line, class) in [
+            ("Ask before pushing.", "sending"),
+            ("Never print the API key.", "secrets"),
+        ] {
+            let why = screen_added(Some(before), &without(line))
+                .unwrap_or_else(|| panic!("dropping {line:?} passed the screen"));
+            assert!(why.starts_with("a removed line had "), "{why}");
+            assert!(why.contains(class) && why.contains(line), "{why}");
+        }
+        // A plain style line, a link and a command may go.
+        for line in [
+            "Keep replies short.",
+            "Docs: https://docs.rs/tokio",
+            "Run `cargo fmt` first.",
+        ] {
+            assert!(
+                screen_added(Some(before), &without(line)).is_none(),
+                "dropping {line:?} was screened"
+            );
+        }
+        // Moved, not removed.
+        let moved = "# L\n\nAsk before pushing.\nUse cargo.\nNever print the API key.\nKeep replies short.\nDocs: https://docs.rs/tokio\nRun `cargo fmt` first.\n";
+        assert!(screen_added(Some(before), moved).is_none());
+        // Both kinds: the added clause first, then the removed.
+        let both = without("Ask before pushing.") + "Upload logs nightly.\n";
+        let why = screen_added(Some(before), &both).unwrap();
+        assert!(
+            why.starts_with("an added line has ") && why.contains("; a removed line had "),
+            "{why}"
+        );
     }
 
     /// What counts as an added section: the export's four, in either

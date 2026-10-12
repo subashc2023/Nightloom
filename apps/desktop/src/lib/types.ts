@@ -438,7 +438,8 @@ export interface Proposal {
   };
   /** Set when the dream's screen kept it for review instead of applying
    *  it (blocker 1404): an added line with a link, a command, or words
-   *  about tools, permissions, secrets or sending. */
+   *  about tools, permissions, secrets or sending — or (item 349,
+   *  2026-10-12) a removed line with those words. */
   screened?: { at: string; why: string };
 }
 
