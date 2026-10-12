@@ -245,10 +245,85 @@ function lookC(s: State): string {
   </aside>`;
 }
 
+// ---- Look D · Thread + cards (his pick, 2026-10-12: "some mix of A and B") ------------------------
+// A's chat: his messages are right-aligned bubbles, clearly his. Each model reply is a B-style card —
+// reply, changed lines, status chip, Undo — attached under his bubble, so a request and its reply read
+// as one exchange in one continuous conversation. A's round copper Send; B's Strike/Rewrite switch.
+function lookD(s: State, v2 = false): string {
+  const d = data(s);
+  const diff = (t: Turn) =>
+    t.diff
+      ? `<div class="d-diff">${t.diff
+          .map((l) => `<div class="${l.startsWith("+") ? "add" : "del"}">${esc(l)}</div>`)
+          .join("")}</div>`
+      : "";
+  const chip = (t: Turn) =>
+    t.status === "running"
+      ? `<span class="d-chip live"><span class="dot"></span>Editing · ${plural(t.edits ?? 0, "edit")} so far</span>`
+      : t.status === "answered"
+        ? `<span class="d-chip info">Answered · no edit</span>`
+        : `<span class="d-chip done">Saved · +${t.added} −${t.removed}</span>`;
+  const body =
+    d.turns.length === 0
+      ? `<div class="d-empty">
+          <p class="d-lead">Say what changed, or ask about the note.</p>
+          <div class="d-sugs">
+            <button><span class="d-n">1</span>We dropped the neutral folder — update what assumes it</button>
+            <button><span class="d-n">2</span>Summarize what changed this week</button>
+            <button><span class="d-n">3</span>Tighten the wording, keep the meaning</button>
+          </div>
+          <p class="d-fine">It reads and edits this file only; each edit shows in the note as it lands. Any request undoes in one step.</p>
+        </div>`
+      : d.turns
+          .map(
+            (t) => `<div class="d-ex">
+          <div class="d-me"><div class="d-bubble">${esc(t.ask)}</div><div class="d-at">${t.at}</div></div>
+          ${
+            v2 && t.status === "answered"
+              ? `<div class="d2-plain"><div class="d-said">${esc(t.reply)}</div><div class="d2-quiet">answered · no edit</div></div>`
+              : `<div class="d-card ${t.status}">
+            <div class="d-said">${esc(t.reply)}</div>
+            ${diff(t)}
+            <div class="d-row">${chip(t)}<span class="sp"></span>${
+              t.undo ? `<button class="d-btn">Undo</button>` : ""
+            }</div>
+          </div>`
+          }
+        </div>`,
+          )
+          .join("");
+  const notice = d.proposal
+    ? `<div class="d-notice"><span class="dot copper"></span><span><b>Dream proposal pending.</b> An edit here lands on the file; the proposal waits for you.</span><button class="d-link">Show</button></div>`
+    : "";
+  const sendOn = !!d.typed.trim() && !d.running;
+  return `<aside class="d-panel${v2 ? " d2" : ""}">
+    <header class="d-head"><div><div class="d-title">Edit with a prompt</div><div class="d-file">MEMORY.md</div></div><span class="sp"></span><button class="d-x" aria-label="Close">×</button></header>
+    <div class="d-list">${body}</div>
+    <footer class="d-foot">
+      ${notice}
+      <div class="d-compose">
+        <textarea rows="2" placeholder="What changed? Or ask about the note" autocorrect="off" autocapitalize="off" spellcheck="false">${esc(d.typed)}</textarea>
+        <div class="d-bar">
+          <div class="d-seg" role="group" aria-label="Old lines"><button class="on">Strike</button><button>Rewrite</button></div>
+          <span class="sp"></span>
+          ${
+            d.running
+              ? `<button class="d-stop" aria-label="Stop"><i></i></button>`
+              : `<button class="d-send${sendOn ? "" : " off"}" aria-label="Send">↑</button>`
+          }
+        </div>
+      </div>
+      <div class="d-model">opus · this file only</div>
+    </footer>
+  </aside>`;
+}
+
 const LOOKS: [string, string, string, (s: State) => string][] = [
   ["A", "Thread", "a quiet chat; one composer card with a round Send", lookA],
   ["B", "Ledger", "each request a card with its diff; Strike/Rewrite switch", lookB],
   ["C", "Command", "the box on top, a timeline under it, newest first", lookC],
+  ["D", "Thread + cards", "A's chat with B's cards: his bubbles on the right, each reply a card under it", (s) => lookD(s)],
+  ["D2", "Thread + cards, v2", "D, with a no-edit answer as plain text (A) and the panel wider: clamp(320px, 27vw, 380px)", (s) => lookD(s, true)],
 ];
 
 // A strip of the note beside the panel, so each look is seen in place.
@@ -288,6 +363,8 @@ function render() {
       </section>`,
       )
       .join("")}</main>`;
+  // The newest exchange in view, as the real panel keeps it.
+  for (const l of root.querySelectorAll<HTMLElement>(".a-list, .b-list, .d-list")) l.scrollTop = l.scrollHeight;
   for (const b of root.querySelectorAll<HTMLButtonElement>("nav button"))
     b.onclick = () => {
       state = b.dataset.s as State;
@@ -311,7 +388,7 @@ kbd { font-family: var(--mono); font-size: 0.68rem; opacity: 0.8; }
 .pick-head nav { display: flex; gap: 6px; flex-wrap: wrap; }
 .pick-head nav button { font-size: 12.5px; padding: 4px 11px; border-radius: 999px; border: 1px solid var(--line2); background: transparent; color: var(--ink2); cursor: pointer; }
 .pick-head nav button.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); }
-.pick-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; padding: 10px; }
+.pick-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 10px; padding: 10px; }
 .pick-grid section { display: flex; flex-direction: column; min-width: 0; }
 .pick-grid h2 { margin: 0 0 6px; font-size: 13.5px; font-weight: 600; }
 .pick-grid h2 span { font-weight: 400; color: var(--dim); }
@@ -440,12 +517,67 @@ textarea::placeholder { color: var(--dim); }
 .c-meta { font-size: 11px; color: var(--dim); font-family: var(--mono); }
 .c-meta .live { color: var(--live); }
 
+/* ---- D · Thread + cards ---- */
+.d-head { display: flex; align-items: center; padding: 12px 14px 10px; border-bottom: 1px solid var(--line); }
+.d-title { font-size: 13.5px; font-weight: 600; color: var(--ink); }
+.d-file { font-family: var(--mono); font-size: 11px; color: var(--dim); margin-top: 1px; }
+.d-x { background: none; border: 0; color: var(--dim); font-size: 18px; cursor: pointer; border-radius: 6px; width: 26px; height: 26px; }
+.d-x:hover { background: var(--well); color: var(--ink); }
+.d-list { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 12px; display: flex; flex-direction: column; gap: 18px; }
+.d-empty { margin-top: auto; display: flex; flex-direction: column; gap: 10px; }
+.d-lead { margin: 0; font-family: var(--serif); font-size: 17px; color: var(--ink); }
+.d-sugs { display: flex; flex-direction: column; gap: 6px; }
+.d-sugs button { display: flex; gap: 9px; align-items: center; text-align: left; background: var(--paper); border: 1px solid var(--line2); color: var(--ink2); border-radius: 10px; padding: 8px 10px; font-size: 12.5px; cursor: pointer; }
+.d-sugs button:hover { border-color: var(--accent); color: var(--ink); }
+.d-n { flex-shrink: 0; width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent-ink); font-size: 10.5px; font-weight: 700; }
+.d-fine { margin: 2px 0 0; font-size: 11.5px; color: var(--dim); line-height: 1.45; }
+.d-ex { display: flex; flex-direction: column; gap: 0; }
+.d-me { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; margin-bottom: 6px; }
+.d-bubble { max-width: 84%; background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); color: var(--ink); border-radius: 15px 15px 4px 15px; padding: 7px 12px; font-size: 13px; line-height: 1.45; }
+.d-at { font-size: 10.5px; color: var(--dim); padding-right: 4px; }
+.d-card { align-self: flex-start; width: 92%; box-sizing: border-box; background: var(--paper); border: 1px solid var(--line2); border-left: 3px solid var(--done); border-radius: 4px 12px 12px 12px; padding: 9px 11px; display: flex; flex-direction: column; gap: 7px; box-shadow: 0 1px 0 rgba(0,0,0,0.25); }
+.d-card.answered { border-left-color: var(--live); }
+.d-card.running { border-color: var(--live); border-left-color: var(--live); background: color-mix(in srgb, var(--live-soft) 45%, var(--paper)); }
+.d-card.undone { border-left-color: var(--dim); }
+.d-said { font-size: 13px; line-height: 1.55; color: var(--ink); }
+.d-diff { font-family: var(--mono); font-size: 10.5px; line-height: 1.6; border-radius: 6px; overflow: hidden; }
+.d-diff div { padding: 0 7px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.d-diff .add { background: var(--add-bg); color: var(--add-fg); font-weight: 400; }
+.d-diff .del { background: var(--del-bg); color: var(--del-fg); font-weight: 400; }
+.d-row { display: flex; align-items: center; gap: 8px; }
+.d-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; border-radius: 999px; padding: 1px 9px; }
+.d-chip.done { background: var(--done-soft); color: var(--done); }
+.d-chip.info, .d-chip.live { background: var(--live-soft); color: var(--live); }
+.d-btn { background: var(--well); border: 1px solid var(--line2); color: var(--ink); border-radius: 7px; font-size: 11.5px; padding: 3px 10px; cursor: pointer; }
+.d-btn:hover { border-color: var(--accent); }
+.d-foot { padding: 8px 12px 10px; display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--line); }
+.d-notice { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--ink2); background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); border-radius: 9px; padding: 7px 10px; line-height: 1.35; }
+.d-notice b { color: var(--accent-ink); font-weight: 600; }
+.d-link { background: none; border: 0; color: var(--accent-ink); font-size: 11.5px; cursor: pointer; padding: 0; text-decoration: underline; }
+.d-compose { background: var(--paper); border: 1px solid var(--line2); border-radius: 12px; padding: 9px 8px 7px 11px; display: flex; flex-direction: column; gap: 6px; }
+.d-compose:focus-within { border-color: var(--accent); }
+.d-compose textarea { background: transparent; border: 0; padding: 0; font-size: 13.5px; line-height: 1.5; }
+.d-bar { display: flex; align-items: center; gap: 8px; }
+.d-seg { display: inline-flex; background: var(--sheet); border: 1px solid var(--line2); border-radius: 8px; padding: 2px; }
+.d-seg button { background: none; border: 0; color: var(--dim); font-size: 11.5px; padding: 3px 10px; border-radius: 6px; cursor: pointer; }
+.d-seg button.on { background: var(--well); color: var(--ink); }
+.d-send { width: 30px; height: 30px; border-radius: 50%; border: 0; background: var(--accent); color: var(--paper); font-size: 16px; font-weight: 700; cursor: pointer; }
+.d-send.off { background: var(--line2); color: var(--dim); cursor: default; }
+.d-stop { width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--line2); background: var(--sheet); cursor: pointer; display: grid; place-items: center; }
+.d-stop i { width: 10px; height: 10px; border-radius: 2px; background: var(--ink); }
+.d-model { font-size: 10.5px; color: var(--dim); padding-left: 4px; }
+/* D2 (his note on D, 2026-10-12): a reply with no edit is plain text, as in A; only an edit gets the card.
+   And the panel is wider: 380px at 1440 (today 320px), 27vw between, never under today's 320px. */
+aside.d2 { width: clamp(320px, 27vw, 380px); }
+.d2-plain { padding: 0 6px 0 2px; display: flex; flex-direction: column; gap: 4px; }
+.d2-quiet { font-size: 11.5px; color: var(--dim); }
+
 @media (max-width: 700px) {
   .pick-grid { grid-template-columns: 1fr; padding: 10px 0; gap: 18px; }
   .pick-grid h2 { padding: 0 16px; }
   .win { height: 700px; min-height: 0; border-radius: 0; border-left: 0; border-right: 0; }
   .note { display: none; }
-  aside { width: 100%; border-left: 0; }
+  aside, aside.d2 { width: 100%; border-left: 0; }
 }
 `;
 const style = document.createElement("style");

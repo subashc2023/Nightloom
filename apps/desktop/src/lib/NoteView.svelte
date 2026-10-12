@@ -198,6 +198,29 @@
     if (marksTimer !== null) clearTimeout(marksTimer);
     marksTimer = null;
     marks = null;
+    jumped = false;
+  }
+  /**
+   * A changed line clicked in the edit panel (backlog 345): the note shows
+   * with that line marked for a moment (the landed-edit marks, reused), then
+   * the editor comes back with the cursor on it.
+   */
+  let jumped = $state(false);
+  const JUMP_MS = 1600;
+  function showLine(line: number) {
+    if (streamed || !bufferKey || media) return;
+    clearMarks();
+    const lines = text.replace(/\n$/, "").split("\n");
+    const at = Math.max(0, Math.min(line, lines.length - 1));
+    marks = { lines, marked: new Set([at]) };
+    jumped = true;
+    caret = lineOffset(text, at);
+    preview = false;
+    marksTimer = setTimeout(() => {
+      clearMarks();
+      jump += 1;
+      if (mode === "plain") void focusArea();
+    }, JUMP_MS);
   }
   $effect(() => {
     const key = bufferKey;
@@ -598,7 +621,7 @@
     {/if}
   </header>
 
-  <div class="body">
+  <div class="body" class:editing={noteEditUi.open && !!open && !media}>
   <div class="main">
   {#if error}
     <p class="err">{error}</p>
@@ -615,6 +638,7 @@
     <div
       class="pane stream"
       class:live={!!streamed}
+      class:jumped
       bind:this={streamPane}
       onclick={() => {
         if (!streamed) clearMarks();
@@ -756,6 +780,7 @@
       blocked={editBlocked}
       proposalOpen={!!reviewing}
       onShowBlock={showProposal}
+      onJump={showLine}
     />
   {/if}
   </div>
@@ -819,6 +844,13 @@
     min-height: 0;
     display: flex;
   }
+  /* A phone-narrow window: the edit panel takes the width (backlog 345);
+     the note is a click on its × away. */
+  @media (max-width: 640px) {
+    .body.editing > .main {
+      display: none;
+    }
+  }
   .main {
     flex: 1;
     min-width: 0;
@@ -840,6 +872,21 @@
   }
   .stream .ln.mark {
     background: color-mix(in srgb, var(--accent) 18%, transparent);
+  }
+  /* A line jumped to from the edit panel (backlog 345). */
+  .stream.jumped .ln.mark {
+    box-shadow: inset 2px 0 0 var(--accent);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .stream.jumped .ln.mark {
+      animation: jump-flash 1.6s ease-out;
+    }
+  }
+  @keyframes jump-flash {
+    0%,
+    20% {
+      background: color-mix(in srgb, var(--accent) 38%, transparent);
+    }
   }
   .stream .caret {
     color: var(--accent);
