@@ -62,6 +62,8 @@
   import { memoryEditOf, type MemoryEdit } from "./memoryEdits";
   import type { ReplyUsageView } from "./replyUsage";
   import { hasUsage, stopNote } from "./replyFooter";
+  // The streaming motion (backlog 342, his pick of 338: "Loom + fade-in").
+  import { Births, needleIn, needleOut, replyMotion } from "./replyMotion";
 
   interface Footer {
     model: string;
@@ -323,6 +325,13 @@
     return () => clearInterval(t);
   });
   const working = $derived(workingLabel(now - (since ?? startedAt)));
+  // Rows born live (first seen after this message's first render, mid-turn)
+  // get the needle and the weft (backlog 342); a reply drawn again keeps its
+  // finished rows still.
+  const births = new Births();
+  $effect(() => {
+    births.settled = true;
+  });
   const summarised = $derived(!!footer && modelOmitsThinking(footer.model));
   // The block the moon rides is the last one, whether or not text follows
   // it (board 1 draws the moon as the block's last row with the reply's
@@ -469,7 +478,8 @@
       <span class="ico">▸</span>
       <span class="name">subagent</span>
       <span class="arg">
-        {#if names}{names}{calls > 4 ? ", …" : ""}{" · "}{/if}{#if calls}{calls} call{calls === 1 ? "" : "s"}{/if}{#if calls && words}{" · "}{/if}{#if words}{words} words{streaming ? " so far" : ""}{/if}
+        <!-- Keyed on the counts so a change flashes accent under a live row (backlog 342). -->
+        {#key `${calls}:${words}`}<span class="rm-count">{#if names}{names}{calls > 4 ? ", …" : ""}{" · "}{/if}{#if calls}{calls} call{calls === 1 ? "" : "s"}{/if}{#if calls && words}{" · "}{/if}{#if words}{words} words{streaming ? " so far" : ""}{/if}</span>{/key}
       </span>
     </summary>
     <div class="sub-body">
@@ -508,7 +518,7 @@
 {/snippet}
 
 
-<div class="assistant">
+<div class="assistant" use:replyMotion={streaming}>
   {#if footer && headed}
     <span class="ns-k">{footer.model}</span>
   {/if}
@@ -552,7 +562,11 @@
                 </div>
               {:else}
                 {@const summary = summarised && seg.done}
-                <div class="row-wrap">
+                {@const bornT = births.of(ids[i] || `think:${i}`, streaming, seg.done)}
+                <!-- The needle (backlog 342): a live block's margin thread is
+                     accent with a glowing needle at its newest line; on done
+                     the thread retracts and the icon turns once. -->
+                <div class="row-wrap" class:rm-live={streaming && !seg.done} class:rm-thought={bornT && seg.done}>
                   <button
                     class="arow thinking"
                     class:wide={!summary}
@@ -567,7 +581,11 @@
                     <span class="size">{seg.done ? (isOpen(i, seg) ? "▾" : "▸") : "…"}</span>
                   </button>
                   {#if isOpen(i, seg)}
-                    <div class="thinking-text">{seg.text}</div>
+                    <div
+                      class="thinking-text"
+                      in:needleIn|global={{ on: births.settled }}
+                      out:needleOut={{ on: births.settled }}
+                    >{seg.text}</div>
                   {/if}
                 </div>
               {/if}
@@ -583,7 +601,9 @@
               {@const icon = toolIcon(seg.call.name)}
               {@const agentTab = agentTabOf(seg.call)}
               {@const agentRow = agentTab ? rowOf(seg.call.id) : null}
-              <div class="row-wrap tool">
+              {@const running = streaming && !seg.call.result && !seg.call.denied}
+              {@const bornW = births.of(ids[i] || `tool:${i}`, streaming, !running)}
+              <div class="row-wrap tool" class:rm-born={bornW} class:rm-finished={bornW && !running}>
                 <!-- An Agent call's row is a drag source (backlog 160): its
                      subagent's transcript as a tab, dropped on a strip or a
                      pane's half — live while it runs (guess pass 2026-09-25,
@@ -611,6 +631,12 @@
                     >{agentRow ? agentRowLine(agentRow) : toolResultSummary(seg.call, streaming)}</span
                   >
                 </button>
+                {#if bornW && streaming}
+                  <!-- The weft (backlog 342): an accent thread draws across the
+                       row as it appears, a bright shuttle runs along it while
+                       the call runs, and on finish it fills and fades. -->
+                  <span class="rm-weft" class:rm-done={!running} aria-hidden="true"></span>
+                {/if}
                 {#if open}
                   <!-- The full call: its whole input, then what came back. -->
                   <div class="tool-full">{compactJson(seg.call.input)}</div>
@@ -915,6 +941,8 @@
     gap: 0.5rem;
     width: 100%;
     max-width: 640px;
+    /* The streaming shuttle (backlog 342) is placed against the reply. */
+    position: relative;
   }
   .assistant :global(.markdown) {
     /* Plex Sans, the interface face, since 2026-09-14: the editorial serif
@@ -1169,7 +1197,192 @@
     word-break: break-word;
     margin: 0 12px 8px 40px;
     padding-left: 0.75rem;
-    border-left: 2px solid var(--border);
+    /* The margin rule is a background thread, not a border (backlog 342), so
+       the needle can draw it: the same 2 px in the border colour at rest. */
+    border-left: 2px solid transparent;
+    background: linear-gradient(var(--border), var(--border)) left top / 2px 100% no-repeat;
+    background-origin: border-box;
+    position: relative;
+  }
+
+  /* ---- The streaming motion (backlog 342, his pick of 338: "Loom + fade-in";
+     timings from harness/stream338-motion.css). Text: replyMotion.ts wraps the
+     words still arriving in .rm-w and moves .rm-shuttle. Thinking: the needle.
+     Tool rows: the weft. Under reduced motion nothing moves and nothing loops. */
+  .row-wrap.rm-live > .thinking-text,
+  .thinking-text:global(.rm-retract) {
+    background-image: linear-gradient(var(--accent), var(--accent));
+  }
+  .row-wrap.rm-live > .thinking-text::after {
+    content: "";
+    position: absolute;
+    left: -2px;
+    bottom: 0.3em;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent-ink, var(--accent));
+    box-shadow: 0 0 8px var(--accent);
+  }
+  .rm-weft {
+    position: absolute;
+    left: 12px;
+    right: 12px;
+    top: 27px;
+    height: 1.5px;
+    transform-origin: left center;
+    pointer-events: none;
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+    overflow: hidden;
+  }
+  .rm-weft::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 28%;
+    border-radius: 2px;
+    background: linear-gradient(90deg, transparent, var(--accent-ink, var(--accent)), transparent);
+  }
+  .rm-weft.rm-done {
+    background: var(--accent);
+    opacity: 0;
+  }
+  .rm-weft.rm-done::after {
+    display: none;
+  }
+  .assistant :global(.rm-shuttle) {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 18px;
+    height: 5px;
+    margin: -2.5px 0 0 0;
+    border-radius: 50% / 100%;
+    background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 10%, transparent), var(--accent-ink, var(--accent)));
+    box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 70%, transparent);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 260ms ease-out;
+    z-index: 5;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .rm-weft,
+    .assistant :global(.rm-shuttle) {
+      display: none;
+    }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    /* Each new word fades up from a soft blur a quarter-line below, under an
+       accent weft that fades; the delay (negative once begun) is set per word. */
+    .assistant :global(.rm-w) {
+      display: inline-block;
+      animation:
+        rm-rise 520ms cubic-bezier(0.2, 0.7, 0.2, 1) both,
+        rm-weft-under 900ms ease-out both;
+    }
+    .row-wrap.rm-live > .thinking-text::after {
+      animation: rm-needle 1.1s ease-in-out infinite;
+    }
+    .row-wrap.rm-thought > .arow .name {
+      animation: rm-label 280ms cubic-bezier(0.2, 0.7, 0.2, 1);
+    }
+    .row-wrap.rm-thought > .arow .ico {
+      animation: rm-turn 520ms cubic-bezier(0.2, 0.7, 0.2, 1) 200ms;
+    }
+    .row-wrap.tool.rm-born {
+      animation: rm-in 180ms;
+    }
+    .rm-weft {
+      animation: rm-draw 320ms cubic-bezier(0.2, 0.7, 0.2, 1);
+    }
+    .rm-weft::after {
+      animation: rm-shuttle-run 0.9s ease-in-out infinite alternate;
+    }
+    .rm-weft.rm-done {
+      animation: rm-weft-done 650ms ease-out;
+    }
+    .row-wrap.tool.rm-finished > .arow .size {
+      animation: rm-in 220ms;
+    }
+    .row-wrap.tool.rm-born .sub {
+      animation: rm-in 300ms;
+    }
+    .row-wrap.tool.rm-born .rm-count {
+      animation: rm-flash 600ms ease-out;
+    }
+  }
+  @keyframes -global-rm-rise {
+    from {
+      opacity: 0;
+      transform: translateY(0.28em);
+      filter: blur(3px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+      filter: none;
+    }
+  }
+  @keyframes -global-rm-weft-under {
+    from {
+      box-shadow: inset 0 -1.5px 0 color-mix(in srgb, var(--accent) 85%, transparent);
+    }
+    to {
+      box-shadow: inset 0 -1.5px 0 transparent;
+    }
+  }
+  @keyframes -global-rm-needle {
+    50% {
+      box-shadow: 0 0 2px var(--accent);
+      opacity: 0.6;
+    }
+  }
+  @keyframes -global-rm-label {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+  }
+  @keyframes -global-rm-turn {
+    from {
+      transform: rotate(0);
+    }
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @keyframes -global-rm-in {
+    from {
+      opacity: 0;
+    }
+  }
+  @keyframes -global-rm-draw {
+    from {
+      transform: scaleX(0);
+    }
+  }
+  @keyframes -global-rm-shuttle-run {
+    from {
+      left: -10%;
+    }
+    to {
+      left: 82%;
+    }
+  }
+  @keyframes -global-rm-weft-done {
+    0%,
+    40% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0;
+    }
+  }
+  @keyframes -global-rm-flash {
+    from {
+      color: var(--accent);
+    }
   }
   /* The moon, kept for the live turn (backlog 096): the same roll as the
      waiting row in `Transcript.svelte`, the elapsed time beside it; still

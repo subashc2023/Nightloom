@@ -44,6 +44,10 @@ for (const k of ["text", "think", "tool", "compare", "reply", "speed"] as const)
 }
 if (q.get("reduce") === "1") ui.reduce.checked = true;
 if (q.get("open") === "1") ui.open.checked = true;
+// Item 342 shipped the pick inside AssistantMessage itself: `?ship=0` turns the
+// component's own motion off, so the layer's options compare as they did
+// (and as the baseline for the frame numbers); `?reduce=1` turns it off too.
+if (q.get("ship") === "0" || q.get("reduce") === "1") (window as unknown as { __replyMotionOff?: boolean }).__replyMotionOff = true;
 // The Tools toggle, set in memory only (never saved): one-line calls unless asked.
 const applyOpen = () => {
   transcript.tools = ui.open.checked;
