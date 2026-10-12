@@ -2077,7 +2077,9 @@ lists each kind with a count and a *Dismiss all*, each row with *Dismiss*:
   takes the row away. ~~*Review the diff* under Proposals is how every
   change to an `AGENTS.md` arrived~~ (struck 2026-10-12): it now appears
   only for a proposal the dream could not apply — one made against a file
-  that changed during the turn, or past the preamble's cap.
+  that changed during the turn, or past the preamble's cap, in a turn
+  that was interrupted, or (wave 7 review, 2026-10-12) to an `AGENTS.md`
+  that is a symbolic link, which the dream never replaces.
 - **Morning pages** unread and **Blockers** open — from the Nightshift
   rows every project already reports (`nightshift_projects`, the same
   counts as the tab badges). *Read it* / *Answer* open the Review tab on

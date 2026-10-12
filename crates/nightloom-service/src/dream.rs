@@ -77,7 +77,8 @@
 //! (git's, or the copy's where there is no git: the user's file lives in
 //! the config folder, which is not one) and Open in editor. A proposal made
 //! against a file that changed during the turn, or one the preamble's cap
-//! truncated, stays pending as before. The test
+//! truncated, stays pending as before — and so does one for an `AGENTS.md`
+//! that is a symbolic link (wave 7 review, 2026-10-12). The test
 //! `agents_md_is_applied_and_committed_after_a_dream_that_proposes` pins it.
 //!
 //! **Two engines, one pass (2026-09-16, nightshift backlog 070).** Every
@@ -1498,7 +1499,12 @@ fn snapshot_in(repo: &Path, pathspec: &[&Path], message: &str) -> GitNote {
 /// stays pending — the file changed on disk during the turn, or it was
 /// longer than the preamble's cap, so the replacement was written against
 /// text that is not the file's (whole-file replacement would drop the part
-/// the pass never saw). In a project that is a repository, an uncommitted
+/// the pass never saw). It also stays pending when the file is a symbolic
+/// link (wave 7 review, 2026-10-12): the write renames a new file over the
+/// path, which would replace his link with a plain file and leave the file
+/// it pointed at — perhaps in another repository — unchanged, and writing
+/// *through* the link instead would write outside the target. In a project
+/// that is a repository, an uncommitted
 /// edit of the user's to the file is committed first as a pre-dream
 /// snapshot, the same rule the notes have: the Revert then restores it.
 fn apply_turns_proposal(
@@ -1514,7 +1520,8 @@ fn apply_turns_proposal(
         .collect();
     let (newest, older) = new.split_first()?;
     let file = target.instructions_path(config);
-    if !unchanged_since_quoted(&file, quoted) {
+    let linked = std::fs::symlink_metadata(&file).is_ok_and(|m| m.file_type().is_symlink());
+    if linked || !unchanged_since_quoted(&file, quoted) {
         return None;
     }
     for e in older {
@@ -2664,6 +2671,83 @@ mod tests {
             .expect("a batch was pending");
         assert_eq!(fs::read_to_string(&user_file).unwrap(), long);
         assert_eq!(crate::proposal::list_in(&config).len(), 1);
+        assert!(outcome.filed[0].proposed && !outcome.filed[0].applied);
+        assert_eq!(
+            proposed_line(&outcome.filed).unwrap(),
+            "proposed a change to your memory — review it under Notes"
+        );
+    }
+
+    /// Wave 7 review (2026-10-12): an `AGENTS.md` that is a symbolic link
+    /// is not written by the dream — the rename would replace his link with
+    /// a plain file, and writing through it would reach outside the target.
+    /// The proposal stays pending, the link and the file it names are as
+    /// they were.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_linked_instructions_file_is_not_written_and_the_proposal_stays_pending() {
+        let (config, vault, _) = fixture("propose-linked", "Lanternfish");
+        let elsewhere = config.join("dotfiles-AGENTS.md");
+        fs::write(&elsewhere, "# Me\n\nBe terse.\n").unwrap();
+        let user_file = config.join(INSTRUCTION_FILE);
+        std::os::unix::fs::symlink(&elsewhere, &user_file).unwrap();
+        append(&config, "Prefers long replies now.", None);
+        let mut chat = chat_scripted(vec![
+            propose("# Me\n\nBe expansive.\n", "Observation 1."),
+            says("done"),
+        ]);
+        let cancel = CancellationToken::new();
+        let outcome = run(&mut chat, &vault, &config, &cancel, &mut |_| {})
+            .await
+            .unwrap()
+            .expect("a batch was pending");
+        assert!(
+            fs::symlink_metadata(&user_file)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            fs::read_to_string(&elsewhere).unwrap(),
+            "# Me\n\nBe terse.\n"
+        );
+        assert_eq!(crate::proposal::list_in(&config).len(), 1);
+        assert!(crate::proposal::applied_by_dream_in(&config).is_empty());
+        assert!(outcome.filed[0].proposed && !outcome.filed[0].applied);
+    }
+
+    /// Wave 7 review (2026-10-12): a turn interrupted after it proposed is
+    /// not applied — the file is untouched, the proposal stays pending for
+    /// him, and the line says "proposed", not "changed".
+    #[tokio::test]
+    async fn an_interrupted_turn_that_proposed_leaves_the_file_and_the_proposal_pending() {
+        let (config, vault, _) = fixture("propose-interrupt", "Lanternfish");
+        let user_file = config.join(INSTRUCTION_FILE);
+        fs::write(&user_file, "# Me\n\nBe terse.\n").unwrap();
+        append(&config, "Prefers long replies now.", None);
+        // Cancelled once the call's result is out — the proposal is on
+        // disk — so the next round sees the token before it opens.
+        let mut chat = chat_scripted(vec![
+            propose("# Me\n\nBe expansive.\n", "Observation 1."),
+            says("never said"),
+        ]);
+        let cancel = CancellationToken::new();
+        let trigger = cancel.clone();
+        let outcome = run(&mut chat, &vault, &config, &cancel, &mut move |event| {
+            if matches!(event, TurnEvent::ToolResult { .. }) {
+                trigger.cancel();
+            }
+        })
+        .await
+        .unwrap()
+        .expect("a batch was pending");
+        assert!(outcome.interrupted);
+        assert_eq!(
+            fs::read_to_string(&user_file).unwrap(),
+            "# Me\n\nBe terse.\n"
+        );
+        assert_eq!(crate::proposal::list_in(&config).len(), 1);
+        assert!(crate::proposal::applied_by_dream_in(&config).is_empty());
         assert!(outcome.filed[0].proposed && !outcome.filed[0].applied);
         assert_eq!(
             proposed_line(&outcome.filed).unwrap(),
