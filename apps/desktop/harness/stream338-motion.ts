@@ -13,7 +13,7 @@
 // the animation picks up exactly where the replaced node left off. Once every
 // stretch is done, nothing is wrapped and the DOM is the component's own.
 
-export const TEXT = ["now", "fade", "shuttle", "paced", "cool"] as const;
+export const TEXT = ["now", "fade", "shuttle", "paced", "cool", "shuttlefade"] as const;
 export const THINK = ["now", "unfurl", "shimmer", "fold", "needle"] as const;
 export const TOOL = ["now", "slide", "weft", "spring", "type"] as const;
 export type TextT = (typeof TEXT)[number];
@@ -29,6 +29,10 @@ export const NAMES: Record<string, { title: string; what: string }> = {
   "text:shuttle": {
     title: "Shuttle",
     what: "A small accent shuttle rides the writing point and glides to each new line — the send motion's shuttle, carried into the reply. New words carry a thin accent weft under them that fades.",
+  },
+  "text:shuttlefade": {
+    title: "Shuttle + ink rise",
+    what: "The shuttle and its fading weft, and each new word also fades up from a soft blur (his ask, 2026-10-11).",
   },
   "text:paced": {
     title: "Even pace",
@@ -86,7 +90,7 @@ export interface LayerStats {
   calls: number;
 }
 
-const DUR: Record<TextT, number> = { now: 0, fade: 520, shuttle: 900, paced: 240, cool: 1100 };
+const DUR: Record<TextT, number> = { now: 0, fade: 520, shuttle: 900, paced: 240, cool: 1100, shuttlefade: 900 };
 const PACE_WINDOW = 350;
 
 interface Range {
@@ -160,7 +164,7 @@ export function attach(root: HTMLElement, cfg: Config, reduced: () => boolean) {
             s!.ranges.push({ from: a, to: b, start: s!.paceCursor });
           });
         } else {
-          const stagger = cfg.text === "fade" ? 22 : 16;
+          const stagger = cfg.text === "fade" || cfg.text === "shuttlefade" ? 22 : 16;
           words.forEach(([a, b], k) =>
             s!.ranges.push({ from: a, to: b, start: k === 0 && carry !== null ? carry : t + Math.min(k * stagger, 160) }),
           );
@@ -217,7 +221,7 @@ export function attach(root: HTMLElement, cfg: Config, reduced: () => boolean) {
   let sx = 0;
   let sy = 0;
   let raf = 0;
-  if (cfg.text === "shuttle") {
+  if (cfg.text === "shuttle" || cfg.text === "shuttlefade") {
     shuttle = document.createElement("div");
     shuttle.className = "m-shuttle";
     shuttle.setAttribute("aria-hidden", "true");
@@ -299,10 +303,16 @@ export function attach(root: HTMLElement, cfg: Config, reduced: () => boolean) {
 
   function thinkGrow(el: HTMLElement) {
     if (cfg.think !== "unfurl") return;
-    const prev = thinkH.get(el) ?? 0;
+    // Measured mid-animation, offsetHeight is the animated height, not the
+    // text's: each grow then ended short and a line stayed cut in half (his
+    // report, 2026-10-11). Stop the running grow, measure the real height,
+    // glide from where the box is now.
+    const running = el.getAnimations();
+    const from = running.length ? el.getBoundingClientRect().height : (thinkH.get(el) ?? 0);
+    running.forEach((a) => a.cancel());
     const h = el.offsetHeight;
     thinkH.set(el, h);
-    if (h > prev && prev > 0) el.animate([{ height: `${prev}px` }, { height: `${h}px` }], { duration: 170, easing: "ease-out" });
+    if (h > from && from > 0) el.animate([{ height: `${from}px` }, { height: `${h}px` }], { duration: 170, easing: "ease-out" });
   }
 
   function thinkClose(removed: HTMLElement, parent: Node, next: Node | null) {
