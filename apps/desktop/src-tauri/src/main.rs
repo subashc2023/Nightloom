@@ -63,8 +63,19 @@ mod model_list;
 mod nightshift;
 /// Edit a note by prompt (nightshift backlog 151).
 mod note_edit;
-/// A debug build's off-screen window for live tests (backlog 339).
+/// A debug build's off-screen window for live tests (backlog 339). Not
+/// compiled into a release (backlog 341): there it is a stub that is off.
+#[cfg(debug_assertions)]
 mod offscreen;
+#[cfg(not(debug_assertions))]
+mod offscreen {
+    /// Never in a release build.
+    pub fn on() -> bool {
+        false
+    }
+    /// Nothing to do in a release build.
+    pub fn apply<R: tauri::Runtime>(_app: &tauri::AppHandle<R>) {}
+}
 /// Sleep-safe turns: the power assertion and the wake watcher.
 mod power;
 /// A changed prompt layer waits for the chat's cold moment (backlog 174).
@@ -5541,7 +5552,9 @@ async fn take_back_injected(
 /// Send now (nightshift backlog 339): a message already sent into the
 /// running turn is re-sent with the CLI's `priority: "now"`, which stops
 /// the step it is in and delivers the message at once. `delivered` when
-/// the turn had already taken it, `not_running` when no turn takes it.
+/// the turn had already taken it, `not_hurried` when the CLI did not
+/// confirm the cancel, `taken_back` when a Take back won (backlog 341),
+/// `not_running` when no turn takes it.
 #[tauri::command]
 async fn send_now_injected(
     state: State<'_, AppState>,

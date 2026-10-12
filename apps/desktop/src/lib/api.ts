@@ -952,8 +952,10 @@ export function injectMessage(
 
 /** Send now (backlog 339): the CLI stops the step it is in and takes the
  *  message at once. `delivered` when the turn had already taken it,
+ *  `not_hurried` when the CLI did not confirm the cancel (it goes at the
+ *  next step), `taken_back` when a Take back won the race (341),
  *  `not_running` when no turn takes it. */
-export function sendNowInjected(turn: string, id: string): Promise<"sent" | "delivered" | "not_running"> {
+export function sendNowInjected(turn: string, id: string): Promise<import("./midTurn").SendNowResult> {
   return invoke("send_now_injected", { turn, id });
 }
 

@@ -254,6 +254,16 @@ pub struct CliSession {
     id: String,
 }
 
+/// A user turn's text without the relay note a mid-turn message carries
+/// while subagents run (backlog 339; stripped for the match, 341). Only a
+/// trailing note goes — one that ends the text.
+fn without_relay_note(text: &str) -> &str {
+    match text.rfind(super::inbox::RELAY_NOTE_START) {
+        Some(i) if text[i..].trim_end().ends_with(']') => &text[..i],
+        _ => text,
+    }
+}
+
 /// The `version` of a node line as `(major, rest)`, or `None` when it is
 /// not a dotted number.
 fn major_of(version: &str) -> Option<&str> {
@@ -478,8 +488,15 @@ impl CliSession {
                 // follows it as another (item 277), which the log keeps
                 // apart from the words — so either reading matches (item
                 // 340: a turn with a text file was refused every edit).
+                // A message sent while subagents ran carries Nightloom's
+                // relay note on the wire only (backlog 341): the log keeps
+                // his words, so the note is not part of the match.
                 let line = &self.lines[i];
-                if line.text().trim() != text.trim() && line.caption().trim() != text.trim() {
+                let (full, caption) = (line.text(), line.caption());
+                let wanted = text.trim();
+                if without_relay_note(&full).trim() != wanted
+                    && without_relay_note(&caption).trim() != wanted
+                {
                     return Err(CliSessionError::Locate(
                         "that turn reads differently in Claude Code's history than in this chat's log; nothing was changed".into(),
                     ));
@@ -1321,6 +1338,49 @@ mod tests {
         assert_eq!(u2["message"]["content"], "second");
         assert_eq!(uuids(&out), uuids(&fixture()), "no node added or dropped");
         assert_eq!(lines.len(), fixture().lines().count());
+    }
+
+    /// Backlog 341: a message sent while subagents ran carries the relay
+    /// note in Claude Code's history and not in the chat's log — a Save on
+    /// it still finds the turn, and the note goes with the old words.
+    #[test]
+    fn a_turn_sent_while_subagents_ran_is_found_without_its_relay_note() {
+        let note =
+            crate::agent::inbox::relay_note(&[("a8bb".into(), "survey June".into())]).unwrap();
+        let wire = serde_json::to_string(&format!("second\n\n{note}")).unwrap();
+        let text = fixture().replace(r#""content":"second""#, &format!(r#""content":{wire}"#));
+        assert_ne!(text, fixture());
+        let s = CliSession::parse(&text).unwrap();
+        let target = Target::User {
+            from_last: 0,
+            text: "second".into(),
+        };
+        let out = s
+            .rewrite(&target, "second, edited")
+            .unwrap()
+            .render_as("new");
+        let u2 = parsed(&out)
+            .into_iter()
+            .find(|o| o["uuid"] == "u2")
+            .unwrap();
+        assert_eq!(u2["message"]["content"], "second, edited");
+        // The words must still match: only the note is set aside.
+        let other = Target::User {
+            from_last: 0,
+            text: "something else".into(),
+        };
+        assert!(s.rewrite(&other, "x").is_err());
+        // With files the words are the first text block, the note at its end.
+        let blocks = format!(
+            r#""content":[{{"type":"text","text":{wire}}},{{"type":"image","source":{{"type":"base64","media_type":"image/png","data":"AAAA"}}}}]"#
+        );
+        let s = CliSession::parse(&fixture().replace(r#""content":"second""#, &blocks)).unwrap();
+        assert!(s.rewrite(&target, "second, edited").is_ok());
+        // A note in the middle of his words is his words.
+        assert_eq!(
+            without_relay_note("a\n\n[Nightloom: sent while your subagents run — x] b"),
+            "a\n\n[Nightloom: sent while your subagents run — x] b"
+        );
     }
 
     /// An attachment turn keeps its image and swaps its caption.

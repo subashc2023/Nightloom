@@ -112,7 +112,7 @@ import {
 } from "./browse";
 import { SEARCH_COLUMN_MAX, searchGrowth } from "./search.svelte";
 import * as tabs from "./tabs";
-import { midTurnWire, chipsFromInputs } from "./midTurn";
+import { midTurnWire, chipsFromInputs, sendNowToast, type SendNowResult } from "./midTurn";
 import { recordRelay } from "./relay.svelte";
 import { adoptPending, closeRunningRows, latestAgents, mergeRows, rowsFromLog, rowsOf } from "./subagentRows";
 import { cli, startCliClock } from "./cliUpdate.svelte";
@@ -5883,20 +5883,20 @@ export async function injectIntoTurn(key: string, q: { id: number; text: string;
  * on (measured on CLI 2.1.296). Without it the row goes at the next step,
  * as before. Returns what he is told.
  */
-export async function sendNowRow(key: string, qid: number): Promise<"sent" | "delivered" | "not_running"> {
+export async function sendNowRow(key: string, qid: number): Promise<SendNowResult> {
   const inj = readDraft(key).queue.find((r) => r.id === qid)?.inject;
   if (!inj) return "not_running";
   if (inj.after !== undefined) return "delivered";
   if (inj.now) return "sent";
-  let r: "sent" | "delivered" | "not_running" = "not_running";
+  let r: SendNowResult = "not_running";
   try {
     r = await api.sendNowInjected(inj.turn, inj.id);
   } catch {
     r = "not_running";
   }
   if (r === "sent") markSendNow(key, qid);
-  else if (r === "delivered") addToast("already reached the turn");
-  else addToast("no turn is running to take it now — it goes as the next message");
+  const toast = sendNowToast(r);
+  if (toast) addToast(toast);
   return r;
 }
 /** The turns in `app.background`, by chat. */

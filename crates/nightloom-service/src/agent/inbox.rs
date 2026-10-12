@@ -82,6 +82,13 @@ pub enum SendNow {
     Sent,
     /// The turn had already taken it.
     Delivered,
+    /// The CLI did not confirm the cancel (no answer in time, or
+    /// `cancelled: false` with the message still waiting): it is still
+    /// queued and goes at the next step, not hurried (backlog 341).
+    NotHurried,
+    /// A Take back won the race: the message was taken back, and its words
+    /// are back in the box (backlog 341).
+    TakenBack,
     /// No turn takes it now (it went nowhere; the window keeps it queued).
     NotRunning,
 }
@@ -137,6 +144,9 @@ struct State {
     taken: Vec<String>,
     /// Ids still waiting when the turn closed: they went nowhere.
     left: Vec<String>,
+    /// Ids a Take back cancelled (backlog 341): a Send now that lost the
+    /// race to one says so.
+    back: Vec<String>,
     /// A `result` came and no command has started since — the process is
     /// idle, and only a waiting message keeps it open.
     idle: bool,
@@ -244,7 +254,11 @@ impl Inbox {
                 return SendNow::NotRunning;
             }
             let Some(i) = s.waiting.iter().position(|w| w.id == id) else {
-                return SendNow::Delivered;
+                return if s.back.iter().any(|b| b == id) {
+                    SendNow::TakenBack
+                } else {
+                    SendNow::Delivered
+                };
             };
             if s.waiting[i].now {
                 return SendNow::Sent;
@@ -273,9 +287,11 @@ impl Inbox {
         let answer = tokio::time::timeout(TAKE_BACK_WAIT, rx).await;
         let mut s = self.lock();
         let Some(i) = s.waiting.iter().position(|w| w.id == id) else {
-            // Taken (or the turn closed) while the cancel was out.
+            // Taken, taken back, or the turn closed while the cancel was out.
             return if s.left.iter().any(|l| l == id) {
                 SendNow::NotRunning
+            } else if s.back.iter().any(|b| b == id) {
+                SendNow::TakenBack
             } else {
                 SendNow::Delivered
             };
@@ -284,7 +300,7 @@ impl Inbox {
         if !matches!(answer, Ok(Ok(true))) {
             // Not cancelled: it is still queued (or about to be taken) at
             // the next step — nothing lost, it just was not hurried.
-            return SendNow::Delivered;
+            return SendNow::NotHurried;
         }
         let Some(tx) = s.tx.clone() else {
             let w = s.waiting.remove(i);
@@ -341,6 +357,7 @@ impl Inbox {
         match answer {
             Ok(Ok(true)) => {
                 s.waiting.retain(|w| w.id != id);
+                s.back.push(id.to_string());
                 // An idle process kept open only for this message ends now
                 // — not while subagents run: their stdin carries Stop them
                 // and the nested-spawn notes (329).
@@ -665,6 +682,11 @@ fn user_line(w: &Waiting, agents: &[(String, String)]) -> String {
     format!("{line}\n")
 }
 
+/// How [`relay_note`] begins, after the blank line [`user_line`] puts
+/// before it — what `CliSession::locate` strips to match his words
+/// (backlog 341).
+pub const RELAY_NOTE_START: &str = "\n\n[Nightloom: sent while your subagents run — ";
+
 /// Nightloom's note on a mid-turn message while subagents run (backlog
 /// 339): who runs, by agent id, and how to pass his words on. Only on the
 /// wire — the log and the window keep his words alone.
@@ -678,8 +700,9 @@ pub fn relay_note(agents: &[(String, String)]) -> Option<String> {
         .collect::<Vec<_>>()
         .join(", ");
     Some(format!(
-        "[Nightloom: sent while your subagents run — {list}. If this message (or part of it) is for one of them, \
-pass it on with SendMessage, `to` set to that agent id, in his words; it reaches the agent at its next tool call.]"
+        "{}{list}. If this message (or part of it) is for one of them, \
+pass it on with SendMessage, `to` set to that agent id, in his words; it reaches the agent at its next tool call.]",
+        RELAY_NOTE_START.trim_start()
     ))
 }
 
@@ -962,10 +985,11 @@ mod tests {
         assert_eq!(inbox.send_now(ID).await, SendNow::Delivered);
     }
 
-    /// A Send now the CLI could not cancel (already taken): delivered,
-    /// nothing re-sent.
+    /// A Send now the CLI did not cancel while the row still waits:
+    /// not hurried (backlog 341 — it used to say "already reached the
+    /// turn"), nothing re-sent, and it still goes at the next step.
     #[tokio::test]
-    async fn send_now_after_the_turn_took_it_says_delivered_and_sends_nothing() {
+    async fn send_now_the_cli_did_not_cancel_says_not_hurried_and_sends_nothing() {
         let inbox = Inbox::default();
         let (tx, mut rx) = mpsc::unbounded_channel();
         inbox.open(tx);
@@ -975,13 +999,37 @@ mod tests {
         let answer = tokio::spawn(async move { i2.send_now(ID).await });
         let req = next_line(&mut rx).await;
         answer_cancel(&inbox, &req, false);
-        assert_eq!(answer.await.unwrap(), SendNow::Delivered);
+        assert_eq!(answer.await.unwrap(), SendNow::NotHurried);
         assert!(rx.try_recv().is_err(), "no second line");
         // Still waiting: the lifecycle still takes it by its first uuid.
         assert!(matches!(
             inbox.on_line(&lifecycle("started")),
             Some(Effect::Taken(_))
         ));
+    }
+
+    /// Backlog 341: Take back's cancel wins the race against a Send now's —
+    /// the Send now says it was taken back, not "already reached the turn".
+    #[tokio::test]
+    async fn send_now_that_loses_the_race_to_take_back_says_taken_back() {
+        let inbox = Inbox::default();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        inbox.open(tx);
+        inbox.send(ID, "x").unwrap();
+        let _ = rx.try_recv();
+        let i2 = inbox.clone();
+        let now = tokio::spawn(async move { i2.send_now(ID).await });
+        let now_req = next_line(&mut rx).await;
+        let i3 = inbox.clone();
+        let back = tokio::spawn(async move { i3.take_back(ID).await });
+        let back_req = next_line(&mut rx).await;
+        answer_cancel(&inbox, &back_req, true);
+        assert_eq!(back.await.unwrap(), TakeBack::Cancelled);
+        answer_cancel(&inbox, &now_req, false);
+        assert_eq!(now.await.unwrap(), SendNow::TakenBack);
+        assert!(rx.try_recv().is_err(), "nothing re-sent");
+        // And a Send now pressed after it says the same.
+        assert_eq!(inbox.send_now(ID).await, SendNow::TakenBack);
     }
 
     /// Take back after a Send now cancels the new wire uuid.

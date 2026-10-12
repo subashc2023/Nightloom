@@ -1831,6 +1831,9 @@ impl ClaudeCodeAgent {
         // The last main-thread call, for where a mid-turn message landed.
         let mut last_call: Option<String> = None;
         let mut after_result = false;
+        // The main-thread call the CLI aborted since the last call began
+        // (backlog 341): a Send now's evidence that a step was stopped.
+        let mut stopped: Option<String> = None;
 
         let stdout = child.stdout.take().expect("stdout piped");
         let mut stderr = child.stderr.take().expect("stderr piped");
@@ -1874,22 +1877,14 @@ impl ClaudeCodeAgent {
                     if let Some(inbox) = &inbox {
                         match inbox.on_line(&line) {
                             Some(inbox::Effect::Taken(t)) => {
-                                let after = if t.now {
-                                    // Send now (339): the CLI stopped the
-                                    // step it was in and took it at once.
-                                    match &last_call {
-                                        Some(name) => format!("at once, stopping {name}"),
-                                        None => "at once".to_string(),
-                                    }
-                                } else if after_result {
-                                    "after the reply".to_string()
-                                } else {
-                                    match &last_call {
-                                        Some(name) => format!("after {name}"),
-                                        None => "at the start".to_string(),
-                                    }
-                                };
+                                let after = delivered_after(
+                                    t.now,
+                                    stopped.as_deref(),
+                                    after_result,
+                                    last_call.as_deref(),
+                                );
                                 after_result = false;
+                                stopped = None;
                                 on_event(TurnEvent::MessageDelivered {
                                     id: t.id,
                                     text: t.text,
@@ -1961,6 +1956,17 @@ impl ClaudeCodeAgent {
                     for event in translator.push(&line) {
                         if let TurnEvent::ToolCall { name, .. } = &event {
                             last_call = Some(name.clone());
+                            stopped = None;
+                        }
+                        if let TurnEvent::ToolResult {
+                            name,
+                            content,
+                            is_error,
+                            ..
+                        } = &event
+                            && is_aborted(content, *is_error)
+                        {
+                            stopped = Some(name.clone());
                         }
                         if !text_seen && matches!(event, TurnEvent::TextDelta { .. }) {
                             text_seen = true;
@@ -2098,6 +2104,37 @@ impl ClaudeCodeAgent {
         }
         Ok(outcome)
     }
+}
+
+/// Where the running turn took a mid-turn message (backlog 328), for its
+/// row and the log. A Send now (339) reads "at once, stopping <call>" only
+/// on evidence that the step was stopped — the CLI aborted that call before
+/// taking the message (backlog 341); a CLI that ignored `priority: "now"`
+/// took it at the next step like any other, and the row says so.
+fn delivered_after(
+    now: bool,
+    stopped: Option<&str>,
+    after_result: bool,
+    last_call: Option<&str>,
+) -> String {
+    if now && let Some(name) = stopped {
+        return format!("at once, stopping {name}");
+    }
+    if after_result {
+        return "after the reply".to_string();
+    }
+    match last_call {
+        Some(name) => format!("after {name}"),
+        None => "at the start".to_string(),
+    }
+}
+
+/// Whether a call's result is the CLI aborting it (backlog 341). Measured
+/// on 2.1.296 (`339-measurements/timeline-promote2.txt`): a Send now's
+/// Bash came back `is_error: true`, "Command was aborted before
+/// completion".
+fn is_aborted(content: &str, is_error: bool) -> bool {
+    is_error && content.to_ascii_lowercase().contains("aborted")
 }
 
 /// Why a reply ended before its `result` line (backlog 332), in his words.
@@ -2425,6 +2462,40 @@ mod tests {
         assert_eq!(cancels.len(), 1);
         assert!(cancels.cancel(7));
         assert!(new.token().is_cancelled());
+    }
+
+    /// Backlog 341: a Send now's row says the step was stopped only when
+    /// the CLI aborted it before taking the message; a CLI that ignored
+    /// `priority: "now"` reads "after <call>" as any other.
+    #[test]
+    fn a_send_now_says_stopping_only_on_an_aborted_call() {
+        // Measured (promote2): the Bash aborted, the first command's
+        // result, then the message started.
+        assert_eq!(
+            delivered_after(true, Some("Bash"), true, Some("Bash")),
+            "at once, stopping Bash"
+        );
+        // No abort seen: nothing was stopped.
+        assert_eq!(
+            delivered_after(true, None, false, Some("Bash")),
+            "after Bash"
+        );
+        assert_eq!(
+            delivered_after(true, None, true, Some("Bash")),
+            "after the reply"
+        );
+        assert_eq!(delivered_after(true, None, false, None), "at the start");
+        // A plain message never claims a stop, abort or not.
+        assert_eq!(
+            delivered_after(false, Some("Bash"), false, Some("Bash")),
+            "after Bash"
+        );
+        assert!(is_aborted(
+            "<error>Command was aborted before completion</error>",
+            true
+        ));
+        assert!(!is_aborted("exit code 1", true));
+        assert!(!is_aborted("the job was aborted", false));
     }
 
     fn spec() -> AgentSpec {
