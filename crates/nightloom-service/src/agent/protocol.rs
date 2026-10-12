@@ -156,6 +156,12 @@ pub(super) enum SystemLine {
         is_backgrounded: bool,
         #[serde(default)]
         prompt: String,
+        /// `local_agent` for a subagent; `local_bash` for a Bash call,
+        /// which the CLI also narrates as a task — every one, foreground
+        /// included (`external`, 339's `timeline-promote.txt` on 2.1.294;
+        /// backlog 346). Absent on older builds, whose tasks were agents.
+        #[serde(default)]
+        task_type: String,
     },
     #[serde(rename = "task_progress")]
     TaskProgress {

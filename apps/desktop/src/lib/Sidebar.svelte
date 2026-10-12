@@ -31,7 +31,7 @@
     toggleSidebar,
   } from "./state.svelte";
   import * as api from "./api";
-  import { hasDraft, newDraftKey } from "./drafts.svelte";
+  import { hasBoxDraft, newDraftKey } from "./drafts.svelte";
   import TerminalButton from "./TerminalButton.svelte";
   import { forkLine } from "./edit";
   import type { SidebarRow } from "./forkTree";
@@ -504,7 +504,7 @@
           ondragend={endContentDrag}
         >
           <span class="snippet"
-            >{#if s.mode === "incognito"}<span class="mark" use:tip={"Incognito: writes nothing, unread by other chats"}>{MODE_GLYPH.incognito}</span> {/if}{#if hasDraft(s.id)}<span class="mark draft" role="img" aria-label="has a draft" use:tip={"has a draft"}></span> {/if}{s.title ?? s.first_user ?? "empty session"}</span
+            >{#if s.mode === "incognito"}<span class="mark" use:tip={"Incognito: writes nothing, unread by other chats"}>{MODE_GLYPH.incognito}</span> {/if}{#if hasBoxDraft(s.id)}<span class="mark draft" role="img" aria-label="has a draft" use:tip={"has a draft"}></span> {/if}{s.title ?? s.first_user ?? "empty session"}</span
           >
           <!-- A fork says where it came from (backlog 062): the
                parent's name as its own row shows it, or that the
@@ -685,7 +685,7 @@
           kinds = !kinds;
         }}
       >
-        {newChatLabel()}{#if hasDraft(newDraftKey(app.project?.id, app.pendingMode))} <span class="mark draft" role="img" aria-label="has a draft" use:tip={"has a draft"}></span>{/if}
+        {newChatLabel()}{#if hasBoxDraft(newDraftKey(app.project?.id, app.pendingMode))} <span class="mark draft" role="img" aria-label="has a draft" use:tip={"has a draft"}></span>{/if}
       </button>
       <button
         class="new-chat more"

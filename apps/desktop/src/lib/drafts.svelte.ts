@@ -382,11 +382,23 @@ export function draftFor(key: string): Draft {
   return d;
 }
 
-/** Non-empty text, at least one chip, or a held message: what earns the
- *  row its mark. */
+/** Non-empty text, at least one chip, or a held message: ~~what earns the
+ *  row its mark~~ — since backlog 346 (2026-10-12) what must not be dropped
+ *  without asking (an aside's discard question); the mark reads
+ *  `hasBoxDraft`. */
 export function hasDraft(key: string): boolean {
   const d = drafts[key];
   return d !== undefined && (d.text.trim().length > 0 || d.attachments.length > 0 || d.queue.length > 0);
+}
+
+/** What is in the box itself — non-empty text or a chip — and not a held
+ *  message (backlog 346): what earns a tab and a sidebar row the "has a
+ *  draft" mark. A message queued mid-turn is on its way to the model and
+ *  shown in the composer's queue row; the mark read "has a draft" over an
+ *  empty box (live check 2026-10-12). */
+export function hasBoxDraft(key: string): boolean {
+  const d = drafts[key];
+  return d !== undefined && (d.text.trim().length > 0 || d.attachments.length > 0);
 }
 
 export function setDraftText(key: string, text: string): void {
