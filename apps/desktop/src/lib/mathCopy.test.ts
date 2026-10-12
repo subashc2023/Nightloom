@@ -44,4 +44,9 @@ describe("mathCopyText", () => {
     const html = `<div data-nl-ws="pre">line one\nline two\n\nline four <span data-nl-ws="normal">a\nb</span></div><p>so ${inl("2^4")}</p>`;
     expect(mathCopyText(html)).toBe("line one\nline two\n\nline four a b\n\nso $2^4$");
   });
+
+  it("a table cell after a formula's cell: a tab, no stray space (review 2026-10-12)", () => {
+    const html = `<table><tr><th>a</th><th>b</th></tr><tr><td>${inl("x_1")}</td><td>2</td></tr></table>`;
+    expect(mathCopyText(html)).toBe("a\tb\n$x_1$\t2");
+  });
 });

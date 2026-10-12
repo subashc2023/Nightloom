@@ -509,7 +509,10 @@ function convert(html: string): string | null {
           put(`${n}. `);
         } else put("- ");
       }
-      if ((c.tag === "td" || c.tag === "th") && last() && last() !== "\n") put("\t");
+      if ((c.tag === "td" || c.tag === "th") && last() && last() !== "\n") {
+        put("\t");
+        glue = false; // a cell after a formula's cell: the tab parts them, no space (review 2026-10-12)
+      }
       // `data-nl-ws` is set only by the app's own copy (item 352,
       // `mathCopy.ts`): the element's drawn white-space where it differs
       // from its parent's, so a pre-wrapped message keeps its line breaks.
