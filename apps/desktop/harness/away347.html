@@ -1,0 +1,23 @@
+<!doctype html>
+<!-- Backlog 347: a streaming reply while the window is away does not move the view; focused, it follows as before.
+     The real Transcript over a fixture log; a live reply grows in app.live with the window away, then focused.
+     scrollTop and the gap from the foot are read before and after each phase. Snapped with nightshift-code bin/snap (WebKit). -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      body { margin: 0; background: #111; }
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+      #root { position: relative; display: flex; flex-direction: column; width: 960px; height: 600px; }
+      #cap { position: fixed; top: 0; left: 0; right: 0; z-index: 99999; font: 14px/1.5 ui-monospace, monospace; color: #fff; background: #000; padding: 6px 8px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <div id="cap">running…</div>
+    <div id="root"></div>
+    <script>
+      window.addEventListener("error", (e) => (document.getElementById("cap").textContent = "error: " + e.message));
+    </script>
+    <script type="module" src="./away347.ts"></script>
+  </body>
+</html>

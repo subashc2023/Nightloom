@@ -69,6 +69,7 @@
   import { loadReplyUsage, replyUsageOf } from "./replyUsage.svelte";
   import { cacheState } from "./cache";
   import { moveScroll, recallScroll, rememberScroll, scrollKey, NEW_SCROLL_KEY } from "./scroll.svelte";
+  import { presence, watchPresence } from "./away.svelte";
   import {
     editDraftKey,
     nextAttachmentId,
@@ -114,7 +115,7 @@
   import { versionPlace } from "./versions";
   import { arrive, hasLaunch } from "./sendMotion";
   // A Send near the foot lands at the bottom (item 313).
-  import { restDistance, sendJumps } from "./sendScroll";
+  import { followStep, restDistance, sendJumps } from "./sendScroll";
   // The first-paint mark of the message's timing line (item 256).
   import { hasText, turnClock } from "./turnTiming";
 
@@ -862,7 +863,14 @@
       if (!inPane && turnClock.waitingForPaint() && hasText(liveNow?.segments)) {
         requestAnimationFrame(() => turnClock.painted());
       }
-      if (pinned && viewport) {
+      // Not looking (backlog 347): while the window is in the background
+      // the view stays where he left it and stops following — the refocus
+      // finds his place with the ⌄ showing there is more, and a later
+      // delta does not snap it down. The ⌄ re-pins, as ever.
+      const step = viewport ? followStep(pinned, presence.away, atBottom()) : "stay";
+      if (step === "release") {
+        pinned = false;
+      } else if (step === "follow" && viewport) {
         scrollingSelf = true;
         viewport.scrollTop = viewport.scrollHeight;
         // The scroll event fires asynchronously; clear after it has.
@@ -871,6 +879,7 @@
       measureNav();
     });
   });
+  watchPresence();
 
   // ---- Per-chat scroll position (nightshift backlog 065, 2026-09-15) ----
   //
@@ -1004,7 +1013,9 @@
     const d = preDistance;
     const h = preHeight;
     requestAnimationFrame(() => {
-      if (pinned || !viewport || sessionKey !== key || viewport.scrollTop !== top) return;
+      // Not while away (backlog 347): a send from the phone or a queued
+      // message going out moves nothing he is not looking at.
+      if (pinned || presence.away || !viewport || sessionKey !== key || viewport.scrollTop !== top) return;
       const now = viewport.clientHeight;
       if (now <= h) return;
       const r = restDistance(d, h, now);
