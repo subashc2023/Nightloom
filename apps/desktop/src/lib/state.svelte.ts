@@ -3496,6 +3496,7 @@ async function applyAgentDraft(updateNow: PromptLayer[] = [], take = true): Prom
       forkMode: d.agentForkMode,
       claudeAiConnectors: d.agentClaudeAi,
       claudeAiBlocked: d.agentClaudeAiBlocked,
+      browser: d.agentChrome,
       promptSuggestions: suggestions.enabled,
       effort: d.agentEffort.trim() || undefined,
       fallbackModel: d.agentFallback.trim() || undefined,

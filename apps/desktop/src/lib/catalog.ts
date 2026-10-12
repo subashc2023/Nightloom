@@ -218,6 +218,11 @@ export interface ConnectionDraft {
   /** With `agentClaudeAi` on, the connectors he unticked, by the init
    *  event's server name ("claude.ai Google Drive"). */
   agentClaudeAiBlocked: string[];
+  /** Claude in Chrome (nightshift backlog 353; blocker 1412): the CLI
+   *  drives his real, logged-in Chrome through the extension. Off by
+   *  default — on sends `--chrome`, off `--no-chrome` — and a draft saved
+   *  before the switch existed reads as off. */
+  agentChrome: boolean;
   /** `--effort` on the agent engine (backlog 076): `low`, `medium`, `high`,
    *  `xhigh` or `max`, sent as spelled — or empty, the rail's *default*
    *  position, which sends no flag and leaves the level to the CLI. Empty
@@ -309,6 +314,7 @@ export function defaultDraft(): ConnectionDraft {
     agentForkMode: true,
     agentClaudeAi: false,
     agentClaudeAiBlocked: [],
+    agentChrome: false,
     agentEffort: "",
     agentFallback: "",
     agentBudget: 0,
@@ -895,6 +901,8 @@ export function loadLastConnection(): ConnectionDraft | null {
       agentClaudeAiBlocked: Array.isArray(parsed.agentClaudeAiBlocked)
         ? (parsed.agentClaudeAiBlocked as unknown[]).filter((x): x is string => typeof x === "string")
         : [],
+      // Claude in Chrome (backlog 353): on only if the draft said true.
+      agentChrome: parsed.agentChrome === true,
       // The limits (backlog 165): a draft from before them, or a field
       // that is not a whole number, reads as the default for that field.
       agentLimits: readLimits(parsed.agentLimits),

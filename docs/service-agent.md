@@ -1117,6 +1117,32 @@ is crossed while he is away. Nothing changed on this side: `continue_session`,
 `AgentSpec::auto_compact` and the lineage reason are as pass 1 left them.
 Nothing is summarised in Nightloom's words.
 
+## Browser: Claude in Chrome per chat (2026-10-12, nightshift backlog 353)
+
+A **Browser** switch on the Claude Code rail, beside *claude.ai connectors*
+(`ConnectionDraft.agentChrome` → `connect_agent`'s `browser` →
+`AgentSpec::browser`). **Off by default** (nightshift blocker 1412): on, the
+CLI gets `--chrome` and drives his own, logged-in Chrome through the Claude
+in Chrome extension; off — and on every spec that is not a chat: dreams,
+captures, note edits, chat names — it gets `--no-chrome`, so the CLI's own
+default never decides. A draft saved before the switch reads as off.
+
+Measured on CLI 2.1.296, one Haiku turn each, the init event's `tools`
+(nightshift `notes/runner-design/353-findings.md`): the chat's flags today
+load **no** `mcp__claude-in-chrome__*` tool even though his account has the
+extension enabled by default; `--chrome` loads 22 (server
+`claude-in-chrome`, connected); `--no-chrome` loads none; and `--chrome`
+under safe mode's `--setting-sources "" --strict-mcp-config` still loads all
+22 — the server is a built-in the flag adds, not a config-file server.
+
+The tools are `mcp__…`, so the Ask hook's matcher pauses each call for an
+approval card like any MCP tool ("Run `mcp__claude-in-chrome__navigate`?");
+on Auto they run unasked. Under the Chat policy, whose matcher lets every
+`mcp__` tool through, a second deny hook on `mcp__claude-in-chrome__.*`
+refuses them (blocker 1414) — by hook, so the tool list and the cached
+prefix stay the same. Flipping the switch on a running chat changes the tool
+list (34 → 56 in the measurement), so the next turn re-writes the prefix once.
+
 ## What `--append-system-prompt` carries
 
 Three parts, in this order, joined by blank lines (`prompt::agent_prompt`

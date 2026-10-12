@@ -456,6 +456,27 @@ pub struct AgentSpec {
     /// by the init event's server name (`claude.ai Google Drive`): each a
     /// server-level `--disallowedTools` rule. Ignored while off.
     pub claude_ai_blocked: Vec<String>,
+    /// Claude in Chrome — the CLI driving his real, logged-in Chrome through
+    /// the extension (nightshift backlog 353, blocker 1412). **Off by
+    /// default** on every path that builds a spec. On sends `--chrome`, off
+    /// sends `--no-chrome`, so the CLI's own default never applies silently.
+    ///
+    /// Measured 2026-10-12, CLI 2.1.296, one Haiku turn each, reading the
+    /// init event (nightshift `notes/runner-design/353-findings.md`):
+    ///
+    /// | spelling | `mcp__claude-in-chrome__*` tools | server |
+    /// |---|---|---|
+    /// | the chat's flags today | 0 | none |
+    /// | + `--chrome` | 22 | `claude-in-chrome`, connected |
+    /// | + `--no-chrome` | 0 | none |
+    /// | + `--chrome` under safe mode's three flags | 22 | `claude-in-chrome`, connected |
+    ///
+    /// So his `claudeInChromeDefaultEnabled` does not reach `claude -p`, and
+    /// `--strict-mcp-config` does not drop the server: `--chrome` adds it as
+    /// a built-in, not from a config file. Its tools are `mcp__…` and so go
+    /// through the Ask hook's matcher like any MCP tool; under the Chat
+    /// policy they are refused ([`BROWSER_TOOLS_MATCHER`], blocker 1414).
+    pub browser: bool,
     /// Passed through verbatim, last, so a caller can reach a flag this
     /// struct has not grown a field for.
     pub extra_args: Vec<String>,
@@ -520,6 +541,17 @@ fn chat_policy_command(reply: &str) -> String {
         format!("echo '{reply}'")
     }
 }
+
+/// The `PreToolUse` matcher for Claude in Chrome's tools under the Chat
+/// policy (nightshift backlog 353, blocker 1414). The policy's own matcher
+/// lets every `mcp__` tool through, and a browser that clicks and submits
+/// in his logged-in Chrome is not a read, so with the Browser switch on a
+/// Chat refuses these too — by hook, like the policy, so the tool list and
+/// the cached prefix stay what they were.
+pub const BROWSER_TOOLS_MATCHER: &str = "mcp__claude-in-chrome__.*";
+
+/// What the model reads when a Chat refuses a browser call.
+pub const BROWSER_UNDER_CHAT_POLICY_REASON: &str = "This chat is a Chat now: the browser is withdrawn with the other tools that act. Reads, search and the web remain.";
 
 /// What the model reads when the policy refuses a call — the hook's
 /// `permissionDecisionReason`, delivered as the tool's error result.
@@ -702,6 +734,7 @@ impl AgentSpec {
             fork_mode: true,
             claude_ai_connectors: false,
             claude_ai_blocked: Vec::new(),
+            browser: false,
             extra_args: Vec::new(),
         }
     }
@@ -1050,6 +1083,16 @@ impl AgentSpec {
             a.push("--disallowedTools".into());
             a.extend(blocked);
         }
+        // Claude in Chrome (backlog 353): always one of the two, so the
+        // CLI's own default never decides for a chat.
+        a.push(
+            if self.browser {
+                "--chrome"
+            } else {
+                "--no-chrome"
+            }
+            .into(),
+        );
         // Ask overrides the mode: the hook decides first, and what it
         // does not catch falls to Manual, which headless is a refusal the
         // transcript shows — never a silent classifier approval.
@@ -1114,6 +1157,22 @@ impl AgentSpec {
                     .or_insert_with(|| serde_json::Value::Array(Vec::new()));
                 if let serde_json::Value::Array(pre) = pre {
                     pre.push(entry);
+                    // The browser's tools pass the policy's matcher as
+                    // `mcp__` (backlog 353, blocker 1414): refused here.
+                    if self.browser {
+                        let reply = serde_json::json!({
+                            "hookSpecificOutput": {
+                                "hookEventName": "PreToolUse",
+                                "permissionDecision": "deny",
+                                "permissionDecisionReason": BROWSER_UNDER_CHAT_POLICY_REASON,
+                            }
+                        })
+                        .to_string();
+                        pre.push(serde_json::json!({
+                            "matcher": BROWSER_TOOLS_MATCHER,
+                            "hooks": [{ "type": "command", "command": chat_policy_command(&reply) }]
+                        }));
+                    }
                 }
             }
         }
@@ -2559,6 +2618,100 @@ mod tests {
                 .iter()
                 .any(|x| x == "mcp__claude_ai_Google_Drive")
         );
+    }
+
+    /// Backlog 353: the Browser switch is off on every spec and says so on
+    /// argv (`--no-chrome`), on every shape; on is `--chrome` and never both.
+    /// The checkpoint fork carries the chat's spelling.
+    #[test]
+    fn browser_is_no_chrome_unless_the_chat_says_on() {
+        let has = |a: &[String], f: &str| a.iter().any(|x| x == f);
+        let off = spec();
+        assert!(!off.browser);
+        for a in [off.args("hi"), off.stdin_args(), off.resume_args()] {
+            assert!(has(&a, "--no-chrome"), "{a:?}");
+            assert!(!has(&a, "--chrome"), "{a:?}");
+        }
+        // A pass (dream, capture, note edit, chat name) has no switch at all.
+        let pass = PassSpec::new("claude", Vec::new()).spec_in("/w");
+        assert!(has(&pass.args("hi"), "--no-chrome"));
+        assert!(!has(&pass.args("hi"), "--chrome"));
+
+        let mut on = spec();
+        on.browser = true;
+        for a in [on.args("hi"), on.stdin_args(), on.resume_args()] {
+            assert!(has(&a, "--chrome"), "{a:?}");
+            assert!(!has(&a, "--no-chrome"), "{a:?}");
+        }
+        // Under safe mode too: measured, `--strict-mcp-config` keeps it.
+        on.safe_mode = true;
+        assert!(has(&on.args("hi"), "--chrome"));
+        on.resume = Some("s-1".into());
+        assert!(has(&on.fork_spec().unwrap().argv, "--chrome"));
+        let mut off_resumed = spec();
+        off_resumed.resume = Some("s-1".into());
+        assert!(has(&off_resumed.fork_spec().unwrap().argv, "--no-chrome"));
+    }
+
+    /// Backlog 353, blocker 1414: a Chat with the Browser on refuses the
+    /// browser's tools by a deny hook beside the policy's (which lets every
+    /// `mcp__` tool through); without the browser there is no such entry.
+    #[test]
+    fn a_chat_refuses_the_browser_tools_by_hook() {
+        let entries = |s: &AgentSpec| -> Vec<serde_json::Value> {
+            let a = s.args("hi");
+            let Some(i) = a.iter().position(|x| x == "--settings") else {
+                return Vec::new();
+            };
+            let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
+            v["hooks"]["PreToolUse"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        };
+        let mut chat = spec();
+        chat.chat_policy = true;
+        assert!(
+            !entries(&chat)
+                .iter()
+                .any(|e| e["matcher"] == BROWSER_TOOLS_MATCHER)
+        );
+        chat.browser = true;
+        let pre = entries(&chat);
+        let e = pre
+            .iter()
+            .find(|e| e["matcher"] == BROWSER_TOOLS_MATCHER)
+            .expect("browser deny entry");
+        let command = e["hooks"][0]["command"].as_str().unwrap();
+        let reply = command.trim_start_matches("echo ").trim_matches('\'');
+        let v: serde_json::Value = serde_json::from_str(reply).unwrap();
+        assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert_eq!(
+            v["hookSpecificOutput"]["permissionDecisionReason"],
+            BROWSER_UNDER_CHAT_POLICY_REASON
+        );
+        assert!(!reply.contains(['&', '|', '<', '>', '^', '%']), "{reply}");
+        // Not a Chat: the browser's calls go to the Ask hook like any MCP
+        // tool, with no deny of their own.
+        let mut code = spec();
+        code.browser = true;
+        assert!(
+            !entries(&code)
+                .iter()
+                .any(|e| e["matcher"] == BROWSER_TOOLS_MATCHER)
+        );
+        assert!(regex_like_matches(
+            ask::MATCHER,
+            "mcp__claude-in-chrome__navigate"
+        ));
+    }
+
+    /// The Ask matcher's `mcp__.*` alternative covers a browser tool name.
+    fn regex_like_matches(matcher: &str, name: &str) -> bool {
+        matcher.split('|').any(|alt| match alt.strip_suffix(".*") {
+            Some(prefix) => name.starts_with(prefix),
+            None => alt == name,
+        })
     }
 
     /// Every turn needs these three together: `stream-json` is what this

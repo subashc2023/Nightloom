@@ -228,6 +228,20 @@ describe("loadLastConnection", () => {
     expect(loadLastConnection()!.agentEffort).toBe("max");
   });
 
+  it("reads an absent or non-true Browser as off (backlog 353)", () => {
+    // The switch drives his real, logged-in Chrome: a rail saved before it
+    // existed, or a stray value, must not read back as on.
+    expect(defaultDraft().agentChrome).toBe(false);
+    save({ provider: "anthropic", engine: "claude-code" });
+    expect(loadLastConnection()!.agentChrome).toBe(false);
+    save({ provider: "anthropic", engine: "claude-code", agentChrome: "true" });
+    expect(loadLastConnection()!.agentChrome).toBe(false);
+    save({ provider: "anthropic", engine: "claude-code", agentChrome: true });
+    expect(loadLastConnection()!.agentChrome).toBe(true);
+    save({ provider: "anthropic", engine: "claude-code", agentChrome: false });
+    expect(loadLastConnection()!.agentChrome).toBe(false);
+  });
+
   it("reads the engine strictly, defaulting to provider", () => {
     // A stray value would land the rail on an engine with no controls
     // showing. A draft from before the agent engine has no field, and the

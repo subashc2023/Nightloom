@@ -1226,6 +1226,21 @@
           {/each}
         {/if}
       {/if}
+      <!-- Claude in Chrome (nightshift backlog 353; blocker 1412): the CLI
+           drives his real, logged-in Chrome through the extension. Off by
+           default; on sends --chrome, off --no-chrome. -->
+      <label class="swq">
+        <span class="t">Browser</span>
+        <Hint text="Off (the default): this chat has no browser. On: Claude Code drives your own Chrome through the Claude in Chrome extension — your tabs, logged in as you — to open pages, click, fill forms and read what they show. Chrome must be running with the extension. On Ask each browser call shows an approval card first; on Auto they run without asking. A Chat refuses them. Safe mode keeps the browser if this is on. Flipping it on a running chat re-writes its cached prefix once." />
+        <input
+          type="checkbox"
+          class="sw"
+          bind:checked={app.draft.agentChrome}
+          onchange={apply}
+          disabled={locked}
+          aria-label="Browser (Claude in Chrome)"
+        />
+      </label>
     {/if}
 
     <!-- Shown on both engines (2026-09-14): the preamble crosses to Claude

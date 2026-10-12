@@ -184,6 +184,7 @@ export function connectAgent(args: AgentConnectArgs): Promise<ConnectResult> {
     forkMode: args.forkMode,
     claudeAiConnectors: args.claudeAiConnectors,
     claudeAiBlocked: args.claudeAiBlocked,
+    browser: args.browser,
     cold: args.cold,
     autoLayers: args.autoLayers,
     updateNow: args.updateNow,

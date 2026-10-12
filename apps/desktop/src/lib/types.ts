@@ -110,6 +110,10 @@ export interface AgentConnectArgs {
   /** With `claudeAiConnectors` on, the connectors he unticked, by the
    *  init event's server name ("claude.ai Google Drive"). */
   claudeAiBlocked?: string[];
+  /** Claude in Chrome (nightshift backlog 353, blocker 1412): the CLI
+   *  drives his real Chrome through the extension. Omitted is off: the
+   *  CLI is started with `--no-chrome`. */
+  browser?: boolean;
   /** Stop the turn if the CLI's own cost estimate passes this. */
   budget?: number;
   /** The subagent limits (backlog 165); omitted is the defaults. */

@@ -1848,6 +1848,7 @@ async fn connect_agent(
     fork_mode: Option<bool>,
     claude_ai_connectors: Option<bool>,
     claude_ai_blocked: Option<Vec<String>>,
+    browser: Option<bool>,
     holds: State<'_, prompt_hold::Pending>,
     cold: Option<bool>,
     auto_layers: Option<bool>,
@@ -1890,6 +1891,7 @@ async fn connect_agent(
                 fork_mode,
                 claude_ai_connectors,
                 claude_ai_blocked,
+                browser,
                 &holds,
                 cold,
                 auto_layers,
@@ -1927,6 +1929,9 @@ async fn connect_agent_body(
     // unless the rail said on; the ones he unticked stay hidden when on.
     claude_ai_connectors: Option<bool>,
     claude_ai_blocked: Option<Vec<String>>,
+    // Claude in Chrome (nightshift backlog 353, blocker 1412): off unless
+    // the rail said on.
+    browser: Option<bool>,
     // Nightshift backlog 174: the chat's cache timer reads cold, the
     // Settings default takes changes then, and *Update now* by layer.
     holds: &prompt_hold::Pending,
@@ -1990,6 +1995,9 @@ async fn connect_agent_body(
     // nothing, an older one included, is off.
     spec.claude_ai_connectors = claude_ai_connectors.unwrap_or(false);
     spec.claude_ai_blocked = claude_ai_blocked.unwrap_or_default();
+    // Claude in Chrome (backlog 353): his real browser, so off unless the
+    // rail said on — and a rail that says nothing, an older one, is off.
+    spec.browser = browser.unwrap_or(false);
     // Effort and the fallback model (backlog 076), as the rail spelled
     // them; empty is the CLI's default and no fallback.
     spec.effort = effort

@@ -2438,3 +2438,13 @@ continuation; every tool judged through the hook with the ledger's latest
 never moving back; the Sonnet switch); `plan_usage.rs` (the stamp);
 `council.rs` (the seat keeps the brief); `agent/mod.rs` (the entry rides the
 Chat policy); `catalog.test.ts`, `budget.test.ts`.
+
+## The Browser switch (nightshift backlog 353, 2026-10-12)
+
+On the Claude Code rail, after *claude.ai connectors*: **Browser**, off by
+default. On, the chat can drive his own Chrome through the Claude in Chrome
+extension (`--chrome`); off sends `--no-chrome`. Each browser call shows the
+usual approval card on Ask, runs unasked on Auto, and is refused in a Chat.
+Saved with the rest of the rail (`loadLastConnection`; absent reads as off).
+The measurements and the flag spelling are in `service-agent.md`, *Browser:
+Claude in Chrome per chat*.

@@ -81,6 +81,20 @@ describe("rail changes during a connect (item 222)", () => {
     app.applyPending = false;
   });
 
+  it("sends the Browser switch with the connect, off unless on (backlog 353)", async () => {
+    app.draft.agentChrome = false;
+    scheduleApply();
+    await vi.advanceTimersByTimeAsync(APPLY_DEBOUNCE_MS);
+    expect((connects()[0][0] as { browser?: boolean }).browser).toBe(false);
+    await settle();
+    app.draft.agentChrome = true;
+    scheduleApply();
+    await vi.advanceTimersByTimeAsync(APPLY_DEBOUNCE_MS);
+    expect((connects()[1][0] as { browser?: boolean }).browser).toBe(true);
+    await settle();
+    app.draft.agentChrome = false;
+  });
+
   it("debounces a burst of clicks into one connect with the last value", async () => {
     for (const n of [5, 4, 3, 2]) {
       app.draft.agentLimits.concurrent = n;
