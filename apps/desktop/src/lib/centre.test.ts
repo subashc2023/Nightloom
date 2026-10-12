@@ -167,4 +167,19 @@ describe("the notices", () => {
     expect(isInstructionsFile(commit, ".agents/memory/stack.md")).toBe(false);
     expect(isInstructionsFile({ ...commit, project: null }, "AGENTS.md")).toBe(false);
   });
+
+  // Blocker 1404: a proposal the dream's screen kept pending says why on its card.
+  it("puts the screen's reason first on a kept proposal's card", () => {
+    const p = base.proposals[1];
+    const kept = {
+      ...p,
+      entry: {
+        ...p.entry,
+        proposal: { ...p.entry.proposal, screened: { at: "2026-10-12T05:00:00Z", why: 'an added line has a web link ("x")' } },
+      },
+    };
+    const n = buildNotices({ ...base, proposals: [kept], commits: [], rows: [], stamp: null });
+    expect(n[0].kind).toBe("proposal");
+    expect(n[0].detail).toBe('Kept for your review: an added line has a web link ("x"). two');
+  });
 });

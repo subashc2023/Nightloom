@@ -469,6 +469,20 @@ change … — review it under Notes" only for one left pending. The pinned test
 now `agents_md_is_applied_and_committed_after_a_dream_that_proposes`. Struck
 below where it no longer holds.
 
+~~Every proposal the guard lets through is applied.~~ (struck 2026-10-12,
+blocker 1404, his "screen".) Before the write, `proposal::screen_added` reads
+the lines the replacement *adds* to the file (a multiset difference; lines the
+file already had are his and are not read) and keeps the proposal **pending**
+(not held) when one has a web link (`http://`, `https://`, `www.`, …), a shell
+command (a code fence, a `$ ` prompt, `| sh`, `rm -`, ` install `, or a program
+name such as `curl`, `bash`, `ssh`), or whole words about tools/permissions,
+secrets/keys/tokens/passwords, or sending/emailing/posting/uploading. The record
+gets `screened: { at, why }`, `Filed.screened` carries the sentence, and
+`proposed_line` says "kept a change to Lanternfish's instructions for your
+review: an added line has a web link ("…") — review it under Notes". It runs in
+`dream::apply_turns_proposal`, so both engines. Broad on purpose: a false hit
+costs one review card.
+
 `proposal.rs` (2026-09-14, nightshift memory-writer 6c; blocker 046's answer).
 Each target has one file the preamble reads *whole* into every conversation —
 a project's `<workspace>/AGENTS.md`, the user's `~/.nightloom/AGENTS.md` for the

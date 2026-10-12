@@ -436,6 +436,10 @@ export interface Proposal {
     commit?: string;
     reverted_at?: string;
   };
+  /** Set when the dream's screen kept it for review instead of applying
+   *  it (blocker 1404): an added line with a link, a command, or words
+   *  about tools, permissions, secrets or sending. */
+  screened?: { at: string; why: string };
 }
 
 /** A pending proposal as the backend lists it: the handle every other call

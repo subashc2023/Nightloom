@@ -198,7 +198,10 @@ export function buildNotices(s: NoticeSources): Notice[] {
       kind: "proposal",
       id: proposalNoticeId(p),
       title: `A change to ${who}`,
-      detail: p.entry.proposal.why,
+      // Kept for review by the dream's screen (blocker 1404): say why first.
+      detail: p.entry.proposal.screened
+        ? `Kept for your review: ${p.entry.proposal.screened.why}. ${p.entry.proposal.why}`
+        : p.entry.proposal.why,
       at: p.entry.proposal.at,
       project: p.project,
       proposal: p,

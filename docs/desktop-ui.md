@@ -2079,7 +2079,12 @@ lists each kind with a count and a *Dismiss all*, each row with *Dismiss*:
   only for a proposal the dream could not apply — one made against a file
   that changed during the turn, or past the preamble's cap, in a turn
   that was interrupted, or (wave 7 review, 2026-10-12) to an `AGENTS.md`
-  that is a symbolic link, which the dream never replaces.
+  that is a symbolic link, which the dream never replaces — or (blocker
+  1404, his "screen", 2026-10-12) one whose *added* lines carry a web
+  link, a shell command, or words about tools, permissions,
+  secrets/keys/tokens or sending/emailing/posting. That card's detail
+  begins "Kept for your review: an added line has …", and the dream's
+  outcome line says the same.
 - **Morning pages** unread and **Blockers** open — from the Nightshift
   rows every project already reports (`nightshift_projects`, the same
   counts as the tab badges). *Read it* / *Answer* open the Review tab on

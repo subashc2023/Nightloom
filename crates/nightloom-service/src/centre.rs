@@ -736,6 +736,7 @@ mod tests {
             applied: None,
             dismissed_at: None,
             held: None,
+            screened: None,
         };
         let dir = proposal::dir_in(&config);
         fs::create_dir_all(&dir).unwrap();
