@@ -125,6 +125,7 @@
   import { foldToFit } from "./fold";
   import { Marks, chipMotion, prefersReducedMotion } from "./chipFade";
   import { codePasteLanguage, fenced, findFences, layerLines, withFenceLanguage } from "./codeDetect";
+  import { mathPasteText } from "./mathPaste";
   import { LANGUAGES } from "./codeHighlight";
   import { launch } from "./sendMotion";
   import { composerConnectHint, launch as launchState } from "./launch.svelte";
@@ -1068,10 +1069,14 @@
 
   function onpaste(e: ClipboardEvent) {
     const pastedText = e.clipboardData?.getData("text/plain") ?? "";
+    const files = Array.from(e.clipboardData?.files ?? []);
+    // Item 348: math copied from a web page (KaTeX, MathJax) comes as its
+    // LaTeX in `$…$`, read from the clipboard's HTML; null for any other
+    // paste, which goes on below unchanged.
+    const math = files.length === 0 ? mathPasteText(e.clipboardData?.getData("text/html") ?? "") : null;
     // Into the in-app clipboard ring (backlog 173): the text, and below
     // each image the paste attached.
-    if (pastedText) recordText("pasted", pastedText);
-    const files = Array.from(e.clipboardData?.files ?? []);
+    if (pastedText) recordText("pasted", math ?? pastedText);
     // Item 284: ⌥⌘V's paste puts the text in as an attachment. A clipboard
     // holding a file (an image) is pasted as ⌘V would.
     const act = pasteAction(takeAttachMark(), pastedText, files.length);
@@ -1079,6 +1084,14 @@
       e.preventDefault();
       if (act === "attach") void attachPastedText(pastedText);
       else addToast("The clipboard holds no text to attach");
+      return;
+    }
+    if (math !== null && ta) {
+      e.preventDefault();
+      const at = Math.min(ta.selectionStart, ta.selectionEnd);
+      pasteMath(normalizeNewlines(math));
+      offer = longPasteOffer(math, at);
+      converted = null;
       return;
     }
     // Item 315: code goes in as a fenced block with its language. A long
@@ -1107,6 +1120,27 @@
     if (!pastedText) e.preventDefault();
     void accept(files).then((chips) => {
       for (const c of chips) if (c.kind === "image") recordImage("pasted", c);
+    });
+  }
+
+  /** Item 348: the converted math paste in place of the selection, one
+   *  undo step, as a plain paste would be. */
+  function pasteMath(raw: string): void {
+    if (!ta) return;
+    if (ta instanceof LiveBoxHandle) {
+      ta.pasteText(raw);
+      return;
+    }
+    const from = Math.min(ta.selectionStart, ta.selectionEnd);
+    const to = Math.max(ta.selectionStart, ta.selectionEnd);
+    const next = text.slice(0, from) + raw + text.slice(to);
+    hist.select(from, to);
+    hist.external(next, from + raw.length);
+    setDraftText(key, next);
+    void tick().then(() => {
+      if (!ta) return;
+      ta.selectionStart = ta.selectionEnd = from + raw.length;
+      autogrow();
     });
   }
 

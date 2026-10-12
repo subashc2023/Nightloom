@@ -729,6 +729,16 @@ export class LiveBoxHandle implements ComposerBox {
       scrollIntoView: true,
     });
   }
+  /** Item 348: text in place of the selection, as a paste — one undo step. */
+  pasteText(raw: string): void {
+    const { from, to } = this.view.state.selection.main;
+    this.view.dispatch({
+      changes: { from, to, insert: raw },
+      selection: EditorSelection.cursor(from + raw.length),
+      userEvent: "input.paste",
+      scrollIntoView: true,
+    });
+  }
   /** Replace `[from, to)` as one undoable edit, the caret kept where it was. */
   replaceRange(from: number, to: number, insert: string): void {
     this.view.dispatch({ changes: { from, to, insert }, userEvent: "input" });

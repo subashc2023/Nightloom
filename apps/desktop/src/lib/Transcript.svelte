@@ -118,6 +118,7 @@
   import { followStep, restDistance, sendJumps } from "./sendScroll";
   // The first-paint mark of the message's timing line (item 256).
   import { hasText, turnClock } from "./turnTiming";
+  import { mathPasteText } from "./mathPaste";
 
   interface AssistantFooter {
     model: string;
@@ -654,6 +655,19 @@
    *  as the composer makes them. Pasted text goes in as text. */
   function editorPaste(e: ClipboardEvent): void {
     const files = Array.from(e.clipboardData?.files ?? []);
+    // Item 348: math copied from a web page goes in as its LaTeX, as in
+    // the composer. `insertText` keeps the textarea's own undo and fires
+    // `input`, so the draft follows.
+    const math = files.length === 0 ? mathPasteText(e.clipboardData?.getData("text/html") ?? "") : null;
+    if (math !== null && e.currentTarget instanceof HTMLTextAreaElement) {
+      e.preventDefault();
+      const box = e.currentTarget;
+      if (!document.execCommand("insertText", false, math)) {
+        box.setRangeText(math, box.selectionStart, box.selectionEnd, "end");
+        box.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      return;
+    }
     if (files.length === 0) return;
     if (!e.clipboardData?.getData("text/plain")) e.preventDefault();
     void acceptFiles(editKey, files);
