@@ -33,6 +33,7 @@
     replyKind,
     shownRows,
     undoable,
+    withSuggestion,
     type EditBlock,
     type EditRow,
     type NoteEditTurn,
@@ -124,7 +125,8 @@
   }
 
   function suggest(s: string) {
-    setRequestDraft(key, s);
+    // Never over what he typed (wave 7 review round 2, practices §7).
+    setRequestDraft(key, withSuggestion(draft, s));
     box?.focus();
   }
 

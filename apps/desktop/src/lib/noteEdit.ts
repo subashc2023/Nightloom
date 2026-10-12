@@ -366,7 +366,12 @@ export const DIFF_ROWS_SHOWN = 4;
  * have moved it — else its old place, kept inside the note.
  */
 export function lineNow(row: EditRow, now: string): number {
-  const lines = now.replace(/\n$/, "").split("\n");
+  // Split as `lineDiff` splits (a CRLF note's `\r` dropped), so an added
+  // line is found by its text there too (wave 7 review round 2).
+  const lines = now
+    .replace(/\r?\n$/, "")
+    .split("\n")
+    .map((l) => (l.endsWith("\r") ? l.slice(0, -1) : l));
   const last = Math.max(0, lines.length - 1);
   if (row.kind === "add") {
     let best = -1;
@@ -387,4 +392,29 @@ export function shownRows(rows: EditRow[], open: boolean): EditRow[] {
 export function expandWords(count: number, open: boolean): string {
   if (open) return "Collapse";
   return count > DIFF_ROWS_SHOWN ? `Show all ${count} lines, whole` : "Show the lines whole";
+}
+
+/**
+ * Where a jump from the edit panel lands in `text` (wave 7 review round 2):
+ * the note's lines (for the marks), the 0-based line kept inside the note,
+ * and the caret's offset — the start of that same line. `NoteView` passed
+ * the 0-based line to the 1-based `lineOffset`, so the caret sat one line
+ * above the marked one.
+ */
+export function jumpTarget(text: string, line: number): { lines: string[]; at: number; offset: number } {
+  const lines = text.replace(/\n$/, "").split("\n");
+  const at = Math.max(0, Math.min(line, lines.length - 1));
+  let offset = 0;
+  for (let i = 0; i < at; i++) offset += lines[i].length + 1;
+  return { lines, at, offset };
+}
+
+/**
+ * The request box after a suggestion is clicked (wave 7 review round 2):
+ * the suggestion in an empty box, and after what he typed otherwise — a
+ * click never replaces his half-typed text (practices §7).
+ */
+export function withSuggestion(draft: string, suggestion: string): string {
+  if (!draft.trim()) return suggestion;
+  return `${draft.replace(/\s+$/, "")}\n${suggestion}`;
 }

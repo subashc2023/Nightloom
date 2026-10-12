@@ -35,7 +35,7 @@
   import { fieldScrollTop } from "./find";
   import NoteEditPanel from "./NoteEditPanel.svelte";
   import { noteEditUi, onLanded, runningTurn } from "./noteEdit.svelte";
-  import { changedLines, editBlock } from "./noteEdit";
+  import { changedLines, editBlock, jumpTarget } from "./noteEdit";
   import { lineOffset } from "./memoryHits";
 
   /**
@@ -210,11 +210,13 @@
   function showLine(line: number) {
     if (streamed || !bufferKey || media) return;
     clearMarks();
-    const lines = text.replace(/\n$/, "").split("\n");
-    const at = Math.max(0, Math.min(line, lines.length - 1));
+    // `jumpTarget` (wave 7 review round 2): the caret goes to the start of
+    // the marked line — `lineOffset` counts from 1, and passing the 0-based
+    // line put it one line above the mark.
+    const { lines, at, offset } = jumpTarget(text, line);
     marks = { lines, marked: new Set([at]) };
     jumped = true;
-    caret = lineOffset(text, at);
+    caret = offset;
     preview = false;
     marksTimer = setTimeout(() => {
       clearMarks();

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { lineOffset } from "./memoryHits";
 import {
   MAX_TURNS,
   HISTORY_CHANGE_LINES,
@@ -12,6 +13,8 @@ import {
   PANEL_WIDTH,
   editRows,
   expandWords,
+  jumpTarget,
+  withSuggestion,
   lineNow,
   panelWidthAt,
   replyKind,
@@ -273,5 +276,44 @@ describe("D2 panel", () => {
     expect(panelWidthAt(1300)).toBeCloseTo(351, 0);
     expect(panelWidthAt(1185)).toBe(320);
     expect(panelWidthAt(900)).toBe(320);
+  });
+});
+
+describe("a jump from the edit panel lands on the clicked line (wave 7 review round 2)", () => {
+  it("puts the caret at the start of the marked line, not the one above", () => {
+    const text = "# P\nalpha\nbeta\ngamma\n";
+    const j = jumpTarget(text, 2);
+    expect(j.at).toBe(2);
+    expect(text.slice(j.offset).startsWith("beta")).toBe(true);
+    expect(jumpTarget(text, 0).offset).toBe(0);
+    // What the panel did before: the 1-based lineOffset given the 0-based
+    // line — the caret one line above the mark.
+    expect(text.slice(lineOffset(text, 2)).startsWith("alpha")).toBe(true);
+    // Past the end: the last line, caret at its start.
+    const last = jumpTarget(text, 99);
+    expect(last.at).toBe(3);
+    expect(text.slice(last.offset).startsWith("gamma")).toBe(true);
+  });
+
+  it("finds an added line by its text in a CRLF note", () => {
+    const now = "# P\r\nx\r\nnew\r\nkeep\r\n";
+    expect(lineNow({ kind: "add", text: "new", line: 0 }, now)).toBe(2);
+  });
+
+  it("a card row's jump marks and places the caret on the same line", () => {
+    const before = "# P\nold\nkeep\n";
+    const after = "# P\nnew\nkeep\n";
+    const row = editRows(before, after).find((r) => r.kind === "add")!;
+    const j = jumpTarget(after, lineNow(row, after));
+    expect(j.lines[j.at]).toBe("new");
+    expect(after.slice(j.offset).startsWith("new")).toBe(true);
+  });
+});
+
+describe("a suggestion never replaces what he typed (wave 7 review round 2)", () => {
+  it("fills an empty box and appends to a typed one", () => {
+    expect(withSuggestion("", "Summarize what changed")).toBe("Summarize what changed");
+    expect(withSuggestion("  ", "Summarize")).toBe("Summarize");
+    expect(withSuggestion("we moved the folder ", "Summarize")).toBe("we moved the folder\nSummarize");
   });
 });
