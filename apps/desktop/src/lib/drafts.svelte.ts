@@ -273,6 +273,12 @@ export function serializeDrafts(map: Record<string, Draft>): string {
   };
   const out: Record<string, Draft> = {};
   for (const [k, d] of Object.entries(map)) {
+    // An edit box's chips (item 336) are not written: the editor they
+    // belong to (`stashEdit`) lives in memory only, so after a reload they
+    // would be orphans holding a past turn's images against the shared
+    // budget, crowding out a box's real chips (w6-review 2026-10-11). They
+    // still follow a chat switch and an unmount, which never reload.
+    if (k.startsWith(EDIT_DRAFT_PREFIX)) continue;
     const queue = d.queue ?? [];
     if (!d.text && d.attachments.length === 0 && queue.length === 0) continue;
     out[k] = {
@@ -850,7 +856,9 @@ export function hasEdit(key: string): boolean {
  * Where a chat's open edit box keeps its chips (item 336): a drafts-store
  * key of its own, so the composer's attach code (`acceptFiles`) puts them
  * there, a conversion finishing finds them by id, and they outlive a chat
- * switch, an unmount and a reload as a box's chips do. One per chat, as
+ * switch and an unmount as the editor's words do (~~and a reload~~ —
+ * 2026-10-11 w6-review: never written to storage, the editor itself not
+ * surviving a reload; `serializeDrafts`). One per chat, as
  * one editor is open per chat; the editor's words stay in `stashEdit`.
  */
 export const EDIT_DRAFT_PREFIX = "edit:";

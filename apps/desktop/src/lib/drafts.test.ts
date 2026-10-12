@@ -6,6 +6,7 @@ import {
   clearDraft,
   draftKey,
   drafts,
+  editDraftKey,
   flushDrafts,
   hasDraft,
   loadDrafts,
@@ -353,6 +354,15 @@ describe("persistence", () => {
     const parsed = JSON.parse(json) as Record<string, { text: string; attachments: Attachment[] }>;
     expect(parsed.a.text).toBe("the words");
     expect(parsed.a.attachments.map((a) => a.id)).toEqual([1]);
+  });
+
+  it("never writes an edit box's chips, so they cannot crowd out a box's (w6 review)", () => {
+    const big = (id: number) => png(id, PERSIST_ATTACHMENT_MAX - 10);
+    const edit = { text: "", attachments: [big(1), big(2), big(3), big(4), big(5), big(6)], queue: [] };
+    const json = serializeDrafts({ [editDraftKey("chat-1")]: edit, b: { text: "", attachments: [big(7)], queue: [] } });
+    const parsed = JSON.parse(json) as Record<string, { attachments: Attachment[] }>;
+    expect(Object.keys(parsed)).toEqual(["b"]);
+    expect(parsed.b.attachments.map((a) => a.id)).toEqual([7]);
   });
 
   it("ignores a malformed store and malformed entries", () => {
