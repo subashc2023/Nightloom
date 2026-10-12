@@ -8,6 +8,14 @@ import {
   changedLines,
   editBlock,
   PROPOSAL_OPEN_WORDS,
+  DIFF_ROWS_SHOWN,
+  PANEL_WIDTH,
+  editRows,
+  expandWords,
+  lineNow,
+  panelWidthAt,
+  replyKind,
+  shownRows,
   editTotals,
   parseThreads,
   priorExchanges,
@@ -197,5 +205,73 @@ describe("priorExchanges", () => {
     const d = changeDigest(before, after).split("\n");
     expect(d).toHaveLength(HISTORY_CHANGE_LINES + 1);
     expect(d[d.length - 1]).toBe(`… ${200 - HISTORY_CHANGE_LINES} more changed lines`);
+  });
+});
+
+// Backlog 345, his pick D2: how a reply is drawn, its lines, and the width.
+describe("D2 panel", () => {
+  const T = (status: NoteEditTurn["status"], extra: Partial<NoteEditTurn> = {}): NoteEditTurn => ({
+    id: 1,
+    request: "r",
+    strike: true,
+    at: "2026-10-12T21:41:00Z",
+    status,
+    before: "a\nb\n",
+    ...extra,
+  });
+
+  it("draws a reply with no edit as plain text and one that edited as a card", () => {
+    expect(replyKind(T("unchanged", { summary: "Two changes this week." }))).toBe("plain");
+    expect(replyKind(T("failed", { error: "x" }))).toBe("plain");
+    expect(replyKind(T("draft", { error: "x" }))).toBe("plain");
+    expect(replyKind(T("kept", { summary: "x" }))).toBe("plain");
+    expect(replyKind(T("applied", { after: "a\nb\n" }))).toBe("plain"); // applied, nothing changed
+    expect(replyKind(T("stopped"))).toBe("plain");
+    expect(replyKind(T("applied", { after: "a\nc\n" }))).toBe("card");
+    expect(replyKind(T("undone", { after: "a\nc\n" }))).toBe("card");
+    expect(replyKind(T("stopped", { after: "a\nc\n" }))).toBe("card");
+    // Running: thinking until an edit lands, then the card.
+    expect(replyKind(T("running", { edits: 0 }))).toBe("thinking");
+    expect(replyKind(T("running", { edits: 1, current: "a\nc\n" }))).toBe("card");
+  });
+
+  it("gives each changed line its place in the note the turn left", () => {
+    const rows = editRows("# P\nold\nkeep\n", "# P\n~~old~~\nnew\nkeep\n");
+    expect(rows).toEqual([
+      { kind: "del", text: "old", line: 1 },
+      { kind: "add", text: "~~old~~", line: 1 },
+      { kind: "add", text: "new", line: 2 },
+    ]);
+  });
+
+  it("a clicked line goes to where it is now — by its text, nearest its old place — else its old place", () => {
+    const row = { kind: "add" as const, text: "new", line: 2 };
+    expect(lineNow(row, "# P\n~~old~~\nnew\nkeep\n")).toBe(2);
+    // Two lines added above since: found by text.
+    expect(lineNow(row, "# P\nx\ny\n~~old~~\nnew\nkeep\n")).toBe(4);
+    // The nearest of two copies.
+    expect(lineNow(row, "new\n# P\nnew\nkeep\n")).toBe(2);
+    // Gone (or a removed line): its old place, inside the note.
+    expect(lineNow({ kind: "del", text: "old", line: 1 }, "# P\nnew\n")).toBe(1);
+    expect(lineNow({ kind: "add", text: "gone", line: 9 }, "# P\nnew\n")).toBe(1);
+  });
+
+  it("a card shows the first lines and expands to all of them, whole", () => {
+    const rows = Array.from({ length: 7 }, (_, i) => ({ kind: "add" as const, text: `l${i}`, line: i }));
+    expect(shownRows(rows, false)).toHaveLength(DIFF_ROWS_SHOWN);
+    expect(shownRows(rows, true)).toHaveLength(7);
+    expect(expandWords(7, false)).toBe("Show all 7 lines, whole");
+    expect(expandWords(2, false)).toBe("Show the lines whole");
+    expect(expandWords(7, true)).toBe("Collapse");
+  });
+
+  it("is 380 px from a 1408-px window up, 27 % between, never under the old 320 px", () => {
+    expect(PANEL_WIDTH).toBe("clamp(320px, 27vw, 380px)");
+    expect(panelWidthAt(1440)).toBe(380);
+    expect(panelWidthAt(1408)).toBe(380);
+    expect(panelWidthAt(1400)).toBe(378);
+    expect(panelWidthAt(1300)).toBeCloseTo(351, 0);
+    expect(panelWidthAt(1185)).toBe(320);
+    expect(panelWidthAt(900)).toBe(320);
   });
 });

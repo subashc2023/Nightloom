@@ -51,7 +51,7 @@ setTimeout(async () => {
     await tick();
     const send = document.querySelector<HTMLButtonElement>("button.send");
     const ta = document.querySelector<HTMLTextAreaElement>("aside textarea");
-    const line = document.querySelector<HTMLElement>(".blocked")?.textContent?.replace(/\s+/g, " ").trim() ?? null;
+    const line = document.querySelector<HTMLElement>(".notice, .blocked")?.textContent?.replace(/\s+/g, " ").trim() ?? null;
     const disabledBefore = send?.disabled;
     send?.click();
     await new Promise((r) => setTimeout(r, 300));
@@ -62,11 +62,24 @@ setTimeout(async () => {
     await new Promise((r) => setTimeout(r, 5400));
     await tick();
     const after = JSON.stringify({ p: app.proposals.memory, r: app.proposalReview });
+    let rafs = 0;
+    await new Promise<void>((r) => {
+      const t0 = performance.now();
+      const step = () => {
+        rafs++;
+        if (performance.now() - t0 < 500) requestAnimationFrame(step);
+        else r();
+      };
+      requestAnimationFrame(step);
+      setTimeout(r, 700);
+    });
+    const bub = [...document.querySelectorAll<HTMLElement>(".bubble")].at(-1);
     cap.textContent = [
       `notice line: ${JSON.stringify(line)}`,
       `Send disabled with text typed + proposal open: ${disabledBefore}`,
       `textarea autocorrect=${ta?.getAttribute("autocorrect")} autocapitalize=${ta?.getAttribute("autocapitalize")} spellcheck=${ta?.getAttribute("spellcheck")}`,
       `edit_note_by_prompt called: ${calls.filter((c) => c === "edit_note_by_prompt").length} · turn status: ${turn?.status} · after has AM/PM: ${turn?.after?.includes("12-hour AM/PM")} · lines marked on landing: ${marked}`,
+      `new bubble opacity ${bub ? getComputedStyle(bub).opacity + " / node " + getComputedStyle(bub.closest(".me") ?? bub).opacity : "none"} · animation frames in 0.5 s here: ${rafs}`,
       `proposal unchanged and still open: ${after === before} · review card back after the marks: ${!!document.querySelector(".review")}`,
     ].join("\n");
   } catch (e) {

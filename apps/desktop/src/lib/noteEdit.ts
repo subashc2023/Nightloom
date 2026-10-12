@@ -302,3 +302,89 @@ export function priorExchanges(turns: NoteEditTurn[]): PriorExchange[] {
   }
   return out.slice(-HISTORY_TURNS);
 }
+
+// ---- the panel's look (backlog 345, his pick D2) --------------------------
+
+/** The panel's width: 380 px from a 1408-px window up, 27 % of the window
+ *  below that, never under the 320 px it was before (backlog 345). */
+export const PANEL_WIDTH = "clamp(320px, 27vw, 380px)";
+export const PANEL_MIN = 320;
+export const PANEL_MAX = 380;
+/** What `PANEL_WIDTH` comes to in a window `vw` px wide. */
+export function panelWidthAt(vw: number): number {
+  return Math.min(PANEL_MAX, Math.max(PANEL_MIN, vw * 0.27));
+}
+
+/**
+ * How a reply is drawn (his D2 note: "if the answer had no edits, then it
+ * should be like the original version A as like a text thing, only when
+ * there is edit it should be that fancy version"):
+ * - `card` — the reply changed the note (or is changing it now): a card with
+ *   the changed lines, a status chip and Undo;
+ * - `plain` — no edit (an answer, a failure, a stop before any edit): text
+ *   under his message and a quiet line;
+ * - `thinking` — running with no edit landed yet: plain text with the needle.
+ */
+export type ReplyKind = "card" | "plain" | "thinking";
+
+export function replyKind(t: NoteEditTurn): ReplyKind {
+  if (t.status === "running") return (t.edits ?? 0) > 0 ? "card" : "thinking";
+  if (t.status === "applied" || t.status === "undone" || t.status === "stopped")
+    return t.after !== undefined && t.after !== t.before ? "card" : "plain";
+  return "plain";
+}
+
+/** One changed line in a reply's card. `line` is where it stands in the
+ *  note the turn left (0-based) — for a removed line, where it stood. */
+export interface EditRow {
+  kind: "add" | "del";
+  text: string;
+  line: number;
+}
+
+/** The changed lines between two texts, each with its place in `after`. */
+export function editRows(before: string, after: string): EditRow[] {
+  const out: EditRow[] = [];
+  let line = 0;
+  for (const row of lineDiff(before, after)) {
+    if (row.kind === "ctx") {
+      line++;
+      continue;
+    }
+    out.push({ kind: row.kind, text: row.text, line });
+    if (row.kind === "add") line++;
+  }
+  return out;
+}
+
+/** Changed lines a collapsed card shows; the rest are one click away. */
+export const DIFF_ROWS_SHOWN = 4;
+
+/**
+ * Where a card's line is in the note as it reads now (0-based): an added
+ * line by its text — the copy nearest its old place, since later edits may
+ * have moved it — else its old place, kept inside the note.
+ */
+export function lineNow(row: EditRow, now: string): number {
+  const lines = now.replace(/\n$/, "").split("\n");
+  const last = Math.max(0, lines.length - 1);
+  if (row.kind === "add") {
+    let best = -1;
+    lines.forEach((l, i) => {
+      if (l === row.text && (best < 0 || Math.abs(i - row.line) < Math.abs(best - row.line))) best = i;
+    });
+    if (best >= 0) return best;
+  }
+  return Math.max(0, Math.min(row.line, last));
+}
+
+/** The rows a card shows: the first few, or all of them once expanded. */
+export function shownRows(rows: EditRow[], open: boolean): EditRow[] {
+  return open ? rows : rows.slice(0, DIFF_ROWS_SHOWN);
+}
+
+/** The card's expand control: what a click on it does next. */
+export function expandWords(count: number, open: boolean): string {
+  if (open) return "Collapse";
+  return count > DIFF_ROWS_SHOWN ? `Show all ${count} lines, whole` : "Show the lines whole";
+}
