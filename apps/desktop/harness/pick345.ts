@@ -249,7 +249,7 @@ function lookC(s: State): string {
 // A's chat: his messages are right-aligned bubbles, clearly his. Each model reply is a B-style card —
 // reply, changed lines, status chip, Undo — attached under his bubble, so a request and its reply read
 // as one exchange in one continuous conversation. A's round copper Send; B's Strike/Rewrite switch.
-function lookD(s: State): string {
+function lookD(s: State, v2 = false): string {
   const d = data(s);
   const diff = (t: Turn) =>
     t.diff
@@ -278,13 +278,17 @@ function lookD(s: State): string {
           .map(
             (t) => `<div class="d-ex">
           <div class="d-me"><div class="d-bubble">${esc(t.ask)}</div><div class="d-at">${t.at}</div></div>
-          <div class="d-card ${t.status}">
+          ${
+            v2 && t.status === "answered"
+              ? `<div class="d2-plain"><div class="d-said">${esc(t.reply)}</div><div class="d2-quiet">answered · no edit</div></div>`
+              : `<div class="d-card ${t.status}">
             <div class="d-said">${esc(t.reply)}</div>
             ${diff(t)}
             <div class="d-row">${chip(t)}<span class="sp"></span>${
               t.undo ? `<button class="d-btn">Undo</button>` : ""
             }</div>
-          </div>
+          </div>`
+          }
         </div>`,
           )
           .join("");
@@ -292,7 +296,7 @@ function lookD(s: State): string {
     ? `<div class="d-notice"><span class="dot copper"></span><span><b>Dream proposal pending.</b> An edit here lands on the file; the proposal waits for you.</span><button class="d-link">Show</button></div>`
     : "";
   const sendOn = !!d.typed.trim() && !d.running;
-  return `<aside class="d-panel">
+  return `<aside class="d-panel${v2 ? " d2" : ""}">
     <header class="d-head"><div><div class="d-title">Edit with a prompt</div><div class="d-file">MEMORY.md</div></div><span class="sp"></span><button class="d-x" aria-label="Close">×</button></header>
     <div class="d-list">${body}</div>
     <footer class="d-foot">
@@ -318,7 +322,8 @@ const LOOKS: [string, string, string, (s: State) => string][] = [
   ["A", "Thread", "a quiet chat; one composer card with a round Send", lookA],
   ["B", "Ledger", "each request a card with its diff; Strike/Rewrite switch", lookB],
   ["C", "Command", "the box on top, a timeline under it, newest first", lookC],
-  ["D", "Thread + cards", "A's chat with B's cards: his bubbles on the right, each reply a card under it", lookD],
+  ["D", "Thread + cards", "A's chat with B's cards: his bubbles on the right, each reply a card under it", (s) => lookD(s)],
+  ["D2", "Thread + cards, v2", "D, with a no-edit answer as plain text (A) and the panel wider: clamp(320px, 27vw, 380px)", (s) => lookD(s, true)],
 ];
 
 // A strip of the note beside the panel, so each look is seen in place.
@@ -561,13 +566,18 @@ textarea::placeholder { color: var(--dim); }
 .d-stop { width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--line2); background: var(--sheet); cursor: pointer; display: grid; place-items: center; }
 .d-stop i { width: 10px; height: 10px; border-radius: 2px; background: var(--ink); }
 .d-model { font-size: 10.5px; color: var(--dim); padding-left: 4px; }
+/* D2 (his note on D, 2026-10-12): a reply with no edit is plain text, as in A; only an edit gets the card.
+   And the panel is wider: 380px at 1440 (today 320px), 27vw between, never under today's 320px. */
+aside.d2 { width: clamp(320px, 27vw, 380px); }
+.d2-plain { padding: 0 6px 0 2px; display: flex; flex-direction: column; gap: 4px; }
+.d2-quiet { font-size: 11.5px; color: var(--dim); }
 
 @media (max-width: 700px) {
   .pick-grid { grid-template-columns: 1fr; padding: 10px 0; gap: 18px; }
   .pick-grid h2 { padding: 0 16px; }
   .win { height: 700px; min-height: 0; border-radius: 0; border-left: 0; border-right: 0; }
   .note { display: none; }
-  aside { width: 100%; border-left: 0; }
+  aside, aside.d2 { width: 100%; border-left: 0; }
 }
 `;
 const style = document.createElement("style");
