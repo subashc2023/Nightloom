@@ -82,6 +82,40 @@ describe("runNoteEdit", () => {
     expect(noteEdits[key].draft).toBe("");
   });
 
+  // Backlog 345: Send works with a dream's proposal open on the note — the
+  // edit lands on the file and the proposal stays pending, untouched.
+  it("lands an edit with a dream's proposal open on the note, and leaves the proposal as it was", async () => {
+    const mkey = noteDraftKey("memory", "MEMORY.md");
+    const mlanded: Landed[] = [];
+    const off = onLanded(mkey, (l) => mlanded.push(l));
+    const entry = {
+      id: "p-345",
+      proposal: {
+        v: 1,
+        at: "2026-10-12T08:00:00Z",
+        target: { kind: "user" as const },
+        why: "Times in AM/PM.",
+        text: "# Memory\n- times in 12-hour AM/PM\n",
+        from_dream: true,
+      },
+    } as (typeof app.proposals.memory)[number];
+    app.proposals.memory = [entry];
+    app.proposalReview = { scope: "memory", entry };
+    const snapshot = JSON.stringify({ proposals: app.proposals, review: app.proposalReview });
+    edit.mockResolvedValueOnce(result(AFTER));
+    setRequestDraft(mkey, "we dropped the neutral folder");
+    await runNoteEdit("memory", "MEMORY.md", BEFORE);
+    expect(edit).toHaveBeenCalledTimes(1);
+    expect(edit.mock.calls[0][0]).toMatchObject({ scope: "memory", name: "MEMORY.md", text: BEFORE });
+    expect(mlanded).toEqual([{ text: AFTER, saved: true, marks: [1, 2] }]);
+    expect(noteEdits[mkey].turns[0].status).toBe("applied");
+    // The proposal is still pending, still open, and its text unchanged.
+    expect(JSON.stringify({ proposals: app.proposals, review: app.proposalReview })).toBe(snapshot);
+    off();
+    app.proposals.memory = [];
+    app.proposalReview = null;
+  });
+
   it("shows each Edit as it lands, and the model's text, while the turn runs", async () => {
     let seq = 0;
     let resolve!: (r: api.NoteEditResult) => void;

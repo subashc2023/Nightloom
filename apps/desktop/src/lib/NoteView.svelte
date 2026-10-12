@@ -155,9 +155,10 @@
    * previous note's unsaved text as a draft under the next note's name.
    */
   let bufferKey = $state<string | null>(null);
-  /** Why the edit panel cannot send (backlog 325), or null. */
+  /** Why the edit panel cannot send (backlog 325), or null — a proposal
+   *  open on the note is not a reason (backlog 345). */
   const editBlocked = $derived(
-    editBlock({ loading, error: !!error, reviewing: !!reviewing, hasBuffer: bufferKey !== null }),
+    editBlock({ loading, error: !!error, hasBuffer: bufferKey !== null }),
   );
 
   /**
@@ -753,6 +754,7 @@
       name={open.name}
       {text}
       blocked={editBlocked}
+      proposalOpen={!!reviewing}
       onShowBlock={showProposal}
     />
   {/if}
