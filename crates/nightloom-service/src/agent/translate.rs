@@ -17,7 +17,7 @@ use super::protocol::{
 use crate::TurnEvent;
 use nightloom_core::Usage;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// What the turn produced beyond its rendered events.
 #[derive(Debug, Default, Clone)]
@@ -131,6 +131,12 @@ pub struct Translator {
     /// The ledgers' keys in the order first seen (backlog 164, pass 2), so
     /// the children a limit stopped are named in the order they started.
     subagent_order: Vec<String>,
+    /// The calls the CLI narrates as tasks that are not subagents (backlog
+    /// 346): a Bash call's `task_started` has `task_type: "local_bash"`,
+    /// and its progress and end lines carry only its call id. Each became
+    /// a Running-tasks row, so the top bar read "1 agent · 1 running"
+    /// over a sleep and "6 agents · done" after six of them.
+    not_agents: HashSet<String>,
     /// Where each `rate_limit_event`'s five-hour figure is written for the
     /// Agent hook (backlog 165, `brief::USAGE_FILE`); `None` writes nothing.
     pub usage_sink: Option<std::path::PathBuf>,
@@ -247,6 +253,15 @@ impl SubagentLedger {
             rounds: self.rounds.len() as u32,
         }
     }
+}
+
+/// Whether a `task_started` line's `task_type` is a subagent (backlog
+/// 346): `local_agent` (and a `remote_agent`, by its name), or none at all
+/// — the builds before `task_type` narrated only subagents. Anything else
+/// (`local_bash`, measured) is a call the transcript already shows and the
+/// Running-tasks rows do not count.
+fn is_agent_task(task_type: &str) -> bool {
+    task_type.is_empty() || task_type.ends_with("_agent")
 }
 
 /// The children a limit stopped (backlog 164, pass 2): first those whose
@@ -600,7 +615,12 @@ impl Translator {
                 subagent_type,
                 is_backgrounded,
                 prompt,
+                task_type,
             } => {
+                if !is_agent_task(&task_type) {
+                    self.not_agents.insert(tool_use_id);
+                    return Vec::new();
+                }
                 let ledger = self.ledger(&tool_use_id);
                 ledger.task_id = task_id;
                 ledger.description = description;
@@ -609,6 +629,12 @@ impl Translator {
                 ledger.prompt = prompt;
                 ledger.status = "running".into();
                 return vec![ledger.event(&tool_use_id)];
+            }
+            SystemLine::TaskProgress { tool_use_id, .. }
+            | SystemLine::TaskNotification { tool_use_id, .. }
+                if self.not_agents.contains(&tool_use_id) =>
+            {
+                return Vec::new();
             }
             SystemLine::TaskProgress { tool_use_id, usage } => {
                 let ledger = self.ledger(&tool_use_id);
@@ -981,6 +1007,44 @@ mod tests {
             "{json}"
         );
         assert!(json.contains(r#""event":{"type":"text_delta""#), "{json}");
+    }
+
+    /// Backlog 346 (b): the CLI narrates every Bash call as a task too
+    /// (`task_type: "local_bash"`, foreground included; lines as 339's
+    /// `timeline-promote.txt` measured them on 2.1.294, ids shortened).
+    /// Each made a Running-tasks row, so the top bar read "1 agent · 1
+    /// running" over a `sleep 8` while the one real agent's box said done.
+    /// A Bash task makes no row; a `local_agent` task beside it still does.
+    #[test]
+    fn a_bash_calls_task_lines_make_no_subagent_row() {
+        const L: [&str; 6] = [
+            r#"{"type":"system","subtype":"task_started","task_id":"bo0ek5knp","run_id":"r","tool_use_id":"toolu_BASH","description":"Sleep 20 seconds then echo one","is_backgrounded":false,"task_type":"local_bash","uuid":"u1","session_id":"s"}"#,
+            r#"{"type":"system","subtype":"task_progress","task_id":"bo0ek5knp","tool_use_id":"toolu_BASH","usage":{"total_tokens":0,"tool_uses":0,"duration_ms":1000}}"#,
+            r#"{"type":"system","subtype":"task_notification","task_id":"bo0ek5knp","run_id":"r","tool_use_id":"toolu_BASH","status":"completed","output_file":"","summary":"Sleep 20 seconds then echo one","uuid":"u2","session_id":"s"}"#,
+            r#"{"type":"system","subtype":"task_started","task_id":"a8bb","tool_use_id":"toolu_AGENT","description":"sleeper","subagent_type":"general-purpose","is_backgrounded":true,"prompt":"p","task_type":"local_agent"}"#,
+            r#"{"type":"system","subtype":"task_notification","task_id":"a8bb","tool_use_id":"toolu_AGENT","status":"completed","usage":{"total_tokens":18000,"tool_uses":5,"duration_ms":9000}}"#,
+            r#"{"type":"system","subtype":"task_started","task_id":"old","tool_use_id":"toolu_OLD","description":"no task_type (older CLI)","subagent_type":"general-purpose"}"#,
+        ];
+        let (events, _) = drive(&L);
+        let rows: Vec<(&str, &str)> = events
+            .iter()
+            .filter_map(|e| match e {
+                TurnEvent::SubagentStatus {
+                    tool_use_id,
+                    status,
+                    ..
+                } => Some((tool_use_id.as_str(), status.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("toolu_AGENT", "running"),
+                ("toolu_AGENT", "completed"),
+                ("toolu_OLD", "running"),
+            ]
+        );
     }
 
     /// A result whose call was never seen still renders, rather than being

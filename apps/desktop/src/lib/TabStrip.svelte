@@ -10,7 +10,7 @@
     noteDraftKey,
     splitTab,
   } from "./state.svelte";
-  import { hasDraft, newDraftKey } from "./drafts.svelte";
+  import { hasBoxDraft, newDraftKey } from "./drafts.svelte";
   import * as tabs from "./tabs";
   import { TAB_DRAG, TERM_DRAG, type Pane } from "./tabs";
   import { draggedShell } from "./terminal.svelte";
@@ -69,7 +69,7 @@
       return app.noteDrafts[noteDraftKey(c.scope, c.name)] !== undefined;
     }
     if (c.kind !== "chat") return false;
-    return hasDraft(c.session ?? newDraftKey(app.project?.id, app.pendingMode));
+    return hasBoxDraft(c.session ?? newDraftKey(app.project?.id, app.pendingMode));
   }
 
   /** The chat's turn runs, or waits on him. ~~Only the live tab can~~ —
