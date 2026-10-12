@@ -84,6 +84,7 @@ mod prompt_hold;
 mod quit_guard;
 /// The phone page over the tailnet (nightshift backlog 091, Shape B).
 mod remote;
+mod sent_files;
 mod set_aside;
 mod startup_log;
 /// The terminal pane's shells (nightshift backlog 113).
@@ -1217,6 +1218,23 @@ fn build_chat(
         // this machine, read-only, and the thing a user most often wants a
         // model to look up is what they told it last week. Subagents inherit
         // them with the rest of the set; reviewers do not (see `reviewers`).
+        // `send_file` (nightshift backlog 343): the model hands him a file
+        // from the chat's folder as a chip on its reply. The folder only —
+        // not the vault or the extra folders — and `Session`, so the filter
+        // below keeps it for an incognito chat, whose copies go to the
+        // temporary folder rather than the config dir.
+        {
+            use nightloom_service::tools::send_file;
+            let store = match project::config_dir() {
+                Some(config) if !spec.mode.writes_nothing() => send_file::store_in(&config),
+                _ => send_file::scratch_store(),
+            };
+            chat.tools
+                .push(Box::new(nightloom_service::tools::SendFile::new(
+                    spec.workspace.clone(),
+                    store,
+                )));
+        }
         if let Some(chats) = &spec.chats {
             chat.tools
                 .push(Box::new(nightloom_service::tools::SearchChats::new(
@@ -2273,6 +2291,9 @@ async fn connect_agent_body(
             if mode.writes_nothing() {
                 args.push("--no-remember".into());
             }
+            // The chat's folder, for `send_file` (nightshift backlog 343).
+            args.push("--root".into());
+            args.push(workspace.to_string_lossy().into_owned());
             if questions {
                 // The permission host the CLI is pointed at, which must be a
                 // tool that exists (`agent::ask::PROMPT_TOOL` has the
@@ -8090,6 +8111,8 @@ fn main() {
             named_files,
             reveal_file,
             open_file,
+            sent_files::save_sent_file,
+            sent_files::drag_sent_file,
             read_file_tab,
             open_url,
             notify,

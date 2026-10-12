@@ -126,6 +126,14 @@ const INSTRUCTIONS: &str = "Nightloom's tools. For the whole text of a page use 
      then notion_read_page or notion_list_children — read-only, and only the page tree the \
      user shared; a page outside it is not found.";
 
+/// The sentence for `send_file` (nightshift backlog 343), present only when
+/// the server serves it — a server started with `--root`. On this engine
+/// the tool is deferred and the model sees its name before its
+/// description; the sentence is what says a file can be handed over at all.
+const SEND_FILE_INSTRUCTION: &str = " To give the user a file (a PDF, an image, anything \
+     you made), use send_file: it attaches the file to your reply; a path in your text \
+     does not.";
+
 /// The last sentence of [`INSTRUCTIONS`], present only when the tool is: a
 /// server started for an incognito chat (`--no-remember`) must not tell the
 /// model to reach for a tool it does not serve.
@@ -167,6 +175,7 @@ const OWN_EFFECTS: &[(&str, Effect)] = &[
     ("notion_search", Effect::ReadOnly),
     ("notion_read_page", Effect::ReadOnly),
     ("notion_list_children", Effect::ReadOnly),
+    ("send_file", Effect::Session),
 ];
 
 /// The effect of a call by the name the CLI reports it under: this
@@ -188,11 +197,17 @@ fn instructions_for(tools: &[Box<dyn Tool>]) -> String {
         return DREAM_INSTRUCTIONS.to_string();
     }
     let remembers = tools.iter().any(|t| t.def().name == "remember");
+    let sends = tools
+        .iter()
+        .any(|t| t.def().name == crate::tools::send_file::NAME);
+    let mut out = INSTRUCTIONS.to_string();
     if remembers {
-        format!("{INSTRUCTIONS}{REMEMBER_INSTRUCTION}")
-    } else {
-        INSTRUCTIONS.to_string()
+        out.push_str(REMEMBER_INSTRUCTION);
     }
+    if sends {
+        out.push_str(SEND_FILE_INSTRUCTION);
+    }
+    out
 }
 
 /// Build the tool set for one project, or for the unfiled chats when there
@@ -974,6 +989,18 @@ pub async fn serve(
     if args.ask {
         tools.push(Box::new(crate::agent::ask::PromptTool));
     }
+    // `send_file` (nightshift backlog 343): served when the desktop named
+    // the chat's folder, never to a dream. A chat that writes nothing
+    // (`remember` off) keeps its copies in the temporary folder.
+    if let (Some(root), None) = (&args.root, &args.dream) {
+        use crate::tools::send_file;
+        let store = if args.remember {
+            send_file::store_in(&config)
+        } else {
+            send_file::scratch_store()
+        };
+        tools.push(Box::new(crate::tools::SendFile::new(root.clone(), store)));
+    }
     serve_tools(tools, reader, writer).await;
     Ok(())
 }
@@ -996,6 +1023,10 @@ pub struct ServeArgs {
     /// refuses). Off otherwise: a tool that only refuses has no business
     /// in a chat that is not asking.
     pub ask: bool,
+    /// The chat's folder (`--root <dir>`, nightshift backlog 343): served
+    /// with it, `send_file` sends files from inside it. Absent, no
+    /// `send_file` — the CLI's own `mcp-serve`, run by hand, has no chat.
+    pub root: Option<PathBuf>,
 }
 
 impl ServeArgs {
@@ -1005,6 +1036,7 @@ impl ServeArgs {
             remember: true,
             dream: None,
             ask: false,
+            root: None,
         }
     }
 
@@ -1014,6 +1046,7 @@ impl ServeArgs {
             remember: false,
             dream: Some(dream),
             ask: false,
+            root: None,
         }
     }
 }
@@ -1228,6 +1261,13 @@ pub fn parse_args(args: &[String]) -> Result<ServeArgs, String> {
             out.remember = false;
         } else if arg == "--ask" {
             out.ask = true;
+        } else if arg == "--root" {
+            let dir = it
+                .next()
+                .ok_or_else(|| "--root needs the chat's folder".to_string())?;
+            out.root = Some(PathBuf::from(dir));
+        } else if let Some(dir) = arg.strip_prefix("--root=") {
+            out.root = Some(PathBuf::from(dir));
         } else if arg == "--dream" {
             let json = it
                 .next()
@@ -1239,7 +1279,7 @@ pub fn parse_args(args: &[String]) -> Result<ServeArgs, String> {
             out.remember = false;
         } else {
             return Err(format!(
-                "unknown argument {arg:?}; the flags are --project <id>, --no-remember, --ask and --dream <json>"
+                "unknown argument {arg:?}; the flags are --project <id>, --no-remember, --ask, --root <dir> and --dream <json>"
             ));
         }
     }
@@ -1837,6 +1877,103 @@ mod tests {
         assert!(err.contains("not-a-project"), "{err}");
     }
 
+    /// Backlog 343: with `--root` the server serves `send_file`, says so in
+    /// its instructions, and a call over the wire copies a file from the
+    /// chat's folder into the config dir's store and answers with the line
+    /// the chip is drawn from; a path outside is a tool error. Without
+    /// `--root`, no `send_file`. A chat that writes nothing copies into the
+    /// temporary folder instead, never the config dir.
+    #[tokio::test]
+    async fn send_file_is_served_with_a_root_and_copies_into_the_store() {
+        use crate::tools::send_file;
+        let (config, id) = fixture("send-file");
+        let root = config.join("chat-folder");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("report.pdf"), b"%PDF").unwrap();
+        for remember in [true, false] {
+            let (client_side, server_side) = tokio::io::duplex(1 << 16);
+            let (sr, sw) = tokio::io::split(server_side);
+            let args = ServeArgs {
+                remember,
+                root: Some(root.clone()),
+                ..ServeArgs::for_project(Some(id.clone()))
+            };
+            let cfg = config.clone();
+            tokio::spawn(async move { serve(cfg, args, sr, sw).await.unwrap() });
+            let (r, mut w) = tokio::io::split(client_side);
+            let mut lines = BufReader::new(r).lines();
+            send(
+                &mut w,
+                r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+            )
+            .await;
+            let init = recv(&mut lines).await;
+            assert!(
+                init["result"]["instructions"]
+                    .as_str()
+                    .unwrap()
+                    .contains("use send_file"),
+                "{init}"
+            );
+            send(&mut w, r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#).await;
+            let list = recv(&mut lines).await;
+            assert!(
+                list["result"]["tools"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|t| t["name"] == "send_file"),
+                "{list}"
+            );
+            send(
+                &mut w,
+                r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"send_file","arguments":{"path":"report.pdf"}}}"#,
+            )
+            .await;
+            let reply = recv(&mut lines).await;
+            assert_eq!(reply["result"]["isError"], false, "{reply}");
+            let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+            let sent = send_file::parse_marker(text).expect("the chip's line");
+            let store = if remember {
+                send_file::store_in(&config)
+            } else {
+                send_file::scratch_store()
+            };
+            assert_eq!(
+                PathBuf::from(&sent.path),
+                store.join(&sent.id).join("report.pdf")
+            );
+            assert_eq!(std::fs::read(&sent.path).unwrap(), b"%PDF");
+            if !remember {
+                std::fs::remove_dir_all(store.join(&sent.id)).unwrap();
+            }
+            send(
+                &mut w,
+                r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"send_file","arguments":{"path":"../registry.json"}}}"#,
+            )
+            .await;
+            let refused = recv(&mut lines).await;
+            assert_eq!(refused["result"]["isError"], true, "{refused}");
+        }
+        // Only the remembering chat's copy is under the config dir.
+        let kept = std::fs::read_dir(send_file::store_in(&config))
+            .unwrap()
+            .count();
+        assert_eq!(kept, 1);
+        // No root, no tool.
+        let (r, mut w) = start(config.clone(), Some(id));
+        let mut lines = BufReader::new(r).lines();
+        send(&mut w, r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).await;
+        let list = recv(&mut lines).await;
+        assert!(
+            !list["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t["name"] == "send_file")
+        );
+    }
+
     #[test]
     fn the_flag_parses_both_spellings_and_nothing_else() {
         let args = |s: &[&str]| s.iter().map(|a| a.to_string()).collect::<Vec<_>>();
@@ -1856,6 +1993,15 @@ mod tests {
             Some("abc")
         );
         assert!(parse_args(&args(&["--project"])).is_err());
+        assert_eq!(
+            parse_args(&args(&["--root", "/w/p"])).unwrap().root,
+            Some(PathBuf::from("/w/p"))
+        );
+        assert_eq!(
+            parse_args(&args(&["--root=/w/p"])).unwrap().root,
+            Some(PathBuf::from("/w/p"))
+        );
+        assert!(parse_args(&args(&["--root"])).is_err());
         assert!(parse_args(&args(&["--verbose"])).is_err());
         let parsed = parse_args(&args(&["--project", "abc", "--no-remember"])).unwrap();
         assert_eq!(parsed.project.as_deref(), Some("abc"));
@@ -2123,6 +2269,7 @@ mod tests {
         let mut served = tools_in(&config, Some(&id), true).unwrap();
         served.extend(dream_tools(&dream_target(&config)));
         served.push(Box::new(crate::agent::ask::PromptTool));
+        served.push(Box::new(crate::tools::SendFile::new(&config, &config)));
         for tool in &served {
             let name = tool.def().name;
             assert_eq!(

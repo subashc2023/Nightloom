@@ -58,6 +58,7 @@
   import { REMOVED_TEXT_PLACEHOLDER, REMOVED_TOOL_PLACEHOLDER } from "./edit";
   import MemoryHits from "./MemoryHits.svelte";
   import { hitsOfCalls } from "./memoryHits";
+  import { isDragMove, sentExt, sentFilesOfCalls, type SentFile } from "./sentFiles";
   import { memoryRefs, openMemoryEdit } from "./memoryOpen";
   import { memoryEditOf, type MemoryEdit } from "./memoryEdits";
   import type { ReplyUsageView } from "./replyUsage";
@@ -362,6 +363,42 @@
     streaming ? [] : hitsOfCalls(segs.flatMap((s) => (s.kind === "tool" ? [s.call] : []))),
   );
   const memHits = $derived(memGroups.flatMap((g) => g.hits));
+  // Files the reply sent (backlog 343): every `send_file` result in the
+  // turn, as a chip under the reply — from the recorded results, so a
+  // reload draws them again; live too, as soon as a call answers.
+  const sent = $derived(sentFilesOfCalls(segs.flatMap((s) => (s.kind === "tool" ? [s.call] : []))));
+  async function openSent(f: SentFile): Promise<void> {
+    try {
+      await api.openFile(f.path);
+    } catch (e) {
+      addToast(`Could not open: ${String(e)}`);
+    }
+  }
+  async function saveSent(f: SentFile): Promise<void> {
+    try {
+      const to = await api.saveSentFile(f.path);
+      if (to) addToast(`Saved ${f.name}`);
+    } catch (e) {
+      addToast(`Could not save: ${String(e)}`);
+    }
+  }
+  // The drag out: the page sees the press and the move, the backend starts
+  // a native file drag (the webview cannot hand AppKit a file itself).
+  let pressed: { x: number; y: number; f: SentFile } | null = null;
+  function sentDown(e: PointerEvent, f: SentFile): void {
+    if (e.button !== 0 || (e.target as HTMLElement).closest("button")) return;
+    pressed = { x: e.clientX, y: e.clientY, f };
+  }
+  function sentMove(e: PointerEvent): void {
+    if (!pressed || (e.buttons & 1) === 0) {
+      pressed = null;
+      return;
+    }
+    if (!isDragMove(pressed, { x: e.clientX, y: e.clientY })) return;
+    const f = pressed.f;
+    pressed = null;
+    void api.dragSentFile(f.path).catch((err) => addToast(`Could not drag the file: ${String(err)}`));
+  }
   // Memory edits (backlog 305), per activity block: the API engine's
   // relative paths resolve against the chat's workspace.
   function memEditsOf(rows: { seg: Segment }[]): MemoryEdit[] {
@@ -796,6 +833,34 @@
       <span class="roll" aria-hidden="true"><Icon name="moon" size={28} /></span>
       <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
       <span class="working-text">{working}</span>
+    </div>
+  {/if}
+  {#if sent.length > 0}
+    <!-- Files the reply sent (backlog 343): the attachment chip — badge,
+         name, caption, size, Open, Save, Reveal; dragged, the file itself
+         goes where it is dropped. -->
+    <div class="cards sent-files">
+      {#each sent as f (f.id)}
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+          class="card file sent"
+          draggable="false"
+          use:tip={"Drag out to drop the file anywhere"}
+          onpointerdown={(e) => sentDown(e, f)}
+          onpointermove={sentMove}
+          onpointerup={() => (pressed = null)}
+        >
+          <span class="card-ext">{sentExt(f.name)}</span>
+          <span class="card-text">
+            <span class="card-title">{f.name}</span>
+            {#if f.caption}<span class="card-sub">{f.caption}</span>{/if}
+          </span>
+          <span class="card-size">{fmtSize(f.size)}</span>
+          <button class="ns-btn ghost small" use:tip={"Open with its application"} onclick={() => void openSent(f)}>Open</button>
+          <button class="ns-btn ghost small" use:tip={"Save a copy where you choose"} onclick={() => void saveSent(f)}>Save</button>
+          <button class="ns-btn ghost small" use:tip={"Show in the Finder"} onclick={() => void revealFile(f.path)}>Reveal</button>
+        </div>
+      {/each}
     </div>
   {/if}
   {#if !streaming && (links.length > 0 || files.length > 0)}
@@ -1659,6 +1724,12 @@
   .card .ns-btn {
     flex: none;
     gap: 4px;
+  }
+  /* A sent file is dragged out by its body (backlog 343). */
+  .card.sent {
+    cursor: grab;
+    user-select: none;
+    -webkit-user-select: none;
   }
   .footer {
     display: flex;

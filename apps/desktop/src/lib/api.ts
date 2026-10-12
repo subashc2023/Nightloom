@@ -1129,6 +1129,19 @@ export function openFile(path: string): Promise<null> {
   return invoke("open_file", { path });
 }
 
+/** A sent file's Save (nightshift backlog 343): the Save dialog, then a
+ *  copy there. The saved path, or null when he cancelled. Refused for
+ *  anything but a copy in `send_file`'s store. */
+export function saveSentFile(path: string): Promise<string | null> {
+  return invoke("save_sent_file", { path });
+}
+
+/** A sent file's drag out (backlog 343): a native file drag from the
+ *  pointer, while the button is down. macOS only. */
+export function dragSentFile(path: string): Promise<null> {
+  return invoke("drag_sent_file", { path });
+}
+
 /** A file read for a tab (nightshift backlog 161): refused, in words,
  *  outside `chat`'s folders unless its own tools wrote it. */
 export interface FileTabData {

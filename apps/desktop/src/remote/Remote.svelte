@@ -85,7 +85,8 @@
   } from "./client";
   import { renderMarkdown } from "../lib/markdown";
   // Wave 8B F2 (item 300): replies in order, code blocks, the keyboard.
-  import { liveSegments } from "./client";
+  import { liveSegments, sentOf } from "./client";
+  import { sentExt, type SentFile } from "../lib/sentFiles";
   import { codeBlocks } from "./codeBlocks";
   import { trackViewport } from "./viewport";
   import { subagentCalls } from "../lib/subagent";
@@ -1777,6 +1778,36 @@
     sheet = "message";
   }
 
+  /** A sent file's tap (backlog 343): fetched with the bearer like every
+   *  call, then handed to the browser as a download of its own name —
+   *  on the iPhone, the preview with Share and Save to Files. */
+  let fetching = $state<string | null>(null);
+  async function openSent(f: SentFile) {
+    if (!client || fetching) return;
+    fetching = f.id;
+    try {
+      const blob = await client.sentFile(f);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = f.name;
+      a.rel = "noopener";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (e) {
+      showError(String(e instanceof Error ? e.message : e), `fetch ${f.name}`);
+    } finally {
+      fetching = null;
+    }
+  }
+  function sizeWord(bytes: number): string {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
   /** Copy without the Clipboard API, which a page served over plain HTTP
    *  (the tailnet listener, blocker 660) does not get. */
   function copy(text: string) {
@@ -2671,6 +2702,22 @@
   {/each}
 {/snippet}
 
+{#snippet sentChips(files: SentFile[])}
+  {#if files.length > 0}
+    <div class="sent-files">
+      {#each files as f (f.id)}
+        <button class="sent-file" data-sent={f.id} disabled={fetching === f.id} onclick={() => void openSent(f)}>
+          <span class="sent-ext">{sentExt(f.name)}</span>
+          <span class="sent-text">
+            <span class="sent-name">{f.name}</span>
+            <span class="sent-sub">{fetching === f.id ? "fetching…" : f.caption ? `${f.caption} · ${sizeWord(f.size)}` : sizeWord(f.size)}</span>
+          </span>
+        </button>
+      {/each}
+    </div>
+  {/if}
+{/snippet}
+
 {#snippet toolBox(tools: ToolRow[], key: string, running: boolean, row: Row | null = null)}
   {@const n = toolCount(tools)}
   {#if n <= 3 || openTools[key]}
@@ -2821,6 +2868,7 @@
                 <div class="md" use:press={() => openMenu(r, s.part)} use:codeBlocks={copy}>{@html renderMarkdown(s.part.text, { breaks: true })}</div>
               {/if}
             {/each}
+            {@render sentChips(sentOf(r.tools))}
             {#if r.removed}<div class="stamp">removed from the context — long-press to restore</div>
             {:else}{@const line = replyLine(events, r, sizes)}{#if line}<div class="stamp reply-line">{line}</div>{/if}{/if}
           </div>
@@ -2834,6 +2882,7 @@
             {#if s.kind === "tools"}{@render toolBox(s.tools, `live${k}`, true)}
             {:else}<div class="md" use:codeBlocks={copy}>{@html renderMarkdown(s.text, { breaks: true })}</div>{/if}
           {/each}
+          {@render sentChips(sentOf(live.tools))}
           {#if !live.text && live.tools.length === 0}<span class="thinking"><i></i><i></i><i></i></span>{/if}
         </div>
       {:else if busyHere}
@@ -3835,6 +3884,58 @@
     padding: 10px 16px;
     font-size: 15.5px;
     white-space: pre-wrap;
+  }
+  /* A file a reply sent (backlog 343): the attachment chip, tapped to
+     fetch it. */
+  .sent-files {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+    margin: 6px 0 2px;
+  }
+  .sent-file {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    max-width: 100%;
+    min-width: 0;
+    padding: 8px 12px;
+    border: 1px solid var(--line2, var(--line));
+    border-radius: 10px;
+    background: var(--sheet, var(--bg));
+    color: var(--ink);
+    font: inherit;
+    text-align: left;
+  }
+  .sent-file:disabled {
+    opacity: 0.6;
+  }
+  .sent-ext {
+    flex: none;
+    font-family: var(--mono, monospace);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--bg);
+    background: var(--dim);
+    border-radius: 4px;
+    padding: 2px 5px;
+  }
+  .sent-text {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .sent-name,
+  .sent-sub {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .sent-sub {
+    font-size: 12px;
+    color: var(--dim);
   }
   .stamp {
     font-size: 11px;

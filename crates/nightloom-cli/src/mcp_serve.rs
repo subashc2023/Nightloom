@@ -53,6 +53,7 @@ pub async fn run(args: McpServeArgs) -> Result<()> {
             remember: !args.no_remember,
             dream: None,
             ask: args.ask,
+            root: None,
         },
     };
     mcp_server::serve_stdio(config, serve_args)

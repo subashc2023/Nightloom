@@ -745,6 +745,8 @@ fn router(shared: Arc<Shared>) -> Router {
         )
         .route("/dream", post(dream))
         .route("/capture", post(capture))
+        // A file a reply sent (nightshift backlog 343): the chip's tap.
+        .route("/sent-files/{id}/{name}", get(sent_file))
         .merge(nightshift_routes::router())
         .merge(sync_routes::router(shared.host.sync()))
         // An explicit fallback so the bearer layer below covers a miss
@@ -1005,6 +1007,50 @@ async fn transcript(State(shared): State<Arc<Shared>>, Path(id): Path<String>) -
         Ok(events) => Json(events).into_response(),
         Err(e) => (StatusCode::NOT_FOUND, e).into_response(),
     }
+}
+
+/// A file a reply sent (nightshift backlog 343), by the id and name the
+/// chip read out of the transcript: the copy in `send_file`'s store, with
+/// the bearer check every `/api` route has. Only a copy in a store is
+/// served — `locate` refuses an id or name that could walk out of one —
+/// and anything else is the same 404 as a missing copy. HTML and SVG go
+/// out as downloads, never rendered on this origin, where a script in
+/// them could read the page's token.
+async fn sent_file(Path((id, name)): Path<(String, String)>) -> Response {
+    use crate::tools::send_file;
+    let Some(path) = send_file::locate(&id, &name) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(b) => b,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let mut kind = send_file::media_type(&name);
+    if kind.starts_with("text/html") || kind == "image/svg+xml" {
+        kind = "application/octet-stream";
+    }
+    let mut resp = bytes.into_response();
+    let h = resp.headers_mut();
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_static(kind));
+    h.insert(
+        header::HeaderName::from_static("x-content-type-options"),
+        HeaderValue::from_static("nosniff"),
+    );
+    // The name for a save, ASCII-safe; the phone names its download itself.
+    let ascii: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_graphic() && c != '"' && c != '\\' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if let Ok(v) = HeaderValue::from_str(&format!("inline; filename=\"{ascii}\"")) {
+        h.insert(header::CONTENT_DISPOSITION, v);
+    }
+    resp
 }
 
 async fn project_transcript(
@@ -2676,6 +2722,43 @@ mod tests {
     }
 
     /// Tiny helpers for the tests below: a request with the bearer.
+    /// Backlog 343: a sent file is served to the bearer only, by the id and
+    /// name the chip read, with its media type; a wrong token, a name that
+    /// is not the copy's, a malformed id and a name that tries to climb out
+    /// are all refused, the last three as the same 404.
+    #[tokio::test]
+    async fn a_sent_file_is_served_to_the_token_alone() {
+        use crate::tools::send_file;
+        let (server, _host, _tx, token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        let dir = send_file::scratch_store().join(&id);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("report.pdf"), b"%PDF-1.4 x").unwrap();
+        let url = format!("{base}/api/sent-files/{id}/report.pdf");
+
+        let r = c.get(&url).send().await.unwrap();
+        assert_eq!(r.status(), 401, "no token");
+        let r = c.get(&url).bearer_auth("wrong").send().await.unwrap();
+        assert_eq!(r.status(), 401, "a wrong token");
+
+        let r = c.get(&url).bearer_auth(&token).send().await.unwrap();
+        assert_eq!(r.status(), 200);
+        assert_eq!(r.headers()[header::CONTENT_TYPE], "application/pdf");
+        assert_eq!(r.bytes().await.unwrap().as_ref(), b"%PDF-1.4 x");
+
+        for bad in [
+            format!("{base}/api/sent-files/{id}/other.pdf"),
+            format!("{base}/api/sent-files/not-an-id/report.pdf"),
+            format!("{base}/api/sent-files/{id}/..%2F..%2Fsecret"),
+        ] {
+            let r = c.get(&bad).bearer_auth(&token).send().await.unwrap();
+            assert_eq!(r.status(), 404, "{bad}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     async fn get_json(c: &reqwest::Client, url: String, token: &str) -> (u16, serde_json::Value) {
         let r = c.get(url).bearer_auth(token).send().await.unwrap();
         let status = r.status().as_u16();

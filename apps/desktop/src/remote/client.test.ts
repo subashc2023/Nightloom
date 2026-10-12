@@ -20,6 +20,7 @@ import {
   toolSummary,
   tokenFromHash,
   transcriptRows,
+  sentOf,
   editAction,
   fitSize,
   hasFeature,
@@ -822,5 +823,42 @@ describe("wave 3 B2: the missing buttons, the limit card, speak the reply", () =
     // No usage recorded: the model alone.
     const bare = [{ event: "assistant_message", model: "haiku", at, usage: usage(0, 0), stop_reason: null, blocks: [{ type: "text", text: "x" }] }] as unknown as SessionEvent[];
     expect(replyLine(bare, transcriptRows(bare)[0], replySizes(bare))).toBe("haiku");
+  });
+});
+
+// Backlog 343: a `send_file` result becomes the reply's chip, on either
+// engine's name, from the recorded log and from a live turn alike.
+describe("files a reply sent", () => {
+  const at = "2026-10-12T10:00:00Z";
+  const ID = "0123456789abcdef0123456789abcdef";
+  const content = `Sent "r.pdf" (4 B) to the user.\nnightloom-sent-file: {"id":"${ID}","name":"r.pdf","size":4,"path":"/s/${ID}/r.pdf"}`;
+
+  it("draws the chip from the recorded result", () => {
+    const events: SessionEvent[] = [
+      { event: "user_message", text: "a pdf please", at },
+      {
+        event: "assistant_message",
+        model: "m",
+        blocks: [{ type: "tool_use", id: "s1", name: "mcp__nightloom__send_file", input: { path: "r.pdf" } }],
+        stop_reason: null,
+        usage: { input_tokens: 0, output_tokens: 0 } as never,
+        at,
+      },
+      { event: "tool_result", tool_use_id: "s1", name: "mcp__nightloom__send_file", content, is_error: false, at },
+    ];
+    const rows = transcriptRows(events);
+    const reply = rows[1];
+    expect(reply.kind).toBe("assistant");
+    if (reply.kind !== "assistant") return;
+    expect(sentOf(reply.tools).map((f) => [f.id, f.name, f.size])).toEqual([[ID, "r.pdf", 4]]);
+  });
+
+  it("draws it in a live turn, and not for a refusal", () => {
+    let live = foldTurnEvent(emptyTurn(), { type: "tool_call", id: "s1", name: "send_file", input: { path: "r.pdf" } });
+    live = foldTurnEvent(live, { type: "tool_result", tool_use_id: "s1", name: "send_file", content, is_error: false });
+    expect(sentOf(live.tools).map((f) => f.name)).toEqual(["r.pdf"]);
+    let refused = foldTurnEvent(emptyTurn(), { type: "tool_call", id: "s2", name: "send_file", input: { path: "../x" } });
+    refused = foldTurnEvent(refused, { type: "tool_result", tool_use_id: "s2", name: "send_file", content: "outside", is_error: true });
+    expect(sentOf(refused.tools)).toEqual([]);
   });
 });

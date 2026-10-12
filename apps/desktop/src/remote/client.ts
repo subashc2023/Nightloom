@@ -11,6 +11,7 @@ import type { WireView } from "../lib/types";
 import type { ContextReply, LayerChange } from "./ContextSheet.svelte";
 import { isCouncilBlock } from "../lib/council";
 import { parseSubagentBlock } from "../lib/subagent";
+import { isSendFile, parseSentFile, sentFileRoute, type SentFile } from "../lib/sentFiles";
 // Pure over the log (only a type import inside): the desktop's per-reply
 // sizes, so the phone's line under a reply says the Mac's number.
 import { fmtTokens, turnSizes, type TurnSize } from "../lib/tokens";
@@ -763,6 +764,11 @@ export class Client {
     return r;
   }
 
+  /** A file a reply sent (backlog 343), with the bearer like every call. */
+  async sentFile(f: Pick<SentFile, "id" | "name">): Promise<Blob> {
+    return (await this.call(sentFileRoute(f))).blob();
+  }
+
   /** `signal`: the host choice's 1.5 s deadline (`hosts.ts`). */
   async state(signal?: AbortSignal): Promise<RemoteState> {
     return (await this.call("/state", signal ? { signal } : {})).json();
@@ -1056,6 +1062,20 @@ export interface ToolRow {
   /** A live turn's call: how much of the reply's text came before it, so
    *  the card sits between the words around it (300 A2). */
   textAt?: number;
+  /** The file a `send_file` call sent (backlog 343): its chip. */
+  sent?: SentFile;
+}
+
+/** The files a reply's calls sent, in order (backlog 343). */
+export function sentOf(tools: ToolRow[]): SentFile[] {
+  const out: SentFile[] = [];
+  for (const t of tools) if (t.sent && !out.some((o) => o.id === t.sent!.id)) out.push(t.sent);
+  return out;
+}
+
+/** A `send_file` result's file, for a row that just got its result. */
+function sentFrom(name: string, content: string, isError: boolean): SentFile | undefined {
+  return !isError && isSendFile(name) ? (parseSentFile(content) ?? undefined) : undefined;
 }
 
 /** The reply as it streams: text so far and the calls made, in order. */
@@ -1141,7 +1161,11 @@ export function foldTurnEvent(live: LiveTurn, ev: TurnEvent): LiveTurn {
     case "tool_result": {
       const tools = structuredClone(live.tools);
       const row = findTool(tools, ev.tool_use_id);
-      if (row) row.ok = !ev.is_error;
+      if (row) {
+        row.ok = !ev.is_error;
+        const sent = sentFrom(row.name, ev.content, ev.is_error);
+        if (sent) row.sent = sent;
+      }
       return { ...live, tools };
     }
     case "tool_denied": {
@@ -1410,7 +1434,11 @@ export function transcriptRows(events: SessionEvent[]): Row[] {
       }
       case "tool_result": {
         const row = byTool.get(e.tool_use_id);
-        if (row) row.ok = !e.is_error;
+        if (row) {
+          row.ok = !e.is_error;
+          const sent = sentFrom(row.name, e.content, !!e.is_error);
+          if (sent) row.sent = sent;
+        }
         break;
       }
       case "compaction":

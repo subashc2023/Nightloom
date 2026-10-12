@@ -500,6 +500,28 @@ and nothing to refuse. Both tools are served to an incognito chat itself —
 it may read the others; they may not read it. The test is
 `an_incognito_chat_is_hidden_from_search_and_refused_by_read`.
 
+## Handing him a file (`tools/send_file.rs`)
+
+Nightshift backlog 343 (2026-10-12). `send_file { path, caption? }` is on
+**both** engines — `build_chat` pushes it on the API engine, and the Claude
+Code engine's MCP server serves it as `mcp__nightloom__send_file` when the
+desktop passes `--root <chat folder>`. The same `deliver` runs either way.
+
+- **The path rule.** Resolved through a `Root` of the chat's folder alone
+  (not the vault, not the extra folders): `..`, an absolute path elsewhere
+  and a symlink out of the folder are refused, with the fix in the message
+  (copy it into the folder first). Missing, a folder, or over 100 MB is
+  refused too.
+- **The copy.** Into `<config>/sent-files/<id>/<name>`, or
+  `$TMPDIR/nightloom-sent-files/…` for a chat that writes nothing, so the
+  chip outlives the model deleting its file.
+- **The chip.** The result's last line is `nightloom-sent-file: {json}`;
+  `sentFiles.ts` reads it from the recorded `tool_result`, so the window's
+  chip (Open, Save, Reveal, drag out) and the phone page's chip (a tap
+  fetches `/api/sent-files/{id}/{name}` with the bearer) need nothing else
+  stored. Save and drag-out serve only a copy in a store (`is_stored`).
+- `Effect::Session`: no approval, and an incognito chat keeps it.
+
 ## Killing a shell is not killing the command (`tools/shell.rs`)
 
 `kill_tree`, `PUMP_GRACE`.
