@@ -510,7 +510,11 @@ function convert(html: string): string | null {
         } else put("- ");
       }
       if ((c.tag === "td" || c.tag === "th") && last() && last() !== "\n") put("\t");
-      walk(c, pre || c.tag === "pre");
+      // `data-nl-ws` is set only by the app's own copy (item 352,
+      // `mathCopy.ts`): the element's drawn white-space where it differs
+      // from its parent's, so a pre-wrapped message keeps its line breaks.
+      const ws = c.attrs["data-nl-ws"];
+      walk(c, ws === "pre" ? true : ws === "normal" ? false : pre || c.tag === "pre");
       if (block) nl(block);
     }
   };

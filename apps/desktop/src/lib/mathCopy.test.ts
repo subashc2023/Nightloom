@@ -37,4 +37,11 @@ describe("mathCopyText", () => {
     expect(mathCopyText("<p>Plain <strong>text</strong> and $5 bills.</p>")).toBeNull();
     expect(mathCopyText("")).toBeNull();
   });
+
+  it("a pre-wrapped element the copy marked keeps its line breaks; one marked normal inside it does not (review 2026-10-12)", () => {
+    // `drawnOnly` marks his turn (`white-space: pre-wrap` in UserBubble) so
+    // a copy across it and a reply with math keeps his lines.
+    const html = `<div data-nl-ws="pre">line one\nline two\n\nline four <span data-nl-ws="normal">a\nb</span></div><p>so ${inl("2^4")}</p>`;
+    expect(mathCopyText(html)).toBe("line one\nline two\n\nline four a b\n\nso $2^4$");
+  });
 });
