@@ -39,3 +39,18 @@ export function restDistance(
   const grown = Math.max(0, nowHeight - preHeight);
   return { distance: Math.max(0, preDistance - grown), viewport: Math.max(preHeight, nowHeight) };
 }
+
+/**
+ * What the transcript's follow-the-bottom effect does as the log or the
+ * live reply grows (backlog 347). `follow`: to the foot, as a pinned
+ * reader always was. `release`: he is away (the window is not in front)
+ * and the growth has put the foot below the view — the view stays where
+ * he left it and is no longer pinned, so the refocus finds his place with
+ * the ⌄ showing there is more, and a later delta does not snap it down.
+ * `stay`: a reader up the page, or away with nothing new below.
+ */
+export function followStep(pinned: boolean, away: boolean, atBottom: boolean): "follow" | "release" | "stay" {
+  if (!pinned) return "stay";
+  if (away) return atBottom ? "stay" : "release";
+  return "follow";
+}
