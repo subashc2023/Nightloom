@@ -216,6 +216,17 @@ pub const PLAN_MODE_PASS: [&str; 4] = ["Write", "Edit", "MultiEdit", "NotebookEd
 /// reply rather than as silence.
 pub const SUBAGENT_DENIED: &str = "this call needs the user's approval, which a subagent cannot ask for under Nightloom's Ask position — make the call from the main conversation, or report what you would have done";
 
+/// What a subagent's Claude in Chrome call is refused with under Ask,
+/// whatever *Subagents run on auto* says (nightshift backlog 353 review,
+/// blocker 1415): the browser is his own, logged-in Chrome, and the
+/// Browser switch's promise is that on Ask each browser call shows him a
+/// card first — which a subagent's call never can (it is never deferred).
+/// A standing "allow for this chat" rule still covers it, checked first.
+pub const SUBAGENT_BROWSER_DENIED: &str = "a subagent cannot use the browser under Nightloom's Ask position: each browser call needs the user's approval, which only the main conversation can ask for — make the call from there, or report what you would have done";
+
+/// Claude in Chrome's tool-name prefix (backlog 353).
+pub const BROWSER_TOOL_PREFIX: &str = "mcp__claude-in-chrome__";
+
 /// Whether a subagent's calls run unasked under Ask when the rules say
 /// nothing — a `rules.json` written before the switch existed, or none
 /// yet. On: a subagent's calls are the parent's, which the user let run
@@ -693,6 +704,11 @@ pub fn decide(dir: &Path, stdin_json: &str) -> HookReply {
         if input.tool_name == QUESTION_TOOL {
             return HookReply::deny(SUBAGENT_QUESTION_DENIED.into());
         }
+        // Nor does a subagent drive his browser unasked (backlog 353
+        // review, blocker 1415), whatever the switch says.
+        if input.tool_name.starts_with(BROWSER_TOOL_PREFIX) {
+            return HookReply::deny(SUBAGENT_BROWSER_DENIED.into());
+        }
         return if rules.subagents_auto.unwrap_or(SUBAGENTS_AUTO_DEFAULT) {
             HookReply::allow(None)
         } else {
@@ -982,6 +998,32 @@ mod tests {
         assert_eq!(decide(&dir, &bash), HookReply::allow(None));
         ask.set_subagents_auto(false).unwrap();
         assert_eq!(decide(&dir, &bash).decision(), "deny");
+    }
+
+    /// Backlog 353 review, blocker 1415: a subagent's Claude in Chrome call
+    /// is refused under Ask with the switch on too — the browser's promise
+    /// is a card for each call, which a subagent's call never gets — and a
+    /// standing rule for the tool still covers it. The main conversation's
+    /// call still defers to a card.
+    #[test]
+    fn a_subagents_browser_call_is_refused_under_ask_even_on_auto() {
+        let dir = scratch();
+        let ask = AskDir::new(&dir);
+        let nav = r#""tool_name":"mcp__claude-in-chrome__navigate""#;
+        let top = STDIN.replace(r#""tool_name":"Write""#, nav);
+        assert!(top.contains(nav));
+        let from_subagent = top.replacen(
+            r#""permission_mode":"acceptEdits""#,
+            r#""permission_mode":"acceptEdits","agent_id":"ae0b73db3d9ffbc33","agent_type":"general-purpose""#,
+            1,
+        );
+        assert!(ask.subagents_auto());
+        let reply = decide(&dir, &from_subagent);
+        assert_eq!(reply.decision(), "deny");
+        assert_eq!(reply.reason(), Some(SUBAGENT_BROWSER_DENIED));
+        assert_eq!(decide(&dir, &top), HookReply::defer());
+        ask.allow_tool("mcp__claude-in-chrome__navigate").unwrap();
+        assert_eq!(decide(&dir, &from_subagent).decision(), "allow");
     }
 
     /// A subagent's question (backlog 294, blocker 1031): refused with the

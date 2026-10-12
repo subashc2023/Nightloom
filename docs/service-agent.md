@@ -1143,7 +1143,11 @@ refuses them (blocker 1414) — by hook, so the tool list and the cached
 prefix stay the same. Beside it the Ask entry's `mcp__.*` becomes
 `mcp__(?!claude-in-chrome__).*` (review, 2026-10-12): with both entries
 matching, a refused browser call still raised an approval card, the
-backlog-147 bug for `Bash`. Flipping the switch on a running chat changes the tool
+backlog-147 bug for `Bash`. A **subagent's** browser call under Ask is refused in words
+(`ask::SUBAGENT_BROWSER_DENIED`, nightshift blocker 1415) whatever
+*Subagents run on auto* says: the hook never defers a subagent's call, so
+on auto it would have driven his Chrome with no card; a standing rule on
+the tool still covers it. Flipping the switch on a running chat changes the tool
 list (34 → 56 in the measurement), so the next turn re-writes the prefix once.
 
 ## What `--append-system-prompt` carries
