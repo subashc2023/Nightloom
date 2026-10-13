@@ -1,0 +1,26 @@
+<!doctype html>
+<!-- Item 276: the formatted message box (LiveBox, the real component) on a gallery of inputs, in a copy of the
+     composer's card at its 760px width, snapped with nightshift-code bin/snap. ?p=A|B|C|D picks the palette,
+     ?g=text|math the group, ?cursor=in puts the caret inside each case's first formatted span (source shown).
+     The caption measures each box: scrollWidth against clientWidth (a formula must never widen the box). -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      body { margin: 0; background: var(--paper); }
+      #root { padding: 12px 20px; display: flex; flex-direction: column; gap: 10px; }
+      .label { font: 11px ui-monospace, monospace; color: #8a8a8a; margin: 0 0 3px 2px; white-space: pre; overflow: hidden; text-overflow: ellipsis; max-width: 760px; }
+      .card { width: 760px; box-sizing: border-box; padding: 12px 14px; background: var(--sheet); border: 1px solid var(--line2); border-radius: 10px; }
+      .ta-wrap { position: relative; margin-left: -10px; width: calc(100% + 10px); }
+      #cap { font: 11px/1.5 ui-monospace, monospace; color: #ddd; background: #000; padding: 6px 8px; white-space: pre; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="cap"></div>
+    <script>
+      window.addEventListener("error", (e) => (document.getElementById("cap").textContent += "error: " + e.message + "\n"));
+    </script>
+    <script type="module" src="./composer276.svelte.ts"></script>
+  </body>
+</html>

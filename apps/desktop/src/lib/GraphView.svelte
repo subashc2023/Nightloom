@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   import * as api from "./api";
   import { app, closeNote, showNote } from "./state.svelte";
   import type { LinkGraph } from "./types";
@@ -353,7 +354,7 @@
         onmousemove={onMove}
         onmouseleave={() => (hovered = null)}
         onclick={onClick}
-        title={hovered ?? ""}
+        use:tip={hovered ?? ""}
       ></canvas>
       {#if hovered}
         <div class="tip">{hovered}</div>
@@ -369,10 +370,10 @@
       {#each graph.broken.slice(0, 24) as b (`${b.from}:${b.target}`)}
         <span
           class="chip"
-          title="{graph.notes[b.from]?.name ?? '?'} links to {b.target}{b
+          use:tip={`${graph.notes[b.from]?.name ?? '?'} links to ${b.target}${b
             .resolution.kind === 'ambiguous'
             ? ' — more than one note has that name'
-            : ''}"
+            : ''}`}
         >
           {b.target}{b.resolution.kind === "ambiguous" ? " ⚠" : ""}
         </span>

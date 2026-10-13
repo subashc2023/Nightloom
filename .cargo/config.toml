@@ -1,0 +1,10 @@
+# macOS only: run every `cargo run` binary through a script that signs
+# nightloom-desktop with a stable developer identity first, so the keychain's
+# "Always Allow" survives rebuilds. See scripts/macos-sign-and-run.sh for the
+# why. Linux and Windows are untouched by a [target.*-apple-darwin] table.
+# Paths with a slash resolve relative to this file's parent directory.
+[target.aarch64-apple-darwin]
+runner = "scripts/macos-sign-and-run.sh"
+
+[target.x86_64-apple-darwin]
+runner = "scripts/macos-sign-and-run.sh"

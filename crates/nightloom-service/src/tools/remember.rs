@@ -103,6 +103,7 @@ impl Tool for Remember {
                 v: 1,
                 at: Utc::now(),
                 source: self.source.clone(),
+                chat: None,
                 kind,
                 text: text.to_string(),
             },

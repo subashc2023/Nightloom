@@ -128,6 +128,26 @@ pub fn price(kind: ProviderKind, model: &str) -> Option<Price> {
         .map(|(_, price)| *price)
 }
 
+/// The id of the row [`price`] reads for `model`, or `None` (nightshift
+/// backlog 182). The prefix rule hides a new model inside its family —
+/// `claude-opus-5-6` reads Opus 5's row — so a caller that must say
+/// "Nightloom has no price for this yet" compares the row with the id.
+pub fn matched_row(kind: ProviderKind, model: &str) -> Option<&'static str> {
+    let model = model.to_ascii_lowercase();
+    let table = match kind {
+        ProviderKind::Anthropic => ANTHROPIC,
+        ProviderKind::Openai | ProviderKind::OpenaiChat => OPENAI,
+        ProviderKind::Gemini => GEMINI,
+        ProviderKind::Groq => GROQ,
+        ProviderKind::Openrouter => OPENROUTER,
+    };
+    table
+        .iter()
+        .filter(|(id, _)| model.starts_with(id))
+        .max_by_key(|(id, _)| id.len())
+        .map(|(id, _)| *id)
+}
+
 // ---------------------------------------------------------------------------
 // Provenance: read 2026-08-18 from openrouter.ai/api/v1/models and
 // models.dev/api.json. USD per million tokens. Models present in `limits.rs`
@@ -139,7 +159,18 @@ pub fn price(kind: ProviderKind, model: &str) -> Option<Price> {
 /// `cache_control: {type: ephemeral}` with no `ttl`, and 5 minutes is that
 /// field's default.
 const ANTHROPIC: &[(&str, Price)] = &[
+    // Fable 5.1 (nightshift backlog 188, 2026-09-22): $10 / $50 like Fable 5,
+    // but cache reads $0.25 (0.025x), 5-minute writes $12.50 — `external`, the
+    // Claude API skill bundled with Claude Code 2.1.280. Before this row the id
+    // matched `claude-fable-5` by prefix and its cache reads were priced 4x.
+    ("claude-fable-5-1", pcw(10.0, 50.0, 0.25, 12.5)),
     ("claude-fable-5", pcw(10.0, 50.0, 1.0, 12.5)),
+    // Opus 5.5 (nightshift backlog 178, 2026-09-22): $4 / $20, cache reads
+    // $0.20 (0.05x), 5-minute writes $5 — `external`, the Claude API skill
+    // bundled with Claude Code 2.1.280 (its write price is derived from the
+    // 1.25x multiplier, "confirm at launch"). Before this row the id matched
+    // `claude-opus-5` by prefix and was priced as Opus 5.
+    ("claude-opus-5-5", pcw(4.0, 20.0, 0.2, 5.0)),
     ("claude-opus-5", pcw(5.0, 25.0, 0.5, 6.25)),
     ("claude-sonnet-5", pcw(2.0, 10.0, 0.2, 2.5)),
     ("claude-opus-4-8", pcw(5.0, 25.0, 0.5, 6.25)),
@@ -227,6 +258,8 @@ const GROQ: &[(&str, Price)] = &[
 /// native rate when read), so a row here disagreeing with the native table
 /// above is the expected outcome and not a transcription error.
 const OPENROUTER: &[(&str, Price)] = &[
+    // Backlog 188 (night review, finding 5): 5.1's own row here too.
+    ("anthropic/claude-fable-5-1", pcw(10.0, 50.0, 0.25, 12.5)),
     ("anthropic/claude-fable-5", pcw(10.0, 50.0, 1.0, 12.5)),
     ("anthropic/claude-opus-5", pcw(5.0, 25.0, 0.5, 6.25)),
     ("anthropic/claude-sonnet-5", pcw(2.0, 10.0, 0.2, 2.5)),
@@ -295,6 +328,8 @@ mod tests {
             reasoning_tokens: None,
             cache_read_tokens: read,
             cache_write_tokens: write,
+            cache_write_5m_tokens: None,
+            cache_write_1h_tokens: None,
         }
     }
 
@@ -362,6 +397,42 @@ mod tests {
         let p = p(1.0, 2.0);
         let cost = p.cost(&usage(1_000, 0, Some(900), None));
         assert!((cost - 1_000.0 / 1e6).abs() < 1e-12, "{cost}");
+    }
+
+    #[test]
+    fn fable_5_1_has_its_own_price_not_fable_5s_by_prefix() {
+        // Backlog 188: before its row, `claude-fable-5-1` matched
+        // `claude-fable-5` by prefix and its cache reads cost $1, not $0.25.
+        let p = price(ProviderKind::Anthropic, "claude-fable-5-1").unwrap();
+        assert_eq!(
+            (p.input, p.output, p.cache_read, p.cache_write),
+            (10.0, 50.0, Some(0.25), Some(12.5))
+        );
+        let five = price(ProviderKind::Anthropic, "claude-fable-5").unwrap();
+        assert_eq!(five.cache_read, Some(1.0));
+        // Through OpenRouter too (night review, finding 5).
+        let or = price(ProviderKind::Openrouter, "anthropic/claude-fable-5-1").unwrap();
+        assert_eq!(or.cache_read, Some(0.25));
+    }
+
+    #[test]
+    fn opus_5_5_has_its_own_price_not_opus_5s_by_prefix() {
+        // Backlog 178: before its row, `claude-opus-5-5` matched
+        // `claude-opus-5` by prefix and was billed at $5 / $25.
+        let p = price(ProviderKind::Anthropic, "claude-opus-5-5").unwrap();
+        assert_eq!(
+            (p.input, p.output, p.cache_read, p.cache_write),
+            (4.0, 20.0, Some(0.2), Some(5.0))
+        );
+        let five = price(ProviderKind::Anthropic, "claude-opus-5").unwrap();
+        assert_eq!(five.input, 5.0);
+        // A dated Opus 5 snapshot still resolves to Opus 5, not 5.5.
+        assert_eq!(
+            price(ProviderKind::Anthropic, "claude-opus-5-2026-01-15")
+                .unwrap()
+                .input,
+            5.0
+        );
     }
 
     #[test]

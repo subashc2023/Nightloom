@@ -1,6 +1,66 @@
-import { beforeEach, describe, expect, it } from "vitest";
-import { app, currentTodos, liveFlags, roundCost } from "./state.svelte";
-import type { Price, SessionEvent, TodoItem, Usage } from "./types";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  app,
+  chatAgentSession,
+  chatMode,
+  clockOf,
+  currentTodos,
+  liveFlags,
+  MODE_GLYPH,
+  MODE_LINES,
+  newChatLabel,
+  newChatSelected,
+  newSession,
+  bornKind,
+  chatFolders,
+  chatKind,
+  setChatFolders,
+  declaredKind,
+  defaultKind,
+  kindLabel,
+  kindSwitchCost,
+  kindWorkspace,
+  switchChatKind,
+  planUsageFromTurn,
+  promptLayerEdits,
+  promptLayersOff,
+  roundCost,
+  sameEdits,
+  sameLayers,
+} from "./state.svelte";
+import type {
+  Price,
+  PromptLayer,
+  PromptLayerEdits,
+  SessionEvent,
+  TodoItem,
+  Usage,
+} from "./types";
+import * as api from "./api";
+
+// The backend, as far as `newSession` reaches it: the two commands New chat
+// used to call (create, then list) and the one it still calls. Everything
+// else in `./api` is the real module, since nothing here invokes it.
+vi.mock("./api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./api")>()),
+  newSession: vi.fn(async (mode?: "normal" | "incognito" | "ephemeral", kind?: "build" | "chat") => ({
+    mode: mode ?? "normal",
+    kind: kind ?? "build",
+  })),
+  listSessions: vi.fn(async () => []),
+  transcript: vi.fn(async () => []),
+  setChatKind: vi.fn(async (kind: "build" | "chat", workspace?: string) => [
+    { event: "session_created", id: "k1", at: "2026-01-01T00:00:00Z", kind: "chat" },
+    { event: "kind", kind, ...(workspace ? { workspace } : {}), at: "2026-01-01T00:00:00Z" },
+  ]),
+  setChatFolders: vi.fn(async (folders: string[]) => [
+    { event: "session_created", id: "f1", at: "2026-01-01T00:00:00Z" },
+    { event: "folders", folders, at: "2026-01-01T00:00:00Z" },
+  ]),
+  connect: vi.fn(async () => {
+    throw new Error("not connected in tests");
+  }),
+}));
 
 // These three functions are hand-written copies of backend logic —
 // `Session::live_flags`, `Session::todos` and `Price::cost`. Nothing links the
@@ -41,6 +101,24 @@ function todos(...contents: string[]): SessionEvent {
 function compaction(): SessionEvent {
   return { event: "compaction", summary: "…", at: AT };
 }
+
+describe("chatAgentSession (the rail's 'Continuing Claude Code session')", () => {
+  const cli = (id: string, agent = "claude-code"): SessionEvent => ({ event: "agent_session", agent, id, at: AT });
+
+  it("names the chat's own latest live CLI session, not another chat's", () => {
+    // Walk 2026-09-25: chat B's rail named A's session (ece63fa7); B's log
+    // said 8376769b. The label now reads the open chat's log.
+    expect(chatAgentSession([user("one"), cli("8376769b-aaaa"), assistant("hi")])).toBe("8376769b-aaaa");
+    expect(chatAgentSession([cli("old"), user("two"), cli("new")])).toBe("new");
+    expect(chatAgentSession([user("one"), assistant("hi")])).toBeNull();
+    expect(chatAgentSession([cli("x", "other-agent")])).toBeNull();
+  });
+
+  it("skips a session a rewind took back, as the backend's resume does", () => {
+    const events = [user("one"), cli("kept"), user("two"), cli("rewound"), rewind(2)];
+    expect(chatAgentSession(events)).toBe("kept");
+  });
+});
 
 describe("liveFlags", () => {
   it("leaves a log with no rewind entirely live", () => {
@@ -175,6 +253,168 @@ describe("currentTodos", () => {
   });
 });
 
+function layers(...off: PromptLayer[]): SessionEvent {
+  return { event: "prompt_layers", off, at: AT };
+}
+
+// A copy of `Session::prompt_layers_off`, on the same terms as the todos:
+// the popover's switches project this, and the backend builds the prompt
+// from its own, so a disagreement is a switch that lies.
+describe("promptLayersOff", () => {
+  it("is every layer on until the chat says otherwise", () => {
+    expect(promptLayersOff([user("one"), assistant("first")])).toEqual([]);
+  });
+
+  it("takes the latest set rather than the first", () => {
+    const events = [layers("project_notes"), user("one"), layers("identity", "knowledge")];
+    expect(promptLayersOff(events)).toEqual(["identity", "knowledge"]);
+  });
+
+  it("outlives a compaction, unlike the task list", () => {
+    // The chat is the same chat after a summary; a blind test does not stop
+    // being blind because its history was condensed.
+    const events = [layers("project_instructions"), user("one"), assistant("first"), compaction()];
+    expect(promptLayersOff(events)).toEqual(["project_instructions"]);
+  });
+
+  it("reverts to the earlier set when the newer one is rewound away", () => {
+    const events = [
+      layers("user_memory"),
+      user("one"),
+      assistant("first"),
+      layers("environment"),
+      user("two"),
+      assistant("second"),
+      // Back to before the first turn: the second set was recorded after
+      // it, so it goes with it, and the model knows what it knew then.
+      rewind(1),
+    ];
+    expect(promptLayersOff(events)).toEqual(["user_memory"]);
+  });
+});
+
+// The mode is the first line's, projected the way `Session::mode()` is:
+// what the top bar marks, the Context page says, and the reconnect strips
+// the engine's writers on — the three must read one source.
+describe("chatMode", () => {
+  const created = (mode?: "normal" | "incognito" | "ephemeral"): SessionEvent => ({
+    event: "session_created",
+    id: "abc",
+    at: "2026-09-15T00:00:00Z",
+    ...(mode ? { mode } : {}),
+  });
+
+  beforeEach(() => {
+    app.pendingMode = "normal";
+  });
+
+  it("is normal for no chat, and for a log written before the field existed", () => {
+    expect(chatMode([])).toBe("normal");
+    expect(chatMode([created(), user("one")])).toBe("normal");
+  });
+
+  it("is the pending kind while there is no chat (nightshift backlog 061)", () => {
+    // New chat is a state: no creation line yet, so the top bar's mark and
+    // the Context caveat read what the first message will create.
+    app.pendingMode = "incognito";
+    expect(chatMode([])).toBe("incognito");
+    app.pendingMode = "ephemeral";
+    expect(chatMode([])).toBe("ephemeral");
+    // And the line, once it exists, wins over whatever is still pending.
+    expect(chatMode([created(), user("one")])).toBe("normal");
+    expect(chatMode([created("incognito")])).toBe("incognito");
+  });
+
+  it("reads the creation line's mode", () => {
+    expect(chatMode([created("incognito"), user("one")])).toBe("incognito");
+    expect(chatMode([created("ephemeral")])).toBe("ephemeral");
+  });
+
+  it("is not something a rewind can reach", () => {
+    const events = [created("incognito"), user("one"), assistant("first"), rewind(1)];
+    expect(chatMode(events)).toBe("incognito");
+  });
+
+  it("marks the two non-normal kinds and not the ordinary one", () => {
+    expect(MODE_GLYPH.normal).toBe("");
+    expect(MODE_GLYPH.incognito).not.toBe("");
+    expect(MODE_GLYPH.ephemeral).not.toBe("");
+    expect(MODE_GLYPH.incognito).not.toBe(MODE_GLYPH.ephemeral);
+    // One line each, and each says the thing it drops.
+    expect(MODE_LINES.incognito).toMatch(/writes nothing/);
+    expect(MODE_LINES.incognito).toMatch(/unread by other chats/);
+    expect(MODE_LINES.ephemeral).toMatch(/nothing is kept/);
+  });
+});
+
+describe("sameLayers", () => {
+  it("compares as sets, in the order the backend normalizes to", () => {
+    expect(sameLayers(["knowledge", "identity"], ["identity", "knowledge"])).toBe(true);
+    expect(sameLayers(["identity", "identity"], ["identity"])).toBe(true);
+    expect(sameLayers([], [])).toBe(true);
+    expect(sameLayers(["identity"], [])).toBe(false);
+    expect(sameLayers(["identity"], ["environment"])).toBe(false);
+  });
+});
+
+function edited(off: PromptLayer[], edits: PromptLayerEdits): SessionEvent {
+  return { event: "prompt_layers", off, edits, at: AT };
+}
+
+// A copy of `Session::prompt_layer_edits`, under the same event as the off
+// set and on the same terms: the cards say "edited for this chat" off this,
+// and the backend assembles the prompt off its own.
+describe("promptLayerEdits", () => {
+  it("is no override until the chat says otherwise, including on a line without the field", () => {
+    expect(promptLayerEdits([user("one"), assistant("first")])).toEqual({});
+    // A `prompt_layers` line written before `edits` existed.
+    expect(promptLayerEdits([layers("identity")])).toEqual({});
+  });
+
+  it("takes the latest event's map, whole", () => {
+    const events = [
+      edited([], { user_memory: "first" }),
+      user("one"),
+      edited(["knowledge"], { model_instructions: "second" }),
+    ];
+    // The map is replaced, not merged: the earlier memory text is gone.
+    expect(promptLayerEdits(events)).toEqual({ model_instructions: "second" });
+    expect(promptLayersOff(events)).toEqual(["knowledge"]);
+  });
+
+  it("outlives a compaction and is undone by a rewind, like the off set", () => {
+    const kept = [edited([], { user_memory: "own" }), user("one"), assistant("first"), compaction()];
+    expect(promptLayerEdits(kept)).toEqual({ user_memory: "own" });
+    const wound = [
+      edited([], { user_memory: "first" }),
+      user("one"),
+      assistant("first"),
+      edited([], { user_memory: "second" }),
+      user("two"),
+      assistant("second"),
+      rewind(1),
+    ];
+    expect(promptLayerEdits(wound)).toEqual({ user_memory: "first" });
+  });
+});
+
+describe("sameEdits", () => {
+  it("compares kind by kind, ignoring key order and absent-vs-undefined", () => {
+    expect(sameEdits({}, {})).toBe(true);
+    expect(sameEdits({ user_memory: "a" }, { user_memory: "a" })).toBe(true);
+    expect(
+      sameEdits(
+        { user_memory: "a", project_instructions: "b" },
+        { project_instructions: "b", user_memory: "a" },
+      ),
+    ).toBe(true);
+    expect(sameEdits({ user_memory: undefined }, {})).toBe(true);
+    expect(sameEdits({ user_memory: "a" }, { user_memory: "b" })).toBe(false);
+    expect(sameEdits({ user_memory: "a" }, {})).toBe(false);
+    expect(sameEdits({ user_memory: "a" }, { model_instructions: "a" })).toBe(false);
+  });
+});
+
 describe("roundCost", () => {
   const price: Price = {
     input: 3,
@@ -264,5 +504,242 @@ describe("roundCost", () => {
       nulled,
     );
     expect(cost).toBeCloseTo(10, 10);
+  });
+});
+
+describe("clockOf — the Start field's and the chip's time", () => {
+  it("is the local clock time, with 'tomorrow' when the day differs", () => {
+    const now = new Date(2026, 8, 12, 0, 40); // 2026-09-12 00:40 local
+    const later = new Date(2026, 8, 12, 5, 12).getTime();
+    expect(clockOf(later, now)).toBe("at 05:12");
+    const next = new Date(2026, 8, 13, 0, 5).getTime();
+    expect(clockOf(next, now)).toBe("at 00:05 tomorrow");
+  });
+});
+
+// New chat is a state, not a file (nightshift backlog 061, 2026-09-15): the
+// click sets the pending kind and clears the chat, creates nothing, refreshes
+// nothing, and the sidebar's button is the selected item until the first
+// message lands a row. The button's two projections are pinned here rather
+// than the component, which this suite has no DOM to mount.
+describe("newSession — a state, not a file", () => {
+  beforeEach(() => {
+    vi.mocked(api.newSession).mockClear();
+    vi.mocked(api.listSessions).mockClear();
+    vi.mocked(api.transcript).mockClear();
+    app.busy = false;
+    app.activeSessionId = "abc";
+    app.events = [
+      { event: "session_created", id: "abc", at: AT },
+      user("one"),
+    ];
+    app.pendingMode = "normal";
+  });
+
+  it("leaves no chat open and records the kind, and the button is selected", async () => {
+    await newSession("incognito");
+    expect(app.activeSessionId).toBeNull();
+    expect(app.events).toEqual([]);
+    expect(app.pendingMode).toBe("incognito");
+    expect(newChatSelected()).toBe(true);
+    expect(newChatLabel()).toBe(`New chat ${MODE_GLYPH.incognito}`);
+    // The backend was told, so its own pending kind matches — the mode
+    // and, unfiled, the default kind: a Chat (nightshift backlog 102).
+    expect(api.newSession).toHaveBeenCalledWith("incognito", "chat");
+  });
+
+  // The second axis (nightshift backlog 102): Claude Code · Chat, chosen at
+  // New chat like the mode, pending until the creation line answers.
+  it("records the kind, defaults it from the project's folder, and the log's line wins", async () => {
+    app.project = null;
+    expect(defaultKind()).toBe("chat");
+    await newSession(undefined, "build");
+    expect(app.pendingKind).toBe("build");
+    expect(chatKind(app.events)).toBe("build");
+    expect(api.newSession).toHaveBeenLastCalledWith(undefined, "build");
+
+    app.project = { id: "p", name: "P", root: "/tmp/p" } as never;
+    expect(defaultKind()).toBe("build");
+    await newSession("incognito");
+    expect(app.pendingKind).toBe("build");
+    expect(api.newSession).toHaveBeenLastCalledWith("incognito", "build");
+    app.project = { id: "q", name: "Q", root: null } as never;
+    expect(defaultKind()).toBe("chat");
+    await newSession();
+    expect(app.pendingKind).toBe("chat");
+    // His "Unfiled chats" has a folder since the consolidation; it is
+    // still unfiled (walk 2026-09-25: the default read Claude Code there).
+    app.project = { id: "u", name: "Unfiled chats", root: "/tmp/Unfiled-chats", unfiled: true } as never;
+    expect(defaultKind()).toBe("chat");
+    await newSession();
+    expect(app.pendingKind).toBe("chat");
+    app.project = null;
+
+    // Once a chat is open its creation line is the answer, whatever is
+    // pending; a line with no kind is a build chat, as every old log is.
+    expect(chatKind([{ event: "session_created", id: "x", at: AT, kind: "chat" }])).toBe("chat");
+    expect(chatKind([{ event: "session_created", id: "x", at: AT }])).toBe("build");
+
+    // His naming: the build kind is Claude Code on the subscription
+    // engine and Build on the provider engine; Chat is Chat on both.
+    expect(kindLabel("build", "claude-code")).toBe("Claude Code");
+    expect(kindLabel("build", "provider")).toBe("Build");
+    expect(kindLabel("chat", "claude-code")).toBe("Chat");
+    expect(kindLabel("chat", null)).toBe("Chat");
+  });
+
+  // A switch (nightshift backlog 144): the latest live `kind` event wins,
+  // the creation line still says what the chat was born as, a rewind past
+  // the switch restores the earlier kind, and the declaration is `build`
+  // from the first time the chat was ever one — so a switch to a Chat never
+  // costs the cache and a switch to Claude Code costs it only on a chat
+  // born as a Chat.
+  it("reads the latest live kind event, keeps the birth kind, and prices the switch", () => {
+    const born = (kind: "build" | "chat"): SessionEvent => ({ event: "session_created", id: "x", at: AT, kind });
+    const sw = (kind: "build" | "chat", workspace?: string): SessionEvent => ({
+      event: "kind",
+      kind,
+      ...(workspace ? { workspace } : {}),
+      at: AT,
+    });
+    const bornBuild = [born("build"), user("one"), assistant("first"), sw("chat"), user("two"), assistant("second")];
+    expect(chatKind(bornBuild)).toBe("chat");
+    expect(bornKind(bornBuild)).toBe("build");
+    expect(declaredKind(bornBuild)).toBe("build");
+    expect(kindWorkspace(bornBuild)).toBeNull();
+    expect(kindSwitchCost(bornBuild, "build")).toBe(0);
+    // Rewind past the switch: the kind before it.
+    expect(chatKind([...bornBuild, rewind(1)])).toBe("build");
+
+    const bornChat = [born("chat"), user("one"), assistant("first")];
+    expect(chatKind(bornChat)).toBe("chat");
+    expect(declaredKind(bornChat)).toBe("chat");
+    // To a Chat: never a cache cost. To Claude Code on a born Chat: the
+    // prefix, once nothing has been sent it is null.
+    expect(kindSwitchCost(bornChat, "chat")).toBe(0);
+    expect(kindSwitchCost(bornChat, "build")).toBeNull();
+    const switched = [...bornChat, sw("build", "/tmp/elsewhere"), user("two"), assistant("second"), sw("chat")];
+    expect(chatKind(switched)).toBe("chat");
+    expect(declaredKind(switched)).toBe("build");
+    expect(kindWorkspace(switched)).toBeNull();
+    expect(kindWorkspace(switched.slice(0, 5))).toBe("/tmp/elsewhere");
+    expect(kindSwitchCost(switched, "build")).toBe(0);
+    // A rewind past the first switch to Claude Code takes the declaration
+    // back with it.
+    expect(declaredKind([...switched, rewind(1)])).toBe("chat");
+  });
+
+  it("switchChatKind records the event, picks up the created chat's id, and is a no-op on the same kind", async () => {
+    vi.mocked(api.setChatKind).mockClear();
+    app.busy = false;
+    app.connecting = false;
+    app.events = [];
+    app.pendingKind = "chat";
+    await switchChatKind("chat");
+    expect(api.setChatKind).not.toHaveBeenCalled();
+    await switchChatKind("build", "/tmp/p");
+    expect(api.setChatKind).toHaveBeenCalledWith("build", "/tmp/p");
+    expect(app.activeSessionId).toBe("k1");
+    expect(chatKind(app.events)).toBe("build");
+    expect(kindWorkspace(app.events)).toBe("/tmp/p");
+    app.activeSessionId = null;
+    app.events = [];
+  });
+
+  // A chat's extra folders (nightshift backlog 143): the latest live
+  // `folders` event, taken back by a rewind past it; the setter records the
+  // whole list, deduplicated, and is a no-op on the same list.
+  it("reads the latest live folders event and records the whole list", async () => {
+    const created: SessionEvent = { event: "session_created", id: "x", at: AT };
+    const grant = (folders: string[]): SessionEvent => ({ event: "folders", folders, at: AT });
+    expect(chatFolders([created])).toEqual([]);
+    const events = [created, user("one"), assistant("first"), grant(["/a", "/b"]), user("two"), assistant("second"), grant(["/b"])];
+    expect(chatFolders(events)).toEqual(["/b"]);
+    expect(chatFolders(events.slice(0, 5))).toEqual(["/a", "/b"]);
+    expect(chatFolders([...events, rewind(1)])).toEqual([]);
+
+    vi.mocked(api.setChatFolders).mockClear();
+    app.busy = false;
+    app.connecting = false;
+    app.events = [];
+    await setChatFolders([]);
+    expect(api.setChatFolders).not.toHaveBeenCalled();
+    await setChatFolders(["/nb", "/nb", " "]);
+    expect(api.setChatFolders).toHaveBeenCalledWith(["/nb"]);
+    expect(app.activeSessionId).toBe("f1");
+    expect(chatFolders(app.events)).toEqual(["/nb"]);
+    app.activeSessionId = null;
+    app.events = [];
+  });
+
+  it("is an ordinary chat when no kind is given, and the button is plain", async () => {
+    await newSession();
+    expect(app.pendingMode).toBe("normal");
+    expect(newChatLabel()).toBe("New chat");
+    expect(newChatSelected()).toBe(true);
+  });
+
+  it("clicking twice creates and lists nothing", async () => {
+    await newSession();
+    await newSession("ephemeral");
+    // No list refresh and no transcript fetch: there is no row and no line.
+    expect(api.listSessions).not.toHaveBeenCalled();
+    expect(api.transcript).not.toHaveBeenCalled();
+    expect(api.newSession).toHaveBeenCalledTimes(2);
+    expect(app.activeSessionId).toBeNull();
+    expect(app.pendingMode).toBe("ephemeral");
+  });
+
+  it("is not selected while a chat is open", () => {
+    expect(newChatSelected()).toBe(false);
+  });
+});
+
+// The plan chip from the turn (nightshift backlog 073): CLI 2.1.263's
+// rate_limit_event carries both windows' share used; an older build's
+// carries none, and none is no reading rather than zero.
+describe("planUsageFromTurn", () => {
+  it("reads both windows off unifiedWindows as whole percentages with ISO reset times", () => {
+    const now = 1_789_544_000_000;
+    const u = planUsageFromTurn(
+      {
+        status: "allowed_warning",
+        rateLimitType: "seven_day",
+        resetsAt: 1789552800,
+        isUsingOverage: false,
+        utilization: 0.86,
+        unifiedWindows: {
+          five_hour: { utilization: 0.85, resetsAt: 1789551600 },
+          seven_day: { utilization: 0.86, resetsAt: 1789552800 },
+        },
+      },
+      now,
+    );
+    expect(u).toEqual({
+      five_hour: 85,
+      seven_day: 86,
+      sampled_at_ms: now,
+      age_seconds: 0,
+      stale: false,
+      five_hour_resets_at: new Date(1789551600 * 1000).toISOString(),
+      seven_day_resets_at: new Date(1789552800 * 1000).toISOString(),
+      source: "turn",
+    });
+  });
+
+  it("is null for the 2.1.237 shape, no plan at all, or a window without a figure", () => {
+    expect(planUsageFromTurn(null)).toBeNull();
+    expect(
+      planUsageFromTurn({ status: "allowed", rateLimitType: "five_hour", resetsAt: 1, isUsingOverage: false }),
+    ).toBeNull();
+    expect(
+      planUsageFromTurn({
+        status: "allowed",
+        rateLimitType: "five_hour",
+        resetsAt: 1,
+        isUsingOverage: false,
+        unifiedWindows: { five_hour: { utilization: null, resetsAt: 1 }, seven_day: null },
+      }),
+    ).toBeNull();
   });
 });

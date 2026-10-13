@@ -1,9 +1,12 @@
-import { marked } from "marked";
+import { Marked, marked } from "marked";
 import DOMPurify from "dompurify";
-import { math } from "./math";
+import { math, renderMath } from "./math";
+import { tilde } from "./tilde";
+import { cite } from "./cite";
 import "katex/dist/katex.min.css";
 
 marked.use(math);
+marked.use(tilde);
 
 /**
  * KaTeX wraps its glyphs in a copy of the formula as MathML, which is what a
@@ -19,8 +22,41 @@ marked.use(math);
  */
 const ALLOW_MATHML = { ADD_TAGS: ["semantics", "annotation"] };
 
-/** Render assistant markdown to sanitized HTML. */
-export function renderMarkdown(src: string): string {
-  const html = marked.parse(src, { async: false, gfm: true });
+/** marked's options for `renderMarkdown` (pure, for the tests). */
+export function markdownOptions(opts: { breaks?: boolean } = {}): { async: false; gfm: true; breaks: boolean } {
+  return { async: false, gfm: true, breaks: opts.breaks === true };
+}
+
+/** Render assistant markdown to sanitized HTML. `breaks` keeps a single
+ *  newline as a line break (the phone's replies, nightshift 300 A32: a
+ *  list of numbers one per line ran together as one paragraph); the
+ *  desktop's callers leave it off and render exactly as before. */
+export function renderMarkdown(src: string, opts: { breaks?: boolean } = {}): string {
+  const html = marked.parse(src, markdownOptions(opts));
   return DOMPurify.sanitize(html, ALLOW_MATHML);
+}
+
+/**
+ * A reply's text (nightshift backlog 213): `renderMarkdown` plus the
+ * citation chips and the folded sources list (`cite.ts`). Its own marked
+ * instance, so a note, a blocker or a file view that happens to hold a
+ * "Sources" list or a `[1](url)` link renders exactly as before.
+ */
+const replyMarked = new Marked();
+replyMarked.use(math);
+replyMarked.use(tilde);
+replyMarked.use(cite);
+
+export function renderReply(src: string): string {
+  const html = replyMarked.parse(src, { async: false, gfm: true });
+  return DOMPurify.sanitize(html, ALLOW_MATHML);
+}
+
+/**
+ * One formula as sanitized HTML — the formatted note editor's math widget
+ * (nightshift backlog 150), through the same KaTeX call and the same
+ * sanitizer as a formula inside `renderMarkdown`.
+ */
+export function renderMathHtml(tex: string, display: boolean): string {
+  return DOMPurify.sanitize(renderMath(tex, display), ALLOW_MATHML);
 }

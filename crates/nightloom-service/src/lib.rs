@@ -8,27 +8,61 @@
 //! the shell's business.
 
 pub mod agent;
+pub mod agent_turn;
 pub mod approval;
+pub mod attach;
+pub mod capture;
+pub mod centre;
+pub mod chat_name;
+pub mod chat_ops;
+pub mod cli_update;
+pub mod context_ops;
+pub mod council;
 pub mod credentials;
+pub mod credits;
 pub mod dream;
+pub mod grounding;
 pub mod import;
+pub mod keep;
 pub mod knowledge;
+pub mod mcp_server;
+pub mod memory_where;
+pub mod model_list;
+pub mod nightshift;
+pub mod note_edit;
+pub mod notion;
 pub mod observe;
+pub mod pass_lock;
+pub mod plan_usage;
 pub mod project;
 pub mod prompt;
+pub mod proposal;
+pub mod rail_store;
+pub mod remote;
+pub mod serve;
+pub mod serve_reads;
 pub mod sidecar;
 pub mod store;
+pub mod sync;
+pub mod thread;
+pub mod tidy;
+pub mod tls;
 pub mod tools;
 pub mod turn;
+pub mod turn_timing;
+pub mod turn_usage;
+pub mod usage;
+pub mod voice;
 
 pub use agent::{
-    AgentError, AgentOutcome, AgentSpec, ClaudeCodeAgent, Recorder, resolve_binary,
-    searched_locations,
+    AgentError, AgentOutcome, AgentSpec, ClaudeCodeAgent, PassSpec, Recorder, carry_transcript,
+    resolve_binary, searched_locations,
 };
 pub use approval::{Approver, AutoApprove, Decision, PendingCall};
 pub use credentials::{CredentialError, KeySource, provider_key, search_key};
 pub use nightloom_providers::ProviderKind;
-pub use nightloom_providers::limits::context_limit;
+pub use nightloom_providers::count::count_tokens;
+pub use nightloom_providers::limits::{claude_code_window, context_limit};
 pub use nightloom_providers::models::list_models;
 pub use nightloom_providers::pricing::{Price, price};
 /// MCP: tools that live in another process.
@@ -41,7 +75,10 @@ pub mod mcp {
 }
 pub use knowledge::{LinkGraph, vault_dir};
 pub use project::{Note, Project, Registry};
-pub use prompt::{KnowledgeContext, ProjectContext, PromptConfig, assemble};
+pub use prompt::{
+    EngineLayers, KnowledgeContext, ProjectContext, PromptConfig, SubagentRules, agent_preamble,
+    agent_prompt, agent_prompt_with, assemble, layer_source, subagent_rules_update_note,
+};
 pub use sidecar::{SidecarContext, SidecarPart};
 pub use turn::{Chat, CompactOutcome, TurnEvent, TurnInput, TurnOutcome};
 

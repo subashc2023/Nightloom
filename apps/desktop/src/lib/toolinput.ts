@@ -30,7 +30,20 @@ export function inputFields(input: unknown): InputField[] {
   return Object.entries(input as Record<string, unknown>).map(
     ([key, value]) => ({
       key,
-      value: typeof value === "string" ? value : compactJson(value),
+      value: typeof value === "string" ? value : fieldJson(value),
     }),
   );
+}
+
+/**
+ * A non-string argument for the card. A list of objects — Claude in
+ * Chrome's `browser_batch` actions (nightshift backlog 353 review), a todo
+ * list — goes one item to a line, so each step can be read before it is
+ * approved; anything else stays one compact line, as before.
+ */
+function fieldJson(value: unknown): string {
+  if (Array.isArray(value) && value.length > 1 && value.every((v) => v !== null && typeof v === "object")) {
+    return "[\n" + value.map((v) => "  " + compactJson(v)).join(",\n") + "\n]";
+  }
+  return compactJson(value);
 }

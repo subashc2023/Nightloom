@@ -1,0 +1,34 @@
+<!doctype html>
+<!-- Backlog 291 + 293: the real ProviderRail (Subagent rules box, Exact limits fold) and the real ContextPanel
+     (the Subagent rules layer and its warm mark), backend stubbed. Snapped with nightshift-code bin/snap (WebKit).
+     ?v=rail|context  &p=A..D (palette)  &open=1 (click "Exact limits")  &type=1 (type rules into the box)
+     &warm=1 (context: the layer changed on a warm chat) -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      body { margin: 0; background: var(--bg, #000); }
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+      #root { width: 360px; margin: 12px; }
+      #overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.45); }
+      #cap { position: fixed; left: 0; right: 0; bottom: 0; font: 11px/1.4 ui-monospace, monospace; color: #ddd; background: #000c; padding: 4px 8px; white-space: pre-wrap; z-index: 99; }
+    </style>
+    <script>
+      window.__NIGHTLOOM_PLATFORM__ = "macos";
+      window.__TAURI_INTERNALS__ = {
+        invoke: (cmd, args) => (window.__stub ? window.__stub(cmd, args) : Promise.resolve(null)),
+        transformCallback: () => 0,
+        metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
+      };
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="cap"></div>
+    <script>
+      window.addEventListener("error", (e) => (document.getElementById("cap").textContent = "error: " + e.message));
+      window.addEventListener("unhandledrejection", (e) => (document.getElementById("cap").textContent += "\nrejection: " + e.reason));
+    </script>
+    <script type="module" src="./rules293.ts"></script>
+  </body>
+</html>

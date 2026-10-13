@@ -1,0 +1,59 @@
+<!doctype html>
+<!-- Item 338 — four whole looks side by side (text + thinking + tools each), for his pick. Serves next to stream338.html. -->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="color-scheme" content="dark" />
+    <title>Pick a look</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #1c1b19; color: #e8e4dc; font: 14px system-ui; }
+      header { display: flex; gap: 16px; align-items: center; padding: 10px 16px; border-bottom: 1px solid #333; }
+      header h1 { font-size: 15px; margin: 0; }
+      button { font: inherit; padding: 6px 14px; border-radius: 6px; border: 1px solid #555; background: #2a2926; color: inherit; cursor: pointer; }
+      main { display: grid; grid-template-columns: repeat(2, 1fr); grid-template-rows: 1fr; gap: 8px; padding: 8px; height: calc(100% - 60px); box-sizing: border-box; }
+      section { display: flex; flex-direction: column; border: 1px solid #333; border-radius: 8px; overflow: hidden; }
+      section h2 { margin: 0; padding: 6px 10px; font-size: 14px; background: #24231f; cursor: zoom-in; }
+      section.big { position: fixed; inset: 60px 8px 8px 8px; z-index: 5; background: #1c1b19; }
+      section.big h2 { cursor: zoom-out; }
+      section h2 span { font-weight: 400; color: #9a958b; }
+      iframe { flex: 1; border: 0; width: 100%; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Pick a look — reply with a letter</h1>
+      <span style="color:#9a958b">click a title to enlarge it</span>
+      <button id="all">Replay all</button>
+      <label><input type="checkbox" id="slow" /> half speed</label>
+    </header>
+    <main id="grid"></main>
+    <script>
+      const LOOKS = [
+        ["C", "Loom", "as before: shuttle text, needle thinking, weft tool rows", "shuttle", "needle", "weft"],
+        ["G", "Loom + fade-in", "everything from Loom, and each word also fades in smoothly", "shuttlefade", "needle", "weft"],
+      ];
+      const grid = document.getElementById("grid");
+      const frames = LOOKS.map(([letter, name, what, text, think, tool]) => {
+        const s = document.createElement("section");
+        s.innerHTML = `<h2>${letter} · ${name} <span>— ${what}</span></h2>`;
+        const f = document.createElement("iframe");
+        f.dataset.q = `text=${text}&think=${think}&tool=${tool}&open=1`;
+        f.src = `stream338.html?${f.dataset.q}`;
+        // Only the chat: the harness's controls, option notes and frame table hidden.
+        f.onload = () => {
+          const st = f.contentDocument.createElement("style");
+          st.textContent = "header, .col-head, #numbers { display: none !important; } .vp { height: 100vh !important; max-height: none !important; }";
+          f.contentDocument.head.append(st);
+        };
+        s.querySelector("h2").onclick = () => s.classList.toggle("big");
+        s.append(f);
+        grid.append(s);
+        return f;
+      });
+      document.getElementById("all").onclick = () => {
+        const speed = document.getElementById("slow").checked ? "&speed=0.5" : "";
+        for (const f of frames) f.src = `stream338.html?${f.dataset.q}${speed}`;
+      };
+    </script>
+  </body>
+</html>

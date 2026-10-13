@@ -482,8 +482,16 @@ mod tests {
             )
             .await;
         // 0 clamps up to MIN_TIMEOUT_MS rather than becoming an instant kill;
-        // echo finishes well inside it.
-        assert!(err.is_ok(), "{err:?}");
+        // echo finishes well inside it on an idle machine. Under CPU load
+        // (nightshift backlog 168: 12 busy processes, 3 runs in 3) starting
+        // a shell can take longer than 100 ms, so a kill is accepted too —
+        // but only one that says the clamped floor, never "after 0 ms".
+        if let Err(e) = &err {
+            assert!(
+                e.contains(&format!("killed after {MIN_TIMEOUT_MS} ms")),
+                "{e}"
+            );
+        }
         fs::remove_dir_all(&dir).ok();
     }
 

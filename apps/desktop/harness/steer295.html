@@ -1,0 +1,32 @@
+<!doctype html>
+<!-- Backlog 295: the real SubagentView under a running agent — one note delivered (drawn after the call it rode
+     on), one on its way, the box and "Tell the main chat too". Backend stubbed, fixtures only. Snapped with
+     nightshift-code bin/snap (WebKit).  ?p=A..D (palette)  &s=running|finished -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      body { margin: 0; background: var(--bg, #000); }
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+      #root { height: 100vh; }
+      #cap { position: fixed; left: 0; right: 0; bottom: 0; font: 11px/1.4 ui-monospace, monospace; color: #ddd; background: #000c; padding: 4px 8px; white-space: pre-wrap; z-index: 99; }
+    </style>
+    <script>
+      window.__NIGHTLOOM_PLATFORM__ = "macos";
+      window.__TAURI_INTERNALS__ = {
+        invoke: (cmd, args) => (window.__stub ? window.__stub(cmd, args) : Promise.resolve(null)),
+        transformCallback: () => 0,
+        metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
+      };
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="cap"></div>
+    <script>
+      window.addEventListener("error", (e) => (document.getElementById("cap").textContent = "error: " + e.message));
+      window.addEventListener("unhandledrejection", (e) => (document.getElementById("cap").textContent += "\nrejection: " + e.reason));
+    </script>
+    <script type="module" src="./steer295.ts"></script>
+  </body>
+</html>

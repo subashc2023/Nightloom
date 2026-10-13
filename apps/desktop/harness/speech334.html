@@ -1,0 +1,19 @@
+<!doctype html>
+<!-- Item 334: the speech test panel alone, with the phone page's dark tokens — for measuring
+     in WebKit on the Mac (nightshift-code's WKWebView runner) and for bin/snap at phone width. -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body { margin: 0; background: #232019; font-family: "IBM Plex Sans", -apple-system, sans-serif; }
+      #root { padding: 16px; --paper: #1b1916; --sheet: #232019; --well: #2c2822; --ink: #ece7dc; --ink2: #c9c2b3;
+        --dim: #8d8676; --line: #332e27; --line2: #4a443a; --accent: #e0a458; --on-accent: #1b1916;
+        --done: #7cc48a; --failed: #e57373; --live: #7fb3f0; --mono: "IBM Plex Mono", Menlo, monospace; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./speech334.ts"></script>
+  </body>
+</html>

@@ -18,7 +18,11 @@ use serde::{Deserialize, Serialize};
 /// What a segment carries. Adapters ignore this; it exists so shells can
 /// introspect an assembled prompt (show what's in play, drop one layer)
 /// without parsing text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Ord` and `Hash` are derived so a kind can key a map — a chat's own
+/// text per layer is stored as one — and the derived order is declaration
+/// order, which is not the ladder: use [`SegmentKind::LAYERS`] for that.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum SegmentKind {
@@ -40,10 +44,107 @@ pub enum SegmentKind {
     /// standing knowledge are not the same thing. The index only, like the
     /// docspace and for the same reason.
     Knowledge,
+    /// The `## Start here` section of the research thread the chat is bound
+    /// to (nightshift backlog 271, step 1, 2026-10-02):
+    /// `<project>/.agents/threads/<slug>/thread.md`. Only that section is
+    /// loaded; the rest of the file is read on demand. A sibling of
+    /// [`SegmentKind::ProjectNotes`] in the ladder, after it.
+    Thread,
     /// User-level standing preferences, from the config dir.
     UserMemory,
+    /// Standing instructions for the one model this chat runs on, from the
+    /// config dir's `models/` folder. Separate from
+    /// [`SegmentKind::UserMemory`] because that layer is read by every
+    /// model and this one is not: it exists for the preference that is
+    /// about *how one model talks*, which does not belong in a file every
+    /// other model also reads.
+    ModelInstructions,
+    /// How a *Chat* — the conversational kind of chat (nightshift backlog
+    /// 102, 2026-09-16) — talks: one file in the config dir, beside the
+    /// user's memory and the models' folder, read into a Chat's prompt
+    /// and no Build chat's. Its own kind because it is the layer that
+    /// makes a Chat a Chat on the subscription engine, where the CLI's
+    /// coding prompt stays underneath; on the provider engine it sits in
+    /// the same ladder position, after the model's file and before the
+    /// project's rules.
+    ChatInstructions,
+    /// The short gloss the Claude Code bridge appends after the layers above,
+    /// saying how their names (`read_file`, `@kb/`) read on an engine that
+    /// has its own tools. Its own kind rather than a [`SegmentKind::Custom`]
+    /// segment named "engine-note", because a shell that lets a chat switch
+    /// layers off addresses them by kind, and the note is a layer a user may
+    /// reasonably drop — the library prompt, which *is* `Custom`, is not.
+    EngineNote,
+    /// How to pace a message against its usage budget (nightshift backlog
+    /// 250, 2026-09-27): the per-message budget, the stop line, the usage
+    /// line the budget hook adds beside tool calls, and when to stop and
+    /// write up. Claude Code engine only, after the engine note; static
+    /// text — the figures ride the usage line, never the prompt.
+    Pacing,
+    /// How to use subagents on this engine (nightshift backlog 251,
+    /// 2026-09-27): when one pays for its start, reuse by SendMessage,
+    /// retirement, the cache lifetime by agent type, the model, the brief.
+    /// Claude Code engine only, after [`SegmentKind::Pacing`]; each
+    /// sentence was measured to hold in a Nightloom chat.
+    Subagents,
+    /// This chat's subagent rules (nightshift backlog 291 + 293,
+    /// 2026-10-03): the user's own rules in words, the limits Nightloom
+    /// enforces, the fork switch and what each helper kind starts with.
+    /// Claude Code engine only, after [`SegmentKind::Subagents`]. Changed
+    /// by a rail setting, it waits for the chat's cold moment like a file;
+    /// while the cache is warm the next message carries the new rules as
+    /// an appended note instead.
+    SubagentRules,
+    /// Claude Code's own auto memory for the chat's folder
+    /// (`~/.claude/projects/<cwd>/memory/MEMORY.md` and its topic files;
+    /// nightshift backlog 088, 2026-09-16). Never a segment of a
+    /// [`SystemPrompt`]: the CLI reads the file itself and Nightloom does
+    /// not assemble it. It is a kind so a chat can switch it off the way
+    /// it switches any other layer — recorded in the log by kind, read at
+    /// connect, and sent to the CLI as `autoMemoryEnabled: false` for
+    /// that chat. Off on any other engine, where there is no such file.
+    CliMemory,
     /// Anything a shell supplies directly (`--system`, the desktop textarea).
     Custom,
+}
+
+impl SegmentKind {
+    /// Every kind a chat may switch off, in ladder order — the set a shell
+    /// offers as switches. Excludes [`SegmentKind::Custom`]: the shell's own
+    /// text is chosen by the shell's own control (a dropdown, a flag), not by
+    /// a layer switch, and offering it twice would leave the two disagreeing.
+    pub const LAYERS: [SegmentKind; 13] = [
+        SegmentKind::Identity,
+        SegmentKind::Environment,
+        SegmentKind::UserMemory,
+        SegmentKind::ModelInstructions,
+        SegmentKind::ChatInstructions,
+        SegmentKind::ProjectInstructions,
+        SegmentKind::ProjectNotes,
+        SegmentKind::Thread,
+        SegmentKind::Knowledge,
+        SegmentKind::EngineNote,
+        SegmentKind::Pacing,
+        SegmentKind::Subagents,
+        SegmentKind::SubagentRules,
+    ];
+
+    /// The kinds whose text a chat may replace with its own — the four
+    /// that are a file the user wrote, in ladder order. The two indexes are
+    /// listings the shell computes, the identity and environment are the
+    /// harness's, and the engine note is the bridge's: none of those is a
+    /// text a user edits, so a chat's override for them is not a thing.
+    ///
+    /// Since 2026-10-02 (backlog 271) also the thread's `## Start here`: a
+    /// section of a file the model and the user write, so a chat may say
+    /// something else in its place like any file-backed layer.
+    pub const EDITABLE: [SegmentKind; 5] = [
+        SegmentKind::UserMemory,
+        SegmentKind::ModelInstructions,
+        SegmentKind::ChatInstructions,
+        SegmentKind::ProjectInstructions,
+        SegmentKind::Thread,
+    ];
 }
 
 /// One addressable piece of the system prompt.

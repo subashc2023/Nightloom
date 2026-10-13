@@ -1,0 +1,32 @@
+[
+ {
+  "label": "formula is the only content",
+  "doc": "$$\\hat{p}$$",
+  "anchor": 11,
+  "head": 11
+ },
+ {
+  "label": "click just left of it: caret before, drawn",
+  "doc": "$$\\hat{p}$$",
+  "anchor": 0,
+  "head": 0
+ },
+ {
+  "label": "typed before it",
+  "doc": "p is $$\\hat{p}$$",
+  "anchor": 5,
+  "head": 5
+ },
+ {
+  "label": "shift-End: selection across the formula",
+  "doc": "p is $$\\hat{p}$$",
+  "anchor": 5,
+  "head": 16
+ },
+ {
+  "label": "pasted a paragraph with formulas",
+  "doc": "p is $$\\hat{p}$$. Pasted: if $x^2$ and $$\\int_0^1 f$$ then **done**\nand a new line with $5 and $10",
+  "anchor": 98,
+  "head": 98
+ }
+]

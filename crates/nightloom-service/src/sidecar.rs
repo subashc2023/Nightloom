@@ -59,16 +59,40 @@ pub fn default_parts() -> Vec<Box<dyn SidecarPart>> {
 /// The framing matters: the model has to be able to tell this apart from
 /// something the user typed, or it will answer the status block instead of
 /// the question.
+///
+/// A spoken turn (the phone's voice mode, nightshift backlog 246) gets the
+/// "answer for the ear" note after the status block, framed on its own:
+/// unlike the status it *is* for the model to act on. It is read from
+/// `voice.md` ([`crate::voice::note`]) only when the last user message was
+/// spoken, so a typed turn's sidecar is byte-for-byte what it was.
 pub fn render(parts: &[Box<dyn SidecarPart>], ctx: &SidecarContext<'_>) -> Option<String> {
+    let spoken = ctx
+        .session
+        .last_user_spoken()
+        .then(crate::voice::note)
+        .filter(|n| !n.is_empty());
+    render_with(parts, ctx, spoken.as_deref())
+}
+
+fn render_with(
+    parts: &[Box<dyn SidecarPart>],
+    ctx: &SidecarContext<'_>,
+    spoken_note: Option<&str>,
+) -> Option<String> {
     let body: Vec<String> = parts.iter().filter_map(|p| p.render(ctx)).collect();
-    if body.is_empty() {
-        return None;
+    let status = (!body.is_empty()).then(|| {
+        format!(
+            "<session-status>\nAttached automatically each turn — the user did not type this. \
+             Treat it as background; don't reply to it.\n\n{}\n</session-status>",
+            body.join("\n\n")
+        )
+    });
+    let spoken = spoken_note.map(|n| format!("<spoken-turn>\n{n}\n</spoken-turn>"));
+    match (status, spoken) {
+        (None, None) => None,
+        (Some(s), None) | (None, Some(s)) => Some(s),
+        (Some(a), Some(b)) => Some(format!("{a}\n\n{b}")),
     }
-    Some(format!(
-        "<session-status>\nAttached automatically each turn — the user did not type this. \
-         Treat it as background; don't reply to it.\n\n{}\n</session-status>",
-        body.join("\n\n")
-    ))
 }
 
 /// Wall-clock time. The cheapest capability in the whole harness: without it
@@ -181,6 +205,39 @@ mod tests {
             },
         );
         session
+    }
+
+    /// A spoken turn carries the ear note after the status, framed apart
+    /// from it; a typed turn's sidecar is exactly what it was; a spoken
+    /// turn with nothing else to say still carries the note.
+    #[test]
+    fn a_spoken_turn_carries_the_ear_note_and_a_typed_one_does_not() {
+        let parts = default_parts();
+        let mut typed = Session::new();
+        typed.record_user("q");
+        let plain = render_with(&parts, &ctx(&typed, None), None).unwrap();
+        assert!(!plain.contains("spoken-turn"));
+
+        let mut spoken = Session::new();
+        spoken.record_user_message("q", vec![], vec![], true);
+        assert!(spoken.last_user_spoken());
+        let out = render_with(&parts, &ctx(&spoken, None), Some("answer for the ear")).unwrap();
+        assert!(out.starts_with("<session-status>"), "{out}");
+        assert!(
+            out.ends_with("<spoken-turn>\nanswer for the ear\n</spoken-turn>"),
+            "{out}"
+        );
+
+        let none: Vec<Box<dyn SidecarPart>> = Vec::new();
+        assert_eq!(
+            render_with(&none, &ctx(&spoken, None), Some("n")).as_deref(),
+            Some("<spoken-turn>\nn\n</spoken-turn>")
+        );
+        assert_eq!(render_with(&none, &ctx(&typed, None), None), None);
+
+        // The next typed message ends it: the note is for the turn, not the chat.
+        spoken.record_user("typed now");
+        assert!(!spoken.last_user_spoken());
     }
 
     #[test]

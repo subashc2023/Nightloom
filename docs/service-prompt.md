@@ -8,8 +8,9 @@ than failing loudly.
 
 ## `prompt.rs` — the static preamble
 
-`assemble(&PromptConfig)` layers identity → environment → user memory → project
-instructions → custom, anchoring a single cache breakpoint at the end.
+`assemble(&PromptConfig)` layers identity → environment → user memory → model
+instructions → project instructions → custom, anchoring a single cache
+breakpoint at the end.
 
 ### Environment
 
@@ -31,9 +32,54 @@ cwd**, emitted outermost-first so the most specific file wins. User memory is
 `~/.nightloom/AGENTS.md`, first in the ladder and outside the walk because it is
 about the *user* rather than a location on disk.
 
+**User memory is instructions only (2026-09-15, nightshift backlog 055).** The
+file holds how the model should behave — in every conversation, whatever it is
+about — and nothing about who the user is, what they work on or what happened.
+Those facts live in the vault (`profile.md`, the topic notes, `background.md`)
+and are read on demand: the file carries a short "Background, on demand"
+paragraph, and the vault index in the prompt lists the notes one line each.
+~~The paragraph names the notes and how to reach them~~ — **trimmed
+2026-09-15 (nightshift backlog 060): the paragraph is the rule alone — nothing
+about the user is here, read the one note a question needs — plus the
+`background.md` staleness caveat; the folder list and the `@kb/` addressing
+were the index's map said twice, and the index owns the map.** The rule exists because the claude.ai import
+once pasted the export's whole summary of the user — work context, personal
+context, top of mind, a history — into this file, and every turn of every chat
+paid for it whether or not the question touched it. Two writers hold the line:
+the importer sends the export's summary to the vault as `background.md` and
+adds the pointer paragraph once (`import.rs`), and the dream's proposal tool
+holds back a replacement that would add one of those sections rather than
+offer it as a draft (`proposal.rs`). The user edits the file themselves, in
+the app under Notes → Memory.
+
 One filename, not a house-branded one beside it, for the reason `mcp.json` uses
 the `mcpServers` key: a project that already wrote an `AGENTS.md` is picked up
 without being asked to duplicate it.
+
+### Instructions per model: `~/.nightloom/models/<id>.md` (2026-09-14)
+
+A fifth layer, `SegmentKind::ModelInstructions`, between user memory and the
+walk: a file one model reads and no other (nightshift backlog 044 — the
+complaint was a way one model talks, which does not belong in a file every
+model reads). `PromptConfig.model` names the model; `assemble` reads
+`models/<id>.md` under the config dir, whole, under the same 32 KiB cap, and
+emits `<model-instructions model="<id>">…</model-instructions>` only when the
+file exists and is not blank — an empty file is how the layer is switched off
+from the editor. The file is named after the id exactly, with `/` written `__`
+(`deepseek/deepseek-v4-flash` → `deepseek__deepseek-v4-flash.md`; a `:` is
+kept); `model_instruction_file` is the one place that rule lives, and
+`model_instruction_path` the one lookup. Global, not per project: it is about
+the model, not the folder.
+
+Both engines. The desktop's `connect` passes the id the chat actually runs on
+(`connect` fills in the provider's default when the rail sent none); the CLI
+does the same. On the Claude Code engine `agent_preamble` carries it like every
+other layer, looked up by **what the rail sends — the alias** (`opus`,
+`sonnet`), because the dated id the CLI resolves it to arrives with the first
+turn, after the prompt has been built once for the session. So a file for that
+engine is `opus.md`, not `claude-opus-5.md`; resolving the alias is a later
+pass, and the lookup helper is where it would go. Off in the evals with the
+other discovered layers, for the same reason.
 
 The walk deliberately does **not** stop at the git root. That assumes the only
 applicable instructions are ones committed to this project, which is wrong in
@@ -149,6 +195,51 @@ token argument — this vault records supersessions (an archived frame size, a
 superseded config block, a section headed *what is not written down here*), and
 a first paragraph would have surfaced the setup and hidden the correction on
 exactly the notes where being wrong costs most.
+
+### Layers off per chat (`PromptConfig::without`, 2026-09-14)
+
+A chat can switch any of the eight layers off for itself — `SegmentKind::LAYERS`:
+identity, environment, user memory, model instructions, project instructions,
+the notes index, the vault index, and on Claude Code the engine note — and the
+exclusion is recorded in its log as `SessionEvent::PromptLayers` (see
+[core.md](core.md)). `PromptConfig::without(&off)` lays the set over whatever the
+shell's switches said: the four bools go false, `model` / `project` / `knowledge`
+go `None`. So a layer that is off is **never read from disk**, not read and
+hidden — the property a blind test wants. The engine note has no field here and
+is `agent_prompt`'s own third argument; `Custom` is not a layer, because the
+shell's text has the shell's own control (the desktop's library dropdown,
+`--system`), and a second switch over it would leave two disagreeing.
+
+The desktop reads the set at `connect` / `connect_agent` from the open chat's
+log and reconnects when a switch flips, exactly as a rail knob does; subagents
+and reviewers are built from the same spec and inherit it, so a blind test stays
+blind one level down. The rail's Preamble switch is the outer gate: off there is
+off for every chat, and the per-chat switches have nothing left to remove.
+
+~~**Not built, on purpose: per-chat *rewriting* of a layer's text.** An edited
+copy of the project's instructions that one chat sees is a fork no later chat
+knows about. Editing text is what the store editors (instructions, memory,
+notes, vault) and the per-chat library prompt are for; a layer here is on or
+off, and the text it carries is the one every chat carries.~~ **Superseded
+2026-09-15 (nightshift backlog 057), his call: "changing the actual
+information per chat just in practice means changing what the flag is
+attached to".** A chat may now carry its own *body* for user memory, model
+instructions and project instructions — `PromptConfig.edits`, a
+`BTreeMap<SegmentKind, String>` read from `SessionEvent::PromptLayers.edits`
+at connect time. `assemble` puts the override where the file would go, in the
+file's wrapper (`<user-instructions>`, `<model-instructions model=…>`,
+`<project-instructions>` with no `path` — the text is the chat's, not a
+file's) and under the file's 32 KB cap; for project instructions it stands in
+for the whole walk as one segment. It is honoured only where the layer's own
+gate is on — an override for a layer switched off is dormant, not a way round
+`without` — and only for `SegmentKind::EDITABLE`. `layer_source(kind, model,
+cwd)` returns what the layer reads from disk as a body (the walk joined with a
+blank line, outermost first), the seed a shell offers before the chat has its
+own text. The fork the old paragraph worried about is answered by visibility,
+not refusal: the desktop's Context page says **edited for this chat** on the
+card, *as sent* carries the override, *Make this the file* hands it to the
+store editor as a draft and never writes, and the dream keeps proposing
+against the file.
 
 ### Both index layers are off in `nightloom-evals`
 

@@ -1,0 +1,110 @@
+[
+ {
+  "label": "a ",
+  "doc": "a ",
+  "anchor": 2,
+  "head": 2
+ },
+ {
+  "label": "*",
+  "doc": "a *",
+  "anchor": 3,
+  "head": 3
+ },
+ {
+  "label": "**",
+  "doc": "a **",
+  "anchor": 4,
+  "head": 4
+ },
+ {
+  "label": "**bold",
+  "doc": "a **bold",
+  "anchor": 8,
+  "head": 8
+ },
+ {
+  "label": "**bold* (must not flash italic)",
+  "doc": "a **bold*",
+  "anchor": 9,
+  "head": 9
+ },
+ {
+  "label": "**bold** closed",
+  "doc": "a **bold**",
+  "anchor": 10,
+  "head": 10
+ },
+ {
+  "label": "*it",
+  "doc": "a **bold** and *it",
+  "anchor": 18,
+  "head": 18
+ },
+ {
+  "label": "*it* closed",
+  "doc": "a **bold** and *it*",
+  "anchor": 19,
+  "head": 19
+ },
+ {
+  "label": "⌫: *it",
+  "doc": "a **bold** and *it",
+  "anchor": 18,
+  "head": 18
+ },
+ {
+  "label": "10×← into **bold**: marks show",
+  "doc": "a **bold** and *it",
+  "anchor": 8,
+  "head": 8
+ },
+ {
+  "label": "←",
+  "doc": "a **bold** and *it",
+  "anchor": 7,
+  "head": 7
+ },
+ {
+  "label": "#",
+  "doc": "a **bold** and *it\n#",
+  "anchor": 20,
+  "head": 20
+ },
+ {
+  "label": "# ",
+  "doc": "a **bold** and *it\n# ",
+  "anchor": 21,
+  "head": 21
+ },
+ {
+  "label": "# H (heading starts, marks dim)",
+  "doc": "a **bold** and *it\n# H",
+  "anchor": 22,
+  "head": 22
+ },
+ {
+  "label": "# Heading",
+  "doc": "a **bold** and *it\n# Heading",
+  "anchor": 28,
+  "head": 28
+ },
+ {
+  "label": "Shift-Enter: heading drawn, marks hidden",
+  "doc": "a **bold** and *it\n# Heading\n",
+  "anchor": 29,
+  "head": 29
+ },
+ {
+  "label": "↑ onto the heading: marks back",
+  "doc": "a **bold** and *it\n# Heading\nbody",
+  "anchor": 24,
+  "head": 24
+ },
+ {
+  "label": "# typed mid-heading: text",
+  "doc": "a **bold** and *it\n# Hea#ding\nbody",
+  "anchor": 25,
+  "head": 25
+ }
+]

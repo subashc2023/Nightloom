@@ -1,0 +1,32 @@
+<!doctype html>
+<!-- Item 299: edits as versions. The real Sidebar (?v=sidebar; &main=1 after Make main; &menu=1 opens the fork's
+     row menu) and the real Transcript of a fork with ‹ n/N › under the edited message (?v=transcript; &chat=o|f|g),
+     backend stubbed with fixture logs. &p=A..D palette. Snapped with nightshift-code bin/snap (WebKit). -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      body { margin: 0; background: var(--bg, #000); }
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+      #root { position: relative; display: flex; flex-direction: column; width: var(--w, 960px); height: var(--h, 560px); overflow: hidden; }
+      #cap { position: fixed; left: 0; right: 0; bottom: 0; font: 11px/1.4 ui-monospace, monospace; color: #ddd; background: #000c; padding: 4px 8px; white-space: pre-wrap; z-index: 99; }
+    </style>
+    <script>
+      window.__NIGHTLOOM_PLATFORM__ = "macos";
+      window.__TAURI_INTERNALS__ = {
+        invoke: (cmd, args) => (window.__stub ? window.__stub(cmd, args) : Promise.resolve(null)),
+        transformCallback: () => 0,
+        metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
+      };
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="cap"></div>
+    <script>
+      window.addEventListener("error", (e) => (document.getElementById("cap").textContent = "error: " + e.message));
+      window.addEventListener("unhandledrejection", (e) => (document.getElementById("cap").textContent += "\nrejection: " + e.reason));
+    </script>
+    <script type="module" src="./versions299.ts"></script>
+  </body>
+</html>

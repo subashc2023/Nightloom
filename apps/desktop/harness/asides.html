@@ -1,0 +1,27 @@
+<!doctype html>
+<!-- Backlogs 225, 226, 228: the real AsideCard / AsideView / Sidebar, served by
+     vite on a spare port and snapped with nightshift-code bin/snap (WebKit).
+     ?what=card|view|sidebar  &lines=0..8  &hover=more|main  &maxh=<px> (floating card, backlog 233)  &count=<n> (cards above the composer) -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      body { margin: 0; background: var(--paper, #111); }
+      /* An offscreen WKWebView runs no animations: the card would stay at its entrance frame (opacity 0). */
+      *, *::before, *::after { animation: none !important; }
+      #root { position: relative; display: flex; flex-direction: column; padding: 24px; min-height: 0; }
+      #root.sidebar { width: 280px; height: 420px; padding: 0; }
+      #cap { font: 12px/1.5 ui-monospace, monospace; color: #ddd; background: #000; padding: 6px 8px; white-space: pre; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="cap"></div>
+    <script>
+      window.addEventListener("error", (e) => (document.getElementById("cap").textContent = "error: " + e.message));
+      window.addEventListener("unhandledrejection", (e) => (document.getElementById("cap").textContent = "rejection: " + e.reason));
+      setTimeout(() => { if (!document.getElementById("cap").textContent) document.getElementById("cap").textContent = "no output yet"; }, 3000);
+    </script>
+    <script type="module" src="./asides.ts"></script>
+  </body>
+</html>

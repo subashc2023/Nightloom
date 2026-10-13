@@ -1,17 +1,24 @@
 <script lang="ts">
+  import { tip } from "./tip";
   import {
     app,
-    addProject,
+    openProjectFolder,
     deleteNote,
     revealFolder,
+    reviewProposal,
+    runCapture,
     runDream,
     saveNote,
     showGraph,
+    startContentDrag,
+    endContentDrag,
     showNote,
+    stopCapture,
     stopDream,
   } from "./state.svelte";
   import type { Note, NoteScope } from "./types";
   import { relativeTime } from "./time";
+  import * as api from "./api";
 
   /**
    * Two stores, one panel.
@@ -34,12 +41,46 @@
   let confirming = $state<string | null>(null);
   /** Sections start open; collapsing is per-session and deliberately not
    *  persisted — it is a glance, not a preference. */
-  let collapsed = $state<Record<NoteScope, boolean>>({
+  let collapsed = $state<Record<"project" | "knowledge", boolean>>({
     project: false,
     knowledge: false,
   });
 
-  function begin(scope: NoteScope) {
+  /**
+   * The always-loaded file at the head of each section — `AGENTS.md` in the
+   * workspace (instructions) and in `~/.nightloom` (memory). Read whole into
+   * every chat's preamble, so unlike the notes below it there is no index to
+   * show; the row carries its size, or "empty" when the file does not exist
+   * yet. Re-read whenever the lists refresh, which `saveNote` does after a
+   * save and the turn loop does after every turn.
+   */
+  const AGENTS_MD = "AGENTS.md";
+  let fixed = $state<Record<"instructions" | "memory", number | null>>({
+    instructions: null,
+    memory: null,
+  });
+  $effect(() => {
+    // Dependencies the effect should re-run on, read up front.
+    const projectId = app.project?.id ?? null;
+    void app.notes;
+    void app.vault;
+    void (async () => {
+      fixed.instructions = projectId
+        ? await api.readNote("instructions", AGENTS_MD).then(
+            (t) => t.length,
+            () => null,
+          )
+        : null;
+      fixed.memory = app.knowledge
+        ? await api.readNote("memory", AGENTS_MD).then(
+            (t) => t.length,
+            () => null,
+          )
+        : null;
+    })();
+  });
+
+  function begin(scope: "project" | "knowledge") {
     creating = scope;
     draftName = "";
     collapsed[scope] = false;
@@ -86,11 +127,55 @@
   }
 </script>
 
+{#snippet pinned(scope: "instructions" | "memory", label: string, hint: string)}
+  <!-- No delete button: the never-lose-work rule, and the backend refuses
+       it anyway — emptying the text is the reversible form. The badge is
+       the dream's pending proposal for the file (a sibling of the row, not
+       inside it — a button in a button is not HTML); it opens the same
+       editor in proposal mode, and nothing is applied until Load and Save. -->
+  <div class="item pinned" class:active={isOpen(scope, AGENTS_MD)}>
+    <button class="row" onclick={() => showNote(scope, AGENTS_MD)} use:tip={hint}>
+      <span class="name">{label}</span>
+      <span class="summary">{hint}</span>
+      <span class="meta">
+        {AGENTS_MD} ·
+        {fixed[scope] === null
+          ? "empty"
+          : fixed[scope] === 0
+            ? "empty"
+            : size(fixed[scope] ?? 0)}
+      </span>
+    </button>
+    {#if app.proposals[scope].length > 0}
+      <button
+        class="proposed"
+        use:tip={"The dream proposed a change to this file — review it as a diff"}
+        aria-label="Review the proposed change to {label}"
+        onclick={() => reviewProposal(scope)}
+        >{app.proposals[scope].length} proposed</button
+      >
+    {/if}
+  </div>
+{/snippet}
+
 {#snippet list(scope: NoteScope, notes: Note[])}
   <div class="list">
     {#each notes as n (n.name)}
       <div class="item" class:active={isOpen(scope, n.name)}>
-        <button class="row" onclick={() => showNote(scope, n.name)}>
+        <!-- Draggable (backlog 140 pass 2): onto a strip for a tab of
+             this note at that slot, onto a pane's half to open it beside. -->
+        <button
+          class="row"
+          onclick={(e) => {
+            // ⌘-click opens the note in a new tab (nightshift backlog
+            // 099, blocker 140); a plain click replaces the active one.
+            if (e.metaKey || e.ctrlKey) app.openNext = "new";
+            showNote(scope, n.name);
+          }}
+          draggable="true"
+          ondragstart={(e) => startContentDrag(e, { kind: "note", scope, name: n.name })}
+          ondragend={endContentDrag}
+        >
           <span class="name">{n.name}</span>
           {#if n.summary}<span class="summary">{n.summary}</span>{/if}
           <span class="meta">{size(n.bytes)} · {relativeTime(n.modified)}</span>
@@ -98,7 +183,7 @@
         <button
           class="delete"
           class:confirming={confirming === `${scope}:${n.name}`}
-          title={confirming === `${scope}:${n.name}`
+          use:tip={confirming === `${scope}:${n.name}`
             ? "Click again to delete this file"
             : "Delete note"}
           aria-label="Delete {n.name}"
@@ -113,7 +198,7 @@
   </div>
 {/snippet}
 
-{#snippet newRow(scope: NoteScope)}
+{#snippet newRow(scope: "project" | "knowledge")}
   <div class="bar">
     {#if creating === scope}
       <!-- svelte-ignore a11y_autofocus -->
@@ -131,6 +216,24 @@
     {:else}
       <button class="add" onclick={() => begin(scope)}>New note</button>
       {#if scope === "knowledge"}
+        <!-- The Capture button is always there, unlike Dream's: the inbox
+             count says nothing about what the chats hold, and the count on
+             it — logs with something new since the last read — is never
+             zero for long, since the chat open right now is one. -->
+        {#if app.capturing}
+          <button
+            class="dream running"
+            use:tip={"reading the chats…"}
+            onclick={() => void stopCapture()}>capturing… ✕</button
+          >
+        {:else}
+          <button
+            class="dream"
+            use:tip={"Read the chats since the last capture into the memory inbox"}
+            disabled={app.dreaming}
+            onclick={() => void runCapture()}>Capture · {app.capturePending}</button
+          >
+        {/if}
         <!-- The Dream button renders only with a backlog, the same rule as
              the CLI's startup line: an inbox with nothing in it needs no
              chrome, and a backlog the user cannot see is one that never
@@ -138,7 +241,7 @@
         {#if app.dreaming}
           <button
             class="dream running"
-            title={app.dreamActivity
+            use:tip={app.dreamActivity
               ? `dreaming — ${app.dreamActivity}`
               : "dreaming…"}
             onclick={() => void stopDream()}>dreaming… ✕</button
@@ -146,21 +249,24 @@
         {:else if app.dreamPending > 0}
           <button
             class="dream"
-            title="Consolidate remembered observations into the vault"
+            use:tip={"Consolidate remembered observations into the vault"}
             onclick={() => void runDream()}>Dream · {app.dreamPending}</button
           >
         {/if}
         <button
           class="folder"
-          title="Show the link graph"
+          use:tip={"Show the link graph — drag it onto a strip for a tab"}
           aria-label="Show the link graph"
           class:on={app.view === "graph"}
-          onclick={showGraph}>◈</button
+          onclick={showGraph}
+          draggable="true"
+          ondragstart={(e) => startContentDrag(e, { kind: "graph" })}
+          ondragend={endContentDrag}>◈</button
         >
       {/if}
       <button
         class="folder"
-        title="Show the folder"
+        use:tip={"Show the folder"}
         aria-label="Show the folder"
         onclick={() =>
           void revealFolder(
@@ -192,11 +298,16 @@
             Notes about the code live in the folder, so a teammate can read
             them and a diff can review them. Open a project to get a set.
           </p>
-          <button class="pick" onclick={() => void addProject()}
-            >Choose a folder…</button
+          <button class="pick" onclick={() => void openProjectFolder()}
+            >Open a folder…</button
           >
         </div>
       {:else}
+        {@render pinned(
+          "instructions",
+          "Instructions",
+          "Standing instructions for this project — read whole into every chat",
+        )}
         {@render newRow("project")}
         {#if app.notes.length === 0}
           <p class="hint">
@@ -232,6 +343,11 @@
           a knowledge base.
         </p>
       {:else}
+        {@render pinned(
+          "memory",
+          "Memory",
+          "How you want the model to behave, everywhere — read whole into every chat",
+        )}
         {@render newRow("knowledge")}
         {#if app.vault.length === 0}
           <p class="hint">
@@ -375,6 +491,10 @@
     color: var(--dim);
     font-style: italic;
   }
+  .dream:disabled {
+    color: var(--dim);
+    cursor: default;
+  }
   .folder {
     background: transparent;
     border: 1px solid var(--border);
@@ -419,10 +539,18 @@
     border-radius: 8px;
   }
   .item:hover {
-    background: #1b1830;
+    background: var(--well);
   }
   .item.active {
     background: #211d38;
+  }
+  /* The always-loaded file sits above the list, in the list's own gutter,
+     with a hairline under it so it reads as the head of the section rather
+     than the first note. */
+  .item.pinned {
+    margin: 0 0.5rem 0.35rem;
+    border-bottom: 1px solid var(--line);
+    border-radius: 8px 8px 0 0;
   }
   .row {
     flex: 1;
@@ -457,6 +585,25 @@
     font-size: 0.68rem;
     color: var(--dim);
     opacity: 0.75;
+  }
+  /* "1 proposed" beside the pinned row: the accent, since it is the one
+     thing in the panel waiting on the user. */
+  .proposed {
+    align-self: center;
+    flex-shrink: 0;
+    margin-right: 0.4rem;
+    background: transparent;
+    border: 1px solid var(--accent);
+    border-radius: 999px;
+    color: var(--accent);
+    font-family: inherit;
+    font-size: 0.66rem;
+    padding: 0.1rem 0.5rem;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .proposed:hover {
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
   }
   .delete {
     background: transparent;

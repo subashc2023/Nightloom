@@ -1,0 +1,62 @@
+[
+ {
+  "label": "before toggle",
+  "doc": "p is $$\\hat{p}$$. Pasted: if $x^2$ and $$\\int_0^1 f$$ then **done**\nand a new line with $5 and $10",
+  "anchor": 98,
+  "head": 98
+ },
+ {
+  "label": "toggled back on mid-typing (caret kept?)",
+  "doc": "p is $$\\hat{p}$$. Pasted: if $x^2$ and $$\\int_0^1 f$$ then **done**\nand a new line with $5 and $10 more\n",
+  "anchor": 104,
+  "head": 104
+ },
+ {
+  "label": "typed x after toggling on",
+  "doc": "p is $$\\hat{p}$$. Pasted: if $x^2$ and $$\\int_0^1 f$$ then **done**\nand a new line with $5 and $10 more\nx",
+  "anchor": 105,
+  "head": 105
+ },
+ {
+  "label": "draft in A before switch",
+  "doc": "p is $$\\hat{p}$$. Pasted: if $x^2$ and $$\\int_0^1 f$$ then **done**\nand a new line with $5 and $10 more\nx\ny $$\\frac{1}{1+\\frac{1}{x}}$$",
+  "anchor": 135,
+  "head": 135
+ },
+ {
+  "label": "switched to B (empty)",
+  "doc": "",
+  "anchor": 0,
+  "head": 0
+ },
+ {
+  "label": "B half-typed formula",
+  "doc": "",
+  "anchor": 0,
+  "head": 0
+ },
+ {
+  "label": "back to A: draft intact",
+  "doc": "p is $$\\hat{p}$$. Pasted: if $x^2$ and $$\\int_0^1 f$$ then **done**\nand a new line with $5 and $10 more\nx\ny $$\\frac{1}{1+\\frac{1}{x}}$$",
+  "anchor": 135,
+  "head": 135
+ },
+ {
+  "label": "back to B: half-typed kept",
+  "doc": "",
+  "anchor": 0,
+  "head": 0
+ },
+ {
+  "label": "B closed",
+  "doc": "",
+  "anchor": 0,
+  "head": 0
+ },
+ {
+  "label": "Enter: send (no backend in harness)",
+  "doc": "",
+  "anchor": 0,
+  "head": 0
+ }
+]

@@ -1,0 +1,7 @@
+{
+  "schedules": [
+    {"id": "nightly", "enabled": false, "days": ["mon", "tue", "wed", "thu", "fri"],
+     "start": "01:00", "until": "09:00", "max_units": 6, "budget_usd": 60,
+     "items": "global-order"}
+  ]
+}

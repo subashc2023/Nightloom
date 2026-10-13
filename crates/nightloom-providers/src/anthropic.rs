@@ -3,8 +3,8 @@ use async_stream::try_stream;
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use nightloom_core::{
-    ChatRequest, ContentBlock, EventStream, Message, Provider, ProviderError, Role, StreamEvent,
-    Thinking, Usage,
+    CacheTtl, ChatRequest, ContentBlock, EventStream, Message, Provider, ProviderError, Role,
+    StreamEvent, Thinking, Usage,
 };
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -258,6 +258,11 @@ const NOTHING_REPLAYABLE: &str = "[this turn's content was recorded against a \
 /// Gemini report it — so the three have to be summed. Skipping this makes the
 /// context gauge read near-empty on exactly the turns where the cache is
 /// working, which is the reverse of the truth.
+///
+/// `cache_creation` — the write split by lifetime, `ephemeral_5m_input_tokens`
+/// and `ephemeral_1h_input_tokens` — rides along when the API sends it
+/// (2026-09-15, nightshift backlog 063). It is what says when the entry
+/// expires; the total above only says that one was written.
 fn read_input_usage(u: &Value, usage: &mut Usage) {
     let read = u["cache_read_input_tokens"].as_u64();
     let write = u["cache_creation_input_tokens"].as_u64();
@@ -265,12 +270,22 @@ fn read_input_usage(u: &Value, usage: &mut Usage) {
         u["input_tokens"].as_u64().unwrap_or(0) + read.unwrap_or(0) + write.unwrap_or(0);
     usage.cache_read_tokens = read;
     usage.cache_write_tokens = write;
+    usage.cache_write_5m_tokens = u["cache_creation"]["ephemeral_5m_input_tokens"].as_u64();
+    usage.cache_write_1h_tokens = u["cache_creation"]["ephemeral_1h_input_tokens"].as_u64();
 }
 
 #[async_trait::async_trait]
 impl Provider for Anthropic {
     fn name(&self) -> &'static str {
         "anthropic"
+    }
+
+    /// Five minutes: [`Anthropic::body`] sends `cache_control: {type:
+    /// ephemeral}` with no `ttl`, and five minutes is that field's default
+    /// — the same fact `pricing.rs` prices the write column at. Change the
+    /// request and this changes with it; the two are one decision.
+    fn cache_ttl(&self) -> Option<CacheTtl> {
+        Some(CacheTtl::FiveMinutes)
     }
 
     async fn stream_chat(&self, request: ChatRequest) -> Result<EventStream, ProviderError> {
@@ -558,6 +573,45 @@ mod tests {
         assert_eq!(usage.input_tokens, 4010);
         assert_eq!(usage.cache_read_tokens, Some(4000));
         assert_eq!(usage.uncached_input_tokens(), 10);
+    }
+
+    /// The write's lifetime comes from `cache_creation`, and the adapter's
+    /// own answer for a request that does not say is the five minutes it
+    /// asks for (nightshift backlog 063).
+    #[test]
+    fn the_cache_write_lifetime_is_read_from_the_breakdown() {
+        let mut usage = Usage::default();
+        read_input_usage(
+            &json!({
+                "input_tokens": 10,
+                "cache_read_input_tokens": 12144,
+                "cache_creation_input_tokens": 7619,
+                "cache_creation": {
+                    "ephemeral_5m_input_tokens": 0,
+                    "ephemeral_1h_input_tokens": 7619
+                }
+            }),
+            &mut usage,
+        );
+        assert_eq!(usage.cache_write_1h_tokens, Some(7619));
+        assert_eq!(usage.cache_write_5m_tokens, Some(0));
+        assert_eq!(usage.cache_write_ttl(), Some(CacheTtl::OneHour));
+
+        // Without the object the split is unknown, not zero, and the
+        // adapter's default stands in for a request that touched the cache.
+        let mut plain = Usage::default();
+        read_input_usage(
+            &json!({ "input_tokens": 10, "cache_read_input_tokens": 4000 }),
+            &mut plain,
+        );
+        assert_eq!(plain.cache_write_1h_tokens, None);
+        assert_eq!(plain.cache_write_ttl(), None);
+        let adapter = Anthropic::new("k", None);
+        assert_eq!(adapter.cache_ttl(), Some(CacheTtl::FiveMinutes));
+        assert_eq!(
+            plain.cache_ttl(adapter.cache_ttl()),
+            Some(CacheTtl::FiveMinutes)
+        );
     }
 
     #[test]
@@ -1167,6 +1221,8 @@ mod tests {
                 reasoning_tokens: None,
                 cache_read_tokens: Some(4000),
                 cache_write_tokens: Some(120),
+                cache_write_5m_tokens: None,
+                cache_write_1h_tokens: None,
             }
         );
     }

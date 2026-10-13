@@ -105,6 +105,49 @@ pub struct Usage {
     /// fold cache writes into ordinary input, so this stays `None` there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_write_tokens: Option<u64>,
+    /// `cache_write_tokens` split by the lifetime the entry was written
+    /// with — Anthropic's `usage.cache_creation.ephemeral_5m_input_tokens`
+    /// and `ephemeral_1h_input_tokens` (2026-09-15). The split is what says
+    /// *when the entry expires*, which the total cannot: a write is a write
+    /// at either price, but one lasts five minutes and the other an hour.
+    /// `None` where the host reports no breakdown, which is every host but
+    /// Anthropic and every log written before the fields existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_5m_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_1h_tokens: Option<u64>,
+}
+
+/// How long a prompt-cache entry lives, measured from the *start* of the
+/// request that wrote it — or last read it, since a read refreshes the
+/// entry for its original lifetime (`external`, the Anthropic prompt-caching
+/// reference). Two values because the API offers two.
+///
+/// Serialized as the API's own suffixes, `5m` and `1h`, so a log line reads
+/// the way the usage block it was taken from does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CacheTtl {
+    #[serde(rename = "5m")]
+    FiveMinutes,
+    #[serde(rename = "1h")]
+    OneHour,
+}
+
+impl CacheTtl {
+    pub fn duration(self) -> std::time::Duration {
+        match self {
+            CacheTtl::FiveMinutes => std::time::Duration::from_secs(5 * 60),
+            CacheTtl::OneHour => std::time::Duration::from_secs(60 * 60),
+        }
+    }
+
+    /// The API's suffix — `5m`, `1h` — which is also the serialized form.
+    pub fn label(self) -> &'static str {
+        match self {
+            CacheTtl::FiveMinutes => "5m",
+            CacheTtl::OneHour => "1h",
+        }
+    }
 }
 
 impl Usage {
@@ -114,6 +157,44 @@ impl Usage {
         add_opt(&mut self.reasoning_tokens, other.reasoning_tokens);
         add_opt(&mut self.cache_read_tokens, other.cache_read_tokens);
         add_opt(&mut self.cache_write_tokens, other.cache_write_tokens);
+        add_opt(&mut self.cache_write_5m_tokens, other.cache_write_5m_tokens);
+        add_opt(&mut self.cache_write_1h_tokens, other.cache_write_1h_tokens);
+    }
+
+    /// The lifetime this request's cache write was made with, read off the
+    /// breakdown: an hour if any tokens went in at an hour, else five
+    /// minutes if any went in at five. `None` when nothing was written —
+    /// which includes a host that reports no breakdown at all.
+    ///
+    /// An hour outranks five minutes because a request that used both
+    /// breakpoints put the hour one first (the API requires the longer
+    /// lifetime earlier in the prompt), so the hour is what the shared
+    /// prefix lives for.
+    pub fn cache_write_ttl(&self) -> Option<CacheTtl> {
+        if self.cache_write_1h_tokens.unwrap_or(0) > 0 {
+            Some(CacheTtl::OneHour)
+        } else if self.cache_write_5m_tokens.unwrap_or(0) > 0 {
+            Some(CacheTtl::FiveMinutes)
+        } else {
+            None
+        }
+    }
+
+    /// The lifetime of the cache entry this request left behind, for a
+    /// timer: the write's own lifetime when the breakdown says it; else
+    /// `default` — the lifetime the engine writes with when it does not
+    /// say — when the request touched the cache at all, since a read
+    /// refreshes the entry it hit for that same lifetime and a write
+    /// without a breakdown is a write at the engine's usual one; `None`
+    /// when it did neither, because then there is no entry to time. A host
+    /// that reports no caching at all lands on `None` by the same test
+    /// rather than by a special case.
+    pub fn cache_ttl(&self, default: Option<CacheTtl>) -> Option<CacheTtl> {
+        self.cache_write_ttl().or_else(|| {
+            let touched =
+                self.cache_read_tokens.unwrap_or(0) + self.cache_write_tokens.unwrap_or(0);
+            (touched > 0).then_some(default).flatten()
+        })
     }
 
     /// Prompt tokens that were neither read from nor written to the cache —
@@ -207,4 +288,14 @@ pub trait Provider: Send + Sync {
     /// Open a streaming chat completion. The returned stream yields
     /// normalized events and ends after `StreamEvent::End` (or an error).
     async fn stream_chat(&self, request: ChatRequest) -> Result<EventStream, ProviderError>;
+
+    /// The lifetime this adapter's requests cache their prompt for when the
+    /// response does not say (see [`Usage::cache_ttl`]). The adapter is the
+    /// one thing that knows, since it is what asked for the cache and with
+    /// what `ttl`; `None` — the default — for a host whose cache has no
+    /// clock this crate can vouch for, which leaves the timer off rather
+    /// than guessing one.
+    fn cache_ttl(&self) -> Option<CacheTtl> {
+        None
+    }
 }

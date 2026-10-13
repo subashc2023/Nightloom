@@ -8,7 +8,10 @@ license.workspace = true
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# `unstable` (backlog 172, blocker 314): `Window::add_child`, the one way to
+# put a web tab's page inside a pane, compiles only with it. It also makes the
+# main page a child view that Tauri resizes with the window.
+tauri = { version = "2", features = ["unstable"] }
 nightloom-core.workspace = true
 nightloom-service.workspace = true
 serde.workspace = true
@@ -16,6 +19,32 @@ serde_json.workspace = true
 async-trait.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+# The connect log's timestamps (item 220, `connect_deadline`).
+chrono.workspace = true
 # API keys entered in-app land in the OS credential store (Windows
 # Credential Manager / macOS Keychain / Secret Service), never on disk.
 tauri-plugin-dialog = "2"
+# The turn-end banner (nightshift backlog 079, blocker 106) is posted from
+# Rust through the OS notification centre; the webview has no Notification
+# API of its own, so this is the one way to reach it.
+tauri-plugin-notification = "2"
+# The terminal pane (nightshift backlog 113, blocker 187): a pseudo-terminal
+# for his login shell, read on a thread and streamed to xterm.js in the
+# webview. `base64` carries the pty's bytes inside a JSON event — a string
+# cannot hold a byte cut mid-character; `libc` reads the foreground process
+# group for the strip's title. Both were already in the lockfile.
+portable-pty = "0.9"
+base64 = "0.22"
+libc = "0.2"
+# The Refresh-now banner (nightshift backlog 116, blocker 169) needs its
+# click back, which the plugin's `show()` discards. ~~notify-rust~~ (to
+# 2026-09-25): its 4.18 `wait_for_action` no longer waits on a banner with no
+# buttons, so the click never came back. Now the crate under it,
+# mac-notification-sys, with `wait_for_click` — already in the lockfile.
+# Nothing else posts through it.
+[target.'cfg(target_os = "macos")'.dependencies]
+mac-notification-sys = "0.6"
+# Web tabs' keys (backlog 172 pass 2): which page holds the first responder,
+# and Undo/Redo sent to it as AppKit actions. Already in the lockfile (tauri
+# and wry use it); two messages and a class lookup, no feature needed.
+objc2 = "0.6"

@@ -1,0 +1,28 @@
+<!doctype html>
+<!-- Item 276 fix pass: replays the states recorded while typing and clicking in the real composer
+     (harness/composer276-full.html, Browser pane) so bin/snap can save each intermediate state. ?f=<name> loads
+     harness/steps276/<name>.json — [{label, doc, anchor, head}] — and draws each state in the real editor state
+     (composerState, focused), with a drawn caret and selection since an offscreen WebKit view has no focus. -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      body { margin: 0; background: var(--paper); }
+      #root { padding: 10px 16px; display: flex; flex-direction: column; gap: 6px; }
+      .label { font: 11px ui-monospace, monospace; color: #9a9a9a; margin: 0 0 2px 2px; white-space: pre; overflow: hidden; text-overflow: ellipsis; max-width: 760px; }
+      .card { width: 760px; box-sizing: border-box; padding: 10px 14px; background: var(--sheet); border: 1px solid var(--line2); border-radius: 10px; }
+      .ta-wrap { position: relative; margin-left: -10px; width: calc(100% + 10px); }
+      .fake-caret { display: inline-block; width: 0; height: 1.2em; vertical-align: text-bottom; box-shadow: 0 0 0 1px var(--ink); margin: 0 -1px 0 0; }
+      .fake-sel { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+      #cap { font: 11px/1.5 ui-monospace, monospace; color: #ddd; background: #000; padding: 6px 8px; white-space: pre; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="cap"></div>
+    <script>
+      window.addEventListener("error", (e) => (document.getElementById("cap").textContent += "error: " + e.message + "\n"));
+    </script>
+    <script type="module" src="./composer276-steps.ts"></script>
+  </body>
+</html>

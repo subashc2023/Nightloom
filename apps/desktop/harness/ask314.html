@@ -1,0 +1,31 @@
+<!doctype html>
+<!-- Backlog 314: the real App with a stubbed Tauri backend and one pending prompt — the question card (his ICS 46
+     "Help style" case, or a long one) or a permission prompt. Fixtures in ask314.ts.
+     ?case=two|long|perm  &p=A|B|C|D  &drag=<px> (a saved question height from before 314) -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      #cap { position: fixed; left: 0; top: 0; right: 0; font: 11px/1.4 ui-monospace, monospace; color: #ddd; background: #000c; padding: 4px 8px; white-space: pre-wrap; z-index: 999; }
+    </style>
+    <script>
+      window.__NIGHTLOOM_PLATFORM__ = "macos";
+      window.__TAURI_INTERNALS__ = {
+        invoke: (cmd, args) => (window.__stub ? window.__stub(cmd, args) : Promise.reject("no stub")),
+        transformCallback: () => 0,
+        unregisterCallback: () => {},
+        metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
+      };
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="cap"></div>
+    <script>
+      window.addEventListener("error", (e) => (document.getElementById("cap").textContent += "\nerror: " + e.message));
+      window.addEventListener("unhandledrejection", (e) => (document.getElementById("cap").textContent += "\nrejection: " + e.reason));
+    </script>
+    <script type="module" src="./ask314.ts"></script>
+  </body>
+</html>

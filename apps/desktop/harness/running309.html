@@ -1,0 +1,33 @@
+<!doctype html>
+<!-- Backlogs 308 + 309: the real App with a stubbed Tauri backend — runs in two projects (a turn on screen, a turn
+     off screen in another project with a subagent, the dream, a Nightshift run), the running badge at the strip's end,
+     the Running-tasks panel's everywhere group, and the quit dialog. Fixtures in running309.ts.
+     ?p=A|B|C|D (palette)  &shot=badge|panel|quit -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+      #cap { position: fixed; left: 0; bottom: 0; right: 0; font: 11px/1.4 ui-monospace, monospace; color: #ddd; background: #000c; padding: 4px 8px; white-space: pre-wrap; z-index: 999; }
+    </style>
+    <script>
+      window.__NIGHTLOOM_PLATFORM__ = "macos";
+      window.__TAURI_INTERNALS__ = {
+        invoke: (cmd, args) => (window.__stub ? window.__stub(cmd, args) : Promise.reject("no stub")),
+        transformCallback: () => 0,
+        unregisterCallback: () => {},
+        metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
+      };
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="cap"></div>
+    <script>
+      window.addEventListener("error", (e) => (document.getElementById("cap").textContent += "\nerror: " + e.message));
+      window.addEventListener("unhandledrejection", (e) => (document.getElementById("cap").textContent += "\nrejection: " + e.reason));
+    </script>
+    <script type="module" src="./running309.ts"></script>
+  </body>
+</html>

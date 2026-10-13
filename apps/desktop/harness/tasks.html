@@ -1,0 +1,36 @@
+<!doctype html>
+<!-- Backlog 267: the real RunningTasks (the Running tasks page) on its overlay, with a fixture of 3 running agents,
+     15 finished (over three sends, one failed) and 2 running chats; served by vite on a spare port and snapped with
+     nightshift-code bin/snap (WebKit). ?palette=A|B|C|D  &chats=0 (no running chats)  &agents=0 (no subagents)
+     &earlier=1 (open the earlier-sends group)  &scroll=end  &before=1 (the page as of bee1086, only while its copy exists) -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      body { margin: 0; background: var(--paper, #000); }
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+      #overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(13, 13, 20, 0.65); }
+      #cap { position: fixed; left: 0; right: 0; bottom: 0; font: 11px/1.4 ui-monospace, monospace; color: #ddd; background: #000c; padding: 4px 8px; white-space: pre-wrap; z-index: 99; }
+      #cap:empty { display: none; }
+    </style>
+    <script>
+      window.__NIGHTLOOM_PLATFORM__ = "macos";
+      window.__TAURI_INTERNALS__ = {
+        invoke: () => Promise.reject("no stub"),
+        transformCallback: () => 0,
+        metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
+      };
+      const p = new URLSearchParams(location.search).get("palette");
+      if (p) document.documentElement.setAttribute("data-palette", p);
+    </script>
+  </head>
+  <body>
+    <div id="overlay"></div>
+    <div id="cap"></div>
+    <script>
+      window.addEventListener("error", (e) => (document.getElementById("cap").textContent = "error: " + e.message));
+      window.addEventListener("unhandledrejection", (e) => (document.getElementById("cap").textContent += "\nrejection: " + e.reason));
+    </script>
+    <script type="module" src="./tasks.ts"></script>
+  </body>
+</html>
