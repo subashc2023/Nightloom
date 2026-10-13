@@ -1,3 +1,5 @@
+import summonSrc from "./composerSummon.svelte.ts?raw";
+import composerSrc from "./Composer.svelte?raw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   pasteChord,
@@ -181,5 +183,19 @@ describe("pasteToComposeKeydown / pasteToComposeEvent", () => {
     active = el("TEXTAREA");
     pasteToComposeEvent({ defaultPrevented: false } as unknown as ClipboardEvent);
     expect(seen.length).toBe(1);
+  });
+});
+
+// Wave 8 review: the rule above is pure; these pin the wiring, which no
+// test exercised (removing either listener or the handler failed nothing).
+
+describe("351: the wiring", () => {
+  it("the window listens for ⌘V and for a stray paste, capture phase, and lets both go", () => {
+    expect(summonSrc).toContain("pasteToComposeKeydown(e, isMac);");
+    expect(summonSrc).toContain('window.addEventListener("paste", pasteToComposeEvent, true);');
+    expect(summonSrc).toContain('window.removeEventListener("paste", pasteToComposeEvent, true);');
+  });
+  it("the chat's composer (not an aside's) registers its handler", () => {
+    expect(composerSrc).toMatch(/if \(aside \|\| !el\) return;\s*return registerPasteHandler\(el, pasteFromOutside\);/);
   });
 });

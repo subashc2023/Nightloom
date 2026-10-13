@@ -1,3 +1,5 @@
+import composerSrc from "./Composer.svelte?raw";
+import transcriptSrc from "./Transcript.svelte?raw";
 import { beforeEach, describe, expect, it } from "vitest";
 import { ScrollHold, placeOf, putPlace, trackPlace, type BoxPlace, type PlaceBox } from "./boxPlace";
 import {
@@ -125,5 +127,24 @@ describe("the message-edit box's place", () => {
     putPlace(box, null);
     expect(box.scrollTop).toBe(12);
     expect(placeOf(null)).toBe(null);
+  });
+});
+
+// Wave 8 review: the hold and the track above are pure; these pin where the
+// composer and the edit box use them (removing any failed no test).
+
+describe("355: the wiring", () => {
+  it("the composer holds a switched-to key's scroll, puts it back on each re-measure, and records his scrolls", () => {
+    expect(composerSrc).toContain("scrollHold.start(k, performance.now());");
+    expect(composerSrc).toMatch(/ta\.style\.height = growHeight\([^\n]*\n[^\n]*\n\s*putScrollBack\(\);/);
+    expect(composerSrc).toContain("onscrollcapture={recordScroll}");
+    for (const ev of ["onkeydowncapture", "onbeforeinputcapture", "onwheel"])
+      expect(composerSrc).toContain(`${ev}={() => scrollHold.release()}`);
+  });
+  it("the edit box tracks every textarea and stashes the places with the edit", () => {
+    expect(transcriptSrc).toContain("use:trackPlace={(pl) => (editPlaces[0] = pl)}");
+    expect(transcriptSrc).toContain("use:trackPlace={(pl) => (editPlaces[p + 1] = pl)}");
+    expect([...transcriptSrc.matchAll(/boxes: editPlaces\.slice\(\)/g)].length).toBe(3);
+    expect([...transcriptSrc.matchAll(/placeBack\(back/g)].length).toBe(2);
   });
 });
