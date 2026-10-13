@@ -84,6 +84,7 @@
     type Try,
   } from "./client";
   import { renderMarkdown } from "../lib/markdown";
+  import AskQuestions from "../lib/AskQuestions.svelte";
   // Wave 8B F2 (item 300): replies in order, code blocks, the keyboard.
   import { liveSegments, sentOf } from "./client";
   import { sentExt, type SentFile } from "../lib/sentFiles";
@@ -2935,25 +2936,16 @@
         {@const kind = cardKind(req)}
         <section class="card" data-approval={req.id} in:fly={{ y: 16, duration: motion(260), easing: cubicOut }}>
           {#if kind === "question"}
-            <div class="card-head">The model asks</div>
-            {#each questions(req) as q, i (i)}
-              <div class="q">
-                <div class="q-text">{q.header ? `${q.header} — ` : ""}{q.question}</div>
-                <div class="opts">
-                  {#each q.options as o (o.label)}
-                    <button class="opt" class:on={(picks[req.id]?.[i] ?? []).includes(o.label)} onclick={() => toggle(req.id, i, o.label, !!q.multiSelect)}>
-                      <b>{o.label}</b>{#if o.description}<span>{o.description}</span>{/if}
-                    </button>
-                  {/each}
-                </div>
-                <input
-                  type="text"
-                  placeholder="Other…"
-                  value={others[req.id]?.[i] ?? ""}
-                  oninput={(e) => (others = { ...others, [req.id]: { ...(others[req.id] ?? {}), [i]: e.currentTarget.value } })}
-                />
-              </div>
-            {/each}
+            <!-- 354: the desktop's question form — tabs on top, the questions inline, Next, the tab following
+                 the scroll, previews (AskQuestions). The note, Answer and Skip stay this card's own. -->
+            <AskQuestions
+              questions={questions(req)}
+              idBase="r-{req.id}"
+              picks={picks[req.id] ?? {}}
+              others={others[req.id] ?? {}}
+              ontoggle={(i, label, multi) => toggle(req.id, i, label, multi)}
+              onother={(i, v) => (others = { ...others, [req.id]: { ...(others[req.id] ?? {}), [i]: v } })}
+            />
             <input type="text" placeholder="A note (goes as your next message)" bind:value={notes[req.id]} />
             <div class="actions">
               <button class="btn accent" disabled={!answered(req)} onclick={() => answer(req, "allow", questionAnswer(req.input, picks[req.id] ?? {}, others[req.id] ?? {}))}>Answer</button>
@@ -4264,43 +4256,6 @@
     max-height: 55dvh;
     overflow: auto;
     font-size: 14px;
-  }
-  .q {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-  .q-text {
-    font-size: 15px;
-  }
-  .opts {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .opt {
-    all: unset;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    min-height: 44px;
-    padding: 8px 12px;
-    border: 1px solid var(--line2);
-    border-radius: 12px;
-    font-size: 15px;
-    cursor: pointer;
-    box-sizing: border-box;
-    transition:
-      border-color 0.15s,
-      background 0.15s;
-  }
-  .opt span {
-    font-size: 13px;
-    color: var(--dim);
-  }
-  .opt.on {
-    border-color: var(--accent);
-    background: var(--accent-soft);
   }
   .seg {
     display: flex;

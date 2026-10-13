@@ -9,6 +9,9 @@
   import Icon from "./Icon.svelte";
   import { cardBox, MIN_HEIGHT } from "./askSizing";
   import type { ApprovalRequest, AskQuestion, FolderGrant } from "./types";
+  import AskQuestions from "./AskQuestions.svelte";
+  import { answeredRows, buildAnswer } from "./askQuestions";
+  import { recordAnswers } from "./askAnswers.svelte";
 
   let { req }: { req: ApprovalRequest } = $props();
 
@@ -262,14 +265,10 @@
   );
 
   function answerQuestions() {
-    const answers: Record<string, string> = {};
-    questions.forEach((q, i) => {
-      const chosen = [...(picks[i] ?? [])];
-      const other = (others[i] ?? "").trim();
-      if (other) chosen.push(other);
-      answers[q.question] = chosen.join(", ");
-    });
-    decide("allow", { ...(req.input as object), answers });
+    const payload = buildAnswer(req.input, questions, picks, others) as { answers: Record<string, string> };
+    // Kept by call id for the answered table under the call (354).
+    recordAnswers(req.id, answeredRows(questions, payload.answers));
+    decide("allow", payload);
   }
 
   // ---- the plan ---------------------------------------------------------
@@ -361,9 +360,9 @@
 {/snippet}
 
 {#if kind === "question"}
-  <!-- The question card (backlog 314): a small label, the question in the
-       transcript's face at full width, the options as stacked buttons; the
-       card grows to its content up to the cap and then scrolls as one. -->
+  <!-- The question card (backlog 314; redesigned by 354, his pick): the tabs on top, every question inline below
+       them in the card's one scroll, a Next after each, the lit tab following the scroll (AskQuestions). The
+       card grows to its content up to the cap and then scrolls as one; the strip stays at its top. -->
   <div
     class="ask qcard"
     class:folded
@@ -373,49 +372,22 @@
     aria-label="the model asks {questions.length} question{questions.length === 1 ? '' : 's'}"
     style:max-height={sized.maxHeight !== null ? `${sized.maxHeight}px` : null}
   >
-    <div class="head">
-      <span class="mark" aria-hidden="true">?</span>
-      <span>Claude asks</span>
-      <span class="effect">{questions.length} question{questions.length === 1 ? "" : "s"}</span>
-      {#if folded}<span class="st">{questionStatus} · waits until you answer</span>{/if}
-      <span class="sp"></span>
-      {@render foldButton()}
-    </div>
+    <AskQuestions
+      {questions}
+      idBase={req.id}
+      {picks}
+      {others}
+      ontoggle={toggle}
+      onother={(i, v) => (others[i] = v)}
+      {folded}
+    >
+      {#snippet tail()}
+        {#if folded}<span class="st">{questionStatus} · waits until you answer</span>{/if}
+        {@render foldButton()}
+      {/snippet}
+    </AskQuestions>
 
     {#if !folded}
-      <div class="qs">
-        {#each questions as q, i (i)}
-          <div class="question" role="group" aria-labelledby="{req.id}-q{i}">
-            <div class="q-label">
-              Question {i + 1} of {questions.length}{q.header ? ` · ${q.header}` : ""}{q.multiSelect
-                ? " · pick any"
-                : ""}
-            </div>
-            <div class="q-text" id="{req.id}-q{i}">{q.question}</div>
-            <div class="opts">
-              {#each q.options as o (o.label)}
-                <label class="opt" class:on={(picks[i] ?? []).includes(o.label)}>
-                  <input
-                    type={q.multiSelect ? "checkbox" : "radio"}
-                    name="{req.id}-q{i}"
-                    checked={(picks[i] ?? []).includes(o.label)}
-                    onchange={() => toggle(i, o.label, !!q.multiSelect)}
-                  />
-                  <span class="o-text">
-                    <span class="o-label">{o.label}</span>
-                    {#if o.description}<span class="o-desc">{o.description}</span>{/if}
-                  </span>
-                </label>
-              {/each}
-              <label class="opt other-opt" class:on={(others[i] ?? "").trim() !== ""}>
-                <span class="o-label">Other</span>
-                <input class="other" type="text" bind:value={others[i]} placeholder="type an answer…" />
-              </label>
-            </div>
-          </div>
-        {/each}
-      </div>
-
       {@render noteField()}
       <div class="actions">
         <button class="ns-btn accent" disabled={!answered} onclick={answerQuestions}>Answer</button>
@@ -992,126 +964,34 @@
     background: var(--accent);
   }
   /* The question card (backlog 314): the card itself scrolls once it
-     reaches its cap, so nothing inside it may shrink. */
+     reaches its cap, so nothing inside it may shrink. Since 354 the
+     questions are AskQuestions; its strip runs the card's full width and
+     sticks at the card's top edge (the padding is 10px 14px). */
   .ask.qcard {
     overflow-y: auto;
     overscroll-behavior: contain;
+    gap: 14px;
+    padding-top: 0;
+    --aq-bg: var(--sheet);
+    --aq-stick: 0px;
+    --aq-strip-margin: 0 -14px;
+    --aq-strip-pad: 4px 10px 0 14px;
+  }
+  .ask.qcard.folded {
+    padding: 0 14px;
+    --aq-strip-pad: 2px 10px 2px 14px;
   }
   .ask.qcard > * {
     flex: none;
   }
-  .qs {
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
-    padding-top: 2px;
-  }
-  .question {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    min-width: 0;
-  }
-  /* "Question 1 of 1 · Help style": a small label above, the UI face. */
-  .q-label {
-    font-family: var(--sans);
-    font-size: 11.5px;
-    letter-spacing: 0.02em;
+  .ask.qcard .st {
+    font-family: var(--mono);
+    font-size: 11px;
     color: var(--dim);
-  }
-  /* The question is model text: the transcript's face, full width, wrapping. */
-  .q-text {
-    font-family: var(--transcript-font, var(--sans));
-    font-size: var(--transcript-size, 16px);
-    line-height: 1.5;
-    color: var(--ink);
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    margin-bottom: 4px;
-  }
-  .opts {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  /* Each option a full-width button: its box, the label, the description
-     under it; picked → the accent border and a tint. */
-  .opt {
-    display: flex;
-    align-items: flex-start;
-    gap: 10px;
-    padding: 7px 12px;
-    border: 1px solid var(--line2);
-    border-radius: 8px;
-    background: var(--paper);
-    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
     min-width: 0;
-    transition:
-      border-color 0.12s,
-      background 0.12s;
-  }
-  .opt:hover {
-    border-color: var(--accent);
-  }
-  .opt.on {
-    border-color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 12%, var(--paper));
-  }
-  .opt:has(input:focus-visible) {
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
-  }
-  .opt input[type="radio"],
-  .opt input[type="checkbox"] {
-    flex: none;
-    margin: 3px 0 0;
-    accent-color: var(--accent);
-  }
-  .opt input:focus-visible {
-    outline: none;
-  }
-  /* The description beside the label while the row has room, under it
-     when it does not — a two-line question and four options fit the cap
-     in his 780-px window without the card scrolling. */
-  .o-text {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    column-gap: 10px;
-    row-gap: 2px;
-    min-width: 0;
-  }
-  .o-label {
-    font-family: var(--sans);
-    font-size: 14px;
-    color: var(--ink);
-  }
-  .o-desc {
-    font-family: var(--sans);
-    font-size: 12.5px;
-    line-height: 1.4;
-    color: var(--dim);
-  }
-  .other-opt {
-    align-items: center;
-  }
-  .other {
-    flex: 1;
-    min-width: 0;
-    background: var(--sheet);
-    color: var(--ink);
-    border: 1px solid var(--line2);
-    border-radius: 6px;
-    padding: 0.3rem 0.5rem;
-    font-size: 13px;
-    font-family: var(--sans);
-  }
-  .other::placeholder {
-    color: var(--dim);
-  }
-  .other:focus {
-    outline: none;
-    border-color: var(--accent);
   }
   /* The status line under the buttons wraps in a narrow pane rather than
      running out of the card. */
