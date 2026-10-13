@@ -170,6 +170,35 @@ describe("Remove, Restore and Save are aimed (backlog 364)", () => {
     await restoreTurn(3, null);
     expect(api.restoreMessage).toHaveBeenLastCalledWith(3);
   });
+
+  // 364 review: the phone's index is its own list's. What the Mac reads
+  // before the change — an undo's previous words, a rewound message — is
+  // read at the turn the aim names in the Mac's list, never at the phone's
+  // index there (which would put another turn's words into the turn meant).
+  it("a phone Save's undo puts back the aimed turn's words, not those at the phone's index", async () => {
+    await saveEdit(1, "two, edited", null, { at: two });
+    expect(api.editMessage).toHaveBeenLastCalledWith(1, "two, edited", "save", null, two, null);
+    await undo();
+    expect(api.editMessage).toHaveBeenLastCalledWith(1, "two", "save", null, two, null);
+  });
+  it("a phone Save of a turn the Mac's list lacks pushes no undo", async () => {
+    await saveEdit(1, "x", null, { at: "2026-10-14T00:00:00Z" });
+    expect(api.editMessage).toHaveBeenCalledTimes(1);
+    expect(undoLabel()).toBeNull();
+  });
+  it("a phone reply Save reads the aimed reply's blocks, and its undo puts them back", async () => {
+    // The phone's index 2 is its "second b"; in the Mac's list that reply is at 5.
+    await saveReplyEdit(2, [{ block: 0, text: "b, reworded" }], { at: two, nth: 1 });
+    expect(api.editBlock).toHaveBeenLastCalledWith(2, 0, "b, reworded", { at: two, nth: 1 });
+    await undo();
+    expect(api.editBlock).toHaveBeenLastCalledWith(2, 0, "second b", { at: two, nth: 1 });
+  });
+  it("a phone rewind puts the aimed message in the box", async () => {
+    delete drafts["chat-1"];
+    await rewindTo(1, two);
+    expect(api.rewind).toHaveBeenLastCalledWith(1, two);
+    expect(readDraft("chat-1").text).toBe("two");
+  });
 });
 
 describe("one inverse per operation", () => {

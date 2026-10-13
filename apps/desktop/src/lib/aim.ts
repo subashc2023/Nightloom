@@ -34,6 +34,25 @@ export function aimOf(events: readonly SessionEvent[], index: number): Aim | nul
   return null;
 }
 
+/**
+ * Where `aim` points in `events` — `guess` when it is that turn, else the one
+ * turn there with that aim — or null when this list has none (or two). The
+ * Mac's window acting for the phone (364 review): the phone's index is the
+ * phone's list's, so what the Mac reads before the change (an undo's
+ * previous text, a rewound message, its files) is read here, at the turn
+ * the aimed change lands on, never at the phone's index in the Mac's list.
+ */
+export function indexOfAim(events: readonly SessionEvent[], aim: Aim, guess: number): number | null {
+  const same = (i: number) => {
+    const a = aimOf(events, i);
+    return a !== null && a.at === aim.at && a.nth === aim.nth;
+  };
+  if (same(guess)) return guess;
+  const hits: number[] = [];
+  for (let i = 0; i < events.length; i++) if (same(i)) hits.push(i);
+  return hits.length === 1 ? hits[0] : null;
+}
+
 /** The aim as a command's arguments: `{ at, nth }`, or nothing when bare. */
 export function aimArgs(aim: Aim | null | undefined): { at?: string; nth?: number } {
   if (!aim) return {};

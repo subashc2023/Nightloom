@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { aimArgs, aimOf } from "./aim";
+import { aimArgs, aimOf, indexOfAim } from "./aim";
 import type { SessionEvent } from "./types";
 
 const one = "2026-10-13T07:19:57.1Z";
@@ -42,5 +42,12 @@ describe("a turn's aim (backlog 364)", () => {
     expect(aimArgs({ at: one })).toEqual({ at: one });
     expect(aimArgs({ at: one, nth: 0 })).toEqual({ at: one, nth: 0 });
     expect(aimArgs(null)).toEqual({});
+  });
+  it("found in another list: the guess when it is that turn, else the one turn with that aim (364 review)", () => {
+    expect(indexOfAim(events, { at: two, nth: 1 }, 6)).toBe(6);
+    expect(indexOfAim(events, { at: two, nth: 1 }, 2)).toBe(6);
+    expect(indexOfAim(events, { at: two }, 1)).toBe(3);
+    expect(indexOfAim(events, { at: two, nth: 2 }, 6)).toBeNull();
+    expect(indexOfAim(events, { at: "2026-10-14T00:00:00Z" }, 1)).toBeNull();
   });
 });

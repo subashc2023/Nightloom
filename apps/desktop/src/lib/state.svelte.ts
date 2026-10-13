@@ -38,7 +38,7 @@ import {
   hasDraft,
   discardDraft,
 } from "./drafts.svelte";
-import { aimOf, type Aim } from "./aim";
+import { aimOf, indexOfAim, type Aim } from "./aim";
 import { requestComposerFocus, rewoundMessage, swapIn, untouched, type BoxSwap } from "./rewindDraft.svelte";
 import {
   CURATED,
@@ -8728,11 +8728,15 @@ export async function rewindTo(to: number, aim: boolean | string = false): Promi
   const meant = aim === true ? app.events[to] : undefined;
   const at = typeof aim === "string" ? aim : meant?.event === "user_message" ? meant.at : undefined;
   const call = () => (at ? api.rewind(to, at) : api.rewind(to));
+  // 364 review: the phone's `to` is its own list's; what follows is read
+  // where its aimed rewind lands in this window's list, and nothing is
+  // offered when this list does not have that message.
+  const here = typeof aim === "string" ? indexOfAim(app.events, { at: aim }, to) : to;
   // His message at `to`, read before the rewind supersedes it (backlog 247).
-  const back = rewoundMessage(app.events, to, nextAttachmentId);
+  const back = here === null ? null : rewoundMessage(app.events, here, nextAttachmentId);
   // What the removed turns wrote, read before the rewind supersedes them
   // (item 259): offered to be set aside, since the next run reads them.
-  const written = rewoundWrites(app.events, liveFlags(app.events), to);
+  const written = here === null ? [] : rewoundWrites(app.events, liveFlags(app.events), here);
   try {
     app.events = await call();
     app.error = null;
@@ -9002,8 +9006,11 @@ export async function saveEdit(
 ): Promise<boolean> {
   if (app.busy) return false;
   const meant = aimFor(index, aim);
-  const previous = currentText(index);
-  const previousSet = attachments ? currentAttachments(index) : null;
+  // 364 review: what the turn said before, read where the aimed edit lands
+  // in this window's list (`here`) — for the phone, not at its index.
+  const here = localIndex(index, aim);
+  const previous = here === null ? null : currentText(here);
+  const previousSet = attachments && here !== null ? currentAttachments(here) : null;
   try {
     const res = await editSaved(index, text, attachments, meant);
     app.events = res.events;
@@ -9012,6 +9019,9 @@ export async function saveEdit(
     addToast(String(e));
     return false;
   }
+  // The turn is not in this window's list: what it said before is unknown,
+  // so no undo rather than one that writes another turn's words into it.
+  if (previous === null) return true;
   // An edit is undone by an edit back to what the turn said before: the
   // same marker, the same CLI copy on Claude Code, the original kept — and,
   // when the attachments changed, back to the set it carried (item 336).
@@ -9045,6 +9055,14 @@ function editSaved(index: number, text: string, set: EditedAttachments | null, a
  */
 function aimFor(index: number, aim: Aim | null | undefined): Aim | null {
   return aim === undefined ? aimOf(app.events, index) : aim;
+}
+
+/** 364 review: where the turn a caller's aim names is in this window's own
+ *  list — `index` itself for the window (no aim brought) and for a bare
+ *  call; for the phone's aim, that turn found by it (`indexOfAim`), or null
+ *  when this list does not have it. */
+function localIndex(index: number, aim: Aim | null | undefined): number | null {
+  return aim ? indexOfAim(app.events, aim, index) : index;
 }
 
 /** The message calls, aimed when there is an aim, the bare call otherwise. */
@@ -9242,10 +9260,13 @@ export async function saveReplyEdit(
   aim?: Aim | null,
 ): Promise<boolean> {
   if (app.busy || changes.length === 0) return false;
-  const e = app.events[index];
-  if (e?.event !== "assistant_message") return false;
+  // 364 review: the reply and its previous block texts read where the aimed
+  // edit lands in this window's list; not there, refused as before.
+  const here = localIndex(index, aim);
+  const e = here === null ? undefined : app.events[here];
+  if (here === null || e?.event !== "assistant_message") return false;
   const meant = aimFor(index, aim);
-  const edits = blockEditsOf(index);
+  const edits = blockEditsOf(here);
   const done: { block: number; text: string; previous: string }[] = [];
   for (const c of changes) {
     const b = e.blocks[c.block];
