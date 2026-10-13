@@ -135,6 +135,7 @@
   import { composerFocus } from "./rewindDraft.svelte";
   import { CaretKeeper, clampSel, mayAutoFocus } from "./composerCaret";
   import { ScrollHold } from "./boxPlace";
+  import { FocusThroughLock, boxLocked } from "./boxLock";
   import { chatBoxCount, chatBoxMounted, composerSummon } from "./composerSummon.svelte";
   import { registerPasteHandler, type PasteRequest } from "./pasteToCompose";
   import { requestWrapUp } from "./wrapAsides.svelte";
@@ -936,6 +937,39 @@
       const had = !!box && !!document.activeElement && box.contains(document.activeElement);
       keeper.focus(key, ta, had, true);
       autogrow();
+    });
+  });
+
+  /*
+   * Backlog 365: the box locks only with no connection and none coming —
+   * a connect in flight (a chat switch to the other engine's chat) leaves
+   * it typeable, Send waiting (`sendHeld`). A lock still takes the focus
+   * from a textarea in WebKit, silently, and the unlock does not give it
+   * back: the box takes it back here with the kept caret, when the focus is
+   * still nowhere (`boxLock.ts`).
+   */
+  const boxIsLocked = $derived(boxLocked(!!app.connection, app.connecting));
+  const lockFocus = new FocusThroughLock();
+  let wasLocked = untrack(() => boxIsLocked);
+  $effect.pre(() => {
+    const l = boxIsLocked;
+    untrack(() => {
+      if (!l || wasLocked || typeof document === "undefined") return;
+      const box = boxElement(ta);
+      lockFocus.locking(!!box && !!document.activeElement && box.contains(document.activeElement));
+    });
+  });
+  $effect(() => {
+    const l = boxIsLocked;
+    untrack(() => {
+      const was = wasLocked;
+      wasLocked = l;
+      if (l || !was || !ta || typeof document === "undefined") return;
+      const a = document.activeElement;
+      if (lockFocus.unlocked(!a || a === document.body || a === document.documentElement)) {
+        keeper.focus(key, ta, false, true);
+        autogrow();
+      }
     });
   });
 
@@ -2683,7 +2717,7 @@
         value={text}
         onchange={(v) => setDraftText(key, v)}
         placeholder={app.connection ? boxPlaceholder : ""}
-        disabled={!app.connection}
+        disabled={boxIsLocked}
         {floating}
         initialCaret={formatCaret}
         oninput={() => {
@@ -2732,7 +2766,7 @@
       autocapitalize="off"
       spellcheck="false"
       placeholder={app.connection ? boxPlaceholder : ""}
-      disabled={!app.connection}
+      disabled={boxIsLocked}
       oninput={(e) => {
         // Blocker 1210: his edit, into the box's own undo history.
         onboxinput(e);

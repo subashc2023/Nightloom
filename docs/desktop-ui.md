@@ -1409,7 +1409,9 @@ else, so a switch swaps the box. The pending chat's draft follows the chat it
 makes: `send` and `sendAgent` pick the id off the re-synced `session_created`
 line and one line there calls ~~`moveDraft("new", id)`~~ `moveDraft(pendingKey,
 id)` before `activeSessionId` changes, which carries anything typed *during*
-the first turn (the box is not locked while a reply streams). Sending clears that chat's entry; nothing else does — not
+the first turn (the box is not locked while a reply streams, nor — since backlog 365, 2026-10-13 — while a
+connect runs with no connection yet, as on a switch to a chat on the other engine; it locks only with no connection and
+none coming, and a lock that took the focus gives it back, kept caret and all, when it lifts: `boxLock.ts`). Sending clears that chat's entry; nothing else does — not
 a switch, not Escape, not deleting the chat. A failed send puts the words and
 the chips back under the chat now open (the text only if nothing new was typed
 meanwhile); until today only the attachments came back.
