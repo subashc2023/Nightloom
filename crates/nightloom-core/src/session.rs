@@ -15,6 +15,32 @@ use std::path::{Path, PathBuf};
 /// Addressed to the model, which is who reads it.
 const SUBAGENT_STEPS_OMITTED: &str = "[a subagent ran here; its steps are not part of this conversation, and its report is the Agent tool's result]";
 
+/// The reply Nightloom records under his message when a turn is stopped
+/// before any reply arrived (nightshift backlog 361, 2026-10-13); a turn
+/// that failed first gets [`NO_REPLY_PREFIX`] and the reason.
+pub const STOPPED_BEFORE_REPLY: &str = "Stopped before any reply arrived.";
+/// The start of the reply recorded for a turn that failed before any reply
+/// (backlog 361): "No reply: <why>".
+pub const NO_REPLY_PREFIX: &str = "No reply: ";
+
+/// Whether an assistant message is backlog 361's stand-in: Nightloom's own
+/// words for a turn that ended before the model said anything — one text
+/// block reading so, stopped or failed, with no usage. The model never said
+/// it, so it is not projected onto the wire (review of wave 8b, 2026-10-13:
+/// before this, the provider engine sent it as an assistant turn), and
+/// Claude Code's history never had it. A real reply cut off by an error
+/// with no usage yet carries the model's own text and is not a stand-in.
+pub fn is_unanswered_stand_in(
+    blocks: &[ContentBlock],
+    stop_reason: Option<&str>,
+    usage: &Usage,
+) -> bool {
+    let says_so = matches!(blocks, [ContentBlock::Text { text }]
+        if text == STOPPED_BEFORE_REPLY || text.starts_with(NO_REPLY_PREFIX));
+    let ended = matches!(stop_reason, Some(r) if r == "stopped" || r.starts_with("error: "));
+    says_so && ended && usage.input_tokens == 0 && usage.output_tokens == 0
+}
+
 /// A point a session can be rewound to.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Checkpoint {
@@ -3144,6 +3170,14 @@ impl Session {
                         content,
                     });
                 }
+                // Backlog 361's stand-in is Nightloom's, not the model's:
+                // nothing goes on the wire for it, as before it existed.
+                SessionEvent::AssistantMessage {
+                    blocks,
+                    stop_reason,
+                    usage,
+                    ..
+                } if is_unanswered_stand_in(blocks, stop_reason.as_deref(), usage) => {}
                 SessionEvent::AssistantMessage { blocks, .. } => {
                     let mut content = if elided[i] {
                         elide_assistant(blocks, &gone[i], i)
@@ -6039,6 +6073,60 @@ mod tests {
         let never = *at + chrono::Duration::days(1);
         assert!(log.aim_user_message(5, never).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Wave 8b review (2026-10-13): backlog 361's stand-in reply is not
+    /// sent to the model as if it had said it; a real reply cut off by an
+    /// error before any usage still is.
+    #[test]
+    fn a_stand_in_reply_is_not_projected_onto_the_wire() {
+        let mut s = Session::new();
+        s.record_user("hi");
+        s.record_assistant(
+            "m",
+            vec![ContentBlock::Text {
+                text: STOPPED_BEFORE_REPLY.into(),
+            }],
+            Some("stopped".into()),
+            Usage::default(),
+        );
+        s.record_user("again");
+        s.record_assistant(
+            "m",
+            vec![ContentBlock::Text {
+                text: format!("{NO_REPLY_PREFIX}can't reach the API server"),
+            }],
+            Some("error: can't reach the API server".into()),
+            Usage::default(),
+        );
+        s.record_user("third");
+        s.record_assistant(
+            "m",
+            vec![ContentBlock::Text {
+                text: "Half a real sente".into(),
+            }],
+            Some("error: overloaded".into()),
+            Usage::default(),
+        );
+        let msgs = s.messages();
+        let texts: Vec<(Role, String)> = msgs.iter().map(|m| (m.role, m.text())).collect();
+        assert_eq!(
+            texts,
+            [
+                (Role::User, "hi".to_string()),
+                (Role::User, "again".to_string()),
+                (Role::User, "third".to_string()),
+                (Role::Assistant, "Half a real sente".to_string()),
+            ]
+        );
+        // The log keeps it: the window still shows it.
+        assert_eq!(
+            s.events()
+                .iter()
+                .filter(|e| matches!(e, SessionEvent::AssistantMessage { .. }))
+                .count(),
+            3
+        );
     }
 
     #[test]

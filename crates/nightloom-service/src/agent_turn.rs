@@ -565,8 +565,8 @@ async fn turn_body(
 }
 
 /// The reply recorded for a turn stopped before anything arrived (backlog
-/// 361).
-pub const STOPPED_BEFORE_REPLY: &str = "Stopped before any reply arrived.";
+/// 361); core's, so the projection and the CLI edits can tell it apart.
+pub use nightloom_core::STOPPED_BEFORE_REPLY;
 
 /// A turn that ended — stopped (`error` `None`) or failed — with nothing
 /// recorded after his message leaves a reply that says so (backlog 361,
@@ -588,7 +588,10 @@ pub(crate) fn record_unanswered(session: &mut Session, model: String, error: Opt
     }
     let (text, reason) = match error {
         None => (STOPPED_BEFORE_REPLY.to_string(), "stopped".to_string()),
-        Some(why) => (format!("No reply: {why}"), format!("error: {why}")),
+        Some(why) => (
+            format!("{}{why}", nightloom_core::NO_REPLY_PREFIX),
+            format!("error: {why}"),
+        ),
     };
     session.record_assistant_timed(
         model,
