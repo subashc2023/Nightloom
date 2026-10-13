@@ -643,25 +643,25 @@ pub fn cli_reply_text(session: &Session, index: usize) -> String {
     out
 }
 
-/// Whether block `block` of the reply at `index` is a subagent's narrative
-/// (item 252): the window's alone, so removing or restoring it changes
-/// nothing in the CLI's file.
 /// Whether the reply at `index` is the stand-in Nightloom records for a
 /// turn stopped or failed before any reply (nightshift item 361: "Stopped
-/// before any reply arrived.", `stop_reason` "stopped" or "error: …", no
-/// usage). The CLI's history never had it, so an edit or removal of it
-/// leaves that history alone (item 363) instead of refusing to find it.
+/// before any reply arrived." or "No reply: …", `stop_reason` stopped or
+/// "error: …", no usage). The CLI's history never had it, so an edit or
+/// removal of it leaves that history alone (item 363) instead of refusing
+/// to find it. Its own words are part of the test (wave 8b review,
+/// 2026-10-13): a real reply cut off by an error before any usage has the
+/// same stop reason and usage, and is in the CLI's history.
 pub fn is_stand_in_reply(session: &Session, index: usize) -> bool {
     matches!(
         session.events().get(index),
-        Some(SessionEvent::AssistantMessage { stop_reason: Some(r), usage, .. })
-            if (r == "stopped" || r.starts_with("error: "))
-                && usage.input_tokens == 0
-                && usage.output_tokens == 0
+        Some(SessionEvent::AssistantMessage { blocks, stop_reason, usage, .. })
+            if nightloom_core::is_unanswered_stand_in(blocks, stop_reason.as_deref(), usage)
     )
 }
 
-/// Whether block `block` of the reply at `index` is a subagent's narrative.
+/// Whether block `block` of the reply at `index` is a subagent's narrative
+/// (item 252): the window's alone, so removing or restoring it changes
+/// nothing in the CLI's file.
 pub fn is_narrative_block(session: &Session, index: usize, block: usize) -> bool {
     matches!(
         session.events().get(index),
@@ -923,6 +923,40 @@ mod tests {
         assert_eq!(now.images.len(), 1, "the edit's set, not the turn's own");
         assert!(now.documents.is_empty());
         assert!(current_attachments(&s, 999).is_none());
+    }
+
+    /// Wave 8b review (2026-10-13): only 361's own words make a stand-in. A
+    /// real reply cut off by an error before any usage has the same stop
+    /// reason and usage, is in Claude Code's history, and must be edited
+    /// or removed there too.
+    #[test]
+    fn a_real_reply_cut_off_by_an_error_is_not_a_stand_in() {
+        use nightloom_core::{ContentBlock, Usage};
+        let mut s = Session::new();
+        s.record_user("hi");
+        s.record_assistant(
+            "m",
+            vec![ContentBlock::Text {
+                text: "Half of what the model said".into(),
+            }],
+            Some("error: overloaded".into()),
+            Usage::default(),
+        );
+        s.record_user("again");
+        s.record_assistant(
+            "m",
+            vec![ContentBlock::Text {
+                text: crate::agent_turn::STOPPED_BEFORE_REPLY.into(),
+            }],
+            Some("stopped".into()),
+            Usage::default(),
+        );
+        let replies: Vec<usize> = (0..s.events().len())
+            .filter(|&i| matches!(s.events()[i], SessionEvent::AssistantMessage { .. }))
+            .collect();
+        assert_eq!(replies.len(), 2);
+        assert!(!is_stand_in_reply(&s, replies[0]));
+        assert!(is_stand_in_reply(&s, replies[1]));
     }
 
     /// The CLI's file for his 363 chat, by shape (never a copy of it): the
