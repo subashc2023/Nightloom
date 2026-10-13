@@ -268,6 +268,17 @@ What each edit does to the copy, and why:
   *with* a tool call cannot be dropped (its results would answer nothing),
   so it keeps its `tool_use` nodes, loses its thinking, and says the same
   marker sentence the API engine's elision projects (`REMOVED_MARKER`).
+- **Finding the turn** (`locate`, nightshift item 356, 2026-10-13): the
+  target is addressed by its count from the newest prompt, checked by text.
+  ~~The count was the address, and a text mismatch refused.~~ (2026-10-13)
+  The count drifts — a turn removed from the copy is gone from the file but
+  still a live turn in the log, a message stopped before the CLI wrote it is
+  in the log alone — and every Remove or Edit on an earlier turn was then
+  refused ("that turn reads differently in Claude Code's history…").
+  So when the counted turn does not read the same, the prompt (or the reply,
+  if it has words) is looked for by its text in every turn, and the match
+  nearest the counted place is taken; two equally near refuse. A tool call
+  is found by its id anywhere in the chain.
 - **Rewind** and **edit and send** (`truncate`): the copy cut before the
   user prompt, as measured. A cut that leaves no turn at all — at the
   oldest prompt, or before the CLI session began — writes no copy: the

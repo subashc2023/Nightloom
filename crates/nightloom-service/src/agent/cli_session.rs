@@ -254,6 +254,33 @@ pub struct CliSession {
     id: String,
 }
 
+/// Where [`nearest`] lands among the places a text was found.
+#[derive(Debug, PartialEq, Eq)]
+enum Nearest {
+    /// Not found anywhere.
+    None,
+    /// The place nearest the counted one.
+    One(usize),
+    /// Two places equally near: refused rather than guessed.
+    Tie,
+}
+
+/// Of the turn positions `found` (indices into the file's prompts), the one
+/// nearest `expected`, the position the log's count gave (nightshift item
+/// 356). The count is usually off by the few turns the two histories
+/// disagree on, so the nearest match is the turn meant.
+fn nearest(found: &[usize], expected: isize) -> Nearest {
+    let dist = |p: usize| (p as isize - expected).unsigned_abs();
+    let Some(best) = found.iter().map(|&p| dist(p)).min() else {
+        return Nearest::None;
+    };
+    let mut at = found.iter().filter(|&&p| dist(p) == best);
+    match (at.next(), at.next()) {
+        (Some(&p), None) => Nearest::One(p),
+        _ => Nearest::Tie,
+    }
+}
+
 /// A user turn's text without the relay note a mid-turn message carries
 /// while subagents run (backlog 339; stripped for the match, 341). Only a
 /// trailing note goes — one that ends the text.
@@ -483,48 +510,113 @@ impl CliSession {
     fn locate(&self, target: &Target) -> Result<Vec<usize>, CliSessionError> {
         match target {
             Target::User { from_last, text } => {
-                let i = self.prompt_from_last(*from_last)?;
-                // The caption is the first text block; a text attachment
-                // follows it as another (item 277), which the log keeps
-                // apart from the words — so either reading matches (item
-                // 340: a turn with a text file was refused every edit).
-                // A message sent while subagents ran carries Nightloom's
-                // relay note on the wire only (backlog 341): the log keeps
-                // his words, so the note is not part of the match.
-                let line = &self.lines[i];
-                let (full, caption) = (line.text(), line.caption());
+                let prompts = self.prompts();
                 let wanted = text.trim();
-                if without_relay_note(&full).trim() != wanted
-                    && without_relay_note(&caption).trim() != wanted
+                let expected = prompts.len() as isize - 1 - *from_last as isize;
+                if let Some(&i) = usize::try_from(expected).ok().and_then(|p| prompts.get(p))
+                    && self.prompt_reads(i, wanted)
                 {
-                    return Err(CliSessionError::Locate(
-                        "that turn reads differently in Claude Code's history than in this chat's log; nothing was changed".into(),
-                    ));
+                    return Ok(vec![i]);
                 }
-                Ok(vec![i])
+                // The count missed (nightshift item 356): the log and the
+                // file disagree on how many turns follow this one — a turn
+                // removed from the CLI's copy is still a live turn in the
+                // log, a message stopped before the CLI wrote it is in the
+                // log alone. So the prompt is found by its text, the one
+                // nearest the counted place; the text check still guards
+                // the edit.
+                let reads: Vec<usize> = (0..prompts.len())
+                    .filter(|&p| self.prompt_reads(prompts[p], wanted))
+                    .collect();
+                match nearest(&reads, expected) {
+                    Nearest::One(p) => Ok(vec![prompts[p]]),
+                    Nearest::Tie => Err(CliSessionError::Locate(
+                        "that turn's text is in Claude Code's history more than once, so which one is meant is unclear; nothing was changed".into(),
+                    )),
+                    // Counted past the file's first prompt: that refusal
+                    // says why (a turn run on the other engine).
+                    Nearest::None if expected < 0 => self.prompt_from_last(*from_last).map(|i| vec![i]),
+                    Nearest::None => Err(CliSessionError::Locate(
+                        "that turn reads differently in Claude Code's history than in this chat's log; nothing was changed".into(),
+                    )),
+                }
             }
             Target::Assistant { from_last, text } => {
-                let prompt = self.prompt_from_last(*from_last)?;
+                let prompts = self.prompts();
                 let wanted = text.trim();
-                let mut hits = self
-                    .replies_after(prompt)
-                    .into_iter()
-                    .filter(|g| self.group_text(g).trim() == wanted);
-                match (hits.next(), hits.next()) {
-                    (Some(g), None) => Ok(g),
-                    // Two replies in the turn read the same — in a long
-                    // agentic turn, typically two rounds with no text at
-                    // all (nightshift item 252). The first used to be
-                    // taken, which could be the wrong one.
-                    (Some(_), Some(_)) => Err(CliSessionError::Locate(
-                        "more than one reply in that turn reads the same in Claude Code's history, so which one is meant is unclear; nothing was changed".into(),
-                    )),
-                    (None, _) => Err(CliSessionError::Locate(
+                let expected = prompts.len() as isize - 1 - *from_last as isize;
+                let same = |g: &Vec<usize>| self.group_text(g).trim() == wanted;
+                if let Some(&prompt) = usize::try_from(expected).ok().and_then(|p| prompts.get(p)) {
+                    let mut hits = self.replies_after(prompt).into_iter().filter(same);
+                    match (hits.next(), hits.next()) {
+                        (Some(g), None) => return Ok(g),
+                        // Two replies in the turn read the same — in a long
+                        // agentic turn, typically two rounds with no text at
+                        // all (nightshift item 252). The first used to be
+                        // taken, which could be the wrong one.
+                        (Some(_), Some(_)) => {
+                            return Err(CliSessionError::Locate(
+                                "more than one reply in that turn reads the same in Claude Code's history, so which one is meant is unclear; nothing was changed".into(),
+                            ));
+                        }
+                        (None, _) => {}
+                    }
+                }
+                // Not under the counted turn (item 356, as for a prompt
+                // above): a reply with words is looked for in every turn,
+                // the nearest turn with exactly one reply reading the same
+                // taken. A reply with no words is never matched this way —
+                // every wordless round would.
+                let not_found = || {
+                    CliSessionError::Locate(
                         "that reply is not in Claude Code's history as this chat's log has it; nothing was changed".into(),
+                    )
+                };
+                if wanted.is_empty() {
+                    return Err(not_found());
+                }
+                let mut found: Vec<(usize, Vec<usize>)> = Vec::new();
+                for (p, &prompt) in prompts.iter().enumerate() {
+                    let hits: Vec<Vec<usize>> = self
+                        .replies_after(prompt)
+                        .into_iter()
+                        .filter(same)
+                        .collect();
+                    if hits.len() > 1 {
+                        return Err(CliSessionError::Locate(
+                            "more than one reply in that turn reads the same in Claude Code's history, so which one is meant is unclear; nothing was changed".into(),
+                        ));
+                    }
+                    found.extend(hits.into_iter().map(|g| (p, g)));
+                }
+                let at: Vec<usize> = found.iter().map(|(p, _)| *p).collect();
+                match nearest(&at, expected) {
+                    Nearest::One(p) => Ok(found
+                        .into_iter()
+                        .find(|(q, _)| *q == p)
+                        .map(|(_, g)| g)
+                        .expect("nearest names a found turn")),
+                    Nearest::Tie => Err(CliSessionError::Locate(
+                        "that reply's text is in Claude Code's history more than once, so which one is meant is unclear; nothing was changed".into(),
                     )),
+                    Nearest::None if expected < 0 => self.prompt_from_last(*from_last).map(|_| Vec::new()),
+                    Nearest::None => Err(not_found()),
                 }
             }
         }
+    }
+
+    /// Whether the prompt at line `i` reads `wanted`. The caption is the
+    /// first text block; a text attachment follows it as another (item
+    /// 277), which the log keeps apart from the words — so either reading
+    /// matches (item 340: a turn with a text file was refused every edit).
+    /// A message sent while subagents ran carries Nightloom's relay note on
+    /// the wire only (backlog 341): the log keeps his words, so the note is
+    /// not part of the match.
+    fn prompt_reads(&self, i: usize, wanted: &str) -> bool {
+        let line = &self.lines[i];
+        let (full, caption) = (line.text(), line.caption());
+        without_relay_note(&full).trim() == wanted || without_relay_note(&caption).trim() == wanted
     }
 
     /// The text of a reply's nodes, joined — what [`locate`](Self::locate)
@@ -549,10 +641,18 @@ impl CliSession {
         let (Target::Assistant { from_last, text }, Block::ToolUse(id)) = (target, block) else {
             return self.locate(target);
         };
-        let prompt = self.prompt_from_last(*from_last)?;
-        let group = self
-            .replies_after(prompt)
+        // A call's id is unique to it, so the whole chain is searched when
+        // the counted turn does not hold it (nightshift item 356: the count
+        // drifts once a turn is removed from the CLI's copy).
+        let prompts = self.prompts();
+        let counted = prompts
+            .len()
+            .checked_sub(1 + *from_last)
+            .map(|p| prompts[p]);
+        let group = counted
             .into_iter()
+            .chain(prompts.iter().copied())
+            .flat_map(|prompt| self.replies_after(prompt))
             .find(|g| g.iter().any(|&i| self.is_call(i, id)))
             .ok_or_else(|| {
                 CliSessionError::Locate(
@@ -1583,6 +1683,110 @@ mod tests {
         assert!(lines.iter().all(|o| o["messageId"] != "u2"));
         let a4 = lines.iter().find(|o| o["uuid"] == "a4").unwrap();
         assert_eq!(a4["parentUuid"], "s2");
+    }
+
+    /// Item 356, his report: Remove did nothing on a Claude Code chat and
+    /// a toast spoke of Claude Code's history. A turn removed from the
+    /// CLI's copy is gone from the file but still a live turn in the log,
+    /// so the log's count from the newest ran one past the file for every
+    /// turn before it, and each later Remove or Edit was refused.
+    #[test]
+    fn a_second_removal_finds_its_turn_after_the_first_dropped_a_prompt() {
+        let s = CliSession::parse(&fixture()).unwrap();
+        let copy = s
+            .remove(&Target::User {
+                from_last: 0,
+                text: "second".into(),
+            })
+            .unwrap();
+        assert_eq!(copy.prompt_count(), 1);
+        // The log still counts "second" after "first": from_last 1.
+        let out = copy
+            .remove(&Target::Assistant {
+                from_last: 1,
+                text: "one".into(),
+            })
+            .unwrap()
+            .render_as("n");
+        assert!(
+            parsed(&out).iter().all(|o| o["uuid"] != "s2"),
+            "the reply went"
+        );
+        let out = copy
+            .remove(&Target::User {
+                from_last: 1,
+                text: "first".into(),
+            })
+            .unwrap()
+            .render_as("n");
+        assert!(parsed(&out).iter().all(|o| o["uuid"] != "u1"));
+    }
+
+    /// The other drift (backlog 255's): a message stopped before the CLI
+    /// wrote it is a turn in the log alone, so every turn before it was
+    /// counted one too far back.
+    #[test]
+    fn a_turn_the_cli_never_recorded_does_not_misplace_an_edit() {
+        let s = CliSession::parse(&fixture()).unwrap();
+        // The log: first, second, stopped — "second" is 1 from the newest.
+        let out = s
+            .rewrite(
+                &Target::User {
+                    from_last: 1,
+                    text: "second".into(),
+                },
+                "second, reworded",
+            )
+            .unwrap()
+            .render_as("n");
+        let u2 = parsed(&out)
+            .into_iter()
+            .find(|o| o["uuid"] == "u2")
+            .unwrap();
+        assert_eq!(u2["message"]["content"], "second, reworded");
+        let out = s
+            .remove(&Target::Assistant {
+                from_last: 1,
+                text: "two".into(),
+            })
+            .unwrap()
+            .render_as("n");
+        assert!(parsed(&out).iter().all(|o| o["uuid"] != "s6"));
+        let out = s
+            .remove_block(
+                &Target::Assistant {
+                    from_last: 1,
+                    text: "let me look".into(),
+                },
+                &Block::ToolUse("toolu_1".into()),
+            )
+            .unwrap()
+            .render_as("n");
+        assert!(parsed(&out).iter().all(|o| o["uuid"] != "s5"));
+        // A text in neither place is still refused, and a wordless reply
+        // is never matched outside its counted turn.
+        assert!(
+            s.remove(&Target::Assistant {
+                from_last: 1,
+                text: "never said".into(),
+            })
+            .is_err()
+        );
+        assert!(
+            s.remove(&Target::Assistant {
+                from_last: 1,
+                text: String::new(),
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn the_nearest_match_wins_and_a_tie_refuses() {
+        assert_eq!(nearest(&[], 1), Nearest::None);
+        assert_eq!(nearest(&[0, 3], 1), Nearest::One(0));
+        assert_eq!(nearest(&[0, 2], 1), Nearest::Tie);
+        assert_eq!(nearest(&[4], -2), Nearest::One(4));
     }
 
     /// The main chain as uuids, with each node's message — what `--resume`

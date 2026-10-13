@@ -56,6 +56,7 @@
   import ApprovalPrompt from "./ApprovalPrompt.svelte";
   import Icon from "./Icon.svelte";
   import { REMOVED_TEXT_PLACEHOLDER, REMOVED_TOOL_PLACEHOLDER } from "./edit";
+  import { removeTip } from "./removeAsk";
   import MemoryHits from "./MemoryHits.svelte";
   import { hitsOfCalls } from "./memoryHits";
   import { isDragMove, sentExt, sentFilesOfCalls, type SentFile } from "./sentFiles";
@@ -955,13 +956,15 @@
             </button>
           {/if}
           {#if onremoveturn}
+            <!-- A delete look, apart from Edit's pencil (item 356); the
+                 transcript asks before it removes. -->
             <button
-              class="tool-btn"
-              use:tip={"Remove this reply from the context. Its tool calls stay; it stays in the log."}
-              aria-label="Remove this reply from the context"
+              class="tool-btn danger"
+              use:tip={removeTip("reply")}
+              aria-label="Remove this reply from the chat history"
               onclick={() => onremoveturn?.()}
             >
-              <Icon name="minus" size={14} />
+              <Icon name="trash" size={14} />
             </button>
           {/if}
         </span>
@@ -1551,6 +1554,12 @@
   .tool-btn:focus-visible {
     color: var(--ink);
     border-color: var(--line2);
+  }
+  /* Remove (item 356): red on hover, so it never reads as Edit. */
+  .tool-btn.danger:hover,
+  .tool-btn.danger:focus-visible {
+    color: var(--error);
+    border-color: color-mix(in srgb, var(--error) 45%, transparent);
   }
   /* A removed block: the placeholder in the tool line's face, greyed and
      italic like a removed turn, Restore at its side. */
