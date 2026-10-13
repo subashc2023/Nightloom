@@ -513,6 +513,20 @@ impl Chat {
         let outcome = self
             .turn_rounds(session, input, spoken, cancel, on_event)
             .await;
+        // Stopped or failed before a word (backlog 361, as the agent
+        // engine's): the log says so, rather than leave his message with
+        // nothing under it.
+        match &outcome {
+            Ok(o) if o.interrupted => {
+                crate::agent_turn::record_unanswered(session, self.model.clone(), None)
+            }
+            Err(e) => crate::agent_turn::record_unanswered(
+                session,
+                self.model.clone(),
+                Some(&e.to_string()),
+            ),
+            Ok(_) => {}
+        }
         // The request is taken either way: a compaction the model asked for
         // during a turn that then failed is stale, and leaving the flag up
         // would fire it at the end of the *next* turn instead.
@@ -1375,6 +1389,23 @@ pub(crate) mod tests {
         }
     }
 
+    /// A provider that cannot be reached (backlog 361): the request fails
+    /// before a single event.
+    struct Unreachable;
+
+    #[async_trait::async_trait]
+    impl Provider for Unreachable {
+        fn name(&self) -> &'static str {
+            "unreachable"
+        }
+
+        async fn stream_chat(&self, _: ChatRequest) -> Result<EventStream, ProviderError> {
+            Err(ProviderError::Transport(
+                "can't reach the API server".into(),
+            ))
+        }
+    }
+
     struct Echo;
 
     #[async_trait::async_trait]
@@ -1952,6 +1983,52 @@ pub(crate) mod tests {
         assert!(matches!(
             session.events().last(),
             Some(SessionEvent::AssistantMessage { stop_reason: Some(r), .. }) if r == "error"
+        ));
+    }
+
+    /// Backlog 361: a turn that fails before any text leaves a reply that
+    /// says so, not his message with nothing under it.
+    #[tokio::test]
+    async fn a_turn_that_fails_before_any_text_leaves_a_reply_that_says_so() {
+        let chat = Chat::new(Box::new(Unreachable), "test-model");
+        let mut session = Session::new();
+        let (out, _) = run(&chat, &mut session, "hi").await;
+        assert!(matches!(out, Err(ProviderError::Transport(_))));
+        let Some(SessionEvent::AssistantMessage {
+            blocks,
+            stop_reason: Some(r),
+            usage,
+            ..
+        }) = session.events().last()
+        else {
+            panic!("a reply under his message: {:?}", session.events().last())
+        };
+        assert!(r.starts_with("error: "), "{r}");
+        assert!(r.contains("can't reach"), "{r}");
+        assert!(
+            matches!(&blocks[..], [ContentBlock::Text { text }] if text.starts_with("No reply: "))
+        );
+        assert_eq!(usage.input_tokens + usage.output_tokens, 0);
+    }
+
+    /// Backlog 361: stopped before any text, the same, as `stopped`.
+    #[tokio::test]
+    async fn a_turn_stopped_before_any_text_leaves_a_reply_that_says_so() {
+        let chat = Chat::new(Scripted::provider(vec![]), "test-model");
+        let mut session = Session::new();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let out = chat
+            .run_turn(&mut session, "hi", &cancel, &mut |_| {})
+            .await
+            .unwrap();
+        assert!(out.interrupted);
+        assert!(matches!(
+            session.events().last(),
+            Some(SessionEvent::AssistantMessage { stop_reason: Some(r), blocks, .. })
+                if r == "stopped"
+                    && matches!(&blocks[..], [ContentBlock::Text { text }]
+                        if text == crate::agent_turn::STOPPED_BEFORE_REPLY)
         ));
     }
 

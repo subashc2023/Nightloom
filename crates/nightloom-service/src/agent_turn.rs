@@ -574,7 +574,7 @@ pub const STOPPED_BEFORE_REPLY: &str = "Stopped before any reply arrived.";
 /// window re-read the log, which read as a reply that had vanished. The
 /// reply carries no usage (the gauges skip it) and no cache window; its
 /// stop reason is `stopped` or `error: <why>`, which the footer names.
-fn record_unanswered(session: &mut Session, model: String, error: Option<&str>) {
+pub(crate) fn record_unanswered(session: &mut Session, model: String, error: Option<&str>) {
     let last = session.events().iter().rev().find(|e| {
         matches!(
             e,
