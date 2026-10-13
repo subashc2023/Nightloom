@@ -17,4 +17,7 @@ describe("reply footer (backlog 332)", () => {
     expect(stopNote("end_turn")).toBeNull();
     expect(stopNote(null)).toBeNull();
   });
+  it("names a turn stopped before any reply (backlog 361)", () => {
+    expect(stopNote("stopped")).toBe("stopped before a reply");
+  });
 });

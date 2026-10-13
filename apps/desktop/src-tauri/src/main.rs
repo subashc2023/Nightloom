@@ -3876,6 +3876,7 @@ async fn edit_message(
     mode: String,
     block: Option<usize>,
     attachments: Option<nightloom_core::EditedAttachments>,
+    at: Option<chrono::DateTime<chrono::Utc>>,
 ) -> Result<MessageEdit, String> {
     match mode.as_str() {
         "save" => {
@@ -3897,7 +3898,7 @@ async fn edit_message(
                 forked: false,
             })
         }
-        "send" => fork_session(state, index).await,
+        "send" => fork_session(state, index, at).await,
         other => Err(format!(
             "unknown edit mode {other:?}; use \"save\" or \"send\""
         )),
@@ -4012,7 +4013,11 @@ async fn restore_block(
 /// The fork's own log is written in the same directory as the parent's;
 /// an ephemeral parent forks to another chat with no log.
 #[tauri::command]
-async fn fork_session(state: State<'_, AppState>, upto: usize) -> Result<MessageEdit, String> {
+async fn fork_session(
+    state: State<'_, AppState>,
+    upto: usize,
+    at: Option<chrono::DateTime<chrono::Utc>>,
+) -> Result<MessageEdit, String> {
     let target = state.chats.target();
     let mut agent_guard = lock_agent_at(&state, &target).await;
     let log_dir = state.log_dir().await;
@@ -4020,6 +4025,12 @@ async fn fork_session(state: State<'_, AppState>, upto: usize) -> Result<Message
     let parent = session_guard
         .as_ref()
         .ok_or_else(|| "no active session".to_string())?;
+    // The message the window meant, by when it was sent (backlog 361): its
+    // place in the window's list may not be its place in the log.
+    let upto = match at {
+        Some(at) => parent.aim_user_message(upto, at)?,
+        None => upto,
+    };
     let fork = chat_ops::fork(parent, &log_dir, agent_guard.as_mut().map(OnCli::of), upto)?;
     let events = fork.events().to_vec();
     let id = fork.id.clone();

@@ -18,6 +18,7 @@ import { replaceStartHere, threadOfEvents } from "./thread";
 import type { AsideFold, FoldRecord } from "./asideFold";
 import { suggestions } from "./suggestions.svelte";
 import { isMac } from "./platform";
+import { hasUsage } from "./replyFooter";
 import {
   UNFILED,
   draftKey,
@@ -9059,7 +9060,11 @@ export async function sendEdit(
   if (app.busy) return false;
   try {
     const parent = app.activeSessionId;
-    const res = await api.editMessage(index, text, "send");
+    // The message's send time rides with its place (backlog 361): the
+    // backend aims the fork at the message meant, or refuses.
+    const meant = app.events[index];
+    const at = meant?.event === "user_message" ? meant.at : null;
+    const res = await api.editMessage(index, text, "send", null, at);
     app.events = res.events;
     // The fork starts with no asides; the parent keeps its own (backlog 203).
     switchAside(res.session);
@@ -9398,7 +9403,9 @@ function lastAssistantUsage(): Usage | null {
   for (let i = app.events.length - 1; i >= 0; i--) {
     if (!live[i]) continue;
     const e = app.events[i];
-    if (e.event === "assistant_message") return e.usage;
+    // A reply with no usage (stopped or failed before a word, backlog
+    // 361; cut off, 332) says nothing about the prefix: read past it.
+    if (e.event === "assistant_message" && hasUsage(e.usage)) return e.usage;
   }
   return null;
 }

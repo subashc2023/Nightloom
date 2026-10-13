@@ -1294,6 +1294,38 @@ impl Session {
     /// always complete. The mode is inherited — a fork of an incognito
     /// chat is incognito, and a fork of an ephemeral chat is another log
     /// that does not exist.
+    /// The log index of the live user message the window meant (nightshift
+    /// backlog 361, 2026-10-13). A window names a message by its place in
+    /// the list it holds; when that list is out of step with the log, the
+    /// place names another message — on 2026-10-13 a Retry on his newest
+    /// message forked before one 7 exchanges earlier, and the reply landed
+    /// in a fork that had lost those exchanges. So the window also sends the
+    /// message's `at`: `upto` stands when the message there was sent at
+    /// `at`; otherwise the one live user message sent at `at` is the one
+    /// meant; none (or two) is refused, naming nothing.
+    pub fn aim_user_message(&self, upto: usize, at: DateTime<Utc>) -> Result<usize, String> {
+        let live = self.live_flags();
+        let sent_at = |i: usize| match self.events.get(i) {
+            Some(SessionEvent::UserMessage { at: a, .. }) if live[i] => Some(*a),
+            _ => None,
+        };
+        if sent_at(upto) == Some(at) {
+            return Ok(upto);
+        }
+        let hits: Vec<usize> = (0..self.events.len())
+            .filter(|&i| sent_at(i) == Some(at))
+            .collect();
+        match hits.as_slice() {
+            [one] => Ok(*one),
+            [] => Err(
+                "that message is not in this chat's log as the window shows it; reopen the chat and try again — nothing was changed".into(),
+            ),
+            _ => Err(
+                "two messages in this chat were sent at the same moment, so which one is meant is unclear; nothing was changed".into(),
+            ),
+        }
+    }
+
     pub fn fork_from(&self, dir: impl AsRef<Path>, upto: usize) -> io::Result<Self> {
         let live = self.live_flags();
         match self.events.get(upto) {
@@ -5953,6 +5985,62 @@ mod tests {
 
     /// A fork inherits the mode: incognito stays incognito on disk, and an
     /// ephemeral parent forks to another session with no log.
+    /// Backlog 361 (found live, 2026-10-13): a Retry on his newest message,
+    /// from a window whose list lacked seven exchanges, forked before the
+    /// message seven exchanges earlier — the reply then lived in a fork
+    /// missing those exchanges, beside a parent that showed none. Aimed by
+    /// the message's send time, the fork cuts before the message meant.
+    #[test]
+    fn a_fork_aimed_from_a_stale_list_cuts_before_the_message_meant() {
+        let dir = std::env::temp_dir().join(format!("nightloom-361-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut log = Session::with_log(&dir).unwrap();
+        let reply = |s: &mut Session, t: &str| {
+            s.record_assistant(
+                "m",
+                vec![ContentBlock::Text { text: t.into() }],
+                None,
+                Usage::default(),
+            )
+        };
+        // 1 user, 2 reply, 3 user, 4 reply (the exchange the window lacks),
+        // 5 user (his newest).
+        log.record_user("first");
+        reply(&mut log, "reply one");
+        log.record_user("second");
+        reply(&mut log, "reply two");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        log.record_user("newest");
+        let events = log.events().to_vec();
+        // The window's list: everything but events 3 and 4.
+        let window: Vec<SessionEvent> = events
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != 3 && *i != 4)
+            .map(|(_, e)| e.clone())
+            .collect();
+        let index = window.len() - 1; // 3 in the window, 5 in the log
+        let SessionEvent::UserMessage { at, text, .. } = &window[index] else {
+            panic!("the window's last event is his message")
+        };
+        assert_eq!(text, "newest");
+        assert_eq!(index, 3);
+        // Unaimed, the window's index names "second" — the 2026-10-13 cut.
+        assert!(
+            matches!(&events[index], SessionEvent::UserMessage { text, .. } if text == "second")
+        );
+        let upto = log.aim_user_message(index, *at).unwrap();
+        assert_eq!(upto, 5);
+        let fork = log.fork_from(&dir, upto).unwrap();
+        let texts: Vec<String> = fork.messages().iter().map(|m| m.text()).collect();
+        assert_eq!(texts, ["first", "reply one", "second", "reply two"]);
+        // An index already right stands; a time no live message has is refused.
+        assert_eq!(log.aim_user_message(5, *at), Ok(5));
+        let never = *at + chrono::Duration::days(1);
+        assert!(log.aim_user_message(5, never).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_fork_inherits_the_mode() {
         let dir =

@@ -565,8 +565,15 @@ export function editMessage(
   /** Item 336: on a `save`, the user message's whole set of attachments
    *  from here on; absent leaves them as they are. */
   attachments: EditedAttachments | null = null,
+  /** Backlog 361: when the user message at `index` was sent, so the
+   *  backend forks before the message meant even when the window's list
+   *  is out of step with the log; absent, `index` alone, as before. */
+  at: string | null = null,
 ): Promise<MessageEdit> {
-  return invoke("edit_message", attachments ? { index, text, mode, attachments } : { index, text, mode });
+  const args: Record<string, unknown> = { index, text, mode };
+  if (attachments) args.attachments = attachments;
+  if (at) args.at = at;
+  return invoke("edit_message", args);
 }
 
 /**
