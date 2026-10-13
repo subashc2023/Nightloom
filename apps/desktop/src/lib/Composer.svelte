@@ -133,6 +133,7 @@
   import { composerFocus } from "./rewindDraft.svelte";
   import { CaretKeeper, mayAutoFocus } from "./composerCaret";
   import { chatBoxCount, chatBoxMounted, composerSummon } from "./composerSummon.svelte";
+  import { registerPasteHandler, type PasteRequest } from "./pasteToCompose";
   import { requestWrapUp } from "./wrapAsides.svelte";
   // Backlog 283: the same composer in an aside.
   import {
@@ -902,6 +903,64 @@
       autogrow();
     });
   });
+
+  /*
+   * ⌘V with nothing to type in (backlog 351, `pasteToCompose.ts`): the
+   * chat's box takes the focus with its kept caret, as ⌘L gives it, and the
+   * paste is then the box's own — AppKit's `paste:` into the focused box
+   * (the same call as ⌥⌘V), so `onpaste` sees a real paste event. A paste
+   * event that reached the window with nothing to paste into is handed to
+   * `onpaste` during its dispatch; plain text, which `onpaste` leaves to the
+   * browser, goes in at the caret as one paste.
+   */
+  $effect(() => {
+    const el = root;
+    if (aside || !el) return;
+    return registerPasteHandler(el, pasteFromOutside);
+  });
+  function pasteFromOutside(req: PasteRequest): void {
+    if (!ta) return;
+    const box = boxElement(ta);
+    const had = !!box && !!document.activeElement && box.contains(document.activeElement);
+    keeper.focus(key, ta, had, true);
+    if ("event" in req) {
+      const e = req.event;
+      onpaste(e);
+      if (e.defaultPrevented) return;
+      const t = e.clipboardData?.getData("text/plain") ?? "";
+      if (!t) return;
+      e.preventDefault();
+      pasteMath(normalizeNewlines(t));
+      return;
+    }
+    if (req.kind === "attach") {
+      clipOpen = false;
+      void pasteAsAttachment();
+      return;
+    }
+    void pasteByKey();
+  }
+  async function pasteByKey(): Promise<void> {
+    let asked = false;
+    try {
+      asked = await pasteIntoFocus();
+    } catch {
+      asked = false;
+    }
+    if (asked) return;
+    // Off the Mac (no `paste:` to send): the clipboard's text, read here,
+    // goes in as a plain paste would, with the long-paste offer.
+    try {
+      const t = await navigator.clipboard.readText();
+      if (!t || !ta) return;
+      const at = Math.min(ta.selectionStart, ta.selectionEnd);
+      pasteMath(normalizeNewlines(t));
+      offer = longPasteOffer(t, at);
+      converted = null;
+    } catch (e) {
+      addToast(`Could not read the clipboard: ${String(e)}`);
+    }
+  }
 
   const quoted = $derived(hasQuoteLine(text));
   // Item 315: fenced code drawn coloured in the same layer as quotes.

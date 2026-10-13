@@ -1,4 +1,6 @@
 import { EditorView } from "@codemirror/view";
+import { pasteToComposeEvent, pasteToComposeKeydown } from "./pasteToCompose";
+import { isMac } from "./platform";
 import { typeToComposeKeydown } from "./typeToCompose";
 
 /**
@@ -36,6 +38,8 @@ export function chatBoxMounted(): () => void {
  * the focus; the key goes on to wherever it was going (`typeToCompose.ts`).
  */
 function onTyping(e: KeyboardEvent): void {
+  // ⌘V with nothing to type in (backlog 351, `pasteToCompose.ts`).
+  pasteToComposeKeydown(e, isMac);
   typeToComposeKeydown(e, endOfEditor);
 }
 
@@ -50,8 +54,13 @@ function endOfEditor(el: HTMLElement): boolean {
 
 function listenForTyping(on: boolean): void {
   if (typeof window === "undefined") return;
-  if (on) window.addEventListener("keydown", onTyping, true);
-  else window.removeEventListener("keydown", onTyping, true);
+  if (on) {
+    window.addEventListener("keydown", onTyping, true);
+    window.addEventListener("paste", pasteToComposeEvent, true);
+  } else {
+    window.removeEventListener("keydown", onTyping, true);
+    window.removeEventListener("paste", pasteToComposeEvent, true);
+  }
 }
 
 export function chatBoxCount(): number {

@@ -106,7 +106,7 @@ export const CONTROL_SELECTOR = [
 ].join(", ");
 
 /** Where the floating aside cards are: their own box is the one meant. */
-const ASIDE_SELECTOR = ".aside-card, .composer.aside";
+export const ASIDE_SELECTOR = ".aside-card, .composer.aside";
 
 /** The slice of an element `focusKindOf` reads. */
 export interface FocusEl extends ElLike {
