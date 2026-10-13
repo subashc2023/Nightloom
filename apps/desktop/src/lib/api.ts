@@ -80,6 +80,7 @@ import type {
   TurnResult,
   WireView,
 } from "./types";
+import { aimArgs, type Aim } from "./aim";
 import type { CouncilRequest } from "./council";
 import type { PriorExchange } from "./noteEdit";
 import type { TurnUsageLine } from "./replyUsage";
@@ -570,12 +571,17 @@ export function editMessage(
   attachments: EditedAttachments | null = null,
   /** Backlog 361: when the user message at `index` was sent, so the
    *  backend forks before the message meant even when the window's list
-   *  is out of step with the log; absent, `index` alone, as before. */
+   *  is out of step with the log; absent, `index` alone, as before.
+   *  Backlog 364: a `save` is aimed by it too. */
   at: string | null = null,
+  /** Backlog 364: on a `save` of a reply, its place among its exchange's
+   *  replies (`aim.ts`); `at` is then its exchange's send time. */
+  nth: number | null = null,
 ): Promise<MessageEdit> {
   const args: Record<string, unknown> = { index, text, mode };
   if (attachments) args.attachments = attachments;
   if (at) args.at = at;
+  if (at && nth !== null) args.nth = nth;
   return invoke("edit_message", args);
 }
 
@@ -584,13 +590,14 @@ export function editMessage(
  * `edit_message` with `block`, an index into the reply's `blocks`; the
  * calls and the other text blocks around it stay where they were.
  */
-export function editBlock(index: number, block: number, text: string): Promise<MessageEdit> {
-  return invoke("edit_message", { index, text, mode: "save", block });
+export function editBlock(index: number, block: number, text: string, aim?: Aim | null): Promise<MessageEdit> {
+  return invoke("edit_message", { index, text, mode: "save", block, ...aimArgs(aim) });
 }
 
-/** Remove the turn at `index` from the context: the `elide` marker, from the transcript. */
-export function removeMessage(index: number): Promise<MessageEdit> {
-  return invoke("remove_message", { index });
+/** Remove the turn at `index` from the context: the `elide` marker, from the transcript.
+ *  `aim` (backlog 364, `aim.ts`): the backend removes the turn meant, or refuses. */
+export function removeMessage(index: number, aim?: Aim | null): Promise<MessageEdit> {
+  return invoke("remove_message", { index, ...aimArgs(aim) });
 }
 
 /**
@@ -598,13 +605,13 @@ export function removeMessage(index: number): Promise<MessageEdit> {
  * backlog 066): a text block, or a tool call with its result — the pair
  * leaves together. On Claude Code the CLI's copy drops the nodes.
  */
-export function removeBlock(index: number, block: number): Promise<MessageEdit> {
-  return invoke("remove_block", { index, block });
+export function removeBlock(index: number, block: number, aim?: Aim | null): Promise<MessageEdit> {
+  return invoke("remove_block", { index, block, ...aimArgs(aim) });
 }
 
 /** Put back a block `removeBlock` took out. */
-export function restoreBlock(index: number, block: number): Promise<MessageEdit> {
-  return invoke("restore_block", { index, block });
+export function restoreBlock(index: number, block: number, aim?: Aim | null): Promise<MessageEdit> {
+  return invoke("restore_block", { index, block, ...aimArgs(aim) });
 }
 
 /**
@@ -612,13 +619,15 @@ export function restoreBlock(index: number, block: number): Promise<MessageEdit>
  * `unelide` marker; on Claude Code a third copy of the CLI's file with the
  * turn's nodes back from the original, recorded and resumed.
  */
-export function restoreMessage(index: number): Promise<MessageEdit> {
-  return invoke("restore_message", { index });
+export function restoreMessage(index: number, aim?: Aim | null): Promise<MessageEdit> {
+  return invoke("restore_message", { index, ...aimArgs(aim) });
 }
 
-/** Fork the open chat before the user turn at `upto`; the fork becomes the open chat. */
-export function forkSession(upto: number): Promise<MessageEdit> {
-  return invoke("fork_session", { upto });
+/** Fork the open chat before the user turn at `upto`; the fork becomes the open chat.
+ *  `at` (backlog 364, the phone's Fork): when that message was sent, so the
+ *  backend forks before the message meant, or refuses (361's aim). */
+export function forkSession(upto: number, at?: string | null): Promise<MessageEdit> {
+  return invoke("fork_session", at ? { upto, at } : { upto });
 }
 
 /** A fresh chat that continues the open one after a hand-off (nightshift

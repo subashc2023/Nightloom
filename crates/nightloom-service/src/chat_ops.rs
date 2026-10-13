@@ -63,6 +63,24 @@ fn split(cli: Option<OnCli<'_>>) -> (Option<PathBuf>, Option<&mut ClaudeCodeAgen
     }
 }
 
+/// The turn the caller meant (nightshift backlog 364, 2026-10-13): `index`
+/// re-aimed by the send time of his message that opened its exchange, and
+/// for a reply its place among that exchange's replies
+/// ([`Session::aim_turn`]), when the caller sends one; bare, as before, when
+/// it does not. A window whose list is out of step with the log names
+/// another turn by its bare index — the hazard backlog 361 met for a fork.
+pub fn aimed(
+    session: &Session,
+    index: usize,
+    at: Option<chrono::DateTime<chrono::Utc>>,
+    nth: Option<usize>,
+) -> Result<usize, String> {
+    match at {
+        Some(at) => session.aim_turn(index, at, nth),
+        None => Ok(index),
+    }
+}
+
 /// "Edit and save" (nightshift backlog 062; `block` backlog 066): an `Edit`
 /// marker on the log — on the turn, or on one text block of a reply — and,
 /// on Claude Code, the CLI's history rewritten by copy first. The desktop's

@@ -79,19 +79,27 @@ import { MAX_SEATS, MIN_SEATS, type CouncilPrefs, type CouncilRequest } from "./
 import type { ApprovalDecision, ChatKind, DocumentInput, EditableLayer, ImageInput, LayerChoice, PromptLayer, SessionEvent } from "./types";
 import type { SubagentLimits } from "./catalog";
 import { modelList } from "./modelList.svelte";
+import type { Aim } from "./aim";
 
 // ---- the wire shapes (design §4; 1A's `remote/api.rs` is the contract) ----
 
+/** Backlog 364: the phone's aim at the turn it names (`aim.ts`), from its
+ *  own list; absent from an older phone, which goes bare as before. */
+export interface ActAim {
+  at?: string | null;
+  nth?: number | null;
+}
+
 /** One message action, tagged by `op` (serde `tag = "op"`, snake_case). */
 export type ChatAction =
-  | { op: "edit"; index: number; text: string; mode: "save" | "send"; block?: number | null }
-  | { op: "remove"; index: number }
-  | { op: "restore"; index: number }
-  | { op: "remove_block"; index: number; block: number }
-  | { op: "restore_block"; index: number; block: number }
-  | { op: "rewind"; to: number }
+  | ({ op: "edit"; index: number; text: string; mode: "save" | "send"; block?: number | null } & ActAim)
+  | ({ op: "remove"; index: number } & ActAim)
+  | ({ op: "restore"; index: number } & ActAim)
+  | ({ op: "remove_block"; index: number; block: number } & ActAim)
+  | ({ op: "restore_block"; index: number; block: number } & ActAim)
+  | { op: "rewind"; to: number; at?: string | null }
   | { op: "unrewind"; of: number }
-  | { op: "fork"; upto: number }
+  | { op: "fork"; upto: number; at?: string | null }
   | { op: "continue" }
   | { op: "compact" }
   | { op: "delete" }
@@ -256,6 +264,14 @@ const reply = (): ActReply => ({ chat: app.activeSessionId, events: app.events }
 const replyOf = (chat: string): ActReply => (chat === app.activeSessionId ? reply() : { chat, events: [] });
 
 /** A fork is now the open chat: as `sendEdit` does it, without the send. */
+/** Backlog 364: the phone's aim, or `null` (an older phone sent none, so
+ *  its index goes bare, as before) — never the Mac's own list's, whose
+ *  index is not the phone's. */
+export function phoneAim(a: ActAim): Aim | null {
+  if (!a.at) return null;
+  return a.nth == null ? { at: a.at } : { at: a.at, nth: a.nth };
+}
+
 function takeFork(res: { events: SessionEvent[]; session: string }): void {
   app.events = res.events;
   switchAside(res.session); // the fork starts with no asides (backlog 203)
@@ -310,11 +326,13 @@ export async function runAct(chat: string, project: string | null, action: ChatA
     case "edit": {
       if (action.block != null) {
         if (action.mode === "send") throw new Error("a reply's block is saved, not sent");
-        await attempt("save the edit", () => saveReplyEdit(action.index, [{ block: action.block!, text: action.text }]));
+        await attempt("save the edit", () =>
+          saveReplyEdit(action.index, [{ block: action.block!, text: action.text }], phoneAim(action)),
+        );
         return reply();
       }
       if (action.mode === "save") {
-        await attempt("save the edit", () => saveEdit(action.index, action.text));
+        await attempt("save the edit", () => saveEdit(action.index, action.text, null, phoneAim(action)));
         return reply();
       }
       // Edit and send: fork before the turn, open the fork, send into it —
@@ -322,33 +340,35 @@ export async function runAct(chat: string, project: string | null, action: ChatA
       // answer comes back now and not at the turn's end.
       if (!app.connection) throw new Error("no engine is connected on the Mac — connect one there first");
       await mustClaim(id);
-      const res = await api.editMessage(action.index, action.text, "send");
+      const res = action.at
+        ? await api.editMessage(action.index, action.text, "send", null, action.at)
+        : await api.editMessage(action.index, action.text, "send");
       takeFork(res);
       // 132 (c): a queued send is said, so the phone draws no live turn.
       const out = await remoteSend(null, action.text);
       return out === "queued" ? { ...reply(), note: "queued — it goes when the Mac's running turn ends" } : reply();
     }
     case "remove":
-      await attempt("remove it", () => removeTurn(action.index));
+      await attempt("remove it", () => removeTurn(action.index, phoneAim(action)));
       return reply();
     case "restore":
-      await attempt("restore it", () => restoreTurn(action.index));
+      await attempt("restore it", () => restoreTurn(action.index, phoneAim(action)));
       return reply();
     case "remove_block":
-      await attempt("remove it", () => removeBlock(action.index, action.block, false));
+      await attempt("remove it", () => removeBlock(action.index, action.block, false, phoneAim(action)));
       return reply();
     case "restore_block":
-      await attempt("restore it", () => restoreBlock(action.index, action.block));
+      await attempt("restore it", () => restoreBlock(action.index, action.block, phoneAim(action)));
       return reply();
     case "rewind":
-      await attempt("rewind", () => rewindTo(action.to));
+      await attempt("rewind", () => rewindTo(action.to, action.at ?? false));
       return reply();
     case "unrewind":
       app.events = await api.unrewind(action.of);
       return reply();
     case "fork":
       await mustClaim(id);
-      takeFork(await api.forkSession(action.upto));
+      takeFork(action.at ? await api.forkSession(action.upto, action.at) : await api.forkSession(action.upto));
       return reply();
     case "continue": {
       const from = app.activeSessionId;

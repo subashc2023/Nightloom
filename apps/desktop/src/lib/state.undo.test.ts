@@ -46,6 +46,8 @@ const assistant = (text: string): SessionEvent => ({
 });
 const base: SessionEvent[] = [created, user("one"), assistant("first"), user("two"), assistant("second")];
 const withRewind: SessionEvent[] = [...base, { event: "rewind", to: 3, at: AT }];
+/** Backlog 364: the reply at 2 is aimed by its exchange's send time and its place in it. */
+const R2 = { at: AT, nth: 0 };
 const withUnrewind: SessionEvent[] = [...withRewind, { event: "unrewind", of: 5, at: AT }];
 
 vi.mock("./api", async (importOriginal) => ({
@@ -115,6 +117,61 @@ describe("a rewind from the transcript is aimed (wave 8b review, 2026-10-13)", (
   });
 });
 
+describe("Remove, Restore and Save are aimed (backlog 364)", () => {
+  // 361's stale list, for the rest: the window's index may name another
+  // turn in the log, so each sends the send time of the message that opened
+  // the turn's exchange, and for a reply its place among that exchange's
+  // replies; undo and redo name the same turn. The phone's own aim (or none)
+  // goes as it came.
+  const one = "2026-10-13T07:19:57.1Z";
+  const two = "2026-10-13T07:21:03.2Z";
+  const events = (): SessionEvent[] => [
+    created,
+    { event: "user_message", text: "one", at: one },
+    assistant("first"),
+    { event: "user_message", text: "two", at: two },
+    assistant("second a"),
+    assistant("second b"),
+  ];
+  beforeEach(() => {
+    app.events = events();
+  });
+
+  it("Remove sends his message's send time, and its undo and redo do too", async () => {
+    await removeTurn(3);
+    expect(api.removeMessage).toHaveBeenLastCalledWith(3, { at: two });
+    await undo();
+    expect(api.restoreMessage).toHaveBeenLastCalledWith(3, { at: two });
+    await redo();
+    expect(api.removeMessage).toHaveBeenLastCalledWith(3, { at: two });
+  });
+  it("Remove on a reply sends its exchange's send time and its place in it", async () => {
+    await removeTurn(5);
+    expect(api.removeMessage).toHaveBeenLastCalledWith(5, { at: two, nth: 1 });
+  });
+  it("Restore sends it, and so does its undo", async () => {
+    await restoreTurn(4);
+    expect(api.restoreMessage).toHaveBeenLastCalledWith(4, { at: two, nth: 0 });
+    await undo();
+    expect(api.removeMessage).toHaveBeenLastCalledWith(4, { at: two, nth: 0 });
+  });
+  it("Save sends it, on his message and on a reply's block", async () => {
+    await saveEdit(3, "two, edited");
+    expect(api.editMessage).toHaveBeenLastCalledWith(3, "two, edited", "save", null, two, null);
+    await undo();
+    expect(api.editMessage).toHaveBeenLastCalledWith(3, "two", "save", null, two, null);
+    app.events = events(); // the mock answered with another log
+    await saveReplyEdit(2, [{ block: 0, text: "first, reworded" }]);
+    expect(api.editBlock).toHaveBeenLastCalledWith(2, 0, "first, reworded", { at: one, nth: 0 });
+  });
+  it("the phone's aim goes as it came, and none goes bare", async () => {
+    await removeTurn(3, { at: one });
+    expect(api.removeMessage).toHaveBeenLastCalledWith(3, { at: one });
+    await restoreTurn(3, null);
+    expect(api.restoreMessage).toHaveBeenLastCalledWith(3);
+  });
+});
+
 describe("one inverse per operation", () => {
   it("rewind → unrewind of the marker it landed; redo is a fresh rewind", async () => {
     await rewindTo(3);
@@ -130,28 +187,28 @@ describe("one inverse per operation", () => {
 
   it("edit-and-save → an edit back to the previous text", async () => {
     await saveEdit(1, "one, edited");
-    expect(api.editMessage).toHaveBeenLastCalledWith(1, "one, edited", "save");
+    expect(api.editMessage).toHaveBeenLastCalledWith(1, "one, edited", "save", null, AT, null);
     await undo();
-    expect(api.editMessage).toHaveBeenLastCalledWith(1, "one", "save");
+    expect(api.editMessage).toHaveBeenLastCalledWith(1, "one", "save", null, AT, null);
     await redo();
-    expect(api.editMessage).toHaveBeenLastCalledWith(1, "one, edited", "save");
+    expect(api.editMessage).toHaveBeenLastCalledWith(1, "one, edited", "save", null, AT, null);
   });
 
   it("an attachment edit (item 336) → an edit back to the set the turn carried", async () => {
     const set = { images: [{ media_type: "image/png", data: "AAAA" }], documents: [] };
     await saveEdit(1, "one, edited", set);
-    expect(api.editMessage).toHaveBeenLastCalledWith(1, "one, edited", "save", set);
+    expect(api.editMessage).toHaveBeenLastCalledWith(1, "one, edited", "save", set, AT, null);
     await undo();
     // Turn 1 had none of its own: the undo sets the empty set back.
-    expect(api.editMessage).toHaveBeenLastCalledWith(1, "one", "save", { images: [], documents: [] });
+    expect(api.editMessage).toHaveBeenLastCalledWith(1, "one", "save", { images: [], documents: [] }, AT, null);
     await redo();
-    expect(api.editMessage).toHaveBeenLastCalledWith(1, "one, edited", "save", set);
+    expect(api.editMessage).toHaveBeenLastCalledWith(1, "one, edited", "save", set, AT, null);
   });
 
   it("remove → restore of the same turn", async () => {
     await removeTurn(2);
     await undo();
-    expect(api.restoreMessage).toHaveBeenCalledWith(2);
+    expect(api.restoreMessage).toHaveBeenCalledWith(2, R2);
     await redo();
     expect(api.removeMessage).toHaveBeenCalledTimes(2);
   });
@@ -227,7 +284,7 @@ describe("the Undo toast", () => {
     expect(toast?.action?.label).toBe("Undo");
     runToastAction(toast!.id);
     await flush();
-    expect(api.restoreMessage).toHaveBeenCalledWith(2);
+    expect(api.restoreMessage).toHaveBeenCalledWith(2, R2);
     expect(app.toasts.some((t) => t.id === toast!.id)).toBe(false);
     expect(undoLabel()).toBeNull();
     // The click is spent with the toast.
@@ -257,33 +314,33 @@ describe("the Undo toast", () => {
     expect(app.toasts.some((t) => t.text.startsWith("Something was done since"))).toBe(true);
     // ⌘Z still undoes in order.
     await undo();
-    expect(api.editMessage).toHaveBeenLastCalledWith(1, "one", "save");
+    expect(api.editMessage).toHaveBeenLastCalledWith(1, "one", "save", null, AT, null);
     await undo();
-    expect(api.restoreMessage).toHaveBeenCalledWith(2);
+    expect(api.restoreMessage).toHaveBeenCalledWith(2, R2);
   });
 });
 
 describe("Restore and tool calls", () => {
   it("Restore on a placeholder pushes its inverse — the removal again", async () => {
     await restoreTurn(2);
-    expect(api.restoreMessage).toHaveBeenCalledWith(2);
+    expect(api.restoreMessage).toHaveBeenCalledWith(2, R2);
     expect(undoLabel()).toBe("restore");
     await undo();
-    expect(api.removeMessage).toHaveBeenCalledWith(2);
+    expect(api.removeMessage).toHaveBeenCalledWith(2, R2);
     await redo();
     expect(api.restoreMessage).toHaveBeenCalledTimes(2);
   });
 
   it("a tool call's removal → the block's restore, with the toast; Restore → the removal", async () => {
     await removeBlock(2, 1);
-    expect(api.removeBlock).toHaveBeenCalledWith(2, 1);
+    expect(api.removeBlock).toHaveBeenCalledWith(2, 1, R2);
     expect(app.toasts.some((t) => t.text === "Removed from context")).toBe(true);
     await undo();
-    expect(api.restoreBlock).toHaveBeenCalledWith(2, 1);
+    expect(api.restoreBlock).toHaveBeenCalledWith(2, 1, R2);
     await restoreBlock(2, 1);
     expect(undoLabel()).toBe("restore");
     await undo();
-    expect(api.removeBlock).toHaveBeenLastCalledWith(2, 1);
+    expect(api.removeBlock).toHaveBeenLastCalledWith(2, 1, R2);
   });
 
   it("a reply's Save is one entry: edits back for edits, restores for emptied blocks, in reverse", async () => {
@@ -308,17 +365,17 @@ describe("Restore and tool calls", () => {
       { block: 2, text: "" },
     ]);
     expect(ok).toBe(true);
-    expect(api.editBlock).toHaveBeenCalledWith(2, 0, "alpha, reworded");
-    expect(api.removeBlock).toHaveBeenCalledWith(2, 2);
+    expect(api.editBlock).toHaveBeenCalledWith(2, 0, "alpha, reworded", R2);
+    expect(api.removeBlock).toHaveBeenCalledWith(2, 2, R2);
     expect(undoLabel()).toBe("edit");
     await undo();
-    expect(api.restoreBlock).toHaveBeenCalledWith(2, 2);
-    expect(api.editBlock).toHaveBeenLastCalledWith(2, 0, "alpha");
+    expect(api.restoreBlock).toHaveBeenCalledWith(2, 2, R2);
+    expect(api.editBlock).toHaveBeenLastCalledWith(2, 0, "alpha", R2);
     const order = (api.restoreBlock as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
     const back = (api.editBlock as ReturnType<typeof vi.fn>).mock.invocationCallOrder[1];
     expect(order).toBeLessThan(back);
     await redo();
-    expect(api.editBlock).toHaveBeenLastCalledWith(2, 0, "alpha, reworded");
+    expect(api.editBlock).toHaveBeenLastCalledWith(2, 0, "alpha, reworded", R2);
     expect(api.removeBlock).toHaveBeenCalledTimes(2);
     expect(undoLabel()).toBe("edit");
   });

@@ -1328,6 +1328,39 @@ impl Session {
         }
     }
 
+    /// The log index of the turn the window meant for an edit, a Remove or
+    /// a Restore (nightshift backlog 364, 2026-10-13): [`Self::aim_user_message`]
+    /// for his own message (`nth` absent), and for a reply the `nth`
+    /// assistant message (from 0) of the exchange his message sent at `at`
+    /// opened — the replies after it up to his next message. A reply has no
+    /// send time of its own, so it is named by its exchange's. None there
+    /// is refused, naming nothing; `index` is only the window's guess.
+    pub fn aim_turn(
+        &self,
+        index: usize,
+        at: DateTime<Utc>,
+        nth: Option<usize>,
+    ) -> Result<usize, String> {
+        let anchor = self.aim_user_message(index, at)?;
+        let Some(nth) = nth else {
+            return Ok(anchor);
+        };
+        let mut seen = 0;
+        for (i, e) in self.events.iter().enumerate().skip(anchor + 1) {
+            match e {
+                SessionEvent::UserMessage { .. } => break,
+                SessionEvent::AssistantMessage { .. } => {
+                    if seen == nth {
+                        return Ok(i);
+                    }
+                    seen += 1;
+                }
+                _ => {}
+            }
+        }
+        Err("that reply is not in this chat's log as the window shows it; reopen the chat and try again — nothing was changed".into())
+    }
+
     /// A new session that begins as this one did, up to and not including
     /// event `upto` (2026-09-15, nightshift backlog 062 — his "edit and
     /// send"): the parent's *live* events before the cut, copied into a
@@ -6071,6 +6104,58 @@ mod tests {
         let never = *at + chrono::Duration::days(1);
         assert!(log.aim_user_message(5, never).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Backlog 364: Remove, Restore and edit-Save are aimed as 361's fork
+    /// is — his message by its send time, a reply by its exchange's and its
+    /// place among that exchange's replies — from a window whose list lacks
+    /// an exchange.
+    #[test]
+    fn a_turn_aimed_from_a_stale_list_is_the_one_meant() {
+        let mut log = Session::new();
+        let reply = |s: &mut Session, t: &str| {
+            s.record_assistant(
+                "m",
+                vec![ContentBlock::Text { text: t.into() }],
+                None,
+                Usage::default(),
+            )
+        };
+        // 1 user, 2 reply, 3 user, 4 reply (the window lacks 3 and 4),
+        // 5 user, 6 reply, 7 reply (two rounds of one exchange).
+        log.record_user("first");
+        reply(&mut log, "reply one");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        log.record_user("second");
+        reply(&mut log, "reply two");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        log.record_user("third");
+        reply(&mut log, "reply three a");
+        reply(&mut log, "reply three b");
+        let events = log.events().to_vec();
+        let SessionEvent::UserMessage { at: third, .. } = &events[5] else {
+            panic!("event 5 is his third message")
+        };
+        // The window's indexes are two short: its 3 is the log's 5.
+        assert_eq!(log.aim_turn(3, *third, None), Ok(5));
+        assert_eq!(log.aim_turn(4, *third, Some(0)), Ok(6));
+        assert_eq!(log.aim_turn(5, *third, Some(1)), Ok(7));
+        // A place already right stands; a reply the exchange does not have,
+        // or a time no live message has, is refused.
+        assert_eq!(log.aim_turn(7, *third, Some(1)), Ok(7));
+        assert!(log.aim_turn(5, *third, Some(2)).is_err());
+        let SessionEvent::UserMessage { at: first, .. } = &events[1] else {
+            panic!("event 1 is his first message")
+        };
+        assert_eq!(
+            log.aim_turn(1, *first, Some(1)).ok(),
+            None,
+            "the first exchange has one reply"
+        );
+        assert!(
+            log.aim_turn(1, *third + chrono::Duration::days(1), None)
+                .is_err()
+        );
     }
 
     /// Wave 8b review (2026-10-13): backlog 361's stand-in reply is not

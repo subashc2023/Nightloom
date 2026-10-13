@@ -38,6 +38,7 @@ import {
   hasDraft,
   discardDraft,
 } from "./drafts.svelte";
+import { aimOf, type Aim } from "./aim";
 import { requestComposerFocus, rewoundMessage, swapIn, untouched, type BoxSwap } from "./rewindDraft.svelte";
 import {
   CURATED,
@@ -8717,14 +8718,15 @@ export function chatAgentSession(events: SessionEvent[]): string | null {
  * reply after the rewind landed, stitching the turn being undone onto the
  * history it was removed from.
  */
-export async function rewindTo(to: number, aim = false): Promise<void> {
+export async function rewindTo(to: number, aim: boolean | string = false): Promise<void> {
   if (app.busy) return;
   // From the window's own transcript, the message's send time rides with
   // its place, as `sendEdit`'s does (backlog 361; wave 8b review): the
   // backend rewinds to the message meant, or refuses. The phone's index is
-  // its own list's, so it goes bare, as before.
-  const meant = aim ? app.events[to] : undefined;
-  const at = meant?.event === "user_message" ? meant.at : undefined;
+  // its own list's: since backlog 364 it sends the send time from that
+  // list (a string here); a phone that sends none goes bare, as before.
+  const meant = aim === true ? app.events[to] : undefined;
+  const at = typeof aim === "string" ? aim : meant?.event === "user_message" ? meant.at : undefined;
   const call = () => (at ? api.rewind(to, at) : api.rewind(to));
   // His message at `to`, read before the rewind supersedes it (backlog 247).
   const back = rewoundMessage(app.events, to, nextAttachmentId);
@@ -8995,12 +8997,15 @@ export async function saveEdit(
   /** Item 336: the user message's whole set of attachments from here on —
    *  the edit box's chips, passed only when they changed. */
   attachments: EditedAttachments | null = null,
+  /** Backlog 364: the phone's aim (`null`: none, bare); absent, the window's own. */
+  aim?: Aim | null,
 ): Promise<boolean> {
   if (app.busy) return false;
+  const meant = aimFor(index, aim);
   const previous = currentText(index);
   const previousSet = attachments ? currentAttachments(index) : null;
   try {
-    const res = await editSaved(index, text, attachments);
+    const res = await editSaved(index, text, attachments, meant);
     app.events = res.events;
     app.error = null;
   } catch (e) {
@@ -9011,7 +9016,7 @@ export async function saveEdit(
   // same marker, the same CLI copy on Claude Code, the original kept — and,
   // when the attachments changed, back to the set it carried (item 336).
   const editTo = async (t: string, set: EditedAttachments | null) => {
-    const res = await editSaved(index, t, set);
+    const res = await editSaved(index, t, set, meant);
     app.events = res.events;
   };
   pushUndo(chatScope(), {
@@ -9023,10 +9028,36 @@ export async function saveEdit(
 }
 
 /** `edit_message` "save", with the attachments only when there are some
- *  to set — a text-only Save is the call it always was. */
-function editSaved(index: number, text: string, set: EditedAttachments | null) {
+ *  to set — a text-only Save is the call it always was; aimed (backlog
+ *  364) when the turn has an aim. */
+function editSaved(index: number, text: string, set: EditedAttachments | null, aim: Aim | null = null) {
+  if (aim) return api.editMessage(index, text, "save", set, aim.at, aim.nth ?? null);
   return set ? api.editMessage(index, text, "save", set) : api.editMessage(index, text, "save");
 }
+
+/**
+ * Backlog 364: the turn the caller means, beside its index — the send time
+ * of the message that opened its exchange, and for a reply its place among
+ * that exchange's replies (`aim.ts`). The window's own list gives it unless
+ * the caller brought one: the phone's, from its own list, or `null` (an
+ * older phone that sent none), which goes bare as before. Read once, before
+ * the change, so its undo and redo name the same turn.
+ */
+function aimFor(index: number, aim: Aim | null | undefined): Aim | null {
+  return aim === undefined ? aimOf(app.events, index) : aim;
+}
+
+/** The message calls, aimed when there is an aim, the bare call otherwise. */
+const removeCall = (index: number, aim: Aim | null) =>
+  aim ? api.removeMessage(index, aim) : api.removeMessage(index);
+const restoreCall = (index: number, aim: Aim | null) =>
+  aim ? api.restoreMessage(index, aim) : api.restoreMessage(index);
+const removeBlockCall = (index: number, block: number, aim: Aim | null) =>
+  aim ? api.removeBlock(index, block, aim) : api.removeBlock(index, block);
+const restoreBlockCall = (index: number, block: number, aim: Aim | null) =>
+  aim ? api.restoreBlock(index, block, aim) : api.restoreBlock(index, block);
+const editBlockCall = (index: number, block: number, text: string, aim: Aim | null) =>
+  aim ? api.editBlock(index, block, text, aim) : api.editBlock(index, block, text);
 
 /** What the user turn at `index` carries now (item 336): the latest live
  *  edit's set, else its own images and documents — what an undo of an
@@ -9094,10 +9125,11 @@ export async function sendEdit(
  * a click away, and the context panel's Restore (or backlog 064's undo)
  * brings it back.
  */
-export async function removeTurn(index: number): Promise<void> {
+export async function removeTurn(index: number, aim?: Aim | null): Promise<void> {
   if (app.busy) return;
+  const meant = aimFor(index, aim);
   try {
-    const res = await api.removeMessage(index);
+    const res = await removeCall(index, meant);
     app.events = res.events;
     app.error = null;
   } catch (e) {
@@ -9107,10 +9139,10 @@ export async function removeTurn(index: number): Promise<void> {
   const handle = pushUndo(chatScope(), {
     label: "remove",
     undo: async () => {
-      app.events = (await api.restoreMessage(index)).events;
+      app.events = (await restoreCall(index, meant)).events;
     },
     redo: async () => {
-      app.events = (await api.removeMessage(index)).events;
+      app.events = (await removeCall(index, meant)).events;
     },
   });
   undoToast("Removed from context", handle);
@@ -9122,10 +9154,11 @@ export async function removeTurn(index: number): Promise<void> {
  * turn's nodes back from the original — with its own inverse on the
  * stack, so a restore is itself undoable.
  */
-export async function restoreTurn(index: number): Promise<void> {
+export async function restoreTurn(index: number, aim?: Aim | null): Promise<void> {
   if (app.busy) return;
+  const meant = aimFor(index, aim);
   try {
-    app.events = (await api.restoreMessage(index)).events;
+    app.events = (await restoreCall(index, meant)).events;
     app.error = null;
   } catch (e) {
     addToast(String(e));
@@ -9134,10 +9167,10 @@ export async function restoreTurn(index: number): Promise<void> {
   pushUndo(chatScope(), {
     label: "restore",
     undo: async () => {
-      app.events = (await api.removeMessage(index)).events;
+      app.events = (await removeCall(index, meant)).events;
     },
     redo: async () => {
-      app.events = (await api.restoreMessage(index)).events;
+      app.events = (await restoreCall(index, meant)).events;
     },
   });
 }
@@ -9148,10 +9181,11 @@ export async function restoreTurn(index: number): Promise<void> {
  * what a Save with that block's text deleted does. The inverse is the
  * block's restore; the toast offers it for eight seconds.
  */
-export async function removeBlock(index: number, block: number, toast = true): Promise<boolean> {
+export async function removeBlock(index: number, block: number, toast = true, aim?: Aim | null): Promise<boolean> {
   if (app.busy) return false;
+  const meant = aimFor(index, aim);
   try {
-    app.events = (await api.removeBlock(index, block)).events;
+    app.events = (await removeBlockCall(index, block, meant)).events;
     app.error = null;
   } catch (e) {
     addToast(String(e));
@@ -9160,10 +9194,10 @@ export async function removeBlock(index: number, block: number, toast = true): P
   const handle = pushUndo(chatScope(), {
     label: "remove",
     undo: async () => {
-      app.events = (await api.restoreBlock(index, block)).events;
+      app.events = (await restoreBlockCall(index, block, meant)).events;
     },
     redo: async () => {
-      app.events = (await api.removeBlock(index, block)).events;
+      app.events = (await removeBlockCall(index, block, meant)).events;
     },
   });
   if (toast) undoToast("Removed from context", handle);
@@ -9171,10 +9205,11 @@ export async function removeBlock(index: number, block: number, toast = true): P
 }
 
 /** The Restore on a removed block's placeholder, on `restoreTurn`'s terms. */
-export async function restoreBlock(index: number, block: number): Promise<void> {
+export async function restoreBlock(index: number, block: number, aim?: Aim | null): Promise<void> {
   if (app.busy) return;
+  const meant = aimFor(index, aim);
   try {
-    app.events = (await api.restoreBlock(index, block)).events;
+    app.events = (await restoreBlockCall(index, block, meant)).events;
     app.error = null;
   } catch (e) {
     addToast(String(e));
@@ -9183,10 +9218,10 @@ export async function restoreBlock(index: number, block: number): Promise<void> 
   pushUndo(chatScope(), {
     label: "restore",
     undo: async () => {
-      app.events = (await api.removeBlock(index, block)).events;
+      app.events = (await removeBlockCall(index, block, meant)).events;
     },
     redo: async () => {
-      app.events = (await api.restoreBlock(index, block)).events;
+      app.events = (await restoreBlockCall(index, block, meant)).events;
     },
   });
 }
@@ -9203,10 +9238,13 @@ export async function restoreBlock(index: number, block: number): Promise<void> 
 export async function saveReplyEdit(
   index: number,
   changes: { block: number; text: string }[],
+  /** Backlog 364: as `saveEdit`'s. */
+  aim?: Aim | null,
 ): Promise<boolean> {
   if (app.busy || changes.length === 0) return false;
   const e = app.events[index];
   if (e?.event !== "assistant_message") return false;
+  const meant = aimFor(index, aim);
   const edits = blockEditsOf(index);
   const done: { block: number; text: string; previous: string }[] = [];
   for (const c of changes) {
@@ -9215,8 +9253,8 @@ export async function saveReplyEdit(
     try {
       app.events = (
         c.text.length === 0
-          ? await api.removeBlock(index, c.block)
-          : await api.editBlock(index, c.block, c.text)
+          ? await removeBlockCall(index, c.block, meant)
+          : await editBlockCall(index, c.block, c.text, meant)
       ).events;
       app.error = null;
     } catch (err) {
@@ -9231,10 +9269,10 @@ export async function saveReplyEdit(
       const text = forward ? d.text : d.previous;
       app.events = (
         forward && d.text.length === 0
-          ? await api.removeBlock(index, d.block)
+          ? await removeBlockCall(index, d.block, meant)
           : !forward && d.text.length === 0
-            ? await api.restoreBlock(index, d.block)
-            : await api.editBlock(index, d.block, text)
+            ? await restoreBlockCall(index, d.block, meant)
+            : await editBlockCall(index, d.block, text, meant)
       ).events;
     }
   };

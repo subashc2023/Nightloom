@@ -86,7 +86,7 @@
   import { renderMarkdown } from "../lib/markdown";
   import AskQuestions from "../lib/AskQuestions.svelte";
   // Wave 8B F2 (item 300): replies in order, code blocks, the keyboard.
-  import { liveSegments, sentOf } from "./client";
+  import { aimAction, liveSegments, sentOf } from "./client";
   import { sentExt, type SentFile } from "../lib/sentFiles";
   import { codeBlocks } from "./codeBlocks";
   import { trackViewport } from "./viewport";
@@ -1726,7 +1726,10 @@
     if (!via) return false;
     try {
       let reply = null;
-      for (const a of actions) reply = await via.act(chat, a, project);
+      // Backlog 364: each action aimed from the list its index was read
+      // from — this chat's, while it is the one shown.
+      const held = chat === chatId ? $state.snapshot(events) : null;
+      for (const a of actions) reply = await via.act(chat, held ? aimAction(held as SessionEvent[], a) : a, project);
       // The Mac opened the chat's project to act on it (665).
       if (project) await refreshProjects();
       if (reply && chat === chatId) {

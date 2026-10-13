@@ -3882,7 +3882,14 @@ async fn unrewind(state: State<'_, AppState>, of: usize) -> Result<Vec<SessionEv
 /// box's chips, sent only when they changed. On Claude Code the turn's
 /// node is rebuilt with them (`CliSession::rewrite_user`). `send` ignores
 /// it: the fork's first message carries the chips itself.
+///
+/// `at` and `nth` (nightshift backlog 364, 2026-10-13), when the window
+/// sends them: on a `save`, the turn is aimed by the send time of the
+/// message that opened its exchange and, for a reply, its place among that
+/// exchange's replies (`chat_ops::aimed`) — or refused; on a `send`, `at`
+/// aims the fork as backlog 361 made it.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn edit_message(
     state: State<'_, AppState>,
     index: usize,
@@ -3891,6 +3898,7 @@ async fn edit_message(
     block: Option<usize>,
     attachments: Option<nightloom_core::EditedAttachments>,
     at: Option<chrono::DateTime<chrono::Utc>>,
+    nth: Option<usize>,
 ) -> Result<MessageEdit, String> {
     match mode.as_str() {
         "save" => {
@@ -3898,6 +3906,7 @@ async fn edit_message(
             let session = session_guard
                 .as_mut()
                 .ok_or_else(|| "no active session".to_string())?;
+            let index = chat_ops::aimed(session, index, at, nth)?;
             chat_ops::edit_saved(
                 session,
                 agent_guard.as_mut().map(OnCli::of),
@@ -3926,11 +3935,18 @@ async fn edit_message(
 /// will undo it. On the Claude Code engine the CLI's copy drops a text
 /// turn outright and marks a turn with tool calls ([`CliSession::remove`]).
 #[tauri::command]
-async fn remove_message(state: State<'_, AppState>, index: usize) -> Result<MessageEdit, String> {
+async fn remove_message(
+    state: State<'_, AppState>,
+    index: usize,
+    at: Option<chrono::DateTime<chrono::Utc>>,
+    nth: Option<usize>,
+) -> Result<MessageEdit, String> {
     let (mut agent_guard, mut session_guard) = lock_agent_and_chat(&state).await;
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "no active session".to_string())?;
+    // Backlog 364: aimed as `edit_message`'s save is.
+    let index = chat_ops::aimed(session, index, at, nth)?;
     chat_ops::remove_message(session, agent_guard.as_mut().map(OnCli::of), index)?;
     Ok(MessageEdit {
         events: session.events().to_vec(),
@@ -3956,11 +3972,18 @@ async fn remove_message(state: State<'_, AppState>, index: usize) -> Result<Mess
 /// behind it needs no file work. The copy is made *before* the marker, as
 /// every edit here is, so a refusal records nothing.
 #[tauri::command]
-async fn restore_message(state: State<'_, AppState>, index: usize) -> Result<MessageEdit, String> {
+async fn restore_message(
+    state: State<'_, AppState>,
+    index: usize,
+    at: Option<chrono::DateTime<chrono::Utc>>,
+    nth: Option<usize>,
+) -> Result<MessageEdit, String> {
     let (mut agent_guard, mut session_guard) = lock_agent_and_chat(&state).await;
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "no active session".to_string())?;
+    // Backlog 364: aimed as `edit_message`'s save is.
+    let index = chat_ops::aimed(session, index, at, nth)?;
     chat_ops::restore_message(session, agent_guard.as_mut().map(OnCli::of), index)?;
     Ok(MessageEdit {
         events: session.events().to_vec(),
@@ -3982,11 +4005,15 @@ async fn remove_block(
     state: State<'_, AppState>,
     index: usize,
     block: usize,
+    at: Option<chrono::DateTime<chrono::Utc>>,
+    nth: Option<usize>,
 ) -> Result<MessageEdit, String> {
     let (mut agent_guard, mut session_guard) = lock_agent_and_chat(&state).await;
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "no active session".to_string())?;
+    // Backlog 364: the reply aimed as `edit_message`'s save is.
+    let index = chat_ops::aimed(session, index, at, nth)?;
     chat_ops::remove_block(session, agent_guard.as_mut().map(OnCli::of), index, block)?;
     Ok(MessageEdit {
         events: session.events().to_vec(),
@@ -4004,11 +4031,15 @@ async fn restore_block(
     state: State<'_, AppState>,
     index: usize,
     block: usize,
+    at: Option<chrono::DateTime<chrono::Utc>>,
+    nth: Option<usize>,
 ) -> Result<MessageEdit, String> {
     let (mut agent_guard, mut session_guard) = lock_agent_and_chat(&state).await;
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "no active session".to_string())?;
+    // Backlog 364: the reply aimed as `edit_message`'s save is.
+    let index = chat_ops::aimed(session, index, at, nth)?;
     chat_ops::restore_block(session, agent_guard.as_mut().map(OnCli::of), index, block)?;
     Ok(MessageEdit {
         events: session.events().to_vec(),

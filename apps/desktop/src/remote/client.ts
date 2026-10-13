@@ -12,6 +12,7 @@ import type { ContextReply, LayerChange } from "./ContextSheet.svelte";
 import { isCouncilBlock } from "../lib/council";
 import { parseSubagentBlock } from "../lib/subagent";
 import { isSendFile, parseSentFile, sentFileRoute, type SentFile } from "../lib/sentFiles";
+import { aimOf } from "../lib/aim";
 // Pure over the log (only a type import inside): the desktop's per-reply
 // sizes, so the phone's line under a reply says the Mac's number.
 import { fmtTokens, turnSizes, type TurnSize } from "../lib/tokens";
@@ -108,15 +109,24 @@ export function hasFeature(state: RemoteState, name: string): boolean {
 
 export type EditMode = "save" | "send";
 
+/** Backlog 364: the turn an action names, besides its index — the send time
+ *  of his message that opened its exchange, and a reply's place among that
+ *  exchange's replies (`lib/aim.ts`). Added from the phone's own list as the
+ *  action goes (`aimAction`); the host aims by it or refuses. */
+export interface ActionAim {
+  at?: string;
+  nth?: number;
+}
+
 export type ChatAction =
-  | { op: "edit"; index: number; text: string; mode: EditMode; block: number | null }
-  | { op: "remove"; index: number }
-  | { op: "restore"; index: number }
-  | { op: "remove_block"; index: number; block: number }
-  | { op: "restore_block"; index: number; block: number }
-  | { op: "rewind"; to: number }
+  | ({ op: "edit"; index: number; text: string; mode: EditMode; block: number | null } & ActionAim)
+  | ({ op: "remove"; index: number } & ActionAim)
+  | ({ op: "restore"; index: number } & ActionAim)
+  | ({ op: "remove_block"; index: number; block: number } & ActionAim)
+  | ({ op: "restore_block"; index: number; block: number } & ActionAim)
+  | { op: "rewind"; to: number; at?: string }
   | { op: "unrewind"; of: number }
-  | { op: "fork"; upto: number }
+  | { op: "fork"; upto: number; at?: string }
   | { op: "continue" }
   | { op: "compact" }
   | { op: "delete" }
@@ -1485,6 +1495,31 @@ export function rowRemoval(row: Row, restore: boolean): ChatAction[] {
   if (row.kind === "user") return [{ op, index: row.index }];
   if (row.kind === "assistant") return row.indexes.map((index) => ({ op, index }));
   return [];
+}
+
+/**
+ * An action with its aim from `events`, the list its index was read from
+ * (backlog 364): edit, remove and restore name a message or a reply; rewind
+ * and fork his message only. Unchanged when the turn has no aim there.
+ */
+export function aimAction(events: readonly SessionEvent[], a: ChatAction): ChatAction {
+  switch (a.op) {
+    case "edit":
+    case "remove":
+    case "restore":
+    case "remove_block":
+    case "restore_block": {
+      const aim = aimOf(events, a.index);
+      return aim ? { ...a, ...aim } : a;
+    }
+    case "rewind":
+    case "fork": {
+      const aim = aimOf(events, a.op === "rewind" ? a.to : a.upto);
+      return aim && aim.nth === undefined ? { ...a, at: aim.at } : a;
+    }
+    default:
+      return a;
+  }
 }
 
 /** The edit a menu's Save or Send makes; `block` for a reply's text block. */

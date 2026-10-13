@@ -1294,43 +1294,68 @@ impl ServeHost {
                 block: Some(_),
                 ..
             } => Err("a reply's block is saved, not sent".into()),
+            // Backlog 364: every index below is the phone's, aimed by the
+            // send time it sent with it (`chat_ops::aimed`), or bare when
+            // an older phone sent none.
             ChatAction::Edit {
                 mode: EditMode::Send,
                 index,
                 text,
+                at,
                 ..
-            } => self.edit_and_send(project, &session, index, text),
+            } => {
+                let index = chat_ops::aimed(&session, index, at, None)?;
+                self.edit_and_send(project, &session, index, text)
+            }
             ChatAction::Edit {
                 mode: EditMode::Save,
                 index,
                 text,
                 block,
+                at,
+                nth,
             } => {
+                let index = chat_ops::aimed(&session, index, at, nth)?;
                 let c = cli();
                 chat_ops::edit_saved(&mut session, c, index, text, block, None)?;
                 Ok(here(&session))
             }
-            ChatAction::Remove { index } => {
+            ChatAction::Remove { index, at, nth } => {
+                let index = chat_ops::aimed(&session, index, at, nth)?;
                 let c = cli();
                 chat_ops::remove_message(&mut session, c, index)?;
                 Ok(here(&session))
             }
-            ChatAction::Restore { index } => {
+            ChatAction::Restore { index, at, nth } => {
+                let index = chat_ops::aimed(&session, index, at, nth)?;
                 let c = cli();
                 chat_ops::restore_message(&mut session, c, index)?;
                 Ok(here(&session))
             }
-            ChatAction::RemoveBlock { index, block } => {
+            ChatAction::RemoveBlock {
+                index,
+                block,
+                at,
+                nth,
+            } => {
+                let index = chat_ops::aimed(&session, index, at, nth)?;
                 let c = cli();
                 chat_ops::remove_block(&mut session, c, index, block)?;
                 Ok(here(&session))
             }
-            ChatAction::RestoreBlock { index, block } => {
+            ChatAction::RestoreBlock {
+                index,
+                block,
+                at,
+                nth,
+            } => {
+                let index = chat_ops::aimed(&session, index, at, nth)?;
                 let c = cli();
                 chat_ops::restore_block(&mut session, c, index, block)?;
                 Ok(here(&session))
             }
-            ChatAction::Rewind { to } => {
+            ChatAction::Rewind { to, at } => {
+                let to = chat_ops::aimed(&session, to, at, None)?;
                 let c = cli();
                 chat_ops::rewind(&mut session, c, to)?;
                 Ok(here(&session))
@@ -1340,7 +1365,8 @@ impl ServeHost {
                 chat_ops::unrewind(&mut session, c, of)?;
                 Ok(here(&session))
             }
-            ChatAction::Fork { upto } => {
+            ChatAction::Fork { upto, at } => {
+                let upto = chat_ops::aimed(&session, upto, at, None)?;
                 let fork = chat_ops::fork(&session, &log_dir, cli(), upto)?;
                 self.follow(project.as_ref(), &fork.id);
                 Ok(here(&fork))
@@ -2505,6 +2531,132 @@ esac
     fn on_disk(unfiled: &Path, chat: &str) -> Vec<SessionEvent> {
         let path = store::find_by_prefix(unfiled, chat).unwrap();
         Session::load(&path).unwrap().events().to_vec()
+    }
+
+    /// Backlog 364: a phone action names its turn by the send time of the
+    /// message that opened the exchange too, so a stale index from the
+    /// phone's list removes, restores and forks the turn meant — or is
+    /// refused with the log as it was.
+    #[tokio::test]
+    async fn serve_aims_a_phone_action_by_its_send_time() {
+        use nightloom_core::{ContentBlock, Usage};
+        crate::project::set_config_dir(
+            std::env::temp_dir().join(format!("nightloom-home-{}", std::process::id())),
+        );
+        let root =
+            std::env::temp_dir().join(format!("nightloom-serve-aim-{}", uuid::Uuid::new_v4()));
+        let unfiled = root.join("unfiled").join("sessions");
+        let workspace = root.join("ws");
+        std::fs::create_dir_all(&unfiled).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        let text = |s: &str| ContentBlock::Text { text: s.into() };
+        let mut seeded = Session::start(&unfiled, ChatMode::Normal, ChatKind::Build).unwrap();
+        seeded.record_user("first"); // 1
+        seeded.record_assistant("m", vec![text("a1")], None, Usage::default()); // 2
+        std::thread::sleep(Duration::from_millis(2));
+        seeded.record_user("second"); // 3
+        seeded.record_assistant("m", vec![text("b1")], None, Usage::default()); // 4
+        let chat = seeded.id.clone();
+        let SessionEvent::UserMessage { at: second, .. } = seeded.events()[3].clone() else {
+            panic!("event 3 is his second message")
+        };
+        drop(seeded);
+        let cfg = ServeConfig {
+            binary: stand_in(&root),
+            model: None,
+            hook_exe: None,
+            assets: None,
+            unfiled_dir: unfiled.clone(),
+            home: root.clone(),
+            unfiled_workspace: workspace.clone(),
+            nightshift_root: None,
+        };
+        let host = ServeHost::new(cfg, Registry::load_from(root.join("projects.json")));
+        let token = "t0k3n".to_string();
+        let server = Server::start_for_test(
+            "127.0.0.1:0".parse().unwrap(),
+            token.clone(),
+            host.clone() as Arc<dyn Host>,
+        )
+        .await
+        .unwrap();
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let act = format!("{base}/api/chats/{chat}/act");
+        let last = || on_disk(&unfiled, &chat).last().cloned().unwrap();
+
+        // The phone's list is two short: its 1 is the log's 3, its 2 the 4.
+        let (code, reply) = post(
+            &c,
+            act.clone(),
+            &token,
+            serde_json::json!({"op": "remove", "index": 1, "at": second}),
+        )
+        .await;
+        assert_eq!(code, 200, "{reply}");
+        assert!(
+            matches!(last(), SessionEvent::Elide { targets, .. } if targets == [3]),
+            "{:?}",
+            last()
+        );
+        let (code, reply) = post(
+            &c,
+            act.clone(),
+            &token,
+            serde_json::json!({"op": "restore", "index": 1, "at": second}),
+        )
+        .await;
+        assert_eq!(code, 200, "{reply}");
+        assert!(
+            matches!(last(), SessionEvent::Unelide { targets, .. } if targets == [3]),
+            "{:?}",
+            last()
+        );
+        let (code, reply) = post(
+            &c,
+            act.clone(),
+            &token,
+            serde_json::json!({"op": "remove", "index": 2, "at": second, "nth": 0}),
+        )
+        .await;
+        assert_eq!(code, 200, "{reply}");
+        assert!(
+            matches!(last(), SessionEvent::Elide { targets, .. } if targets == [4]),
+            "{:?}",
+            last()
+        );
+        // No live message was sent then: refused, the log as it was.
+        let before = on_disk(&unfiled, &chat).len();
+        let never = second + chrono::Duration::days(1);
+        let (code, reply) = post(
+            &c,
+            act.clone(),
+            &token,
+            serde_json::json!({"op": "restore", "index": 4, "at": never, "nth": 0}),
+        )
+        .await;
+        assert_ne!(code, 200, "{reply}");
+        assert_eq!(on_disk(&unfiled, &chat).len(), before);
+        // A fork from the stale list cuts before the message meant.
+        let (code, reply) = post(
+            &c,
+            act.clone(),
+            &token,
+            serde_json::json!({"op": "fork", "upto": 1, "at": second}),
+        )
+        .await;
+        assert_eq!(code, 200, "{reply}");
+        let reply: ActReply = serde_json::from_str(&reply).unwrap();
+        let users = on_disk(&unfiled, &reply.chat)
+            .iter()
+            .filter(|e| matches!(e, SessionEvent::UserMessage { .. }))
+            .count();
+        assert_eq!(
+            users, 1,
+            "the fork keeps \"first\" and cuts before \"second\""
+        );
+        server.stop().await;
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Wave 3, A1: every chat action, the Context page and the layers on
