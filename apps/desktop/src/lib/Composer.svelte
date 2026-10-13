@@ -2975,7 +2975,7 @@
         {:else if asideBusy}
           {aside && asideWaiting(aside) ? "Waiting — one aside answers at a time; ↵ holds the next message." : "Answering — ↵ holds the next message for when it ends."}
         {:else}
-          Answers from <em>{asideChatName}</em>'s context; nothing here enters the chat.
+          Answers from this chat's context; nothing here enters the chat.
         {/if}
       </span>
       <span class="spacer"></span>
