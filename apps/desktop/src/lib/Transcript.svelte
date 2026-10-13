@@ -81,6 +81,7 @@
   import { acceptFiles, conversionJobs, filesBlocked, splitChips } from "./attachFiles.svelte";
   import EditAttachments from "./EditAttachments.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
+  import { removeAsk, removeTip, type RemoveKind } from "./removeAsk";
   // For its effect: the aside threads' keeper (backlog 137).
   import "./asides.svelte";
   import {
@@ -634,6 +635,9 @@
   }
   /** A pending "drop this edit?" question (practices §7, item 336). */
   let dropAsk = $state<{ what: "cancel" | "open"; run: () => void } | null>(null);
+  // Remove asks first (item 356): the turn the trash button names, until
+  // the dialog's Remove or Cancel.
+  let removing = $state<{ index: number; kind: RemoveKind; text: string } | null>(null);
   function cancelEdit(): void {
     if (!editing) return;
     // A changed edit is not dropped on one key: Cancel and Escape ask.
@@ -1518,6 +1522,22 @@
 
 <svelte:document onselectionchange={placePill} />
 <svelte:window onkeydown={asideChord} />
+{#if removing}
+  <!-- Item 356: Remove asks first, and the undo toast still follows it. -->
+  {@const ask = removeAsk(removing.kind, removing.text, onClaudeCode)}
+  <ConfirmDialog
+    title={ask.title}
+    lead={ask.lead}
+    facts={ask.facts}
+    confirmLabel={ask.confirmLabel}
+    onconfirm={() => {
+      const index = removing?.index;
+      removing = null;
+      if (index != null) void removeTurn(index);
+    }}
+    onclose={() => (removing = null)}
+  />
+{/if}
 {#if dropAsk}
   <!-- Practices §7 (item 336): a changed edit — words or chips — is not
        dropped on one key or one click elsewhere; Keep editing is the default. -->
@@ -1799,13 +1819,14 @@
                       <Icon name="pencil" size={14} />
                     </button>
                   {/if}
+                  <!-- A delete look, apart from Edit's pencil (item 356). -->
                   <button
-                    class="tool-btn"
-                    use:tip={"Remove this message from the context. It stays in the log; the context panel restores it."}
-                    aria-label="Remove this message from the context"
-                    onclick={() => void removeTurn(item.index)}
+                    class="tool-btn danger"
+                    use:tip={removeTip("message")}
+                    aria-label="Remove this message from the chat history"
+                    onclick={() => (removing = { index: item.index, kind: "message", text: item.text })}
                   >
-                    <Icon name="minus" size={14} />
+                    <Icon name="trash" size={14} />
                   </button>
                   {#if app.connection?.engine === "claude-code" && checkpointOwner(userIndexes, app.checkpoint) !== item.index}
                     <!-- "Fork from here" (nightshift backlog 104, pass 3):
@@ -1927,7 +1948,9 @@
               clock={now}
               headed={!continued[i]}
               onedit={editable && item.editable ? () => beginEdit(item) : null}
-              onremoveturn={editable ? () => void removeTurn(item.index) : null}
+              onremoveturn={editable
+                ? () => (removing = { index: item.index, kind: "reply", text: textOf(item.segs) })
+                : null}
               planUsage={replyUsageView(usageLines.get(item.index))}
               onretry={editable && turnEnds[i] && app.activeSessionId ? () => void retryReply(item.index) : null}
             />
@@ -2502,6 +2525,12 @@
   .tool-btn:focus-visible {
     color: var(--ink);
     border-color: var(--line2);
+  }
+  /* Remove (item 356): red on hover, so it never reads as Edit. */
+  .tool-btn.danger:hover,
+  .tool-btn.danger:focus-visible {
+    color: var(--error);
+    border-color: color-mix(in srgb, var(--error) 45%, transparent);
   }
   .assistant-turn {
     display: flex;

@@ -1082,7 +1082,10 @@ the buttons:
   back. Cancel, Escape, and opening another turn's editor ask before
   dropping a changed edit (`editDirty`).
 
-**Remove** asks nothing: it is the same `elide` marker the context panel
+**Remove** ~~asks nothing~~ (2026-10-13, nightshift item 356: a trash
+button, red on hover, apart from Edit's pencil; it asks first in a
+confirmation naming the message, then the "Removed from context" undo toast
+follows; `removeAsk.ts` holds the words): it is the same `elide` marker the context panel
 records, and the transcript now draws a removed turn as its placeholder
 ("removed from the context — still in the log"), greyed, with "what was
 removed" a click away; an assistant reply keeps its tool-call chips. It is
