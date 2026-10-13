@@ -68,4 +68,13 @@ describe("the Remove buttons", () => {
     expect(markup.slice(markup.lastIndexOf("<ConfirmDialog", at), at)).toContain("removing");
     expect(calls.length).toBeGreaterThan(0);
   });
+
+  it("the question belongs to the chat it was asked in: a switch drops it, the confirm checks it", () => {
+    // Wave 8 review: the service removes by index in the open chat.
+    const src = here("Transcript.svelte");
+    expect(src).toContain("if (removing && removing.key !== k) removing = null;");
+    expect(src).toContain("if (asked && asked.key === sessionKey) void removeTurn(asked.index);");
+    expect(src).toContain('kind: "message", text: item.text, key: sessionKey }');
+    expect(src).toContain('kind: "reply", text: textOf(item.segs), key: sessionKey }');
+  });
 });

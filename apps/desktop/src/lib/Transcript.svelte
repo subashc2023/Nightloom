@@ -647,8 +647,17 @@
   /** A pending "drop this edit?" question (practices §7, item 336). */
   let dropAsk = $state<{ what: "cancel" | "open"; run: () => void } | null>(null);
   // Remove asks first (item 356): the turn the trash button names, until
-  // the dialog's Remove or Cancel.
-  let removing = $state<{ index: number; kind: RemoveKind; text: string } | null>(null);
+  // the dialog's Remove or Cancel. `key` is the chat it was asked in: the
+  // service removes by index in the open chat, so a switch while the
+  // dialog is open drops the question (wave 8 review) rather than
+  // removing the same index from the chat switched to.
+  let removing = $state<{ index: number; kind: RemoveKind; text: string; key: string } | null>(null);
+  $effect(() => {
+    const k = sessionKey;
+    untrack(() => {
+      if (removing && removing.key !== k) removing = null;
+    });
+  });
   function cancelEdit(): void {
     if (!editing) return;
     // A changed edit is not dropped on one key: Cancel and Escape ask.
@@ -1545,9 +1554,9 @@
     facts={ask.facts}
     confirmLabel={ask.confirmLabel}
     onconfirm={() => {
-      const index = removing?.index;
+      const asked = removing;
       removing = null;
-      if (index != null) void removeTurn(index);
+      if (asked && asked.key === sessionKey) void removeTurn(asked.index);
     }}
     onclose={() => (removing = null)}
   />
@@ -1839,7 +1848,7 @@
                     class="tool-btn danger"
                     use:tip={removeTip("message")}
                     aria-label="Remove this message from the chat history"
-                    onclick={() => (removing = { index: item.index, kind: "message", text: item.text })}
+                    onclick={() => (removing = { index: item.index, kind: "message", text: item.text, key: sessionKey })}
                   >
                     <Icon name="trash" size={14} />
                   </button>
@@ -1965,7 +1974,7 @@
               headed={!continued[i]}
               onedit={editable && item.editable ? () => beginEdit(item) : null}
               onremoveturn={editable
-                ? () => (removing = { index: item.index, kind: "reply", text: textOf(item.segs) })
+                ? () => (removing = { index: item.index, kind: "reply", text: textOf(item.segs), key: sessionKey })
                 : null}
               planUsage={replyUsageView(usageLines.get(item.index))}
               onretry={editable && turnEnds[i] && app.activeSessionId ? () => void retryReply(item.index) : null}
