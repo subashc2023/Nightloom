@@ -1297,6 +1297,19 @@ focused text field keeps its own paste; a floating aside card, a modal, menu,
 the palette or the find bar open, ⌘⇧V, or (with two panes) the chat not in
 the focused pane leave the key alone. Rules: `pastesToComposer` (pure, tested).
 
+**A long draft keeps its scroll place (2026-10-13, nightshift item 355).** A
+draft taller than its box comes back scrolled where he left it after a chat
+switch, a tab switch, a reload or a quit — not at its top. The composer (the
+chat's box and an aside's) keeps the box's scrollTop in the drafts store
+beside the caret (`Draft.scroll`), recorded as the box scrolls and once more
+just before the key changes; a key arriving holds its place (`ScrollHold`,
+`boxPlace.ts`) for up to 1.5 s, put back after every re-measure of the box,
+until he presses, scrolls, types or pastes in it. A draft with no kept scroll
+shows its kept caret instead. The message-edit box keeps each textarea's
+scroll and caret with its stashed edit (`EditStash.boxes`, `trackPlace`) and
+puts them back once the editor is drawn again (`putPlace`). Tested:
+`boxPlace.test.ts`.
+
 `Attachment.kind` is carried rather than sniffed from the media type: a document
 has no thumbnail, and a chip that guessed wrong would render a broken `<img>`. The
 transcript lists an attached PDF by name for the same reason a turn shows its

@@ -729,6 +729,12 @@ export class LiveBoxHandle implements ComposerBox {
       scrollIntoView: true,
     });
   }
+  /** Backlog 355: scroll the box so position `pos` is in view, the
+   *  selection untouched (a kept caret not yet put back). */
+  revealAt(pos: number): void {
+    const at = Math.max(0, Math.min(pos, this.view.state.doc.length));
+    this.view.dispatch({ effects: EditorView.scrollIntoView(at, { y: "nearest" }) });
+  }
   /** Item 348: text in place of the selection, as a paste — one undo step. */
   pasteText(raw: string): void {
     const { from, to } = this.view.state.selection.main;

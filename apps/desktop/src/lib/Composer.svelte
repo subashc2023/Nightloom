@@ -107,6 +107,8 @@
     restoreDraft,
     setDraftAttachments,
     setDraftSelection,
+    setDraftScroll,
+    draftScroll,
     setDraftText,
     shiftQueue,
     takeBackQueued,
@@ -131,7 +133,8 @@
   import { composerConnectHint, launch as launchState } from "./launch.svelte";
   import { hasQuoteLine, insertQuote, mirrorLines, replyRequest, takeReply } from "./replyQuote.svelte";
   import { composerFocus } from "./rewindDraft.svelte";
-  import { CaretKeeper, mayAutoFocus } from "./composerCaret";
+  import { CaretKeeper, clampSel, mayAutoFocus } from "./composerCaret";
+  import { ScrollHold } from "./boxPlace";
   import { chatBoxCount, chatBoxMounted, composerSummon } from "./composerSummon.svelte";
   import { registerPasteHandler, type PasteRequest } from "./pasteToCompose";
   import { requestWrapUp } from "./wrapAsides.svelte";
@@ -598,6 +601,8 @@
     ta.style.maxHeight = max + "px";
     ta.style.height = "auto";
     ta.style.height = growHeight(ta.scrollHeight, min, max) + "px";
+    // Backlog 355: a switched-to draft's place, once its height is right.
+    putScrollBack();
     syncMirror();
   }
 
@@ -856,12 +861,40 @@
   function recordCaret(): void {
     keeper.record(key, ta, text);
   }
+  /*
+   * Backlog 355: a draft taller than its box keeps its scroll place. The
+   * box's scrollTop is kept in the drafts store beside the caret
+   * (`Draft.scroll`) as it scrolls, and once more just before the key
+   * changes; a key arriving holds its place (`ScrollHold`) until the box
+   * has settled — put back after every re-measure (`autogrow`), the
+   * browser's own scrolls meanwhile not recorded. With nothing kept (a
+   * draft from before this), the kept caret is scrolled into view instead.
+   */
+  const scrollHold = new ScrollHold(1500);
+  function recordScroll(): void {
+    if (!ta || ta.value !== text || scrollHold.holds(key, performance.now())) return;
+    setDraftScroll(key, ta.scrollTop);
+  }
+  function putScrollBack(): void {
+    if (!ta || !scrollHold.holds(key, performance.now())) return;
+    const top = draftScroll(key);
+    if (top !== null) {
+      ta.scrollTop = top;
+      return;
+    }
+    const sel = clampSel(draftSelection(key), ta.value.length);
+    if (!sel) return;
+    if (ta instanceof LiveBoxHandle) ta.revealAt(sel.end);
+    else if (sel.end === ta.value.length) ta.scrollTop = ta.scrollHeight;
+  }
   $effect.pre(() => {
     const k = key;
     untrack(() => {
       if (shownKey !== null && shownKey !== k) {
         valueBefore = ta?.value ?? null;
         keeper.record(shownKey, ta, readDraft(shownKey).text);
+        if (ta && ta.value === readDraft(shownKey).text && !scrollHold.holds(shownKey, performance.now()))
+          setDraftScroll(shownKey, ta.scrollTop);
       }
     });
   });
@@ -871,6 +904,7 @@
       if (shownKey === k) return;
       shownKey = k;
       keeper.arrive(k);
+      scrollHold.start(k, performance.now());
       void tick().then(() => {
         if (key !== k || !ta || typeof document === "undefined") return;
         const box = boxElement(ta);
@@ -883,6 +917,7 @@
           keeper.focus(k, ta, had, false);
           autogrow();
         }
+        putScrollBack();
       });
     });
   });
@@ -923,6 +958,7 @@
     const box = boxElement(ta);
     const had = !!box && !!document.activeElement && box.contains(document.activeElement);
     keeper.focus(key, ta, had, true);
+    scrollHold.release();
     if ("event" in req) {
       const e = req.event;
       onpaste(e);
@@ -2618,7 +2654,14 @@
         recordCaret();
         pointerDown = false;
       }}
-      onmousedown={() => (pointerDown = true)}
+      onmousedown={() => {
+        pointerDown = true;
+        scrollHold.release();
+      }}
+      onkeydowncapture={() => scrollHold.release()}
+      onbeforeinputcapture={() => scrollHold.release()}
+      onwheel={() => scrollHold.release()}
+      onscrollcapture={recordScroll}
       onselect={recordCaret}
       oninput={recordCaret}
       onfocusin={() => {
