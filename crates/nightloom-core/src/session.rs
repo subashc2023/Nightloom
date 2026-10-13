@@ -1296,30 +1296,6 @@ impl Session {
         s
     }
 
-    /// A new session that begins as this one did, up to and not including
-    /// event `upto` (2026-09-15, nightshift backlog 062 — his "edit and
-    /// send"): the parent's *live* events before the cut, copied into a
-    /// fresh log whose creation line names the parent and the cut
-    /// ([`ForkedFrom`]). The parent is not touched, which is the whole
-    /// point — it keeps the turn being replaced and everything after it,
-    /// and the fork is where the replacement goes.
-    ///
-    /// Live events only, and the copy renumbers them. Rewound turns are
-    /// not part of the conversation the fork continues, so carrying them
-    /// would carry text the model was not going to see; and the markers
-    /// that address by index — `Elide`, `Unelide`, `Edit` — are re-aimed
-    /// at the copied positions, dropped when everything they named is past
-    /// the cut. The parent's `AgentSession` handles are not copied: the
-    /// agent's history they name runs past the cut, and the shell that
-    /// forks on that engine records the fork's own handle. Neither is the
-    /// `Title` — the fork is named from what it becomes, and the listing's
-    /// "from" line carries the lineage.
-    ///
-    /// `upto` must be a live user message, on [`Session::rewind`]'s
-    /// argument: it is the one position where the preceding exchange is
-    /// always complete. The mode is inherited — a fork of an incognito
-    /// chat is incognito, and a fork of an ephemeral chat is another log
-    /// that does not exist.
     /// The log index of the live user message the window meant (nightshift
     /// backlog 361, 2026-10-13). A window names a message by its place in
     /// the list it holds; when that list is out of step with the log, the
@@ -1352,6 +1328,30 @@ impl Session {
         }
     }
 
+    /// A new session that begins as this one did, up to and not including
+    /// event `upto` (2026-09-15, nightshift backlog 062 — his "edit and
+    /// send"): the parent's *live* events before the cut, copied into a
+    /// fresh log whose creation line names the parent and the cut
+    /// ([`ForkedFrom`]). The parent is not touched, which is the whole
+    /// point — it keeps the turn being replaced and everything after it,
+    /// and the fork is where the replacement goes.
+    ///
+    /// Live events only, and the copy renumbers them. Rewound turns are
+    /// not part of the conversation the fork continues, so carrying them
+    /// would carry text the model was not going to see; and the markers
+    /// that address by index — `Elide`, `Unelide`, `Edit` — are re-aimed
+    /// at the copied positions, dropped when everything they named is past
+    /// the cut. The parent's `AgentSession` handles are not copied: the
+    /// agent's history they name runs past the cut, and the shell that
+    /// forks on that engine records the fork's own handle. Neither is the
+    /// `Title` — the fork is named from what it becomes, and the listing's
+    /// "from" line carries the lineage.
+    ///
+    /// `upto` must be a live user message, on [`Session::rewind`]'s
+    /// argument: it is the one position where the preceding exchange is
+    /// always complete. The mode is inherited — a fork of an incognito
+    /// chat is incognito, and a fork of an ephemeral chat is another log
+    /// that does not exist.
     pub fn fork_from(&self, dir: impl AsRef<Path>, upto: usize) -> io::Result<Self> {
         let live = self.live_flags();
         match self.events.get(upto) {
@@ -6017,8 +6017,6 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// A fork inherits the mode: incognito stays incognito on disk, and an
-    /// ephemeral parent forks to another session with no log.
     /// Backlog 361 (found live, 2026-10-13): a Retry on his newest message,
     /// from a window whose list lacked seven exchanges, forked before the
     /// message seven exchanges earlier — the reply then lived in a fork
@@ -6129,6 +6127,8 @@ mod tests {
         );
     }
 
+    /// A fork inherits the mode: incognito stays incognito on disk, and an
+    /// ephemeral parent forks to another session with no log.
     #[test]
     fn a_fork_inherits_the_mode() {
         let dir =
