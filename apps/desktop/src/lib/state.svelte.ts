@@ -18,6 +18,7 @@ import { replaceStartHere, threadOfEvents } from "./thread";
 import type { AsideFold, FoldRecord } from "./asideFold";
 import { suggestions } from "./suggestions.svelte";
 import { isMac } from "./platform";
+import { hasUsage } from "./replyFooter";
 import {
   UNFILED,
   draftKey,
@@ -9384,7 +9385,9 @@ function lastAssistantUsage(): Usage | null {
   for (let i = app.events.length - 1; i >= 0; i--) {
     if (!live[i]) continue;
     const e = app.events[i];
-    if (e.event === "assistant_message") return e.usage;
+    // A reply with no usage (stopped or failed before a word, backlog
+    // 361; cut off, 332) says nothing about the prefix: read past it.
+    if (e.event === "assistant_message" && hasUsage(e.usage)) return e.usage;
   }
   return null;
 }

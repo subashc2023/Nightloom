@@ -19,5 +19,8 @@ export function stopNote(stopReason: string | null | undefined): string | null {
   // The API error the CLI ended the reply with (backlog 202).
   if (stopReason.startsWith("error: ")) return `stopped · ${stopReason.slice(7)}`;
   if (stopReason.startsWith("cut off: ")) return `cut off · ${stopReason.slice(9)}`;
+  // Stopped before a word arrived (backlog 361): the reply the service
+  // records so his message is not left with nothing under it.
+  if (stopReason === "stopped") return "stopped before a reply";
   return null;
 }
