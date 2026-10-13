@@ -1,0 +1,19 @@
+<!doctype html>
+<!-- Item 354 — three whole looks of the AskUserQuestion card (the questions Claude asks him mid-turn), for his pick.
+     Each look draws the same three scenes from the same data: one question whose options carry previews; several
+     questions (one multi-select, "Other" being typed); and the answered card, folded in the transcript.
+     The app's real tokens and fonts (src/app.css), palette B by default; ?palette=A|B|C|D.
+     ?scene=one|several|answered  ?look=A|B|C shows one look only (one look fills the window, as in the app).
+     Static mockups: nothing here is wired to the app. Snapped with nightshift-code bin/snap (WebKit). -->
+<html lang="en" data-palette="B">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Pick a question card</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./pick354.ts"></script>
+  </body>
+</html>
