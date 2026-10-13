@@ -79,6 +79,7 @@
     takeEdit,
   } from "./drafts.svelte";
   import { acceptFiles, conversionJobs, filesBlocked, splitChips } from "./attachFiles.svelte";
+  import { putPlace, trackPlace, type BoxPlace } from "./boxPlace";
   import EditAttachments from "./EditAttachments.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import { removeAsk, removeTip, type RemoveKind } from "./removeAsk";
@@ -508,6 +509,15 @@
   // A reply's editor is one textarea per text block (backlog 066); the
   // first takes the focus and each grows to its own text.
   let editorEls = $state<(HTMLTextAreaElement | null)[]>([]);
+  // Backlog 355: each editor box's scroll and caret as he leaves it (the
+  // user turn's box at 0, a reply's block p at p + 1), stashed with the
+  // edit and put back once the editor is drawn again (`boxPlace.ts`).
+  let editPlaces: (BoxPlace | null)[] = [];
+  function placeBack(boxes: (BoxPlace | null)[] | undefined): void {
+    editPlaces = boxes?.slice() ?? [];
+    if (!boxes?.length) return;
+    void tick().then(() => [editorEl, ...editorEls].forEach((el, i) => putPlace(el, boxes[i])));
+  }
   const onClaudeCode = $derived(app.connection?.engine === "claude-code");
   const controlsTitle = $derived(
     onClaudeCode
@@ -582,6 +592,7 @@
     openEditor(item);
   }
   function openEditor(item: Item) {
+    editPlaces = [];
     const text = item.kind === "user" ? item.text : item.kind === "assistant" ? textOf(item.segs) : "";
     const parts =
       item.kind === "assistant"
@@ -785,13 +796,14 @@
     if (inPane) return;
     untrack(() => {
       if (busy) {
-        if (editing) stashEdit(sessionKey, { editing, line: editCacheLine });
+        if (editing) stashEdit(sessionKey, { editing, line: editCacheLine, boxes: editPlaces.slice() });
         editing = editReduce(editing, { type: "busy" });
       } else if (!editing) {
         const back = takeEdit(sessionKey);
         if (back) {
           editing = back.editing;
           editCacheLine = back.line;
+          placeBack(back.boxes);
         }
       }
     });
@@ -959,10 +971,11 @@
       // editor must not re-run the scroll restore below. (A pane's
       // transcript leaves the chat's stashed edit for the open one.)
       untrack(() => {
-        if (from !== null && editing) stashEdit(from, { editing, line: editCacheLine });
+        if (from !== null && editing) stashEdit(from, { editing, line: editCacheLine, boxes: editPlaces.slice() });
         const back = takeEdit(key);
         editing = back?.editing ?? null;
         editCacheLine = back?.line ?? "";
+        placeBack(back?.boxes);
       });
     }
     const entry = recallScroll(key);
@@ -982,7 +995,8 @@
   // the live tab went to the other pane — the draft is stashed for the
   // next mount on this chat (backlog 137).
   onDestroy(() => {
-    if (!inPane && editing && lastKey !== null) stashEdit(lastKey, { editing, line: editCacheLine });
+    if (!inPane && editing && lastKey !== null)
+      stashEdit(lastKey, { editing, line: editCacheLine, boxes: editPlaces.slice() });
   });
 
   // ---- The sent message's entrance (nightshift backlog 095, 2026-09-16) ----
@@ -1624,6 +1638,7 @@
               <textarea
                 bind:this={editorEl}
                 use:grow
+                use:trackPlace={(pl) => (editPlaces[0] = pl)}
                 value={editing.draft}
                 oninput={(e) => {
                   editing = editReduce(editing, { type: "draft", text: (e.target as HTMLTextAreaElement).value });
@@ -1896,6 +1911,7 @@
                   <textarea
                     bind:this={editorEls[p]}
                     use:grow
+                    use:trackPlace={(pl) => (editPlaces[p + 1] = pl)}
                     value={part.draft}
                     oninput={(e) => {
                       const el = e.target as HTMLTextAreaElement;

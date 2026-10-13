@@ -1286,6 +1286,33 @@ transcript a text attachment shows its word count beside the chip; a click
 unfolds the text in place. Rules: `pasteAttach.ts` (pure, tested). The phone
 composer is not changed.
 
+**⌘V with nothing to type in (2026-10-13, nightshift item 351).** With the
+focus outside every text field — the transcript, a button, the sidebar,
+nothing — ⌘V (and ⌥⌘V) pastes into the open chat's box as a focused paste
+would. The window's keydown (capture, `pasteToCompose.ts`) prevents the key
+and asks the chat's composer, which focuses its box with its kept caret (⌘L's,
+blocker 980) and calls `paste_into_focus`, so the box's own `onpaste` handles
+it: images to chips, 348's math, 315's code fence, the long-paste offer, the
+clipboard ring. A `paste` event that still reaches the window with nothing to
+paste into (Edit ▸ Paste from the menu, if WebKit sends one) is handed to the
+same `onpaste` during its dispatch, plain text then put in at the caret. Any
+focused text field keeps its own paste; a floating aside card, a modal, menu,
+the palette or the find bar open, ⌘⇧V, or (with two panes) the chat not in
+the focused pane leave the key alone. Rules: `pastesToComposer` (pure, tested).
+
+**A long draft keeps its scroll place (2026-10-13, nightshift item 355).** A
+draft taller than its box comes back scrolled where he left it after a chat
+switch, a tab switch, a reload or a quit — not at its top. The composer (the
+chat's box and an aside's) keeps the box's scrollTop in the drafts store
+beside the caret (`Draft.scroll`), recorded as the box scrolls and once more
+just before the key changes; a key arriving holds its place (`ScrollHold`,
+`boxPlace.ts`) for up to 1.5 s, put back after every re-measure of the box,
+until he presses, scrolls, types or pastes in it. A draft with no kept scroll
+shows its kept caret instead. The message-edit box keeps each textarea's
+scroll and caret with its stashed edit (`EditStash.boxes`, `trackPlace`) and
+puts them back once the editor is drawn again (`putPlace`). Tested:
+`boxPlace.test.ts`.
+
 `Attachment.kind` is carried rather than sniffed from the media type: a document
 has no thumbnail, and a chip that guessed wrong would render a broken `<img>`. The
 transcript lists an attached PDF by name for the same reason a turn shows its

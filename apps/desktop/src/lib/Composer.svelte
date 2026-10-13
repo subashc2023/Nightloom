@@ -107,6 +107,8 @@
     restoreDraft,
     setDraftAttachments,
     setDraftSelection,
+    setDraftScroll,
+    draftScroll,
     setDraftText,
     shiftQueue,
     takeBackQueued,
@@ -131,8 +133,10 @@
   import { composerConnectHint, launch as launchState } from "./launch.svelte";
   import { hasQuoteLine, insertQuote, mirrorLines, replyRequest, takeReply } from "./replyQuote.svelte";
   import { composerFocus } from "./rewindDraft.svelte";
-  import { CaretKeeper, mayAutoFocus } from "./composerCaret";
+  import { CaretKeeper, clampSel, mayAutoFocus } from "./composerCaret";
+  import { ScrollHold } from "./boxPlace";
   import { chatBoxCount, chatBoxMounted, composerSummon } from "./composerSummon.svelte";
+  import { registerPasteHandler, type PasteRequest } from "./pasteToCompose";
   import { requestWrapUp } from "./wrapAsides.svelte";
   // Backlog 283: the same composer in an aside.
   import {
@@ -597,6 +601,8 @@
     ta.style.maxHeight = max + "px";
     ta.style.height = "auto";
     ta.style.height = growHeight(ta.scrollHeight, min, max) + "px";
+    // Backlog 355: a switched-to draft's place, once its height is right.
+    putScrollBack();
     syncMirror();
   }
 
@@ -855,12 +861,40 @@
   function recordCaret(): void {
     keeper.record(key, ta, text);
   }
+  /*
+   * Backlog 355: a draft taller than its box keeps its scroll place. The
+   * box's scrollTop is kept in the drafts store beside the caret
+   * (`Draft.scroll`) as it scrolls, and once more just before the key
+   * changes; a key arriving holds its place (`ScrollHold`) until the box
+   * has settled — put back after every re-measure (`autogrow`), the
+   * browser's own scrolls meanwhile not recorded. With nothing kept (a
+   * draft from before this), the kept caret is scrolled into view instead.
+   */
+  const scrollHold = new ScrollHold(1500);
+  function recordScroll(): void {
+    if (!ta || ta.value !== text || scrollHold.holds(key, performance.now())) return;
+    setDraftScroll(key, ta.scrollTop);
+  }
+  function putScrollBack(): void {
+    if (!ta || !scrollHold.holds(key, performance.now())) return;
+    const top = draftScroll(key);
+    if (top !== null) {
+      ta.scrollTop = top;
+      return;
+    }
+    const sel = clampSel(draftSelection(key), ta.value.length);
+    if (!sel) return;
+    if (ta instanceof LiveBoxHandle) ta.revealAt(sel.end);
+    else if (sel.end === ta.value.length) ta.scrollTop = ta.scrollHeight;
+  }
   $effect.pre(() => {
     const k = key;
     untrack(() => {
       if (shownKey !== null && shownKey !== k) {
         valueBefore = ta?.value ?? null;
         keeper.record(shownKey, ta, readDraft(shownKey).text);
+        if (ta && ta.value === readDraft(shownKey).text && !scrollHold.holds(shownKey, performance.now()))
+          setDraftScroll(shownKey, ta.scrollTop);
       }
     });
   });
@@ -870,6 +904,7 @@
       if (shownKey === k) return;
       shownKey = k;
       keeper.arrive(k);
+      scrollHold.start(k, performance.now());
       void tick().then(() => {
         if (key !== k || !ta || typeof document === "undefined") return;
         const box = boxElement(ta);
@@ -882,6 +917,7 @@
           keeper.focus(k, ta, had, false);
           autogrow();
         }
+        putScrollBack();
       });
     });
   });
@@ -902,6 +938,65 @@
       autogrow();
     });
   });
+
+  /*
+   * ⌘V with nothing to type in (backlog 351, `pasteToCompose.ts`): the
+   * chat's box takes the focus with its kept caret, as ⌘L gives it, and the
+   * paste is then the box's own — AppKit's `paste:` into the focused box
+   * (the same call as ⌥⌘V), so `onpaste` sees a real paste event. A paste
+   * event that reached the window with nothing to paste into is handed to
+   * `onpaste` during its dispatch; plain text, which `onpaste` leaves to the
+   * browser, goes in at the caret as one paste.
+   */
+  $effect(() => {
+    const el = root;
+    if (aside || !el) return;
+    return registerPasteHandler(el, pasteFromOutside);
+  });
+  function pasteFromOutside(req: PasteRequest): void {
+    if (!ta) return;
+    const box = boxElement(ta);
+    const had = !!box && !!document.activeElement && box.contains(document.activeElement);
+    keeper.focus(key, ta, had, true);
+    scrollHold.release();
+    if ("event" in req) {
+      const e = req.event;
+      onpaste(e);
+      if (e.defaultPrevented) return;
+      const t = e.clipboardData?.getData("text/plain") ?? "";
+      if (!t) return;
+      e.preventDefault();
+      pasteMath(normalizeNewlines(t));
+      return;
+    }
+    if (req.kind === "attach") {
+      clipOpen = false;
+      void pasteAsAttachment();
+      return;
+    }
+    void pasteByKey();
+  }
+  async function pasteByKey(): Promise<void> {
+    let asked = false;
+    try {
+      asked = await pasteIntoFocus();
+    } catch {
+      asked = false;
+    }
+    if (asked) return;
+    // Off the Mac (no `paste:` to send): the clipboard's text, read here,
+    // goes in as a plain paste would, with the long-paste offer.
+    try {
+      const t = await navigator.clipboard.readText();
+      if (!t || !ta) return;
+      const at = Math.min(ta.selectionStart, ta.selectionEnd);
+      pasteMath(normalizeNewlines(t));
+      offer = longPasteOffer(t, at);
+      converted = null;
+    } catch (e) {
+      addToast(`Could not read the clipboard: ${String(e)}`);
+    }
+  }
 
   const quoted = $derived(hasQuoteLine(text));
   // Item 315: fenced code drawn coloured in the same layer as quotes.
@@ -2559,7 +2654,14 @@
         recordCaret();
         pointerDown = false;
       }}
-      onmousedown={() => (pointerDown = true)}
+      onmousedown={() => {
+        pointerDown = true;
+        scrollHold.release();
+      }}
+      onkeydowncapture={() => scrollHold.release()}
+      onbeforeinputcapture={() => scrollHold.release()}
+      onwheel={() => scrollHold.release()}
+      onscrollcapture={recordScroll}
       onselect={recordCaret}
       oninput={recordCaret}
       onfocusin={() => {
@@ -2873,7 +2975,7 @@
         {:else if asideBusy}
           {aside && asideWaiting(aside) ? "Waiting — one aside answers at a time; ↵ holds the next message." : "Answering — ↵ holds the next message for when it ends."}
         {:else}
-          Answers from <em>{asideChatName}</em>'s context; nothing here enters the chat.
+          Answers from this chat's context; nothing here enters the chat.
         {/if}
       </span>
       <span class="spacer"></span>

@@ -87,6 +87,7 @@
  */
 import type { Attachment, ChatMode } from "./types";
 import type { EditState } from "./edit";
+import type { BoxPlace } from "./boxPlace";
 
 export interface Draft {
   text: string;
@@ -101,6 +102,13 @@ export interface Draft {
    * never a reason to change the text.
    */
   sel?: DraftSel;
+  /**
+   * How far the box was scrolled, in pixels (backlog 355): a draft taller
+   * than its box comes back at the same place after a switch, a reload or
+   * a quit, not at its top. Absent until the box has scrolled; written and
+   * put back only by the composer (`ScrollHold`, `boxPlace.ts`).
+   */
+  scroll?: number;
 }
 
 /** A caret (`start === end`) or a selection, in characters of the draft. */
@@ -221,13 +229,20 @@ export function loadDrafts(storage: Pick<Storage, "getItem"> = localStorage): Re
       const attachments = Array.isArray(d.attachments) ? d.attachments.filter(isAttachment) : [];
       const queue = readQueue(d.queue);
       const sel = readSel(d.sel);
+      const scroll = typeof d.scroll === "number" && Number.isFinite(d.scroll) && d.scroll > 0 ? d.scroll : undefined;
       if (!text && attachments.length === 0 && queue.length === 0) continue;
       // The pre-094 pending key, read once into the unfiled ordinary slot.
       // Appended if that slot is already in the store, so neither is lost.
       const k = raw_k === LEGACY_NEW_DRAFT_KEY ? newDraftKey(null) : raw_k;
       const prior = out[k];
       if (!prior) {
-        out[k] = sel ? { text, attachments, queue, sel } : { text, attachments, queue };
+        out[k] = {
+          text,
+          attachments,
+          queue,
+          ...(sel ? { sel } : {}),
+          ...(scroll !== undefined ? { scroll } : {}),
+        };
       } else {
         prior.text = prior.text ? (text ? `${prior.text}\n${text}` : prior.text) : text;
         prior.attachments.push(...attachments);
@@ -286,6 +301,7 @@ export function serializeDrafts(map: Record<string, Draft>): string {
       attachments: keep(d.attachments),
       queue: queue.map((q) => ({ id: q.id, text: q.text, attachments: keep(q.attachments) })),
       ...(d.sel ? { sel: { start: d.sel.start, end: d.sel.end } } : {}),
+      ...(d.scroll ? { scroll: d.scroll } : {}),
     };
   }
   return JSON.stringify(out);
@@ -310,6 +326,7 @@ export function saveDrafts(
           attachments: pastedOnly(d.attachments),
           queue: (d.queue ?? []).map((q) => ({ id: q.id, text: q.text, attachments: pastedOnly(q.attachments) })),
           ...(d.sel ? { sel: d.sel } : {}),
+          ...(d.scroll ? { scroll: d.scroll } : {}),
         };
       storage.setItem(KEY, serializeDrafts(bare));
     } catch {
@@ -426,6 +443,25 @@ export function setDraftSelection(key: string, start: number, end: number): void
   schedule();
 }
 
+/**
+ * Keep how far the box is scrolled (backlog 355). As with the caret, only
+ * on an entry that exists, and never touching the text.
+ */
+export function setDraftScroll(key: string, top: number): void {
+  const d = drafts[key];
+  if (!d || !Number.isFinite(top)) return;
+  const v = Math.max(0, Math.round(top));
+  if ((d.scroll ?? 0) === v) return;
+  if (v === 0) delete d.scroll;
+  else d.scroll = v;
+  schedule();
+}
+
+/** The kept scroll; null when none (the box at its top). */
+export function draftScroll(key: string): number | null {
+  return drafts[key]?.scroll ?? null;
+}
+
 /** The kept caret, as stored (unclamped); null when none. */
 export function draftSelection(key: string): DraftSel | null {
   const s = drafts[key]?.sel;
@@ -482,6 +518,7 @@ export function clearDraft(key: string): void {
     d.text = "";
     d.attachments = [];
     delete d.sel;
+    delete d.scroll;
   }
   schedule();
 }
@@ -644,6 +681,7 @@ export function moveDraft(from: string, to: string): void {
       attachments: src.attachments.slice(),
       queue: src.queue.slice(),
       ...(src.sel ? { sel: { ...src.sel } } : {}),
+      ...(src.scroll ? { scroll: src.scroll } : {}),
     };
   } else {
     dst.text = dst.text ? (src.text ? `${dst.text}\n${src.text}` : dst.text) : src.text;
@@ -669,11 +707,13 @@ export function carryDraft(from: string, to: string): void {
   dst.text = dst.text ? (src.text ? `${dst.text}\n${src.text}` : dst.text) : src.text;
   dst.attachments.push(...src.attachments);
   if (!dst.sel && src.sel) dst.sel = { ...src.sel };
+  if (!dst.scroll && src.scroll) dst.scroll = src.scroll;
   if (src.queue.length === 0) delete drafts[from];
   else {
     src.text = "";
     src.attachments = [];
     delete src.sel;
+    delete src.scroll;
   }
   schedule();
 }
@@ -841,6 +881,10 @@ function moveHistory(from: string, to: string): void {
 export interface EditStash {
   editing: NonNullable<EditState>;
   line: string;
+  /** Each editor box's scroll and caret, in drawing order — the user
+   *  turn's one box, or a reply's blocks (backlog 355); absent when none
+   *  was recorded. */
+  boxes?: (BoxPlace | null)[];
 }
 
 const edits = new Map<string, EditStash>();
