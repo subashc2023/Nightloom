@@ -8717,15 +8717,22 @@ export function chatAgentSession(events: SessionEvent[]): string | null {
  * reply after the rewind landed, stitching the turn being undone onto the
  * history it was removed from.
  */
-export async function rewindTo(to: number): Promise<void> {
+export async function rewindTo(to: number, aim = false): Promise<void> {
   if (app.busy) return;
+  // From the window's own transcript, the message's send time rides with
+  // its place, as `sendEdit`'s does (backlog 361; wave 8b review): the
+  // backend rewinds to the message meant, or refuses. The phone's index is
+  // its own list's, so it goes bare, as before.
+  const meant = aim ? app.events[to] : undefined;
+  const at = meant?.event === "user_message" ? meant.at : undefined;
+  const call = () => (at ? api.rewind(to, at) : api.rewind(to));
   // His message at `to`, read before the rewind supersedes it (backlog 247).
   const back = rewoundMessage(app.events, to, nextAttachmentId);
   // What the removed turns wrote, read before the rewind supersedes them
   // (item 259): offered to be set aside, since the next run reads them.
   const written = rewoundWrites(app.events, liveFlags(app.events), to);
   try {
-    app.events = await api.rewind(to);
+    app.events = await call();
     app.error = null;
   } catch (e) {
     app.error = String(e);
@@ -8760,7 +8767,7 @@ export async function rewindTo(to: number): Promise<void> {
       }
     },
     redo: async () => {
-      app.events = await api.rewind(to);
+      app.events = await call();
       marker = lastMarker("rewind");
       if (back) swap = fillBox(key, back);
     },

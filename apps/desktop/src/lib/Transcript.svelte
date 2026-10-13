@@ -1829,7 +1829,7 @@
                     class="tool-btn"
                     use:tip={rewindTitle}
                     aria-label="Rewind to here"
-                    onclick={() => void rewindTo(item.index)}
+                    onclick={() => void rewindTo(item.index, true)}
                   >
                     <Icon name="revert" size={14} />
                   </button>

@@ -3770,12 +3770,26 @@ async fn compact(
 /// On the Claude Code engine (since 2026-09-15) the CLI's session file is
 /// copied truncated before the turn and the copy resumed — see
 /// [`edit_on_cli`]; the log gets its `Rewind` marker either way.
+///
+/// `at`, when the window sends it, is when the message at `to` was sent: a
+/// rewind is aimed at that message as a fork is (backlog 361's
+/// `aim_user_message`; wave 8b review, 2026-10-13) — from a window whose
+/// list was out of step with the log, the bare index named a message
+/// exchanges earlier and would have hidden everything after it.
 #[tauri::command]
-async fn rewind(state: State<'_, AppState>, to: usize) -> Result<Vec<SessionEvent>, String> {
+async fn rewind(
+    state: State<'_, AppState>,
+    to: usize,
+    at: Option<chrono::DateTime<chrono::Utc>>,
+) -> Result<Vec<SessionEvent>, String> {
     let (mut agent_guard, mut session_guard) = lock_agent_and_chat(&state).await;
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "no active session".to_string())?;
+    let to = match at {
+        Some(at) => session.aim_user_message(to, at)?,
+        None => to,
+    };
     chat_ops::rewind(session, agent_guard.as_mut().map(OnCli::of), to)?;
     Ok(session.events().to_vec())
 }

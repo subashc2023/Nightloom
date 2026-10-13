@@ -125,9 +125,12 @@ export function countDraftTokens(
   return invoke("count_draft_tokens", { provider, model, text });
 }
 
-/** Rewind to the turn at log index `to`; resolves with the new transcript. */
-export function rewind(to: number): Promise<SessionEvent[]> {
-  return invoke("rewind", { to });
+/** Rewind to the turn at log index `to`; resolves with the new transcript.
+ *  `at`, when given, is when the message at `to` was sent: the backend aims
+ *  at that message even when the window's list is out of step with the log
+ *  (as `editMessage`'s, backlog 361). */
+export function rewind(to: number, at?: string): Promise<SessionEvent[]> {
+  return invoke("rewind", at ? { to, at } : { to });
 }
 
 /**

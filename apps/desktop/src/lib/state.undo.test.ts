@@ -96,6 +96,25 @@ describe("liveFlags with unrewind", () => {
   });
 });
 
+describe("a rewind from the transcript is aimed (wave 8b review, 2026-10-13)", () => {
+  // Backlog 361's stale list: the window's index may name another message
+  // in the log, so the transcript's Rewind also sends the message's send
+  // time, and its redo does too. The phone's rewind goes bare, as before.
+  it("sends the message's send time with its place, and redo does too", async () => {
+    const sent = "2026-10-13T07:19:57.123456789Z";
+    app.events = [created, user("one"), assistant("first"), { event: "user_message", text: "two", at: sent }];
+    await rewindTo(3, true);
+    expect(api.rewind).toHaveBeenLastCalledWith(3, sent);
+    await undo();
+    await redo();
+    expect(api.rewind).toHaveBeenLastCalledWith(3, sent);
+  });
+  it("goes bare when not aimed (the phone's index)", async () => {
+    await rewindTo(3);
+    expect(api.rewind).toHaveBeenLastCalledWith(3);
+  });
+});
+
 describe("one inverse per operation", () => {
   it("rewind → unrewind of the marker it landed; redo is a fresh rewind", async () => {
     await rewindTo(3);
