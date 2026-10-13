@@ -254,33 +254,6 @@ pub struct CliSession {
     id: String,
 }
 
-/// Where [`nearest`] lands among the places a text was found.
-#[derive(Debug, PartialEq, Eq)]
-enum Nearest {
-    /// Not found anywhere.
-    None,
-    /// The place nearest the counted one.
-    One(usize),
-    /// Two places equally near: refused rather than guessed.
-    Tie,
-}
-
-/// Of the turn positions `found` (indices into the file's prompts), the one
-/// nearest `expected`, the position the log's count gave (nightshift item
-/// 356). The count is usually off by the few turns the two histories
-/// disagree on, so the nearest match is the turn meant.
-fn nearest(found: &[usize], expected: isize) -> Nearest {
-    let dist = |p: usize| (p as isize - expected).unsigned_abs();
-    let Some(best) = found.iter().map(|&p| dist(p)).min() else {
-        return Nearest::None;
-    };
-    let mut at = found.iter().filter(|&&p| dist(p) == best);
-    match (at.next(), at.next()) {
-        (Some(&p), None) => Nearest::One(p),
-        _ => Nearest::Tie,
-    }
-}
-
 /// A user turn's text without the relay note a mid-turn message carries
 /// while subagents run (backlog 339; stripped for the match, 341). Only a
 /// trailing note goes — one that ends the text.
@@ -522,21 +495,27 @@ impl CliSession {
                 // file disagree on how many turns follow this one — a turn
                 // removed from the CLI's copy is still a live turn in the
                 // log, a message stopped before the CLI wrote it is in the
-                // log alone. So the prompt is found by its text, the one
-                // nearest the counted place; the text check still guards
-                // the edit.
-                let reads: Vec<usize> = (0..prompts.len())
-                    .filter(|&p| self.prompt_reads(prompts[p], wanted))
+                // log alone. So the prompt is found by its text — only
+                // when one turn in the whole file reads so (wave 8 review:
+                // ~~the one nearest the counted place~~ — with the count
+                // already off, "nearest" can be a repeated "continue" that
+                // is not the turn meant, and a wrong Remove loses context
+                // silently; a refusal changes nothing). The text check
+                // still guards the edit.
+                let reads: Vec<usize> = prompts
+                    .iter()
+                    .copied()
+                    .filter(|&i| self.prompt_reads(i, wanted))
                     .collect();
-                match nearest(&reads, expected) {
-                    Nearest::One(p) => Ok(vec![prompts[p]]),
-                    Nearest::Tie => Err(CliSessionError::Locate(
+                match reads.as_slice() {
+                    [i] => Ok(vec![*i]),
+                    [_, _, ..] => Err(CliSessionError::Locate(
                         "that turn's text is in Claude Code's history more than once, so which one is meant is unclear; nothing was changed".into(),
                     )),
                     // Counted past the file's first prompt: that refusal
                     // says why (a turn run on the other engine).
-                    Nearest::None if expected < 0 => self.prompt_from_last(*from_last).map(|i| vec![i]),
-                    Nearest::None => Err(CliSessionError::Locate(
+                    [] if expected < 0 => self.prompt_from_last(*from_last).map(|i| vec![i]),
+                    [] => Err(CliSessionError::Locate(
                         "that turn reads differently in Claude Code's history than in this chat's log; nothing was changed".into(),
                     )),
                 }
@@ -564,9 +543,10 @@ impl CliSession {
                 }
                 // Not under the counted turn (item 356, as for a prompt
                 // above): a reply with words is looked for in every turn,
-                // the nearest turn with exactly one reply reading the same
-                // taken. A reply with no words is never matched this way —
-                // every wordless round would.
+                // and taken only when exactly one reply in the file reads
+                // the same (wave 8 review: ~~the nearest turn~~ — see the
+                // prompt's case). A reply with no words is never matched
+                // this way — every wordless round would.
                 let not_found = || {
                     CliSessionError::Locate(
                         "that reply is not in Claude Code's history as this chat's log has it; nothing was changed".into(),
@@ -575,8 +555,8 @@ impl CliSession {
                 if wanted.is_empty() {
                     return Err(not_found());
                 }
-                let mut found: Vec<(usize, Vec<usize>)> = Vec::new();
-                for (p, &prompt) in prompts.iter().enumerate() {
+                let mut found: Vec<Vec<usize>> = Vec::new();
+                for &prompt in &prompts {
                     let hits: Vec<Vec<usize>> = self
                         .replies_after(prompt)
                         .into_iter()
@@ -587,20 +567,17 @@ impl CliSession {
                             "more than one reply in that turn reads the same in Claude Code's history, so which one is meant is unclear; nothing was changed".into(),
                         ));
                     }
-                    found.extend(hits.into_iter().map(|g| (p, g)));
+                    found.extend(hits);
                 }
-                let at: Vec<usize> = found.iter().map(|(p, _)| *p).collect();
-                match nearest(&at, expected) {
-                    Nearest::One(p) => Ok(found
-                        .into_iter()
-                        .find(|(q, _)| *q == p)
-                        .map(|(_, g)| g)
-                        .expect("nearest names a found turn")),
-                    Nearest::Tie => Err(CliSessionError::Locate(
+                if found.len() > 1 {
+                    return Err(CliSessionError::Locate(
                         "that reply's text is in Claude Code's history more than once, so which one is meant is unclear; nothing was changed".into(),
-                    )),
-                    Nearest::None if expected < 0 => self.prompt_from_last(*from_last).map(|_| Vec::new()),
-                    Nearest::None => Err(not_found()),
+                    ));
+                }
+                match found.pop() {
+                    Some(g) => Ok(g),
+                    None if expected < 0 => self.prompt_from_last(*from_last).map(|_| Vec::new()),
+                    None => Err(not_found()),
                 }
             }
         }
@@ -1781,12 +1758,47 @@ mod tests {
         );
     }
 
+    /// Wave 8 review: once the count has drifted, a text that more than
+    /// one turn reads is refused, never guessed — the turn nearest the
+    /// counted place can be a repeated prompt that is not the one meant.
     #[test]
-    fn the_nearest_match_wins_and_a_tie_refuses() {
-        assert_eq!(nearest(&[], 1), Nearest::None);
-        assert_eq!(nearest(&[0, 3], 1), Nearest::One(0));
-        assert_eq!(nearest(&[0, 2], 1), Nearest::Tie);
-        assert_eq!(nearest(&[4], -2), Nearest::One(4));
+    fn a_drifted_count_refuses_a_text_two_turns_read() {
+        let s = CliSession::parse(&fixture()).unwrap();
+        // Both prompts reworded to the same text: "same" twice.
+        let s = s
+            .rewrite(
+                &Target::User {
+                    from_last: 1,
+                    text: "first".into(),
+                },
+                "same",
+            )
+            .unwrap()
+            .rewrite(
+                &Target::User {
+                    from_last: 0,
+                    text: "second".into(),
+                },
+                "same",
+            )
+            .unwrap();
+        // Counted exactly, the turn is taken as before.
+        assert!(
+            s.remove(&Target::User {
+                from_last: 0,
+                text: "same".into(),
+            })
+            .is_ok()
+        );
+        // Counted one too far back (2 from the newest: before the file's
+        // first), the text alone cannot tell the two apart: refused.
+        let err = s
+            .remove(&Target::User {
+                from_last: 2,
+                text: "same".into(),
+            })
+            .unwrap_err();
+        assert!(err.to_string().contains("more than once"), "{err}");
     }
 
     /// The main chain as uuids, with each node's message — what `--resume`

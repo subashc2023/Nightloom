@@ -276,8 +276,11 @@ What each edit does to the copy, and why:
   in the log alone — and every Remove or Edit on an earlier turn was then
   refused ("that turn reads differently in Claude Code's history…").
   So when the counted turn does not read the same, the prompt (or the reply,
-  if it has words) is looked for by its text in every turn, and the match
-  nearest the counted place is taken; two equally near refuse. A tool call
+  if it has words) is looked for by its text in every turn, and ~~the match
+  nearest the counted place is taken; two equally near refuse~~ (struck
+  2026-10-13, wave 8 review: with the count off, the nearest of two turns
+  that read the same can be the wrong one) taken only when exactly one turn
+  in the file reads so; two or more refuse and nothing changes. A tool call
   is found by its id anywhere in the chain.
 - **Rewind** and **edit and send** (`truncate`): the copy cut before the
   user prompt, as measured. A cut that leaves no turn at all — at the
