@@ -90,6 +90,7 @@ pub fn edit_saved(
     }
     let (workspace, agent) = split(cli);
     let change = match &workspace {
+        Some(_) if is_stand_in_reply(session, index) => CliChange::Untouched,
         Some(cwd) => {
             let target = cli_target(session, index)?;
             let nth = match block {
@@ -172,6 +173,7 @@ pub fn remove_message(
     }
     let (workspace, agent) = split(cli);
     let change = match &workspace {
+        Some(_) if is_stand_in_reply(session, index) => CliChange::Untouched,
         Some(cwd) => {
             let target = cli_target(session, index)?;
             edit_on_cli(session, cwd, move |cli| cli.remove(&target).map(Some))?
@@ -216,6 +218,7 @@ pub fn remove_block(
     let (workspace, agent) = split(cli);
     let change = match &workspace {
         Some(_) if is_narrative_block(session, index, block) => CliChange::Untouched,
+        Some(_) if is_stand_in_reply(session, index) => CliChange::Untouched,
         Some(cwd) => {
             let target = cli_target(session, index)?;
             let which = cli_block(session, index, block)?;
@@ -307,15 +310,28 @@ pub fn fork(
     cli: Option<OnCli<'_>>,
     upto: usize,
 ) -> Result<Session, String> {
+    fork_in(parent, log_dir, cli, upto, None)
+}
+
+/// [`fork`] with the CLI's projects root as a parameter, for a test;
+/// `None` is `~/.claude/projects`.
+pub fn fork_in(
+    parent: &Session,
+    log_dir: &Path,
+    cli: Option<OnCli<'_>>,
+    upto: usize,
+    projects: Option<&Path>,
+) -> Result<Session, String> {
     let (workspace, mut agent) = split(cli);
     let (turns, before) = turn_texts(parent, upto)?;
     let change = match &workspace {
-        Some(cwd) => edit_on_cli(parent, cwd, |cli| {
+        Some(cwd) => edit_on_cli_in(parent, projects, cwd, |cli| {
             cli.truncate_by_text(&turns, before.as_deref())
         })?,
         None => CliChange::Untouched,
     };
     let mut fork = parent.fork_from(log_dir, upto).map_err(|e| e.to_string())?;
+    keep_the_name(parent, &mut fork, turns.first().map(String::as_str));
     match change {
         // The fork carries no handle of the parent's, so anything but a
         // copy to resume means the fork's first turn opens a CLI
@@ -328,6 +344,40 @@ pub fn fork(
         resume => resume.adopt(&mut fork, agent),
     }
     Ok(fork)
+}
+
+/// A fork cut at the parent's first turn keeps the parent's name
+/// (nightshift item 363, his workflow: "i sent a first chat jus to like
+/// "name" the chat n then immediately clicked stop and then edited it to
+/// add the files"). A chat with no title is named by its first message,
+/// and the fork's first message is the edited one, so the name he gave by
+/// sending was lost. The fork gets the parent's title, as the parent's
+/// author wrote it, or else that first message's words as his own name
+/// for it. A fork cut later keeps a first message of the parent's, and so
+/// its name, and is left as it was.
+fn keep_the_name(parent: &Session, fork: &mut Session, first: Option<&str>) {
+    let has_turn = fork
+        .live_events()
+        .iter()
+        .any(|(_, e)| matches!(e, SessionEvent::UserMessage { .. }));
+    if has_turn || fork.title().is_some() {
+        return;
+    }
+    match parent.title() {
+        Some(title) => {
+            let by = if parent.named_by_user() {
+                nightloom_core::TitleBy::User
+            } else {
+                nightloom_core::TitleBy::Model
+            };
+            fork.record_title_by(title.to_string(), by);
+        }
+        None => {
+            if let Some(words) = first.map(str::trim).filter(|w| !w.is_empty()) {
+                fork.record_title_by(words.to_string(), nightloom_core::TitleBy::User);
+            }
+        }
+    }
 }
 
 /// Continue `parent` in a fresh chat after a hand-off (backlog 086): empty,
@@ -596,6 +646,22 @@ pub fn cli_reply_text(session: &Session, index: usize) -> String {
 /// Whether block `block` of the reply at `index` is a subagent's narrative
 /// (item 252): the window's alone, so removing or restoring it changes
 /// nothing in the CLI's file.
+/// Whether the reply at `index` is the stand-in Nightloom records for a
+/// turn stopped or failed before any reply (nightshift item 361: "Stopped
+/// before any reply arrived.", `stop_reason` "stopped" or "error: …", no
+/// usage). The CLI's history never had it, so an edit or removal of it
+/// leaves that history alone (item 363) instead of refusing to find it.
+pub fn is_stand_in_reply(session: &Session, index: usize) -> bool {
+    matches!(
+        session.events().get(index),
+        Some(SessionEvent::AssistantMessage { stop_reason: Some(r), usage, .. })
+            if (r == "stopped" || r.starts_with("error: "))
+                && usage.input_tokens == 0
+                && usage.output_tokens == 0
+    )
+}
+
+/// Whether block `block` of the reply at `index` is a subagent's narrative.
 pub fn is_narrative_block(session: &Session, index: usize, block: usize) -> bool {
     matches!(
         session.events().get(index),
@@ -663,6 +729,17 @@ pub fn edit_on_cli(
     workspace: &Path,
     change: impl FnOnce(&CliSession) -> Result<Option<CliSession>, cli_session::CliSessionError>,
 ) -> Result<CliChange, String> {
+    edit_on_cli_in(session, None, workspace, change)
+}
+
+/// [`edit_on_cli`] with the projects root as a parameter (`None`:
+/// `~/.claude/projects`), so a test can run a whole edit (item 363).
+pub fn edit_on_cli_in(
+    session: &Session,
+    projects: Option<&Path>,
+    workspace: &Path,
+    change: impl FnOnce(&CliSession) -> Result<Option<CliSession>, cli_session::CliSessionError>,
+) -> Result<CliChange, String> {
     // An ephemeral chat has a CLI session id — the CLI reports one even
     // under `--no-session-persistence` — but no file behind it, and the
     // next turn replays the log anyway; the id alone was read as "a file
@@ -677,8 +754,11 @@ pub fn edit_on_cli(
     else {
         return Ok(CliChange::Untouched);
     };
-    let projects = cli_session::projects_dir()
-        .ok_or_else(|| "no home directory, so no ~/.claude/projects to look in".to_string())?;
+    let projects = match projects {
+        Some(p) => p.to_path_buf(),
+        None => cli_session::projects_dir()
+            .ok_or_else(|| "no home directory, so no ~/.claude/projects to look in".to_string())?,
+    };
     edit_cli_file(&projects, workspace, &id, change)
 }
 
@@ -750,7 +830,9 @@ pub fn restore_on_cli(
     let Some(original) = agent_session_before(session, marker).filter(|id| *id != current) else {
         return Ok(CliChange::Untouched);
     };
-    if block.is_some_and(|b| is_narrative_block(session, index, b)) {
+    if block.is_some_and(|b| is_narrative_block(session, index, b))
+        || is_stand_in_reply(session, index)
+    {
         return Ok(CliChange::Untouched);
     }
     let target = cli_target(session, index)?;
@@ -841,5 +923,133 @@ mod tests {
         assert_eq!(now.images.len(), 1, "the edit's set, not the turn's own");
         assert!(now.documents.is_empty());
         assert!(current_attachments(&s, 999).is_none());
+    }
+
+    /// The CLI's file for his 363 chat, by shape (never a copy of it): the
+    /// first prompt stopped about a second in, so the CLI wrote its
+    /// attachments and then its own `[Request interrupted by user]` line,
+    /// and never his words.
+    fn stopped_first_turn(sid: &str) -> String {
+        use serde_json::json;
+        let node = |uuid: &str, parent: Option<&str>, kind: &str, extra: serde_json::Value| {
+            let mut o = json!({
+                "parentUuid": parent, "isSidechain": false, "type": kind, "uuid": uuid,
+                "timestamp": "2026-10-13T21:12:54.000Z", "userType": "external",
+                "cwd": "/x", "sessionId": sid,
+                "version": cli_session::MEASURED_VERSION, "gitBranch": "main"
+            });
+            for (k, v) in extra.as_object().unwrap() {
+                o[k] = v.clone();
+            }
+            o.to_string()
+        };
+        let att = |uuid: &str, parent: Option<&str>| {
+            node(
+                uuid,
+                parent,
+                "attachment",
+                json!({"attachment": {"type": "environment", "text": "x"}}),
+            )
+        };
+        [
+            json!({"type": "queue-operation", "operation": "enqueue", "timestamp": "t", "sessionId": sid, "content": "Lecture 4 & 5"}).to_string(),
+            json!({"type": "queue-operation", "operation": "dequeue", "timestamp": "t", "sessionId": sid}).to_string(),
+            att("a1", None),
+            att("a2", Some("a1")),
+            node("i1", Some("a2"), "user", json!({"message": {"role": "user", "content": [{"type": "text", "text": "[Request interrupted by user]"}]}})),
+            json!({"type": "last-prompt", "lastPrompt": "Lecture 4 & 5", "leafUuid": "i1", "sessionId": sid}).to_string(),
+            json!({"type": "atis-latch", "atis": "", "sessionId": sid}).to_string(),
+        ]
+        .join("\n")
+            + "\n"
+    }
+
+    /// Item 363, his sequence: send a short first message to name the chat,
+    /// Stop at once, then edit that message (adding the files) and press
+    /// Enter. Edit and send forks before the first turn. It refused with
+    /// "none of the turns being rewound is in Claude Code's history, and
+    /// its history does not end at the turn before them"; now the fork
+    /// starts a fresh CLI conversation and keeps the name.
+    #[test]
+    fn editing_a_stopped_first_message_forks_fresh_and_keeps_the_name() {
+        let root = std::env::temp_dir().join(format!("nightloom-363-{}", uuid::Uuid::new_v4()));
+        let (logs, projects, cwd) = (
+            root.join("sessions"),
+            root.join("projects"),
+            root.join("STATS 67"),
+        );
+        std::fs::create_dir_all(&logs).unwrap();
+        std::fs::create_dir_all(&cwd).unwrap();
+        let sid = "aaec4e58-d91e-4c7c-a1f9-484a00a68d8b";
+        let folder = projects.join(cli_session::project_folder(&cwd));
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join(format!("{sid}.jsonl")), stopped_first_turn(sid)).unwrap();
+
+        let mut parent = Session::start(&logs, ChatMode::Normal, ChatKind::Build).unwrap();
+        parent.record_user("Lecture 4 & 5");
+        parent.record_agent_session(AGENT, sid);
+        // Item 361's stand-in reply, which the CLI's history never has.
+        parent.record_assistant_timed(
+            "claude-opus".to_string(),
+            vec![nightloom_core::ContentBlock::Text {
+                text: "Stopped before any reply arrived.".into(),
+            }],
+            Some("stopped".into()),
+            nightloom_core::Usage::default(),
+            None,
+            chrono::Utc::now(),
+            None,
+        );
+        let first = parent
+            .events()
+            .iter()
+            .position(|e| matches!(e, SessionEvent::UserMessage { .. }))
+            .unwrap();
+        let stand_in = parent.events().len() - 1;
+        assert!(is_stand_in_reply(&parent, stand_in));
+        assert!(!is_stand_in_reply(&parent, first));
+
+        let fork = fork_in(
+            &parent,
+            &logs,
+            Some(OnCli::at(cwd.clone())),
+            first,
+            Some(&projects),
+        )
+        .expect("the edit of a stopped first message forks");
+        assert_eq!(
+            fork.title(),
+            Some("Lecture 4 & 5"),
+            "the name he sent is kept"
+        );
+        assert!(fork.named_by_user(), "a naming pass leaves it alone");
+        assert!(
+            fork.agent_session().is_none(),
+            "a fresh CLI conversation: nothing to resume"
+        );
+        assert!(
+            !fork
+                .events()
+                .iter()
+                .any(|e| matches!(e, SessionEvent::UserMessage { .. })),
+            "the edited text is the fork's first turn, sent next"
+        );
+        assert!(parent.title().is_none(), "the parent is untouched");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A fork cut at a later turn keeps a first message of the parent's,
+    /// and so its name; no title is written.
+    #[test]
+    fn a_later_fork_writes_no_title() {
+        let root = std::env::temp_dir().join(format!("nightloom-363b-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut parent = Session::start(&root, ChatMode::Normal, ChatKind::Build).unwrap();
+        parent.record_user("one");
+        parent.record_user("two");
+        let second = parent.events().len() - 1;
+        let fork = fork_in(&parent, &root, None, second, None).unwrap();
+        assert!(fork.title().is_none());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

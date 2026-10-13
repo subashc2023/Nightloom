@@ -147,6 +147,7 @@ impl Line {
             || self.flag("isMeta")
             || self.flag("isCompactSummary")
             || self.is_notification()
+            || self.is_interrupt_marker()
         {
             return false;
         }
@@ -157,6 +158,20 @@ impl Line {
                 .any(|b| b.get("type").and_then(Value::as_str) == Some("tool_result")),
             _ => false,
         }
+    }
+    /// The line the CLI writes as a user node when a turn is stopped
+    /// (nightshift items 361 and 363, measured on 2.1.x in the STATS 67
+    /// chat aaec4e58, 2026-10-13): `[Request interrupted by user]`, or `…
+    /// for tool use`, as the whole content, with no `isMeta` or `origin`.
+    /// He never typed it. Counted as a prompt, it put every turn before a
+    /// Stop one further from the newest; and when a first message was
+    /// stopped before the CLI wrote it, the marker was the file's only
+    /// "prompt", so an edit of that message refused (363).
+    fn is_interrupt_marker(&self) -> bool {
+        matches!(
+            self.text().trim(),
+            "[Request interrupted by user]" | "[Request interrupted by user for tool use]"
+        )
     }
     /// A message the CLI wrote as a user node that he never typed
     /// (nightshift item 252): a background subagent's completion, which
@@ -992,25 +1007,38 @@ impl CliSession {
     /// text (two identical messages both happened that day). Turns before
     /// it that the file lacks were never recorded, and need no cut.
     ///
-    /// None of `turns` in the file: the CLI recorded none of them, which
+    /// ~~None of `turns` in the file: the CLI recorded none of them, which
     /// is safe to leave as it is only when the file ends at `before` —
     /// then the copy is unchanged. Otherwise, and when the file has fewer
-    /// prompts of that text than the log from here on, it refuses: a copy
-    /// cut at the wrong turn is worse than a refusal. `Ok(None)` as for
-    /// [`Self::truncate`], when the cut leaves no turn.
+    /// prompts of that text than the log from here on, it refuses~~
+    /// (2026-10-13, nightshift item 363: an edit of a chat's first message,
+    /// stopped before the CLI wrote it, refused). None of `turns` in the
+    /// file: the CLI recorded none of them, so nothing in it is being
+    /// rewound. With no `before` the cut is at the log's first turn and
+    /// nothing precedes it: `Ok(None)`, a fresh CLI conversation, whatever
+    /// the file holds (the CLI's own stop marker, attachments). With a
+    /// `before`, the copy keeps the file through `before`'s turn — cut at
+    /// the prompt after it, if any — and the file whole when `before` is
+    /// not in it either (blocker 1434). A turn the file has fewer times
+    /// than the log from here on still refuses: a copy cut at the wrong
+    /// turn is worse than a refusal. `Ok(None)` as for
+    /// [`Self::truncate`], when the cut leaves no turn. Prompts match as
+    /// [`Self::locate`]'s do: the caption or the whole text, the relay
+    /// note aside.
     pub fn truncate_by_text(
         &self,
         turns: &[String],
         before: Option<&str>,
     ) -> Result<Option<Self>, CliSessionError> {
         let prompts = self.prompts();
-        let texts: Vec<String> = prompts
-            .iter()
-            .map(|&i| self.lines[i].text().trim().to_string())
-            .collect();
+        let reading = |turn: &str| -> Vec<usize> {
+            (0..prompts.len())
+                .filter(|&p| self.prompt_reads(prompts[p], turn))
+                .collect()
+        };
         for (k, turn) in turns.iter().enumerate() {
             let turn = turn.trim();
-            let matches: Vec<usize> = (0..texts.len()).filter(|&p| texts[p] == turn).collect();
+            let matches = reading(turn);
             if matches.is_empty() {
                 continue;
             }
@@ -1028,15 +1056,19 @@ impl CliSession {
             }
             return Ok(Some(self.cut_before(prompts[p])));
         }
-        match (texts.last(), before) {
-            (None, _) => Ok(None),
-            (Some(last), Some(b)) if last == b.trim() => Ok(Some(Self {
+        let whole = || {
+            Some(Self {
                 lines: self.lines.clone(),
                 id: self.id.clone(),
-            })),
-            _ => Err(CliSessionError::Locate(
-                "none of the turns being rewound is in Claude Code's history, and its history does not end at the turn before them; nothing was changed".into(),
-            )),
+            })
+        };
+        match before {
+            None => Ok(None),
+            Some(_) if prompts.is_empty() => Ok(None),
+            Some(b) => match reading(b.trim()).last() {
+                Some(&p) if p + 1 < prompts.len() => Ok(Some(self.cut_before(prompts[p + 1]))),
+                _ => Ok(whole()),
+            },
         }
     }
 
@@ -2192,12 +2224,73 @@ mod tests {
                 .is_none()
         );
 
-        // None of the turns in the file, and the file does not end at the
-        // turn before them: refuse rather than guess.
-        let err = s
+        // ~~None of the turns in the file, and the file does not end at the
+        // turn before them: refuse rather than guess.~~ (2026-10-13, item
+        // 363) Nothing in the file is being rewound, so the copy keeps it
+        // through the turn before them: cut at the prompt after "first".
+        let out = s
             .truncate_by_text(&t(&["stopped"]), Some("first"))
-            .unwrap_err();
-        assert!(err.to_string().contains("nothing was changed"), "{err}");
+            .unwrap()
+            .unwrap();
+        assert_eq!(uuids(&out.render_as("n")), by_count);
+        // And whole when the turn before is not in it either.
+        let out = s
+            .truncate_by_text(&t(&["stopped"]), Some("never sent here"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(uuids(&out.render_as("n")), uuids(&fixture()));
+    }
+
+    /// Item 363, his chat by shape: the first prompt was stopped before the
+    /// CLI wrote it, leaving its attachments and the CLI's own
+    /// `[Request interrupted by user]` line. Editing that first message
+    /// (no turn before it) refused; it now starts fresh.
+    #[test]
+    fn rewinding_a_first_message_the_cli_never_wrote_starts_fresh() {
+        let lines = [
+            attachment("a1", "a0", "environment").replace(r#""parentUuid":"a0""#, r#""parentUuid":null"#),
+            attachment("a2", "a1", "instructions"),
+            user("i1", Some("a2"), json!([{"type": "text", "text": "[Request interrupted by user]"}])),
+            json!({"type": "last-prompt", "lastPrompt": "Lecture 4 & 5", "leafUuid": "i1", "sessionId": SID}).to_string(),
+        ];
+        let s = CliSession::parse(&(lines.join("\n") + "\n")).unwrap();
+        assert_eq!(
+            s.prompt_count(),
+            0,
+            "the stop marker is not a prompt he typed"
+        );
+        let t = vec!["Lecture 4 & 5".to_string()];
+        assert!(s.truncate_by_text(&t, None).unwrap().is_none());
+        // A first message the file does have, and anything else in it: the
+        // cut at the log's first turn leaves nothing before it either.
+        let f = CliSession::parse(&fixture()).unwrap();
+        assert!(f.truncate_by_text(&t, None).unwrap().is_none());
+    }
+
+    /// Item 361's patch note: a Stop mid-conversation leaves the CLI's
+    /// marker after his prompt; counted as a prompt, it put every turn
+    /// before the Stop one further from the newest.
+    #[test]
+    fn a_stop_marker_does_not_count_as_a_turn() {
+        // A third prompt, stopped: the CLI writes its marker under it.
+        let text = fixture()
+            + &user("u3", Some("s6"), json!("third"))
+            + "\n"
+            + &user(
+                "x1",
+                Some("u3"),
+                json!([{"type": "text", "text": "[Request interrupted by user]"}]),
+            )
+            + "\n";
+        let s = CliSession::parse(&text).unwrap();
+        assert_eq!(s.prompt_count(), 3, "first, second, third; not the marker");
+        // "first" is two before the newest, and the count alone finds it.
+        let first = Target::User {
+            from_last: 2,
+            text: "first".into(),
+        };
+        assert_eq!(s.prompts()[0], s.prompt_from_last(2).unwrap());
+        assert!(s.rewrite(&first, "first, again").is_ok());
     }
 
     /// Backlog 255: two prompts reading the same are told apart by how
