@@ -63,6 +63,7 @@
   import { memoryEditOf, type MemoryEdit } from "./memoryEdits";
   import type { ReplyUsageView } from "./replyUsage";
   import { hasUsage, stopNote } from "./replyFooter";
+  import StillRunningLine from "./StillRunningLine.svelte";
   // The streaming motion (backlog 342, his pick of 338: "Loom + fade-in").
   import { Births, needleIn, needleOut, replyMotion } from "./replyMotion";
 
@@ -826,6 +827,9 @@
       </div>
     {:else if g.seg.kind === "notice"}
       <div class="notice">{g.seg.text}</div>
+    {:else if g.seg.kind === "still_running"}
+      <!-- Backlog 357: the still-running line, Stop and the names on it. -->
+      <StillRunningLine seg={g.seg} />
     {/if}
   {/each}
   {#if moonAlone}

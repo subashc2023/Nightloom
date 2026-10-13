@@ -50,6 +50,15 @@
   import Icon from "./Icon.svelte";
   import { allRunning } from "./running.svelte";
   import type { RunEntry } from "./running";
+  import { tasksFocus } from "./tasksFocus.svelte";
+  import { onDestroy } from "svelte";
+
+  // Opened on one agent (backlog 357: a name on the still-running line):
+  // its row is marked and scrolled into view; the mark goes with the panel.
+  function focusRow(el: HTMLElement, id: string) {
+    if (tasksFocus.id === id) requestAnimationFrame(() => el.scrollIntoView({ block: "nearest" }));
+  }
+  onDestroy(() => (tasksFocus.id = null));
 
   /** A ticking clock for the elapsed column while any child or chat runs. */
   let now = $state(Date.now());
@@ -180,7 +189,7 @@
 
 {#snippet agentRow(r: SubagentRow)}
   {@const st = rowState(r)}
-  <div class="row {st}">
+  <div class="row {st}" class:focus={tasksFocus.id === r.tool_use_id} use:focusRow={r.tool_use_id}>
     <span class="state">
       <span class="dot"></span>{stateLabel(r)}
     </span>
@@ -519,6 +528,10 @@
   .row.running {
     color: var(--ink);
     box-shadow: inset 2px 0 0 var(--live);
+  }
+  /* The agent he opened the panel on (357). */
+  .row.focus {
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
   }
   .num {
     text-align: right;

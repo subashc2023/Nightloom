@@ -115,6 +115,7 @@ import * as tabs from "./tabs";
 import { midTurnWire, chipsFromInputs, sendNowToast, type SendNowResult } from "./midTurn";
 import { recordRelay } from "./relay.svelte";
 import { adoptPending, closeRunningRows, latestAgents, mergeRows, rowsFromLog, rowsOf } from "./subagentRows";
+import { lineText, lineView, matchTasks, type StillRunningSegment } from "./stillRunning";
 import { cli, startCliClock } from "./cliUpdate.svelte";
 import { chatIsCold, loadLayerPrefs, reconnectBeforeTurn, saveLayerPrefs } from "./promptVersions";
 import { CONNECT_DEADLINE_MS, withDeadline } from "./deadline";
@@ -536,7 +537,10 @@ export type Segment =
    *  click away and Restore beside it. Never in a live message. */
   | { kind: "removed_text"; block: number; text: string }
   | { kind: "removed_tool"; block: number; call: ToolCallView }
-  | { kind: "notice"; text: string };
+  | { kind: "notice"; text: string }
+  /** The reply ended with subagents still running (backlog 357): a status
+   *  line with Stop and the agents' names, read live (`stillRunning.ts`). */
+  | StillRunningSegment;
 
 export interface Connection {
   provider: string;
@@ -8087,19 +8091,29 @@ export function applyTurnEventTo(host: TurnHost, ev: TurnEvent & { chat?: string
       // The main reply ended with its subagents still running (backlog
       // 329): the turn waits for them — the CLI wakes the main agent as
       // each ends — unless he stops them.
-      const n = ev.tasks.length;
-      const what = ev.tasks.map((t) => `“${t}”`).join(", ");
-      const text = `${n} subagent${n === 1 ? "" : "s"} still running (${what}) — wait for ${n === 1 ? "it" : "them"}, or stop ${n === 1 ? "it" : "them"}?`;
-      closeThinking(segments);
-      segments.push({ kind: "notice", text });
+      // ~~A notice worded as a question, Stop on a toast~~ — backlog 357:
+      // a status line of its own, Stop on it, each name opening the
+      // Running-tasks panel on its row, turning to done or stopped as the
+      // rows end (`StillRunningLine.svelte`).
       const key = onScreen ? fg?.key : undefined;
-      // One toast per turn per set of tasks: the main agent replies again
-      // after each report or wake-up, and each such reply says so too.
-      const seen = `${key ?? host.chat}:${ev.tasks.join("|")}`;
+      const seg: StillRunningSegment = {
+        kind: "still_running",
+        tasks: [...ev.tasks],
+        ids: matchTasks(ev.tasks, rowsOf(app.subagents, host.chat)),
+        ...(key ? { turn: key } : {}),
+      };
+      closeThinking(segments);
+      segments.push(seg);
+      // The toast only for a chat off screen (357): on screen the line is in
+      // view and carries Stop, so the toast said the same thing twice. Off
+      // screen there is no line to see and no key to stop by — the toast is
+      // the news, as before. One per chat per set of tasks: the main agent
+      // replies again after each report, and each such reply says so too.
+      if (onScreen) break;
+      const seen = `${host.chat}:${ev.tasks.join("|")}`;
       if (stillRunningAsked.has(seen)) break;
       stillRunningAsked.add(seen);
-      if (key) addToast(text, { label: n === 1 ? "Stop it" : "Stop them", run: () => void api.stopSubagents(key) });
-      else addToast(text);
+      addToast(lineText(lineView(seg, app.subagents)));
       break;
     }
     case "round_limit":
