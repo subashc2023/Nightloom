@@ -1,0 +1,25 @@
+<!doctype html>
+<!-- Backlog 358: an aside after its answer completes, its chat untitled (the head and the caption name the chat by
+     his whole first prompt), served by vite and snapped with nightshift-code bin/snap (WebKit; its zoom argument is
+     the app's ⌘+/⌘− page zoom).  ?v=card|foot|tab  &w=card width (520)  &asking=1 (the answer still streaming). -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      body { margin: 0; background: var(--paper, #111); color: var(--ink); }
+      /* An offscreen WKWebView runs no animations. */
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+      #root { position: relative; display: flex; width: 100vw; height: calc(100vh - 44px); overflow: hidden; }
+      #cap { font: 11px/1.4 ui-monospace, monospace; color: #ddd; background: #000; padding: 4px 8px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="cap"></div>
+    <script>
+      window.addEventListener("error", (e) => (document.getElementById("cap").textContent = "error: " + e.message));
+      window.addEventListener("unhandledrejection", (e) => (document.getElementById("cap").textContent = "rejection: " + e.reason));
+    </script>
+    <script type="module" src="./aside358.ts"></script>
+  </body>
+</html>

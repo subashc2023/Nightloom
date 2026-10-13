@@ -23,6 +23,7 @@
   // Backlog 283: the chat's composer and the chat's message pieces.
   import Composer from "./Composer.svelte";
   import AsideThread from "./AsideThread.svelte";
+  import { fmtTokens } from "./tokens";
 
   /**
    * The floating aside card (nightshift backlog 141, 2026-09-17; blocker
@@ -376,7 +377,11 @@
          quotes it at the top of the thread; the head's room goes to
          "Aside of ‹chat›". -->
     {#if last && last.answer !== null && last.cacheRead > 0}
-      <span class="ns-chip mono">{last.cacheRead.toLocaleString()} read from cache</span>
+      <!-- Short (backlog 358): the long "188,342 read from cache" lost the
+           head's room and drew as "1…"; the full count is its tip. -->
+      <span class="ns-chip mono aside-cache" use:tip={`${last.cacheRead.toLocaleString()} tokens read from cache`}
+        >{fmtTokens(last.cacheRead)} cached</span
+      >
     {/if}
     <span class="spacer"></span>
     {#if folded}
@@ -545,7 +550,8 @@
     white-space: nowrap;
   }
   .aside-card-head > .aside-card-grip,
-  .aside-card-head > .ns-btn {
+  .aside-card-head > .ns-btn,
+  .aside-card-head > .aside-cache {
     flex-shrink: 0;
   }
   .aside-card-grip {
@@ -600,6 +606,33 @@
   }
   .aside-card-foot.draft {
     border-top: none;
+  }
+  /* The composer's line under the box (backlog 358): one line, cut with an
+     ellipsis. Its "Answers from ‹chat›" names an untitled chat by its whole
+     first prompt — once the answer completed it replaced the short
+     "Answering —" line, grew to fifteen lines, and the pinned foot took the
+     card's room from the answer, which shrank to a line. The chat's name
+     inside it is cut short too, so a line that keeps a button (not the open
+     chat) still shows the button. The format chip never gives way. */
+  .aside-card :global(.composer.aside .aside-line) {
+    /* Its text is its basis, shrunk to the row: a 0 basis split the row
+       with the spacer and cut the chat's name whole. */
+    flex: 1 1 auto;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .aside-card :global(.composer.aside .aside-line em) {
+    display: inline-block;
+    max-width: 14em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: bottom;
+  }
+  .aside-card :global(.composer.aside .bottom-toggle) {
+    flex-shrink: 0;
   }
   .aside-card-of {
     flex-shrink: 1;
