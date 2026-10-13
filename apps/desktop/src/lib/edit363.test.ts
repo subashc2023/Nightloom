@@ -34,14 +34,23 @@ describe("item 363: edit a stopped first message and send", () => {
     app.activeSessionId = "parent-363";
     app.events = [
       { event: "session_created", id: "parent-363", at: "2026-10-13T21:12:53Z" } as never,
-      { event: "user_message", text: "Lecture 4 & 5", at: "2026-10-13T21:12:53Z" } as never,
+      // The backend's own send time, nanoseconds and all: it rides back as sent.
+      { event: "user_message", text: "Lecture 4 & 5", at: "2026-10-13T21:12:54.123456789Z" } as never,
     ];
     const docs = [{ media_type: "application/pdf", name: "lecture4.pdf", data: "JVBE" }] as never[];
     const files = [{ name: "lecture5.pdf", path: "/tmp/lecture5.pdf" }] as never[];
     const forked: [string | null, string][] = [];
     await sendEdit(1, "Alright let's go through lecture 4.", [], docs, (p, f) => forked.push([p, f]), files);
 
-    expect(api.editMessage).toHaveBeenCalledWith(1, "Alright let's go through lecture 4.", "send");
+    // The message's send time rides with its place (item 361's aim): the
+    // backend forks before the message meant even from a stale list.
+    expect(api.editMessage).toHaveBeenCalledWith(
+      1,
+      "Alright let's go through lecture 4.",
+      "send",
+      null,
+      "2026-10-13T21:12:54.123456789Z",
+    );
     expect(forked).toEqual([["parent-363", "fork-363"]]);
     expect(app.activeSessionId).toBe("fork-363");
     await vi.waitFor(() => expect(api.sendAgent).toHaveBeenCalledTimes(1));
