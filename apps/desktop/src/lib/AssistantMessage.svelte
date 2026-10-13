@@ -54,6 +54,7 @@
   import { agentCallContent, agentRowLine, isAgentCall } from "./subagentRows";
   import type { TabContent } from "./tabs";
   import ApprovalPrompt from "./ApprovalPrompt.svelte";
+  import AskAnswered from "./AskAnswered.svelte";
   import Icon from "./Icon.svelte";
   import { REMOVED_TEXT_PLACEHOLDER, REMOVED_TOOL_PLACEHOLDER } from "./edit";
   import { removeTip } from "./removeAsk";
@@ -700,6 +701,10 @@
                 {#each approvals.filter((a) => a.id === seg.call.id) as req (req.id)}
                   <ApprovalPrompt {req} />
                 {/each}
+                <!-- 354: what he answered, under the question once it is no longer waiting. -->
+                {#if seg.call.name === "AskUserQuestion" && !approvals.some((a) => a.id === seg.call.id)}
+                  <AskAnswered call={seg.call} />
+                {/if}
                 <!-- The subagent this call spawned (backlog 075): one indented
                      row that opens to the child's turn — its calls, thinking and
                      words, nested subagents included. Live the children are
@@ -750,6 +755,9 @@
               {#each approvals.filter((a) => a.id === seg.call.id) as req (req.id)}
                 <ApprovalPrompt {req} />
               {/each}
+              {#if seg.call.name === "AskUserQuestion" && !approvals.some((a) => a.id === seg.call.id)}
+                <AskAnswered call={seg.call} />
+              {/if}
             {/if}
           {/each}
         {/if}

@@ -1088,7 +1088,9 @@ export interface FolderGrant {
 export interface AskQuestion {
   question: string;
   header?: string;
-  options: { label: string; description?: string }[];
+  /** `preview`: the CLI's optional option preview (markdown or an HTML fragment; single-select only), drawn as
+   *  preformatted text (backlog 354). */
+  options: { label: string; description?: string; preview?: string }[];
   multiSelect?: boolean;
 }
 
