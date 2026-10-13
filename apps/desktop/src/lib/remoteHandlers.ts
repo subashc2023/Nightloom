@@ -263,7 +263,6 @@ const reply = (): ActReply => ({ chat: app.activeSessionId, events: app.events }
 /** The reply for `chat` without opening it: its log when it is open. */
 const replyOf = (chat: string): ActReply => (chat === app.activeSessionId ? reply() : { chat, events: [] });
 
-/** A fork is now the open chat: as `sendEdit` does it, without the send. */
 /** Backlog 364: the phone's aim, or `null` (an older phone sent none, so
  *  its index goes bare, as before) — never the Mac's own list's, whose
  *  index is not the phone's. */
@@ -272,6 +271,7 @@ export function phoneAim(a: ActAim): Aim | null {
   return a.nth == null ? { at: a.at } : { at: a.at, nth: a.nth };
 }
 
+/** A fork is now the open chat: as `sendEdit` does it, without the send. */
 function takeFork(res: { events: SessionEvent[]; session: string }): void {
   app.events = res.events;
   switchAside(res.session); // the fork starts with no asides (backlog 203)
