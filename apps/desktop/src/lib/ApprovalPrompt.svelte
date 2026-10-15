@@ -12,6 +12,8 @@
   import AskQuestions from "./AskQuestions.svelte";
   import { answeredRows, buildAnswer } from "./askQuestions";
   import { recordAnswers } from "./askAnswers.svelte";
+  import PlaywrightCard from "./PlaywrightCard.svelte";
+  import { isPlaywright } from "./playwright";
 
   let { req }: { req: ApprovalRequest } = $props();
 
@@ -359,7 +361,10 @@
   </div>
 {/snippet}
 
-{#if kind === "question"}
+{#if deferred && isPlaywright(req.name)}
+  <!-- Playwright, Claude's own browser (backlog 367): its own card. -->
+  <PlaywrightCard {req} />
+{:else if kind === "question"}
   <!-- The question card (backlog 314; redesigned by 354, his pick): the tabs on top, every question inline below
        them in the card's one scroll, a Next after each, the lit tab following the scroll (AskQuestions). The
        card grows to its content up to the cap and then scrolls as one; the strip stays at its top. -->

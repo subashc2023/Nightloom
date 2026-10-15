@@ -109,6 +109,7 @@
   import ChatMenu from "./ChatMenu.svelte";
   import { chatSheetSub, fitVisual } from "./sheetLayout";
   import Hosts from "./Hosts.svelte";
+  import { PLAYWRIGHT_BUTTONS, PLAYWRIGHT_DECLINED, playwrightAction } from "../lib/playwright";
   // Item 300 (wave 8B F1): the drawer follows the finger; Recents and Projects.
   import { dragAxis, drawerX, fingerSpeed, settleOpen } from "./client";
   import { UNFILED, lastActive as chatWhen, projectSummaries, recentRows } from "./recents";
@@ -2966,6 +2967,25 @@
             <div class="actions">
               <button class="btn accent" onclick={() => answer(req, "allow", req.input, planThen[req.id] ?? "ask")}>Approve</button>
               <button class="btn" onclick={() => answer(req, "deny", undefined, undefined, KEEP_PLANNING)}>Keep planning</button>
+            </div>
+          {:else if kind === "playwright"}
+            <!-- 367: Playwright, Claude's own browser — the desktop's card. -->
+            {@const act = playwrightAction(req.name, req.input)}
+            <div class="card-head">Claude wants to use its own browser (Playwright)</div>
+            <div class="args">
+              <div class="arg"><span class="key">the model's reason</span><pre>{req.reason ?? "The model wrote nothing before the call."}</pre></div>
+              <div class="arg"><span class="key">the action</span><pre>{act.tool}{act.target ? `  ${act.target}` : ""}</pre></div>
+            </div>
+            <input type="text" placeholder="A note (the reason, if denied)" bind:value={notes[req.id]} />
+            <div class="actions">
+              {#each PLAYWRIGHT_BUTTONS as b (b.decision)}
+                <button
+                  class="btn"
+                  class:accent={b.decision === "allow"}
+                  class:danger={b.decision === "deny"}
+                  onclick={() => answer(req, b.decision, undefined, undefined, PLAYWRIGHT_DECLINED)}>{b.label}</button
+                >
+              {/each}
             </div>
           {:else}
             <div class="card-head">Allow <b>{req.name}</b>?</div>

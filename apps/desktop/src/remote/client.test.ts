@@ -195,6 +195,9 @@ describe("the cards", () => {
     expect(cardKind({ id: "1", name: "AskUserQuestion", input: {}, effect: "read" as never })).toBe("question");
     expect(cardKind({ id: "1", name: "ExitPlanMode", input: {}, effect: "read" as never })).toBe("plan");
     expect(cardKind({ id: "1", name: "Bash", input: {}, effect: "read" as never })).toBe("call");
+    expect(
+      cardKind({ id: "1", name: "mcp__playwright__browser_navigate", input: {}, effect: "read" as never }),
+    ).toBe("playwright");
   });
 
   it("answers a question form the way the desktop does", () => {

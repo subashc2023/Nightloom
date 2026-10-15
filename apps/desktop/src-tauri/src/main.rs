@@ -2339,17 +2339,26 @@ async fn connect_agent_body(
                     text,
                 });
             }
-            spec.mcp_config = Some(
+            let mut servers = serde_json::Map::new();
+            servers.insert(
+                nightloom_service::mcp_server::SERVER_NAME.into(),
                 serde_json::json!({
-                    "mcpServers": {
-                        nightloom_service::mcp_server::SERVER_NAME: {
-                            "command": exe.to_string_lossy(),
-                            "args": args,
-                        }
-                    }
-                })
-                .to_string(),
+                    "command": exe.to_string_lossy(),
+                    "args": args,
+                }),
             );
+            // Playwright, Claude's own browser (nightshift backlog 367,
+            // blocker 1413): in every Claude Code chat when installed, each
+            // call gated by an approval card in every position.
+            nightloom_service::agent::own_browser::add_to(
+                &mut spec,
+                &mut servers,
+                vec![
+                    exe.to_string_lossy().into_owned(),
+                    "--permission-hook".into(),
+                ],
+            );
+            spec.mcp_config = Some(serde_json::json!({ "mcpServers": servers }).to_string());
         }
     } else {
         spec.tools = Some(Vec::new());
@@ -3651,7 +3660,8 @@ async fn prewarm_agent(state: State<'_, AppState>) -> Result<bool, String> {
     if let Some(dir) = ask_dir {
         let spec = agent.spec();
         let pointed = spec.ask.as_ref().is_none_or(|a| a.dir == dir)
-            && spec.brief.as_ref().is_none_or(|b| b.dir == dir);
+            && spec.brief.as_ref().is_none_or(|b| b.dir == dir)
+            && spec.playwright.as_ref().is_none_or(|p| p.dir == dir);
         if !pointed {
             agent.set_ask_dir(dir);
         }
@@ -7394,6 +7404,37 @@ fn approve_call(
     Ok(())
 }
 
+/// The chat's Playwright switch (nightshift backlog 367): whether
+/// Playwright is installed, and whether this chat runs it without asking —
+/// the card's *Allow for this chat*. `on` sets it first; off means the next
+/// Playwright call shows the card again. `chat` is the chat's id (its log's
+/// stem, the ask directory's name), in the open project's log folder.
+#[derive(Serialize)]
+struct PlaywrightSwitch {
+    installed: bool,
+    on: bool,
+}
+
+#[tauri::command]
+async fn playwright_for_chat(
+    state: State<'_, AppState>,
+    chat: String,
+    on: Option<bool>,
+) -> Result<PlaywrightSwitch, String> {
+    let chat = chat.trim();
+    if chat.is_empty() || chat.contains(['/', '\\']) || chat.starts_with('.') {
+        return Err(format!("not a chat id: {chat}"));
+    }
+    let dir = state.log_dir().await.join("ask").join(chat);
+    if let Some(on) = on {
+        nightloom_service::agent::own_browser::set_for_chat(&dir, on).map_err(|e| e.to_string())?;
+    }
+    Ok(PlaywrightSwitch {
+        installed: nightloom_service::agent::own_browser::locate().is_some(),
+        on: nightloom_service::agent::own_browser::for_chat(&dir),
+    })
+}
+
 /// Migrate a project's pre-move `.nightloom/` and say so if anything moved.
 ///
 /// A toast rather than silence, unlike the unfiled chats: this one touches
@@ -8140,6 +8181,7 @@ fn main() {
             quit_guard::quit_dialog_shown,
             quit_guard::quit_now,
             approve_call,
+            playwright_for_chat,
             pick_folder,
             pick_export,
             import_claude,

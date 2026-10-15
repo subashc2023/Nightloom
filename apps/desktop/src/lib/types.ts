@@ -1070,6 +1070,9 @@ export interface ApprovalRequest {
   /** The chat whose turn asks (nightshift backlog 159, A2): two chats may
    *  be running. Only on a Claude Code deferred call. */
   chat?: string;
+  /** The model's text just before the call — Playwright's card shows it as
+   *  the reason (nightshift backlog 367). Only on a Playwright call. */
+  reason?: string;
 }
 
 export type ApprovalDecision = "allow" | "always" | "deny";

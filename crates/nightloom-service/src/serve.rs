@@ -591,14 +591,19 @@ impl ServeHost {
                 args.push("--no-remember".into());
             }
             args.push("--ask".into());
-            spec.mcp_config = Some(
-                serde_json::json!({
-                    "mcpServers": {
-                        crate::mcp_server::SERVER_NAME: { "command": exe, "args": args }
-                    }
-                })
-                .to_string(),
+            let mut servers = serde_json::Map::new();
+            servers.insert(
+                crate::mcp_server::SERVER_NAME.into(),
+                serde_json::json!({ "command": exe, "args": args }),
             );
+            // Playwright behind its card, as the desktop gives it (backlog
+            // 367); the phone shows the card.
+            crate::agent::own_browser::add_to(
+                &mut spec,
+                &mut servers,
+                vec![exe.clone(), "permission-hook".into()],
+            );
+            spec.mcp_config = Some(serde_json::json!({ "mcpServers": servers }).to_string());
         }
         rail.apply_ask(&mut spec);
         spec.apply_mode(session.mode());
