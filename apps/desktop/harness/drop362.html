@@ -1,0 +1,33 @@
+<!doctype html>
+<!-- Item 362: the shipped drop look — the real Transcript and Composer, app state stubbed, the Tauri bridge faked.
+     The page dispatches the drag events itself. ?s=chat (files held over the chat) | box (held over the box) |
+     drop (dropped on the box) | dropchat (dropped on the chat); ?n=1|3 files; ?t=0..1 for the drop frames (the page
+     pauses every Web Animation at that moment: the landing runs 0–420 ms, the chips from 350 ms); ?rm=1 reduced
+     motion; ?palette=. Snapped with nightshift-code bin/snap (WebKit). -->
+<html lang="en" data-palette="B">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="color-scheme" content="dark" />
+    <title>Drop 362</title>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; }
+      body { background: var(--paper, #111); }
+      /* An offscreen WKWebView does not advance CSS animations or transitions; they are off here. The drop's own
+         motion is Web Animations, set frame by frame by the page. */
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+      #root { position: relative; display: flex; flex-direction: column; width: 100vw; height: 100vh; }
+      .content { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+      #tag { position: fixed; left: 10px; top: 8px; right: 10px; white-space: pre-wrap; word-break: break-all; z-index: 99999; font: 12px/1.4 ui-monospace, monospace; color: #aaa; background: rgba(0,0,0,0.6); padding: 3px 7px; border-radius: 5px; }
+    </style>
+  </head>
+  <body>
+    <div id="root"><div class="content" id="tr"></div></div>
+    <div id="tag">drop362</div>
+    <script>
+      localStorage.removeItem("nightloom.drafts");
+      window.addEventListener("error", (e) => (document.getElementById("tag").textContent = "error: " + e.message));
+      window.addEventListener("unhandledrejection", (e) => (document.getElementById("tag").textContent = "rejection: " + e.reason));
+    </script>
+    <script type="module" src="./drop362.ts"></script>
+  </body>
+</html>

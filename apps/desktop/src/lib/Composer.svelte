@@ -126,6 +126,9 @@
   import type { CouncilPrefs } from "./council";
   import { foldToFit } from "./fold";
   import { Marks, chipMotion, prefersReducedMotion } from "./chipFade";
+  import DropOverlay from "./DropOverlay.svelte";
+  import { chipDropIn, rowDropOpen } from "./dropLook";
+  import { dropPending, takeDropped } from "./dropLook.svelte";
   import { codePasteLanguage, fenced, findFences, layerLines, withFenceLanguage } from "./codeDetect";
   import { mathPasteText } from "./mathPaste";
   import { LANGUAGES } from "./codeHighlight";
@@ -1479,8 +1482,16 @@
    */
   const fadeInNames = new Marks<string>();
   const fadeOutIds = new Marks<number>();
-  function chipIn(_node: Element, a: Attachment) {
+  function chipIn(node: Element, a: Attachment) {
+    // Item 362: a dropped file's chip opens the row and scales in (A).
+    const dropped = takeDropped(a.name);
+    if (dropped !== null) return chipDropIn(dropped, node.getBoundingClientRect().width, prefersReducedMotion());
     return chipMotion(fadeInNames.take(a.name), prefersReducedMotion());
+  }
+  /** Item 362: the row the first dropped chip makes opens to its height. */
+  function rowIn(node: Element) {
+    if (!dropPending()) return { duration: 0 };
+    return rowDropOpen(node.getBoundingClientRect().height, prefersReducedMotion());
   }
   function chipOut(_node: Element, a: Attachment) {
     return chipMotion(fadeOutIds.take(a.id), prefersReducedMotion());
@@ -2443,6 +2454,7 @@
   class:aside={aside !== null}
   class:compact
   class:dropping={dragDepth > 0}
+  data-drop-box={aside ? "aside" : "main"}
   role="group"
   aria-label={aside ? "aside composer" : "message composer"}
   {ondragenter}
@@ -2490,8 +2502,13 @@
       {/each}
     </div>
   {/if}
+  {#if aside === null}
+    <!-- Item 362: the veil and zone while a file is held over the chat,
+         and the landing at the drop; drawn on `body`. -->
+    <DropOverlay root={() => root} accept={(files) => void accept(files)} />
+  {/if}
   {#if attachments.length > 0}
-    <div class="attachments">
+    <div class="attachments" in:rowIn>
       {#each attachments as a (a.id)}
         <div class="attachment" in:chipIn|global={a} out:chipOut|global={a}>
           <div class="attachment-face">
@@ -3367,8 +3384,11 @@
     padding: 0;
     width: 100%;
   }
+  /* Held over the box (item 362, B's first frame): the edge turns accent
+     with a soft ring, so it reads apart from the focused box's edge. */
   .composer.dropping .card {
     border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
   }
   /* In an aside (backlog 283): the chat's composer inside the aside's
      frame — no panel fill of its own, the card on the aside's tint with a
@@ -3504,6 +3524,9 @@
   .attachment-face {
     position: relative;
     line-height: 0;
+    /* Item 362: the accent ring a dropped chip arrives with (`chipDropIn`). */
+    border-radius: 8px;
+    box-shadow: var(--drop-ring, none);
   }
   .attachment img {
     width: 4rem;

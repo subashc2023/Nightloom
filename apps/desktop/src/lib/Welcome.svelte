@@ -198,7 +198,9 @@
   });
 </script>
 
-<div class="welcome" bind:this={stage} bind:clientWidth={w} bind:clientHeight={h}>
+<!-- Item 362: the empty chat takes a dropped file for its box, as the
+     transcript does. -->
+<div class="welcome" data-drop-chat bind:this={stage} bind:clientWidth={w} bind:clientHeight={h}>
   {#if rings && travellers.length > 0}
     <div class="sky" aria-hidden="true">
       <svg viewBox="0 0 {w} {h}" preserveAspectRatio="none">

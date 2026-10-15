@@ -15,6 +15,10 @@
   import { badgeOf, extOf } from "./attachKinds";
   import { acceptFiles } from "./attachFiles.svelte";
   import { readDraft, removeAttachment } from "./drafts.svelte";
+  import { chipDropIn } from "./dropLook";
+  import { takeDropped } from "./dropLook.svelte";
+  import { prefersReducedMotion } from "./chipFade";
+  import type { Attachment } from "./types";
 
   let { key }: { key: string } = $props();
 
@@ -26,11 +30,18 @@
     if (picker) picker.value = "";
     if (files.length > 0) void acceptFiles(key, files);
   }
+
+  /** Item 362: a dropped file's chip arrives as the composer's does. */
+  function chipIn(node: Element, a: Attachment) {
+    const dropped = takeDropped(a.name);
+    if (dropped === null) return { duration: 0 };
+    return chipDropIn(dropped, node.getBoundingClientRect().width, prefersReducedMotion());
+  }
 </script>
 
 <div class="edit-attach" data-edit-attachments>
   {#each chips as a (a.id)}
-    <div class="face">
+    <div class="face" in:chipIn={a}>
       {#if a.kind === "image"}
         <img src={`data:${a.media_type};base64,${a.data}`} alt={a.name} />
       {:else}
@@ -75,6 +86,8 @@
   .face {
     position: relative;
     line-height: 0;
+    border-radius: 8px;
+    box-shadow: var(--drop-ring, none);
   }
   img {
     width: 4rem;

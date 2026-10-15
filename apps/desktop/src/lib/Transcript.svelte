@@ -1588,6 +1588,7 @@
 <div
   class="transcript"
   bind:this={viewport}
+  data-drop-chat={inPane ? undefined : ""}
   {onscroll}
   use:scrollIntent
   tabindex="-1"
@@ -1643,7 +1644,7 @@
           </div>
           {#if editing?.index === item.index}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div class="editor" ondragover={editorDragOver} ondrop={editorDrop}>
+            <div class="editor" data-drop-box="edit" ondragover={editorDragOver} ondrop={editorDrop}>
               <textarea
                 bind:this={editorEl}
                 use:grow
