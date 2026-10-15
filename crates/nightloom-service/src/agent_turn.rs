@@ -78,6 +78,29 @@ pub struct ApprovalPrompt<'a> {
     pub outside: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chat: Option<&'a str>,
+    /// The model's text just before the call — the reason Playwright's
+    /// card shows (nightshift backlog 367). Only on a Playwright call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Playwright's *Allow once* and *Deny* last for one reply (nightshift
+/// backlog 367): cleared as the turn starts — a crash may have left one —
+/// and when it ends, whichever way it ends.
+struct ReplyEnd(AskDir);
+
+impl ReplyEnd {
+    fn begin(dir: &Path) -> Self {
+        let d = AskDir::new(dir);
+        d.end_reply();
+        Self(d)
+    }
+}
+
+impl Drop for ReplyEnd {
+    fn drop(&mut self) {
+        self.0.end_reply();
+    }
 }
 
 /// What became of a folder the card granted "for the project".
@@ -197,6 +220,7 @@ async fn turn_body(
     // `rate_limit_event` and the next reading after it (`turn_usage`).
     // Dropped on any other way out, it records nothing.
     let usage_turn = ask_dir.as_deref().map(crate::turn_usage::begin);
+    let _reply_end = ask_dir.as_deref().map(ReplyEnd::begin);
     // Sampled before the first append of the turn: a log that seals during
     // it says so once, as a notice.
     let sealed_before = session.write_failure().is_some();
@@ -335,7 +359,12 @@ async fn turn_body(
     let mut recorder = Recorder::new(session, seed);
     // The first text handed to the window (or the phone) — item 256.
     let mut emitted = false;
+    // The model's words before a call, for Playwright's card (backlog 367).
+    let reason = std::sync::Mutex::new(crate::agent::own_browser::ReasonTracker::default());
     let mut on_event = |e: TurnEvent| {
+        if let Ok(mut r) = reason.lock() {
+            r.push(&e);
+        }
         env.event(chat_id, &e);
         if !emitted && matches!(e, TurnEvent::TextDelta { .. }) {
             emitted = true;
@@ -372,6 +401,9 @@ async fn turn_body(
             effect: crate::mcp_server::effect_of(&call.name),
             outside,
             chat: Some(chat_id),
+            reason: crate::agent::own_browser::is_playwright(&call.name)
+                .then(|| reason.lock().ok().and_then(|r| r.reason()))
+                .flatten(),
         });
         let answer = tokio::select! {
             _ = cancel.cancelled() => None,

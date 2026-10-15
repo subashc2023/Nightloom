@@ -35,6 +35,7 @@ pub mod connectors;
 pub mod fork;
 pub mod inbox;
 pub mod nested;
+pub mod own_browser;
 mod protocol;
 mod record;
 pub mod steer;
@@ -477,6 +478,12 @@ pub struct AgentSpec {
     /// through the Ask hook's matcher like any MCP tool; under the Chat
     /// policy they are refused ([`BROWSER_TOOLS_MATCHER`], blocker 1414).
     pub browser: bool,
+    /// Playwright's gate (nightshift backlog 367): a `PreToolUse` entry on
+    /// [`own_browser::MATCHER`] in every position, bypass included, so a
+    /// call defers for the approval card unless the chat or the reply
+    /// already allows it. `None` when the chat has no Playwright server in
+    /// its `mcp_config` (not installed, or a spec that is not a chat's).
+    pub playwright: Option<own_browser::PlaywrightGate>,
     /// Passed through verbatim, last, so a caller can reach a flag this
     /// struct has not grown a field for.
     pub extra_args: Vec<String>,
@@ -528,7 +535,7 @@ fn ask_matcher_under_chat_policy(matcher: &str, browser: bool) -> String {
         .split('|')
         .filter(|alt| CHAT_POLICY_KEPT.iter().any(|kept| alt.starts_with(kept)))
         .map(|alt| {
-            if browser && alt == "mcp__.*" {
+            if browser && alt == ask::MCP_ALTERNATIVE {
                 ASK_MCP_LESS_BROWSER
             } else {
                 alt
@@ -541,7 +548,8 @@ fn ask_matcher_under_chat_policy(matcher: &str, browser: bool) -> String {
 /// The Ask hook's `mcp__` alternative under the Chat policy with the
 /// Browser on: every MCP tool but Claude in Chrome's, by the same
 /// JavaScript negative lookahead [`CHAT_POLICY_MATCHER`] uses.
-const ASK_MCP_LESS_BROWSER: &str = "mcp__(?!claude-in-chrome__).*";
+/// Playwright's tools stay out too, as in [`ask::MATCHER`] (backlog 367).
+const ASK_MCP_LESS_BROWSER: &str = "mcp__(?!claude-in-chrome__|playwright__).*";
 
 /// The deny hook's command line. Single-quoted for the POSIX shell the CLI
 /// runs hooks through on macOS and Linux. On Windows, `cmd.exe`'s `echo`
@@ -753,6 +761,7 @@ impl AgentSpec {
             claude_ai_connectors: false,
             claude_ai_blocked: Vec::new(),
             browser: false,
+            playwright: None,
             extra_args: Vec::new(),
         }
     }
@@ -782,6 +791,11 @@ impl AgentSpec {
             // The read-only list above leaves nothing that would pause
             // anyway; this makes the fact explicit rather than incidental.
             self.ask = None;
+            // Playwright's tools are MCP tools, which the list does not
+            // narrow: with no card to show, its gate refuses (backlog 367).
+            if let Some(pw) = &mut self.playwright {
+                pw.no_card = true;
+            }
         }
     }
 
@@ -904,6 +918,11 @@ impl AgentSpec {
         // No brief either: the aside is one question on the warm cache,
         // and its settings carry no hook (the test below pins that).
         spec.brief = None;
+        // Playwright's gate stays (the tools are listed), never deferring
+        // (backlog 367).
+        if let Some(pw) = &mut spec.playwright {
+            pw.side = true;
+        }
         Some(spec)
     }
 
@@ -951,6 +970,11 @@ impl AgentSpec {
         let mut spec = self.clone();
         spec.fork_session = true;
         spec.no_session_persistence = true;
+        // No card waits on a fork: Playwright runs only if allowed already
+        // (backlog 367).
+        if let Some(pw) = &mut spec.playwright {
+            pw.side = true;
+        }
         if let Some(ask) = &mut spec.ask {
             if ask.mode.is_auto() {
                 // An Auto chat's fork stays on `auto`, as it ran before
@@ -1191,6 +1215,22 @@ impl AgentSpec {
                             "hooks": [{ "type": "command", "command": chat_policy_command(&reply) }]
                         }));
                     }
+                }
+            }
+        }
+        // Playwright's gate (backlog 367): its own entry in every position,
+        // the Chat policy's included — the policy lets `mcp__` through, and
+        // the gate asks as it would anywhere.
+        if let Some(pw) = &self.playwright {
+            let hooks = settings
+                .entry("hooks")
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+            if let serde_json::Value::Object(hooks) = hooks {
+                let pre = hooks
+                    .entry("PreToolUse")
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+                if let serde_json::Value::Array(pre) = pre {
+                    pre.push(pw.hook_entry());
                 }
             }
         }
@@ -1592,6 +1632,9 @@ impl ClaudeCodeAgent {
     /// — in every position, since a subagent gets no preamble in any of
     /// them — written only when it changed.
     pub fn set_ask_dir(&mut self, dir: PathBuf) {
+        if let Some(pw) = &mut self.spec.playwright {
+            pw.dir = dir.clone();
+        }
         if let Some(ask) = &mut self.spec.ask {
             ask.dir = dir.clone();
             let _ = AskDir::new(&ask.dir).set_subagents_auto(ask.subagents_auto);
@@ -2741,22 +2784,48 @@ mod tests {
             .collect();
         assert_eq!(
             asks,
-            ["WebFetch|WebSearch|mcp__(?!claude-in-chrome__).*"],
+            ["WebFetch|WebSearch|mcp__(?!claude-in-chrome__|playwright__).*"],
             "{pre:?}"
         );
         chat.browser = false;
         let pre = entries(&chat);
         assert!(
             pre.iter()
-                .any(|e| e["matcher"] == "WebFetch|WebSearch|mcp__.*"),
+                .any(|e| e["matcher"] == "WebFetch|WebSearch|mcp__(?!playwright__).*"),
             "{pre:?}"
         );
     }
 
     /// The Ask matcher's `mcp__.*` alternative covers a browser tool name.
+    /// Understands the two shapes the matchers use: `prefix.*`, and
+    /// `prefix(?!a|b).*` (a negative lookahead after the prefix).
     fn regex_like_matches(matcher: &str, name: &str) -> bool {
-        matcher.split('|').any(|alt| match alt.strip_suffix(".*") {
-            Some(prefix) => name.starts_with(prefix),
+        // Split on `|` outside parentheses.
+        let mut alts: Vec<String> = vec![String::new()];
+        let mut depth = 0;
+        for c in matcher.chars() {
+            match c {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                '|' if depth == 0 => {
+                    alts.push(String::new());
+                    continue;
+                }
+                _ => {}
+            }
+            alts.last_mut().unwrap().push(c);
+        }
+        alts.iter().any(|alt| match alt.strip_suffix(".*") {
+            Some(p) => match p.split_once("(?!") {
+                Some((head, negs)) => {
+                    name.starts_with(head)
+                        && !negs
+                            .trim_end_matches(')')
+                            .split('|')
+                            .any(|n| name[head.len()..].starts_with(n))
+                }
+                None => name.starts_with(p),
+            },
             None => alt == name,
         })
     }
@@ -3391,7 +3460,7 @@ mod tests {
     #[test]
     fn under_the_chat_policy_the_ask_hook_names_only_what_the_policy_leaves() {
         let narrowed = ask_matcher_under_chat_policy(ask::MATCHER, false);
-        assert_eq!(narrowed, "WebFetch|WebSearch|mcp__.*");
+        assert_eq!(narrowed, "WebFetch|WebSearch|mcp__(?!playwright__).*");
         for withdrawn in [
             "Bash",
             "Write",
@@ -3421,7 +3490,10 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
         let pre = v["hooks"]["PreToolUse"].as_array().unwrap();
         assert_eq!(pre.len(), 2, "{v}");
-        assert_eq!(pre[0]["matcher"], "WebFetch|WebSearch|mcp__.*");
+        assert_eq!(
+            pre[0]["matcher"],
+            "WebFetch|WebSearch|mcp__(?!playwright__).*"
+        );
         assert_eq!(pre[1]["matcher"], CHAT_POLICY_MATCHER);
         // The one resume that leaves plan mode: only the deny is registered.
         s.ask.as_mut().unwrap().mode = AskMode::ExitingToAuto;
@@ -3862,6 +3934,102 @@ mod tests {
             subagents_auto: true,
         });
         s
+    }
+
+    /// The `PreToolUse` entries of a spec's one `--settings` JSON.
+    fn pre_entries(s: &AgentSpec) -> Vec<serde_json::Value> {
+        let a = s.args("hi");
+        let Some(i) = a.iter().position(|x| x == "--settings") else {
+            return Vec::new();
+        };
+        let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
+        v["hooks"]["PreToolUse"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn with_playwright(mut s: AgentSpec) -> AgentSpec {
+        s.playwright = Some(own_browser::PlaywrightGate {
+            hook: vec!["/app/nl".into(), "--permission-hook".into()],
+            dir: PathBuf::from("/logs/ask/chat-3"),
+            side: false,
+            no_card: false,
+        });
+        s
+    }
+
+    /// Backlog 367: Playwright's gate is on the line in every position —
+    /// bypass (no Ask at all), Auto, Ask, Plan, the Chat policy — as the
+    /// chat's hook on the chat's directory, and it is the only entry that
+    /// matches a Playwright tool, so no second hook races it.
+    #[test]
+    fn the_playwright_gate_is_registered_in_every_position() {
+        let mut bypass = with_playwright(spec());
+        bypass.permission_mode = Some("bypassPermissions".into());
+        let mut chat = with_playwright(asking(AskMode::Ask));
+        chat.chat_policy = true;
+        chat.browser = true;
+        let positions = [
+            ("bypass", bypass),
+            ("auto", with_playwright(asking(AskMode::Auto))),
+            ("ask", with_playwright(asking(AskMode::Ask))),
+            ("plan", with_playwright(asking(AskMode::Plan))),
+            ("chat policy", chat),
+        ];
+        for (name, s) in positions {
+            let pre = pre_entries(&s);
+            let matching: Vec<&serde_json::Value> = pre
+                .iter()
+                .filter(|e| {
+                    let m = e["matcher"].as_str().unwrap_or("");
+                    // The brief's entry matches every tool and decides
+                    // nothing about permission; none is set here.
+                    regex_like_matches(m, "mcp__playwright__browser_navigate")
+                        && m != CHAT_POLICY_MATCHER
+                })
+                .collect();
+            assert_eq!(matching.len(), 1, "{name}: {pre:?}");
+            assert_eq!(matching[0]["matcher"], own_browser::MATCHER, "{name}");
+            assert_eq!(
+                matching[0]["hooks"][0]["command"],
+                "'/app/nl' '--permission-hook' '/logs/ask/chat-3'",
+                "{name}"
+            );
+        }
+        // Without the server there is no gate.
+        assert!(pre_entries(&spec()).is_empty());
+        // The Ask matcher still asks about every other MCP tool.
+        assert!(regex_like_matches(ask::MATCHER, "mcp__nightloom__remember"));
+        assert!(!regex_like_matches(
+            ask::MATCHER,
+            "mcp__playwright__browser_click"
+        ));
+    }
+
+    /// An aside and a checkpoint fork keep the gate but never defer
+    /// (`--side`); an ephemeral chat's gate refuses outright.
+    #[test]
+    fn side_processes_and_ephemeral_chats_never_defer_playwright() {
+        let mut s = with_playwright(asking(AskMode::Auto));
+        s.resume = Some("sess".into());
+        let aside = s.aside().unwrap();
+        let cmd = |s: &AgentSpec| {
+            pre_entries(s)
+                .into_iter()
+                .find(|e| e["matcher"] == own_browser::MATCHER)
+                .unwrap()["hooks"][0]["command"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert!(cmd(&aside).ends_with("'--side'"));
+        let fork = s.checkpoint_fork().unwrap();
+        assert!(cmd(&fork).ends_with("'--side'"));
+        assert!(!cmd(&s).contains("--side"));
+        let mut eph = with_playwright(spec());
+        eph.apply_mode(ChatMode::Ephemeral);
+        assert!(cmd(&eph).contains("\"deny\""));
     }
 
     fn mode_of(a: &[String]) -> String {

@@ -394,6 +394,15 @@ export function approveCall(
   });
 }
 
+/**
+ * A chat's Playwright switch (nightshift backlog 367): whether Playwright is
+ * installed, and whether the chat runs it without asking — the card's
+ * "Allow for this chat". `on` sets it first; off asks again on the next call.
+ */
+export function playwrightForChat(chat: string, on?: boolean): Promise<{ installed: boolean; on: boolean }> {
+  return invoke("playwright_for_chat", { chat, on });
+}
+
 export function listSessions(): Promise<SessionMeta[]> {
   return invoke("list_sessions");
 }

@@ -1164,6 +1164,41 @@ on auto it would have driven his Chrome with no card; a standing rule on
 the tool still covers it. Flipping the switch on a running chat changes the tool
 list (34 → 56 in the measurement), so the next turn re-writes the prefix once.
 
+## Playwright: Claude's own browser behind a card (2026-10-15, nightshift backlog 367)
+
+Every Claude Code chat gets Microsoft's Playwright MCP server (`@playwright/mcp`
+0.0.83, pinned) in the `--mcp-config` JSON beside Nightloom's own, driving
+**WebKit** headless with an in-memory profile — never Chrome
+(`agent/own_browser.rs`). Installed outside the bundle and outside
+`~/.nightloom`: `~/.local/share/nightloom/playwright-mcp` (override
+`NIGHTLOOM_PLAYWRIGHT_DIR`), WebKit in Playwright's cache
+(`~/Library/Caches/ms-playwright/webkit-2368`, 296 MB). node is found at
+`NIGHTLOOM_NODE`, Homebrew's prefixes, the newest nvm install, then `PATH`;
+no install, no server, nothing to gate.
+
+The model is told nothing about on or off: the tools are always listed (the
+prefix never moves) and a `PreToolUse` entry on `mcp__playwright__.*` — the
+Ask position's own hook binary on the chat's ask directory — gates each call
+**in every position, bypass included**. Measured on CLI 2.1.300 before it was
+built (nightshift `wave9-367-report.md`, M1–M2): under `bypassPermissions`
+with no prompt tool named, the hook's `defer` ends the process with
+`deferred_tool_use`, and `--resume` with the hook answering `allow` runs the
+call. The Ask matcher's MCP alternative became `mcp__(?!playwright__).*` so
+only one hook sees a Playwright call (matching hooks run in parallel and would
+race for the one-shot decision file).
+
+The card: "Claude wants to use its own browser (Playwright)", the model's
+last text before the call (`ApprovalPrompt.reason`), the action, and
+**Allow once** (`rules.json` `playwright_reply: "allow"` — until the reply
+ends), **Allow for this chat** (`playwright_chat: true`, the rail's per-chat
+*Playwright for this chat* switch, `playwright_for_chat`), **Deny** ("The
+user declined Playwright for now.", and `playwright_reply: "deny"` so the
+reply does not raise a card per retry). The turn clears `playwright_reply`
+as it starts and as it ends (`agent_turn::ReplyEnd`). A subagent's, an
+aside's or a fork's call (`--side`) is never deferred: it runs if already
+allowed, else is refused in words; an ephemeral chat's gate is an `echo`
+deny. The phone draws the same card. The API engine is out of scope.
+
 ## What `--append-system-prompt` carries
 
 Three parts, in this order, joined by blank lines (`prompt::agent_prompt`

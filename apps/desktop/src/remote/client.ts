@@ -13,6 +13,7 @@ import { isCouncilBlock } from "../lib/council";
 import { parseSubagentBlock } from "../lib/subagent";
 import { isSendFile, parseSentFile, sentFileRoute, type SentFile } from "../lib/sentFiles";
 import { aimOf } from "../lib/aim";
+import { isPlaywright } from "../lib/playwright";
 // Pure over the log (only a type import inside): the desktop's per-reply
 // sizes, so the phone's line under a reply says the Mac's number.
 import { fmtTokens, turnSizes, type TurnSize } from "../lib/tokens";
@@ -1648,8 +1649,11 @@ export function newQueued(
 // ---- the cards --------------------------------------------------------------
 
 /** The card a prompt draws, by the tool the CLI paused on. */
-export function cardKind(req: ApprovalRequest): "question" | "plan" | "call" {
+export function cardKind(req: ApprovalRequest): "question" | "plan" | "playwright" | "call" {
   if (req.name === "AskUserQuestion") return "question";
+  // Playwright, Claude's own browser (backlog 367): the desktop's card,
+  // here too — the phone renders questions, so it renders this.
+  if (isPlaywright(req.name)) return "playwright";
   if (req.name === "ExitPlanMode") return "plan";
   return "call";
 }

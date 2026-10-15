@@ -152,8 +152,15 @@ impl nightloom_core::tool::Tool for PromptTool {
 /// would prompt about. Not `.*` — a `Read` inside the working directory
 /// never prompts, and pausing the turn for it would make Ask unusable.
 /// `mcp__.*` covers Nightloom's own server too: `remember` writes, and the
-/// CLI prompts for every MCP tool it has no rule for.
-pub const MATCHER: &str = "Bash|Write|Edit|MultiEdit|NotebookEdit|WebFetch|WebSearch|AskUserQuestion|ExitPlanMode|EnterWorktree|ExitWorktree|CronCreate|CronDelete|ScheduleWakeup|mcp__.*";
+/// CLI prompts for every MCP tool it has no rule for. Every MCP tool but
+/// Playwright's (backlog 367), which has its own entry in every position
+/// ([`super::own_browser::PlaywrightGate`]): the CLI runs every matching
+/// entry, in parallel, and two hooks on one call would race for its
+/// one-shot decision file.
+pub const MATCHER: &str = "Bash|Write|Edit|MultiEdit|NotebookEdit|WebFetch|WebSearch|AskUserQuestion|ExitPlanMode|EnterWorktree|ExitWorktree|CronCreate|CronDelete|ScheduleWakeup|mcp__(?!playwright__).*";
+
+/// [`MATCHER`]'s MCP alternative, as a word (the Chat policy narrows it).
+pub const MCP_ALTERNATIVE: &str = "mcp__(?!playwright__).*";
 
 /// The plan tool's name, as the CLI reports it in `deferred_tool_use`.
 pub const EXIT_PLAN_TOOL: &str = "ExitPlanMode";
@@ -393,6 +400,15 @@ struct Rules {
     /// existed is not a chat that chose off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     subagents_auto: Option<bool>,
+    /// Playwright allowed for the whole chat (nightshift backlog 367): the
+    /// card's *Allow for this chat*, and the chat's switch.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    playwright_chat: bool,
+    /// Playwright's answer for the reply now running — `allow` (the card's
+    /// *Allow once*) or `deny` — cleared when the turn ends
+    /// ([`AskDir::end_reply`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    playwright_reply: Option<String>,
 }
 
 /// One chat's ask directory, from Nightloom's side.
@@ -415,6 +431,9 @@ impl AskDir {
     /// decision file's removal cannot lose the standing grant.
     pub fn write(&self, call: &DeferredCall, answer: &Answer) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.dir)?;
+        if super::own_browser::is_playwright(&call.name) {
+            return self.write_playwright(call, answer);
+        }
         let decision = match answer {
             Answer::Allow { updated_input, .. } => Decision {
                 tool_use_id: call.id.clone(),
@@ -442,6 +461,90 @@ impl AskDir {
             &self.dir.join(DECISION_FILE),
             &serde_json::to_vec(&decision)?,
         )
+    }
+
+    /// A Playwright call's answer (nightshift backlog 367): the decision
+    /// for this call, and what stays — *Allow once* and *Deny* for the
+    /// reply, *Allow for this chat* for the chat — written first, like a
+    /// rule, so the decision file's removal cannot lose it. Never the
+    /// per-tool allow list: the chat's switch has to be able to take it
+    /// back, and one tool name would not cover the server's others.
+    fn write_playwright(&self, call: &DeferredCall, answer: &Answer) -> std::io::Result<()> {
+        let decision = match answer {
+            Answer::Allow { .. } => {
+                self.set_playwright_reply(Some("allow"))?;
+                Decision {
+                    tool_use_id: call.id.clone(),
+                    decision: "allow".into(),
+                    updated_input: None,
+                    reason: None,
+                }
+            }
+            Answer::AllowForChat { .. } => {
+                self.set_playwright_chat(true)?;
+                Decision {
+                    tool_use_id: call.id.clone(),
+                    decision: "allow".into(),
+                    updated_input: None,
+                    reason: None,
+                }
+            }
+            Answer::Deny { reason } => {
+                self.set_playwright_reply(Some("deny"))?;
+                // The generic refusal the window falls back to becomes his
+                // words for this card; a note he typed stays his.
+                let reason = if reason.trim().is_empty() || reason == "the user declined this call"
+                {
+                    super::own_browser::DECLINED.to_string()
+                } else {
+                    reason.clone()
+                };
+                Decision {
+                    tool_use_id: call.id.clone(),
+                    decision: "deny".into(),
+                    updated_input: None,
+                    reason: Some(reason),
+                }
+            }
+        };
+        write_atomic(
+            &self.dir.join(DECISION_FILE),
+            &serde_json::to_vec(&decision)?,
+        )
+    }
+
+    /// The chat's Playwright switch (backlog 367): on is *Allow for this
+    /// chat*; off asks again on the next call.
+    pub fn set_playwright_chat(&self, on: bool) -> std::io::Result<()> {
+        let mut rules = read_rules(&self.dir);
+        if rules.playwright_chat == on {
+            return Ok(());
+        }
+        std::fs::create_dir_all(&self.dir)?;
+        rules.playwright_chat = on;
+        write_atomic(&self.dir.join(RULES_FILE), &serde_json::to_vec(&rules)?)
+    }
+
+    /// Whether this chat allows Playwright without asking.
+    pub fn playwright_chat(&self) -> bool {
+        read_rules(&self.dir).playwright_chat
+    }
+
+    /// Playwright's answer for the running reply, or `None` to clear it.
+    pub fn set_playwright_reply(&self, word: Option<&str>) -> std::io::Result<()> {
+        let mut rules = read_rules(&self.dir);
+        if rules.playwright_reply.as_deref() == word {
+            return Ok(());
+        }
+        std::fs::create_dir_all(&self.dir)?;
+        rules.playwright_reply = word.map(str::to_string);
+        write_atomic(&self.dir.join(RULES_FILE), &serde_json::to_vec(&rules)?)
+    }
+
+    /// The reply ended: *Allow once* and *Deny* stop applying (backlog
+    /// 367). Called as a turn starts and as it ends, on every way out.
+    pub fn end_reply(&self) {
+        let _ = self.set_playwright_reply(None);
     }
 
     /// Add `name` to the chat's standing allow list.
@@ -681,6 +784,13 @@ impl HookReply {
 /// ([`SUBAGENT_QUESTION_DENIED`], backlog 294): allowed, it would run with
 /// no answers in it.
 pub fn decide(dir: &Path, stdin_json: &str) -> HookReply {
+    decide_in(dir, stdin_json, false)
+}
+
+/// [`decide`] for a process of the chat's that no card waits on — an aside
+/// or a checkpoint fork (`side`), which only Playwright's gate is
+/// registered with (backlog 367): such a call is never deferred.
+pub fn decide_in(dir: &Path, stdin_json: &str, side: bool) -> HookReply {
     let input: HookInput = match serde_json::from_str(stdin_json) {
         Ok(i) => i,
         // Unreadable input is not a call anyone can answer; deferring it
@@ -688,6 +798,11 @@ pub fn decide(dir: &Path, stdin_json: &str) -> HookReply {
         // CLI's own flow decide is the conservative reading.
         Err(_) => return HookReply::new("ask"),
     };
+    // Playwright's own gate (backlog 367), in every position: its own
+    // rules, before any of the Ask position's.
+    if super::own_browser::is_playwright(&input.tool_name) {
+        return decide_playwright(dir, &input, side);
+    }
     // Before the rules on purpose: plan mode's promise is that nothing is
     // edited until the plan is approved, and a rule granted in an earlier
     // Ask turn must not be the thing that breaks it.
@@ -736,6 +851,49 @@ pub fn decide(dir: &Path, stdin_json: &str) -> HookReply {
     }
 }
 
+/// A Playwright call (backlog 367). Order: this very call's answer
+/// (consumed — first, so a refusal written by a Stop is delivered even to
+/// a chat allowed since), the chat's switch, the reply's answer, then a
+/// call no card can wait on is refused in words, and anything else defers
+/// for the card.
+fn decide_playwright(dir: &Path, input: &HookInput, side: bool) -> HookReply {
+    use super::own_browser::{DECLINED, SIDE_REFUSED, SUBAGENT_REFUSED};
+    let path = dir.join(DECISION_FILE);
+    let decision: Option<Decision> = std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok());
+    if let Some(d) = decision
+        && d.tool_use_id == input.tool_use_id
+    {
+        let _ = std::fs::remove_file(&path);
+        return if d.decision == "allow" {
+            HookReply::allow(None)
+        } else {
+            HookReply::deny(
+                d.reason
+                    .filter(|r| !r.trim().is_empty())
+                    .unwrap_or_else(|| DECLINED.into()),
+            )
+        };
+    }
+    let rules = read_rules(dir);
+    if rules.playwright_chat {
+        return HookReply::allow(None);
+    }
+    match rules.playwright_reply.as_deref() {
+        Some("allow") => return HookReply::allow(None),
+        Some("deny") => return HookReply::deny(DECLINED.into()),
+        _ => {}
+    }
+    if input.agent_id.as_deref().is_some_and(|id| !id.is_empty()) {
+        return HookReply::deny(SUBAGENT_REFUSED.into());
+    }
+    if side {
+        return HookReply::deny(SIDE_REFUSED.into());
+    }
+    HookReply::defer()
+}
+
 /// The process entry: `<binary> --permission-hook <dir>`. Reads stdin to
 /// EOF, prints one JSON line, exits 0. Never exits non-zero on purpose —
 /// exit 2 is the CLI's "block", and a hook that failed to read is not a
@@ -747,9 +905,15 @@ pub fn run_hook(args: &[String]) -> std::io::Result<()> {
             "--permission-hook needs the ask directory",
         )
     })?;
+    // `--side` after the directory: an aside's or a fork's Playwright gate
+    // (backlog 367), which must never defer.
+    let side = args
+        .iter()
+        .skip(1)
+        .any(|a| a == super::own_browser::SIDE_ARG);
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input)?;
-    let reply = decide(&dir, &input);
+    let reply = decide_in(&dir, &input, side);
     let mut out = std::io::stdout().lock();
     out.write_all(serde_json::to_string(&reply)?.as_bytes())?;
     out.write_all(b"\n")?;
@@ -842,6 +1006,233 @@ impl AskGate {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // ---- Playwright's gate (nightshift backlog 367) -----------------------
+
+    use crate::agent::own_browser::{DECLINED, SIDE_REFUSED, SUBAGENT_REFUSED};
+
+    /// A Playwright call's stdin line as M1 measured it (CLI 2.1.300, the
+    /// fields read here), in `mode`, as call `id`, a subagent's when `agent`.
+    fn pw_stdin(id: &str, mode: &str, agent: Option<&str>) -> String {
+        let mut v = json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "mcp__playwright__browser_navigate",
+            "tool_input": {"url": "https://example.com"},
+            "tool_use_id": id,
+            "permission_mode": mode,
+        });
+        if let Some(a) = agent {
+            v["agent_id"] = json!(a);
+        }
+        v.to_string()
+    }
+
+    fn pw_call(id: &str) -> DeferredCall {
+        DeferredCall {
+            id: id.into(),
+            name: "mcp__playwright__browser_navigate".into(),
+            input: json!({"url": "https://example.com"}),
+        }
+    }
+
+    fn allow_once() -> Answer {
+        Answer::Allow {
+            updated_input: None,
+            plan_then: None,
+            grant: None,
+        }
+    }
+
+    /// The card's whole premise: in every position — bypass, Auto, Ask,
+    /// Plan — a Playwright call nobody has allowed defers for the card.
+    /// Even a standing per-tool rule from the Ask card does not pass it:
+    /// only the chat's Playwright switch does.
+    #[test]
+    fn an_unallowed_playwright_call_defers_in_every_position() {
+        let dir = scratch();
+        for mode in ["bypassPermissions", "auto", "default", "plan", "dontAsk"] {
+            assert_eq!(
+                decide(&dir, &pw_stdin("t1", mode, None)).decision(),
+                "defer",
+                "{mode}"
+            );
+        }
+        AskDir::new(&dir)
+            .allow_tool("mcp__playwright__browser_navigate")
+            .unwrap();
+        assert_eq!(
+            decide(&dir, &pw_stdin("t1", "bypassPermissions", None)).decision(),
+            "defer"
+        );
+    }
+
+    /// Allow once: this call runs, and every Playwright call after it in
+    /// the same reply — then the reply ends and the next one asks again.
+    #[test]
+    fn allow_once_lasts_until_the_reply_ends() {
+        let dir = scratch();
+        let ask = AskDir::new(&dir);
+        ask.write(&pw_call("t1"), &allow_once()).unwrap();
+        assert_eq!(
+            decide(&dir, &pw_stdin("t1", "bypassPermissions", None)).decision(),
+            "allow"
+        );
+        assert!(!dir.join(DECISION_FILE).exists(), "consumed");
+        assert_eq!(
+            decide(&dir, &pw_stdin("t2", "bypassPermissions", None)).decision(),
+            "allow"
+        );
+        assert!(!ask.playwright_chat(), "not a chat grant");
+        assert!(ask.allowed().is_empty(), "never the per-tool list");
+        ask.end_reply();
+        assert_eq!(
+            decide(&dir, &pw_stdin("t3", "bypassPermissions", None)).decision(),
+            "defer"
+        );
+    }
+
+    /// Allow for this chat: on until the chat's switch turns it off; the
+    /// reply's end leaves it.
+    #[test]
+    fn allow_for_this_chat_stays_until_the_switch_turns_it_off() {
+        let dir = scratch();
+        let ask = AskDir::new(&dir);
+        ask.write(
+            &pw_call("t1"),
+            &Answer::AllowForChat {
+                updated_input: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            decide(&dir, &pw_stdin("t1", "auto", None)).decision(),
+            "allow"
+        );
+        ask.end_reply();
+        assert_eq!(
+            decide(&dir, &pw_stdin("t2", "auto", None)).decision(),
+            "allow"
+        );
+        assert!(crate::agent::own_browser::for_chat(&dir));
+        crate::agent::own_browser::set_for_chat(&dir, false).unwrap();
+        assert_eq!(
+            decide(&dir, &pw_stdin("t3", "auto", None)).decision(),
+            "defer"
+        );
+        // And the switch turns it on as the card would.
+        crate::agent::own_browser::set_for_chat(&dir, true).unwrap();
+        assert_eq!(
+            decide(&dir, &pw_stdin("t4", "auto", None)).decision(),
+            "allow"
+        );
+    }
+
+    /// Deny: refused in his words, and every Playwright call after it in
+    /// the reply refused unasked — no card storm — until the reply ends.
+    #[test]
+    fn deny_refuses_in_his_words_until_the_reply_ends() {
+        let dir = scratch();
+        let ask = AskDir::new(&dir);
+        ask.write(
+            &pw_call("t1"),
+            &Answer::Deny {
+                reason: "the user declined this call".into(),
+            },
+        )
+        .unwrap();
+        let r = decide(&dir, &pw_stdin("t1", "default", None));
+        assert_eq!((r.decision(), r.reason()), ("deny", Some(DECLINED)));
+        let r = decide(&dir, &pw_stdin("t2", "default", None));
+        assert_eq!((r.decision(), r.reason()), ("deny", Some(DECLINED)));
+        ask.end_reply();
+        assert_eq!(
+            decide(&dir, &pw_stdin("t3", "default", None)).decision(),
+            "defer"
+        );
+        // A note he typed stays his.
+        ask.write(
+            &pw_call("t4"),
+            &Answer::Deny {
+                reason: "not that site".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            decide(&dir, &pw_stdin("t4", "default", None)).reason(),
+            Some("not that site")
+        );
+    }
+
+    /// A call no card can wait on is never deferred: a subagent's, and a
+    /// side process's (an aside, a checkpoint fork). Allowed ones run.
+    #[test]
+    fn a_subagent_or_side_call_is_refused_unless_already_allowed() {
+        let dir = scratch();
+        let r = decide(&dir, &pw_stdin("t1", "bypassPermissions", Some("a1")));
+        assert_eq!((r.decision(), r.reason()), ("deny", Some(SUBAGENT_REFUSED)));
+        let r = decide_in(&dir, &pw_stdin("t1", "dontAsk", None), true);
+        assert_eq!((r.decision(), r.reason()), ("deny", Some(SIDE_REFUSED)));
+        AskDir::new(&dir)
+            .set_playwright_reply(Some("allow"))
+            .unwrap();
+        assert_eq!(
+            decide(&dir, &pw_stdin("t2", "auto", Some("a1"))).decision(),
+            "allow"
+        );
+        assert_eq!(
+            decide_in(&dir, &pw_stdin("t2", "auto", None), true).decision(),
+            "allow"
+        );
+    }
+
+    /// A Stop while the card was up writes a refusal for the next turn's
+    /// hook; a chat grant made since must not run that stale call.
+    #[test]
+    fn a_stale_refusal_is_delivered_before_a_later_chat_grant() {
+        let dir = scratch();
+        let ask = AskDir::new(&dir);
+        ask.write(
+            &pw_call("t1"),
+            &Answer::Deny {
+                reason: "the turn was stopped before this was approved".into(),
+            },
+        )
+        .unwrap();
+        ask.end_reply();
+        ask.set_playwright_chat(true).unwrap();
+        assert_eq!(
+            decide(&dir, &pw_stdin("t1", "auto", None)).decision(),
+            "deny"
+        );
+        assert_eq!(
+            decide(&dir, &pw_stdin("t2", "auto", None)).decision(),
+            "allow"
+        );
+    }
+
+    /// The Ask hook's matcher leaves Playwright to its own entry: two hooks
+    /// on one call run in parallel and would race for the decision file.
+    #[test]
+    fn the_ask_matcher_does_not_name_playwright() {
+        assert!(MATCHER.ends_with(MCP_ALTERNATIVE));
+        assert!(MCP_ALTERNATIVE.contains("(?!playwright__)"));
+    }
+
+    /// The Playwright fields ride in `rules.json` beside the others without
+    /// disturbing them.
+    #[test]
+    fn the_playwright_rules_keep_the_other_rules() {
+        let dir = scratch();
+        let ask = AskDir::new(&dir);
+        ask.allow_tool("Bash").unwrap();
+        ask.set_subagents_auto(false).unwrap();
+        ask.set_playwright_chat(true).unwrap();
+        ask.set_playwright_reply(Some("allow")).unwrap();
+        ask.end_reply();
+        assert_eq!(ask.allowed(), vec!["Bash".to_string()]);
+        assert!(!ask.subagents_auto());
+        assert!(ask.playwright_chat());
+    }
 
     fn scratch() -> PathBuf {
         let dir = std::env::temp_dir().join(format!("nightloom-ask-{}", uuid::Uuid::new_v4()));
