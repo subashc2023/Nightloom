@@ -89,6 +89,10 @@
     JUMP_OFFSET,
     MIN_TICKS,
     activeTick,
+    anchorSelector,
+    animateScroll,
+    cancelScroll,
+    liveTick,
     replyGoing,
     scrollToLatest,
     showJumpDown,
@@ -1234,10 +1238,20 @@
   // viewport's scroll space, which one is being read, whether the view
   // scrolls at all — measured once per frame on scroll and again after
   // the events change. `data-turn` on each turn is the anchor.
-  const navTicks = $derived(tickModel(evs, liveFlags(evs), displayTexts(evs)));
+  // Item 359: the reply still streaming (or its ghost) has a rib too,
+  // anchored on `data-nav-live` — LibreChat's rail lists the row the
+  // moment it mounts and previews "Generating" until it has words.
+  const navTicks = $derived.by(() => {
+    const logged = tickModel(evs, liveFlags(evs), displayTexts(evs));
+    if (!shown) return logged;
+    const said = shown.segments.map((s) => (s.kind === "text" ? s.text : "")).join("");
+    return [...logged, liveTick(said)];
+  });
   let navActive = $state<number | null>(null);
   let navScrolls = $state(false);
-  const showNav = $derived(navScrolls && navTicks.length >= MIN_TICKS);
+  // Item 359: shown from three messages whether or not the chat scrolls
+  // (LibreChat's rule); before, only when it scrolled and from four.
+  const showNav = $derived(navTicks.length >= MIN_TICKS);
   // The round ⌄ above the composer (item 218): lit when scrolled up past
   // `JUMP_DOWN_SHOW`, dark at the foot and while its own click is carrying
   // the view down (`chasing`, cleared at the foot or on any upward input).
@@ -1249,7 +1263,7 @@
 
   function anchorTop(index: number): number | null {
     if (!viewport) return null;
-    const el = viewport.querySelector<HTMLElement>(`[data-turn="${index}"]`);
+    const el = viewport.querySelector<HTMLElement>(anchorSelector(index));
     if (!el) return null;
     return el.getBoundingClientRect().top - viewport.getBoundingClientRect().top + viewport.scrollTop;
   }
@@ -1259,8 +1273,13 @@
     navScrolls = viewport.scrollHeight > viewport.clientHeight + 8;
     if (chasing && atBottom()) chasing = false;
     jumpDown = showJumpDown(viewport.scrollTop, viewport.clientHeight, viewport.scrollHeight, chasing);
-    if (!navScrolls || navTicks.length < MIN_TICKS) {
+    if (navTicks.length < MIN_TICKS) {
       navActive = null;
+      return;
+    }
+    // A chat that does not scroll is read from its first message (theirs).
+    if (!navScrolls) {
+      navActive = 0;
       return;
     }
     const tops = navTicks.map((t) => anchorTop(t.index) ?? 0);
@@ -1276,22 +1295,36 @@
   });
 
   /** Scroll so the message sits just under the top edge; the view is no
-   *  longer following the reply. */
-  function jumpTo(i: number) {
+   *  longer following the reply. Item 359: LibreChat's 400 ms ease-out
+   *  cubic, re-aimed every frame, rather than the browser's smooth scroll;
+   *  `instant` for a drag along the rail. */
+  function jumpTo(i: number, instant = false) {
     const t = navTicks[i];
     if (!t || !viewport) return;
     const top = anchorTop(t.index);
     if (top === null) return;
     pinned = false;
-    viewport.scrollTo({ top: Math.max(0, top - JUMP_OFFSET), behavior: "smooth" });
+    const vp = viewport;
+    const aim = () => {
+      const now = anchorTop(t.index);
+      if (now === null) return null;
+      return Math.max(0, Math.min(now - JUMP_OFFSET, vp.scrollHeight - vp.clientHeight));
+    };
+    if (instant) {
+      cancelScroll();
+      vp.scrollTop = aim() ?? vp.scrollTop;
+    } else {
+      animateScroll(vp, aim);
+    }
     // So ⌥↑ / ⌥↓ work from here: the keys are on the viewport, and a click
     // on the strip would otherwise leave focus on the strip.
     viewport.focus({ preventScroll: true });
   }
-  function toTop() {
+  function toTop(instant = false) {
     if (!viewport) return;
     pinned = false;
-    viewport.scrollTo({ top: 0, behavior: "smooth" });
+    cancelScroll();
+    viewport.scrollTo({ top: 0, behavior: instant ? "instant" : "smooth" });
     viewport.focus({ preventScroll: true });
   }
   /** The ⌄'s click (item 218; it was 065's bottom chevron on the strip):
@@ -1302,6 +1335,7 @@
     pinned = true;
     chasing = true;
     jumpDown = false;
+    cancelScroll();
     scrollToLatest(viewport);
     // A smooth scroll that something else interrupts (a scrollbar grab)
     // never reaches the foot; the ride is over by then either way.
@@ -2035,6 +2069,9 @@
          turn's end and the re-synced log (backlog 131), so the reply never
          leaves the DOM under a reader. -->
     {#if shown}
+      <!-- Item 359: the live reply's anchor for its rib on the rail. One
+           flex item, as the reply alone was; nothing styles it. -->
+      <div data-nav-live>
       {#if shown.segments.length === 0}
         <!-- Between send and the first streamed event there is nothing to
              render, and a blank row read as "nothing happened" (his words,
@@ -2054,6 +2091,7 @@
           approvals={approvalsNow}
         />
       {/if}
+      </div>
     {/if}
     {#each stranded as req (req.id)}
       <ApprovalPrompt {req} />
@@ -2162,7 +2200,24 @@
   </div>
 </div>
 {#if showNav}
-  <Navigator ticks={navTicks} active={navActive} onjump={jumpTo} ontop={toTop} />
+  <Navigator
+    ticks={navTicks}
+    active={navActive}
+    {viewport}
+    onjump={jumpTo}
+    ontop={toTop}
+    onend={(instant) => {
+      // The rail's terminus: the foot, re-pinned, as the ⌄ above the
+      // composer does; a drag past the rail's end lands there at once.
+      if (instant && viewport) {
+        cancelScroll();
+        pinned = true;
+        viewport.scrollTop = viewport.scrollHeight;
+        return;
+      }
+      toBottom();
+    }}
+  />
 {/if}
 <!-- The jump to the latest message (item 218): round, centred just above
      the composer where the Claude app keeps it, faded in only when the
