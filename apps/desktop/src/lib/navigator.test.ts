@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import transcriptSrc from "./Transcript.svelte?raw";
 import {
   FULL_WEIGHT_CHARS,
   MIN_TICKS,
@@ -276,5 +277,18 @@ describe("LibreChat's rail, ported (item 359)", () => {
     expect(el.scrollTop).toBe(1200);
     frames.shift()!(400);
     expect(el.scrollTop).toBe(600);
+  });
+});
+
+describe("359 review: the eased jump stops when it should", () => {
+  it("a chat switch cancels a jump still easing in the chat just left", () => {
+    expect(transcriptSrc).toMatch(/lastKey = key;[^]*?if \(from !== null && from !== key\) cancelScroll\(\);/);
+  });
+  it("his own wheel, touch and scroll keys cancel it; the alt-arrow steps do not", () => {
+    const intent = transcriptSrc.slice(transcriptSrc.indexOf("function scrollIntent"));
+    const body = intent.slice(0, intent.indexOf("node.addEventListener"));
+    expect(body).toMatch(/const wheel = \(e: WheelEvent\) => \{\s*cancelScroll\(\);/);
+    expect(body).toMatch(/const touchmove = \(e: TouchEvent\) => \{\s*cancelScroll\(\);/);
+    expect(body).toMatch(/if \(!e\.altKey && \[[^\]]*"ArrowDown"[^\]]*\]\.includes\(e\.key\)\)\s*cancelScroll\(\);/);
   });
 });

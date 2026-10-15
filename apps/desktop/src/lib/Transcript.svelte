@@ -850,16 +850,24 @@
       pinned = false;
       chasing = false;
     };
+    // Item 359 (review): his own scrolling ends the rail's eased jump
+    // (`animateScroll`), which would otherwise pull the view back to its
+    // target every frame for up to 400 ms. ⌥↑ / ⌥↓ start a jump, so they
+    // never cancel one.
     const wheel = (e: WheelEvent) => {
+      cancelScroll();
       if (e.deltaY < 0) up();
     };
     const key = (e: KeyboardEvent) => {
+      if (!e.altKey && ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(e.key))
+        cancelScroll();
       if (["ArrowUp", "PageUp", "Home"].includes(e.key)) up();
     };
     const touchstart = (e: TouchEvent) => {
       touchY = e.touches[0]?.clientY ?? 0;
     };
     const touchmove = (e: TouchEvent) => {
+      cancelScroll();
       const y = e.touches[0]?.clientY ?? 0;
       if (y > touchY) up();
       touchY = y;
@@ -975,6 +983,10 @@
     const key = sessionKey;
     const from = lastKey;
     lastKey = key;
+    // Item 359 (review): a rail jump still easing in the chat just left
+    // must not go on scrolling this one (its aim re-reads the anchors each
+    // frame, now this chat's) and overwrite the position restored below.
+    if (from !== null && from !== key) cancelScroll();
     if (from === NEW_SCROLL_KEY && key !== NEW_SCROLL_KEY) {
       moveScroll(from, key);
       return;
