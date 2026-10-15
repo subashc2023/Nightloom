@@ -31,6 +31,10 @@ export type DropKind = "chat" | "main" | "box" | "none";
 export const BOX_ATTR = "data-drop-box";
 /** The attribute the region that takes a drop for the chat's box carries. */
 export const CHAT_ATTR = "data-drop-chat";
+/** A region inside the chat that takes no drop for the chat's box (an aside
+ *  card: a file dropped on its thread is not for the main composer). Its
+ *  own box inside it still takes its own drop. */
+export const NONE_ATTR = "data-drop-none";
 
 type Hit = { closest(selector: string): Hit | null; getAttribute(name: string): string | null };
 
@@ -39,6 +43,7 @@ export function dropKind(target: unknown): { kind: DropKind; box: Hit | null } {
   if (!t || typeof t.closest !== "function") return { kind: "none", box: null };
   const box = t.closest(`[${BOX_ATTR}]`);
   if (box) return { kind: box.getAttribute(BOX_ATTR) === "main" ? "main" : "box", box };
+  if (t.closest(`[${NONE_ATTR}]`)) return { kind: "none", box: null };
   if (t.closest(`[${CHAT_ATTR}]`)) return { kind: "chat", box: null };
   return { kind: "none", box: null };
 }

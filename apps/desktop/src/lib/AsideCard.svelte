@@ -306,8 +306,11 @@
 <svelte:window onkeydown={windowKeys} />
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+<!-- Item 362 (review): a file dropped on the card outside its own box is
+     refused, never handed to the chat's composer beneath it. -->
 <div
   class="aside-card"
+  data-drop-none
   class:floating={placement !== null}
   class:foot={placement === null && !panel}
   class:folded

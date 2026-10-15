@@ -71,6 +71,14 @@ function track(e: DragEvent): DropKind {
   setOver((box as Element | null) ?? null);
   if (drop.kind !== kind) drop.kind = kind;
   lastOver = performance.now();
+  // A drag that leaves the window may not say so; one that stops sending
+  // `dragover` (AppKit sends it periodically even when the pointer rests)
+  // is gone. Armed on every tracked event, not only `dragenter`: a reset
+  // by this timer clears it, and a drag that goes on after one must be
+  // watched again (review of 362, 2026-10-15).
+  stale ??= setInterval(() => {
+    if (performance.now() - lastOver > 1500) reset();
+  }, 500);
   return kind;
 }
 
@@ -78,12 +86,6 @@ function onEnter(e: DragEvent): void {
   if (!carriesFiles(e.dataTransfer)) return;
   depth++;
   track(e);
-  // A drag that leaves the window may not say so; one that stops sending
-  // `dragover` (AppKit sends it periodically even when the pointer rests)
-  // is gone.
-  stale ??= setInterval(() => {
-    if (performance.now() - lastOver > 1500) reset();
-  }, 500);
 }
 
 function onOver(e: DragEvent): void {

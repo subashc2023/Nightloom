@@ -3,6 +3,7 @@ import composerSrc from "./Composer.svelte?raw";
 import transcriptSrc from "./Transcript.svelte?raw";
 import welcomeSrc from "./Welcome.svelte?raw";
 import editAttachSrc from "./EditAttachments.svelte?raw";
+import asideCardSrc from "./AsideCard.svelte?raw";
 import {
   CHIP_FADE_RM_MS,
   CHIP_MS,
@@ -43,6 +44,10 @@ const main = new El({ "data-drop-box": "main" }, win);
 const textarea = new El({}, main);
 const edit = new El({ "data-drop-box": "edit" }, chat);
 const sidebar = new El({}, win);
+// An aside card drawn inline in the chat, its thread and its own box.
+const asideCard = new El({ "data-drop-none": "" }, chat);
+const asideThread = new El({}, asideCard);
+const asideBox = new El({ "data-drop-box": "aside" }, asideCard);
 
 describe("362: which box a file drag is over", () => {
   it("names the chat, the chat's box, another box, or nothing", () => {
@@ -53,6 +58,11 @@ describe("362: which box a file drag is over", () => {
     expect(dropKind(edit).kind).toBe("box");
     expect(dropKind(sidebar).kind).toBe("none");
     expect(dropKind(null).kind).toBe("none");
+  });
+  it("an aside card in the chat takes no drop for the chat's box; its own box takes its own (review)", () => {
+    expect(dropKind(asideThread).kind).toBe("none");
+    expect(dropKind(asideBox).kind).toBe("box");
+    expect(dropKind(asideBox).box).toBe(asideBox);
   });
   it("follows only drags that carry files", () => {
     expect(carriesFiles({ types: ["Files"] })).toBe(true);
@@ -197,6 +207,37 @@ describe("362: the window watcher", () => {
     expect(mod.takeDropped("shot.png")).toBe(0);
   });
 
+  it("a drop on an aside card's thread is not handed to the chat's composer (review)", () => {
+    listeners.dragenter(ev(asideThread));
+    const over = ev(asideThread);
+    listeners.dragover(over);
+    expect(mod.drop.kind).toBe("none");
+    expect(over.defaultPrevented).toBe(false);
+    const d = ev(asideThread);
+    d.dataTransfer.files = files;
+    listeners.drop(d);
+    expect(accepted).toEqual([]);
+    expect(d.defaultPrevented).toBe(false);
+  });
+
+  it("drops the veil of a drag that pauses, goes on, then vanishes without a dragleave (review)", () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "performance"] });
+    try {
+      listeners.dragenter(ev(bubble));
+      listeners.dragover(ev(bubble));
+      expect(mod.drop.kind).toBe("chat");
+      vi.advanceTimersByTime(2100);
+      expect(mod.drop.kind).toBe("idle");
+      // The drag goes on: dragover again, then nothing more — no dragleave.
+      listeners.dragover(ev(bubble));
+      expect(mod.drop.kind).toBe("chat");
+      vi.advanceTimersByTime(2100);
+      expect(mod.drop.kind).toBe("idle");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("marks the edit box held over, takes nothing outside the chat, ignores non-file drags", () => {
     listeners.dragenter(ev(edit));
     listeners.dragover(ev(edit));
@@ -223,6 +264,7 @@ describe("362: wired into the boxes", () => {
   it("the composer, the aside box and the edit box are boxes; only the chat's composer draws the overlay", () => {
     expect(composerSrc).toContain('data-drop-box={aside ? "aside" : "main"}');
     expect(transcriptSrc).toContain('class="editor" data-drop-box="edit"');
+    expect(asideCardSrc).toMatch(/class="aside-card"\s+data-drop-none/);
     expect(composerSrc).toMatch(/\{#if aside === null\}\s*<!--[^]*?-->\s*<DropOverlay /);
   });
   it("dropped chips arrive with the drop's motion in the composer and the edit box", () => {
