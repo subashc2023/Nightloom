@@ -213,6 +213,15 @@ pub struct PlaywrightGate {
 /// The hook's extra argument for a side process.
 pub const SIDE_ARG: &str = "--side";
 
+/// What follows the hook on its command line: the gate fails closed. The
+/// CLI runs a call whose hook exits non-zero with any code but 2 (a
+/// "non-blocking error"), so a hook that could not run — its binary gone
+/// (127), its input unreadable (1) — would let Playwright run unasked in
+/// any position, bypass included; exit 2 blocks the call and hands the
+/// model the line on stderr (review of 367, 2026-10-15).
+pub const FAIL_CLOSED: &str =
+    "|| { echo 'Playwright was not used: its approval check could not run.' >&2; exit 2; }";
+
 impl PlaywrightGate {
     /// The `PreToolUse` entry for the one `--settings` JSON. With no
     /// directory to read (an ephemeral chat, or a spec no turn has pointed)
@@ -243,6 +252,7 @@ impl PlaywrightGate {
         if self.side {
             words.push(super::ask::shell_quote(SIDE_ARG));
         }
+        words.push(FAIL_CLOSED.to_string());
         serde_json::json!({
             "matcher": MATCHER,
             "hooks": [{ "type": "command", "command": words.join(" ") }]
@@ -385,13 +395,16 @@ mod tests {
             .as_str()
             .unwrap()
             .to_string();
-        assert_eq!(cmd, "'/bin/nl' '--permission-hook' '/logs/ask/c1'");
+        assert_eq!(
+            cmd,
+            format!("'/bin/nl' '--permission-hook' '/logs/ask/c1' {FAIL_CLOSED}")
+        );
         g.side = true;
         let cmd = g.hook_entry()["hooks"][0]["command"]
             .as_str()
             .unwrap()
             .to_string();
-        assert!(cmd.ends_with("'--side'"));
+        assert!(cmd.ends_with(&format!("'--side' {FAIL_CLOSED}")));
         g.no_card = true;
         assert!(
             g.hook_entry()["hooks"][0]["command"]
@@ -399,6 +412,44 @@ mod tests {
                 .unwrap()
                 .contains("\"deny\"")
         );
+    }
+
+    /// The gate fails closed (review of 367): a hook that cannot run —
+    /// here its binary is missing, exit 127 — exits 2, the CLI's "block",
+    /// never another code, which the CLI would treat as a non-blocking
+    /// error and run the call.
+    #[cfg(unix)]
+    #[test]
+    fn a_hook_that_cannot_run_blocks_the_call() {
+        let g = PlaywrightGate {
+            hook: vec![
+                "/nonexistent/nightloom-desktop".into(),
+                "--permission-hook".into(),
+            ],
+            dir: "/logs/ask/c1".into(),
+            side: false,
+            no_card: false,
+        };
+        let cmd = g.hook_entry()["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&cmd)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{cmd}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("Playwright was not used"));
+        // A hook that answered exits 0 and is passed through as it was.
+        let ok = format!("true {FAIL_CLOSED}");
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&ok)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(0));
     }
 
     #[test]

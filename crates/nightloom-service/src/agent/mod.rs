@@ -3993,7 +3993,10 @@ mod tests {
             assert_eq!(matching[0]["matcher"], own_browser::MATCHER, "{name}");
             assert_eq!(
                 matching[0]["hooks"][0]["command"],
-                "'/app/nl' '--permission-hook' '/logs/ask/chat-3'",
+                format!(
+                    "'/app/nl' '--permission-hook' '/logs/ask/chat-3' {}",
+                    own_browser::FAIL_CLOSED
+                ),
                 "{name}"
             );
         }
@@ -4023,9 +4026,9 @@ mod tests {
                 .unwrap()
                 .to_string()
         };
-        assert!(cmd(&aside).ends_with("'--side'"));
+        assert!(cmd(&aside).contains("'--side' ||"));
         let fork = s.checkpoint_fork().unwrap();
-        assert!(cmd(&fork).ends_with("'--side'"));
+        assert!(cmd(&fork).contains("'--side' ||"));
         assert!(!cmd(&s).contains("--side"));
         let mut eph = with_playwright(spec());
         eph.apply_mode(ChatMode::Ephemeral);
