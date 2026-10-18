@@ -1,0 +1,26 @@
+<!doctype html>
+<!-- Backlog 376: the real Sidebar and TabStrip; Rename from the row menu and from the tab menu, then what is
+     focused and selected, then Esc. Served by vite on a spare port and snapped with nightshift-code bin/snap
+     (WebKit); the caption carries the measurement. -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      body { margin: 0; background: var(--paper, #111); }
+      *, *::before, *::after { animation: none !important; }
+      #wrap { display: flex; gap: 12px; }
+      #side { position: relative; display: flex; flex-direction: column; width: 280px; height: 360px; }
+      section.pane { display: flex; flex-direction: column; width: 560px; height: 200px; background: var(--sheet); }
+      #cap { font: 12px/1.5 ui-monospace, monospace; color: #ddd; background: #000; padding: 6px 8px; white-space: pre; }
+    </style>
+  </head>
+  <body>
+    <div id="wrap"><div id="side"></div><section class="pane" id="pane"></section></div>
+    <div id="cap"></div>
+    <script>
+      window.addEventListener("error", (e) => (document.getElementById("cap").textContent += "\nerror: " + e.message));
+      window.addEventListener("unhandledrejection", (e) => (document.getElementById("cap").textContent += "\nrejection: " + e.reason));
+    </script>
+    <script type="module" src="./rename376.ts"></script>
+  </body>
+</html>

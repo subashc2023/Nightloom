@@ -1,6 +1,7 @@
 <script lang="ts">
   import { canLeaveProject, canDeleteChat } from "./state.svelte";
   import { tip } from "./tip";
+  import { renamedTo, selectAllOnMount } from "./renameField";
   import {
     app,
     openProjectFolder,
@@ -277,10 +278,13 @@
 
   let renaming = $state<string | null>(null);
   let draft = $state("");
+  /** The name the field opened with (backlog 376): unchanged is a cancel. */
+  let renameFrom = "";
 
   function startRename(id: string, current: string) {
     renaming = id;
     draft = current;
+    renameFrom = current;
   }
 
   async function commitRename(id: string) {
@@ -289,10 +293,10 @@
     // DOM, and the blur that removal can fire must not turn the cancel
     // into a rename; Enter's own blur is the one commit.
     if (renaming !== id) return;
-    const name = draft.trim();
-    renaming = null;
     // Unchanged or emptied is a cancel, not a rename: an empty name would
     // leave the row labelled by its opening message with no way back.
+    const name = renamedTo(draft, renameFrom);
+    renaming = null;
     if (!name) return;
     // Through the state's version, which puts the inverse on the undo
     // stack and toasts a failure itself (nightshift backlog 064).
@@ -468,12 +472,13 @@
     {@const s = r.meta}
     <div class="session-item" class:active={rowLit(s.id)} class:fork={r.depth > 0} style:--depth={r.depth > 0 ? r.depth : undefined}>
       {#if renaming === s.id}
-        <!-- svelte-ignore a11y_autofocus -->
+        <!-- Opens with the whole title selected (backlog 376): typing
+             replaces it, Esc leaves the name as it was. -->
         <input
           class="rename"
           aria-label="Session name"
           bind:value={draft}
-          autofocus
+          use:selectAllOnMount
           onblur={() => void commitRename(s.id)}
           onkeydown={(e) => {
             if (e.key === "Enter") (e.target as HTMLInputElement).blur();
