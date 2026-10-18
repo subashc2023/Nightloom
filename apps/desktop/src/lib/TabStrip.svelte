@@ -14,6 +14,7 @@
   import { renamedTo, selectAllOnMount } from "./renameField";
   import { hasBoxDraft, newDraftKey } from "./drafts.svelte";
   import * as tabs from "./tabs";
+  import { FORK_GLYPH, type ForkMark } from "./forkMark";
   import { TAB_DRAG, TERM_DRAG, type Pane } from "./tabs";
   import { draggedShell } from "./terminal.svelte";
   import Icon from "./Icon.svelte";
@@ -102,6 +103,16 @@
     return ` · ${c.session.slice(0, 8)}${mode}`;
   }
 
+  /** A fork's tab (backlog 379): the mark before its title, and the
+   *  chat it came from named on hover — of the mark and of the tab. */
+  function fork(t: tabs.Tab): ForkMark | null {
+    return tabs.tabFork(t.content, app.sessions);
+  }
+  function forkTail(t: tabs.Tab): string {
+    const f = fork(t);
+    return f ? ` · ${f.tip}` : "";
+  }
+
   function hint(t: tabs.Tab): string {
     const c = t.content;
     const base =
@@ -119,7 +130,7 @@
                   ? `${c.path} — a file a reply named, read-only`
                   : c.kind === "thread"
                     ? `${title(t)} — what the thread stores (.agents/threads/${c.slug}/), read-only`
-                    : title(t) + chatTail(c);
+                    : title(t) + chatTail(c) + forkTail(t);
     const state = needsYou(t) ? " · waiting on you" : running(t) ? " · a turn is running" : "";
     return `${base}${state} — ${isMac ? "⌘W" : "Ctrl+W"} closes`;
   }
@@ -393,6 +404,8 @@
           }}
         />
       {:else}
+        {@const f = fork(t)}
+        {#if f}<span class="fork" role="img" aria-label={f.tip} use:tip={f.tip}>{FORK_GLYPH}</span>{/if}
         <span class="name">{title(t)}</span>
       {/if}
       {#if needsYou(t)}
@@ -447,6 +460,7 @@
     style:transition-duration="{SNAP_MS}ms"
   >
     <span class="glyph"><Icon name={tabs.tabGlyph(ghost.tab.content)} size={12} /></span>
+    {#if fork(ghost.tab)}<span class="fork" aria-hidden="true">{FORK_GLYPH}</span>{/if}
     <span class="name">{title(ghost.tab)}</span>
   </div>
 {/if}
@@ -535,6 +549,14 @@
     width: 12px;
     height: 12px;
     object-fit: contain;
+  }
+  /* The fork mark (backlog 379): never shrinks, so a narrow tab
+     truncates the title and keeps the mark. */
+  .fork {
+    flex-shrink: 0;
+    color: var(--dim);
+    font-size: 0.95em;
+    line-height: 1;
   }
   .name {
     overflow: hidden;
