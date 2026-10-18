@@ -56,3 +56,16 @@
 .hljs-operator {
   color: var(--ink);
 }
+/* Item 380: Markdown in a file tab (the chat's languages emit none of these). */
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 600;
+}
+.hljs-link {
+  color: var(--live);
+}
+.hljs-code {
+  color: var(--done);
+}

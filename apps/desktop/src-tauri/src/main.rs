@@ -59,6 +59,8 @@ mod draft_count;
 /// (nightshift backlog 161).
 mod filetab;
 mod for_you;
+/// A `.tex` tab's rendered PDF (nightshift backlog 381).
+mod latex;
 mod model_list;
 /// Nightshift: the unattended runner's file contract, as commands.
 mod nightshift;
@@ -8430,6 +8432,7 @@ fn main() {
             sent_files::save_sent_file,
             sent_files::drag_sent_file,
             read_file_tab,
+            latex::render_latex,
             open_url,
             notify,
             notify_usage_refreshed,

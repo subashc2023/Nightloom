@@ -1209,6 +1209,19 @@ export function readFileTab(path: string, chat: string | null): Promise<FileTabD
   return invoke("read_file_tab", { path, chat });
 }
 
+/** A `.tex` tab's rendered side (nightshift backlog 381): the PDF (base64)
+ *  on success; else the TeX log and/or a message; `missing_tex` when this
+ *  Mac has no TeX. Refused like `readFileTab`. */
+export interface LatexRender {
+  pdf: string | null;
+  missing_tex: boolean;
+  log: string | null;
+  message: string | null;
+}
+export function renderLatex(path: string, chat: string | null): Promise<LatexRender> {
+  return invoke("render_latex", { path, chat });
+}
+
 /** Files for him (nightshift backlog 377): the open project's, newest first. */
 export function forYouFiles(): Promise<ForYouRow[]> {
   return invoke("for_you_files");
