@@ -111,6 +111,9 @@
     draftScroll,
     setDraftText,
     shiftQueue,
+    forgetMove,
+    queueAfterTurn,
+    ranKey,
     takeBackQueued,
     updateAttachment,
     NEW_DRAFT_PREFIX,
@@ -1682,6 +1685,11 @@
     council: CouncilPrefs | null = null,
   ): Promise<void> {
     const chat = app.activeSessionId;
+    // The chat this turn is for, by draft key (backlog 375): its failed
+    // words and its queue go back to it, never to the chat open when it
+    // ends.
+    const from = liveKey();
+    forgetMove(from);
     const { images, documents, files } = split(chips);
     await send(
       typed.trim(),
@@ -1693,22 +1701,24 @@
     // send() reports failures on app.error instead of throwing, and a turn
     // that never reached the model should not cost the user its attachments
     // — or, since 2026-09-15, its words. Both go back under the key of the
-    // chat now open (the pending chat's first turn may have made the chat
-    // before failing, and `key` has followed it), the text only if nothing
-    // new was typed meanwhile. A wrap-up that failed goes back to its
-    // notice rather than into the box.
+    // ~~chat now open~~ chat the turn was for (backlog 375: the chat now
+    // open may be another project's; the pending chat's first turn may
+    // have made the chat before failing, which `ranKey` follows), the text
+    // only if nothing new was typed meanwhile. A wrap-up that failed goes
+    // back to its notice rather than into the box.
     if (app.error) {
       if (wrapUp) {
         abortWrapUp(chat);
         return;
       }
-      if (!readDraft(key).text) {
-        setDraftText(key, typed);
-        setDraftAttachments(key, chips.concat(readDraft(key).attachments));
+      const back = ranKey(from);
+      if (!readDraft(back).text) {
+        setDraftText(back, typed);
+        setDraftAttachments(back, chips.concat(readDraft(back).attachments));
       } else if (typed || chips.length > 0) {
         // The box holds new words: the failed message goes back to the
         // head of the queue rather than nowhere (backlog 158).
-        requeueFront(key, { id: nextQueueId(), text: typed, attachments: chips });
+        requeueFront(back, { id: nextQueueId(), text: typed, attachments: chips });
       }
       return;
     }
@@ -1716,7 +1726,14 @@
     // the Resume rather than sending the next message into the same
     // exhausted window.
     if (app.limitPause) return;
-    await drain();
+    await drain(false, from);
+  }
+
+  /** The open chat's draft key, read now — not `key`, which a composer
+   *  torn down by a view change (the New chat page has its own) may hold
+   *  from before (backlog 375). */
+  function liveKey(): string {
+    return aside ? key : draftKey(app.activeSessionId, app.project?.id, app.pendingMode);
   }
 
   /** Why the queue is waiting rather than sending itself, if it is. */
@@ -1727,15 +1744,20 @@
    * turn's end the queue holds when `queueHold` says so; *Send next* is
    * the explicit choice and goes regardless.
    */
-  async function drain(explicit = false): Promise<void> {
+  async function drain(explicit = false, from?: string): Promise<void> {
     if (aside) return asideDrain();
     // A provider turn off screen holds the engine (backlog 159, A4).
     if (app.busy || !app.connection || providerElsewhereName()) return;
     if (!explicit && hold) return;
+    // Only the open chat's own queue, and after a turn only when that turn
+    // was this chat's (backlog 375): a message never leaves for a chat it
+    // was not queued in.
+    const live = liveKey();
+    if (from !== undefined && queueAfterTurn(from, live) === null) return;
     // The held row is where this message leaves from (backlog 194).
-    const head = queue[0];
+    const head = readDraft(live).queue[0];
     if (head) launch("chat", document.querySelector(`.queue-row[data-queue-id="${head.id}"] .queue-text`));
-    const q = shiftQueue(key);
+    const q = shiftQueue(live);
     if (!q) return;
     // The row Nightloom queued while he was away is the wrap-up going.
     const wrapUp = handoffHere && q.id === handoff.queuedId;

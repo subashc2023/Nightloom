@@ -564,6 +564,55 @@ export function requeueFront(key: string, q: QueuedMessage): void {
   schedule();
 }
 
+/**
+ * Where the pending chat's draft went (`moveDraft`), by pending key: a
+ * turn sent from the New chat page drains the queue of the chat it made
+ * (backlog 375). Forgotten when a new turn leaves from that key.
+ */
+const movedTo = new Map<string, string>();
+
+/** A turn leaves from `key` now: an older move from it says nothing. */
+export function forgetMove(key: string): void {
+  movedTo.delete(key);
+}
+
+/**
+ * The queue a turn's end may send from (nightshift backlog 375,
+ * 2026-10-18): only the queue of the chat that turn ran in — `from`, the
+ * key it was sent from, or the chat the pending key became — and only
+ * while that chat is the one open (`live`). Anything else is `null`: the
+ * chat he queued in is not on screen, so its messages wait there rather
+ * than go to whatever chat is open. Before, the drain after a turn read
+ * the composer's key at that moment, and a message queued in a chat
+ * whose turn ended while he was in another project went into that one.
+ */
+export function queueAfterTurn(from: string, live: string): string | null {
+  return ranKey(from) === live ? live : null;
+}
+
+/** The draft key of the chat a turn sent from `from` ran in: `from`, or
+ *  the chat the pending key became (375). */
+export function ranKey(from: string): string {
+  return movedTo.get(from) ?? from;
+}
+
+/**
+ * The pending chat's queue follows the chat its first turn made when that
+ * turn goes off screen (backlog 375): rows he queued while it ran belong
+ * to it, not to the next New chat of the project. Only the queue — words
+ * in the box under the pending key may be a new draft for another chat.
+ */
+export function moveQueue(from: string, to: string): void {
+  if (from === to) return;
+  movedTo.set(from, to);
+  const src = drafts[from];
+  if (!src || src.queue.length === 0) return;
+  draftFor(to).queue.push(...src.queue);
+  src.queue = [];
+  if (!src.text && src.attachments.length === 0) delete drafts[from];
+  schedule();
+}
+
 /** The oldest held message, removed: what goes as the next turn. */
 export function shiftQueue(key: string): QueuedMessage | null {
   const d = drafts[key];
@@ -672,6 +721,8 @@ export function dropQueued(key: string, id: number): void {
  */
 export function moveDraft(from: string, to: string): void {
   if (from === to) return;
+  // The turn sent from `from` drains `to`'s queue at its end (375).
+  movedTo.set(from, to);
   const src = drafts[from];
   if (!src) return;
   const dst = drafts[to];

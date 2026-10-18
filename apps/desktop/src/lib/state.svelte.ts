@@ -25,6 +25,7 @@ import {
   enqueueMessage,
   clearInjected,
   markDelivered,
+  moveQueue,
   markInjected,
   markSendNow,
   settleInjected,
@@ -5856,6 +5857,10 @@ interface TurnCtx {
   /** A provider (API key) turn (A4): one runs at a time, so a message in
    *  another chat queues while it runs off screen. */
   provider?: boolean;
+  /** The pending chat's draft key it was sent from, when it is a New
+   *  chat's first turn (backlog 375): its queue follows the chat it makes
+   *  when it goes off screen. */
+  pendingKey?: string | null;
   /** The context window of the connection it started on (A4 review,
    *  2026-09-30): its end off screen fills the wrap-up against this, not
    *  against whatever connection is on screen by then. */
@@ -6398,6 +6403,8 @@ function detach(): boolean {
     app.activeSessionId = id;
     void tick().then(() => activating--);
   }
+  // And what he queued on its New chat page goes with it (backlog 375).
+  if (t.pendingKey) moveQueue(t.pendingKey, id);
   const mine = (r: ApprovalRequest) => !r.chat || r.chat === id;
   app.background[id] = {
     session: id,
@@ -6446,6 +6453,9 @@ function promoteParked(): void {
   };
   app.pendingApprovals = app.pendingApprovals.filter((r) => r.chat && r.chat !== id);
   app.parked = null;
+  // What he queued on its New chat page is its (backlog 375), not the
+  // next New chat's of the project.
+  if (t.pendingKey) moveQueue(t.pendingKey, id);
   t.detached = true;
   bgTurns.set(id, t);
   fg = null;
@@ -7041,7 +7051,7 @@ export async function send(
   // This turn, for the background (backlog 159, A4): as the agent
   // engine's since A2 — he may open another chat while it runs, and it
   // goes off screen instead of parking once its chat has a name.
-  const turn: TurnCtx = { chat: app.activeSessionId, detached: false, key: newTurnKey(), choice, provider: true };
+  const turn: TurnCtx = { chat: app.activeSessionId, detached: false, key: newTurnKey(), choice, provider: true, pendingKey };
   fg = turn;
   let failed: string | null = null;
   try {
@@ -7155,6 +7165,7 @@ async function sendAgent(
     key: newTurnKey(),
     choice: choiceOf(app.draft),
     contextLimit: app.connection?.contextLimit ?? null,
+    pendingKey,
   };
   fg = turn;
   // The budget meter (backlog 165, pass 2) follows this chat's ledger
