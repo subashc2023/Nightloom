@@ -128,7 +128,7 @@ import { chatIsCold, loadLayerPrefs, reconnectBeforeTurn, saveLayerPrefs } from 
 import { CONNECT_DEADLINE_MS, withDeadline } from "./deadline";
 import { rewoundWrites, setAsideFiles } from "./rewoundFiles";
 import type { TabContent, Workspace } from "./tabs";
-import { UNFILED_TABS, loadSavedWorkspaces, rebuild, saveWorkspaceFor, snapshot } from "./tabsStore";
+import { UNFILED_TABS, carryTabsTo, loadSavedWorkspaces, rebuild, saveWorkspaceFor, snapshot } from "./tabsStore";
 import { turnClock } from "./turnTiming";
 import { FirstSeen, doingOf, quoteLine, sortRuns, type RunEntry, type RunKind } from "./running";
 import { rememberScroll } from "./scroll.svelte";
@@ -6887,6 +6887,47 @@ export async function deleteSession(id: string): Promise<void> {
       await refreshSessions();
     },
   });
+}
+
+/**
+ * *Move to project…* (nightshift backlog 370): the chat leaves this
+ * project's list for project `to`'s (null: the unfiled chats), while the
+ * app runs. Refused in words while its turn runs, like a delete. Its id
+ * does not change, so its draft and queued rows (keyed by the id, backlog
+ * 375) go with it untouched; its chat tab goes to the other project's
+ * stored workspace (`carryTabsTo`), the rest of its tabs close here.
+ * No undo: the chat is no longer in this list to move back from — it is
+ * moved back from the other project's list the same way.
+ */
+export async function moveSession(id: string, to: string | null): Promise<boolean> {
+  if (!canDeleteChat(id)) {
+    addToast("That chat is running a turn — move it when the turn ends");
+    return false;
+  }
+  const carried = tabs
+    .allTabs(app.tabs)
+    .filter((t) => t.content.kind === "chat" && t.content.session === id)
+    .map((t) => t.content);
+  let full: string;
+  try {
+    full = await api.moveSession(id, to);
+  } catch (e) {
+    addToast(String(e));
+    await refreshSessions();
+    return false;
+  }
+  if (id === app.activeSessionId || full === app.activeSessionId) {
+    switchAside(null);
+    app.activeSessionId = null;
+    app.events = [];
+  }
+  dropChatTabs(full);
+  if (typeof localStorage !== "undefined") carryTabsTo(localStorage, to ?? UNFILED_TABS, carried);
+  await refreshSessions();
+  const where = to === null ? "No project (unfiled chats)" : (app.projects.find((p) => p.id === to)?.name ?? "the other project");
+  addToast(`Moved to ${where}`);
+  void refreshProjects();
+  return true;
 }
 
 /**

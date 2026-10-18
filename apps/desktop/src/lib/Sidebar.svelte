@@ -12,6 +12,7 @@
     endContentDrag,
     droppedContent,
     moveChatToThread,
+    moveSession,
     newChatInThread,
     startContentDrag,
     enableNightshift,
@@ -197,6 +198,18 @@
   $effect(() => {
     if (!rowMenu) moveOpen = false;
   });
+  // *Move to project ▸* (backlog 370): every other project, and No
+  // project (the unfiled chats) when one is open; one click moves.
+  let projectMoveOpen = $state(false);
+  $effect(() => {
+    if (!rowMenu) projectMoveOpen = false;
+  });
+  const moveTargets = $derived(app.projects.filter((p) => p.id !== app.project?.id));
+  function rowMoveProject(to: string | null) {
+    const s = rowMenu?.s;
+    rowMenu = null;
+    if (s) void moveSession(s.id, to);
+  }
   function rowMove(slug: string | null) {
     const s = rowMenu?.s;
     rowMenu = null;
@@ -914,6 +927,26 @@
             {/if}
             {#if inThread}
               <button role="menuitem" onclick={() => rowMove(null)}>Remove from thread <span class="row-key">◇ {inThread}</span></button>
+            {/if}
+          {/if}
+          {#if rowMenu.s.mode !== "ephemeral" && (moveTargets.length > 0 || app.project)}
+            <button
+              role="menuitem"
+              aria-haspopup="menu"
+              aria-expanded={projectMoveOpen}
+              class:on={projectMoveOpen}
+              disabled={!canDeleteChat(rowMenu.s.id)}
+              onclick={() => (projectMoveOpen = !projectMoveOpen)}
+            >Move to project <span class="row-key">{projectMoveOpen ? "▾" : "▸"}</span></button>
+            {#if projectMoveOpen}
+              <div class="row-threads" role="group" aria-label="Move to project">
+                {#each moveTargets as p (p.id)}
+                  <button role="menuitem" class="row-thread" use:tip={p.root ?? "No folder"} onclick={() => rowMoveProject(p.id)}>{p.name}</button>
+                {/each}
+                {#if app.project}
+                  <button role="menuitem" class="row-thread" use:tip={"Unfiled chats: no project"} onclick={() => rowMoveProject(null)}>No project</button>
+                {/if}
+              </div>
             {/if}
           {/if}
           <button role="menuitem" disabled={!!rowMenu?.s && !canDeleteChat(rowMenu.s.id)} onclick={rowDelete}>Delete…</button>

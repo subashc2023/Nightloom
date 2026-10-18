@@ -214,3 +214,46 @@ export function rebuild(saved: SavedWorkspace, resolve: (c: TabContent) => TabCo
   const ws: Workspace = { panes, focused: (focused ?? panes[0]).id };
   return { ws, shells: shells.filter((s) => panes.some((p) => p.id === s.pane)) };
 }
+
+/**
+ * A chat moved to another project (nightshift backlog 370) takes its tab
+ * there: `contents` (its chat tab, stored form) join the end of that
+ * project's stored focused pane, once each, and the first becomes that
+ * pane's front — so opening the project shows the chat that was just
+ * moved into it. A project with nothing stored gets a workspace of just
+ * these. Best-effort, like every write here.
+ */
+export function carryTabsTo(
+  storage: Pick<Storage, "getItem" | "setItem">,
+  key: string,
+  contents: TabContent[],
+): void {
+  if (contents.length === 0) return;
+  const all = loadSavedWorkspaces(storage);
+  saveWorkspaceFor(storage, key, withCarried(all[key], contents));
+}
+
+/** The pure half of `carryTabsTo`. */
+export function withCarried(saved: SavedWorkspace | undefined, contents: TabContent[]): SavedWorkspace {
+  const plain = contents.map(structuredCloneContent);
+  if (!saved || saved.panes.length === 0) {
+    const unique = plain.filter((c, i) => plain.findIndex((d) => tabs.sameContent(c, d)) === i);
+    return { panes: [{ tabs: unique, active: 0 }], focused: 0 };
+  }
+  const at = Math.min(Math.max(0, saved.focused), saved.panes.length - 1);
+  const panes = saved.panes.map((p, i) => {
+    if (i !== at) return p;
+    const list = [...p.tabs];
+    let front = -1;
+    for (const c of plain) {
+      let k = list.findIndex((d) => tabs.sameContent(c, d));
+      if (k < 0) {
+        list.push(c);
+        k = list.length - 1;
+      }
+      if (front < 0) front = k;
+    }
+    return { ...p, tabs: list, active: front < 0 ? p.active : front };
+  });
+  return { panes, focused: at };
+}

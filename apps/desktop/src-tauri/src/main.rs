@@ -4995,6 +4995,56 @@ async fn restore_session(state: State<'_, AppState>, id: String) -> Result<Strin
     chat_ops::restore_from_trash(&log_dir, &id)
 }
 
+/// Move a chat of the open project's list into another project, or out to
+/// the unfiled chats when `to` is `None` (nightshift backlog 370, *Move to
+/// project…*), while the app runs. Its log moves with its id unchanged —
+/// drafts, queued rows and tabs are keyed by that id — and is touched so
+/// capture reads it under its new project (`chat_ops::move_chat`). Like
+/// [`delete_session`], a chat whose turn is running is refused in words and
+/// any other is dropped from the held set first (the open one leaves New
+/// chat open), so no writer appends to the old path after the move.
+/// Returns the full id.
+#[tauri::command]
+async fn move_session(
+    state: State<'_, AppState>,
+    id: String,
+    to: Option<String>,
+) -> Result<String, String> {
+    let from_dir = state.log_dir().await;
+    let path = store::find_by_prefix(&from_dir, &id).map_err(|e| e.to_string())?;
+    let full_id = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let to_dir = match &to {
+        Some(pid) => state
+            .workspaces
+            .lock()
+            .await
+            .registry
+            .find(pid)
+            .map(Project::session_dir)
+            .ok_or_else(|| "that project is no longer in the list".to_string())?,
+        None => state.default_log_dir.clone(),
+    };
+    if to_dir == from_dir {
+        return Err("the chat is already there".into());
+    }
+    let was_active = match state.chats.forget(&full_id) {
+        Ok(open) => open,
+        Err(chats::Busy) => {
+            return Err("that chat is running a turn — move it when the turn ends".into());
+        }
+    };
+    state.agents.forget(&full_id);
+    if was_active {
+        adopt_agent_session(&state, None).await;
+    }
+    let moved = full_id.clone();
+    blocking(move || chat_ops::move_chat(&from_dir, &to_dir, &moved)).await?;
+    Ok(full_id)
+}
+
 // ---- projects ----------------------------------------------------------
 
 /// Ask the OS for a folder. `None` when the user cancelled.
@@ -8174,6 +8224,7 @@ fn main() {
             set_prompt_layer_choice,
             continue_session,
             delete_session,
+            move_session,
             restore_session,
             set_undo_menu,
             paste_into_focus,
