@@ -1343,7 +1343,7 @@ export function macIdleMs(): Promise<number | null> {
  * `TurnEvent` shape, on its own channel) while it works, and resolves with
  * what the pass did.
  */
-export function capture(args: PassArgs): Promise<CaptureReport> {
+export function capture(args: PassArgs, chat?: string): Promise<CaptureReport> {
   return invoke("capture", {
     provider: args.provider,
     model: args.model,
@@ -1351,6 +1351,9 @@ export function capture(args: PassArgs): Promise<CaptureReport> {
     thinking: args.thinking,
     binary: args.binary,
     safeMode: args.safeMode,
+    // "Save memory from this chat" (backlog 371): that one chat, whatever
+    // the cutoff; absent, the whole pass.
+    ...(chat ? { chat } : {}),
   });
 }
 

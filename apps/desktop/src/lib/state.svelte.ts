@@ -1993,6 +1993,39 @@ export async function runCapture(quiet = false): Promise<void> {
   await refreshDreamStatus();
 }
 
+/**
+ * "Save memory from this chat" (backlog 371): the capture pass over that one
+ * chat — an imported one too, whatever the cutoff — then the toast offers
+ * the Dream that files what it found into the project's memory or the vault.
+ */
+export async function saveMemoryFromChat(id: string): Promise<void> {
+  if (app.capturing || app.dreaming) {
+    addToast("a dream or a capture is already running");
+    return;
+  }
+  const target = passTarget();
+  app.capturing = true;
+  let found = 0;
+  try {
+    const r = await api.capture(target, id);
+    found = r.observations;
+    addToast(
+      (r.interrupted ? "save interrupted — " : "") +
+        `saved ${r.observations} observation${r.observations === 1 ? "" : "s"} from this chat` +
+        (r.refused > 0 ? ` (${r.refused} refused)` : "") +
+        (r.remaining > 0 ? "; the rest of it is left for the next save" : "") +
+        (r.observations > 0 ? " — Dream files them into memory" : ""),
+      r.observations > 0 ? { label: "Dream", run: () => void runDream() } : undefined,
+    );
+  } catch (e) {
+    addToast(`save memory failed: ${String(e)}`);
+  } finally {
+    app.capturing = false;
+  }
+  await refreshCaptureStatus();
+  if (found > 0) await refreshDreamStatus();
+}
+
 /** Interrupt the in-flight capture. The chat it stopped in is re-read next time. */
 export async function stopCapture(): Promise<void> {
   try {
