@@ -134,6 +134,16 @@ const SEND_FILE_INSTRUCTION: &str = " To give the user a file (a PDF, an image, 
      you made), use send_file: it attaches the file to your reply; a path in your text \
      does not.";
 
+/// The sentence for `mark_file` (nightshift backlog 377), present only
+/// when the server serves it — a server started with `--root` for a chat
+/// that writes. The CLI puts server instructions in the model's system
+/// prompt, and on this engine the tool is deferred, so this is where the
+/// model learns to tag what it makes.
+const MARK_FILE_INSTRUCTION: &str = " Each time you create a file or folder, call mark_file \
+     on it: for \"user\" when it is something the user should open (a report, a draft, a \
+     document they asked for), \"self\" when it is your own working material; the user's \
+     ones are listed for them in Nightloom.";
+
 /// The last sentence of [`INSTRUCTIONS`], present only when the tool is: a
 /// server started for an incognito chat (`--no-remember`) must not tell the
 /// model to reach for a tool it does not serve.
@@ -176,6 +186,7 @@ const OWN_EFFECTS: &[(&str, Effect)] = &[
     ("notion_read_page", Effect::ReadOnly),
     ("notion_list_children", Effect::ReadOnly),
     ("send_file", Effect::Session),
+    ("mark_file", Effect::Session),
 ];
 
 /// The effect of a call by the name the CLI reports it under: this
@@ -206,6 +217,12 @@ fn instructions_for(tools: &[Box<dyn Tool>]) -> String {
     }
     if sends {
         out.push_str(SEND_FILE_INSTRUCTION);
+    }
+    if tools
+        .iter()
+        .any(|t| t.def().name == crate::tools::mark_file::NAME)
+    {
+        out.push_str(MARK_FILE_INSTRUCTION);
     }
     out
 }
@@ -1000,6 +1017,17 @@ pub async fn serve(
             send_file::scratch_store()
         };
         tools.push(Box::new(crate::tools::SendFile::new(root.clone(), store)));
+        // `mark_file` (nightshift backlog 377): beside it, for a chat that
+        // writes — the marks go in the config dir, which an incognito or
+        // ephemeral chat promised not to touch.
+        if args.remember {
+            use crate::tools::mark_file;
+            tools.push(Box::new(crate::tools::MarkFile::new(
+                root.clone(),
+                mark_file::manifest_in(&config),
+                args.project.clone(),
+            )));
+        }
     }
     serve_tools(tools, reader, writer).await;
     Ok(())
@@ -1974,6 +2002,64 @@ mod tests {
         );
     }
 
+    /// Backlog 377: a server with `--root` for a chat that writes serves
+    /// `mark_file` and says in its instructions to tag what it makes; a
+    /// call over the wire lands in the config dir's manifest under the
+    /// project's id. A chat that writes nothing gets neither.
+    #[tokio::test]
+    async fn mark_file_is_served_to_a_chat_that_writes_and_records_in_the_manifest() {
+        use crate::tools::mark_file;
+        let (config, id) = fixture("mark-file");
+        let root = config.join("chat-folder");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("plan.md"), b"# plan").unwrap();
+        for remember in [true, false] {
+            let (client_side, server_side) = tokio::io::duplex(1 << 16);
+            let (sr, sw) = tokio::io::split(server_side);
+            let args = ServeArgs {
+                remember,
+                root: Some(root.clone()),
+                ..ServeArgs::for_project(Some(id.clone()))
+            };
+            let cfg = config.clone();
+            tokio::spawn(async move { serve(cfg, args, sr, sw).await.unwrap() });
+            let (r, mut w) = tokio::io::split(client_side);
+            let mut lines = BufReader::new(r).lines();
+            send(
+                &mut w,
+                r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+            )
+            .await;
+            let init = recv(&mut lines).await;
+            let says = init["result"]["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("call mark_file");
+            assert_eq!(says, remember, "{init}");
+            send(&mut w, r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#).await;
+            let list = recv(&mut lines).await;
+            let served = list["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t["name"] == "mark_file");
+            assert_eq!(served, remember, "{list}");
+            if remember {
+                send(
+                    &mut w,
+                    r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"mark_file","arguments":{"path":"plan.md","for":"user","title":"The plan"}}}"#,
+                )
+                .await;
+                let reply = recv(&mut lines).await;
+                assert_eq!(reply["result"]["isError"], false, "{reply}");
+            }
+        }
+        let listed = mark_file::for_user(&mark_file::manifest_in(&config), Some(&id), 10);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].title.as_deref(), Some("The plan"));
+        assert!(listed[0].path.ends_with("plan.md"));
+    }
+
     #[test]
     fn the_flag_parses_both_spellings_and_nothing_else() {
         let args = |s: &[&str]| s.iter().map(|a| a.to_string()).collect::<Vec<_>>();
@@ -2270,6 +2356,9 @@ mod tests {
         served.extend(dream_tools(&dream_target(&config)));
         served.push(Box::new(crate::agent::ask::PromptTool));
         served.push(Box::new(crate::tools::SendFile::new(&config, &config)));
+        served.push(Box::new(crate::tools::MarkFile::new(
+            &config, &config, None,
+        )));
         for tool in &served {
             let name = tool.def().name;
             assert_eq!(

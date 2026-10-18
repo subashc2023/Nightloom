@@ -24,6 +24,7 @@
 mod chats;
 mod compact;
 mod files;
+pub mod mark_file;
 mod remember;
 mod review;
 mod root;
@@ -36,6 +37,7 @@ mod web;
 
 pub use chats::{ChatDir, ChatDirs, ReadChat, SearchChats};
 pub use compact::{CompactContext, CompactSignal};
+pub use mark_file::MarkFile;
 pub use remember::Remember;
 pub use review::{Review, Reviewer, ReviewerSpec, bench};
 pub use root::{Root, VAULT_ALIAS};

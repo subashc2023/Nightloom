@@ -5,6 +5,9 @@
   import Icon from "./Icon.svelte";
   import { isMac } from "./platform";
   import { untrack } from "svelte";
+  import { baseName } from "./forYou";
+  import { forYou, openForYou, refreshForYou } from "./forYou.svelte";
+  import { relativeTime } from "./time";
 
   /**
    * The + chooser (nightshift backlog 140, 2026-09-17; blocker 195 for
@@ -31,6 +34,11 @@
   function recent(list: Note[]): Note[] {
     return [...list].sort((a, b) => (a.modified < b.modified ? 1 : -1)).slice(0, NOTE_CAP);
   }
+  /** Files the model marked for him in the open project (backlog 377),
+   *  the newest few, near the top: his "relatively near the top". */
+  const FOR_YOU_CAP = 5;
+  const forYouRows = $derived(forYou.rows.slice(0, FOR_YOU_CAP));
+  void refreshForYou(true);
   const projectNotes = $derived(app.project ? recent(app.notes) : []);
   const vaultNotes = $derived(app.knowledge ? recent(app.vault) : []);
 
@@ -96,6 +104,25 @@
       </span>
     </button>
   {/each}
+
+  {#if forYouRows.length > 0}
+    <div class="tab-chooser-sect">Files for you <span class="tab-chooser-key">newest first · the folder button has them all</span></div>
+    {#each forYouRows as r (r.path)}
+      <button
+        class="tab-chooser-row"
+        role="menuitem"
+        onclick={() => {
+          close();
+          void openForYou(r);
+        }}
+      >
+        <span class="tab-chooser-glyph" aria-hidden="true"><Icon name={r.folder ? "folder" : "note"} size={13} /></span>
+        <span class="tab-chooser-text"
+          ><span class="tab-chooser-name">{r.title ?? baseName(r.path)}</span><span class="tab-chooser-line">{r.rel} · {relativeTime(r.at)}{r.folder ? " · opens in the Finder" : ""}</span></span
+        >
+      </button>
+    {/each}
+  {/if}
 
   <div class="tab-chooser-sect">New note</div>
   {#each [["project", "in this project", !!app.project], ["knowledge", "in the knowledge base", !!app.knowledge]] as [scope, where, have] (scope)}

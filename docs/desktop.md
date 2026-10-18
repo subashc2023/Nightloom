@@ -824,6 +824,18 @@ build posts into nothing. `reveal` is a
 per-OS spawn (`explorer` / `open` / `xdg-open`) and is **not** a tool: nothing the
 model asks for opens a window on the user's desktop.
 
+**Open With → Nightloom** (nightshift backlog 378): `tauri.conf.json`'s
+`fileAssociations` declare `.md`/`.markdown` (`net.daringfireball.markdown`)
+and `.txt` (`public.plain-text`) as **Viewer, rank Alternate** — listed in
+Finder's Open With, never made the default by installing (blocker 1469: he
+sets the default himself, Get Info → Open with → Change All). macOS hands the
+files over as `RunEvent::Opened`, at launch or while running;
+`opened_files.rs` keeps them until the page takes them (`take_opened_files`,
+after `restoreTabs`, and again on each `files-opened` event) and remembers
+each for the process's life, so the file tab reads a file he chose without a
+chat to vouch for it. A note under the notes folder or the vault opens in the
+note view; anything else in the read-only file tab.
+
 ## MCP, reviewers and web keys
 
 MCP servers are cached in `AppState` keyed by workspace, **not** started per

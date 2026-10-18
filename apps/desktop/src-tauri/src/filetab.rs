@@ -51,6 +51,10 @@ pub enum Via {
     Folder,
     /// Outside them, but one of this chat's own tools wrote it.
     Written,
+    /// Chosen by him, not the model: a file opened from the Finder
+    /// (backlog 378) or one the model marked for him (backlog 377, confined
+    /// to a chat's folder when it was marked).
+    Chosen,
 }
 
 /// A file as the tab draws it.

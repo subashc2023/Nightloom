@@ -1673,6 +1673,9 @@ export async function init(): Promise<void> {
       // The tabs he left open (backlog 201), once the lists that decide
       // which survive are read and the engine is connected.
       await restoreTabs();
+      // Files opened with Nightloom from the Finder (backlog 378), after
+      // the restored tabs so none lands over them.
+      void import("./openedFiles.svelte").then((m) => m.installOpenedFiles()).catch(() => {});
     },
     mark: (step, ms, detail) => void api.startupMark(step, ms, detail).catch(() => {}),
     now: () => performance.now(),
