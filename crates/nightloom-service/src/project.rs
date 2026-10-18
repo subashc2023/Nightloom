@@ -973,6 +973,14 @@ impl Registry {
             fs::write(&agents, text)
                 .map_err(|e| format!("cannot write {}: {e}", agents.display()))?;
         }
+        // Version history from creation (backlog 372): the project's memory
+        // folder is a repository with a first commit — unless the folder is
+        // itself one (picked code), which already holds `.agents/`. Best
+        // effort: without git the project is still made, and the first
+        // dream tries again and says what failed.
+        if !crate::history::is_repo(&dir) {
+            let _ = crate::history::ensure(&dir.join(AGENTS_DIR));
+        }
         self.create(name, Some(dir), None)
     }
 }
@@ -2437,6 +2445,41 @@ mod tests {
         .unwrap();
         assert!(target.is_dir());
         assert!(!target.join("AGENTS.md").exists());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Backlog 372: a new project's `.agents` is a repository with a first
+    /// commit from the moment it is made; a picked folder that is already a
+    /// repository is left as it was (its own history holds `.agents/`).
+    #[test]
+    fn a_new_projects_memory_folder_has_history_from_creation() {
+        let dir = temp_dir("new-project-history");
+        let mut reg = Registry::load_from(dir.join("registry.json"));
+        let made = reg
+            .new_project(
+                "Fresh",
+                NewProjectFolder::Resolved(dir.join("projects").join("Fresh")),
+                None,
+            )
+            .unwrap();
+        let agents = made.workspace.unwrap().join(AGENTS_DIR);
+        assert!(crate::history::is_repo(&agents));
+        let log = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&agents)
+            .args(["log", "--format=%s"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&log.stdout).trim(),
+            crate::history::FIRST_COMMIT
+        );
+
+        let code = dir.join("code");
+        crate::history::start(&code).unwrap();
+        reg.new_project("Code", NewProjectFolder::Picked(code.clone()), None)
+            .unwrap();
+        assert!(!code.join(AGENTS_DIR).exists(), "no nested repository");
         fs::remove_dir_all(&dir).ok();
     }
 

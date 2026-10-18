@@ -22,6 +22,7 @@ pub mod credentials;
 pub mod credits;
 pub mod dream;
 pub mod grounding;
+pub mod history;
 pub mod import;
 pub mod keep;
 pub mod knowledge;

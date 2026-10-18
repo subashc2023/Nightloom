@@ -6679,7 +6679,15 @@ fn dream_git_line(
         ),
         _ => String::new(),
     };
-    match after {
+    // A folder with no history got one first (backlog 372) — said, not
+    // left to be found in `git log`.
+    let started = match before {
+        GitNote::Initialised { hash } => {
+            format!(" (it had no version history, so Nightloom started one first: {hash})")
+        }
+        _ => String::new(),
+    };
+    let line = match after {
         GitNote::Untouched => format!("{what} untouched"),
         GitNote::NotARepo => {
             format!("{what} is not in a git repository, so there is no rollback for it")
@@ -6687,8 +6695,10 @@ fn dream_git_line(
         GitNote::Committed { hash, .. } if hash.is_empty() => format!("{what} committed{swept}"),
         GitNote::Committed { hash, .. } => format!("{what} committed ({hash}){swept}"),
         GitNote::Clean => format!("{what} unchanged"),
+        GitNote::Initialised { hash } => format!("{what} version history started ({hash})"),
         GitNote::Failed(e) => format!("git snapshot of {what} failed: {e}"),
-    }
+    };
+    format!("{line}{started}")
 }
 
 /// Interrupt the in-flight dream, if any. Separate from `cancel` because a
