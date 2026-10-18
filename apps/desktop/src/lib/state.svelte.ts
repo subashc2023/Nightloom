@@ -6460,6 +6460,10 @@ function promoteParked(): void {
   bgTurns.set(id, t);
   fg = null;
   app.busy = false;
+  // The chat on screen is idle now: what he queued in it while the turn
+  // was parked goes, as its toast said (375 — the turn's own end no longer
+  // drains a chat that is not its own).
+  void providerDrains.at(-1)?.();
   // The meter on screen is the viewed chat's now (A4).
   if (app.budgetSession === id) {
     app.turnBudget = null;
