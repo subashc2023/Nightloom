@@ -58,6 +58,7 @@ mod draft_count;
 /// A file card's Open as a tab: which paths may be read, and reading them
 /// (nightshift backlog 161).
 mod filetab;
+mod for_you;
 mod model_list;
 /// Nightshift: the unattended runner's file contract, as commands.
 mod nightshift;
@@ -67,6 +68,8 @@ mod note_edit;
 /// compiled into a release (backlog 341): there it is a stub that is off.
 #[cfg(debug_assertions)]
 mod offscreen;
+/// Finder's Open With → Nightloom (nightshift backlog 378).
+mod opened_files;
 #[cfg(not(debug_assertions))]
 mod offscreen {
     /// Never in a release build.
@@ -997,6 +1000,9 @@ struct ChatSpec {
     /// The open project, for the shared-notes prompt layer. `None` for an
     /// unfiled chat, which has no docspace to index.
     project: Option<ProjectContext>,
+    /// The open project's id, for `mark_file`'s records (nightshift
+    /// backlog 377); `None` for an unfiled chat.
+    project_id: Option<String>,
     /// The user's knowledge vault, when this chat may reach it.
     ///
     /// Its own switch rather than riding on `tools`, because turning tools on
@@ -1233,6 +1239,21 @@ fn build_chat(
                 .push(Box::new(nightloom_service::tools::SendFile::new(
                     spec.workspace.clone(),
                     store,
+                )));
+        }
+        // `mark_file` (nightshift backlog 377): the model says who each
+        // file it makes is for; his are listed under the top bar's Files
+        // for you. Not for a chat that writes nothing — the marks go in the
+        // config dir.
+        if !spec.mode.writes_nothing()
+            && let Some(config) = project::config_dir()
+        {
+            use nightloom_service::tools::mark_file;
+            chat.tools
+                .push(Box::new(nightloom_service::tools::MarkFile::new(
+                    spec.workspace.clone(),
+                    mark_file::manifest_in(&config),
+                    spec.project_id.clone(),
                 )));
         }
         if let Some(chats) = &spec.chats {
@@ -1505,6 +1526,7 @@ async fn connect(
             name: p.name.clone(),
             notes_dir: p.notes_dir(),
         }),
+        project_id: active.as_ref().map(|p| p.id.clone()),
         chats: Some(chats),
         layers_off: layers_off(&state).await,
         layer_edits: layer_edits(&state).await,
@@ -7210,6 +7232,11 @@ async fn read_file_tab(
         }
         (None, None) => facts(None),
     };
+    // A file he opened from the Finder (backlog 378) or one the model
+    // marked for him (backlog 377) needs no chat to vouch for it.
+    if opened_files::is_opened(&target) || for_you::is_for_you(&target) {
+        return filetab::read(&target, filetab::Via::Chosen);
+    }
     let via = filetab::permitted(&target, &trees, &written)?;
     filetab::read(&target, via)
 }
@@ -8418,12 +8445,20 @@ fn main() {
             webtab::web_labels,
             webtab::web_focused,
             webtab::web_find,
+            for_you::for_you_files,
+            for_you::for_you_stamp,
+            for_you::for_you_reveal,
+            opened_files::take_opened_files,
         ]))
         .build(tauri::generate_context!())
         .expect("error while building Nightloom")
         .run(|app, event| match event {
             // The away server's quit push (item 268 step 3), best effort.
             tauri::RunEvent::Exit => away::on_exit(app),
+            // Finder's Open With → Nightloom (nightshift backlog 378): the
+            // file becomes a tab, whether the open launched the app or not.
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Opened { urls } => opened_files::on_opened(app, &urls),
             // The window's close button while work runs asks first (backlog
             // 308); with nothing running it closes, and the app quits, as
             // before.

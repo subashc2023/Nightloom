@@ -21,6 +21,7 @@
   import { foldToFit } from "./fold";
   const POP_WIDTH = 340;
   import NotificationCentre from "./NotificationCentre.svelte";
+  import ForYouButton from "./ForYouButton.svelte";
   import { chatKind, kindLabel, liveChats, openSession } from "./state.svelte";
   import { forkLine } from "./edit";
   // Item 299: Make main on the open fork, from the bar.
@@ -672,6 +673,9 @@
          … right next to the settings button; that might save some space"). -->
     <!-- The bell (nightshift backlog 069, agent I's hunk): what waits on
          him, five kinds; the Nightshift header carries the same one. -->
+    <!-- Files for you (nightshift backlog 377): what the model marked for
+         him, a dot for new ones. -->
+    <ForYouButton />
     <NotificationCentre />
   </div>
 

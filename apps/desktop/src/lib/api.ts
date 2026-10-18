@@ -82,6 +82,7 @@ import type {
 } from "./types";
 import { aimArgs, type Aim } from "./aim";
 import type { CouncilRequest } from "./council";
+import type { ForYouRow } from "./forYou";
 import type { PriorExchange } from "./noteEdit";
 import type { TurnUsageLine } from "./replyUsage";
 
@@ -1200,11 +1201,29 @@ export interface FileTabData {
   size: number;
   text: string | null;
   data: string | null;
-  /** Why it could be read: inside the chat's folders, or written by it. */
-  via: "folder" | "written";
+  /** Why it could be read: inside the chat's folders, written by it, or
+   *  chosen by him (opened from the Finder, or marked for him — 377/378). */
+  via: "folder" | "written" | "chosen";
 }
 export function readFileTab(path: string, chat: string | null): Promise<FileTabData> {
   return invoke("read_file_tab", { path, chat });
+}
+
+/** Files for him (nightshift backlog 377): the open project's, newest first. */
+export function forYouFiles(): Promise<ForYouRow[]> {
+  return invoke("for_you_files");
+}
+/** The manifest's length and time — re-read the list only when it moves. */
+export function forYouStamp(): Promise<string> {
+  return invoke("for_you_stamp");
+}
+/** A file marked for him shown in the Finder; a folder opened there. */
+export function forYouReveal(path: string): Promise<null> {
+  return invoke("for_you_reveal", { path });
+}
+/** Files opened with Nightloom from the Finder (backlog 378), each once. */
+export function takeOpenedFiles(): Promise<string[]> {
+  return invoke("take_opened_files");
 }
 
 /** Open an `https://` link in the browser. */
