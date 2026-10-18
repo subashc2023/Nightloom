@@ -651,6 +651,11 @@ impl Inbox {
         s.idle && !s.agents.is_empty() && s.tx.is_some()
     }
 
+    /// Whether a message he sent is written to the feed and not yet taken.
+    pub fn has_waiting(&self) -> bool {
+        !self.lock().waiting.is_empty()
+    }
+
     /// The ids the turn took since it began.
     pub fn taken(&self) -> Vec<String> {
         self.lock().taken.clone()

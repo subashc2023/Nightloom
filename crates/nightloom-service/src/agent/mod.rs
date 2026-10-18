@@ -1447,6 +1447,15 @@ impl PassSpec {
 }
 
 /// Runs turns by driving the CLI, reporting progress as [`TurnEvent`]s.
+/// A deferred call's resume runs on the stdin shape with nothing written
+/// (backlog 374). Measured on CLI 2.1.301 (nightshift `374-375-review.md`,
+/// M3): resumed that way, a session that holds **no** deferred call prints
+/// nothing and waits on stdin until its EOF, then exits 0 — where the old
+/// argv resume failed at once. So a resume that has printed nothing after
+/// this long has its feed closed and ends instead of hanging the turn.
+/// A real resume prints its first line within a second or two (M2: 0.7 s).
+pub const SILENT_RESUME: Duration = Duration::from_secs(30);
+
 pub struct ClaudeCodeAgent {
     spec: AgentSpec,
     /// The model id the CLI last resolved [`AgentSpec::model`] to.
@@ -1478,6 +1487,10 @@ pub struct ClaudeCodeAgent {
     /// seat's, an aside's or a name's — which mark when the CLI was
     /// spawned, said `init`, and sent its first text.
     timing: Option<std::sync::Arc<crate::turn_timing::TurnTiming>>,
+    /// How long a deferred call's resume on stdin may print nothing before
+    /// its feed is closed ([`SILENT_RESUME`]); a field so a test can
+    /// shorten it.
+    silent_resume: Duration,
     /// The next message's process, started while he types (item 256,
     /// [`warm`]); taken by [`Self::run_turn`] when it is the same command.
     warm: warm::WarmSlot,
@@ -1493,6 +1506,7 @@ impl ClaudeCodeAgent {
             refused: None,
             chair: std::sync::Mutex::new(None),
             timing: None,
+            silent_resume: SILENT_RESUME,
             warm: warm::WarmSlot::default(),
             inbox: inbox::Inbox::default(),
         }
@@ -1983,6 +1997,12 @@ impl ClaudeCodeAgent {
         // Why the read loop ended early, when it did (backlog 332).
         let mut read_error: Option<String> = None;
         let mut any_line = false;
+        // A deferred resume with nothing written (374): if it prints
+        // nothing at all, the session held no deferred call — close the
+        // feed so the CLI exits rather than waiting on stdin for ever.
+        let silent = tokio::time::sleep(self.silent_resume);
+        tokio::pin!(silent);
+        let mut watch_silence = piped && input.is_none();
 
         loop {
             let next = tokio::select! {
@@ -1990,6 +2010,21 @@ impl ClaudeCodeAgent {
                 _ = cancel.cancelled() => {
                     interrupted = true;
                     break;
+                }
+                _ = &mut silent, if watch_silence && !any_line => {
+                    watch_silence = false;
+                    // A message he sent in the silence is on its way in:
+                    // its turn will print, so the feed stays open — closed
+                    // now, the CLI would still run it and the window would
+                    // send it again as untaken.
+                    if inbox.as_ref().is_some_and(|i| i.has_waiting()) {
+                        continue;
+                    }
+                    if let Some(inbox) = &inbox {
+                        inbox.close();
+                    }
+                    held_stdin = None;
+                    continue;
                 }
                 line = lines.next_line() => line,
             };
@@ -4332,6 +4367,33 @@ cat >/dev/null
             "{args:?}"
         );
         assert!(!inbox.is_open(), "closed at the result");
+    }
+
+    /// 374 review: a deferred resume of a session that holds no deferred
+    /// call prints nothing and waits on stdin (measured, M3). The stand-in
+    /// does the same — reads stdin to its EOF, prints nothing, exits 0 — and
+    /// the resume must end on its own once the silence runs out, not hang.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_silent_deferred_resume_ends_instead_of_waiting_on_stdin() {
+        let dir = std::env::temp_dir().join(format!("nightloom-374s-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = AgentSpec::new(&dir);
+        s.binary = stand_in(&dir, "cat >/dev/null\n");
+        s.resume = Some("s-none".into());
+        let mut agent = ClaudeCodeAgent::new(s);
+        agent.silent_resume = Duration::from_millis(300);
+        let call = ask::DeferredCall {
+            id: "toolu_gone".into(),
+            name: "Bash".into(),
+            input: serde_json::json!({}),
+        };
+        let cancel = CancellationToken::new();
+        let mut on_event = |_e: TurnEvent| {};
+        let run = agent.resume_deferred(&call, &cancel, &mut on_event);
+        let ended = tokio::time::timeout(Duration::from_secs(10), run).await;
+        assert!(ended.is_ok(), "the resume hung on stdin");
+        assert!(!agent.inbox().is_open());
     }
 
     #[cfg(unix)]
