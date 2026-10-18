@@ -325,6 +325,12 @@ fn print_git(what: &str, before: &GitNote, after: &GitNote) {
     {
         println!("{DIM}pre-dream git snapshot of {what} failed: {e}{RESET}");
     }
+    // A folder with no history got one before the pass (backlog 372).
+    if let GitNote::Initialised { hash } = before {
+        println!(
+            "{DIM}{what} had no version history — started one ({hash}) before the pass{RESET}"
+        );
+    }
     // The pre-dream commit is the user's own uncommitted work, if they had
     // any: it has to be committed for the rollback to be total, since a note
     // the dream rewrites would otherwise lose the edit. Saying so is the
@@ -351,6 +357,9 @@ fn print_git(what: &str, before: &GitNote, after: &GitNote) {
             "{DIM}{what} committed ({hash}) — `git log -p` there is the audit trail{RESET}"
         ),
         GitNote::Clean => println!("{DIM}{what} unchanged{RESET}"),
+        GitNote::Initialised { hash } => {
+            println!("{DIM}{what} version history started ({hash}){RESET}")
+        }
         GitNote::Failed(e) => println!("{DIM}git snapshot of {what} failed: {e}{RESET}"),
     }
 }

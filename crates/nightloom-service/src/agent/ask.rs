@@ -920,6 +920,16 @@ pub fn run_hook(args: &[String]) -> std::io::Result<()> {
     out.flush()
 }
 
+/// What follows the Ask hook on its command line: it fails closed, as
+/// Playwright's gate does (`own_browser::FAIL_CLOSED`, 09d5fee). The CLI
+/// runs a call whose hook exits non-zero with any code but 2 (a
+/// "non-blocking error"), so a hook that could not run — its binary gone
+/// (127), its input unreadable (1) — would let a call Ask mode pauses run
+/// unasked; exit 2 blocks the call and hands the model the line on stderr
+/// (backlog 368). A hook that answered exits 0 and its reply passes as is.
+pub const FAIL_CLOSED: &str =
+    "|| { echo 'This call was not run: its approval check could not run.' >&2; exit 2; }";
+
 /// The `--settings` value that registers the hook: `command` is the hook
 /// program and its arguments joined for the shell the CLI runs hooks
 /// through, each word single-quoted, so a bundle path with a space in it
@@ -933,6 +943,7 @@ pub fn settings_json(hook: &[String], dir: &Path) -> String {
 pub fn settings_json_matching(hook: &[String], dir: &Path, matcher: &str) -> String {
     let mut words: Vec<String> = hook.iter().map(|w| shell_quote(w)).collect();
     words.push(shell_quote(&dir.to_string_lossy()));
+    words.push(FAIL_CLOSED.to_string());
     serde_json::json!({
         "hooks": {
             "PreToolUse": [{
@@ -1497,13 +1508,57 @@ mod tests {
         assert_eq!(entry["matcher"], MATCHER);
         assert_eq!(
             entry["hooks"][0]["command"],
-            "'/Applications/Night loom.app/Contents/MacOS/nightloom-desktop' '--permission-hook' '/tmp/ask/chat-1'"
+            format!(
+                "'/Applications/Night loom.app/Contents/MacOS/nightloom-desktop' '--permission-hook' '/tmp/ask/chat-1' {FAIL_CLOSED}"
+            )
         );
         assert_eq!(entry["hooks"][0]["type"], "command");
         assert!(MATCHER.contains("AskUserQuestion") && MATCHER.contains("ExitPlanMode"));
         assert!(
             !MATCHER.split('|').any(|t| t == "Read"),
             "a read never pauses the turn"
+        );
+    }
+
+    /// The Ask hook fails closed (backlog 368): with its binary missing
+    /// (exit 127) or its run failing (exit 1) the command exits 2, the
+    /// CLI's "block", never another code, which the CLI would treat as a
+    /// non-blocking error and run the call unasked.
+    #[cfg(unix)]
+    #[test]
+    fn an_ask_hook_that_cannot_run_blocks_the_call() {
+        let s = settings_json(
+            &[
+                "/nonexistent/nightloom-desktop".into(),
+                "--permission-hook".into(),
+            ],
+            Path::new("/tmp/ask/chat-1"),
+        );
+        let v: Value = serde_json::from_str(&s).unwrap();
+        let cmd = v["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let run = |cmd: &str| {
+            std::process::Command::new("sh")
+                .arg("-c")
+                .arg(cmd)
+                .stdin(std::process::Stdio::null())
+                .output()
+                .unwrap()
+        };
+        let out = run(&cmd);
+        assert_eq!(out.status.code(), Some(2), "{cmd}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("This call was not run"));
+        // A hook that ran and failed (exit 1) blocks too.
+        let out = run(&format!("false {FAIL_CLOSED}"));
+        assert_eq!(out.status.code(), Some(2));
+        // A hook that answered exits 0, its reply passed through as it was.
+        let out = run(&format!("echo '{{\"decision\":\"defer\"}}' {FAIL_CLOSED}"));
+        assert_eq!(out.status.code(), Some(0));
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            r#"{"decision":"defer"}"#
         );
     }
 

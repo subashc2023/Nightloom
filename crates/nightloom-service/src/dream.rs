@@ -27,8 +27,11 @@
 //!   …; since …"). Git still holds every replaced line.
 //! - **Git is the rollback.** If the vault is a repository, the pass commits
 //!   before and after, so `git log -p` is the audit trail and revert is
-//!   free. A vault that is not a repository gets one line saying rollback is
-//!   unavailable — never a `git init` on a folder the user owns.
+//!   free. ~~A vault that is not a repository gets one line saying rollback is
+//!   unavailable — never a `git init` on a folder the user owns.~~
+//!   (2026-10-18, backlog 372, his "go ahead":) a dream on a memory folder
+//!   with no history starts one first ([`crate::history`]) and says so — the
+//!   vault, or a project's `.agents` when its workspace is not a repository.
 //! - **The dream is the only writer the inbox trusts.** Sessions append
 //!   observations and read the vault; promotion happens here, batched, with
 //!   the whole vault open for dedupe and under version control. That
@@ -166,7 +169,8 @@ pub enum Target {
     Vault(PathBuf),
     /// One project's memory, `<workspace>/.agents/memory`: what is true of
     /// it alone. The workspace is kept because the snapshot runs there —
-    /// the memory folder is not a repository, the workspace may be. The id
+    /// the memory folder is not a repository, the workspace may be — or in
+    /// `<workspace>/.agents` when that is its own repository (backlog 372). The id
     /// is what the project's store is keyed on, which is where a proposal
     /// for its `AGENTS.md` is filed.
     Project {
@@ -607,6 +611,13 @@ pub enum GitNote {
     /// which says a snapshot ran and found nothing to commit.
     Untouched,
     NotARepo,
+    /// The folder had no history; the pass started one (backlog 372) — a
+    /// repository and a first commit holding what was there. A `before`
+    /// state only: it stands in for the pre-dream snapshot, whose job the
+    /// first commit already did.
+    Initialised {
+        hash: String,
+    },
     Clean,
     Committed {
         hash: String,
@@ -806,7 +817,12 @@ async fn run_with(
         let dir = g.target.dir();
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
-        filed[i].git_before = snapshot_target(&g.target, "nightloom: pre-dream snapshot");
+        // A folder with no history gets one first (backlog 372); its first
+        // commit holds what was there, so it is the pre-dream snapshot.
+        filed[i].git_before = match start_history(&g.target) {
+            Some(note) => note,
+            None => snapshot_target(&g.target, "nightloom: pre-dream snapshot"),
+        };
         // The always-loaded file, quoted under the preamble's own cap so the
         // model proposes against what every conversation actually reads —
         // and handed to the tool, so its guard judges against the same text.
@@ -1283,6 +1299,7 @@ impl GitNote {
         match self {
             GitNote::Untouched => String::new(),
             GitNote::NotARepo => "not in a git repository, so there is no rollback".into(),
+            GitNote::Initialised { hash } => format!("version history started ({hash})"),
             GitNote::Clean => "unchanged".into(),
             GitNote::Committed { hash, .. } if hash.is_empty() => "committed".into(),
             GitNote::Committed { hash, .. } => format!("committed ({hash})"),
@@ -1438,6 +1455,18 @@ fn snapshot_target(target: &Target, message: &str) -> GitNote {
 fn snapshot_target_with(target: &Target, message: &str, with_instructions: bool) -> GitNote {
     match target {
         Target::Vault(dir) => snapshot(dir, message),
+        // `.agents` with its own history (backlog 372): the notes commit
+        // there, whole; `AGENTS.md` sits outside it, in the workspace, and
+        // commits there only when the workspace is a repository.
+        Target::Project { workspace, .. }
+            if crate::history::is_repo(&workspace.join(AGENTS_DIR)) =>
+        {
+            let note = snapshot_in(&workspace.join(AGENTS_DIR), &[], message);
+            if with_instructions {
+                let _ = snapshot_in(workspace, &[Path::new(INSTRUCTION_FILE)], message);
+            }
+            note
+        }
         Target::Project { workspace, .. } => {
             let agents = Path::new(AGENTS_DIR);
             let file = Path::new(INSTRUCTION_FILE);
@@ -1447,6 +1476,30 @@ fn snapshot_target_with(target: &Target, message: &str, with_instructions: bool)
                 snapshot_in(workspace, &[agents], message)
             }
         }
+    }
+}
+
+/// Start the target's history if it has none (backlog 372): the vault, or a
+/// project's `.agents` — unless the workspace is itself a repository, which
+/// already holds `.agents/` (a nested repository would hide the notes from
+/// it). `None` when there was history already; a failure is reported as the
+/// pre-dream snapshot's, and the pass goes on without rollback.
+fn start_history(target: &Target) -> Option<GitNote> {
+    let dir = match target {
+        Target::Vault(dir) => dir.clone(),
+        Target::Project { workspace, .. } => {
+            if crate::history::is_repo(workspace) {
+                return None;
+            }
+            workspace.join(AGENTS_DIR)
+        }
+    };
+    match crate::history::ensure(&dir) {
+        Ok(None) => None,
+        Ok(Some(hash)) => Some(GitNote::Initialised { hash }),
+        Err(e) => Some(GitNote::Failed(format!(
+            "could not start version history: {e}"
+        ))),
     }
 }
 
@@ -2397,9 +2450,41 @@ mod tests {
         assert_eq!(split, [(Some("Lanternfish"), 2), (None, 1)]);
         assert!(outcome.summary.contains("filed into the project"));
         assert!(outcome.summary.contains("filed into the vault"));
-        // Neither folder is a repository; the vault's pair says so.
-        assert_eq!(outcome.git_after, GitNote::NotARepo);
-        assert_eq!(outcome.filed[0].git_after, GitNote::NotARepo);
+        // ~~Neither folder is a repository; the vault's pair says so.~~
+        // (2026-10-18, backlog 372:) neither folder had history, so the pass
+        // started one in each first and says so, then committed its work:
+        // the project's in its own `.agents`, its workspace left alone.
+        for f in &outcome.filed {
+            assert!(
+                matches!(f.git_before, GitNote::Initialised { .. }),
+                "{:?}",
+                f.git_before
+            );
+            assert!(
+                matches!(f.git_after, GitNote::Committed { .. }),
+                "{:?}",
+                f.git_after
+            );
+        }
+        assert!(crate::history::is_repo(&workspace.join(AGENTS_DIR)));
+        assert!(!crate::history::is_repo(&workspace));
+        assert!(crate::history::is_repo(&vault));
+        assert!(
+            outcome.filed[0]
+                .git_before
+                .brief()
+                .starts_with("version history started (")
+        );
+        let tracked = Command::new("git")
+            .arg("-C")
+            .arg(workspace.join(AGENTS_DIR))
+            .args(["ls-files"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&tracked.stdout).trim(),
+            "memory/stack.md"
+        );
         // Everything was consumed.
         assert!(observe::backlog_in(&config).pending.is_empty());
     }

@@ -906,6 +906,135 @@ async fn run_with(
     Ok(Some(outcome))
 }
 
+// ---- one chat, on his ask (nightshift backlog 371) -------------------------
+
+/// "Save memory from this chat": the capture pass over one log, by its id
+/// (the file stem the sidebar knows it by), whatever the cutoff — an
+/// imported chat keeps its old date, and [`CaptureState::since`] exists to
+/// keep exactly those out of the *automatic* pass; asking for one by name
+/// is the opposite case. Read from its watermark (a chat captured before
+/// offers only what is new since), never deferred for being short, and
+/// read to its end in up to [`TURN_CAP`] turns. Observations carry the
+/// chat's id and the date of the message they came from, as on the
+/// automatic pass, so the next dream files them where they belong.
+///
+/// `Ok(None)` when the chat has nothing unread. An id no session dir holds
+/// is an error, as is an incognito chat: it was started so that nothing it
+/// said reaches memory.
+pub async fn run_chat(
+    chat: &mut Chat,
+    config: &Path,
+    id: &str,
+    cancel: &CancellationToken,
+    on_event: &mut (dyn FnMut(TurnEvent) + Send),
+) -> Result<Option<CaptureOutcome>, String> {
+    run_chat_with(Engine::Provider(chat), config, id, cancel, on_event).await
+}
+
+/// [`run_chat`] on the Claude Code engine, as [`run_on_agent`] is [`run`].
+pub async fn run_chat_on_agent(
+    pass: &PassSpec,
+    config: &Path,
+    id: &str,
+    cancel: &CancellationToken,
+    on_event: &mut (dyn FnMut(TurnEvent) + Send),
+) -> Result<Option<CaptureOutcome>, String> {
+    let scratch = config.join(AGENT_SCRATCH);
+    fs::create_dir_all(&scratch)
+        .map_err(|e| format!("could not create {}: {e}", scratch.display()))?;
+    run_chat_with(Engine::Agent(pass), config, id, cancel, on_event).await
+}
+
+/// The session dir holding the log `id`, and the log's path. Matched on the
+/// whole stem, never a prefix, and only for an id that cannot be a path.
+pub fn find_chat(config: &Path, id: &str) -> Option<(SessionDir, PathBuf)> {
+    if !store::is_log_id(id) {
+        return None;
+    }
+    session_dirs(config).into_iter().find_map(|d| {
+        let logs = store::log_files(&d.dir).ok()?;
+        let path = logs
+            .into_iter()
+            .map(|l| l.path)
+            .find(|p| p.file_stem().is_some_and(|s| s == id))?;
+        Some((d, path))
+    })
+}
+
+async fn run_chat_with(
+    engine: Engine<'_>,
+    config: &Path,
+    id: &str,
+    cancel: &CancellationToken,
+    on_event: &mut (dyn FnMut(TurnEvent) + Send),
+) -> Result<Option<CaptureOutcome>, String> {
+    let _lock = crate::pass_lock::take(config)?;
+    let (dir, path) = find_chat(config, id)
+        .ok_or_else(|| format!("no chat {id} in any project's chats or the unfiled ones"))?;
+    if store::mode_of(&path).unread_by_others() {
+        return Err("this chat is incognito — nothing it said is saved to memory".into());
+    }
+    let state = state_in(config);
+    let key = path.to_string_lossy().into_owned();
+    let len = fs::metadata(&path)
+        .map_err(|e| format!("could not read {}: {e}", path.display()))?
+        .len();
+    let mut from = match state.consumed.get(&key) {
+        Some(&n) if n <= len => n,
+        _ => 0,
+    };
+    if from >= len {
+        return Ok(None);
+    }
+    let mut pass = Pass {
+        engine,
+        config,
+        standing: prompt::read_capped(&config.join(prompt::INSTRUCTION_FILE)),
+        dry_run: false,
+        cancel,
+        on_event,
+        state,
+        outcome: CaptureOutcome::default(),
+        usd: 0.0,
+        unpriced: 0,
+        turns: 0,
+    };
+    while from < len {
+        if pass.turns >= TURN_CAP {
+            pass.outcome.remaining = 1;
+            break;
+        }
+        let excerpt = fold(&path, from, BATCH_BUDGET)?;
+        if excerpt.text.is_empty() {
+            // Nothing said in the rest: consumed without a turn, as on the
+            // automatic pass.
+            pass.state.consumed.insert(key.clone(), excerpt.end);
+            break;
+        }
+        let end = excerpt.end;
+        let batch = Batch {
+            source: dir.project.clone(),
+            excerpts: vec![excerpt],
+        };
+        if !pass.turn(&batch).await? {
+            break;
+        }
+        if end <= from {
+            // A fold that made no progress would loop for ever.
+            break;
+        }
+        from = end;
+    }
+    if !pass.outcome.interrupted {
+        write_state(config, &pass.state)?;
+    }
+    let mut outcome = pass.outcome;
+    // A chat read across several turns counts once.
+    outcome.logs_read = outcome.logs_read.min(1);
+    outcome.cost_usd = (pass.unpriced == 0 && pass.usd > 0.0).then_some(pass.usd);
+    Ok(Some(outcome))
+}
+
 /// One run's working state, so a turn is a method rather than a function
 /// with a dozen arguments.
 struct Pass<'a> {
@@ -1553,6 +1682,87 @@ mod tests {
         assert!(state.since.is_some(), "a run keeps the cutoff");
         set_since_in(&config, None).unwrap();
         assert_eq!(pending_count_in(&config), 1);
+    }
+
+    /// Backlog 371: "Save memory from this chat" reads that one log even
+    /// when the cutoff keeps it out of the automatic pass and it is too
+    /// short to be worth a turn there; its observations carry the chat's
+    /// id and a date, and a second ask finds nothing new.
+    #[tokio::test]
+    async fn one_chat_is_captured_on_ask_whatever_the_cutoff() {
+        let (config, unfiled) = fixture("one-chat");
+        let old = write_log(&unfiled, 1);
+        settle(&old);
+        let other = write_log(&unfiled, 2);
+        set_since_in(&config, Some(Utc::now() - chrono::TimeDelta::minutes(30))).unwrap();
+        let id = old.file_stem().unwrap().to_string_lossy().into_owned();
+
+        let (mut chat, seen) = chat_recording(vec![says("user_stated | Prefers tabs.")]);
+        let cancel = CancellationToken::new();
+        let outcome = run_chat(&mut chat, &config, &id, &cancel, &mut |_| {})
+            .await
+            .unwrap()
+            .expect("the old chat was unread");
+        assert_eq!((outcome.logs_read, outcome.observations), (1, 1));
+        assert_eq!(outcome.per_project, [(UNFILED.to_string(), 1)]);
+        let asked = all_text(&seen);
+        assert!(asked.contains("question 0"), "{asked}");
+
+        let pending = observe::backlog_in(&config).pending;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].obs.chat.as_deref(), Some(id.as_str()));
+        assert_eq!(pending[0].obs.kind, ObservationKind::UserStated);
+        // Dated to the message it came from, not to this run.
+        assert!(pending[0].obs.at <= Utc::now());
+
+        // Only that chat moved; the cutoff is kept for the automatic pass.
+        let state = state_in(&config);
+        assert!(
+            state
+                .consumed
+                .contains_key(&old.to_string_lossy().into_owned())
+        );
+        assert!(
+            !state
+                .consumed
+                .contains_key(&other.to_string_lossy().into_owned())
+        );
+        assert!(state.since.is_some());
+
+        // Asked again: nothing new in it.
+        let mut chat = chat_scripted(vec![says("user_stated | never asked")]);
+        assert!(
+            run_chat(&mut chat, &config, &id, &cancel, &mut |_| {})
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// An id no session dir holds, or one shaped like a path, is refused;
+    /// an incognito chat is refused by name and never read.
+    #[tokio::test]
+    async fn one_chat_capture_refuses_unknown_and_incognito_chats() {
+        let (config, unfiled) = fixture("one-chat-refuse");
+        let mut inc = Session::incognito(&unfiled).unwrap();
+        inc.record_user("PRIVATE-QUESTION".to_string());
+        let inc_id = inc.id.clone();
+        drop(inc);
+        let cancel = CancellationToken::new();
+        for id in ["no-such-chat", "../unfiled", ""] {
+            let mut chat = chat_scripted(vec![]);
+            let err = run_chat(&mut chat, &config, id, &cancel, &mut |_| {})
+                .await
+                .unwrap_err();
+            assert!(err.contains("no chat"), "{id}: {err}");
+        }
+        let (mut chat, seen) = chat_recording(vec![says("none")]);
+        let err = run_chat(&mut chat, &config, &inc_id, &cancel, &mut |_| {})
+            .await
+            .unwrap_err();
+        assert!(err.contains("incognito"), "{err}");
+        assert!(seen.lock().unwrap().is_empty(), "the model saw nothing");
+        assert!(observe::backlog_in(&config).pending.is_empty());
     }
 
     /// Cancelled before the first turn: nothing appended, no watermark.

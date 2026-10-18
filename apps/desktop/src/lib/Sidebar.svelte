@@ -1,5 +1,6 @@
 <script lang="ts">
   import { canLeaveProject, canDeleteChat } from "./state.svelte";
+  import { saveMemoryFromChat } from "./state.svelte";
   import { tip } from "./tip";
   import { renamedTo, selectAllOnMount } from "./renameField";
   import {
@@ -282,6 +283,12 @@
     const s = rowMenu?.s;
     rowMenu = null;
     if (s) void makeMainChat(s.id);
+  }
+  // Backlog 371: the capture pass over this one chat, then Dream offered.
+  function rowSaveMemory() {
+    const s = rowMenu?.s;
+    rowMenu = null;
+    if (s) void saveMemoryFromChat(s.id);
   }
   function rowDelete() {
     const s = rowMenu?.s;
@@ -948,6 +955,14 @@
                 {/if}
               </div>
             {/if}
+          {/if}
+          {#if rowMenu.s.mode !== "incognito" && rowMenu.s.mode !== "ephemeral"}
+            <button
+              role="menuitem"
+              disabled={app.capturing || app.dreaming}
+              use:tip={"Read this chat for things worth remembering — an imported or old one too — then offer Dream to file them"}
+              onclick={rowSaveMemory}>Save memory from this chat</button
+            >
           {/if}
           <button role="menuitem" disabled={!!rowMenu?.s && !canDeleteChat(rowMenu.s.id)} onclick={rowDelete}>Delete…</button>
           <AsideMenuItems session={rowMenu.s.id} onpick={() => (rowMenu = null)} />

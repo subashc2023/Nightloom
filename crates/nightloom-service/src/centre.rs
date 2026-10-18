@@ -117,6 +117,26 @@ pub fn dream_commits_in(config: &Path, vault: &Path, limit: usize) -> Vec<DreamC
         let Some(workspace) = p.workspace.clone() else {
             continue;
         };
+        let project = || {
+            Some(ProjectRef {
+                id: p.id.clone(),
+                name: p.name.clone(),
+            })
+        };
+        // `.agents` with its own history (backlog 372): its commits, whole;
+        // and the workspace's for `AGENTS.md`, when the workspace is a
+        // repository too.
+        let agents = workspace.join(AGENTS_DIR);
+        if crate::history::is_repo(&agents) {
+            out.extend(commits_in(&agents, &[], limit, project()));
+            out.extend(commits_in(
+                &workspace,
+                &[Path::new(INSTRUCTION_FILE)],
+                limit,
+                project(),
+            ));
+            continue;
+        }
         out.extend(commits_in(
             &workspace,
             &[Path::new(AGENTS_DIR), Path::new(INSTRUCTION_FILE)],
@@ -147,6 +167,12 @@ pub fn dream_repo(config: &Path, vault: &Path, repo: &Path) -> Result<PathBuf, S
         if let Some(w) = p.workspace.as_deref()
             && let Ok(w) = fs::canonicalize(w)
         {
+            // Its `.agents`, when that is its own repository (backlog 372).
+            if let Ok(a) = fs::canonicalize(w.join(AGENTS_DIR))
+                && crate::history::is_repo(&a)
+            {
+                allowed.push(a);
+            }
             allowed.push(w);
         }
     }
@@ -706,6 +732,46 @@ mod tests {
         assert!(err.contains("not the vault or a project's folder"), "{err}");
         assert!(dream_repo(&config, &vault, Path::new("/nonexistent/x")).is_err());
         let _ = fs::remove_dir_all(&config);
+    }
+
+    /// A project whose `.agents` is its own repository (backlog 372): the
+    /// dream's commits there are listed with that folder as their repo, and
+    /// the window may name it for a diff or a revert.
+    #[test]
+    fn a_projects_own_agents_history_is_listed_and_allowed() {
+        let Some(vault) = repo() else { return };
+        let workspace = std::env::temp_dir().join(format!(
+            "nightloom-centre-ws-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let agents = workspace.join(AGENTS_DIR);
+        fs::create_dir_all(agents.join("memory")).unwrap();
+        crate::history::start(&agents).unwrap();
+        fs::write(agents.join("memory").join("stack.md"), "tokio\n").unwrap();
+        let dream = commit_all(&agents, "nightloom: dream — consolidated 1 observations");
+        let config = workspace.with_extension("cfg");
+        fs::create_dir_all(&config).unwrap();
+        Registry::load_in(&config)
+            .add(&workspace, Some("p".into()))
+            .unwrap();
+
+        let commits = dream_commits_in(&config, &vault, 5);
+        assert_eq!(commits.len(), 1, "{commits:?}");
+        assert_eq!(commits[0].hash, dream);
+        assert_eq!(commits[0].project.as_ref().unwrap().name, "p");
+        assert_eq!(
+            fs::canonicalize(&commits[0].repo).unwrap(),
+            fs::canonicalize(&agents).unwrap()
+        );
+        assert_eq!(commits[0].files[0].path, "memory/stack.md");
+        assert_eq!(
+            dream_repo(&config, &vault, &agents).unwrap(),
+            fs::canonicalize(&agents).unwrap()
+        );
     }
 
     #[test]

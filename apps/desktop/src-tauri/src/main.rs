@@ -6788,7 +6788,15 @@ fn dream_git_line(
         ),
         _ => String::new(),
     };
-    match after {
+    // A folder with no history got one first (backlog 372) — said, not
+    // left to be found in `git log`.
+    let started = match before {
+        GitNote::Initialised { hash } => {
+            format!(" (it had no version history, so Nightloom started one first: {hash})")
+        }
+        _ => String::new(),
+    };
+    let line = match after {
         GitNote::Untouched => format!("{what} untouched"),
         GitNote::NotARepo => {
             format!("{what} is not in a git repository, so there is no rollback for it")
@@ -6796,8 +6804,10 @@ fn dream_git_line(
         GitNote::Committed { hash, .. } if hash.is_empty() => format!("{what} committed{swept}"),
         GitNote::Committed { hash, .. } => format!("{what} committed ({hash}){swept}"),
         GitNote::Clean => format!("{what} unchanged"),
+        GitNote::Initialised { hash } => format!("{what} version history started ({hash})"),
         GitNote::Failed(e) => format!("git snapshot of {what} failed: {e}"),
-    }
+    };
+    format!("{line}{started}")
 }
 
 /// Interrupt the in-flight dream, if any. Separate from `cancel` because a
@@ -6892,6 +6902,9 @@ async fn capture(
     thinking: Option<String>,
     binary: Option<String>,
     safe_mode: Option<bool>,
+    // "Save memory from this chat" (backlog 371): that one log, by id,
+    // whatever the cutoff; absent, the whole pass.
+    chat: Option<String>,
 ) -> Result<CaptureReport, String> {
     let Some(config) = project::config_dir() else {
         return Err("no user config directory — there are no session logs to read".into());
@@ -6910,13 +6923,34 @@ async fn capture(
     let mut on_event = move |event: TurnEvent| {
         let _ = emitter.emit("capture-event", &event);
     };
+    let chat_id = chat;
     let outcome = match pass_engine(&provider)? {
         // The Claude Code engine (2026-09-16): one no-tool `claude -p` per
         // batch, the reply parsed as on the other engine.
         PassEngine::Agent => {
             let pass = pass_spec(binary, model, safe_mode)?;
-            nightloom_service::capture::run_on_agent(&pass, &config, false, &cancel, &mut on_event)
-                .await?
+            match &chat_id {
+                Some(id) => {
+                    nightloom_service::capture::run_chat_on_agent(
+                        &pass,
+                        &config,
+                        id,
+                        &cancel,
+                        &mut on_event,
+                    )
+                    .await?
+                }
+                None => {
+                    nightloom_service::capture::run_on_agent(
+                        &pass,
+                        &config,
+                        false,
+                        &cancel,
+                        &mut on_event,
+                    )
+                    .await?
+                }
+            }
         }
         PassEngine::Provider(kind) => {
             let thinking = match thinking {
@@ -6935,11 +6969,37 @@ async fn capture(
             chat.thinking = thinking;
             chat.context_limit = nightloom_service::context_limit(kind, &chat.model);
             chat.price = nightloom_service::price(kind, &chat.model);
-            nightloom_service::capture::run(&mut chat, &config, false, &cancel, &mut on_event)
-                .await?
+            match &chat_id {
+                Some(id) => {
+                    nightloom_service::capture::run_chat(
+                        &mut chat,
+                        &config,
+                        id,
+                        &cancel,
+                        &mut on_event,
+                    )
+                    .await?
+                }
+                None => {
+                    nightloom_service::capture::run(
+                        &mut chat,
+                        &config,
+                        false,
+                        &cancel,
+                        &mut on_event,
+                    )
+                    .await?
+                }
+            }
         }
     }
-    .ok_or_else(|| "nothing left to capture".to_string())?;
+    .ok_or_else(|| {
+        if chat_id.is_some() {
+            "nothing new in this chat to save — it was saved to memory already".to_string()
+        } else {
+            "nothing left to capture".to_string()
+        }
+    })?;
     Ok(CaptureReport {
         observations: outcome.observations,
         logs_read: outcome.logs_read,
