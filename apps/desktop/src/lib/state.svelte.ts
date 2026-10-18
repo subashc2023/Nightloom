@@ -94,7 +94,8 @@ import { runLaunch } from "./launch.svelte";
 import { withProject, withoutProject } from "./projectRows";
 import { EDITABLE_LAYERS } from "./types";
 import { LIST_SCOPE, NEW_CHAT_SCOPE, UndoHistory } from "./undo";
-import { chatName, notifyNeedsYou, notifyTurnEnd } from "./notify";
+import { chatName, notifyNeedsYou, notifyTurnEnd, postHeldNeedsYou } from "./notify";
+import { onAway, watchPresence } from "./away.svelte";
 import { RESUME_TEXT, SleepWatch, loadSleepPrefs, pushPowerPrefs, type Woke } from "./sleep";
 import { asideFollowUp, asideQuestion, type AsideQuote } from "./asideQuote";
 import type { AsideAnchor } from "./asideCard";
@@ -1574,6 +1575,10 @@ export async function init(): Promise<void> {
     // window is behind something else nothing on screen says so.
     void notifyNeedsYou(bannerChat(), e.payload);
   });
+  // A card that landed while he looked posts its banner when he leaves with
+  // it still waiting (nightshift backlog 373).
+  watchPresence();
+  onAway(() => void postHeldNeedsYou(approvalWaits));
   // The phone page (nightshift backlog 091, Shape B; item 246 wave 1):
   // a message, an answer, a stop or a chat action from the phone reaches
   // this window as an event and runs through the same state functions a
@@ -7238,6 +7243,14 @@ export function resumeAfterLimit(): void {
 
 /** The chat as a banner names it (nightshift backlog 079): the open
  *  session's title, else the first message of the turn just sent. */
+/** Whether a call still waits on his answer, here or in a background chat. */
+function approvalWaits(id: string): boolean {
+  return (
+    app.pendingApprovals.some((r) => r.id === id) ||
+    Object.values(app.background).some((b) => b.approvals.some((r) => r.id === id))
+  );
+}
+
 function bannerChat(): string {
   const s = app.sessions.find((x) => x.id === app.activeSessionId);
   const sent = [...app.events].reverse().find((e) => e.event === "user_message");

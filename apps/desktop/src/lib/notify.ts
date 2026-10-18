@@ -217,14 +217,50 @@ export async function notifyTurnEnd(args: {
   }
 }
 
-/** Post the needs-you banner, on the same terms. */
+/**
+ * Calls that arrived while the window was in front (nightshift backlog
+ * 373): no banner then, but if he leaves while the call still waits — he
+ * watched the question card land, then switched apps — it posts on the way
+ * out. Keyed by the call's id; at most `HELD_MAX`, oldest dropped.
+ */
+const held = new Map<string, { chat: string; req: ApprovalRequest }>();
+const HELD_MAX = 32;
+
+/** Post the needs-you banner, on the same terms — except that a call the
+ *  focused window received is held for `postHeldNeedsYou`. */
 export async function notifyNeedsYou(chat: string, req: ApprovalRequest, prefs?: NotifyPrefs): Promise<void> {
   const p = prefs ?? loadNotifyPrefs();
-  if (!p.needsYou || windowFocused()) return;
+  if (!p.needsYou) return;
+  if (windowFocused()) {
+    held.delete(req.id);
+    held.set(req.id, { chat, req });
+    if (held.size > HELD_MAX) held.delete(held.keys().next().value as string);
+    return;
+  }
   try {
     await api.notify(needsYouTitle(chat, req), needsYouBody(req));
   } catch {
     // See above.
+  }
+}
+
+/**
+ * The window just went behind (`away.svelte.ts`'s `onAway`): post the held
+ * banner of each call that still waits — `stillWaiting` asks the state, so
+ * a card answered while he looked posts nothing. The hold empties either way.
+ */
+export async function postHeldNeedsYou(stillWaiting: (id: string) => boolean, prefs?: NotifyPrefs): Promise<void> {
+  const calls = [...held.values()];
+  held.clear();
+  const p = prefs ?? loadNotifyPrefs();
+  if (!p.needsYou) return;
+  for (const { chat, req } of calls) {
+    if (!stillWaiting(req.id)) continue;
+    try {
+      await api.notify(needsYouTitle(chat, req), needsYouBody(req));
+    } catch {
+      // See above.
+    }
   }
 }
 
