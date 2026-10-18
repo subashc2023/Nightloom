@@ -37,6 +37,7 @@
   import { hasBoxDraft, newDraftKey } from "./drafts.svelte";
   import TerminalButton from "./TerminalButton.svelte";
   import { forkLine } from "./edit";
+  import { FORK_GLYPH, forkMark } from "./forkMark";
   import type { SidebarRow } from "./forkTree";
   import { THREADS_CLOSED_KEY, newInThreadTip, threadGroups, threadKey } from "./thread";
   import { openThreadView, refreshThreadList, threadList } from "./threadPanel.svelte";
@@ -490,6 +491,10 @@
 
   {#snippet chatRow(r: SidebarRow, group: string | null = null)}
     {@const s = r.meta}
+    <!-- A fork carries ⑂ before its title (backlog 379), its parent named
+         on hover; `r.meta` is the row as drawn, so a version made main
+         over a top-level original has no mark. -->
+    {@const fork = forkMark(s, app.sessions)}
     <div class="session-item" class:active={rowLit(s.id)} class:fork={r.depth > 0} style:--depth={r.depth > 0 ? r.depth : undefined}>
       {#if renaming === s.id}
         <!-- Opens with the whole title selected (backlog 376): typing
@@ -529,7 +534,7 @@
           ondragend={endContentDrag}
         >
           <span class="snippet"
-            >{#if s.mode === "incognito"}<span class="mark" use:tip={"Incognito: writes nothing, unread by other chats"}>{MODE_GLYPH.incognito}</span> {/if}{#if hasBoxDraft(s.id)}<span class="mark draft" role="img" aria-label="has a draft" use:tip={"has a draft"}></span> {/if}{s.title ?? s.first_user ?? "empty session"}</span
+            >{#if s.mode === "incognito"}<span class="mark" use:tip={"Incognito: writes nothing, unread by other chats"}>{MODE_GLYPH.incognito}</span> {/if}{#if hasBoxDraft(s.id)}<span class="mark draft" role="img" aria-label="has a draft" use:tip={"has a draft"}></span> {/if}{#if fork}<span class="mark fork" role="img" aria-label={fork.tip} use:tip={fork.tip}>{FORK_GLYPH}</span> {/if}{s.title ?? s.first_user ?? "empty session"}</span
           >
           <!-- A fork says where it came from (backlog 062): the
                parent's name as its own row shows it, or that the

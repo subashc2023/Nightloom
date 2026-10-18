@@ -52,7 +52,8 @@
  * the model holds only its address and title; the page itself is a child
  * webview the pane places over its content (`webtabs.svelte.ts`).
  */
-import type { NoteScope } from "./types";
+import type { NoteScope, SessionMeta } from "./types";
+import { forkMark, type ForkMark } from "./forkMark";
 import type { IconName } from "./icons";
 
 export type TabContent =
@@ -717,6 +718,21 @@ export function tabTitle(
       }
     }
   }
+}
+
+/** A chat tab's fork mark (backlog 379): ⑂ before the title and the
+ *  parent's name on hover, so a fork never reads the same as the chat it
+ *  came from. Null for every other tab, a new chat, and a hand-off. */
+export function tabFork(
+  content: TabContent,
+  sessions: Pick<SessionMeta, "id" | "title" | "first_user" | "forked_from">[],
+): ForkMark | null {
+  if (content.kind !== "chat" || content.session === null) return null;
+  const id = content.session;
+  return forkMark(
+    sessions.find((s) => s.id === id),
+    sessions,
+  );
 }
 
 /** The strip's glyph for a kind — an `Icon` name. */
