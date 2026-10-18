@@ -273,7 +273,7 @@
               disabled={resetAtMs == null || resetIsPast}
               use:tip={resetAtMs == null ? "the usage probe has no reset time" : resetIsPast ? "the window has already reset" : `usage resets ${clockOf(resetAtMs - RESET_MARGIN_MS)}; launches two minutes after`}
               onclick={() => pickStart("reset")}
-            >when usage resets{#if resetAtMs != null && !resetIsPast} · {clockOf(resetAtMs - RESET_MARGIN_MS).replace(/^at /, "")}{/if}</button>
+            >when usage resets{#if resetAtMs != null && !resetIsPast}{" · "}{clockOf(resetAtMs - RESET_MARGIN_MS).replace(/^at /, "")}{/if}</button>
             <button type="button" role="radio" aria-checked={startMode === "at"} class="ns-chip preset" class:on={startMode === "at"} onclick={() => pickStart("at")}>at a time</button>
           </span>
           {#if startMode === "at"}
@@ -286,7 +286,7 @@
             />
           {/if}
           <span class="hint-sm">
-            {#if startMode === "now"}launches when you press the button{:else if startMode === "reset"}{#if resetAtMs != null && !resetIsPast}5h usage {app.nightshift.usage?.five_hour ?? "?"}% · launches {clockOf(resetAtMs)}{#if usageStale} · from a stale usage sample{/if}{:else if resetIsPast}the window has already reset{#if usageStale} (stale sample){/if} — pick a time, or launch now{:else}the usage probe has no reset time{/if}{:else if startAtMs != null}launches {clockOf(startAtMs)}{:else}not a time yet{/if}
+            {#if startMode === "now"}launches when you press the button{:else if startMode === "reset"}{#if resetAtMs != null && !resetIsPast}5h usage {app.nightshift.usage?.five_hour ?? "?"}% · launches {clockOf(resetAtMs)}{#if usageStale}{" · "}from a stale usage sample{/if}{:else if resetIsPast}the window has already reset{#if usageStale} (stale sample){/if} — pick a time, or launch now{:else}the usage probe has no reset time{/if}{:else if startAtMs != null}launches {clockOf(startAtMs)}{:else}not a time yet{/if}
           </span>
         </div>
 

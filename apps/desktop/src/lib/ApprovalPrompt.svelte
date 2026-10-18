@@ -999,11 +999,13 @@
     min-width: 0;
   }
   /* The status line under the buttons wraps in a narrow pane rather than
-     running out of the card. */
-  .ask.qcard .actions {
+     running out of the card — on every card since item 360 (the approval
+     card's "⏎ allow · esc deny · the note goes with either" ran past its
+     border at the narrowest window and 125 %). */
+  .ask .actions {
     flex-wrap: wrap;
   }
-  .ask.qcard .actions .keys {
+  .ask .actions .keys {
     white-space: normal;
     min-width: 0;
   }

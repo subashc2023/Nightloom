@@ -283,7 +283,7 @@
           {#if status?.started}
             <span class="sub">
               {hhmmss(status.started)} → {hhmmss(status.updated)}
-              {#if duration(status.started, status.updated)} · {duration(status.started, status.updated)}{/if}
+              {#if duration(status.started, status.updated)}{" · "}{duration(status.started, status.updated)}{/if}
             </span>
           {/if}
         </div>
@@ -320,7 +320,7 @@
                   {@const w = outcomeWord(u)}
                   <tr>
                     <td class="ns-mono">{u.n}</td>
-                    <td><span class="ns-mono">{u.item_id ?? "—"}</span>{#if u.pass != null} · pass {u.pass}{/if}{#if u.landing} <span class="ns-pill grey">landing</span>{/if}</td>
+                    <td><span class="ns-mono">{u.item_id ?? "—"}</span>{#if u.pass != null}{" · "}pass {u.pass}{/if}{#if u.landing} <span class="ns-pill grey">landing</span>{/if}</td>
                     <td><span class="ns-pill {pillClass(w)}">{w}</span></td>
                     <td class="ns-mono">
                       {#if u.commit}

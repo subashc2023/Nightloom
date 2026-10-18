@@ -510,7 +510,7 @@
                parent's name as its own row shows it, or that the
                parent is gone. -->
           <span class="meta"
-            >{s.id.slice(0, 8)}{#if s.kind === "chat"} · chat{/if}{#if s.mode === "incognito"} · incognito{/if} · {relativeTime(s.modified)}{#if s.thread && s.thread !== group} · <span class="thread" use:tip={`Works from the research thread ${s.thread}`}>◇ {s.thread}</span>{/if}{#if r.depth === 0 && forkLine(s, app.sessions)} · <span class="from" use:tip={"Forked from that chat; the parent is unchanged"}>{forkLine(s, app.sessions)}</span>{/if}</span
+            >{s.id.slice(0, 8)}{#if s.kind === "chat"}{" · "}chat{/if}{#if s.mode === "incognito"}{" · "}incognito{/if} · {relativeTime(s.modified)}{#if s.thread && s.thread !== group}{" · "}<span class="thread" use:tip={`Works from the research thread ${s.thread}`}>◇ {s.thread}</span>{/if}{#if r.depth === 0 && forkLine(s, app.sessions)}{" · "}<span class="from" use:tip={"Forked from that chat; the parent is unchanged"}>{forkLine(s, app.sessions)}</span>{/if}</span
           >
         </button>
         <!-- The origin's forks (backlog 207): a chevron and the count,
@@ -1657,8 +1657,11 @@
   }
   /* The box with its count (backlog 117): the count sits inside the box's
      right edge, in the accent, and reopens the panel. */
+  /* Inset as the New chat row above it (item 360): flush, the field's
+     right edge ran under the sidebar's border at every zoom. */
   .search-wrap {
     position: relative;
+    margin: 0 0.75rem;
   }
   .search-wrap:has(.search-cnt) .search {
     padding-right: 2.8rem;

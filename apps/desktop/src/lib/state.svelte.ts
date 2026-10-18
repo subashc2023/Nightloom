@@ -422,7 +422,33 @@ export function toggleSidebar(): void {
  *  so the column no longer jumps; the saved width is untouched. */
 export const SEARCH_COLUMN = SEARCH_COLUMN_MAX;
 export function sidebarColumn(): number {
-  return app.layout.sidebarWidth + Math.round(searchGrowth.current);
+  return sidebarShown() + Math.round(searchGrowth.current);
+}
+
+/**
+ * The most of the window the sidebar may take (nightshift item 360, the
+ * zoom audit). Its width is CSS px, so ⌘+ (page zoom) grows it with
+ * everything else while the window's CSS width shrinks: at the narrowest
+ * window (700 points) and 125 % the 260 px sidebar took 46 % of a 560 px
+ * page, and the chat was left 300 px — the top bar on two rows, the
+ * approval card scrolling sideways, the welcome composer's Send cut off.
+ * Past this share the sidebar is drawn narrower (never under its minimum);
+ * the saved width is untouched and comes back as the window widens.
+ */
+export const SIDEBAR_SHARE = 0.34;
+export function fitSidebar(saved: number, viewport: number): number {
+  return Math.round(Math.max(SIDEBAR_MIN, Math.min(saved, viewport * SIDEBAR_SHARE)));
+}
+/** The window's CSS width — what `innerWidth` reads, page zoom included. */
+const viewport = $state({ w: typeof window === "undefined" ? 1440 : window.innerWidth });
+if (typeof window !== "undefined") {
+  window.addEventListener("resize", () => {
+    viewport.w = window.innerWidth;
+  });
+}
+/** The sidebar's drawn width: the saved one, fitted to the window. */
+export function sidebarShown(): number {
+  return fitSidebar(app.layout.sidebarWidth, viewport.w);
 }
 
 export function setSidebarWidth(px: number): void {

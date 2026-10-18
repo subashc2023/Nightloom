@@ -917,7 +917,7 @@
                 <span class="gloss">The CLI's built-in tools this session offers, then each server's tools by short name.{#if chatPolicy} Struck through: still listed — the list is what keeps the cache warm — and refused when called, since this chat is a Chat now (Kind, in the rail).{/if}</span>
               </div>
               <span class="spacer"></span>
-              <span class="meta">{init.tools.length}{#if chatPolicy} · {builtinTools.filter(refused).length} refused{/if}</span>
+              <span class="meta">{init.tools.length}{#if chatPolicy}{" · "}{builtinTools.filter(refused).length} refused{/if}</span>
             </div>
             <div class="chips">
               {#each builtinTools as t (t)}<span class="chip" class:refused={refused(t)} use:tip={refused(t) ? "Refused on a Chat: a call to it gets an error result" : ""}>{t}</span>{/each}

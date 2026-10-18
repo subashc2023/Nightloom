@@ -551,7 +551,7 @@
       <span class="dot" class:unknown={!app.connection}></span>
       {#if app.connection}
         <span class="model-name"
-          >{kindLabel(chatKind(app.events), app.connection.engine)}<span class="fold2"> · {engineName}</span></span
+          >{kindLabel(chatKind(app.events), app.connection.engine)}<span class="fold2">{" · "}{engineName}</span></span
         >
       {:else}
         <!-- "not connected" only once it is true (item 220): while the

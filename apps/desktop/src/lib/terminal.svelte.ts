@@ -22,7 +22,7 @@
  */
 import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
-import { app, addToast, menuInterceptors, registerTerminalHooks } from "./state.svelte";
+import { app, addToast, menuInterceptors, registerTerminalHooks, sidebarShown } from "./state.svelte";
 import { TERM_DRAG } from "./tabs";
 import {
   TERM_DEFAULT_HEIGHT,
@@ -239,7 +239,7 @@ export async function initTerminalEvents(): Promise<void> {
  * (`.pane-dock`'s parent), or the window's less the sidebar.
  */
 function firstGrid(pane: string | null): { cols: number; rows: number } {
-  let width = window.innerWidth - (app.layout.sidebarCollapsed ? 0 : app.layout.sidebarWidth);
+  let width = window.innerWidth - (app.layout.sidebarCollapsed ? 0 : sidebarShown());
   try {
     const slot = document.querySelector<HTMLElement>(`.pane-dock[data-pane="${pane ?? app.tabs.focused}"]`);
     const column = slot?.parentElement ?? document.querySelector<HTMLElement>(".main");
