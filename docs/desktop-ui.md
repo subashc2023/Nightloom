@@ -1798,6 +1798,17 @@ message, else *New chat*. Nothing is sent anywhere: no push, no phone
 (blocker 078). The pure parts — the preference, the copy, the file count —
 are in `src/lib/notify.ts`, pinned by `notify.test.ts`.
 
+Since 2026-10-18 (nightshift backlog 373) a needs-you call the focused
+window received is **held**, not dropped: if he leaves (the native window
+loses focus or the document is hidden — `away.svelte.ts`'s `onAway`) while
+the call still waits, its banner posts then; a card answered before he
+leaves posts nothing. He watched a question card land, switched apps, and
+got no banner — the decision had been made once, at arrival. Measured the
+same day: Nightloom's banners do reach Notification Centre on macOS 27
+(usernoted logs "Presenting … as banner" for `app.nightloom.desktop`),
+though `com.apple.ncprefs.plist` has no entry for it. Pinned by
+`notify373.test.ts`.
+
 A third switch since 2026-09-16 evening (nightshift backlog 116): *When
 Usage → Refresh now finishes*, the one banner that is posted to a focused
 window too and whose click opens a page — [usage-ledger.md](usage-ledger.md)
