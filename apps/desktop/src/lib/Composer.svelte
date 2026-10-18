@@ -61,7 +61,7 @@
     noteThread,
   } from "./handoff.svelte";
   import ThreadPicker from "./ThreadPicker.svelte";
-  import { chatThread, refreshThreadFlags, injectIntoTurn, sendNowRow } from "./state.svelte";
+  import { chatThread, refreshThreadFlags, injectIntoTurn, sendNowRow, openChatKey, takeQueued } from "./state.svelte";
   import { injectChip, queueHeadLabel } from "./midTurn";
   import { rowsOf } from "./subagentRows";
   import { draftEstimate, draftEstimateTitle, draftExact, draftExactTitle, EXACT_TOKENS_FROM, fmtTokens } from "./tokens";
@@ -113,7 +113,6 @@
     setDraftText,
     shiftQueue,
     forgetMove,
-    queueAfterTurn,
     ranKey,
     takeBackQueued,
     updateAttachment,
@@ -1734,7 +1733,7 @@
    *  torn down by a view change (the New chat page has its own) may hold
    *  from before (backlog 375). */
   function liveKey(): string {
-    return aside ? key : draftKey(app.activeSessionId, app.project?.id, app.pendingMode);
+    return aside ? key : openChatKey();
   }
 
   /** Why the queue is waiting rather than sending itself, if it is. */
@@ -1762,13 +1761,12 @@
     // Only the open chat's own queue, and after a turn only when that turn
     // was this chat's (backlog 375): a message never leaves for a chat it
     // was not queued in.
-    const live = liveKey();
-    if (from !== undefined && queueAfterTurn(from, live) === null) return;
-    // The held row is where this message leaves from (backlog 194).
-    const head = readDraft(live).queue[0];
-    if (head) launch("chat", document.querySelector(`.queue-row[data-queue-id="${head.id}"] .queue-text`));
-    const q = shiftQueue(live);
+    // `takeQueued` (state.svelte.ts) is where that rule lives and is tested.
+    const q = takeQueued(key, aside !== null, from);
     if (!q) return;
+    // The held row is where this message leaves from (backlog 194); its
+    // element is still in the DOM until the next flush.
+    launch("chat", document.querySelector(`.queue-row[data-queue-id="${q.id}"] .queue-text`));
     // The row Nightloom queued while he was away is the wrap-up going.
     const wrapUp = handoffHere && q.id === handoff.queuedId;
     if (wrapUp) beginWrapUp(app.activeSessionId);
@@ -1951,7 +1949,10 @@
     // says so; the box keeps everything meanwhile.
     const sendKey = key;
     if (!(await conversionsDone(sendKey))) return;
-    if (sendKey !== key || !app.connection || app.busy) return;
+    // Against the open chat read now, not `key` (375 review): a composer
+    // torn down by a switch during the wait holds its old key, and its
+    // box's words would go to the chat open now.
+    if (sendKey !== key || sendKey !== liveKey() || !app.connection || app.busy) return;
     if (filesBlocked(attachments)) return;
     const pending = attachments.slice();
     const typed = text;
@@ -1979,7 +1980,7 @@
     if ((!t && attachments.length === 0) || !app.connection || app.busy || sendHeld()) return;
     const sendKey = key;
     if (!(await conversionsDone(sendKey))) return;
-    if (sendKey !== key || !app.connection || app.busy) return;
+    if (sendKey !== key || sendKey !== liveKey() || !app.connection || app.busy) return;
     if (filesBlocked(attachments)) return;
     noteActivity();
     const pending = attachments.slice();

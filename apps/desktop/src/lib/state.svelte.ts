@@ -26,6 +26,10 @@ import {
   clearInjected,
   markDelivered,
   moveQueue,
+  queueAfterTurn,
+  ranKey,
+  shiftQueue,
+  type QueuedMessage,
   markInjected,
   markSendNow,
   settleInjected,
@@ -5900,6 +5904,10 @@ const stillRunningAsked = new Set<string>();
 export async function injectIntoTurn(key: string, q: { id: number; text: string; attachments: Attachment[] }): Promise<void> {
   const turn = fg;
   if (!turn || !app.busy || app.parked) return;
+  // Only into the row's own chat's turn (375 review): a caller holding a
+  // stale key (a composer torn down by a chat or project switch) must not
+  // hand another chat's row to the turn on screen.
+  if (!turnOwnsKey(turn, key)) return;
   const wire = midTurnWire(q.attachments);
   if (!wire || (!q.text.trim() && wire.images.length + wire.documents.length === 0)) return;
   const id = crypto.randomUUID();
@@ -5919,6 +5927,39 @@ export async function injectIntoTurn(key: string, q: { id: number; text: string;
     if (!later.some((r) => r.key === key && r.qid === q.id)) later.push({ key, qid: q.id });
     injectLater.set(turn.key, later);
   }
+}
+
+/**
+ * Whether a queued row under draft key `key` belongs to `turn`'s chat
+ * (nightshift backlog 375, review 2026-10-18): the turn's chat id, or —
+ * for a New chat's first turn — its pending key or the chat that key
+ * became. Anything else is another chat's message.
+ */
+export function turnOwnsKey(turn: { chat: string | null; pendingKey?: string | null }, key: string): boolean {
+  if (turn.chat !== null && turn.chat === key) return true;
+  const p = turn.pendingKey;
+  return p != null && (p === key || ranKey(p) === key);
+}
+
+/** The open chat's draft key, read from the app now (375). */
+export function openChatKey(): string {
+  return draftKey(app.activeSessionId, app.project?.id, app.pendingMode);
+}
+
+/**
+ * The queued row a drain sends next (nightshift backlog 375): taken from
+ * the **open** chat's queue — `send()` goes to the open chat, so the row
+ * must come from the same place — never from `composerKey`, which a
+ * composer torn down by a chat or project switch holds stale (Svelte
+ * 5.56: a derived read after its owner is destroyed returns its last
+ * value, `derived_inert`; measured 2026-10-18). An aside's key is its own
+ * and stable. After a turn (`from`, the key the turn left from), only when
+ * that turn was the open chat's. `null`: nothing goes.
+ */
+export function takeQueued(composerKey: string, aside: boolean, from?: string): QueuedMessage | null {
+  const live = aside ? composerKey : openChatKey();
+  if (from !== undefined && queueAfterTurn(from, live) === null) return null;
+  return shiftQueue(live);
 }
 
 /**
