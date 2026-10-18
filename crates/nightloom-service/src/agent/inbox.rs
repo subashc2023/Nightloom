@@ -109,7 +109,9 @@ pub struct Relayed {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SendError {
     /// No turn is running with an open stdin (none at all, a slash command
-    /// on argv, a deferred call's resume): the window keeps it queued.
+    /// on argv, ~~a deferred call's resume~~ — on stdin since backlog 374;
+    /// between a deferral and its answer no process runs): the window keeps
+    /// it queued, and tries again when the turn's next process starts.
     NotRunning,
     /// The id is not a uuid — the CLI compares it as one.
     BadId,

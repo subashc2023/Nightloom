@@ -1767,16 +1767,26 @@ impl ClaudeCodeAgent {
     /// is refused. The caller has already pointed [`AgentSpec::resume`] at
     /// the session that deferred. Events stream as for any turn; the first
     /// is the deferred call's own result, paired by name from `call`.
+    ///
+    /// Since backlog 374 (2026-10-18) it runs on the stdin shape with the
+    /// chat's inbox, as the chat's own turn does: measured on 2.1.301
+    /// (nightshift `notes/runner-design/374-report.md`, M2), `-p
+    /// --input-format stream-json --resume <id>` with stdin held open and
+    /// nothing written resumes the deferred call on its own, and a line
+    /// written later is taken at once. Before, the resume had no stdin, so
+    /// a message he sent while it ran — four background subagents' worth,
+    /// in his case — waited for the very end.
     pub async fn resume_deferred(
         &self,
         call: &DeferredCall,
         cancel: &CancellationToken,
         on_event: &mut (dyn FnMut(TurnEvent) + Send),
     ) -> Result<AgentOutcome, AgentError> {
-        self.drive(
+        self.drive_as(
             &self.spec,
             None,
             Translator::resuming(call),
+            true,
             cancel,
             on_event,
         )
@@ -1860,10 +1870,11 @@ impl ClaudeCodeAgent {
         let attached = input
             .as_ref()
             .is_some_and(|i| !i.images.is_empty() || !i.documents.is_empty());
-        let piped =
-            attached || (chat && input.as_ref().is_some_and(|i| warm::suits_stdin(&i.text)));
+        // The chat's deferred resume (no input) goes on stdin too (374):
+        // the stdin shape with nothing written resumes the deferred call.
+        let piped = attached || (chat && input.as_ref().is_none_or(|i| warm::suits_stdin(&i.text)));
         let (args, stdin) = match &input {
-            Some(_) if piped => (spec.stdin_args(), Stdio::piped()),
+            _ if piped => (spec.stdin_args(), Stdio::piped()),
             // Null rather than inherited: with a terminal on the other end
             // the CLI waits three seconds for piped input that is never
             // coming, on every turn.
@@ -1871,7 +1882,9 @@ impl ClaudeCodeAgent {
             None => (spec.resume_args(), Stdio::null()),
         };
         let key = warm::Key::of(spec, &args);
-        let taken = if chat && piped {
+        // Never for a deferred resume: a waiting process is one that has
+        // not yet been given its message, which a resume has none of.
+        let taken = if chat && piped && input.is_some() {
             self.warm.take(&key)
         } else {
             None
@@ -1919,12 +1932,13 @@ impl ClaudeCodeAgent {
         // waiting, at a Stop, or when the process ends.
         let inbox = (chat && piped).then(|| self.inbox.clone());
         let mut held_stdin: Option<tokio::sync::mpsc::UnboundedSender<String>> = None;
-        if piped
-            && let Some(input) = &input
-            && let Some(mut stdin) = child.stdin.take()
-        {
+        if piped && let Some(mut stdin) = child.stdin.take() {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-            let _ = tx.send(protocol::user_line(input));
+            // A deferred resume (374) has no opening line: the CLI resumes
+            // the call on its own and the feed carries only what he sends.
+            if let Some(input) = &input {
+                let _ = tx.send(protocol::user_line(input));
+            }
             match &inbox {
                 Some(inbox) => inbox.open(tx),
                 // Any other process takes its one message, and the EOF once
@@ -4256,6 +4270,68 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path.to_string_lossy().into_owned()
+    }
+
+    /// Backlog 374: a deferred call's resume runs on the stdin shape with
+    /// the chat's inbox, so a message he sends while it runs — while its
+    /// subagents run, in his case — is written to the CLI and taken, rather
+    /// than held for the end of the last subagent. The stand-in records its
+    /// argv, waits for his line, and says it started it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_deferred_resume_takes_a_message_he_sends_while_it_runs() {
+        let dir = std::env::temp_dir().join(format!("nightloom-374-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let argv = dir.join("argv");
+        let body = format!(
+            r##"printf '%s\n' "$@" > '{argv}'
+printf '%s\n' '{{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"claude-haiku-4-5","permissionMode":"default","session_id":"s-374"}}'
+read -r line
+id=$(printf '%s' "$line" | sed 's/.*"uuid":"\([^"]*\)".*/\1/')
+printf '%s\n' "{{\"type\":\"command_lifecycle\",\"command_uuid\":\"$id\",\"state\":\"started\"}}"
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"ok","session_id":"s-374","stop_reason":"end_turn","usage":{{"input_tokens":1,"output_tokens":1}}}}'
+cat >/dev/null
+"##,
+            argv = argv.display()
+        );
+        let mut s = AgentSpec::new(&dir);
+        s.binary = stand_in(&dir, &body);
+        s.resume = Some("s-374".into());
+        let agent = ClaudeCodeAgent::new(s);
+        let inbox = agent.inbox();
+        let id = uuid::Uuid::new_v4().to_string();
+        let call = ask::DeferredCall {
+            id: "toolu_d".into(),
+            name: "Bash".into(),
+            input: serde_json::json!({}),
+        };
+        let cancel = CancellationToken::new();
+        let mut delivered = Vec::new();
+        {
+            let mut on_event = |e| match e {
+                TurnEvent::AgentInit { .. } => inbox.send(&id, "while it runs").unwrap(),
+                TurnEvent::MessageDelivered { id, .. } => delivered.push(id),
+                _ => {}
+            };
+            let run = agent.resume_deferred(&call, &cancel, &mut on_event);
+            tokio::time::timeout(std::time::Duration::from_secs(10), run)
+                .await
+                .expect("the stand-in ended on the EOF after its result")
+                .unwrap();
+        }
+        assert_eq!(delivered, vec![id.clone()]);
+        let args = std::fs::read_to_string(&argv).unwrap();
+        let args: Vec<&str> = args.lines().collect();
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["--input-format", "stream-json"]),
+            "{args:?}"
+        );
+        assert!(
+            args.windows(2).any(|w| w == ["--resume", "s-374"]),
+            "{args:?}"
+        );
+        assert!(!inbox.is_open(), "closed at the result");
     }
 
     #[cfg(unix)]
