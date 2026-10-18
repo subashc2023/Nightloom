@@ -136,7 +136,8 @@ describe("the message-edit box's place", () => {
 describe("355: the wiring", () => {
   it("the composer holds a switched-to key's scroll, puts it back on each re-measure, and records his scrolls", () => {
     expect(composerSrc).toContain("scrollHold.start(k, performance.now());");
-    expect(composerSrc).toMatch(/ta\.style\.height = growHeight\([^\n]*\n[^\n]*\n\s*putScrollBack\(\);/);
+    // Within a few lines of the re-measure (360's overflowY line sits between).
+    expect(composerSrc).toMatch(/ta\.style\.height = growHeight\([^\n]*\n(?:[^\n]*\n){1,4}\s*putScrollBack\(\);/);
     expect(composerSrc).toContain("onscrollcapture={recordScroll}");
     for (const ev of ["onkeydowncapture", "onbeforeinputcapture", "onwheel"])
       expect(composerSrc).toContain(`${ev}={() => scrollHold.release()}`);
