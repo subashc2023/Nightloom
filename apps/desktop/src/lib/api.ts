@@ -553,6 +553,12 @@ export function deleteSession(id: string, active: string | null = null): Promise
   return invoke("delete_session", { id, active });
 }
 
+/** Move a chat of the open project's list into project `to`, or to the
+ *  unfiled chats when `to` is null (nightshift backlog 370); its full id. */
+export function moveSession(id: string, to: string | null): Promise<string> {
+  return invoke("move_session", { id, to });
+}
+
 /** Put a deleted session back from the trash (nightshift backlog 064). */
 export function restoreSession(id: string): Promise<string> {
   return invoke("restore_session", { id });

@@ -435,6 +435,117 @@ pub fn move_to_trash(log_dir: &Path, path: &Path, full_id: &str) -> Result<(), S
     std::fs::rename(path, &dest).map_err(|e| e.to_string())
 }
 
+/// Move chat `full_id` from the sessions folder `from_dir` to `to_dir` —
+/// another project's, or the unfiled one (backlog 370, *Move to project*;
+/// the app's form of `bin/refile-chats.py`, backlog 369). The id is kept,
+/// so the chat's drafts, queued rows and tabs, all keyed by it, still name
+/// it. Refused, with nothing moved, when `to_dir` already has a log of
+/// that name. The log is touched after the move, so the capture pass
+/// (cut off by mtime, `capture.json`'s `since`) reads it again with its
+/// new project as the source. The folders' `.listing.json` / `.index.json`
+/// caches re-validate against the files and rebuild themselves.
+///
+/// Never a copy and a delete unchecked: a same-volume move is one
+/// `rename`; across volumes the bytes are copied, synced, read back and
+/// compared before the original goes ([`copy_verified`]).
+///
+/// The chat's per-chat side files go with it, best-effort: `ask/<id>/`
+/// (its turn budget and ask scratch) and `prompt-held/<id>.json`. Returns
+/// the log's new path.
+pub fn move_chat(from_dir: &Path, to_dir: &Path, full_id: &str) -> Result<PathBuf, String> {
+    if !store::is_log_id(full_id) {
+        return Err(format!("not a chat id: {full_id:?}"));
+    }
+    if from_dir == to_dir {
+        return Err("the chat is already there".into());
+    }
+    let name = format!("{full_id}.jsonl");
+    let src = from_dir.join(&name);
+    if !src.is_file() {
+        return Err(format!("no chat {full_id} in {}", from_dir.display()));
+    }
+    let dest = to_dir.join(&name);
+    if dest.exists() {
+        return Err(format!(
+            "the other project already has a chat {full_id}; nothing was moved"
+        ));
+    }
+    std::fs::create_dir_all(to_dir).map_err(|e| e.to_string())?;
+    move_file(&src, &dest)?;
+    // Touched, so capture reads it again under its new project.
+    if let Ok(f) = std::fs::OpenOptions::new().append(true).open(&dest) {
+        let _ = f.set_modified(std::time::SystemTime::now());
+    }
+    for (from, to) in [
+        (
+            from_dir.join("ask").join(full_id),
+            to_dir.join("ask").join(full_id),
+        ),
+        (
+            from_dir.join("prompt-held").join(format!("{full_id}.json")),
+            to_dir.join("prompt-held").join(format!("{full_id}.json")),
+        ),
+    ] {
+        if from.exists()
+            && !to.exists()
+            && let Some(parent) = to.parent()
+            && std::fs::create_dir_all(parent).is_ok()
+        {
+            // A side file left behind costs a turn budget, never the chat.
+            let _ = std::fs::rename(&from, &to);
+        }
+    }
+    Ok(dest)
+}
+
+/// `rename`, or — across volumes, where a rename cannot go — a copy that
+/// is verified before the original is removed.
+fn move_file(src: &Path, dest: &Path) -> Result<(), String> {
+    match std::fs::rename(src, dest) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {
+            copy_verified(src, dest)?;
+            std::fs::remove_file(src).map_err(|e| {
+                format!("the chat was copied but its old file could not be removed: {e}")
+            })
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Copy `src` to `dest` through a temporary file beside `dest`, synced to
+/// disk and read back byte for byte before it takes `dest`'s name. On any
+/// difference the copy is removed and `src` is untouched.
+pub fn copy_verified(src: &Path, dest: &Path) -> Result<(), String> {
+    use std::io::Write;
+    let bytes = std::fs::read(src).map_err(|e| e.to_string())?;
+    let tmp = dest.with_extension(format!("moving-{}", uuid::Uuid::new_v4()));
+    let write = || -> std::io::Result<()> {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(&bytes)?;
+        f.sync_all()
+    };
+    if let Err(e) = write() {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("could not copy the chat: {e}"));
+    }
+    match std::fs::read(&tmp) {
+        Ok(back) if back == bytes => {}
+        _ => {
+            let _ = std::fs::remove_file(&tmp);
+            return Err("the chat's copy did not read back the same; nothing was moved".into());
+        }
+    }
+    if dest.exists() {
+        let _ = std::fs::remove_file(&tmp);
+        return Err("a chat of that name appeared in the other project; nothing was moved".into());
+    }
+    std::fs::rename(&tmp, dest).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        e.to_string()
+    })
+}
+
 /// Whether `<log_dir>/trash/` holds chat `id` (plain or stamped).
 pub fn in_trash(log_dir: &Path, id: &str) -> bool {
     let trash = log_dir.join("trash");
@@ -898,6 +1009,122 @@ pub fn restore_cli_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- Move to project (backlog 370) ----
+
+    fn move_scratch() -> (PathBuf, PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!("nightloom-370-{}", uuid::Uuid::new_v4()));
+        let (a, b) = (root.join("a/sessions"), root.join("b/sessions"));
+        std::fs::create_dir_all(&a).unwrap();
+        (root, a, b)
+    }
+
+    #[test]
+    fn a_moved_chat_keeps_its_id_and_bytes_and_leaves_nothing_behind() {
+        let (root, a, b) = move_scratch();
+        let log = a.join("c-1.jsonl");
+        std::fs::write(&log, "{\"event\":\"user_message\",\"text\":\"hi\"}\n").unwrap();
+        std::fs::create_dir_all(a.join("ask/c-1")).unwrap();
+        std::fs::write(a.join("ask/c-1/budget.json"), "{}").unwrap();
+        std::fs::create_dir_all(a.join("prompt-held")).unwrap();
+        std::fs::write(a.join("prompt-held/c-1.json"), "{}").unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(86_400);
+        std::fs::File::options()
+            .append(true)
+            .open(&log)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+
+        let dest = move_chat(&a, &b, "c-1").unwrap();
+        assert_eq!(dest, b.join("c-1.jsonl"));
+        assert!(!log.exists(), "the old file goes");
+        assert_eq!(
+            std::fs::read_to_string(&dest).unwrap(),
+            "{\"event\":\"user_message\",\"text\":\"hi\"}\n"
+        );
+        let mtime = std::fs::metadata(&dest).unwrap().modified().unwrap();
+        assert!(
+            mtime > old + std::time::Duration::from_secs(3600),
+            "touched for capture"
+        );
+        assert!(b.join("ask/c-1/budget.json").is_file() && !a.join("ask/c-1").exists());
+        assert!(
+            b.join("prompt-held/c-1.json").is_file() && !a.join("prompt-held/c-1.json").exists()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The DoD's "it lists there at once": both folders' listing caches,
+    /// read before the move, answer with the move after it.
+    #[test]
+    fn a_moved_chat_lists_in_its_new_folder_at_once_and_leaves_the_old() {
+        let (root, a, b) = move_scratch();
+        std::fs::create_dir_all(&b).unwrap();
+        let mut s = Session::with_log(&a).unwrap();
+        s.record_user("a chat about parsnips");
+        s.record_title_by("Parsnips", nightloom_core::TitleBy::User);
+        let id = s.id.clone();
+        drop(s);
+        let mut other = Session::with_log(&b).unwrap();
+        other.record_user("already here");
+        drop(other);
+        assert_eq!(store::list(&a).unwrap().len(), 1);
+        assert_eq!(store::list(&b).unwrap().len(), 1);
+
+        move_chat(&a, &b, &id).unwrap();
+        assert!(
+            store::list(&a).unwrap().is_empty(),
+            "gone from the old list"
+        );
+        let listed = store::list(&b).unwrap();
+        assert_eq!(listed.len(), 2);
+        let row = listed.iter().find(|r| r.id == id).expect("in the new list");
+        assert_eq!(row.title.as_deref(), Some("Parsnips"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_move_onto_an_existing_chat_is_refused_and_moves_nothing() {
+        let (root, a, b) = move_scratch();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("c-1.jsonl"), "mine").unwrap();
+        std::fs::write(b.join("c-1.jsonl"), "theirs").unwrap();
+        assert!(move_chat(&a, &b, "c-1").is_err());
+        assert_eq!(
+            std::fs::read_to_string(a.join("c-1.jsonl")).unwrap(),
+            "mine"
+        );
+        assert_eq!(
+            std::fs::read_to_string(b.join("c-1.jsonl")).unwrap(),
+            "theirs"
+        );
+        assert!(move_chat(&a, &a, "c-1").is_err(), "same folder");
+        assert!(move_chat(&a, &b, "../c-1").is_err(), "not an id");
+        assert!(move_chat(&a, &b, "nope").is_err(), "missing");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_cross_volume_copy_is_read_back_before_it_takes_the_name() {
+        let (root, a, b) = move_scratch();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("c-1.jsonl"), "every byte").unwrap();
+        copy_verified(&a.join("c-1.jsonl"), &b.join("c-1.jsonl")).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(b.join("c-1.jsonl")).unwrap(),
+            "every byte"
+        );
+        assert!(
+            a.join("c-1.jsonl").is_file(),
+            "the copy leaves the source to its caller"
+        );
+        let leftovers: Vec<_> = std::fs::read_dir(&b).unwrap().flatten().collect();
+        assert_eq!(leftovers.len(), 1, "no temporary file left");
+        // A name taken meanwhile is refused, the source untouched.
+        assert!(copy_verified(&a.join("c-1.jsonl"), &b.join("c-1.jsonl")).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
     use nightloom_core::{DocumentInput, ImageInput};
 
     fn text_doc() -> DocumentInput {

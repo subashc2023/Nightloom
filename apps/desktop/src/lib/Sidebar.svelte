@@ -1,6 +1,7 @@
 <script lang="ts">
   import { canLeaveProject, canDeleteChat } from "./state.svelte";
   import { tip } from "./tip";
+  import { renamedTo, selectAllOnMount } from "./renameField";
   import {
     app,
     openProjectFolder,
@@ -11,6 +12,7 @@
     endContentDrag,
     droppedContent,
     moveChatToThread,
+    moveSession,
     newChatInThread,
     startContentDrag,
     enableNightshift,
@@ -196,6 +198,18 @@
   $effect(() => {
     if (!rowMenu) moveOpen = false;
   });
+  // *Move to project ▸* (backlog 370): every other project, and No
+  // project (the unfiled chats) when one is open; one click moves.
+  let projectMoveOpen = $state(false);
+  $effect(() => {
+    if (!rowMenu) projectMoveOpen = false;
+  });
+  const moveTargets = $derived(app.projects.filter((p) => p.id !== app.project?.id));
+  function rowMoveProject(to: string | null) {
+    const s = rowMenu?.s;
+    rowMenu = null;
+    if (s) void moveSession(s.id, to);
+  }
   function rowMove(slug: string | null) {
     const s = rowMenu?.s;
     rowMenu = null;
@@ -277,10 +291,13 @@
 
   let renaming = $state<string | null>(null);
   let draft = $state("");
+  /** The name the field opened with (backlog 376): unchanged is a cancel. */
+  let renameFrom = "";
 
   function startRename(id: string, current: string) {
     renaming = id;
     draft = current;
+    renameFrom = current;
   }
 
   async function commitRename(id: string) {
@@ -289,10 +306,10 @@
     // DOM, and the blur that removal can fire must not turn the cancel
     // into a rename; Enter's own blur is the one commit.
     if (renaming !== id) return;
-    const name = draft.trim();
-    renaming = null;
     // Unchanged or emptied is a cancel, not a rename: an empty name would
     // leave the row labelled by its opening message with no way back.
+    const name = renamedTo(draft, renameFrom);
+    renaming = null;
     if (!name) return;
     // Through the state's version, which puts the inverse on the undo
     // stack and toasts a failure itself (nightshift backlog 064).
@@ -468,12 +485,13 @@
     {@const s = r.meta}
     <div class="session-item" class:active={rowLit(s.id)} class:fork={r.depth > 0} style:--depth={r.depth > 0 ? r.depth : undefined}>
       {#if renaming === s.id}
-        <!-- svelte-ignore a11y_autofocus -->
+        <!-- Opens with the whole title selected (backlog 376): typing
+             replaces it, Esc leaves the name as it was. -->
         <input
           class="rename"
           aria-label="Session name"
           bind:value={draft}
-          autofocus
+          use:selectAllOnMount
           onblur={() => void commitRename(s.id)}
           onkeydown={(e) => {
             if (e.key === "Enter") (e.target as HTMLInputElement).blur();
@@ -909,6 +927,26 @@
             {/if}
             {#if inThread}
               <button role="menuitem" onclick={() => rowMove(null)}>Remove from thread <span class="row-key">◇ {inThread}</span></button>
+            {/if}
+          {/if}
+          {#if rowMenu.s.mode !== "ephemeral" && (moveTargets.length > 0 || app.project)}
+            <button
+              role="menuitem"
+              aria-haspopup="menu"
+              aria-expanded={projectMoveOpen}
+              class:on={projectMoveOpen}
+              disabled={!canDeleteChat(rowMenu.s.id)}
+              onclick={() => (projectMoveOpen = !projectMoveOpen)}
+            >Move to project <span class="row-key">{projectMoveOpen ? "▾" : "▸"}</span></button>
+            {#if projectMoveOpen}
+              <div class="row-threads" role="group" aria-label="Move to project">
+                {#each moveTargets as p (p.id)}
+                  <button role="menuitem" class="row-thread" use:tip={p.root ?? "No folder"} onclick={() => rowMoveProject(p.id)}>{p.name}</button>
+                {/each}
+                {#if app.project}
+                  <button role="menuitem" class="row-thread" use:tip={"Unfiled chats: no project"} onclick={() => rowMoveProject(null)}>No project</button>
+                {/if}
+              </div>
             {/if}
           {/if}
           <button role="menuitem" disabled={!!rowMenu?.s && !canDeleteChat(rowMenu.s.id)} onclick={rowDelete}>Delete…</button>

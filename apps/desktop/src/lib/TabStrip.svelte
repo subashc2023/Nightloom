@@ -8,8 +8,10 @@
     droppedContent,
     moveTab,
     noteDraftKey,
+    renameSession,
     splitTab,
   } from "./state.svelte";
+  import { renamedTo, selectAllOnMount } from "./renameField";
   import { hasBoxDraft, newDraftKey } from "./drafts.svelte";
   import * as tabs from "./tabs";
   import { TAB_DRAG, TERM_DRAG, type Pane } from "./tabs";
@@ -277,10 +279,50 @@
     menuFor = t.id;
     menuAt = { x: e.clientX, y: e.clientY };
   }
+  /**
+   * A menu item's action on the tab the menu is for, the menu closed.
+   * The tab is read **before** `menuFor` clears (found by backlog 376's
+   * harness, 2026-10-18): the markup's `{@const t}` re-derives from
+   * `menuFor`, so read after the clear it was `undefined` and every item
+   * guarded by `if (t)` did nothing.
+   */
+  function menuAct(f: (t: tabs.Tab) => void) {
+    const t = pane.tabs.find((x) => x.id === menuFor);
+    menuFor = null;
+    if (t) f(t);
+  }
   function closeOthers(id: string) {
     for (const t of [...pane.tabs]) if (t.id !== id) void closeTab(t.id);
   }
   const canSplit = $derived(app.tabs.panes.length < tabs.MAX_PANES && pane.tabs.length > 1);
+
+  // ---- a chat tab renamed in place (backlog 376) ----
+  //
+  // The menu's Rename turns the tab's title into a field with the whole
+  // name selected: typing replaces it, ↵ or a click away keeps it, Esc
+  // leaves the name as it was. The same rename as the sidebar row's
+  // (`renameSession`, on the list's undo stack).
+  let renamingTab = $state<string | null>(null);
+  let tabDraft = $state("");
+  let tabRenameFrom = "";
+  function chatName(session: string): string {
+    const meta = app.sessions.find((s) => s.id === session);
+    return meta?.title ?? meta?.first_user ?? "";
+  }
+  function startTabRename(t: tabs.Tab) {
+    if (t.content.kind !== "chat" || !t.content.session) return;
+    tabRenameFrom = chatName(t.content.session) || title(t);
+    tabDraft = tabRenameFrom;
+    renamingTab = t.id;
+  }
+  async function commitTabRename(t: tabs.Tab) {
+    // Only the tab still being renamed commits: Esc clears `renamingTab`
+    // first, and the blur the field's removal fires must not undo that.
+    if (renamingTab !== t.id) return;
+    renamingTab = null;
+    const name = renamedTo(tabDraft, tabRenameFrom);
+    if (name && t.content.kind === "chat" && t.content.session) await renameSession(t.content.session, name);
+  }
   const other = $derived(tabs.otherPane(app.tabs, pane.id));
   /** The running badge (backlog 309) sits once, at the window's right:
    *  the last pane's strip. */
@@ -334,7 +376,25 @@
             size={12}
           />{/if}</span
       >
-      <span class="name">{title(t)}</span>
+      {#if renamingTab === t.id}
+        <input
+          class="name rename"
+          aria-label="Chat name"
+          bind:value={tabDraft}
+          use:selectAllOnMount
+          onpointerdown={(e) => e.stopPropagation()}
+          onclick={(e) => e.stopPropagation()}
+          onblur={() => void commitTabRename(t)}
+          onkeydown={(e) => {
+            // The tab's own keys (↵ and Space activate) stay out of the field.
+            e.stopPropagation();
+            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            else if (e.key === "Escape") renamingTab = null;
+          }}
+        />
+      {:else}
+        <span class="name">{title(t)}</span>
+      {/if}
       {#if needsYou(t)}
         <span class="dot needs" use:tip={"Waiting on you"}></span>
       {:else if running(t)}
@@ -398,16 +458,18 @@
   {@const t = pane.tabs.find((x) => x.id === menuFor)}
   <button class="tab-scrim" aria-label="Close" onclick={() => (menuFor = null)} oncontextmenu={(e) => { e.preventDefault(); menuFor = null; }}></button>
   <div class="tab-menu" role="menu" style:left="{menuAt.x}px" style:top="{menuAt.y}px">
-    <button role="menuitem" onclick={() => { menuFor = null; if (t) void closeTab(t.id); }}>Close</button>
-    <button role="menuitem" disabled={pane.tabs.length < 2} onclick={() => { menuFor = null; if (t) closeOthers(t.id); }}>Close others</button>
+    <button role="menuitem" onclick={() => menuAct((x) => void closeTab(x.id))}>Close</button>
+    <button role="menuitem" disabled={pane.tabs.length < 2} onclick={() => menuAct((x) => closeOthers(x.id))}>Close others</button>
     {#if other}
-      <button role="menuitem" onclick={() => { menuFor = null; if (t) void moveTab(t.id, other.id, other.tabs.length); }}>Move to the other pane</button>
+      <button role="menuitem" onclick={() => menuAct((x) => void moveTab(x.id, other.id, other.tabs.length))}>Move to the other pane</button>
     {:else}
-      <button role="menuitem" disabled={!canSplit} use:tip={canSplit ? "" : "A pane keeps at least one tab"} onclick={() => { menuFor = null; if (t) void splitTab(t.id, "right"); }}>Open beside</button>
+      <button role="menuitem" disabled={!canSplit} use:tip={canSplit ? "" : "A pane keeps at least one tab"} onclick={() => menuAct((x) => void splitTab(x.id, "right"))}>Open beside</button>
+    {/if}
+    {#if t?.content.kind === "chat" && t.content.session}
+      <button role="menuitem" onclick={() => menuAct(startTabRename)}>Rename</button>
     {/if}
     {#if t?.content.kind === "chat" && t.content.session && canMakeMain(app.sessions, versions.map, t.content.session)}
-      {@const sid = t.content.session}
-      <button role="menuitem" use:tip={"Put this fork in its original's row, name and place; the original stays a version under the edited message"} onclick={() => { menuFor = null; void makeMainChat(sid); }}>Make main</button>
+      <button role="menuitem" use:tip={"Put this fork in its original's row, name and place; the original stays a version under the edited message"} onclick={() => menuAct((x) => { if (x.content.kind === "chat" && x.content.session) void makeMainChat(x.content.session); })}>Make main</button>
     {/if}
   </div>
 {/if}
@@ -479,6 +541,18 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     min-width: 0;
+  }
+  /* The title as a field while it is renamed (backlog 376). */
+  input.rename {
+    flex: 1;
+    width: 0;
+    padding: 1px 4px;
+    font: inherit;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--accent);
+    border-radius: 3px;
+    outline: none;
   }
   .dot {
     width: 6px;
