@@ -3641,7 +3641,10 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
         assert_eq!(
             v["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
-            "'/app/nightloom-desktop' '--permission-hook' '/logs/ask/chat-1'"
+            format!(
+                "'/app/nightloom-desktop' '--permission-hook' '/logs/ask/chat-1' {}",
+                ask::FAIL_CLOSED
+            )
         );
         let i = a
             .iter()
