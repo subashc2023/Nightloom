@@ -177,6 +177,14 @@ impl Agents {
         }
     }
 
+    /// `chat`'s own agent if one is still here, of any connection — the one
+    /// its last turn ran on, built for its own project (blocker 1467: a
+    /// queued message sent in the background after a switch to another
+    /// project must not run on that project's spec).
+    pub fn existing(&self, chat: &str) -> Option<Slot> {
+        self.inner().per_chat.get(chat).map(|e| e.slot.clone())
+    }
+
     /// Make `chat`'s agent from the newest spec, pointed at `resume`. If
     /// another command made one meanwhile, that one wins. `None` when the
     /// engine went away meanwhile.

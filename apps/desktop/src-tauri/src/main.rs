@@ -3347,6 +3347,11 @@ async fn send_agent(
     // 3): copied into the chat's own folder under the workspace, and the
     // message names where, for the model to open with its tools.
     files: Option<Vec<nightloom_service::attach::FileInput>>,
+    // A queued message sent in the background at its chat's own turn's
+    // end (nightshift blocker 1467): the chat it was queued in and that
+    // chat's project. That chat or nothing — never the focus.
+    chat: Option<String>,
+    project: Option<String>,
 ) -> Result<AgentTurn, String> {
     // The message's timing line (nightshift item 256): begun here, before
     // any lock, under the window's name for the turn — its Send, call and
@@ -3364,8 +3369,31 @@ async fn send_agent(
     // A2 review finding 2): the agent and the log below are both its,
     // however fast he switches chats meanwhile. ~~`lock_agent` and then
     // `lock_or_start`, each reading the focus afresh~~.
-    let target = state.chats.target();
-    let mut agent_guard = lock_agent_at(&state, &target).await;
+    let target = match &chat {
+        Some(id) => state.chats.target_at(id).ok_or_else(|| {
+            "that chat is not loaded now — its message stays queued there".to_string()
+        })?,
+        None => state.chats.target(),
+    };
+    let active_project = state
+        .workspaces
+        .lock()
+        .await
+        .active
+        .as_ref()
+        .map(|p| p.id.clone());
+    let mut agent_guard = match &chat {
+        // Its own agent, built for its own project (1467); a new one from
+        // the rail's spec only when that spec is its project's.
+        Some(id) => match state.agents.existing(id) {
+            Some(slot) => agents::Guard::new(slot.lock_owned().await),
+            None if project == active_project => lock_agent_at(&state, &target).await,
+            None => {
+                return Err("that chat's project is not open and it has no agent now — its message stays queued there".to_string());
+            }
+        },
+        None => lock_agent_at(&state, &target).await,
+    };
     // Its slot, for New chat's first turn to hand to the chat it makes.
     let agent_slot = agent_guard.is_some().then(|| agent_guard.slot().clone());
     let agent = agent_guard
@@ -3379,13 +3407,12 @@ async fn send_agent(
     // The project the turn runs in (backlog 159, A4; blocker 630: he may
     // switch projects while it runs off screen): a folder granted "for the
     // project" mid-turn goes to this one, not the one open by then.
-    let turn_project = state
-        .workspaces
-        .lock()
-        .await
-        .active
-        .as_ref()
-        .map(|p| p.id.clone());
+    // A background send's is its chat's own (1467).
+    let turn_project = if chat.is_some() {
+        project.clone()
+    } else {
+        active_project
+    };
     let pending = *state.pending_mode.lock().await;
     let pending_kind = *state.pending_kind.lock().await;
     // The open chat's own lock, held for the turn — no other chat's
@@ -3396,6 +3423,16 @@ async fn send_agent(
         .lock_or_start_at(&target, pending, pending_kind, &log_dir)
         .await?;
     let session: &mut Session = &mut held;
+    if let Some(id) = &chat
+        && session.id != *id
+    {
+        return Err("the chat named is not the chat locked — nothing was sent".to_string());
+    }
+    // A background send's log folder is its chat's, not the open project's (1467).
+    let log_dir = match (&chat, session.log_path().and_then(|p| p.parent())) {
+        (Some(_), Some(dir)) => dir.to_path_buf(),
+        _ => log_dir,
+    };
     state.chats.mark_turn(&session.id);
     // The chat this turn runs in, on every event it sends the window
     // (backlog 159, A2): two chats may be streaming at once.

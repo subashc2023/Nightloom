@@ -210,12 +210,25 @@ export function sendAgent(
   stopKey?: string,
   spoken?: boolean,
   files?: FileInput[],
+  target?: { chat: string; project: string | null },
 ): Promise<AgentTurnResult> {
   // `stopKey` (backlog 159, A3): the window's name for this turn, which a
   // Stop can use before the turn's first event names its chat. `spoken`
   // (item 246 wave 3): said aloud on the phone — answered for the ear.
   // `files` (item 277): saved in the chat's folder, named in the message.
-  return invoke("send_agent", { text, images, documents, council, stopKey, spoken, files });
+  // `target` (blocker 1467): a queued message sent in the background goes
+  // to that chat, in its project, or is refused — never the open chat.
+  return invoke("send_agent", {
+    text,
+    images,
+    documents,
+    council,
+    stopKey,
+    spoken,
+    files,
+    chat: target?.chat,
+    project: target?.project ?? undefined,
+  });
 }
 
 /** What an office file became (item 277): a PDF, or its text. */

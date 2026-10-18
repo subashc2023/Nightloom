@@ -29,6 +29,7 @@ import {
   queueAfterTurn,
   ranKey,
   shiftQueue,
+  requeueFront,
   type QueuedMessage,
   markInjected,
   markSendNow,
@@ -5947,6 +5948,16 @@ export function openChatKey(): string {
 }
 
 /**
+ * The row a background send takes from chat `key` (blocker 1467): only
+ * when the ended turn owns that key (`turnOwnsKey`, 375) — its own chat's
+ * queue, never the open one's. `null`: nothing goes.
+ */
+export function takeQueuedFor(turn: { chat: string | null; pendingKey?: string | null }, key: string): QueuedMessage | null {
+  if (!turnOwnsKey(turn, key)) return null;
+  return shiftQueue(key);
+}
+
+/**
  * The queued row a drain sends next (nightshift backlog 375): taken from
  * the **open** chat's queue — `send()` goes to the open chat, so the row
  * must come from the same place — never from `composerKey`, which a
@@ -6640,6 +6651,123 @@ function endBackground(t: TurnCtx, failed: string | null, res: AgentTurnResult |
   // Was it sleep that ended it (backlog 101)? A4: a background turn's end
   // reached the watch not at all.
   sleepTurnEnded(errored, b?.events ?? [], id, t.stopped === true);
+  // Blocker 1467 (his answer, 2026-10-18): what he queued in it goes now,
+  // in its own chat, in the background — after this `finally` has settled
+  // the rows the turn took or handed back.
+  const ok = !errored && !(res && limitPauseFrom(res, id));
+  queueMicrotask(() => void sendQueuedInBackground(t, b, ok));
+}
+
+/**
+ * The next message queued in a chat whose turn just ended off screen,
+ * sent at once in that chat, in the background (nightshift blocker 1467,
+ * his answer: "it should be right away in that chat in the background")
+ * — the chat he is in is untouched. The row comes through `turnOwnsKey`
+ * (375): only the ended turn's own chat's queue, and the backend is told
+ * that chat and its project by id (`send_agent`'s `chat`), so it runs
+ * there or is refused; it never reads the focus. Not after a Stop, a
+ * failure or a usage-limit pause (the queue waits, as on screen), not on
+ * the provider engine (one turn at a time; its own drain), and not when
+ * the chat is on screen again (the composer drains it). `true` when sent.
+ */
+export async function sendQueuedInBackground(
+  ended: Pick<TurnCtx, "chat" | "pendingKey" | "stopped" | "provider" | "contextLimit">,
+  was: Pick<Background<Segment, ApprovalRequest>, "pendingMode" | "pendingKind" | "project" | "projectName" | "name"> | undefined,
+  ok: boolean,
+): Promise<boolean> {
+  const id = ended.chat;
+  if (!id || !ok || ended.stopped || ended.provider) return false;
+  if (app.activeSessionId === id || app.background[id] || bgTurns.has(id)) return false;
+  const q = takeQueuedFor(ended, id);
+  if (!q) return false;
+  if (q.attachments.some((c) => c.pending || !c.data)) {
+    requeueFront(id, q);
+    return false;
+  }
+  const images = q.attachments.filter((a) => a.kind === "image").map(({ media_type, data }) => ({ media_type, data }));
+  const documents = q.attachments
+    .filter((a) => a.kind === "document")
+    .map(({ media_type, name, data }) => ({ media_type, name, data }));
+  const files = q.attachments.filter((a) => a.kind === "file").map(({ name, data }) => ({ name, data }));
+  const project = was?.project ?? null;
+  const turn: TurnCtx = { chat: id, detached: true, key: newTurnKey(), contextLimit: ended.contextLimit, pendingKey: null };
+  const mine: SessionEvent = {
+    event: "user_message",
+    text: q.text,
+    ...(images.length > 0 ? { images } : {}),
+    ...(documents.length > 0 ? { documents } : {}),
+    at: new Date().toISOString(),
+  };
+  app.background[id] = {
+    session: id,
+    pendingMode: was?.pendingMode ?? "normal",
+    pendingKind: was?.pendingKind ?? app.pendingKind,
+    events: [mine],
+    live: { segments: [] },
+    liveUsage: null,
+    approvals: [],
+    budget: null,
+    agentInit: null,
+    project,
+    projectName: was?.projectName ?? null,
+    name: was?.name ?? null,
+  };
+  bgTurns.set(id, turn);
+  // Its log under the message, for the tab and a pane showing it.
+  void api
+    .transcript(false, id)
+    .then((events) => {
+      const b = app.background[id];
+      if (b && bgTurns.get(id) === turn) b.events = [...events, mine];
+    })
+    .catch(() => {});
+  let failed: string | null = null;
+  let res: AgentTurnResult | null = null;
+  let delivered: string[] = [];
+  try {
+    res = await api.sendAgent(
+      q.text,
+      images.length > 0 ? images : undefined,
+      documents.length > 0 ? documents : undefined,
+      undefined,
+      turn.key,
+      undefined,
+      files.length > 0 ? files : undefined,
+      { chat: id, project },
+    );
+    delivered = res.delivered ?? [];
+  } catch (e) {
+    failed = String(e);
+  }
+  // Refused before anything was sent (the chat not loaded, or its project
+  // closed with no agent of its own): back at the head of its own queue.
+  const refused = failed !== null && /stays queued there|nothing was sent/.test(failed);
+  if (refused) requeueFront(id, q);
+  settleInjected(turn.key, delivered);
+  injectLater.delete(turn.key);
+  closeRunningRows(app.subagents, id);
+  if (turn.detached) {
+    if (refused) {
+      delete app.background[id];
+      bgTurns.delete(id);
+      addToast(`${was?.name ?? "A chat"}: its queued message is waiting there — ${failed}`);
+    } else endBackground(turn, failed, res);
+    return !refused;
+  }
+  // He opened it while it ran (`attach`): its end on screen, then the
+  // composer's drain takes the next row of the chat open — this one.
+  if (fg === turn) fg = null;
+  notifyTurnEnded(failed);
+  app.live = null;
+  app.liveUsage = null;
+  app.pendingApprovals = [];
+  app.busy = false;
+  if (failed !== null && !refused) app.error = failed;
+  await settleTurnView(null, id, null);
+  void refreshSessions();
+  void readPlanAtReplyEnd();
+  if (failed === null) void providerDrains.at(-1)?.();
+  return !refused;
 }
 
 /**
