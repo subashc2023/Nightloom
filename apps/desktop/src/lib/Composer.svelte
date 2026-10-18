@@ -4,7 +4,7 @@
   import { isImeKey } from "./imeKey";
   import Kbd from "./Kbd.svelte";
   import ResizeHandle from "./ResizeHandle.svelte";
-  import { dragHeight, growHeight, loadBoxHeight, saveBoxHeight } from "./boxGrow";
+  import { dragHeight, growHeight, loadBoxHeight, overflows, saveBoxHeight } from "./boxGrow";
   import { sentSinceDrag } from "./composerSize";
   import {
     app,
@@ -608,6 +608,8 @@
     ta.style.maxHeight = max + "px";
     ta.style.height = "auto";
     ta.style.height = growHeight(ta.scrollHeight, min, max) + "px";
+    // Backlog 360: a pixel of rounding is not overflow (as the aside boxes).
+    ta.style.overflowY = overflows(ta.scrollHeight, ta.clientHeight) ? "auto" : "hidden";
     // Backlog 355: a switched-to draft's place, once its height is right.
     putScrollBack();
     syncMirror();
