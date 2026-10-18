@@ -1,0 +1,40 @@
+<!doctype html>
+<!-- Item 360: the zoom audit's capture page — the real App, the Tauri backend stubbed (unknown commands answer null),
+     one surface per ?v=: welcome | chat | approve | ask | playwright | aside | asidepanel | notes | note | bell |
+     settings | rail | context | drop. ?p=A..D palette (default B). Snapped with nightshift-code bin/snap (WebKit) at
+     the page zoom ⌘−/⌘+ set (WKWebView.pageZoom). Fixtures in app360.ts; ?cap=1 shows the caption.
+     Debug knobs: ?log=1 logs every stubbed command; ?on=<section> opens Settings there; ?prov=0|p<i> narrows the
+     providers; ?lm=null and ?sb=null answer list_models / search_backends with null (lm=null hangs Settings). -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      *, *::before, *::after { animation: none !important; transition: none !important; caret-color: transparent !important; }
+      #cap { position: fixed; left: 0; bottom: 0; right: 0; font: 11px/1.4 ui-monospace, monospace; color: #ddd; background: #000c; padding: 4px 8px; white-space: pre-wrap; z-index: 99999; display: none; }
+      #cap.on { display: block; }
+    </style>
+    <script>
+      window.__NIGHTLOOM_PLATFORM__ = "macos";
+      // Before any module: state.svelte reads asides, layout and prefs at import (a run must not see the last one's).
+      try { localStorage.clear(); } catch {}
+      window.__TAURI_INTERNALS__ = {
+        invoke: (cmd, args) => (window.__stub ? window.__stub(cmd, args) : Promise.resolve(null)),
+        transformCallback: () => 0,
+        unregisterCallback: () => {},
+        metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
+      };
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+      window.requestAnimationFrame = (cb) => setTimeout(() => cb(performance.now()), 16);
+      window.cancelAnimationFrame = (id) => clearTimeout(id);
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="cap"></div>
+    <script>
+      window.addEventListener("error", (e) => { const c = document.getElementById("cap"); c.classList.add("on"); c.textContent += "\nerror: " + e.message; });
+      window.addEventListener("unhandledrejection", (e) => { const c = document.getElementById("cap"); c.classList.add("on"); c.textContent += "\nrejection: " + e.reason; });
+    </script>
+    <script type="module" src="./app360.ts"></script>
+  </body>
+</html>

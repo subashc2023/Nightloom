@@ -27,6 +27,7 @@
     syncUndoMenu,
     setSidebarWidth,
     sidebarColumn,
+    sidebarShown,
     syncPromptLayers,
     toggleSidebar,
     useProject,
@@ -617,7 +618,7 @@
       </button>
       <div class="side-grip" style:left="{sidebarColumn() - 4}px">
         <Grip
-          width={app.layout.sidebarWidth}
+          width={sidebarShown()}
           min={SIDEBAR_MIN}
           max={SIDEBAR_MAX}
           edge="left"
@@ -705,7 +706,7 @@
                   {#if p}
                     <p class="tab-card-path">{p.root ?? "No folder — notes and chats only"}</p>
                     <p>
-                      {p.chats} chat{p.chats === 1 ? "" : "s"} · {p.notes} note{p.notes === 1 ? "" : "s"}{#if !p.exists} · folder missing{/if}
+                      {p.chats} chat{p.chats === 1 ? "" : "s"} · {p.notes} note{p.notes === 1 ? "" : "s"}{#if !p.exists}{" · "}folder missing{/if}
                     </p>
                     {#if app.project?.id === p.id}
                       <p>This is the open project.</p>
@@ -883,7 +884,7 @@
                  context · Undo") takes the pointer; the rest stay
                  inert, as they were. -->
             <div class="toast" class:actionable={!!t.action}>
-              {t.text}{#if t.action}<span class="toast-sep"> · </span><button
+              {t.text}{#if t.action}<span class="toast-sep">{" · "}</span><button
                   class="toast-action"
                   onclick={() => runToastAction(t.id)}>{t.action.label}</button>{/if}
             </div>

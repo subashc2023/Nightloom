@@ -200,11 +200,12 @@
     align-items: center;
     gap: 8px;
   }
+  /* Wraps rather than running out of the card in a narrow pane (item 360). */
   .keys {
     margin-left: auto;
+    min-width: 0;
     font-family: var(--mono);
     font-size: 11px;
     color: var(--dim);
-    white-space: nowrap;
   }
 </style>

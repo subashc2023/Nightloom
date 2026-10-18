@@ -646,6 +646,12 @@
     font-size: 12px;
     color: var(--ink2, var(--dim));
   }
+  /* In the side panel the panel's own title row already reads "Aside ·
+     ‹chat›", and the head's chips leave this ~10 px: it drew as "A…" at
+     every zoom (item 360). The chips get the room. */
+  .aside-card.panel .aside-card-of {
+    display: none;
+  }
   .aside-card-of em {
     font-style: normal;
     font-weight: 600;
