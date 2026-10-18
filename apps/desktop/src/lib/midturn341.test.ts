@@ -37,6 +37,7 @@ describe("a sent row's chip (341)", () => {
   });
 
   it("a plain sent row reads as before", () => {
-    expect(injectChip({})).toMatchObject({ state: "sent", label: "sent · at the next step" });
+    // Backlog 366: future tense until the turn takes it.
+    expect(injectChip({})).toMatchObject({ state: "sent", label: "goes at Claude's next step" });
   });
 });

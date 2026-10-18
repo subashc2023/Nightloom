@@ -1462,7 +1462,7 @@
         // The Mac has it behind the running turn (backlog 132): it lands
         // in the transcript when its own turn runs, so nothing is drawn
         // yet — a row drawn now would vanish on the re-read.
-        note("The Mac is mid-turn — your message goes when it ends");
+        note("The Mac is mid-turn — Claude takes your message as soon as it can");
         return;
       }
       live = emptyTurn();
@@ -1564,7 +1564,9 @@
     try {
       const status = await chatClient.send(chatId, text, { project: sendProject, images, documents, nonce });
       lastTry = null;
-      note(status === "queued" ? `Sent to ${chatRole === "away" ? "Away" : "the Mac"} — it goes when its turn ends` : `Sent to ${chatRole === "away" ? "Away" : "the Mac"}`);
+      // Backlog 374: the Mac hands a queued message to the running turn at
+      // its next step (and holds it for the turn's end only when it cannot).
+      note(status === "queued" ? (chatRole === "away" ? "Sent to Away — it goes when its turn ends" : "Sent to the Mac mid-turn — Claude takes it as soon as it can") : `Sent to ${chatRole === "away" ? "Away" : "the Mac"}`);
       events = [
         ...events,
         {

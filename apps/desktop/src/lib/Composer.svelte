@@ -62,7 +62,8 @@
   } from "./handoff.svelte";
   import ThreadPicker from "./ThreadPicker.svelte";
   import { chatThread, refreshThreadFlags, injectIntoTurn, sendNowRow } from "./state.svelte";
-  import { injectChip } from "./midTurn";
+  import { injectChip, queueHeadLabel } from "./midTurn";
+  import { rowsOf } from "./subagentRows";
   import { draftEstimate, draftEstimateTitle, draftExact, draftExactTitle, EXACT_TOKENS_FROM, fmtTokens } from "./tokens";
   import { exactCounter, type ExactResult } from "./draftCount";
   import { countDraftTokens, pasteIntoFocus, takeBackInjected } from "./api";
@@ -1738,6 +1739,15 @@
 
   /** Why the queue is waiting rather than sending itself, if it is. */
   const hold = $derived(aside ? null : queueHold(handoffHere ? handoff.stage : "idle", turnWasStopped()));
+  /** The main queue's head: one state at a time (backlog 366 + 374). */
+  const mainHead = $derived(
+    queueHeadLabel({
+      busy: app.busy,
+      hold,
+      rows: queue,
+      subagents: rowsOf(app.subagents, app.activeSessionId).filter((r) => r.status === "running").length,
+    }),
+  );
 
   /**
    * Send the oldest held message as the next turn, if there is one. At a
@@ -2503,7 +2513,7 @@
   {#if queue.length > 0}
     <div class="queue" role="list" aria-label="queued messages">
       <div class="queue-head">
-        <span class="ns-chip mono">queued · {aside ? (asideBusy ? "sent when this answer ends" : asideBlock === "not-open" ? "waiting — open the chat to send" : "waiting") : app.busy ? "sent when this turn ends" : hold === "stopped" ? "waiting — the turn was stopped" : hold === "wrapped" ? "waiting — HANDOFF.md is written; continue in a new chat, or Send next here" : "waiting"}</span>
+        <span class="ns-chip mono" data-queue-head>{aside ? `queued · ${asideBusy ? "sent when this answer ends" : asideBlock === "not-open" ? "waiting — open the chat to send" : "waiting"}` : mainHead}</span>
         {#if !busy}
           <button class="ns-btn ghost small" disabled={!app.connection || asideBlock !== null} onclick={() => void drain(true)}>Send next</button>
         {/if}

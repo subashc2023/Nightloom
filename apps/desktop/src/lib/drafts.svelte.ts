@@ -650,12 +650,17 @@ export function markInjected(key: string, qid: number, inject: { id: string; tur
 }
 
 /** The turn took the row whose uuid is `id` (backlog 328), `after` the
- *  step named; the row stays, marked, until the turn ends. */
-export function markDelivered(id: string, after: string): boolean {
-  for (const d of Object.values(drafts)) {
-    const q = d.queue.find((r) => r.inject?.id === id);
-    if (q && q.inject) {
-      q.inject.after = after;
+ *  step named. ~~The row stays, marked, until the turn ends.~~ It leaves
+ *  the queue at once (backlog 366, 2026-10-18): it is sent — the reply
+ *  shows it in place, and the log has it as his message at the turn's end
+ *  — and a queue box still holding it read as "not sent yet" beside a
+ *  transcript saying it was. */
+export function markDelivered(id: string): boolean {
+  for (const [key, d] of Object.entries(drafts)) {
+    const i = d.queue.findIndex((r) => r.inject?.id === id);
+    if (i >= 0) {
+      d.queue.splice(i, 1);
+      if (!d.text && d.attachments.length === 0 && d.queue.length === 0) delete drafts[key];
       schedule();
       return true;
     }

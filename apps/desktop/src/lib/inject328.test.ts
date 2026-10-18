@@ -23,8 +23,9 @@ describe("messages sent into the running turn (328)", () => {
     const b = enqueueMessage("c1", "second", []);
     markInjected("c1", a.id, { id: "u-a", turn: "turn:1" });
     markInjected("c1", b.id, { id: "u-b", turn: "turn:1" });
-    expect(markDelivered("u-a", "after Bash")).toBe(true);
-    expect(readDraft("c1").queue[0]!.inject?.after).toBe("after Bash");
+    // Backlog 366: a taken row leaves the queue at once, not at the end.
+    expect(markDelivered("u-a")).toBe(true);
+    expect(readDraft("c1").queue.map((r) => r.text)).toEqual(["second"]);
     settleInjected("turn:1", ["u-a"]);
     const q = readDraft("c1").queue;
     expect(q.map((r) => r.text)).toEqual(["second"]);

@@ -115,7 +115,7 @@ import {
 } from "./browse";
 import { SEARCH_COLUMN_MAX, searchGrowth } from "./search.svelte";
 import * as tabs from "./tabs";
-import { midTurnWire, chipsFromInputs, sendNowToast, type SendNowResult } from "./midTurn";
+import { midTurnWire, chipsFromInputs, sendNowToast, deliveredNotice, type SendNowResult } from "./midTurn";
 import { recordRelay } from "./relay.svelte";
 import { adoptPending, closeRunningRows, latestAgents, mergeRows, rowsFromLog, rowsOf } from "./subagentRows";
 import { lineText, lineView, matchTasks, type StillRunningSegment } from "./stillRunning";
@@ -5911,7 +5911,35 @@ export async function injectIntoTurn(key: string, q: { id: number; text: string;
   } catch {
     sent = false;
   }
-  if (!sent && readDraft(key).queue.find((r) => r.id === q.id)?.inject?.id === id) clearInjected(key, q.id);
+  if (!sent && readDraft(key).queue.find((r) => r.id === q.id)?.inject?.id === id) {
+    clearInjected(key, q.id);
+    // No process with a stdin runs now — a question waiting on his answer,
+    // say (backlog 374): tried again when the turn's next process starts.
+    const later = injectLater.get(turn.key) ?? [];
+    if (!later.some((r) => r.key === key && r.qid === q.id)) later.push({ key, qid: q.id });
+    injectLater.set(turn.key, later);
+  }
+}
+
+/**
+ * Rows the running turn could not take when he queued them, by turn key
+ * (backlog 374): no process with a stdin was running — the deferred
+ * question's wait, before its resume (which takes messages since 374), or
+ * a `/command` turn on argv. Each is tried again at the turn's next
+ * `agent_init` (every CLI process, and every command in one, sends one).
+ */
+const injectLater = new Map<string, { key: string; qid: number }[]>();
+
+/** Send the turn's held-back rows into it now (374); a row taken back,
+ *  sent, or already handed in meanwhile is skipped. */
+export function retryInjects(turnKey: string): void {
+  const rows = injectLater.get(turnKey);
+  if (!rows) return;
+  injectLater.delete(turnKey);
+  for (const { key, qid } of rows) {
+    const q = readDraft(key).queue.find((r) => r.id === qid);
+    if (q && !q.inject) void injectIntoTurn(key, q);
+  }
 }
 
 /**
@@ -7233,6 +7261,7 @@ async function sendAgent(
     // What he sent into it (328): taken → in the chat; not → queued again,
     // before the queue's drain reads it.
     settleInjected(turn.key, delivered);
+    injectLater.delete(turn.key);
     // The turn's process is gone (backlog 331): whatever of its subagents
     // the CLI never reported finished ran inside it, and is not running.
     closeRunningRows(app.subagents, turn.chat ?? (turn.detached ? null : app.activeSessionId));
@@ -8149,6 +8178,9 @@ export function applyTurnEventTo(host: TurnHost, ev: TurnEvent & { chat?: string
       } else {
         app.agentInit = ev;
         void windowFromInit(ev.model);
+        // A new process or command of the turn on screen: what it could
+        // not take before goes in now (backlog 374).
+        if (fg) retryInjects(fg.key);
       }
       break;
     case "prompt_suggestion":
@@ -8174,16 +8206,13 @@ export function applyTurnEventTo(host: TurnHost, ev: TurnEvent & { chat?: string
       break;
     }
     case "message_delivered": {
-      // His mid-turn message reached the turn (backlog 328): its queue row
-      // says where, and the reply shows it in place until the turn's end
-      // re-reads the log, where it is his own message.
-      markDelivered(ev.id, ev.after);
+      // His mid-turn message reached the turn (backlog 328): ~~its queue row
+      // says where~~ its queue row leaves (366), and the reply shows it in
+      // place until the turn's end re-reads the log, where it is his own
+      // message.
+      markDelivered(ev.id);
       closeThinking(segments);
-      const first = ev.text.split("\n")[0] ?? "";
-      segments.push({
-        kind: "notice",
-        text: `your message reached the turn ${ev.after}: “${first.length > 120 ? first.slice(0, 119) + "…" : first}”`,
-      });
+      segments.push({ kind: "notice", text: deliveredNotice(ev.after, ev.text) });
       break;
     }
     default:
