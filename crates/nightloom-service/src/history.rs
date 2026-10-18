@@ -67,12 +67,23 @@ pub fn start(dir: &Path) -> Result<String, String> {
     git(&["rev-parse", "--short", "HEAD"])
 }
 
-/// [`start`] unless `dir` already has history; `Ok(None)` when it had.
+/// [`start`] unless `dir` already has history; `Ok(None)` when it had —
+/// or when it sits inside another repository (wave 10 review): a project
+/// whose folder is a subfolder of someone's code, or a vault kept inside a
+/// repository, is that repository's to version; a repository nested in it
+/// would turn the notes into an opaque gitlink, the case [`start`]'s callers
+/// already skip for a folder that is a repository's top.
 pub fn ensure(dir: &Path) -> Result<Option<String>, String> {
-    if is_repo(dir) {
+    if is_repo(dir) || enclosing_repo(dir).is_some() {
         return Ok(None);
     }
     start(dir).map(Some)
+}
+
+/// The nearest folder above `dir` that is a repository's top, by the same
+/// existence test as [`is_repo`]; `None` when there is none.
+pub fn enclosing_repo(dir: &Path) -> Option<&Path> {
+    dir.ancestors().skip(1).find(|a| is_repo(a))
 }
 
 /// Whether git would find an author for a commit in `dir`.
@@ -144,5 +155,19 @@ mod tests {
         assert_eq!(git(&d, &["rev-list", "--count", "HEAD"]), "1");
         assert_eq!(ensure(&d).unwrap(), None);
         assert_eq!(git(&d, &["rev-parse", "--short", "HEAD"]), first);
+    }
+
+    /// A memory folder inside someone's repository — a project picked as a
+    /// subfolder of their code — gets no repository of its own: nothing is
+    /// nested in theirs (wave 10 review).
+    #[test]
+    fn a_folder_inside_another_repository_is_left_to_it() {
+        let code = scratch("code");
+        git(&code, &["init", "-q"]);
+        let agents = code.join("apps").join("web").join(".agents");
+        assert_eq!(enclosing_repo(&agents), Some(code.as_path()));
+        assert_eq!(ensure(&agents).unwrap(), None);
+        assert!(!is_repo(&agents));
+        assert!(!agents.exists(), "nothing made inside their repository");
     }
 }
