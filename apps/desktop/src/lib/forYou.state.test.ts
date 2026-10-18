@@ -44,6 +44,7 @@ vi.mock("./api", async (importOriginal) => ({
     via: "chosen",
   })),
   openFile: vi.fn(async () => null),
+  revealFile: vi.fn(async () => null),
 }));
 
 const row = (rel: string, at: string, folder = false): ForYouRow => ({ path: `/w/${rel}`, rel, folder, title: null, at });
@@ -112,5 +113,18 @@ describe("Open With → Nightloom", () => {
     listeners.get("files-opened")!();
     await new Promise((r) => setTimeout(r, 0));
     expect(tabPaths().length).toBe(n);
+  });
+});
+
+describe("Open With → Nightloom, a file the tab cannot draw (wave 10 review)", () => {
+  it("is shown in the Finder, never handed back to its default app — which may be Nightloom", async () => {
+    vi.mocked(api.revealFile).mockClear();
+    opened = ["/Users/s/latin1.bin"];
+    // Installed by the test above; alone, this installs and takes it now.
+    await installOpenedFiles();
+    listeners.get("files-opened")!();
+    await vi.waitFor(() => expect(api.revealFile).toHaveBeenCalledWith("/Users/s/latin1.bin"));
+    expect(api.openFile).not.toHaveBeenCalled();
+    expect(tabPaths()).not.toContain("/Users/s/latin1.bin");
   });
 });

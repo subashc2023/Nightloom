@@ -22,7 +22,7 @@ async function drain(): Promise<void> {
   } catch {
     return;
   }
-  for (const p of paths) await openPathAsTab(p);
+  for (const p of paths) await openPathAsTab(p, null, { finder: true });
 }
 
 export async function installOpenedFiles(): Promise<void> {

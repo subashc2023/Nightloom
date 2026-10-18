@@ -75,8 +75,14 @@ export function markForYouSeen(): void {
  * application. A refusal is a toast in the backend's words. `chat` vouches
  * for the read when there is one; a file marked for him or opened from the
  * Finder needs none.
+ *
+ * `finder`: the path came from Finder's Open With (backlog 378). A kind the
+ * tab cannot draw is then shown in the Finder, never handed back to "its
+ * application" — once Nightloom is the default for `.md`/`.txt`, a file of
+ * that type that is not UTF-8 text would come straight back here, and the
+ * two would open each other without end (wave 10 review).
  */
-export async function openPathAsTab(path: string, chat: string | null = null): Promise<void> {
+export async function openPathAsTab(path: string, chat: string | null = null, opts: { finder?: boolean } = {}): Promise<void> {
   const note = noteForPath(path, { project: app.project?.notes_dir, knowledge: app.knowledge?.dir });
   if (note) {
     await openContent({ kind: "note", ...note }, "new");
@@ -85,7 +91,10 @@ export async function openPathAsTab(path: string, chat: string | null = null): P
   try {
     const f = await api.readFileTab(path, chat);
     if (f.kind === "other") {
-      await api.openFile(path);
+      if (opts.finder) {
+        addToast(`${path.split("/").pop() ?? path} is not text a tab can show — shown in the Finder`);
+        await api.revealFile(path);
+      } else await api.openFile(path);
       return;
     }
     await openContent(chat ? { kind: "file", path, session: chat } : { kind: "file", path }, "new");
