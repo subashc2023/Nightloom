@@ -69,6 +69,9 @@
   import StillRunningLine from "./StillRunningLine.svelte";
   // The streaming motion (backlog 342, his pick of 338: "Loom + fade-in").
   import { Births, needleIn, needleOut, replyMotion } from "./replyMotion";
+  // The thinking block's arrival (backlog 389): a live thinking row's first
+  // appearance is thrown in along the send flight's path, not spawned.
+  import { thinkingArrival, type ArrivalParams } from "./thinkingArrival";
 
   interface Footer {
     model: string;
@@ -343,6 +346,12 @@
   // words under it); with no block yet it sits under the text alone.
   const lastGroup = $derived([...groups].reverse().find((g) => g.kind === "activity"));
   const moonInBlock = $derived(streaming && !!lastGroup);
+  // A block whose first row is a live thinking is that thinking's arrival
+  // (backlog 389): the whole block — its box, fold line and row — comes in.
+  function blockArrival(rows: readonly { seg: Segment }[]): ArrivalParams {
+    const s = rows[0]?.seg;
+    return s?.kind === "thinking" ? { at: s.at, live: streaming && !s.done } : { live: false };
+  }
   const moonAlone = $derived(streaming && segs.length > 0 && !moonInBlock);
 
   // The cards under the reply (backlog 078): an artifact the model published
@@ -570,7 +579,7 @@
       <!-- One block for the run: a left rule, accent while the turn is
            live; a summary line that folds and unfolds the rows; the rows
            on one grid — icon · name · argument · size (backlog 096). -->
-      <div class="activity" class:live={streaming}>
+      <div class="activity" class:live={streaming} use:thinkingArrival={blockArrival(g.rows)}>
         <button
           class="fold"
           aria-expanded={!folded}
@@ -595,8 +604,12 @@
                   <span class="size"></span>
                 </div>
               {:else if !seg.done && seg.text.trim() === ""}
-                <!-- Begun, nothing arrived yet: under way, not yet a button. -->
-                <div class="arow static thinking wide">
+                <!-- Begun, nothing arrived yet: under way, not yet a button.
+                     A thinking later in a block arrives on its own row (389). -->
+                <div
+                  class="arow static thinking wide"
+                  use:thinkingArrival={{ at: seg.at, live: streaming && g.rows[0].i !== i }}
+                >
                   <span class="ico"><Icon name="think" size={13} /></span>
                   <span class="name">thinking</span>
                   <span class="size">…</span>
@@ -607,7 +620,8 @@
                 <!-- The needle (backlog 342): a live block's margin thread is
                      accent with a glowing needle at its newest line; on done
                      the thread retracts and the icon turns once. -->
-                <div class="row-wrap" class:rm-live={streaming && !seg.done} class:rm-thought={bornT && seg.done}>
+                <div class="row-wrap" class:rm-live={streaming && !seg.done} class:rm-thought={bornT && seg.done}
+                  use:thinkingArrival={{ at: seg.at, live: streaming && !seg.done && g.rows[0].i !== i }}>
                   <button
                     class="arow thinking"
                     class:wide={!summary}
