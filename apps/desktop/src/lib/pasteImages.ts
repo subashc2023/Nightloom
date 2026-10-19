@@ -17,9 +17,13 @@
  *   conversion) while the backend gets it — from Safari's web archive on the
  *   pasteboard when it holds that URL, else by a cookie-less fetch with a
  *   size cap and a timeout (`paste_images.rs`);
+ * - an SVG or AVIF (the model takes neither) is drawn as a PNG by WebKit
+ *   (item 385, `rasterize`);
  * - one that cannot be had loses its chip and its marker reads
- *   `[image: could not be fetched]` (or says why it could not be
- *   attached) — never a silent loss. Its number goes with it: every later
+ *   `[image: could not be fetched (why)]` — the backend's reason, e.g.
+ *   that the site wants his sign-in (item 385: the reason was dropped and
+ *   a Gradescope paste said only "could not be fetched") — or why it could
+ *   not be attached; never a silent loss. Its number goes with it: every later
  *   `[image M]` in the box (and its chip's name) moves down one, so the
  *   numbers keep naming the images in the order the model sees them
  *   (review 2026-10-18: a lost image 1 left `[image 2]` naming the first
@@ -44,6 +48,9 @@ export const MAX_PASTE_IMAGES = 20;
 
 /** The media types the model takes as an image. */
 export const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+/** Item 385: types the model does not take that WebKit draws, so the
+ *  composer converts them to PNG (`rasterize`) — a site's SVG logo, AVIF. */
+export const CONVERTIBLE_TYPES = new Set(["image/svg+xml", "image/avif"]);
 
 export interface PastedImage {
   /** Its number in the box: the marker reads `[image n]`. */
@@ -101,6 +108,7 @@ export function classify(img: El): { kind: "none" } | { kind: "text"; text: stri
  */
 export function htmlImagePaste(html: string, first = 1, max = MAX_PASTE_IMAGES): ImagePaste | null {
   if (!html || !/<img\b/i.test(html)) return null;
+  const base = /<base\b[^>]*\bhref\s*=\s*["']([^"']+)["']/i.exec(html)?.[1];
   const images: PastedImage[] = [];
   let n = first;
   let over = false;
@@ -113,11 +121,39 @@ export function htmlImagePaste(html: string, first = 1, max = MAX_PASTE_IMAGES):
       return failedMarker(`not attached, over ${max} images in one paste`);
     }
     const k = n++;
-    images.push({ n: k, src: c.src });
+    images.push({ n: k, src: resolveSrc(c.src, base) });
     return marker(k);
   });
   if (text === null || (images.length === 0 && !over)) return null;
   return { text, images };
+}
+
+/** Item 385: an image's address made whole — `//host/x` and, when the copy
+ *  names its page (`<base href>`), `/x` or `x` — so it can be fetched; any
+ *  other address is left as it is (and its marker says why). */
+export function resolveSrc(src: string, base?: string): string {
+  if (/^(data|https?|blob):/i.test(src)) return src;
+  try {
+    if (src.startsWith("//")) return new URL(src, base && /^https?:/i.test(base) ? base : "https://x.invalid").href;
+    if (base && /^https?:/i.test(base)) return new URL(src, base).href;
+  } catch {
+    /* left as it is */
+  }
+  return src;
+}
+
+/** Why an image whose address is not a web address cannot be had. */
+function unreachable(src: string): string {
+  return /^blob:/i.test(src)
+    ? "could not be fetched (the page kept it to itself; drag the image in)"
+    : "could not be fetched (only part of its address came with the copy)";
+}
+
+/** The marker's words for a fetch that failed: the backend's reason (a
+ *  string), the time limit's, or none. */
+export function fetchFailure(e: unknown): string {
+  const why = typeof e === "string" ? e : e instanceof Error && e.message === "timed out" ? "timed out" : "";
+  return why ? `could not be fetched (${why})` : "could not be fetched";
 }
 
 /** A `data:` URL's image as the chip holds it (raw base64), or why not. */
@@ -125,16 +161,58 @@ export function decodeDataUrl(src: string): { media_type: string; data: string }
   const m = /^data:([^;,]*)((?:;[^;,]*)*),(.*)$/is.exec(src);
   if (!m) return { error: "could not be read" };
   const type = (m[1] || "text/plain").toLowerCase();
-  if (!IMAGE_TYPES.has(type)) return { error: `could not be attached (${type || "unknown type"})` };
+  if (!IMAGE_TYPES.has(type) && !CONVERTIBLE_TYPES.has(type)) return { error: `could not be attached (${type || "unknown type"})` };
   const base64 = /;base64/i.test(m[2]);
   let data: string;
   try {
-    data = base64 ? m[3].replace(/\s+/g, "") : btoa(decodeURIComponent(m[3]));
+    data = base64
+      ? m[3].replace(/\s+/g, "")
+      : type === "image/svg+xml"
+        ? utf8Base64(decodeURIComponent(m[3]))
+        : btoa(decodeURIComponent(m[3]));
   } catch {
     return { error: "could not be read" };
   }
   if (!data) return { error: "could not be read" };
   return { media_type: type, data };
+}
+
+function utf8Base64(text: string): string {
+  let bin = "";
+  for (const b of new TextEncoder().encode(text)) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+
+/** The longest side a converted image is drawn at; an SVG smaller than
+ *  `SVG_MIN_SIDE` is drawn up to it, so a logo reads. */
+const MAX_SIDE = 2048;
+const SVG_MIN_SIDE = 1024;
+
+/**
+ * Item 385: an SVG or AVIF as a PNG, drawn by WebKit — the model takes
+ * neither. Rejects when WebKit cannot draw it (or will not let the canvas
+ * be read back).
+ */
+export async function rasterize(img: FetchedImage): Promise<FetchedImage> {
+  const el = new Image();
+  el.src = `data:${img.media_type};base64,${img.data}`;
+  await el.decode();
+  let w = el.naturalWidth || 300;
+  let h = el.naturalHeight || 150;
+  const long = Math.max(w, h);
+  const scale = img.media_type === "image/svg+xml" && long < SVG_MIN_SIDE ? SVG_MIN_SIDE / long : Math.min(1, MAX_SIDE / long);
+  w = Math.max(1, Math.round(w * scale));
+  h = Math.max(1, Math.round(h * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("no canvas");
+  ctx.drawImage(el, 0, 0, w, h);
+  const url = canvas.toDataURL("image/png");
+  const data = url.slice(url.indexOf(",") + 1);
+  if (!data) throw new Error("empty");
+  return { media_type: "image/png", data };
 }
 
 /** `text` with the first `[image n]` read as `replacement`; unchanged when
@@ -204,7 +282,7 @@ export function preparePaste(paste: ImagePaste, cap: number): { text: string; im
       else if (d.data.length > cap) fail(img.n, TOO_BIG);
       else images.push({ n: keep(img.n), image: d });
     } else if (/^https?:\/\//i.test(img.src)) images.push({ n: keep(img.n), url: img.src });
-    else fail(img.n);
+    else fail(img.n, unreachable(img.src));
   }
   return { text, images, failed };
 }
@@ -222,6 +300,9 @@ export interface PasteImageEffects {
   readText: () => string;
   setText: (text: string) => void;
   fetch: (url: string) => Promise<FetchedImage>;
+  /** An SVG or AVIF as a PNG (`rasterize`); absent, such an image is lost
+   *  with its type named. */
+  convert?: (img: FetchedImage) => Promise<FetchedImage>;
   /** A fetch in flight, so Send waits for it. */
   track: (id: number, job: Promise<void>) => void;
   /** An image chip with its data in hand (for the clipboard ring). */
@@ -244,14 +325,15 @@ export function attachPastedImages(images: PreparedImage[], failed: number[], fx
   const jobs: Promise<void>[] = [];
   for (const img of images) {
     const name = `image ${img.n}`;
-    if ("image" in img) {
+    const convertible = "image" in img && CONVERTIBLE_TYPES.has(img.image.media_type);
+    if ("image" in img && !convertible) {
       const chip: Attachment = { id: fx.nextId(), kind: "image", name, media_type: img.image.media_type, data: img.image.data };
       fx.add(chip);
       fx.record(chip);
       continue;
     }
     const id = fx.nextId();
-    fx.add({ id, kind: "image", name, media_type: "image/png", data: "", label: "fetching", pending: true });
+    fx.add({ id, kind: "image", name, media_type: "image/png", data: "", label: convertible ? "converting" : "fetching", pending: true });
     let settled = false;
     const fail = (why?: string) => {
       if (settled) return;
@@ -275,19 +357,29 @@ export function attachPastedImages(images: PreparedImage[], failed: number[], fx
     const limit = new Promise<never>((_, no) => {
       timer = setTimeout(() => no(new Error("timed out")), fx.limitMs ?? FETCH_LIMIT_MS);
     });
-    const job = Promise.race([fx.fetch(img.url), limit])
+    const untyped = (t: string) => `could not be attached (${t})`;
+    // Item 385: an SVG or AVIF is drawn as a PNG; one WebKit cannot draw is
+    // lost with its type named.
+    const toModel = (got: FetchedImage): Promise<FetchedImage> =>
+      !CONVERTIBLE_TYPES.has(got.media_type)
+        ? Promise.resolve(got)
+        : fx.convert
+          ? fx.convert(got).catch(() => Promise.reject(untyped(got.media_type)))
+          : Promise.reject(untyped(got.media_type));
+    const source = "image" in img ? Promise.resolve(img.image) : fx.fetch(img.url).catch((e: unknown) => Promise.reject(fetchFailure(e)));
+    const job = Promise.race([source.then(toModel), limit])
       .finally(() => clearTimeout(timer))
       .then(
         (got) => {
           if (settled) return;
-          if (!IMAGE_TYPES.has(got.media_type)) return fail(`could not be attached (${got.media_type})`);
+          if (!IMAGE_TYPES.has(got.media_type)) return fail(untyped(got.media_type));
           if (got.data.length > fx.cap) return fail(TOO_BIG);
           settled = true;
           const now = fx.chips().find((c) => c.id === id)?.name ?? name;
           fx.update(id, { media_type: got.media_type, data: got.data, label: undefined, pending: false });
           fx.record({ id, kind: "image", name: now, media_type: got.media_type, data: got.data });
         },
-        () => fail(),
+        (e: unknown) => fail(typeof e === "string" ? e : fetchFailure(e)),
       );
     fx.track(id, job);
     jobs.push(job);

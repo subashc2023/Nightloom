@@ -136,7 +136,7 @@
   import { dropPending, takeDropped } from "./dropLook.svelte";
   import { codePasteLanguage, fenced, findFences, layerLines, withFenceLanguage } from "./codeDetect";
   import { mathPasteText } from "./mathPaste";
-  import { attachPastedImages, fetchPasteImage, htmlImagePaste, preparePaste, type ImagePaste } from "./pasteImages";
+  import { attachPastedImages, fetchPasteImage, htmlImagePaste, preparePaste, rasterize, type ImagePaste } from "./pasteImages";
   import { LANGUAGES } from "./codeHighlight";
   import { launch } from "./sendMotion";
   import { composerConnectHint, launch as launchState } from "./launch.svelte";
@@ -1301,6 +1301,7 @@
       readText: () => readDraft(chatKey).text,
       setText: (t) => setDraftText(chatKey, t),
       fetch: fetchPasteImage,
+      convert: rasterize,
       track: trackPending,
       record: (chip) => recordImage("pasted", chip),
       cap: MAX_IMAGE_BASE64,

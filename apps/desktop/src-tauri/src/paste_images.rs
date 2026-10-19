@@ -16,8 +16,9 @@
 //!    resolved, checked and pinned before the connection.
 //!
 //! The answer is a PNG, JPEG, GIF or WebP (judged by its bytes, not the
-//! server's word) as base64 — what an image chip holds — or the reason it is
-//! not, which the composer writes into the image's marker.
+//! server's word) as base64 — what an image chip holds — or an SVG or AVIF
+//! the composer converts to PNG (item 385), or the reason it is not, which
+//! the composer writes into the image's marker.
 
 use base64::Engine as _;
 use reqwest::Url;
@@ -78,11 +79,50 @@ pub fn sniff(bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
+/// Item 385: an image the model does not take but the composer's WebKit can
+/// draw, so it converts it to PNG (`pasteImages.ts` `rasterize`): SVG (a
+/// site's logo, often) and AVIF.
+pub fn sniff_convertible(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.len() >= 12
+        && &bytes[4..8] == b"ftyp"
+        && (&bytes[8..12] == b"avif" || &bytes[8..12] == b"avis")
+    {
+        return Some("image/avif");
+    }
+    let head = String::from_utf8_lossy(&bytes[..bytes.len().min(1024)]).to_ascii_lowercase();
+    let head = head.trim_start_matches('\u{feff}').trim_start();
+    if head.starts_with("<svg")
+        || ((head.starts_with("<?xml") || head.starts_with("<!--"))
+            && head.contains("<svg")
+            && !head.contains("<html"))
+    {
+        return Some("image/svg+xml");
+    }
+    None
+}
+
+/// Item 385: a body that is a web page, not an image — what a site behind a
+/// login sends (its sign-in page) to a request without his cookies.
+fn is_web_page(bytes: &[u8]) -> bool {
+    let head = String::from_utf8_lossy(&bytes[..bytes.len().min(512)]).to_ascii_lowercase();
+    let head = head.trim_start();
+    head.starts_with("<!doctype html") || head.starts_with("<html") || head.contains("<head")
+}
+
+/// What the marker says when the site would not give the image without his
+/// sign-in: the fetch has no cookies; Safari's copy carries the image itself.
+pub const NEEDS_SIGN_IN: &str =
+    "the site wants your sign-in; copy from Safari, or drag the image in";
+
 fn as_image(bytes: &[u8], cap: usize) -> Result<PastedImage, String> {
     if bytes.len() > cap {
         return Err("over the image size limit".into());
     }
-    let media_type = sniff(bytes).ok_or("not a PNG, JPEG, GIF or WebP image")?;
+    let media_type = match sniff(bytes).or_else(|| sniff_convertible(bytes)) {
+        Some(t) => t,
+        None if is_web_page(bytes) => return Err(NEEDS_SIGN_IN.into()),
+        None => return Err("not a PNG, JPEG, GIF or WebP image".into()),
+    };
     Ok(PastedImage {
         media_type: media_type.into(),
         data: base64::engine::general_purpose::STANDARD.encode(bytes),
@@ -220,6 +260,9 @@ async fn fetch(
                     .as_str(),
             )?;
             continue;
+        }
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            return Err(NEEDS_SIGN_IN.into());
         }
         if !status.is_success() {
             return Err(format!("the server answered {}", status.as_u16()));
@@ -404,7 +447,30 @@ mod tests {
         )
         .await
         .unwrap_err();
+        assert_eq!(e, NEEDS_SIGN_IN);
+        let junk = serve(Some(ok("application/octet-stream", b"\x00\x01junk"))).await;
+        let e = fetch(
+            Url::parse(&format!("{junk}/a")).unwrap(),
+            true,
+            TIMEOUT,
+            MAX_IMAGE_BYTES,
+        )
+        .await
+        .unwrap_err();
         assert_eq!(e, "not a PNG, JPEG, GIF or WebP image");
+        let denied = serve(Some(
+            b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
+        ))
+        .await;
+        let e = fetch(
+            Url::parse(&format!("{denied}/a")).unwrap(),
+            true,
+            TIMEOUT,
+            MAX_IMAGE_BYTES,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(e, NEEDS_SIGN_IN);
         let missing = serve(Some(
             b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
         ))
@@ -418,6 +484,21 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(e, "the server answered 404");
+    }
+
+    #[test]
+    fn svg_and_avif_come_back_typed_for_the_composer_to_convert() {
+        let svg = br#"<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"/>"#;
+        assert_eq!(
+            as_image(svg, MAX_IMAGE_BYTES).unwrap().media_type,
+            "image/svg+xml"
+        );
+        let avif = [&[0, 0, 0, 0x1c][..], b"ftypavif", &[0u8; 8]].concat();
+        assert_eq!(
+            as_image(&avif, MAX_IMAGE_BYTES).unwrap().media_type,
+            "image/avif"
+        );
+        assert_eq!(sniff_convertible(b"<html><svg></svg></html>"), None);
     }
 
     #[tokio::test]

@@ -84,7 +84,8 @@ describe("decodeDataUrl", () => {
     expect(decodeDataUrl(`data:image/png;base64,${PNG}`)).toEqual({ media_type: "image/png", data: PNG });
   });
   it("refuses what the model cannot take", () => {
-    expect(decodeDataUrl("data:image/svg+xml;utf8,<svg/>")).toEqual({ error: "could not be attached (image/svg+xml)" });
+    // test-change: SVG is converted since item 385; BMP is still refused.
+    expect(decodeDataUrl("data:image/bmp;base64,Qk0=")).toEqual({ error: "could not be attached (image/bmp)" });
     expect(decodeDataUrl("data:nonsense")).toEqual({ error: "could not be read" });
   });
 });
@@ -131,11 +132,11 @@ describe("preparePaste + attachPastedImages", () => {
   }
 
   it("adds chips in marker order however the fetches finish, and marks the lost one", async () => {
-    const html = `<p>a</p><img src="https://x.test/1.png"><p>b</p><img src="data:image/png;base64,${PNG}"><p>c</p><img src="https://x.test/3.png"><img src="data:image/svg+xml;utf8,<svg/>">`;
+    const html = `<p>a</p><img src="https://x.test/1.png"><p>b</p><img src="data:image/png;base64,${PNG}"><p>c</p><img src="https://x.test/3.png"><img src="data:image/bmp;base64,Qk0=">`;
     const paste = htmlImagePaste(html)!;
     const ready = preparePaste(paste, 1000);
     // test-change: a marker of an image not attached carries no number (review 2026-10-18).
-    expect(ready.text).toBe("a\n\n[image 1]\n\nb\n\n[image 2]\n\nc\n\n[image 3] [image: could not be attached (image/svg+xml)]");
+    expect(ready.text).toBe("a\n\n[image 1]\n\nb\n\n[image 2]\n\nc\n\n[image 3] [image: could not be attached (image/bmp)]");
     const h = harness({ "https://x.test/1.png": { media_type: "image/jpeg", data: "QUJD" }, "https://x.test/3.png": "fail" }, ready.text);
     const done = attachPastedImages(ready.images, ready.failed, h.fx);
     // At once: three chips in order, the fetched ones waiting.
@@ -151,7 +152,7 @@ describe("preparePaste + attachPastedImages", () => {
       ["image 2", "image/png", PNG, false],
     ]);
     // test-change: unnumbered marker and toast (review 2026-10-18).
-    expect(h.text()).toContain("c\n\n[image: could not be fetched] [image: could not be attached (image/svg+xml)]");
+    expect(h.text()).toContain("c\n\n[image: could not be fetched] [image: could not be attached (image/bmp)]");
     expect(h.toasts).toEqual(["2 images from the paste could not be attached; their places in the text say so"]);
   });
 
@@ -188,9 +189,9 @@ describe("preparePaste + attachPastedImages", () => {
   });
 
   it("numbers only the images it keeps when one cannot be read at once", () => {
-    const html = `<img src="data:image/svg+xml;utf8,<svg/>"><p>x</p><img src="data:image/png;base64,${PNG}"><img src="https://x.test/b.png">`;
+    const html = `<img src="data:image/bmp;base64,Qk0="><p>x</p><img src="data:image/png;base64,${PNG}"><img src="https://x.test/b.png">`;
     const ready = preparePaste(htmlImagePaste(html)!, 1000);
-    expect(ready.text).toBe("[image: could not be attached (image/svg+xml)]\n\nx\n\n[image 1] [image 2]");
+    expect(ready.text).toBe("[image: could not be attached (image/bmp)]\n\nx\n\n[image 1] [image 2]");
     expect(ready.images.map((i) => i.n)).toEqual([1, 2]);
   });
 
@@ -200,6 +201,62 @@ describe("preparePaste + attachPastedImages", () => {
     h.fx.limitMs = 30;
     await attachPastedImages(ready.images, ready.failed, h.fx);
     expect(h.chips).toEqual([]);
-    expect(h.text()).toBe("a\n\n[image: could not be fetched]");
+    // test-change: the marker says why since item 385.
+    expect(h.text()).toBe("a\n\n[image: could not be fetched (timed out)]");
+  });
+
+  // Item 385: a Gradescope paste said only "could not be fetched" — the
+  // backend's reason was dropped.
+  it("writes the backend's reason into the marker", async () => {
+    const ready = preparePaste(htmlImagePaste('<p>a</p><img src="https://x.test/locked.png">')!, 1000);
+    const h = harness({}, ready.text);
+    h.fx.fetch = () => Promise.reject("the site wants your sign-in; copy from Safari, or drag the image in");
+    await attachPastedImages(ready.images, ready.failed, h.fx);
+    expect(h.text()).toBe("a\n\n[image: could not be fetched (the site wants your sign-in; copy from Safari, or drag the image in)]");
+  });
+
+  it("converts an SVG, pasted or fetched, to a PNG chip in its place", async () => {
+    const html = `<img src="data:image/svg+xml;utf8,<svg/>"><p>x</p><img src="https://x.test/logo.svg">`;
+    const ready = preparePaste(htmlImagePaste(html)!, 1000);
+    expect(ready.text).toBe("[image 1]\n\nx\n\n[image 2]");
+    const h = harness({ "https://x.test/logo.svg": { media_type: "image/svg+xml", data: "PHN2Zy8+" } }, ready.text);
+    const seen: string[] = [];
+    h.fx.convert = async (img) => {
+      seen.push(img.media_type);
+      return { media_type: "image/png", data: PNG };
+    };
+    const done = attachPastedImages(ready.images, ready.failed, h.fx);
+    expect(h.chips.map((c) => [c.name, c.label, !!c.pending])).toEqual([
+      ["image 1", "converting", true],
+      ["image 2", "fetching", true],
+    ]);
+    await done;
+    expect(seen).toEqual(["image/svg+xml", "image/svg+xml"]);
+    expect(h.chips.map((c) => [c.name, c.media_type, c.data, !!c.pending])).toEqual([
+      ["image 1", "image/png", PNG, false],
+      ["image 2", "image/png", PNG, false],
+    ]);
+    expect(h.toasts).toEqual([]);
+  });
+
+  it("loses an SVG WebKit cannot draw, naming its type", async () => {
+    const ready = preparePaste(htmlImagePaste('<img src="data:image/svg+xml;utf8,<svg/>">')!, 1000);
+    const h = harness({}, ready.text);
+    h.fx.convert = () => Promise.reject(new Error("decode"));
+    await attachPastedImages(ready.images, ready.failed, h.fx);
+    expect(h.text()).toBe("[image: could not be attached (image/svg+xml)]");
+  });
+
+  it("completes a partial address from the copy's page, and says so when it cannot", () => {
+    const withBase = htmlImagePaste('<base href="https://www.gradescope.com/courses/1/"><img src="/assets/a.png"><img src="b.png"><img src="//cdn.test/c.png">')!;
+    expect(withBase.images.map((i) => i.src)).toEqual([
+      "https://www.gradescope.com/assets/a.png",
+      "https://www.gradescope.com/courses/1/b.png",
+      "https://cdn.test/c.png",
+    ]);
+    const ready = preparePaste(htmlImagePaste('<img src="/assets/a.png"><img src="blob:https://x.test/1">')!, 1000);
+    expect(ready.text).toBe(
+      "[image: could not be fetched (only part of its address came with the copy)] [image: could not be fetched (the page kept it to itself; drag the image in)]",
+    );
   });
 });
