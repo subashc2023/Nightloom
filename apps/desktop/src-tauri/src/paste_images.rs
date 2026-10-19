@@ -110,9 +110,10 @@ fn is_web_page(bytes: &[u8]) -> bool {
 }
 
 /// What the marker says when the site would not give the image without his
-/// sign-in: the fetch has no cookies; Safari's copy carries the image itself.
+/// sign-in: the fetch has no cookies, and a Chrome copy of text carries only the
+/// image's address; Copy Image carries the image itself (he uses Chrome only).
 pub const NEEDS_SIGN_IN: &str =
-    "the site wants your sign-in; copy from Safari, or drag the image in";
+    "the site wants your sign-in; in Chrome, right-click the image, Copy Image, and paste it";
 
 fn as_image(bytes: &[u8], cap: usize) -> Result<PastedImage, String> {
     if bytes.len() > cap {

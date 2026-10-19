@@ -210,9 +210,9 @@ describe("preparePaste + attachPastedImages", () => {
   it("writes the backend's reason into the marker", async () => {
     const ready = preparePaste(htmlImagePaste('<p>a</p><img src="https://x.test/locked.png">')!, 1000);
     const h = harness({}, ready.text);
-    h.fx.fetch = () => Promise.reject("the site wants your sign-in; copy from Safari, or drag the image in");
+    h.fx.fetch = () => Promise.reject("the site wants your sign-in; in Chrome, right-click the image, Copy Image, and paste it");
     await attachPastedImages(ready.images, ready.failed, h.fx);
-    expect(h.text()).toBe("a\n\n[image: could not be fetched (the site wants your sign-in; copy from Safari, or drag the image in)]");
+    expect(h.text()).toBe("a\n\n[image: could not be fetched (the site wants your sign-in; in Chrome, right-click the image, Copy Image, and paste it)]");
   });
 
   it("converts an SVG, pasted or fetched, to a PNG chip in its place", async () => {
