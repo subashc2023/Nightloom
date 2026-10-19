@@ -60,11 +60,14 @@ describe("the Remove buttons", () => {
   it("ask before removing a turn: removeTurn runs only from the confirmation", () => {
     const src = here("Transcript.svelte");
     const calls = [...src.matchAll(/removeTurn\(/g)].map((m) => m.index!);
-    // The import, and the one call in the dialog's confirm.
+    // The import, and the one call in the dialog's confirm — through
+    // `removeHere`, which lays down the delete motion first (item 397).
     const markup = src.slice(src.indexOf("</script>"));
-    const inMarkup = [...markup.matchAll(/removeTurn\(/g)];
+    expect([...markup.matchAll(/removeTurn\(/g)].length).toBe(0);
+    const inMarkup = [...markup.matchAll(/removeHere\(/g)];
     expect(inMarkup.length).toBe(1);
-    const at = markup.indexOf("removeTurn(");
+    expect(src).toMatch(/async function removeHere\(index: number\)[^}]*await removeTurn\(index\);/);
+    const at = markup.indexOf("removeHere(");
     expect(markup.slice(markup.lastIndexOf("<ConfirmDialog", at), at)).toContain("removing");
     expect(calls.length).toBeGreaterThan(0);
   });
@@ -73,7 +76,7 @@ describe("the Remove buttons", () => {
     // Wave 8 review: the service removes by index in the open chat.
     const src = here("Transcript.svelte");
     expect(src).toContain("if (removing && removing.key !== k) removing = null;");
-    expect(src).toContain("if (asked && asked.key === sessionKey) void removeTurn(asked.index);");
+    expect(src).toContain("if (asked && asked.key === sessionKey) void removeHere(asked.index);");
     expect(src).toContain('kind: "message", text: item.text, key: sessionKey }');
     expect(src).toContain('kind: "reply", text: textOf(item.segs), key: sessionKey }');
   });

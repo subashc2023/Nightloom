@@ -1,6 +1,21 @@
 import { describe, expect, it } from "vitest";
 import { FLIGHT_MS, frameAt as flightAt } from "./sendMotion";
-import { ARRIVAL_STYLE, DURATION, FRESH_MS, STREAK_MS, decide, frameAt, pathPoint } from "./thinkingArrival";
+import {
+  ARRIVAL_STYLE,
+  A_SCALE,
+  DURATION,
+  FRESH_MS,
+  OFFERED_STYLES,
+  STREAK_MS,
+  chosenArrival,
+  decide,
+  frameAt,
+  pathPoint,
+  setChosenArrival,
+} from "./thinkingArrival";
+
+/** A base-timeline time (the 480 ms one the comments describe) as played, ×1.3 (backlog 395). */
+const a = (base: number) => base * A_SCALE;
 
 describe("the thinking block's arrival (backlog 389)", () => {
   it("builds A, his idea, and keeps it shorter than the send flight", () => {
@@ -9,20 +24,32 @@ describe("the thinking block's arrival (backlog 389)", () => {
     expect(STREAK_MS).toBeLessThanOrEqual(FLIGHT_MS);
   });
 
+  it("A plays 1.3x slower than 389 built it (backlog 395): 480 -> 624 ms, the streak 220 -> 286", () => {
+    expect(A_SCALE).toBe(1.3);
+    expect(DURATION.A).toBe(624);
+    expect(DURATION.A).toBeGreaterThan(480);
+    expect(STREAK_MS).toBe(286);
+    // every time stretches together: the base frame at t is the played frame at 1.3t
+    expect(frameAt("A", a(250))).toEqual(frameAt("A", 250 * 1.3));
+    expect(frameAt("A", 479).done).toBe(false);
+    expect(frameAt("A", 623).done).toBe(false);
+    expect(frameAt("A", 624).done).toBe(true);
+  });
+
   it("A: the streak flies first with the block hidden, then the block drops in under the line", () => {
     const f0 = frameAt("A", 0);
     expect(f0.opacity).toBe(0);
     expect(f0.streak).not.toBeNull();
-    const mid = frameAt("A", 120);
+    const mid = frameAt("A", a(120));
     expect(mid.streak!.head).toBeGreaterThan(mid.streak!.tail);
     expect(mid.opacity).toBe(0);
     const landed = frameAt("A", STREAK_MS);
     expect(landed.streak!.head).toBe(1);
     expect(landed.line).not.toBeNull();
-    expect(frameAt("A", 300).streak).toBeNull(); // the tail has collapsed into the landing point
-    expect(frameAt("A", 340).line!.k).toBeCloseTo(1);
-    expect(frameAt("A", 320).opacity).toBe(1);
-    expect(frameAt("A", 380).reveal).toBeCloseTo(1);
+    expect(frameAt("A", a(300)).streak).toBeNull(); // the tail has collapsed into the landing point
+    expect(frameAt("A", a(340)).line!.k).toBeCloseTo(1);
+    expect(frameAt("A", a(320)).opacity).toBe(1);
+    expect(frameAt("A", a(380)).reveal).toBeCloseTo(1);
   });
 
   it("A: the drop settles from −6 px with at most a pixel of overshoot, and ends still", () => {
@@ -74,6 +101,26 @@ describe("the thinking block's arrival (backlog 389)", () => {
     }
     expect(frameAt("fade", 0).opacity).toBe(0);
     expect(frameAt("fade", 90).opacity).toBeGreaterThan(0.5);
+  });
+});
+
+describe("the pick in Settings → Appearance → Animations (backlog 395)", () => {
+  it("offers A and B, not C", () => {
+    expect(OFFERED_STYLES.map((s) => s.id)).toEqual(["A", "B"]);
+  });
+  it("defaults to A, remembers B, and never stores or reads C", () => {
+    localStorage.removeItem("nightloom.thinkingArrival");
+    expect(chosenArrival()).toBe("A");
+    setChosenArrival("B");
+    expect(localStorage.getItem("nightloom.thinkingArrival")).toBe("B");
+    expect(chosenArrival()).toBe("B");
+    setChosenArrival("C");
+    expect(chosenArrival()).toBe("B");
+    localStorage.setItem("nightloom.thinkingArrival", "C");
+    expect(chosenArrival()).toBe("A");
+    localStorage.setItem("nightloom.thinkingArrival", "junk");
+    expect(chosenArrival()).toBe("A");
+    localStorage.removeItem("nightloom.thinkingArrival");
   });
 });
 

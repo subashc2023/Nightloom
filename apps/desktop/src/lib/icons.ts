@@ -15,6 +15,10 @@ export const ICONS = {
   ext: '<path d="M8 4H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1v-3M12 4h4v4M16 4l-7 7"/>',
   gear: '<circle cx="10" cy="10" r="2.5"/><path d="M10 3v2M10 15v2M3 10h2M15 10h2M5 5l1.4 1.4M13.6 13.6 15 15M5 15l1.4-1.4M13.6 6.4 15 5"/>',
   play: '<path d="M6 4.5v11l9-5.5z"/>',
+  /* Stop a turn (item 398): a filled rounded square, the media-stop shape,
+     filled where the set is otherwise line — the one solid glyph, so it reads
+     as an action at the size of the Send it replaces. */
+  stop: '<rect x="4" y="4" width="12" height="12" rx="2.5" fill="currentColor" stroke="none"/>',
   revert: '<path d="M4 8h9a4 4 0 0 1 0 8H8M4 8l3-3M4 8l3 3"/>',
   check: '<path d="m4 10.5 4 4 8-9"/>',
   copy: '<rect x="7" y="7" width="9" height="10" rx="1.5"/><path d="M13 7V4.5A1.5 1.5 0 0 0 11.5 3h-6A1.5 1.5 0 0 0 4 4.5v8A1.5 1.5 0 0 0 5.5 14H7"/>',
