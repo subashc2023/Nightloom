@@ -46,6 +46,10 @@ describe("Usage & Cost: two tabs under one category (backlog 206)", () => {
     expect(groups[5].panes).toEqual(["search:brave"]);
   });
 
+  it("puts Animations under Appearance, after Palette (backlog 395)", () => {
+    expect(groups[6]).toEqual({ title: "Appearance", panes: ["appearance", "animations"] });
+  });
+
   it("opens on the top pane when nothing was asked or left within two minutes (backlog 109)", () => {
     // The walk of 2026-09-25 saw Providers → Anthropic here: the fallback
     // was the rail's provider. It is the nav's first row.

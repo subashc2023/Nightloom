@@ -124,6 +124,8 @@
   import { isMac } from "./platform";
   import Icon from "./Icon.svelte";
   import Kbd from "./Kbd.svelte";
+  import { OFFERED_STYLES, chosenArrival, play as playArrival, setChosenArrival, type ArrivalStyle } from "./thinkingArrival";
+  import { reducedMotion } from "./sendMotion";
 
   /**
    * Redesigned 2026-09-13 (nightshift surface-redesign-2026-09-13, canvas
@@ -146,6 +148,26 @@
   onDestroy(() => {
     lastPane = { pane: selected, closedAt: Date.now() };
   });
+  // Appearance → Animations (nightshift backlog 395): the thinking block's
+  // arrival, A or B, stored by thinkingArrival.ts and read at each arrival.
+  let arrival = $state<ArrivalStyle>(chosenArrival());
+  const arrivalBlock: Record<string, HTMLElement | null> = {};
+  const arrivalFrom: Record<string, HTMLElement | null> = {};
+  let stopPreview: (() => void) | null = null;
+  /** Play a look on its card's sample block, its streak leaving from the card's own composer. */
+  function previewArrival(style: ArrivalStyle) {
+    stopPreview?.();
+    stopPreview = null;
+    const node = arrivalBlock[style];
+    if (!node) return;
+    stopPreview = playArrival(node, reducedMotion() ? "fade" : style, 0, null, arrivalFrom[style] ?? null);
+  }
+  function pickArrival(style: ArrivalStyle) {
+    arrival = style;
+    setChosenArrival(style);
+    previewArrival(style);
+  }
+  onDestroy(() => stopPreview?.());
   let keyDraft = $state("");
   let keyBusy = $state(false);
   let keyError = $state<string | null>(null);
@@ -1230,6 +1252,14 @@
       <!-- The palette's name, not its letter: "B" read as a key (backlog 109). -->
       <span class="st">{PALETTES.find((p) => p.id === app.palette)?.name ?? app.palette}</span>
     </button>
+    <button
+      class="nav-item"
+      class:active={selected === "animations"}
+      onclick={() => select("animations")}
+    >
+      <span class="nav-label">Animations</span>
+      <span class="st">{OFFERED_STYLES.find((s) => s.id === arrival)?.name ?? arrival}</span>
+    </button>
     <div class="nav-title">Remote<Kbd keys={keyOf("Remote")} dim /></div>
     <button
       class="nav-item"
@@ -1450,6 +1480,53 @@
           />
           <span>Ask first (a Resume toast) instead of resuming automatically</span>
         </label>
+      </section>
+    </div>
+  {:else if selected === "animations"}
+    <!-- Appearance → Animations (nightshift backlog 395, his ask 2026-10-19:
+         "put both A and B as two diff options for the thinking block's
+         animation"). One card per animated moment; the rewind and the
+         delete (396, 397) join as cards of their own below this one. -->
+    <div class="pane">
+      <div class="pane-head">
+        <h2 class="pane-title">Animations</h2>
+        <span class="spacer"></span>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+      </div>
+      <p class="note">
+        How things arrive and leave in the transcript. Each choice applies to
+        the next time it happens and is remembered. With Reduce motion on in
+        macOS, every one of them is a plain fade.
+      </p>
+      <section class="card">
+        <div class="ch"><span class="t">Thinking block</span></div>
+        <p class="note small">How a reply's thinking block comes in when the model starts thinking.</p>
+        <div class="anims" role="radiogroup" aria-label="Thinking block arrival">
+          {#each OFFERED_STYLES as s (s.id)}
+            <div class="anim" class:on={arrival === s.id}>
+              <button
+                class="anim-pick"
+                role="radio"
+                aria-checked={arrival === s.id}
+                onclick={() => pickArrival(s.id)}
+              >
+                <span class="anim-name"><b>{s.id}</b> {s.name}</span>
+                <span class="anim-blurb">{s.blurb}</span>
+              </button>
+              <div class="anim-stage" aria-hidden="true">
+                <div class="anim-block" bind:this={arrivalBlock[s.id]}>
+                  <span class="anim-label">Thinking</span>
+                  <span class="anim-text">The cache key hashes the lockfile and the toolchain file…</span>
+                </div>
+                <div class="anim-composer" bind:this={arrivalFrom[s.id]}></div>
+              </div>
+              <div class="anim-foot">
+                <button class="ns-btn ghost small" onclick={() => previewArrival(s.id)}>Preview</button>
+                {#if arrival === s.id}<span class="anim-on">In use</span>{/if}
+              </div>
+            </div>
+          {/each}
+        </div>
       </section>
     </div>
   {:else if selected === "remote"}
@@ -3975,6 +4052,101 @@
   .seg button.on {
     background: var(--accent);
     color: var(--paper);
+  }
+  /* Appearance → Animations (backlog 395): one card per look, each with a
+     sample stage — a thinking block over a stand-in composer, the streak's
+     launch point — and a Preview. Two columns, like the palette swatches. */
+  .anims {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.7rem;
+  }
+  .anim {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+    padding: 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+  .anim:hover {
+    border-color: var(--dim);
+  }
+  .anim.on {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
+  }
+  /* The pick grows, so the two stages and Previews line up whatever the blurbs' lengths. */
+  .anim-pick {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+    gap: 0.25rem;
+    padding: 0;
+    background: transparent;
+    border: none;
+    text-align: left;
+    color: var(--text);
+    font: inherit;
+    cursor: pointer;
+  }
+  .anim-name {
+    font-size: 0.85rem;
+  }
+  .anim-name b {
+    font-weight: 600;
+    margin-right: 0.3rem;
+  }
+  .anim-blurb {
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--dim);
+  }
+  .anim-stage {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 34px;
+    padding: 12px 12px 10px;
+    border-radius: 6px;
+    background: var(--sheet);
+    border: 1px solid var(--line);
+  }
+  .anim-block {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 7px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--line2);
+    background: var(--paper);
+  }
+  .anim-label {
+    font-size: 11.5px;
+    color: var(--ink2);
+  }
+  .anim-text {
+    font-size: 11.5px;
+    color: var(--dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .anim-composer {
+    height: 22px;
+    border-radius: 7px;
+    border: 1px solid var(--line2);
+    background: var(--well);
+  }
+  .anim-foot {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .anim-on {
+    font-size: 11.5px;
+    color: var(--accent);
   }
   /* Backlog 291: the default subagent rules box. */
   .rules-default {
