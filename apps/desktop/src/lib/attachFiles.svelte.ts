@@ -82,6 +82,13 @@ const hasConverter = () => (converter ??= officeConverter().catch(() => false));
 /** Office conversions in flight, by chip id: Send waits on these. */
 const converting = new Map<number, Promise<void>>();
 
+/** Item 382: a pasted image being fetched is waited on as a conversion is —
+ *  Send holds until it settles. */
+export function trackPending(id: number, job: Promise<void>): void {
+  const done = job.finally(() => converting.delete(id));
+  converting.set(id, done);
+}
+
 /** The conversions still running for `key`'s pending chips. */
 export function conversionJobs(key: string): Promise<void>[] {
   return readDraft(key)

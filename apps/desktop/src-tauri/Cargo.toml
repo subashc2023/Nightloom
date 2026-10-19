@@ -42,6 +42,10 @@ libc = "0.2"
 # buttons, so the click never came back. Now the crate under it,
 # mac-notification-sys, with `wait_for_click` — already in the lockfile.
 # Nothing else posts through it.
+# Item 382: a pasted web image fetched (`paste_images.rs`), and Safari's
+# web archive on the pasteboard read. Both already in the lockfile.
+reqwest.workspace = true
+plist = "1"
 [target.'cfg(target_os = "macos")'.dependencies]
 mac-notification-sys = "0.6"
 # Web tabs' keys (backlog 172 pass 2): which page holds the first responder,
