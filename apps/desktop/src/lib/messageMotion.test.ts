@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { FLIGHT_MS, TOTAL_MS } from "./sendMotion";
-import { DURATION, REWIND_STYLE, flightPoint, prepareRewind, rewindFrame, rewindRow } from "./messageMotion";
+import {
+  DELETE_STYLE,
+  DURATION,
+  REWIND_STYLE,
+  deleteFrame,
+  flightPoint,
+  prepareDelete,
+  prepareRewind,
+  rewindFrame,
+  rewindRow,
+} from "./messageMotion";
 
 const STYLES = ["A", "B", "C", "fade"] as const;
 
@@ -91,8 +101,58 @@ describe("the rewind motion (backlog 396)", () => {
   });
 });
 
+describe("the delete motion (backlog 397)", () => {
+  it("builds A, and every look stays short", () => {
+    expect(DELETE_STYLE).toBe("A");
+    for (const s of STYLES) expect(DURATION.delete[s]).toBeLessThanOrEqual(600);
+  });
+
+  it("every look starts on the old bubble, whole, and ends on the placeholder alone", () => {
+    for (const s of STYLES) {
+      const f0 = deleteFrame(s, 0);
+      expect(f0.ghost.opacity).toBe(1);
+      expect(f0.node).toBe(0);
+      const end = deleteFrame(s, DURATION.delete[s]);
+      expect(end.done).toBe(true);
+      expect(end.ghost.opacity).toBe(0);
+      expect(end.node).toBe(1);
+      expect(end.shift).toBe(1);
+    }
+  });
+
+  it("A: the strike draws across first, then the struck bubble lifts away and the placeholder fades in", () => {
+    expect(deleteFrame("A", 80).strike!.k).toBeGreaterThan(0.5);
+    expect(deleteFrame("A", 160).strike!.k).toBe(1);
+    expect(deleteFrame("A", 160).ghost.opacity).toBe(1);
+    expect(deleteFrame("A", 380).ghost.opacity).toBe(0);
+    expect(deleteFrame("A", 380).ghost.dy).toBe(-10);
+    expect(deleteFrame("A", 260).node).toBe(0);
+    expect(deleteFrame("A", 459).node).toBeGreaterThan(0.99);
+  });
+
+  it("B morphs onto the placeholder; C blurs out", () => {
+    expect(deleteFrame("B", 0).morph).toBe(0);
+    expect(deleteFrame("B", 320).morph).toBe(1);
+    expect(deleteFrame("C", 300).ghost.blur).toBe(6);
+  });
+
+  it("reduced motion is a plain cross-fade", () => {
+    for (let ms = 0; ms < DURATION.delete.fade; ms += 10) {
+      const f = deleteFrame("fade", ms);
+      expect(f.ghost.dy).toBe(0);
+      expect(f.ghost.scale).toBe(1);
+      expect(f.ghost.blur).toBe(0);
+      expect(f.strike).toBeNull();
+      expect(f.morph).toBeNull();
+      expect(f.shift).toBe(1);
+      expect(f.ghost.opacity + f.node).toBeCloseTo(1);
+    }
+  });
+});
+
 describe("with no DOM to draw on", () => {
   it("prepare returns null and the caller goes on with the plain state change", () => {
     expect(prepareRewind(null, 3)).toBeNull();
+    expect(prepareDelete(undefined, 3)).toBeNull();
   });
 });

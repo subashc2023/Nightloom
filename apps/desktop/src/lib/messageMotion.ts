@@ -1,7 +1,9 @@
 /**
- * The rewind motion on his messages (nightshift backlog 396, his ask
- * 2026-10-19: "a small animation for clicking rewind on one of my
- * messages"). Until now a rewind cut the thread back in one frame.
+ * The rewind and delete motions on his messages (nightshift backlog 396 and
+ * 397, his asks 2026-10-19: "a small animation for clicking rewind on one of
+ * my messages", and the same for delete). Until now a rewind cut the thread
+ * back in one frame and a delete swapped the bubble for its placeholder in
+ * one frame.
  *
  * The state change is never held back. Just before the call, `prepare…` lays
  * a copy of what is about to change exactly over it — nothing visibly moves.
@@ -28,13 +30,24 @@
  *      accent line at his message's top edge, which then shrinks away.
  *   C, drain: the copy drops 20 px, blurs and fades as one; a ring on the box.
  *
+ * Delete, three looks; the app plays `DELETE_STYLE`:
+ *   A, struck and lifted (built): an accent line strikes through each line of the bubble
+ *      left to right, then the struck bubble lifts 10 px and fades, and the
+ *      greyed placeholder fades in where it was.
+ *        0–160 ms   the strike draws
+ *        160–380    the bubble lifts away; rows below slide 160–460
+ *        260–460    the placeholder fades in
+ *   B, shrink to the placeholder: the bubble's copy shrinks onto the
+ *      placeholder's box while the two cross-fade.
+ *   C, dissolve: the bubble blurs out; the placeholder fades in.
+ *
  * Under `prefers-reduced-motion: reduce`, every look is a plain 180 ms fade
  * and nothing moves.
  *
- * The timelines are pure (`rewindFrame`, `rewindRow`) so the
+ * The timelines are pure (`rewindFrame`, `rewindRow`, `deleteFrame`) so the
  * tests can read them and the harness can hold any instant
  * (`window.__messageMotionHold = ms`; `window.__messageMotion =
- * { rewind: "B" }` overrides the looks for the demo).
+ * { rewind: "B", delete: "C" }` overrides the looks for the demo).
  */
 
 import { FLIGHT_MS, easeOutCubic, easeOutQuart, reducedMotion } from "./sendMotion";
@@ -42,9 +55,12 @@ import { FLIGHT_MS, easeOutCubic, easeOutQuart, reducedMotion } from "./sendMoti
 export type MotionStyle = "A" | "B" | "C";
 /** His pick for rewind. To switch the app to another look, change this one letter. */
 export const REWIND_STYLE: MotionStyle = "A";
+/** His pick for delete. To switch the app to another look, change this one letter. */
+export const DELETE_STYLE: MotionStyle = "A";
 
-export const DURATION: Record<"rewind", Record<MotionStyle | "fade", number>> = {
+export const DURATION: Record<"rewind" | "delete", Record<MotionStyle | "fade", number>> = {
   rewind: { A: 600, B: 460, C: 400, fade: 180 },
+  delete: { A: 460, B: 400, C: 380, fade: 180 },
 };
 /** A prepared copy whose call never lands lets go after this long. */
 export const PENDING_TTL_MS = 2500;
@@ -172,17 +188,83 @@ export function flightPoint(bubble: { x: number; y: number }, box: { x: number; 
   };
 }
 
+export interface DeleteFrame {
+  /** The copy of his bubble as it was. */
+  ghost: { opacity: number; dy: number; scale: number; blur: number };
+  /** B: 0..1 of the way from the bubble's old box onto the placeholder's. */
+  morph: number | null;
+  /** A's strike through the bubble: 0..1 of its width, from the left. */
+  strike: { k: number; opacity: number } | null;
+  /** The placeholder, as a share of its own (greyed) opacity. */
+  node: number;
+  /** 0..1: how far shifted rows have slid to their new place. */
+  shift: number;
+  done: boolean;
+}
+
+export function deleteFrame(style: MotionStyle | "fade", ms: number): DeleteFrame {
+  const done = ms >= DURATION.delete[style];
+  const rest: DeleteFrame = {
+    ghost: { opacity: 0, dy: 0, scale: 1, blur: 0 },
+    morph: null,
+    strike: null,
+    node: 1,
+    shift: 1,
+    done: true,
+  };
+  if (done) return rest;
+  if (style === "fade") {
+    const e = easeOutCubic(ms / DURATION.delete.fade);
+    return {
+      ...rest,
+      ghost: { opacity: 1 - e, dy: 0, scale: 1, blur: 0 },
+      node: e,
+      done,
+    };
+  }
+  if (style === "A") {
+    const u = smooth(160, 380, ms);
+    return {
+      ...rest,
+      ghost: { opacity: 1 - u, dy: -10 * u, scale: 1 - 0.03 * u, blur: 0 },
+      strike: { k: easeOutCubic(ms / 160), opacity: 0.9 * (1 - u) },
+      node: smooth(260, 460, ms),
+      shift: easeOutCubic((ms - 160) / 300),
+      done,
+    };
+  }
+  if (style === "B") {
+    return {
+      ...rest,
+      ghost: { opacity: 1 - smooth(60, 300, ms), dy: 0, scale: 1, blur: 0 },
+      morph: easeOutCubic(ms / 320),
+      node: smooth(100, 400, ms),
+      shift: easeOutCubic(ms / 320),
+      done,
+    };
+  }
+  // C
+  const u = smooth(0, 300, ms);
+  return {
+    ...rest,
+    ghost: { opacity: 1 - u, dy: 0, scale: 1, blur: 6 * u },
+    node: smooth(120, 380, ms),
+    shift: easeOutCubic(ms / 300),
+    done,
+  };
+}
+
 // ---- the DOM side ----------------------------------------------------------
 
 type Win = {
-  __messageMotion?: { rewind?: MotionStyle };
+  __messageMotion?: { rewind?: MotionStyle; delete?: MotionStyle };
   __messageMotionHold?: number;
 };
 const win = () => (typeof window !== "undefined" ? (window as unknown as Win) : ({} as Win));
 
-function styleFor(kind: "rewind"): MotionStyle | "fade" {
+function styleFor(kind: "rewind" | "delete"): MotionStyle | "fade" {
   if (reducedMotion()) return "fade";
-  return win().__messageMotion?.[kind] ?? REWIND_STYLE;
+  return win().__messageMotion?.[kind] ?? (kind === "rewind" ? REWIND_STYLE : DELETE_STYLE);
 }
 
 function now(): number {
@@ -267,6 +349,38 @@ function lookAlike(el: HTMLElement, r: DOMRect): HTMLElement {
   s.transform = `translate3d(${r.left}px, ${r.top}px, 0)`;
   s.willChange = "transform, opacity";
   return c;
+}
+
+/** The lines of text in `el`, relative to its box `r`: where each line's words run, and its middle. At most 12. */
+function linesOf(el: HTMLElement, r: DOMRect): { left: number; width: number; mid: number }[] {
+  const out: { left: number; right: number; top: number; bottom: number }[] = [];
+  try {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    for (const q of Array.from(range.getClientRects())) {
+      if (q.width < 1 || q.height < 1) continue;
+      const same = out.find((l) => Math.abs(l.top - q.top) < 3);
+      if (same) {
+        same.left = Math.min(same.left, q.left);
+        same.right = Math.max(same.right, q.right);
+        same.bottom = Math.max(same.bottom, q.bottom);
+      } else
+        out.push({
+          left: q.left,
+          right: q.right,
+          top: q.top,
+          bottom: q.bottom,
+        });
+    }
+  } catch {
+    // no ranges: the fallback below
+  }
+  const lines = out.slice(0, 12).map((l) => ({
+    left: l.left - r.left,
+    width: l.right - l.left,
+    mid: (l.top + l.bottom) / 2 - r.top,
+  }));
+  return lines.length ? lines : [{ left: 12, width: Math.max(0, r.width - 24), mid: r.height / 2 }];
 }
 
 /** Rows that might shift, with where they are now. */
@@ -548,6 +662,109 @@ export function prepareRewind(viewport: HTMLElement | null | undefined, index: n
           if (composer) composer.style.boxShadow = composerShadow;
           flier?.remove();
           thread?.svg.remove();
+          remove();
+        });
+      });
+    },
+  };
+}
+
+/**
+ * Before his message at log index `index` is removed from the context: lay
+ * a copy of its bubble over it. Null when there is nothing to draw.
+ */
+export function prepareDelete(viewport: HTMLElement | null | undefined, index: number): Prepared | null {
+  if (!viewport || typeof document === "undefined" || typeof requestAnimationFrame !== "function") return null;
+  const sel = `.user-turn[data-turn="${index}"]`;
+  const row = viewport.querySelector<HTMLElement>(sel);
+  const bubble = row?.querySelector<HTMLElement>(".user-bubble");
+  const inner = row?.parentElement;
+  if (!row || !bubble || !inner) return null;
+  const view = viewOf(viewport);
+  const br = bubble.getBoundingClientRect();
+  if (br.top > view.bottom || br.bottom < view.top || br.width === 0) return null;
+  const style = styleFor("delete");
+  const ghost = lookAlike(bubble, br);
+  ghost.classList.add("msg-motion", "msg-delete");
+  ghost.style.overflow = "hidden";
+  // One strike through each line of his text, where the line's words are (else one through the middle).
+  const strikes = linesOf(bubble, br).map((l) => {
+    const d = document.createElement("div");
+    d.style.cssText = `position:absolute;left:${l.left}px;width:${l.width}px;top:${l.mid}px;height:1.5px;margin-top:-0.75px;border-radius:1px;background:${ACCENT};transform-origin:0 50%;transform:scaleX(0)`;
+    ghost.appendChild(d);
+    return d;
+  });
+  const near = rowsNear(inner, view, () => false);
+  viewport.appendChild(ghost);
+
+  let committed = false;
+  let stop: (() => void) | null = null;
+  const remove = () => {
+    clearTimeout(ttl);
+    ghost.remove();
+  };
+  const ttl = setTimeout(() => {
+    if (!committed) remove();
+  }, PENDING_TTL_MS);
+
+  return {
+    cancel: () => {
+      committed = true;
+      stop?.();
+      remove();
+    },
+    commit: () => {
+      if (committed) return;
+      committed = true;
+      clearTimeout(ttl);
+      nextFrame(() => {
+        const cur = viewport.querySelector<HTMLElement>(sel);
+        if (!cur || !cur.classList.contains("removed")) return remove();
+        const placeholder = cur.querySelector<HTMLElement>(".user-bubble");
+        const own = placeholder ? placeholder.style.opacity : "";
+        const base = placeholder ? parseFloat(getComputedStyle(placeholder).opacity) || 1 : 1;
+        const pr = placeholder?.getBoundingClientRect() ?? null;
+        const moved = near.map((a) => ({
+          ...a,
+          d: a.el.isConnected ? a.top - a.el.getBoundingClientRect().top : 0,
+        }));
+        const paint = (ms: number) => {
+          const f = deleteFrame(style, ms);
+          for (const m of moved)
+            m.el.style.transform = f.shift >= 1 || !m.d ? m.transform : `translateY(${(m.d * (1 - f.shift)).toFixed(2)}px)`;
+          if (placeholder) placeholder.style.opacity = f.node >= 1 ? own : String(+(base * f.node).toFixed(4));
+          let x = br.left;
+          let y = br.top + f.ghost.dy;
+          let sx = f.ghost.scale;
+          let sy = f.ghost.scale;
+          if (f.morph !== null && pr && pr.width > 0) {
+            // Onto the placeholder's box as it is now (its row may have slid).
+            const slide = moved.find((m) => m.el === cur);
+            const py = pr.top + (slide ? slide.d * (1 - f.shift) : 0);
+            x = lerp(br.left, pr.left, f.morph);
+            y = lerp(br.top, py, f.morph);
+            sx = lerp(1, pr.width / br.width, f.morph);
+            sy = lerp(1, pr.height / br.height, f.morph);
+          } else {
+            // Scale about the bubble's centre.
+            x += (br.width * (1 - sx)) / 2;
+            y += (br.height * (1 - sy)) / 2;
+          }
+          ghost.style.transform = `translate3d(${x.toFixed(2)}px, ${y.toFixed(2)}px, 0) scale(${sx.toFixed(4)}, ${sy.toFixed(4)})`;
+          ghost.style.opacity = String(f.ghost.opacity);
+          ghost.style.filter = f.ghost.blur > 0.01 ? `blur(${f.ghost.blur.toFixed(2)}px)` : "";
+          for (const d of strikes) {
+            d.style.display = f.strike ? "" : "none";
+            if (f.strike) {
+              d.style.transform = `scaleX(${f.strike.k.toFixed(4)})`;
+              d.style.opacity = String(f.strike.opacity);
+            }
+          }
+          return f.done;
+        };
+        stop = run(paint, () => {
+          for (const m of moved) m.el.style.transform = m.transform;
+          if (placeholder) placeholder.style.opacity = own;
           remove();
         });
       });

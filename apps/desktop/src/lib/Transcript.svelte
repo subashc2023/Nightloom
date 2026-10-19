@@ -120,9 +120,9 @@
   import { retryReply } from "./retry.svelte";
   import { versionPlace } from "./versions";
   import { arrive, hasLaunch } from "./sendMotion";
-  // Item 396: a rewind of his message plays out
+  // Items 396 and 397: a rewind and a removal of his message play out
   // over a copy of the thread laid down just before the call.
-  import { prepareRewind } from "./messageMotion";
+  import { prepareDelete, prepareRewind } from "./messageMotion";
   // A Send near the foot lands at the bottom (item 313).
   import { followStep, restDistance, sendJumps } from "./sendScroll";
   // The first-paint mark of the message's timing line (item 256).
@@ -659,13 +659,21 @@
   // dialog is open drops the question (wave 8 review) rather than
   // removing the same index from the chat switched to.
   let removing = $state<{ index: number; kind: RemoveKind; text: string; key: string } | null>(null);
-  // The motion (item 396): the copy goes down before the call and
+  // The motions (items 396, 397): the copy goes down before the call and
   // plays once it lands; the state change itself is never held back, and a
   // refused or failed call lets the copy go on the next frame.
   async function rewindHere(index: number): Promise<void> {
     const m = prepareRewind(viewport, index);
     try {
       await rewindTo(index, true);
+    } finally {
+      m?.commit();
+    }
+  }
+  async function removeHere(index: number): Promise<void> {
+    const m = prepareDelete(viewport, index);
+    try {
+      await removeTurn(index);
     } finally {
       m?.commit();
     }
@@ -1616,7 +1624,7 @@
     onconfirm={() => {
       const asked = removing;
       removing = null;
-      if (asked && asked.key === sessionKey) void removeTurn(asked.index);
+      if (asked && asked.key === sessionKey) void removeHere(asked.index);
     }}
     onclose={() => (removing = null)}
   />
