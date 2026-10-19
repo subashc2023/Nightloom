@@ -133,7 +133,7 @@
   import { Marks, chipMotion, prefersReducedMotion } from "./chipFade";
   import DropOverlay from "./DropOverlay.svelte";
   import { chipDropIn, rowDropOpen } from "./dropLook";
-  import { dropPending, takeDropped } from "./dropLook.svelte";
+  import { dropPending, markPasted, takeDropped } from "./dropLook.svelte";
   import { codePasteLanguage, fenced, findFences, layerLines, withFenceLanguage } from "./codeDetect";
   import { mathPasteText } from "./mathPaste";
   import { attachPastedImages, fetchPasteImage, htmlImagePaste, preparePaste, rasterize, type ImagePaste } from "./pasteImages";
@@ -1275,6 +1275,9 @@
     // Only swallow the paste when it carries no text of its own; some sources
     // put a screenshot and its caption on the clipboard together.
     if (!pastedText) e.preventDefault();
+    // Item 388: a pasted image lands with the drop's ending, not at once
+    // (names as `attachFiles`' describe gives them).
+    markPasted(files.filter((f) => f.type.startsWith("image/")).map((f) => f.name || "pasted image"));
     void accept(files).then((chips) => {
       for (const c of chips) if (c.kind === "image") recordImage("pasted", c);
     });
@@ -1292,6 +1295,8 @@
     recordText("pasted", raw);
     offer = longPasteOffer(raw, at);
     converted = null;
+    // Item 388: the paste's image chips land as dropped ones do.
+    markPasted(ready.images.map((i) => `image ${i.n}`));
     void attachPastedImages(ready.images, ready.failed, {
       nextId: nextAttachmentId,
       add: (chip) => addAttachment(chatKey, chip),

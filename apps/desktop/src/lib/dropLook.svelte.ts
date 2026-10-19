@@ -165,6 +165,13 @@ export function watchDrops(): () => void {
   };
 }
 
+/** Item 388: a paste's image chips land as dropped ones do (the drop's
+ *  ending: the row opens, the chip rises and scales in, the accent ring
+ *  fades off it) — marked by the names their chips will have, in order. */
+export function markPasted(names: readonly string[]): void {
+  if (names.length > 0) dropMarks.mark(names, performance.now());
+}
+
 /** For a box's chip: its place in the drop that made it, or null. */
 export function takeDropped(name: string): number | null {
   return dropMarks.take(name, performance.now());
