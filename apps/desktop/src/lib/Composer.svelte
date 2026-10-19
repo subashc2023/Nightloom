@@ -87,7 +87,7 @@
   } from "./pasteAttach";
   import { badgeOf, extOf } from "./attachKinds";
   import { sendTip, tip } from "./tip";
-  import { acceptFiles, conversionJobs, filesBlocked, splitChips } from "./attachFiles.svelte";
+  import { acceptFiles, conversionJobs, filesBlocked, MAX_IMAGE_BASE64, splitChips, trackPending } from "./attachFiles.svelte";
   import { floatMenu } from "./floatMenu";
   import { ghostFor } from "./suggestions.svelte";
   import { queuedElsewhereToast } from "./browse";
@@ -134,6 +134,7 @@
   import { dropPending, takeDropped } from "./dropLook.svelte";
   import { codePasteLanguage, fenced, findFences, layerLines, withFenceLanguage } from "./codeDetect";
   import { mathPasteText } from "./mathPaste";
+  import { attachPastedImages, fetchPasteImage, htmlImagePaste, preparePaste, type ImagePaste } from "./pasteImages";
   import { LANGUAGES } from "./codeHighlight";
   import { launch } from "./sendMotion";
   import { composerConnectHint, launch as launchState } from "./launch.svelte";
@@ -1210,17 +1211,30 @@
     // Item 348: math copied from a web page (KaTeX, MathJax) comes as its
     // LaTeX in `$…$`, read from the clipboard's HTML; null for any other
     // paste, which goes on below unchanged.
-    const math = files.length === 0 ? mathPasteText(e.clipboardData?.getData("text/html") ?? "") : null;
+    const html = files.length === 0 ? (e.clipboardData?.getData("text/html") ?? "") : "";
+    // Item 382: text copied with images in it — the images' places marked
+    // `[image N]` in the text, each image a chip (pasteImages.ts). N counts
+    // on from the images already in the box: the model sees a turn's images
+    // in chip order, after its text.
+    const asAttachment = takeAttachMark();
+    const firstImage = readDraft(key).attachments.filter((a) => a.kind === "image").length + 1;
+    const withImages = files.length === 0 && !asAttachment ? htmlImagePaste(html, firstImage) : null;
+    const math = files.length === 0 && !withImages ? mathPasteText(html) : null;
     // Into the in-app clipboard ring (backlog 173): the text, and below
     // each image the paste attached.
-    if (pastedText) recordText("pasted", math ?? pastedText);
+    if (pastedText && !(withImages && ta)) recordText("pasted", math ?? pastedText);
     // Item 284: ⌥⌘V's paste puts the text in as an attachment. A clipboard
     // holding a file (an image) is pasted as ⌘V would.
-    const act = pasteAction(takeAttachMark(), pastedText, files.length);
+    const act = pasteAction(asAttachment, pastedText, files.length);
     if (act !== "box") {
       e.preventDefault();
       if (act === "attach") void attachPastedText(pastedText);
       else addToast("The clipboard holds no text to attach");
+      return;
+    }
+    if (withImages && ta) {
+      e.preventDefault();
+      pasteWithImages(withImages);
       return;
     }
     if (math !== null && ta) {
@@ -1257,6 +1271,33 @@
     if (!pastedText) e.preventDefault();
     void accept(files).then((chips) => {
       for (const c of chips) if (c.kind === "image") recordImage("pasted", c);
+    });
+  }
+
+  /** Item 382: the paste's text with its markers at the caret (as a math
+   *  paste goes in), then its images as chips in marker order, under the
+   *  key of the moment of the paste. */
+  function pasteWithImages(paste: ImagePaste): void {
+    const chatKey = key;
+    const ready = preparePaste(paste, MAX_IMAGE_BASE64);
+    const at = Math.min(ta?.selectionStart ?? text.length, ta?.selectionEnd ?? text.length);
+    const raw = normalizeNewlines(ready.text);
+    pasteMath(raw);
+    recordText("pasted", raw);
+    offer = longPasteOffer(raw, at);
+    converted = null;
+    void attachPastedImages(ready.images, ready.failed, {
+      nextId: nextAttachmentId,
+      add: (chip) => addAttachment(chatKey, chip),
+      update: (id, patch) => void updateAttachment(chatKey, id, patch),
+      remove: (id) => removeAttachment(chatKey, id),
+      readText: () => readDraft(chatKey).text,
+      setText: (t) => setDraftText(chatKey, t),
+      fetch: fetchPasteImage,
+      track: trackPending,
+      record: (chip) => recordImage("pasted", chip),
+      cap: MAX_IMAGE_BASE64,
+      toast: (m) => addToast(m),
     });
   }
 

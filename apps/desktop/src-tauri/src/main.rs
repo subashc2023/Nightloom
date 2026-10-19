@@ -72,6 +72,8 @@ mod note_edit;
 mod offscreen;
 /// Finder's Open With → Nightloom (nightshift backlog 378).
 mod opened_files;
+/// A paste's web images, fetched (nightshift backlog 382).
+mod paste_images;
 #[cfg(not(debug_assertions))]
 mod offscreen {
     /// Never in a release build.
@@ -8429,6 +8431,7 @@ fn main() {
             named_files,
             reveal_file,
             open_file,
+            paste_images::fetch_paste_image,
             sent_files::save_sent_file,
             sent_files::drag_sent_file,
             read_file_tab,
