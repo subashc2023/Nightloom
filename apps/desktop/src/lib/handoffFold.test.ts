@@ -36,3 +36,11 @@ describe("383: Hand off after Stay here", () => {
     expect(handoff.stage).toBe("due");
   });
 });
+
+describe("383 review: Stay here ends a fold", () => {
+  it("a notice folded, then wrapped up and stayed past, re-asks in full", () => {
+    fold("g", "due");
+    noteStay("g", "wrapped");
+    expect(isFolded("g", "due")).toBe(false);
+  });
+});

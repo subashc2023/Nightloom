@@ -690,9 +690,9 @@
   );
   const handoffPct = $derived(Math.round(handoff.fill * 100));
   // Backlog 383: after *Stay here* the card can come back before the re-ask mark.
-  const handoffStayed = $derived(
-    !aside && handoff.chat !== null && handoff.chat === app.activeSessionId && handoff.stage === "idle" && handoff.dismissedAt > 0,
-  );
+  // Under handoffHere's own conditions too (review 2026-10-18): on an
+  // engine that shows no card, the button would reopen nothing.
+  const handoffStayed = $derived(handoffHere && !aside && handoff.stage === "idle" && handoff.dismissedAt > 0);
   const handoffThresholdPct = $derived(Math.round(threshold(app.activeSessionId) * 100));
   const handoffDefaultPct = $derived(Math.round(threshold(null) * 100));
   const reAskPct = Math.round(RE_ASK * 100);
@@ -3998,6 +3998,29 @@
     overflow: hidden;
     text-overflow: ellipsis;
     min-width: 0;
+  }
+  /* Review 2026-10-18: at a 700 pt window the title read "HA…"; the fill
+     (repeated in the due title, secondary on the wrapped one) gives up its
+     room first and is gone on a narrow line, so the title keeps what fits. */
+  .handoff.handoff-min {
+    container-type: inline-size;
+  }
+  .handoff-min .handoff-fill {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 0 1000 auto;
+  }
+  @container (max-width: 560px) {
+    .handoff-min .handoff-fill {
+      display: none;
+    }
+  }
+  .handoff-min .ns-btn {
+    flex: none;
+  }
+  .handoff-min .handoff-mark {
+    flex: none;
   }
   .handoff-head {
     display: flex;

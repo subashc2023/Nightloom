@@ -11,9 +11,15 @@ const folded = $state<{ at: Record<string, HandoffStage>; stayedFrom: Record<str
   stayedFrom: {},
 });
 
-/** Which card a *Stay here* closed, so *Hand off* reopens the same one. */
+/** Which card a *Stay here* closed, so *Hand off* reopens the same one.
+ *  A *Stay here* also ends any fold: the card's next showing (the re-ask
+ *  past the mark, or *Hand off*) is a fresh ask and opens in full (review
+ *  2026-10-18: a notice folded, then wrapped up from the folded line and
+ *  stayed past, came back folded at the re-ask). */
 export function noteStay(chat: string | null, stage: HandoffStage): void {
-  if (chat !== null) folded.stayedFrom[chat] = stage;
+  if (chat === null) return;
+  folded.stayedFrom[chat] = stage;
+  delete folded.at[chat];
 }
 
 export function stayedFromWrapped(chat: string | null): boolean {
