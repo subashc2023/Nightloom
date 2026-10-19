@@ -5,6 +5,7 @@
   import type { Segment } from "./state.svelte";
   import type { ApprovalRequest, Usage } from "./types";
   import { renderReply } from "./markdown";
+  import { codeCopy } from "./codeCopy";
   import CouncilBlocks from "./CouncilBlocks.svelte";
   import { parseCouncilRecord, parseCouncilSeat } from "./council";
   import { wordDiff } from "./textdiff";
@@ -799,7 +800,7 @@
           {#each wordDiff(before, g.seg.text) as op, k (k)}{#if op.kind === "del"}<del>{op.text}</del>{:else if op.kind === "add"}<ins>{op.text}</ins>{:else}{op.text}{/if}{/each}
         </div>
       {:else}
-        <div class="markdown" use:memoryRefs={{ hits: memHits, text: g.seg.text }}>{@html renderReply(g.seg.text)}</div>
+        <div class="markdown" use:memoryRefs={{ hits: memHits, text: g.seg.text }} use:codeCopy>{@html renderReply(g.seg.text)}</div>
       {/if}
     {:else if g.seg.kind === "removed_tool" || g.seg.kind === "removed_text"}
       {@const seg = g.seg}
