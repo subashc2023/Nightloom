@@ -97,7 +97,9 @@ pub async fn compile(file: &Path, out: &Path, bin: &Path, timeout: Duration) -> 
     cmd.arg("-no-shell-escape")
         .arg("-interaction=nonstopmode")
         .arg("-halt-on-error")
-        .arg(name)
+        // `./name`, never the bare name: a file named `-pdflatex=cmd.tex` is
+        // otherwise read by latexmk as an option and runs `cmd` (review 381).
+        .arg(Path::new(".").join(name))
         .current_dir(dir)
         // latexmk finds pdflatex (and perl) by name.
         .env(
@@ -106,6 +108,10 @@ pub async fn compile(file: &Path, out: &Path, bin: &Path, timeout: Duration) -> 
         )
         // TeX's own writes (\openout) land in the output folder too.
         .env("TEXMFOUTPUT", out)
+        // Paranoid writes (TeX Live's default, pinned against a loosened
+        // texmf.cnf or environment): no absolute path outside the output
+        // folder, no `..`, no dot files, so \openout cannot reach his folder.
+        .env("openout_any", "p")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -282,5 +288,73 @@ mod tests {
         assert!(log.contains("! Undefined control sequence."), "{log}");
         assert!(log.contains("l.4 \\nosuchmacro"), "{log}");
         assert_eq!(listing(&src), before);
+    }
+
+    /// A file whose name reads as an option is compiled as a file: without
+    /// `./` latexmk took `-pdflatex=touch PWNED.tex` as its TeX command and
+    /// ran it beside the file (review 381).
+    #[tokio::test]
+    async fn a_name_that_reads_as_an_option_is_compiled_not_obeyed() {
+        if engine(Path::new(TEXBIN)).is_none() {
+            eprintln!("skipped: no TeX at {TEXBIN}");
+            return;
+        }
+        let src = scratch("dash name");
+        let out = scratch("dash-out");
+        let file = src.join("-pdflatex=touch PWNED.tex");
+        std::fs::write(
+            &file,
+            "\\documentclass{article}\n\\begin{document}\nok\n\\end{document}\n",
+        )
+        .unwrap();
+        let before = listing(&src);
+        let r = compile(&file, &out, Path::new(TEXBIN), TIMEOUT).await;
+        assert_eq!(listing(&src), before, "a command ran beside the file");
+        assert!(r.pdf.is_some(), "no PDF: {:?}", r.message);
+    }
+
+    /// A compile that never ends is stopped at the limit, with its children
+    /// (latexmk's pdflatex): nothing of it is left running.
+    #[tokio::test]
+    async fn a_compile_past_the_limit_is_stopped_with_its_children() {
+        if engine(Path::new(TEXBIN)).is_none() {
+            eprintln!("skipped: no TeX at {TEXBIN}");
+            return;
+        }
+        let src = scratch("loop");
+        let out = scratch("loop-out");
+        // A stem no other process has on its command line, for pgrep.
+        let stem = format!(
+            "forever{}x{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let file = src.join(format!("{stem}.tex"));
+        std::fs::write(&file, "\\def\\x{\\x}\\x\n").unwrap();
+        let started = std::time::Instant::now();
+        let r = compile(&file, &out, Path::new(TEXBIN), Duration::from_secs(3)).await;
+        assert!(started.elapsed() < Duration::from_secs(20));
+        assert!(r.pdf.is_none());
+        assert!(
+            r.message
+                .as_deref()
+                .is_some_and(|m| m.contains("was stopped")),
+            "{:?}",
+            r.message
+        );
+        // The group's kill lands asynchronously; give it a moment.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let left = std::process::Command::new("/usr/bin/pgrep")
+            .args(["-f", &stem])
+            .output()
+            .unwrap();
+        assert!(
+            left.stdout.is_empty(),
+            "still running: {}",
+            String::from_utf8_lossy(&left.stdout)
+        );
     }
 }
