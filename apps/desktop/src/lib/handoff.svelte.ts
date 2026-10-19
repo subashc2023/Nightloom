@@ -364,6 +364,14 @@ export function stayHere(): void {
   handoff.stage = "idle";
 }
 
+/** The *Hand off* button after a *Stay here* (backlog 383): the card comes
+ *  back before the re-ask mark — "HANDOFF.md written" again if the wrap-up
+ *  had already run, else the notice. Where it was dismissed stays, so a
+ *  second *Stay here* is no different from the first. */
+export function reopenHandoff(wasWrapped: boolean): void {
+  handoff.stage = wasWrapped ? "wrapped" : "due";
+}
+
 /** After the mark was raised on the notice: a fill now under it goes quiet
  *  without counting as a *Stay here*, so the new mark asks afresh. */
 export function reconsider(chat: string | null): void {
