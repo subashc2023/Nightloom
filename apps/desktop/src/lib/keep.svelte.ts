@@ -6,7 +6,7 @@
  * same bytes and writes nothing).
  */
 import { keepAttachment } from "./api";
-import { addToast, projectFilesChanged } from "./state.svelte";
+import { addToast, projectFilesChanged, refreshNotes } from "./state.svelte";
 import type { KeepState } from "./keep";
 
 export const keeps = $state<Record<string, KeepState>>({});
@@ -29,6 +29,10 @@ export async function keepNow(
     const kept = await keepAttachment(name, mediaType, from);
     keeps[key] = { phase: "kept", rel: kept.rel };
     if (!kept.already) projectFilesChanged();
+    // Item 392 (his bug, 2026-10-18): the Notes list shows it now — it
+    // read the folder only at a turn's end or a reload, so a file kept
+    // and its chip removed looked lost though it was on disk.
+    void refreshNotes();
     addToast(
       kept.already
         ? `${name} was already in this project's files, as ${kept.rel}`
