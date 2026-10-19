@@ -110,7 +110,7 @@
       <button class="ghost revert" use:tip={"Drop what is typed here"} onclick={() => (confirmDiscard = true)}>Discard</button>
     {/if}
     <button class="ghost" use:tip={"Back to the chat; what is typed stays (Esc)"} onclick={closeNewProject}>Cancel</button>
-    <button class="save" disabled={!canCreate || creating || !canLeaveProject()} use:tip={`Make the folder and open the project (${mod}↵)`} onclick={() => void create()}>
+    <button class="save" disabled={!canCreate || creating || !canLeaveProject()} use:tip={canLeaveProject() ? `Make the folder and open the project (${mod}↵)` : "Waits for the new chat's first reply to start"} onclick={() => void create()}>
       {creating ? "Creating…" : "Create"}
     </button>
   </header>
@@ -145,6 +145,11 @@
           {/if}
         </div>
         <p class="hint" class:bad={noSlug}>{reason}</p>
+        {#if canCreate && !creating && !canLeaveProject()}
+          <!-- Item 393 (his bug, 2026-10-18): Create sat disabled with no
+               word why while a New chat's first reply had not started. -->
+          <p class="hint">Create waits a moment: a new chat's first reply is still starting, and it needs its first word before the project can change.</p>
+        {/if}
       </div>
 
       <!-- A third of its old height (backlog 103), resizable downward by
@@ -173,7 +178,7 @@
         <button
           class="ns-btn accent"
           disabled={!canCreate || creating || !canLeaveProject()}
-          use:tip={`Make the folder and open the project (${mod}↵)`}
+          use:tip={canLeaveProject() ? `Make the folder and open the project (${mod}↵)` : "Waits for the new chat's first reply to start"}
           onclick={() => void create()}
         >
           {creating ? "Creating…" : "Create"}
