@@ -72,8 +72,10 @@ describe("htmlImagePaste", () => {
     const html = Array.from({ length: 4 }, (_, i) => `<p>${i}</p><img src="https://x.test/${i}.png">`).join("");
     const p = htmlImagePaste(html, 1, 2)!;
     expect(p.images.map((i) => i.n)).toEqual([1, 2]);
-    expect(p.text).toContain("[image 3: not attached, over 2 images in one paste]");
-    expect(p.text).toContain("[image 4: not attached, over 2 images in one paste]");
+    // test-change: a marker of an image not attached carries no number (review 2026-10-18),
+    // so the next paste's numbers (counted from the chips) cannot collide with it.
+    expect(p.text.split("[image: not attached, over 2 images in one paste]")).toHaveLength(3);
+    expect(p.text).not.toContain("[image 3");
   });
 });
 
@@ -95,23 +97,28 @@ describe("replaceMarker", () => {
 });
 
 describe("preparePaste + attachPastedImages", () => {
-  function harness(fetched: Record<string, FetchedImage | "fail">, boxText: string) {
+  function harness(fetched: Record<string, FetchedImage | "fail" | "hang">, boxText: string, already: Attachment[] = []) {
     let text = boxText;
     let id = 100;
-    const chips: Attachment[] = [];
+    const chips: Attachment[] = already.map((c) => ({ ...c }));
     const toasts: string[] = [];
     const tracked: number[] = [];
     const fx: PasteImageEffects = {
       nextId: () => ++id,
       add: (c) => chips.push({ ...c }),
       update: (i, patch) => Object.assign(chips.find((c) => c.id === i)!, patch),
-      remove: (i) => chips.splice(chips.findIndex((c) => c.id === i), 1),
+      remove: (i) => {
+        const at = chips.findIndex((c) => c.id === i);
+        if (at >= 0) chips.splice(at, 1);
+      },
+      chips: () => chips,
       readText: () => text,
       setText: (t) => {
         text = t;
       },
       fetch: (url) => {
         const r = fetched[url];
+        if (r === "hang") return new Promise<FetchedImage>(() => {});
         // Out of order on purpose: later URLs settle first.
         return new Promise((ok, no) => setTimeout(() => (r && r !== "fail" ? ok(r) : no(new Error("nope"))), 50 - Object.keys(fetched).indexOf(url) * 10));
       },
@@ -127,7 +134,8 @@ describe("preparePaste + attachPastedImages", () => {
     const html = `<p>a</p><img src="https://x.test/1.png"><p>b</p><img src="data:image/png;base64,${PNG}"><p>c</p><img src="https://x.test/3.png"><img src="data:image/svg+xml;utf8,<svg/>">`;
     const paste = htmlImagePaste(html)!;
     const ready = preparePaste(paste, 1000);
-    expect(ready.text).toBe("a\n\n[image 1]\n\nb\n\n[image 2]\n\nc\n\n[image 3] [image 4: could not be attached (image/svg+xml)]");
+    // test-change: a marker of an image not attached carries no number (review 2026-10-18).
+    expect(ready.text).toBe("a\n\n[image 1]\n\nb\n\n[image 2]\n\nc\n\n[image 3] [image: could not be attached (image/svg+xml)]");
     const h = harness({ "https://x.test/1.png": { media_type: "image/jpeg", data: "QUJD" }, "https://x.test/3.png": "fail" }, ready.text);
     const done = attachPastedImages(ready.images, ready.failed, h.fx);
     // At once: three chips in order, the fetched ones waiting.
@@ -142,8 +150,9 @@ describe("preparePaste + attachPastedImages", () => {
       ["image 1", "image/jpeg", "QUJD", false],
       ["image 2", "image/png", PNG, false],
     ]);
-    expect(h.text()).toContain("[image 3: could not be fetched]");
-    expect(h.toasts).toEqual(["2 images from the paste could not be attached (3, 4); their places in the text say so"]);
+    // test-change: unnumbered marker and toast (review 2026-10-18).
+    expect(h.text()).toContain("c\n\n[image: could not be fetched] [image: could not be attached (image/svg+xml)]");
+    expect(h.toasts).toEqual(["2 images from the paste could not be attached; their places in the text say so"]);
   });
 
   it("refuses a fetched image over the cap, in place", async () => {
@@ -152,6 +161,45 @@ describe("preparePaste + attachPastedImages", () => {
     const h = harness({ "https://x.test/big.png": { media_type: "image/png", data: "A".repeat(2000) } }, ready.text);
     await attachPastedImages(ready.images, ready.failed, h.fx);
     expect(h.chips).toEqual([]);
-    expect(h.text()).toBe("[image 1: could not be attached (over the image size limit)]");
+    // test-change: unnumbered marker (review 2026-10-18).
+    expect(h.text()).toBe("[image: could not be attached (over the image size limit)]");
+  });
+
+  // Review 2026-10-18: the model sees the chips' images in order, so a lost
+  // image must take its number with it — before, a lost image 2 left
+  // `[image 3]` naming what the model sees as the second image.
+  it("moves later numbers down when an image before them is lost, in the text and on the chips", async () => {
+    const existing: Attachment = { id: 1, kind: "image", name: "image 1", media_type: "image/png", data: PNG };
+    const html = `<p>a</p><img src="https://x.test/gone.png"><p>b</p><img src="data:image/png;base64,${PNG}"><p>c</p><img src="https://x.test/ok.png">`;
+    const paste = htmlImagePaste(html, 2)!;
+    const ready = preparePaste(paste, 1000);
+    const h = harness(
+      { "https://x.test/gone.png": "fail", "https://x.test/ok.png": { media_type: "image/jpeg", data: "QUJD" } },
+      `before [image 1]\n${ready.text}`,
+      [existing],
+    );
+    await attachPastedImages(ready.images, ready.failed, h.fx);
+    expect(h.text()).toBe("before [image 1]\na\n\n[image: could not be fetched]\n\nb\n\n[image 2]\n\nc\n\n[image 3]");
+    expect(h.chips.map((c) => [c.name, c.data])).toEqual([
+      ["image 1", PNG],
+      ["image 2", PNG],
+      ["image 3", "QUJD"],
+    ]);
+  });
+
+  it("numbers only the images it keeps when one cannot be read at once", () => {
+    const html = `<img src="data:image/svg+xml;utf8,<svg/>"><p>x</p><img src="data:image/png;base64,${PNG}"><img src="https://x.test/b.png">`;
+    const ready = preparePaste(htmlImagePaste(html)!, 1000);
+    expect(ready.text).toBe("[image: could not be attached (image/svg+xml)]\n\nx\n\n[image 1] [image 2]");
+    expect(ready.images.map((i) => i.n)).toEqual([1, 2]);
+  });
+
+  it("counts a fetch that never answers as lost, so Send is not held forever", async () => {
+    const ready = preparePaste(htmlImagePaste('<p>a</p><img src="https://x.test/stuck.png">')!, 1000);
+    const h = harness({ "https://x.test/stuck.png": "hang" }, ready.text);
+    h.fx.limitMs = 30;
+    await attachPastedImages(ready.images, ready.failed, h.fx);
+    expect(h.chips).toEqual([]);
+    expect(h.text()).toBe("a\n\n[image: could not be fetched]");
   });
 });

@@ -102,6 +102,9 @@ fn is_local(ip: IpAddr) -> bool {
                 || v.is_multicast()
                 || (o[0] == 100 && (o[1] & 0xc0) == 64) // carrier-grade NAT, 100.64/10
                 || o[0] == 0
+                || (o[0] == 192 && o[1] == 0 && o[2] == 0) // IETF protocol assignments, 192.0.0/24
+                || (o[0] == 198 && (o[1] & 0xfe) == 18) // benchmarking, 198.18/15
+                || o[0] >= 240 // reserved, 240/4
         }
         IpAddr::V6(v) => {
             let s = v.segments();
@@ -110,7 +113,18 @@ fn is_local(ip: IpAddr) -> bool {
                 || v.is_multicast()
                 || (s[0] & 0xfe00) == 0xfc00 // unique local
                 || (s[0] & 0xffc0) == 0xfe80 // link local
-                || v.to_ipv4_mapped().is_some_and(|m| is_local(IpAddr::V4(m)))
+                || (s[0] & 0xffc0) == 0xfec0 // site local (deprecated, still routed by some)
+                // An IPv4 address inside v6: mapped (::ffff:a.b.c.d),
+                // compatible (::a.b.c.d) or NAT64's 64:ff9b::/96 — judged
+                // as the IPv4 address it reaches (review 2026-10-18).
+                || v.to_ipv4().is_some_and(|m| is_local(IpAddr::V4(m)))
+                || (s[..6] == [0x64, 0xff9b, 0, 0, 0, 0]
+                    && is_local(IpAddr::V4(std::net::Ipv4Addr::new(
+                        (s[6] >> 8) as u8,
+                        s[6] as u8,
+                        (s[7] >> 8) as u8,
+                        s[7] as u8,
+                    ))))
         }
     }
 }
@@ -164,6 +178,9 @@ async fn fetch(
     for _ in 0..=MAX_REDIRECTS {
         let addr = checked_addr(&url, allow_local).await?;
         let mut b = reqwest::Client::builder()
+            // No proxy: a proxy would resolve the name itself, past the
+            // check and the pin above (review 2026-10-18).
+            .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .user_agent(USER_AGENT)
             .timeout(deadline.saturating_duration_since(tokio::time::Instant::now()));
@@ -492,6 +509,33 @@ mod tests {
         let got = pasteboard_image(&url).expect("the image is in the pasteboard's web archive");
         assert_eq!(got.media_type, "image/png");
         println!("found {url}: {} base64 chars", got.data.len());
+    }
+
+    /// Review 2026-10-18: an IPv4 local address wrapped in IPv6, and the
+    /// reserved IPv4 ranges, are local too.
+    #[test]
+    fn local_addresses_in_every_spelling_are_local() {
+        for a in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "192.168.0.1",
+            "198.18.0.1",
+            "192.0.0.8",
+            "240.0.0.1",
+            "::1",
+            "::ffff:127.0.0.1",
+            "::127.0.0.1",
+            "::ffff:10.0.0.1",
+            "64:ff9b::7f00:1",
+            "64:ff9b::c0a8:101",
+            "fec0::1",
+            "fd00::1",
+        ] {
+            assert!(is_local(a.parse().unwrap()), "{a} should be local");
+        }
+        for a in ["93.184.216.34", "2606:2800:220:1::1", "64:ff9b::5db8:d822"] {
+            assert!(!is_local(a.parse().unwrap()), "{a} should not be local");
+        }
     }
 
     #[test]

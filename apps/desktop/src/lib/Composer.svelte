@@ -1297,6 +1297,7 @@
       add: (chip) => addAttachment(chatKey, chip),
       update: (id, patch) => void updateAttachment(chatKey, id, patch),
       remove: (id) => removeAttachment(chatKey, id),
+      chips: () => readDraft(chatKey).attachments,
       readText: () => readDraft(chatKey).text,
       setText: (t) => setDraftText(chatKey, t),
       fetch: fetchPasteImage,

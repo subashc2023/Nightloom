@@ -18,8 +18,12 @@
  *   pasteboard when it holds that URL, else by a cookie-less fetch with a
  *   size cap and a timeout (`paste_images.rs`);
  * - one that cannot be had loses its chip and its marker reads
- *   `[image N: could not be fetched]` (or says why it could not be
- *   attached) — never a silent loss.
+ *   `[image: could not be fetched]` (or says why it could not be
+ *   attached) — never a silent loss. Its number goes with it: every later
+ *   `[image M]` in the box (and its chip's name) moves down one, so the
+ *   numbers keep naming the images in the order the model sees them
+ *   (review 2026-10-18: a lost image 1 left `[image 2]` naming the first
+ *   image sent).
  *
  * The order reaches the model as it is (read 2026-10-18,
  * `protocol::user_content`): a turn's content is its text, then its images in
@@ -53,7 +57,13 @@ export interface ImagePaste {
 }
 
 export const marker = (n: number) => `[image ${n}]`;
-export const failedMarker = (n: number, why = "could not be fetched") => `[image ${n}: ${why}]`;
+/** Where an image stood that is not attached. It has no number: numbers
+ *  name only the images the model is sent, in its order. */
+export const failedMarker = (why = "could not be fetched") => `[image: ${why}]`;
+/** The longest a paste's image may stay waiting before it counts as lost,
+ *  so a stuck backend call never holds Send (the backend's own budget is
+ *  20 s for the network). */
+export const FETCH_LIMIT_MS = 45_000;
 
 const px = (v: string | undefined) => (v === undefined || v === "" ? null : Number.parseFloat(v));
 
@@ -98,11 +108,11 @@ export function htmlImagePaste(html: string, first = 1, max = MAX_PASTE_IMAGES):
     const c = classify(img);
     if (c.kind === "none") return null;
     if (c.kind === "text") return c.text;
-    const k = n++;
     if (images.length >= max) {
       over = true;
-      return failedMarker(k, `not attached, over ${max} images in one paste`);
+      return failedMarker(`not attached, over ${max} images in one paste`);
     }
+    const k = n++;
     images.push({ n: k, src: c.src });
     return marker(k);
   });
@@ -135,6 +145,21 @@ export function replaceMarker(text: string, n: number, replacement: string): str
   return at < 0 ? text : text.slice(0, at) + replacement + text.slice(at + m.length);
 }
 
+/** `text` with every `[image m]` past `lost` moved down one: image `lost`
+ *  is gone, so each later image is now one earlier in what the model sees. */
+export function shiftMarkersAfter(text: string, lost: number): string {
+  return text.replace(/\[image (\d+)\]/g, (all, d: string) => {
+    const m = Number(d);
+    return m > lost ? marker(m - 1) : all;
+  });
+}
+
+/** The number in a chip's `image N` name, or null for any other name. */
+export function chipNumber(name: string): number | null {
+  const m = /^image (\d+)$/.exec(name);
+  return m ? Number(m[1]) : null;
+}
+
 /** What the backend's `fetch_paste_image` returns. */
 export interface FetchedImage {
   media_type: string;
@@ -161,17 +186,24 @@ export function preparePaste(paste: ImagePaste, cap: number): { text: string; im
   let text = paste.text;
   const images: PreparedImage[] = [];
   const failed: number[] = [];
+  // Images lost so far: each later one moves down this many.
+  let lost = 0;
   const fail = (n: number, why?: string) => {
     failed.push(n);
-    text = replaceMarker(text, n, failedMarker(n, why));
+    text = replaceMarker(text, n, failedMarker(why));
+    lost++;
+  };
+  const keep = (n: number): number => {
+    if (lost > 0) text = replaceMarker(text, n, marker(n - lost));
+    return n - lost;
   };
   for (const img of paste.images) {
     if (/^data:/i.test(img.src)) {
       const d = decodeDataUrl(img.src);
       if ("error" in d) fail(img.n, d.error);
       else if (d.data.length > cap) fail(img.n, TOO_BIG);
-      else images.push({ n: img.n, image: d });
-    } else if (/^https?:\/\//i.test(img.src)) images.push({ n: img.n, url: img.src });
+      else images.push({ n: keep(img.n), image: d });
+    } else if (/^https?:\/\//i.test(img.src)) images.push({ n: keep(img.n), url: img.src });
     else fail(img.n);
   }
   return { text, images, failed };
@@ -184,6 +216,8 @@ export interface PasteImageEffects {
   add: (chip: Attachment) => void;
   update: (id: number, patch: Partial<Attachment>) => void;
   remove: (id: number) => void;
+  /** The box's chips now, in order (a lost image renumbers the later ones). */
+  chips: () => Attachment[];
   /** The box's text now, and setting it (a failed image's marker). */
   readText: () => string;
   setText: (text: string) => void;
@@ -195,6 +229,8 @@ export interface PasteImageEffects {
   /** The base64 cap for an image. */
   cap: number;
   toast: (msg: string) => void;
+  /** How long a fetch may wait before it counts as lost (FETCH_LIMIT_MS). */
+  limitMs?: number;
 }
 
 /**
@@ -216,30 +252,52 @@ export function attachPastedImages(images: PreparedImage[], failed: number[], fx
     }
     const id = fx.nextId();
     fx.add({ id, kind: "image", name, media_type: "image/png", data: "", label: "fetching", pending: true });
+    let settled = false;
     const fail = (why?: string) => {
-      fx.remove(id);
+      if (settled) return;
+      settled = true;
       lost.push(img.n);
-      fx.setText(replaceMarker(fx.readText(), img.n, failedMarker(img.n, why)));
+      // Its number now (an earlier loss may have moved it down); a chip he
+      // removed meanwhile is his own edit and is left as he made it.
+      const chip = fx.chips().find((c) => c.id === id);
+      const n = chip ? chipNumber(chip.name) : null;
+      fx.remove(id);
+      if (n === null) return;
+      let text = replaceMarker(fx.readText(), n, failedMarker(why));
+      text = shiftMarkersAfter(text, n);
+      fx.setText(text);
+      for (const c of fx.chips()) {
+        const m = c.kind === "image" ? chipNumber(c.name) : null;
+        if (m !== null && m > n) fx.update(c.id, { name: `image ${m - 1}` });
+      }
     };
-    const job = fx.fetch(img.url).then(
-      (got) => {
-        if (!IMAGE_TYPES.has(got.media_type)) return fail(`could not be attached (${got.media_type})`);
-        if (got.data.length > fx.cap) return fail(TOO_BIG);
-        fx.update(id, { media_type: got.media_type, data: got.data, label: undefined, pending: false });
-        fx.record({ id, kind: "image", name, media_type: got.media_type, data: got.data });
-      },
-      () => fail(),
-    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const limit = new Promise<never>((_, no) => {
+      timer = setTimeout(() => no(new Error("timed out")), fx.limitMs ?? FETCH_LIMIT_MS);
+    });
+    const job = Promise.race([fx.fetch(img.url), limit])
+      .finally(() => clearTimeout(timer))
+      .then(
+        (got) => {
+          if (settled) return;
+          if (!IMAGE_TYPES.has(got.media_type)) return fail(`could not be attached (${got.media_type})`);
+          if (got.data.length > fx.cap) return fail(TOO_BIG);
+          settled = true;
+          const now = fx.chips().find((c) => c.id === id)?.name ?? name;
+          fx.update(id, { media_type: got.media_type, data: got.data, label: undefined, pending: false });
+          fx.record({ id, kind: "image", name: now, media_type: got.media_type, data: got.data });
+        },
+        () => fail(),
+      );
     fx.track(id, job);
     jobs.push(job);
   }
   return Promise.all(jobs).then(() => {
     if (lost.length === 0) return;
-    lost.sort((a, b) => a - b);
     fx.toast(
       lost.length === 1
-        ? `Image ${lost[0]} from the paste could not be attached; its place in the text says so`
-        : `${lost.length} images from the paste could not be attached (${lost.join(", ")}); their places in the text say so`,
+        ? "An image from the paste could not be attached; its place in the text says so"
+        : `${lost.length} images from the paste could not be attached; their places in the text say so`,
     );
   });
 }
