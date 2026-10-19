@@ -19,6 +19,13 @@
   import type { Note, NoteScope } from "./types";
   import { relativeTime } from "./time";
   import * as api from "./api";
+  import { onMount } from "svelte";
+  import { addToast } from "./state.svelte";
+  import { carriesFiles } from "./dropLook";
+  import { acceptFiles, conversionJobs } from "./attachFiles.svelte";
+  import { discardDraft, readDraft } from "./drafts.svelte";
+  import { keepNow, keepStateOf, keeps } from "./keep.svelte";
+  import { HOLD_LINE, Hold, holdTitle, keepDropped } from "./notesDrop";
 
   /**
    * Two stores, one panel.
@@ -118,6 +125,71 @@
       app.openNote?.scope === scope &&
       app.openNote.name === name
     );
+  }
+
+  /**
+   * Item 391: files dropped on the Project section are kept in the
+   * project, as attaching them and pressing Keep would (`notesDrop.ts`).
+   * The section carries `data-drop-none`, so the window's drop watcher
+   * (`dropLook.svelte.ts`) never takes this drop for a chat's box.
+   */
+  const hold = new Hold();
+  let held = $state(false);
+  let keeping = $state(0);
+  const sync = () => (held = hold.held(performance.now()));
+  onMount(() => {
+    const t = setInterval(() => held && sync(), 500);
+    const end = () => {
+      hold.end();
+      sync();
+    };
+    window.addEventListener("dragend", end, true);
+    window.addEventListener("drop", end, true);
+    return () => {
+      clearInterval(t);
+      window.removeEventListener("dragend", end, true);
+      window.removeEventListener("drop", end, true);
+    };
+  });
+  function onDragEnter(e: DragEvent) {
+    if (!carriesFiles(e.dataTransfer)) return;
+    hold.enter(performance.now());
+    sync();
+  }
+  function onDragOver(e: DragEvent) {
+    if (!carriesFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    hold.over(performance.now());
+    sync();
+  }
+  function onDragLeave(e: DragEvent) {
+    if (!carriesFiles(e.dataTransfer)) return;
+    hold.leave();
+    sync();
+  }
+  async function onDrop(e: DragEvent) {
+    const files = Array.from(e.dataTransfer?.files ?? []);
+    hold.end();
+    sync();
+    if (files.length === 0) return;
+    e.preventDefault();
+    keeping += files.length;
+    try {
+      await keepDropped(files, {
+        project: () => app.project,
+        toast: addToast,
+        attach: acceptFiles,
+        jobs: conversionJobs,
+        chips: (k) => readDraft(k).attachments,
+        state: keepStateOf,
+        forget: (k) => delete keeps[k],
+        keep: keepNow,
+        discard: (k) => discardDraft(k),
+      });
+    } finally {
+      keeping -= files.length;
+    }
   }
 
   function size(bytes: number): string {
@@ -280,7 +352,30 @@
 <div class="panel">
   <!-- The project's own notes. Absent rather than empty when nothing is
        open: there is no folder for them to be about. -->
-  <section>
+  <section
+    class="keep-drop"
+    class:held
+    role="group"
+    aria-label="Project notes — drop files here to keep them in the project"
+    data-drop-none
+    data-notes-drop
+    aria-busy={keeping > 0}
+    ondragenter={onDragEnter}
+    ondragover={onDragOver}
+    ondragleave={onDragLeave}
+    ondrop={onDrop}
+  >
+    {#if held}
+      <div class="hold" aria-hidden="true">
+        <div class="words">
+          <b>{holdTitle(app.project)}</b>
+          {#if app.project && !app.project.unfiled}<span>{HOLD_LINE}</span>{/if}
+        </div>
+      </div>
+    {/if}
+    {#if keeping > 0}
+      <p class="keeping" role="status">Keeping {keeping} {keeping === 1 ? "file" : "files"}…</p>
+    {/if}
     <button
       class="head"
       onclick={() => (collapsed.project = !collapsed.project)}
@@ -376,6 +471,63 @@
     display: flex;
     flex-direction: column;
     flex-shrink: 0;
+  }
+  /* Item 391: files held over the Project section — the composer's drop
+     zone tokens (DropOverlay's `.zone.on`), drawn over the section so its
+     rows do not move. Reduced motion: it comes and goes without fading. */
+  .keep-drop {
+    position: relative;
+    border-radius: 12px;
+  }
+  .keep-drop.held {
+    background: color-mix(in srgb, var(--accent-soft) 85%, transparent);
+    box-shadow:
+      inset 0 0 0 2px var(--accent),
+      0 0 0 6px color-mix(in srgb, var(--accent) 10%, transparent);
+  }
+  .hold {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    pointer-events: none;
+    padding: 0 0.75rem;
+    text-align: center;
+    border: 2px dashed var(--accent);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--accent-soft) 85%, var(--paper));
+    color: var(--accent-ink);
+    font-size: 0.72rem;
+    animation: hold-fade 140ms ease-out;
+  }
+  /* Near the head and held in view while the panel scrolls: a project
+     with many kept files makes the section taller than the panel. */
+  .hold .words {
+    position: sticky;
+    top: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 3.2rem 0 1rem;
+  }
+  .hold b {
+    font-size: 0.9rem;
+    font-weight: 500;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .hold {
+      animation: none;
+    }
+  }
+  @keyframes hold-fade {
+    from {
+      opacity: 0;
+    }
+  }
+  .keeping {
+    margin: 0;
+    padding: 0.3rem 0.75rem 0;
+    font-size: 0.72rem;
+    color: var(--dim);
   }
   /* A header the whole width so the hit target is the row, not the caret. */
   .head {
