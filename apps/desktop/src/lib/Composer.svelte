@@ -89,6 +89,7 @@
   } from "./pasteAttach";
   import { badgeOf, extOf } from "./attachKinds";
   import { sendTip, tip } from "./tip";
+  import { armStop } from "./stopButton";
   import { acceptFiles, conversionJobs, filesBlocked, MAX_IMAGE_BASE64, splitChips, trackPending } from "./attachFiles.svelte";
   import { floatMenu } from "./floatMenu";
   import { ghostFor } from "./suggestions.svelte";
@@ -3050,10 +3051,18 @@
           onclick={enqueue}
           disabled={!text.trim() && attachments.length === 0}>Queue</button
         >
+        <!-- Item 398: Stop is an icon button in Send's place at Send's size —
+             a filled square over an invisible "Send" that sizes it, so the
+             row keeps its height when a turn starts. Armed after 400 ms, so
+             a double-click on Send cannot stop the turn it started. -->
         {#if aside}
-          <button class="ns-btn danger small act" use:tip={"Stop this answer; what has arrived stays"} onclick={() => aside && stopAside(aside)}>Stop</button>
+          <button class="ns-btn danger send stop act" aria-label="Stop" use:armStop use:tip={"Stop this answer; what has arrived stays"} onclick={() => aside && stopAside(aside)}
+            ><span class="stop-size" aria-hidden="true">Send</span><span class="stop-ico" aria-hidden="true"><Icon name="stop" size={16} /></span></button
+          >
         {:else}
-          <button class="ns-btn danger small act" use:tip={app.parked ? `Stop the turn running in ${runningChatName()}` : "Stop this turn"} onclick={() => void cancelTurn()}>Stop</button>
+          <button class="ns-btn danger send stop act" aria-label="Stop" use:armStop use:tip={app.parked ? `Stop the turn running in ${runningChatName()}` : "Stop this turn"} onclick={() => void cancelTurn()}
+            ><span class="stop-size" aria-hidden="true">Send</span><span class="stop-ico" aria-hidden="true"><Icon name="stop" size={16} /></span></button
+          >
         {/if}
       {:else if aside}
         <!-- The aside's Send (backlog 283): no schedule ▾, no council. -->
@@ -3917,6 +3926,22 @@
   }
   .send {
     padding: 6px 16px;
+  }
+  /* Item 398: the Stop in Send's place. "Send" in Send's weight, hidden,
+     gives it Send's width and height; the square sits centred over it. */
+  .stop {
+    position: relative;
+    font-weight: 500;
+  }
+  .stop .stop-size {
+    visibility: hidden;
+  }
+  .stop .stop-ico {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
   /* Send's split (backlog 224): the ▾ carries the right-hand corners. */
   .send-split {
