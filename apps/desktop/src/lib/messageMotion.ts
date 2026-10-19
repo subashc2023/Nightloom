@@ -14,7 +14,10 @@
  * clamping after a rewind shortens the thread; a long message becoming the
  * one-line placeholder) slide from where they were to where they are now.
  *
- * Rewind, three looks; the app plays `REWIND_STYLE`:
+ * Rewind, three looks; the app plays the one he picked in Settings →
+ * Appearance → Animations (backlog 396 + 397 pass 2, his "make the default
+ * A for both", 2026-10-19), stored as `nightloom.rewindMotion`, default
+ * `REWIND_STYLE`:
  *   A, reel back (built): the send played backwards. His bubble travels back
  *      along the send flight's own bowed path into the composer box, the
  *      accent thread trailing to the box, its tint draining so it becomes
@@ -30,7 +33,8 @@
  *      accent line at his message's top edge, which then shrinks away.
  *   C, drain: the copy drops 20 px, blurs and fades as one; a ring on the box.
  *
- * Delete, three looks; the app plays `DELETE_STYLE`:
+ * Delete, three looks; the app plays his pick, `nightloom.deleteMotion`,
+ * default `DELETE_STYLE`:
  *   A, struck and lifted (built): an accent line strikes through each line of the bubble
  *      left to right, then the struck bubble lifts 10 px and fades, and the
  *      greyed placeholder fades in where it was.
@@ -53,10 +57,58 @@
 import { FLIGHT_MS, easeOutCubic, easeOutQuart, reducedMotion } from "./sendMotion";
 
 export type MotionStyle = "A" | "B" | "C";
-/** His pick for rewind. To switch the app to another look, change this one letter. */
+/** The rewind look when he has not picked one in Settings (his default, 2026-10-19). */
 export const REWIND_STYLE: MotionStyle = "A";
-/** His pick for delete. To switch the app to another look, change this one letter. */
+/** The delete look when he has not picked one in Settings (his default, 2026-10-19). */
 export const DELETE_STYLE: MotionStyle = "A";
+
+export type MotionKind = "rewind" | "delete";
+/** The looks Settings → Appearance → Animations offers for each (all three, his yes 2026-10-19). */
+export const OFFERED_MOTIONS: Record<MotionKind, { id: MotionStyle; name: string; blurb: string }[]> = {
+  rewind: [
+    { id: "A", name: "Reel back", blurb: "Your message flies back into the box along the send's path; the replies under it drop away." },
+    { id: "B", name: "Fold up", blurb: "Everything from your message down folds up into a thin line, which shrinks away." },
+    { id: "C", name: "Drain", blurb: "Your message and the replies under it sink, blur and fade as one." },
+  ],
+  delete: [
+    { id: "A", name: "Struck and lifted", blurb: "A line strikes through your words, then the message lifts away and the placeholder fades in." },
+    { id: "B", name: "Shrink", blurb: "The message shrinks onto the placeholder as the two cross-fade." },
+    { id: "C", name: "Dissolve", blurb: "The message blurs out and the placeholder fades in." },
+  ],
+};
+export const MOTION_KEY: Record<MotionKind, string> = { rewind: "nightloom.rewindMotion", delete: "nightloom.deleteMotion" };
+const DEFAULT_MOTION: Record<MotionKind, MotionStyle> = { rewind: REWIND_STYLE, delete: DELETE_STYLE };
+
+/** The look he picked for `kind`, from localStorage; the default when unset, unreadable or not offered. */
+export function chosenMotion(kind: MotionKind): MotionStyle {
+  try {
+    const raw = localStorage.getItem(MOTION_KEY[kind]);
+    if (raw && OFFERED_MOTIONS[kind].some((s) => s.id === raw)) return raw as MotionStyle;
+  } catch {
+    // A malformed preference costs the preference, not the feature.
+  }
+  return DEFAULT_MOTION[kind];
+}
+
+/** Remember his pick for `kind`. Only an offered look is stored. */
+export function setChosenMotion(kind: MotionKind, style: MotionStyle): void {
+  if (!OFFERED_MOTIONS[kind].some((s) => s.id === style)) return;
+  try {
+    localStorage.setItem(MOTION_KEY[kind], style);
+  } catch {
+    // best-effort
+  }
+}
+
+/**
+ * What Settings' preview passes to `prepare…`: the look to play (reduced
+ * motion still makes it a fade) and the box a rewind's A flies into,
+ * instead of the app's composer under the scroll box.
+ */
+export interface PrepareOptions {
+  style?: MotionStyle;
+  composer?: HTMLElement | null;
+}
 
 export const DURATION: Record<"rewind" | "delete", Record<MotionStyle | "fade", number>> = {
   rewind: { A: 600, B: 460, C: 400, fade: 180 },
@@ -262,9 +314,9 @@ type Win = {
 };
 const win = () => (typeof window !== "undefined" ? (window as unknown as Win) : ({} as Win));
 
-function styleFor(kind: "rewind" | "delete"): MotionStyle | "fade" {
+function styleFor(kind: MotionKind, asked?: MotionStyle): MotionStyle | "fade" {
   if (reducedMotion()) return "fade";
-  return win().__messageMotion?.[kind] ?? (kind === "rewind" ? REWIND_STYLE : DELETE_STYLE);
+  return asked ?? win().__messageMotion?.[kind] ?? chosenMotion(kind);
 }
 
 function now(): number {
@@ -509,7 +561,11 @@ function run(paint: (ms: number) => boolean, cleanup: () => void): () => void {
  * message and everything below it over the thread. Null when there is
  * nothing to draw (no DOM, the row is not on screen).
  */
-export function prepareRewind(viewport: HTMLElement | null | undefined, index: number): Prepared | null {
+export function prepareRewind(
+  viewport: HTMLElement | null | undefined,
+  index: number,
+  opts: PrepareOptions = {},
+): Prepared | null {
   if (!viewport || typeof document === "undefined" || typeof requestAnimationFrame !== "function") return null;
   const row = viewport.querySelector<HTMLElement>(`.user-turn[data-turn="${index}"]`);
   const inner = row?.parentElement;
@@ -517,7 +573,7 @@ export function prepareRewind(viewport: HTMLElement | null | undefined, index: n
   const view = viewOf(viewport);
   const rr = row.getBoundingClientRect();
   if (rr.top > view.bottom || rr.bottom < view.top || rr.width === 0) return null;
-  const style = styleFor("rewind");
+  const style = styleFor("rewind", opts.style);
   const top = Math.max(rr.top, view.top);
 
   // The copy: a window over the scroll box from his message down, on the paper.
@@ -596,7 +652,7 @@ export function prepareRewind(viewport: HTMLElement | null | undefined, index: n
         }));
         // The copy rides with the row just above it, so it stays attached as the thread settles.
         const attach = moved.length ? -moved[moved.length - 1].d : 0;
-        const composer = composerOf(viewport);
+        const composer = opts.composer !== undefined ? opts.composer : composerOf(viewport);
         const composerShadow = composer?.style.boxShadow ?? "";
         const myBubble = mine?.querySelector<HTMLElement>(".user-bubble") ?? null;
         const thread = flier ? threadOf() : null;
@@ -673,7 +729,11 @@ export function prepareRewind(viewport: HTMLElement | null | undefined, index: n
  * Before his message at log index `index` is removed from the context: lay
  * a copy of its bubble over it. Null when there is nothing to draw.
  */
-export function prepareDelete(viewport: HTMLElement | null | undefined, index: number): Prepared | null {
+export function prepareDelete(
+  viewport: HTMLElement | null | undefined,
+  index: number,
+  opts: PrepareOptions = {},
+): Prepared | null {
   if (!viewport || typeof document === "undefined" || typeof requestAnimationFrame !== "function") return null;
   const sel = `.user-turn[data-turn="${index}"]`;
   const row = viewport.querySelector<HTMLElement>(sel);
@@ -683,7 +743,7 @@ export function prepareDelete(viewport: HTMLElement | null | undefined, index: n
   const view = viewOf(viewport);
   const br = bubble.getBoundingClientRect();
   if (br.top > view.bottom || br.bottom < view.top || br.width === 0) return null;
-  const style = styleFor("delete");
+  const style = styleFor("delete", opts.style);
   const ghost = lookAlike(bubble, br);
   ghost.classList.add("msg-motion", "msg-delete");
   ghost.style.overflow = "hidden";

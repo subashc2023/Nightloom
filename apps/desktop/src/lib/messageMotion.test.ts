@@ -3,13 +3,17 @@ import { FLIGHT_MS, TOTAL_MS } from "./sendMotion";
 import {
   DELETE_STYLE,
   DURATION,
+  MOTION_KEY,
+  OFFERED_MOTIONS,
   REWIND_STYLE,
+  chosenMotion,
   deleteFrame,
   flightPoint,
   prepareDelete,
   prepareRewind,
   rewindFrame,
   rewindRow,
+  setChosenMotion,
 } from "./messageMotion";
 
 const STYLES = ["A", "B", "C", "fade"] as const;
@@ -154,5 +158,28 @@ describe("with no DOM to draw on", () => {
   it("prepare returns null and the caller goes on with the plain state change", () => {
     expect(prepareRewind(null, 3)).toBeNull();
     expect(prepareDelete(undefined, 3)).toBeNull();
+  });
+});
+
+describe("the picks in Settings → Appearance → Animations (396 + 397, pass 2)", () => {
+  it("offers A, B and C for both, under these keys", () => {
+    expect(OFFERED_MOTIONS.rewind.map((s) => s.id)).toEqual(["A", "B", "C"]);
+    expect(OFFERED_MOTIONS.delete.map((s) => s.id)).toEqual(["A", "B", "C"]);
+    expect(MOTION_KEY).toEqual({ rewind: "nightloom.rewindMotion", delete: "nightloom.deleteMotion" });
+  });
+  it("defaults to A for both, remembers each pick on its own, and reads junk as the default", () => {
+    for (const k of ["rewind", "delete"] as const) localStorage.removeItem(MOTION_KEY[k]);
+    expect(chosenMotion("rewind")).toBe("A");
+    expect(chosenMotion("delete")).toBe("A");
+    setChosenMotion("rewind", "C");
+    setChosenMotion("delete", "B");
+    expect(localStorage.getItem("nightloom.rewindMotion")).toBe("C");
+    expect(chosenMotion("rewind")).toBe("C");
+    expect(chosenMotion("delete")).toBe("B");
+    setChosenMotion("delete", "Z" as never);
+    expect(chosenMotion("delete")).toBe("B");
+    localStorage.setItem("nightloom.deleteMotion", "junk");
+    expect(chosenMotion("delete")).toBe("A");
+    for (const k of ["rewind", "delete"] as const) localStorage.removeItem(MOTION_KEY[k]);
   });
 });

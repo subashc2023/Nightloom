@@ -126,6 +126,17 @@
   import Kbd from "./Kbd.svelte";
   import { OFFERED_STYLES, chosenArrival, play as playArrival, setChosenArrival, type ArrivalStyle } from "./thinkingArrival";
   import { reducedMotion } from "./sendMotion";
+  import {
+    DURATION as MOTION_MS,
+    OFFERED_MOTIONS,
+    chosenMotion,
+    prepareDelete,
+    prepareRewind,
+    setChosenMotion,
+    type MotionKind,
+    type MotionStyle,
+  } from "./messageMotion";
+  import { REMOVED_PLACEHOLDER } from "./edit";
 
   /**
    * Redesigned 2026-09-13 (nightshift surface-redesign-2026-09-13, canvas
@@ -168,6 +179,44 @@
     previewArrival(style);
   }
   onDestroy(() => stopPreview?.());
+
+  // The rewind and delete picks (396 + 397 pass 2, his yes 2026-10-19,
+  // default A for both). Each choice card holds a small thread; Preview
+  // runs the real prepare → change → commit on it, as Transcript does,
+  // then puts the thread back once the motion is over.
+  let motionPick = $state<Record<MotionKind, MotionStyle>>({ rewind: chosenMotion("rewind"), delete: chosenMotion("delete") });
+  /** Which sample threads are showing the changed state, by `kind:style`. */
+  let motionDone = $state<Record<string, boolean>>({});
+  const motionView: Record<string, HTMLElement | null> = {};
+  const motionBox: Record<string, HTMLElement | null> = {};
+  const motionReset: Record<string, ReturnType<typeof setTimeout>> = {};
+  const MOTION_KINDS: { kind: MotionKind; title: string; note: string }[] = [
+    { kind: "rewind", title: "Rewinding a message", note: "How the thread goes back when you rewind to one of your messages." },
+    { kind: "delete", title: "Deleting a message", note: "How one of your messages leaves the context when you delete it." },
+  ];
+  async function previewMotion(kind: MotionKind, style: MotionStyle) {
+    const key = `${kind}:${style}`;
+    clearTimeout(motionReset[key]);
+    if (motionDone[key]) {
+      motionDone[key] = false;
+      await tick();
+    }
+    const prep = kind === "rewind" ? prepareRewind : prepareDelete;
+    const m = prep(motionView[key], 1, { style, composer: motionBox[key] ?? null });
+    motionDone[key] = true;
+    await tick();
+    m?.commit();
+    const ms = reducedMotion() ? MOTION_MS[kind].fade : MOTION_MS[kind][style];
+    // A held frame (the harness's `__messageMotionHold`) never ends, so the thread is left changed under it.
+    if (typeof (window as unknown as { __messageMotionHold?: number }).__messageMotionHold === "number") return;
+    motionReset[key] = setTimeout(() => (motionDone[key] = false), ms + 900);
+  }
+  function pickMotion(kind: MotionKind, style: MotionStyle) {
+    motionPick[kind] = style;
+    setChosenMotion(kind, style);
+    void previewMotion(kind, style);
+  }
+  onDestroy(() => Object.values(motionReset).forEach(clearTimeout));
   let keyDraft = $state("");
   let keyBusy = $state(false);
   let keyError = $state<string | null>(null);
@@ -1258,6 +1307,7 @@
       onclick={() => select("animations")}
     >
       <span class="nav-label">Animations</span>
+      <!-- Names, not letters: a bare "B" read as a key (backlog 109). The thinking pick only; the row has no room for three. -->
       <span class="st">{OFFERED_STYLES.find((s) => s.id === arrival)?.name ?? arrival}</span>
     </button>
     <div class="nav-title">Remote<Kbd keys={keyOf("Remote")} dim /></div>
@@ -1528,6 +1578,53 @@
           {/each}
         </div>
       </section>
+      {#each MOTION_KINDS as mk (mk.kind)}
+        <section class="card">
+          <div class="ch"><span class="t">{mk.title}</span></div>
+          <p class="note small">{mk.note}</p>
+          <div class="anims three" role="radiogroup" aria-label={mk.title}>
+            {#each OFFERED_MOTIONS[mk.kind] as s (s.id)}
+              {@const key = `${mk.kind}:${s.id}`}
+              {@const done = !!motionDone[key]}
+              <div class="anim" class:on={motionPick[mk.kind] === s.id}>
+                <button
+                  class="anim-pick"
+                  role="radio"
+                  aria-checked={motionPick[mk.kind] === s.id}
+                  onclick={() => pickMotion(mk.kind, s.id)}
+                >
+                  <span class="anim-name"><b>{s.id}</b> {s.name}</span>
+                  <span class="anim-blurb">{s.blurb}</span>
+                </button>
+                <div class="anim-stage msg-stage" aria-hidden="true">
+                  <div class="mini-view" bind:this={motionView[key]}>
+                    <div class="mini-inner">
+                      <div class="mini-reply">Sure — it hashes the lockfile.</div>
+                      {#if mk.kind === "rewind" && done}
+                        <div class="mini-rewound">2 messages rewound</div>
+                      {:else}
+                        <div class="user-turn mini-turn" class:removed={mk.kind === "delete" && done} data-turn="1">
+                          <div class="user-bubble mini-bubble" class:gone={mk.kind === "delete" && done}>
+                            {mk.kind === "delete" && done ? REMOVED_PLACEHOLDER : "Why does CI still miss?"}
+                          </div>
+                        </div>
+                        <div class="mini-reply">The toolchain bump changes the key.</div>
+                      {/if}
+                    </div>
+                  </div>
+                  <div class="anim-composer mini-box" bind:this={motionBox[key]}>
+                    {#if mk.kind === "rewind" && done}<span class="mini-typed">Why does CI still miss?</span>{/if}
+                  </div>
+                </div>
+                <div class="anim-foot">
+                  <button class="ns-btn ghost small" onclick={() => previewMotion(mk.kind, s.id)}>Preview</button>
+                  {#if motionPick[mk.kind] === s.id}<span class="anim-on">In use</span>{/if}
+                </div>
+              </div>
+            {/each}
+          </div>
+        </section>
+      {/each}
     </div>
   {:else if selected === "remote"}
     <!-- The phone page over the tailnet (nightshift backlog 091, Shape B):
@@ -4147,6 +4244,68 @@
   .anim-on {
     font-size: 11.5px;
     color: var(--accent);
+  }
+  .anims.three {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  /* The rewind and delete samples: a small thread (one reply, his message,
+     the reply under it) in a scroll box over a stand-in composer — the
+     shape messageMotion.ts lays its copy over. */
+  .msg-stage {
+    gap: 10px;
+  }
+  .mini-view {
+    height: 112px;
+    overflow: hidden;
+    background: var(--sheet);
+  }
+  .mini-inner {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .mini-reply {
+    font-size: 11.5px;
+    color: var(--ink2);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .mini-turn {
+    display: flex;
+    justify-content: flex-end;
+  }
+  .mini-bubble {
+    max-width: 85%;
+    padding: 6px 10px;
+    border-radius: 12px;
+    font-size: 11.5px;
+    line-height: 1.35;
+    color: var(--ink);
+    background: color-mix(in srgb, var(--sheet) 88%, var(--ink));
+  }
+  .mini-bubble.gone {
+    color: var(--dim);
+    font-style: italic;
+    background: transparent;
+    border: 1px dashed var(--line2);
+  }
+  .mini-rewound {
+    align-self: center;
+    font-size: 11px;
+    color: var(--dim);
+  }
+  .mini-box {
+    display: flex;
+    align-items: center;
+    padding: 0 8px;
+    font-size: 11.5px;
+    color: var(--ink);
+  }
+  .mini-typed {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   /* Backlog 291: the default subagent rules box. */
   .rules-default {
