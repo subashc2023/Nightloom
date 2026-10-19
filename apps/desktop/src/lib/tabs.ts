@@ -366,8 +366,17 @@ export function land(ws: Workspace, pane: Pane, content: TabContent, how: LandHo
     pane.active = existing.id;
     return existing;
   }
+  // The New project form (nightshift backlog 394) opens as the first tab
+  // and is never taken over: content landing "in place" over it goes in
+  // a new tab after it, so a click on a chat keeps the half-filled form.
+  if (content.kind === "new-project") {
+    const tab = makeTab(content);
+    pane.tabs.unshift(tab);
+    pane.active = tab.id;
+    return tab;
+  }
   const current = activeTab(pane);
-  if (how === "replace") {
+  if (how === "replace" && current.content.kind !== "new-project") {
     current.content = content;
     return current;
   }
@@ -375,6 +384,40 @@ export function land(ws: Workspace, pane: Pane, content: TabContent, how: LandHo
   const at = pane.tabs.findIndex((t) => t.id === current.id);
   pane.tabs.splice(at + 1, 0, tab);
   pane.active = tab.id;
+  return tab;
+}
+
+/**
+ * The New project tab put back first in the focused pane (nightshift
+ * backlog 394): the form is the workspace's, not a project's, so after a
+ * project switch or a restore rebuilds the strip, the tab — open until
+ * Create, Cancel, Discard or its × — is put back at index 0. The tab
+ * already there anywhere moves (an emptied other pane goes); else a new
+ * one is made. `front` makes it the pane's active tab and the pane the
+ * focused one; otherwise what was in front stays in front.
+ */
+export function pinNewProject(ws: Workspace, front: boolean): Tab {
+  const pane = focusedPane(ws);
+  const content: TabContent = { kind: "new-project" };
+  let tab = findAnywhere(ws, content);
+  if (tab) {
+    const from = paneOf(ws, tab.id) as Pane;
+    const at = from.tabs.findIndex((t) => t.id === tab!.id);
+    from.tabs.splice(at, 1);
+    if (from !== pane) {
+      if (from.tabs.length === 0) ws.panes = ws.panes.filter((p) => p.id !== from.id);
+      else if (from.active === tab.id) from.active = from.tabs[Math.min(at, from.tabs.length - 1)].id;
+    }
+  } else {
+    tab = makeTab(content);
+  }
+  pane.tabs.unshift(tab);
+  if (front) {
+    pane.active = tab.id;
+    ws.focused = pane.id;
+  } else if (!pane.tabs.some((t) => t.id === pane.active)) {
+    pane.active = tab.id;
+  }
   return tab;
 }
 

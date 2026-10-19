@@ -6,9 +6,11 @@ import {
   importFromClaude,
   openProjectFolder,
   renameProject,
+  showNewProject,
   useKnowledgeDir,
   useProject,
 } from "./state.svelte";
+import * as tabs from "./tabs";
 import { REFRESH_LIMIT_MS } from "./afterWrite";
 import type { ProjectInfo } from "./types";
 
@@ -83,6 +85,29 @@ describe("project writes acknowledge before the re-read (backlog 211)", () => {
     expect(app.projects[0].name).toBe("Fresh");
     expect(app.newProjectDraft.name).toBe("");
     await vi.advanceTimersByTimeAsync(REFRESH_LIMIT_MS + 50);
+  });
+
+  it("the New project tab and its draft ride two project switches, first in the strip (backlog 394)", async () => {
+    app.tabs = tabs.emptyWorkspace();
+    app.newProjectDraft = { name: "Half", instructions: "typed", pickedPath: null };
+    showNewProject();
+    const first = () => app.tabs.panes[0].tabs[0].content;
+    await endsWithinLimit(useProject("a"));
+    expect(first()).toEqual({ kind: "new-project" });
+    expect(app.view).toBe("new-project");
+    // A chat opened beside it (a plain click) lands after it.
+    app.view = "chat";
+    tabs.land(app.tabs, tabs.focusedPane(app.tabs), { kind: "chat", session: "x" }, "replace");
+    await endsWithinLimit(useProject("b"));
+    expect(first()).toEqual({ kind: "new-project" });
+    expect(app.view).toBe("chat");
+    expect(app.newProjectDraft).toEqual({ name: "Half", instructions: "typed", pickedPath: null });
+    // Create closes it: the next switch's strip has none.
+    app.newProjectDraft = { name: "Fresh", instructions: "", pickedPath: null };
+    await expect(createNewProject()).resolves.toBe(true);
+    expect(app.newProjectOpen).toBe(false);
+    await endsWithinLimit(useProject("a"));
+    expect(tabs.findAnywhere(app.tabs, { kind: "new-project" })).toBeUndefined();
   });
 
   it("opening a project ends at the limit when the lists hang", async () => {

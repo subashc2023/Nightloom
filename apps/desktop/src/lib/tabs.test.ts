@@ -20,6 +20,7 @@ import {
   openBeside,
   openFloating,
   parseContentDrag,
+  pinNewProject,
   reorder,
   sameContent,
   split,
@@ -550,5 +551,56 @@ describe("ctrlTabStep (backlog 286)", () => {
     expect(ctrlTabStep(k({ metaKey: true }))).toBe(0);
     expect(ctrlTabStep(k({ ctrlKey: true, altKey: true }))).toBe(0);
     expect(ctrlTabStep(k({ key: "a", ctrlKey: true }))).toBe(0);
+  });
+});
+
+describe("the New project tab (backlog 394)", () => {
+  const np = { kind: "new-project" } as const;
+  const chatOf = (session: string | null) => ({ kind: "chat", session }) as const;
+  const strip = (ws: ReturnType<typeof emptyWorkspace>) => ws.panes.map((p) => p.tabs.map((t) => t.content));
+
+  it("opens as the first tab, a new tab, leaving the chat in front behind it", () => {
+    const ws = emptyWorkspace();
+    land(ws, focusedPane(ws), chatOf("a"), "replace");
+    land(ws, focusedPane(ws), chatOf("b"), "new");
+    const t = land(ws, focusedPane(ws), np, "replace");
+    expect(strip(ws)).toEqual([[np, chatOf("a"), chatOf("b")]]);
+    expect(activeTab(focusedPane(ws)).id).toBe(t.id);
+  });
+
+  it("a plain click on a chat never takes its place: the chat lands after it", () => {
+    const ws = emptyWorkspace();
+    land(ws, focusedPane(ws), chatOf("a"), "replace");
+    land(ws, focusedPane(ws), np, "replace");
+    const c = land(ws, focusedPane(ws), chatOf("b"), "replace");
+    expect(strip(ws)).toEqual([[np, chatOf("b"), chatOf("a")]]);
+    expect(activeTab(focusedPane(ws)).id).toBe(c.id);
+    // The next plain click retargets the chat tab, as ever.
+    land(ws, focusedPane(ws), chatOf("c"), "replace");
+    expect(strip(ws)).toEqual([[np, chatOf("c"), chatOf("a")]]);
+  });
+
+  it("pinNewProject puts it first in the focused pane, in front only when asked", () => {
+    const ws = emptyWorkspace();
+    land(ws, focusedPane(ws), chatOf("a"), "replace");
+    const front = activeTab(focusedPane(ws)).id;
+    pinNewProject(ws, false);
+    expect(strip(ws)).toEqual([[np, chatOf("a")]]);
+    expect(activeTab(focusedPane(ws)).id).toBe(front);
+    // Again: one tab, still first, now in front.
+    const t = pinNewProject(ws, true);
+    expect(strip(ws)).toEqual([[np, chatOf("a")]]);
+    expect(activeTab(focusedPane(ws)).id).toBe(t.id);
+  });
+
+  it("pinNewProject moves it out of the other pane, which goes when emptied", () => {
+    const ws = emptyWorkspace();
+    land(ws, focusedPane(ws), chatOf("a"), "replace");
+    const t = openBeside(ws, np);
+    expect(ws.panes).toHaveLength(2);
+    activate(ws, ws.panes[0].tabs[0].id);
+    const pinned = pinNewProject(ws, false);
+    expect(pinned.id).toBe(t.id);
+    expect(strip(ws)).toEqual([[np, chatOf("a")]]);
   });
 });

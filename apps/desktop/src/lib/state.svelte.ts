@@ -131,7 +131,18 @@ import { chatIsCold, loadLayerPrefs, reconnectBeforeTurn, saveLayerPrefs } from 
 import { CONNECT_DEADLINE_MS, withDeadline } from "./deadline";
 import { rewoundWrites, setAsideFiles } from "./rewoundFiles";
 import type { TabContent, Workspace } from "./tabs";
-import { UNFILED_TABS, carryTabsTo, loadSavedWorkspaces, rebuild, saveWorkspaceFor, snapshot } from "./tabsStore";
+import {
+  UNFILED_TABS,
+  carryTabsTo,
+  emptyNewProjectDraft,
+  loadNewProject,
+  loadSavedWorkspaces,
+  rebuild,
+  saveNewProject,
+  saveWorkspaceFor,
+  snapshot,
+  type SavedNewProject,
+} from "./tabsStore";
 import { turnClock } from "./turnTiming";
 import { FirstSeen, doingOf, quoteLine, sortRuns, type RunEntry, type RunKind } from "./running";
 import { rememberScroll } from "./scroll.svelte";
@@ -709,6 +720,18 @@ export function asideAsking(a: Aside | null): AsideTurn | null {
   return t && t.answer === null && t.error === null && !t.cancelled ? t : null;
 }
 
+/** The New project form as the last window left it (backlog 394): its
+ *  draft, whether its tab was open, and whether it was in front. */
+function loadNewProjectNow(): SavedNewProject {
+  try {
+    if (typeof localStorage !== "undefined") return loadNewProject(localStorage);
+  } catch {
+    // A malformed store costs the draft, not the launch.
+  }
+  return { open: false, front: false, draft: emptyNewProjectDraft() };
+}
+const newProjectAtLaunch = loadNewProjectNow();
+
 export const app = $state({
   providers: [] as ProviderInfo[],
   /** Web-search backends and which one has a key (settings modal edits this). */
@@ -746,12 +769,21 @@ export const app = $state({
    * instructions and a picked folder still there. Cleared by Create and by
    * an explicit Discard, nothing else.
    */
-  newProjectDraft: { name: "", instructions: "", pickedPath: null } as {
+  newProjectDraft: newProjectAtLaunch.draft as {
     name: string;
     instructions: string;
     /** A folder chosen through Change…; null means `<projects folder>/<slug>`. */
     pickedPath: string | null;
   },
+  /**
+   * Whether the New project tab is open (nightshift backlog 394): from the
+   * form's opening until Create, Cancel (or Esc, or ← Chat), Discard or
+   * its ×. The tab is the whole workspace's, not a project's: while this
+   * is set, every project switch and restore puts it back first in the
+   * focused pane (`restoreTabs`). Kept across a relaunch with the draft
+   * (`nightloom.newProject`, written by `tabsKeeper.svelte.ts`).
+   */
+  newProjectOpen: newProjectAtLaunch.open,
   /**
    * What the centre pane shows. "note" is the note editor and "graph" the
    * vault's link graph, both of which replace the transcript rather than
@@ -1705,7 +1737,7 @@ export async function init(): Promise<void> {
       chatChoice.ready = true;
       // The tabs he left open (backlog 201), once the lists that decide
       // which survive are read and the engine is connected.
-      await restoreTabs();
+      await restoreTabs({ newProjectFront: newProjectAtLaunch.front });
       // Files opened with Nightloom from the Finder (backlog 378), after
       // the restored tabs so none lands over them.
       void import("./openedFiles.svelte").then((m) => m.installOpenedFiles()).catch(() => {});
@@ -2721,8 +2753,11 @@ export async function useProject(id: string | null): Promise<void> {
   app.error = null;
   // Switching projects from the Nightshift page stays on it — the page
   // follows the open project (round 2, point 12); everywhere else it is a
-  // navigation to the new project's chat.
-  if (app.view !== "nightshift") app.view = "chat";
+  // navigation to the new project's chat. The New project form in front
+  // stays in front too (backlog 394): it is the workspace's, not the
+  // project's, and he is still filling it in.
+  const formFront = app.view === "new-project" && app.newProjectOpen;
+  if (app.view !== "nightshift" && !formFront) app.view = "chat";
   app.openNote = null;
   reflectTabs();
   // ~~The connect, then the list, the chats and the notes, each awaited~~
@@ -2740,8 +2775,8 @@ export async function useProject(id: string | null): Promise<void> {
   ]);
   // The project's own tabs (backlog 201). On the Nightshift page the page
   // stays in front and lands in the restored workspace.
-  const stay = app.view === "nightshift";
-  await restoreTabs({ show: !stay });
+  const stay = app.view === "nightshift" || formFront;
+  await restoreTabs({ show: !stay, newProjectFront: formFront });
   if (stay) reflectTabs();
 }
 
@@ -2784,6 +2819,7 @@ export async function openProjectFolder(): Promise<void> {
  * way out of the screen except Create and Discard.
  */
 export function showNewProject(): void {
+  app.newProjectOpen = true;
   app.overlay = null;
   app.view = "new-project";
   app.openNote = null;
@@ -2797,13 +2833,16 @@ export function showNewProject(): void {
  *  The form is a tab (backlog 140): leaving closes its tab and lands the
  *  neighbour, as the note view's ← Chat does. */
 export function closeNewProject(): void {
-  if (app.view !== "new-project") return;
-  const front = tabs.activeTab(tabs.focusedPane(app.tabs));
-  if (front.content.kind === "new-project") {
-    void closeTab(front.id);
+  // ~~Only from the form in front, closing the front tab~~ — since backlog
+  // 394 the tab is open until this (or Create, Discard, its ×), wherever
+  // it sits, so it is found anywhere and the flag goes down with it.
+  app.newProjectOpen = false;
+  const tab = tabs.findAnywhere(app.tabs, { kind: "new-project" });
+  if (tab) {
+    void closeTab(tab.id);
     return;
   }
-  app.view = "chat";
+  if (app.view === "new-project") app.view = "chat";
 }
 
 /** Drop the draft and leave. Behind a confirmation in the form. */
@@ -2846,6 +2885,11 @@ export async function createNewProject(): Promise<boolean> {
   try {
     const project = await api.newProject(d.name, d.pickedPath, d.instructions);
     app.newProjectDraft = { name: "", instructions: "", pickedPath: null };
+    // Its tab closes with Create (backlog 394); the switch below shows the
+    // new project's strip, so nothing lands in its place here.
+    app.newProjectOpen = false;
+    const formTab = tabs.findAnywhere(app.tabs, { kind: "new-project" });
+    if (formTab) tabs.close(app.tabs, formTab.id);
     // ~~The list and the folder re-read before the form closed~~ (backlog
     // 211's leftovers, 2026-09-26: the form stayed up for as long as a
     // listing could hang). The row comes from the answer, the form closes
@@ -4067,6 +4111,8 @@ export async function closeTab(tabId?: string): Promise<void> {
     addToast("This is the last tab and it is already a new chat — the window closes from its red light");
     return;
   }
+  // Its × closes the New project form (backlog 394); the draft stays.
+  if (tab.content.kind === "new-project") app.newProjectOpen = false;
   const r = tabs.close(ws, id);
   if (r.show) await activateTab(r.show.id);
 }
@@ -4166,6 +4212,18 @@ export function registerTerminalHooks(h: TerminalHooks): void {
   terminalHooks = h;
 }
 
+/** Write the New project form — open, in front, its draft — for a
+ *  relaunch (backlog 394). Called from the keeper's effect; removes the
+ *  key once the form is closed with nothing typed. Best-effort. */
+export function flushNewProject(): void {
+  if (typeof localStorage === "undefined") return;
+  saveNewProject(localStorage, {
+    open: app.newProjectOpen,
+    front: app.view === "new-project",
+    draft: app.newProjectDraft,
+  });
+}
+
 /** Write the workspace now, under the project it belongs to. Called on
  *  the keeper's debounce (`tabsKeeper.svelte.ts`), on `pagehide` and
  *  before a project switch replaces it. Best-effort. */
@@ -4258,7 +4316,7 @@ function resolveTabContent(c: TabContent): TabContent | null {
  * fresh, in the project's folder. A malformed store costs the layout,
  * never the launch.
  */
-export async function restoreTabs(opts: { show?: boolean } = {}): Promise<void> {
+export async function restoreTabs(opts: { show?: boolean; newProjectFront?: boolean } = {}): Promise<void> {
   const key = tabsKeyNow();
   let reopenShells: { pane: string; count: number }[] = [];
   try {
@@ -4270,6 +4328,12 @@ export async function restoreTabs(opts: { show?: boolean } = {}): Promise<void> 
     }
   } catch {
     // The layout is lost; the launch is not.
+  }
+  // The New project tab, while open, is the workspace's (backlog 394):
+  // first in the focused pane whatever project's strip this is, in front
+  // when it was in front.
+  if (app.newProjectOpen) {
+    tabs.pinNewProject(app.tabs, opts.newProjectFront ?? app.view === "new-project");
   }
   tabsOwner = key;
   if (opts.show !== false) {

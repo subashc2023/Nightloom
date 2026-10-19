@@ -1,7 +1,17 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import * as tabs from "./tabs";
 import type { TabContent, Workspace } from "./tabs";
-import { TABS_KEY, loadSavedWorkspaces, rebuild, saveWorkspaceFor, snapshot } from "./tabsStore";
+import {
+  NEW_PROJECT_KEY,
+  TABS_KEY,
+  emptyNewProjectDraft,
+  loadNewProject,
+  loadSavedWorkspaces,
+  rebuild,
+  saveNewProject,
+  saveWorkspaceFor,
+  snapshot,
+} from "./tabsStore";
 
 /**
  * The workspace across a quit (nightshift backlog 201): what is stored,
@@ -187,5 +197,40 @@ describe("a malformed store", () => {
     const pane = { tabs: [chat("a")], active: 0 };
     localStorage.setItem(TABS_KEY, JSON.stringify({ p: { panes: [pane, pane, pane], focused: 0 } }));
     expect(loadSavedWorkspaces(localStorage).p.panes).toHaveLength(2);
+  });
+});
+
+describe("the New project tab and form across a quit (backlog 394)", () => {
+  beforeEach(() => localStorage.clear());
+
+  it("is never stored per project, and an older store's copy is dropped", () => {
+    const pane = tabs.makePane([tabs.makeTab({ kind: "new-project" }), tabs.makeTab(chat("a"))]);
+    const ws: Workspace = { panes: [pane], focused: pane.id };
+    const saved = snapshot(ws);
+    expect(saved.panes[0].tabs).toEqual([chat("a")]);
+    expect(saved.panes[0].active).toBe(0);
+    const older = { panes: [{ tabs: [{ kind: "new-project" }, chat("a")] as TabContent[], active: 0 }], focused: 0 };
+    const back = rebuild(older, (c) => c);
+    expect(back?.ws.panes[0].tabs.map((t) => t.content)).toEqual([chat("a")]);
+  });
+
+  it("the form's open flag, front and draft round-trip, and Create or Discard clears the key", () => {
+    expect(loadNewProject(localStorage)).toEqual({ open: false, front: false, draft: emptyNewProjectDraft() });
+    const draft = { name: "Half", instructions: "typed", pickedPath: null };
+    saveNewProject(localStorage, { open: true, front: true, draft });
+    expect(loadNewProject(localStorage)).toEqual({ open: true, front: true, draft });
+    // Cancel keeps the draft but closes the tab.
+    saveNewProject(localStorage, { open: false, front: false, draft });
+    expect(loadNewProject(localStorage)).toEqual({ open: false, front: false, draft });
+    // Create and Discard empty the draft and close: the key goes.
+    saveNewProject(localStorage, { open: false, front: false, draft: emptyNewProjectDraft() });
+    expect(localStorage.getItem(NEW_PROJECT_KEY)).toBeNull();
+  });
+
+  it("a malformed store reads as closed and empty", () => {
+    localStorage.setItem(NEW_PROJECT_KEY, "{nope");
+    expect(loadNewProject(localStorage).open).toBe(false);
+    localStorage.setItem(NEW_PROJECT_KEY, JSON.stringify({ open: "yes", front: true, draft: { name: 3 } }));
+    expect(loadNewProject(localStorage)).toEqual({ open: false, front: false, draft: emptyNewProjectDraft() });
   });
 });

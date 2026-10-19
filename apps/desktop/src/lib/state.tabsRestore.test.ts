@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { app, asideStash, flushTabs, restoreTabs, type Aside } from "./state.svelte";
+import { app, asideStash, closeNewProject, closeTab, flushTabs, restoreTabs, showNewProject, type Aside } from "./state.svelte";
 import * as tabs from "./tabs";
 import type { TabContent } from "./tabs";
 import { TABS_KEY } from "./tabsStore";
@@ -67,5 +67,48 @@ describe("restoreTabs / flushTabs", () => {
     app.tabs = tabs.emptyWorkspace();
     await expect(restoreTabs()).resolves.toBeUndefined();
     expect(contents()).toEqual([[{ kind: "chat", session: null }]]);
+  });
+
+  it("the New project tab, while open, comes back first after a restore (backlog 394)", async () => {
+    localStorage.clear();
+    app.sessions = [{ id: "a" }, { id: "b" }] as typeof app.sessions;
+    app.activeSessionId = null;
+    app.view = "chat";
+    app.tabs = tabs.emptyWorkspace();
+    await restoreTabs({ show: false });
+    showNewProject();
+    expect(app.newProjectOpen).toBe(true);
+    // A plain click on a chat lands after the form, not over it.
+    tabs.land(app.tabs, tabs.focusedPane(app.tabs), { kind: "chat", session: "a" }, "replace");
+    flushTabs();
+    expect(localStorage.getItem(TABS_KEY)).not.toContain("new-project");
+
+    // A switch: another project's strip (here, the same key rebuilt).
+    app.view = "chat";
+    app.tabs = tabs.emptyWorkspace();
+    await restoreTabs({ show: false, newProjectFront: false });
+    expect(contents()[0][0]).toEqual({ kind: "new-project" });
+    expect(tabs.activeTab(tabs.focusedPane(app.tabs)).content).toEqual({ kind: "chat", session: "a" });
+
+    // In front when it was in front.
+    app.tabs = tabs.emptyWorkspace();
+    await restoreTabs({ show: false, newProjectFront: true });
+    expect(tabs.activeTab(tabs.focusedPane(app.tabs)).content).toEqual({ kind: "new-project" });
+
+    // Its × closes it, and the next restore leaves it out.
+    const np = tabs.findAnywhere(app.tabs, { kind: "new-project" });
+    await closeTab(np!.id);
+    expect(app.newProjectOpen).toBe(false);
+    app.tabs = tabs.emptyWorkspace();
+    await restoreTabs({ show: false });
+    expect(tabs.findAnywhere(app.tabs, { kind: "new-project" })).toBeUndefined();
+
+    // Cancel from a tab not in front closes it too.
+    showNewProject();
+    tabs.land(app.tabs, tabs.focusedPane(app.tabs), { kind: "chat", session: "b" }, "replace");
+    closeNewProject();
+    await Promise.resolve();
+    expect(app.newProjectOpen).toBe(false);
+    expect(tabs.findAnywhere(app.tabs, { kind: "new-project" })).toBeUndefined();
   });
 });
