@@ -42,6 +42,13 @@ describe("nextStage", () => {
     expect(nextStage("idle", 0.91, 0.7, 0.9)).toBe("due");
   });
 
+  // Item 390 (his bug): a rewind under the mark puts the notice away.
+  it("goes back to idle when the fill drops under the mark", () => {
+    expect(nextStage("due", 0.5, 0.7, 0)).toBe("idle");
+    expect(nextStage("wrapped", 0.5, 0.7, 0)).toBe("idle");
+    expect(nextStage("wrapping", 0.5, 0.7, 0)).toBe("wrapped");
+  });
+
   it("respects a per-chat threshold lower or higher than the default", () => {
     expect(nextStage("idle", 0.05, 0.03, 0)).toBe("due");
     expect(nextStage("idle", 0.8, 0.9, 0)).toBe("idle");
@@ -220,6 +227,7 @@ import {
   noteActivity,
   noteAgentTurnEnd,
   noteFill,
+  noteRewound,
   reconsider,
   resetHandoff,
   setDefaultMessage,
@@ -466,5 +474,46 @@ describe("the read order", () => {
     const old = parseStored(JSON.stringify({ default: 0.5 }));
     expect(old.readOrder).toBeNull();
     expect(old.readOrders).toEqual({});
+  });
+});
+
+// Item 390 (his bug, 2026-10-18): a rewind back under the mark.
+describe("noteRewound", () => {
+  it("puts the notice away, takes back its queued wrap-up, and asks afresh at the next crossing", () => {
+    resetHandoff();
+    noteFill("rw390-a", 60, 100, true);
+    noteFill("rw390-a", 75, 100, true);
+    expect(handoff.stage).toBe("due");
+    const queued = readDraft("rw390-a").queue.length;
+    expect(queued).toBeGreaterThan(0);
+    noteRewound("rw390-a", 40, 100);
+    expect(handoff.stage).toBe("idle");
+    expect(handoff.queuedId).toBe(0);
+    expect(readDraft("rw390-a").queue).toHaveLength(queued - 1);
+    noteFill("rw390-a", 72, 100, false);
+    expect(handoff.stage).toBe("due");
+  });
+
+  it("forgets a Stay here once under the mark", () => {
+    resetHandoff();
+    noteFill("rw390-b", 75, 100, false);
+    stayHere();
+    expect(handoff.dismissedAt).toBe(0.75);
+    noteRewound("rw390-b", 30, 100);
+    expect(handoff.dismissedAt).toBe(0);
+    noteFill("rw390-b", 71, 100, false);
+    expect(handoff.stage).toBe("due");
+  });
+
+  it("leaves another chat's notice alone, and a redo past the mark queues nothing", () => {
+    resetHandoff();
+    noteFill("rw390-c", 75, 100, false);
+    noteRewound("rw390-other", 10, 100);
+    expect(handoff.chat).toBe("rw390-c");
+    expect(handoff.stage).toBe("due");
+    noteRewound("rw390-c", 40, 100);
+    noteRewound("rw390-c", 80, 100);
+    expect(handoff.stage).toBe("due");
+    expect(handoff.queuedId).toBe(0);
   });
 });

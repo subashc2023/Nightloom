@@ -6,6 +6,7 @@ import {
   firstMessage,
   handoff,
   noteAgentTurnEnd,
+  noteRewound,
   noteThread,
   noteThreadFlags,
   readOrder,
@@ -9073,6 +9074,9 @@ export async function rewindTo(to: number, aim: boolean | string = false): Promi
     app.error = String(e);
     return;
   }
+  // Item 390: fewer turns, less context — the hand-off notice reads it now.
+  const refill = () => noteRewound(app.activeSessionId, contextUsed(), app.connection?.contextLimit ?? null);
+  refill();
   app.rewoundWrites =
     written.length > 0
       ? {
@@ -9091,6 +9095,7 @@ export async function rewindTo(to: number, aim: boolean | string = false): Promi
     label: "rewind",
     undo: async () => {
       app.events = await api.unrewind(marker);
+      refill();
       // The turn is back; its files were left alone unless he set them
       // aside, and then the card says where they went.
       if (app.rewoundWrites && app.rewoundWrites.done === null) app.rewoundWrites = null;
@@ -9103,6 +9108,7 @@ export async function rewindTo(to: number, aim: boolean | string = false): Promi
     },
     redo: async () => {
       app.events = await call();
+      refill();
       marker = lastMarker("rewind");
       if (back) swap = fillBox(key, back);
     },

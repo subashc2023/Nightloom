@@ -170,6 +170,10 @@ export function nextStage(
   dismissedAt: number,
 ): HandoffStage {
   if (stage === "wrapping") return "wrapped";
+  // Item 390 (his bug, 2026-10-18): a fill back under the mark — a rewind
+  // took turns off — puts the notice away; it was kept up whatever the
+  // fill did after.
+  if ((stage === "due" || stage === "wrapped") && fill < threshold) return "idle";
   if (stage === "due" || stage === "wrapped") return stage;
   if (fill < threshold) return "idle";
   if (dismissedAt > 0 && (fill < RE_ASK || fill <= dismissedAt)) return "idle";
@@ -282,6 +286,12 @@ export function noteFill(
   handoff.fill = fill;
   const before = handoff.stage;
   if (before === "wrapping" && !events) return;
+  // Item 390: under the mark, a *Stay here* is forgotten, so the next
+  // crossing asks afresh; a wrap-up queued for the crossing goes.
+  if (fill < threshold(chat)) {
+    handoff.dismissedAt = 0;
+    if (before === "due") dropAutoQueued();
+  }
   const after = nextStage(before, fill, threshold(chat), handoff.dismissedAt);
   handoff.stage = after;
   if (before === "wrapping" && after === "wrapped") {
@@ -291,6 +301,14 @@ export function noteFill(
     const text = message(chat);
     if (text.trim()) handoff.queuedId = enqueueMessage(chat, text, []).id;
   }
+}
+
+/** Item 390: after a rewind (or its undo or redo) the fill is read again —
+ *  no turn ran, so nothing else would — never as away, so a redo past the
+ *  mark does not queue the wrap-up. */
+export function noteRewound(chat: string | null, used: number | null, limit: number | null): void {
+  if (handoff.chat !== chat || handoff.stage === "wrapping") return;
+  noteFill(chat, used, limit, false);
 }
 
 /** Called at the end of every agent turn with the gauge's pair and the log. */
