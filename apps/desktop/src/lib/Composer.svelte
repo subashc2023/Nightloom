@@ -56,10 +56,12 @@
     setReadOrder,
     setThreshold,
     stayHere,
+    reopenHandoff,
     threadFor,
     threshold,
     noteThread,
   } from "./handoff.svelte";
+  import { fold, isFolded, noteStay, stayedFromWrapped, unfold } from "./handoffFold.svelte";
   import ThreadPicker from "./ThreadPicker.svelte";
   import { chatThread, refreshThreadFlags, injectIntoTurn, sendNowRow, openChatKey, takeQueued } from "./state.svelte";
   import { injectChip, queueHeadLabel } from "./midTurn";
@@ -687,6 +689,10 @@
       handoff.chat !== null,
   );
   const handoffPct = $derived(Math.round(handoff.fill * 100));
+  // Backlog 383: after *Stay here* the card can come back before the re-ask mark.
+  const handoffStayed = $derived(
+    !aside && handoff.chat !== null && handoff.chat === app.activeSessionId && handoff.stage === "idle" && handoff.dismissedAt > 0,
+  );
   const handoffThresholdPct = $derived(Math.round(threshold(app.activeSessionId) * 100));
   const handoffDefaultPct = $derived(Math.round(threshold(null) * 100));
   const reAskPct = Math.round(RE_ASK * 100);
@@ -2621,7 +2627,16 @@
       {/each}
     </div>
   {/if}
-  {#if handoffHere && handoff.stage === "due"}
+  {#if handoffHere && handoff.stage === "due" && isFolded(app.activeSessionId, "due")}
+    <div class="handoff handoff-min" role="status" aria-label="Hand-off notice, minimized">
+      <span class="handoff-mark" aria-hidden="true"><Icon name="branch" size={13} /></span>
+      <strong class="handoff-min-title">Context {handoffPct}% — past this chat's {handoffThresholdPct}% hand-off mark</strong>
+      <span class="mono handoff-fill">{fmtTokens(handoff.used)} of {fmtTokens(handoff.limit)} · {handoffPct}%</span>
+      <span class="spacer"></span>
+      {#if !wrapUpQueued}<button class="ns-btn accent small" disabled={app.busy || !wrapUpText.trim()} onclick={() => void sendWrapUpNow()}>Wrap up now</button>{/if}
+      <button class="ns-btn ghost small" use:tip={"Show the whole card again"} onclick={() => unfold(app.activeSessionId)}>Expand</button>
+    </div>
+  {:else if handoffHere && handoff.stage === "due"}
     <!-- The notice (backlog 086 pass 2, blocker 120): the board's hand-off
          card — accent rule, a heading with the fill, one line of what
          happens, the two things he can change for this chat, the actions.
@@ -2675,7 +2690,8 @@
         {#if !wrapUpQueued}
           <button class="ns-btn accent small" disabled={app.busy || !wrapUpText.trim()} onclick={() => void sendWrapUpNow()}>Wrap up now</button>
         {/if}
-        <button class="ns-btn ghost small" use:tip={`No wrap-up; asked again past ${reAskPct}%`} onclick={stayHere}>Stay here</button>
+        <button class="ns-btn ghost small" use:tip={`No wrap-up; asked again past ${reAskPct}%`} onclick={() => { noteStay(app.activeSessionId, "due"); stayHere(); }}>Stay here</button>
+        <button class="ns-btn ghost small" use:tip={"Fold this card to one line above the box"} onclick={() => fold(app.activeSessionId, "due")}>Minimize</button>
         {#if hasOwnMessage(app.activeSessionId)}
           <button class="ns-btn ghost small" use:tip={"Back to the Settings default for this chat"} onclick={() => clearMessage(app.activeSessionId)}>Reset the message</button>
         {/if}
@@ -2685,6 +2701,15 @@
   {:else if handoffHere && handoff.stage === "wrapping"}
     <div class="handoff" role="status">
       <div class="handoff-head"><span>Wrapping up — the model is finishing what is half-done, {#if threadHandoff}updating the thread's files{:else}writing <code>HANDOFF.md</code>{/if}, and ending with the start prompt for the new chat.</span></div>
+    </div>
+  {:else if handoffHere && handoff.stage === "wrapped" && isFolded(app.activeSessionId, "wrapped")}
+    <div class="handoff handoff-min" role="status" aria-label="Hand-off notice, minimized">
+      <span class="handoff-mark" aria-hidden="true"><Icon name="branch" size={13} /></span>
+      <strong class="handoff-min-title">{threadHandoff ? "Thread updated" : "HANDOFF.md written"}</strong>
+      <span class="mono handoff-fill">{fmtTokens(handoff.used)} of {fmtTokens(handoff.limit)} · {handoffPct}%</span>
+      <span class="spacer"></span>
+      <button class="ns-btn accent small" disabled={app.busy} onclick={() => void continueChat()}>Continue in a new chat</button>
+      <button class="ns-btn ghost small" use:tip={"Show the whole card again"} onclick={() => unfold(app.activeSessionId)}>Expand</button>
     </div>
   {:else if handoffHere && handoff.stage === "wrapped"}
     <div class="handoff" role="status" aria-label="Hand-off done">
@@ -2726,7 +2751,8 @@
         {#if hasOwnReadOrder(app.activeSessionId)}
           <button class="ns-btn ghost small" use:tip={"Back to the Settings default for this chat"} onclick={() => clearReadOrder(app.activeSessionId)}>Reset the read order</button>
         {/if}
-        <button class="ns-btn ghost small" use:tip={`Keep going here; asked again past ${reAskPct}%`} onclick={stayHere}>Stay here</button>
+        <button class="ns-btn ghost small" use:tip={`Keep going here; asked again past ${reAskPct}%`} onclick={() => { noteStay(app.activeSessionId, "wrapped"); stayHere(); }}>Stay here</button>
+        <button class="ns-btn ghost small" use:tip={"Fold this card to one line above the box"} onclick={() => fold(app.activeSessionId, "wrapped")}>Minimize</button>
         <span class="handoff-keys mono">stay past {reAskPct}% and the wrap-up is asked again</span>
       </div>
     </div>
@@ -2998,6 +3024,13 @@
         </span>
       {/if}
       <span class="spacer"></span>
+      {#if handoffStayed}
+        <button
+          class="ns-btn ghost small act"
+          use:tip={`Bring back the hand-off card now; it asks by itself again past ${reAskPct}%`}
+          onclick={() => reopenHandoff(stayedFromWrapped(app.activeSessionId))}
+        ><Icon name="branch" size={12} /> Hand off</button>
+      {/if}
       {#if shown}
         <span class="draft-tokens mono act" data-fold-step="tokens" use:tip={shown.title}
           ><span class="fold-word">{shown.long}</span><span class="short-word">{shown.short}</span></span
@@ -3950,6 +3983,20 @@
     background: var(--sheet);
     font-size: 13px;
     color: var(--ink2);
+  }
+  /* Backlog 383: the card folded to one line. */
+  .handoff.handoff-min {
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  .handoff-min-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
   }
   .handoff-head {
     display: flex;
