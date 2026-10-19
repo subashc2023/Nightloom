@@ -31,6 +31,17 @@
  * ⌥e e's second press). The rule is `sendsToComposer`, pure; the DOM side
  * is `focusKindOf`, `chatComposerBox` and `focusBoxAtEnd`, wired by
  * `composerSummon.svelte.ts` while a chat composer is mounted.
+ *
+ * **Enter sends the draft from anywhere in the chat (item 387, his ask
+ * 2026-10-18: "Clicking enter should also … send the msg that is in a
+ * draft … even if the cursor is actively not on the textbox the same way
+ * that like typing does").** A plain Enter (no ⇧ ⌥ ⌘ ⌃, not held, no IME)
+ * with the focus on nothing or on the chat's transcript, and a draft in the
+ * box (text or an attachment), moves the focus to the box and hands it the
+ * Enter, so the box's own Enter decides (send, queue during a turn, wait
+ * for a pasted image). The same blocks as typing apply, and on a focused
+ * control (a button, a link, a tab) Enter stays the control's. The rule is
+ * `enterSends`, pure.
  */
 import { AUTO_FOCUS_BLOCKERS, CMD_L_BLOCKERS, isEditable, type ElLike } from "./composerCaret";
 
@@ -85,6 +96,18 @@ export function sendsToComposer(e: KeyLike, ctx: ComposeContext): boolean {
   if (e.repeat) return false;
   if (!isPrintable(e.key)) return false;
   if (e.key === " " && ctx.focus === "control") return false;
+  return true;
+}
+
+/** Whether this keydown is an Enter that should send the box's draft
+ *  (item 387). `draft`: the box holds text or an attachment. */
+export function enterSends(e: KeyLike, ctx: ComposeContext, draft: boolean): boolean {
+  if (e.key !== "Enter" || !draft) return false;
+  if (!ctx.composer || ctx.blocked) return false;
+  if (ctx.focus !== "none" && ctx.focus !== "content") return false;
+  if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return false;
+  if (e.isComposing || e.keyCode === 229) return false;
+  if (e.repeat) return false;
   return true;
 }
 
@@ -179,10 +202,16 @@ export function focusBoxAtEnd(box: HTMLElement, endOfEditor?: (el: HTMLElement) 
  * The keydown listener (window, capture phase): decides, moves the focus
  * when the answer is yes, and never stops, prevents or swallows the key.
  */
-export function typeToComposeKeydown(e: KeyboardEvent, endOfEditor?: (el: HTMLElement) => boolean): void {
+export function typeToComposeKeydown(
+  e: KeyboardEvent,
+  endOfEditor?: (el: HTMLElement) => boolean,
+  boxText?: (el: HTMLElement) => string,
+): void {
   if (e.defaultPrevented) return;
   // Cheap rejections first: most keys he presses are in the box already.
-  if (e.metaKey || e.ctrlKey || e.repeat || !isPrintable(e.key)) return;
+  if (e.metaKey || e.ctrlKey || e.repeat) return;
+  const enter = e.key === "Enter";
+  if (!enter && !isPrintable(e.key)) return;
   const doc = document;
   const found = chatComposerBox(doc);
   const active = doc.activeElement as (HTMLElement & FocusEl) | null;
@@ -192,6 +221,19 @@ export function typeToComposeKeydown(e: KeyboardEvent, endOfEditor?: (el: HTMLEl
     blocked: !!doc.querySelector(TYPE_BLOCKERS),
     focus: focusKindOf(active, active === doc.body || active === doc.documentElement, region),
   };
-  if (!found || !sendsToComposer(e, ctx)) return;
+  if (!found) return;
+  if (enter) {
+    const text = boxText?.(found.box) ?? (found.box instanceof HTMLTextAreaElement ? found.box.value : "");
+    const draft = text.trim() !== "" || found.root.querySelector(".attachments .attachment") !== null;
+    if (!enterSends(e, ctx, draft)) return;
+    // Item 387: the Enter is the box's — its own handler sends — and not
+    // the transcript's or the window's.
+    e.preventDefault();
+    e.stopPropagation();
+    focusBoxAtEnd(found.box, endOfEditor);
+    found.box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, cancelable: true }));
+    return;
+  }
+  if (!sendsToComposer(e, ctx)) return;
   focusBoxAtEnd(found.box, endOfEditor);
 }

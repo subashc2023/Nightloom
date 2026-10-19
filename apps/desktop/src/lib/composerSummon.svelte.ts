@@ -40,7 +40,14 @@ export function chatBoxMounted(): () => void {
 function onTyping(e: KeyboardEvent): void {
   // ⌘V with nothing to type in (backlog 351, `pasteToCompose.ts`).
   pasteToComposeKeydown(e, isMac);
-  typeToComposeKeydown(e, endOfEditor);
+  typeToComposeKeydown(e, endOfEditor, boxText);
+}
+
+/** The box's draft text: the formatted box's from its state (its DOM holds
+ *  a placeholder and only the rows in view), else the textarea's. */
+function boxText(el: HTMLElement): string {
+  if (el instanceof HTMLTextAreaElement) return el.value;
+  return EditorView.findFromDOM(el)?.state.doc.toString() ?? "";
 }
 
 /** The formatted box (item 276) is CodeMirror's: its caret is its state's. */
