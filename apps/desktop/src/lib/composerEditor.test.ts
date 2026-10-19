@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { EditorSelection, type EditorState } from "@codemirror/state";
-import { composerDecorations, composerState, liveSpans, setFocused, type LiveKind } from "./composerEditor";
+import { EditorSelection, type EditorState, type Extension, type Transaction } from "@codemirror/state";
+import { drawSelection } from "@codemirror/view";
+import { deleteCharBackward, selectAll, standardKeymap } from "@codemirror/commands";
+import { composerDecorations, composerKeymap, composerState, liveSpans, setFocused, type LiveKind } from "./composerEditor";
 import { loadComposerFormat, saveComposerFormat } from "./composerFormat.svelte";
 
 // The formatted message box (nightshift item 276). What matters most: the
@@ -225,5 +227,39 @@ describe("fix pass: emphasis half typed does not flash", () => {
       expect(k.includes("em"), JSON.stringify(s.doc.toString())).toBe(false);
     }
     expect(liveSpans(s).map((x) => x.kind)).toEqual(["strong"]);
+  });
+});
+
+describe("item 386: ⌘A over a long paste selects, and shows, the whole text", () => {
+  // The browser's own highlight reached only the rows CodeMirror keeps in
+  // the page (1,815 of 60,491 characters, measured in WebKit); the box now
+  // draws its selection. What node can pin: the drawn selection is in the
+  // box's extensions, and ⌘A then Backspace empties a 600-line box.
+  const long = Array.from({ length: 600 }, (_, i) => `Line ${i + 1}: a pasted question, long enough to wrap.`).join("\n");
+
+  function flatten(e: Extension, out: unknown[] = []): unknown[] {
+    if (Array.isArray(e)) for (const x of e) flatten(x, out);
+    else out.push(e);
+    return out;
+  }
+
+  it("draws the selection rather than leaving it to the browser", () => {
+    const mine = new Set(flatten(composerKeymap()));
+    // drawSelection's cursor layer, selection layer and native-selection
+    // hider are module constants, so the same objects are in the box's
+    // extensions.
+    const drawn = flatten(drawSelection());
+    expect(drawn.filter((x) => mine.has(x)).length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("⌘A selects every character and Backspace leaves the box empty", () => {
+    const bind = standardKeymap.find((b) => b.key === "Mod-a");
+    expect(bind?.run).toBe(selectAll);
+    let state = composerState(long, [composerKeymap()]);
+    const target = { get state() { return state; }, dispatch: (tr: Transaction) => { state = tr.state; } };
+    expect(selectAll(target)).toBe(true);
+    expect([state.selection.main.from, state.selection.main.to]).toEqual([0, long.length]);
+    expect(deleteCharBackward(target as never)).toBe(true);
+    expect(state.doc.length).toBe(0);
   });
 });

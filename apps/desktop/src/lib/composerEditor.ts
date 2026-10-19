@@ -17,7 +17,7 @@
  * is not loaded into the box at all.
  */
 import { EditorSelection, EditorState, Prec, StateEffect, StateField, type Extension, type Range } from "@codemirror/state";
-import { Decoration, EditorView, WidgetType, keymap, type DecorationSet } from "@codemirror/view";
+import { Decoration, EditorView, WidgetType, drawSelection, keymap, type DecorationSet } from "@codemirror/view";
 import { LanguageSupport, ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import { markdownLanguage } from "@codemirror/lang-markdown";
 import { history, historyKeymap, insertNewline, isolateHistory, standardKeymap } from "@codemirror/commands";
@@ -498,9 +498,18 @@ export function composerState(
  * newline (no list continuation, no indentation). Everything the composer
  * itself does with a key — Enter to send, ↑ to take back, the menus — runs
  * first, from the composer's own handler.
+ *
+ * The selection is drawn by CodeMirror (`drawSelection`), not the browser
+ * (item 386, his bug 2026-10-18): CodeMirror keeps only the rows in view in
+ * the page, so the browser's own highlight after ⌘A over a 600-line paste
+ * covered the ~18 rows that were there (1,815 of 60,491 characters,
+ * measured in WebKit) though the whole text was selected. A drawn selection
+ * covers every row he scrolls to. `composerTheme` gives it the textarea's
+ * colours.
  */
 export function composerKeymap(): Extension {
   return [
+    drawSelection(),
     Prec.high(
       keymap.of([
         { key: "Enter", run: insertNewline, shift: insertNewline },
@@ -539,6 +548,12 @@ export const composerTheme = EditorView.theme({
   },
   ".cm-line": { padding: "0" },
   "&.cm-focused .cm-cursor": { borderLeftColor: "var(--ink)" },
+  // Item 386: the drawn selection in the textarea's colour (the system
+  // highlight), and none while the box is unfocused, as a textarea shows
+  // none. Selectors as specific as CodeMirror's light-theme defaults, which
+  // would otherwise paint a pale lilac / grey block in the dark palette.
+  "& > .cm-scroller > .cm-selectionLayer .cm-selectionBackground": { background: "transparent" },
+  "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground": { background: "Highlight" },
   ".cm-placeholder": { color: "var(--dim)" },
   // Headings sized for a message, not a page (his ask: nothing that "looks
   // weird within the box"): 1.25× body at most, no margins, so a heading
