@@ -2020,6 +2020,10 @@
     border-left: 1px solid var(--line);
   }
   .row-menu .row-thread {
+    /* Backlog 401 (nightshift): never shrink — with more rows than the
+       list's 180 px holds, the column squashed each one to slivers
+       (overflow: hidden drops the min-height floor); the list scrolls. */
+    flex-shrink: 0;
     justify-content: flex-start;
     white-space: nowrap;
     overflow: hidden;
