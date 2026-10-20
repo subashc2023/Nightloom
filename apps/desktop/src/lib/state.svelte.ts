@@ -19,6 +19,7 @@ import { replaceStartHere, threadOfEvents } from "./thread";
 import type { AsideFold, FoldRecord } from "./asideFold";
 import { suggestions } from "./suggestions.svelte";
 import { isMac } from "./platform";
+import { stopChordTarget } from "./stopButton";
 import { hasUsage } from "./replyFooter";
 import {
   UNFILED,
@@ -1393,6 +1394,13 @@ export function runMenuCommand(id: string): void {
       break;
     case "engine":
       void toggleEngine();
+      break;
+    // ⌘. (item 398, blocker 1506): the composer's Stop, by key. An aside
+    // box with the keyboard takes it first (Composer's interceptor); here
+    // it is the chat's turn, and nothing when none runs — the same
+    // `app.busy` that puts the Stop on screen.
+    case "stop_turn":
+      if (stopChordTarget({ asideFocused: false, asideBusy: false, turnBusy: app.busy }) === "turn") void cancelTurn();
       break;
     case "model_sonnet":
     case "model_opus":

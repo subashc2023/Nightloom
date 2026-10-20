@@ -37,7 +37,7 @@
   import * as tabs from "./lib/tabs";
   import { paneLine } from "./lib/browse";
   import { budgetChip } from "./lib/budget";
-  import { draggedShell, dropLabel } from "./lib/terminal.svelte";
+  import { draggedShell, dropLabel, term } from "./lib/terminal.svelte";
   import "./lib/tabsKeeper.svelte";
   import TabStrip from "./lib/TabStrip.svelte";
   import { tabDrag } from "./lib/tabDrag.svelte";
@@ -545,6 +545,12 @@
       }
       if (e.shiftKey && (e.code === "BracketRight" || e.code === "BracketLeft")) {
         runMenuCommand(e.code === "BracketRight" ? "next_tab" : "prev_tab");
+        return true;
+      }
+      // Ctrl+. stops the turn (item 398, blocker 1506); ⌘. is View → Stop
+      // on macOS. Not from the terminal, whose shell may want the key.
+      if (!e.shiftKey && e.code === "Period" && !term.focused) {
+        runMenuCommand("stop_turn");
         return true;
       }
     }

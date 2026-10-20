@@ -29,3 +29,23 @@ export function armStop(node: HTMLElement, armMs: number = STOP_ARM_MS): { destr
   node.addEventListener("click", guard, true);
   return { destroy: () => node.removeEventListener("click", guard, true) };
 }
+
+/**
+ * ⌘. stops (item 398, blocker 1506 — his yes, 2026-10-19): the macOS
+ * menu's View → Stop carries ⌘. as a `stop_turn` menu event; elsewhere
+ * `App.svelte` binds Ctrl+. to the same id. What it stops is what the
+ * Stop button on screen would: an aside thread's answer when that
+ * thread's box has the keyboard, else the chat's turn; nothing when
+ * neither runs. An aside box with the keyboard and no answer coming
+ * stops nothing — never the chat's turn behind it, whose Stop is not the
+ * one in front of him.
+ */
+export function stopChordTarget(s: { asideFocused: boolean; asideBusy: boolean; turnBusy: boolean }): "aside" | "turn" | null {
+  if (s.asideFocused) return s.asideBusy ? "aside" : null;
+  return s.turnBusy ? "turn" : null;
+}
+
+/** The chord as the tooltip names it, per platform. */
+export function stopChordLabel(mac: boolean): string {
+  return mac ? "⌘." : "Ctrl+.";
+}
