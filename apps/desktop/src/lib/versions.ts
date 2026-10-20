@@ -105,25 +105,25 @@ export function sidebarSessions(sessions: SessionMeta[], map: VersionMap): Sessi
 }
 
 /**
- * The chat whose row `id` would take on *Make main*: the topmost of
- * `replacedAll` — the row the line started from, whose name it takes.
- * Null when there is nothing to take.
+ * The chat whose row `id` would take on *Make main*: the nearest of
+ * `replacedAll` — one layer per click (blocker 1511, his answer:
+ * ~~the topmost, the whole line in one click~~, 2026-10-19). Null when
+ * there is nothing to take.
  */
 export function replacedBy(sessions: SessionMeta[], map: VersionMap, id: string): string | null {
-  const all = replacedAll(sessions, map, id);
-  return all.length ? all[all.length - 1] : null;
+  return replacedAll(sessions, map, id)[0] ?? null;
 }
 
 /**
  * Every chat whose place *Make main* on `id` takes, nearest first: what
  * has its own place (a hidden version being put back), then, up its line
  * of edit forks to the first chat that is not one, what has each
- * ancestor's place — so the whole line from the root through `id` becomes
- * the chat's main line in one click (item 400, blocker 1511). ~~Before
- * 400 only the parent's place was taken~~ (2026-10-19): Make main on a
- * thread inside a thread left it a thread of the original, and, its
- * parent now drawn as itself, with no button. A hand-off continuation
- * ends the line (another chat, not a version). Empty: nothing to take.
+ * ancestor's place. Make main takes only the first (one layer per click,
+ * blocker 1511); the walk is so a chat that is still a fork at any depth
+ * keeps its button (item 400): before 400 only the parent was looked at,
+ * so a thread inside a thread, once in its parent's place, was still a
+ * thread of the original with no button. A hand-off continuation ends the
+ * line (another chat, not a version). Empty: nothing to take.
  */
 export function replacedAll(sessions: SessionMeta[], map: VersionMap, id: string): string[] {
   const listed = new Set(sessions.map((s) => s.id));
@@ -148,14 +148,15 @@ export function canMakeMain(sessions: SessionMeta[], map: VersionMap, id: string
 }
 
 /**
- * The map after *Make main* on `id`: every chat of each group whose place
- * it takes (`replacedAll`) now points at it, and its own entry is gone.
+ * The map after *Make main* on `id`: every chat of the group whose place
+ * it takes (`replacedBy`, one layer) now points at it, and its own entry is gone.
  * Null when it cannot be made main. Entries are flattened to the new
  * main, so a later Make main on any of them moves the whole group again.
  */
 export function makeMain(sessions: SessionMeta[], map: VersionMap, id: string): VersionMap | null {
-  const replaced = new Set(replacedAll(sessions, map, id));
-  if (replaced.size === 0) return null;
+  const first = replacedBy(sessions, map, id);
+  if (!first) return null;
+  const replaced = new Set([first]);
   const listed = new Set(sessions.map((s) => s.id));
   const next: VersionMap = {};
   for (const [k, v] of Object.entries(map)) {
