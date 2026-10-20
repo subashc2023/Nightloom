@@ -7837,6 +7837,13 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     let engine = MenuItemBuilder::with_id("engine", "Switch Engine (Provider ⇄ Claude Code)")
         .accelerator("CmdOrCtrl+E")
         .build(app)?;
+    // ⌘. stops the running turn (nightshift item 398, blocker 1506 — his
+    // yes, 2026-10-19), the composer's Stop by key. Always enabled: with no
+    // turn running `runMenuCommand` does nothing, and an aside's box with
+    // the keyboard stops its own answer instead (Composer's interceptor).
+    let stop_turn = MenuItemBuilder::with_id("stop_turn", "Stop")
+        .accelerator("CmdOrCtrl+.")
+        .build(app)?;
     // Whole-app zoom (nightshift backlog 108): ⌘= is the key Chrome binds
     // Zoom In to (⌘+ needs Shift on a US layout; `zoom.ts` takes that one
     // too, since it is not a menu item), ⌘− out, ⌘0 back to 100 %. The
@@ -7940,6 +7947,7 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
         .item(&projects)
         .separator()
         .item(&engine)
+        .item(&stop_turn)
         .separator()
         .item(&next_tab)
         .item(&prev_tab)

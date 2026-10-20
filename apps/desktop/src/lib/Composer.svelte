@@ -89,7 +89,7 @@
   } from "./pasteAttach";
   import { badgeOf, extOf } from "./attachKinds";
   import { sendTip, tip } from "./tip";
-  import { armStop } from "./stopButton";
+  import { armStop, stopChordLabel, stopChordTarget } from "./stopButton";
   import { acceptFiles, conversionJobs, filesBlocked, MAX_IMAGE_BASE64, splitChips, trackPending } from "./attachFiles.svelte";
   import { floatMenu } from "./floatMenu";
   import { ghostFor } from "./suggestions.svelte";
@@ -1678,6 +1678,27 @@
     };
   });
 
+  // ⌘. in an aside's box (item 398, blocker 1506): the thread's Stop, as
+  // its button — its answer if one is coming, else nothing, never the
+  // chat's turn behind it. A chat's box needs no hook: `runMenuCommand`
+  // stops the chat's turn.
+  $effect(() => {
+    const thread = aside;
+    if (!thread) return;
+    const take = (id: string): boolean => {
+      if (id !== "stop_turn") return false;
+      const asideFocused = !!root && root.contains(document.activeElement);
+      if (!asideFocused) return false;
+      if (stopChordTarget({ asideFocused, asideBusy, turnBusy: app.busy }) === "aside") stopAside(thread);
+      return true;
+    };
+    menuInterceptors.push(take);
+    return () => {
+      const i = menuInterceptors.indexOf(take);
+      if (i >= 0) menuInterceptors.splice(i, 1);
+    };
+  });
+
   function ondragenter(e: DragEvent) {
     if (!e.dataTransfer?.types.includes("Files")) return;
     e.preventDefault();
@@ -3056,11 +3077,11 @@
              row keeps its height when a turn starts. Armed after 400 ms, so
              a double-click on Send cannot stop the turn it started. -->
         {#if aside}
-          <button class="ns-btn danger send stop act" aria-label="Stop" use:armStop use:tip={"Stop this answer; what has arrived stays"} onclick={() => aside && stopAside(aside)}
+          <button class="ns-btn danger send stop act" aria-label="Stop" use:armStop use:tip={`Stop this answer; what has arrived stays (${stopChordLabel(isMac)})`} onclick={() => aside && stopAside(aside)}
             ><span class="stop-size" aria-hidden="true">Send</span><span class="stop-ico" aria-hidden="true"><Icon name="stop" size={16} /></span></button
           >
         {:else}
-          <button class="ns-btn danger send stop act" aria-label="Stop" use:armStop use:tip={app.parked ? `Stop the turn running in ${runningChatName()}` : "Stop this turn"} onclick={() => void cancelTurn()}
+          <button class="ns-btn danger send stop act" aria-label="Stop" use:armStop use:tip={`${app.parked ? `Stop the turn running in ${runningChatName()}` : "Stop this turn"} (${stopChordLabel(isMac)})`} onclick={() => void cancelTurn()}
             ><span class="stop-size" aria-hidden="true">Send</span><span class="stop-ico" aria-hidden="true"><Icon name="stop" size={16} /></span></button
           >
         {/if}
