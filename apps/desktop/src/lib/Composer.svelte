@@ -34,7 +34,7 @@
   import { LiveBoxHandle, boxElement, type ComposerBox } from "./composerEditor";
   import LiveBox from "./LiveBox.svelte";
   import { isMac } from "./platform";
-  import { BoxHistory, editKind, historyInput } from "./boxHistory";
+  import { BoxHistory, editKind, historyInput, historyKey } from "./boxHistory";
   import {
     RE_ASK,
     abortWrapUp,
@@ -135,13 +135,13 @@
   import DropOverlay from "./DropOverlay.svelte";
   import { chipDropIn, rowDropOpen } from "./dropLook";
   import { dropPending, markPasted, takeDropped } from "./dropLook.svelte";
-  import { codePasteLanguage, fenced, findFences, layerLines, withFenceLanguage } from "./codeDetect";
-  import { mathPasteText } from "./mathPaste";
+  import { fenced, findFences, withFenceLanguage } from "./codeDetect";
+  import BoxLayer, { layerShown } from "./BoxLayer.svelte";
+  import { pasteSteps, textPastePlan } from "./textPaste";
   import { attachPastedImages, fetchPasteImage, htmlImagePaste, preparePaste, rasterize, type ImagePaste } from "./pasteImages";
-  import { LANGUAGES } from "./codeHighlight";
   import { launch } from "./sendMotion";
   import { composerConnectHint, launch as launchState } from "./launch.svelte";
-  import { hasQuoteLine, insertQuote, mirrorLines, replyRequest, takeReply } from "./replyQuote.svelte";
+  import { insertQuote, replyRequest, takeReply } from "./replyQuote.svelte";
   import { composerFocus } from "./rewindDraft.svelte";
   import { CaretKeeper, clampSel, mayAutoFocus } from "./composerCaret";
   import { ScrollHold } from "./boxPlace";
@@ -377,24 +377,9 @@
    * kept. It is still the textarea he types in: cursor, selection, IME,
    * undo, paste and auto-grow are the textarea's. The layer holds the same
    * characters with the same font, padding and wrapping, sized to the
-   * textarea's client box and scrolled with it (`syncMirror`).
+   * textarea's client box and scrolled with it — `BoxLayer.svelte`, shared
+   * with the edit box of one of his messages since item 399.
    */
-  let mirror = $state<HTMLDivElement | null>(null);
-  function syncMirror() {
-    if (!mirror || !ta) return;
-    mirror.style.width = ta.clientWidth + "px";
-    mirror.style.height = ta.clientHeight + "px";
-    mirror.scrollTop = ta.scrollTop;
-    // Item 315: each code block's label rides on its opening fence line,
-    // hidden while that line is scrolled out of the box.
-    const tops: (number | null)[] = [];
-    for (const el of mirror.querySelectorAll<HTMLElement>("[data-fence]")) {
-      const top = el.offsetTop - mirror.scrollTop;
-      tops[Number(el.dataset.fence)] = top >= 0 && top < mirror.clientHeight - 4 ? top : null;
-    }
-    fenceTops = tops;
-  }
-  let fenceTops = $state<(number | null)[]>([]);
   // Drag events fire per element, so a boolean flickers as the pointer crosses
   // children; count enters against leaves instead.
   let dragDepth = $state(0);
@@ -616,7 +601,6 @@
     ta.style.overflowY = overflows(ta.scrollHeight, ta.clientHeight) ? "auto" : "hidden";
     // Backlog 355: a switched-to draft's place, once its height is right.
     putScrollBack();
-    syncMirror();
   }
 
   // A resized window moves the 40% line.
@@ -1048,22 +1032,9 @@
     }
   }
 
-  const quoted = $derived(hasQuoteLine(text));
-  // Item 315: fenced code drawn coloured in the same layer as quotes.
-  const fences = $derived(findFences(text));
-  const codeLayer = $derived(fences.length > 0 ? layerLines(text) : []);
-  const layered = $derived(quoted || fences.length > 0);
-  // The layer follows the box: its size (a drag, the 40% line, a resized
-  // window) and its text (the scroll after a keystroke) — item 223.
-  $effect(() => {
-    const box = boxElement(ta);
-    if (!box || !mirror) return;
-    void text;
-    const ro = new ResizeObserver(() => syncMirror());
-    ro.observe(box);
-    void tick().then(syncMirror);
-    return () => ro.disconnect();
-  });
+  // Item 223 / 315: quote lines and fenced code drawn in a layer behind
+  // the textarea (`BoxLayer`), while the draft has either.
+  const layered = $derived(layerShown(text));
 
   function onkeydown(e: KeyboardEvent) {
     // ⌥⌘V: paste the clipboard's text as an attachment (item 284).
@@ -1226,7 +1197,10 @@
     const asAttachment = takeAttachMark();
     const firstImage = readDraft(key).attachments.filter((a) => a.kind === "image").length + 1;
     const withImages = files.length === 0 && !asAttachment ? htmlImagePaste(html, firstImage) : null;
-    const math = files.length === 0 && !withImages ? mathPasteText(html) : null;
+    // Item 399: math and code read by the one plan the edit box shares.
+    const caret = Math.min(ta?.selectionStart ?? text.length, ta?.selectionEnd ?? text.length);
+    const plan = withImages ? null : textPastePlan({ plain: pastedText, html, fileCount: files.length, text, caret });
+    const math = plan?.kind === "math" ? plan.text : null;
     // Into the in-app clipboard ring (backlog 173): the text, and below
     // each image the paste attached.
     if (pastedText && !(withImages && ta)) recordText("pasted", math ?? pastedText);
@@ -1247,23 +1221,19 @@
     if (math !== null && ta) {
       e.preventDefault();
       const at = Math.min(ta.selectionStart, ta.selectionEnd);
-      pasteMath(normalizeNewlines(math));
+      pasteMath(math);
       offer = longPasteOffer(math, at);
       converted = null;
       return;
     }
     // Item 315: code goes in as a fenced block with its language. A long
     // paste is left to the attachment offer below (codePasteLanguage).
-    if (pastedText && files.length === 0 && ta) {
-      const at = Math.min(ta.selectionStart, ta.selectionEnd);
-      const lang = codePasteLanguage(pastedText, text, at);
-      if (lang) {
-        e.preventDefault();
-        pasteAsCode(normalizeNewlines(pastedText), lang);
-        offer = null;
-        converted = null;
-        return;
-      }
+    if (plan?.kind === "code" && ta) {
+      e.preventDefault();
+      pasteAsCode(plan.raw, plan.lang);
+      offer = null;
+      converted = null;
+      return;
     }
     // A long ⌘V paste: the text goes in as always, and an offer under the
     // box can move it into an attachment.
@@ -1352,17 +1322,15 @@
     }
     const from = Math.min(ta.selectionStart, ta.selectionEnd);
     const to = Math.max(ta.selectionStart, ta.selectionEnd);
-    const before = text.slice(0, from);
-    const after = text.slice(to);
-    const block = fenced(raw, lang, before, after);
-    const wrapped = before + block + after;
+    // Item 399: the steps the edit box takes too (`pasteSteps`).
+    const steps = pasteSteps(text, from, to, raw, lang);
+    const last = steps[steps.length - 1];
     hist.select(from, to);
-    hist.external(before + raw + after, from + raw.length);
-    hist.external(wrapped, from + block.length);
-    setDraftText(key, wrapped);
+    for (const st of steps) hist.external(st.text, st.caret);
+    setDraftText(key, last.text);
     void tick().then(() => {
       if (!ta) return;
-      ta.selectionStart = ta.selectionEnd = from + block.length;
+      ta.selectionStart = ta.selectionEnd = last.caret;
       autogrow();
     });
   }
@@ -1441,11 +1409,7 @@
   /** The box's undo / redo key, or null: ⌘Z, ⌘⇧Z and ⌘Y (Ctrl off the
    *  Mac). */
   function boxHistoryKey(e: KeyboardEvent): "undo" | "redo" | null {
-    const primary = isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
-    if (!primary || e.altKey) return null;
-    if (e.code === "KeyZ" || e.key.toLowerCase() === "z") return e.shiftKey ? "redo" : "undo";
-    if (!e.shiftKey && (e.code === "KeyY" || e.key.toLowerCase() === "y")) return "redo";
-    return null;
+    return historyKey(e, isMac);
   }
 
   /** One undo or redo in the textarea. False when the box is the
@@ -2880,35 +2844,14 @@
     {:else}
     {#if layered}
       <!-- Item 223: the draft drawn behind the textarea, quote lines as the
-           bubble draws them. An empty line holds a zero-width space so it
-           keeps its height, as the textarea's does. Item 315: a fenced
-           block's lines on a code ground, the body coloured, the same
-           characters in the same font so nothing moves. -->
-      <div class="ta-mirror" aria-hidden="true" bind:this={mirror}>{#each mirrorLines(text) as l, i (i)}{@const c = codeLayer[i]}{#if c && c.kind === "body"}<div class="ml code">{#each c.segs as sg, j (j)}<span class={sg.cls}>{sg.text}</span>{/each}{#if c.segs.length === 0}{"\u200b"}{/if}</div>{:else if c}<div class="ml code fence" data-fence={c.kind === "open" ? c.fence : undefined}>{l.marker}{l.rest || "\u200b"}</div>{:else}<div class="ml" class:q={l.quote}>{#if l.quote}<span class="qm">{l.marker}</span>{l.rest}{:else}{l.rest || "\u200b"}{/if}</div>{/if}{/each}</div>
-      {#each fences as f, k (k)}
-        {#if fenceTops[k] != null}
-          <!-- Item 315: the block's language; a pick rewrites only the
-               fence's info string. -->
-          <select
-            class="code-lang mono"
-            style:top="{fenceTops[k]}px"
-            aria-label="Code block language"
-            use:tip={"The block's language — the fence's ```name"}
-            value={f.lang ?? f.info}
-            onmousedown={(e) => e.stopPropagation()}
-            onchange={(e) => relabel(k, (e.currentTarget as HTMLSelectElement).value)}
-          >
-            {#if !f.lang}<option value={f.info}>{f.info || "code"}</option>{/if}
-            {#each LANGUAGES as lg (lg.id)}<option value={lg.id}>{lg.label}</option>{/each}
-          </select>
-        {/if}
-      {/each}
+           bubble draws them; item 315: a fenced block on a code ground, its
+           language picker on the fence. Shared with the edit box (399). -->
+      <BoxLayer {text} box={ta instanceof HTMLTextAreaElement ? ta : null} onrelabel={relabel} />
     {/if}
     <textarea
       bind:this={ta}
       class:quoted={layered}
       bind:value={() => text, (v) => setDraftText(key, v)}
-      onscroll={syncMirror}
       rows="1"
       autocorrect="off"
       autocapitalize="off"
@@ -3878,67 +3821,8 @@
     color: transparent;
     caret-color: var(--ink);
   }
-  .ta-mirror {
-    position: absolute;
-    top: 0;
-    left: 0;
-    z-index: 0;
-    overflow: hidden;
-    box-sizing: border-box;
-    padding: 2px 0 2px 10px;
-    font-size: 15px;
-    font-family: inherit;
-    line-height: 1.5;
-    color: var(--ink);
-    white-space: pre-wrap;
-    overflow-wrap: break-word;
-    pointer-events: none;
-  }
-  .composer.floating .ta-mirror {
-    font-size: 15.5px;
-  }
-  /* A quote line: the bubble's `.user-quote` look (bar, muted text), the
-     bar in the gutter; the `> ` marker dimmed further but kept, so the
-     characters and the caret stay where the textarea has them. */
-  .ml.q {
-    margin-left: -10px;
-    padding-left: 10px;
-    box-shadow: inset 3px 0 0 var(--accent);
-    color: var(--dim);
-  }
-  .qm {
-    opacity: 0.45;
-  }
-  /* Item 315: a fenced block in the box — a code ground under its lines
-     (out into the gutter, as a quote's bar), the fence lines dimmed. The
-     font stays the textarea's: the layer must match its glyphs. */
-  .ml.code {
-    margin-left: -10px;
-    padding-left: 10px;
-    background: var(--well);
-  }
-  .ml.fence {
-    color: var(--dim);
-  }
-  .code-lang {
-    position: absolute;
-    right: 8px;
-    z-index: 2;
-    height: 1.35rem;
-    margin-top: 0.1rem;
-    padding: 0 0.3rem;
-    border: 1px solid var(--line2);
-    border-radius: 6px;
-    background: var(--sheet);
-    color: var(--ink2);
-    font-family: var(--mono);
-    font-size: 0.7rem;
-    cursor: pointer;
-  }
-  .code-lang:hover {
-    color: var(--ink);
-    border-color: var(--dim);
-  }
+  /* The layer's own look (`.ta-mirror`, quote and code lines, the language
+     picker) moved to `BoxLayer.svelte` with it (item 399). */
   textarea:focus {
     outline: none;
   }

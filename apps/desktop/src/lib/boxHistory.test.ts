@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BoxHistory, caretAfterChange, editKind, historyInput, MAX_STEPS } from "./boxHistory";
+import { BoxHistory, caretAfterChange, editKind, historyInput, historyKey, MAX_STEPS } from "./boxHistory";
 
 const snap = (text: string, start = text.length, end = start) => ({ text, start, end });
 
@@ -157,5 +157,21 @@ describe("boxHistory (blocker 1210)", () => {
     expect(caretAfterChange("ab", "aXb")).toBe(2);
     expect(caretAfterChange("abc", "abc\n> q\n")).toBe(8);
     expect(caretAfterChange("hello", "")).toBe(0);
+  });
+});
+
+// Item 399: the key the composer and the edit box share.
+describe("historyKey", () => {
+  const k = (o: Partial<KeyboardEvent>) =>
+    ({ metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, code: "", key: "", ...o }) as KeyboardEvent;
+  it("⌘Z undoes, ⌘⇧Z and ⌘Y redo on the Mac", () => {
+    expect(historyKey(k({ metaKey: true, code: "KeyZ", key: "z" }), true)).toBe("undo");
+    expect(historyKey(k({ metaKey: true, shiftKey: true, code: "KeyZ", key: "Z" }), true)).toBe("redo");
+    expect(historyKey(k({ metaKey: true, code: "KeyY", key: "y" }), true)).toBe("redo");
+  });
+  it("Ctrl off the Mac; ⌥ and the other modifier are not it", () => {
+    expect(historyKey(k({ ctrlKey: true, code: "KeyZ", key: "z" }), false)).toBe("undo");
+    expect(historyKey(k({ ctrlKey: true, code: "KeyZ", key: "z" }), true)).toBeNull();
+    expect(historyKey(k({ metaKey: true, altKey: true, code: "KeyZ", key: "z" }), true)).toBeNull();
   });
 });
