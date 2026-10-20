@@ -69,6 +69,19 @@ export function historyInput(inputType: string): "undo" | "redo" | null {
 }
 
 /** Steps kept, and characters across them, before the oldest go. */
+/** The box's undo / redo key, or null: ⌘Z, ⌘⇧Z and ⌘Y (Ctrl off the
+ *  Mac). Shared by the composer and the edit box (item 399). */
+export function historyKey(
+  e: Pick<KeyboardEvent, "metaKey" | "ctrlKey" | "altKey" | "shiftKey" | "code" | "key">,
+  mac: boolean,
+): "undo" | "redo" | null {
+  const primary = mac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+  if (!primary || e.altKey) return null;
+  if (e.code === "KeyZ" || e.key.toLowerCase() === "z") return e.shiftKey ? "redo" : "undo";
+  if (!e.shiftKey && (e.code === "KeyY" || e.key.toLowerCase() === "y")) return "redo";
+  return null;
+}
+
 export const MAX_STEPS = 300;
 export const MAX_CHARS = 8_000_000;
 

@@ -145,7 +145,10 @@ describe("355: the wiring", () => {
   it("the edit box tracks every textarea and stashes the places with the edit", () => {
     expect(transcriptSrc).toContain("use:trackPlace={(pl) => (editPlaces[0] = pl)}");
     expect(transcriptSrc).toContain("use:trackPlace={(pl) => (editPlaces[p + 1] = pl)}");
-    expect([...transcriptSrc.matchAll(/boxes: editPlaces\.slice\(\)/g)].length).toBe(3);
+    // Item 399: through `editBoxPlaces`, which reads the formatted box's
+    // place first (it has no `trackPlace`) and returns the same slice.
+    expect([...transcriptSrc.matchAll(/boxes: editBoxPlaces\(\)/g)].length).toBe(3);
+    expect(transcriptSrc).toMatch(/function editBoxPlaces\(\)[^]*?return editPlaces\.slice\(\);/);
     expect([...transcriptSrc.matchAll(/placeBack\(back/g)].length).toBe(2);
   });
 });

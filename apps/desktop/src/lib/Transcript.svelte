@@ -8,6 +8,7 @@
   import {
     app,
     addToast,
+    menuInterceptors,
     denialReason,
     draftAside,
     liveFlags,
@@ -71,15 +72,30 @@
   import { moveScroll, recallScroll, rememberScroll, scrollKey, NEW_SCROLL_KEY } from "./scroll.svelte";
   import { presence, watchPresence } from "./away.svelte";
   import {
+    addAttachment,
     editDraftKey,
     nextAttachmentId,
     readDraft,
+    removeAttachment,
     setDraftAttachments,
     stashEdit,
     takeEdit,
+    updateAttachment,
   } from "./drafts.svelte";
-  import { acceptFiles, conversionJobs, filesBlocked, splitChips } from "./attachFiles.svelte";
-  import { putPlace, trackPlace, type BoxPlace } from "./boxPlace";
+  import { acceptFiles, conversionJobs, filesBlocked, MAX_IMAGE_BASE64, splitChips, trackPending } from "./attachFiles.svelte";
+  import { placeOf, putPlace, trackPlace, type BoxPlace } from "./boxPlace";
+  // Item 399: the edit box draws and pastes as the composer does.
+  import BoxLayer, { layerShown } from "./BoxLayer.svelte";
+  import LiveBox from "./LiveBox.svelte";
+  import { LiveBoxHandle, type ComposerBox } from "./composerEditor";
+  import { composerFormat } from "./composerFormat.svelte";
+  import { fenced, findFences, withFenceLanguage } from "./codeDetect";
+  import { pasteSteps, textPastePlan } from "./textPaste";
+  import { BoxHistory, editKind, historyInput, historyKey } from "./boxHistory";
+  import { attachPastedImages, fetchPasteImage, htmlImagePaste, preparePaste, rasterize } from "./pasteImages";
+  import { normalizeNewlines } from "./pasteAttach";
+  import { recordImage, recordText } from "./clipRing.svelte";
+  import { markPasted } from "./dropLook.svelte";
   import EditAttachments from "./EditAttachments.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import { removeAsk, removeTip, type RemoveKind } from "./removeAsk";
@@ -127,7 +143,6 @@
   import { followStep, restDistance, sendJumps } from "./sendScroll";
   // The first-paint mark of the message's timing line (item 256).
   import { hasText, turnClock } from "./turnTiming";
-  import { mathPasteText } from "./mathPaste";
 
   interface AssistantFooter {
     model: string;
@@ -513,6 +528,10 @@
   );
   const HOW_LABEL: Record<string, string> = { created: "created", edited: "edited", shell: "shell, a guess" };
   let editorEl = $state<HTMLTextAreaElement | null>(null);
+  // Item 399: with the composer's format toggle on (item 276), a user
+  // turn's editor is the composer's formatted box (`LiveBox`), as the
+  // composer is; this is its handle, null while the textarea stands.
+  let editorLive = $state<ComposerBox | null>(null);
   // A reply's editor is one textarea per text block (backlog 066); the
   // first takes the focus and each grows to its own text.
   let editorEls = $state<(HTMLTextAreaElement | null)[]>([]);
@@ -523,7 +542,13 @@
   function placeBack(boxes: (BoxPlace | null)[] | undefined): void {
     editPlaces = boxes?.slice() ?? [];
     if (!boxes?.length) return;
-    void tick().then(() => [editorEl, ...editorEls].forEach((el, i) => putPlace(el, boxes[i])));
+    void tick().then(() => [editorLive ?? editorEl, ...editorEls].forEach((el, i) => putPlace(el, boxes[i])));
+  }
+  /** The editor boxes' places for a stash: the formatted box's read now
+   *  (it has no `trackPlace`; its place is its handle's). */
+  function editBoxPlaces(): (BoxPlace | null)[] {
+    if (editorLive) editPlaces[0] = placeOf(editorLive);
+    return editPlaces.slice();
   }
   const onClaudeCode = $derived(app.connection?.engine === "claude-code");
   const controlsTitle = $derived(
@@ -614,6 +639,10 @@
       editing = editReduce(editing, { type: "begin", index: item.index, text, parts, chipsAt });
       editCacheLine = editLine(cacheState(evs, Date.now()));
     }).then(() => {
+      if (editorLive) {
+        editorLive.focus();
+        return;
+      }
       const first = editorEl ?? editorEls.find((el) => el);
       // Not `focus()` bare: that scrolls the textarea's top edge into view,
       // which on a long message is a jump to its top (backlog 122). The
@@ -701,26 +730,200 @@
       setDraftAttachments(editKey, []);
     });
   }
-  /** Files pasted or dropped on a user turn's editor (item 336): chips,
-   *  as the composer makes them. Pasted text goes in as text. */
+  /**
+   * A paste into a user turn's editor, read as the composer reads one
+   * (item 399, his "if i copy in code it doesnt render it as code, neither
+   * in the edit screen or even when i click send"): files become chips
+   * (item 336) and pasted images land with the drop's shine (388); text
+   * copied with images keeps them in place as `[image N]` and chips (382);
+   * math from a web page goes in as its LaTeX (348); code goes in fenced
+   * with its language, ⌘Z giving back the paste as it came (315) — the
+   * plan is `textPastePlan`, the composer's own. Anything else is the
+   * box's own paste. The text goes into the clipboard ring as the
+   * composer's pastes do (173).
+   */
   function editorPaste(e: ClipboardEvent): void {
+    if (!editing || editing.parts) return;
+    const box: ComposerBox | null = editorLive ?? editorEl;
+    const plain = e.clipboardData?.getData("text/plain") ?? "";
     const files = Array.from(e.clipboardData?.files ?? []);
-    // Item 348: math copied from a web page goes in as its LaTeX, as in
-    // the composer. `insertText` keeps the textarea's own undo and fires
-    // `input`, so the draft follows.
-    const math = files.length === 0 ? mathPasteText(e.clipboardData?.getData("text/html") ?? "") : null;
-    if (math !== null && e.currentTarget instanceof HTMLTextAreaElement) {
+    const html = files.length === 0 ? (e.clipboardData?.getData("text/html") ?? "") : "";
+    const firstImage = editChips.filter((a) => a.kind === "image").length + 1;
+    const withImages = files.length === 0 ? htmlImagePaste(html, firstImage) : null;
+    if (withImages && box) {
       e.preventDefault();
-      const box = e.currentTarget;
-      if (!document.execCommand("insertText", false, math)) {
-        box.setRangeText(math, box.selectionStart, box.selectionEnd, "end");
-        box.dispatchEvent(new Event("input", { bubbles: true }));
-      }
+      editPasteWithImages(box, withImages);
+      return;
+    }
+    const caret = box ? Math.min(box.selectionStart, box.selectionEnd) : editing.draft.length;
+    const plan = textPastePlan({ plain, html, fileCount: files.length, text: editing.draft, caret });
+    if (plain) recordText("pasted", plan.kind === "math" ? plan.text : plain);
+    if (plan.kind === "math" && box) {
+      e.preventDefault();
+      editInsert(box, plan.text);
+      return;
+    }
+    if (plan.kind === "code" && box) {
+      e.preventDefault();
+      if (box instanceof LiveBoxHandle) box.pasteAsCode(plan.raw, (before, after) => fenced(plan.raw, plan.lang, before, after));
+      else editPasteSteps(box as HTMLTextAreaElement, plan.raw, plan.lang);
       return;
     }
     if (files.length === 0) return;
-    if (!e.clipboardData?.getData("text/plain")) e.preventDefault();
-    void acceptFiles(editKey, files);
+    if (!plain) e.preventDefault();
+    markPasted(files.filter((f) => f.type.startsWith("image/")).map((f) => f.name || "pasted image"));
+    void acceptFiles(editKey, files).then((chips) => {
+      for (const c of chips) if (c.kind === "image") recordImage("pasted", c);
+    });
+  }
+  /** Text in place of the edit box's selection, one undo step, as a paste. */
+  function editInsert(box: ComposerBox, text: string): void {
+    if (box instanceof LiveBoxHandle) box.pasteText(text);
+    else editPasteSteps(box as HTMLTextAreaElement, text, null);
+  }
+  /** A paste in the edit box's textarea as the composer's is: each step
+   *  (`pasteSteps`) one of the box's own undo history, the last shown. */
+  function editPasteSteps(box: HTMLTextAreaElement, raw: string, lang: string | null): void {
+    if (!editing || editing.parts) return;
+    const from = Math.min(box.selectionStart, box.selectionEnd);
+    const to = Math.max(box.selectionStart, box.selectionEnd);
+    const steps = pasteSteps(editing.draft, from, to, raw, lang);
+    const last = steps[steps.length - 1];
+    editHist.select(from, to);
+    for (const st of steps) editHist.external(st.text, st.caret);
+    editing = editReduce(editing, { type: "draft", text: last.text });
+    void tick().then(() => {
+      box.selectionStart = box.selectionEnd = last.caret;
+      autogrow(box);
+    });
+  }
+
+  /*
+   * Item 399: the edit box's undo is the composer's own history (blocker
+   * 1210, `boxHistory.ts`) — WebKit's goes stale after any text the page
+   * sets, and folds a scripted paste into the typing before it, so ⌘Z
+   * after a code paste took his typing with it (measured). His keystrokes
+   * are recorded from `beforeinput` / `input`; every other change to the
+   * draft (a fence, a relabel, a marker rewritten) is seen by the effect
+   * and recorded as a step of its own. Opening an editor starts afresh.
+   */
+  const editHist = new BoxHistory("");
+  let editHistAt: number | null = null;
+  let editComposing = false;
+  let editNativeStepped = false;
+  $effect(() => {
+    const e = editing;
+    const t = e && !e.parts ? e.draft : null;
+    untrack(() => {
+      if (!e || t === null) {
+        editHistAt = null;
+        return;
+      }
+      if (e.index !== editHistAt) {
+        editHistAt = e.index;
+        editHist.reset(t);
+        editComposing = false;
+      } else if (t !== editHist.current.text) editHist.external(t);
+    });
+  });
+  const editSnap = (el: HTMLTextAreaElement) => ({ text: el.value, start: el.selectionStart, end: el.selectionEnd });
+  function editBeforeInput(e: InputEvent): void {
+    const el = e.currentTarget as HTMLTextAreaElement;
+    const h = historyInput(e.inputType);
+    if (h) {
+      // WebKit's own undo (the Edit menu's, the context menu's): never
+      // applied — its stack is the stale one — but answered from the box's.
+      e.preventDefault();
+      if (!editNativeStepped) {
+        editNativeStepped = true;
+        const mc = new MessageChannel();
+        mc.port1.onmessage = () => (editNativeStepped = false);
+        mc.port2.postMessage(0);
+        editStep(h);
+      }
+      return;
+    }
+    editHist.before(editSnap(el));
+  }
+  /** One undo or redo in the edit box's textarea; false when there is none. */
+  function editStep(dir: "undo" | "redo"): boolean {
+    const el = editorEl;
+    if (!el || !editing || editing.parts || editorLive) return false;
+    // Not while an input method's marked text shows (as the composer).
+    if (editComposing) return true;
+    const st = dir === "undo" ? editHist.undo() : editHist.redo();
+    if (!st) return true;
+    editing = editReduce(editing, { type: "draft", text: st.text });
+    void tick().then(() => {
+      el.focus({ preventScroll: true });
+      el.setSelectionRange(st.start, st.end);
+      autogrow(el);
+    });
+    return true;
+  }
+  // The Edit menu's Undo while the edit box has the keyboard (macOS: the
+  // menu takes ⌘Z before the box sees it), as the composer's.
+  $effect(() => {
+    const take = (id: string): boolean => {
+      if (id !== "undo_app" && id !== "redo_app") return false;
+      if (!editorEl || document.activeElement !== editorEl) return false;
+      return editStep(id === "undo_app" ? "undo" : "redo");
+    };
+    menuInterceptors.push(take);
+    return () => {
+      const i = menuInterceptors.indexOf(take);
+      if (i >= 0) menuInterceptors.splice(i, 1);
+    };
+  });
+  /** Item 382 in the edit box: the paste's text with its markers at the
+   *  caret, then its images as chips of this edit, in marker order. */
+  function editPasteWithImages(box: ComposerBox, paste: NonNullable<ReturnType<typeof htmlImagePaste>>): void {
+    const chatKey = editKey;
+    const at = editing?.index;
+    const ready = preparePaste(paste, MAX_IMAGE_BASE64);
+    const raw = normalizeNewlines(ready.text);
+    editInsert(box, raw);
+    recordText("pasted", raw);
+    markPasted(ready.images.map((i) => `image ${i.n}`));
+    void attachPastedImages(ready.images, ready.failed, {
+      nextId: nextAttachmentId,
+      add: (chip) => addAttachment(chatKey, chip),
+      update: (id, patch) => void updateAttachment(chatKey, id, patch),
+      remove: (id) => removeAttachment(chatKey, id),
+      chips: () => readDraft(chatKey).attachments,
+      // A marker rewritten (an image that could not come) in this edit's
+      // text, while this edit is the one open.
+      readText: () => (editing && editing.index === at ? editing.draft : ""),
+      setText: (t) => {
+        if (editing && editing.index === at && !editing.parts) editing = editReduce(editing, { type: "draft", text: t });
+      },
+      fetch: fetchPasteImage,
+      convert: rasterize,
+      track: trackPending,
+      record: (chip) => recordImage("pasted", chip),
+      cap: MAX_IMAGE_BASE64,
+      toast: (m) => addToast(m),
+    });
+  }
+  /** Item 315 in the edit box: a block's language picked from its label —
+   *  only the fence's info string changes, as one undoable edit. */
+  function editRelabel(k: number, lang: string): void {
+    if (!editing || editing.parts) return;
+    const f = findFences(editing.draft)[k];
+    const box = editorLive ?? editorEl;
+    if (!f || !box) return;
+    if (box instanceof LiveBoxHandle) {
+      box.replaceRange(f.infoFrom, f.infoTo, lang);
+      return;
+    }
+    const ta = box as HTMLTextAreaElement;
+    const caret = ta.selectionStart;
+    const shift = lang.length - (f.infoTo - f.infoFrom);
+    editing = editReduce(editing, { type: "draft", text: withFenceLanguage(editing.draft, f, lang) });
+    void tick().then(() => {
+      const back = caret >= f.infoTo ? caret + shift : Math.min(caret, f.infoFrom);
+      ta.selectionStart = ta.selectionEnd = back;
+    });
   }
   function editorDragOver(e: DragEvent): void {
     if (!e.dataTransfer?.types.includes("Files")) return;
@@ -813,6 +1016,13 @@
     // as the composer's does, Shift+Enter is a newline, and Save is its
     // button only; a reply's editor keeps Enter a newline and ⌘/Ctrl-Enter
     // to save. The mapping is `editorKey` (edit.ts), IME-safe (item 322).
+    // Item 399: ⌘Z / ⌘⇧Z in a user turn's textarea step the box's own
+    // history, as in the composer (the formatted box has its own).
+    const step = item.kind === "user" && !editorLive ? historyKey(e, isMac) : null;
+    if (step && editStep(step)) {
+      e.preventDefault();
+      return;
+    }
     const action = editorKey(e, item.kind !== "user");
     if (!action) return;
     e.preventDefault();
@@ -831,7 +1041,7 @@
     if (inPane) return;
     untrack(() => {
       if (busy) {
-        if (editing) stashEdit(sessionKey, { editing, line: editCacheLine, boxes: editPlaces.slice() });
+        if (editing) stashEdit(sessionKey, { editing, line: editCacheLine, boxes: editBoxPlaces() });
         editing = editReduce(editing, { type: "busy" });
       } else if (!editing) {
         const back = takeEdit(sessionKey);
@@ -1018,7 +1228,7 @@
       // editor must not re-run the scroll restore below. (A pane's
       // transcript leaves the chat's stashed edit for the open one.)
       untrack(() => {
-        if (from !== null && editing) stashEdit(from, { editing, line: editCacheLine, boxes: editPlaces.slice() });
+        if (from !== null && editing) stashEdit(from, { editing, line: editCacheLine, boxes: editBoxPlaces() });
         const back = takeEdit(key);
         editing = back?.editing ?? null;
         editCacheLine = back?.line ?? "";
@@ -1043,7 +1253,7 @@
   // next mount on this chat (backlog 137).
   onDestroy(() => {
     if (!inPane && editing && lastKey !== null)
-      stashEdit(lastKey, { editing, line: editCacheLine, boxes: editPlaces.slice() });
+      stashEdit(lastKey, { editing, line: editCacheLine, boxes: editBoxPlaces() });
   });
 
   // ---- The sent message's entrance (nightshift backlog 095, 2026-09-16) ----
@@ -1645,7 +1855,7 @@
     }}
     onclose={() => {
       dropAsk = null;
-      void tick().then(() => editorEl?.focus({ preventScroll: true }));
+      void tick().then(() => (editorLive ? editorLive.focus() : editorEl?.focus({ preventScroll: true })));
     }}
   />
 {/if}
@@ -1713,22 +1923,56 @@
           {#if editing?.index === item.index}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div class="editor" data-drop-box="edit" ondragover={editorDragOver} ondrop={editorDrop}>
-              <textarea
-                bind:this={editorEl}
-                use:grow
-                use:trackPlace={(pl) => (editPlaces[0] = pl)}
-                value={editing.draft}
-                oninput={(e) => {
-                  editing = editReduce(editing, { type: "draft", text: (e.target as HTMLTextAreaElement).value });
-                  autogrow();
-                }}
-                onkeydown={(e) => editorKeys(e, item)}
-                onpaste={editorPaste}
-                aria-label="Edit this message"
-                autocorrect="off"
-                autocapitalize="off"
-                spellcheck="false"
-              ></textarea>
+              <!-- Item 399: the composer's box, drawn as the composer draws
+                   it — with the format toggle on, its formatted box; off,
+                   the textarea with quote and code lines drawn in a layer
+                   behind it (BoxLayer). -->
+              {#if composerFormat.on}
+                <div class="edit-live">
+                  <LiveBox
+                    bind:handle={editorLive}
+                    value={editing.draft}
+                    label="Edit this message"
+                    onchange={(v) => {
+                      if (editing && !editing.parts) editing = editReduce(editing, { type: "draft", text: v });
+                    }}
+                    oninput={() => (editPlaces[0] = placeOf(editorLive))}
+                    onkeydown={(e) => editorKeys(e, item)}
+                    onpaste={editorPaste}
+                  />
+                </div>
+              {:else}
+                <div class="edit-wrap">
+                  {#if layerShown(editing.draft)}
+                    <BoxLayer text={editing.draft} box={editorEl} onrelabel={editRelabel} />
+                  {/if}
+                  <textarea
+                    bind:this={editorEl}
+                    class:layered={layerShown(editing.draft)}
+                    use:grow
+                    use:trackPlace={(pl) => (editPlaces[0] = pl)}
+                    value={editing.draft}
+                    oninput={(e) => {
+                      const el = e.target as HTMLTextAreaElement;
+                      editHist.input(editKind((e as unknown as InputEvent).inputType ?? ""), editSnap(el));
+                      editing = editReduce(editing, { type: "draft", text: el.value });
+                      autogrow();
+                    }}
+                    onbeforeinput={editBeforeInput}
+                    oncompositionstart={() => (editComposing = true)}
+                    oncompositionend={() => {
+                      editComposing = false;
+                      editHist.close();
+                    }}
+                    onkeydown={(e) => editorKeys(e, item)}
+                    onpaste={editorPaste}
+                    aria-label="Edit this message"
+                    autocorrect="off"
+                    autocapitalize="off"
+                    spellcheck="false"
+                  ></textarea>
+                </div>
+              {/if}
               <!-- Item 336: the turn's attachments as chips, × to remove,
                    Attach (and paste, drop) to add. -->
               <EditAttachments key={editKey} />
@@ -2766,9 +3010,39 @@
   .assistant-turn .editor {
     max-width: 640px;
   }
+  /* Item 399: the box's face is its wrap's, so the layer behind the
+     textarea (BoxLayer) shows through it; the textarea's glyphs go
+     transparent over the layer while it is drawn, its caret kept. */
+  .edit-wrap {
+    position: relative;
+    background: var(--sheet);
+    border-radius: 10px;
+  }
+  .edit-wrap textarea {
+    position: relative;
+    z-index: 1;
+    display: block;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+  }
+  .edit-wrap textarea.layered {
+    color: transparent;
+    caret-color: var(--ink);
+  }
+  .edit-live {
+    background: var(--sheet);
+    border: 1px solid var(--accent);
+    border-radius: 10px;
+    padding: 8px 14px 6px 4px;
+  }
+  .edit-live :global(.cm-editor) {
+    max-height: 420px;
+    min-height: 3.2em;
+    font-family: var(--transcript-font, var(--sans));
+  }
   .editor textarea {
     width: 100%;
-    background: var(--sheet);
+    background: transparent;
     color: var(--ink);
     border: 1px solid var(--accent);
     border-radius: 10px;
