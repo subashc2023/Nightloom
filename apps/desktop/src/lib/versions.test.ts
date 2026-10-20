@@ -65,9 +65,24 @@ describe("Make main (item 299)", () => {
     expect(rows[0].forks).toBe(1);
   });
 
-  it("keeps a nested original's place under its own parent", () => {
+  // ~~"keeps a nested original's place under its own parent": f took o's
+  // place and stayed a fork of p~~ (2026-10-19, item 400, blocker 1511):
+  // that was his bug — the line is made main up to its root. An original
+  // under a hand-off continuation still keeps its place there (next test).
+  it("makes a nested edit fork's whole line main (item 400)", () => {
     const list = [meta("f", "o"), meta("o", "p", 5), meta("p")];
     const map = makeMain(list, {}, "f")!;
+    expect(map).toEqual({ o: "f", p: "f" });
+    const rows = sidebarRows(sidebarSessions(list, map), new Set(["p"]));
+    expect(ids(rows)).toEqual(["f"]);
+    expect(rows[0].meta.forked_from).toBeUndefined();
+    expect(canMakeMain(list, map, "f")).toBe(false);
+  });
+
+  it("keeps an original's place under the hand-off continuation it was edited in", () => {
+    const list = [meta("f", "o"), meta("o", "p", 5, null, "handoff"), meta("p")];
+    const map = makeMain(list, {}, "f")!;
+    expect(map).toEqual({ o: "f" });
     const rows = sidebarRows(sidebarSessions(list, map), new Set(["p"]));
     expect(ids(rows)).toEqual(["p", "-f"]);
     expect(rows[1].meta.forked_from?.session).toBe("p");
@@ -112,6 +127,91 @@ describe("Make main (item 299)", () => {
     expect(parseVersions("[1,2]")).toEqual({});
     expect(parseVersions("{bad")).toEqual({});
     expect(parseVersions('{"a":"b","c":4}')).toEqual({ a: "b" });
+  });
+});
+
+// Item 400 (his bug, 2026-10-19): a ← the chat, b ← an edit in a (thread
+// 1), c ← an edit inside b (thread 2), never Make main between them.
+describe("Make main on a thread inside a thread (item 400)", () => {
+  const two = () => [meta("c", "b", 6), meta("b", "a", 4), meta("a"), meta("x")];
+  const rowsOf = (list: SessionMeta[], map: VersionMap) =>
+    ids(sidebarRows(sidebarSessions(list, map), new Set(["a", "b", "c", "d"])));
+
+  it("before: two layers drawn nested; Make main is offered on the inner", () => {
+    const list = two();
+    expect(rowsOf(list, {})).toEqual(["a", "-b", "--c", "x"]);
+    expect(canMakeMain(list, {}, "c")).toBe(true);
+  });
+
+  it("Make main on the inner makes it the main line in one click, no thread left", () => {
+    const list = two();
+    const map = makeMain(list, {}, "c")!;
+    expect(map).toEqual({ a: "c", b: "c" });
+    expect(rowsOf(list, map)).toEqual(["c", "x"]);
+    expect(canMakeMain(list, map, "c")).toBe(false); // main: nothing to offer
+    // both earlier lines stay reachable: each can be put back
+    expect(canMakeMain(list, map, "a")).toBe(true);
+    expect(canMakeMain(list, map, "b")).toBe(true);
+  });
+
+  it("gets out of the state the old build stored ({b: c}): the button is back on c", () => {
+    const list = two();
+    const stuck: VersionMap = { b: "c" };
+    expect(rowsOf(list, stuck)).toEqual(["a", "-c", "x"]); // still a thread of a
+    expect(canMakeMain(list, stuck, "c")).toBe(true); // was false: his bug
+    const map = makeMain(list, stuck, "c")!;
+    expect(map).toEqual({ a: "c", b: "c" });
+    expect(rowsOf(list, map)).toEqual(["c", "x"]);
+  });
+
+  it("the old build's way out still works: b put back, made main, then c", () => {
+    const list = two();
+    const m1 = makeMain(list, { b: "c" }, "b")!; // ‹ to b, Make main
+    expect(m1).toEqual({ c: "b", a: "b" }); // now b's whole line in one click
+    expect(rowsOf(list, m1)).toEqual(["b", "x"]);
+    const m2 = makeMain(list, m1, "c")!; // › to c, Make main
+    expect(m2).toEqual({ a: "c", b: "c" });
+    expect(rowsOf(list, m2)).toEqual(["c", "x"]);
+  });
+
+  it("Make main on the outer layer while inside the inner: the inner hangs under it, still offered", () => {
+    const list = two();
+    const m1 = makeMain(list, {}, "b")!;
+    expect(m1).toEqual({ a: "b" });
+    expect(rowsOf(list, m1)).toEqual(["b", "-c", "x"]);
+    expect(canMakeMain(list, m1, "c")).toBe(true);
+    const m2 = makeMain(list, m1, "c")!;
+    expect(m2).toEqual({ a: "c", b: "c" });
+    expect(rowsOf(list, m2)).toEqual(["c", "x"]);
+  });
+
+  it("puts an earlier line back as the main line from the made-main chat's versions", () => {
+    const list = two();
+    const map = makeMain(list, {}, "c")!;
+    const back = makeMain(list, map, "b")!;
+    expect(back).toEqual({ a: "b", c: "b" });
+    expect(rowsOf(list, back)).toEqual(["b", "x"]);
+    const orig = makeMain(list, back, "a")!;
+    expect(orig).toEqual({ b: "a", c: "a" });
+    expect(rowsOf(list, orig)).toEqual(["a", "x"]);
+  });
+
+  it("three layers: the innermost made main in one click; a middle one first, then the innermost", () => {
+    const list = [meta("d", "c", 8), ...two()];
+    expect(rowsOf(list, {})).toEqual(["a", "-b", "--c", "---d", "x"]);
+    const all = makeMain(list, {}, "d")!;
+    expect(all).toEqual({ a: "d", b: "d", c: "d" });
+    expect(rowsOf(list, all)).toEqual(["d", "x"]);
+    const mid = makeMain(list, {}, "c")!;
+    expect(mid).toEqual({ a: "c", b: "c" });
+    expect(rowsOf(list, mid)).toEqual(["c", "-d", "x"]);
+    expect(rowsOf(list, makeMain(list, mid, "d")!)).toEqual(["d", "x"]);
+  });
+
+  it("keeps the other threads of every replaced layer, under the new main", () => {
+    const list = [meta("e", "a", 2), meta("g", "b", 9), ...two()];
+    const map = makeMain(list, {}, "c")!;
+    expect(rowsOf(list, map)).toEqual(["c", "-e", "-g", "x"]);
   });
 });
 
