@@ -23,6 +23,9 @@
   import UserBubble from "./UserBubble.svelte";
   import Icon from "./Icon.svelte";
   import { scheduleAsideSave } from "./asides.svelte";
+  import WaitingMoon from "./WaitingMoon.svelte";
+  import { prepareRewind } from "./messageMotion";
+  import { asideWait, quietLabel } from "./asideWait";
 
   /**
    * An aside's exchanges, drawn as the chat's turns are (nightshift backlog
@@ -46,6 +49,17 @@
    * exchanges above travel as text, and Rewind drops them).
    *
    * One card, panel and tab draw this; their frames differ, not the turns.
+   *
+   * Since item 403 (2026-10-20, his "practically the same as the main
+   * chat") the turn is the chat's in motion too: the reply is drawn from
+   * the exchange's `segments` — thinking, calls and text, as the chat's
+   * live reply holds them — so `AssistantMessage` gives it the thinking
+   * block and its arrival (his Settings pick), the activity rows and the
+   * working moon with `working · 41 s` from the send; the wait before the
+   * first event is the chat's own `WaitingMoon`; Rewind plays the chat's
+   * rewind motion (his pick, item 396). Item 404: the moon's row says when
+   * the aside is queued behind the chat's turn, and a running exchange
+   * silent past `ASIDE_STALL_MS` says so, with Ask again and Stop.
    */
   let { aside, open }: { aside: Aside; open: boolean } = $props();
 
@@ -54,7 +68,32 @@
   const onClaudeCode = $derived(app.connection?.engine === "claude-code");
 
   function segsOf(t: AsideTurn): Segment[] {
+    if (t.segments && t.segments.length > 0) return t.segments;
     return t.partial ? [{ kind: "text", text: t.partial }] : [];
+  }
+
+  // The clock the queued / stalled words read (item 404), ticking only
+  // while an exchange runs.
+  let now = $state(Date.now());
+  $effect(() => {
+    if (!asking) return;
+    now = Date.now();
+    const id = setInterval(() => (now = Date.now()), 1000);
+    return () => clearInterval(id);
+  });
+  const wait = $derived(asking ? asideWait(asking, now) : null);
+
+  let threadEl = $state<HTMLElement | null>(null);
+  /** The box the thread scrolls in (the card's body, the tab's view): the
+   *  rewind motion's window. */
+  function scrollBox(el: HTMLElement | null): HTMLElement | null {
+    let p = el?.parentElement ?? null;
+    while (p) {
+      const oy = getComputedStyle(p).overflowY;
+      if (oy === "auto" || oy === "scroll") return p;
+      p = p.parentElement;
+    }
+    return null;
   }
   function footerOf(t: AsideTurn) {
     if (t === asking || !t.partial.trim()) return null;
@@ -97,8 +136,14 @@
 
   function rewind(i: number): void {
     const before = aside.unsent ?? "";
+    // The chat's rewind motion (item 396, his pick), over this thread.
+    const m = prepareRewind(scrollBox(threadEl), i, { row: `.aside-q[data-turn="${i}"]` });
     const gone = rewindAside(aside, i);
-    if (gone.length === 0) return;
+    if (gone.length === 0) {
+      m?.cancel();
+      return;
+    }
+    m?.commit();
     scheduleAsideSave();
     const after = aside.unsent ?? "";
     const n = gone.length;
@@ -141,14 +186,34 @@
     const t = aside.turns[ed.index];
     if (!t) return;
     const words = ed.text.trim();
+    if (!words && !(t.attachments ?? []).some((c) => c.data)) return;
+    editing = null;
+    await askInPlace(ed.index, words, "with your edit");
+  }
+
+  /**
+   * A stalled exchange asked again (item 404): stopped, then the same
+   * question and chips asked in its place — Undo on the notice puts the
+   * stopped one back, with whatever of it had arrived.
+   */
+  async function askAgain(i: number): Promise<void> {
+    const t = aside.turns[i];
+    if (!t || !open || !onClaudeCode) return;
+    stopAside(aside);
+    await askInPlace(i, t.question, "");
+  }
+
+  /** Exchange `at` and the later ones replaced by `words` with its chips. */
+  async function askInPlace(at: number, words: string, how: string): Promise<void> {
+    const t = aside.turns[at];
+    if (!t || asideAsking(aside)) return;
     const chips: Attachment[] = (t.attachments ?? []).filter((c) => c.data).map((c) => ({ ...c }));
     if (!words && chips.length === 0) return;
-    editing = null;
-    const at = ed.index;
     const gone = rewindAside(aside, at, false);
     if (gone.length === 0) return;
     const n = gone.length;
-    addToast(n === 1 ? "Asked again with your edit" : `Asked again with your edit — ${n} exchanges replaced`, {
+    const what = how ? `Asked again ${how}` : "Asked again";
+    addToast(n === 1 ? what : `${what} — ${n} exchanges replaced`, {
       label: "Undo",
       run: () => {
         // The new exchange out (stopped if it still runs), the old ones back.
@@ -164,9 +229,9 @@
   }
 </script>
 
-<div class="aside-thread">
+<div class="aside-thread" bind:this={threadEl}>
   {#each aside.turns as turn, i (turn.seq)}
-    <div class="aside-q" use:arrive={{ channel: "aside", bubble: ".user-bubble" }}>
+    <div class="aside-q" data-turn={i} use:arrive={{ channel: "aside", bubble: ".user-bubble" }}>
       {#if editing?.index === i}
         <div class="aside-editor">
           <!-- svelte-ignore a11y_autofocus -->
@@ -229,24 +294,44 @@
         </div>
       {/if}
     </div>
-    {#if turn.partial || turn === asking}
+    {@const segs = segsOf(turn)}
+    {#if segs.length > 0}
       <div class="aside-a">
+        <!-- Item 403: the chat's live reply, from the same segments: the
+             thinking block's arrival, the activity rows, the working moon
+             counting from the send. -->
         <AssistantMessage
-          segs={segsOf(turn)}
-          streaming={turn === asking && !!turn.partial}
+          {segs}
+          streaming={turn === asking}
+          since={turn === asking ? (turn.startedAt ?? null) : null}
           footer={footerOf(turn)}
         />
       </div>
-    {/if}
-    {#if turn === asking && !turn.partial}
-      <!-- The same moon a turn waits with (backlog 049). -->
-      <div class="aside-wait" role="status" aria-label="Waiting for the answer">
-        <span class="roll" aria-hidden="true"><Icon name="moon" size={16} /></span>
-        <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+    {:else if turn === asking}
+      <!-- The chat's own wait (backlog 049), the one piece since 403. -->
+      <WaitingMoon label="Waiting for the answer">
         {#if waiting}
           <!-- Blocker 317: one aside answers at a time; this one is next. -->
-          <span class="aside-queued">waiting — one aside answers at a time</span>
+          waiting — one aside answers at a time
+        {:else if wait?.kind === "queued"}
+          <!-- Item 404: the chat's own turn holds the agent. -->
+          waiting for the chat's turn to end — the aside runs after it
         {/if}
+      </WaitingMoon>
+    {/if}
+    {#if turn === asking && wait?.kind === "stalled" && !waiting}
+      <!-- Item 404: silence past ASIDE_STALL_MS is said, with a way on. -->
+      <div class="aside-stalled" role="status">
+        <span>Nothing has come back for {quietLabel(wait.quietMs)} — Claude Code may be stuck.</span>
+        <span class="aside-stalled-row">
+          <button
+            class="ns-btn small"
+            disabled={!open || !onClaudeCode}
+            use:tip={"Stop this exchange and ask the same question again (Undo on the notice puts this one back)"}
+            onclick={() => void askAgain(i)}>Ask again</button
+          >
+          <button class="ns-btn ghost small" onclick={() => stopAside(aside)}>Stop</button>
+        </span>
       </div>
     {/if}
     {#if turn.cancelled}
@@ -333,47 +418,16 @@
     gap: 6px;
     justify-content: flex-end;
   }
-  .aside-wait {
+  .aside-stalled {
     display: flex;
-    align-items: center;
-    gap: 8px;
+    flex-direction: column;
+    gap: 6px;
     color: var(--dim);
-    font-size: 12px;
+    font-size: 12.5px;
   }
-  .aside-wait .roll {
-    display: inline-flex;
-    animation: aside-roll 2.4s linear infinite;
-  }
-  @keyframes aside-roll {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-  .aside-wait .dots {
-    display: inline-flex;
-    gap: 3px;
-  }
-  .aside-wait .dots i {
-    width: 4px;
-    height: 4px;
-    border-radius: 50%;
-    background: var(--dim);
-    animation: aside-dot 1.2s ease-in-out infinite;
-  }
-  .aside-wait .dots i:nth-child(2) {
-    animation-delay: 0.2s;
-  }
-  .aside-wait .dots i:nth-child(3) {
-    animation-delay: 0.4s;
-  }
-  @keyframes aside-dot {
-    0%,
-    100% {
-      opacity: 0.25;
-    }
-    50% {
-      opacity: 1;
-    }
+  .aside-stalled-row {
+    display: flex;
+    gap: 6px;
   }
   .aside-mark {
     color: var(--dim);
@@ -383,11 +437,5 @@
   .aside-err {
     color: var(--danger, #d66);
     font-size: 12.5px;
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .aside-wait .roll,
-    .aside-wait .dots i {
-      animation: none;
-    }
   }
 </style>

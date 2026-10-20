@@ -1770,8 +1770,16 @@ impl ClaudeCodeAgent {
         }
         // The chat's own turn: its text on stdin, and the waiting process
         // taken if it is this command (item 256).
-        self.drive_as(&self.spec, Some(input), translator, true, cancel, on_event)
-            .await
+        self.drive_as(
+            &self.spec,
+            Some(input),
+            translator,
+            true,
+            None,
+            cancel,
+            on_event,
+        )
+        .await
     }
 
     /// Continue the turn a deferred call paused (2026-09-16, nightshift
@@ -1801,6 +1809,7 @@ impl ClaudeCodeAgent {
             None,
             Translator::resuming(call),
             true,
+            None,
             cancel,
             on_event,
         )
@@ -1818,18 +1827,31 @@ impl ClaudeCodeAgent {
     /// aside's composer attaches images and documents as the chat's does —
     /// and `model` / `effort` override the chat's for this aside only
     /// ([`AgentSpec::aside_with`]).
+    ///
+    /// Since item 404 (2026-10-20) an aside has a timing line of its own in
+    /// `turn-timing.log`, as the chat's turns do (`timing`): an aside that
+    /// sat on the moon for minutes left no trace of where it waited.
     pub async fn ask_aside(
         &self,
         input: TurnInput,
         model: Option<&str>,
         effort: Option<&str>,
+        timing: Option<std::sync::Arc<crate::turn_timing::TurnTiming>>,
         cancel: &CancellationToken,
         on_event: &mut (dyn FnMut(TurnEvent) + Send),
     ) -> Option<Result<AgentOutcome, AgentError>> {
         let spec = self.spec.aside_with(model, effort)?;
         Some(
-            self.drive(&spec, Some(input), Translator::new(), cancel, on_event)
-                .await,
+            self.drive_as(
+                &spec,
+                Some(input),
+                Translator::new(),
+                false,
+                timing,
+                cancel,
+                on_event,
+            )
+            .await,
         )
     }
 
@@ -1866,18 +1888,22 @@ impl ClaudeCodeAgent {
         cancel: &CancellationToken,
         on_event: &mut (dyn FnMut(TurnEvent) + Send),
     ) -> Result<AgentOutcome, AgentError> {
-        self.drive_as(spec, input, translator, false, cancel, on_event)
+        self.drive_as(spec, input, translator, false, None, cancel, on_event)
             .await
     }
 
     /// [`Self::drive`]; `chat` for the chat's own turn, whose text goes on
     /// stdin and which may take the waiting process (item 256, [`warm`]).
+    /// `timing` marks this process's stages on a line of its own (an
+    /// aside's, item 404) in place of the chat turn's.
+    #[allow(clippy::too_many_arguments)]
     async fn drive_as(
         &self,
         spec: &AgentSpec,
         input: Option<TurnInput>,
         mut translator: Translator,
         chat: bool,
+        timing: Option<std::sync::Arc<crate::turn_timing::TurnTiming>>,
         cancel: &CancellationToken,
         on_event: &mut (dyn FnMut(TurnEvent) + Send),
     ) -> Result<AgentOutcome, AgentError> {
@@ -1918,7 +1944,7 @@ impl ClaudeCodeAgent {
         // The turn's timing line (item 256): the spawn (or the waiting
         // process taken), the CLI's `init` line, the model's first streamed
         // event and its first text. Only the chat's own turn sets it.
-        let timing = self.timing.clone();
+        let timing = timing.or_else(|| self.timing.clone());
         if let Some(t) = &timing {
             t.mark(crate::turn_timing::Mark::Spawned);
             t.set_warm(warm_start);

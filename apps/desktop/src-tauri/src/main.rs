@@ -2951,13 +2951,12 @@ fn resume_of(session: &Session) -> Option<String> {
 /// connection, pointed at its recorded resume. Lock order as everywhere:
 /// the agent, then a chat. ~~The one agent, re-pointed at the open chat
 /// when `agent_readopt` said so (A1)~~.
-async fn lock_agent(state: &AppState) -> agents::Guard {
-    lock_agent_at(state, &state.chats.target()).await
-}
-
-/// [`lock_agent`] for a chat read once at the command's start (backlog
-/// 159, A3; A2 review finding 2): the agent and the log a command locks
-/// are then the same chat's even if he switches chats in between.
+///
+/// For a chat read once at the command's start (backlog 159, A3; A2
+/// review finding 2): the agent and the log a command locks are then the
+/// same chat's even if he switches chats in between. ~~`lock_agent`, the
+/// same for `state.chats.target()`~~ — removed 2026-10-20 (item 404): the
+/// aside, its last caller, now reads the target itself for its timing line.
 async fn lock_agent_at(state: &AppState, target: &chats::Target) -> agents::Guard {
     let slot = match state.agents.slot(target.id()) {
         agents::Found::Off => return agents::Guard::none(),
@@ -4224,6 +4223,56 @@ struct AsideDelta {
     text: String,
 }
 
+/// The rest of an aside's stream (item 403, 2026-10-20): its thinking, a
+/// redacted block, a call and its result, as `aside-turn-event`, so the
+/// window draws an aside's turn with the chat's own pieces — the thinking
+/// block and its arrival, the activity rows, the working moon. Text stays
+/// on `aside-delta` (the phone's relay reads it, `remote.rs`).
+#[derive(Serialize, Clone)]
+struct AsideTurnEvent {
+    seq: u64,
+    event: TurnEvent,
+}
+
+/// Where an aside stands before its first event (item 404): `queued` once
+/// it has waited [`ASIDE_QUEUED_AFTER`] for the chat's agent — the chat's
+/// own turn holds it, and the aside runs after that turn ends — and
+/// `running` once it has the agent. The window says which on the moon's
+/// row instead of showing dots that say nothing.
+#[derive(Serialize, Clone)]
+struct AsidePhase {
+    seq: u64,
+    phase: &'static str,
+}
+
+/// How long an aside waits for the chat's agent before the window is told
+/// it is queued: a free agent is taken in microseconds.
+const ASIDE_QUEUED_AFTER: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The part of an aside's turn the window draws besides its text.
+fn aside_drawn(e: &TurnEvent) -> bool {
+    matches!(
+        e,
+        TurnEvent::ThinkingDelta { .. }
+            | TurnEvent::RedactedThinking
+            | TurnEvent::ToolCall { .. }
+            | TurnEvent::ToolResult { .. }
+            | TurnEvent::ToolDenied { .. }
+    )
+}
+
+/// The outcome an aside's timing line ends on (item 404): how it ended and
+/// what the question carried — counts only, never names or words.
+fn aside_outcome(end: &str, images: usize, documents: usize, files: usize) -> String {
+    let mut out = end.to_string();
+    for (n, one) in [(images, "image"), (documents, "document"), (files, "file")] {
+        if n > 0 {
+            out.push_str(&format!(", {n} {one}{}", if n == 1 { "" } else { "s" }));
+        }
+    }
+    out
+}
+
 /// Ask a side question of the open chat without adding to it (nightshift
 /// backlog 081) — the CLI's interactive `/btw`, which `-p` refuses, done as
 /// a throwaway fork of the chat's session on its warm cache
@@ -4267,10 +4316,54 @@ async fn ask_aside(
     // Its own token, by `seq` (backlog 176): the entry goes when this ends.
     let registered = state.aside_cancel.begin(seq);
     let cancel = registered.token().clone();
+    // Its timing line (item 404): entered now, `turn` when the chat's agent
+    // is taken, the process's stages from `drive_as`, the end below. A
+    // return before the end writes it as `error` (the guard).
+    use nightloom_service::turn_timing::{self, Mark, TurnTiming};
+    let timing = TurnTiming::begin(turn_timing::ASIDE, None, turn_timing::log_path());
+    let target = state.chats.target();
+    if let Some(chat) = target.id() {
+        timing.set_chat(chat);
+    }
+    let _ended = timing.end_guard();
+    let carried = (
+        images.as_ref().map_or(0, Vec::len),
+        documents.as_ref().map_or(0, Vec::len),
+        files.as_ref().map_or(0, Vec::len),
+    );
+    let ended = |end: &str| timing.end(&aside_outcome(end, carried.0, carried.1, carried.2));
+    // The chat's own running turn holds its agent and the aside waits for
+    // it (item 404): past a beat, the window is told, so the moon's row
+    // can say what it waits for.
+    let lock = lock_agent_at(&state, &target);
+    tokio::pin!(lock);
     let agent_guard = tokio::select! {
-        guard = lock_agent(&state) => guard,
-        _ = cancel.cancelled() => return Err("the aside was cancelled".to_string()),
+        biased;
+        _ = cancel.cancelled() => {
+            ended("stopped");
+            return Err("the aside was cancelled".to_string());
+        }
+        guard = &mut lock => guard,
+        _ = tokio::time::sleep(ASIDE_QUEUED_AFTER) => {
+            let _ = app.emit("aside-phase", AsidePhase { seq, phase: "queued" });
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    ended("stopped");
+                    return Err("the aside was cancelled".to_string());
+                }
+                guard = &mut lock => guard,
+            }
+        }
     };
+    timing.mark(Mark::Started);
+    let _ = app.emit(
+        "aside-phase",
+        AsidePhase {
+            seq,
+            phase: "running",
+        },
+    );
     let agent = agent_guard
         .as_ref()
         .ok_or_else(|| "not connected".to_string())?;
@@ -4278,6 +4371,7 @@ async fn ask_aside(
     let _awake = power.acquire();
     *state.cancel.lock().unwrap() = cancel.clone();
     let mut answer = String::new();
+    let marks = timing.clone();
     let mut on_event = |e: TurnEvent| {
         if let TurnEvent::TextDelta { text } = &e {
             answer.push_str(text);
@@ -4288,6 +4382,9 @@ async fn ask_aside(
                     text: text.clone(),
                 },
             );
+            marks.mark(Mark::Emitted);
+        } else if aside_drawn(&e) {
+            let _ = app.emit("aside-turn-event", AsideTurnEvent { seq, event: e });
         }
     };
     let mut text = text;
@@ -4312,6 +4409,7 @@ async fn ask_aside(
             input,
             model.as_deref(),
             effort.as_deref(),
+            Some(timing.clone()),
             &cancel,
             &mut on_event,
         )
@@ -4321,6 +4419,13 @@ async fn ask_aside(
                 .to_string()
         })?
         .map_err(|e| e.to_string())?;
+    ended(if cancel.is_cancelled() {
+        "stopped"
+    } else if outcome.is_error {
+        "error"
+    } else {
+        "ok"
+    });
     Ok(AsideResult {
         answer: if answer.trim().is_empty() {
             outcome.text
@@ -8556,6 +8661,34 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An aside's timing line ends on how it ended and the counts of what
+    /// it carried, never names (item 404).
+    #[test]
+    fn an_aside_outcome_names_counts_only() {
+        assert_eq!(aside_outcome("ok", 0, 0, 0), "ok");
+        assert_eq!(aside_outcome("ok", 1, 0, 0), "ok, 1 image");
+        assert_eq!(
+            aside_outcome("stopped", 2, 1, 3),
+            "stopped, 2 images, 1 document, 3 files"
+        );
+    }
+
+    /// Thinking, redacted thinking and calls go to the window as the
+    /// aside's turn events (item 403); text keeps its own `aside-delta`,
+    /// and the rest (usage, init) is not drawn.
+    #[test]
+    fn an_aside_forwards_what_the_reply_draws() {
+        assert!(aside_drawn(&TurnEvent::ThinkingDelta { text: "x".into() }));
+        assert!(aside_drawn(&TurnEvent::RedactedThinking));
+        assert!(aside_drawn(&TurnEvent::ToolCall {
+            id: "1".into(),
+            name: "Read".into(),
+            input: serde_json::json!({}),
+        }));
+        assert!(!aside_drawn(&TurnEvent::TextDelta { text: "x".into() }));
+        assert!(!aside_drawn(&TurnEvent::RoundLimit { rounds: 2 }));
+    }
 
     /// A thread bound, unbound or switched is taken at once on the Claude
     /// Code engine (backlog 271); the same thread with a rewritten Start

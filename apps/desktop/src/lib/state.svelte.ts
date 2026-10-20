@@ -660,6 +660,19 @@ export interface AsideTurn {
   /** Clock when it was asked (backlog 309): the running list's elapsed.
    *  In memory only; a stored turn is never running. */
   startedAt?: number;
+  /** The turn as the chat's live reply holds it (item 403): its thinking,
+   *  calls and text in order, built by the chat's own `applyToSegments`
+   *  from `aside-delta` and `aside-turn-event`, so `AssistantMessage`
+   *  draws an aside's turn as it draws the chat's — the thinking block's
+   *  arrival, the activity rows, the working moon. In memory only; a
+   *  stored turn is its text (`partial`). */
+  segments?: Segment[];
+  /** Where it stands before it runs (item 404): `queued` while the
+   *  chat's own turn holds the agent, `running` once the aside has it. */
+  phase?: "queued" | "running";
+  /** When anything of it last arrived (item 404): the stalled notice
+   *  counts from here (`asideWait`). */
+  heardAt?: number;
 }
 
 /** The open chat's aside (backlog 081, the passage form backlog 107) — see
@@ -1564,7 +1577,18 @@ export async function init(): Promise<void> {
   // exchange (its `seq` differs) is dropped.
   await listen<AsideDelta>("aside-delta", (e) => {
     const t = findAsideTurn(e.payload.seq);
-    if (t && t.answer === null && !t.cancelled) t.partial += e.payload.text;
+    if (t) asideTurnEvent(t, { type: "text_delta", text: e.payload.text });
+  });
+  // The rest of an aside's turn (item 403): its thinking and calls, into
+  // the same segments the chat's live reply is made of.
+  await listen<{ seq: number; event: TurnEvent }>("aside-turn-event", (e) => {
+    const t = findAsideTurn(e.payload.seq);
+    if (t) asideTurnEvent(t, e.payload.event);
+  });
+  // Queued behind the chat's own turn, or running (item 404).
+  await listen<{ seq: number; phase: "queued" | "running" }>("aside-phase", (e) => {
+    const t = findAsideTurn(e.payload.seq);
+    if (t) asidePhase(t, e.payload.phase);
   });
   await listen<string>("turn-notice", (e) => addToast(e.payload));
   // A chat named itself (nightshift backlog 209): the list re-reads its titles.
@@ -7820,6 +7844,7 @@ async function runAside(turn: AsideTurn, sent: string, thread: Aside | null = nu
     const res = await api.askAside(sent, turn.seq, asideWire(thread, chips));
     const t = live();
     if (!t || t.cancelled) return; // dismissed, replaced or cancelled meanwhile
+    settleAsideSegments(t, res.answer);
     t.answer = res.answer;
     t.partial = res.answer;
     t.error = res.is_error ? (res.notices.join("; ") || "the aside failed") : null;
@@ -8062,6 +8087,48 @@ export function stopAside(a: Aside): void {
   if (!t) return;
   void api.cancelAside(t.seq).catch(() => {});
   t.cancelled = true;
+  if (t.segments) closeThinking(t.segments);
+}
+
+/**
+ * One event of an aside's stream into its exchange (item 403): text onto
+ * `partial` as before, and every drawn event into `segments` by the chat's
+ * own `applyToSegments`, so the thread draws it with the chat's pieces.
+ * An exchange that has its answer, or was stopped, takes nothing more.
+ * Exported for the suite.
+ */
+export function asideTurnEvent(t: AsideTurn, ev: TurnEvent, now = Date.now()): void {
+  if (t.answer !== null || t.cancelled) return;
+  if (!t.segments) t.segments = [];
+  applyToSegments(t.segments, ev);
+  if (ev.type === "text_delta") t.partial += ev.text;
+  t.heardAt = now;
+  t.phase = "running";
+}
+
+/** The backend's word on where an exchange stands (item 404); `running`
+ *  starts the stalled clock. Exported for the suite. */
+export function asidePhase(t: AsideTurn, phase: "queued" | "running", now = Date.now()): void {
+  if (t.answer !== null || t.cancelled) return;
+  if (phase === "running" && t.phase !== "running") t.heardAt = now;
+  t.phase = phase;
+}
+
+/**
+ * The answer's end on its segments (item 403): an open thinking block
+ * closes, and the text drawn is the result's — the whole answer, where a
+ * delta was lost or none came (the result alone carried it). The thinking
+ * and calls stay where they were, the text after them. Exported for the
+ * suite.
+ */
+export function settleAsideSegments(t: AsideTurn, answer: string): void {
+  const segs = t.segments;
+  if (!segs) return;
+  closeThinking(segs);
+  const text = segs.flatMap((s) => (s.kind === "text" ? [s.text] : [])).join("");
+  if (text === answer) return;
+  for (let i = segs.length - 1; i >= 0; i--) if (segs[i]!.kind === "text") segs.splice(i, 1);
+  if (answer) segs.push({ kind: "text", text: answer });
 }
 
 /** The text typed in a thread's box, into app state (backlog 228). Since

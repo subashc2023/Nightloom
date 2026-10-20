@@ -135,6 +135,7 @@
     Usage,
   } from "./types";
   import AssistantMessage from "./AssistantMessage.svelte";
+  import WaitingMoon from "./WaitingMoon.svelte";
   import UserBubble from "./UserBubble.svelte";
   import AsideLayer from "./AsideLayer.svelte";
   import { openAttachment } from "./attachments.svelte";
@@ -2502,10 +2503,8 @@
              and back until the first delta or tool call replaces it; with
              the OS asked for less motion it is three still dots. It says
              nothing about progress, because it can see none. -->
-        <div class="waiting" role="status" aria-label="Waiting for the reply">
-          <span class="roll" aria-hidden="true"><Icon name="moon" size={22} /></span>
-          <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
-        </div>
+        <!-- Since item 403 the one piece the chat and its asides wait with. -->
+        <WaitingMoon />
       {:else}
         <AssistantMessage
           segs={shown.segments}
@@ -3338,67 +3337,8 @@
     font-size: 10px;
     color: var(--dim);
   }
-  .waiting {
-    display: flex;
-    align-items: center;
-    min-height: 20px;
-    color: var(--dim);
-    /* A beat after the bubble (backlog 095); `backwards` keeps it unseen
-       through the delay, and leaves no fill behind to fight `.superseded`. */
-    animation: enter 180ms ease-out 300ms backwards;
-  }
-  /* The sent message's entrance (backlog 095) moved to `sendMotion.ts`
-     (backlog 194): a flight from the composer, or the same 180 ms rise
-     when nothing launched. The moon above waits 300 ms now, so it comes
-     in as the flight lands rather than under it. */
-  @keyframes enter {
-    from {
-      opacity: 0;
-      transform: translateY(6px);
-    }
-    to {
-      opacity: 1;
-      transform: none;
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .waiting {
-      animation: none;
-    }
-  }
-  .roll {
-    display: inline-flex;
-    animation: roll 1.5s ease-in-out infinite alternate;
-  }
-  /* Two feet, not the width of the pane: a roll that crosses the transcript
-     competes with the reply it is waiting for. */
-  @keyframes roll {
-    from {
-      transform: translateX(0) rotate(0deg);
-    }
-    to {
-      transform: translateX(32px) rotate(360deg);
-    }
-  }
-  .dots {
-    display: none;
-    gap: 5px;
-  }
-  .dots i {
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: currentColor;
-    opacity: 0.55;
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .roll {
-      display: none;
-    }
-    .dots {
-      display: inline-flex;
-    }
-  }
+  /* The waiting moon's styles moved to `WaitingMoon.svelte` with it
+     (item 403), so an aside waits with the same one. */
   /* The limit card (backlog 164): a pause, drawn like a notice and not
      like the error banner above it. */
   .limit-card {

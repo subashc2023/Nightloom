@@ -108,6 +108,10 @@ export function setChosenMotion(kind: MotionKind, style: MotionStyle): void {
 export interface PrepareOptions {
   style?: MotionStyle;
   composer?: HTMLElement | null;
+  /** The selector of his message's row, where it is not the transcript's
+   *  `.user-turn[data-turn=…]` — an aside's thread (item 403), whose rows
+   *  are `.aside-q[data-turn=…]` in the same column shape. */
+  row?: string;
 }
 
 export const DURATION: Record<"rewind" | "delete", Record<MotionStyle | "fade", number>> = {
@@ -567,7 +571,8 @@ export function prepareRewind(
   opts: PrepareOptions = {},
 ): Prepared | null {
   if (!viewport || typeof document === "undefined" || typeof requestAnimationFrame !== "function") return null;
-  const row = viewport.querySelector<HTMLElement>(`.user-turn[data-turn="${index}"]`);
+  const rowSel = opts.row ?? `.user-turn[data-turn="${index}"]`;
+  const row = viewport.querySelector<HTMLElement>(rowSel);
   const inner = row?.parentElement;
   if (!row || !inner) return null;
   const view = viewOf(viewport);
@@ -645,7 +650,7 @@ export function prepareRewind(
       clearTimeout(ttl);
       nextFrame(() => {
         // Nothing changed (refused, busy, failed): let go.
-        if (row.isConnected && row.matches(".user-turn")) return remove();
+        if (row.isConnected && row.matches(opts.row ?? ".user-turn")) return remove();
         const moved = above.map((a) => ({
           ...a,
           d: a.el.isConnected ? a.top - a.el.getBoundingClientRect().top : 0,

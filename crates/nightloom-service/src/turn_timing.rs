@@ -186,6 +186,11 @@ pub fn append(path: &Path, line: &str) {
 /// The host a turn ran on, as the line names it.
 pub const DESKTOP: &str = "desktop";
 pub const SERVE: &str = "serve";
+/// An aside on the desktop (item 404, 2026-10-20): `turn aside chat <id>:
+/// from entered; …`. Its `turn` stage is the chat's agent taken — an aside
+/// waits there for the chat's own running turn — and the outcome names
+/// what the question carried (`ok, 1 image`), never its words.
+pub const ASIDE: &str = "aside";
 
 struct Inner {
     chat: String,
