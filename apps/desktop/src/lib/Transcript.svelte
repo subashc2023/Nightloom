@@ -93,7 +93,19 @@
   import { pasteSteps, textPastePlan } from "./textPaste";
   import { BoxHistory, editKind, historyInput, historyKey } from "./boxHistory";
   import { attachPastedImages, fetchPasteImage, htmlImagePaste, preparePaste, rasterize } from "./pasteImages";
-  import { normalizeNewlines } from "./pasteAttach";
+  import {
+    canUndo,
+    followOffer,
+    isPasteAsAttachmentKey,
+    longPasteOffer,
+    normalizeNewlines,
+    pasteAction,
+    undoConverted,
+    type Converted,
+    type LongPaste,
+  } from "./pasteAttach";
+  import PasteOfferRow from "./PasteOfferRow.svelte";
+  import { AttachMark, attachPastedText, convertOffer, isConvertTag, pasteAsAttachment, type ConvertTag } from "./pastedText.svelte";
   import { recordImage, recordText } from "./clipRing.svelte";
   import { markPasted } from "./dropLook.svelte";
   import EditAttachments from "./EditAttachments.svelte";
@@ -117,6 +129,7 @@
   } from "./navigator";
   import type {
     ApprovalRequest,
+    Attachment,
     DocumentInput,
     ImageInput,
     Usage,
@@ -748,27 +761,43 @@
     const plain = e.clipboardData?.getData("text/plain") ?? "";
     const files = Array.from(e.clipboardData?.files ?? []);
     const html = files.length === 0 ? (e.clipboardData?.getData("text/html") ?? "") : "";
+    // Item 399b: ⌥⌘V's paste puts the text in as an attachment (284); a
+    // clipboard holding a file is pasted as ⌘V would.
+    const act = pasteAction(editAttachMark.take(), plain, files.length);
+    if (act !== "box") {
+      e.preventDefault();
+      if (act === "attach") void attachPastedText(editKey, plain);
+      else addToast("The clipboard holds no text to attach");
+      return;
+    }
     const firstImage = editChips.filter((a) => a.kind === "image").length + 1;
     const withImages = files.length === 0 ? htmlImagePaste(html, firstImage) : null;
+    const caret = box ? Math.min(box.selectionStart, box.selectionEnd) : editing.draft.length;
+    // Every text paste replaces the last one's offer (284), as in the composer.
+    editConverted = null;
     if (withImages && box) {
       e.preventDefault();
       editPasteWithImages(box, withImages);
       return;
     }
-    const caret = box ? Math.min(box.selectionStart, box.selectionEnd) : editing.draft.length;
     const plan = textPastePlan({ plain, html, fileCount: files.length, text: editing.draft, caret });
     if (plain) recordText("pasted", plan.kind === "math" ? plan.text : plain);
     if (plan.kind === "math" && box) {
       e.preventDefault();
       editInsert(box, plan.text);
+      editOffer = longPasteOffer(plan.text, caret);
       return;
     }
     if (plan.kind === "code" && box) {
       e.preventDefault();
+      editOffer = null;
       if (box instanceof LiveBoxHandle) box.pasteAsCode(plan.raw, (before, after) => fenced(plan.raw, plan.lang, before, after));
       else editPasteSteps(box as HTMLTextAreaElement, plan.raw, plan.lang);
       return;
     }
+    // A long ⌘V paste: the text goes in as always (the box's own paste),
+    // and the offer under the box can move it into an attachment (284).
+    if (plain && files.length === 0) editOffer = longPasteOffer(plain, caret);
     if (files.length === 0) return;
     if (!plain) e.preventDefault();
     markPasted(files.filter((f) => f.type.startsWith("image/")).map((f) => f.name || "pasted image"));
@@ -796,6 +825,75 @@
       box.selectionStart = box.selectionEnd = last.caret;
       autogrow(box);
     });
+  }
+
+  /*
+   * Item 399b (his answer to blocker 1508): the long paste's offer and
+   * ⌥⌘V in the edit box, the composer's own (`pastedText.svelte.ts`,
+   * `PasteOfferRow`): "Make this an attachment" under the box while it is
+   * as the paste left it; one click moves the span into a chip of this
+   * edit; Undo (or ⌘Z) puts it back while nothing has changed since.
+   */
+  let editOffer = $state<LongPaste | null>(null);
+  let editConverted = $state<Converted | null>(null);
+  const editAttachMark = new AttachMark();
+  /** Whether the conversion's Undo still applies (a function: the edit's
+   *  chips are declared further down). */
+  function editUndoable(): boolean {
+    return !!editing && !editing.parts && canUndo(editConverted, editing.draft, editChips.map((a) => a.id));
+  }
+  $effect(() => {
+    const t = editing && !editing.parts ? editing.draft : null;
+    untrack(() => {
+      editOffer = t === null ? null : followOffer(editOffer, t);
+    });
+  });
+  // Another turn's editor, or none: the offer and its Undo were this one's.
+  // On the index alone (a derived), not on every keystroke's new state.
+  const editIndex = $derived(editing && !editing.parts ? editing.index : null);
+  $effect(() => {
+    void editIndex;
+    untrack(() => {
+      editOffer = null;
+      editConverted = null;
+    });
+  });
+  async function editConvert(): Promise<void> {
+    const o = editOffer;
+    if (!o || !editing || editing.parts) return;
+    editOffer = null;
+    const at = editing.index;
+    const key = editKey;
+    const read = () => (editing && editing.index === at && !editing.parts ? editing.draft : null);
+    const done = await convertOffer(o, key, read, (t) => attachPastedText(key, t));
+    if (!done || !editing || editing.index !== at || editing.parts) return;
+    // Blocker 1210: a step of the box's history that carries the chip.
+    const tag: ConvertTag = { convert: true, chip: $state.snapshot(done.chip) as Attachment, before: done.before, after: done.after, caret: o.start };
+    editHist.external(done.after, o.start, tag);
+    editing = editReduce(editing, { type: "draft", text: done.after });
+    editConverted = { before: done.before, after: done.after, chipId: done.chip.id, caret: o.start };
+    void tick().then(() => editCaret(o.start));
+  }
+  function editUndoConvert(): boolean {
+    const c = editConverted;
+    editConverted = null;
+    if (!editing || editing.parts || !canUndo(c, editing.draft, editChips.map((a) => a.id))) return false;
+    const tag = editHist.undoTag;
+    if (!editorLive && isConvertTag(tag) && tag.chip.id === c.chipId) return editStep("undo");
+    const r = undoConverted(c);
+    removeAttachment(editKey, c.chipId);
+    editHist.external(r.text, r.caret);
+    editing = editReduce(editing, { type: "draft", text: r.text });
+    void tick().then(() => editCaret(r.caret));
+    return true;
+  }
+  /** The edit box focused with its caret at `at` (either box). */
+  function editCaret(at: number): void {
+    const box: ComposerBox | null = editorLive ?? editorEl;
+    if (!box) return;
+    box.focus();
+    box.selectionStart = box.selectionEnd = at;
+    if (editorEl) autogrow(editorEl);
   }
 
   /*
@@ -853,6 +951,19 @@
     if (editComposing) return true;
     const st = dir === "undo" ? editHist.undo() : editHist.redo();
     if (!st) return true;
+    // 399b: a conversion's chip goes with its undo and comes back with its
+    // redo, so the pasted words are always in the box or in the chip.
+    if (isConvertTag(st.tag)) {
+      const t = st.tag;
+      const has = editChips.some((a) => a.id === t.chip.id);
+      if (dir === "undo") {
+        editConverted = null;
+        if (has) removeAttachment(editKey, t.chip.id);
+      } else {
+        if (!has) addAttachment(editKey, t.chip);
+        editConverted = { before: t.before, after: t.after, chipId: t.chip.id, caret: t.caret };
+      }
+    }
     editing = editReduce(editing, { type: "draft", text: st.text });
     void tick().then(() => {
       el.focus({ preventScroll: true });
@@ -866,7 +977,9 @@
   $effect(() => {
     const take = (id: string): boolean => {
       if (id !== "undo_app" && id !== "redo_app") return false;
-      if (!editorEl || document.activeElement !== editorEl) return false;
+      const box = editorLive instanceof LiveBoxHandle ? editorLive.element : editorEl;
+      if (!box || !box.contains(document.activeElement)) return false;
+      if (id === "undo_app" && editUndoable()) return editUndoConvert();
       return editStep(id === "undo_app" ? "undo" : "redo");
     };
     menuInterceptors.push(take);
@@ -882,7 +995,9 @@
     const at = editing?.index;
     const ready = preparePaste(paste, MAX_IMAGE_BASE64);
     const raw = normalizeNewlines(ready.text);
+    const start = Math.min(box.selectionStart, box.selectionEnd);
     editInsert(box, raw);
+    editOffer = longPasteOffer(raw, start);
     recordText("pasted", raw);
     markPasted(ready.images.map((i) => `image ${i.n}`));
     void attachPastedImages(ready.images, ready.failed, {
@@ -1018,6 +1133,27 @@
     // to save. The mapping is `editorKey` (edit.ts), IME-safe (item 322).
     // Item 399: ⌘Z / ⌘⇧Z in a user turn's textarea step the box's own
     // history, as in the composer (the formatted box has its own).
+    if (item.kind === "user") {
+      // 399b: ⌥⌘V pastes the clipboard's text as an attachment (284).
+      if (isPasteAsAttachmentKey(e)) {
+        e.preventDefault();
+        void pasteAsAttachment(editAttachMark, (t) => attachPastedText(editKey, t));
+        return;
+      }
+      // Esc while the offer stands dismisses it (318); the paste stays.
+      if (e.key === "Escape" && editOffer && editOffer.after !== null && !editComposing && !e.isComposing && e.keyCode !== 229) {
+        e.preventDefault();
+        e.stopPropagation();
+        editOffer = null;
+        return;
+      }
+      // ⌘Z right after "Make this an attachment" puts the text back.
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "z" && editUndoable()) {
+        e.preventDefault();
+        editUndoConvert();
+        return;
+      }
+    }
     const step = item.kind === "user" && !editorLive ? historyKey(e, isMac) : null;
     if (step && editStep(step)) {
       e.preventDefault();
@@ -1973,6 +2109,14 @@
                   ></textarea>
                 </div>
               {/if}
+              <!-- Item 399b: the composer's long-paste offer. -->
+              <PasteOfferRow
+                offer={editOffer}
+                undoable={editUndoable()}
+                onconvert={() => void editConvert()}
+                ondismiss={() => (editOffer = null)}
+                onundo={() => editUndoConvert()}
+              />
               <!-- Item 336: the turn's attachments as chips, × to remove,
                    Attach (and paste, drop) to add. -->
               <EditAttachments key={editKey} />

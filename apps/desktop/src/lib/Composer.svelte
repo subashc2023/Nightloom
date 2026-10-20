@@ -78,12 +78,8 @@
     isPasteAsAttachmentKey,
     longPasteOffer,
     normalizeNewlines,
-    pastedFile,
-    pastedLabel,
-    pastedName,
     pasteAction,
     undoConverted,
-    withoutSpan,
     type Converted,
     type LongPaste,
   } from "./pasteAttach";
@@ -137,6 +133,15 @@
   import { dropPending, markPasted, takeDropped } from "./dropLook.svelte";
   import { fenced, findFences, withFenceLanguage } from "./codeDetect";
   import BoxLayer, { layerShown } from "./BoxLayer.svelte";
+  import PasteOfferRow from "./PasteOfferRow.svelte";
+  import {
+    AttachMark,
+    attachPastedText as sharedAttachPastedText,
+    convertOffer,
+    isConvertTag,
+    pasteAsAttachment as sharedPasteAsAttachment,
+    type ConvertTag,
+  } from "./pastedText.svelte";
   import { pasteSteps, textPastePlan } from "./textPaste";
   import { attachPastedImages, fetchPasteImage, htmlImagePaste, preparePaste, rasterize, type ImagePaste } from "./pasteImages";
   import { launch } from "./sendMotion";
@@ -1389,17 +1394,7 @@
   /** An input method's composition is open in the box (marked text). */
   let composing = false;
 
-  /** A history step that is 284's conversion, carrying its chip. */
-  interface ConvertTag {
-    convert: true;
-    chip: Attachment;
-    before: string;
-    after: string;
-    caret: number;
-  }
-  function isConvertTag(t: unknown): t is ConvertTag {
-    return typeof t === "object" && t !== null && (t as { convert?: unknown }).convert === true;
-  }
+  // 284's conversion step: `ConvertTag` / `isConvertTag` (pastedText.svelte.ts).
 
   function onboxinput(e: Event): void {
     if (!(ta instanceof HTMLTextAreaElement)) return;
@@ -1472,30 +1467,13 @@
    * would and makes its text a chip. Off the Mac the clipboard is read
    * here instead.
    */
-  let attachMark = 0;
-  const ATTACH_MARK_MS = 1500;
+  // Shared with the edit box since item 399b (`pastedText.svelte.ts`).
+  const attachMark = new AttachMark();
   function takeAttachMark(): boolean {
-    const on = attachMark > 0 && performance.now() - attachMark < ATTACH_MARK_MS;
-    attachMark = 0;
-    return on;
+    return attachMark.take();
   }
-  async function pasteAsAttachment(): Promise<void> {
-    attachMark = performance.now();
-    let asked = false;
-    try {
-      asked = await pasteIntoFocus();
-    } catch {
-      asked = false;
-    }
-    if (asked) return;
-    attachMark = 0;
-    try {
-      const t = await navigator.clipboard.readText();
-      if (t) await attachPastedText(t);
-      else addToast("The clipboard holds no text to attach");
-    } catch (e) {
-      addToast(`Could not read the clipboard: ${String(e)}`);
-    }
+  function pasteAsAttachment(): Promise<void> {
+    return sharedPasteAsAttachment(attachMark, attachPastedText);
   }
 
   /*
@@ -1523,22 +1501,12 @@
 
   /** Pasted text as a chip, by item 277's text route (`accept`): named
    *  "Pasted text", its words on the chip, kept with the draft. */
-  async function attachPastedText(raw: string): Promise<Attachment | null> {
-    const body = normalizeNewlines(raw);
-    const chatKey = key;
-    const name = pastedName(readDraft(chatKey).attachments.map((a) => a.name));
+  function attachPastedText(raw: string): Promise<Attachment | null> {
     // Item 312: this chip came from text, so it fades in.
-    fadeInNames.mark(name);
-    const [chip] = await accept([pastedFile(body, name)]);
-    if (!chip) {
-      fadeInNames.unmark(name);
-      return null;
-    }
-    updateAttachment(chatKey, chip.id, {
-      pasted: true,
-      ...(chip.kind === "document" ? { label: pastedLabel(body) } : {}),
+    return sharedAttachPastedText(key, raw, {
+      named: (name) => fadeInNames.mark(name),
+      failed: (name) => fadeInNames.unmark(name),
     });
-    return chip;
   }
 
   /*
@@ -1567,17 +1535,11 @@
     if (!o) return;
     offer = null;
     const chatKey = key;
-    if (withoutSpan(readDraft(chatKey).text, o) === null) return;
-    const chip = await attachPastedText(o.pasted);
-    // Refused (too long for this engine): the toast said why; the text stays.
-    if (!chip) return;
-    const now = readDraft(chatKey).text;
-    const after = withoutSpan(now, o);
-    if (after === null) {
-      // Typed into meanwhile: the text stays where he is working.
-      removeAttachment(chatKey, chip.id);
-      return;
-    }
+    // Refused (too long for this engine), or typed into meanwhile: the
+    // text stays where he is working (`convertOffer`, shared with 399b).
+    const done = await convertOffer(o, chatKey, () => readDraft(chatKey).text, attachPastedText);
+    if (!done) return;
+    const { chip, before: now, after } = done;
     // Blocker 1210: a step of the box's history that carries the chip, so
     // ⌘Z takes the chip away with the text and ⌘⇧Z brings both back.
     if (chatKey === key) {
@@ -2877,36 +2839,8 @@
     ></textarea>
     {/if}
     </div>
-    {#if offer && offer.after !== null}
-      <!-- Item 284: a long ⌘V paste, offered as an attachment. -->
-      <div class="paste-offer" role="status">
-        <span class="mono dim">long paste · {pastedLabel(offer.pasted)}</span>
-        <button
-          class="ns-btn ghost small"
-          use:tip={"Move the pasted text out of the box into an attachment — Undo puts it back. ⌥⌘V pastes as an attachment from the start."}
-          onmousedown={(e) => e.preventDefault()}
-          onclick={() => void convertLongPaste()}>Make this an attachment</button
-        >
-        <!-- Item 318: keep the paste as text; the offer goes for this paste. -->
-        <button
-          class="offer-x"
-          aria-label="Dismiss — keep the paste as text"
-          use:tip={"Keep it as text (Esc)"}
-          onmousedown={(e) => e.preventDefault()}
-          onclick={dismissOffer}>×</button
-        >
-      </div>
-    {:else if undoable}
-      <div class="paste-offer" role="status">
-        <span class="mono dim">moved into an attachment</span>
-        <button
-          class="ns-btn ghost small"
-          use:tip={"Put the text back in the box (⌘Z)"}
-          onmousedown={(e) => e.preventDefault()}
-          onclick={() => undoConvert()}>Undo</button
-        >
-      </div>
-    {/if}
+    <!-- Item 284's offer; shared with the edit box since item 399b. -->
+    <PasteOfferRow {offer} {undoable} onconvert={() => void convertLongPaste()} ondismiss={dismissOffer} onundo={() => undoConvert()} />
     <div class="row" bind:this={rowEl} data-fold={rowFold}>
       <input
         bind:this={picker}
@@ -3529,31 +3463,7 @@
   .composer.floating textarea {
     font-size: 15.5px;
   }
-  /* Item 284: the long paste's offer, a slim line under the box. */
-  .paste-offer {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 2px 10px 4px;
-    font-size: 12px;
-  }
-  /* Item 318: the offer's dismiss, a small × beside it. */
-  .offer-x {
-    width: 1.15rem;
-    height: 1.15rem;
-    padding: 0;
-    background: none;
-    color: var(--dim);
-    border: 1px solid transparent;
-    border-radius: 50%;
-    font-size: 0.85rem;
-    line-height: 1;
-    cursor: pointer;
-  }
-  .offer-x:hover {
-    color: var(--text);
-    border-color: var(--border);
-  }
+  /* The offer's look moved to `PasteOfferRow.svelte` with it (item 399b). */
   /* The queue tray: joined to the top of the card, dashed so it reads as
      "not sent yet" (backlog 089). Plain rows; the real design is the
      Fable board's. */
