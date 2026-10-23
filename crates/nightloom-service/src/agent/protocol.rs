@@ -165,6 +165,10 @@ pub(super) enum SystemLine {
     },
     #[serde(rename = "task_progress")]
     TaskProgress {
+        /// The agent's id: the key a resume by SendMessage keeps when its
+        /// `tool_use_id` becomes the SendMessage call's (backlog 406).
+        #[serde(default)]
+        task_id: String,
         #[serde(default)]
         tool_use_id: String,
         #[serde(default)]
@@ -172,6 +176,8 @@ pub(super) enum SystemLine {
     },
     #[serde(rename = "task_notification")]
     TaskNotification {
+        #[serde(default)]
+        task_id: String,
         #[serde(default)]
         tool_use_id: String,
         #[serde(default)]

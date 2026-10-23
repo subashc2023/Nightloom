@@ -137,6 +137,15 @@ pub struct Translator {
     /// a Running-tasks row, so the top bar read "1 agent · 1 running"
     /// over a sleep and "6 agents · done" after six of them.
     not_agents: HashSet<String>,
+    /// Each agent's first spawning call, by its `task_id` (backlog 406):
+    /// a SendMessage that resumes a finished agent makes the CLI narrate
+    /// the resumed run under the SendMessage call's id (measured on
+    /// 2.1.309), which would open a nameless second row and leave the
+    /// original reading done while the agent works.
+    spawned_by: HashMap<String, String>,
+    /// A resuming call's id → the spawning call's (406), for task lines
+    /// that name only the call.
+    aliases: HashMap<String, String>,
     /// Where each `rate_limit_event`'s five-hour figure is written for the
     /// Agent hook (backlog 165, `brief::USAGE_FILE`); `None` writes nothing.
     pub usage_sink: Option<std::path::PathBuf>,
@@ -414,6 +423,16 @@ impl Translator {
         self.outcome
     }
 
+    /// The spawning call a task line belongs to (406): the first call
+    /// seen for its agent, else the call it names.
+    fn origin_of(&self, task_id: &str, tool_use_id: String) -> String {
+        self.spawned_by
+            .get(task_id)
+            .or_else(|| self.aliases.get(&tool_use_id))
+            .cloned()
+            .unwrap_or(tool_use_id)
+    }
+
     /// The ledger of the child spawned by `id`, opened on first sight.
     fn ledger(&mut self, id: &str) -> &mut SubagentLedger {
         if !self.subagents.contains_key(id) {
@@ -621,6 +640,22 @@ impl Translator {
                     self.not_agents.insert(tool_use_id);
                     return Vec::new();
                 }
+                // A resume of an agent already seen (406): the original
+                // row runs again; the resuming call is not a row.
+                if let Some(origin) = self.spawned_by.get(&task_id).cloned()
+                    && origin != tool_use_id
+                {
+                    self.aliases.insert(tool_use_id, origin.clone());
+                    let ledger = self.ledger(&origin);
+                    ledger.status = "running".into();
+                    ledger.background |= is_backgrounded;
+                    return vec![ledger.event(&origin)];
+                }
+                if !task_id.is_empty() {
+                    self.spawned_by
+                        .entry(task_id.clone())
+                        .or_insert_with(|| tool_use_id.clone());
+                }
                 let ledger = self.ledger(&tool_use_id);
                 ledger.task_id = task_id;
                 ledger.description = description;
@@ -636,7 +671,12 @@ impl Translator {
             {
                 return Vec::new();
             }
-            SystemLine::TaskProgress { tool_use_id, usage } => {
+            SystemLine::TaskProgress {
+                task_id,
+                tool_use_id,
+                usage,
+            } => {
+                let tool_use_id = self.origin_of(&task_id, tool_use_id);
                 let ledger = self.ledger(&tool_use_id);
                 if ledger.status.is_empty() {
                     ledger.status = "running".into();
@@ -645,10 +685,12 @@ impl Translator {
                 return vec![ledger.event(&tool_use_id)];
             }
             SystemLine::TaskNotification {
+                task_id,
                 tool_use_id,
                 status,
                 usage,
             } => {
+                let tool_use_id = self.origin_of(&task_id, tool_use_id);
                 let ledger = self.ledger(&tool_use_id);
                 ledger.task(usage);
                 ledger.status = if status.is_empty() {
@@ -1603,5 +1645,82 @@ mod tests {
     fn an_ordinary_turn_has_no_limit() {
         let (_, outcome) = drive(&[RATE_LIMIT_263, RESULT]);
         assert!(outcome.limit.is_none());
+    }
+
+    // Backlog 406: a SendMessage to an agent that had already finished
+    // resumes it, and CLI 2.1.309 narrates the resumed run under the
+    // SendMessage call's id with the same `task_id` (scratch run, Haiku,
+    // 2026-10-23, lines verbatim).
+    const R_SPAWN: &str = r##"{"type":"assistant","message":{"model":"claude-haiku-5-5","id":"msg_011CgJrz8GWsDGRMhMqQhLo3","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_0167io1Y9jPZHdt16w6e2dkQ","name":"Agent","input":{"description":"Reply with ONE","prompt":"Reply with the single word ONE.","subagent_type":"general-purpose","model":"haiku","run_in_background":false},"caller":{"type":"direct"}}],"container":null,"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":2,"cache_creation_input_tokens":10072,"cache_read_input_tokens":23910,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":10072},"output_tokens":5,"service_tier":"standard","inference_geo":"global","speed":"standard"},"input_transformations":[],"diagnostics":null,"context_management":null},"parent_tool_use_id":null,"session_id":"97fc691b-9334-4601-8c3d-83e60e451405","uuid":"d9ea7a82-3801-452b-98fb-7efd01029f51","timestamp":"2026-10-23T08:35:30.929Z","request_id":"req_011CgJrz7z97JFLsLAVTeG7s","wire_tool_inputs":{"toolu_0167io1Y9jPZHdt16w6e2dkQ":{"description":"Reply with ONE","prompt":"Reply with the single word ONE.","subagent_type":"general-purpose","model":"haiku","run_in_background":false}}}"##;
+    const R_STARTED: &str = r##"{"type":"system","subtype":"task_started","task_id":"a393aa129621de155","run_id":"0mvkpt14v-ffc7534b","tool_use_id":"toolu_0167io1Y9jPZHdt16w6e2dkQ","description":"Reply with ONE","subagent_type":"general-purpose","is_backgrounded":false,"spawn_depth":1,"task_type":"local_agent","prompt":"Reply with the single word ONE.","uuid":"be9d540d-72f0-46bc-aa85-ed891a52ccb1","session_id":"97fc691b-9334-4601-8c3d-83e60e451405"}"##;
+    const R_DONE_ONE: &str = r##"{"type":"system","subtype":"task_notification","task_id":"a393aa129621de155","run_id":"0mvkpt14v-ffc7534b","tool_use_id":"toolu_0167io1Y9jPZHdt16w6e2dkQ","status":"completed","output_file":"/private/tmp/claude-501/-private-tmp-claude-501--Users-swaraagsistla-Documents-ComputerScience-PersonalProjects-Nightloom-nightshift-code-6fe7c7ab-c9b8-4d4c-8cca-4edc5844dcf9-scratchpad-406/97fc691b-9334-4601-8c3d-83e60e451405/tasks/a393aa129621de155.output","summary":"ONE","usage":{"total_tokens":25487,"tool_uses":0,"duration_ms":1299},"uuid":"6124c974-7f6b-4f24-95bf-8543149b4e7a","session_id":"97fc691b-9334-4601-8c3d-83e60e451405"}"##;
+    const R_SENDMESSAGE: &str = r##"{"type":"assistant","message":{"model":"claude-haiku-5-5","id":"msg_011CgJrzS1cCx1oiJtj8JmMD","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_0176QKYiQvXCpGikuLVDdohv","name":"SendMessage","input":{"to":"a393aa129621de155","message":"Now reply with the single word TWO.","summary":"Ask agent to reply TWO","type":"message","recipient":"a393aa129621de155","recipient_kind":"agent","content":"Now reply with the single word TWO."},"caller":{"type":"direct"}}],"container":null,"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":2,"cache_creation_input_tokens":2787,"cache_read_input_tokens":33982,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":2787},"output_tokens":24,"service_tier":"standard","inference_geo":"global","speed":"standard"},"input_transformations":[],"diagnostics":null,"context_management":null},"parent_tool_use_id":null,"session_id":"97fc691b-9334-4601-8c3d-83e60e451405","uuid":"b5833338-2e93-4170-b8ba-518ca3cd8b76","timestamp":"2026-10-23T08:35:33.606Z","request_id":"req_011CgJrzReXxs5oP8i5gQFJK","wire_tool_inputs":{"toolu_0176QKYiQvXCpGikuLVDdohv":{"to":"a393aa129621de155","message":"Now reply with the single word TWO.","summary":"Ask agent to reply TWO"}}}"##;
+    const R_RESUMED: &str = r##"{"type":"system","subtype":"task_started","task_id":"a393aa129621de155","run_id":"0mvkpt37k-c69743af","tool_use_id":"toolu_0176QKYiQvXCpGikuLVDdohv","description":"Reply with ONE","subagent_type":"general-purpose","is_backgrounded":true,"spawn_depth":1,"task_type":"local_agent","prompt":"Now reply with the single word TWO.","uuid":"8ae47d8d-b464-412d-b77a-dab8217f80e6","session_id":"97fc691b-9334-4601-8c3d-83e60e451405"}"##;
+    const R_CHILD_THINKING: &str = r##"{"type":"assistant","message":{"model":"claude-haiku-5-5","id":"msg_011CgJrzY2WMQQyaKAUaHgci","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"","signature":"CAQS3QYKEAgTGAI4AUIIdGhpbmtpbmcSDGIJnFeRbPGpIS1hphoMPKiLlJ8fP9yVbnlVIjD0TjhuPOIV5UUuURGxoRVUWCRwIAdJkkOruZIwyYbNM8NCLrPYIaW00nMQGii4Jrsq+gUcRVgH3ykiZKAqJ6m0CXdquP80uywy/ZBEh8LskemrB+OSn1NQ4YPnu7jXeAyWG89VQVKDN28xvs/iMYIjMWjDARGoSheq22pIkiVTTfLu2eHqFlPINOyA0lXDqkVcjbnt0DeTP5gryNgid4jJHzLRxQznAiUAAEPv9N3xJfLj2hkBFDdSZ+Z/i1YfJr7U+8czEk/xEFqvvtTnPJNsTbTEm/L4L5pD2n4yKldt/VSh2ACU8SQTqe7FgV14mYiWRwF1qe52Gr0yQ33EHGxuBv4K/Ko5XOD3RMRqEQLEwnIbw3CblLQ0gZgA04jllAT63h/dQJxh+L9EosxZKJxwkWPvqk9Izq6/S7G+zCiWH7xGBweb7aQ9Y+9QBfs36is9UPUU2/UgDFwLNIN8COkTWgeFGUBxwjfWZ4kmwl88wXvxiD1Z68PsswjMM1ouqfx3HheLbir6y0Qwu4spZid04YKToEog8MaXgpZ8gBa6xTB3pXQFgqt/zqEbJH5TIClY/9+C8LbQJLPW/YaMU7afeGCTse5/aWTJZPuG1UgP0gMdDMMxnswDjOx3ibyFFOzwg66Q3DeijP5LbQO+1SFxpAylqdOd5gYssglxtbwIuqQcV6AtrKIRSSWvSSwDprwm9q6oF47RZCQd1TeLbLCvo5C9u8eW2uTRft03CypfrphnTzyiEi8pKiuEI1De8tYjBxEgyIBnKAeHKV4Fy0VtUlwSqBzntg2YFhHJuVT9rDJUa+qN4peV2tsq78jNT7j4UzY9qxp9cUcrrnGZ6V9/Lf8S3c1x/jJNDUCu0CXHgkqlu1j4arvHvh7c/lD7yS4vXRGivbhwHr9zBOt/gH/tdu4AhLsSJHsTKD4VKbJtKC24o8miJPlG/tlS0pFTft/9iXjk7TMdnQ/MgNZLgY9VF7L+RB3rHfSOGUi2UaWrsLAk2nUMVDONIl+MqWmubtnwydWuTB0zv6/0TcXHAoorQbYEKLbcxuEdWLHXGwnxVo4JdXdqPZe48D/o0h4YAQ=="}],"container":null,"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":4,"cache_creation_input_tokens":4911,"cache_read_input_tokens":20613,"cache_creation":{"ephemeral_5m_input_tokens":4911,"ephemeral_1h_input_tokens":0},"output_tokens":9,"service_tier":"standard","inference_geo":"global","speed":"standard"},"input_transformations":[],"diagnostics":{"cache_miss_reason":{"type":"messages_changed","cache_missed_input_tokens":4834}},"context_management":null},"parent_tool_use_id":"toolu_0167io1Y9jPZHdt16w6e2dkQ","agent_id":"a393aa129621de155","session_id":"97fc691b-9334-4601-8c3d-83e60e451405","uuid":"e5231816-1f5b-43af-a305-831d2a8b804e","timestamp":"2026-10-23T08:35:34.828Z","request_id":"req_011CgJrzXdwpDgZ7sQ2jJvHg","subagent_type":"general-purpose","task_description":"Reply with ONE"}"##;
+    const R_CHILD_TWO: &str = r##"{"type":"assistant","message":{"model":"claude-haiku-5-5","id":"msg_011CgJrzY2WMQQyaKAUaHgci","type":"message","role":"assistant","content":[{"type":"text","text":"TWO"}],"container":null,"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":4,"cache_creation_input_tokens":4911,"cache_read_input_tokens":20613,"cache_creation":{"ephemeral_5m_input_tokens":4911,"ephemeral_1h_input_tokens":0},"output_tokens":9,"service_tier":"standard","inference_geo":"global","speed":"standard"},"input_transformations":[],"diagnostics":{"cache_miss_reason":{"type":"messages_changed","cache_missed_input_tokens":4834}},"context_management":null},"parent_tool_use_id":"toolu_0167io1Y9jPZHdt16w6e2dkQ","agent_id":"a393aa129621de155","session_id":"97fc691b-9334-4601-8c3d-83e60e451405","uuid":"f1fe8ff7-3537-44df-a21d-1322147d9db9","timestamp":"2026-10-23T08:35:34.830Z","request_id":"req_011CgJrzXdwpDgZ7sQ2jJvHg","subagent_type":"general-purpose","task_description":"Reply with ONE"}"##;
+    const R_DONE_TWO: &str = r##"{"type":"system","subtype":"task_notification","task_id":"a393aa129621de155","run_id":"0mvkpt37k-c69743af","tool_use_id":"toolu_0176QKYiQvXCpGikuLVDdohv","status":"completed","output_file":"/private/tmp/claude-501/-private-tmp-claude-501--Users-swaraagsistla-Documents-ComputerScience-PersonalProjects-Nightloom-nightshift-code-6fe7c7ab-c9b8-4d4c-8cca-4edc5844dcf9-scratchpad-406/97fc691b-9334-4601-8c3d-83e60e451405/tasks/a393aa129621de155.output","summary":"TWO","usage":{"total_tokens":25764,"tool_uses":0,"duration_ms":1235},"uuid":"75fb5141-1bc7-4a0c-8921-b83072f8e484","session_id":"97fc691b-9334-4601-8c3d-83e60e451405"}"##;
+
+    fn statuses(events: &[TurnEvent]) -> Vec<(String, String, String)> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                TurnEvent::SubagentStatus {
+                    tool_use_id,
+                    status,
+                    description,
+                    ..
+                } => Some((tool_use_id.clone(), status.clone(), description.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_resume_by_sendmessage_revives_the_original_row_and_opens_no_other() {
+        const ORIGIN: &str = "toolu_0167io1Y9jPZHdt16w6e2dkQ";
+        let mut t = Translator::new();
+        let mut per_line = Vec::new();
+        for line in [
+            R_SPAWN,
+            R_STARTED,
+            R_DONE_ONE,
+            R_SENDMESSAGE,
+            R_RESUMED,
+            R_CHILD_THINKING,
+            R_CHILD_TWO,
+            R_DONE_TWO,
+        ] {
+            per_line.push(statuses(&t.push(line)));
+        }
+        // Every status names the spawning call; the SendMessage call
+        // (`toolu_0176…`) is never a row.
+        let all: Vec<_> = per_line.iter().flatten().collect();
+        assert!(!all.is_empty());
+        assert!(all.iter().all(|(id, _, _)| id == ORIGIN), "{all:?}");
+        assert!(all.iter().all(|(_, _, d)| d == "Reply with ONE"));
+        // Done after the first run, running again at the resume, done at
+        // its end.
+        assert_eq!(per_line[2].last().unwrap().1, "completed");
+        assert_eq!(
+            per_line[4],
+            vec![(
+                ORIGIN.to_string(),
+                "running".to_string(),
+                "Reply with ONE".to_string()
+            )]
+        );
+        assert_eq!(per_line[7].last().unwrap().1, "completed");
+        let outcome = t.finish();
+        assert!(outcome.limit.is_none());
+    }
+
+    #[test]
+    fn a_resume_notified_only_by_its_call_id_still_finds_the_original() {
+        let mut t = Translator::new();
+        t.push(R_STARTED);
+        t.push(R_RESUMED);
+        // A progress line naming only the SendMessage call (no task_id).
+        let ev = t.push(r#"{"type":"system","subtype":"task_progress","tool_use_id":"toolu_0176QKYiQvXCpGikuLVDdohv","usage":{"total_tokens":10,"tool_uses":1,"duration_ms":5}}"#);
+        assert_eq!(statuses(&ev)[0].0, "toolu_0167io1Y9jPZHdt16w6e2dkQ");
     }
 }

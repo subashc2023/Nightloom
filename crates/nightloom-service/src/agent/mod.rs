@@ -2031,11 +2031,25 @@ impl ClaudeCodeAgent {
         let mut watch_silence = piped && input.is_none();
 
         loop {
+            // A subagent's end the main thread was not told of (406): the
+            // wake's deadline, recomputed after every line.
+            let wake_due = inbox.as_ref().and_then(|i| i.wake_due());
             let next = tokio::select! {
                 biased;
                 _ = cancel.cancelled() => {
                     interrupted = true;
                     break;
+                }
+                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(
+                    wake_due.unwrap_or_else(std::time::Instant::now),
+                )), if wake_due.is_some() => {
+                    if let Some(w) = inbox
+                        .as_ref()
+                        .and_then(|i| i.fire_wake_at(std::time::Instant::now()))
+                    {
+                        on_event(TurnEvent::Woke { text: w.text, agents: w.agents });
+                    }
+                    continue;
                 }
                 _ = &mut silent, if watch_silence && !any_line => {
                     watch_silence = false;

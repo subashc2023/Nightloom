@@ -8587,6 +8587,19 @@ export function applyTurnEventTo(host: TurnHost, ev: TurnEvent & { chat?: string
       addToast(lineText(lineView(seg, app.subagents)));
       break;
     }
+    case "woke": {
+      // A subagent's end the main agent was never told of (backlog 406):
+      // Nightloom wrote it a line of its own, and the reply says so in
+      // place — Nightloom's words, not his, so a notice and not a message.
+      const names = ev.agents.map((a) => `“${a}”`).join(", ");
+      closeThinking(segments);
+      segments.push({
+        kind: "notice",
+        text: `${names} finished but its report never reached the main agent — Nightloom told it to continue`,
+      });
+      if (!onScreen) addToast(`Nightloom woke ${backgroundName(host.bg!.session, host.bg!.events)}: ${names} finished`);
+      break;
+    }
     case "round_limit":
       closeThinking(segments);
       segments.push({

@@ -1278,6 +1278,11 @@ export type TurnEvent =
    *  (nightshift backlog 329): their descriptions. The turn waits for them
    *  unless he stops them. */
   | { type: "still_running"; tasks: string[] }
+  /** Nightloom woke an idle main thread (nightshift backlog 406): a
+   *  subagent finished and its report never reached the main agent. `text`
+   *  is the Nightloom-authored line written to the chat (not his words);
+   *  `agents` the descriptions it named. */
+  | { type: "woke"; text: string; agents: string[] }
   /** An event of a subagent's own turn on the Claude Code engine, carrying
    *  the id of the `Agent` call that spawned it (nightshift backlog 075);
    *  `event` is the child's text, thinking, call or result as the main

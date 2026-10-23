@@ -132,6 +132,16 @@ pub enum TurnEvent {
     StillRunning {
         tasks: Vec<String>,
     },
+    /// Nightloom woke an idle main thread (nightshift backlog 406): a
+    /// subagent finished and its report never reached the main agent —
+    /// CLI 2.1.309 sends no hand-back for an agent resumed by a message
+    /// it took mid-run, and starts no turn for its notification. `text` is
+    /// the Nightloom-authored line written to the chat (not his words);
+    /// `agents` the descriptions it named. Claude Code engine only.
+    Woke {
+        text: String,
+        agents: Vec<String>,
+    },
     /// An event of a subagent's own turn — one the Claude Code CLI spawned
     /// through its `Agent` tool — carrying the id of the call that spawned
     /// it (2026-09-16, nightshift backlog 075; `--forward-subagent-text`).

@@ -1,0 +1,473 @@
+[
+  {
+    "label": "init",
+    "statuses": [],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "spawn 3",
+    "statuses": [],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "started HF",
+    "statuses": [
+      {
+        "background": true,
+        "description": "Hugging Face incident facts",
+        "duration_ms": 0,
+        "prompt": "p",
+        "rounds": 0,
+        "status": "running",
+        "subagent_type": "general-purpose",
+        "task_id": "a94e5527c15d551f6",
+        "tokens": 0,
+        "tool_use_id": "toolu_015awQvfRVecj2DZUHcrraVJ",
+        "tool_uses": 0,
+        "type": "subagent_status",
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0
+        }
+      }
+    ],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "started bench",
+    "statuses": [
+      {
+        "background": true,
+        "description": "Benchmark suite feasibility",
+        "duration_ms": 0,
+        "prompt": "p",
+        "rounds": 0,
+        "status": "running",
+        "subagent_type": "general-purpose",
+        "task_id": "a05b3fd749ee094f2",
+        "tokens": 0,
+        "tool_use_id": "toolu_01NXZF9nanmMbnHzXbMjMCEw",
+        "tool_uses": 0,
+        "type": "subagent_status",
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0
+        }
+      }
+    ],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "started market",
+    "statuses": [
+      {
+        "background": true,
+        "description": "Agent guardrail market scan",
+        "duration_ms": 0,
+        "prompt": "p",
+        "rounds": 0,
+        "status": "running",
+        "subagent_type": "general-purpose",
+        "task_id": "a162a44caa6992ce2",
+        "tokens": 0,
+        "tool_use_id": "toolu_01JfLbujUck47fY3cVtZr8Ec",
+        "tool_uses": 0,
+        "type": "subagent_status",
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0
+        }
+      }
+    ],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "launched",
+    "statuses": [],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "reply",
+    "statuses": [],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "result",
+    "statuses": [],
+    "still_running": [
+      "Hugging Face incident facts",
+      "Benchmark suite feasibility",
+      "Agent guardrail market scan"
+    ],
+    "woke": null
+  },
+  {
+    "label": "market handback call",
+    "statuses": [],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "market handback ok",
+    "statuses": [],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "market notified",
+    "statuses": [
+      {
+        "background": true,
+        "description": "Agent guardrail market scan",
+        "duration_ms": 9000,
+        "prompt": "p",
+        "rounds": 0,
+        "status": "completed",
+        "subagent_type": "general-purpose",
+        "task_id": "a162a44caa6992ce2",
+        "tokens": 1000,
+        "tool_use_id": "toolu_01JfLbujUck47fY3cVtZr8Ec",
+        "tool_uses": 3,
+        "type": "subagent_status",
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0
+        }
+      }
+    ],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "init",
+    "statuses": [],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "market peer",
+    "statuses": [],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "market answered",
+    "statuses": [],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "result",
+    "statuses": [],
+    "still_running": [
+      "Hugging Face incident facts",
+      "Benchmark suite feasibility"
+    ],
+    "woke": null
+  },
+  {
+    "label": "init",
+    "statuses": [],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "result",
+    "statuses": [],
+    "still_running": [
+      "Hugging Face incident facts",
+      "Benchmark suite feasibility"
+    ],
+    "woke": null
+  },
+  {
+    "label": "HF handback call",
+    "statuses": [],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "HF handback ok",
+    "statuses": [],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "init",
+    "statuses": [],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "HF peer",
+    "statuses": [],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "HF answered",
+    "statuses": [],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "SendMessage HF",
+    "statuses": [],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "SendMessage result",
+    "statuses": [],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "reply",
+    "statuses": [],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "result",
+    "statuses": [],
+    "still_running": [
+      "Hugging Face incident facts",
+      "Benchmark suite feasibility"
+    ],
+    "woke": null
+  },
+  {
+    "label": "HF works on",
+    "statuses": [],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "bench handback call",
+    "statuses": [],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "bench handback ok",
+    "statuses": [],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "bench notified",
+    "statuses": [
+      {
+        "background": true,
+        "description": "Benchmark suite feasibility",
+        "duration_ms": 9000,
+        "prompt": "p",
+        "rounds": 0,
+        "status": "completed",
+        "subagent_type": "general-purpose",
+        "task_id": "a05b3fd749ee094f2",
+        "tokens": 1000,
+        "tool_use_id": "toolu_01NXZF9nanmMbnHzXbMjMCEw",
+        "tool_uses": 3,
+        "type": "subagent_status",
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0
+        }
+      }
+    ],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "init",
+    "statuses": [],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "bench peer",
+    "statuses": [],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "bench answered",
+    "statuses": [],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "result",
+    "statuses": [],
+    "still_running": [
+      "Hugging Face incident facts"
+    ],
+    "woke": null
+  },
+  {
+    "label": "init",
+    "statuses": [],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "result",
+    "statuses": [],
+    "still_running": [
+      "Hugging Face incident facts"
+    ],
+    "woke": null
+  },
+  {
+    "label": "HF notified (lone)",
+    "statuses": [
+      {
+        "background": true,
+        "description": "Hugging Face incident facts",
+        "duration_ms": 9000,
+        "prompt": "p",
+        "rounds": 0,
+        "status": "completed",
+        "subagent_type": "general-purpose",
+        "task_id": "a94e5527c15d551f6",
+        "tokens": 1000,
+        "tool_use_id": "toolu_015awQvfRVecj2DZUHcrraVJ",
+        "tool_uses": 3,
+        "type": "subagent_status",
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0
+        }
+      }
+    ],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "wake at 46s",
+    "statuses": [],
+    "still_running": [],
+    "woke": {
+      "agents": [
+        "Hugging Face incident facts"
+      ],
+      "text": "[Nightloom, not from Swaraag: the agent “Hugging Face incident facts” (`a94e5527c15d551f6`) finished (completed) but its report did not reach you; its output is at /tmp/tasks/a94e5527c15d551f6.output. Continue.]",
+      "type": "woke"
+    }
+  },
+  {
+    "label": "init",
+    "statuses": [],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "woken reply",
+    "statuses": [],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "result",
+    "statuses": [],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "---- resume",
+    "statuses": [],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "SendMessage bench",
+    "statuses": [],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "bench resumed",
+    "statuses": [
+      {
+        "background": true,
+        "description": "Benchmark suite feasibility",
+        "duration_ms": 9000,
+        "prompt": "p",
+        "rounds": 0,
+        "status": "running",
+        "subagent_type": "general-purpose",
+        "task_id": "a05b3fd749ee094f2",
+        "tokens": 1000,
+        "tool_use_id": "toolu_01NXZF9nanmMbnHzXbMjMCEw",
+        "tool_uses": 3,
+        "type": "subagent_status",
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0
+        }
+      }
+    ],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "SendMessage result",
+    "statuses": [],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "result",
+    "statuses": [],
+    "still_running": [
+      "Benchmark suite feasibility"
+    ],
+    "woke": null
+  },
+  {
+    "label": "bench handback call",
+    "statuses": [],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "bench handback ok",
+    "statuses": [],
+    "still_running": [],
+    "woke": null
+  },
+  {
+    "label": "bench notified (resume)",
+    "statuses": [
+      {
+        "background": true,
+        "description": "Benchmark suite feasibility",
+        "duration_ms": 9000,
+        "prompt": "p",
+        "rounds": 0,
+        "status": "completed",
+        "subagent_type": "general-purpose",
+        "task_id": "a05b3fd749ee094f2",
+        "tokens": 1000,
+        "tool_use_id": "toolu_01NXZF9nanmMbnHzXbMjMCEw",
+        "tool_uses": 3,
+        "type": "subagent_status",
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0
+        }
+      }
+    ],
+    "still_running": [],
+    "woke": null
+  }
+]
