@@ -24,3 +24,20 @@ export function stopNote(stopReason: string | null | undefined): string | null {
   if (stopReason === "stopped") return "stopped before a reply";
   return null;
 }
+
+/** The service's words for a turn that ended before the model said
+ *  anything (backlog 361; `nightloom_core::STOPPED_BEFORE_REPLY` and
+ *  `NO_REPLY_PREFIX`) — Nightloom's, not the model's. */
+export const STOPPED_BEFORE_REPLY = "Stopped before any reply arrived.";
+export const NO_REPLY_PREFIX = "No reply: ";
+
+/** Whether a reply is that stand-in (backlog 407): one text block reading
+ *  so, ended stopped or by an error. Drawn as Nightloom's notice, never as
+ *  model prose. Mirrors `is_unanswered_stand_in` in nightloom-core. */
+export function isStandIn(texts: string[], stopReason: string | null | undefined): boolean {
+  if (texts.length !== 1) return false;
+  const t = texts[0];
+  const says = t === STOPPED_BEFORE_REPLY || t.startsWith(NO_REPLY_PREFIX);
+  const ended = stopReason === "stopped" || !!stopReason?.startsWith("error: ");
+  return says && ended;
+}

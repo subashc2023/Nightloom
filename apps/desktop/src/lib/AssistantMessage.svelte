@@ -65,7 +65,7 @@
   import { memoryRefs, openMemoryEdit } from "./memoryOpen";
   import { memoryEditOf, type MemoryEdit } from "./memoryEdits";
   import type { ReplyUsageView } from "./replyUsage";
-  import { hasUsage, stopNote } from "./replyFooter";
+  import { hasUsage, isStandIn, stopNote } from "./replyFooter";
   import StillRunningLine from "./StillRunningLine.svelte";
   // The streaming motion (backlog 342, his pick of 338: "Loom + fade-in").
   import { Births, needleIn, needleOut, replyMotion } from "./replyMotion";
@@ -249,6 +249,11 @@
   // The reply as the transcript draws it: runs of thinking and tool calls
   // as one activity block each, everything else on its own (backlog 096).
   const groups = $derived(groupSegments(segs, ids));
+  // Nightloom's own stand-in for a turn with no reply (backlog 407): drawn
+  // as its notice under a "Nightloom" header, never as the model's prose.
+  const standIn = $derived(
+    segs.length === 1 && segs[0].kind === "text" && isStandIn([segs[0].text], footer?.stop_reason),
+  );
 
   function kindOf(seg: Segment): BlockKind {
     return seg.kind === "thinking" ? "thinking" : "tool";
@@ -570,7 +575,7 @@
 
 <div class="assistant" use:replyMotion={streaming}>
   {#if footer && headed}
-    <span class="ns-k">{footer.model}</span>
+    <span class="ns-k">{standIn ? "Nightloom" : footer.model}</span>
   {/if}
   {#each groups as g (g.kind === "activity" ? g.key : `one:${g.i}`)}
     {#if g.kind === "activity"}
@@ -798,6 +803,8 @@
           <span>{ed.verb} <span class="mem-edit-name">{ed.label}</span></span>
         </button>
       {/each}
+    {:else if g.seg.kind === "text" && standIn}
+      <div class="notice nl-own">{g.seg.text}</div>
     {:else if g.seg.kind === "text"}
       {@const councilSeat = parseCouncilSeat(g.seg.text)}
       {@const councilRecord = councilSeat ? null : parseCouncilRecord(g.seg.text)}
