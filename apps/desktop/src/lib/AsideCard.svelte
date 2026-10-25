@@ -20,6 +20,8 @@
   import type { Placement } from "./asideCard";
   import MoveZone from "./MoveZone.svelte";
   import AsideFoldPanel from "./AsideFoldPanel.svelte";
+  import CopyButton from "./CopyButton.svelte";
+  import { COPIED_MS } from "./copyIcon";
   // Backlog 283: the chat's composer and the chat's message pieces.
   import Composer from "./Composer.svelte";
   import AsideThread from "./AsideThread.svelte";
@@ -296,7 +298,7 @@
     try {
       await copyText(text);
       copied = true;
-      setTimeout(() => (copied = false), 1200);
+      setTimeout(() => (copied = false), COPIED_MS);
     } catch {
       // The clipboard refused; nothing to say.
     }
@@ -404,11 +406,11 @@
       <AsideFoldPanel {aside} part="button" open={!readOnly} />
     {/if}
     {#if last && last.partial.trim()}
-      <button
-        class="ns-btn ghost small"
-        use:tip={aside.turns.length > 1 ? "Copy the thread as text" : "Copy the answer as text"}
-        onclick={() => void copy()}>{copied ? "Copied" : "Copy"}</button
-      >
+      <CopyButton
+        {copied}
+        label={aside.turns.length > 1 ? "Copy the thread as text" : "Copy the answer as text"}
+        onclick={() => void copy()}
+      />
     {/if}
     {#if !readOnly}
       <button

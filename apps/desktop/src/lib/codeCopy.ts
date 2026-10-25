@@ -5,6 +5,11 @@
  * Copies the block's `<code>` text, never the button's.
  */
 
+import { flashCopied, setCopyState } from "./copyIcon";
+
+/** The code-block Copy button's name, for a reader and the tooltip. */
+export const COPY_BLOCK = "Copy this block";
+
 /** The text Copy puts on the clipboard: the block's code, as shown. */
 export function codeText(pre: Element): string {
   const code = pre.querySelector("code");
@@ -19,15 +24,13 @@ export function addCopyButtons(root: HTMLElement): void {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "code-copy";
-    b.textContent = "Copy";
-    b.setAttribute("data-tip", "Copy this block");
+    // The copy icon, not the word (item 402); its name rides on aria-label
+    // and the tooltip.
+    setCopyState(b, false, COPY_BLOCK);
     b.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      void navigator.clipboard?.writeText(codeText(pre)).then(() => {
-        b.textContent = "Copied";
-        setTimeout(() => (b.textContent = "Copy"), 1500);
-      });
+      void navigator.clipboard?.writeText(codeText(pre)).then(() => flashCopied(b, COPY_BLOCK));
     });
     pre.appendChild(b);
   }
