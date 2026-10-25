@@ -241,6 +241,34 @@ pub struct EditedAttachments {
     pub documents: Vec<DocumentInput>,
 }
 
+/// What a reply's prompt cache was built with, as far as a change to it
+/// is measured to lose the cache (nightshift backlog 408, measured
+/// 2026-10-24 on Claude Code 2.1.310 — `notes/runner-design/
+/// 408-report-2026-10-24.md`): the model (Haiku → Opus re-wrote all but
+/// the 11k head every chat shares), the tool list (tools off re-wrote
+/// everything), safe mode (re-wrote the conversation after the system
+/// head), and the Plan position (on Haiku the CLI runs a Plan turn on
+/// Sonnet, so it is a model change there; on Opus it kept). Effort,
+/// Chrome, connectors, fork mode and default ↔ bypass were measured to
+/// keep the cache and are not here. `ask` rides along so a restore puts
+/// the position back whole, not half.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CacheKey {
+    /// `"claude-code"` — the only engine measured.
+    pub engine: String,
+    /// The model as picked (`--model`: an alias or an id), `None` for the
+    /// CLI's own default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Whether the CLI was offered any tools (`--tools ""` is none).
+    pub tools: bool,
+    pub safe_mode: bool,
+    /// The Ask position or the Plan position (Plan implies Ask).
+    #[serde(default)]
+    pub ask: bool,
+    pub plan: bool,
+}
+
 /// One entry in a session's append-only event log.
 ///
 /// The log is the source of truth; the message list sent to a provider and
@@ -334,6 +362,15 @@ pub enum SessionEvent {
         /// did.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cache_ttl: Option<CacheTtl>,
+        /// The settings this request was sent with that, changed, lose its
+        /// prompt cache (nightshift backlog 408, 2026-10-24) — so the window
+        /// can warn before a pick throws a warm cache away, and put the
+        /// settings back. Only the ones measured to break it are kept
+        /// ([`CacheKey`]). Absent on every log written before the field and
+        /// on engines it was not measured on, and the window never warns
+        /// without it, so a guess is never shown.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_key: Option<CacheKey>,
         at: DateTime<Utc>,
     },
     /// One executed tool call. Consecutive results project into a single
@@ -1811,6 +1848,7 @@ impl Session {
             cost,
             sent_at: None,
             cache_ttl: None,
+            cache_key: None,
             at: Utc::now(),
         });
     }
@@ -1833,6 +1871,32 @@ impl Session {
         sent_at: DateTime<Utc>,
         default_ttl: Option<CacheTtl>,
     ) {
+        self.record_assistant_keyed(
+            model,
+            blocks,
+            stop_reason,
+            usage,
+            cost,
+            sent_at,
+            default_ttl,
+            None,
+        );
+    }
+
+    /// [`record_assistant_timed`](Self::record_assistant_timed) with the
+    /// settings the cache was built with (nightshift backlog 408).
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_assistant_keyed(
+        &mut self,
+        model: impl Into<String>,
+        blocks: Vec<ContentBlock>,
+        stop_reason: Option<String>,
+        usage: Usage,
+        cost: Option<f64>,
+        sent_at: DateTime<Utc>,
+        default_ttl: Option<CacheTtl>,
+        cache_key: Option<CacheKey>,
+    ) {
         self.record(SessionEvent::AssistantMessage {
             model: model.into(),
             blocks,
@@ -1841,6 +1905,7 @@ impl Session {
             cost,
             sent_at: Some(sent_at),
             cache_ttl: usage.cache_ttl(default_ttl),
+            cache_key,
             at: Utc::now(),
         });
     }
@@ -5496,7 +5561,7 @@ mod tests {
         ));
         let back = serde_json::to_string(&event).unwrap();
         assert!(
-            !back.contains("sent_at") && !back.contains("cache_ttl"),
+            !back.contains("sent_at") && !back.contains("cache_ttl") && !back.contains("cache_key"),
             "{back}"
         );
 

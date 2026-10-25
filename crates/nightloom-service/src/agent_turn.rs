@@ -357,6 +357,8 @@ async fn turn_body(
     let seed_model = seed.clone();
     // Rendered live and recorded in one pass.
     let mut recorder = Recorder::new(session, seed);
+    // What a change would lose this turn's cache to (backlog 408).
+    recorder.key_cache_from(agent.spec());
     // The first text handed to the window (or the phone) — item 256.
     let mut emitted = false;
     // The model's words before a call, for Playwright's card (backlog 367).
