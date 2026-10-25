@@ -67,7 +67,8 @@
   import { memoryRefs, openMemoryEdit } from "./memoryOpen";
   import { memoryEditOf, type MemoryEdit } from "./memoryEdits";
   import type { ReplyUsageView } from "./replyUsage";
-  import { hasUsage, isStandIn, stopNote } from "./replyFooter";
+  import { hasUsage, isSignedOut, isStandIn, stopNote } from "./replyFooter";
+  import SignedOutNotice from "./SignedOutNotice.svelte";
   import StillRunningLine from "./StillRunningLine.svelte";
   // The streaming motion (backlog 342, his pick of 338: "Loom + fade-in").
   import { Births, needleIn, needleOut, replyMotion } from "./replyMotion";
@@ -805,6 +806,9 @@
           <span>{ed.verb} <span class="mem-edit-name">{ed.label}</span></span>
         </button>
       {/each}
+    {:else if g.seg.kind === "text" && standIn && isSignedOut(footer?.stop_reason)}
+      <!-- Signed out (backlog 409): says so, with Sign in. -->
+      <SignedOutNotice reason={footer?.stop_reason} />
     {:else if g.seg.kind === "text" && standIn}
       <div class="notice nl-own">{g.seg.text}</div>
     {:else if g.seg.kind === "text"}
