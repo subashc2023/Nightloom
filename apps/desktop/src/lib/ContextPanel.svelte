@@ -453,7 +453,7 @@
   // what it reads is the cards above; what it may not do is this line.
   const kind = $derived(chatMode(app.events));
   const MODE_CAVEAT: Record<string, string> = {
-    incognito: "incognito: writes nothing, unread by other chats",
+    incognito: "incognito: knows nothing about you, writes nothing, unread by other chats",
     ephemeral:
       "ephemeral: nothing is kept — no log, no name, no CLI session; on Claude Code the earlier turns are replayed into each prompt rather than resumed",
   };
