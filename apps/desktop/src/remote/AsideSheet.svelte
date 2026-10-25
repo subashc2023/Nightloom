@@ -11,6 +11,7 @@
    */
   import { onMount } from "svelte";
   import { renderMarkdown } from "../lib/markdown";
+  import { COPIED_MS, copyIconSvg } from "../lib/copyIcon";
   import { loadDraft, saveDraft, type Aside, type PastAside } from "./client";
   import { missingSentence } from "./hosts";
 
@@ -35,6 +36,13 @@
   const key = $derived(`aside:${chat}`);
   let text = $state("");
   let sending = $state(false);
+  // Copy is the copy icon (item 402), a check for COPIED_MS after a tap.
+  let answerCopied = $state(false);
+  function copyAnswer(answer: string): void {
+    oncopy(answer);
+    answerCopied = true;
+    setTimeout(() => (answerCopied = false), COPIED_MS);
+  }
 
   onMount(() => {
     text = loadDraft(key);
@@ -78,7 +86,11 @@
           <button class="as-btn" onclick={onstop}>Stop</button>
         {:else if aside.answer}
           <span class="as-grow"></span>
-          <button class="as-btn" onclick={() => oncopy(aside!.answer)}>Copy</button>
+          <button
+            class="as-btn icon"
+            aria-label={answerCopied ? "Copied" : "Copy the answer"}
+            onclick={() => copyAnswer(aside!.answer)}>{@html copyIconSvg(answerCopied, 20)}</button
+          >
         {/if}
       </div>
     </div>
@@ -226,6 +238,12 @@
     border: 1px solid var(--line2);
     font-size: 15px;
     box-sizing: border-box;
+  }
+  /* Item 402: an icon button is a square at the row's 44px tap height. */
+  .as-btn.icon {
+    width: 44px;
+    padding: 0;
+    justify-content: center;
   }
   .as-btn:disabled {
     opacity: 0.4;

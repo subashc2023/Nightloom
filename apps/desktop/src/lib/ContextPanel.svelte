@@ -4,6 +4,8 @@
   import { copyText } from "./clipRing.svelte";
   import * as api from "./api";
   import Icon from "./Icon.svelte";
+  import CopyButton from "./CopyButton.svelte";
+  import { COPIED_MS } from "./copyIcon";
   import LayerVersionMark from "./LayerVersionMark.svelte";
   import ThreadPicker from "./ThreadPicker.svelte";
   import { pendingFor } from "./promptVersions";
@@ -94,7 +96,7 @@
       copied = key;
       setTimeout(() => {
         if (copied === key) copied = null;
-      }, 1200);
+      }, COPIED_MS);
     } catch {
       // The webview refused the clipboard; nothing to show but the button.
     }
@@ -1035,9 +1037,7 @@
           <span class="gloss">One string, joined the way the adapters join it — not a re-join done here.</span>
           <span class="spacer"></span>
           <span class="meta">{text.length.toLocaleString()} characters</span>
-          <button class="ns-btn small" onclick={() => copy("sent", text)}>
-            {copied === "sent" ? "Copied" : "Copy"}
-          </button>
+          <CopyButton copied={copied === "sent"} label="Copy the text" onclick={() => copy("sent", text)} />
         </div>
         <pre class="reader tall">{text}</pre>
       </section>
@@ -1120,9 +1120,7 @@
                 <div class="body-bar">
                   <span class="file" use:tip={cliPrompt.path}>{cliPrompt.path}</span>
                   <span class="spacer"></span>
-                  <button class="ns-btn ghost small" onclick={() => copy(CLI_PROMPT, cliPrompt?.sections.join("\n\n"))}>
-                    {copied === CLI_PROMPT ? "Copied" : "Copy"}
-                  </button>
+                  <CopyButton copied={copied === CLI_PROMPT} label="Copy the text" onclick={() => copy(CLI_PROMPT, cliPrompt?.sections.join("\n\n"))} />
                 </div>
                 <pre class="reader">{cliPrompt.sections.join("\n\n")}</pre>
               </div>
@@ -1255,9 +1253,7 @@
                       <span class="file" use:tip={seg.name}>{seg.name}</span>
                     {/if}
                     <span class="spacer"></span>
-                    <button class="ns-btn ghost small" onclick={() => copy(seg.name, seg.text)}>
-                      {copied === seg.name ? "Copied" : "Copy"}
-                    </button>
+                    <CopyButton copied={copied === seg.name} label="Copy the text" onclick={() => copy(seg.name, seg.text)} />
                   </div>
                   <pre class="reader">{seg.text}</pre>
                 </div>
@@ -1297,9 +1293,7 @@
               <div class="body">
                 <div class="body-bar">
                   <span class="spacer"></span>
-                  <button class="ns-btn ghost small" onclick={() => copy(seg.name, seg.text)}>
-                    {copied === seg.name ? "Copied" : "Copy"}
-                  </button>
+                  <CopyButton copied={copied === seg.name} label="Copy the text" onclick={() => copy(seg.name, seg.text)} />
                 </div>
                 <pre class="reader">{seg.text}</pre>
               </div>
@@ -1367,9 +1361,7 @@
                 <div class="body-bar">
                   <span class="file" use:tip={cliMemory.path}>{cliMemory.path}</span>
                   <span class="spacer"></span>
-                  <button class="ns-btn ghost small" onclick={() => copy(CLI_MEMORY, cliMemory?.text)}>
-                    {copied === CLI_MEMORY ? "Copied" : "Copy"}
-                  </button>
+                  <CopyButton copied={copied === CLI_MEMORY} label="Copy the text" onclick={() => copy(CLI_MEMORY, cliMemory?.text)} />
                 </div>
                 <pre class="reader">{cliMemory.text}</pre>
                 {#if cliMemory.others.length > 0}
@@ -1447,9 +1439,7 @@
               <div class="body-bar">
                 <span class="file" use:tip={voiceNote.path}>{voiceNote.path}</span>
                 <span class="spacer"></span>
-                <button class="ns-btn ghost small" onclick={() => copy(SPOKEN, voiceNote?.text)}>
-                  {copied === SPOKEN ? "Copied" : "Copy"}
-                </button>
+                <CopyButton copied={copied === SPOKEN} label="Copy the text" onclick={() => copy(SPOKEN, voiceNote?.text)} />
               </div>
               <pre class="reader">{voiceNote.text}</pre>
             </div>

@@ -123,6 +123,8 @@
   import { onDestroy, tick, untrack } from "svelte";
   import { isMac } from "./platform";
   import Icon from "./Icon.svelte";
+  import CopyButton from "./CopyButton.svelte";
+  import { COPIED_MS } from "./copyIcon";
   import Kbd from "./Kbd.svelte";
   import { OFFERED_STYLES, chosenArrival, play as playArrival, setChosenArrival, type ArrivalStyle } from "./thinkingArrival";
   import { reducedMotion } from "./sendMotion";
@@ -741,6 +743,19 @@
   let remoteError = $state<string | null>(null);
   let remotePort = $state("");
   let remoteRevealed = $state(false);
+  // The token's Copy (item 402: the copy icon, a check for COPIED_MS). Straight
+  // to the clipboard, as before — not through the clip ring's history.
+  let tokenCopied = $state(false);
+  async function copyToken(): Promise<void> {
+    try {
+      if (!navigator.clipboard || !remote?.token) return;
+      await navigator.clipboard.writeText(remote.token);
+      tokenCopied = true;
+      setTimeout(() => (tokenCopied = false), COPIED_MS);
+    } catch {
+      // The webview refused the clipboard; nothing to show but the button.
+    }
+  }
   async function remoteRun(call: () => Promise<RemoteStatus>) {
     if (remoteBusy) return;
     remoteBusy = true;
@@ -1714,7 +1729,7 @@
         <div class="remote-actions">
           {#if remote?.token}
             <button class="ns-btn" onclick={() => (remoteRevealed = !remoteRevealed)}>{remoteRevealed ? "Hide" : "Show"} the token</button>
-            <button class="ns-btn" onclick={() => void navigator.clipboard?.writeText(remote?.token ?? "")}>Copy</button>
+            <CopyButton copied={tokenCopied} label="Copy the token" onclick={() => void copyToken()} />
           {/if}
           <button class="ns-btn" disabled={remoteBusy} onclick={() => void remoteRun(() => api.remoteToken(!!remote?.has_token))}>
             {remote?.has_token ? "Regenerate" : "Make a token"}
@@ -3623,6 +3638,7 @@
      threshold row and the composer's field face for the message. */
   .remote-actions {
     display: flex;
+    align-items: center;
     gap: 8px;
     flex-wrap: wrap;
     margin-top: 6px;

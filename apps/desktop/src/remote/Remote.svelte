@@ -4187,14 +4187,16 @@
     border-bottom: 1px solid var(--line);
     background: var(--well);
   }
+  /* Item 402: the copy icon, not the word — a 36px square, the header's
+     height, so the tap target stays what the word's was. */
   .md :global(.code-copy) {
     all: unset;
     cursor: pointer;
-    min-height: 36px;
-    padding: 0 10px;
+    display: inline-grid;
+    place-items: center;
+    width: 36px;
+    height: 36px;
     color: var(--accent-ink);
-    font-size: 13px;
-    font-weight: 500;
   }
   .md :global(.code-body) {
     position: relative;

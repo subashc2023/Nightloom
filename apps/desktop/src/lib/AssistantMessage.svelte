@@ -57,6 +57,8 @@
   import ApprovalPrompt from "./ApprovalPrompt.svelte";
   import AskAnswered from "./AskAnswered.svelte";
   import Icon from "./Icon.svelte";
+  import CopyButton from "./CopyButton.svelte";
+  import { COPIED_MS } from "./copyIcon";
   import { REMOVED_TEXT_PLACEHOLDER, REMOVED_TOOL_PLACEHOLDER } from "./edit";
   import { removeTip } from "./removeAsk";
   import MemoryHits from "./MemoryHits.svelte";
@@ -98,7 +100,7 @@
     try {
       await copyText(textOf());
       copied = true;
-      setTimeout(() => (copied = false), 1200);
+      setTimeout(() => (copied = false), COPIED_MS);
     } catch {
       // The webview refused the clipboard; nothing to show but the button.
     }
@@ -932,7 +934,7 @@
   {#if footer && !streaming}
     {@const share = size ? shareOf(size.tokens, limit) : null}
     <div class="footer">
-      <button class="ns-btn ghost small" onclick={() => void copy()}>{copied ? "Copied" : "Copy"}</button>
+      <CopyButton {copied} label="Copy this reply" onclick={() => void copy()} />
       {#if onretry}
         <!-- Retry (item 333): the prompt again, in a fork from it; this
              reply stays where it is, a version (‹ ›) away. -->

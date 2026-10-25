@@ -250,22 +250,26 @@ button {
 .markdown pre:has(> .code-copy) {
   position: relative;
   overflow-x: visible;
-  padding-right: 4.6em;
+  padding-right: 38px;
 }
 .markdown pre:has(> .code-copy) > code {
   display: block;
   overflow-x: auto;
 }
+/* Item 402: the copy icon in `.ns-icon-btn`'s 22px box (the word "Copy"
+   until then), on the block's own background so code never shows through;
+   its centre on the first line's (measured: 0.2px off, 402 harness). */
 .markdown pre > .code-copy {
   position: absolute;
-  top: 7px;
+  top: 10px;
   right: 7px;
-  font-family: inherit;
-  font-size: 11px;
-  font-weight: 500;
-  padding: 2px 8px;
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
   border-radius: 6px;
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   background: var(--term);
   color: var(--dim);
   cursor: pointer;
@@ -277,8 +281,10 @@ button {
 .markdown pre > .code-copy:focus-visible {
   opacity: 1;
 }
-.markdown pre > .code-copy:hover {
+.markdown pre > .code-copy:hover,
+.markdown pre > .code-copy:focus-visible {
   color: var(--ink);
+  border-color: var(--line2);
 }
 
 .markdown pre code {
@@ -442,6 +448,27 @@ button {
 .ns-btn:disabled {
   opacity: 0.5;
   cursor: default;
+}
+/* An icon button (item 402: every Copy, `CopyButton.svelte`): the box,
+   colours and hover of the transcript's `.tool-btn` beside his messages,
+   so the copy icon reads the same everywhere. */
+.ns-icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--dim);
+  padding: 0;
+  cursor: pointer;
+  flex: none;
+}
+.ns-icon-btn:hover,
+.ns-icon-btn:focus-visible {
+  color: var(--ink);
+  border-color: var(--line2);
 }
 .ns-btn svg {
   width: 14px;
