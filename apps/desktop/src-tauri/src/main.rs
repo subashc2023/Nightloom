@@ -6018,6 +6018,21 @@ async fn cli_version_check(
     Ok(nightloom_service::cli_update::check(&cli_binary(binary)).await)
 }
 
+/// Whether Claude Code is signed in (nightshift backlog 409), for the
+/// engine chip, and the absolute path of the CLI the Sign in button types
+/// `auth login` after. `loggedIn` alone is read; the account's details the
+/// command also prints are never kept or shown. Zero tokens.
+#[tauri::command]
+async fn claude_auth_status(
+    binary: Option<String>,
+) -> Result<nightloom_service::cli_auth::AuthStatus, String> {
+    let b = binary
+        .filter(|b| !b.trim().is_empty())
+        .unwrap_or_else(|| "claude".to_string());
+    let bin = nightloom_service::cli_auth::absolute_binary(&b);
+    Ok(nightloom_service::cli_auth::status(&bin).await)
+}
+
 /// One `claude update` at a time, whatever asks.
 static CLI_UPDATING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -8487,6 +8502,7 @@ fn main() {
             plan_usage,
             plan_usage_refresh,
             cli_version_check,
+            claude_auth_status,
             cli_update,
             turn_budget,
             turn_usage,

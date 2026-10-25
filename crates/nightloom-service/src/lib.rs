@@ -15,6 +15,7 @@ pub mod capture;
 pub mod centre;
 pub mod chat_name;
 pub mod chat_ops;
+pub mod cli_auth;
 pub mod cli_update;
 pub mod context_ops;
 pub mod council;

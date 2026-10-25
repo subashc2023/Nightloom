@@ -3,6 +3,7 @@ import type {
   AsideResult,
   EditedAttachments,
   AsideSendOptions,
+  ClaudeAuthStatus,
   CliStatus,
   CliUpdateResult,
   AgentConnectArgs,
@@ -920,6 +921,12 @@ export function planUsageRefresh(afterMs?: number): Promise<PlanUsage> {
  *  the connected chat's resolved CLI, or null for `claude` resolved. */
 export function cliVersionCheck(binary: string | null): Promise<CliStatus> {
   return invoke("cli_version_check", { binary });
+}
+
+/** Whether Claude Code is signed in (backlog 409), by `claude auth status`.
+ *  Zero tokens; no account detail comes back. */
+export function claudeAuthStatus(binary: string | null): Promise<ClaudeAuthStatus> {
+  return invoke("claude_auth_status", { binary });
 }
 
 /** Run `claude update` (backlog 182) — only at a cold moment, or on "now"

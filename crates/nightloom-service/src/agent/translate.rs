@@ -15,6 +15,7 @@ use super::protocol::{
     TaskUsage, TurnLine,
 };
 use crate::TurnEvent;
+use crate::cli_auth::is_sign_in_failure;
 use nightloom_core::Usage;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -67,6 +68,11 @@ pub struct AgentOutcome {
     /// The CLI's own sentence, for a notice and the log's stop reason; a
     /// turn stopped this way otherwise ends silently.
     pub api_error: Option<String>,
+    /// The CLI refused the turn because it is signed out (backlog 409): its
+    /// OAuth session expired and could not be refreshed, or it was never
+    /// logged in. Read from the CLI's own failure ([`is_sign_in_failure`]);
+    /// `api_error` still holds its sentence.
+    pub signed_out: bool,
     /// The CLI's `result` line was read (backlog 332). A stream that ends
     /// without one lost its tail somewhere — the reply was cut off.
     pub result_seen: bool,
@@ -755,6 +761,9 @@ impl Translator {
                     t.is_api_error_message || (synthetic && text.starts_with("API Error"));
                 if flagged && !text.is_empty() && !text.starts_with(LIMIT_TEXT_PREFIX) {
                     self.outcome.api_error = Some(text.to_string());
+                    if is_sign_in_failure(t.error.as_deref(), t.api_error_status, text) {
+                        self.outcome.signed_out = true;
+                    }
                 }
             }
         }
@@ -775,6 +784,9 @@ impl Translator {
             && !text.is_empty()
         {
             self.outcome.api_error = Some(text.to_string());
+            if is_sign_in_failure(None, None, text) {
+                self.outcome.signed_out = true;
+            }
         }
         if let Some(text) = r.result {
             self.outcome.text = text;
@@ -1541,6 +1553,57 @@ mod tests {
         assert!(limit.api_error.is_none());
         let (_, fine) = drive(&[RESULT]);
         assert!(fine.api_error.is_none());
+    }
+
+    // Backlog 409: the CLI signed out. Verbatim from its own transcripts
+    // (cwd, branch and ids dropped), `external`: 2.1.310 on 2026-10-24 — the
+    // line behind the reply he saw — 2.1.280 with its 401, and 2.1.263's
+    // never-logged-in.
+    const SIGNED_OUT_2_1_310: &str = r#"{"type":"assistant","message":{"id":"61cfc640","container":null,"model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","stop_sequence":"","type":"message","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"Failed to authenticate: OAuth session expired and could not be refreshed"}],"context_management":null},"parent_tool_use_id":null,"error":"authentication_failed","isApiErrorMessage":true,"session_id":"aaec4e58"}"#;
+    const SIGNED_OUT_401: &str = r#"{"type":"assistant","message":{"id":"3400f30d","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"Failed to authenticate. API Error: 401 OAuth access token has expired. Re-authenticate to continue."}]},"parent_tool_use_id":null,"error":"authentication_failed","isApiErrorMessage":true,"apiErrorStatus":401,"session_id":"d9779319"}"#;
+    const NOT_LOGGED_IN: &str = r#"{"type":"assistant","message":{"id":"fb08f1d7","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"Not logged in · Please run /login"}]},"parent_tool_use_id":null,"error":"authentication_failed","isApiErrorMessage":true,"session_id":"63206cd7"}"#;
+    const RESULT_SIGNED_OUT: &str = r#"{"type":"result","subtype":"success","is_error":true,"num_turns":1,"result":"Failed to authenticate: OAuth session expired and could not be refreshed","session_id":"aaec4e58","usage":{"input_tokens":0,"output_tokens":0}}"#;
+
+    #[test]
+    fn each_sign_in_failure_the_cli_writes_reads_as_signed_out() {
+        for line in [SIGNED_OUT_2_1_310, SIGNED_OUT_401, NOT_LOGGED_IN] {
+            let (_, o) = drive(&[line, RESULT_SIGNED_OUT]);
+            assert!(o.signed_out, "{line}");
+            assert!(o.is_error);
+            assert!(o.limit.is_none());
+            assert!(o.api_error.is_some());
+        }
+        let (_, o) = drive(&[SIGNED_OUT_2_1_310]);
+        assert_eq!(
+            o.api_error.as_deref(),
+            Some("Failed to authenticate: OAuth session expired and could not be refreshed")
+        );
+    }
+
+    #[test]
+    fn a_failed_result_alone_is_the_backstop_for_signed_out() {
+        let (_, o) = drive(&[RESULT_SIGNED_OUT]);
+        assert!(o.signed_out);
+    }
+
+    #[test]
+    fn no_other_failure_reads_as_signed_out() {
+        for lines in [
+            &[FILTERED][..],
+            &[RESULT_FILTERED],
+            &[LIMIT_MAIN_429, RESULT_LIMIT],
+            &[RESULT],
+        ] {
+            let (_, o) = drive(lines);
+            assert!(!o.signed_out);
+        }
+        assert!(!is_sign_in_failure(
+            Some("rate_limit"),
+            Some(429),
+            "You've hit your session limit"
+        ));
+        assert!(!is_sign_in_failure(Some("unknown"), None, FILTER_TEXT));
+        assert!(is_sign_in_failure(None, Some(401), "API Error: 401"));
     }
 
     // Pass 2 of 164 (2026-10-09): a whole turn replayed, synthetic but in

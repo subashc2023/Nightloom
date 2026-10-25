@@ -495,6 +495,10 @@ async fn turn_body(
             }
             // The reason rides in the stop reason (backlog 202).
             let reason = match (&outcome.api_error, outcome.is_error, &outcome.cut_off) {
+                // Signed out (backlog 409): the mark the window reads.
+                (Some(e), true, _) if outcome.signed_out => {
+                    format!("{}{e}", nightloom_core::SIGNED_OUT_REASON)
+                }
                 (Some(e), true, _) => format!("error: {e}"),
                 (None, true, _) => "error".to_string(),
                 // Ended before its `result` (backlog 332): the footer
@@ -511,11 +515,12 @@ async fn turn_body(
                     .api_error
                     .clone()
                     .unwrap_or_else(|| "the turn failed before any reply arrived".into());
-                record_unanswered(
-                    session,
-                    outcome.model.clone().unwrap_or(seed_model),
-                    Some(&why),
-                );
+                let model = outcome.model.clone().unwrap_or(seed_model);
+                if outcome.signed_out {
+                    record_signed_out(session, model, &why);
+                } else {
+                    record_unanswered(session, model, Some(&why));
+                }
             }
             // After the turn: an id from a run that failed to start is a
             // handle to nothing.
@@ -588,6 +593,9 @@ async fn turn_body(
             let why = e.to_string();
             if cancel.is_cancelled() {
                 record_unanswered(session, seed_model, None);
+            } else if crate::cli_auth::is_sign_in_failure(None, None, &why) {
+                // A CLI that will not start signed out (backlog 409).
+                record_signed_out(session, seed_model, &why);
             } else {
                 record_unanswered(session, seed_model, Some(&why));
             }
@@ -607,6 +615,26 @@ pub use nightloom_core::STOPPED_BEFORE_REPLY;
 /// reply carries no usage (the gauges skip it) and no cache window; its
 /// stop reason is `stopped` or `error: <why>`, which the footer names.
 pub(crate) fn record_unanswered(session: &mut Session, model: String, error: Option<&str>) {
+    let (text, reason) = match error {
+        None => (STOPPED_BEFORE_REPLY.to_string(), "stopped".to_string()),
+        Some(why) => (
+            format!("{}{why}", nightloom_core::NO_REPLY_PREFIX),
+            format!("error: {why}"),
+        ),
+    };
+    record_stand_in(session, model, text, reason);
+}
+
+/// Backlog 409: the same stand-in for a turn Claude Code refused because it
+/// is signed out, its stop reason marked so the window offers Sign in
+/// (`error: signed out: <why>`).
+pub(crate) fn record_signed_out(session: &mut Session, model: String, why: &str) {
+    let text = format!("{}{why}", nightloom_core::NO_REPLY_PREFIX);
+    let reason = format!("{}{why}", nightloom_core::SIGNED_OUT_REASON);
+    record_stand_in(session, model, text, reason);
+}
+
+fn record_stand_in(session: &mut Session, model: String, text: String, reason: String) {
     let last = session.events().iter().rev().find(|e| {
         matches!(
             e,
@@ -618,13 +646,6 @@ pub(crate) fn record_unanswered(session: &mut Session, model: String, error: Opt
     if !matches!(last, Some(SessionEvent::UserMessage { .. })) {
         return;
     }
-    let (text, reason) = match error {
-        None => (STOPPED_BEFORE_REPLY.to_string(), "stopped".to_string()),
-        Some(why) => (
-            format!("{}{why}", nightloom_core::NO_REPLY_PREFIX),
-            format!("error: {why}"),
-        ),
-    };
     session.record_assistant_timed(
         model,
         vec![ContentBlock::Text { text }],
@@ -890,6 +911,32 @@ printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":tr
             reason.as_deref().is_some_and(|r| r.starts_with("error")),
             "{reason:?}"
         );
+    }
+
+    /// Backlog 409: the CLI signed out — its own failure line (2.1.310,
+    /// `external`, ids trimmed) — leaves the stand-in with the stop reason
+    /// marked signed out, which the window reads to offer Sign in.
+    #[tokio::test]
+    async fn a_signed_out_cli_leaves_a_reply_marked_signed_out() {
+        let body = r##"#!/bin/sh
+printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"claude-haiku-4-5","permissionMode":"default","session_id":"s-1"}'
+printf '%s\n' '{"type":"assistant","message":{"id":"61cfc640","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"Failed to authenticate: OAuth session expired and could not be refreshed"}]},"parent_tool_use_id":null,"error":"authentication_failed","isApiErrorMessage":true,"session_id":"s-1"}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"num_turns":1,"result":"Failed to authenticate: OAuth session expired and could not be refreshed","session_id":"s-1","usage":{"input_tokens":0,"output_tokens":0}}'
+"##;
+        let events = one_turn(body, None).await;
+        let (text, reason) = reply_after_his(&events).expect("a reply under his message");
+        assert_eq!(
+            text,
+            "No reply: Failed to authenticate: OAuth session expired and could not be refreshed"
+        );
+        assert_eq!(
+            reason.as_deref(),
+            Some(
+                "error: signed out: Failed to authenticate: OAuth session expired and could not be refreshed"
+            )
+        );
+        // Still the stand-in core keeps off the wire.
+        assert!(reason.unwrap().starts_with("error: "));
     }
 
     /// Backlog 361: a turn that answered gets no second, empty-handed reply.

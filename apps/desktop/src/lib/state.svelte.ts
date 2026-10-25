@@ -128,6 +128,7 @@ import { recordRelay } from "./relay.svelte";
 import { adoptPending, closeRunningRows, latestAgents, mergeRows, rowsFromLog, rowsOf } from "./subagentRows";
 import { lineText, lineView, matchTasks, type StillRunningSegment } from "./stillRunning";
 import { cli, startCliClock } from "./cliUpdate.svelte";
+import { probeAuth } from "./claudeAuth.svelte";
 import { chatIsCold, loadLayerPrefs, reconnectBeforeTurn, saveLayerPrefs } from "./promptVersions";
 import { CONNECT_DEADLINE_MS, withDeadline } from "./deadline";
 import { rewoundWrites, setAsideFiles } from "./rewoundFiles";
@@ -3686,6 +3687,9 @@ async function applyAgentDraft(updateNow: PromptLayer[] = [], take = true): Prom
       agent: res.agent ?? null,
       folders: res.folders ?? [],
     };
+    // Whether Claude Code is signed in (backlog 409), for the engine chip:
+    // a local `claude auth status`, zero tokens, not awaited.
+    void probeAuth(res.agent?.binary ?? null);
     app.project = res.project ?? null;
     saveLastConnection({ ...d });
     chatConnected(chat, sent);
