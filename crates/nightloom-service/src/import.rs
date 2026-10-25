@@ -1674,6 +1674,7 @@ fn write_conversation(dir: &Path, conv: &ExportedConversation) -> Result<Option<
                 // import is history, and any entry it had is long gone.
                 sent_at: None,
                 cache_ttl: None,
+                cache_key: None,
                 at,
             }),
             other => {

@@ -820,6 +820,20 @@ export interface Usage {
  *  wrote or last read it — the API's own suffixes, as the log spells them. */
 export type CacheTtl = "5m" | "1h";
 
+/** What a reply's prompt cache was built with, as far as a change is
+ *  measured to lose it (nightshift backlog 408): the core's `CacheKey`. */
+export interface CacheKey {
+  /** `"claude-code"`, the only engine measured. */
+  engine: string;
+  /** The model as picked (alias or id); absent is the CLI's default. */
+  model?: string;
+  tools: boolean;
+  safe_mode: boolean;
+  /** The Ask or the Plan position. */
+  ask?: boolean;
+  plan: boolean;
+}
+
 /** One MCP server, as reported by `connect`. */
 export interface McpServerInfo {
   name: string;
@@ -1147,6 +1161,10 @@ export type SessionEvent =
       // lifetime also absent when the request touched no cache.
       sent_at?: string;
       cache_ttl?: CacheTtl;
+      // The settings the request was sent with that, changed, lose its
+      // cache (nightshift backlog 408) — Claude Code turns since the field;
+      // absent before it, and never guessed (`cacheLoss` in cache.ts).
+      cache_key?: CacheKey;
       at: string;
     }
   // Supersedes events `to..` up to this marker. The log keeps them, so the

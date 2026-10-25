@@ -1,4 +1,4 @@
-import type { CacheTtl, SessionEvent } from "./types";
+import type { CacheKey, CacheTtl, SessionEvent } from "./types";
 import { liveFlags } from "./state.svelte";
 
 /**
@@ -106,4 +106,125 @@ export function nextTickMs(remainingMs: number): number | null {
   if (remainingMs <= 0) return null;
   if (remainingMs <= SECONDS_BELOW_MS) return (remainingMs % 1000) + 1;
   return Math.min((remainingMs % 60_000) + 1, remainingMs - SECONDS_BELOW_MS + 1);
+}
+
+/**
+ * What the cache was built with (nightshift backlog 408, 2026-10-24): the
+ * newest live reply's recorded settings, and how many tokens its request
+ * left in the cache (read plus written — the prefix the next request would
+ * otherwise read back). The same reply `cacheState` times. Null when that
+ * reply recorded no settings: every log before the field, the API engine,
+ * and a stand-in reply — and then nothing is warned, never a guess.
+ */
+export interface CacheBuilt {
+  key: CacheKey;
+  cachedTokens: number;
+}
+
+export function cacheBuiltWith(events: SessionEvent[]): CacheBuilt | null {
+  const live = liveFlags(events);
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (!live[i]) continue;
+    const e = events[i];
+    if (e.event !== "assistant_message") continue;
+    if (!e.cache_key) return null;
+    const cachedTokens = (e.usage.cache_read_tokens ?? 0) + (e.usage.cache_write_tokens ?? 0);
+    return { key: e.cache_key, cachedTokens };
+  }
+  return null;
+}
+
+/** The settings the next turn goes out with — the rail's draft fields. */
+export interface PendingSettings {
+  engine: string;
+  agentModel: string;
+  tools: boolean;
+  agentSafeMode: boolean;
+  approval: boolean;
+  agentAsk: boolean;
+  agentPlan: boolean;
+}
+
+/** One setting that differs from what built the cache. `whole` is false
+ *  where the measured change re-sent only the conversation after the
+ *  system head, so the tooltip says "up to". */
+export interface CacheChange {
+  what: "model" | "tools" | "safe mode" | "plan";
+  text: string;
+  whole: boolean;
+}
+
+const isHaiku = (m: string): boolean => /haiku/i.test(m);
+
+/**
+ * The pending settings that would lose the cache (backlog 408) — only the
+ * ones measured to (Claude Code 2.1.310, 2026-10-24; nightshift
+ * `notes/runner-design/408-report-2026-10-24.md`):
+ * - the model (Haiku → Opus read back only the 11k head every chat shares);
+ * - tools on/off (tools off read back nothing);
+ * - safe mode (everything after the first ~31k re-sent);
+ * - the Plan position, **on Haiku only**: the CLI runs a Haiku chat's Plan
+ *   turn on Sonnet, a model change; on Opus Plan kept the cache.
+ * Effort, Chrome, connectors and fork mode were measured to keep it. The
+ * API engine and a switch between engines were not measured (blocker
+ * 1517), so either side off Claude Code warns of nothing.
+ */
+export function cacheLoss(key: CacheKey, p: PendingSettings): CacheChange[] {
+  if (key.engine !== "claude-code" || p.engine !== "claude-code") return [];
+  const out: CacheChange[] = [];
+  const was = key.model ?? "";
+  const now = p.agentModel.trim();
+  if (was !== now) out.push({ what: "model", text: `model ${was || "default"} → ${now || "default"}`, whole: true });
+  if (key.tools !== p.tools) out.push({ what: "tools", text: p.tools ? "tools on" : "tools off", whole: true });
+  if (key.safe_mode !== p.agentSafeMode) {
+    out.push({ what: "safe mode", text: p.agentSafeMode ? "safe mode on" : "safe mode off", whole: false });
+  }
+  const planNow = p.approval && p.agentPlan;
+  if (key.plan !== planNow && (isHaiku(was) || isHaiku(now))) {
+    out.push({ what: "plan", text: planNow ? "plan mode on" : "plan mode off", whole: true });
+  }
+  return out;
+}
+
+/** The chip's words while a change would lose a warm cache:
+ *  `cache will be lost · model haiku → opus, tools off`. */
+export function cacheLossLine(changes: CacheChange[]): string {
+  return `cache will be lost · ${changes.map((c) => c.text).join(", ")}`;
+}
+
+/** Its tooltip: what changed, what the next turn would re-send, and what
+ *  a click does. */
+export function cacheLossTitle(changes: CacheChange[], cachedTokens: number, remainingMs: number): string {
+  const n = cachedTokens.toLocaleString("en-US");
+  const whole = changes.some((c) => c.whole);
+  const left = remainingText(remainingMs);
+  const resend = whole
+    ? `the next turn re-sends the ${n} tokens this chat's cache holds at full price instead of reading them back`
+    : `the next turn re-sends up to ${n} of the tokens this chat's cache holds (the conversation after the system prompt) at full price`;
+  return (
+    `Changed since this chat's cache was built: ${changes.map((c) => c.text).join(", ")} — ${resend}. ` +
+    `Click to put ${changes.length === 1 ? "it" : "them"} back${left ? ` (the cache is warm for ${left})` : ""}.`
+  );
+}
+
+/**
+ * Put back every changed setting (backlog 408): the draft fields named in
+ * `changes`, to what built the cache. The caller reconnects. Plan restored
+ * on brings approval and Ask with it (Plan implies both); Plan restored
+ * off leaves the Ask position if the cache was built on Ask, else Auto.
+ */
+export function restoreCacheSettings(key: CacheKey, changes: CacheChange[], d: PendingSettings): void {
+  for (const c of changes) {
+    if (c.what === "model") d.agentModel = key.model ?? "";
+    else if (c.what === "tools") d.tools = key.tools;
+    else if (c.what === "safe mode") d.agentSafeMode = key.safe_mode;
+    else if (key.plan) {
+      d.approval = true;
+      d.agentAsk = true;
+      d.agentPlan = true;
+    } else {
+      d.agentPlan = false;
+      d.agentAsk = key.ask ?? false;
+    }
+  }
 }

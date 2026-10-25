@@ -27,7 +27,17 @@
   import { MODEL_KEYS, modelChipLabel, thinkingSupport } from "./catalog";
   import { modelList } from "./modelList.svelte";
   import { effortDefaultLabel } from "./effortDefaults";
-  import { cacheLine, cacheState, nextTickMs, remainingText } from "./cache";
+  import {
+    cacheBuiltWith,
+    cacheLine,
+    cacheLoss,
+    cacheLossLine,
+    cacheLossTitle,
+    cacheState,
+    nextTickMs,
+    remainingText,
+    restoreCacheSettings,
+  } from "./cache";
   import { HIDDEN_THINKING_TITLE, thinkingToggleDead } from "./activity";
   import { toggleTranscriptPref, transcript } from "./transcriptPrefs.svelte";
   import { composerFormat, toggleComposerFormat } from "./composerFormat.svelte";
@@ -2470,6 +2480,20 @@
       if (id != null) clearTimeout(id);
     };
   });
+  /**
+   * Backlog 408 (2026-10-24): what the warm cache was built with, and the
+   * rail's pending settings that would lose it — only the changes measured
+   * to (`cacheLoss`). While any stands, the chip says so and a click puts
+   * them back; offered only while the cache is warm, since a cold cache
+   * has nothing left to lose.
+   */
+  const cacheBuilt = $derived(floating ? null : cacheBuiltWith(app.events));
+  const cacheChanges = $derived(cacheBuilt && cache?.warm ? cacheLoss(cacheBuilt.key, app.draft) : []);
+  function restoreCache() {
+    if (!cacheBuilt || cacheChanges.length === 0) return;
+    restoreCacheSettings(cacheBuilt.key, cacheChanges, app.draft);
+    void applyDraft();
+  }
   const cacheShareTitle = "Share of the last request's prompt served from cache.";
   const cacheTitle = $derived.by(() => {
     if (!cache) return "";
@@ -3117,7 +3141,17 @@
            how long it stays warm, or `cold`. A chat whose last turn
            predates the timer's fields shows the share alone, and the
            title says why. Nothing before the first turn. -->
-      {#if cached != null || cache}
+      {#if cache && cacheBuilt && cacheChanges.length > 0}
+        <!-- Backlog 408: a pending change would lose the warm cache; the
+             click puts every changed setting back. -->
+        <button
+          class="ns-chip mono bottom-cache losing"
+          use:tip={cacheLossTitle(cacheChanges, cacheBuilt.cachedTokens, cache.remainingMs)}
+          onclick={restoreCache}
+        >
+          <span class="losing-what">{cacheLossLine(cacheChanges)}</span><span class="bottom-cache-when">&nbsp;· <span class="restore-word">restore</span></span>
+        </button>
+      {:else if cached != null || cache}
         <div
           class="ns-chip mono bottom-cache"
           class:cold={cache ? !cache.warm : false}
@@ -3388,6 +3422,29 @@
   .bottom-cache {
     font-variant-numeric: tabular-nums;
     color: var(--ink2);
+  }
+  /* Backlog 408: the warning reads in the accent, and is a button. */
+  .bottom-cache.losing {
+    display: inline-flex;
+    min-width: 0;
+    max-width: 100%;
+    color: var(--accent);
+    border-color: var(--accent);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .losing-what {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .bottom-cache.losing .bottom-cache-when {
+    flex: none;
+    color: var(--accent);
+  }
+  .restore-word {
+    text-decoration: underline;
+    text-underline-offset: 2px;
   }
   /* Only the timer half dims when cold; the share is still a fact. */
   .bottom-cache.cold .bottom-cache-when {
