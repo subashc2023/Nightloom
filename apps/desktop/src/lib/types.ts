@@ -597,6 +597,16 @@ export interface CliStatus {
   updates_disabled: string | null;
 }
 
+/** Whether Claude Code is signed in (backlog 409; `claude auth status`'s
+ *  `loggedIn` alone), the absolute CLI the Sign in button types `auth login`
+ *  after, and the home folder a Sign in tab opens in when the chat has no
+ *  folder. `signed_in` is null when the status could not be read. */
+export interface ClaudeAuthStatus {
+  binary: string;
+  signed_in: boolean | null;
+  home: string | null;
+}
+
 /** What a run of `claude update` did (backlog 182). */
 export interface CliUpdateResult {
   ok: boolean;

@@ -22,6 +22,11 @@ pub const STOPPED_BEFORE_REPLY: &str = "Stopped before any reply arrived.";
 /// The start of the reply recorded for a turn that failed before any reply
 /// (backlog 361): "No reply: <why>".
 pub const NO_REPLY_PREFIX: &str = "No reply: ";
+/// The stop reason of a turn Claude Code refused because it is signed out
+/// (backlog 409), before the CLI's own sentence: `error: signed out: <why>`.
+/// Still an `error: ` reason, so everything that reads one reads this; the
+/// window reads the mark to offer Sign in.
+pub const SIGNED_OUT_REASON: &str = "error: signed out: ";
 
 /// Whether an assistant message is backlog 361's stand-in: Nightloom's own
 /// words for a turn that ended before the model said anything — one text
