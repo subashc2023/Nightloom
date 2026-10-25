@@ -484,6 +484,17 @@ pub struct AgentSpec {
     /// already allows it. `None` when the chat has no Playwright server in
     /// its `mcp_config` (not installed, or a spec that is not a chat's).
     pub playwright: Option<own_browser::PlaywrightGate>,
+    /// An incognito chat (nightshift backlog 405): set by
+    /// [`apply_incognito`](Self::apply_incognito), never directly. On, the
+    /// CLI loads no setting file — so not his `~/.claude/CLAUDE.md`, his
+    /// hooks or his allowlist — no MCP server but the ones named here, and
+    /// no skill: the spelling safe mode uses, for the reason its doc's
+    /// table gives (`--setting-sources ""`, measured 2026-09-14).
+    pub incognito: bool,
+    /// The folders no read may reach (backlog 405), sent as
+    /// `permissions.deny` `Read(//…)` rules in the one `--settings` JSON
+    /// ([`crate::incognito::deny_rules`]; measured in the 405 report, M0).
+    pub denied_reads: Vec<PathBuf>,
     /// Passed through verbatim, last, so a caller can reach a flag this
     /// struct has not grown a field for.
     pub extra_args: Vec<String>,
@@ -762,6 +773,8 @@ impl AgentSpec {
             claude_ai_blocked: Vec::new(),
             browser: false,
             playwright: None,
+            incognito: false,
+            denied_reads: Vec::new(),
             extra_args: Vec::new(),
         }
     }
@@ -797,6 +810,25 @@ impl AgentSpec {
                 pw.no_card = true;
             }
         }
+    }
+
+    /// Make this the chat that knows nothing about him (nightshift backlog
+    /// 405, blocker 1513) — for a chat whose mode writes nothing, beside
+    /// [`apply_mode`](Self::apply_mode), after the shell has chosen the
+    /// chat's own empty folder ([`crate::incognito::workspace`]) and built
+    /// the prompt without the project's layers. Here: no `--add-dir` (the
+    /// vault and the extra folders), no auto memory, none of his settings
+    /// files, skills or other MCP servers ([`incognito`](Self::incognito)),
+    /// neither his claude.ai connectors nor his own Chrome, and every read
+    /// of `denied` refused. Narrows, never widens.
+    pub fn apply_incognito(&mut self, denied: Vec<PathBuf>) {
+        self.incognito = true;
+        self.auto_memory = false;
+        self.add_dirs.clear();
+        self.claude_ai_connectors = false;
+        self.claude_ai_blocked.clear();
+        self.browser = false;
+        self.denied_reads = denied;
     }
 
     /// Shape the spec for a chat of `kind` (nightshift backlog 102,
@@ -1291,6 +1323,17 @@ impl AgentSpec {
         if !self.auto_memory {
             settings.insert("autoMemoryEnabled".into(), serde_json::Value::Bool(false));
         }
+        // An incognito chat's refused reads (backlog 405), in the same one
+        // JSON: a flag source, so it holds under the empty
+        // `--setting-sources` below (measured, 405 report M0).
+        if !self.denied_reads.is_empty() {
+            settings.insert(
+                "permissions".into(),
+                serde_json::json!({
+                    "deny": crate::incognito::deny_rules(&self.denied_reads)
+                }),
+            );
+        }
         if !self.auto_compact {
             settings.insert("autoCompactEnabled".into(), serde_json::Value::Bool(false));
         }
@@ -1326,7 +1369,7 @@ impl AgentSpec {
             a.push("--agents".into());
             a.push(fork::agents_json());
         }
-        if self.safe_mode {
+        if self.safe_mode || self.incognito {
             // Not `--safe-mode`: see the field doc's table — that flag
             // drops the `--mcp-config` server with everything else. No
             // setting source at all is what leaves Nightloom's server
@@ -1615,6 +1658,10 @@ impl ClaudeCodeAgent {
     /// log at every connect, so this holds until then and the record
     /// takes over.
     pub fn grant_dir(&mut self, dir: PathBuf) {
+        // Never a folder an incognito chat may not read (backlog 405).
+        if self.spec.denied_reads.iter().any(|d| dir.starts_with(d)) {
+            return;
+        }
         if !self.spec.add_dirs.contains(&dir) {
             self.spec.add_dirs.push(dir);
         }
@@ -3605,6 +3652,54 @@ mod tests {
             "cmd.exe would read one of these as its own: {reply}"
         );
         assert!(!reply.contains('\''), "{reply}");
+    }
+
+    /// Backlog 405: an incognito chat's CLI loads no settings file (so not
+    /// his `CLAUDE.md`), no other MCP server, no skill and no auto memory;
+    /// is granted no folder; has neither connectors nor Chrome; and refuses
+    /// reads of every folder it was given, in the one `--settings` JSON.
+    #[test]
+    fn apply_incognito_drops_his_files_and_denies_his_folders() {
+        let mut s = spec();
+        s.add_dirs = vec![PathBuf::from("/vault")];
+        s.browser = true;
+        s.claude_ai_connectors = true;
+        s.apply_mode(ChatMode::Incognito);
+        s.apply_incognito(vec![
+            PathBuf::from("/Users/x/.nightloom"),
+            PathBuf::from("/Users/x/.claude"),
+        ]);
+        let a = s.args("hi");
+        let joined = a.join(" ");
+        assert!(!a.iter().any(|x| x == "--add-dir"), "{a:?}");
+        let i = a.iter().position(|x| x == "--setting-sources").unwrap();
+        assert_eq!(a[i + 1], "");
+        assert!(a.iter().any(|x| x == "--strict-mcp-config"));
+        assert!(a.iter().any(|x| x == "--disable-slash-commands"));
+        assert!(a.iter().any(|x| x == "--no-chrome"));
+        assert!(!joined.contains("--chrome "), "{joined}");
+        let i = a.iter().position(|x| x == "--settings").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
+        assert_eq!(v["autoMemoryEnabled"], false);
+        let deny: Vec<&str> = v["permissions"]["deny"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r.as_str().unwrap())
+            .collect();
+        for want in [
+            "Read(//Users/x/.nightloom/**)",
+            "Read(//Users/x/.nightloom)",
+            "Read(//Users/x/.claude/**)",
+        ] {
+            assert!(deny.contains(&want), "{want} not in {deny:?}");
+        }
+        // Only one `--settings` (the CLI keeps the last).
+        assert_eq!(a.iter().filter(|x| *x == "--settings").count(), 1);
+        // A normal chat is untouched.
+        let normal = spec().args("hi");
+        assert!(!normal.iter().any(|x| x == "--setting-sources"));
+        assert!(!normal.join(" ").contains("permissions"));
     }
 
     #[test]

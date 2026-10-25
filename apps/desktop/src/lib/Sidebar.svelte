@@ -534,7 +534,7 @@
           ondragend={endContentDrag}
         >
           <span class="snippet"
-            >{#if s.mode === "incognito"}<span class="mark" use:tip={"Incognito: writes nothing, unread by other chats"}>{MODE_GLYPH.incognito}</span> {/if}{#if hasBoxDraft(s.id)}<span class="mark draft" role="img" aria-label="has a draft" use:tip={"has a draft"}></span> {/if}{#if fork}<span class="mark fork" role="img" aria-label={fork.tip} use:tip={fork.tip}>{FORK_GLYPH}</span> {/if}{s.title ?? s.first_user ?? "empty session"}</span
+            >{#if s.mode === "incognito"}<span class="mark" use:tip={"Incognito: knows nothing about you, writes nothing, unread by other chats"}>{MODE_GLYPH.incognito}</span> {/if}{#if hasBoxDraft(s.id)}<span class="mark draft" role="img" aria-label="has a draft" use:tip={"has a draft"}></span> {/if}{#if fork}<span class="mark fork" role="img" aria-label={fork.tip} use:tip={fork.tip}>{FORK_GLYPH}</span> {/if}{s.title ?? s.first_user ?? "empty session"}</span
           >
           <!-- A fork says where it came from (backlog 062): the
                parent's name as its own row shows it, or that the

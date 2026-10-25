@@ -25,6 +25,7 @@ pub mod dream;
 pub mod grounding;
 pub mod history;
 pub mod import;
+pub mod incognito;
 pub mod keep;
 pub mod knowledge;
 pub mod mcp_server;
