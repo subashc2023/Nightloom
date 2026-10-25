@@ -21,6 +21,7 @@
     reflectTabs,
     runMenuCommand,
     runToastAction,
+    dismissToast,
     answerAsideDiscard,
     setPaneWidth,
     splitTab,
@@ -887,12 +888,15 @@
         <div class="toasts">
           {#each app.toasts as t (t.id)}
             <!-- A toast with an action (backlog 066: "Removed from
-                 context · Undo") takes the pointer; the rest stay
-                 inert, as they were. -->
+                 context · Undo"). Every toast takes the pointer for its
+                 X (backlog 410, his ask: dismiss any of them at once). -->
             <div class="toast" class:actionable={!!t.action}>
-              {t.text}{#if t.action}<span class="toast-sep">{" · "}</span><button
+              <span class="toast-text">{t.text}{#if t.action}<span class="toast-sep">{" · "}</span><button
                   class="toast-action"
-                  onclick={() => runToastAction(t.id)}>{t.action.label}</button>{/if}
+                  onclick={() => runToastAction(t.id)}>{t.action.label}</button>{/if}</span>
+              <button class="toast-x" aria-label="Dismiss" onclick={() => dismissToast(t.id)}>
+                <Icon name="x" size={12} />
+              </button>
             </div>
           {/each}
         </div>
@@ -1261,9 +1265,32 @@
     padding: 0.4rem 0.7rem;
     border-radius: 6px;
     max-width: 22rem;
-  }
-  .toast.actionable {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
     pointer-events: auto;
+  }
+  .toast-text {
+    flex: 1;
+    min-width: 0;
+  }
+  /* The X (backlog 410): the dim text's colour, the ink on hover. */
+  .toast-x {
+    flex: none;
+    background: none;
+    border: none;
+    padding: 2px;
+    margin: -1px -4px 0 0;
+    color: var(--dim);
+    cursor: pointer;
+    display: flex;
+    border-radius: 4px;
+  }
+  .toast-x:hover,
+  .toast-x:focus-visible {
+    color: var(--ink);
+    background: color-mix(in srgb, var(--ink) 10%, transparent);
+    outline: none;
   }
   /* The action is the toast's own text with the accent — a word, not a
      button drawn as one. */
