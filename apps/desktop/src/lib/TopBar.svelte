@@ -123,7 +123,7 @@
   );
   const modeTitle = $derived(
     mode === "incognito"
-      ? "Incognito: kept and marked; writes nothing, unread by other chats"
+      ? "Incognito: kept and marked; knows nothing about you (no profile, memory, vault or project), writes nothing, unread by other chats"
       : "Ephemeral: no log, no name, no CLI session; gone when you close it",
   );
 

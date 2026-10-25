@@ -124,6 +124,11 @@ pub struct Root {
     /// folder's leaf name ([`folder_alias`]), made unique in order of
     /// grant; `@kb` stays the vault's.
     extras: Vec<(String, Anchor)>,
+    /// Trees no path may land in whatever tree holds it (nightshift backlog
+    /// 405): an incognito chat's — his config dir, the vault, `~/.claude`,
+    /// every project. Checked after the grant, so a denied tree inside the
+    /// workspace is refused too.
+    denied: Vec<Anchor>,
 }
 
 impl Root {
@@ -132,7 +137,16 @@ impl Root {
             tree: Anchor::new(absolutize(path.into())),
             vault: None,
             extras: Vec::new(),
+            denied: Vec::new(),
         }
+    }
+
+    /// Refuse every path inside `trees` (backlog 405), whichever of this
+    /// root's trees would have held it.
+    pub fn with_denied(mut self, trees: impl IntoIterator<Item = PathBuf>) -> Self {
+        self.denied
+            .extend(trees.into_iter().map(|t| Anchor::new(absolutize(t))));
+        self
     }
 
     /// Grant an extra folder, addressed `@<alias>/…` (nightshift backlog
@@ -239,6 +253,32 @@ impl Root {
     /// be used. A relative argument is taken relative to the workspace; one
     /// beginning `@kb` is taken relative to the vault.
     pub fn resolve(&self, arg: &str) -> Result<PathBuf, String> {
+        let path = self.resolve_granted(arg)?;
+        if self.is_denied(&path) {
+            return Err(format!(
+                "path \"{arg}\" is refused: this chat is incognito and may not read the user's \
+                 own folders. Only its own folder ({}) can be reached from here.",
+                self.tree.path.display()
+            ));
+        }
+        Ok(path)
+    }
+
+    /// Whether `path` (lexically normalized) lies in a denied tree, by the
+    /// path as written or as resolved.
+    fn is_denied(&self, path: &Path) -> bool {
+        self.denied.iter().any(|d| {
+            path.starts_with(&d.path)
+                || d.real.as_ref().is_some_and(|real| {
+                    deepest_existing(path)
+                        .and_then(|e| e.canonicalize().ok())
+                        .is_some_and(|r| r.starts_with(real))
+                })
+        })
+    }
+
+    /// [`resolve`](Self::resolve) before the denied trees are consulted.
+    fn resolve_granted(&self, arg: &str) -> Result<PathBuf, String> {
         if arg.is_empty() {
             return Err("path must not be empty; use \".\" for the workspace root".to_string());
         }
@@ -523,6 +563,38 @@ mod tests {
         let resolved = root.resolve("a/b.txt").unwrap();
         assert_eq!(resolved, normalize(&dir.join("a").join("b.txt")));
         assert_eq!(root.show(&resolved), "a/b.txt");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Backlog 405: a denied tree is refused even inside a granted one —
+    /// the vault, an extra folder, the workspace itself — and through a
+    /// symlink from the workspace into it.
+    #[test]
+    fn a_denied_tree_is_refused_from_every_grant_and_through_a_link() {
+        let dir = test_dir("root-denied");
+        let ws = dir.join("ws");
+        let kb = dir.join("kb");
+        fs::create_dir_all(ws.join("own")).unwrap();
+        fs::create_dir_all(&kb).unwrap();
+        fs::write(kb.join("profile.md"), "Name: Testy McTestface").unwrap();
+        let root = Root::new(&ws)
+            .with_vault(&kb)
+            .with_denied([kb.clone(), ws.join("own")]);
+        for arg in [
+            "@kb/profile.md".to_string(),
+            kb.join("profile.md").to_string_lossy().into_owned(),
+            "own/x.md".to_string(),
+        ] {
+            let err = root.resolve(&arg).unwrap_err();
+            assert!(err.contains("incognito"), "{arg}: {err}");
+        }
+        assert!(root.resolve("other.md").is_ok());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&kb, ws.join("link")).unwrap();
+            let plain = Root::new(&ws).with_vault(&kb).with_denied([kb.clone()]);
+            assert!(plain.resolve("link/profile.md").is_err());
+        }
         fs::remove_dir_all(&dir).ok();
     }
 

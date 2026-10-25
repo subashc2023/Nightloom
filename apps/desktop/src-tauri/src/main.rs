@@ -1066,6 +1066,10 @@ struct ChatSpec {
     /// (nightshift backlog 143): the project's and the chat's own, as
     /// `extra_folders` lists them. Each becomes a named tree of the `Root`.
     extra_folders: Vec<PathBuf>,
+    /// The folders no file tool may reach (nightshift backlog 405): an
+    /// incognito chat's `incognito::denied_roots` — his config dir, the
+    /// vault, `~/.claude`, every project. Empty for every other chat.
+    denied: Vec<PathBuf>,
 }
 
 impl ChatSpec {
@@ -1086,7 +1090,7 @@ impl ChatSpec {
         for f in &self.extra_folders {
             root.add_extra(f.clone());
         }
-        root
+        root.with_denied(self.denied.iter().cloned())
     }
 }
 
@@ -1472,9 +1476,40 @@ async fn connect(
     // the project's tree. By the declaration (backlog 144): a Chat that
     // was born Claude Code keeps its folder.
     let workspace = chat_workspace(declared_kind, workspace);
+    // An incognito chat knows nothing about him (nightshift backlog 405,
+    // blocker 1513): its own empty folder outside the project and
+    // `~/.nightloom`, no project, vault, extra folders or other chats, the
+    // project's layers never read, and every folder of his refused.
+    let mode = session_mode(&state).await;
+    let incognito = mode.writes_nothing();
+    let workspace = if incognito {
+        let id = state
+            .chats
+            .lock_focused()
+            .await
+            .as_ref()
+            .map(|s| s.id.clone());
+        nightloom_service::incognito::workspace(id.as_deref())
+    } else {
+        workspace
+    };
+    let denied = if incognito {
+        let projects = state.workspaces.lock().await.registry.projects();
+        nightloom_service::incognito::denied_roots(project::config_dir().as_deref(), &projects)
+    } else {
+        Vec::new()
+    };
+    // The project as the model sees it: none for an incognito chat. The
+    // window's own `active` stays — the rail still shows the project the
+    // chat is filed under.
+    let seen = active.as_ref().filter(|_| !incognito);
     // The extra folders (nightshift backlog 143): the project's and the
     // chat's own, each a further named tree the file tools may reach.
-    let granted = extra_folders(active.as_ref(), state.chats.lock_focused().await.as_ref());
+    let granted = if incognito {
+        Vec::new()
+    } else {
+        extra_folders(seen, state.chats.lock_focused().await.as_ref())
+    };
 
     // Every project's chats plus the unfiled ones, named as the picker names
     // them, with the sidebar's directory as the default scope. The registry
@@ -1525,20 +1560,28 @@ async fn connect(
         knowledge: knowledge
             .unwrap_or(true)
             .then(nightloom_service::knowledge::vault_dir)
-            .flatten(),
-        project: active.as_ref().map(|p| ProjectContext {
+            .flatten()
+            .filter(|_| !incognito),
+        project: seen.map(|p| ProjectContext {
             name: p.name.clone(),
             notes_dir: p.notes_dir(),
         }),
-        project_id: active.as_ref().map(|p| p.id.clone()),
-        chats: Some(chats),
-        layers_off: layers_off(&state).await,
+        project_id: seen.map(|p| p.id.clone()),
+        chats: (!incognito).then_some(chats),
+        layers_off: {
+            let mut off = layers_off(&state).await;
+            if incognito {
+                off.extend(nightloom_service::incognito::LAYERS_OFF);
+            }
+            off
+        },
         layer_edits: layer_edits(&state).await,
-        thread: thread_context(active.as_ref(), chat_thread(&state).await.as_deref()),
-        mode: session_mode(&state).await,
+        thread: thread_context(seen, chat_thread(&state).await.as_deref()),
+        mode,
         chat_kind,
         declared_kind,
         extra_folders: granted.iter().map(|(p, _)| p.clone()).collect(),
+        denied,
     };
     let mcp = ensure_mcp(&state, &spec.workspace, spec.tools).await;
     let mcp_tools = state
@@ -1999,6 +2042,19 @@ async fn connect_agent_body(
     // not in the cached prefix, but the folder's memory and CLAUDE.md are
     // what the CLI loads, and the switch is meant to change nothing there.
     let workspace = chat_workspace(declared, workspace);
+    // An incognito chat knows nothing about him (nightshift backlog 405,
+    // blocker 1513): the CLI runs in an empty folder of the chat's own,
+    // outside the project and `~/.nightloom`, so no project name is in its
+    // cwd, its per-cwd files or an `--add-dir`; `seen` is the project as
+    // the model sees it — none. The window's `active` stays for the rail.
+    let mode = open.mode;
+    let incognito = mode.writes_nothing();
+    let workspace = if incognito {
+        nightloom_service::incognito::workspace(open.chat.as_deref())
+    } else {
+        workspace
+    };
+    let seen = active.as_ref().filter(|_| !incognito);
 
     let mut spec = AgentSpec::new(workspace.clone());
     spec.binary = binary
@@ -2049,7 +2105,8 @@ async fn connect_agent_body(
     let preamble = preamble.unwrap_or(true);
     let knowledge = preamble
         .then(nightloom_service::knowledge::vault_dir)
-        .flatten();
+        .flatten()
+        .filter(|_| !incognito);
     // The vault sits outside every workspace, and the preamble is about to
     // name it by its real path; granting the directory is what makes that
     // path one the CLI will open rather than route to a classifier that,
@@ -2060,15 +2117,22 @@ async fn connect_agent_body(
     // chat's own, each granted the same way — readable without a prompt,
     // edits under the permission mode (`external`, the CLI's permissions
     // reference, via blocker 050).
-    let granted = open.granted.clone();
+    let granted = if incognito {
+        Vec::new()
+    } else {
+        open.granted.clone()
+    };
     spec.add_dirs.extend(granted.iter().map(|(p, _)| p.clone()));
     // Built as segments and rendered from them, so the Context popover can
     // show the same segments the flag carries rather than a re-parse of the
     // string (see `PromptBuilt`). The chat's own exclusions apply here as on
     // the other engine, plus the one layer that exists only here.
-    let off = open.off.clone();
+    let mut off = open.off.clone();
+    // Backlog 405: never the project's layers or the vault index.
+    if incognito {
+        off.extend(nightloom_service::incognito::LAYERS_OFF);
+    }
     let edits = open.edits.clone();
-    let mode = open.mode;
     // The CLI's own memory is a layer the chat can switch off like the
     // rest (nightshift backlog 088), but never one Nightloom assembles:
     // the kind reaches the CLI as a setting, not as text.
@@ -2076,6 +2140,7 @@ async fn connect_agent_body(
     // The subagents layer says `reusable` only when the roster has it: the
     // user's own agent file, dropped under safe mode (nightshift backlog 251).
     let reusable = !spec.safe_mode
+        && !incognito
         && nightloom_service::usage::claude_dir()
             .is_some_and(|c| c.join("agents").join("reusable.md").exists());
     let prompt = nightloom_service::agent_prompt_with(
@@ -2098,7 +2163,7 @@ async fn connect_agent_body(
             chat_instructions: preamble && declared == ChatKind::Chat,
             project: preamble
                 .then(|| {
-                    active.as_ref().map(|p| ProjectContext {
+                    seen.map(|p| ProjectContext {
                         name: p.name.clone(),
                         notes_dir: p.notes_dir(),
                     })
@@ -2107,7 +2172,7 @@ async fn connect_agent_body(
             knowledge: knowledge.map(|dir| KnowledgeContext { dir }),
             // The thread layer (backlog 271), on the preamble switch.
             thread: preamble
-                .then(|| thread_context(active.as_ref(), open.thread.as_deref()))
+                .then(|| thread_context(seen, open.thread.as_deref()))
                 .flatten(),
             cwd: workspace.clone(),
             custom: None,
@@ -2134,6 +2199,9 @@ async fn connect_agent_body(
                     fork_mode: spec.fork_mode,
                 },
             ),
+            // Backlog 405: the engine note names only what an incognito
+            // chat's server serves.
+            incognito,
         },
     );
     // A changed layer waits for the chat's cold moment (nightshift backlog
@@ -2316,14 +2384,17 @@ async fn connect_agent_body(
         // point (nightshift backlog 046).
         if let Ok(exe) = std::env::current_exe() {
             let mut args = vec!["--mcp-serve".to_string()];
-            if let Some(p) = &active {
+            if let Some(p) = seen {
                 args.push("--project".into());
                 args.push(p.id.clone());
             }
-            // The server for a chat that writes nothing serves no
-            // `remember`; the two readers and the fetch stay (2026-09-15).
-            if mode.writes_nothing() {
-                args.push("--no-remember".into());
+            // ~~The server for a chat that writes nothing serves no
+            // `remember`; the two readers and the fetch stay (2026-09-15).~~
+            // Since backlog 405 (2026-10-24) such a chat's server is
+            // `--incognito`: no `remember`, and none of the readers of his
+            // chats, memory or Notion either; the fetch stays.
+            if incognito {
+                args.push("--incognito".into());
             }
             // The chat's folder, for `send_file` (nightshift backlog 343).
             args.push("--root".into());
@@ -2393,6 +2464,16 @@ async fn connect_agent_body(
     // the measured read-only list for either non-normal mode, and no CLI
     // session file for an ephemeral one (`AgentSpec::apply_mode`).
     spec.apply_mode(mode);
+    // Backlog 405: no `--add-dir`, auto memory, settings files, skills,
+    // other MCP servers, connectors or Chrome, and every folder of his
+    // refused to Read, Glob and Grep (`AgentSpec::apply_incognito`).
+    if incognito {
+        let projects = state.workspaces.lock().await.registry.projects();
+        spec.apply_incognito(nightloom_service::incognito::denied_roots(
+            project::config_dir().as_deref(),
+            &projects,
+        ));
+    }
     // And the kind's own narrowing (nightshift backlog 102): a Chat gets
     // the same five read-only tools; the folder was chosen above. By the
     // declaration (backlog 144) — and the policy over it: a Chat that was

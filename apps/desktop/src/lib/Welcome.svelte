@@ -342,7 +342,7 @@
     </button>
     <!-- The two other kinds (nightshift backlog 059): incognito on ⌘⇧N;
          ephemeral has no key, and the cap is still a button. -->
-    <button class="kk" onclick={() => runMenuCommand("new_incognito")} use:tipAction={"Kept and marked; writes nothing, unread by other chats"}>
+    <button class="kk" onclick={() => runMenuCommand("new_incognito")} use:tipAction={"Kept and marked; knows nothing about you, writes nothing, unread by other chats"}>
       <Kbd keys="{mod}{shift}N" />incognito
     </button>
     <button class="kk" onclick={() => runMenuCommand("new_ephemeral")} use:tipAction={"Nothing is kept; gone when you close it"}>

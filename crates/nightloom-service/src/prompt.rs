@@ -392,6 +392,10 @@ pub struct EngineLayers<'a> {
     /// This chat's subagent rules layer (nightshift backlog 291 + 293):
     /// `None` when it is switched off or the shell does not offer it.
     pub subagent_rules: Option<SubagentRules<'a>>,
+    /// An incognito chat (nightshift backlog 405): the engine note names
+    /// only the Nightloom tool its server serves (`--incognito`) and says
+    /// nothing of other chats, memory or the CLI's transcripts.
+    pub incognito: bool,
 }
 
 impl EngineLayers<'static> {
@@ -402,6 +406,7 @@ impl EngineLayers<'static> {
         reusable: false,
         subagent_model: crate::agent::brief::SubagentModel::Choose,
         subagent_rules: None,
+        incognito: false,
     };
 }
 
@@ -442,7 +447,11 @@ pub fn agent_prompt_with(
     }
     let preamble = !prompt.is_empty();
     if engine_note && preamble {
-        prompt.push(engine_note_segment(config.knowledge.as_ref()));
+        prompt.push(if layers.incognito {
+            incognito_engine_note_segment()
+        } else {
+            engine_note_segment(config.knowledge.as_ref())
+        });
     }
     if layers.pacing && preamble {
         prompt.push(Segment::new(SegmentKind::Pacing, "pacing", PACING_NOTE));
@@ -794,6 +803,35 @@ fn engine_note_segment(knowledge: Option<&KnowledgeContext>) -> Segment {
     text.push(' ');
     text.push_str(CITE_NOTE);
     text.push_str("\n</engine-note>");
+    Segment::new(SegmentKind::EngineNote, "engine-note", text)
+}
+
+/// What an incognito chat is told about the one fact of his it cannot be
+/// kept from (nightshift backlog 405, blocker 1515): Claude Code attaches
+/// the subscription account's email to every request as `userEmail`
+/// context, unconditionally on a subscription login (read from the CLI
+/// 2.1.310 bundle: it is left out only under `ANTHROPIC_UNIX_SOCKET`), and
+/// no flag or setting drops it. Measured in the 405 report: without this
+/// sentence a Haiku turn asked "what do you know about me?" named it.
+pub const INCOGNITO_NOTE: &str = "This chat is incognito: the user started it so that it knows \
+     nothing about them. Claude Code attaches the account's email address as context; do not \
+     use it, repeat it or infer anything from it (a name, a school, an employer), and answer as \
+     someone who knows nothing about the user.";
+
+/// The engine note of an incognito chat (nightshift backlog 405): the file
+/// tools' mapping, the one Nightloom tool its server serves, and the cite
+/// rule — no vault, no `search_chats`/`read_chat`/`remember`, no pointer
+/// into `~/.claude` (refused to it anyway).
+fn incognito_engine_note_segment() -> Segment {
+    let text = format!(
+        "<engine-note>\n\
+         On this engine the file tools are Claude Code's own: read a note with Read. Where \
+         the sections above say read_file, they mean Read. Nightloom's own tool is the MCP \
+         tool mcp__nightloom__fetch_page (ToolSearch it by that full name). For the whole \
+         text of a page use fetch_page (WebFetch summarises and truncates); if fetch_page \
+         reports a JavaScript shell or returns only a title, use WebFetch on that URL instead \
+         of retrying. {INCOGNITO_NOTE} {CITE_NOTE}\n</engine-note>"
+    );
     Segment::new(SegmentKind::EngineNote, "engine-note", text)
 }
 
@@ -2601,6 +2639,7 @@ As of now — the front.
             reusable: true,
             subagent_model: crate::agent::brief::SubagentModel::Choose,
             subagent_rules: None,
+            incognito: false,
         };
         let full = agent_prompt_with(&config, Some("Be terse."), all);
         assert_eq!(

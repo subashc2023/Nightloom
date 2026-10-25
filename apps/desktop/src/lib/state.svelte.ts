@@ -5865,7 +5865,7 @@ export function newChatLabel(): string {
 /** One line on what a mode means, for the places that offer it. */
 export const MODE_LINES: Record<ChatMode, string> = {
   normal: "kept, indexed, remembered",
-  incognito: "kept and marked; writes nothing, unread by other chats",
+  incognito: "kept and marked; knows nothing about you, writes nothing, unread by other chats",
   ephemeral: "nothing is kept; gone when you close it",
 };
 
