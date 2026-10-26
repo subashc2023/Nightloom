@@ -96,6 +96,7 @@
   import { badgeOf, extOf } from "./attachKinds";
   import { sendTip, tip } from "./tip";
   import { armStop, stopChordLabel, stopChordTarget } from "./stopButton";
+  import { stopPref } from "./stopShape.svelte";
   import { acceptFiles, conversionJobs, filesBlocked, MAX_IMAGE_BASE64, splitChips, trackPending } from "./attachFiles.svelte";
   import { floatMenu } from "./floatMenu";
   import { ghostFor } from "./suggestions.svelte";
@@ -2973,17 +2974,19 @@
           onclick={enqueue}
           disabled={!text.trim() && attachments.length === 0}>Queue</button
         >
-        <!-- Item 398: Stop is an icon button in Send's place at Send's size —
+        <!-- Item 411: its shape is his pick in Settings → Appearance (square
+             unless he picks another); `wide` is item 398's, below.
+             Item 398: Stop is an icon button in Send's place at Send's size —
              a filled square over an invisible "Send" that sizes it, so the
              row keeps its height when a turn starts. Armed after 400 ms, so
              a double-click on Send cannot stop the turn it started. -->
         {#if aside}
-          <button class="ns-btn danger send stop act" aria-label="Stop" use:armStop use:tip={`Stop this answer; what has arrived stays (${stopChordLabel(isMac)})`} onclick={() => aside && stopAside(aside)}
-            ><span class="stop-size" aria-hidden="true">Send</span><span class="stop-ico" aria-hidden="true"><Icon name="stop" size={16} /></span></button
+          <button class="ns-btn danger send stop act shape-{stopPref.shape}" aria-label="Stop" use:armStop use:tip={`Stop this answer; what has arrived stays (${stopChordLabel(isMac)})`} onclick={() => aside && stopAside(aside)}
+            ><span class="stop-size" aria-hidden="true">Send</span><span class="stop-ico" aria-hidden="true"><Icon name="stop" size={stopPref.shape === "wide" ? 16 : 12} />{#if stopPref.shape === "labelled"}<span class="stop-word">Stop</span>{/if}</span></button
           >
         {:else}
-          <button class="ns-btn danger send stop act" aria-label="Stop" use:armStop use:tip={`${app.parked ? `Stop the turn running in ${runningChatName()}` : "Stop this turn"} (${stopChordLabel(isMac)})`} onclick={() => void cancelTurn()}
-            ><span class="stop-size" aria-hidden="true">Send</span><span class="stop-ico" aria-hidden="true"><Icon name="stop" size={16} /></span></button
+          <button class="ns-btn danger send stop act shape-{stopPref.shape}" aria-label="Stop" use:armStop use:tip={`${app.parked ? `Stop the turn running in ${runningChatName()}` : "Stop this turn"} (${stopChordLabel(isMac)})`} onclick={() => void cancelTurn()}
+            ><span class="stop-size" aria-hidden="true">Send</span><span class="stop-ico" aria-hidden="true"><Icon name="stop" size={stopPref.shape === "wide" ? 16 : 12} />{#if stopPref.shape === "labelled"}<span class="stop-word">Stop</span>{/if}</span></button
           >
         {/if}
       {:else if aside}
@@ -3814,6 +3817,38 @@
     display: flex;
     align-items: center;
     justify-content: center;
+  }
+  /* Item 411 (blocker 1524): the compact shapes keep the hidden "Send" for
+     Send's height only, at no width; the button is as wide as it is high. */
+  .stop:not(.shape-wide) {
+    padding-left: 0;
+    padding-right: 0;
+    justify-content: center;
+  }
+  .stop:not(.shape-wide) .stop-size {
+    display: inline-block;
+    width: 0;
+    overflow: hidden;
+  }
+  /* 31 px: Send's height, measured in the 411 harness (30.9). */
+  .stop.shape-square,
+  .stop.shape-round {
+    width: 31px;
+    background: color-mix(in srgb, var(--failed) 16%, var(--sheet));
+  }
+  .stop.shape-round {
+    border-radius: 50%;
+  }
+  .stop.shape-labelled {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  .stop.shape-labelled .stop-ico {
+    position: static;
+    gap: 6px;
+  }
+  .stop-word {
+    font-size: 12.5px;
   }
   /* Send's split (backlog 224): the ▾ carries the right-hand corners. */
   .send-split {

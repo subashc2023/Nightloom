@@ -49,3 +49,26 @@ export function stopChordTarget(s: { asideFocused: boolean; asideBusy: boolean; 
 export function stopChordLabel(mac: boolean): string {
   return mac ? "⌘." : "Ctrl+.";
 }
+
+/**
+ * The Stop button's shape (item 411, blocker 1524 — his pick B, 2026-10-25,
+ * the others kept as a choice in Settings → Appearance). `square` is a
+ * Send-high square with a soft red fill; `round` the Claude app's circle;
+ * `labelled` a square and the word Stop; `wide` item 398's shape, Send's
+ * full width with the square alone in it.
+ */
+export const STOP_SHAPES = [
+  { id: "square", name: "Square" },
+  { id: "round", name: "Round" },
+  { id: "labelled", name: "Labelled" },
+  { id: "wide", name: "Wide" },
+] as const;
+
+export type StopShape = (typeof STOP_SHAPES)[number]["id"];
+
+export const STOP_SHAPE_KEY = "nightloom.stopShape";
+
+/** A stored shape, or `square` for none or one this build does not know. */
+export function parseStopShape(raw: string | null | undefined): StopShape {
+  return STOP_SHAPES.some((s) => s.id === raw) ? (raw as StopShape) : "square";
+}

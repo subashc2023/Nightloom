@@ -16,6 +16,8 @@
 <script lang="ts">
   import { tip } from "./tip";
   import { setLinkPref, web as webTabs } from "./webtabs.svelte";
+  import { STOP_SHAPES } from "./stopButton";
+  import { setStopShape, stopPref } from "./stopShape.svelte";
   import {
     app,
     applyDraft,
@@ -166,21 +168,22 @@
   let arrival = $state<ArrivalStyle>(chosenArrival());
   const arrivalBlock: Record<string, HTMLElement | null> = {};
   const arrivalFrom: Record<string, HTMLElement | null> = {};
-  let stopPreview: (() => void) | null = null;
+  /** Each card's running preview, by look: the cards replay side by side (item 413). */
+  const stopPreview: Partial<Record<ArrivalStyle, () => void>> = {};
   /** Play a look on its card's sample block, its streak leaving from the card's own composer. */
   function previewArrival(style: ArrivalStyle) {
-    stopPreview?.();
-    stopPreview = null;
+    stopPreview[style]?.();
+    delete stopPreview[style];
     const node = arrivalBlock[style];
     if (!node) return;
-    stopPreview = playArrival(node, reducedMotion() ? "fade" : style, 0, null, arrivalFrom[style] ?? null);
+    stopPreview[style] = playArrival(node, reducedMotion() ? "fade" : style, 0, null, arrivalFrom[style] ?? null);
   }
   function pickArrival(style: ArrivalStyle) {
     arrival = style;
     setChosenArrival(style);
     previewArrival(style);
   }
-  onDestroy(() => stopPreview?.());
+  onDestroy(() => Object.values(stopPreview).forEach((f) => f?.()));
 
   // The rewind and delete picks (396 + 397 pass 2, his yes 2026-10-19,
   // default A for both). Each choice card holds a small thread; Preview
@@ -219,6 +222,32 @@
     void previewMotion(kind, style);
   }
   onDestroy(() => Object.values(motionReset).forEach(clearTimeout));
+
+  // The previews play themselves (item 413, his ask 2026-10-25: "automatically
+  // running every like 2-3 seconds"): while Animations is the pane shown,
+  // every card replays each `PREVIEW_EVERY_MS`, staggered a little so they
+  // do not all fire at once. Preview still replays one at once.
+  const PREVIEW_EVERY_MS = 2500;
+  const PREVIEW_STAGGER_MS = 180;
+  $effect(() => {
+    if (selected !== "animations") return;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    const round = () => {
+      const plays: (() => void)[] = [
+        ...OFFERED_STYLES.map((st) => () => previewArrival(st.id)),
+        ...MOTION_KINDS.flatMap((mk) => OFFERED_MOTIONS[mk.kind].map((st) => () => void previewMotion(mk.kind, st.id))),
+      ];
+      timers.length = 0; // the last round's have all fired by now
+      plays.forEach((play, i) => timers.push(setTimeout(play, i * PREVIEW_STAGGER_MS)));
+    };
+    const first = setTimeout(round, 400);
+    const every = setInterval(round, PREVIEW_EVERY_MS);
+    return () => {
+      clearTimeout(first);
+      clearInterval(every);
+      timers.forEach(clearTimeout);
+    };
+  });
   let keyDraft = $state("");
   let keyBusy = $state(false);
   let keyError = $state<string | null>(null);
@@ -1454,6 +1483,31 @@
                 aria-checked={webTabs.pref === "tab"}
                 onclick={() => setLinkPref("tab")}>A Nightloom tab</button
               >
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- The Stop button's shape (item 411, blocker 1524): the square is
+           his pick; the others stay here as choices. -->
+      <section class="card">
+        <div class="ch"><span class="t">Stop button</span></div>
+        <p class="note small">
+          The button that takes Send's place while a reply comes in. Applies
+          at once and is remembered.
+        </p>
+        <div class="type-rows">
+          <div class="type-row">
+            <span class="type-label">Shape</span>
+            <div class="seg" role="radiogroup" aria-label="Stop button shape">
+              {#each STOP_SHAPES as sh (sh.id)}
+                <button
+                  class:on={stopPref.shape === sh.id}
+                  role="radio"
+                  aria-checked={stopPref.shape === sh.id}
+                  onclick={() => setStopShape(sh.id)}
+                ><span class="stop-swatch {sh.id}" aria-hidden="true">{#if sh.id === "labelled"}<i></i>Stop{:else}<i></i>{/if}</span>{sh.name}</button>
+              {/each}
             </div>
           </div>
         </div>
@@ -4185,6 +4239,41 @@
   }
   /* Backlog 412: the whole card picks, not only its name and blurb — the
      pick's ::after stretches over the stage and the foot; Preview sits above it. */
+  /* Item 411: each Stop shape drawn small in its own choice. */
+  .stop-swatch {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    height: 16px;
+    min-width: 16px;
+    margin-right: 6px;
+    vertical-align: -3px;
+    border: 1px solid #7a3d3f;
+    border-radius: 3px;
+    color: var(--failed);
+    font-size: 9px;
+    box-sizing: border-box;
+  }
+  .stop-swatch i {
+    width: 6px;
+    height: 6px;
+    border-radius: 1px;
+    background: currentColor;
+  }
+  .stop-swatch.square,
+  .stop-swatch.round {
+    background: color-mix(in srgb, var(--failed) 16%, var(--sheet));
+  }
+  .stop-swatch.round {
+    border-radius: 50%;
+  }
+  .stop-swatch.labelled {
+    padding: 0 4px;
+  }
+  .stop-swatch.wide {
+    width: 32px;
+  }
   .anim-pick::after {
     content: "";
     position: absolute;

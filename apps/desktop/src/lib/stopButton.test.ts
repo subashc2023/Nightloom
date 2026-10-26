@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { STOP_ARM_MS, stopArmed, stopChordLabel, stopChordTarget } from "./stopButton";
+import { STOP_ARM_MS, STOP_SHAPES, parseStopShape, stopArmed, stopChordLabel, stopChordTarget } from "./stopButton";
 
 /** Item 398: the Stop that takes Send's place ignores a double-click's second click. */
 describe("the Stop's arming", () => {
@@ -35,5 +35,18 @@ describe("what ⌘. stops", () => {
   it("names the chord per platform", () => {
     expect(stopChordLabel(true)).toBe("⌘.");
     expect(stopChordLabel(false)).toBe("Ctrl+.");
+  });
+});
+
+describe("the Stop's shape (item 411)", () => {
+  it("is the square until he picks another", () => {
+    expect(parseStopShape(null)).toBe("square");
+    expect(parseStopShape("")).toBe("square");
+  });
+  it("keeps each shape Settings offers", () => {
+    for (const s of STOP_SHAPES) expect(parseStopShape(s.id)).toBe(s.id);
+  });
+  it("falls back to the square for a shape this build does not know", () => {
+    expect(parseStopShape("hexagon")).toBe("square");
   });
 });
