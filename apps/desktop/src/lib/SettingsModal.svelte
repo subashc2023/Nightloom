@@ -4175,12 +4175,25 @@
     gap: 0.7rem;
   }
   .anim {
+    position: relative;
     display: flex;
     flex-direction: column;
     gap: 0.55rem;
     padding: 0.6rem;
     border: 1px solid var(--border);
     border-radius: 10px;
+  }
+  /* Backlog 412: the whole card picks, not only its name and blurb — the
+     pick's ::after stretches over the stage and the foot; Preview sits above it. */
+  .anim-pick::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+  }
+  .anim-foot .ns-btn {
+    position: relative;
+    z-index: 1;
   }
   .anim:hover {
     border-color: var(--dim);
