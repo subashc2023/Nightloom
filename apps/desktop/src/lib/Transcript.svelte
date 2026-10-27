@@ -29,6 +29,7 @@
     keepRewound,
     loadPaneLog,
     paneChat,
+    chatAgentSession,
   } from "./state.svelte";
   import type { Segment } from "./state.svelte";
   import { checkpointLine, checkpointOwner } from "./checkpoint";
@@ -229,6 +230,12 @@
   const locked = $derived(chat !== undefined || app.busy);
   /** The chat drawn. */
   const chatId = $derived(chat !== undefined ? chat : app.activeSessionId);
+  /** Its Claude Code session, where a tool result's images are read from
+   *  (backlog 434): the log's, or for a first turn not yet re-synced the
+   *  open chat's init line. */
+  const cliSession = $derived(
+    chatAgentSession(evs) ?? (chat === undefined ? (app.agentInit?.session_id ?? null) : null),
+  );
   // The versions under an edited message (item 299): the forks in this
   // chat's lineage are read once each, so the arrows know where each one's
   // edited message is.
@@ -2438,6 +2445,7 @@
                 : null}
               planUsage={replyUsageView(usageLines.get(item.index))}
               onretry={editable && turnEnds[i] && app.activeSessionId ? () => void retryReply(item.index) : null}
+              {cliSession}
             />
             {#if item.original !== null && item.removed}
               <details class="original">
@@ -2513,6 +2521,7 @@
           streaming
           since={shown.since}
           approvals={approvalsNow}
+          {cliSession}
         />
       {/if}
       </div>

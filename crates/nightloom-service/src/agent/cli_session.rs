@@ -1270,9 +1270,142 @@ pub fn write_copy(original: &Path, edited: &CliSession) -> Result<String, CliSes
     Ok(id)
 }
 
+/// One image a tool returned (nightshift backlog 434): a browser
+/// screenshot, a zoom, a `Read` of a picture. The stream's translator
+/// flattens a structured result to text and names an image `[image]`
+/// (`translate::flatten`), and the recorder keeps that text, so the bytes
+/// live in one place only — the CLI's own session file — and are read from
+/// there when the transcript draws the call, live or reopened.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ToolImage {
+    pub media_type: String,
+    /// Base64, as the CLI wrote it.
+    pub data: String,
+}
+
+/// A result's images, and how many were left out by the caps below.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct ToolResultImages {
+    pub images: Vec<ToolImage>,
+    pub skipped: usize,
+}
+
+/// The largest image handed to the window, in base64 characters (~6 MB of
+/// image). The API's own cap is 5 MB per image, so a real screenshot is
+/// always under it; this is the backstop for a file somebody hand-edited.
+pub const TOOL_IMAGE_MAX_CHARS: usize = 8 * 1024 * 1024;
+/// The most images drawn for one result; a batch that returns more says so.
+pub const TOOL_IMAGES_PER_RESULT: usize = 8;
+
+/// The images of the `tool_result` blocks for `ids` in a CLI session file's
+/// text: only base64 sources (a URL source would be a fetch, and nothing
+/// here fetches), at most [`TOOL_IMAGES_PER_RESULT`] per result, each at
+/// most [`TOOL_IMAGE_MAX_CHARS`]. An id with no image is absent. A result
+/// the CLI wrote twice (a resumed or copied session) keeps its first.
+pub fn tool_result_images(
+    text: &str,
+    ids: &[String],
+) -> std::collections::HashMap<String, ToolResultImages> {
+    let mut out = std::collections::HashMap::new();
+    for line in text.lines() {
+        // Cheap filters first: most lines carry neither.
+        if !line.contains("\"tool_result\"") || !line.contains("\"image\"") {
+            continue;
+        }
+        if !ids.iter().any(|id| line.contains(id.as_str())) {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(blocks) = v["message"]["content"].as_array() else {
+            continue;
+        };
+        for b in blocks {
+            if b["type"] != "tool_result" {
+                continue;
+            }
+            let Some(id) = b["tool_use_id"].as_str() else {
+                continue;
+            };
+            if !ids.iter().any(|x| x == id) || out.contains_key(id) {
+                continue;
+            }
+            let Some(parts) = b["content"].as_array() else {
+                continue;
+            };
+            let mut found = ToolResultImages::default();
+            for p in parts {
+                if p["type"] != "image" {
+                    continue;
+                }
+                let src = &p["source"];
+                let (Some("base64"), Some(media), Some(data)) = (
+                    src["type"].as_str(),
+                    src["media_type"].as_str(),
+                    src["data"].as_str(),
+                ) else {
+                    found.skipped += 1;
+                    continue;
+                };
+                if !media.starts_with("image/")
+                    || data.len() > TOOL_IMAGE_MAX_CHARS
+                    || found.images.len() >= TOOL_IMAGES_PER_RESULT
+                {
+                    found.skipped += 1;
+                    continue;
+                }
+                found.images.push(ToolImage {
+                    media_type: media.to_string(),
+                    data: data.to_string(),
+                });
+            }
+            if !found.images.is_empty() || found.skipped > 0 {
+                out.insert(id.to_string(), found);
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Backlog 434: a browser screenshot's result line, in the shape the
+    /// CLI writes (`message.content[].tool_result.content[]`, a base64
+    /// image source), dummy bytes; a text-only result and an unasked id
+    /// yield nothing, a URL source and an over-cap image count as skipped.
+    #[test]
+    fn tool_result_images_reads_base64_images_by_id() {
+        let shot = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_SHOT","content":[{"type":"text","text":"Took a screenshot"},{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"AAAA"}}]}]}}"#;
+        let url = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_URL","content":[{"type":"image","source":{"type":"url","url":"https://example.com/x.png"}}]}]}}"#;
+        let text_only = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_TXT","content":"no \"image\" here"}]}}"#;
+        let other = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_OTHER","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"BBBB"}}]}]}}"#;
+        let big = format!(
+            r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"toolu_BIG","content":[{{"type":"image","source":{{"type":"base64","media_type":"image/png","data":"{}"}}}}]}}]}}}}"#,
+            "A".repeat(TOOL_IMAGE_MAX_CHARS + 1)
+        );
+        let file = [shot, url, text_only, other, big.as_str()].join("\n");
+        let ids: Vec<String> = ["toolu_SHOT", "toolu_URL", "toolu_TXT", "toolu_BIG"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let got = tool_result_images(&file, &ids);
+        assert_eq!(
+            got["toolu_SHOT"].images,
+            vec![ToolImage {
+                media_type: "image/jpeg".into(),
+                data: "AAAA".into()
+            }]
+        );
+        assert_eq!(got["toolu_SHOT"].skipped, 0);
+        assert_eq!(got["toolu_URL"].images.len(), 0);
+        assert_eq!(got["toolu_URL"].skipped, 1);
+        assert_eq!(got["toolu_BIG"].skipped, 1);
+        assert!(!got.contains_key("toolu_TXT"));
+        assert!(!got.contains_key("toolu_OTHER"));
+    }
 
     /// A session file built from the *shape* measured on 2.1.263 — the
     /// node types, the fields, the chaining, the bookkeeping lines — with
