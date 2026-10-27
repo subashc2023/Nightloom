@@ -70,6 +70,11 @@
     threadFor,
     threshold,
     noteThread,
+    mark,
+    cap,
+    codeProbePaths,
+    codeProjectFor,
+    noteCodeProject,
   } from "./handoff.svelte";
   import { fold, isFolded, noteStay, stayedFromWrapped, unfold } from "./handoffFold.svelte";
   import ThreadPicker from "./ThreadPicker.svelte";
@@ -78,7 +83,7 @@
   import { rowsOf } from "./subagentRows";
   import { draftEstimate, draftEstimateTitle, draftExact, draftExactTitle, EXACT_TOKENS_FROM, fmtTokens } from "./tokens";
   import { exactCounter, type ExactResult } from "./draftCount";
-  import { countDraftTokens, pasteIntoFocus, takeBackInjected } from "./api";
+  import { countDraftTokens, namedFiles, pasteIntoFocus, takeBackInjected } from "./api";
   import KeepButton from "./KeepButton.svelte";
   import { keepKey } from "./keep";
   import { menuInterceptors } from "./state.svelte";
@@ -694,8 +699,15 @@
   // Under handoffHere's own conditions too (review 2026-10-18): on an
   // engine that shows no card, the button would reopen nothing.
   const handoffStayed = $derived(handoffHere && !aside && handoff.stage === "idle" && handoff.dismissedAt > 0);
-  const handoffThresholdPct = $derived(Math.round(threshold(app.activeSessionId) * 100));
-  const handoffDefaultPct = $derived(Math.round(threshold(null) * 100));
+  // Backlog 436: the mark the notice is compared to — the chat's own
+  // percent, else the Settings percent or the 300k cap, whichever is first.
+  const handoffThresholdPct = $derived(Math.round(mark(app.activeSessionId, handoff.limit) * 100));
+  /** The mark in tokens, for the heading; 0 with no window known. */
+  const handoffMarkTokens = $derived(handoff.limit ? Math.round(mark(app.activeSessionId, handoff.limit) * handoff.limit) : 0);
+  /** The default's rule in words, for the field's note. */
+  const handoffDefaultRule = $derived(
+    cap() > 0 ? `${Math.round(threshold(null) * 100)}% or ${fmtTokens(cap())}, whichever comes first` : `${Math.round(threshold(null) * 100)}%`,
+  );
   const reAskPct = Math.round(RE_ASK * 100);
   /*
    * The research thread (nightshift backlog 271): the open chat's binding,
@@ -716,6 +728,37 @@
   });
   /** Whether the hand-off writes the thread's files rather than HANDOFF.md. */
   const threadHandoff = $derived(threadFor(app.activeSessionId) !== null);
+  /*
+   * Backlog 431 (blocker 1567): whether the chat's project is a code
+   * project — a HANDOFF.md or a backlog/ at its top — so a thread chat's
+   * wrap-up also writes a STATE section and commits. Probed when the chat
+   * or the project changes, and again when the notice comes up (the first
+   * wrap-up may have made HANDOFF.md since). Best-effort: no answer is
+   * "not a code project", today's thread wrap-up.
+   */
+  const projectRoot = $derived(app.project?.root ?? null);
+  function probeCodeProject(chat: string | null, root: string | null): void {
+    if (!chat) return;
+    if (!root) {
+      noteCodeProject(chat, false);
+      return;
+    }
+    namedFiles(codeProbePaths(root)).then(
+      (found) => noteCodeProject(chat, found.some((f) => f !== null)),
+      () => noteCodeProject(chat, false),
+    );
+  }
+  $effect(() => {
+    if (aside) return;
+    const [chat, root] = [app.activeSessionId, projectRoot];
+    untrack(() => probeCodeProject(chat, root));
+  });
+  $effect(() => {
+    if (aside) return;
+    if (handoff.stage === "due") untrack(() => probeCodeProject(app.activeSessionId, projectRoot));
+  });
+  /** A thread chat in a code project also writes HANDOFF.md (blocker 1568). */
+  const threadAndHandoff = $derived(threadHandoff && codeProjectFor(app.activeSessionId));
   /** The wrap-up this chat would send: its own edit, else its thread's, else the Settings default. */
   const wrapUpText = $derived(message(app.activeSessionId));
   /** The read order this chat's continuation opens with (backlog 193). */
@@ -2611,7 +2654,7 @@
   {#if handoffHere && handoff.stage === "due" && isFolded(app.activeSessionId, "due")}
     <div class="handoff handoff-min" role="status" aria-label="Hand-off notice, minimized">
       <span class="handoff-mark" aria-hidden="true"><Icon name="branch" size={13} /></span>
-      <strong class="handoff-min-title">Context {handoffPct}% — past this chat's {handoffThresholdPct}% hand-off mark</strong>
+      <strong class="handoff-min-title">Context {handoffPct}% — past this chat's {handoffThresholdPct}%{handoffMarkTokens ? ` (${fmtTokens(handoffMarkTokens)})` : ""} hand-off mark</strong>
       <span class="mono handoff-fill">{fmtTokens(handoff.used)} of {fmtTokens(handoff.limit)} · {handoffPct}%</span>
       <span class="spacer"></span>
       {#if !wrapUpQueued}<button class="ns-btn accent small" disabled={app.busy || !wrapUpText.trim()} onclick={() => void sendWrapUpNow()}>Wrap up now</button>{/if}
@@ -2624,7 +2667,7 @@
          Nothing goes by itself while it is on screen. -->
     <div class="handoff" role="status" aria-label="Hand-off notice">
       <div class="handoff-head">
-        <strong>Context {handoffPct}% — past this chat's {handoffThresholdPct}% hand-off mark</strong>
+        <strong>Context {handoffPct}% — past this chat's {handoffThresholdPct}%{handoffMarkTokens ? ` (${fmtTokens(handoffMarkTokens)})` : ""} hand-off mark</strong>
         <span class="spacer"></span>
         <span class="mono handoff-fill">{fmtTokens(handoff.used)} of {fmtTokens(handoff.limit)} · {handoffPct}%</span>
       </div>
@@ -2634,7 +2677,7 @@
           its × takes it back.
         {:else}
           <strong>Wrap up now</strong> sends the message below as a turn of its own: the model finishes what is
-          half-done, {#if threadHandoff}updates the thread's files{:else}writes <code>HANDOFF.md</code>{/if}, and
+          half-done, {#if threadAndHandoff}updates the thread's files, adds a section to <code>HANDOFF.md</code>, commits{:else if threadHandoff}updates the thread's files{:else}writes <code>HANDOFF.md</code>, commits{/if}, and
           ends with a start prompt for the new chat. Or raise this chat's mark and keep going. Nothing is sent by
           itself while this notice is open.
         {/if}
@@ -2651,7 +2694,7 @@
           aria-label="This chat's hand-off threshold, percent of the context window"
           onchange={(e) => setChatThreshold((e.currentTarget as HTMLInputElement).value)}
         />
-        <span>% of the window{hasOwnThreshold(app.activeSessionId) ? ` (the default is ${handoffDefaultPct}%)` : " (the default)"}</span>
+        <span>% of the window{hasOwnThreshold(app.activeSessionId) ? ` (the default is ${handoffDefaultRule})` : ` (the default: ${handoffDefaultRule})`}</span>
       </label>
       <textarea
         class="handoff-msg"
@@ -2681,12 +2724,12 @@
     </div>
   {:else if handoffHere && handoff.stage === "wrapping"}
     <div class="handoff" role="status">
-      <div class="handoff-head"><span>Wrapping up — the model is finishing what is half-done, {#if threadHandoff}updating the thread's files{:else}writing <code>HANDOFF.md</code>{/if}, and ending with the start prompt for the new chat.</span></div>
+      <div class="handoff-head"><span>Wrapping up — the model is finishing what is half-done, {#if threadAndHandoff}updating the thread's files and <code>HANDOFF.md</code>, committing{:else if threadHandoff}updating the thread's files{:else}writing <code>HANDOFF.md</code>, committing{/if}, and ending with the start prompt for the new chat.</span></div>
     </div>
   {:else if handoffHere && handoff.stage === "wrapped" && isFolded(app.activeSessionId, "wrapped")}
     <div class="handoff handoff-min" role="status" aria-label="Hand-off notice, minimized">
       <span class="handoff-mark" aria-hidden="true"><Icon name="branch" size={13} /></span>
-      <strong class="handoff-min-title">{threadHandoff ? "Thread updated" : "HANDOFF.md written"}</strong>
+      <strong class="handoff-min-title">{threadAndHandoff ? "Thread and HANDOFF.md updated" : threadHandoff ? "Thread updated" : "HANDOFF.md written"}</strong>
       <span class="mono handoff-fill">{fmtTokens(handoff.used)} of {fmtTokens(handoff.limit)} · {handoffPct}%</span>
       <span class="spacer"></span>
       <button class="ns-btn accent small" disabled={app.busy} onclick={() => void continueChat()}>Continue in a new chat</button>
@@ -2696,7 +2739,7 @@
     <div class="handoff" role="status" aria-label="Hand-off done">
       <div class="handoff-head">
         <span class="handoff-mark" aria-hidden="true"><Icon name="branch" size={15} /></span>
-        <strong>{threadHandoff ? "Thread updated" : "HANDOFF.md written"}</strong>
+        <strong>{threadAndHandoff ? "Thread and HANDOFF.md updated" : threadHandoff ? "Thread updated" : "HANDOFF.md written"}</strong>
         <span class="spacer"></span>
         <span class="mono handoff-fill">{fmtTokens(handoff.used)} of {fmtTokens(handoff.limit)} · {handoffPct}%</span>
       </div>

@@ -121,6 +121,8 @@
     setDefaultMessage as setHandoffDefaultMessage,
     setThreshold as setHandoffThreshold,
     threshold as handoffThreshold,
+    cap as handoffCap,
+    setCap as setHandoffCap,
   } from "./handoff.svelte";
   import { onDestroy, tick, untrack } from "svelte";
   import { isMac } from "./platform";
@@ -885,6 +887,17 @@
     const n = Number(v);
     if (!Number.isFinite(n)) return;
     setHandoffThreshold(null, Math.min(100, Math.max(1, Math.round(n))) / 100);
+  }
+
+  // The token cap on the default (backlog 436, blocker 1569): the hand-off
+  // is asked at the percent or at this many tokens, whichever comes first;
+  // shown and typed in thousands. 0 turns the cap off.
+  const handoffCapK = $derived(Math.round(handoffCap() / 1000));
+  function setHandoffCapK(v: string): void {
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < 0) return;
+    setHandoffCap(Math.round(n) * 1000);
+    if (handoffChat) reconsiderHandoff(handoffChat);
   }
 
   // The open chat's own mark (nightshift backlog 258, 2026-09-29): it
@@ -1989,6 +2002,18 @@
             onchange={(e) => setHandoffDefaultPct((e.currentTarget as HTMLInputElement).value)}
           />
           <span>% of the window, for every chat without a mark of its own (70% to begin with)</span>
+        </label>
+        <label class="handoff-row">
+          <span>or at</span>
+          <input
+            type="number"
+            min="0"
+            step="10"
+            value={handoffCapK}
+            aria-label="Hand-off token cap, thousands of tokens, for every chat without a mark of its own"
+            onchange={(e) => setHandoffCapK((e.currentTarget as HTMLInputElement).value)}
+          />
+          <span>k tokens, whichever comes first (300k to begin with, the practices' stop point: 140k on a 200k window, 300k on a 1M one; 0 for no cap). A chat's own mark is not capped.</span>
         </label>
         {#if handoffChat}
           <label class="handoff-row">

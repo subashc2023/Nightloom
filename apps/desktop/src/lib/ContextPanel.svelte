@@ -25,7 +25,7 @@
     subagentsOfTurn,
   } from "./state.svelte";
   import { EDITABLE_LAYERS } from "./types";
-  import { hasOwnThreshold, threshold } from "./handoff.svelte";
+  import { cap as handoffCap, hasOwnThreshold, threshold } from "./handoff.svelte";
   import { setPromptSuggestions, suggestions } from "./suggestions.svelte";
   import { applyDraft, refreshLayerVersions } from "./state.svelte";
   import { onMount, untrack } from "svelte";
@@ -1530,7 +1530,7 @@
                where he looks for it; said here beside the number it is
                compared to. -->
           <p class="note small threshold">
-            Hand off at {handoffPct}% of the window{app.activeSessionId ? (hasOwnThreshold(app.activeSessionId) ? ", this chat's own mark" : ", the default") : " (the default)"}
+            Hand off at {handoffPct}% of the window{!hasOwnThreshold(app.activeSessionId) && handoffCap() > 0 ? ` or ${fmtTokens(handoffCap())} tokens, whichever comes first` : ""}{app.activeSessionId ? (hasOwnThreshold(app.activeSessionId) ? ", this chat's own mark" : ", the default") : " (the default)"}
             — past it the composer's notice asks for the wrap-up (the model writes HANDOFF.md, stops, and
             gives a start prompt for a linked new chat).
             <button class="ns-btn ghost small" onclick={openHandoffSettings}>Change in Settings → Subscription</button>

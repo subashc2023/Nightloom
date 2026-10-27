@@ -1929,6 +1929,28 @@ composer's bar, the top bar's mark and one control on the Context page.
 percent on a test chat is how to see the whole flow on Haiku without a
 long context.
 
+**The mark since 2026-10-27 (nightshift backlog 436, blocker 1569):** a chat
+without its own percent is asked at the Settings percent (70%) **or at
+300k tokens, whichever comes first** (`mark` in `handoff.svelte.ts`) —
+140k on a 200k window, 300k on a 1M one. 300k is his own stop point in the
+practices file (§2, his call 2026-09-24); the 70% was backlog 086's default
+when every window was 200k, and alone it asked at 700k on a 1M window.
+Settings → Subscription → Hand-off holds the cap (*or at [300] k tokens*;
+0 turns it off). A chat's own percent is his explicit choice and is not
+capped. The re-ask after *Stay here* is still 85% of the window.
+
+**Code chats (backlog 431, blockers 1567–1568):** an unbound chat's
+built-in wrap-up now closes as practices §2 does — mdcheck flags into the
+queue, the STATE section, a commit by path, the backlog index (the command
+the project's CLAUDE.md names, else `backlogctl.py index`), a push only
+where the project says so (`CODE_CLOSE`); each step is skipped where it
+does not apply. A thread-bound chat whose project has a `HANDOFF.md` or a
+`backlog/` at its top (probed through `named_files` when the chat or
+project changes and when the notice comes up) keeps the thread wrap-up, but
+its step 5 adds a short STATE section pointing at the thread and the same
+close instead of "Do not write HANDOFF.md"; the card says *Thread and
+HANDOFF.md updated*. A thread chat in any other project is unchanged.
+
 ### Pass 2 (2026-09-16 afternoon, nightshift blocker 120; answers blocker 092)
 
 The shape above is his own hand-run practice made automatic — ask the

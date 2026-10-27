@@ -54,6 +54,21 @@
  *    `HANDOFF.md` ~~overwrites HANDOFF.md~~ (superseded 2026-09-25: an
  *    overwrite lost every earlier hand-off).
  *
+ * 7. **Code chats** (backlog 431, 2026-10-27; blockers 1567, 1568): a
+ *    chat is a code chat when it is unbound, or bound to a thread in a
+ *    project whose folder holds a `HANDOFF.md` or a `backlog/` (the shell
+ *    probes both and notes the answer, `noteCodeProject`). Its wrap-up runs
+ *    practices §2's close: the STATE section, a commit by path, the backlog
+ *    index, a push only where the project says so (`CODE_CLOSE`). A thread
+ *    chat in a code project keeps the thread wrap-up and adds a short STATE
+ *    section and the same close, so the project's next session sees what
+ *    changed in its files; a thread chat in any other project is unchanged.
+ * 8. **The mark** (backlog 436, blocker 1569): the hand-off is asked at the
+ *    Settings percent of the window or at `DEFAULT_CAP_TOKENS` (300k, his
+ *    practices §2 stop point), whichever comes first — 140k on a 200k
+ *    window, 300k on a 1M one (`mark`). A chat's own percent is his explicit
+ *    choice and is not capped.
+ *
  * The stage machine is pure (`nextStage`, `autoQueues`, `isAway`,
  * `extractStartPrompt`) so it can be tested without a window: the running
  * app could not be driven the day it was built.
@@ -65,12 +80,34 @@ import { windowFocused } from "./notify";
 export type HandoffStage = "idle" | "due" | "wrapping" | "wrapped";
 
 export const DEFAULT_THRESHOLD = 0.7;
+/**
+ * The token count past which the hand-off is asked whatever the percent
+ * (backlog 436, blocker 1569): his own stop point in practices §2 ("Once it
+ * passes ~300k", his call 2026-09-24). The 70% above was the orchestrator's
+ * default for backlog 086 when every window was 200k; on a 1M window it
+ * would ask at 700k, far past where he stops. 0 in Settings: no cap.
+ */
+export const DEFAULT_CAP_TOKENS = 300_000;
 /** Past this a chat that chose *Stay here* is asked the wrap-up again. */
 export const RE_ASK = 0.85;
 /** No send and no keystroke for this long, and he counts as away (blocker 120). */
 export const AWAY_MS = 60_000;
 /** The info string of the fenced block the wrap-up asks for. */
 export const START_PROMPT_TAG = "start-prompt";
+
+/**
+ * The close of a code chat's wrap-up (backlog 431): practices §2's wrap-up
+ * and §5 — commit by path, refresh the backlog index, push only where the
+ * project's own instructions say so. Each step is conditional, so a folder
+ * with no git or no backlog/ skips it rather than failing.
+ */
+export const CODE_CLOSE =
+  "If the project folder is a git repository, commit by path: name each file this chat changed, and " +
+  "HANDOFF.md, in `git add` (never `git add -A` or `git add .`, never `git stash`), one commit per finished " +
+  "piece of work, its message saying what landed, with no AI attribution line. If the project has a " +
+  "backlog/ folder, refresh its index before that commit — the command the project's CLAUDE.md names, " +
+  "else `python3 ~/.claude/practices/bin/backlogctl.py index` from the project folder when that file " +
+  "exists — and commit the regenerated files by path too. Push only if the project's instructions say to push.";
 
 /**
  * The default wrap-up, sent as a message of its own. The shape is his:
@@ -86,8 +123,11 @@ export const WRAP_UP =
   "`## STATE AS OF <date time> — <one line>`, for the chat that continues this one: what we were " +
   "doing, what is done, what is next, the decisions taken and why, and the files that matter — in " +
   "your own words, complete enough that a fresh session can carry on without this conversation — " +
-  "ending with the queue of next steps in order as its last list.\n" +
-  "3. End your reply with a short start prompt for the new chat. The new chat is already told to " +
+  "ending with the queue of next steps in order as its last list. If ~/.claude/practices/bin/mdcheck.py " +
+  "exists, run it in the project folder first and put each FLAG it prints at the top of that queue as " +
+  "\"trim <file>\"; do not trim now.\n" +
+  `3. ${CODE_CLOSE}\n` +
+  "4. End your reply with a short start prompt for the new chat. The new chat is already told to " +
   "read the newest HANDOFF.md section, then backlog/INDEX.md, then blockers/INDEX.md, so say only " +
   "what that does not: what changed since the section was written, any other file to read, and " +
   "what to do first. Put it in a fenced code block tagged `start-prompt` " +
@@ -288,11 +328,12 @@ export function noteFill(
   if (before === "wrapping" && !events) return;
   // Item 390: under the mark, a *Stay here* is forgotten, so the next
   // crossing asks afresh; a wrap-up queued for the crossing goes.
-  if (fill < threshold(chat)) {
+  const at = mark(chat, limit);
+  if (fill < at) {
     handoff.dismissedAt = 0;
     if (before === "due") dropAutoQueued();
   }
-  const after = nextStage(before, fill, threshold(chat), handoff.dismissedAt);
+  const after = nextStage(before, fill, at, handoff.dismissedAt);
   handoff.stage = after;
   if (before === "wrapping" && after === "wrapped") {
     handoff.startPrompt = events ? extractStartPrompt(lastReplyText(events)) : null;
@@ -394,7 +435,7 @@ export function reopenHandoff(wasWrapped: boolean): void {
  *  without counting as a *Stay here*, so the new mark asks afresh. */
 export function reconsider(chat: string | null): void {
   if (handoff.chat !== chat || handoff.stage !== "due") return;
-  if (handoff.fill < threshold(chat)) {
+  if (handoff.fill < mark(chat, handoff.limit)) {
     dropAutoQueued();
     handoff.stage = "idle";
   }
@@ -433,6 +474,8 @@ export interface Stored {
   readOrder: string | null;
   /** A chat's own read order, blank included, when it has one. */
   readOrders: Record<string, string>;
+  /** The token cap on the default mark (backlog 436); 0 means none. */
+  cap: number;
 }
 
 function isRatio(v: unknown): v is number {
@@ -467,12 +510,21 @@ export function parseStored(raw: string | null): Stored {
         messages: readMap(p.messages, isText),
         readOrder: isString(p.readOrder) ? p.readOrder : null,
         readOrders: readMap(p.readOrders, isString),
+        cap: typeof p.cap === "number" && Number.isFinite(p.cap) && p.cap >= 0 ? p.cap : DEFAULT_CAP_TOKENS,
       };
     }
   } catch {
     // Unreadable storage: the defaults.
   }
-  return { default: DEFAULT_THRESHOLD, perChat: {}, message: null, messages: {}, readOrder: null, readOrders: {} };
+  return {
+    default: DEFAULT_THRESHOLD,
+    perChat: {},
+    message: null,
+    messages: {},
+    readOrder: null,
+    readOrders: {},
+    cap: DEFAULT_CAP_TOKENS,
+  };
 }
 
 function load(): Stored {
@@ -516,7 +568,7 @@ export function threadDir(slug: string): string {
  * line on Start here, condensing claim by claim, a start prompt with no
  * placeholders — and the upkeep flags Nightloom found, when there are any.
  */
-export function threadWrapUp(slug: string, flags: readonly string[] = []): string {
+export function threadWrapUp(slug: string, flags: readonly string[] = [], code = false): string {
   const dir = threadDir(slug);
   const lines = [
     `This chat's context is filling, so let's hand off to a new chat. This chat works from the thread ${dir}/. Before anything else:`,
@@ -527,7 +579,12 @@ export function threadWrapUp(slug: string, flags: readonly string[] = []): strin
     // writer), and this wrap-up is where it reaches thread.md.
     `3. Fold any log.md entries from asides since the last wrap-up into thread.md: the entries in ${dir}/log.md between "<!-- aside fold" and "<!-- /aside fold -->" lines, headed "— aside '<name>' from chat '<title>'", that come after this thread's last wrap-up paragraph. By the same small edits: their "His words" into "## His view" verbatim with their pointers, "Inferred" lines into Claims tagged inferred, "External" lines into Claims as written, "New queue rows" into the Queue with the next ids, open questions into the Queue. Leave the entries in log.md as they are.`,
     `4. Append one dated paragraph to ${dir}/log.md: this chat's id, what was asked, which ids changed in thread.md, which aside entries you folded in, where the long outputs are. Never edit earlier entries.`,
-    "5. Do not write HANDOFF.md for this chat.",
+    // Backlog 431 (blocker 1568): in a code project the thread is the
+    // chat's memory and HANDOFF.md stays the project's, so the chat adds a
+    // short STATE section pointing at the thread and closes as a code chat.
+    code
+      ? `5. This project keeps a HANDOFF.md or a backlog/, so this chat's work lands there too. Add a short new section at the top of HANDOFF.md (create the file if there is none; never delete or rewrite the sections already in it), headed \`## STATE AS OF <date time AM/PM> — <one line>\`: what this chat changed in the project's files, that its reasoning is in ${dir}/, and the queue of next steps in order as its last list. Then: ${CODE_CLOSE} Commit the thread's files the same way.`
+      : "5. Do not write HANDOFF.md for this chat.",
     "6. End your reply with a short start prompt for the new chat (what to do first, and only what thread.md's Start here does not already say), ready to paste as is — no [brackets] or placeholders — in a fenced code block tagged start-prompt (a line of three backticks followed by start-prompt, the prompt, then a line of three backticks).",
   ];
   if (flags.length > 0) {
@@ -564,6 +621,29 @@ export function pickText(own: string | undefined, thread: string | null, fallbac
 
 /** Each chat's bound thread, as the shell last read it from the log. */
 const threadOf = $state<Record<string, string>>({});
+/** Each chat's code-project answer (backlog 431), as the shell last probed it. */
+const codeOf = $state<Record<string, boolean>>({});
+
+/** The files whose presence makes a project a code project (blocker 1567):
+ *  HANDOFF.md, or a backlog/ — seen through its INDEX.md or order.json,
+ *  as the probe answers for regular files only. */
+export function codeProbePaths(root: string): string[] {
+  const base = root.replace(/\/+$/, "");
+  return [`${base}/HANDOFF.md`, `${base}/backlog/INDEX.md`, `${base}/backlog/order.json`];
+}
+
+/** Note whether the chat's project is a code project (null: unknown, as false). */
+export function noteCodeProject(chat: string | null, code: boolean): void {
+  if (!chat) return;
+  if (code) codeOf[chat] = true;
+  else delete codeOf[chat];
+}
+
+/** Whether the chat's project was found to be a code project. */
+export function codeProjectFor(chat: string | null): boolean {
+  return !!chat && codeOf[chat] === true;
+}
+
 /** Each thread's upkeep flags from the last dry run. */
 const threadFlags = $state<Record<string, string[]>>({});
 
@@ -592,7 +672,7 @@ function baseMessage(chat: string | null): string {
 /** The chat's thread's research wrap-up, flags included; null when unbound. */
 function threadMessage(chat: string | null): string | null {
   const t = threadFor(chat);
-  return t ? threadWrapUp(t, threadFlags[t] ?? []) : null;
+  return t ? threadWrapUp(t, threadFlags[t] ?? [], codeProjectFor(chat)) : null;
 }
 
 /** The read order a chat starts from before its own edit. */
@@ -605,6 +685,35 @@ function baseReadOrder(chat: string | null): string {
 export function threshold(chat: string | null): number {
   if (chat && isRatio(stored.perChat[chat])) return stored.perChat[chat];
   return stored.default;
+}
+
+/**
+ * The fill at which the chat's hand-off is asked, 0..1 (backlog 436): its
+ * own percent when it has one — his explicit choice, uncapped — else the
+ * Settings percent or the token cap over the window, whichever is lower.
+ * With no window known the percent alone.
+ */
+export function mark(chat: string | null, limit: number | null): number {
+  if (hasOwnThreshold(chat)) return threshold(chat);
+  return cappedMark(stored.default, cap(), limit);
+}
+
+/** The pure rule: the percent, or `capTokens` over `limit` when lower. */
+export function cappedMark(ratio: number, capTokens: number, limit: number | null): number {
+  if (!limit || limit <= 0 || capTokens <= 0) return ratio;
+  return Math.min(ratio, capTokens / limit);
+}
+
+/** The Settings token cap; 0 means none. */
+export function cap(): number {
+  return stored.cap;
+}
+
+/** Set the Settings token cap; a negative or non-number is ignored, 0 turns it off. */
+export function setCap(tokens: number): void {
+  if (!Number.isFinite(tokens) || tokens < 0) return;
+  stored.cap = Math.round(tokens);
+  save();
 }
 
 /** Whether the chat has a threshold of its own. */

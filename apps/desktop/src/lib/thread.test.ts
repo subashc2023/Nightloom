@@ -21,6 +21,10 @@ import {
   threadFor,
   threadReadOrder,
   threadWrapUp,
+  CODE_CLOSE,
+  codeProbePaths,
+  codeProjectFor,
+  noteCodeProject,
 } from "./handoff.svelte";
 import { app, chatThread, continueChat, setChatThread } from "./state.svelte";
 import { NEW_THREAD, NO_THREAD, pickerOptions, replaceStartHere, slugFrom, validSlug } from "./thread";
@@ -141,6 +145,42 @@ describe("the wrap-up and the read order a chat gets", () => {
     expect(readOrder("c1")).toBe(threadReadOrder("stuart-brainstorm"));
     expect(readOrder("c1")).toContain('the "## Queue" section of .agents/threads/stuart-brainstorm/thread.md');
     expect(readOrder("c1")).not.toContain("backlog/INDEX.md");
+  });
+
+  // Backlog 431 (blockers 1567, 1568): a thread chat in a code project —
+  // a HANDOFF.md or a backlog/ at the top — keeps the thread wrap-up and
+  // adds a STATE section and practices §2's close; anywhere else it is as
+  // before. The read order stays the thread's either way.
+  it("a bound chat in a code project also writes a STATE section and commits", () => {
+    noteThread("c1", "stuart-brainstorm");
+    noteCodeProject("c1", true);
+    expect(codeProjectFor("c1")).toBe(true);
+    const w = message("c1");
+    expect(w).toBe(threadWrapUp("stuart-brainstorm", [], true));
+    expect(w).not.toContain("Do not write HANDOFF.md");
+    expect(w).toContain("Add a short new section at the top of HANDOFF.md");
+    expect(w).toContain("## STATE AS OF <date time AM/PM>");
+    expect(w).toContain("its reasoning is in .agents/threads/stuart-brainstorm/");
+    expect(w).toContain(CODE_CLOSE);
+    expect(w).toContain("thread.md by small edits, never a rewrite");
+    expect(readOrder("c1")).toBe(threadReadOrder("stuart-brainstorm"));
+    noteCodeProject("c1", false);
+    expect(codeProjectFor("c1")).toBe(false);
+    expect(message("c1")).toContain("Do not write HANDOFF.md for this chat.");
+  });
+
+  it("an unbound chat is a code chat whatever the probe says", () => {
+    noteCodeProject("c1", false);
+    expect(message("c1")).toBe(WRAP_UP);
+    expect(message("c1")).toContain(CODE_CLOSE);
+    noteCodeProject("c1", true);
+    expect(message("c1")).toBe(WRAP_UP);
+    noteCodeProject("c1", false);
+  });
+
+  it("probes HANDOFF.md and backlog/ at the project's top", () => {
+    expect(codeProbePaths("/p/site/")).toEqual(["/p/site/HANDOFF.md", "/p/site/backlog/INDEX.md", "/p/site/backlog/order.json"]);
+    expect(codeProbePaths("/p/site")[0]).toBe("/p/site/HANDOFF.md");
   });
 
   it("carries the upkeep flags Nightloom found", () => {

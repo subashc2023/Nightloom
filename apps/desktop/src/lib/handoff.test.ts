@@ -517,3 +517,88 @@ describe("noteRewound", () => {
     expect(handoff.queuedId).toBe(0);
   });
 });
+
+// Backlog 436 (blocker 1569): one stop point for both windows — the
+// Settings percent or the 300k cap, whichever comes first; a chat's own
+// percent is his explicit choice and is not capped.
+import { CODE_CLOSE, DEFAULT_CAP_TOKENS, cap, cappedMark, mark, setCap } from "./handoff.svelte";
+
+describe("the mark: 70% or 300k, whichever comes first", () => {
+  it("is 140k on a 200k window and 300k on a 1M one", () => {
+    expect(DEFAULT_CAP_TOKENS).toBe(300_000);
+    expect(cappedMark(0.7, 300_000, 200_000) * 200_000).toBeCloseTo(140_000);
+    expect(cappedMark(0.7, 300_000, 1_000_000) * 1_000_000).toBeCloseTo(300_000);
+  });
+  it("falls back to the percent with no window or no cap", () => {
+    expect(cappedMark(0.7, 300_000, null)).toBe(0.7);
+    expect(cappedMark(0.7, 300_000, 0)).toBe(0.7);
+    expect(cappedMark(0.7, 0, 1_000_000)).toBe(0.7);
+  });
+  it("reads the cap back from storage, default 300k, 0 kept, junk dropped", () => {
+    expect(parseStored(null).cap).toBe(300_000);
+    expect(parseStored(JSON.stringify({ default: 0.7 })).cap).toBe(300_000);
+    expect(parseStored(JSON.stringify({ cap: 0 })).cap).toBe(0);
+    expect(parseStored(JSON.stringify({ cap: 250_000 })).cap).toBe(250_000);
+    expect(parseStored(JSON.stringify({ cap: -5 })).cap).toBe(300_000);
+    expect(parseStored(JSON.stringify({ cap: "x" })).cap).toBe(300_000);
+  });
+  it("asks at 300k on a 1M window and at 140k on a 200k one, end to end", () => {
+    setThreshold(null, 0.7);
+    setCap(300_000);
+    resetHandoff();
+    noteFill("cap-1m", 290_000, 1_000_000, false);
+    expect(handoff.stage).toBe("idle");
+    noteFill("cap-1m", 310_000, 1_000_000, false);
+    expect(handoff.stage).toBe("due");
+    resetHandoff();
+    noteFill("cap-200k", 130_000, 200_000, false);
+    expect(handoff.stage).toBe("idle");
+    noteFill("cap-200k", 145_000, 200_000, false);
+    expect(handoff.stage).toBe("due");
+  });
+  it("leaves a chat's own percent uncapped, and a raised own mark puts the notice away", () => {
+    setThreshold(null, 0.7);
+    setCap(300_000);
+    resetHandoff();
+    noteFill("cap-own", 310_000, 1_000_000, false);
+    expect(handoff.stage).toBe("due");
+    expect(mark("cap-own", 1_000_000)).toBeCloseTo(0.3);
+    setThreshold("cap-own", 0.5);
+    expect(mark("cap-own", 1_000_000)).toBe(0.5);
+    reconsider("cap-own");
+    expect(handoff.stage).toBe("idle");
+    setThreshold("cap-own", 0);
+  });
+  it("a cap of 0 is the percent alone; a negative cap is ignored", () => {
+    setCap(0);
+    expect(cap()).toBe(0);
+    expect(mark("cap-none", 1_000_000)).toBe(0.7);
+    setCap(-1);
+    expect(cap()).toBe(0);
+    setCap(300_000);
+    expect(mark("cap-none", 1_000_000)).toBeCloseTo(0.3);
+  });
+});
+
+// Backlog 431: an unbound chat is a code chat; its wrap-up closes as
+// practices §2 does — commit by path, the backlog index, push only where
+// the project says so.
+describe("the code chat's close", () => {
+  it("commits by path, refreshes the index, and pushes only where the project says", () => {
+    expect(WRAP_UP).toContain(CODE_CLOSE);
+    expect(CODE_CLOSE).toContain("commit by path");
+    expect(CODE_CLOSE).toContain("never `git add -A` or `git add .`, never `git stash`");
+    expect(CODE_CLOSE).toContain("backlogctl.py index");
+    expect(CODE_CLOSE).toContain("the command the project's CLAUDE.md names");
+    expect(CODE_CLOSE).toContain("Push only if the project's instructions say to push.");
+    expect(CODE_CLOSE).toContain("no AI attribution");
+    expect(WRAP_UP).toContain("mdcheck.py");
+    expect(WRAP_UP).toContain("do not trim now");
+  });
+  it("keeps the order: STATE section, close, start prompt, stop", () => {
+    const i = (t: string) => WRAP_UP.indexOf(t);
+    expect(i("## STATE AS OF")).toBeLessThan(i(CODE_CLOSE));
+    expect(i(CODE_CLOSE)).toBeLessThan(i("start-prompt"));
+    expect(i("start-prompt")).toBeLessThan(i("Then stop"));
+  });
+});
