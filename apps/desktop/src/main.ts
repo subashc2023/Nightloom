@@ -14,9 +14,13 @@ import "@fontsource/ibm-plex-mono/latin-500.css";
 import "./app.css";
 import { app as state, applyPalette } from "./lib/state.svelte";
 import { installMathCopy } from "./lib/mathCopy";
+import { installFieldUndo } from "./lib/fieldUndo";
 
 // Item 352: copying a rendered formula gives its TeX.
 installMathCopy();
+
+// Item 421: ⌘Z in a plain field undoes that field, never another box.
+installFieldUndo();
 
 // The saved palette, before the first paint.
 applyPalette(state.palette);

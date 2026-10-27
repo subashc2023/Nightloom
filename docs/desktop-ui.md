@@ -1230,7 +1230,13 @@ a rename in progress — and the app's stack is untouched. On macOS the Edit
 menu's Undo and Redo are the app's own items now, retitled live with the
 operation ("Undo rewind", "Redo remove") and disabled when there is nothing
 to reverse and no text box has the focus (`set_undo_menu`); a click or ⌘Z
-with a text box focused hands the box its own undo through the webview.
+with a text box focused hands the box its own undo — ~~through the webview~~
+(2026-10-27, item 421: WebKit's `execCommand` stack is the whole page's, so
+⌘Z in the Find bar undid the message box) from the box's own history: the
+message box's and edit box's `BoxHistory`, CodeMirror's for a formatted box
+or note, and `fieldUndo.ts`'s per-field `BoxHistory` for every other plain
+field. A run of typing is one step until the caret moves or a pause of
+over 500 ms, as in CodeMirror.
 Elsewhere `App.svelte` binds the keys. ⌘K has "Undo …" / "Redo …" rows in
 an Edit group, greyed when there is nothing. A toast names every step
 ("Undid rename"), since the change may be off screen. Both are no-ops while

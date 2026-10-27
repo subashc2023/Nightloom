@@ -148,6 +148,7 @@ import {
 import { turnClock } from "./turnTiming";
 import { FirstSeen, doingOf, quoteLine, sortRuns, type RunEntry, type RunKind } from "./running";
 import { rememberScroll } from "./scroll.svelte";
+import { stepFocusedField } from "./fieldUndo";
 import {
   DEFAULT_USAGE_LIMITS,
   deferredRecheckAt,
@@ -1425,13 +1426,19 @@ export function runMenuCommand(id: string): void {
     // The Edit menu's Undo and Redo, ours since nightshift backlog 064: in
     // a text box the key is the box's — the webview's own command keeps
     // the typing history — and anywhere else it is the app's stack.
+    // Item 421: a plain field or a CodeMirror editor steps its OWN history
+    // (`fieldUndo.ts`) — WebKit's `execCommand` stack is the whole page's,
+    // so ⌘Z in the Find bar undid the message box. The message box and the
+    // edit box took the command above (their interceptors).
     case "undo_app":
-      if (inTextField()) document.execCommand("undo");
-      else void undo();
+      if (inTextField()) {
+        if (!stepFocusedField("undo")) document.execCommand("undo");
+      } else void undo();
       break;
     case "redo_app":
-      if (inTextField()) document.execCommand("redo");
-      else void redo();
+      if (inTextField()) {
+        if (!stepFocusedField("redo")) document.execCommand("redo");
+      } else void redo();
       break;
     // ⌘F (nightshift backlog 287): since web tabs pass 2 (backlog 172) the
     // Edit menu's Find… holds ⌘F, so on macOS the key never reaches the

@@ -36,6 +36,7 @@
     SIDEBAR_MIN,
   } from "./lib/state.svelte";
   import * as tabs from "./lib/tabs";
+  import { stepFocusedField } from "./lib/fieldUndo";
   import { paneLine } from "./lib/browse";
   import { budgetChip } from "./lib/budget";
   import { draggedShell, dropLabel, term } from "./lib/terminal.svelte";
@@ -458,12 +459,15 @@
     // the window handler carries ⌘⇧Z instead, which is no longer a menu
     // item. Both go through `redo_app`, which hands a text box its own
     // redo. Other platforms keep the ⌘Y branch and the tables below.
+    // Not when the focused box already took the key (item 421: the
+    // formatted box's CodeMirror redoes on ⌘⇧Z itself, and a second redo
+    // here would skip a step).
     if (isMac) {
-      if (primary && e.shiftKey && e.code === "KeyZ") {
+      if (primary && e.shiftKey && e.code === "KeyZ" && !e.defaultPrevented) {
         runMenuCommand("redo_app");
         return true;
       }
-    } else if (primary && !e.shiftKey && e.code === "KeyY") {
+    } else if (primary && !e.shiftKey && e.code === "KeyY" && !e.defaultPrevented) {
       runMenuCommand("redo_app");
       return true;
     }
@@ -559,7 +563,10 @@
     const k = e.key.toLowerCase();
     const id = e.shiftKey ? SHIFT_KEYS[k] : KEYS[k];
     if (!id) return false;
-    if ((id === "undo_app" || id === "redo_app") && inTextField()) return false;
+    // In a text box the key is the box's: a plain field steps its own
+    // history (item 421, `fieldUndo.ts`), never the browser's page-wide one.
+    if ((id === "undo_app" || id === "redo_app") && inTextField())
+      return !e.defaultPrevented && stepFocusedField(id === "undo_app" ? "undo" : "redo");
     runMenuCommand(id);
     return true;
   }

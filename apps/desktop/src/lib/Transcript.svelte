@@ -2083,8 +2083,10 @@
                   {#if layerShown(editing.draft)}
                     <BoxLayer text={editing.draft} box={editorEl} onrelabel={editRelabel} />
                   {/if}
+                  <!-- data-own-undo: its history is editHist's (item 421, fieldUndo.ts). -->
                   <textarea
                     bind:this={editorEl}
+                    data-own-undo
                     class:layered={layerShown(editing.draft)}
                     use:grow
                     use:trackPlace={(pl) => (editPlaces[0] = pl)}

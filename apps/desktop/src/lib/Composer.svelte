@@ -2835,8 +2835,10 @@
            language picker on the fence. Shared with the edit box (399). -->
       <BoxLayer {text} box={ta instanceof HTMLTextAreaElement ? ta : null} onrelabel={relabel} />
     {/if}
+    <!-- data-own-undo: its history is `hist`'s, not fieldUndo.ts's (item 421). -->
     <textarea
       bind:this={ta}
+      data-own-undo
       class:quoted={layered}
       bind:value={() => text, (v) => setDraftText(key, v)}
       rows="1"
