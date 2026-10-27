@@ -752,6 +752,19 @@ written over an `AGENTS.md` a picked folder has — then makes the folder, write
 `AGENTS.md` when there was text (the file the preamble reads whole; nothing
 else), registers under the typed name and opens the project. No dialog appears.
 
+**Use my practices (nightshift backlog 432, 2026-10-27).** His practices file
+reaches a Claude Code chat only through a project `CLAUDE.md` that imports it,
+so the form has a *Practices* row: a "Use my practices" box, ticked by default
+(blocker 1573), that has Create also write `CLAUDE.md` with
+`@~/.claude/practices/practices.md` as its first line and the project's name
+as a header (`project::write_practices_claude_md`, opened `create_new`). A
+picked folder that already has a `CLAUDE.md` gets a line saying it is kept,
+not a box; nothing is ever written over or into an existing one. The row is
+absent when `~/.claude/practices/practices.md` is not there. Unticking is
+kept in the draft (`claudeMd: false`) across a quit. *Open project…* on a
+folder with no `CLAUDE.md` offers rather than writes: a toast whose
+"Add CLAUDE.md" button calls `add_practices_claude_md` (blocker 1574).
+
 The draft is `app.newProjectDraft`, not component state (the never-lose-work
 rule): Escape, Cancel, a click on a chat and a project switch all leave the form
 with the name, the instructions and a picked folder still in it, marked

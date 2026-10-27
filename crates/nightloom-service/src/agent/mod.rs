@@ -89,6 +89,10 @@ const INTERRUPT_GRACE: Duration = Duration::from_secs(5);
 /// Tail of the child's stderr kept for diagnosis, in bytes.
 const STDERR_TAIL: usize = 4096;
 
+/// Set to `1` on every `claude` process Nightloom starts (backlog 435), so
+/// a user's own Claude Code hooks can tell a Nightloom turn from theirs.
+pub const NIGHTLOOM_MARKER_ENV: &str = "NIGHTLOOM";
+
 /// The last [`STDERR_TAIL`] bytes of `text`, cut on a character boundary:
 /// a byte offset that lands inside a multi-byte character would panic the
 /// reader task and lose the tail exactly when it is the only diagnosis
@@ -1058,6 +1062,10 @@ impl AgentSpec {
         }
         // His claude.ai connectors (backlog 235): off unless the chat said on.
         env.extend(connectors::env(self.claude_ai_connectors));
+        // Nightloom's mark on its own `claude` processes (backlog 435): his
+        // `~/.claude/hooks/notify.sh` exits quietly when it is set, since
+        // Nightloom raises its own banner. Inherited by the CLI's hooks.
+        env.push((NIGHTLOOM_MARKER_ENV, "1".into()));
         env
     }
 
@@ -3847,6 +3855,30 @@ mod tests {
         let mut plain = spec();
         plain.fork_mode = false;
         assert!(!plain.args("hi").iter().any(|x| x == "--settings"));
+    }
+
+    /// Backlog 435: every process Nightloom starts carries `NIGHTLOOM=1` —
+    /// a chat turn, a pass (dream, capture, chat name) and the checkpoint
+    /// fork alike — so his `notify.sh` hook can stay quiet on them.
+    #[test]
+    fn every_process_carries_the_nightloom_marker() {
+        let marked = |env: &[(String, String)]| {
+            env.iter()
+                .any(|(k, v)| k == NIGHTLOOM_MARKER_ENV && v == "1")
+        };
+        let env_of = |s: &AgentSpec| -> Vec<(String, String)> {
+            s.env_set()
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect()
+        };
+        assert!(marked(&env_of(&spec())));
+        let pass = PassSpec::new("claude", Vec::new()).spec_in("/w");
+        assert!(marked(&env_of(&pass)));
+        let mut resumed = spec();
+        resumed.resume = Some("s-1".into());
+        assert!(marked(&resumed.fork_spec().unwrap().env));
+        assert!(!spec().env_removed().contains(&NIGHTLOOM_MARKER_ENV));
     }
 
     /// Fork mode (backlog 104, pass 3): on by default, it puts

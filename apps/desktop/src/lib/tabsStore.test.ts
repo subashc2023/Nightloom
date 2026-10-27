@@ -227,6 +227,16 @@ describe("the New project tab and form across a quit (backlog 394)", () => {
     expect(localStorage.getItem(NEW_PROJECT_KEY)).toBeNull();
   });
 
+  it("an unticked 'Use my practices' box survives a quit; ticked is the default and is not stored (backlog 432)", () => {
+    const declined = { name: "Half", instructions: "", pickedPath: null, claudeMd: false };
+    saveNewProject(localStorage, { open: true, front: true, draft: declined });
+    expect(loadNewProject(localStorage).draft).toEqual(declined);
+    saveNewProject(localStorage, { open: true, front: true, draft: { ...declined, claudeMd: undefined } });
+    expect(loadNewProject(localStorage).draft).toEqual({ name: "Half", instructions: "", pickedPath: null });
+    localStorage.setItem(NEW_PROJECT_KEY, JSON.stringify({ open: true, draft: { name: "x", claudeMd: "no" } }));
+    expect(loadNewProject(localStorage).draft.claudeMd).toBeUndefined();
+  });
+
   it("a malformed store reads as closed and empty", () => {
     localStorage.setItem(NEW_PROJECT_KEY, "{nope");
     expect(loadNewProject(localStorage).open).toBe(false);

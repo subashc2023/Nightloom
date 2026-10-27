@@ -6319,6 +6319,7 @@ async fn new_project(
     name: String,
     path: Option<String>,
     instructions: Option<String>,
+    claude_md: Option<bool>,
 ) -> Result<ProjectInfo, String> {
     let mut guard = state.workspaces.lock().await;
     let folder = match path
@@ -6332,11 +6333,56 @@ async fn new_project(
             project::NewProjectFolder::Resolved(project::NewProjectPath::resolve(&name, &base).path)
         }
     };
-    let project = guard
-        .registry
-        .new_project(&name, folder, instructions.as_deref())?;
+    let project = guard.registry.new_project_with(
+        &name,
+        folder,
+        instructions.as_deref(),
+        claude_md.unwrap_or(false),
+    )?;
     announce_migration(&app, &project);
     Ok(ProjectInfo::of(&project))
+}
+
+/// Backlog 432: whether a folder could take the practices `CLAUDE.md` —
+/// `exists` when it has one (never touched), `practices` when
+/// `~/.claude/practices/practices.md` is there for the line to import.
+#[derive(Serialize, Clone)]
+struct ClaudeMdOffer {
+    exists: bool,
+    practices: bool,
+}
+
+/// The offer's check, for a picked folder in the New project form and a
+/// folder just opened by Open project…. Reads only.
+#[tauri::command]
+async fn claude_md_offer(path: String) -> Result<ClaudeMdOffer, String> {
+    let dir = PathBuf::from(path);
+    Ok(ClaudeMdOffer {
+        // An empty path is a folder New project has yet to make: no file.
+        exists: !dir.as_os_str().is_empty()
+            && dir.join(project::CLAUDE_MD).symlink_metadata().is_ok(),
+        practices: project::practices_file_exists(),
+    })
+}
+
+/// Backlog 432: Open project…'s offer accepted — the practices `CLAUDE.md`
+/// in the project's folder, only if it has none. `false` when one was
+/// already there (left exactly as it was).
+#[tauri::command]
+async fn add_practices_claude_md(state: State<'_, AppState>, id: String) -> Result<bool, String> {
+    let (dir, name) = {
+        let guard = state.workspaces.lock().await;
+        let p = guard
+            .registry
+            .find(&id)
+            .ok_or_else(|| format!("no project {id}"))?;
+        let dir = p
+            .workspace
+            .clone()
+            .ok_or_else(|| format!("{} has no folder", p.name))?;
+        (dir, p.name.clone())
+    };
+    project::write_practices_claude_md(&dir, &name)
 }
 
 /// Open a project: its chats become the listing and its folder the workspace.
@@ -8720,6 +8766,8 @@ fn main() {
             set_checkpoint,
             resolve_new_project_path,
             new_project,
+            claude_md_offer,
+            add_practices_claude_md,
             open_project,
             close_project,
             rename_project,
