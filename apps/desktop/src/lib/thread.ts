@@ -211,6 +211,61 @@ export function threadGroups(
   return { groups: [...groups.values()], loose };
 }
 
+// ---- his order of the threads (nightshift backlog 426) ----
+
+/** Where the sidebar keeps his order of each project's threads, across launches: `{project: slugs}`. */
+export const THREAD_ORDER_KEY = "nightloom.threadOrder";
+
+/**
+ * The project's threads in his order: the backend's (most recently touched
+ * first) until he has dragged one; after that, the slugs as he left them,
+ * with any thread new since then first, in the backend's order (a new
+ * thread is the most recently touched). A slug in the order that is no
+ * longer a thread is skipped.
+ */
+export function orderedThreads(threads: ThreadInfo[], order: readonly string[] | undefined): ThreadInfo[] {
+  if (!order || order.length === 0) return threads;
+  const at = new Map(order.map((s, i) => [s, i] as const));
+  const fresh = threads.filter((t) => !at.has(t.slug));
+  const placed = threads.filter((t) => at.has(t.slug)).sort((a, b) => at.get(a.slug)! - at.get(b.slug)!);
+  return [...fresh, ...placed];
+}
+
+/** `slugs` with `slug` moved to just before `before` (`null`: to the end). */
+export function reordered(slugs: readonly string[], slug: string, before: string | null): string[] {
+  if (slug === before) return [...slugs];
+  const rest = slugs.filter((s) => s !== slug);
+  const at = before === null ? -1 : rest.indexOf(before);
+  if (at < 0) return [...rest, slug];
+  return [...rest.slice(0, at), slug, ...rest.slice(at)];
+}
+
+function readOrders(): Record<string, string[]> {
+  try {
+    const v = JSON.parse(localStorage.getItem(THREAD_ORDER_KEY) ?? "{}");
+    return v && typeof v === "object" && !Array.isArray(v) ? v : {};
+  } catch {
+    return {};
+  }
+}
+
+/** His saved order of `project`'s threads, or undefined before his first drag. */
+export function loadThreadOrder(project: string): string[] | undefined {
+  const o = readOrders()[project];
+  return Array.isArray(o) && o.every((s) => typeof s === "string") ? o : undefined;
+}
+
+/** Keep his order of `project`'s threads; best-effort, like the closed groups. */
+export function saveThreadOrder(project: string, slugs: readonly string[]): void {
+  try {
+    const all = readOrders();
+    all[project] = [...slugs];
+    localStorage.setItem(THREAD_ORDER_KEY, JSON.stringify(all));
+  } catch {
+    // best-effort
+  }
+}
+
 /** The tooltip that says the two weights apart (backlog 288): this one is light. */
 export function newInThreadTip(slug: string): string {
   return (

@@ -4870,6 +4870,56 @@ async fn new_thread(
     blocking(move || nightloom_service::thread::create_thread(&notes, slug.trim(), &name)).await
 }
 
+/// The open project's docspace, for the thread commands that need one.
+async fn thread_notes(state: &AppState) -> Result<PathBuf, String> {
+    state
+        .active()
+        .await
+        .map(|p| p.notes_dir())
+        .ok_or_else(|| "open a project first — threads live in a project".to_string())
+}
+
+/// Rename a thread in the open project (nightshift backlog 424): the title
+/// in its `thread.md` heading only; the slug and folder stay, so bound
+/// chats still find it (`thread::rename_thread`).
+#[tauri::command]
+async fn rename_thread(
+    state: State<'_, AppState>,
+    slug: String,
+    name: String,
+) -> Result<nightloom_service::thread::ThreadInfo, String> {
+    let notes = thread_notes(&state).await?;
+    blocking(move || nightloom_service::thread::rename_thread(&notes, slug.trim(), &name)).await
+}
+
+/// Delete a thread in the open project (nightshift backlog 424): its folder
+/// moves to `.agents/.trash/threads/<slug>-<when>`, never unlinked
+/// (`thread::trash_thread`). The shell unbinds its chats first. Returns
+/// where the folder went.
+#[tauri::command]
+async fn delete_thread(state: State<'_, AppState>, slug: String) -> Result<String, String> {
+    let notes = thread_notes(&state).await?;
+    let when = chrono::Local::now().format("%Y-%m-%d-%H%M%S").to_string();
+    blocking(move || {
+        nightloom_service::thread::trash_thread(&notes, slug.trim(), &when)
+            .map(|p| p.display().to_string())
+    })
+    .await
+}
+
+/// Show a thread's folder in the file manager, selected (backlog 424's
+/// Reveal in Finder). Nothing is created: a thread that has gone says so.
+#[tauri::command]
+async fn reveal_thread(state: State<'_, AppState>, slug: String) -> Result<(), String> {
+    let notes = thread_notes(&state).await?;
+    let dir = nightloom_service::thread::thread_dir(&notes, slug.trim())
+        .ok_or_else(|| format!("{slug:?} is not a thread name"))?;
+    if !dir.is_dir() {
+        return Err(format!("the thread {slug} is no longer there"));
+    }
+    project::reveal_file(&dir).map_err(|e| e.to_string())
+}
+
 /// Append an aside's fold entry to a thread's `log.md` in the open project
 /// (backlog 282). The shell builds the entry (dated, the aside and chat
 /// named, the model's summary as he approved or edited it); this only
@@ -8547,6 +8597,9 @@ fn main() {
             set_session_thread,
             list_threads,
             new_thread,
+            rename_thread,
+            delete_thread,
+            reveal_thread,
             append_thread_log,
             thread_upkeep,
             tidy_threads,

@@ -14,7 +14,7 @@
  */
 import * as api from "./api";
 import * as tabs from "./tabs";
-import { activateTab, app, openContent, showNote } from "./state.svelte";
+import { activateTab, addToast, app, chatThread, moveChatToThread, openContent, showNote } from "./state.svelte";
 import { threadNoteName, type ThreadFile } from "./thread";
 import type { ThreadInfo } from "./types";
 
@@ -102,6 +102,85 @@ export async function openThreadView(slug: string, title: string = slug): Promis
     return;
   }
   await openContent(content, "new");
+}
+
+/**
+ * The thread menu's three opens (nightshift backlog 424), as a chat row's:
+ * `replace` is the name's click (the tab already open for it, else a new
+ * one); `new` a tab after the focused pane's front one (the one already in
+ * that pane comes forward); `beside` the other pane, made when there is one.
+ */
+export async function openThreadAs(slug: string, title: string, how: "replace" | "new" | "beside"): Promise<void> {
+  if (!app.project) return;
+  if (how === "replace") return openThreadView(slug, title);
+  const content: tabs.TabContent = title && title !== slug ? { kind: "thread", slug, title } : { kind: "thread", slug };
+  const t = how === "beside" ? tabs.openBeside(app.tabs, content, "new") : tabs.land(app.tabs, tabs.focusedPane(app.tabs), content, "new");
+  await activateTab(t.id);
+}
+
+/**
+ * Rename a thread (backlog 424; his go 2026-10-27: the title only). The
+ * heading in its `thread.md` changes; the slug and folder stay, so the
+ * chats bound to it still find it. The listing and the thread's open tabs
+ * take the new name at once. False, with a toast, when refused.
+ */
+export async function renameThread(slug: string, name: string): Promise<boolean> {
+  let info: ThreadInfo;
+  try {
+    info = await api.renameThread(slug, name);
+  } catch (e) {
+    addToast(String(e));
+    return false;
+  }
+  const i = threadList.list.findIndex((t) => t.slug === slug);
+  if (i >= 0) threadList.list[i] = info;
+  for (const t of tabs.allTabs(app.tabs)) {
+    if (t.content.kind === "thread" && t.content.slug === slug) t.content = { kind: "thread", slug, title: info.title };
+  }
+  void refreshThreadList();
+  return true;
+}
+
+/**
+ * Delete a thread (backlog 424). Its chats are unbound first — each becomes
+ * "Not in a thread", its messages untouched (the same `thread` line the
+ * picker writes); if one cannot be (it is running a turn), nothing is
+ * deleted and the toast says why. Then the folder moves to the project's
+ * `.agents/.trash/threads/`, never unlinked, and the thread's tabs close.
+ */
+export async function deleteThread(slug: string): Promise<boolean> {
+  const bound = app.sessions.filter((s) => s.thread === slug).map((s) => s.id);
+  if (app.activeSessionId && !bound.includes(app.activeSessionId) && chatThread(app.events) === slug) {
+    bound.push(app.activeSessionId);
+  }
+  for (const id of bound) {
+    if (!(await moveChatToThread(id, null))) return false;
+  }
+  let where: string;
+  try {
+    where = await api.deleteThread(slug);
+  } catch (e) {
+    addToast(String(e));
+    return false;
+  }
+  for (const t of tabs.allTabs(app.tabs).filter((t) => t.content.kind === "thread" && t.content.slug === slug)) {
+    const r = tabs.close(app.tabs, t.id);
+    if (r.show) void activateTab(r.show.id);
+  }
+  threadList.list = threadList.list.filter((t) => t.slug !== slug);
+  void refreshThreadList();
+  const n = bound.length;
+  addToast(`Deleted the thread ${slug}${n ? ` — ${n} chat${n === 1 ? "" : "s"} now in no thread` : ""}; its folder is in ${where}`);
+  return true;
+}
+
+/** Show the thread's folder in Finder, selected (backlog 424). */
+export async function revealThread(slug: string): Promise<void> {
+  try {
+    await api.revealThread(slug);
+  } catch (e) {
+    addToast(String(e));
+  }
 }
 
 /** The existing edit path: the note editor on one of the thread's files, as a note tab. */
