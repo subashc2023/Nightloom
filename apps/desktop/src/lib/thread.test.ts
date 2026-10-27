@@ -86,9 +86,18 @@ describe("the picker's rows", () => {
       null,
     );
     expect(rows.map((r) => r.value)).toEqual([NO_THREAD, "stuart-brainstorm", "side", NEW_THREAD]);
-    expect(rows[1].label).toBe("Stuart brainstorm (stuart-brainstorm)");
+    // The name only; the slug is the row's hint (backlog 418).
+    expect(rows[1].label).toBe("Stuart brainstorm");
+    expect(rows[1].hint).toBe(".agents/threads/stuart-brainstorm/");
     expect(rows[1].detail).toBe("As of 1:00 AM — round 3 · touched 2026-10-02 · 1 upkeep flag");
     expect(rows[2].label).toBe("side");
+    expect(rows[0].hint).toBe("");
+    expect(rows[3].hint).toBe("");
+  });
+
+  it("names a thread whose title is blank by its slug", () => {
+    const rows = pickerOptions([info("blank", { title: "  " })], null);
+    expect(rows[1].label).toBe("blank");
   });
 
   it("keeps a binding the project no longer has, marked, so it is never shown as none", () => {

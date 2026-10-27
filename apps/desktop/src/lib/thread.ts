@@ -30,6 +30,9 @@ export interface PickerOption {
   label: string;
   /** The line under the label: status and last touched. */
   detail: string;
+  /** The row's tooltip: a thread's folder (`.agents/threads/<slug>/`), so the
+   *  slug is one hover away; empty for the other rows (backlog 418). */
+  hint: string;
 }
 
 /** The value "New thread…" carries; never a slug (slugs have no `:`). */
@@ -44,21 +47,29 @@ export const NO_THREAD = "";
  * shows a binding it cannot name.
  */
 export function pickerOptions(threads: ThreadInfo[], bound: string | null): PickerOption[] {
-  const rows: PickerOption[] = [{ value: NO_THREAD, label: "No thread", detail: "wrap-up writes HANDOFF.md" }];
+  const rows: PickerOption[] = [{ value: NO_THREAD, label: "No thread", detail: "wrap-up writes HANDOFF.md", hint: "" }];
   for (const t of threads) {
     const when = t.touched ? `touched ${t.touched}` : "";
     const flags = t.flags > 0 ? `${t.flags} upkeep flag${t.flags === 1 ? "" : "s"}` : "";
     rows.push({
       value: t.slug,
-      label: t.title === t.slug ? t.slug : `${t.title} (${t.slug})`,
+      // The name only (backlog 418): "Title (slug)" was what cut the rows
+      // off; the slug is in the hint.
+      label: t.title.trim() || t.slug,
       detail: [t.status, when, flags].filter((x) => x).join(" · "),
+      hint: threadFolder(t.slug),
     });
   }
   if (bound && !threads.some((t) => t.slug === bound)) {
-    rows.push({ value: bound, label: `${bound} (missing)`, detail: "no thread.md in this project" });
+    rows.push({ value: bound, label: `${bound} (missing)`, detail: "no thread.md in this project", hint: threadFolder(bound) });
   }
-  rows.push({ value: NEW_THREAD, label: "New thread…", detail: "from the project's template" });
+  rows.push({ value: NEW_THREAD, label: "New thread…", detail: "from the project's template", hint: "" });
   return rows;
+}
+
+/** A thread's folder, as the picker shows it: `.agents/threads/<slug>/`. */
+export function threadFolder(slug: string): string {
+  return `.agents/threads/${slug}/`;
 }
 
 /** The chat's thread, projected from the log: the latest live `thread`
