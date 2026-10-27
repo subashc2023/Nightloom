@@ -235,6 +235,10 @@ pub struct Prepared {
     /// Why the text path was taken when a converter was there (a timeout,
     /// a failed conversion) — shown to him, never sent to the model.
     pub note: Option<String>,
+    /// SHA-256 (hex) of the office file itself, before conversion (item
+    /// 428): the PDF LibreOffice makes differs byte for byte on every run,
+    /// so Keep tells the same file dropped twice by this instead.
+    pub source_sha256: String,
 }
 
 /// An office file made sendable: a PDF when `soffice` is given and the
@@ -259,6 +263,7 @@ pub async fn prepare_office(
                     data: base64::engine::general_purpose::STANDARD.encode(&pdf),
                     via: "pdf",
                     note: None,
+                    source_sha256: crate::sync::manifest::sha256_hex(bytes),
                 });
             }
             Err(e) => note = Some(e),
@@ -284,6 +289,7 @@ pub async fn prepare_office(
         via: "text",
         count: Some(count),
         note,
+        source_sha256: crate::sync::manifest::sha256_hex(bytes),
     })
 }
 

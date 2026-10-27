@@ -20,7 +20,7 @@
   import { relativeTime } from "./time";
   import * as api from "./api";
   import { onMount, tick, untrack } from "svelte";
-  import { addToast, projectFilesChanged, refreshNotes } from "./state.svelte";
+  import { projectFilesChanged, refreshNotes } from "./state.svelte";
   import { carriesFiles } from "./dropLook";
   import { acceptFiles, conversionJobs, readBase64 } from "./attachFiles.svelte";
   import { discardDraft, readDraft } from "./drafts.svelte";
@@ -37,6 +37,7 @@
   import {
     FLASH_MS,
     HOLD_LINE,
+    NOTES_TOAST_MS,
     Hold,
     centredScrollTop,
     flashPlan,
@@ -256,6 +257,24 @@
   let held = $state(false);
   let keeping = $state(0);
   const sync = () => (held = hold.held(performance.now()));
+
+  /*
+   * Item 428 (his bug, 2026-10-27: "it like did nothing both times"): a
+   * drop's words — kept, already there, refused — and "Keeping…" while an
+   * office file converts, held at the panel's foot where he is looking.
+   * The window's toasts sit at the far corner of the chat pane, a thousand
+   * pixels from the panel, and came only after the conversion.
+   */
+  let dropToasts = $state<{ id: number; text: string }[]>([]);
+  let dropToastSeq = 0;
+  function dismissDropToast(id: number) {
+    dropToasts = dropToasts.filter((t) => t.id !== id);
+  }
+  function notesToast(text: string) {
+    const id = ++dropToastSeq;
+    dropToasts = [...dropToasts, { id, text }];
+    setTimeout(() => dismissDropToast(id), NOTES_TOAST_MS);
+  }
   onMount(() => {
     const t = setInterval(() => held && sync(), 500);
     const end = () => {
@@ -298,13 +317,13 @@
     try {
       await keepDropped(files, {
         project: () => app.project,
-        toast: addToast,
+        toast: notesToast,
         attach: acceptFiles,
         jobs: conversionJobs,
         chips: (k) => readDraft(k).attachments,
         state: keepStateOf,
         forget: (k) => delete keeps[k],
-        keep: keepNow,
+        keep: (k, name, mediaType, from, source) => keepNow(k, name, mediaType, from, { source, toast: notesToast }),
         discard: (k) => discardDraft(k),
         // Item 414: a zip is unpacked into files/<its name>/.
         zip: {
@@ -521,9 +540,6 @@
         </div>
       </div>
     {/if}
-    {#if keeping > 0}
-      <p class="keeping" role="status">Keeping {keeping} {keeping === 1 ? "file" : "files"}…</p>
-    {/if}
     <button
       class="head"
       onclick={() => (collapsed.project = !collapsed.project)}
@@ -613,6 +629,21 @@
       {/if}
     {/if}
   </section>
+  <!-- Item 428: the drop's words, at the panel's foot while the list
+       scrolls; "Keeping…" moved here from the section's top. -->
+  {#if keeping > 0 || dropToasts.length > 0}
+    <div class="drop-toasts" aria-live="polite">
+      {#if keeping > 0}
+        <p class="keeping" role="status">Keeping {keeping} {keeping === 1 ? "file" : "files"}…</p>
+      {/if}
+      {#each dropToasts as t (t.id)}
+        <div class="drop-toast" role="status">
+          <span class="drop-toast-text">{t.text}</span>
+          <button class="drop-toast-x" aria-label="Dismiss" onclick={() => dismissDropToast(t.id)}>×</button>
+        </div>
+      {/each}
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -710,9 +741,51 @@
   }
   .keeping {
     margin: 0;
-    padding: 0.3rem 0.75rem 0;
+    padding: 0.1rem 0.15rem;
     font-size: 0.72rem;
     color: var(--dim);
+  }
+  /* Item 428: held at the panel's foot, over the list as it scrolls. */
+  .drop-toasts {
+    position: sticky;
+    bottom: 0;
+    z-index: 3;
+    margin-top: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    padding: 0.4rem 0.6rem 0.6rem;
+    background: linear-gradient(to bottom, transparent, var(--paper) 0.6rem);
+  }
+  .drop-toast {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.4rem;
+    padding: 0.4rem 0.55rem;
+    border: 1px solid var(--accent, var(--border));
+    border-radius: 6px;
+    background: var(--panel, var(--paper));
+    color: var(--text);
+    font-size: 0.76rem;
+    line-height: 1.35;
+  }
+  .drop-toast-text {
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .drop-toast-x {
+    border: none;
+    background: none;
+    color: var(--dim);
+    font: inherit;
+    font-size: 0.9rem;
+    line-height: 1;
+    padding: 0 0.1rem;
+    cursor: pointer;
+  }
+  .drop-toast-x:hover {
+    color: var(--text);
   }
   /* A header the whole width so the hit target is the row, not the caret. */
   .head {

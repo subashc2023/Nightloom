@@ -112,6 +112,117 @@ pub fn keep_in_project_at(
     media_type: &str,
     bytes: &[u8],
 ) -> Result<Kept, String> {
+    keep_in_project_from(docspace, sub, name, media_type, bytes, None)
+}
+
+/*
+ * Item 428 (his bug, 2026-10-27: "i jus dragged the same identical file
+ * twice into notes ... it like uploaded both times"). An office file is kept
+ * as the PDF LibreOffice made of it, and LibreOffice does not make the same
+ * bytes twice (his two copies of one .pptx: same size, 372,439 bytes apart),
+ * so the same-bytes check never matches a converted file. The window passes
+ * the office file's own SHA-256 (`attach::Prepared::source_sha256`); a hidden
+ * manifest beside the kept files, `files/.kept-sources.json`, remembers which
+ * kept file each source became. A dot-file: the Notes list, the prompt's
+ * listing and a zip's unpack all skip it. Only this module writes it.
+ */
+
+/// The manifest's name, inside `files/`.
+pub const SOURCES_MANIFEST: &str = ".kept-sources.json";
+
+/// One writer at a time: two keeps at once must not each read the old
+/// manifest and drop the other's line.
+static SOURCES_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[derive(Debug, Default, serde::Deserialize, serde::Serialize)]
+struct SourcesManifest {
+    /// Source SHA-256 (lowercase hex) → the kept file's rel (`files/x.pdf`).
+    #[serde(default)]
+    sources: std::collections::BTreeMap<String, String>,
+}
+
+fn is_sha256_hex(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// The manifest, or an empty one when it is missing or unreadable: a broken
+/// manifest only means the content check alone decides, as before 428.
+fn read_sources(files_dir: &Path) -> SourcesManifest {
+    std::fs::read(files_dir.join(SOURCES_MANIFEST))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+/// Record `sha → rel`, written whole to a temporary dot-file and renamed
+/// over. A failure is not the keep's: the file is kept either way.
+fn record_source(files_dir: &Path, sha: &str, rel: &str) {
+    let mut m = read_sources(files_dir);
+    if m.sources.get(sha).map(String::as_str) == Some(rel) {
+        return;
+    }
+    m.sources.insert(sha.to_string(), rel.to_string());
+    let Ok(json) = serde_json::to_vec_pretty(&m) else {
+        return;
+    };
+    let tmp = files_dir.join(format!("{SOURCES_MANIFEST}.{}.tmp", std::process::id()));
+    if std::fs::write(&tmp, json).is_ok()
+        && std::fs::rename(&tmp, files_dir.join(SOURCES_MANIFEST)).is_err()
+    {
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
+
+/// [`keep_in_project_at`], told the SHA-256 of the file these bytes were
+/// made from (`source`, item 428): when that source was kept before and its
+/// file is still there, the answer is `already` with that file and nothing
+/// is written. A source given for a zip's entry (`sub` not empty) is not
+/// looked up — an entry belongs in its zip's folder. A `source` that is not
+/// a SHA-256 is ignored.
+pub fn keep_in_project_from(
+    docspace: &Path,
+    sub: &str,
+    name: &str,
+    media_type: &str,
+    bytes: &[u8],
+    source: Option<&str>,
+) -> Result<Kept, String> {
+    let source = source
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| sub.is_empty() && is_sha256_hex(s));
+    let Some(sha) = source else {
+        return keep_bytes(docspace, sub, name, media_type, bytes);
+    };
+    let files_dir = docspace.join(KEPT_DIR);
+    let _guard = SOURCES_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(rel) = read_sources(&files_dir).sources.get(&sha)
+        && let Some(leaf) = rel.strip_prefix(&format!("{KEPT_DIR}/"))
+        // Only a file directly in `files/`, by a plain name: the manifest
+        // is a file on disk, and a line in it must not point anywhere else.
+        && !leaf.is_empty()
+        && !leaf.contains('/')
+        && !leaf.contains('\\')
+        && !leaf.starts_with('.')
+        && files_dir.join(leaf).is_file()
+    {
+        return Ok(Kept {
+            path: files_dir.join(leaf),
+            rel: rel.clone(),
+            already: true,
+        });
+    }
+    let kept = keep_bytes(docspace, sub, name, media_type, bytes)?;
+    record_source(&files_dir, &sha, &kept.rel);
+    Ok(kept)
+}
+
+fn keep_bytes(
+    docspace: &Path,
+    sub: &str,
+    name: &str,
+    media_type: &str,
+    bytes: &[u8],
+) -> Result<Kept, String> {
     let sub = if sub.is_empty() {
         String::new()
     } else {
@@ -205,8 +316,10 @@ fn same_bytes_in(dir: &Path, bytes: &[u8]) -> Option<String> {
         .ok()?
         .flatten()
         .filter(|e| {
-            e.metadata()
-                .is_ok_and(|m| m.is_file() && m.len() == bytes.len() as u64)
+            // Not the source manifest (item 428), nor any hidden file.
+            !e.file_name().to_string_lossy().starts_with('.')
+                && e.metadata()
+                    .is_ok_and(|m| m.is_file() && m.len() == bytes.len() as u64)
         })
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
@@ -502,6 +615,205 @@ mod tests {
         assert_eq!(renamed.rel, "files/deck (3).pdf");
         assert!(renamed.already);
         assert_eq!(std::fs::read_dir(docs.join("files")).unwrap().count(), 3);
+        let _ = std::fs::remove_dir_all(docs);
+    }
+
+    // ---- item 428: the same office file kept twice, its PDFs different ----
+
+    const SRC: &str = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+
+    fn kept_files(docs: &Path) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(docs.join(KEPT_DIR))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| !n.starts_with('.'))
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn the_same_source_kept_twice_is_one_file_though_its_pdfs_differ() {
+        let docs = scratch("source-twice");
+        let name = "ICS51-Combinational-Logic-Design (1).pptx";
+        let a = keep_in_project_from(&docs, "", name, "application/pdf", b"%PDF-run-1", Some(SRC))
+            .unwrap();
+        assert!(!a.already);
+        assert_eq!(a.rel, "files/ICS51-Combinational-Logic-Design (1).pdf");
+        // The second conversion made other bytes: still that one file.
+        let b = keep_in_project_from(&docs, "", name, "application/pdf", b"%PDF-run-2", Some(SRC))
+            .unwrap();
+        assert!(b.already);
+        assert_eq!(b.rel, a.rel);
+        assert_eq!(b.path, a.path);
+        assert_eq!(kept_files(&docs), vec![a.rel[6..].to_string()]);
+        assert_eq!(std::fs::read(&a.path).unwrap(), b"%PDF-run-1");
+        // Upper-case hex is the same source.
+        let c = keep_in_project_from(
+            &docs,
+            "",
+            name,
+            "application/pdf",
+            b"%PDF-run-3",
+            Some(&SRC.to_ascii_uppercase()),
+        )
+        .unwrap();
+        assert!(c.already);
+        // Another source of the same name is a second file, as before.
+        let other = "a".repeat(64);
+        let d = keep_in_project_from(
+            &docs,
+            "",
+            name,
+            "application/pdf",
+            b"%PDF-other",
+            Some(&other),
+        )
+        .unwrap();
+        assert!(!d.already);
+        assert_eq!(d.rel, "files/ICS51-Combinational-Logic-Design (1) (2).pdf");
+        // The manifest is hidden, so the prompt's listing does not show it.
+        assert!(docs.join(KEPT_DIR).join(SOURCES_MANIFEST).is_file());
+        let seg = crate::prompt::project_notes_segment(&crate::prompt::ProjectContext {
+            name: "ICS 51".into(),
+            notes_dir: docs.clone(),
+        });
+        assert!(!format!("{seg:?}").contains("kept-sources"));
+        let _ = std::fs::remove_dir_all(docs);
+    }
+
+    #[test]
+    fn a_missing_or_corrupt_manifest_keeps_as_before() {
+        let docs = scratch("source-corrupt");
+        let a = keep_in_project_from(
+            &docs,
+            "",
+            "deck.pptx",
+            "application/pdf",
+            b"%PDF-1",
+            Some(SRC),
+        )
+        .unwrap();
+        let manifest = docs.join(KEPT_DIR).join(SOURCES_MANIFEST);
+        // Missing: the content check alone, as before 428 — a second copy.
+        std::fs::remove_file(&manifest).unwrap();
+        let b = keep_in_project_from(
+            &docs,
+            "",
+            "deck.pptx",
+            "application/pdf",
+            b"%PDF-2",
+            Some(SRC),
+        )
+        .unwrap();
+        assert!(!b.already);
+        assert_eq!(b.rel, "files/deck (2).pdf");
+        // ... and from then on it is remembered again.
+        let b2 = keep_in_project_from(
+            &docs,
+            "",
+            "deck.pptx",
+            "application/pdf",
+            b"%PDF-3",
+            Some(SRC),
+        )
+        .unwrap();
+        assert!(b2.already);
+        assert_eq!(b2.rel, b.rel);
+        // Corrupt: never a failed keep; same bytes still found by content.
+        std::fs::write(&manifest, b"{not json").unwrap();
+        let c = keep_in_project_from(
+            &docs,
+            "",
+            "deck.pptx",
+            "application/pdf",
+            b"%PDF-1",
+            Some(SRC),
+        )
+        .unwrap();
+        assert!(c.already);
+        assert_eq!(c.rel, a.rel);
+        // A line pointing out of files/ is not followed.
+        std::fs::write(
+            &manifest,
+            format!("{{\"sources\":{{\"{SRC}\":\"files/../../etc/passwd\"}}}}"),
+        )
+        .unwrap();
+        let d = keep_in_project_from(
+            &docs,
+            "",
+            "deck.pptx",
+            "application/pdf",
+            b"%PDF-4",
+            Some(SRC),
+        )
+        .unwrap();
+        assert!(!d.already);
+        assert_eq!(d.rel, "files/deck (3).pdf");
+        // Not a SHA-256: ignored, the keep goes on.
+        let e = keep_in_project_from(
+            &docs,
+            "",
+            "deck.pptx",
+            "application/pdf",
+            b"%PDF-4",
+            Some("x"),
+        )
+        .unwrap();
+        assert!(e.already);
+        assert_eq!(e.rel, d.rel);
+        let _ = std::fs::remove_dir_all(docs);
+    }
+
+    #[test]
+    fn a_source_whose_file_was_deleted_is_kept_again() {
+        let docs = scratch("source-deleted");
+        let a = keep_in_project_from(
+            &docs,
+            "",
+            "deck.pptx",
+            "application/pdf",
+            b"%PDF-1",
+            Some(SRC),
+        )
+        .unwrap();
+        std::fs::remove_file(&a.path).unwrap();
+        let b = keep_in_project_from(
+            &docs,
+            "",
+            "deck.pptx",
+            "application/pdf",
+            b"%PDF-2",
+            Some(SRC),
+        )
+        .unwrap();
+        assert!(!b.already);
+        assert_eq!(b.rel, "files/deck.pdf");
+        assert_eq!(std::fs::read(&b.path).unwrap(), b"%PDF-2");
+        let c = keep_in_project_from(
+            &docs,
+            "",
+            "deck.pptx",
+            "application/pdf",
+            b"%PDF-3",
+            Some(SRC),
+        )
+        .unwrap();
+        assert!(c.already);
+        assert_eq!(kept_files(&docs), vec!["deck.pdf".to_string()]);
+        // A zip's entry with that source is kept in its folder regardless.
+        let z = keep_in_project_from(
+            &docs,
+            "lab3",
+            "deck.pptx",
+            "application/pdf",
+            b"%PDF-9",
+            Some(SRC),
+        )
+        .unwrap();
+        assert!(!z.already);
+        assert_eq!(z.rel, "files/lab3/deck.pdf");
         let _ = std::fs::remove_dir_all(docs);
     }
 

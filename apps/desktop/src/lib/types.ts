@@ -1063,6 +1063,9 @@ export interface Attachment {
   /** Text pasted as an attachment (item 284): there is no file on disk to
    *  drop again, so the drafts store keeps it like the box's own text. */
   pasted?: boolean;
+  /** An office file's own SHA-256, once converted (item 428): what Keep
+   *  matches it by, since its PDF's bytes differ on every conversion. */
+  source_sha256?: string;
 }
 
 /** A file for the Claude Code engine (item 277), as `send_agent` takes it. */

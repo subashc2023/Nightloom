@@ -2602,6 +2602,7 @@
             mediaType={a.media_type}
             from={{ data: a.data }}
             pending={!!a.pending}
+            source={a.source_sha256}
           />
         </div>
       {/each}

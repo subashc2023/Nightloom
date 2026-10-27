@@ -3395,6 +3395,9 @@ async fn keep_attachment(
     data: Option<String>,
     path: Option<String>,
     dir: Option<String>,
+    // Item 428: the SHA-256 of the office file `data` was converted from,
+    // so the same file kept twice is found though its PDF differs.
+    source: Option<String>,
 ) -> Result<nightloom_service::keep::Kept, String> {
     use base64::Engine as _;
     let project = state
@@ -3410,12 +3413,13 @@ async fn keep_attachment(
                 .decode(data.trim())
                 .map_err(|e| format!("{name}: {e}"))?;
             // Item 414: an entry of a dropped zip goes into its folder.
-            nightloom_service::keep::keep_in_project_at(
+            nightloom_service::keep::keep_in_project_from(
                 &docspace,
                 dir.as_deref().unwrap_or(""),
                 &name,
                 &media_type,
                 &bytes,
+                source.as_deref(),
             )
         }
         (None, Some(path)) => {

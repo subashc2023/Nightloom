@@ -53,7 +53,8 @@ export type KeepDeps = {
   state: (key: string) => KeepState;
   /** Forget a "kept" state so Keep asks the backend again. */
   forget: (key: string) => void;
-  keep: (key: string, name: string, mediaType: string, from: { data: string }) => Promise<void>;
+  /** `source`: an office file's own SHA-256 (item 428). */
+  keep: (key: string, name: string, mediaType: string, from: { data: string }, source?: string) => Promise<void>;
   /** Drop the scratch box. */
   discard: (key: string) => void;
   /** Item 414: how a zip is unpacked and its entries kept. Without it, a
@@ -85,7 +86,9 @@ async function keepFiles(files: readonly File[], d: KeepDeps): Promise<number> {
   const key = scratchKey();
   let asked = 0;
   try {
-    const made = await d.attach(key, [...files]);
+    // Item 428: refusals and failed conversions go to the same toast as
+    // the keeps — the Notes panel's own, where he is looking.
+    const made = await d.attach(key, [...files], d.toast);
     // Office files convert behind their chips; Keep waits for the PDF, as
     // the chip's Keep button does (disabled while `pending`).
     await Promise.allSettled(d.jobs(key));
@@ -103,7 +106,10 @@ async function keepFiles(files: readonly File[], d: KeepDeps): Promise<number> {
         continue;
       }
       asked++;
-      await d.keep(k, a.name, a.media_type, { data: a.data });
+      // Item 428: an office file's own SHA-256, so a second drop of it
+      // answers "already" though its PDF came out different.
+      const src = a.source_sha256 ? [a.source_sha256] : [];
+      await d.keep(k, a.name, a.media_type, { data: a.data }, ...src);
     }
   } finally {
     d.discard(key);
@@ -260,6 +266,11 @@ export class Hold {
 /** A kept file the panel has not shown yet: its note name (`files/a.pdf`,
  *  the keep's `rel`) and when it was kept (ms, `performance.now()`). */
 export type KeptNotice = { rel: string; at: number };
+
+/** How long a drop's toast stays at the Notes panel's foot (item 428):
+ *  longer than the window's 5 s, as an office file's words come only
+ *  once it has converted. */
+export const NOTES_TOAST_MS = 8000;
 
 /** Older than this, a notice is not shown: the panel was not open when the
  *  file was kept, and flashing it on a later visit would be noise. */

@@ -142,6 +142,7 @@ async function attachOffice(chatKey: string, file: File, addToast: (text: string
         data: out.data,
         label: convertedLabel(chip.name, out.via, out.count),
         pending: false,
+        ...(out.source_sha256 ? { source_sha256: out.source_sha256 } : {}),
       });
     } catch (e) {
       removeAttachment(chatKey, chip.id);

@@ -6,7 +6,7 @@
  * same bytes and writes nothing).
  */
 import { keepAttachment } from "./api";
-import { addToast, projectFilesChanged, refreshNotes } from "./state.svelte";
+import { addToast as toastNow, projectFilesChanged, refreshNotes } from "./state.svelte";
 import type { KeepState } from "./keep";
 import type { KeptNotice } from "./notesDrop";
 
@@ -41,18 +41,22 @@ export function keepStateOf(key: string): KeepState {
   return keeps[key] ?? { phase: "idle" };
 }
 
-/** Press Keep: copy into the open project's files, say where on the chip. */
+/** Press Keep: copy into the open project's files, say where on the chip.
+ *  `source` is an office file's own SHA-256 (item 428); `toast` is where the
+ *  words go — the Notes panel's own, for a drop on it. */
 export async function keepNow(
   key: string,
   name: string,
   mediaType: string,
   from: { data: string } | { path: string },
+  opts: { source?: string; toast?: (text: string) => void } = {},
 ): Promise<void> {
+  const addToast = opts.toast ?? toastNow;
   const now = keepStateOf(key);
   if (now.phase !== "idle") return;
   keeps[key] = { phase: "keeping" };
   try {
-    const kept = await keepAttachment(name, mediaType, from);
+    const kept = await keepAttachment(name, mediaType, from, undefined, opts.source);
     keeps[key] = { phase: "kept", rel: kept.rel };
     if (!kept.already) projectFilesChanged();
     // Item 392 (his bug, 2026-10-18): the Notes list shows it now — it

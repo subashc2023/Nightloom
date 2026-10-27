@@ -241,6 +241,9 @@ export interface PreparedOffice {
   via: "pdf" | "text";
   count: number | null;
   note: string | null;
+  /** SHA-256 (hex) of the office file itself (item 428): Keep finds the
+   *  same file kept before by this, its PDF differing on every run. */
+  source_sha256?: string;
 }
 
 /** An office file as a PDF (LibreOffice) or its text; `textOnly` skips the
@@ -270,9 +273,17 @@ export function keepAttachment(
   mediaType: string,
   from: { data: string } | { path: string },
   dir?: string,
+  // Item 428: the SHA-256 of the office file `data` was converted from.
+  source?: string,
 ): Promise<KeptFile> {
   // Item 414: `dir` (a folder under `files/`) only for a zip's entries.
-  return invoke("keep_attachment", dir ? { name, mediaType, ...from, dir } : { name, mediaType, ...from });
+  return invoke("keep_attachment", {
+    name,
+    mediaType,
+    ...from,
+    ...(dir ? { dir } : {}),
+    ...(source ? { source } : {}),
+  });
 }
 
 /** A dropped zip, read (item 414): the folder under `files/` it unpacks
