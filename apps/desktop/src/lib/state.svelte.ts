@@ -790,6 +790,9 @@ export const app = $state({
     instructions: string;
     /** A folder chosen through Change…; null means `<projects folder>/<slug>`. */
     pickedPath: string | null;
+    /** Backlog 432: `false` when "Use my practices" is unticked; absent
+     *  means ticked. */
+    claudeMd?: boolean;
   },
   /**
    * Whether the New project tab is open (nightshift backlog 394): from the
@@ -2845,9 +2848,31 @@ export async function openProjectFolder(): Promise<void> {
     app.projects = withProject(app.projects, project);
     void refreshWithin("opening " + project.name, [refreshProjects]);
     await useProject(project.id);
+    void offerPracticesClaudeMd(project, path);
   } catch (e) {
     addToast(String(e));
   }
+}
+
+/**
+ * Backlog 432: a folder opened by Open project… with no `CLAUDE.md` gets an
+ * offer, never a write — a toast whose button adds the practices
+ * `CLAUDE.md`. Nothing when it has one, or when there is no
+ * `~/.claude/practices/practices.md` for the line to import.
+ */
+export async function offerPracticesClaudeMd(project: ProjectInfo, path: string): Promise<void> {
+  const offer = await api.claudeMdOffer(path).catch(() => null);
+  if (!offer || offer.exists || !offer.practices) return;
+  addToast(`${project.name} has no CLAUDE.md, so your practices file does not load in its chats.`, {
+    label: "Add CLAUDE.md",
+    run: () => {
+      void api.addPracticesClaudeMd(project.id).then(
+        (written) =>
+          addToast(written ? `Added CLAUDE.md to ${project.name} with your practices line.` : `${project.name} already has a CLAUDE.md — left as it is.`),
+        (e) => addToast(String(e)),
+      );
+    },
+  });
 }
 
 // ---- the New project form ----
@@ -2923,7 +2948,12 @@ export async function createNewProject(): Promise<boolean> {
   if (app.busy) return false;
   const d = app.newProjectDraft;
   try {
-    const project = await api.newProject(d.name, d.pickedPath, d.instructions);
+    // Backlog 432: the practices CLAUDE.md, when the box is ticked and
+    // there is a practices file for its line to import. The backend writes
+    // it only where the folder has none.
+    const offer = d.claudeMd === false ? null : await api.claudeMdOffer(d.pickedPath ?? "").catch(() => null);
+    const claudeMd = !!offer?.practices && !offer.exists;
+    const project = await api.newProject(d.name, d.pickedPath, d.instructions, claudeMd);
     app.newProjectDraft = { name: "", instructions: "", pickedPath: null };
     // Its tab closes with Create (backlog 394); the switch below shows the
     // new project's strip, so nothing lands in its place here.

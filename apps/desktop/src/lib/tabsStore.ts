@@ -276,6 +276,9 @@ export interface NewProjectDraft {
   instructions: string;
   /** A folder chosen through Change…; null means `<projects folder>/<slug>`. */
   pickedPath: string | null;
+  /** Backlog 432: `false` when the "Use my practices" box was unticked;
+   *  absent means ticked, the default. */
+  claudeMd?: boolean;
 }
 
 export interface SavedNewProject {
@@ -307,6 +310,7 @@ export function loadNewProject(storage: Pick<Storage, "getItem">): SavedNewProje
         name: typeof d.name === "string" ? d.name : "",
         instructions: typeof d.instructions === "string" ? d.instructions : "",
         pickedPath: typeof d.pickedPath === "string" ? d.pickedPath : null,
+        ...(d.claudeMd === false ? { claudeMd: false } : {}),
       },
     };
   } catch {
@@ -328,7 +332,12 @@ export function saveNewProject(storage: Pick<Storage, "setItem" | "removeItem">,
       JSON.stringify({
         open: saved.open,
         front: saved.open && saved.front,
-        draft: { name: d.name, instructions: d.instructions, pickedPath: d.pickedPath },
+        draft: {
+          name: d.name,
+          instructions: d.instructions,
+          pickedPath: d.pickedPath,
+          ...(d.claudeMd === false ? { claudeMd: false } : {}),
+        },
       }),
     );
   } catch {

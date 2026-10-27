@@ -48,6 +48,7 @@ if (typeof window !== "undefined") {
       void d.name;
       void d.instructions;
       void d.pickedPath;
+      void d.claudeMd;
       untrack(flushNewProject);
     });
   });

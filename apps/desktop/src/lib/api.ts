@@ -1107,8 +1107,21 @@ export function newProject(
   name: string,
   path: string | null,
   instructions: string,
+  claudeMd = false,
 ): Promise<ProjectInfo> {
-  return invoke("new_project", { name, path, instructions });
+  return invoke("new_project", { name, path, instructions, claudeMd });
+}
+
+/** Backlog 432: whether a folder has a `CLAUDE.md` (never touched if so)
+ *  and whether `~/.claude/practices/practices.md` is there to import. */
+export function claudeMdOffer(path: string): Promise<{ exists: boolean; practices: boolean }> {
+  return invoke("claude_md_offer", { path });
+}
+
+/** Backlog 432: write the practices `CLAUDE.md` into a project's folder;
+ *  `false` when one was already there (left as it was). */
+export function addPracticesClaudeMd(id: string): Promise<boolean> {
+  return invoke("add_practices_claude_md", { id });
 }
 
 /**
