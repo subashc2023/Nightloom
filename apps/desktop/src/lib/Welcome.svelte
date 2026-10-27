@@ -69,7 +69,9 @@
   // the column was ~340 px at his zoom and the composer's controls split
   // into two lopsided rows. The column is the chat composer's width now
   // (its card is 760 px), the pane's less a margin; the rings pass behind.
-  const colMax = $derived(Math.max(320, Math.min(760, w - 40)));
+  // ~~760~~ → 700 (item 422, 2026-10-27, his "slightly, just slightly, not
+  // too much"): 8 % narrower than the chat's box, on this page only.
+  const colMax = $derived(Math.max(320, Math.min(700, w - 40)));
 
   function ellipse(rx: number, ry: number): string {
     return `M ${cx + rx} ${cy} A ${rx} ${ry} 0 1 1 ${cx - rx} ${cy} A ${rx} ${ry} 0 1 1 ${cx + rx} ${cy}`;
