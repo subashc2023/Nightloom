@@ -125,3 +125,50 @@ export class Hold {
     return this.depth > 0 && now - this.last <= this.staleMs;
   }
 }
+
+/*
+ * Item 416 (his ask, 2026-10-26: "scroll u to where it is and like
+ * highlight it for a sec") — after a keep, the Notes list scrolls the
+ * kept file's row to the middle and flashes it. The pure half.
+ */
+
+/** A kept file the panel has not shown yet: its note name (`files/a.pdf`,
+ *  the keep's `rel`) and when it was kept (ms, `performance.now()`). */
+export type KeptNotice = { rel: string; at: number };
+
+/** Older than this, a notice is not shown: the panel was not open when the
+ *  file was kept, and flashing it on a later visit would be noise. */
+export const NOTICE_MS = 4000;
+/** How long a row flashes. */
+export const FLASH_MS = 1000;
+
+/**
+ * Which rows to flash and which to scroll to: the noticed files that are
+ * in the list, once each, in the list's order; the scroll goes to the
+ * first of them (the top-most, so the others sit below it in view).
+ */
+export function flashPlan(
+  notices: readonly KeptNotice[],
+  names: readonly string[],
+  now: number,
+): { scrollTo: string | null; flash: string[] } {
+  const fresh = new Set(notices.filter((n) => now - n.at <= NOTICE_MS).map((n) => n.rel));
+  const flash = names.filter((n) => fresh.has(n));
+  return { scrollTo: flash[0] ?? null, flash };
+}
+
+/**
+ * The `scrollTop` that puts a row in the middle of its scrolling box,
+ * clamped to what the box can scroll. `rowTop` is the row's top relative
+ * to the box's visible top (`rowRect.top - boxRect.top`).
+ */
+export function centredScrollTop(
+  scrollTop: number,
+  rowTop: number,
+  rowHeight: number,
+  boxHeight: number,
+  scrollHeight: number,
+): number {
+  const want = scrollTop + rowTop - (boxHeight - rowHeight) / 2;
+  return Math.max(0, Math.min(Math.round(want), Math.max(0, scrollHeight - boxHeight)));
+}
