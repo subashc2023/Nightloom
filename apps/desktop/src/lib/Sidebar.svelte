@@ -1610,7 +1610,12 @@
     background: var(--sheet);
     box-shadow: 0 0 0 1px var(--line2);
   }
+  /* Item 423 (his ask 2026-10-27): a right-click opens the row's menu
+     without first selecting the word under the pointer, as WebKit does
+     for selectable text; the tab strip's rows were already unselectable. */
   .session-row {
+    -webkit-user-select: none;
+    user-select: none;
     flex: 1;
     min-width: 0;
     display: flex;
