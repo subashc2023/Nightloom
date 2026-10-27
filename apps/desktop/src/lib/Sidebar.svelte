@@ -54,11 +54,12 @@
   // A chat's asides under its row and in its menu (item 265).
   import SidebarAsides from "./SidebarAsides.svelte";
   import AsideMenuItems from "./AsideMenuItems.svelte";
+  import { aimsAt, placeMenu, placeSubmenu, type Placed, type Point } from "./menuPlace";
   import { asidesListedOf, asidesShown, toggleAsidesOf } from "./asideSidebar.svelte";
   import { findChord } from "./find";
   import { findBar } from "./search";
   import { isMac } from "./platform";
-  import { untrack } from "svelte";
+  import { tick, untrack } from "svelte";
   import type { ChatKind, ChatMode, NightshiftInfo, NightshiftRow, SessionMeta } from "./types";
   import { relativeTime } from "./time";
   import { sameMorning } from "./nightshift";
@@ -194,18 +195,22 @@
     if (!app.draggingContent) dropOn = null;
   });
 
-  // The row menu's *Move to thread ▸*: opens the project's threads inside
-  // the menu; one click binds.
-  let moveOpen = $state(false);
+  // The row menu's *Move to thread ▸* (the project's threads; one click
+  // binds) and *Move to project ▸* (backlog 370: every other project, and
+  // No project when one is open; one click moves). Since item 425 both are
+  // flyout submenus to the right of the menu — opened on hover, click, → or
+  // ↵ — instead of lists unfolding inside it (his "when you highlight over
+  // that line, it opens up to the right, cause that's how the arrow makes
+  // it look").
+  type RowSub = "thread" | "project";
+  let rowSub = $state<RowSub | null>(null);
+  /** The row that opened the submenu: it places the submenu and takes focus back. */
+  let rowSubFrom: HTMLElement | null = null;
+  let rowSubEl = $state<HTMLElement | null>(null);
   $effect(() => {
-    if (!rowMenu) moveOpen = false;
+    if (!rowMenu) closeRowSub();
   });
-  // *Move to project ▸* (backlog 370): every other project, and No
-  // project (the unfiled chats) when one is open; one click moves.
-  let projectMoveOpen = $state(false);
-  $effect(() => {
-    if (!rowMenu) projectMoveOpen = false;
-  });
+  const rowOthers = $derived(threads.filter((t) => t.slug !== (rowMenu?.s.thread ?? null)));
   const moveTargets = $derived(app.projects.filter((p) => p.id !== app.project?.id));
   function rowMoveProject(to: string | null) {
     const s = rowMenu?.s;
@@ -245,28 +250,149 @@
    * a turn, and a whole-chat fork from a row needs the backend (blocker
    * 380). Each item does what the row's own gesture does.
    */
-  let rowMenu = $state<{ s: SessionMeta; x: number; y: number; up?: boolean } | null>(null);
+  /**
+   * Where the menu opens (item 425): `x` its left edge (its right edge with
+   * `alignRight`), `below` the top it takes dropping down, `above` the
+   * bottom it takes flipping up. `placeMenu` picks, once the menu is drawn
+   * and its size known, so it always fits the window.
+   */
+  let rowMenu = $state<{ s: SessionMeta; x: number; below: number; above: number; alignRight?: boolean } | null>(null);
   function openRowMenu(e: MouseEvent, s: SessionMeta) {
     e.preventDefault();
-    rowMenu = { s, x: e.clientX, y: e.clientY };
+    rowMenu = { s, x: e.clientX, below: e.clientY, above: e.clientY };
   }
   /**
    * The row's one tool, ··· (backlog 208, design C, blocker 436: "the triple
    * dots thing might be the way to go"): the same menu as a right-click,
    * its right edge under the button's, dropped below it — or raised above
-   * it when the row sits too near the window's foot for the menu to fit.
+   * it when the row sits too near the window's foot for the menu to fit
+   * (since item 425 measured, not guessed: `placeMenu`).
    */
-  const ROW_MENU_W = 200;
-  const ROW_MENU_ROOM = 190;
   function openRowMenuFrom(e: MouseEvent, s: SessionMeta) {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const up = window.innerHeight - r.bottom < ROW_MENU_ROOM;
-    rowMenu = {
-      s,
-      x: Math.max(4, r.right - ROW_MENU_W),
-      y: up ? window.innerHeight - r.top + 4 : r.bottom + 4,
-      up,
+    rowMenu = { s, x: r.right, below: r.bottom + 4, above: r.top - 4, alignRight: true };
+  }
+  const viewSize = () => ({ w: window.innerWidth, h: window.innerHeight });
+  /** A menu's natural size: its content's full height, not the capped box's (so a cap never feeds back). */
+  const naturalSize = (el: HTMLElement) => ({ w: el.offsetWidth, h: el.scrollHeight + (el.offsetHeight - el.clientHeight) });
+  function setPlaced(el: HTMLElement, p: Placed) {
+    el.style.left = `${p.left}px`;
+    el.style.top = `${p.top}px`;
+    el.style.maxHeight = p.maxHeight === undefined ? "" : `${p.maxHeight}px`;
+  }
+  /** Places the menu from its drawn size, and again whenever that size changes (the asides load late). */
+  function placeRowMenu(el: HTMLElement, at: NonNullable<typeof rowMenu>) {
+    let anchor = at;
+    const place = () => {
+      setPlaced(el, placeMenu(anchor, naturalSize(el), viewSize()));
+      if (rowSubEl) placeRowSub(rowSubEl);
     };
+    place();
+    const ro = new ResizeObserver(place);
+    ro.observe(el);
+    window.addEventListener("resize", place);
+    return {
+      update(next: NonNullable<typeof rowMenu>) {
+        if (next.x === anchor.x && next.below === anchor.below && next.above === anchor.above) return;
+        anchor = next;
+        place();
+      },
+      destroy() {
+        ro.disconnect();
+        window.removeEventListener("resize", place);
+      },
+    };
+  }
+  let rowMenuEl = $state<HTMLElement | null>(null);
+  function placeRowSub(el: HTMLElement) {
+    if (!rowSubFrom || !rowMenuEl) return;
+    setPlaced(el, placeSubmenu(rowSubFrom.getBoundingClientRect(), rowMenuEl.getBoundingClientRect(), naturalSize(el), viewSize()));
+  }
+
+  // Hover intent for the submenus (item 425): a submenu opens a beat after
+  // the pointer rests on its row, and a move across the rows below toward
+  // it — the diagonal into a flyout — does not close it (`aimsAt`, the
+  // safe triangle); a move anywhere else switches at once.
+  const SUB_OPEN_MS = 120;
+  const SUB_AIM_MS = 300;
+  let subTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastPt: Point | null = null;
+  function closeRowSub() {
+    clearTimeout(subTimer);
+    rowSub = null;
+    rowSubFrom = null;
+  }
+  function openRowSub(k: RowSub, from: HTMLElement, focusFirst = false) {
+    clearTimeout(subTimer);
+    rowSubFrom = from;
+    rowSub = k;
+    if (focusFirst) {
+      // After the flyout is drawn (`tick`, not a frame: a frame never comes in a hidden view).
+      void tick().then(() => rowSubEl?.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled)')?.focus());
+    }
+  }
+  function rowMenuMove(e: PointerEvent) {
+    const prev = lastPt;
+    const now = { x: e.clientX, y: e.clientY };
+    lastPt = now;
+    const item = (e.target as Element).closest<HTMLElement>('[role="menuitem"]');
+    const k = (item?.dataset.sub as RowSub | undefined) ?? null;
+    if (k && (item as HTMLButtonElement).disabled) return;
+    if (k && k === rowSub && item === rowSubFrom) {
+      clearTimeout(subTimer);
+      return;
+    }
+    const aiming = !!(rowSub && rowSubEl && prev && aimsAt(prev, now, rowSubEl.getBoundingClientRect()));
+    clearTimeout(subTimer);
+    const go = () => {
+      if (k && item) openRowSub(k, item);
+      else closeRowSub();
+    };
+    if (aiming) subTimer = setTimeout(go, SUB_AIM_MS);
+    else if (k) subTimer = setTimeout(go, rowSub ? 0 : SUB_OPEN_MS);
+    else if (rowSub) go();
+  }
+  /** The pointer reached the submenu: whatever was pending (a close while aiming) is off. */
+  function rowSubMove(e: PointerEvent) {
+    clearTimeout(subTimer);
+    lastPt = { x: e.clientX, y: e.clientY };
+  }
+  function rowSubClick(e: MouseEvent, k: RowSub) {
+    const from = e.currentTarget as HTMLElement;
+    // A click (or ↵ / space, which click with detail 0) opens it; a second
+    // click on its own row closes it, as the old toggles did.
+    if (rowSub === k && rowSubFrom === from) closeRowSub();
+    else openRowSub(k, from, e.detail === 0);
+  }
+  /** ↑ ↓ walk a menu's rows; → opens a submenu row's flyout, ← and esc go back to its row. */
+  function menuKeys(e: KeyboardEvent, inSub: boolean) {
+    const box = e.currentTarget as HTMLElement;
+    const items = [...box.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled)')];
+    const at = items.indexOf(document.activeElement as HTMLElement);
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const n = items.length;
+      if (n === 0) return;
+      const next = at < 0 ? (e.key === "ArrowDown" ? 0 : n - 1) : (at + (e.key === "ArrowDown" ? 1 : n - 1)) % n;
+      items[next].focus();
+      return;
+    }
+    if (!inSub && e.key === "ArrowRight") {
+      const el = document.activeElement as HTMLElement | null;
+      const k = el?.dataset.sub as RowSub | undefined;
+      if (k && el && !(el as HTMLButtonElement).disabled) {
+        e.preventDefault();
+        openRowSub(k, el, true);
+      }
+      return;
+    }
+    if (inSub && (e.key === "ArrowLeft" || e.key === "Escape")) {
+      e.preventDefault();
+      e.stopPropagation();
+      const from = rowSubFrom;
+      closeRowSub();
+      from?.focus();
+    }
   }
   function rowOpen(how: "replace" | "new" | "beside") {
     const s = rowMenu?.s;
@@ -347,6 +473,13 @@
     // backlog 208), so Escape closes it.
     if (rowMenu && e.key === "Escape") {
       e.preventDefault();
+      // An open submenu goes first (item 425); the next esc closes the menu.
+      if (rowSub) {
+        const from = rowSubFrom;
+        closeRowSub();
+        from?.focus();
+        return;
+      }
       rowMenu = null;
       return;
     }
@@ -897,12 +1030,15 @@
       </div>
       {#if rowMenu}
         <button class="scrim" aria-label="Close" onclick={() => (rowMenu = null)} oncontextmenu={(e) => { e.preventDefault(); rowMenu = null; }}></button>
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
         <div
           class="row-menu"
           role="menu"
-          style:left="{rowMenu.x}px"
-          style:top={rowMenu.up ? undefined : `${rowMenu.y}px`}
-          style:bottom={rowMenu.up ? `${rowMenu.y}px` : undefined}
+          tabindex="-1"
+          bind:this={rowMenuEl}
+          use:placeRowMenu={rowMenu}
+          onpointermove={rowMenuMove}
+          onkeydown={(e) => menuKeys(e, false)}
         >
           <button role="menuitem" onclick={() => rowOpen("replace")}>Open</button>
           <button role="menuitem" onclick={() => rowOpen("new")}>Open in a new tab <span class="row-key">{mod}-click</span></button>
@@ -920,22 +1056,15 @@
           {/if}
           {#if app.project && rowMenu.s.mode !== "ephemeral"}
             {@const inThread = rowMenu.s.thread ?? null}
-            {@const others = threads.filter((t) => t.slug !== inThread)}
-            {#if others.length > 0}
+            {#if rowOthers.length > 0}
               <button
                 role="menuitem"
                 aria-haspopup="menu"
-                aria-expanded={moveOpen}
-                class:on={moveOpen}
-                onclick={() => (moveOpen = !moveOpen)}
-              >Move to thread <span class="row-key">{moveOpen ? "▾" : "▸"}</span></button>
-              {#if moveOpen}
-                <div class="row-threads" role="group" aria-label="Move to thread">
-                  {#each others as t (t.slug)}
-                    <button role="menuitem" class="row-thread" use:tip={t.status || t.slug} onclick={() => rowMove(t.slug)}>◇ {t.title}</button>
-                  {/each}
-                </div>
-              {/if}
+                aria-expanded={rowSub === "thread"}
+                class:on={rowSub === "thread"}
+                data-sub="thread"
+                onclick={(e) => rowSubClick(e, "thread")}
+              >Move to thread <span class="row-key">▸</span></button>
             {/if}
             {#if inThread}
               <button role="menuitem" onclick={() => rowMove(null)}>Remove from thread <span class="row-key">◇ {inThread}</span></button>
@@ -945,21 +1074,12 @@
             <button
               role="menuitem"
               aria-haspopup="menu"
-              aria-expanded={projectMoveOpen}
-              class:on={projectMoveOpen}
+              aria-expanded={rowSub === "project"}
+              class:on={rowSub === "project"}
+              data-sub="project"
               disabled={!canDeleteChat(rowMenu.s.id)}
-              onclick={() => (projectMoveOpen = !projectMoveOpen)}
-            >Move to project <span class="row-key">{projectMoveOpen ? "▾" : "▸"}</span></button>
-            {#if projectMoveOpen}
-              <div class="row-threads" role="group" aria-label="Move to project">
-                {#each moveTargets as p (p.id)}
-                  <button role="menuitem" class="row-thread" use:tip={p.root ?? "No folder"} onclick={() => rowMoveProject(p.id)}>{p.name}</button>
-                {/each}
-                {#if app.project}
-                  <button role="menuitem" class="row-thread" use:tip={"Unfiled chats: no project"} onclick={() => rowMoveProject(null)}>No project</button>
-                {/if}
-              </div>
-            {/if}
+              onclick={(e) => rowSubClick(e, "project")}
+            >Move to project <span class="row-key">▸</span></button>
           {/if}
           {#if rowMenu.s.mode !== "incognito" && rowMenu.s.mode !== "ephemeral"}
             <button
@@ -972,6 +1092,36 @@
           <button role="menuitem" disabled={!!rowMenu?.s && !canDeleteChat(rowMenu.s.id)} onclick={rowDelete}>Delete…</button>
           <AsideMenuItems session={rowMenu.s.id} onpick={() => (rowMenu = null)} />
         </div>
+        {#if rowSub}
+          {#key rowSub}
+            <!-- The flyout (item 425): beside the menu, not inside it, so
+                 the menu never grows and neither box clips the other. -->
+            <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+            <div
+              class="row-menu row-sub"
+              role="menu"
+              tabindex="-1"
+              aria-label={rowSub === "thread" ? "Move to thread" : "Move to project"}
+              bind:this={rowSubEl}
+              use:placeRowSub
+              onpointermove={rowSubMove}
+              onkeydown={(e) => menuKeys(e, true)}
+            >
+              {#if rowSub === "thread"}
+                {#each rowOthers as t (t.slug)}
+                  <button role="menuitem" class="row-thread" use:tip={t.status || t.slug} onclick={() => rowMove(t.slug)}>◇ {t.title}</button>
+                {/each}
+              {:else}
+                {#each moveTargets as p (p.id)}
+                  <button role="menuitem" class="row-thread" use:tip={p.root ?? "No folder"} onclick={() => rowMoveProject(p.id)}>{p.name}</button>
+                {/each}
+                {#if app.project}
+                  <button role="menuitem" class="row-thread" use:tip={"Unfiled chats: no project"} onclick={() => rowMoveProject(null)}>No project</button>
+                {/if}
+              {/if}
+            </div>
+          {/key}
+        {/if}
       {/if}
     {/if}
   {:else if app.leftTab === "notes"}
@@ -1204,6 +1354,19 @@
     border: 1px solid var(--line2);
     border-radius: 8px;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    /* Item 425: placed by `placeMenu`; capped (and scrolling) only when
+       taller than the window, so its rows never squash. */
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .row-menu > :global(*) {
+    flex-shrink: 0;
+  }
+  /* The flyout beside it (item 425): Move to thread ▸ / Move to project ▸. */
+  .row-sub {
+    z-index: 37;
+    min-width: 160px;
+    max-width: 300px;
   }
   .row-menu button {
     display: flex;
@@ -2015,14 +2178,6 @@
   }
   .row-menu button.on {
     background: var(--well);
-  }
-  .row-threads {
-    display: flex;
-    flex-direction: column;
-    max-height: 180px;
-    overflow-y: auto;
-    margin: 0 0 2px 10px;
-    border-left: 1px solid var(--line);
   }
   .row-menu .row-thread {
     /* Backlog 401 (nightshift): never shrink — with more rows than the
