@@ -850,6 +850,17 @@ export function cliPromptSnapshot(): Promise<CliPromptSnapshot | null> {
   return invoke("cli_prompt_snapshot");
 }
 
+/** The images tool calls returned (nightshift backlog 434), read from the
+ *  CLI session file `session` for the calls `ids`; an id without one is
+ *  absent. `skipped` counts images left out by the size and count caps. */
+export interface ToolResultImages {
+  images: { media_type: string; data: string }[];
+  skipped: number;
+}
+export function toolResultImages(session: string, ids: string[]): Promise<Record<string, ToolResultImages>> {
+  return invoke("tool_result_images", { session, ids });
+}
+
 /** The *newer version exists* marks of the connected chat (backlog 174). */
 export function promptPending(): Promise<PendingView> {
   return invoke("prompt_pending");

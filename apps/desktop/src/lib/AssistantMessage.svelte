@@ -68,6 +68,10 @@
   import { memoryEditOf, type MemoryEdit } from "./memoryEdits";
   import type { ReplyUsageView } from "./replyUsage";
   import { hasUsage, isSignedOut, isStandIn, stopNote } from "./replyFooter";
+  import EditDiffView from "./EditDiffView.svelte";
+  import { editDiffOf } from "./editDiff";
+  import ToolImagesView from "./ToolImagesView.svelte";
+  import { namesImage } from "./toolImages.svelte";
   import SignedOutNotice from "./SignedOutNotice.svelte";
   import StillRunningLine from "./StillRunningLine.svelte";
   // The streaming motion (backlog 342, his pick of 338: "Loom + fade-in").
@@ -191,6 +195,7 @@
     onremoveturn = null,
     planUsage = null,
     onretry = null,
+    cliSession = null,
   }: {
     segs: Segment[];
     footer?: Footer | null;
@@ -239,6 +244,9 @@
     /** Run this reply's prompt again in a fork from it (item 333), on a
      *  turn's last reply; null where Retry is not offered. */
     onretry?: (() => void) | null;
+    /** The chat's Claude Code session id, where a tool result's images are
+     *  read from (backlog 434); null draws none. */
+    cliSession?: string | null;
   } = $props();
 
   // Per-block clicks, keyed by the block's stable id (`segmentIds`) rather
@@ -544,12 +552,17 @@
       {#each children as c, k (k)}
         {#if c.kind === "tool"}
           {@const icon = toolIcon(c.call.name)}
+          {@const childDiff = editDiffOf(c.call.name, c.call.input)}
           <div class="arow static" class:error={!!c.call.result?.is_error}>
             <span class="ico">{#if icon}<Icon name={icon} size={13} />{:else}⚒{/if}</span>
             <span class="name" use:tip={c.call.name}>{shortToolName(c.call.name)}</span>
             <span class="arg">{toolInputSummary(c.call.input)}</span>
             <span class="size">{toolResultSummary(c.call, streaming)}</span>
           </div>
+          {#if childDiff}
+            <!-- A subagent's edit as a diff too (backlog 433). -->
+            <EditDiffView diff={childDiff} denied={!!c.call.denied} />
+          {/if}
           {#if c.call.children?.length}
             {@render subagent(c.call.children)}
           {/if}
@@ -666,6 +679,7 @@
               {@const agentRow = agentTab ? rowOf(seg.call.id) : null}
               {@const running = streaming && !seg.call.result && !seg.call.denied}
               {@const bornW = births.of(ids[i] || `tool:${i}`, streaming, !running)}
+              {@const editDiff = editDiffOf(seg.call.name, seg.call.input)}
               <div class="row-wrap tool" class:rm-born={bornW} class:rm-finished={bornW && !running}>
                 <!-- An Agent call's row is a drag source (backlog 160): its
                      subagent's transcript as a tab, dropped on a strip or a
@@ -700,9 +714,21 @@
                        the call runs, and on finish it fills and fades. -->
                   <span class="rm-weft" class:rm-done={!running} aria-hidden="true"></span>
                 {/if}
+                <!-- A file edit as a diff (backlog 433), drawn whether the row is
+                     open or not: the change is what the row is about. -->
+                {#if editDiff}
+                  <EditDiffView diff={editDiff} denied={!!seg.call.denied} />
+                {/if}
+                <!-- What a screenshot showed the model (backlog 434). -->
+                {#if !seg.call.denied && namesImage(seg.call.result?.content)}
+                  <ToolImagesView session={cliSession} id={seg.call.id} name={shortToolName(seg.call.name)} />
+                {/if}
                 {#if open}
-                  <!-- The full call: its whole input, then what came back. -->
-                  <div class="tool-full">{compactJson(seg.call.input)}</div>
+                  <!-- The full call: its whole input (an edit's is the diff
+                       above), then what came back. -->
+                  {#if !editDiff}
+                    <div class="tool-full">{compactJson(seg.call.input)}</div>
+                  {/if}
                   {#if seg.call.denied}
                     <!-- The reason can come from the gate itself (a cancelled turn
                          refuses what it left parked), so it stands in for "you said no"

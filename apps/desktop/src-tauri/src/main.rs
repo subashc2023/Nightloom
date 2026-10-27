@@ -5307,6 +5307,40 @@ async fn cli_prompt_snapshot(
     }))
 }
 
+/// The images tool calls returned (nightshift backlog 434): a browser
+/// screenshot drawn in the transcript. The stream and the log carry only
+/// `[image]` (`translate::flatten`); the bytes are in the CLI's session
+/// file `session`, read here for the calls `ids`. Empty when the file is
+/// not found (an ephemeral chat, another machine's session). Read-only;
+/// the window asks only for results whose text names an image.
+#[tauri::command]
+async fn tool_result_images(
+    state: State<'_, AppState>,
+    session: String,
+    ids: Vec<String>,
+) -> Result<
+    std::collections::HashMap<String, nightloom_service::agent::cli_session::ToolResultImages>,
+    String,
+> {
+    use nightloom_service::agent::cli_session;
+    if ids.is_empty() {
+        return Ok(Default::default());
+    }
+    // `find` tries this folder first and then every project folder.
+    let cwd = state.prompt.lock().await.cwd.clone().unwrap_or_default();
+    blocking(move || -> Result<_, String> {
+        let Some(projects) = cli_session::projects_dir() else {
+            return Ok(Default::default());
+        };
+        let Ok(path) = cli_session::find(&projects, &cwd, &session) else {
+            return Ok(Default::default());
+        };
+        let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        Ok(cli_session::tool_result_images(&text, &ids))
+    })
+    .await
+}
+
 /// Delete a session log the reversible way: it moves to `<logs>/trash/`
 /// rather than being unlinked (review round 1, 2026-09-13 — the rule that
 /// no click in the UI may lose work for good; `backlog/trash/` is the same
@@ -8723,6 +8757,7 @@ fn main() {
             set_voice_note,
             cli_memory_file,
             cli_prompt_snapshot,
+            tool_result_images,
             prompt_pending,
             set_prompt_layer_choice,
             continue_session,
