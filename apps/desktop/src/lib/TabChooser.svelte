@@ -129,7 +129,7 @@
     {#if have}
       {#if naming === scope}
         <!-- svelte-ignore a11y_autofocus -->
-        <input
+        <input autocorrect="off" autocapitalize="off" spellcheck="false"
           class="tab-chooser-name-field"
           autofocus
           placeholder="note name"

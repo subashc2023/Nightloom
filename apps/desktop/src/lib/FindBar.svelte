@@ -405,7 +405,7 @@
 
 {#if open}
   <div class="find-bar" bind:this={bar} role="search" aria-label="Find in page">
-    <input
+    <input autocorrect="off" autocapitalize="off"
       class="find-field"
       bind:this={field}
       bind:value={query}

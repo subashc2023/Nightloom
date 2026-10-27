@@ -399,7 +399,7 @@
   <div class="bar">
     {#if creating === scope}
       <!-- svelte-ignore a11y_autofocus -->
-      <input
+      <input autocorrect="off" autocapitalize="off" spellcheck="false"
         class="new-name"
         autofocus
         placeholder="note name"
@@ -477,7 +477,7 @@
 <div class="panel" bind:this={panelEl}>
   <!-- Item 415: narrows both sections as he types; the pinned rows stay. -->
   <div class="find-bar">
-    <input
+    <input autocorrect="off" autocapitalize="off" spellcheck="false"
       class="find"
       type="search"
       placeholder="Search notes"

@@ -486,7 +486,7 @@
       <div class="q">
         <Icon name="search" size={15} />
         {#if mode === "commands"}
-          <input
+          <input autocorrect="off" autocapitalize="off"
             bind:this={input}
             bind:value={filter}
             placeholder="Type a command…"

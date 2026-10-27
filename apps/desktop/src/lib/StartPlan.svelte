@@ -277,7 +277,7 @@
             <button type="button" role="radio" aria-checked={startMode === "at"} class="ns-chip preset" class:on={startMode === "at"} onclick={() => pickStart("at")}>at a time</button>
           </span>
           {#if startMode === "at"}
-            <input
+            <input autocorrect="off" autocapitalize="off" spellcheck="false"
               class="ns-fld"
               type="text"
               aria-label="Start time"
@@ -294,7 +294,7 @@
              inherit the whole label as their accessible name. -->
         <div class="field">
           <span class="ns-k">Until</span>
-          <input
+          <input autocorrect="off" autocapitalize="off" spellcheck="false"
             class="ns-fld"
             type="text"
             aria-label="Until"

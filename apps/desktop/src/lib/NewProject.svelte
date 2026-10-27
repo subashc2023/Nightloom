@@ -122,7 +122,7 @@
       <label class="field centred">
         <span class="lab">Name</span>
         <!-- svelte-ignore a11y_autofocus -->
-        <input
+        <input autocorrect="off" autocapitalize="off"
           class="name"
           type="text"
           autofocus

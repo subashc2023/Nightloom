@@ -388,7 +388,7 @@
           />{/if}</span
       >
       {#if renamingTab === t.id}
-        <input
+        <input autocorrect="off" autocapitalize="off" spellcheck="false"
           class="name rename"
           aria-label="Chat name"
           bind:value={tabDraft}

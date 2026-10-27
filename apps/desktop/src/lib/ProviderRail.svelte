@@ -702,7 +702,7 @@
       {#if showAgentField}
         <div class="row">
           <span class="lbl">Id</span>
-          <input
+          <input autocorrect="off" autocapitalize="off" spellcheck="false"
             type="text"
             bind:value={app.draft.agentModel}
             onchange={apply}
@@ -753,7 +753,7 @@
       {#if models.length > 0}
         <div class="ml" role="radiogroup" aria-label="Model">
           {#if models.length > 6}
-            <input
+            <input autocorrect="off" autocapitalize="off" spellcheck="false"
               class="mfilter"
               type="text"
               bind:value={modelFilter}
@@ -787,7 +787,7 @@
       {:else}
         <div class="row">
           <span class="lbl">Model</span>
-          <input
+          <input autocorrect="off" autocapitalize="off" spellcheck="false"
             type="text"
             bind:value={app.draft.model}
             onchange={onModelChange}
@@ -803,7 +803,7 @@
       {#if app.draft.provider === "openai-chat"}
         <div class="row">
           <span class="lbl">Base URL</span>
-          <input
+          <input autocorrect="off" autocapitalize="off" spellcheck="false"
             type="text"
             bind:value={app.draft.baseUrl}
             onchange={apply}
@@ -1339,7 +1339,7 @@
             <span class="path locked dim-path" use:tip={workspaceTitle}>no folder — a Chat runs in a neutral, empty directory</span>
           {:else}
             {#if app.project}<span class="lock"><Icon name="lock" size={12} /></span>{/if}
-            <input
+            <input autocorrect="off" autocapitalize="off" spellcheck="false"
               class="path"
               class:tail={!!app.project}
               class:locked={!!app.project}
@@ -1509,7 +1509,7 @@
       <div class="sect-h"><span class="ns-k">CLI</span></div>
       <div class="row">
         <span class="lbl">Binary</span>
-        <input
+        <input autocorrect="off" autocapitalize="off" spellcheck="false"
           type="text"
           bind:value={app.draft.agentBinary}
           onchange={apply}

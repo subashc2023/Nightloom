@@ -499,7 +499,7 @@
       {#if renaming === s.id}
         <!-- Opens with the whole title selected (backlog 376): typing
              replaces it, Esc leaves the name as it was. -->
-        <input
+        <input autocorrect="off" autocapitalize="off" spellcheck="false"
           class="rename"
           aria-label="Session name"
           bind:value={draft}
@@ -782,7 +782,7 @@
       <!-- The panel's field, at rest (board 11b): typing or focusing opens
            the panel in place; the count reopens it. -->
       <div class="search-wrap">
-        <input
+        <input autocorrect="off" autocapitalize="off" spellcheck="false"
           class="search"
           type="search"
           placeholder="Search chats"
@@ -1042,7 +1042,7 @@
                   <label class="enable-label" for="ns-runner-{openRow.id}">
                     Runner — the folder holding bin/nightshift.sh
                   </label>
-                  <input
+                  <input autocorrect="off" autocapitalize="off"
                     id="ns-runner-{openRow.id}"
                     class="ns-fld enable-input"
                     type="text"

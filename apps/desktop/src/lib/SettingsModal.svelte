@@ -1852,7 +1852,7 @@
           sync. Incognito chats are never sent.
         </p>
         {#if (away?.projects.length ?? 0) > 8}
-          <input class="away-filter" type="search" placeholder="Filter projects" bind:value={awayFilter} aria-label="Filter projects" />
+          <input autocorrect="off" autocapitalize="off" spellcheck="false" class="away-filter" type="search" placeholder="Filter projects" bind:value={awayFilter} aria-label="Filter projects" />
         {/if}
         <div class="away-projects">
           {#each orderedProjects(away?.projects ?? [], awayFilter) as p (p.id)}
@@ -2880,7 +2880,7 @@
             <option value={OTHER}>Other — type an id…</option>
           </select>
           {#if pickOther}
-            <input
+            <input autocorrect="off" autocapitalize="off" spellcheck="false"
               type="text"
               class="pick-id"
               placeholder="model id, exactly as the provider names it"
@@ -2982,7 +2982,7 @@
           <span class="spacer"></span>
           <span class="filter-wrap">
             <Icon name="search" size={13} />
-            <input
+            <input autocorrect="off" autocapitalize="off" spellcheck="false"
               class="filter"
               type="text"
               bind:value={filter}
@@ -3117,7 +3117,7 @@
             addCustom();
           }}
         >
-          <input type="text" bind:value={addDraft} placeholder="add a model id…" aria-label="Model id to add" />
+          <input autocorrect="off" autocapitalize="off" spellcheck="false" type="text" bind:value={addDraft} placeholder="add a model id…" aria-label="Model id to add" />
           <button type="submit" class="ns-btn" disabled={!addDraft.trim()}>
             <Icon name="plus" size={13} />
             Add

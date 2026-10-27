@@ -119,7 +119,7 @@
       <p class="hint">No notes — nothing under notes/.</p>
     {:else}
       <div class="search-wrap">
-        <input class="ns-fld search" placeholder="Filter by path…" bind:value={search} />
+        <input autocorrect="off" autocapitalize="off" spellcheck="false" class="ns-fld search" placeholder="Filter by path…" bind:value={search} />
       </div>
       <div class="scroll">
         {#if rows.length === 0}
