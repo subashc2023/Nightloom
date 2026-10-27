@@ -269,8 +269,22 @@ export function keepAttachment(
   name: string,
   mediaType: string,
   from: { data: string } | { path: string },
+  dir?: string,
 ): Promise<KeptFile> {
-  return invoke("keep_attachment", { name, mediaType, ...from });
+  // Item 414: `dir` (a folder under `files/`) only for a zip's entries.
+  return invoke("keep_attachment", dir ? { name, mediaType, ...from, dir } : { name, mediaType, ...from });
+}
+
+/** A dropped zip, read (item 414): the folder under `files/` it unpacks
+ *  into, its safe entries (`path` under that folder, bytes as base64), and
+ *  what was left out (system files, paths that escape, too large). */
+export interface UnpackedZip {
+  folder: string;
+  files: { path: string; data: string }[];
+  skipped: { name: string; why: string }[];
+}
+export function unpackZip(name: string, data: string): Promise<UnpackedZip> {
+  return invoke("unpack_zip", { name, data });
 }
 
 /**

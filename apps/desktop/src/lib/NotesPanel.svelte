@@ -20,9 +20,9 @@
   import { relativeTime } from "./time";
   import * as api from "./api";
   import { onMount, tick, untrack } from "svelte";
-  import { addToast } from "./state.svelte";
+  import { addToast, projectFilesChanged, refreshNotes } from "./state.svelte";
   import { carriesFiles } from "./dropLook";
-  import { acceptFiles, conversionJobs } from "./attachFiles.svelte";
+  import { acceptFiles, conversionJobs, readBase64 } from "./attachFiles.svelte";
   import { discardDraft, readDraft } from "./drafts.svelte";
   import {
     holdKeptNotices,
@@ -30,6 +30,7 @@
     keepStateOf,
     keeps,
     keptNotices,
+    noticeKept,
     releaseKeptNotices,
     takeKeptNotices,
   } from "./keep.svelte";
@@ -305,6 +306,17 @@
         forget: (k) => delete keeps[k],
         keep: keepNow,
         discard: (k) => discardDraft(k),
+        // Item 414: a zip is unpacked into files/<its name>/.
+        zip: {
+          read: readBase64,
+          unpack: api.unpackZip,
+          keepAt: (name, mediaType, data, dir) => api.keepAttachment(name, mediaType, { data }, dir),
+          kept: async (rels, anyNew) => {
+            if (anyNew) projectFilesChanged();
+            await refreshNotes().catch(() => {});
+            for (const rel of rels) noticeKept(rel);
+          },
+        },
       });
     } finally {
       keeping -= files.length;

@@ -3394,6 +3394,7 @@ async fn keep_attachment(
     media_type: String,
     data: Option<String>,
     path: Option<String>,
+    dir: Option<String>,
 ) -> Result<nightloom_service::keep::Kept, String> {
     use base64::Engine as _;
     let project = state
@@ -3408,12 +3409,73 @@ async fn keep_attachment(
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(data.trim())
                 .map_err(|e| format!("{name}: {e}"))?;
-            nightloom_service::keep::keep_in_project(&docspace, &name, &media_type, &bytes)
+            // Item 414: an entry of a dropped zip goes into its folder.
+            nightloom_service::keep::keep_in_project_at(
+                &docspace,
+                dir.as_deref().unwrap_or(""),
+                &name,
+                &media_type,
+                &bytes,
+            )
         }
         (None, Some(path)) => {
             nightloom_service::keep::keep_chat_file(&workspace, &docspace, Path::new(&path))
         }
         (None, None) => Err(format!("{name}: nothing to keep")),
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// One file out of a dropped zip, for the window (item 414).
+#[derive(serde::Serialize)]
+struct ZipFileWire {
+    path: String,
+    data: String,
+}
+
+/// A dropped zip, read (item 414): the folder under `files/` it unpacks
+/// into, its files as base64 for the window to put through a dropped
+/// file's rules and keep with `keep_attachment`'s `dir`, and the entries
+/// left out. Nothing is written here.
+#[derive(serde::Serialize)]
+struct UnpackedWire {
+    folder: String,
+    files: Vec<ZipFileWire>,
+    skipped: Vec<nightloom_service::keep::ZipSkip>,
+}
+
+#[tauri::command]
+async fn unpack_zip(
+    state: State<'_, AppState>,
+    name: String,
+    data: String,
+) -> Result<UnpackedWire, String> {
+    use base64::Engine as _;
+    let project = state
+        .active()
+        .await
+        .filter(|p| !p.is_unfiled_holder())
+        .ok_or("this chat is not in a project, so there is no project to keep the files in")?;
+    let docspace = project.notes_dir();
+    tokio::task::spawn_blocking(move || {
+        let b64 = &base64::engine::general_purpose::STANDARD;
+        let bytes = b64
+            .decode(data.trim())
+            .map_err(|e| format!("{name}: {e}"))?;
+        let u = nightloom_service::keep::unpack_zip(&docspace, &name, &bytes)?;
+        Ok(UnpackedWire {
+            folder: u.folder,
+            files: u
+                .files
+                .into_iter()
+                .map(|f| ZipFileWire {
+                    path: f.path,
+                    data: b64.encode(f.bytes),
+                })
+                .collect(),
+            skipped: u.skipped,
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -8517,6 +8579,7 @@ fn main() {
             send_agent,
             prepare_office_attachment,
             keep_attachment,
+            unpack_zip,
             office_converter,
             turn_timing_window,
             prewarm_agent,

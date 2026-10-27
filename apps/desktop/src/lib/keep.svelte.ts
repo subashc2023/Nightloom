@@ -30,7 +30,9 @@ export function releaseKeptNotices(): void {
 export function takeKeptNotices(): KeptNotice[] {
   return keptNotices.list.splice(0);
 }
-function noticeKept(rel: string): void {
+/** Exported for a zip's entries (item 414), kept without `keepNow`'s
+ *  toast per file. */
+export function noticeKept(rel: string): void {
   keptNotices.list.push({ rel, at: performance.now() });
   if (holding === 0) keptNotices.seq++;
 }

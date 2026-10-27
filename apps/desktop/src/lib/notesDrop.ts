@@ -18,6 +18,7 @@
  */
 import { canKeep, keepKey, type KeepState } from "./keep";
 import type { Attachment } from "./types";
+import type { UnpackedZip } from "./api";
 
 /** Why nothing can be kept here, or null when the project can keep. */
 export function whyNoKeep(project: { unfiled?: boolean; name?: string } | null | undefined): string | null {
@@ -43,8 +44,8 @@ export function scratchKey(): string {
 export type KeepDeps = {
   project: () => { unfiled?: boolean } | null | undefined;
   toast: (text: string) => void;
-  /** The composer's `acceptFiles`. */
-  attach: (key: string, files: File[]) => Promise<Attachment[]>;
+  /** The composer's `acceptFiles`; `toast` takes its refusals' words. */
+  attach: (key: string, files: File[], toast?: (text: string) => void) => Promise<Attachment[]>;
   /** The conversions still running for `key`'s chips (`conversionJobs`). */
   jobs: (key: string) => Promise<void>[];
   /** `key`'s chips as they are now (a conversion updates its chip). */
@@ -55,6 +56,9 @@ export type KeepDeps = {
   keep: (key: string, name: string, mediaType: string, from: { data: string }) => Promise<void>;
   /** Drop the scratch box. */
   discard: (key: string) => void;
+  /** Item 414: how a zip is unpacked and its entries kept. Without it, a
+   *  zip goes through `attach` as any file. */
+  zip?: ZipDeps;
 };
 
 /**
@@ -69,6 +73,15 @@ export async function keepDropped(files: readonly File[], d: KeepDeps): Promise<
     d.toast(why);
     return 0;
   }
+  // Item 414: a zip is unpacked into a folder, not kept whole.
+  const zips = d.zip ? files.filter(isZip) : [];
+  const rest = files.filter((f) => !zips.includes(f));
+  let asked = rest.length > 0 ? await keepFiles(rest, d) : 0;
+  for (const z of zips) asked += await keepZip(z, d, d.zip!);
+  return asked;
+}
+
+async function keepFiles(files: readonly File[], d: KeepDeps): Promise<number> {
   const key = scratchKey();
   let asked = 0;
   try {
@@ -96,6 +109,118 @@ export async function keepDropped(files: readonly File[], d: KeepDeps): Promise<
     d.discard(key);
   }
   return asked;
+}
+
+/*
+ * Item 414 (his bug, 2026-10-26: "Why cant i drop a zip file into the
+ * notes section... bro"; blocker 1526) — a zip dropped here is unpacked
+ * into `files/<zip name>/`: the backend reads it and refuses what must not
+ * land (`keep::unpack_zip`: `__MACOSX/`, dot-files, paths that climb out,
+ * symlinks, bombs), then each entry meets a dropped file's own rules —
+ * `acceptFiles`' routes, caps, office → PDF and refusals — and is kept in
+ * its folder. One toast says what came of the whole zip.
+ */
+
+export type ZipDeps = {
+  /** The zip's bytes as base64. */
+  read: (file: File) => Promise<string>;
+  unpack: (name: string, data: string) => Promise<UnpackedZip>;
+  /** Keep one entry's bytes in `files/<dir>/`. */
+  keepAt: (name: string, mediaType: string, data: string, dir: string) => Promise<{ rel: string; already: boolean }>;
+  /** After the keeps: refresh Notes and hand the rows to 416's flash. */
+  kept: (rels: string[], anyNew: boolean) => Promise<void>;
+};
+
+export function isZip(f: { name: string; type?: string }): boolean {
+  return /\.zip$/i.test(f.name) || f.type === "application/zip" || f.type === "application/x-zip-compressed";
+}
+
+const SYSTEM = "system file";
+
+/** The one toast for a zip: what was kept where, and what was not. */
+export function zipToast(zip: string, folder: string, kept: number, skipped: readonly { name: string; why: string }[]): string {
+  const files = (n: number) => `${n} file${n === 1 ? "" : "s"}`;
+  let line = kept > 0 ? `Kept ${files(kept)} from ${zip} in files/${folder}/` : `Kept nothing from ${zip}`;
+  if (skipped.length === 0) return line;
+  const system = skipped.filter((s) => s.why === SYSTEM).length;
+  const others = skipped.filter((s) => s.why !== SYSTEM);
+  const parts: string[] = [];
+  if (system > 0) parts.push(`${system} system file${system === 1 ? "" : "s"}`);
+  const shown = others.slice(0, 3).map((s) => s.name);
+  if (others.length > 3) shown.push(`+${others.length - 3} more`);
+  if (shown.length) parts.push(shown.join(", "));
+  line += ` · ${skipped.length} skipped (${parts.join("; ")})`;
+  if (others.length > 0) {
+    const first = others[0];
+    const leaf = first.name.slice(first.name.lastIndexOf("/") + 1);
+    line += ` — ${first.why.startsWith(leaf) ? first.why : `${leaf}: ${first.why}`}`;
+  }
+  return line;
+}
+
+function bytesOf(b64: string): Uint8Array<ArrayBuffer> {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+/** Unpack one zip and keep its entries. Returns how many were kept. */
+export async function keepZip(file: File, d: KeepDeps, z: ZipDeps): Promise<number> {
+  let u: UnpackedZip;
+  try {
+    u = await z.unpack(file.name, await z.read(file));
+  } catch (e) {
+    d.toast(`Could not open ${file.name}: ${String(e)}`);
+    return 0;
+  }
+  if (u.files.length === 0 && u.skipped.length === 0) {
+    d.toast(`${file.name} is empty — nothing to keep`);
+    return 0;
+  }
+  const key = scratchKey();
+  const said: string[] = [];
+  const say = (t: string) => void said.push(t);
+  const skipped = [...u.skipped];
+  const pathOf = new Map<number, string>();
+  const dirOf = (path: string) => {
+    const cut = path.lastIndexOf("/");
+    return cut >= 0 ? `${u.folder}/${path.slice(0, cut)}` : u.folder;
+  };
+  const leafOf = (path: string) => path.slice(path.lastIndexOf("/") + 1);
+  const reason = (path: string, fallback: string) =>
+    said.find((m) => m.startsWith(leafOf(path))) ?? fallback;
+  const rels: string[] = [];
+  let anyNew = false;
+  try {
+    for (const f of u.files) {
+      const made = await d.attach(key, [new File([bytesOf(f.data)], leafOf(f.path))], say);
+      if (made.length === 0) skipped.push({ name: f.path, why: reason(f.path, "refused") });
+      for (const a of made) pathOf.set(a.id, f.path);
+    }
+    // Office entries convert behind their chips, as a dropped file's do.
+    await Promise.allSettled(d.jobs(key));
+    const chips = d.chips(key);
+    for (const [id, path] of pathOf) {
+      const a = chips.find((c) => c.id === id);
+      if (!a || a.pending || !a.data) {
+        skipped.push({ name: path, why: reason(path, "could not be converted") });
+        continue;
+      }
+      try {
+        const k = await z.keepAt(a.name, a.media_type, a.data, dirOf(path));
+        rels.push(k.rel);
+        anyNew ||= !k.already;
+      } catch (e) {
+        skipped.push({ name: path, why: String(e) });
+      }
+    }
+  } finally {
+    d.discard(key);
+  }
+  if (rels.length > 0) await z.kept(rels, anyNew);
+  d.toast(zipToast(file.name, u.folder, rels.length, skipped));
+  return rels.length;
 }
 
 /**

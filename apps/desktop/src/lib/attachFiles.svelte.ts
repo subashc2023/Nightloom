@@ -8,7 +8,7 @@
  * a conversion finishing finds its chip by its unique id wherever it now
  * sits (`updateAttachment`, the wave 5 review fix 51798f5).
  */
-import { app, addToast } from "./state.svelte";
+import { app, addToast as toastNow } from "./state.svelte";
 import { officeConverter, prepareOfficeAttachment } from "./api";
 import {
   convertedLabel,
@@ -40,7 +40,8 @@ export const MAX_DOCUMENT_BASE64 = 32 * 1024 * 1024;
 export const MAX_AGENT_DOCUMENT_BASE64 = 20 * 1024 * 1024;
 export const encodedLimit = (n: number) => Math.floor((n / 4) * 3);
 
-function readBase64(file: File): Promise<string> {
+/** Exported for a dropped zip (item 414). */
+export function readBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
@@ -102,7 +103,7 @@ export function conversionJobs(key: string): Promise<void>[] {
  * conversion behind it. A PDF over the engine's cap goes again as its
  * text, with a toast saying so; a chip removed meanwhile stays removed.
  */
-async function attachOffice(chatKey: string, file: File): Promise<Attachment | null> {
+async function attachOffice(chatKey: string, file: File, addToast: (text: string) => void): Promise<Attachment | null> {
   if (file.size > MAX_OFFICE_BYTES) {
     addToast(`${describe(file)} is too large to convert — the limit is ${MAX_OFFICE_BYTES / 1024 / 1024} MB`);
     return null;
@@ -156,12 +157,17 @@ async function attachOffice(chatKey: string, file: File): Promise<Attachment | n
 /** Attach what can be attached, as chips under `chatKey` — the key of the
  *  moment the file was dropped: a read can outlive a chat switch, and the
  *  chip belongs where it was pasted. The chips made, for a paste to record. */
-export async function acceptFiles(chatKey: string, files: Iterable<File>): Promise<Attachment[]> {
+export async function acceptFiles(
+  chatKey: string,
+  files: Iterable<File>,
+  // Item 414: a zip's entries collect their refusals for one toast.
+  addToast: (text: string) => void = toastNow,
+): Promise<Attachment[]> {
   const added: Attachment[] = [];
   for (const file of files) {
     const route = routeOf(file.name, file.type);
     if (route === "office") {
-      const chip = await attachOffice(chatKey, file);
+      const chip = await attachOffice(chatKey, file, addToast);
       if (chip) added.push(chip);
       continue;
     }
@@ -254,7 +260,7 @@ export function filesBlocked(chips: Attachment[]): boolean {
   if (app.connection?.engine === "claude-code") return false;
   const files = chips.filter((a) => a.kind === "file");
   if (files.length === 0) return false;
-  addToast(
+  toastNow(
     `${files.map((f) => f.name).join(", ")}: only the Claude Code engine can take ${files.length === 1 ? "a file" : "files"} it opens itself — switch engines, or remove ${files.length === 1 ? "it" : "them"}`,
   );
   return true;
