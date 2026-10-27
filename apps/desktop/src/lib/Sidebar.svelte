@@ -39,8 +39,26 @@
   import { forkLine } from "./edit";
   import { FORK_GLYPH, forkMark } from "./forkMark";
   import type { SidebarRow } from "./forkTree";
-  import { THREADS_CLOSED_KEY, newInThreadTip, threadGroups, threadKey } from "./thread";
-  import { openThreadView, refreshThreadList, threadList } from "./threadPanel.svelte";
+  import {
+    THREADS_CLOSED_KEY,
+    loadThreadOrder,
+    newInThreadTip,
+    orderedThreads,
+    reordered,
+    saveThreadOrder,
+    threadGroups,
+    threadKey,
+    type ThreadGroup,
+  } from "./thread";
+  import {
+    deleteThread,
+    openThreadAs,
+    openThreadView,
+    refreshThreadList,
+    renameThread,
+    revealThread,
+    threadList,
+  } from "./threadPanel.svelte";
   import {
     sidebarRows,
     loadOpen as loadForksOpen,
@@ -138,9 +156,16 @@
   const threads = $derived(threadList.project === (app.project?.id ?? "") ? threadList.list : []);
   let threadsClosed = $state<Set<string>>(loadForksOpen(THREADS_CLOSED_KEY));
   const projectKey = $derived(app.project?.id ?? "");
+  // His order of the threads (item 426): the backend's, most recently
+  // touched first, until he drags one; then his, kept per project.
+  let threadOrder = $state<string[] | undefined>(undefined);
+  $effect(() => {
+    threadOrder = loadThreadOrder(projectKey);
+  });
+  const ordered = $derived(orderedThreads(threads, threadOrder));
   const split = $derived(
     app.project
-      ? threadGroups(rows, threads, threadsClosed, projectKey, app.activeSessionId)
+      ? threadGroups(rows, ordered, threadsClosed, projectKey, app.activeSessionId)
       : { groups: [], loose: rows },
   );
   const groups = $derived(split.groups);
@@ -192,8 +217,105 @@
     void moveChatToThread(c.session, slug);
   }
   $effect(() => {
-    if (!app.draggingContent) dropOn = null;
+    if (!app.draggingContent) {
+      dropOn = null;
+      insertBefore = undefined;
+    }
   });
+
+  // Drag a thread to reorder (item 426): its name row carries the tab
+  // drag's `{kind: "thread"}` (so onto a strip or a pane it still opens
+  // the thread's tab); over the Threads section a line shows where it
+  // lands — above the group whose head the pointer is in the top half of,
+  // else below it — and the drop keeps the new order for this project.
+  /** Where a dragged thread would land: before that slug, `null` at the end; undefined when no thread is dragged here. */
+  let insertBefore = $state<string | null | undefined>(undefined);
+  const realSlugs = $derived(ordered.map((t) => t.slug));
+  function draggedThread(): string | null {
+    const c = app.draggingContent;
+    return c?.kind === "thread" ? c.slug : null;
+  }
+  function overThread(e: DragEvent, g: ThreadGroup): boolean {
+    if (!draggedThread()) return false;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    const head = (e.currentTarget as HTMLElement).querySelector(".tg-head") ?? (e.currentTarget as HTMLElement);
+    const r = head.getBoundingClientRect();
+    const i = realSlugs.indexOf(g.slug);
+    if (i < 0) insertBefore = null;
+    else if (e.clientY < r.top + r.height / 2) insertBefore = g.slug;
+    else insertBefore = realSlugs[i + 1] ?? null;
+    return true;
+  }
+  function overThreadsEnd(e: DragEvent): boolean {
+    if (!draggedThread()) return false;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    insertBefore = null;
+    return true;
+  }
+  function dropThread(e: DragEvent): boolean {
+    const c = droppedContent(e);
+    if (c?.kind !== "thread") return false;
+    e.preventDefault();
+    e.stopPropagation();
+    const before = insertBefore;
+    insertBefore = undefined;
+    endContentDrag();
+    if (before === undefined || !realSlugs.includes(c.slug)) return true;
+    const next = reordered(realSlugs, c.slug, before);
+    if (next.join("/") === realSlugs.join("/")) return true;
+    threadOrder = next;
+    saveThreadOrder(projectKey, next);
+    return true;
+  }
+  /** The group the insertion line is drawn on: above `before`, or below the last thread for the end. */
+  function lineAt(g: ThreadGroup): "before" | "after" | null {
+    if (insertBefore === undefined) return null;
+    if (insertBefore === g.slug) return "before";
+    if (insertBefore === null && realSlugs.at(-1) === g.slug) return "after";
+    return null;
+  }
+
+  // The thread's right-click menu (item 424): Open · Open in a new tab ·
+  // Open beside · New chat in this thread · Rename · Reveal in Finder ·
+  // Delete thread…, placed as the chat menu is (`placeMenu`, item 425).
+  let threadMenu = $state<{ g: ThreadGroup; x: number; below: number; above: number } | null>(null);
+  function openThreadMenu(e: MouseEvent, g: ThreadGroup) {
+    e.preventDefault();
+    rowMenu = null;
+    threadMenu = { g, x: e.clientX, below: e.clientY, above: e.clientY };
+  }
+  function threadPick<T>(run: (g: ThreadGroup) => T) {
+    const g = threadMenu?.g;
+    threadMenu = null;
+    if (g) run(g);
+  }
+  let threadRenaming = $state<string | null>(null);
+  let threadDraft = $state("");
+  let threadRenameFrom = "";
+  function startThreadRename(g: ThreadGroup) {
+    threadRenaming = g.slug;
+    threadDraft = g.title;
+    threadRenameFrom = g.title;
+  }
+  async function commitThreadRename(slug: string) {
+    // As a chat's rename: only the field still open commits; unchanged or
+    // emptied is a cancel.
+    if (threadRenaming !== slug) return;
+    const name = renamedTo(threadDraft, threadRenameFrom);
+    threadRenaming = null;
+    if (!name) return;
+    await renameThread(slug, name);
+  }
+  let deletingThread = $state<ThreadGroup | null>(null);
+  function confirmDeleteThread() {
+    const g = deletingThread;
+    deletingThread = null;
+    if (g) void deleteThread(g.slug);
+  }
 
   // The row menu's *Move to thread ▸* (the project's threads; one click
   // binds) and *Move to project ▸* (backlog 370: every other project, and
@@ -259,6 +381,7 @@
   let rowMenu = $state<{ s: SessionMeta; x: number; below: number; above: number; alignRight?: boolean } | null>(null);
   function openRowMenu(e: MouseEvent, s: SessionMeta) {
     e.preventDefault();
+    threadMenu = null;
     rowMenu = { s, x: e.clientX, below: e.clientY, above: e.clientY };
   }
   /**
@@ -270,6 +393,7 @@
    */
   function openRowMenuFrom(e: MouseEvent, s: SessionMeta) {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    threadMenu = null;
     rowMenu = { s, x: r.right, below: r.bottom + 4, above: r.top - 4, alignRight: true };
   }
   const viewSize = () => ({ w: window.innerWidth, h: window.innerHeight });
@@ -281,7 +405,8 @@
     el.style.maxHeight = p.maxHeight === undefined ? "" : `${p.maxHeight}px`;
   }
   /** Places the menu from its drawn size, and again whenever that size changes (the asides load late). */
-  function placeRowMenu(el: HTMLElement, at: NonNullable<typeof rowMenu>) {
+  type MenuAnchor = { x: number; below: number; above: number; alignRight?: boolean };
+  function placeRowMenu(el: HTMLElement, at: MenuAnchor) {
     let anchor = at;
     const place = () => {
       setPlaced(el, placeMenu(anchor, naturalSize(el), viewSize()));
@@ -292,7 +417,7 @@
     ro.observe(el);
     window.addEventListener("resize", place);
     return {
-      update(next: NonNullable<typeof rowMenu>) {
+      update(next: MenuAnchor) {
         if (next.x === anchor.x && next.below === anchor.below && next.above === anchor.above) return;
         anchor = next;
         place();
@@ -471,6 +596,11 @@
   function windowKeys(e: KeyboardEvent) {
     // The row menu is reachable from the keyboard now (the ··· button,
     // backlog 208), so Escape closes it.
+    if (threadMenu && e.key === "Escape") {
+      e.preventDefault();
+      threadMenu = null;
+      return;
+    }
     if (rowMenu && e.key === "Escape") {
       e.preventDefault();
       // An open submenu goes first (item 425); the next esc closes the menu.
@@ -948,16 +1078,20 @@
           <div
             class="thread-group"
             class:drop={dropOn === g.slug}
+            class:ins-before={lineAt(g) === "before"}
+            class:ins-after={lineAt(g) === "after"}
+            class:dragging={draggedThread() === g.slug}
             role="group"
             aria-label={`Thread ${g.title}`}
-            ondragover={(e) => overDrop(e, g.slug)}
+            ondragover={(e) => overThread(e, g) || overDrop(e, g.slug)}
             ondragleave={leaveDrop}
-            ondrop={(e) => onDropChat(e, g.slug)}
+            ondrop={(e) => dropThread(e) || onDropChat(e, g.slug)}
           >
             <!-- Backlog 292: the chevron folds the group; the name (and status
                  line) opens the thread's tab — what the thread stores. A slug
                  with no thread.md has nothing to show, so its name folds too. -->
-            <div class="tg-head" class:active={threadSelected(g.slug)}>
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div class="tg-head" class:active={threadSelected(g.slug)} oncontextmenu={(e) => openThreadMenu(e, g)}>
               <button
                 class="tg-toggle"
                 class:open={g.open}
@@ -968,12 +1102,33 @@
               >
                 <span class="tg-chev"><Icon name="chevr" size={11} /></span>
               </button>
+              {#if threadRenaming === g.slug}
+                <!-- Rename (item 424): the title only; the slug stays. -->
+                <input autocorrect="off" autocapitalize="off" spellcheck="false"
+                  class="rename tg-rename"
+                  aria-label="Thread name"
+                  bind:value={threadDraft}
+                  use:selectAllOnMount
+                  onblur={() => void commitThreadRename(g.slug)}
+                  onkeydown={(e) => {
+                    if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                    else if (e.key === "Escape") {
+                      e.stopPropagation();
+                      threadRenaming = null;
+                      threadDraft = "";
+                    }
+                  }}
+                />
+              {:else}
               <button
                 class="tg-open"
                 use:tip={g.missing
                   ? `${g.open ? "Hide" : "Show"} the chats bound to ${g.slug} (no thread.md in this project)`
                   : `Open what the thread ${g.slug} stores: thread.md (Start here, Queue, Claims, His view…), log.md, archive.md`}
                 onclick={() => (g.missing ? toggleThread(g.slug) : void openThreadView(g.slug, g.title))}
+                ondragend={endContentDrag}
+                draggable={!g.missing}
+                ondragstart={(e) => startContentDrag(e, g.title && g.title !== g.slug ? { kind: "thread", slug: g.slug, title: g.title } : { kind: "thread", slug: g.slug })}
               >
                 <span class="tg-text">
                   <span class="tg-name"><span class="tg-mark" aria-hidden="true">◇</span> {g.title}</span>
@@ -981,6 +1136,7 @@
                 </span>
                 <span class="tg-count" aria-label={`${g.chats} chat${g.chats === 1 ? "" : "s"}`}>{g.chats}</span>
               </button>
+              {/if}
               {#if !g.missing}
                 <button
                   class="tg-new"
@@ -1007,9 +1163,9 @@
             class:drop={dropOn === ""}
             role="group"
             aria-label="Chats in no thread"
-            ondragover={(e) => overDrop(e, null)}
+            ondragover={(e) => overThreadsEnd(e) || overDrop(e, null)}
             ondragleave={leaveDrop}
-            ondrop={(e) => onDropChat(e, null)}
+            ondrop={(e) => dropThread(e) || onDropChat(e, null)}
           >
             <span role="heading" aria-level="3">Not in a thread</span>
             {#if loose.length === 0}
@@ -1028,6 +1184,38 @@
           {#each loose as r (r.meta.id)}{@render chatRow(r)}{/each}
         </div>
       </div>
+      {#if threadMenu}
+        {@const tg = threadMenu.g}
+        <button class="scrim" aria-label="Close" onclick={() => (threadMenu = null)} oncontextmenu={(e) => { e.preventDefault(); threadMenu = null; }}></button>
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+        <div
+          class="row-menu thread-menu"
+          role="menu"
+          tabindex="-1"
+          aria-label={`Thread ${tg.title}`}
+          use:placeRowMenu={threadMenu}
+          onkeydown={(e) => menuKeys(e, false)}
+        >
+          {#if tg.missing}
+            <p class="row-note">No thread.md for ◇ {tg.slug} in this project — nothing to open, rename or delete. Its chats can be moved out of it.</p>
+          {:else}
+            <button role="menuitem" onclick={() => threadPick((g) => void openThreadAs(g.slug, g.title, "replace"))}>Open</button>
+            <button role="menuitem" onclick={() => threadPick((g) => void openThreadAs(g.slug, g.title, "new"))}>Open in a new tab</button>
+            <button role="menuitem" onclick={() => threadPick((g) => void openThreadAs(g.slug, g.title, "beside"))}>Open beside <span class="row-key">drag</span></button>
+            <div class="row-sep"></div>
+            <button
+              role="menuitem"
+              disabled={app.busy || app.connecting}
+              use:tip={newInThreadTip(tg.slug)}
+              onclick={() => threadPick((g) => void newChatInThread(g.slug))}>New chat in this thread</button
+            >
+            <button role="menuitem" use:tip={"The thread's name only; its folder and slug stay, so its chats still find it"} onclick={() => threadPick(startThreadRename)}>Rename</button>
+            <button role="menuitem" onclick={() => threadPick((g) => void revealThread(g.slug))}>Reveal in Finder</button>
+            <div class="row-sep"></div>
+            <button role="menuitem" onclick={() => threadPick((g) => (deletingThread = g))}>Delete thread…</button>
+          {/if}
+        </div>
+      {/if}
       {#if rowMenu}
         <button class="scrim" aria-label="Close" onclick={() => (rowMenu = null)} oncontextmenu={(e) => { e.preventDefault(); rowMenu = null; }}></button>
         <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
@@ -1238,6 +1426,24 @@
       onclose={() => (deleting = null)}
     />
   {/if}
+  {#if deletingThread}
+    {@const dt = deletingThread}
+    {@const nBound = app.sessions.filter((x) => x.thread === dt.slug).length}
+    <!-- Item 424: the folder moves to the project's trash, never unlinked;
+         its chats stay, in no thread. -->
+    <ConfirmDialog
+      title="Delete this thread?"
+      lead={`Its folder moves to the project's trash (.agents/.trash/threads/), out of the list but still on disk.${nBound ? ` ${nBound === 1 ? "Its chat moves" : `Its ${nBound} chats move`} to Not in a thread, messages untouched.` : ""}`}
+      facts={[
+        ["thread", dt.title],
+        ["folder", `.agents/threads/${dt.slug}/`],
+        ["chats", nBound === 0 ? "none" : `${nBound}`],
+      ]}
+      confirmLabel="Move to trash"
+      onconfirm={confirmDeleteThread}
+      onclose={() => (deletingThread = null)}
+    />
+  {/if}
 
   {#if disabling}
     <DisableDialog
@@ -1393,6 +1599,14 @@
   .row-key {
     color: var(--dim);
     font-size: 11.5px;
+  }
+  /* Item 424: a thread with no thread.md has nothing the menu can act on. */
+  .row-note {
+    margin: 4px 8px;
+    max-width: 220px;
+    color: var(--dim);
+    font-size: 12px;
+    line-height: 1.4;
   }
   .row-sep {
     height: 1px;
@@ -1999,6 +2213,34 @@
     border-radius: 8px;
     outline: 1px dashed transparent;
     outline-offset: -1px;
+  }
+  /* Item 426: where a dragged thread lands — an accent line between groups;
+     the thread being dragged is dimmed in place. */
+  .thread-group {
+    position: relative;
+  }
+  .thread-group.ins-before::before,
+  .thread-group.ins-after::after {
+    content: "";
+    position: absolute;
+    left: 6px;
+    right: 6px;
+    height: 2px;
+    border-radius: 1px;
+    background: var(--accent);
+    pointer-events: none;
+  }
+  .thread-group.ins-before::before {
+    top: -2px;
+  }
+  .thread-group.ins-after::after {
+    bottom: -2px;
+  }
+  .thread-group.dragging .tg-head {
+    opacity: 0.5;
+  }
+  .tg-rename {
+    margin: 3px 4px 3px 0;
   }
   .thread-group.drop,
   .loose-head.drop {

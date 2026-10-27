@@ -745,6 +745,21 @@ export function newThread(slug: string, name: string): Promise<ThreadInfo> {
   return invoke("new_thread", { slug, name });
 }
 
+/** Rename a thread in the open project: its title only; the slug and folder stay (backlog 424). */
+export function renameThread(slug: string, name: string): Promise<ThreadInfo> {
+  return invoke("rename_thread", { slug, name });
+}
+
+/** Move a thread's folder to the project's `.agents/.trash/threads/`; returns where it went (backlog 424). */
+export function deleteThread(slug: string): Promise<string> {
+  return invoke("delete_thread", { slug });
+}
+
+/** Show a thread's folder in the file manager, selected (backlog 424). */
+export function revealThread(slug: string): Promise<null> {
+  return invoke("reveal_thread", { slug });
+}
+
 /** Append an aside's fold entry to a thread's log.md in the open project
  *  (backlog 282); append-only, refused for a thread with no thread.md.
  *  Resolves to the bytes appended. */

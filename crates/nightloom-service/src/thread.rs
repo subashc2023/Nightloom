@@ -922,6 +922,107 @@ pub fn create_thread(notes_dir: &Path, slug: &str, name: &str) -> Result<ThreadI
         .ok_or_else(|| format!("the thread {slug} was written but does not read back"))
 }
 
+/// The heading line a renamed thread gets, from the one it had: a
+/// `# Thread: <old>` heading keeps its `Thread:`, a bare `# <old>` stays bare.
+fn renamed_heading(old: &str, name: &str) -> String {
+    if old.trim_start().starts_with("Thread:") {
+        format!("# Thread: {name}")
+    } else {
+        format!("# {name}")
+    }
+}
+
+/// Rename a thread (nightshift backlog 424): its title only — the first
+/// `# ` heading of `thread.md`, the line [`list_threads`] reads the title
+/// from (one is put first when it has none). The slug and folder stay, so
+/// the chats bound to it still find it; nothing else in the file changes,
+/// and its modified time is put back, so a rename never moves the thread
+/// up the most-recently-touched order. The index is rewritten.
+pub fn rename_thread(notes_dir: &Path, slug: &str, name: &str) -> Result<ThreadInfo, String> {
+    let dir =
+        thread_dir(notes_dir, slug).ok_or_else(|| format!("{slug:?} is not a thread name"))?;
+    let file = dir.join(THREAD_FILE);
+    let text = std::fs::read_to_string(&file).map_err(|_| format!("no thread {slug} here"))?;
+    let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    if name.is_empty() {
+        return Err("a thread needs a name".into());
+    }
+    let mut lines: Vec<String> = text.split('\n').map(String::from).collect();
+    match lines.iter().position(|l| l.starts_with("# ")) {
+        Some(i) => lines[i] = renamed_heading(&lines[i][2..], &name),
+        None => {
+            lines.insert(0, String::new());
+            lines.insert(0, format!("# Thread: {name}"));
+        }
+    }
+    let body = lines.join("\n");
+    if body != text {
+        let modified = std::fs::metadata(&file).and_then(|m| m.modified()).ok();
+        crate::tidy::write_whole(&file, &body)?;
+        if let Some(t) = modified {
+            // Best-effort: a filesystem that refuses leaves the thread "touched now".
+            let _ = std::fs::File::options()
+                .write(true)
+                .open(&file)
+                .and_then(|f| f.set_modified(t));
+        }
+    }
+    write_index(notes_dir)?;
+    list_threads(notes_dir)
+        .into_iter()
+        .find(|t| t.slug == slug)
+        .ok_or_else(|| format!("the thread {slug} was renamed but does not read back"))
+}
+
+/// The docspace's trash folder, `<workspace>/.agents/.trash`: hidden, so
+/// neither the notes listing nor the thread listing reads what is in it,
+/// and inside the project, so a delete is a rename on the same disk.
+pub const TRASH_DIR: &str = ".trash";
+
+/// Where a thread deleted at `when` (a local `YYYY-MM-DD-HHMMSS`) is kept:
+/// `.agents/.trash/threads/<slug>-<when>`, with `-2`, `-3`, … when taken.
+pub fn thread_trash_path(notes_dir: &Path, slug: &str, when: &str) -> PathBuf {
+    let base = notes_dir.join(TRASH_DIR).join(THREADS_DIR);
+    let mut n = 1;
+    loop {
+        let name = if n == 1 {
+            format!("{slug}-{when}")
+        } else {
+            format!("{slug}-{when}-{n}")
+        };
+        let path = base.join(name);
+        if !path.exists() {
+            return path;
+        }
+        n += 1;
+    }
+}
+
+/// Delete a thread (nightshift backlog 424): its whole folder moves to the
+/// docspace's trash ([`thread_trash_path`]), never unlinked (the
+/// never-lose-work rule), and the index is rewritten. The chats bound to it
+/// are the shell's to unbind, before this runs; their logs are not touched
+/// here. Returns where the folder went.
+pub fn trash_thread(notes_dir: &Path, slug: &str, when: &str) -> Result<PathBuf, String> {
+    let dir =
+        thread_dir(notes_dir, slug).ok_or_else(|| format!("{slug:?} is not a thread name"))?;
+    if !dir.is_dir() {
+        return Err(format!("no thread {slug} here"));
+    }
+    let to = thread_trash_path(notes_dir, slug, when);
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
+    std::fs::rename(&dir, &to).map_err(|e| {
+        format!(
+            "could not move the thread {slug} to {}, so it was not deleted: {e}",
+            to.display()
+        )
+    })?;
+    write_index(notes_dir)?;
+    Ok(to)
+}
+
 /// Upkeep for every thread in one docspace, then its index. A thread that
 /// will not read is reported in `errors`, not fatal.
 pub fn tidy_threads(notes_dir: &Path, today: NaiveDate, apply: bool) -> (Vec<Upkeep>, Vec<String>) {
@@ -1234,5 +1335,89 @@ The question.
         assert!(append_log(&bare, entry).is_err());
         assert!(!bare.join(LOG_FILE).exists());
         assert!(append_log(&dir, "\n\n").is_err());
+    }
+
+    #[test]
+    fn a_rename_changes_the_title_line_only_and_keeps_the_folder_and_its_time() {
+        let tmp = scratch();
+        let notes = tmp.join(".agents");
+        create_thread(&notes, "alpha", "Alpha").unwrap();
+        let file = notes.join("threads/alpha/thread.md");
+        let before = std::fs::read_to_string(&file).unwrap();
+        let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        let t = rename_thread(&notes, "alpha", "  The  cut\nworks ").unwrap();
+        assert_eq!(t.slug, "alpha");
+        assert_eq!(t.title, "The cut works");
+        let after = std::fs::read_to_string(&file).unwrap();
+        assert!(after.starts_with("# Thread: The cut works\n"), "{after}");
+        assert_eq!(
+            after.split_once('\n').unwrap().1,
+            before.split_once('\n').unwrap().1,
+            "nothing below the heading changes"
+        );
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().modified().unwrap(),
+            old,
+            "a rename never moves it up the touched order"
+        );
+        let index = std::fs::read_to_string(notes.join("threads/INDEX.md")).unwrap();
+        assert!(index.contains("| `alpha` — The cut works |"), "{index}");
+        // A bare heading stays bare; no heading gets one.
+        std::fs::write(&file, "# Plain\n\nbody\n").unwrap();
+        rename_thread(&notes, "alpha", "Renamed").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "# Renamed\n\nbody\n"
+        );
+        std::fs::write(&file, "## Start here\nx\n").unwrap();
+        rename_thread(&notes, "alpha", "Headed").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "# Thread: Headed\n\n## Start here\nx\n"
+        );
+        assert!(rename_thread(&notes, "alpha", "   ").is_err());
+        assert!(rename_thread(&notes, "nope", "x").is_err());
+        assert!(rename_thread(&notes, "../alpha", "x").is_err());
+    }
+
+    #[test]
+    fn a_delete_moves_the_folder_to_the_trash_whole() {
+        let tmp = scratch();
+        let notes = tmp.join(".agents");
+        create_thread(&notes, "alpha", "Alpha").unwrap();
+        create_thread(&notes, "beta", "Beta").unwrap();
+        std::fs::write(notes.join("threads/alpha/archive.md"), "kept\n").unwrap();
+        let to = trash_thread(&notes, "alpha", "2026-10-27-101500").unwrap();
+        assert_eq!(to, notes.join(".trash/threads/alpha-2026-10-27-101500"));
+        assert!(!notes.join("threads/alpha").exists());
+        assert_eq!(
+            std::fs::read_to_string(to.join("archive.md")).unwrap(),
+            "kept\n"
+        );
+        assert!(to.join("thread.md").is_file() && to.join("log.md").is_file());
+        let slugs: Vec<_> = list_threads(&notes).into_iter().map(|t| t.slug).collect();
+        assert_eq!(slugs, ["beta"]);
+        let index = std::fs::read_to_string(notes.join("threads/INDEX.md")).unwrap();
+        assert!(!index.contains("`alpha`"), "{index}");
+        // The same slug deleted again in the same second is kept beside it.
+        create_thread(&notes, "alpha", "Alpha again").unwrap();
+        let again = trash_thread(&notes, "alpha", "2026-10-27-101500").unwrap();
+        assert_eq!(
+            again,
+            notes.join(".trash/threads/alpha-2026-10-27-101500-2")
+        );
+        assert!(
+            to.join("archive.md").is_file(),
+            "the first copy is untouched"
+        );
+        assert!(trash_thread(&notes, "alpha", "x").is_err(), "gone already");
+        assert!(trash_thread(&notes, "../beta", "x").is_err());
+        assert!(notes.join("threads/beta/thread.md").is_file());
     }
 }
