@@ -5549,13 +5549,40 @@ export function kindWorkspace(events: SessionEvent[]): string | null {
   return null;
 }
 
+/**
+ * The pending chat's draft key while no chat is open, else null — taken
+ * before a setting's call that may create the chat's log (nightshift
+ * backlog 420).
+ */
+function pendingChatKey(): string | null {
+  return app.activeSessionId === null ? newDraftKey(app.project?.id, app.pendingMode) : null;
+}
+
+/**
+ * Pick up the id of a chat whose log a setting's call just created (the
+ * thread, the kind, the folders, the prompt layers), the way `send` does,
+ * so the sidebar and the next open agree on which chat this is — and,
+ * when the call was made on the pending New chat (`pending`, from
+ * `pendingChatKey`), carry what its box held over to that chat: the
+ * pending chat became this one. Before backlog 420 (2026-10-27) the words
+ * stayed under the pending key, so binding a draft New chat to a thread
+ * showed the bound chat with an empty box and the draft back on a second
+ * New chat.
+ */
+function adoptCreatedChat(pending: string | null): void {
+  const first = app.events[0];
+  if (!first || first.event !== "session_created") return;
+  app.activeSessionId = first.id;
+  if (pending !== null && pending !== first.id) moveDraft(pending, first.id);
+}
+
 /** The two steps of a kind switch: the log, then the reconnect that reads
  *  it back. False on a refusal, toasted. */
 async function applyKind(kind: ChatKind, workspace?: string): Promise<boolean> {
+  const pending = pendingChatKey();
   try {
     app.events = await api.setChatKind(kind, workspace);
-    const first = app.events[0];
-    if (first && first.event === "session_created") app.activeSessionId = first.id;
+    adoptCreatedChat(pending);
     app.error = null;
   } catch (e) {
     addToast(String(e));
@@ -5639,11 +5666,11 @@ export async function setChatThread(slug: string | null): Promise<boolean> {
   return true;
 }
 
-async function applyThread(slug: string | null): Promise<boolean> {
+async function applyThread(slug: string | null, adopt = true): Promise<boolean> {
+  const pending = adopt ? pendingChatKey() : null;
   try {
     app.events = await api.setChatThread(slug);
-    const first = app.events[0];
-    if (first && first.event === "session_created") app.activeSessionId = first.id;
+    adoptCreatedChat(pending);
     app.error = null;
     noteThread(app.activeSessionId, slug);
     if (slug) void refreshThreadFlags(slug);
@@ -5707,7 +5734,8 @@ export async function newChatInThread(slug: string): Promise<boolean> {
   }
   await newSession();
   if (app.activeSessionId !== null) return false;
-  if (!(await applyThread(slug))) return false;
+  // The plain New chat's draft is not this chat's: it stays where it is.
+  if (!(await applyThread(slug, false))) return false;
   const id = app.activeSessionId;
   if (!id) return false;
   setDraftText(id, threadReadOrder(slug, THEN_HIS_ASK));
@@ -5759,10 +5787,10 @@ async function promoteThreadText(text: string): Promise<void> {
 }
 
 async function applyFolders(folders: string[]): Promise<boolean> {
+  const pending = pendingChatKey();
   try {
     app.events = await api.setChatFolders(folders);
-    const first = app.events[0];
-    if (first && first.event === "session_created") app.activeSessionId = first.id;
+    adoptCreatedChat(pending);
     app.error = null;
   } catch (e) {
     addToast(String(e));
@@ -8913,12 +8941,12 @@ export async function setPromptLayer(layer: PromptLayer, on: boolean): Promise<v
 /** The two steps of a layer change: the log, then the reconnect that
  *  reads it back. False on a refusal, toasted. */
 async function applyLayers(off: PromptLayer[]): Promise<boolean> {
+  const pending = pendingChatKey();
   try {
     app.events = await api.setPromptLayers(off);
     // A chat whose log was just created by this call: pick up its id the way
     // `send` does, so the sidebar and the next open agree on which chat this is.
-    const first = app.events[0];
-    if (first && first.event === "session_created") app.activeSessionId = first.id;
+    adoptCreatedChat(pending);
     app.error = null;
   } catch (e) {
     addToast(String(e));
@@ -8984,10 +9012,10 @@ export async function setPromptLayerText(
 
 /** `applyLayers` for one layer's own text. */
 async function applyLayerText(layer: EditableLayer, text: string | null): Promise<boolean> {
+  const pending = pendingChatKey();
   try {
     app.events = await api.setPromptLayerText(layer, text);
-    const first = app.events[0];
-    if (first && first.event === "session_created") app.activeSessionId = first.id;
+    adoptCreatedChat(pending);
     app.error = null;
   } catch (e) {
     addToast(String(e));

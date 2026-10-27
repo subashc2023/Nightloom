@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "./api";
-import { readDraft } from "./drafts.svelte";
+import { newDraftKey, readDraft, setDraftText } from "./drafts.svelte";
 import {
   READ_ORDER,
   WRAP_UP,
@@ -242,5 +242,26 @@ describe("Continue on a bound chat", () => {
     expect(readDraft("chat-next").text).toBe(`${threadReadOrder("stuart-brainstorm")}\n\nStart with T-04.`);
     expect(threadFor("chat-next")).toBe("stuart-brainstorm");
     expect(api.threadUpkeep).toHaveBeenCalledWith("stuart-brainstorm", true);
+  });
+});
+
+describe("binding the draft New chat (backlog 420)", () => {
+  it("binds that same chat and its draft stays in its box — no second New chat holds it", async () => {
+    vi.mocked(api.setChatThread).mockClear();
+    app.busy = false;
+    app.connecting = false;
+    app.events = [];
+    app.activeSessionId = null;
+    app.pendingMode = "normal";
+    const pending = newDraftKey(app.project?.id, app.pendingMode);
+    setDraftText(pending, "half a thought about Stuart");
+    expect(await setChatThread("stuart-brainstorm")).toBe(true);
+    expect(app.activeSessionId).toBe("t1");
+    expect(chatThread(app.events)).toBe("stuart-brainstorm");
+    expect(readDraft("t1").text).toBe("half a thought about Stuart");
+    expect(readDraft(pending).text).toBe("");
+    setDraftText("t1", "");
+    app.events = [];
+    app.activeSessionId = null;
   });
 });
