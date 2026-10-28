@@ -5,11 +5,14 @@
    * scheduled message's chip: its address and status, the command, the
    * log's last 200 lines on demand, Open (a Nightloom web tab) and Stop.
    * The model starts it with its `preview` tool; this chip is his view of
-   * it and his way to end it.
+   * it and his way to end it. One that ended — its command exited, or
+   * the app quit or restarted — offers Restart (item 445); when this app
+   * process could not serve previews at all, the chip's place says so
+   * (item 444).
    */
   import { onDestroy, onMount } from "svelte";
   import { tip } from "./tip";
-  import { previews, refreshPreview, startPreviews, stopPreview } from "./preview.svelte";
+  import { previews, refreshPreview, restartPreview, startPreviews, stopPreview } from "./preview.svelte";
   import { previewCommandLine, previewHost, previewStatusText } from "./preview";
   import { openWebTab } from "./webtabs.svelte";
 
@@ -18,6 +21,8 @@
   const p = $derived(previews.byChat[chat] ?? null);
   let showLog = $state(false);
   let stopping = $state(false);
+  let restarting = $state(false);
+  let restartError = $state<string | null>(null);
   let logEl: HTMLPreElement | undefined = $state();
   let timer: ReturnType<typeof setInterval> | null = null;
 
@@ -50,6 +55,18 @@
     if (logEl) logEl.scrollTop = logEl.scrollHeight;
   });
 
+  async function restart(): Promise<void> {
+    restarting = true;
+    restartError = null;
+    try {
+      await restartPreview(chat);
+    } catch (e) {
+      restartError = String(e);
+    } finally {
+      restarting = false;
+    }
+  }
+
   async function stop(): Promise<void> {
     stopping = true;
     try {
@@ -76,20 +93,46 @@
         <button class="ns-btn ghost small" aria-expanded={showLog} onclick={() => (showLog = !showLog)}
           >{showLog ? "Hide log" : "Log"}</button
         >
-        <button class="ns-btn ghost small" onclick={() => void openWebTab(p.url)}>Open</button>
+        {#if p.status === "exited"}
+          <button
+            class="ns-btn ghost small"
+            disabled={restarting}
+            use:tip={`Run ${previewCommandLine(p.command)} again on port ${p.port}`}
+            onclick={() => void restart()}>{restarting ? "Restarting…" : "Restart"}</button
+          >
+        {:else}
+          <button class="ns-btn ghost small" onclick={() => void openWebTab(p.url)}>Open</button>
+        {/if}
         <button
           class="ns-btn ghost small"
           disabled={stopping}
-          use:tip={"End the server and everything it started"}
-          onclick={() => void stop()}>{stopping ? "Stopping…" : "Stop"}</button
+          use:tip={p.status === "exited" ? "Remove this chip" : "End the server and everything it started"}
+          onclick={() => void stop()}
+          >{stopping ? "Stopping…" : p.status === "exited" ? "Dismiss" : "Stop"}</button
         >
       </span>
     </div>
+    {#if restartError}
+      <div class="preview-error" role="alert">{restartError}</div>
+    {/if}
     {#if showLog}
       <pre class="preview-log mono" bind:this={logEl} aria-label="preview log">{p.log.length
           ? p.log.join("\n")
           : "(no output yet)"}</pre>
     {/if}
+  </div>
+{:else if previews.unavailable && !previews.unavailableDismissed}
+  <div class="preview-chip" data-status="unavailable" role="status" aria-label="preview unavailable">
+    <div class="preview-row">
+      <span class="dot" aria-hidden="true"></span>
+      <span class="ns-chip mono preview-label">preview unavailable</span>
+      <span class="preview-cmd mono" use:tip={previews.unavailable}
+        >the app could not open its preview socket, so chats cannot run a dev server this session</span
+      >
+      <span class="preview-acts">
+        <button class="ns-btn ghost small" onclick={() => (previews.unavailableDismissed = true)}>Dismiss</button>
+      </span>
+    </div>
   </div>
 {/if}
 
@@ -129,6 +172,15 @@
   }
   [data-status="exited"] .preview-label {
     color: var(--failed);
+  }
+  [data-status="unavailable"] .dot {
+    background: var(--partial);
+  }
+  .preview-error {
+    margin-top: 0.35rem;
+    font-size: 12px;
+    color: var(--failed);
+    white-space: pre-wrap;
   }
   @keyframes preview-pulse {
     50% {

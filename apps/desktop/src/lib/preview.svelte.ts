@@ -11,6 +11,10 @@ import { applyPreviewChange } from "./preview";
 
 export const previews = $state({
   byChat: {} as Record<string, PreviewSnapshot>,
+  /** Why previews are not served in this app process (item 444), or null. */
+  unavailable: null as string | null,
+  /** He dismissed that notice for this run. */
+  unavailableDismissed: false,
 });
 
 let started = false;
@@ -23,6 +27,11 @@ export async function startPreviews(): Promise<void> {
     await listen<{ chat: string; preview: PreviewSnapshot | null }>("preview-changed", (e) => {
       previews.byChat = applyPreviewChange(previews.byChat, e.payload.chat, e.payload.preview);
     });
+    try {
+      previews.unavailable = await api.previewUnavailable();
+    } catch {
+      previews.unavailable = null;
+    }
     const all = await api.previewList();
     let map: Record<string, PreviewSnapshot> = {};
     for (const p of all) map = applyPreviewChange(map, p.chat, p);
@@ -40,6 +49,12 @@ export async function refreshPreview(chat: string): Promise<void> {
   } catch {
     // Kept as it was; the next event or tick reads again.
   }
+}
+
+/** His Restart on an ended preview (item 445). */
+export async function restartPreview(chat: string): Promise<void> {
+  const p = await api.previewRestart(chat);
+  previews.byChat = applyPreviewChange(previews.byChat, chat, p);
 }
 
 export async function stopPreview(chat: string): Promise<void> {

@@ -3714,6 +3714,9 @@ async fn send_agent(
     // Subagent rules changed while the cache is warm (nightshift backlog
     // 293): the new rules ride after this message, on the wire only.
     let wire_note = holds.take_rules_note(&chat_id).await;
+    // The chat's preview ended since the model last heard (item 445): it
+    // is told now, on the wire, rather than by failing tool calls.
+    let wire_note = preview::with_ended_note(&app, ask_dir.as_deref(), wire_note);
     let env = DesktopTurnEnv {
         app: &app,
         state: &state,
@@ -8945,6 +8948,8 @@ fn main() {
             preview::preview_list,
             preview::preview_get,
             preview::preview_stop,
+            preview::preview_restart,
+            preview::preview_unavailable,
         ]))
         .build(tauri::generate_context!())
         .expect("error while building Nightloom")

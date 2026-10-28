@@ -22,6 +22,10 @@ describe("preview chip words (item 430)", () => {
     expect(previewStatusText(snap({ status: "starting" }))).toBe("starting");
     expect(previewStatusText(snap({ status: "exited", exit_code: 3 }))).toBe("exited (code 3)");
     expect(previewStatusText(snap({ status: "exited", exit_code: null }))).toBe("stopped by a signal");
+    // Item 445: one that ended with the app says so, whatever its code.
+    expect(previewStatusText(snap({ status: "exited", exit_code: null, ended_by_app: true }))).toBe(
+      "ended when the app quit",
+    );
   });
   it("shows the address without its scheme", () => {
     expect(previewHost(snap())).toBe("localhost:5173");

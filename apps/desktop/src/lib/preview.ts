@@ -12,6 +12,7 @@ export function previewStatusText(p: PreviewSnapshot): string {
     case "starting":
       return "starting";
     case "exited":
+      if (p.ended_by_app) return "ended when the app quit";
       return p.exit_code === null ? "stopped by a signal" : `exited (code ${p.exit_code})`;
   }
 }

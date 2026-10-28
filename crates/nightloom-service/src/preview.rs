@@ -95,6 +95,11 @@ pub struct Snapshot {
     pub started_ms: i64,
     /// The process group (the shell's pid).
     pub pgid: Option<u32>,
+    /// It ended with the app — a quit, a restart, a crash — and was found
+    /// in the record at the next launch (nightshift item 445). Always
+    /// [`Status::Exited`] then.
+    #[serde(default)]
+    pub ended_by_app: bool,
 }
 
 struct State {
@@ -111,6 +116,11 @@ struct Entry {
     state: Arc<Mutex<State>>,
     started_ms: i64,
     generation: u64,
+    /// The model has been told it ended (item 445): by the note before a
+    /// turn ([`Previews::take_ended_note`]) or by a `status` reply.
+    told: bool,
+    /// Restored from the record at launch: it ended with the app.
+    ended_by_app: bool,
 }
 
 impl Entry {
@@ -127,8 +137,46 @@ impl Entry {
             log: self.log.lock().unwrap().iter().cloned().collect(),
             started_ms: self.started_ms,
             pgid: self.pgid,
+            ended_by_app: self.ended_by_app,
         }
     }
+
+    fn record(&self) -> Record {
+        let state = self.state.lock().unwrap();
+        Record {
+            command: self.command.clone(),
+            cwd: self.cwd.clone(),
+            port: self.port,
+            started_ms: self.started_ms,
+            pid: std::process::id(),
+            exited: state.status == Status::Exited,
+            exit_code: state.exit_code,
+            ended_by_app: self.ended_by_app,
+            told: self.told,
+        }
+    }
+}
+
+/// One chat's preview as the record on disk keeps it (item 445): enough
+/// to say, after the app restarts, that it ended and how to start it again.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Record {
+    command: String,
+    cwd: PathBuf,
+    port: u16,
+    started_ms: i64,
+    /// The app process that ran it. A record whose process is gone is a
+    /// preview that ended with it; one whose process lives is another
+    /// running app's (a dev build on the same home) and is left alone.
+    pid: u32,
+    #[serde(default)]
+    exited: bool,
+    #[serde(default)]
+    exit_code: Option<i32>,
+    #[serde(default)]
+    ended_by_app: bool,
+    #[serde(default)]
+    told: bool,
 }
 
 /// Told of every change of a chat's preview: its new snapshot, or `None`
@@ -144,6 +192,11 @@ pub struct Previews {
     /// The pid the watchdog watches; `None`, no watchdog (tests of the
     /// watchdog itself set another).
     watch_pid: Option<u32>,
+    /// Where every chat's preview is recorded, so the next launch knows
+    /// which ended with the app (item 445). `None`, nothing recorded.
+    record: Option<PathBuf>,
+    /// One writer of the record at a time within this process.
+    record_lock: Mutex<()>,
 }
 
 impl Default for Previews {
@@ -160,7 +213,151 @@ impl Previews {
             generation: AtomicU64::new(1),
             ready_wait: READY_WAIT,
             watch_pid: Some(std::process::id()),
+            record: None,
+            record_lock: Mutex::new(()),
         }
+    }
+
+    /// The same, recording its previews at `path` (item 445) — the
+    /// desktop's [`record_path`].
+    pub fn with_record(mut self, path: PathBuf) -> Self {
+        self.record = Some(path);
+        self
+    }
+
+    fn read_records(path: &Path) -> HashMap<String, Record> {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default()
+    }
+
+    /// Write one chat's record (`None` removes it), leaving every other
+    /// chat's as it is — another app process on the same home has its own.
+    fn save_record(&self, chat: &str, rec: Option<Record>) {
+        let Some(path) = &self.record else { return };
+        let _g = self.record_lock.lock().unwrap();
+        let mut all = Self::read_records(path);
+        match rec {
+            Some(r) => {
+                all.insert(chat.to_string(), r);
+            }
+            None => {
+                if all.remove(chat).is_none() {
+                    return;
+                }
+            }
+        }
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+        if let Ok(text) = serde_json::to_string_pretty(&all)
+            && std::fs::write(&tmp, text).is_ok()
+        {
+            let _ = std::fs::rename(&tmp, path);
+        }
+    }
+
+    fn save_entry_record(&self, chat: &str) {
+        let rec = self.entries.lock().unwrap().get(chat).map(Entry::record);
+        if let Some(rec) = rec {
+            self.save_record(chat, Some(rec));
+        }
+    }
+
+    /// At launch: every recorded preview whose app process is gone ended
+    /// with it — each comes back as an exited preview, marked
+    /// `ended_by_app`, for the chip to offer Restart and the chat's next
+    /// turn to tell the model (item 445). A record of this process's own
+    /// pid is a reused pid, so it counts as gone too. Returns how many.
+    pub fn restore_ended(&self) -> usize {
+        let Some(path) = &self.record else { return 0 };
+        let me = std::process::id();
+        let records = {
+            let _g = self.record_lock.lock().unwrap();
+            Self::read_records(path)
+        };
+        let mut n = 0;
+        for (chat, rec) in records {
+            if rec.pid != me && pid_alive(rec.pid) {
+                continue;
+            }
+            if self.entries.lock().unwrap().contains_key(&chat) {
+                continue;
+            }
+            let entry = Entry {
+                command: rec.command,
+                cwd: rec.cwd,
+                port: rec.port,
+                pgid: None,
+                log: Arc::new(Mutex::new(VecDeque::new())),
+                state: Arc::new(Mutex::new(State {
+                    status: Status::Exited,
+                    exit_code: if rec.exited { rec.exit_code } else { None },
+                })),
+                started_ms: rec.started_ms,
+                generation: self.generation.fetch_add(1, Ordering::SeqCst),
+                told: rec.told,
+                // A preview that had already exited on its own before the
+                // app went keeps saying so.
+                ended_by_app: rec.ended_by_app || !rec.exited,
+            };
+            self.entries.lock().unwrap().insert(chat.clone(), entry);
+            n += 1;
+            // Rewritten under this process, so a second launch while this
+            // one runs leaves it alone; still ended.
+            self.save_entry_record(&chat);
+        }
+        n
+    }
+
+    /// The note the chat's next turn carries when its preview ended and
+    /// the model has not been told (item 445), once: taking it marks the
+    /// preview told. `None` when there is nothing to tell.
+    pub fn take_ended_note(&self, chat: &str) -> Option<String> {
+        let snap = {
+            let mut entries = self.entries.lock().unwrap();
+            let e = entries.get_mut(chat)?;
+            if e.told || e.state.lock().unwrap().status != Status::Exited {
+                return None;
+            }
+            e.told = true;
+            e.snapshot(chat)
+        };
+        self.save_entry_record(chat);
+        Some(ended_note(&snap))
+    }
+
+    /// The model saw the chat's preview ended (a `status` reply): no note
+    /// next turn.
+    fn mark_told_if_ended(&self, chat: &str) {
+        let changed = {
+            let mut entries = self.entries.lock().unwrap();
+            match entries.get_mut(chat) {
+                Some(e) if !e.told && e.state.lock().unwrap().status == Status::Exited => {
+                    e.told = true;
+                    true
+                }
+                _ => false,
+            }
+        };
+        if changed {
+            self.save_entry_record(chat);
+        }
+    }
+
+    /// His Restart on the chip (item 445): the chat's preview started again
+    /// with the command, folder and port it had.
+    pub async fn restart(self: &Arc<Self>, chat: &str) -> Result<Snapshot, String> {
+        let (cwd, command, port) = {
+            let entries = self.entries.lock().unwrap();
+            let e = entries
+                .get(chat)
+                .ok_or_else(|| "this chat has no preview to restart".to_string())?;
+            (e.cwd.clone(), e.command.clone(), e.port)
+        };
+        self.start(chat, &cwd, &command, port).await
     }
 
     /// The same, waiting `ready_wait` for a port rather than [`READY_WAIT`].
@@ -298,9 +495,13 @@ impl Previews {
             state: Arc::clone(&state),
             started_ms: chrono::Utc::now().timestamp_millis(),
             generation,
+            told: false,
+            ended_by_app: false,
         };
         let snap = entry.snapshot(chat);
+        let rec = entry.record();
         self.entries.lock().unwrap().insert(chat.to_string(), entry);
+        self.save_record(chat, Some(rec));
         self.changed(chat, Some(&snap));
 
         // The shell's end: its code, and Exited if nothing answers on the
@@ -336,6 +537,9 @@ impl Previews {
                         .map(|e| e.snapshot(&chat_owned))
                 };
                 if let Some(snap) = snap {
+                    // Recorded as exited, so a restart before the next
+                    // turn still tells the model how it ended (item 445).
+                    me.save_entry_record(&chat_owned);
                     me.changed(&chat_owned, Some(&snap));
                 }
             }
@@ -376,12 +580,15 @@ impl Previews {
         let entry = self.entries.lock().unwrap().remove(chat)?;
         let snap = entry.snapshot(chat);
         stop_group(entry.pgid).await;
+        self.save_record(chat, None);
         self.changed(chat, None);
         Some(snap)
     }
 
     /// Every preview, at once, without waiting on a runtime: the app's exit.
-    /// SIGTERM to each group, a short grace, SIGKILL to what is left.
+    /// SIGTERM to each group, a short grace, SIGKILL to what is left. The
+    /// record is left as it is: the next launch reads it to tell each chat
+    /// its preview ended with the app (item 445).
     pub fn shutdown_all(&self) {
         let entries: Vec<(String, Entry)> = self.entries.lock().unwrap().drain().collect();
         if entries.is_empty() {
@@ -416,6 +623,56 @@ impl Drop for Previews {
     fn drop(&mut self) {
         self.shutdown_all();
     }
+}
+
+/// What the chat's next turn tells the model of a preview that ended
+/// (item 445): what it was, how it ended, and how to start it again.
+pub fn ended_note(s: &Snapshot) -> String {
+    let how = if s.ended_by_app {
+        "it ended when the Nightloom app quit or restarted".to_string()
+    } else {
+        match s.exit_code {
+            Some(c) => format!("its command ended (exit code {c}) and nothing answers on the port"),
+            None => {
+                "its command was stopped by a signal and nothing answers on the port".to_string()
+            }
+        }
+    };
+    let mut note = format!(
+        "[Nightloom: this chat's preview `{}` (port {}, in {}) is no longer running — {how}. \
+         If you still need it, start it again with the preview tool (action \"start\"); the user can \
+         also press Restart on its chip.]",
+        s.command,
+        s.port,
+        s.cwd.display()
+    );
+    if !s.ended_by_app && !s.log.is_empty() {
+        let tail: Vec<&str> = s
+            .log
+            .iter()
+            .rev()
+            .take(10)
+            .rev()
+            .map(String::as_str)
+            .collect();
+        note.push_str(&format!(
+            "\nIts last {} log lines:\n{}",
+            tail.len(),
+            tail.join("\n")
+        ));
+    }
+    note
+}
+
+#[cfg(unix)]
+fn pid_alive(pid: u32) -> bool {
+    // SAFETY: signal 0 only checks.
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}
+
+#[cfg(not(unix))]
+fn pid_alive(_pid: u32) -> bool {
+    false
 }
 
 pub fn url_for(port: u16) -> String {
@@ -556,10 +813,114 @@ pub fn socket_path(config: &Path) -> PathBuf {
         .join(format!("preview-{}.sock", std::process::id()))
 }
 
-/// Remove the sockets of app processes that are gone.
+/// Where the previews are recorded across launches (item 445).
+pub fn record_path(config: &Path) -> PathBuf {
+    config.join("run").join("previews.json")
+}
+
+/// The longest socket path the OS takes: `sun_path` is 104 bytes on macOS
+/// and the BSDs, 108 on Linux, its last byte the terminating NUL.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub const SUN_PATH_MAX: usize = 108;
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+pub const SUN_PATH_MAX: usize = 104;
+
+/// Whether `path` fits in `sun_path`, its NUL included.
+pub fn socket_path_fits(path: &Path) -> bool {
+    path.as_os_str().len() < SUN_PATH_MAX
+}
+
+/// The short folder a socket falls back to when the config dir's path is
+/// too long for one (item 444; the 429 run lost its previews to a
+/// ~150-character `NIGHTLOOM_HOME`): `/tmp/nightloom-<uid>`, this user's
+/// alone (mode 0700).
+#[cfg(unix)]
+pub fn short_socket_dir() -> PathBuf {
+    // SAFETY: getuid has no failure mode and no memory effects.
+    let uid = unsafe { libc::getuid() };
+    PathBuf::from("/tmp").join(format!("nightloom-{uid}"))
+}
+
+/// The paths to try for this process's socket, in order: under the config
+/// dir when it fits `sun_path`, then [`short_socket_dir`] (item 444).
+#[cfg(unix)]
+pub fn socket_candidates(config: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let preferred = socket_path(config);
+    if socket_path_fits(&preferred) {
+        out.push(preferred);
+    }
+    out.push(short_socket_dir().join(format!("preview-{}.sock", std::process::id())));
+    out
+}
+
+/// Make `dir` a folder only this user can enter: created 0700, and refused
+/// when it is a link or someone else's (a shared `/tmp` must not hand a
+/// planted folder our socket).
+#[cfg(unix)]
+pub fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    match std::fs::symlink_metadata(dir) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir_all(dir)?;
+        }
+        Err(e) => return Err(e),
+    }
+    let meta = std::fs::symlink_metadata(dir)?;
+    // SAFETY: as above.
+    let uid = unsafe { libc::getuid() };
+    if !meta.file_type().is_dir() || meta.uid() != uid {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("{} is not a folder of this user's", dir.display()),
+        ));
+    }
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+}
+
+/// Bind this process's socket at the first of [`socket_candidates`] that
+/// takes it (item 444). The path bound, or every attempt's error in one
+/// line — what the window shows as "preview unavailable".
+#[cfg(unix)]
+pub fn bind_preview_socket(
+    config: &Path,
+) -> Result<(PathBuf, std::os::unix::net::UnixListener), String> {
+    let preferred = socket_path(config);
+    let mut errors = Vec::new();
+    if !socket_path_fits(&preferred) {
+        errors.push(format!(
+            "{} is {} bytes, longer than a socket path may be ({})",
+            preferred.display(),
+            preferred.as_os_str().len(),
+            SUN_PATH_MAX - 1
+        ));
+    }
+    for path in socket_candidates(config) {
+        let short = path.parent() == Some(short_socket_dir().as_path());
+        if short && let Err(e) = ensure_private_dir(&short_socket_dir()) {
+            errors.push(format!("{}: {e}", short_socket_dir().display()));
+            continue;
+        }
+        match bind_socket(&path) {
+            Ok(l) => return Ok((path, l)),
+            Err(e) => errors.push(format!("{}: {e}", path.display())),
+        }
+    }
+    Err(errors.join("; "))
+}
+
+/// Remove the sockets of app processes that are gone, under the config dir
+/// and in the short fallback folder.
 #[cfg(unix)]
 pub fn sweep_sockets(config: &Path) {
-    let Ok(read) = std::fs::read_dir(config.join("run")) else {
+    sweep_socket_dir(&config.join("run"));
+    sweep_socket_dir(&short_socket_dir());
+}
+
+#[cfg(unix)]
+fn sweep_socket_dir(dir: &Path) {
+    let Ok(read) = std::fs::read_dir(dir) else {
         return;
     };
     for e in read.flatten() {
@@ -650,11 +1011,15 @@ pub async fn answer(previews: &Arc<Previews>, req: Request) -> Reply {
             preview: previews.stop(&chat).await,
             error: None,
         },
-        Request::Status { chat } => Reply {
-            ok: true,
-            preview: previews.status(&chat),
-            error: None,
-        },
+        Request::Status { chat } => {
+            let preview = previews.status(&chat);
+            previews.mark_told_if_ended(&chat);
+            Reply {
+                ok: true,
+                preview,
+                error: None,
+            }
+        }
     }
 }
 
@@ -904,6 +1269,16 @@ mod tests {
             .port()
     }
 
+    /// One server test at a time. Run side by side they saw a start's
+    /// port check read a fresh port as busy now and then (1 to 5 runs in
+    /// 15 once item 445's tests were added, 2026-10-28; cause not found —
+    /// the port was free again a moment later). Each test holds this for
+    /// its length.
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn tmp(tag: &str) -> PathBuf {
         let dir =
             std::env::temp_dir().join(format!("nightloom-430-{tag}-{}", uuid::Uuid::new_v4()));
@@ -921,6 +1296,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_start_answers_once_the_port_does_and_keeps_the_log() {
+        let _serial = serial();
         let p = previews();
         let dir = tmp("start");
         std::fs::write(dir.join("index.html"), "hello 430").unwrap();
@@ -941,6 +1317,7 @@ mod tests {
     /// before, during and after.
     #[tokio::test]
     async fn a_preview_survives_a_turn_ending() {
+        let _serial = serial();
         let p = previews();
         let dir = tmp("turn");
         let port = free_port();
@@ -954,6 +1331,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_stop_ends_the_whole_group_and_frees_the_port() {
+        let _serial = serial();
         let p = previews();
         let dir = tmp("stop");
         let port = free_port();
@@ -972,6 +1350,7 @@ mod tests {
 
     #[tokio::test]
     async fn shutdown_kills_every_preview() {
+        let _serial = serial();
         let p = previews();
         let dir = tmp("quit");
         let (a, b) = (free_port(), free_port());
@@ -999,6 +1378,7 @@ mod tests {
     /// The app gone without its exit (a crash): the watchdog ends the group.
     #[tokio::test]
     async fn the_watchdog_ends_a_preview_whose_app_is_gone() {
+        let _serial = serial();
         let mut fake_app = std::process::Command::new("sleep")
             .arg("30")
             .spawn()
@@ -1023,6 +1403,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_port_in_use_is_refused_before_anything_runs() {
+        let _serial = serial();
         let p = previews();
         let dir = tmp("clash");
         let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1055,6 +1436,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_restart_replaces_the_chats_preview_on_the_same_port() {
+        let _serial = serial();
         let p = previews();
         let dir = tmp("restart");
         let port = free_port();
@@ -1072,6 +1454,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_command_that_dies_says_so_with_its_log() {
+        let _serial = serial();
         let p = previews();
         let dir = tmp("dies");
         let port = free_port();
@@ -1091,6 +1474,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_log_keeps_the_last_two_hundred_lines() {
+        let _serial = serial();
         let p = previews();
         let dir = tmp("log");
         let port = free_port();
@@ -1112,6 +1496,7 @@ mod tests {
     /// previews the desktop owns.
     #[tokio::test]
     async fn the_tool_reaches_the_desktop_over_its_socket() {
+        let _serial = serial();
         let p = previews();
         let dir = tmp("socket");
         // A socket path must fit `sun_path` (104 bytes on macOS), and the
@@ -1193,6 +1578,176 @@ mod tests {
         assert_eq!(v["mcpServers"]["other"]["args"], json!(["a"]));
         let none = json!({"mcpServers": {"n": {"args": ["--mcp-serve"]}}}).to_string();
         assert!(with_chat(&none, "c").is_none());
+    }
+
+    /// Item 444: a config dir too long for `sun_path` falls back to the
+    /// short folder, and the socket there binds and answers.
+    #[tokio::test]
+    async fn a_long_home_binds_its_socket_in_the_short_folder() {
+        let _serial = serial();
+        let long = tmp(&"h".repeat(120));
+        assert!(
+            !socket_path_fits(&socket_path(&long)),
+            "the test home must be too long"
+        );
+        let candidates = socket_candidates(&long);
+        assert_eq!(candidates.len(), 1, "{candidates:?}");
+        assert_eq!(candidates[0].parent(), Some(short_socket_dir().as_path()));
+        assert!(socket_path_fits(&candidates[0]));
+        let (path, listener) = bind_preview_socket(&long).unwrap();
+        assert_eq!(path, candidates[0]);
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(short_socket_dir())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700, "the short folder is this user's alone");
+        let p = previews();
+        let server_task = tokio::spawn(serve_socket(listener, Arc::clone(&p)));
+        let reply = request(&path, &Request::Status { chat: "c".into() })
+            .await
+            .unwrap();
+        assert!(reply.ok && reply.preview.is_none(), "{reply:?}");
+        server_task.abort();
+        let _ = std::fs::remove_file(&path);
+        // A short home keeps its socket under the config dir.
+        let short = PathBuf::from("/tmp/nl444");
+        assert_eq!(socket_candidates(&short)[0], socket_path(&short));
+    }
+
+    /// Item 444: a planted link in the short folder's place is refused,
+    /// not followed.
+    #[test]
+    fn the_short_folder_must_be_a_folder_of_this_users() {
+        let dir = tmp("planted");
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&dir, &link).unwrap();
+        assert!(ensure_private_dir(&link).is_err());
+        let fresh = dir.join("fresh");
+        ensure_private_dir(&fresh).unwrap();
+        assert!(fresh.is_dir());
+    }
+
+    /// Item 445: a preview that ended with the app comes back at the next
+    /// launch as ended; the chat's next turn is told once; Restart runs it
+    /// again with the same command and port.
+    #[tokio::test]
+    async fn a_preview_ended_by_the_app_is_told_once_and_restarts() {
+        let _serial = serial();
+        let dir = tmp("record");
+        let record = dir.join("run").join("previews.json");
+        let port = free_port();
+        // A record as a dead app process left it: running when it went.
+        let dead_pid = {
+            let mut c = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+            let pid = c.id();
+            c.wait().unwrap();
+            pid
+        };
+        let rec = Record {
+            command: server(port),
+            cwd: dir.clone(),
+            port,
+            started_ms: 1,
+            pid: dead_pid,
+            exited: false,
+            exit_code: None,
+            ended_by_app: false,
+            told: false,
+        };
+        std::fs::create_dir_all(record.parent().unwrap()).unwrap();
+        std::fs::write(
+            &record,
+            serde_json::to_string(&HashMap::from([("chat-r".to_string(), rec)])).unwrap(),
+        )
+        .unwrap();
+        let p = Arc::new(
+            Previews::new()
+                .with_ready_wait(Duration::from_secs(15))
+                .with_record(record.clone()),
+        );
+        assert_eq!(p.restore_ended(), 1);
+        let snap = p.status("chat-r").unwrap();
+        assert_eq!(snap.status, Status::Exited);
+        assert!(snap.ended_by_app);
+        let note = p.take_ended_note("chat-r").expect("told at the next turn");
+        assert!(note.contains("ended when the Nightloom app quit"), "{note}");
+        assert!(note.contains(&format!("port {port}")), "{note}");
+        assert!(note.contains("\"start\""), "{note}");
+        assert!(p.take_ended_note("chat-r").is_none(), "told once");
+        // Told is on the record, so another launch does not tell it again.
+        let on_disk = Previews::read_records(&record);
+        assert!(
+            on_disk["chat-r"].told && on_disk["chat-r"].ended_by_app,
+            "{on_disk:?}"
+        );
+        let restarted = p.restart("chat-r").await.unwrap();
+        assert_eq!(restarted.status, Status::Listening, "{restarted:?}");
+        assert!(!restarted.ended_by_app);
+        assert_eq!(restarted.port, port);
+        assert!(
+            p.take_ended_note("chat-r").is_none(),
+            "running: nothing to tell"
+        );
+        // A stop forgets it: nothing restored at the next launch.
+        p.stop("chat-r").await;
+        let next = Previews::new().with_record(record.clone());
+        assert_eq!(next.restore_ended(), 0);
+        assert!(!std::fs::read_to_string(&record).unwrap().contains("chat-r"));
+    }
+
+    /// Item 445: a preview whose command died tells the model how, once;
+    /// a `status` reply counts as telling it.
+    #[tokio::test]
+    async fn a_preview_that_exited_is_told_with_its_code_and_a_status_counts() {
+        let _serial = serial();
+        let p = previews();
+        let dir = tmp("exit-note");
+        let port = free_port();
+        let snap = p
+            .start("chat-x", &dir, "echo boom; exit 3", port)
+            .await
+            .unwrap();
+        assert_eq!(snap.status, Status::Exited, "{snap:?}");
+        let note = p.take_ended_note("chat-x").unwrap();
+        assert!(note.contains("exit code 3"), "{note}");
+        assert!(note.contains("boom"), "{note}");
+        assert!(p.take_ended_note("chat-x").is_none());
+        p.start("chat-y", &dir, "exit 1", free_port())
+            .await
+            .unwrap();
+        let reply = answer(
+            &p,
+            Request::Status {
+                chat: "chat-y".into(),
+            },
+        )
+        .await;
+        assert!(reply.ok);
+        assert!(
+            p.take_ended_note("chat-y").is_none(),
+            "the status reply told it"
+        );
+        assert!(p.take_ended_note("no-such-chat").is_none());
+    }
+
+    /// Item 445: the app's own exit leaves the record, so the next launch
+    /// can say the preview ended with it.
+    #[tokio::test]
+    async fn the_apps_exit_keeps_the_record() {
+        let _serial = serial();
+        let dir = tmp("exit-keeps");
+        let record = dir.join("previews.json");
+        let p = Arc::new(
+            Previews::new()
+                .with_ready_wait(Duration::from_secs(15))
+                .with_record(record.clone()),
+        );
+        let port = free_port();
+        p.start("chat-k", &dir, &server(port), port).await.unwrap();
+        p.shutdown_all();
+        let text = std::fs::read_to_string(&record).unwrap();
+        assert!(text.contains("chat-k"), "{text}");
     }
 
     fn http_get(port: u16, path: &str) -> String {

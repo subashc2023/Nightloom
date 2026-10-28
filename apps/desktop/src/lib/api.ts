@@ -1308,6 +1308,8 @@ export interface PreviewSnapshot {
   log: string[];
   started_ms: number;
   pgid: number | null;
+  /** It ended with the app (a quit or restart), found at launch (item 445). */
+  ended_by_app?: boolean;
 }
 export function previewList(): Promise<PreviewSnapshot[]> {
   return invoke("preview_list");
@@ -1317,6 +1319,14 @@ export function previewGet(chat: string): Promise<PreviewSnapshot | null> {
 }
 export function previewStop(chat: string): Promise<void> {
   return invoke("preview_stop", { chat });
+}
+/** Start an ended preview again with its command and port (item 445). */
+export function previewRestart(chat: string): Promise<PreviewSnapshot> {
+  return invoke("preview_restart", { chat });
+}
+/** Why previews are not served in this app process, or null (item 444). */
+export function previewUnavailable(): Promise<string | null> {
+  return invoke("preview_unavailable");
 }
 export function forYouFiles(): Promise<ForYouRow[]> {
   return invoke("for_you_files");

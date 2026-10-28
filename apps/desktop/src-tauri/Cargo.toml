@@ -52,3 +52,6 @@ mac-notification-sys = "0.6"
 # and Undo/Redo sent to it as AppKit actions. Already in the lockfile (tauri
 # and wry use it); two messages and a class lookup, no feature needed.
 objc2 = "0.6"
+# Item 448: the off-screen window's page capture hands WebKit a completion
+# block. Already in the lockfile (objc2-web-kit and wry use it).
+block2 = "0.6"
