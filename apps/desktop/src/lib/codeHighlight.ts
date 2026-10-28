@@ -14,16 +14,20 @@ import c from "highlight.js/lib/languages/c";
 import cpp from "highlight.js/lib/languages/cpp";
 import css from "highlight.js/lib/languages/css";
 import go from "highlight.js/lib/languages/go";
+import ini from "highlight.js/lib/languages/ini";
 import java from "highlight.js/lib/languages/java";
 import javascript from "highlight.js/lib/languages/javascript";
 import json from "highlight.js/lib/languages/json";
 import kotlin from "highlight.js/lib/languages/kotlin";
+import latex from "highlight.js/lib/languages/latex";
+import markdown from "highlight.js/lib/languages/markdown";
 import python from "highlight.js/lib/languages/python";
 import rust from "highlight.js/lib/languages/rust";
 import sql from "highlight.js/lib/languages/sql";
 import swift from "highlight.js/lib/languages/swift";
 import typescript from "highlight.js/lib/languages/typescript";
 import xml from "highlight.js/lib/languages/xml";
+import yaml from "highlight.js/lib/languages/yaml";
 import "./codeHighlight.css";
 
 /** The languages the box knows, in the label menu's order: the fence's
@@ -46,8 +50,15 @@ export const LANGUAGES: { id: string; label: string; hl: string }[] = [
   { id: "css", label: "CSS", hl: "css" },
 ];
 
+/** Languages a file tab colours that the chat's code boxes do not offer
+ *  (item 380): registered with highlight.js but kept out of `LANGUAGES`, so
+ *  the label menu, `languageOf` and `guessLanguage` are what they were.
+ *  `ini` also reads TOML. */
+const FILE_ONLY = { ini, latex, markdown, yaml };
+
 const DEFS: Record<string, Parameters<typeof hljs.registerLanguage>[1]> = {
   bash, c, cpp, css, go, java, javascript, json, kotlin, python, rust, sql, swift, typescript, xml,
+  ...FILE_ONLY,
 };
 for (const [name, def] of Object.entries(DEFS)) hljs.registerLanguage(name, def);
 
@@ -123,10 +134,14 @@ export function segments(code: string, info: string): Seg[] {
  *  cost ~70 ms in WebKit. ~500 lines of typical code are still coloured. */
 export const HIGHLIGHT_MAX_CHARS = 20_000;
 function segmentsUncached(code: string, info: string): Seg[] {
-  const lang = languageOf(info);
-  if (!lang || !code || code.length > HIGHLIGHT_MAX_CHARS) return code ? [{ text: code, cls: "" }] : [];
+  return highlightAs(code, languageOf(info)?.hl ?? null);
+}
+/** `code` in runs for highlight.js's language `hl`; one plain run when
+ *  `hl` is null or the code is past the cap. Joined, the runs are `code`. */
+function highlightAs(code: string, hl: string | null): Seg[] {
+  if (!hl || !code || code.length > HIGHLIGHT_MAX_CHARS) return code ? [{ text: code, cls: "" }] : [];
   try {
-    const segs = htmlToSegments(hljs.highlight(code, { language: lang.hl, ignoreIllegals: true }).value);
+    const segs = htmlToSegments(hljs.highlight(code, { language: hl, ignoreIllegals: true }).value);
     // A guard, not an expectation: never draw characters that are not his.
     if (segs.map((s) => s.text).join("") !== code) return [{ text: code, cls: "" }];
     return segs;
@@ -154,4 +169,45 @@ export function guessLanguage(code: string): { id: string; relevance: number } |
   if (!r.language) return null;
   const lang = LANGUAGES.find((l) => hljs.getLanguage(l.hl) === hljs.getLanguage(r.language!));
   return lang ? { id: lang.id, relevance: r.relevance } : null;
+}
+
+/** A file's extension (lower case) to highlight.js's language, for a file
+ *  tab (item 380). Every language the chat colours, plus LaTeX, YAML,
+ *  TOML/INI and Markdown. */
+const BY_EXTENSION: Record<string, string> = {
+  py: "python", pyw: "python", pyi: "python",
+  cpp: "cpp", cc: "cpp", cxx: "cpp", hpp: "cpp", hh: "cpp", hxx: "cpp",
+  c: "c", h: "c",
+  java: "java",
+  js: "javascript", jsx: "javascript", mjs: "javascript", cjs: "javascript",
+  ts: "typescript", tsx: "typescript", mts: "typescript", cts: "typescript",
+  rs: "rust",
+  go: "go",
+  swift: "swift",
+  kt: "kotlin", kts: "kotlin",
+  sh: "bash", bash: "bash", zsh: "bash",
+  sql: "sql",
+  json: "json", jsonc: "json", jsonl: "json",
+  html: "xml", htm: "xml", xml: "xml", svg: "xml", plist: "xml",
+  css: "css",
+  tex: "latex", sty: "latex", cls: "latex", ltx: "latex",
+  yaml: "yaml", yml: "yaml",
+  toml: "ini", ini: "ini", cfg: "ini",
+  md: "markdown", markdown: "markdown",
+};
+
+/** highlight.js's language for the file at `path`, by its extension; null
+ *  when it has none the tab colours. */
+export function languageForPath(path: string): string | null {
+  const name = path.split(/[\\/]/).pop() ?? "";
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0) return null;
+  return BY_EXTENSION[name.slice(dot + 1).toLowerCase()] ?? null;
+}
+
+/** A file's text in coloured runs for a file tab (item 380): by its
+ *  extension, one plain run past `HIGHLIGHT_MAX_CHARS`. Joined, the runs
+ *  are `text` exactly. */
+export function fileSegments(text: string, path: string): Seg[] {
+  return highlightAs(text, languageForPath(path));
 }

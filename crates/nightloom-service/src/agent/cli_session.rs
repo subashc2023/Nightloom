@@ -147,6 +147,7 @@ impl Line {
             || self.flag("isMeta")
             || self.flag("isCompactSummary")
             || self.is_notification()
+            || self.is_interrupt_marker()
         {
             return false;
         }
@@ -157,6 +158,20 @@ impl Line {
                 .any(|b| b.get("type").and_then(Value::as_str) == Some("tool_result")),
             _ => false,
         }
+    }
+    /// The line the CLI writes as a user node when a turn is stopped
+    /// (nightshift items 361 and 363, measured on 2.1.x in the STATS 67
+    /// chat aaec4e58, 2026-10-13): `[Request interrupted by user]`, or `…
+    /// for tool use`, as the whole content, with no `isMeta` or `origin`.
+    /// He never typed it. Counted as a prompt, it put every turn before a
+    /// Stop one further from the newest; and when a first message was
+    /// stopped before the CLI wrote it, the marker was the file's only
+    /// "prompt", so an edit of that message refused (363).
+    fn is_interrupt_marker(&self) -> bool {
+        matches!(
+            self.text().trim(),
+            "[Request interrupted by user]" | "[Request interrupted by user for tool use]"
+        )
     }
     /// A message the CLI wrote as a user node that he never typed
     /// (nightshift item 252): a background subagent's completion, which
@@ -483,48 +498,117 @@ impl CliSession {
     fn locate(&self, target: &Target) -> Result<Vec<usize>, CliSessionError> {
         match target {
             Target::User { from_last, text } => {
-                let i = self.prompt_from_last(*from_last)?;
-                // The caption is the first text block; a text attachment
-                // follows it as another (item 277), which the log keeps
-                // apart from the words — so either reading matches (item
-                // 340: a turn with a text file was refused every edit).
-                // A message sent while subagents ran carries Nightloom's
-                // relay note on the wire only (backlog 341): the log keeps
-                // his words, so the note is not part of the match.
-                let line = &self.lines[i];
-                let (full, caption) = (line.text(), line.caption());
+                let prompts = self.prompts();
                 let wanted = text.trim();
-                if without_relay_note(&full).trim() != wanted
-                    && without_relay_note(&caption).trim() != wanted
+                let expected = prompts.len() as isize - 1 - *from_last as isize;
+                if let Some(&i) = usize::try_from(expected).ok().and_then(|p| prompts.get(p))
+                    && self.prompt_reads(i, wanted)
                 {
-                    return Err(CliSessionError::Locate(
-                        "that turn reads differently in Claude Code's history than in this chat's log; nothing was changed".into(),
-                    ));
+                    return Ok(vec![i]);
                 }
-                Ok(vec![i])
+                // The count missed (nightshift item 356): the log and the
+                // file disagree on how many turns follow this one — a turn
+                // removed from the CLI's copy is still a live turn in the
+                // log, a message stopped before the CLI wrote it is in the
+                // log alone. So the prompt is found by its text — only
+                // when one turn in the whole file reads so (wave 8 review:
+                // ~~the one nearest the counted place~~ — with the count
+                // already off, "nearest" can be a repeated "continue" that
+                // is not the turn meant, and a wrong Remove loses context
+                // silently; a refusal changes nothing). The text check
+                // still guards the edit.
+                let reads: Vec<usize> = prompts
+                    .iter()
+                    .copied()
+                    .filter(|&i| self.prompt_reads(i, wanted))
+                    .collect();
+                match reads.as_slice() {
+                    [i] => Ok(vec![*i]),
+                    [_, _, ..] => Err(CliSessionError::Locate(
+                        "that turn's text is in Claude Code's history more than once, so which one is meant is unclear; nothing was changed".into(),
+                    )),
+                    // Counted past the file's first prompt: that refusal
+                    // says why (a turn run on the other engine).
+                    [] if expected < 0 => self.prompt_from_last(*from_last).map(|i| vec![i]),
+                    [] => Err(CliSessionError::Locate(
+                        "that turn reads differently in Claude Code's history than in this chat's log; nothing was changed".into(),
+                    )),
+                }
             }
             Target::Assistant { from_last, text } => {
-                let prompt = self.prompt_from_last(*from_last)?;
+                let prompts = self.prompts();
                 let wanted = text.trim();
-                let mut hits = self
-                    .replies_after(prompt)
-                    .into_iter()
-                    .filter(|g| self.group_text(g).trim() == wanted);
-                match (hits.next(), hits.next()) {
-                    (Some(g), None) => Ok(g),
-                    // Two replies in the turn read the same — in a long
-                    // agentic turn, typically two rounds with no text at
-                    // all (nightshift item 252). The first used to be
-                    // taken, which could be the wrong one.
-                    (Some(_), Some(_)) => Err(CliSessionError::Locate(
-                        "more than one reply in that turn reads the same in Claude Code's history, so which one is meant is unclear; nothing was changed".into(),
-                    )),
-                    (None, _) => Err(CliSessionError::Locate(
+                let expected = prompts.len() as isize - 1 - *from_last as isize;
+                let same = |g: &Vec<usize>| self.group_text(g).trim() == wanted;
+                if let Some(&prompt) = usize::try_from(expected).ok().and_then(|p| prompts.get(p)) {
+                    let mut hits = self.replies_after(prompt).into_iter().filter(same);
+                    match (hits.next(), hits.next()) {
+                        (Some(g), None) => return Ok(g),
+                        // Two replies in the turn read the same — in a long
+                        // agentic turn, typically two rounds with no text at
+                        // all (nightshift item 252). The first used to be
+                        // taken, which could be the wrong one.
+                        (Some(_), Some(_)) => {
+                            return Err(CliSessionError::Locate(
+                                "more than one reply in that turn reads the same in Claude Code's history, so which one is meant is unclear; nothing was changed".into(),
+                            ));
+                        }
+                        (None, _) => {}
+                    }
+                }
+                // Not under the counted turn (item 356, as for a prompt
+                // above): a reply with words is looked for in every turn,
+                // and taken only when exactly one reply in the file reads
+                // the same (wave 8 review: ~~the nearest turn~~ — see the
+                // prompt's case). A reply with no words is never matched
+                // this way — every wordless round would.
+                let not_found = || {
+                    CliSessionError::Locate(
                         "that reply is not in Claude Code's history as this chat's log has it; nothing was changed".into(),
-                    )),
+                    )
+                };
+                if wanted.is_empty() {
+                    return Err(not_found());
+                }
+                let mut found: Vec<Vec<usize>> = Vec::new();
+                for &prompt in &prompts {
+                    let hits: Vec<Vec<usize>> = self
+                        .replies_after(prompt)
+                        .into_iter()
+                        .filter(same)
+                        .collect();
+                    if hits.len() > 1 {
+                        return Err(CliSessionError::Locate(
+                            "more than one reply in that turn reads the same in Claude Code's history, so which one is meant is unclear; nothing was changed".into(),
+                        ));
+                    }
+                    found.extend(hits);
+                }
+                if found.len() > 1 {
+                    return Err(CliSessionError::Locate(
+                        "that reply's text is in Claude Code's history more than once, so which one is meant is unclear; nothing was changed".into(),
+                    ));
+                }
+                match found.pop() {
+                    Some(g) => Ok(g),
+                    None if expected < 0 => self.prompt_from_last(*from_last).map(|_| Vec::new()),
+                    None => Err(not_found()),
                 }
             }
         }
+    }
+
+    /// Whether the prompt at line `i` reads `wanted`. The caption is the
+    /// first text block; a text attachment follows it as another (item
+    /// 277), which the log keeps apart from the words — so either reading
+    /// matches (item 340: a turn with a text file was refused every edit).
+    /// A message sent while subagents ran carries Nightloom's relay note on
+    /// the wire only (backlog 341): the log keeps his words, so the note is
+    /// not part of the match.
+    fn prompt_reads(&self, i: usize, wanted: &str) -> bool {
+        let line = &self.lines[i];
+        let (full, caption) = (line.text(), line.caption());
+        without_relay_note(&full).trim() == wanted || without_relay_note(&caption).trim() == wanted
     }
 
     /// The text of a reply's nodes, joined — what [`locate`](Self::locate)
@@ -549,10 +633,18 @@ impl CliSession {
         let (Target::Assistant { from_last, text }, Block::ToolUse(id)) = (target, block) else {
             return self.locate(target);
         };
-        let prompt = self.prompt_from_last(*from_last)?;
-        let group = self
-            .replies_after(prompt)
+        // A call's id is unique to it, so the whole chain is searched when
+        // the counted turn does not hold it (nightshift item 356: the count
+        // drifts once a turn is removed from the CLI's copy).
+        let prompts = self.prompts();
+        let counted = prompts
+            .len()
+            .checked_sub(1 + *from_last)
+            .map(|p| prompts[p]);
+        let group = counted
             .into_iter()
+            .chain(prompts.iter().copied())
+            .flat_map(|prompt| self.replies_after(prompt))
             .find(|g| g.iter().any(|&i| self.is_call(i, id)))
             .ok_or_else(|| {
                 CliSessionError::Locate(
@@ -915,25 +1007,38 @@ impl CliSession {
     /// text (two identical messages both happened that day). Turns before
     /// it that the file lacks were never recorded, and need no cut.
     ///
-    /// None of `turns` in the file: the CLI recorded none of them, which
+    /// ~~None of `turns` in the file: the CLI recorded none of them, which
     /// is safe to leave as it is only when the file ends at `before` —
     /// then the copy is unchanged. Otherwise, and when the file has fewer
-    /// prompts of that text than the log from here on, it refuses: a copy
-    /// cut at the wrong turn is worse than a refusal. `Ok(None)` as for
-    /// [`Self::truncate`], when the cut leaves no turn.
+    /// prompts of that text than the log from here on, it refuses~~
+    /// (2026-10-13, nightshift item 363: an edit of a chat's first message,
+    /// stopped before the CLI wrote it, refused). None of `turns` in the
+    /// file: the CLI recorded none of them, so nothing in it is being
+    /// rewound. With no `before` the cut is at the log's first turn and
+    /// nothing precedes it: `Ok(None)`, a fresh CLI conversation, whatever
+    /// the file holds (the CLI's own stop marker, attachments). With a
+    /// `before`, the copy keeps the file through `before`'s turn — cut at
+    /// the prompt after it, if any — and the file whole when `before` is
+    /// not in it either (blocker 1434). A turn the file has fewer times
+    /// than the log from here on still refuses: a copy cut at the wrong
+    /// turn is worse than a refusal. `Ok(None)` as for
+    /// [`Self::truncate`], when the cut leaves no turn. Prompts match as
+    /// [`Self::locate`]'s do: the caption or the whole text, the relay
+    /// note aside.
     pub fn truncate_by_text(
         &self,
         turns: &[String],
         before: Option<&str>,
     ) -> Result<Option<Self>, CliSessionError> {
         let prompts = self.prompts();
-        let texts: Vec<String> = prompts
-            .iter()
-            .map(|&i| self.lines[i].text().trim().to_string())
-            .collect();
+        let reading = |turn: &str| -> Vec<usize> {
+            (0..prompts.len())
+                .filter(|&p| self.prompt_reads(prompts[p], turn))
+                .collect()
+        };
         for (k, turn) in turns.iter().enumerate() {
             let turn = turn.trim();
-            let matches: Vec<usize> = (0..texts.len()).filter(|&p| texts[p] == turn).collect();
+            let matches = reading(turn);
             if matches.is_empty() {
                 continue;
             }
@@ -951,15 +1056,19 @@ impl CliSession {
             }
             return Ok(Some(self.cut_before(prompts[p])));
         }
-        match (texts.last(), before) {
-            (None, _) => Ok(None),
-            (Some(last), Some(b)) if last == b.trim() => Ok(Some(Self {
+        let whole = || {
+            Some(Self {
                 lines: self.lines.clone(),
                 id: self.id.clone(),
-            })),
-            _ => Err(CliSessionError::Locate(
-                "none of the turns being rewound is in Claude Code's history, and its history does not end at the turn before them; nothing was changed".into(),
-            )),
+            })
+        };
+        match before {
+            None => Ok(None),
+            Some(_) if prompts.is_empty() => Ok(None),
+            Some(b) => match reading(b.trim()).last() {
+                Some(&p) if p + 1 < prompts.len() => Ok(Some(self.cut_before(prompts[p + 1]))),
+                _ => Ok(whole()),
+            },
         }
     }
 
@@ -1161,9 +1270,142 @@ pub fn write_copy(original: &Path, edited: &CliSession) -> Result<String, CliSes
     Ok(id)
 }
 
+/// One image a tool returned (nightshift backlog 434): a browser
+/// screenshot, a zoom, a `Read` of a picture. The stream's translator
+/// flattens a structured result to text and names an image `[image]`
+/// (`translate::flatten`), and the recorder keeps that text, so the bytes
+/// live in one place only — the CLI's own session file — and are read from
+/// there when the transcript draws the call, live or reopened.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ToolImage {
+    pub media_type: String,
+    /// Base64, as the CLI wrote it.
+    pub data: String,
+}
+
+/// A result's images, and how many were left out by the caps below.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct ToolResultImages {
+    pub images: Vec<ToolImage>,
+    pub skipped: usize,
+}
+
+/// The largest image handed to the window, in base64 characters (~6 MB of
+/// image). The API's own cap is 5 MB per image, so a real screenshot is
+/// always under it; this is the backstop for a file somebody hand-edited.
+pub const TOOL_IMAGE_MAX_CHARS: usize = 8 * 1024 * 1024;
+/// The most images drawn for one result; a batch that returns more says so.
+pub const TOOL_IMAGES_PER_RESULT: usize = 8;
+
+/// The images of the `tool_result` blocks for `ids` in a CLI session file's
+/// text: only base64 sources (a URL source would be a fetch, and nothing
+/// here fetches), at most [`TOOL_IMAGES_PER_RESULT`] per result, each at
+/// most [`TOOL_IMAGE_MAX_CHARS`]. An id with no image is absent. A result
+/// the CLI wrote twice (a resumed or copied session) keeps its first.
+pub fn tool_result_images(
+    text: &str,
+    ids: &[String],
+) -> std::collections::HashMap<String, ToolResultImages> {
+    let mut out = std::collections::HashMap::new();
+    for line in text.lines() {
+        // Cheap filters first: most lines carry neither.
+        if !line.contains("\"tool_result\"") || !line.contains("\"image\"") {
+            continue;
+        }
+        if !ids.iter().any(|id| line.contains(id.as_str())) {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(blocks) = v["message"]["content"].as_array() else {
+            continue;
+        };
+        for b in blocks {
+            if b["type"] != "tool_result" {
+                continue;
+            }
+            let Some(id) = b["tool_use_id"].as_str() else {
+                continue;
+            };
+            if !ids.iter().any(|x| x == id) || out.contains_key(id) {
+                continue;
+            }
+            let Some(parts) = b["content"].as_array() else {
+                continue;
+            };
+            let mut found = ToolResultImages::default();
+            for p in parts {
+                if p["type"] != "image" {
+                    continue;
+                }
+                let src = &p["source"];
+                let (Some("base64"), Some(media), Some(data)) = (
+                    src["type"].as_str(),
+                    src["media_type"].as_str(),
+                    src["data"].as_str(),
+                ) else {
+                    found.skipped += 1;
+                    continue;
+                };
+                if !media.starts_with("image/")
+                    || data.len() > TOOL_IMAGE_MAX_CHARS
+                    || found.images.len() >= TOOL_IMAGES_PER_RESULT
+                {
+                    found.skipped += 1;
+                    continue;
+                }
+                found.images.push(ToolImage {
+                    media_type: media.to_string(),
+                    data: data.to_string(),
+                });
+            }
+            if !found.images.is_empty() || found.skipped > 0 {
+                out.insert(id.to_string(), found);
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Backlog 434: a browser screenshot's result line, in the shape the
+    /// CLI writes (`message.content[].tool_result.content[]`, a base64
+    /// image source), dummy bytes; a text-only result and an unasked id
+    /// yield nothing, a URL source and an over-cap image count as skipped.
+    #[test]
+    fn tool_result_images_reads_base64_images_by_id() {
+        let shot = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_SHOT","content":[{"type":"text","text":"Took a screenshot"},{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"AAAA"}}]}]}}"#;
+        let url = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_URL","content":[{"type":"image","source":{"type":"url","url":"https://example.com/x.png"}}]}]}}"#;
+        let text_only = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_TXT","content":"no \"image\" here"}]}}"#;
+        let other = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_OTHER","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"BBBB"}}]}]}}"#;
+        let big = format!(
+            r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"toolu_BIG","content":[{{"type":"image","source":{{"type":"base64","media_type":"image/png","data":"{}"}}}}]}}]}}}}"#,
+            "A".repeat(TOOL_IMAGE_MAX_CHARS + 1)
+        );
+        let file = [shot, url, text_only, other, big.as_str()].join("\n");
+        let ids: Vec<String> = ["toolu_SHOT", "toolu_URL", "toolu_TXT", "toolu_BIG"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let got = tool_result_images(&file, &ids);
+        assert_eq!(
+            got["toolu_SHOT"].images,
+            vec![ToolImage {
+                media_type: "image/jpeg".into(),
+                data: "AAAA".into()
+            }]
+        );
+        assert_eq!(got["toolu_SHOT"].skipped, 0);
+        assert_eq!(got["toolu_URL"].images.len(), 0);
+        assert_eq!(got["toolu_URL"].skipped, 1);
+        assert_eq!(got["toolu_BIG"].skipped, 1);
+        assert!(!got.contains_key("toolu_TXT"));
+        assert!(!got.contains_key("toolu_OTHER"));
+    }
 
     /// A session file built from the *shape* measured on 2.1.263 — the
     /// node types, the fields, the chaining, the bookkeeping lines — with
@@ -1585,6 +1827,145 @@ mod tests {
         assert_eq!(a4["parentUuid"], "s2");
     }
 
+    /// Item 356, his report: Remove did nothing on a Claude Code chat and
+    /// a toast spoke of Claude Code's history. A turn removed from the
+    /// CLI's copy is gone from the file but still a live turn in the log,
+    /// so the log's count from the newest ran one past the file for every
+    /// turn before it, and each later Remove or Edit was refused.
+    #[test]
+    fn a_second_removal_finds_its_turn_after_the_first_dropped_a_prompt() {
+        let s = CliSession::parse(&fixture()).unwrap();
+        let copy = s
+            .remove(&Target::User {
+                from_last: 0,
+                text: "second".into(),
+            })
+            .unwrap();
+        assert_eq!(copy.prompt_count(), 1);
+        // The log still counts "second" after "first": from_last 1.
+        let out = copy
+            .remove(&Target::Assistant {
+                from_last: 1,
+                text: "one".into(),
+            })
+            .unwrap()
+            .render_as("n");
+        assert!(
+            parsed(&out).iter().all(|o| o["uuid"] != "s2"),
+            "the reply went"
+        );
+        let out = copy
+            .remove(&Target::User {
+                from_last: 1,
+                text: "first".into(),
+            })
+            .unwrap()
+            .render_as("n");
+        assert!(parsed(&out).iter().all(|o| o["uuid"] != "u1"));
+    }
+
+    /// The other drift (backlog 255's): a message stopped before the CLI
+    /// wrote it is a turn in the log alone, so every turn before it was
+    /// counted one too far back.
+    #[test]
+    fn a_turn_the_cli_never_recorded_does_not_misplace_an_edit() {
+        let s = CliSession::parse(&fixture()).unwrap();
+        // The log: first, second, stopped — "second" is 1 from the newest.
+        let out = s
+            .rewrite(
+                &Target::User {
+                    from_last: 1,
+                    text: "second".into(),
+                },
+                "second, reworded",
+            )
+            .unwrap()
+            .render_as("n");
+        let u2 = parsed(&out)
+            .into_iter()
+            .find(|o| o["uuid"] == "u2")
+            .unwrap();
+        assert_eq!(u2["message"]["content"], "second, reworded");
+        let out = s
+            .remove(&Target::Assistant {
+                from_last: 1,
+                text: "two".into(),
+            })
+            .unwrap()
+            .render_as("n");
+        assert!(parsed(&out).iter().all(|o| o["uuid"] != "s6"));
+        let out = s
+            .remove_block(
+                &Target::Assistant {
+                    from_last: 1,
+                    text: "let me look".into(),
+                },
+                &Block::ToolUse("toolu_1".into()),
+            )
+            .unwrap()
+            .render_as("n");
+        assert!(parsed(&out).iter().all(|o| o["uuid"] != "s5"));
+        // A text in neither place is still refused, and a wordless reply
+        // is never matched outside its counted turn.
+        assert!(
+            s.remove(&Target::Assistant {
+                from_last: 1,
+                text: "never said".into(),
+            })
+            .is_err()
+        );
+        assert!(
+            s.remove(&Target::Assistant {
+                from_last: 1,
+                text: String::new(),
+            })
+            .is_err()
+        );
+    }
+
+    /// Wave 8 review: once the count has drifted, a text that more than
+    /// one turn reads is refused, never guessed — the turn nearest the
+    /// counted place can be a repeated prompt that is not the one meant.
+    #[test]
+    fn a_drifted_count_refuses_a_text_two_turns_read() {
+        let s = CliSession::parse(&fixture()).unwrap();
+        // Both prompts reworded to the same text: "same" twice.
+        let s = s
+            .rewrite(
+                &Target::User {
+                    from_last: 1,
+                    text: "first".into(),
+                },
+                "same",
+            )
+            .unwrap()
+            .rewrite(
+                &Target::User {
+                    from_last: 0,
+                    text: "second".into(),
+                },
+                "same",
+            )
+            .unwrap();
+        // Counted exactly, the turn is taken as before.
+        assert!(
+            s.remove(&Target::User {
+                from_last: 0,
+                text: "same".into(),
+            })
+            .is_ok()
+        );
+        // Counted one too far back (2 from the newest: before the file's
+        // first), the text alone cannot tell the two apart: refused.
+        let err = s
+            .remove(&Target::User {
+                from_last: 2,
+                text: "same".into(),
+            })
+            .unwrap_err();
+        assert!(err.to_string().contains("more than once"), "{err}");
+    }
+
     /// The main chain as uuids, with each node's message — what `--resume`
     /// reads; line order and bookkeeping are not part of it.
     fn shape(s: &CliSession) -> Vec<(String, Option<String>, Value)> {
@@ -1976,12 +2357,73 @@ mod tests {
                 .is_none()
         );
 
-        // None of the turns in the file, and the file does not end at the
-        // turn before them: refuse rather than guess.
-        let err = s
+        // ~~None of the turns in the file, and the file does not end at the
+        // turn before them: refuse rather than guess.~~ (2026-10-13, item
+        // 363) Nothing in the file is being rewound, so the copy keeps it
+        // through the turn before them: cut at the prompt after "first".
+        let out = s
             .truncate_by_text(&t(&["stopped"]), Some("first"))
-            .unwrap_err();
-        assert!(err.to_string().contains("nothing was changed"), "{err}");
+            .unwrap()
+            .unwrap();
+        assert_eq!(uuids(&out.render_as("n")), by_count);
+        // And whole when the turn before is not in it either.
+        let out = s
+            .truncate_by_text(&t(&["stopped"]), Some("never sent here"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(uuids(&out.render_as("n")), uuids(&fixture()));
+    }
+
+    /// Item 363, his chat by shape: the first prompt was stopped before the
+    /// CLI wrote it, leaving its attachments and the CLI's own
+    /// `[Request interrupted by user]` line. Editing that first message
+    /// (no turn before it) refused; it now starts fresh.
+    #[test]
+    fn rewinding_a_first_message_the_cli_never_wrote_starts_fresh() {
+        let lines = [
+            attachment("a1", "a0", "environment").replace(r#""parentUuid":"a0""#, r#""parentUuid":null"#),
+            attachment("a2", "a1", "instructions"),
+            user("i1", Some("a2"), json!([{"type": "text", "text": "[Request interrupted by user]"}])),
+            json!({"type": "last-prompt", "lastPrompt": "Lecture 4 & 5", "leafUuid": "i1", "sessionId": SID}).to_string(),
+        ];
+        let s = CliSession::parse(&(lines.join("\n") + "\n")).unwrap();
+        assert_eq!(
+            s.prompt_count(),
+            0,
+            "the stop marker is not a prompt he typed"
+        );
+        let t = vec!["Lecture 4 & 5".to_string()];
+        assert!(s.truncate_by_text(&t, None).unwrap().is_none());
+        // A first message the file does have, and anything else in it: the
+        // cut at the log's first turn leaves nothing before it either.
+        let f = CliSession::parse(&fixture()).unwrap();
+        assert!(f.truncate_by_text(&t, None).unwrap().is_none());
+    }
+
+    /// Item 361's patch note: a Stop mid-conversation leaves the CLI's
+    /// marker after his prompt; counted as a prompt, it put every turn
+    /// before the Stop one further from the newest.
+    #[test]
+    fn a_stop_marker_does_not_count_as_a_turn() {
+        // A third prompt, stopped: the CLI writes its marker under it.
+        let text = fixture()
+            + &user("u3", Some("s6"), json!("third"))
+            + "\n"
+            + &user(
+                "x1",
+                Some("u3"),
+                json!([{"type": "text", "text": "[Request interrupted by user]"}]),
+            )
+            + "\n";
+        let s = CliSession::parse(&text).unwrap();
+        assert_eq!(s.prompt_count(), 3, "first, second, third; not the marker");
+        // "first" is two before the newest, and the count alone finds it.
+        let first = Target::User {
+            from_last: 2,
+            text: "first".into(),
+        };
+        assert_eq!(s.prompts()[0], s.prompt_from_last(2).unwrap());
+        assert!(s.rewrite(&first, "first, again").is_ok());
     }
 
     /// Backlog 255: two prompts reading the same are told apart by how

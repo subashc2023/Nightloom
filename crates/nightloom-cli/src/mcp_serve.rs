@@ -23,6 +23,10 @@ pub struct McpServeArgs {
     /// chat, which must not be able to write to memory (2026-09-15).
     #[arg(long)]
     no_remember: bool,
+    /// Serve an incognito chat (nightshift backlog 405): none of the tools
+    /// that read his chats, memory or Notion; implies `--no-remember`.
+    #[arg(long)]
+    incognito: bool,
     /// A dream's server (2026-09-16): the JSON `dream::run_on_agent` builds,
     /// and `propose_instructions` is the one tool served. Needs no config
     /// dir.
@@ -50,10 +54,13 @@ pub async fn run(args: McpServeArgs) -> Result<()> {
         Some(dream) => mcp_server::ServeArgs::for_dream(dream),
         None => mcp_server::ServeArgs {
             project: args.project,
-            remember: !args.no_remember,
+            remember: !args.no_remember && !args.incognito,
             dream: None,
             ask: args.ask,
             root: None,
+            incognito: args.incognito,
+            preview: None,
+            preview_chat: None,
         },
     };
     mcp_server::serve_stdio(config, serve_args)

@@ -132,6 +132,35 @@ pub enum TurnEvent {
     StillRunning {
         tasks: Vec<String>,
     },
+    /// Nightloom woke an idle main thread (nightshift backlog 406): a
+    /// subagent finished and its report never reached the main agent —
+    /// CLI 2.1.309 sends no hand-back for an agent resumed by a message
+    /// it took mid-run, and starts no turn for its notification. `text` is
+    /// the Nightloom-authored line written to the chat (not his words);
+    /// `agents` the descriptions it named. Claude Code engine only.
+    Woke {
+        text: String,
+        agents: Vec<String>,
+    },
+    /// The Claude Code CLI is retrying a failed API call (nightshift items
+    /// 440 + 441, 2026-10-27): its `system/api_retry` line, one per try.
+    /// Live only — a shell keeps **one** status line for the turn and
+    /// updates it in place ("Can't reach Claude — retrying (2/10)"); it is
+    /// not a notice, so a stalled turn does not end in a stack of toasts.
+    /// `error` is the CLI's category (`overloaded`, `rate_limit`,
+    /// `authentication_failed`, `server_error`, `cloud_credential_error`,
+    /// or `unknown` — what a failed connection, with no HTTP status, is
+    /// called); `status` the HTTP status when one came back; `delay_ms`
+    /// the wait before the next try; `waited_ms` set when the call timed
+    /// out with no response at all. Claude Code engine only.
+    Retry {
+        attempt: u32,
+        max_retries: u32,
+        error: Option<String>,
+        status: Option<u16>,
+        delay_ms: Option<u64>,
+        waited_ms: Option<u64>,
+    },
     /// An event of a subagent's own turn — one the Claude Code CLI spawned
     /// through its `Agent` tool — carrying the id of the call that spawned
     /// it (2026-09-16, nightshift backlog 075; `--forward-subagent-text`).
@@ -513,6 +542,20 @@ impl Chat {
         let outcome = self
             .turn_rounds(session, input, spoken, cancel, on_event)
             .await;
+        // Stopped or failed before a word (backlog 361, as the agent
+        // engine's): the log says so, rather than leave his message with
+        // nothing under it.
+        match &outcome {
+            Ok(o) if o.interrupted => {
+                crate::agent_turn::record_unanswered(session, self.model.clone(), None)
+            }
+            Err(e) => crate::agent_turn::record_unanswered(
+                session,
+                self.model.clone(),
+                Some(&e.to_string()),
+            ),
+            Ok(_) => {}
+        }
         // The request is taken either way: a compaction the model asked for
         // during a turn that then failed is stale, and leaving the flag up
         // would fire it at the end of the *next* turn instead.
@@ -1375,6 +1418,23 @@ pub(crate) mod tests {
         }
     }
 
+    /// A provider that cannot be reached (backlog 361): the request fails
+    /// before a single event.
+    struct Unreachable;
+
+    #[async_trait::async_trait]
+    impl Provider for Unreachable {
+        fn name(&self) -> &'static str {
+            "unreachable"
+        }
+
+        async fn stream_chat(&self, _: ChatRequest) -> Result<EventStream, ProviderError> {
+            Err(ProviderError::Transport(
+                "can't reach the API server".into(),
+            ))
+        }
+    }
+
     struct Echo;
 
     #[async_trait::async_trait]
@@ -1952,6 +2012,52 @@ pub(crate) mod tests {
         assert!(matches!(
             session.events().last(),
             Some(SessionEvent::AssistantMessage { stop_reason: Some(r), .. }) if r == "error"
+        ));
+    }
+
+    /// Backlog 361: a turn that fails before any text leaves a reply that
+    /// says so, not his message with nothing under it.
+    #[tokio::test]
+    async fn a_turn_that_fails_before_any_text_leaves_a_reply_that_says_so() {
+        let chat = Chat::new(Box::new(Unreachable), "test-model");
+        let mut session = Session::new();
+        let (out, _) = run(&chat, &mut session, "hi").await;
+        assert!(matches!(out, Err(ProviderError::Transport(_))));
+        let Some(SessionEvent::AssistantMessage {
+            blocks,
+            stop_reason: Some(r),
+            usage,
+            ..
+        }) = session.events().last()
+        else {
+            panic!("a reply under his message: {:?}", session.events().last())
+        };
+        assert!(r.starts_with("error: "), "{r}");
+        assert!(r.contains("can't reach"), "{r}");
+        assert!(
+            matches!(&blocks[..], [ContentBlock::Text { text }] if text.starts_with("No reply: "))
+        );
+        assert_eq!(usage.input_tokens + usage.output_tokens, 0);
+    }
+
+    /// Backlog 361: stopped before any text, the same, as `stopped`.
+    #[tokio::test]
+    async fn a_turn_stopped_before_any_text_leaves_a_reply_that_says_so() {
+        let chat = Chat::new(Scripted::provider(vec![]), "test-model");
+        let mut session = Session::new();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let out = chat
+            .run_turn(&mut session, "hi", &cancel, &mut |_| {})
+            .await
+            .unwrap();
+        assert!(out.interrupted);
+        assert!(matches!(
+            session.events().last(),
+            Some(SessionEvent::AssistantMessage { stop_reason: Some(r), blocks, .. })
+                if r == "stopped"
+                    && matches!(&blocks[..], [ContentBlock::Text { text }]
+                        if text == crate::agent_turn::STOPPED_BEFORE_REPLY)
         ));
     }
 

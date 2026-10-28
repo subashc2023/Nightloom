@@ -6,6 +6,7 @@ import {
   firstMessage,
   handoff,
   noteAgentTurnEnd,
+  noteRewound,
   noteThread,
   noteThreadFlags,
   readOrder,
@@ -18,12 +19,20 @@ import { replaceStartHere, threadOfEvents } from "./thread";
 import type { AsideFold, FoldRecord } from "./asideFold";
 import { suggestions } from "./suggestions.svelte";
 import { isMac } from "./platform";
+import { stopChordTarget } from "./stopButton";
+import { hasUsage } from "./replyFooter";
 import {
   UNFILED,
   draftKey,
   enqueueMessage,
   clearInjected,
   markDelivered,
+  moveQueue,
+  queueAfterTurn,
+  ranKey,
+  shiftQueue,
+  requeueFront,
+  type QueuedMessage,
   markInjected,
   markSendNow,
   settleInjected,
@@ -37,6 +46,7 @@ import {
   hasDraft,
   discardDraft,
 } from "./drafts.svelte";
+import { aimOf, indexOfAim, type Aim } from "./aim";
 import { requestComposerFocus, rewoundMessage, swapIn, untouched, type BoxSwap } from "./rewindDraft.svelte";
 import {
   CURATED,
@@ -86,7 +96,8 @@ import { runLaunch } from "./launch.svelte";
 import { withProject, withoutProject } from "./projectRows";
 import { EDITABLE_LAYERS } from "./types";
 import { LIST_SCOPE, NEW_CHAT_SCOPE, UndoHistory } from "./undo";
-import { chatName, notifyNeedsYou, notifyTurnEnd } from "./notify";
+import { chatName, notifyNeedsYou, notifyTurnEnd, postHeldNeedsYou } from "./notify";
+import { onAway, watchPresence } from "./away.svelte";
 import { RESUME_TEXT, SleepWatch, loadSleepPrefs, pushPowerPrefs, type Woke } from "./sleep";
 import { asideFollowUp, asideQuestion, type AsideQuote } from "./asideQuote";
 import type { AsideAnchor } from "./asideCard";
@@ -112,18 +123,33 @@ import {
 } from "./browse";
 import { SEARCH_COLUMN_MAX, searchGrowth } from "./search.svelte";
 import * as tabs from "./tabs";
-import { midTurnWire, chipsFromInputs, sendNowToast, type SendNowResult } from "./midTurn";
+import { midTurnWire, chipsFromInputs, sendNowToast, deliveredNotice, type SendNowResult } from "./midTurn";
 import { recordRelay } from "./relay.svelte";
 import { adoptPending, closeRunningRows, latestAgents, mergeRows, rowsFromLog, rowsOf } from "./subagentRows";
+import { lineText, lineView, matchTasks, type StillRunningSegment } from "./stillRunning";
+import { applyRetry, clearRetry, markRetryStopping, turnNotices, type RetrySegment } from "./retryLine";
 import { cli, startCliClock } from "./cliUpdate.svelte";
+import { probeAuth } from "./claudeAuth.svelte";
 import { chatIsCold, loadLayerPrefs, reconnectBeforeTurn, saveLayerPrefs } from "./promptVersions";
 import { CONNECT_DEADLINE_MS, withDeadline } from "./deadline";
 import { rewoundWrites, setAsideFiles } from "./rewoundFiles";
 import type { TabContent, Workspace } from "./tabs";
-import { UNFILED_TABS, loadSavedWorkspaces, rebuild, saveWorkspaceFor, snapshot } from "./tabsStore";
+import {
+  UNFILED_TABS,
+  carryTabsTo,
+  emptyNewProjectDraft,
+  loadNewProject,
+  loadSavedWorkspaces,
+  rebuild,
+  saveNewProject,
+  saveWorkspaceFor,
+  snapshot,
+  type SavedNewProject,
+} from "./tabsStore";
 import { turnClock } from "./turnTiming";
 import { FirstSeen, doingOf, quoteLine, sortRuns, type RunEntry, type RunKind } from "./running";
 import { rememberScroll } from "./scroll.svelte";
+import { stepFocusedField } from "./fieldUndo";
 import {
   DEFAULT_USAGE_LIMITS,
   deferredRecheckAt,
@@ -419,7 +445,33 @@ export function toggleSidebar(): void {
  *  so the column no longer jumps; the saved width is untouched. */
 export const SEARCH_COLUMN = SEARCH_COLUMN_MAX;
 export function sidebarColumn(): number {
-  return app.layout.sidebarWidth + Math.round(searchGrowth.current);
+  return sidebarShown() + Math.round(searchGrowth.current);
+}
+
+/**
+ * The most of the window the sidebar may take (nightshift item 360, the
+ * zoom audit). Its width is CSS px, so ⌘+ (page zoom) grows it with
+ * everything else while the window's CSS width shrinks: at the narrowest
+ * window (700 points) and 125 % the 260 px sidebar took 46 % of a 560 px
+ * page, and the chat was left 300 px — the top bar on two rows, the
+ * approval card scrolling sideways, the welcome composer's Send cut off.
+ * Past this share the sidebar is drawn narrower (never under its minimum);
+ * the saved width is untouched and comes back as the window widens.
+ */
+export const SIDEBAR_SHARE = 0.34;
+export function fitSidebar(saved: number, viewport: number): number {
+  return Math.round(Math.max(SIDEBAR_MIN, Math.min(saved, viewport * SIDEBAR_SHARE)));
+}
+/** The window's CSS width — what `innerWidth` reads, page zoom included. */
+const viewport = $state({ w: typeof window === "undefined" ? 1440 : window.innerWidth });
+if (typeof window !== "undefined") {
+  window.addEventListener("resize", () => {
+    viewport.w = window.innerWidth;
+  });
+}
+/** The sidebar's drawn width: the saved one, fitted to the window. */
+export function sidebarShown(): number {
+  return fitSidebar(app.layout.sidebarWidth, viewport.w);
 }
 
 export function setSidebarWidth(px: number): void {
@@ -536,7 +588,13 @@ export type Segment =
    *  click away and Restore beside it. Never in a live message. */
   | { kind: "removed_text"; block: number; text: string }
   | { kind: "removed_tool"; block: number; call: ToolCallView }
-  | { kind: "notice"; text: string };
+  | { kind: "notice"; text: string }
+  /** The reply ended with subagents still running (backlog 357): a status
+   *  line with Stop and the agents' names, read live (`stillRunning.ts`). */
+  | StillRunningSegment
+  /** The CLI retrying a failed call (items 440 + 441): one line, updated
+   *  in place, gone at the first word; live only (`retryLine.ts`). */
+  | RetrySegment;
 
 export interface Connection {
   provider: string;
@@ -608,6 +666,19 @@ export interface AsideTurn {
   /** Clock when it was asked (backlog 309): the running list's elapsed.
    *  In memory only; a stored turn is never running. */
   startedAt?: number;
+  /** The turn as the chat's live reply holds it (item 403): its thinking,
+   *  calls and text in order, built by the chat's own `applyToSegments`
+   *  from `aside-delta` and `aside-turn-event`, so `AssistantMessage`
+   *  draws an aside's turn as it draws the chat's — the thinking block's
+   *  arrival, the activity rows, the working moon. In memory only; a
+   *  stored turn is its text (`partial`). */
+  segments?: Segment[];
+  /** Where it stands before it runs (item 404): `queued` while the
+   *  chat's own turn holds the agent, `running` once the aside has it. */
+  phase?: "queued" | "running";
+  /** When anything of it last arrived (item 404): the stalled notice
+   *  counts from here (`asideWait`). */
+  heardAt?: number;
 }
 
 /** The open chat's aside (backlog 081, the passage form backlog 107) — see
@@ -669,6 +740,18 @@ export function asideAsking(a: Aside | null): AsideTurn | null {
   return t && t.answer === null && t.error === null && !t.cancelled ? t : null;
 }
 
+/** The New project form as the last window left it (backlog 394): its
+ *  draft, whether its tab was open, and whether it was in front. */
+function loadNewProjectNow(): SavedNewProject {
+  try {
+    if (typeof localStorage !== "undefined") return loadNewProject(localStorage);
+  } catch {
+    // A malformed store costs the draft, not the launch.
+  }
+  return { open: false, front: false, draft: emptyNewProjectDraft() };
+}
+const newProjectAtLaunch = loadNewProjectNow();
+
 export const app = $state({
   providers: [] as ProviderInfo[],
   /** Web-search backends and which one has a key (settings modal edits this). */
@@ -706,12 +789,24 @@ export const app = $state({
    * instructions and a picked folder still there. Cleared by Create and by
    * an explicit Discard, nothing else.
    */
-  newProjectDraft: { name: "", instructions: "", pickedPath: null } as {
+  newProjectDraft: newProjectAtLaunch.draft as {
     name: string;
     instructions: string;
     /** A folder chosen through Change…; null means `<projects folder>/<slug>`. */
     pickedPath: string | null;
+    /** Backlog 432: `false` when "Use my practices" is unticked; absent
+     *  means ticked. */
+    claudeMd?: boolean;
   },
+  /**
+   * Whether the New project tab is open (nightshift backlog 394): from the
+   * form's opening until Create, Cancel (or Esc, or ← Chat), Discard or
+   * its ×. The tab is the whole workspace's, not a project's: while this
+   * is set, every project switch and restore puts it back first in the
+   * focused pane (`restoreTabs`). Kept across a relaunch with the draft
+   * (`nightloom.newProject`, written by `tabsKeeper.svelte.ts`).
+   */
+  newProjectOpen: newProjectAtLaunch.open,
   /**
    * What the centre pane shows. "note" is the note editor and "graph" the
    * vault's link graph, both of which replace the transcript rather than
@@ -1322,6 +1417,13 @@ export function runMenuCommand(id: string): void {
     case "engine":
       void toggleEngine();
       break;
+    // ⌘. (item 398, blocker 1506): the composer's Stop, by key. An aside
+    // box with the keyboard takes it first (Composer's interceptor); here
+    // it is the chat's turn, and nothing when none runs — the same
+    // `app.busy` that puts the Stop on screen.
+    case "stop_turn":
+      if (stopChordTarget({ asideFocused: false, asideBusy: false, turnBusy: app.busy }) === "turn") void cancelTurn();
+      break;
     case "model_sonnet":
     case "model_opus":
     case "model_fable":
@@ -1331,13 +1433,19 @@ export function runMenuCommand(id: string): void {
     // The Edit menu's Undo and Redo, ours since nightshift backlog 064: in
     // a text box the key is the box's — the webview's own command keeps
     // the typing history — and anywhere else it is the app's stack.
+    // Item 421: a plain field or a CodeMirror editor steps its OWN history
+    // (`fieldUndo.ts`) — WebKit's `execCommand` stack is the whole page's,
+    // so ⌘Z in the Find bar undid the message box. The message box and the
+    // edit box took the command above (their interceptors).
     case "undo_app":
-      if (inTextField()) document.execCommand("undo");
-      else void undo();
+      if (inTextField()) {
+        if (!stepFocusedField("undo")) document.execCommand("undo");
+      } else void undo();
       break;
     case "redo_app":
-      if (inTextField()) document.execCommand("redo");
-      else void redo();
+      if (inTextField()) {
+        if (!stepFocusedField("redo")) document.execCommand("redo");
+      } else void redo();
       break;
     // ⌘F (nightshift backlog 287): since web tabs pass 2 (backlog 172) the
     // Edit menu's Find… holds ⌘F, so on macOS the key never reaches the
@@ -1484,7 +1592,18 @@ export async function init(): Promise<void> {
   // exchange (its `seq` differs) is dropped.
   await listen<AsideDelta>("aside-delta", (e) => {
     const t = findAsideTurn(e.payload.seq);
-    if (t && t.answer === null && !t.cancelled) t.partial += e.payload.text;
+    if (t) asideTurnEvent(t, { type: "text_delta", text: e.payload.text });
+  });
+  // The rest of an aside's turn (item 403): its thinking and calls, into
+  // the same segments the chat's live reply is made of.
+  await listen<{ seq: number; event: TurnEvent }>("aside-turn-event", (e) => {
+    const t = findAsideTurn(e.payload.seq);
+    if (t) asideTurnEvent(t, e.payload.event);
+  });
+  // Queued behind the chat's own turn, or running (item 404).
+  await listen<{ seq: number; phase: "queued" | "running" }>("aside-phase", (e) => {
+    const t = findAsideTurn(e.payload.seq);
+    if (t) asidePhase(t, e.payload.phase);
   });
   await listen<string>("turn-notice", (e) => addToast(e.payload));
   // A chat named itself (nightshift backlog 209): the list re-reads its titles.
@@ -1536,6 +1655,10 @@ export async function init(): Promise<void> {
     // window is behind something else nothing on screen says so.
     void notifyNeedsYou(bannerChat(), e.payload);
   });
+  // A card that landed while he looked posts its banner when he leaves with
+  // it still waiting (nightshift backlog 373).
+  watchPresence();
+  onAway(() => void postHeldNeedsYou(approvalWaits));
   // The phone page (nightshift backlog 091, Shape B; item 246 wave 1):
   // a message, an answer, a stop or a chat action from the phone reaches
   // this window as an event and runs through the same state functions a
@@ -1661,7 +1784,10 @@ export async function init(): Promise<void> {
       chatChoice.ready = true;
       // The tabs he left open (backlog 201), once the lists that decide
       // which survive are read and the engine is connected.
-      await restoreTabs();
+      await restoreTabs({ newProjectFront: newProjectAtLaunch.front });
+      // Files opened with Nightloom from the Finder (backlog 378), after
+      // the restored tabs so none lands over them.
+      void import("./openedFiles.svelte").then((m) => m.installOpenedFiles()).catch(() => {});
     },
     mark: (step, ms, detail) => void api.startupMark(step, ms, detail).catch(() => {}),
     now: () => performance.now(),
@@ -1980,6 +2106,39 @@ export async function runCapture(quiet = false): Promise<void> {
   // The pass fills the inbox and moves the watermarks; both counts follow.
   await refreshCaptureStatus();
   await refreshDreamStatus();
+}
+
+/**
+ * "Save memory from this chat" (backlog 371): the capture pass over that one
+ * chat — an imported one too, whatever the cutoff — then the toast offers
+ * the Dream that files what it found into the project's memory or the vault.
+ */
+export async function saveMemoryFromChat(id: string): Promise<void> {
+  if (app.capturing || app.dreaming) {
+    addToast("a dream or a capture is already running");
+    return;
+  }
+  const target = passTarget();
+  app.capturing = true;
+  let found = 0;
+  try {
+    const r = await api.capture(target, id);
+    found = r.observations;
+    addToast(
+      (r.interrupted ? "save interrupted — " : "") +
+        `saved ${r.observations} observation${r.observations === 1 ? "" : "s"} from this chat` +
+        (r.refused > 0 ? ` (${r.refused} refused)` : "") +
+        (r.remaining > 0 ? "; the rest of it is left for the next save" : "") +
+        (r.observations > 0 ? " — Dream files them into memory" : ""),
+      r.observations > 0 ? { label: "Dream", run: () => void runDream() } : undefined,
+    );
+  } catch (e) {
+    addToast(`save memory failed: ${String(e)}`);
+  } finally {
+    app.capturing = false;
+  }
+  await refreshCaptureStatus();
+  if (found > 0) await refreshDreamStatus();
 }
 
 /** Interrupt the in-flight capture. The chat it stopped in is re-read next time. */
@@ -2641,8 +2800,11 @@ export async function useProject(id: string | null): Promise<void> {
   app.error = null;
   // Switching projects from the Nightshift page stays on it — the page
   // follows the open project (round 2, point 12); everywhere else it is a
-  // navigation to the new project's chat.
-  if (app.view !== "nightshift") app.view = "chat";
+  // navigation to the new project's chat. The New project form in front
+  // stays in front too (backlog 394): it is the workspace's, not the
+  // project's, and he is still filling it in.
+  const formFront = app.view === "new-project" && app.newProjectOpen;
+  if (app.view !== "nightshift" && !formFront) app.view = "chat";
   app.openNote = null;
   reflectTabs();
   // ~~The connect, then the list, the chats and the notes, each awaited~~
@@ -2660,8 +2822,8 @@ export async function useProject(id: string | null): Promise<void> {
   ]);
   // The project's own tabs (backlog 201). On the Nightshift page the page
   // stays in front and lands in the restored workspace.
-  const stay = app.view === "nightshift";
-  await restoreTabs({ show: !stay });
+  const stay = app.view === "nightshift" || formFront;
+  await restoreTabs({ show: !stay, newProjectFront: formFront });
   if (stay) reflectTabs();
 }
 
@@ -2690,9 +2852,31 @@ export async function openProjectFolder(): Promise<void> {
     app.projects = withProject(app.projects, project);
     void refreshWithin("opening " + project.name, [refreshProjects]);
     await useProject(project.id);
+    void offerPracticesClaudeMd(project, path);
   } catch (e) {
     addToast(String(e));
   }
+}
+
+/**
+ * Backlog 432: a folder opened by Open project… with no `CLAUDE.md` gets an
+ * offer, never a write — a toast whose button adds the practices
+ * `CLAUDE.md`. Nothing when it has one, or when there is no
+ * `~/.claude/practices/practices.md` for the line to import.
+ */
+export async function offerPracticesClaudeMd(project: ProjectInfo, path: string): Promise<void> {
+  const offer = await api.claudeMdOffer(path).catch(() => null);
+  if (!offer || offer.exists || !offer.practices) return;
+  addToast(`${project.name} has no CLAUDE.md, so your practices file does not load in its chats.`, {
+    label: "Add CLAUDE.md",
+    run: () => {
+      void api.addPracticesClaudeMd(project.id).then(
+        (written) =>
+          addToast(written ? `Added CLAUDE.md to ${project.name} with your practices line.` : `${project.name} already has a CLAUDE.md — left as it is.`),
+        (e) => addToast(String(e)),
+      );
+    },
+  });
 }
 
 // ---- the New project form ----
@@ -2704,6 +2888,7 @@ export async function openProjectFolder(): Promise<void> {
  * way out of the screen except Create and Discard.
  */
 export function showNewProject(): void {
+  app.newProjectOpen = true;
   app.overlay = null;
   app.view = "new-project";
   app.openNote = null;
@@ -2717,13 +2902,16 @@ export function showNewProject(): void {
  *  The form is a tab (backlog 140): leaving closes its tab and lands the
  *  neighbour, as the note view's ← Chat does. */
 export function closeNewProject(): void {
-  if (app.view !== "new-project") return;
-  const front = tabs.activeTab(tabs.focusedPane(app.tabs));
-  if (front.content.kind === "new-project") {
-    void closeTab(front.id);
+  // ~~Only from the form in front, closing the front tab~~ — since backlog
+  // 394 the tab is open until this (or Create, Discard, its ×), wherever
+  // it sits, so it is found anywhere and the flag goes down with it.
+  app.newProjectOpen = false;
+  const tab = tabs.findAnywhere(app.tabs, { kind: "new-project" });
+  if (tab) {
+    void closeTab(tab.id);
     return;
   }
-  app.view = "chat";
+  if (app.view === "new-project") app.view = "chat";
 }
 
 /** Drop the draft and leave. Behind a confirmation in the form. */
@@ -2764,8 +2952,18 @@ export async function createNewProject(): Promise<boolean> {
   if (app.busy) return false;
   const d = app.newProjectDraft;
   try {
-    const project = await api.newProject(d.name, d.pickedPath, d.instructions);
+    // Backlog 432: the practices CLAUDE.md, when the box is ticked and
+    // there is a practices file for its line to import. The backend writes
+    // it only where the folder has none.
+    const offer = d.claudeMd === false ? null : await api.claudeMdOffer(d.pickedPath ?? "").catch(() => null);
+    const claudeMd = !!offer?.practices && !offer.exists;
+    const project = await api.newProject(d.name, d.pickedPath, d.instructions, claudeMd);
     app.newProjectDraft = { name: "", instructions: "", pickedPath: null };
+    // Its tab closes with Create (backlog 394); the switch below shows the
+    // new project's strip, so nothing lands in its place here.
+    app.newProjectOpen = false;
+    const formTab = tabs.findAnywhere(app.tabs, { kind: "new-project" });
+    if (formTab) tabs.close(app.tabs, formTab.id);
     // ~~The list and the folder re-read before the form closed~~ (backlog
     // 211's leftovers, 2026-09-26: the form stayed up for as long as a
     // listing could hang). The row comes from the answer, the form closes
@@ -3530,6 +3728,9 @@ async function applyAgentDraft(updateNow: PromptLayer[] = [], take = true): Prom
       agent: res.agent ?? null,
       folders: res.folders ?? [],
     };
+    // Whether Claude Code is signed in (backlog 409), for the engine chip:
+    // a local `claude auth status`, zero tokens, not awaited.
+    void probeAuth(res.agent?.binary ?? null);
     app.project = res.project ?? null;
     saveLastConnection({ ...d });
     chatConnected(chat, sent);
@@ -3987,6 +4188,8 @@ export async function closeTab(tabId?: string): Promise<void> {
     addToast("This is the last tab and it is already a new chat — the window closes from its red light");
     return;
   }
+  // Its × closes the New project form (backlog 394); the draft stays.
+  if (tab.content.kind === "new-project") app.newProjectOpen = false;
   const r = tabs.close(ws, id);
   if (r.show) await activateTab(r.show.id);
 }
@@ -4086,6 +4289,18 @@ export function registerTerminalHooks(h: TerminalHooks): void {
   terminalHooks = h;
 }
 
+/** Write the New project form — open, in front, its draft — for a
+ *  relaunch (backlog 394). Called from the keeper's effect; removes the
+ *  key once the form is closed with nothing typed. Best-effort. */
+export function flushNewProject(): void {
+  if (typeof localStorage === "undefined") return;
+  saveNewProject(localStorage, {
+    open: app.newProjectOpen,
+    front: app.view === "new-project",
+    draft: app.newProjectDraft,
+  });
+}
+
 /** Write the workspace now, under the project it belongs to. Called on
  *  the keeper's debounce (`tabsKeeper.svelte.ts`), on `pagehide` and
  *  before a project switch replaces it. Best-effort. */
@@ -4178,7 +4393,7 @@ function resolveTabContent(c: TabContent): TabContent | null {
  * fresh, in the project's folder. A malformed store costs the layout,
  * never the launch.
  */
-export async function restoreTabs(opts: { show?: boolean } = {}): Promise<void> {
+export async function restoreTabs(opts: { show?: boolean; newProjectFront?: boolean } = {}): Promise<void> {
   const key = tabsKeyNow();
   let reopenShells: { pane: string; count: number }[] = [];
   try {
@@ -4190,6 +4405,12 @@ export async function restoreTabs(opts: { show?: boolean } = {}): Promise<void> 
     }
   } catch {
     // The layout is lost; the launch is not.
+  }
+  // The New project tab, while open, is the workspace's (backlog 394):
+  // first in the focused pane whatever project's strip this is, in front
+  // when it was in front.
+  if (app.newProjectOpen) {
+    tabs.pinNewProject(app.tabs, opts.newProjectFront ?? app.view === "new-project");
   }
   tabsOwner = key;
   if (opts.show !== false) {
@@ -5369,13 +5590,40 @@ export function kindWorkspace(events: SessionEvent[]): string | null {
   return null;
 }
 
+/**
+ * The pending chat's draft key while no chat is open, else null — taken
+ * before a setting's call that may create the chat's log (nightshift
+ * backlog 420).
+ */
+function pendingChatKey(): string | null {
+  return app.activeSessionId === null ? newDraftKey(app.project?.id, app.pendingMode) : null;
+}
+
+/**
+ * Pick up the id of a chat whose log a setting's call just created (the
+ * thread, the kind, the folders, the prompt layers), the way `send` does,
+ * so the sidebar and the next open agree on which chat this is — and,
+ * when the call was made on the pending New chat (`pending`, from
+ * `pendingChatKey`), carry what its box held over to that chat: the
+ * pending chat became this one. Before backlog 420 (2026-10-27) the words
+ * stayed under the pending key, so binding a draft New chat to a thread
+ * showed the bound chat with an empty box and the draft back on a second
+ * New chat.
+ */
+function adoptCreatedChat(pending: string | null): void {
+  const first = app.events[0];
+  if (!first || first.event !== "session_created") return;
+  app.activeSessionId = first.id;
+  if (pending !== null && pending !== first.id) moveDraft(pending, first.id);
+}
+
 /** The two steps of a kind switch: the log, then the reconnect that reads
  *  it back. False on a refusal, toasted. */
 async function applyKind(kind: ChatKind, workspace?: string): Promise<boolean> {
+  const pending = pendingChatKey();
   try {
     app.events = await api.setChatKind(kind, workspace);
-    const first = app.events[0];
-    if (first && first.event === "session_created") app.activeSessionId = first.id;
+    adoptCreatedChat(pending);
     app.error = null;
   } catch (e) {
     addToast(String(e));
@@ -5459,11 +5707,11 @@ export async function setChatThread(slug: string | null): Promise<boolean> {
   return true;
 }
 
-async function applyThread(slug: string | null): Promise<boolean> {
+async function applyThread(slug: string | null, adopt = true): Promise<boolean> {
+  const pending = adopt ? pendingChatKey() : null;
   try {
     app.events = await api.setChatThread(slug);
-    const first = app.events[0];
-    if (first && first.event === "session_created") app.activeSessionId = first.id;
+    adoptCreatedChat(pending);
     app.error = null;
     noteThread(app.activeSessionId, slug);
     if (slug) void refreshThreadFlags(slug);
@@ -5527,7 +5775,8 @@ export async function newChatInThread(slug: string): Promise<boolean> {
   }
   await newSession();
   if (app.activeSessionId !== null) return false;
-  if (!(await applyThread(slug))) return false;
+  // The plain New chat's draft is not this chat's: it stays where it is.
+  if (!(await applyThread(slug, false))) return false;
   const id = app.activeSessionId;
   if (!id) return false;
   setDraftText(id, threadReadOrder(slug, THEN_HIS_ASK));
@@ -5579,10 +5828,10 @@ async function promoteThreadText(text: string): Promise<void> {
 }
 
 async function applyFolders(folders: string[]): Promise<boolean> {
+  const pending = pendingChatKey();
   try {
     app.events = await api.setChatFolders(folders);
-    const first = app.events[0];
-    if (first && first.event === "session_created") app.activeSessionId = first.id;
+    adoptCreatedChat(pending);
     app.error = null;
   } catch (e) {
     addToast(String(e));
@@ -5689,7 +5938,7 @@ export function newChatLabel(): string {
 /** One line on what a mode means, for the places that offer it. */
 export const MODE_LINES: Record<ChatMode, string> = {
   normal: "kept, indexed, remembered",
-  incognito: "kept and marked; writes nothing, unread by other chats",
+  incognito: "kept and marked; knows nothing about you, writes nothing, unread by other chats",
   ephemeral: "nothing is kept; gone when you close it",
 };
 
@@ -5850,6 +6099,10 @@ interface TurnCtx {
   /** A provider (API key) turn (A4): one runs at a time, so a message in
    *  another chat queues while it runs off screen. */
   provider?: boolean;
+  /** The pending chat's draft key it was sent from, when it is a New
+   *  chat's first turn (backlog 375): its queue follows the chat it makes
+   *  when it goes off screen. */
+  pendingKey?: string | null;
   /** The context window of the connection it started on (A4 review,
    *  2026-09-30): its end off screen fills the wrap-up against this, not
    *  against whatever connection is on screen by then. */
@@ -5889,6 +6142,10 @@ const stillRunningAsked = new Set<string>();
 export async function injectIntoTurn(key: string, q: { id: number; text: string; attachments: Attachment[] }): Promise<void> {
   const turn = fg;
   if (!turn || !app.busy || app.parked) return;
+  // Only into the row's own chat's turn (375 review): a caller holding a
+  // stale key (a composer torn down by a chat or project switch) must not
+  // hand another chat's row to the turn on screen.
+  if (!turnOwnsKey(turn, key)) return;
   const wire = midTurnWire(q.attachments);
   if (!wire || (!q.text.trim() && wire.images.length + wire.documents.length === 0)) return;
   const id = crypto.randomUUID();
@@ -5900,7 +6157,78 @@ export async function injectIntoTurn(key: string, q: { id: number; text: string;
   } catch {
     sent = false;
   }
-  if (!sent && readDraft(key).queue.find((r) => r.id === q.id)?.inject?.id === id) clearInjected(key, q.id);
+  if (!sent && readDraft(key).queue.find((r) => r.id === q.id)?.inject?.id === id) {
+    clearInjected(key, q.id);
+    // No process with a stdin runs now — a question waiting on his answer,
+    // say (backlog 374): tried again when the turn's next process starts.
+    const later = injectLater.get(turn.key) ?? [];
+    if (!later.some((r) => r.key === key && r.qid === q.id)) later.push({ key, qid: q.id });
+    injectLater.set(turn.key, later);
+  }
+}
+
+/**
+ * Whether a queued row under draft key `key` belongs to `turn`'s chat
+ * (nightshift backlog 375, review 2026-10-18): the turn's chat id, or —
+ * for a New chat's first turn — its pending key or the chat that key
+ * became. Anything else is another chat's message.
+ */
+export function turnOwnsKey(turn: { chat: string | null; pendingKey?: string | null }, key: string): boolean {
+  if (turn.chat !== null && turn.chat === key) return true;
+  const p = turn.pendingKey;
+  return p != null && (p === key || ranKey(p) === key);
+}
+
+/** The open chat's draft key, read from the app now (375). */
+export function openChatKey(): string {
+  return draftKey(app.activeSessionId, app.project?.id, app.pendingMode);
+}
+
+/**
+ * The row a background send takes from chat `key` (blocker 1467): only
+ * when the ended turn owns that key (`turnOwnsKey`, 375) — its own chat's
+ * queue, never the open one's. `null`: nothing goes.
+ */
+export function takeQueuedFor(turn: { chat: string | null; pendingKey?: string | null }, key: string): QueuedMessage | null {
+  if (!turnOwnsKey(turn, key)) return null;
+  return shiftQueue(key);
+}
+
+/**
+ * The queued row a drain sends next (nightshift backlog 375): taken from
+ * the **open** chat's queue — `send()` goes to the open chat, so the row
+ * must come from the same place — never from `composerKey`, which a
+ * composer torn down by a chat or project switch holds stale (Svelte
+ * 5.56: a derived read after its owner is destroyed returns its last
+ * value, `derived_inert`; measured 2026-10-18). An aside's key is its own
+ * and stable. After a turn (`from`, the key the turn left from), only when
+ * that turn was the open chat's. `null`: nothing goes.
+ */
+export function takeQueued(composerKey: string, aside: boolean, from?: string): QueuedMessage | null {
+  const live = aside ? composerKey : openChatKey();
+  if (from !== undefined && queueAfterTurn(from, live) === null) return null;
+  return shiftQueue(live);
+}
+
+/**
+ * Rows the running turn could not take when he queued them, by turn key
+ * (backlog 374): no process with a stdin was running — the deferred
+ * question's wait, before its resume (which takes messages since 374), or
+ * a `/command` turn on argv. Each is tried again at the turn's next
+ * `agent_init` (every CLI process, and every command in one, sends one).
+ */
+const injectLater = new Map<string, { key: string; qid: number }[]>();
+
+/** Send the turn's held-back rows into it now (374); a row taken back,
+ *  sent, or already handed in meanwhile is skipped. */
+export function retryInjects(turnKey: string): void {
+  const rows = injectLater.get(turnKey);
+  if (!rows) return;
+  injectLater.delete(turnKey);
+  for (const { key, qid } of rows) {
+    const q = readDraft(key).queue.find((r) => r.id === qid);
+    if (q && !q.inject) void injectIntoTurn(key, q);
+  }
 }
 
 /**
@@ -6392,6 +6720,8 @@ function detach(): boolean {
     app.activeSessionId = id;
     void tick().then(() => activating--);
   }
+  // And what he queued on its New chat page goes with it (backlog 375).
+  if (t.pendingKey) moveQueue(t.pendingKey, id);
   const mine = (r: ApprovalRequest) => !r.chat || r.chat === id;
   app.background[id] = {
     session: id,
@@ -6440,10 +6770,17 @@ function promoteParked(): void {
   };
   app.pendingApprovals = app.pendingApprovals.filter((r) => r.chat && r.chat !== id);
   app.parked = null;
+  // What he queued on its New chat page is its (backlog 375), not the
+  // next New chat's of the project.
+  if (t.pendingKey) moveQueue(t.pendingKey, id);
   t.detached = true;
   bgTurns.set(id, t);
   fg = null;
   app.busy = false;
+  // The chat on screen is idle now: what he queued in it while the turn
+  // was parked goes, as its toast said (375 — the turn's own end no longer
+  // drains a chat that is not its own).
+  void providerDrains.at(-1)?.();
   // The meter on screen is the viewed chat's now (A4).
   if (app.budgetSession === id) {
     app.turnBudget = null;
@@ -6523,7 +6860,7 @@ function endBackground(t: TurnCtx, failed: string | null, res: AgentTurnResult |
     cliError: res?.is_error === true,
   });
   addToast(backgroundEndToast(name, failed));
-  for (const n of res?.notices ?? []) addToast(n);
+  for (const n of turnNotices(res?.notices ?? [], t.stopped === true)) addToast(n);
   // Its list and notes are its project's (blocker 630): re-read only when
   // that is the one open; coming back to it reads them fresh anyway.
   if (!b || !inOtherProject(b, app.project?.id ?? null)) {
@@ -6551,6 +6888,123 @@ function endBackground(t: TurnCtx, failed: string | null, res: AgentTurnResult |
   // Was it sleep that ended it (backlog 101)? A4: a background turn's end
   // reached the watch not at all.
   sleepTurnEnded(errored, b?.events ?? [], id, t.stopped === true);
+  // Blocker 1467 (his answer, 2026-10-18): what he queued in it goes now,
+  // in its own chat, in the background — after this `finally` has settled
+  // the rows the turn took or handed back.
+  const ok = !errored && !(res && limitPauseFrom(res, id));
+  queueMicrotask(() => void sendQueuedInBackground(t, b, ok));
+}
+
+/**
+ * The next message queued in a chat whose turn just ended off screen,
+ * sent at once in that chat, in the background (nightshift blocker 1467,
+ * his answer: "it should be right away in that chat in the background")
+ * — the chat he is in is untouched. The row comes through `turnOwnsKey`
+ * (375): only the ended turn's own chat's queue, and the backend is told
+ * that chat and its project by id (`send_agent`'s `chat`), so it runs
+ * there or is refused; it never reads the focus. Not after a Stop, a
+ * failure or a usage-limit pause (the queue waits, as on screen), not on
+ * the provider engine (one turn at a time; its own drain), and not when
+ * the chat is on screen again (the composer drains it). `true` when sent.
+ */
+export async function sendQueuedInBackground(
+  ended: Pick<TurnCtx, "chat" | "pendingKey" | "stopped" | "provider" | "contextLimit">,
+  was: Pick<Background<Segment, ApprovalRequest>, "pendingMode" | "pendingKind" | "project" | "projectName" | "name"> | undefined,
+  ok: boolean,
+): Promise<boolean> {
+  const id = ended.chat;
+  if (!id || !ok || ended.stopped || ended.provider) return false;
+  if (app.activeSessionId === id || app.background[id] || bgTurns.has(id)) return false;
+  const q = takeQueuedFor(ended, id);
+  if (!q) return false;
+  if (q.attachments.some((c) => c.pending || !c.data)) {
+    requeueFront(id, q);
+    return false;
+  }
+  const images = q.attachments.filter((a) => a.kind === "image").map(({ media_type, data }) => ({ media_type, data }));
+  const documents = q.attachments
+    .filter((a) => a.kind === "document")
+    .map(({ media_type, name, data }) => ({ media_type, name, data }));
+  const files = q.attachments.filter((a) => a.kind === "file").map(({ name, data }) => ({ name, data }));
+  const project = was?.project ?? null;
+  const turn: TurnCtx = { chat: id, detached: true, key: newTurnKey(), contextLimit: ended.contextLimit, pendingKey: null };
+  const mine: SessionEvent = {
+    event: "user_message",
+    text: q.text,
+    ...(images.length > 0 ? { images } : {}),
+    ...(documents.length > 0 ? { documents } : {}),
+    at: new Date().toISOString(),
+  };
+  app.background[id] = {
+    session: id,
+    pendingMode: was?.pendingMode ?? "normal",
+    pendingKind: was?.pendingKind ?? app.pendingKind,
+    events: [mine],
+    live: { segments: [] },
+    liveUsage: null,
+    approvals: [],
+    budget: null,
+    agentInit: null,
+    project,
+    projectName: was?.projectName ?? null,
+    name: was?.name ?? null,
+  };
+  bgTurns.set(id, turn);
+  // Its log under the message, for the tab and a pane showing it.
+  void api
+    .transcript(false, id)
+    .then((events) => {
+      const b = app.background[id];
+      if (b && bgTurns.get(id) === turn) b.events = [...events, mine];
+    })
+    .catch(() => {});
+  let failed: string | null = null;
+  let res: AgentTurnResult | null = null;
+  let delivered: string[] = [];
+  try {
+    res = await api.sendAgent(
+      q.text,
+      images.length > 0 ? images : undefined,
+      documents.length > 0 ? documents : undefined,
+      undefined,
+      turn.key,
+      undefined,
+      files.length > 0 ? files : undefined,
+      { chat: id, project },
+    );
+    delivered = res.delivered ?? [];
+  } catch (e) {
+    failed = String(e);
+  }
+  // Refused before anything was sent (the chat not loaded, or its project
+  // closed with no agent of its own): back at the head of its own queue.
+  const refused = failed !== null && /stays queued there|nothing was sent/.test(failed);
+  if (refused) requeueFront(id, q);
+  settleInjected(turn.key, delivered);
+  injectLater.delete(turn.key);
+  closeRunningRows(app.subagents, id);
+  if (turn.detached) {
+    if (refused) {
+      delete app.background[id];
+      bgTurns.delete(id);
+      addToast(`${was?.name ?? "A chat"}: its queued message is waiting there — ${failed}`);
+    } else endBackground(turn, failed, res);
+    return !refused;
+  }
+  // He opened it while it ran (`attach`): its end on screen, then the
+  // composer's drain takes the next row of the chat open — this one.
+  if (fg === turn) fg = null;
+  notifyTurnEnded(failed);
+  app.live = null;
+  app.liveUsage = null;
+  app.pendingApprovals = [];
+  app.busy = false;
+  if (failed !== null && !refused) app.error = failed;
+  await settleTurnView(null, id, null);
+  void refreshSessions();
+  void readPlanAtReplyEnd();
+  if (failed === null) void providerDrains.at(-1)?.();
+  return !refused;
 }
 
 /**
@@ -6801,6 +7255,47 @@ export async function deleteSession(id: string): Promise<void> {
 }
 
 /**
+ * *Move to project…* (nightshift backlog 370): the chat leaves this
+ * project's list for project `to`'s (null: the unfiled chats), while the
+ * app runs. Refused in words while its turn runs, like a delete. Its id
+ * does not change, so its draft and queued rows (keyed by the id, backlog
+ * 375) go with it untouched; its chat tab goes to the other project's
+ * stored workspace (`carryTabsTo`), the rest of its tabs close here.
+ * No undo: the chat is no longer in this list to move back from — it is
+ * moved back from the other project's list the same way.
+ */
+export async function moveSession(id: string, to: string | null): Promise<boolean> {
+  if (!canDeleteChat(id)) {
+    addToast("That chat is running a turn — move it when the turn ends");
+    return false;
+  }
+  const carried = tabs
+    .allTabs(app.tabs)
+    .filter((t) => t.content.kind === "chat" && t.content.session === id)
+    .map((t) => t.content);
+  let full: string;
+  try {
+    full = await api.moveSession(id, to);
+  } catch (e) {
+    addToast(String(e));
+    await refreshSessions();
+    return false;
+  }
+  if (id === app.activeSessionId || full === app.activeSessionId) {
+    switchAside(null);
+    app.activeSessionId = null;
+    app.events = [];
+  }
+  dropChatTabs(full);
+  if (typeof localStorage !== "undefined") carryTabsTo(localStorage, to ?? UNFILED_TABS, carried);
+  await refreshSessions();
+  const where = to === null ? "No project (unfiled chats)" : (app.projects.find((p) => p.id === to)?.name ?? "the other project");
+  addToast(`Moved to ${where}`);
+  void refreshProjects();
+  return true;
+}
+
+/**
  * A message from the phone (backlog 091): for the open chat, or for one
  * that is opened first. `openSession` refuses while a turn runs (blocker
  * 182) and can fail; either way the chat asked for is not the one open,
@@ -6918,6 +7413,14 @@ export function resumeAfterLimit(): void {
 
 /** The chat as a banner names it (nightshift backlog 079): the open
  *  session's title, else the first message of the turn just sent. */
+/** Whether a call still waits on his answer, here or in a background chat. */
+function approvalWaits(id: string): boolean {
+  return (
+    app.pendingApprovals.some((r) => r.id === id) ||
+    Object.values(app.background).some((b) => b.approvals.some((r) => r.id === id))
+  );
+}
+
 function bannerChat(): string {
   const s = app.sessions.find((x) => x.id === app.activeSessionId);
   const sent = [...app.events].reverse().find((e) => e.event === "user_message");
@@ -7035,7 +7538,7 @@ export async function send(
   // This turn, for the background (backlog 159, A4): as the agent
   // engine's since A2 — he may open another chat while it runs, and it
   // goes off screen instead of parking once its chat has a name.
-  const turn: TurnCtx = { chat: app.activeSessionId, detached: false, key: newTurnKey(), choice, provider: true };
+  const turn: TurnCtx = { chat: app.activeSessionId, detached: false, key: newTurnKey(), choice, provider: true, pendingKey };
   fg = turn;
   let failed: string | null = null;
   try {
@@ -7149,6 +7652,7 @@ async function sendAgent(
     key: newTurnKey(),
     choice: choiceOf(app.draft),
     contextLimit: app.connection?.contextLimit ?? null,
+    pendingKey,
   };
   fg = turn;
   // The budget meter (backlog 165, pass 2) follows this chat's ledger
@@ -7200,7 +7704,9 @@ async function sendAgent(
       if (res.folders) app.connection.folders = res.folders;
       app.connection.refused = res.refused ?? [];
     }
-    for (const notice of res.notices) addToast(notice);
+    // A Stop he pressed toasts nothing (item 441): the reply's own
+    // "stopped" mark says it (`turnNotices`).
+    for (const notice of turnNotices(res.notices, stopped)) addToast(notice);
   } catch (e) {
     failed = String(e);
     if (turn.detached) {
@@ -7212,6 +7718,7 @@ async function sendAgent(
     // What he sent into it (328): taken → in the chat; not → queued again,
     // before the queue's drain reads it.
     settleInjected(turn.key, delivered);
+    injectLater.delete(turn.key);
     // The turn's process is gone (backlog 331): whatever of its subagents
     // the CLI never reported finished ran inside it, and is not running.
     closeRunningRows(app.subagents, turn.chat ?? (turn.detached ? null : app.activeSessionId));
@@ -7412,6 +7919,7 @@ async function runAside(turn: AsideTurn, sent: string, thread: Aside | null = nu
     const res = await api.askAside(sent, turn.seq, asideWire(thread, chips));
     const t = live();
     if (!t || t.cancelled) return; // dismissed, replaced or cancelled meanwhile
+    settleAsideSegments(t, res.answer);
     t.answer = res.answer;
     t.partial = res.answer;
     t.error = res.is_error ? (res.notices.join("; ") || "the aside failed") : null;
@@ -7654,6 +8162,48 @@ export function stopAside(a: Aside): void {
   if (!t) return;
   void api.cancelAside(t.seq).catch(() => {});
   t.cancelled = true;
+  if (t.segments) closeThinking(t.segments);
+}
+
+/**
+ * One event of an aside's stream into its exchange (item 403): text onto
+ * `partial` as before, and every drawn event into `segments` by the chat's
+ * own `applyToSegments`, so the thread draws it with the chat's pieces.
+ * An exchange that has its answer, or was stopped, takes nothing more.
+ * Exported for the suite.
+ */
+export function asideTurnEvent(t: AsideTurn, ev: TurnEvent, now = Date.now()): void {
+  if (t.answer !== null || t.cancelled) return;
+  if (!t.segments) t.segments = [];
+  applyToSegments(t.segments, ev);
+  if (ev.type === "text_delta") t.partial += ev.text;
+  t.heardAt = now;
+  t.phase = "running";
+}
+
+/** The backend's word on where an exchange stands (item 404); `running`
+ *  starts the stalled clock. Exported for the suite. */
+export function asidePhase(t: AsideTurn, phase: "queued" | "running", now = Date.now()): void {
+  if (t.answer !== null || t.cancelled) return;
+  if (phase === "running" && t.phase !== "running") t.heardAt = now;
+  t.phase = phase;
+}
+
+/**
+ * The answer's end on its segments (item 403): an open thinking block
+ * closes, and the text drawn is the result's — the whole answer, where a
+ * delta was lost or none came (the result alone carried it). The thinking
+ * and calls stay where they were, the text after them. Exported for the
+ * suite.
+ */
+export function settleAsideSegments(t: AsideTurn, answer: string): void {
+  const segs = t.segments;
+  if (!segs) return;
+  closeThinking(segs);
+  const text = segs.flatMap((s) => (s.kind === "text" ? [s.text] : [])).join("");
+  if (text === answer) return;
+  for (let i = segs.length - 1; i >= 0; i--) if (segs[i]!.kind === "text") segs.splice(i, 1);
+  if (answer) segs.push({ kind: "text", text: answer });
 }
 
 /** The text typed in a thread's box, into app state (backlog 228). Since
@@ -7817,6 +8367,8 @@ export async function cancelTurn(chat?: string | null): Promise<void> {
     // Marked before the call, as the screen's `stopped` (A4).
     const t = bgTurns.get(bg);
     if (t) t.stopped = true;
+    // A retry line says "stopping" from here (item 441).
+    if (markRetryStopping(app.background[bg]?.live?.segments)) app.paneVersion++;
     try {
       await api.cancel(bg);
       const b = app.background[bg];
@@ -7836,6 +8388,9 @@ export async function cancelTurn(chat?: string | null): Promise<void> {
   // Before the call, not after: the stopped turn can return before the
   // cancel's own reply does, and the queue reads the flag at that return.
   stopped = true;
+  // A retry line says "stopping" from here, and later tries leave it
+  // (item 441: the count kept climbing after Stop).
+  if (markRetryStopping(liveHost(app).live?.segments)) app.liveVersion++;
   try {
     // The turn on screen (or parked) only (backlog 159, A2): a chat
     // running in the background keeps running.
@@ -8054,7 +8609,15 @@ export function applyTurnEventTo(host: TurnHost, ev: TurnEvent & { chat?: string
     case "tool_call":
     case "tool_result":
     case "tool_denied":
+      // The reply is coming (items 440 + 441): the retry line goes.
+      clearRetry(segments);
       applyToSegments(segments, ev);
+      break;
+    case "retry":
+      // The CLI retrying (items 440 + 441): one line, updated in place —
+      // never a toast; a Stop's line is left saying "stopping".
+      if (!segments.some((g) => g.kind === "retry")) closeThinking(segments);
+      applyRetry(segments, ev);
       break;
     case "subagent": {
       // A subagent's event (backlog 075) goes under the row of the call
@@ -8087,19 +8650,42 @@ export function applyTurnEventTo(host: TurnHost, ev: TurnEvent & { chat?: string
       // The main reply ended with its subagents still running (backlog
       // 329): the turn waits for them — the CLI wakes the main agent as
       // each ends — unless he stops them.
-      const n = ev.tasks.length;
-      const what = ev.tasks.map((t) => `“${t}”`).join(", ");
-      const text = `${n} subagent${n === 1 ? "" : "s"} still running (${what}) — wait for ${n === 1 ? "it" : "them"}, or stop ${n === 1 ? "it" : "them"}?`;
-      closeThinking(segments);
-      segments.push({ kind: "notice", text });
+      // ~~A notice worded as a question, Stop on a toast~~ — backlog 357:
+      // a status line of its own, Stop on it, each name opening the
+      // Running-tasks panel on its row, turning to done or stopped as the
+      // rows end (`StillRunningLine.svelte`).
       const key = onScreen ? fg?.key : undefined;
-      // One toast per turn per set of tasks: the main agent replies again
-      // after each report or wake-up, and each such reply says so too.
-      const seen = `${key ?? host.chat}:${ev.tasks.join("|")}`;
+      const seg: StillRunningSegment = {
+        kind: "still_running",
+        tasks: [...ev.tasks],
+        ids: matchTasks(ev.tasks, rowsOf(app.subagents, host.chat)),
+        ...(key ? { turn: key } : {}),
+      };
+      closeThinking(segments);
+      segments.push(seg);
+      // The toast only for a chat off screen (357): on screen the line is in
+      // view and carries Stop, so the toast said the same thing twice. Off
+      // screen there is no line to see and no key to stop by — the toast is
+      // the news, as before. One per chat per set of tasks: the main agent
+      // replies again after each report, and each such reply says so too.
+      if (onScreen) break;
+      const seen = `${host.chat}:${ev.tasks.join("|")}`;
       if (stillRunningAsked.has(seen)) break;
       stillRunningAsked.add(seen);
-      if (key) addToast(text, { label: n === 1 ? "Stop it" : "Stop them", run: () => void api.stopSubagents(key) });
-      else addToast(text);
+      addToast(lineText(lineView(seg, app.subagents)));
+      break;
+    }
+    case "woke": {
+      // A subagent's end the main agent was never told of (backlog 406):
+      // Nightloom wrote it a line of its own, and the reply says so in
+      // place — Nightloom's words, not his, so a notice and not a message.
+      const names = ev.agents.map((a) => `“${a}”`).join(", ");
+      closeThinking(segments);
+      segments.push({
+        kind: "notice",
+        text: `${names} finished but its report never reached the main agent — Nightloom told it to continue`,
+      });
+      if (!onScreen) addToast(`Nightloom woke ${backgroundName(host.bg!.session, host.bg!.events)}: ${names} finished`);
       break;
     }
     case "round_limit":
@@ -8118,6 +8704,9 @@ export function applyTurnEventTo(host: TurnHost, ev: TurnEvent & { chat?: string
       } else {
         app.agentInit = ev;
         void windowFromInit(ev.model);
+        // A new process or command of the turn on screen: what it could
+        // not take before goes in now (backlog 374).
+        if (fg) retryInjects(fg.key);
       }
       break;
     case "prompt_suggestion":
@@ -8143,16 +8732,13 @@ export function applyTurnEventTo(host: TurnHost, ev: TurnEvent & { chat?: string
       break;
     }
     case "message_delivered": {
-      // His mid-turn message reached the turn (backlog 328): its queue row
-      // says where, and the reply shows it in place until the turn's end
-      // re-reads the log, where it is his own message.
-      markDelivered(ev.id, ev.after);
+      // His mid-turn message reached the turn (backlog 328): ~~its queue row
+      // says where~~ its queue row leaves (366), and the reply shows it in
+      // place until the turn's end re-reads the log, where it is his own
+      // message.
+      markDelivered(ev.id);
       closeThinking(segments);
-      const first = ev.text.split("\n")[0] ?? "";
-      segments.push({
-        kind: "notice",
-        text: `your message reached the turn ${ev.after}: “${first.length > 120 ? first.slice(0, 119) + "…" : first}”`,
-      });
+      segments.push({ kind: "notice", text: deliveredNotice(ev.after, ev.text) });
       break;
     }
     default:
@@ -8411,12 +8997,12 @@ export async function setPromptLayer(layer: PromptLayer, on: boolean): Promise<v
 /** The two steps of a layer change: the log, then the reconnect that
  *  reads it back. False on a refusal, toasted. */
 async function applyLayers(off: PromptLayer[]): Promise<boolean> {
+  const pending = pendingChatKey();
   try {
     app.events = await api.setPromptLayers(off);
     // A chat whose log was just created by this call: pick up its id the way
     // `send` does, so the sidebar and the next open agree on which chat this is.
-    const first = app.events[0];
-    if (first && first.event === "session_created") app.activeSessionId = first.id;
+    adoptCreatedChat(pending);
     app.error = null;
   } catch (e) {
     addToast(String(e));
@@ -8482,10 +9068,10 @@ export async function setPromptLayerText(
 
 /** `applyLayers` for one layer's own text. */
 async function applyLayerText(layer: EditableLayer, text: string | null): Promise<boolean> {
+  const pending = pendingChatKey();
   try {
     app.events = await api.setPromptLayerText(layer, text);
-    const first = app.events[0];
-    if (first && first.event === "session_created") app.activeSessionId = first.id;
+    adoptCreatedChat(pending);
     app.error = null;
   } catch (e) {
     addToast(String(e));
@@ -8702,20 +9288,35 @@ export function chatAgentSession(events: SessionEvent[]): string | null {
  * reply after the rewind landed, stitching the turn being undone onto the
  * history it was removed from.
  */
-export async function rewindTo(to: number): Promise<void> {
+export async function rewindTo(to: number, aim: boolean | string = false): Promise<void> {
   if (app.busy) return;
+  // From the window's own transcript, the message's send time rides with
+  // its place, as `sendEdit`'s does (backlog 361; wave 8b review): the
+  // backend rewinds to the message meant, or refuses. The phone's index is
+  // its own list's: since backlog 364 it sends the send time from that
+  // list (a string here); a phone that sends none goes bare, as before.
+  const meant = aim === true ? app.events[to] : undefined;
+  const at = typeof aim === "string" ? aim : meant?.event === "user_message" ? meant.at : undefined;
+  const call = () => (at ? api.rewind(to, at) : api.rewind(to));
+  // 364 review: the phone's `to` is its own list's; what follows is read
+  // where its aimed rewind lands in this window's list, and nothing is
+  // offered when this list does not have that message.
+  const here = typeof aim === "string" ? indexOfAim(app.events, { at: aim }, to) : to;
   // His message at `to`, read before the rewind supersedes it (backlog 247).
-  const back = rewoundMessage(app.events, to, nextAttachmentId);
+  const back = here === null ? null : rewoundMessage(app.events, here, nextAttachmentId);
   // What the removed turns wrote, read before the rewind supersedes them
   // (item 259): offered to be set aside, since the next run reads them.
-  const written = rewoundWrites(app.events, liveFlags(app.events), to);
+  const written = here === null ? [] : rewoundWrites(app.events, liveFlags(app.events), here);
   try {
-    app.events = await api.rewind(to);
+    app.events = await call();
     app.error = null;
   } catch (e) {
     app.error = String(e);
     return;
   }
+  // Item 390: fewer turns, less context — the hand-off notice reads it now.
+  const refill = () => noteRewound(app.activeSessionId, contextUsed(), app.connection?.contextLimit ?? null);
+  refill();
   app.rewoundWrites =
     written.length > 0
       ? {
@@ -8734,6 +9335,7 @@ export async function rewindTo(to: number): Promise<void> {
     label: "rewind",
     undo: async () => {
       app.events = await api.unrewind(marker);
+      refill();
       // The turn is back; its files were left alone unless he set them
       // aside, and then the card says where they went.
       if (app.rewoundWrites && app.rewoundWrites.done === null) app.rewoundWrites = null;
@@ -8745,7 +9347,8 @@ export async function rewindTo(to: number): Promise<void> {
       }
     },
     redo: async () => {
-      app.events = await api.rewind(to);
+      app.events = await call();
+      refill();
       marker = lastMarker("rewind");
       if (back) swap = fillBox(key, back);
     },
@@ -8973,23 +9576,32 @@ export async function saveEdit(
   /** Item 336: the user message's whole set of attachments from here on —
    *  the edit box's chips, passed only when they changed. */
   attachments: EditedAttachments | null = null,
+  /** Backlog 364: the phone's aim (`null`: none, bare); absent, the window's own. */
+  aim?: Aim | null,
 ): Promise<boolean> {
   if (app.busy) return false;
-  const previous = currentText(index);
-  const previousSet = attachments ? currentAttachments(index) : null;
+  const meant = aimFor(index, aim);
+  // 364 review: what the turn said before, read where the aimed edit lands
+  // in this window's list (`here`) — for the phone, not at its index.
+  const here = localIndex(index, aim);
+  const previous = here === null ? null : currentText(here);
+  const previousSet = attachments && here !== null ? currentAttachments(here) : null;
   try {
-    const res = await editSaved(index, text, attachments);
+    const res = await editSaved(index, text, attachments, meant);
     app.events = res.events;
     app.error = null;
   } catch (e) {
     addToast(String(e));
     return false;
   }
+  // The turn is not in this window's list: what it said before is unknown,
+  // so no undo rather than one that writes another turn's words into it.
+  if (previous === null) return true;
   // An edit is undone by an edit back to what the turn said before: the
   // same marker, the same CLI copy on Claude Code, the original kept — and,
   // when the attachments changed, back to the set it carried (item 336).
   const editTo = async (t: string, set: EditedAttachments | null) => {
-    const res = await editSaved(index, t, set);
+    const res = await editSaved(index, t, set, meant);
     app.events = res.events;
   };
   pushUndo(chatScope(), {
@@ -9001,10 +9613,44 @@ export async function saveEdit(
 }
 
 /** `edit_message` "save", with the attachments only when there are some
- *  to set — a text-only Save is the call it always was. */
-function editSaved(index: number, text: string, set: EditedAttachments | null) {
+ *  to set — a text-only Save is the call it always was; aimed (backlog
+ *  364) when the turn has an aim. */
+function editSaved(index: number, text: string, set: EditedAttachments | null, aim: Aim | null = null) {
+  if (aim) return api.editMessage(index, text, "save", set, aim.at, aim.nth ?? null);
   return set ? api.editMessage(index, text, "save", set) : api.editMessage(index, text, "save");
 }
+
+/**
+ * Backlog 364: the turn the caller means, beside its index — the send time
+ * of the message that opened its exchange, and for a reply its place among
+ * that exchange's replies (`aim.ts`). The window's own list gives it unless
+ * the caller brought one: the phone's, from its own list, or `null` (an
+ * older phone that sent none), which goes bare as before. Read once, before
+ * the change, so its undo and redo name the same turn.
+ */
+function aimFor(index: number, aim: Aim | null | undefined): Aim | null {
+  return aim === undefined ? aimOf(app.events, index) : aim;
+}
+
+/** 364 review: where the turn a caller's aim names is in this window's own
+ *  list — `index` itself for the window (no aim brought) and for a bare
+ *  call; for the phone's aim, that turn found by it (`indexOfAim`), or null
+ *  when this list does not have it. */
+function localIndex(index: number, aim: Aim | null | undefined): number | null {
+  return aim ? indexOfAim(app.events, aim, index) : index;
+}
+
+/** The message calls, aimed when there is an aim, the bare call otherwise. */
+const removeCall = (index: number, aim: Aim | null) =>
+  aim ? api.removeMessage(index, aim) : api.removeMessage(index);
+const restoreCall = (index: number, aim: Aim | null) =>
+  aim ? api.restoreMessage(index, aim) : api.restoreMessage(index);
+const removeBlockCall = (index: number, block: number, aim: Aim | null) =>
+  aim ? api.removeBlock(index, block, aim) : api.removeBlock(index, block);
+const restoreBlockCall = (index: number, block: number, aim: Aim | null) =>
+  aim ? api.restoreBlock(index, block, aim) : api.restoreBlock(index, block);
+const editBlockCall = (index: number, block: number, text: string, aim: Aim | null) =>
+  aim ? api.editBlock(index, block, text, aim) : api.editBlock(index, block, text);
 
 /** What the user turn at `index` carries now (item 336): the latest live
  *  edit's set, else its own images and documents — what an undo of an
@@ -9045,7 +9691,11 @@ export async function sendEdit(
   if (app.busy) return false;
   try {
     const parent = app.activeSessionId;
-    const res = await api.editMessage(index, text, "send");
+    // The message's send time rides with its place (backlog 361): the
+    // backend aims the fork at the message meant, or refuses.
+    const meant = app.events[index];
+    const at = meant?.event === "user_message" ? meant.at : null;
+    const res = await api.editMessage(index, text, "send", null, at);
     app.events = res.events;
     // The fork starts with no asides; the parent keeps its own (backlog 203).
     switchAside(res.session);
@@ -9068,10 +9718,11 @@ export async function sendEdit(
  * a click away, and the context panel's Restore (or backlog 064's undo)
  * brings it back.
  */
-export async function removeTurn(index: number): Promise<void> {
+export async function removeTurn(index: number, aim?: Aim | null): Promise<void> {
   if (app.busy) return;
+  const meant = aimFor(index, aim);
   try {
-    const res = await api.removeMessage(index);
+    const res = await removeCall(index, meant);
     app.events = res.events;
     app.error = null;
   } catch (e) {
@@ -9081,10 +9732,10 @@ export async function removeTurn(index: number): Promise<void> {
   const handle = pushUndo(chatScope(), {
     label: "remove",
     undo: async () => {
-      app.events = (await api.restoreMessage(index)).events;
+      app.events = (await restoreCall(index, meant)).events;
     },
     redo: async () => {
-      app.events = (await api.removeMessage(index)).events;
+      app.events = (await removeCall(index, meant)).events;
     },
   });
   undoToast("Removed from context", handle);
@@ -9096,10 +9747,11 @@ export async function removeTurn(index: number): Promise<void> {
  * turn's nodes back from the original — with its own inverse on the
  * stack, so a restore is itself undoable.
  */
-export async function restoreTurn(index: number): Promise<void> {
+export async function restoreTurn(index: number, aim?: Aim | null): Promise<void> {
   if (app.busy) return;
+  const meant = aimFor(index, aim);
   try {
-    app.events = (await api.restoreMessage(index)).events;
+    app.events = (await restoreCall(index, meant)).events;
     app.error = null;
   } catch (e) {
     addToast(String(e));
@@ -9108,10 +9760,10 @@ export async function restoreTurn(index: number): Promise<void> {
   pushUndo(chatScope(), {
     label: "restore",
     undo: async () => {
-      app.events = (await api.removeMessage(index)).events;
+      app.events = (await removeCall(index, meant)).events;
     },
     redo: async () => {
-      app.events = (await api.restoreMessage(index)).events;
+      app.events = (await restoreCall(index, meant)).events;
     },
   });
 }
@@ -9122,10 +9774,11 @@ export async function restoreTurn(index: number): Promise<void> {
  * what a Save with that block's text deleted does. The inverse is the
  * block's restore; the toast offers it for eight seconds.
  */
-export async function removeBlock(index: number, block: number, toast = true): Promise<boolean> {
+export async function removeBlock(index: number, block: number, toast = true, aim?: Aim | null): Promise<boolean> {
   if (app.busy) return false;
+  const meant = aimFor(index, aim);
   try {
-    app.events = (await api.removeBlock(index, block)).events;
+    app.events = (await removeBlockCall(index, block, meant)).events;
     app.error = null;
   } catch (e) {
     addToast(String(e));
@@ -9134,10 +9787,10 @@ export async function removeBlock(index: number, block: number, toast = true): P
   const handle = pushUndo(chatScope(), {
     label: "remove",
     undo: async () => {
-      app.events = (await api.restoreBlock(index, block)).events;
+      app.events = (await restoreBlockCall(index, block, meant)).events;
     },
     redo: async () => {
-      app.events = (await api.removeBlock(index, block)).events;
+      app.events = (await removeBlockCall(index, block, meant)).events;
     },
   });
   if (toast) undoToast("Removed from context", handle);
@@ -9145,10 +9798,11 @@ export async function removeBlock(index: number, block: number, toast = true): P
 }
 
 /** The Restore on a removed block's placeholder, on `restoreTurn`'s terms. */
-export async function restoreBlock(index: number, block: number): Promise<void> {
+export async function restoreBlock(index: number, block: number, aim?: Aim | null): Promise<void> {
   if (app.busy) return;
+  const meant = aimFor(index, aim);
   try {
-    app.events = (await api.restoreBlock(index, block)).events;
+    app.events = (await restoreBlockCall(index, block, meant)).events;
     app.error = null;
   } catch (e) {
     addToast(String(e));
@@ -9157,10 +9811,10 @@ export async function restoreBlock(index: number, block: number): Promise<void> 
   pushUndo(chatScope(), {
     label: "restore",
     undo: async () => {
-      app.events = (await api.removeBlock(index, block)).events;
+      app.events = (await removeBlockCall(index, block, meant)).events;
     },
     redo: async () => {
-      app.events = (await api.restoreBlock(index, block)).events;
+      app.events = (await restoreBlockCall(index, block, meant)).events;
     },
   });
 }
@@ -9177,11 +9831,17 @@ export async function restoreBlock(index: number, block: number): Promise<void> 
 export async function saveReplyEdit(
   index: number,
   changes: { block: number; text: string }[],
+  /** Backlog 364: as `saveEdit`'s. */
+  aim?: Aim | null,
 ): Promise<boolean> {
   if (app.busy || changes.length === 0) return false;
-  const e = app.events[index];
-  if (e?.event !== "assistant_message") return false;
-  const edits = blockEditsOf(index);
+  // 364 review: the reply and its previous block texts read where the aimed
+  // edit lands in this window's list; not there, refused as before.
+  const here = localIndex(index, aim);
+  const e = here === null ? undefined : app.events[here];
+  if (here === null || e?.event !== "assistant_message") return false;
+  const meant = aimFor(index, aim);
+  const edits = blockEditsOf(here);
   const done: { block: number; text: string; previous: string }[] = [];
   for (const c of changes) {
     const b = e.blocks[c.block];
@@ -9189,8 +9849,8 @@ export async function saveReplyEdit(
     try {
       app.events = (
         c.text.length === 0
-          ? await api.removeBlock(index, c.block)
-          : await api.editBlock(index, c.block, c.text)
+          ? await removeBlockCall(index, c.block, meant)
+          : await editBlockCall(index, c.block, c.text, meant)
       ).events;
       app.error = null;
     } catch (err) {
@@ -9205,10 +9865,10 @@ export async function saveReplyEdit(
       const text = forward ? d.text : d.previous;
       app.events = (
         forward && d.text.length === 0
-          ? await api.removeBlock(index, d.block)
+          ? await removeBlockCall(index, d.block, meant)
           : !forward && d.text.length === 0
-            ? await api.restoreBlock(index, d.block)
-            : await api.editBlock(index, d.block, text)
+            ? await restoreBlockCall(index, d.block, meant)
+            : await editBlockCall(index, d.block, text, meant)
       ).events;
     }
   };
@@ -9384,7 +10044,9 @@ function lastAssistantUsage(): Usage | null {
   for (let i = app.events.length - 1; i >= 0; i--) {
     if (!live[i]) continue;
     const e = app.events[i];
-    if (e.event === "assistant_message") return e.usage;
+    // A reply with no usage (stopped or failed before a word, backlog
+    // 361; cut off, 332) says nothing about the prefix: read past it.
+    if (e.event === "assistant_message" && hasUsage(e.usage)) return e.usage;
   }
   return null;
 }

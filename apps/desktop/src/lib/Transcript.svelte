@@ -8,6 +8,7 @@
   import {
     app,
     addToast,
+    menuInterceptors,
     denialReason,
     draftAside,
     liveFlags,
@@ -28,6 +29,7 @@
     keepRewound,
     loadPaneLog,
     paneChat,
+    chatAgentSession,
   } from "./state.svelte";
   import type { Segment } from "./state.svelte";
   import { checkpointLine, checkpointOwner } from "./checkpoint";
@@ -71,22 +73,55 @@
   import { moveScroll, recallScroll, rememberScroll, scrollKey, NEW_SCROLL_KEY } from "./scroll.svelte";
   import { presence, watchPresence } from "./away.svelte";
   import {
+    addAttachment,
     editDraftKey,
     nextAttachmentId,
     readDraft,
+    removeAttachment,
     setDraftAttachments,
     stashEdit,
     takeEdit,
+    updateAttachment,
   } from "./drafts.svelte";
-  import { acceptFiles, conversionJobs, filesBlocked, splitChips } from "./attachFiles.svelte";
+  import { acceptFiles, conversionJobs, filesBlocked, MAX_IMAGE_BASE64, splitChips, trackPending } from "./attachFiles.svelte";
+  import { placeOf, putPlace, trackPlace, type BoxPlace } from "./boxPlace";
+  // Item 399: the edit box draws and pastes as the composer does.
+  import BoxLayer, { layerShown } from "./BoxLayer.svelte";
+  import LiveBox from "./LiveBox.svelte";
+  import { LiveBoxHandle, type ComposerBox } from "./composerEditor";
+  import { composerFormat } from "./composerFormat.svelte";
+  import { fenced, findFences, withFenceLanguage } from "./codeDetect";
+  import { pasteSteps, textPastePlan } from "./textPaste";
+  import { BoxHistory, editKind, historyInput, historyKey } from "./boxHistory";
+  import { attachPastedImages, fetchPasteImage, htmlImagePaste, preparePaste, rasterize } from "./pasteImages";
+  import {
+    canUndo,
+    followOffer,
+    isPasteAsAttachmentKey,
+    longPasteOffer,
+    normalizeNewlines,
+    pasteAction,
+    undoConverted,
+    type Converted,
+    type LongPaste,
+  } from "./pasteAttach";
+  import PasteOfferRow from "./PasteOfferRow.svelte";
+  import { AttachMark, attachPastedText, convertOffer, isConvertTag, pasteAsAttachment, type ConvertTag } from "./pastedText.svelte";
+  import { recordImage, recordText } from "./clipRing.svelte";
+  import { markPasted } from "./dropLook.svelte";
   import EditAttachments from "./EditAttachments.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
+  import { removeAsk, removeTip, type RemoveKind } from "./removeAsk";
   // For its effect: the aside threads' keeper (backlog 137).
   import "./asides.svelte";
   import {
     JUMP_OFFSET,
     MIN_TICKS,
     activeTick,
+    anchorSelector,
+    animateScroll,
+    cancelScroll,
+    liveTick,
     replyGoing,
     scrollToLatest,
     showJumpDown,
@@ -95,11 +130,13 @@
   } from "./navigator";
   import type {
     ApprovalRequest,
+    Attachment,
     DocumentInput,
     ImageInput,
     Usage,
   } from "./types";
   import AssistantMessage from "./AssistantMessage.svelte";
+  import WaitingMoon from "./WaitingMoon.svelte";
   import UserBubble from "./UserBubble.svelte";
   import AsideLayer from "./AsideLayer.svelte";
   import { openAttachment } from "./attachments.svelte";
@@ -110,15 +147,17 @@
   import Navigator from "./Navigator.svelte";
   // Edits as versions (item 299): ‹ n/N › under an edited message.
   import { ensureForkInfo, openVersion, versionsOf } from "./versions.svelte";
-  import { endsTurn } from "./retry";
+  import { endsTurn, redoOf } from "./retry";
   import { retryReply } from "./retry.svelte";
   import { versionPlace } from "./versions";
   import { arrive, hasLaunch } from "./sendMotion";
+  // Items 396 and 397: a rewind and a removal of his message play out
+  // over a copy of the thread laid down just before the call.
+  import { prepareDelete, prepareRewind } from "./messageMotion";
   // A Send near the foot lands at the bottom (item 313).
   import { followStep, restDistance, sendJumps } from "./sendScroll";
   // The first-paint mark of the message's timing line (item 256).
   import { hasText, turnClock } from "./turnTiming";
-  import { mathPasteText } from "./mathPaste";
 
   interface AssistantFooter {
     model: string;
@@ -191,6 +230,12 @@
   const locked = $derived(chat !== undefined || app.busy);
   /** The chat drawn. */
   const chatId = $derived(chat !== undefined ? chat : app.activeSessionId);
+  /** Its Claude Code session, where a tool result's images are read from
+   *  (backlog 434): the log's, or for a first turn not yet re-synced the
+   *  open chat's init line. */
+  const cliSession = $derived(
+    chatAgentSession(evs) ?? (chat === undefined ? (app.agentInit?.session_id ?? null) : null),
+  );
   // The versions under an edited message (item 299): the forks in this
   // chat's lineage are read once each, so the arrows know where each one's
   // edited message is.
@@ -421,6 +466,9 @@
 
   // Retry (item 333) rides the last reply of each turn.
   const turnEnds = $derived(endsTurn(items.map((it) => ({ kind: it.kind, superseded: it.superseded }))));
+  // Redo (item 439): the same Retry, in the icon row under his last
+  // message, beside Rewind — where he looked for it.
+  const redo = $derived(redoOf(items, turnEnds));
 
   // Rewound turns are not drawn (backlog 247): one quiet line stands where
   // each run of them was (blocker 582).
@@ -504,9 +552,28 @@
   );
   const HOW_LABEL: Record<string, string> = { created: "created", edited: "edited", shell: "shell, a guess" };
   let editorEl = $state<HTMLTextAreaElement | null>(null);
+  // Item 399: with the composer's format toggle on (item 276), a user
+  // turn's editor is the composer's formatted box (`LiveBox`), as the
+  // composer is; this is its handle, null while the textarea stands.
+  let editorLive = $state<ComposerBox | null>(null);
   // A reply's editor is one textarea per text block (backlog 066); the
   // first takes the focus and each grows to its own text.
   let editorEls = $state<(HTMLTextAreaElement | null)[]>([]);
+  // Backlog 355: each editor box's scroll and caret as he leaves it (the
+  // user turn's box at 0, a reply's block p at p + 1), stashed with the
+  // edit and put back once the editor is drawn again (`boxPlace.ts`).
+  let editPlaces: (BoxPlace | null)[] = [];
+  function placeBack(boxes: (BoxPlace | null)[] | undefined): void {
+    editPlaces = boxes?.slice() ?? [];
+    if (!boxes?.length) return;
+    void tick().then(() => [editorLive ?? editorEl, ...editorEls].forEach((el, i) => putPlace(el, boxes[i])));
+  }
+  /** The editor boxes' places for a stash: the formatted box's read now
+   *  (it has no `trackPlace`; its place is its handle's). */
+  function editBoxPlaces(): (BoxPlace | null)[] {
+    if (editorLive) editPlaces[0] = placeOf(editorLive);
+    return editPlaces.slice();
+  }
   const onClaudeCode = $derived(app.connection?.engine === "claude-code");
   const controlsTitle = $derived(
     onClaudeCode
@@ -581,6 +648,7 @@
     openEditor(item);
   }
   function openEditor(item: Item) {
+    editPlaces = [];
     const text = item.kind === "user" ? item.text : item.kind === "assistant" ? textOf(item.segs) : "";
     const parts =
       item.kind === "assistant"
@@ -595,6 +663,10 @@
       editing = editReduce(editing, { type: "begin", index: item.index, text, parts, chipsAt });
       editCacheLine = editLine(cacheState(evs, Date.now()));
     }).then(() => {
+      if (editorLive) {
+        editorLive.focus();
+        return;
+      }
       const first = editorEl ?? editorEls.find((el) => el);
       // Not `focus()` bare: that scrolls the textarea's top edge into view,
       // which on a long message is a jump to its top (backlog 122). The
@@ -634,6 +706,37 @@
   }
   /** A pending "drop this edit?" question (practices §7, item 336). */
   let dropAsk = $state<{ what: "cancel" | "open"; run: () => void } | null>(null);
+  // Remove asks first (item 356): the turn the trash button names, until
+  // the dialog's Remove or Cancel. `key` is the chat it was asked in: the
+  // service removes by index in the open chat, so a switch while the
+  // dialog is open drops the question (wave 8 review) rather than
+  // removing the same index from the chat switched to.
+  let removing = $state<{ index: number; kind: RemoveKind; text: string; key: string } | null>(null);
+  // The motions (items 396, 397): the copy goes down before the call and
+  // plays once it lands; the state change itself is never held back, and a
+  // refused or failed call lets the copy go on the next frame.
+  async function rewindHere(index: number): Promise<void> {
+    const m = prepareRewind(viewport, index);
+    try {
+      await rewindTo(index, true);
+    } finally {
+      m?.commit();
+    }
+  }
+  async function removeHere(index: number): Promise<void> {
+    const m = prepareDelete(viewport, index);
+    try {
+      await removeTurn(index);
+    } finally {
+      m?.commit();
+    }
+  }
+  $effect(() => {
+    const k = sessionKey;
+    untrack(() => {
+      if (removing && removing.key !== k) removing = null;
+    });
+  });
   function cancelEdit(): void {
     if (!editing) return;
     // A changed edit is not dropped on one key: Cancel and Escape ask.
@@ -651,26 +754,302 @@
       setDraftAttachments(editKey, []);
     });
   }
-  /** Files pasted or dropped on a user turn's editor (item 336): chips,
-   *  as the composer makes them. Pasted text goes in as text. */
+  /**
+   * A paste into a user turn's editor, read as the composer reads one
+   * (item 399, his "if i copy in code it doesnt render it as code, neither
+   * in the edit screen or even when i click send"): files become chips
+   * (item 336) and pasted images land with the drop's shine (388); text
+   * copied with images keeps them in place as `[image N]` and chips (382);
+   * math from a web page goes in as its LaTeX (348); code goes in fenced
+   * with its language, ⌘Z giving back the paste as it came (315) — the
+   * plan is `textPastePlan`, the composer's own. Anything else is the
+   * box's own paste. The text goes into the clipboard ring as the
+   * composer's pastes do (173).
+   */
   function editorPaste(e: ClipboardEvent): void {
+    if (!editing || editing.parts) return;
+    const box: ComposerBox | null = editorLive ?? editorEl;
+    const plain = e.clipboardData?.getData("text/plain") ?? "";
     const files = Array.from(e.clipboardData?.files ?? []);
-    // Item 348: math copied from a web page goes in as its LaTeX, as in
-    // the composer. `insertText` keeps the textarea's own undo and fires
-    // `input`, so the draft follows.
-    const math = files.length === 0 ? mathPasteText(e.clipboardData?.getData("text/html") ?? "") : null;
-    if (math !== null && e.currentTarget instanceof HTMLTextAreaElement) {
+    const html = files.length === 0 ? (e.clipboardData?.getData("text/html") ?? "") : "";
+    // Item 399b: ⌥⌘V's paste puts the text in as an attachment (284); a
+    // clipboard holding a file is pasted as ⌘V would.
+    const act = pasteAction(editAttachMark.take(), plain, files.length);
+    if (act !== "box") {
       e.preventDefault();
-      const box = e.currentTarget;
-      if (!document.execCommand("insertText", false, math)) {
-        box.setRangeText(math, box.selectionStart, box.selectionEnd, "end");
-        box.dispatchEvent(new Event("input", { bubbles: true }));
+      if (act === "attach") void attachPastedText(editKey, plain);
+      else addToast("The clipboard holds no text to attach");
+      return;
+    }
+    const firstImage = editChips.filter((a) => a.kind === "image").length + 1;
+    const withImages = files.length === 0 ? htmlImagePaste(html, firstImage) : null;
+    const caret = box ? Math.min(box.selectionStart, box.selectionEnd) : editing.draft.length;
+    // Every text paste replaces the last one's offer (284), as in the composer.
+    editConverted = null;
+    if (withImages && box) {
+      e.preventDefault();
+      editPasteWithImages(box, withImages);
+      return;
+    }
+    const plan = textPastePlan({ plain, html, fileCount: files.length, text: editing.draft, caret });
+    if (plain) recordText("pasted", plan.kind === "math" ? plan.text : plain);
+    if (plan.kind === "math" && box) {
+      e.preventDefault();
+      editInsert(box, plan.text);
+      editOffer = longPasteOffer(plan.text, caret);
+      return;
+    }
+    if (plan.kind === "code" && box) {
+      e.preventDefault();
+      editOffer = null;
+      if (box instanceof LiveBoxHandle) box.pasteAsCode(plan.raw, (before, after) => fenced(plan.raw, plan.lang, before, after));
+      else editPasteSteps(box as HTMLTextAreaElement, plan.raw, plan.lang);
+      return;
+    }
+    // A long ⌘V paste: the text goes in as always (the box's own paste),
+    // and the offer under the box can move it into an attachment (284).
+    if (plain && files.length === 0) editOffer = longPasteOffer(plain, caret);
+    if (files.length === 0) return;
+    if (!plain) e.preventDefault();
+    markPasted(files.filter((f) => f.type.startsWith("image/")).map((f) => f.name || "pasted image"));
+    void acceptFiles(editKey, files).then((chips) => {
+      for (const c of chips) if (c.kind === "image") recordImage("pasted", c);
+    });
+  }
+  /** Text in place of the edit box's selection, one undo step, as a paste. */
+  function editInsert(box: ComposerBox, text: string): void {
+    if (box instanceof LiveBoxHandle) box.pasteText(text);
+    else editPasteSteps(box as HTMLTextAreaElement, text, null);
+  }
+  /** A paste in the edit box's textarea as the composer's is: each step
+   *  (`pasteSteps`) one of the box's own undo history, the last shown. */
+  function editPasteSteps(box: HTMLTextAreaElement, raw: string, lang: string | null): void {
+    if (!editing || editing.parts) return;
+    const from = Math.min(box.selectionStart, box.selectionEnd);
+    const to = Math.max(box.selectionStart, box.selectionEnd);
+    const steps = pasteSteps(editing.draft, from, to, raw, lang);
+    const last = steps[steps.length - 1];
+    editHist.select(from, to);
+    for (const st of steps) editHist.external(st.text, st.caret);
+    editing = editReduce(editing, { type: "draft", text: last.text });
+    void tick().then(() => {
+      box.selectionStart = box.selectionEnd = last.caret;
+      autogrow(box);
+    });
+  }
+
+  /*
+   * Item 399b (his answer to blocker 1508): the long paste's offer and
+   * ⌥⌘V in the edit box, the composer's own (`pastedText.svelte.ts`,
+   * `PasteOfferRow`): "Make this an attachment" under the box while it is
+   * as the paste left it; one click moves the span into a chip of this
+   * edit; Undo (or ⌘Z) puts it back while nothing has changed since.
+   */
+  let editOffer = $state<LongPaste | null>(null);
+  let editConverted = $state<Converted | null>(null);
+  const editAttachMark = new AttachMark();
+  /** Whether the conversion's Undo still applies (a function: the edit's
+   *  chips are declared further down). */
+  function editUndoable(): boolean {
+    return !!editing && !editing.parts && canUndo(editConverted, editing.draft, editChips.map((a) => a.id));
+  }
+  $effect(() => {
+    const t = editing && !editing.parts ? editing.draft : null;
+    untrack(() => {
+      editOffer = t === null ? null : followOffer(editOffer, t);
+    });
+  });
+  // Another turn's editor, or none: the offer and its Undo were this one's.
+  // On the index alone (a derived), not on every keystroke's new state.
+  const editIndex = $derived(editing && !editing.parts ? editing.index : null);
+  $effect(() => {
+    void editIndex;
+    untrack(() => {
+      editOffer = null;
+      editConverted = null;
+    });
+  });
+  async function editConvert(): Promise<void> {
+    const o = editOffer;
+    if (!o || !editing || editing.parts) return;
+    editOffer = null;
+    const at = editing.index;
+    const key = editKey;
+    const read = () => (editing && editing.index === at && !editing.parts ? editing.draft : null);
+    const done = await convertOffer(o, key, read, (t) => attachPastedText(key, t));
+    if (!done || !editing || editing.index !== at || editing.parts) return;
+    // Blocker 1210: a step of the box's history that carries the chip.
+    const tag: ConvertTag = { convert: true, chip: $state.snapshot(done.chip) as Attachment, before: done.before, after: done.after, caret: o.start };
+    editHist.external(done.after, o.start, tag);
+    editing = editReduce(editing, { type: "draft", text: done.after });
+    editConverted = { before: done.before, after: done.after, chipId: done.chip.id, caret: o.start };
+    void tick().then(() => editCaret(o.start));
+  }
+  function editUndoConvert(): boolean {
+    const c = editConverted;
+    editConverted = null;
+    if (!editing || editing.parts || !canUndo(c, editing.draft, editChips.map((a) => a.id))) return false;
+    const tag = editHist.undoTag;
+    if (!editorLive && isConvertTag(tag) && tag.chip.id === c.chipId) return editStep("undo");
+    const r = undoConverted(c);
+    removeAttachment(editKey, c.chipId);
+    editHist.external(r.text, r.caret);
+    editing = editReduce(editing, { type: "draft", text: r.text });
+    void tick().then(() => editCaret(r.caret));
+    return true;
+  }
+  /** The edit box focused with its caret at `at` (either box). */
+  function editCaret(at: number): void {
+    const box: ComposerBox | null = editorLive ?? editorEl;
+    if (!box) return;
+    box.focus();
+    box.selectionStart = box.selectionEnd = at;
+    if (editorEl) autogrow(editorEl);
+  }
+
+  /*
+   * Item 399: the edit box's undo is the composer's own history (blocker
+   * 1210, `boxHistory.ts`) — WebKit's goes stale after any text the page
+   * sets, and folds a scripted paste into the typing before it, so ⌘Z
+   * after a code paste took his typing with it (measured). His keystrokes
+   * are recorded from `beforeinput` / `input`; every other change to the
+   * draft (a fence, a relabel, a marker rewritten) is seen by the effect
+   * and recorded as a step of its own. Opening an editor starts afresh.
+   */
+  const editHist = new BoxHistory("");
+  let editHistAt: number | null = null;
+  let editComposing = false;
+  let editNativeStepped = false;
+  $effect(() => {
+    const e = editing;
+    const t = e && !e.parts ? e.draft : null;
+    untrack(() => {
+      if (!e || t === null) {
+        editHistAt = null;
+        return;
+      }
+      if (e.index !== editHistAt) {
+        editHistAt = e.index;
+        editHist.reset(t);
+        editComposing = false;
+      } else if (t !== editHist.current.text) editHist.external(t);
+    });
+  });
+  const editSnap = (el: HTMLTextAreaElement) => ({ text: el.value, start: el.selectionStart, end: el.selectionEnd });
+  function editBeforeInput(e: InputEvent): void {
+    const el = e.currentTarget as HTMLTextAreaElement;
+    const h = historyInput(e.inputType);
+    if (h) {
+      // WebKit's own undo (the Edit menu's, the context menu's): never
+      // applied — its stack is the stale one — but answered from the box's.
+      e.preventDefault();
+      if (!editNativeStepped) {
+        editNativeStepped = true;
+        const mc = new MessageChannel();
+        mc.port1.onmessage = () => (editNativeStepped = false);
+        mc.port2.postMessage(0);
+        editStep(h);
       }
       return;
     }
-    if (files.length === 0) return;
-    if (!e.clipboardData?.getData("text/plain")) e.preventDefault();
-    void acceptFiles(editKey, files);
+    editHist.before(editSnap(el));
+  }
+  /** One undo or redo in the edit box's textarea; false when there is none. */
+  function editStep(dir: "undo" | "redo"): boolean {
+    const el = editorEl;
+    if (!el || !editing || editing.parts || editorLive) return false;
+    // Not while an input method's marked text shows (as the composer).
+    if (editComposing) return true;
+    const st = dir === "undo" ? editHist.undo() : editHist.redo();
+    if (!st) return true;
+    // 399b: a conversion's chip goes with its undo and comes back with its
+    // redo, so the pasted words are always in the box or in the chip.
+    if (isConvertTag(st.tag)) {
+      const t = st.tag;
+      const has = editChips.some((a) => a.id === t.chip.id);
+      if (dir === "undo") {
+        editConverted = null;
+        if (has) removeAttachment(editKey, t.chip.id);
+      } else {
+        if (!has) addAttachment(editKey, t.chip);
+        editConverted = { before: t.before, after: t.after, chipId: t.chip.id, caret: t.caret };
+      }
+    }
+    editing = editReduce(editing, { type: "draft", text: st.text });
+    void tick().then(() => {
+      el.focus({ preventScroll: true });
+      el.setSelectionRange(st.start, st.end);
+      autogrow(el);
+    });
+    return true;
+  }
+  // The Edit menu's Undo while the edit box has the keyboard (macOS: the
+  // menu takes ⌘Z before the box sees it), as the composer's.
+  $effect(() => {
+    const take = (id: string): boolean => {
+      if (id !== "undo_app" && id !== "redo_app") return false;
+      const box = editorLive instanceof LiveBoxHandle ? editorLive.element : editorEl;
+      if (!box || !box.contains(document.activeElement)) return false;
+      if (id === "undo_app" && editUndoable()) return editUndoConvert();
+      return editStep(id === "undo_app" ? "undo" : "redo");
+    };
+    menuInterceptors.push(take);
+    return () => {
+      const i = menuInterceptors.indexOf(take);
+      if (i >= 0) menuInterceptors.splice(i, 1);
+    };
+  });
+  /** Item 382 in the edit box: the paste's text with its markers at the
+   *  caret, then its images as chips of this edit, in marker order. */
+  function editPasteWithImages(box: ComposerBox, paste: NonNullable<ReturnType<typeof htmlImagePaste>>): void {
+    const chatKey = editKey;
+    const at = editing?.index;
+    const ready = preparePaste(paste, MAX_IMAGE_BASE64);
+    const raw = normalizeNewlines(ready.text);
+    const start = Math.min(box.selectionStart, box.selectionEnd);
+    editInsert(box, raw);
+    editOffer = longPasteOffer(raw, start);
+    recordText("pasted", raw);
+    markPasted(ready.images.map((i) => `image ${i.n}`));
+    void attachPastedImages(ready.images, ready.failed, {
+      nextId: nextAttachmentId,
+      add: (chip) => addAttachment(chatKey, chip),
+      update: (id, patch) => void updateAttachment(chatKey, id, patch),
+      remove: (id) => removeAttachment(chatKey, id),
+      chips: () => readDraft(chatKey).attachments,
+      // A marker rewritten (an image that could not come) in this edit's
+      // text, while this edit is the one open.
+      readText: () => (editing && editing.index === at ? editing.draft : ""),
+      setText: (t) => {
+        if (editing && editing.index === at && !editing.parts) editing = editReduce(editing, { type: "draft", text: t });
+      },
+      fetch: fetchPasteImage,
+      convert: rasterize,
+      track: trackPending,
+      record: (chip) => recordImage("pasted", chip),
+      cap: MAX_IMAGE_BASE64,
+      toast: (m) => addToast(m),
+    });
+  }
+  /** Item 315 in the edit box: a block's language picked from its label —
+   *  only the fence's info string changes, as one undoable edit. */
+  function editRelabel(k: number, lang: string): void {
+    if (!editing || editing.parts) return;
+    const f = findFences(editing.draft)[k];
+    const box = editorLive ?? editorEl;
+    if (!f || !box) return;
+    if (box instanceof LiveBoxHandle) {
+      box.replaceRange(f.infoFrom, f.infoTo, lang);
+      return;
+    }
+    const ta = box as HTMLTextAreaElement;
+    const caret = ta.selectionStart;
+    const shift = lang.length - (f.infoTo - f.infoFrom);
+    editing = editReduce(editing, { type: "draft", text: withFenceLanguage(editing.draft, f, lang) });
+    void tick().then(() => {
+      const back = caret >= f.infoTo ? caret + shift : Math.min(caret, f.infoFrom);
+      ta.selectionStart = ta.selectionEnd = back;
+    });
   }
   function editorDragOver(e: DragEvent): void {
     if (!e.dataTransfer?.types.includes("Files")) return;
@@ -763,6 +1142,34 @@
     // as the composer's does, Shift+Enter is a newline, and Save is its
     // button only; a reply's editor keeps Enter a newline and ⌘/Ctrl-Enter
     // to save. The mapping is `editorKey` (edit.ts), IME-safe (item 322).
+    // Item 399: ⌘Z / ⌘⇧Z in a user turn's textarea step the box's own
+    // history, as in the composer (the formatted box has its own).
+    if (item.kind === "user") {
+      // 399b: ⌥⌘V pastes the clipboard's text as an attachment (284).
+      if (isPasteAsAttachmentKey(e)) {
+        e.preventDefault();
+        void pasteAsAttachment(editAttachMark, (t) => attachPastedText(editKey, t));
+        return;
+      }
+      // Esc while the offer stands dismisses it (318); the paste stays.
+      if (e.key === "Escape" && editOffer && editOffer.after !== null && !editComposing && !e.isComposing && e.keyCode !== 229) {
+        e.preventDefault();
+        e.stopPropagation();
+        editOffer = null;
+        return;
+      }
+      // ⌘Z right after "Make this an attachment" puts the text back.
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "z" && editUndoable()) {
+        e.preventDefault();
+        editUndoConvert();
+        return;
+      }
+    }
+    const step = item.kind === "user" && !editorLive ? historyKey(e, isMac) : null;
+    if (step && editStep(step)) {
+      e.preventDefault();
+      return;
+    }
     const action = editorKey(e, item.kind !== "user");
     if (!action) return;
     e.preventDefault();
@@ -781,13 +1188,14 @@
     if (inPane) return;
     untrack(() => {
       if (busy) {
-        if (editing) stashEdit(sessionKey, { editing, line: editCacheLine });
+        if (editing) stashEdit(sessionKey, { editing, line: editCacheLine, boxes: editBoxPlaces() });
         editing = editReduce(editing, { type: "busy" });
       } else if (!editing) {
         const back = takeEdit(sessionKey);
         if (back) {
           editing = back.editing;
           editCacheLine = back.line;
+          placeBack(back.boxes);
         }
       }
     });
@@ -821,16 +1229,24 @@
       pinned = false;
       chasing = false;
     };
+    // Item 359 (review): his own scrolling ends the rail's eased jump
+    // (`animateScroll`), which would otherwise pull the view back to its
+    // target every frame for up to 400 ms. ⌥↑ / ⌥↓ start a jump, so they
+    // never cancel one.
     const wheel = (e: WheelEvent) => {
+      cancelScroll();
       if (e.deltaY < 0) up();
     };
     const key = (e: KeyboardEvent) => {
+      if (!e.altKey && ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(e.key))
+        cancelScroll();
       if (["ArrowUp", "PageUp", "Home"].includes(e.key)) up();
     };
     const touchstart = (e: TouchEvent) => {
       touchY = e.touches[0]?.clientY ?? 0;
     };
     const touchmove = (e: TouchEvent) => {
+      cancelScroll();
       const y = e.touches[0]?.clientY ?? 0;
       if (y > touchY) up();
       touchY = y;
@@ -946,6 +1362,10 @@
     const key = sessionKey;
     const from = lastKey;
     lastKey = key;
+    // Item 359 (review): a rail jump still easing in the chat just left
+    // must not go on scrolling this one (its aim re-reads the anchors each
+    // frame, now this chat's) and overwrite the position restored below.
+    if (from !== null && from !== key) cancelScroll();
     if (from === NEW_SCROLL_KEY && key !== NEW_SCROLL_KEY) {
       moveScroll(from, key);
       return;
@@ -955,10 +1375,11 @@
       // editor must not re-run the scroll restore below. (A pane's
       // transcript leaves the chat's stashed edit for the open one.)
       untrack(() => {
-        if (from !== null && editing) stashEdit(from, { editing, line: editCacheLine });
+        if (from !== null && editing) stashEdit(from, { editing, line: editCacheLine, boxes: editBoxPlaces() });
         const back = takeEdit(key);
         editing = back?.editing ?? null;
         editCacheLine = back?.line ?? "";
+        placeBack(back?.boxes);
       });
     }
     const entry = recallScroll(key);
@@ -978,7 +1399,8 @@
   // the live tab went to the other pane — the draft is stashed for the
   // next mount on this chat (backlog 137).
   onDestroy(() => {
-    if (!inPane && editing && lastKey !== null) stashEdit(lastKey, { editing, line: editCacheLine });
+    if (!inPane && editing && lastKey !== null)
+      stashEdit(lastKey, { editing, line: editCacheLine, boxes: editBoxPlaces() });
   });
 
   // ---- The sent message's entrance (nightshift backlog 095, 2026-09-16) ----
@@ -1207,10 +1629,20 @@
   // viewport's scroll space, which one is being read, whether the view
   // scrolls at all — measured once per frame on scroll and again after
   // the events change. `data-turn` on each turn is the anchor.
-  const navTicks = $derived(tickModel(evs, liveFlags(evs), displayTexts(evs)));
+  // Item 359: the reply still streaming (or its ghost) has a rib too,
+  // anchored on `data-nav-live` — LibreChat's rail lists the row the
+  // moment it mounts and previews "Generating" until it has words.
+  const navTicks = $derived.by(() => {
+    const logged = tickModel(evs, liveFlags(evs), displayTexts(evs));
+    if (!shown) return logged;
+    const said = shown.segments.map((s) => (s.kind === "text" ? s.text : "")).join("");
+    return [...logged, liveTick(said)];
+  });
   let navActive = $state<number | null>(null);
   let navScrolls = $state(false);
-  const showNav = $derived(navScrolls && navTicks.length >= MIN_TICKS);
+  // Item 359: shown from three messages whether or not the chat scrolls
+  // (LibreChat's rule); before, only when it scrolled and from four.
+  const showNav = $derived(navTicks.length >= MIN_TICKS);
   // The round ⌄ above the composer (item 218): lit when scrolled up past
   // `JUMP_DOWN_SHOW`, dark at the foot and while its own click is carrying
   // the view down (`chasing`, cleared at the foot or on any upward input).
@@ -1222,7 +1654,7 @@
 
   function anchorTop(index: number): number | null {
     if (!viewport) return null;
-    const el = viewport.querySelector<HTMLElement>(`[data-turn="${index}"]`);
+    const el = viewport.querySelector<HTMLElement>(anchorSelector(index));
     if (!el) return null;
     return el.getBoundingClientRect().top - viewport.getBoundingClientRect().top + viewport.scrollTop;
   }
@@ -1232,8 +1664,13 @@
     navScrolls = viewport.scrollHeight > viewport.clientHeight + 8;
     if (chasing && atBottom()) chasing = false;
     jumpDown = showJumpDown(viewport.scrollTop, viewport.clientHeight, viewport.scrollHeight, chasing);
-    if (!navScrolls || navTicks.length < MIN_TICKS) {
+    if (navTicks.length < MIN_TICKS) {
       navActive = null;
+      return;
+    }
+    // A chat that does not scroll is read from its first message (theirs).
+    if (!navScrolls) {
+      navActive = 0;
       return;
     }
     const tops = navTicks.map((t) => anchorTop(t.index) ?? 0);
@@ -1249,22 +1686,36 @@
   });
 
   /** Scroll so the message sits just under the top edge; the view is no
-   *  longer following the reply. */
-  function jumpTo(i: number) {
+   *  longer following the reply. Item 359: LibreChat's 400 ms ease-out
+   *  cubic, re-aimed every frame, rather than the browser's smooth scroll;
+   *  `instant` for a drag along the rail. */
+  function jumpTo(i: number, instant = false) {
     const t = navTicks[i];
     if (!t || !viewport) return;
     const top = anchorTop(t.index);
     if (top === null) return;
     pinned = false;
-    viewport.scrollTo({ top: Math.max(0, top - JUMP_OFFSET), behavior: "smooth" });
+    const vp = viewport;
+    const aim = () => {
+      const now = anchorTop(t.index);
+      if (now === null) return null;
+      return Math.max(0, Math.min(now - JUMP_OFFSET, vp.scrollHeight - vp.clientHeight));
+    };
+    if (instant) {
+      cancelScroll();
+      vp.scrollTop = aim() ?? vp.scrollTop;
+    } else {
+      animateScroll(vp, aim);
+    }
     // So ⌥↑ / ⌥↓ work from here: the keys are on the viewport, and a click
     // on the strip would otherwise leave focus on the strip.
     viewport.focus({ preventScroll: true });
   }
-  function toTop() {
+  function toTop(instant = false) {
     if (!viewport) return;
     pinned = false;
-    viewport.scrollTo({ top: 0, behavior: "smooth" });
+    cancelScroll();
+    viewport.scrollTo({ top: 0, behavior: instant ? "instant" : "smooth" });
     viewport.focus({ preventScroll: true });
   }
   /** The ⌄'s click (item 218; it was 065's bottom chevron on the strip):
@@ -1275,6 +1726,7 @@
     pinned = true;
     chasing = true;
     jumpDown = false;
+    cancelScroll();
     scrollToLatest(viewport);
     // A smooth scroll that something else interrupts (a scrollbar grab)
     // never reaches the foot; the ride is over by then either way.
@@ -1518,6 +1970,22 @@
 
 <svelte:document onselectionchange={placePill} />
 <svelte:window onkeydown={asideChord} />
+{#if removing}
+  <!-- Item 356: Remove asks first, and the undo toast still follows it. -->
+  {@const ask = removeAsk(removing.kind, removing.text, onClaudeCode)}
+  <ConfirmDialog
+    title={ask.title}
+    lead={ask.lead}
+    facts={ask.facts}
+    confirmLabel={ask.confirmLabel}
+    onconfirm={() => {
+      const asked = removing;
+      removing = null;
+      if (asked && asked.key === sessionKey) void removeHere(asked.index);
+    }}
+    onclose={() => (removing = null)}
+  />
+{/if}
 {#if dropAsk}
   <!-- Practices §7 (item 336): a changed edit — words or chips — is not
        dropped on one key or one click elsewhere; Keep editing is the default. -->
@@ -1534,7 +2002,7 @@
     }}
     onclose={() => {
       dropAsk = null;
-      void tick().then(() => editorEl?.focus({ preventScroll: true }));
+      void tick().then(() => (editorLive ? editorLive.focus() : editorEl?.focus({ preventScroll: true })));
     }}
   />
 {/if}
@@ -1545,6 +2013,7 @@
 <div
   class="transcript"
   bind:this={viewport}
+  data-drop-chat={inPane ? undefined : ""}
   {onscroll}
   use:scrollIntent
   tabindex="-1"
@@ -1600,22 +2069,67 @@
           </div>
           {#if editing?.index === item.index}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div class="editor" ondragover={editorDragOver} ondrop={editorDrop}>
-              <textarea
-                bind:this={editorEl}
-                use:grow
-                value={editing.draft}
-                oninput={(e) => {
-                  editing = editReduce(editing, { type: "draft", text: (e.target as HTMLTextAreaElement).value });
-                  autogrow();
-                }}
-                onkeydown={(e) => editorKeys(e, item)}
-                onpaste={editorPaste}
-                aria-label="Edit this message"
-                autocorrect="off"
-                autocapitalize="off"
-                spellcheck="false"
-              ></textarea>
+            <div class="editor" data-drop-box="edit" ondragover={editorDragOver} ondrop={editorDrop}>
+              <!-- Item 399: the composer's box, drawn as the composer draws
+                   it — with the format toggle on, its formatted box; off,
+                   the textarea with quote and code lines drawn in a layer
+                   behind it (BoxLayer). -->
+              {#if composerFormat.on}
+                <div class="edit-live">
+                  <LiveBox
+                    bind:handle={editorLive}
+                    value={editing.draft}
+                    label="Edit this message"
+                    onchange={(v) => {
+                      if (editing && !editing.parts) editing = editReduce(editing, { type: "draft", text: v });
+                    }}
+                    oninput={() => (editPlaces[0] = placeOf(editorLive))}
+                    onkeydown={(e) => editorKeys(e, item)}
+                    onpaste={editorPaste}
+                  />
+                </div>
+              {:else}
+                <div class="edit-wrap">
+                  {#if layerShown(editing.draft)}
+                    <BoxLayer text={editing.draft} box={editorEl} onrelabel={editRelabel} />
+                  {/if}
+                  <!-- data-own-undo: its history is editHist's (item 421, fieldUndo.ts). -->
+                  <textarea
+                    bind:this={editorEl}
+                    data-own-undo
+                    class:layered={layerShown(editing.draft)}
+                    use:grow
+                    use:trackPlace={(pl) => (editPlaces[0] = pl)}
+                    value={editing.draft}
+                    oninput={(e) => {
+                      const el = e.target as HTMLTextAreaElement;
+                      editHist.input(editKind((e as unknown as InputEvent).inputType ?? ""), editSnap(el));
+                      editing = editReduce(editing, { type: "draft", text: el.value });
+                      autogrow();
+                    }}
+                    onbeforeinput={editBeforeInput}
+                    oncompositionstart={() => (editComposing = true)}
+                    oncompositionend={() => {
+                      editComposing = false;
+                      editHist.close();
+                    }}
+                    onkeydown={(e) => editorKeys(e, item)}
+                    onpaste={editorPaste}
+                    aria-label="Edit this message"
+                    autocorrect="off"
+                    autocapitalize="off"
+                    spellcheck="false"
+                  ></textarea>
+                </div>
+              {/if}
+              <!-- Item 399b: the composer's long-paste offer. -->
+              <PasteOfferRow
+                offer={editOffer}
+                undoable={editUndoable()}
+                onconvert={() => void editConvert()}
+                ondismiss={() => (editOffer = null)}
+                onundo={() => editUndoConvert()}
+              />
               <!-- Item 336: the turn's attachments as chips, × to remove,
                    Attach (and paste, drop) to add. -->
               <EditAttachments key={editKey} />
@@ -1785,10 +2299,24 @@
                     class="tool-btn"
                     use:tip={rewindTitle}
                     aria-label="Rewind to here"
-                    onclick={() => void rewindTo(item.index)}
+                    onclick={() => void rewindHere(item.index)}
                   >
                     <Icon name="revert" size={14} />
                   </button>
+                  {#if redo && redo.prompt === item.index && app.activeSessionId}
+                    <!-- Redo (item 439): Claude answers this message again,
+                         no retyping — the Retry under the reply (item 333),
+                         here beside Rewind. The old reply stays a version
+                         away; a half-typed draft follows him. -->
+                    <button
+                      class="tool-btn"
+                      use:tip={"Redo: Claude answers this message again, without retyping it. The old reply stays — ‹ › under your message flips between the two."}
+                      aria-label="Redo the reply to this message"
+                      onclick={() => void retryReply(redo.reply)}
+                    >
+                      <Icon name="refresh" size={14} />
+                    </button>
+                  {/if}
                   {#if item.editable}
                     <button
                       class="tool-btn"
@@ -1799,13 +2327,14 @@
                       <Icon name="pencil" size={14} />
                     </button>
                   {/if}
+                  <!-- A delete look, apart from Edit's pencil (item 356). -->
                   <button
-                    class="tool-btn"
-                    use:tip={"Remove this message from the context. It stays in the log; the context panel restores it."}
-                    aria-label="Remove this message from the context"
-                    onclick={() => void removeTurn(item.index)}
+                    class="tool-btn danger"
+                    use:tip={removeTip("message")}
+                    aria-label="Remove this message from the chat history"
+                    onclick={() => (removing = { index: item.index, kind: "message", text: item.text, key: sessionKey })}
                   >
-                    <Icon name="minus" size={14} />
+                    <Icon name="trash" size={14} />
                   </button>
                   {#if app.connection?.engine === "claude-code" && checkpointOwner(userIndexes, app.checkpoint) !== item.index}
                     <!-- "Fork from here" (nightshift backlog 104, pass 3):
@@ -1875,6 +2404,7 @@
                   <textarea
                     bind:this={editorEls[p]}
                     use:grow
+                    use:trackPlace={(pl) => (editPlaces[p + 1] = pl)}
                     value={part.draft}
                     oninput={(e) => {
                       const el = e.target as HTMLTextAreaElement;
@@ -1927,9 +2457,12 @@
               clock={now}
               headed={!continued[i]}
               onedit={editable && item.editable ? () => beginEdit(item) : null}
-              onremoveturn={editable ? () => void removeTurn(item.index) : null}
+              onremoveturn={editable
+                ? () => (removing = { index: item.index, kind: "reply", text: textOf(item.segs), key: sessionKey })
+                : null}
               planUsage={replyUsageView(usageLines.get(item.index))}
               onretry={editable && turnEnds[i] && app.activeSessionId ? () => void retryReply(item.index) : null}
+              {cliSession}
             />
             {#if item.original !== null && item.removed}
               <details class="original">
@@ -1987,6 +2520,9 @@
          turn's end and the re-synced log (backlog 131), so the reply never
          leaves the DOM under a reader. -->
     {#if shown}
+      <!-- Item 359: the live reply's anchor for its rib on the rail. One
+           flex item, as the reply alone was; nothing styles it. -->
+      <div data-nav-live>
       {#if shown.segments.length === 0}
         <!-- Between send and the first streamed event there is nothing to
              render, and a blank row read as "nothing happened" (his words,
@@ -1994,18 +2530,18 @@
              and back until the first delta or tool call replaces it; with
              the OS asked for less motion it is three still dots. It says
              nothing about progress, because it can see none. -->
-        <div class="waiting" role="status" aria-label="Waiting for the reply">
-          <span class="roll" aria-hidden="true"><Icon name="moon" size={22} /></span>
-          <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
-        </div>
+        <!-- Since item 403 the one piece the chat and its asides wait with. -->
+        <WaitingMoon />
       {:else}
         <AssistantMessage
           segs={shown.segments}
           streaming
           since={shown.since}
           approvals={approvalsNow}
+          {cliSession}
         />
       {/if}
+      </div>
     {/if}
     {#each stranded as req (req.id)}
       <ApprovalPrompt {req} />
@@ -2114,7 +2650,24 @@
   </div>
 </div>
 {#if showNav}
-  <Navigator ticks={navTicks} active={navActive} onjump={jumpTo} ontop={toTop} />
+  <Navigator
+    ticks={navTicks}
+    active={navActive}
+    {viewport}
+    onjump={jumpTo}
+    ontop={toTop}
+    onend={(instant) => {
+      // The rail's terminus: the foot, re-pinned, as the ⌄ above the
+      // composer does; a drag past the rail's end lands there at once.
+      if (instant && viewport) {
+        cancelScroll();
+        pinned = true;
+        viewport.scrollTop = viewport.scrollHeight;
+        return;
+      }
+      toBottom();
+    }}
+  />
 {/if}
 <!-- The jump to the latest message (item 218): round, centred just above
      the composer where the Claude app keeps it, faded in only when the
@@ -2503,6 +3056,12 @@
     color: var(--ink);
     border-color: var(--line2);
   }
+  /* Remove (item 356): red on hover, so it never reads as Edit. */
+  .tool-btn.danger:hover,
+  .tool-btn.danger:focus-visible {
+    color: var(--error);
+    border-color: color-mix(in srgb, var(--error) 45%, transparent);
+  }
   .assistant-turn {
     display: flex;
     flex-direction: column;
@@ -2622,9 +3181,39 @@
   .assistant-turn .editor {
     max-width: 640px;
   }
+  /* Item 399: the box's face is its wrap's, so the layer behind the
+     textarea (BoxLayer) shows through it; the textarea's glyphs go
+     transparent over the layer while it is drawn, its caret kept. */
+  .edit-wrap {
+    position: relative;
+    background: var(--sheet);
+    border-radius: 10px;
+  }
+  .edit-wrap textarea {
+    position: relative;
+    z-index: 1;
+    display: block;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+  }
+  .edit-wrap textarea.layered {
+    color: transparent;
+    caret-color: var(--ink);
+  }
+  .edit-live {
+    background: var(--sheet);
+    border: 1px solid var(--accent);
+    border-radius: 10px;
+    padding: 8px 14px 6px 4px;
+  }
+  .edit-live :global(.cm-editor) {
+    max-height: 420px;
+    min-height: 3.2em;
+    font-family: var(--transcript-font, var(--sans));
+  }
   .editor textarea {
     width: 100%;
-    background: var(--sheet);
+    background: transparent;
     color: var(--ink);
     border: 1px solid var(--accent);
     border-radius: 10px;
@@ -2776,67 +3365,8 @@
     font-size: 10px;
     color: var(--dim);
   }
-  .waiting {
-    display: flex;
-    align-items: center;
-    min-height: 20px;
-    color: var(--dim);
-    /* A beat after the bubble (backlog 095); `backwards` keeps it unseen
-       through the delay, and leaves no fill behind to fight `.superseded`. */
-    animation: enter 180ms ease-out 300ms backwards;
-  }
-  /* The sent message's entrance (backlog 095) moved to `sendMotion.ts`
-     (backlog 194): a flight from the composer, or the same 180 ms rise
-     when nothing launched. The moon above waits 300 ms now, so it comes
-     in as the flight lands rather than under it. */
-  @keyframes enter {
-    from {
-      opacity: 0;
-      transform: translateY(6px);
-    }
-    to {
-      opacity: 1;
-      transform: none;
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .waiting {
-      animation: none;
-    }
-  }
-  .roll {
-    display: inline-flex;
-    animation: roll 1.5s ease-in-out infinite alternate;
-  }
-  /* Two feet, not the width of the pane: a roll that crosses the transcript
-     competes with the reply it is waiting for. */
-  @keyframes roll {
-    from {
-      transform: translateX(0) rotate(0deg);
-    }
-    to {
-      transform: translateX(32px) rotate(360deg);
-    }
-  }
-  .dots {
-    display: none;
-    gap: 5px;
-  }
-  .dots i {
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: currentColor;
-    opacity: 0.55;
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .roll {
-      display: none;
-    }
-    .dots {
-      display: inline-flex;
-    }
-  }
+  /* The waiting moon's styles moved to `WaitingMoon.svelte` with it
+     (item 403), so an aside waits with the same one. */
   /* The limit card (backlog 164): a pause, drawn like a notice and not
      like the error banner above it. */
   .limit-card {

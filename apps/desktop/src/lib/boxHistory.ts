@@ -14,9 +14,14 @@
  * bring it back), so the box keeps its own history and WebKit's is never
  * used: every undo and redo lands on a text the box really held.
  *
- * Shaped like WebKit's own so ⌘Z feels the same: a run of typing is one
- * step until the caret moves, a run of deleting another; a paste, a cut,
- * a drop and every script-set change are a step each.
+ * A run of typing is one step until the caret moves or he pauses, a run
+ * of deleting another; a paste, a cut, a drop and every script-set change
+ * are a step each. The pause (item 421, 2026-10-27): WebKit's runs end
+ * only at a caret move, so a message typed straight through was ONE step
+ * and ⌘Z emptied the box ("only goes back like 2 things", measured: 30
+ * words, 1 step). A pause longer than `GROUP_MS` now starts a new step, as
+ * CodeMirror's history does (its `newGroupDelay`), so the plain box and
+ * the formatted one step back alike.
  */
 
 /** The box at one moment: its text and selection. */
@@ -69,7 +74,23 @@ export function historyInput(inputType: string): "undo" | "redo" | null {
 }
 
 /** Steps kept, and characters across them, before the oldest go. */
+/** The box's undo / redo key, or null: ⌘Z, ⌘⇧Z and ⌘Y (Ctrl off the
+ *  Mac). Shared by the composer and the edit box (item 399). */
+export function historyKey(
+  e: Pick<KeyboardEvent, "metaKey" | "ctrlKey" | "altKey" | "shiftKey" | "code" | "key">,
+  mac: boolean,
+): "undo" | "redo" | null {
+  const primary = mac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+  if (!primary || e.altKey) return null;
+  if (e.code === "KeyZ" || e.key.toLowerCase() === "z") return e.shiftKey ? "redo" : "undo";
+  if (!e.shiftKey && (e.code === "KeyY" || e.key.toLowerCase() === "y")) return "redo";
+  return null;
+}
+
 export const MAX_STEPS = 300;
+/** A pause longer than this ends a run of typing or deleting (item 421):
+ *  CodeMirror's `newGroupDelay`. */
+export const GROUP_MS = 500;
 export const MAX_CHARS = 8_000_000;
 
 /** Where the caret goes after a script-set change: the end of what
@@ -94,8 +115,14 @@ export class BoxHistory {
   private pending: Snap | null = null;
   /** The kind of the top step while it may still grow; null once closed. */
   private open: EditKind | null = null;
+  /** When the top step last grew (item 421's pause rule). */
+  private lastAt = -Infinity;
 
-  constructor(text = "") {
+  /** `now` is the clock (a test's own); `Date.now` by default. */
+  constructor(
+    text = "",
+    private readonly now: () => number = () => Date.now(),
+  ) {
     this.cur = at(text, text.length);
   }
 
@@ -141,9 +168,12 @@ export class BoxHistory {
     }
     const top = this.past[this.past.length - 1];
     const joins = top !== undefined && top.after.text === before.text;
+    const t = this.now();
+    const paused = t - this.lastAt > GROUP_MS;
+    this.lastAt = t;
     let runs: boolean;
     if (kind === "type" || kind === "delete")
-      runs = joins && this.open === kind && before.start === before.end && before.start === top.after.end;
+      runs = joins && this.open === kind && !paused && before.start === before.end && before.start === top.after.end;
     // The marked text is replaced on every update, wherever the caret is.
     else if (kind === "compose") runs = joins && this.open === "compose";
     // The commit finishes its composition, even after `compositionend`.

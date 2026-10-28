@@ -522,6 +522,32 @@ desktop passes `--root <chat folder>`. The same `deliver` runs either way.
   stored. Save and drag-out serve only a copy in a store (`is_stored`).
 - `Effect::Session`: no approval, and an incognito chat keeps it.
 
+## Saying who a file is for (`tools/mark_file.rs`)
+
+Nightshift backlog 377 (2026-10-18). `mark_file { path, for: "user"|"self",
+title? }` is on both engines the way `send_file` is (`build_chat` on the API
+engine; `mcp__nightloom__mark_file` beside `send_file` when the desktop
+passes `--root`). The model is told to call it on every file or folder it
+creates — by the tool's description on the API engine, by the server's
+`initialize` instructions (which the CLI puts in its system prompt) on the
+Claude Code engine.
+
+- **Why a tool** and not a manifest the model edits: the same reasons as
+  `send_file` (blocker 1386) — a fixed shape listed on every request, and a
+  path Nightloom confines through the chat folder's `Root`.
+- **The record.** One JSON line per call, appended to
+  `<config>/for-you.jsonl` with the project's id: Nightloom's folder, not the
+  project's `.agents` (committed notes about the code; an unfiled chat has
+  none). Append-only; the latest mark of a path wins, and a path gone from
+  disk drops out of the list but stays recorded.
+- **The window** (`apps/desktop/src-tauri/src/for_you.rs`,
+  `ForYouButton.svelte`, the + list): the open project's marks for the user,
+  newest first, behind a folder button with a dot for new ones, polled by the
+  manifest's stamp every 3 s. A file opens in a file tab (a note in the note
+  view), a folder in the Finder. The file tab reads a marked path without a
+  chat to vouch for it (`Via::Chosen`).
+- Not served to a chat that writes nothing: the marks go in the config dir.
+
 ## Killing a shell is not killing the command (`tools/shell.rs`)
 
 `kill_tree`, `PUMP_GRACE`.

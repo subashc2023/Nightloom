@@ -15,6 +15,37 @@ use std::path::{Path, PathBuf};
 /// Addressed to the model, which is who reads it.
 const SUBAGENT_STEPS_OMITTED: &str = "[a subagent ran here; its steps are not part of this conversation, and its report is the Agent tool's result]";
 
+/// The reply Nightloom records under his message when a turn is stopped
+/// before any reply arrived (nightshift backlog 361, 2026-10-13); a turn
+/// that failed first gets [`NO_REPLY_PREFIX`] and the reason.
+pub const STOPPED_BEFORE_REPLY: &str = "Stopped before any reply arrived.";
+/// The start of the reply recorded for a turn that failed before any reply
+/// (backlog 361): "No reply: <why>".
+pub const NO_REPLY_PREFIX: &str = "No reply: ";
+/// The stop reason of a turn Claude Code refused because it is signed out
+/// (backlog 409), before the CLI's own sentence: `error: signed out: <why>`.
+/// Still an `error: ` reason, so everything that reads one reads this; the
+/// window reads the mark to offer Sign in.
+pub const SIGNED_OUT_REASON: &str = "error: signed out: ";
+
+/// Whether an assistant message is backlog 361's stand-in: Nightloom's own
+/// words for a turn that ended before the model said anything — one text
+/// block reading so, stopped or failed, with no usage. The model never said
+/// it, so it is not projected onto the wire (review of wave 8b, 2026-10-13:
+/// before this, the provider engine sent it as an assistant turn), and
+/// Claude Code's history never had it. A real reply cut off by an error
+/// with no usage yet carries the model's own text and is not a stand-in.
+pub fn is_unanswered_stand_in(
+    blocks: &[ContentBlock],
+    stop_reason: Option<&str>,
+    usage: &Usage,
+) -> bool {
+    let says_so = matches!(blocks, [ContentBlock::Text { text }]
+        if text == STOPPED_BEFORE_REPLY || text.starts_with(NO_REPLY_PREFIX));
+    let ended = matches!(stop_reason, Some(r) if r == "stopped" || r.starts_with("error: "));
+    says_so && ended && usage.input_tokens == 0 && usage.output_tokens == 0
+}
+
 /// A point a session can be rewound to.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Checkpoint {
@@ -210,6 +241,34 @@ pub struct EditedAttachments {
     pub documents: Vec<DocumentInput>,
 }
 
+/// What a reply's prompt cache was built with, as far as a change to it
+/// is measured to lose the cache (nightshift backlog 408, measured
+/// 2026-10-24 on Claude Code 2.1.310 — `notes/runner-design/
+/// 408-report-2026-10-24.md`): the model (Haiku → Opus re-wrote all but
+/// the 11k head every chat shares), the tool list (tools off re-wrote
+/// everything), safe mode (re-wrote the conversation after the system
+/// head), and the Plan position (on Haiku the CLI runs a Plan turn on
+/// Sonnet, so it is a model change there; on Opus it kept). Effort,
+/// Chrome, connectors, fork mode and default ↔ bypass were measured to
+/// keep the cache and are not here. `ask` rides along so a restore puts
+/// the position back whole, not half.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CacheKey {
+    /// `"claude-code"` — the only engine measured.
+    pub engine: String,
+    /// The model as picked (`--model`: an alias or an id), `None` for the
+    /// CLI's own default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Whether the CLI was offered any tools (`--tools ""` is none).
+    pub tools: bool,
+    pub safe_mode: bool,
+    /// The Ask position or the Plan position (Plan implies Ask).
+    #[serde(default)]
+    pub ask: bool,
+    pub plan: bool,
+}
+
 /// One entry in a session's append-only event log.
 ///
 /// The log is the source of truth; the message list sent to a provider and
@@ -303,6 +362,15 @@ pub enum SessionEvent {
         /// did.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cache_ttl: Option<CacheTtl>,
+        /// The settings this request was sent with that, changed, lose its
+        /// prompt cache (nightshift backlog 408, 2026-10-24) — so the window
+        /// can warn before a pick throws a warm cache away, and put the
+        /// settings back. Only the ones measured to break it are kept
+        /// ([`CacheKey`]). Absent on every log written before the field and
+        /// on engines it was not measured on, and the window never warns
+        /// without it, so a guess is never shown.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_key: Option<CacheKey>,
         at: DateTime<Utc>,
     },
     /// One executed tool call. Consecutive results project into a single
@@ -1270,6 +1338,71 @@ impl Session {
         s
     }
 
+    /// The log index of the live user message the window meant (nightshift
+    /// backlog 361, 2026-10-13). A window names a message by its place in
+    /// the list it holds; when that list is out of step with the log, the
+    /// place names another message — on 2026-10-13 a Retry on his newest
+    /// message forked before one 7 exchanges earlier, and the reply landed
+    /// in a fork that had lost those exchanges. So the window also sends the
+    /// message's `at`: `upto` stands when the message there was sent at
+    /// `at`; otherwise the one live user message sent at `at` is the one
+    /// meant; none (or two) is refused, naming nothing.
+    pub fn aim_user_message(&self, upto: usize, at: DateTime<Utc>) -> Result<usize, String> {
+        let live = self.live_flags();
+        let sent_at = |i: usize| match self.events.get(i) {
+            Some(SessionEvent::UserMessage { at: a, .. }) if live[i] => Some(*a),
+            _ => None,
+        };
+        if sent_at(upto) == Some(at) {
+            return Ok(upto);
+        }
+        let hits: Vec<usize> = (0..self.events.len())
+            .filter(|&i| sent_at(i) == Some(at))
+            .collect();
+        match hits.as_slice() {
+            [one] => Ok(*one),
+            [] => Err(
+                "that message is not in this chat's log as the window shows it; reopen the chat and try again — nothing was changed".into(),
+            ),
+            _ => Err(
+                "two messages in this chat were sent at the same moment, so which one is meant is unclear; nothing was changed".into(),
+            ),
+        }
+    }
+
+    /// The log index of the turn the window meant for an edit, a Remove or
+    /// a Restore (nightshift backlog 364, 2026-10-13): [`Self::aim_user_message`]
+    /// for his own message (`nth` absent), and for a reply the `nth`
+    /// assistant message (from 0) of the exchange his message sent at `at`
+    /// opened — the replies after it up to his next message. A reply has no
+    /// send time of its own, so it is named by its exchange's. None there
+    /// is refused, naming nothing; `index` is only the window's guess.
+    pub fn aim_turn(
+        &self,
+        index: usize,
+        at: DateTime<Utc>,
+        nth: Option<usize>,
+    ) -> Result<usize, String> {
+        let anchor = self.aim_user_message(index, at)?;
+        let Some(nth) = nth else {
+            return Ok(anchor);
+        };
+        let mut seen = 0;
+        for (i, e) in self.events.iter().enumerate().skip(anchor + 1) {
+            match e {
+                SessionEvent::UserMessage { .. } => break,
+                SessionEvent::AssistantMessage { .. } => {
+                    if seen == nth {
+                        return Ok(i);
+                    }
+                    seen += 1;
+                }
+                _ => {}
+            }
+        }
+        Err("that reply is not in this chat's log as the window shows it; reopen the chat and try again — nothing was changed".into())
+    }
+
     /// A new session that begins as this one did, up to and not including
     /// event `upto` (2026-09-15, nightshift backlog 062 — his "edit and
     /// send"): the parent's *live* events before the cut, copied into a
@@ -1715,6 +1848,7 @@ impl Session {
             cost,
             sent_at: None,
             cache_ttl: None,
+            cache_key: None,
             at: Utc::now(),
         });
     }
@@ -1737,6 +1871,32 @@ impl Session {
         sent_at: DateTime<Utc>,
         default_ttl: Option<CacheTtl>,
     ) {
+        self.record_assistant_keyed(
+            model,
+            blocks,
+            stop_reason,
+            usage,
+            cost,
+            sent_at,
+            default_ttl,
+            None,
+        );
+    }
+
+    /// [`record_assistant_timed`](Self::record_assistant_timed) with the
+    /// settings the cache was built with (nightshift backlog 408).
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_assistant_keyed(
+        &mut self,
+        model: impl Into<String>,
+        blocks: Vec<ContentBlock>,
+        stop_reason: Option<String>,
+        usage: Usage,
+        cost: Option<f64>,
+        sent_at: DateTime<Utc>,
+        default_ttl: Option<CacheTtl>,
+        cache_key: Option<CacheKey>,
+    ) {
         self.record(SessionEvent::AssistantMessage {
             model: model.into(),
             blocks,
@@ -1745,6 +1905,7 @@ impl Session {
             cost,
             sent_at: Some(sent_at),
             cache_ttl: usage.cache_ttl(default_ttl),
+            cache_key,
             at: Utc::now(),
         });
     }
@@ -3112,6 +3273,14 @@ impl Session {
                         content,
                     });
                 }
+                // Backlog 361's stand-in is Nightloom's, not the model's:
+                // nothing goes on the wire for it, as before it existed.
+                SessionEvent::AssistantMessage {
+                    blocks,
+                    stop_reason,
+                    usage,
+                    ..
+                } if is_unanswered_stand_in(blocks, stop_reason.as_deref(), usage) => {}
                 SessionEvent::AssistantMessage { blocks, .. } => {
                     let mut content = if elided[i] {
                         elide_assistant(blocks, &gone[i], i)
@@ -5392,7 +5561,7 @@ mod tests {
         ));
         let back = serde_json::to_string(&event).unwrap();
         assert!(
-            !back.contains("sent_at") && !back.contains("cache_ttl"),
+            !back.contains("sent_at") && !back.contains("cache_ttl") && !back.contains("cache_key"),
             "{back}"
         );
 
@@ -5949,6 +6118,168 @@ mod tests {
         assert!(!plain.contains("forked_from"), "{plain}");
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Backlog 361 (found live, 2026-10-13): a Retry on his newest message,
+    /// from a window whose list lacked seven exchanges, forked before the
+    /// message seven exchanges earlier — the reply then lived in a fork
+    /// missing those exchanges, beside a parent that showed none. Aimed by
+    /// the message's send time, the fork cuts before the message meant.
+    #[test]
+    fn a_fork_aimed_from_a_stale_list_cuts_before_the_message_meant() {
+        let dir = std::env::temp_dir().join(format!("nightloom-361-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut log = Session::with_log(&dir).unwrap();
+        let reply = |s: &mut Session, t: &str| {
+            s.record_assistant(
+                "m",
+                vec![ContentBlock::Text { text: t.into() }],
+                None,
+                Usage::default(),
+            )
+        };
+        // 1 user, 2 reply, 3 user, 4 reply (the exchange the window lacks),
+        // 5 user (his newest).
+        log.record_user("first");
+        reply(&mut log, "reply one");
+        log.record_user("second");
+        reply(&mut log, "reply two");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        log.record_user("newest");
+        let events = log.events().to_vec();
+        // The window's list: everything but events 3 and 4.
+        let window: Vec<SessionEvent> = events
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != 3 && *i != 4)
+            .map(|(_, e)| e.clone())
+            .collect();
+        let index = window.len() - 1; // 3 in the window, 5 in the log
+        let SessionEvent::UserMessage { at, text, .. } = &window[index] else {
+            panic!("the window's last event is his message")
+        };
+        assert_eq!(text, "newest");
+        assert_eq!(index, 3);
+        // Unaimed, the window's index names "second" — the 2026-10-13 cut.
+        assert!(
+            matches!(&events[index], SessionEvent::UserMessage { text, .. } if text == "second")
+        );
+        let upto = log.aim_user_message(index, *at).unwrap();
+        assert_eq!(upto, 5);
+        let fork = log.fork_from(&dir, upto).unwrap();
+        let texts: Vec<String> = fork.messages().iter().map(|m| m.text()).collect();
+        assert_eq!(texts, ["first", "reply one", "second", "reply two"]);
+        // An index already right stands; a time no live message has is refused.
+        assert_eq!(log.aim_user_message(5, *at), Ok(5));
+        let never = *at + chrono::Duration::days(1);
+        assert!(log.aim_user_message(5, never).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Backlog 364: Remove, Restore and edit-Save are aimed as 361's fork
+    /// is — his message by its send time, a reply by its exchange's and its
+    /// place among that exchange's replies — from a window whose list lacks
+    /// an exchange.
+    #[test]
+    fn a_turn_aimed_from_a_stale_list_is_the_one_meant() {
+        let mut log = Session::new();
+        let reply = |s: &mut Session, t: &str| {
+            s.record_assistant(
+                "m",
+                vec![ContentBlock::Text { text: t.into() }],
+                None,
+                Usage::default(),
+            )
+        };
+        // 1 user, 2 reply, 3 user, 4 reply (the window lacks 3 and 4),
+        // 5 user, 6 reply, 7 reply (two rounds of one exchange).
+        log.record_user("first");
+        reply(&mut log, "reply one");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        log.record_user("second");
+        reply(&mut log, "reply two");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        log.record_user("third");
+        reply(&mut log, "reply three a");
+        reply(&mut log, "reply three b");
+        let events = log.events().to_vec();
+        let SessionEvent::UserMessage { at: third, .. } = &events[5] else {
+            panic!("event 5 is his third message")
+        };
+        // The window's indexes are two short: its 3 is the log's 5.
+        assert_eq!(log.aim_turn(3, *third, None), Ok(5));
+        assert_eq!(log.aim_turn(4, *third, Some(0)), Ok(6));
+        assert_eq!(log.aim_turn(5, *third, Some(1)), Ok(7));
+        // A place already right stands; a reply the exchange does not have,
+        // or a time no live message has, is refused.
+        assert_eq!(log.aim_turn(7, *third, Some(1)), Ok(7));
+        assert!(log.aim_turn(5, *third, Some(2)).is_err());
+        let SessionEvent::UserMessage { at: first, .. } = &events[1] else {
+            panic!("event 1 is his first message")
+        };
+        assert_eq!(
+            log.aim_turn(1, *first, Some(1)).ok(),
+            None,
+            "the first exchange has one reply"
+        );
+        assert!(
+            log.aim_turn(1, *third + chrono::Duration::days(1), None)
+                .is_err()
+        );
+    }
+
+    /// Wave 8b review (2026-10-13): backlog 361's stand-in reply is not
+    /// sent to the model as if it had said it; a real reply cut off by an
+    /// error before any usage still is.
+    #[test]
+    fn a_stand_in_reply_is_not_projected_onto_the_wire() {
+        let mut s = Session::new();
+        s.record_user("hi");
+        s.record_assistant(
+            "m",
+            vec![ContentBlock::Text {
+                text: STOPPED_BEFORE_REPLY.into(),
+            }],
+            Some("stopped".into()),
+            Usage::default(),
+        );
+        s.record_user("again");
+        s.record_assistant(
+            "m",
+            vec![ContentBlock::Text {
+                text: format!("{NO_REPLY_PREFIX}can't reach the API server"),
+            }],
+            Some("error: can't reach the API server".into()),
+            Usage::default(),
+        );
+        s.record_user("third");
+        s.record_assistant(
+            "m",
+            vec![ContentBlock::Text {
+                text: "Half a real sente".into(),
+            }],
+            Some("error: overloaded".into()),
+            Usage::default(),
+        );
+        let msgs = s.messages();
+        let texts: Vec<(Role, String)> = msgs.iter().map(|m| (m.role, m.text())).collect();
+        assert_eq!(
+            texts,
+            [
+                (Role::User, "hi".to_string()),
+                (Role::User, "again".to_string()),
+                (Role::User, "third".to_string()),
+                (Role::Assistant, "Half a real sente".to_string()),
+            ]
+        );
+        // The log keeps it: the window still shows it.
+        assert_eq!(
+            s.events()
+                .iter()
+                .filter(|e| matches!(e, SessionEvent::AssistantMessage { .. }))
+                .count(),
+            3
+        );
     }
 
     /// A fork inherits the mode: incognito stays incognito on disk, and an

@@ -23,7 +23,7 @@
 
 // ---- a small HTML tree ------------------------------------------------------
 
-interface El {
+export interface El {
   tag: string;
   attrs: Record<string, string>;
   children: Child[];
@@ -402,7 +402,23 @@ export function mathPasteText(html: string): string | null {
   }
 }
 
-function convert(html: string): string | null {
+/**
+ * Item 382: the paste as text, as `mathPasteText` makes it, with each `<img>`
+ * handed to `onImage` — which returns what stands in its place (a marker, an
+ * emoji's alt) or null for nothing. Math in the same paste converts as above.
+ * Null when the HTML gave neither math nor any `<img>` text, and on any
+ * failure, so the paste goes in as it always did.
+ */
+export function htmlPasteText(html: string, onImage: (img: El) => string | null): string | null {
+  if (!html) return null;
+  try {
+    return convert(html, onImage);
+  } catch {
+    return null;
+  }
+}
+
+function convert(html: string, onImage?: (img: El) => string | null): string | null {
   const root = parseHtml(html);
   // MathJax v2 pairs: frame id `MathJax-Element-3-Frame` ↔ script id `MathJax-Element-3`.
   const scripts = new Map<string, El>();
@@ -424,6 +440,7 @@ function convert(html: string): string | null {
     if (s) parts.push(s);
   };
   let found = 0;
+  let images = 0; // item 382: `<img>`s that put text in
   let glue = false; // the last thing written was inline math: a word after it needs a space
   const nl = (n: 1 | 2) => {
     if (!last()) return;
@@ -491,6 +508,17 @@ function convert(html: string): string | null {
       }
       if (SKIP.has(c.tag) || c.tag === "script") continue;
       if (/display\s*:\s*none/i.test(c.attrs.style ?? "")) continue;
+      if (c.tag === "img" && onImage) {
+        const s = onImage(c);
+        if (s) {
+          images++;
+          const l = last();
+          if (l && l !== "\n" && l !== " ") put(" ");
+          put(s);
+          glue = true;
+        }
+        continue;
+      }
       if (c.tag === "br") {
         nl(1);
         continue;
@@ -522,7 +550,7 @@ function convert(html: string): string | null {
     }
   };
   walk(root, false);
-  if (found === 0) return null;
+  if (found === 0 && images === 0) return null;
   return parts
     .join("")
     .split("\n")

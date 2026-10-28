@@ -7,6 +7,11 @@
  * already dressed alone.
  */
 
+import { flashCopied, setCopyState } from "../lib/copyIcon";
+
+/** The code-block Copy button's name, for a reader (it has no word). */
+const COPY_BLOCK = "Copy this block";
+
 /** The language a fenced block names (`language-ts` → "ts"), or "". */
 export function codeLanguage(className: string): string {
   const m = /(?:^|\s)language-([\w#+.-]+)/.exec(className);
@@ -35,10 +40,13 @@ export function codeBlocks(node: HTMLElement, copy: (text: string) => void) {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "code-copy";
-      btn.textContent = "Copy";
+      // The copy icon, the desktop's (item 402), not the word; a check for
+      // a moment after a tap, beside the page's own "Copied" note.
+      setCopyState(btn, false, COPY_BLOCK, 18);
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
         onCopy((code ?? pre).textContent ?? "");
+        flashCopied(btn, COPY_BLOCK, 18);
       });
       // A long-press on the button is not a long-press on the reply.
       btn.addEventListener("touchstart", (e) => e.stopPropagation(), { passive: true });

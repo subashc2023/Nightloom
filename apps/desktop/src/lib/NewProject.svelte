@@ -13,6 +13,7 @@
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import Icon from "./Icon.svelte";
   import { isMac } from "./platform";
+  import { claudeMdOffer } from "./api";
 
   /**
    * New project… (backlog 047, 2026-09-14). A screen in Welcome's place
@@ -68,6 +69,26 @@
     return "";
   });
 
+  // Backlog 432: the "Use my practices" offer — a CLAUDE.md with the
+  // practices import line. Shown only when ~/.claude/practices/practices.md
+  // is there; a picked folder that has a CLAUDE.md keeps it untouched, and
+  // the row says so instead of offering.
+  let offer = $state<{ exists: boolean; practices: boolean } | null>(null);
+  let offerSeq = 0;
+  $effect(() => {
+    const path = d.pickedPath ?? "";
+    const mine = ++offerSeq;
+    void claudeMdOffer(path).then(
+      (o) => {
+        if (mine === offerSeq) offer = o;
+      },
+      () => {
+        if (mine === offerSeq) offer = null;
+      },
+    );
+  });
+  const practicesTicked = $derived(d.claudeMd !== false);
+
   let creating = $state(false);
   let confirmDiscard = $state(false);
   const mod = isMac ? "⌘" : "Ctrl+";
@@ -110,7 +131,7 @@
       <button class="ghost revert" use:tip={"Drop what is typed here"} onclick={() => (confirmDiscard = true)}>Discard</button>
     {/if}
     <button class="ghost" use:tip={"Back to the chat; what is typed stays (Esc)"} onclick={closeNewProject}>Cancel</button>
-    <button class="save" disabled={!canCreate || creating || !canLeaveProject()} use:tip={`Make the folder and open the project (${mod}↵)`} onclick={() => void create()}>
+    <button class="save" disabled={!canCreate || creating || !canLeaveProject()} use:tip={canLeaveProject() ? `Make the folder and open the project (${mod}↵)` : "Waits for the new chat's first reply to start"} onclick={() => void create()}>
       {creating ? "Creating…" : "Create"}
     </button>
   </header>
@@ -122,7 +143,7 @@
       <label class="field centred">
         <span class="lab">Name</span>
         <!-- svelte-ignore a11y_autofocus -->
-        <input
+        <input autocorrect="off" autocapitalize="off"
           class="name"
           type="text"
           autofocus
@@ -145,6 +166,11 @@
           {/if}
         </div>
         <p class="hint" class:bad={noSlug}>{reason}</p>
+        {#if canCreate && !creating && !canLeaveProject()}
+          <!-- Item 393 (his bug, 2026-10-18): Create sat disabled with no
+               word why while a New chat's first reply had not started. -->
+          <p class="hint">Create waits a moment: a new chat's first reply is still starting, and it needs its first word before the project can change.</p>
+        {/if}
       </div>
 
       <!-- A third of its old height (backlog 103), resizable downward by
@@ -165,6 +191,35 @@
         </p>
       </label>
 
+      {#if offer?.practices}
+        <!-- Backlog 432: his practices reach a Claude Code chat only through
+             a project CLAUDE.md that imports them. -->
+        <div class="field">
+          <span class="lab">Practices</span>
+          {#if offer.exists}
+            <p class="hint">
+              This folder already has a <code>CLAUDE.md</code> — it is kept exactly as it is.
+            </p>
+          {:else}
+            <label class="tick">
+              <input
+                type="checkbox"
+                checked={practicesTicked}
+                onchange={(e) => (app.newProjectDraft.claudeMd = e.currentTarget.checked ? undefined : false)}
+                aria-label="Use my practices"
+              />
+              <span>Use my practices</span>
+            </label>
+            <p class="hint">
+              Writes a <code>CLAUDE.md</code> whose first line is
+              <code>@~/.claude/practices/practices.md</code>, so every Claude Code
+              chat here starts with your working practices. Never written over
+              an existing one.
+            </p>
+          {/if}
+        </div>
+      {/if}
+
       <!-- The same two buttons as the header's, under Instructions (backlog
            103, his "have it in both spots"; blocker 233's board A): Create
            filled in the accent. Both pairs do exactly the same thing. -->
@@ -173,7 +228,7 @@
         <button
           class="ns-btn accent"
           disabled={!canCreate || creating || !canLeaveProject()}
-          use:tip={`Make the folder and open the project (${mod}↵)`}
+          use:tip={canLeaveProject() ? `Make the folder and open the project (${mod}↵)` : "Waits for the new chat's first reply to start"}
           onclick={() => void create()}
         >
           {creating ? "Creating…" : "Create"}
@@ -397,6 +452,19 @@
   .hint code {
     font-family: var(--mono);
     font-size: 0.72rem;
+  }
+  .tick {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-size: 0.82rem;
+    color: var(--text);
+    cursor: pointer;
+    width: fit-content;
+  }
+  .tick input {
+    accent-color: var(--accent);
+    margin: 0;
   }
   textarea {
     height: 6.2rem;

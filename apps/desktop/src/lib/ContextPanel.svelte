@@ -4,6 +4,8 @@
   import { copyText } from "./clipRing.svelte";
   import * as api from "./api";
   import Icon from "./Icon.svelte";
+  import CopyButton from "./CopyButton.svelte";
+  import { COPIED_MS } from "./copyIcon";
   import LayerVersionMark from "./LayerVersionMark.svelte";
   import ThreadPicker from "./ThreadPicker.svelte";
   import { pendingFor } from "./promptVersions";
@@ -23,7 +25,7 @@
     subagentsOfTurn,
   } from "./state.svelte";
   import { EDITABLE_LAYERS } from "./types";
-  import { hasOwnThreshold, threshold } from "./handoff.svelte";
+  import { cap as handoffCap, hasOwnThreshold, threshold } from "./handoff.svelte";
   import { setPromptSuggestions, suggestions } from "./suggestions.svelte";
   import { applyDraft, refreshLayerVersions } from "./state.svelte";
   import { onMount, untrack } from "svelte";
@@ -94,7 +96,7 @@
       copied = key;
       setTimeout(() => {
         if (copied === key) copied = null;
-      }, 1200);
+      }, COPIED_MS);
     } catch {
       // The webview refused the clipboard; nothing to show but the button.
     }
@@ -451,7 +453,7 @@
   // what it reads is the cards above; what it may not do is this line.
   const kind = $derived(chatMode(app.events));
   const MODE_CAVEAT: Record<string, string> = {
-    incognito: "incognito: writes nothing, unread by other chats",
+    incognito: "incognito: knows nothing about you, writes nothing, unread by other chats",
     ephemeral:
       "ephemeral: nothing is kept — no log, no name, no CLI session; on Claude Code the earlier turns are replayed into each prompt rather than resumed",
   };
@@ -917,7 +919,7 @@
                 <span class="gloss">The CLI's built-in tools this session offers, then each server's tools by short name.{#if chatPolicy} Struck through: still listed — the list is what keeps the cache warm — and refused when called, since this chat is a Chat now (Kind, in the rail).{/if}</span>
               </div>
               <span class="spacer"></span>
-              <span class="meta">{init.tools.length}{#if chatPolicy} · {builtinTools.filter(refused).length} refused{/if}</span>
+              <span class="meta">{init.tools.length}{#if chatPolicy}{" · "}{builtinTools.filter(refused).length} refused{/if}</span>
             </div>
             <div class="chips">
               {#each builtinTools as t (t)}<span class="chip" class:refused={refused(t)} use:tip={refused(t) ? "Refused on a Chat: a call to it gets an error result" : ""}>{t}</span>{/each}
@@ -1035,9 +1037,7 @@
           <span class="gloss">One string, joined the way the adapters join it — not a re-join done here.</span>
           <span class="spacer"></span>
           <span class="meta">{text.length.toLocaleString()} characters</span>
-          <button class="ns-btn small" onclick={() => copy("sent", text)}>
-            {copied === "sent" ? "Copied" : "Copy"}
-          </button>
+          <CopyButton copied={copied === "sent"} label="Copy the text" onclick={() => copy("sent", text)} />
         </div>
         <pre class="reader tall">{text}</pre>
       </section>
@@ -1120,9 +1120,7 @@
                 <div class="body-bar">
                   <span class="file" use:tip={cliPrompt.path}>{cliPrompt.path}</span>
                   <span class="spacer"></span>
-                  <button class="ns-btn ghost small" onclick={() => copy(CLI_PROMPT, cliPrompt?.sections.join("\n\n"))}>
-                    {copied === CLI_PROMPT ? "Copied" : "Copy"}
-                  </button>
+                  <CopyButton copied={copied === CLI_PROMPT} label="Copy the text" onclick={() => copy(CLI_PROMPT, cliPrompt?.sections.join("\n\n"))} />
                 </div>
                 <pre class="reader">{cliPrompt.sections.join("\n\n")}</pre>
               </div>
@@ -1255,9 +1253,7 @@
                       <span class="file" use:tip={seg.name}>{seg.name}</span>
                     {/if}
                     <span class="spacer"></span>
-                    <button class="ns-btn ghost small" onclick={() => copy(seg.name, seg.text)}>
-                      {copied === seg.name ? "Copied" : "Copy"}
-                    </button>
+                    <CopyButton copied={copied === seg.name} label="Copy the text" onclick={() => copy(seg.name, seg.text)} />
                   </div>
                   <pre class="reader">{seg.text}</pre>
                 </div>
@@ -1297,9 +1293,7 @@
               <div class="body">
                 <div class="body-bar">
                   <span class="spacer"></span>
-                  <button class="ns-btn ghost small" onclick={() => copy(seg.name, seg.text)}>
-                    {copied === seg.name ? "Copied" : "Copy"}
-                  </button>
+                  <CopyButton copied={copied === seg.name} label="Copy the text" onclick={() => copy(seg.name, seg.text)} />
                 </div>
                 <pre class="reader">{seg.text}</pre>
               </div>
@@ -1367,9 +1361,7 @@
                 <div class="body-bar">
                   <span class="file" use:tip={cliMemory.path}>{cliMemory.path}</span>
                   <span class="spacer"></span>
-                  <button class="ns-btn ghost small" onclick={() => copy(CLI_MEMORY, cliMemory?.text)}>
-                    {copied === CLI_MEMORY ? "Copied" : "Copy"}
-                  </button>
+                  <CopyButton copied={copied === CLI_MEMORY} label="Copy the text" onclick={() => copy(CLI_MEMORY, cliMemory?.text)} />
                 </div>
                 <pre class="reader">{cliMemory.text}</pre>
                 {#if cliMemory.others.length > 0}
@@ -1447,9 +1439,7 @@
               <div class="body-bar">
                 <span class="file" use:tip={voiceNote.path}>{voiceNote.path}</span>
                 <span class="spacer"></span>
-                <button class="ns-btn ghost small" onclick={() => copy(SPOKEN, voiceNote?.text)}>
-                  {copied === SPOKEN ? "Copied" : "Copy"}
-                </button>
+                <CopyButton copied={copied === SPOKEN} label="Copy the text" onclick={() => copy(SPOKEN, voiceNote?.text)} />
               </div>
               <pre class="reader">{voiceNote.text}</pre>
             </div>
@@ -1540,7 +1530,7 @@
                where he looks for it; said here beside the number it is
                compared to. -->
           <p class="note small threshold">
-            Hand off at {handoffPct}% of the window{app.activeSessionId ? (hasOwnThreshold(app.activeSessionId) ? ", this chat's own mark" : ", the default") : " (the default)"}
+            Hand off at {handoffPct}% of the window{!hasOwnThreshold(app.activeSessionId) && handoffCap() > 0 ? ` or ${fmtTokens(handoffCap())} tokens, whichever comes first` : ""}{app.activeSessionId ? (hasOwnThreshold(app.activeSessionId) ? ", this chat's own mark" : ", the default") : " (the default)"}
             — past it the composer's notice asks for the wrap-up (the model writes HANDOFF.md, stops, and
             gives a start prompt for a linked new chat).
             <button class="ns-btn ghost small" onclick={openHandoffSettings}>Change in Settings → Subscription</button>

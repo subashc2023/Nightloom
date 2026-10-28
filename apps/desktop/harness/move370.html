@@ -1,0 +1,28 @@
+<!doctype html>
+<!-- Backlog 370: the real Sidebar and TabStrip over a mocked backend; Move to project from the row menu, then what
+     lists where, what tabs and drafts follow. ?stage=menu stops with the menu open. Served by vite on a spare port and snapped with nightshift-code bin/snap
+     (WebKit); the caption carries the measurement. -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      body { margin: 0; background: var(--paper, #111); }
+      *, *::before, *::after { animation: none !important; }
+      #wrap { display: flex; gap: 12px; }
+      #side { position: relative; display: flex; flex-direction: column; width: 280px; height: 360px; }
+      section.pane { display: flex; flex-direction: column; width: 560px; height: 200px; background: var(--sheet); }
+      #cap { font: 12px/1.5 ui-monospace, monospace; color: #ddd; background: #000; padding: 6px 8px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <div id="wrap"><div id="side"></div><section class="pane" id="pane"></section></div>
+    <div id="cap"></div>
+    <script>
+      // The mocked backend answers only what the move reads; other panels' errors are counted, not printed.
+      window.harnessNoise = 0;
+      window.addEventListener("error", () => window.harnessNoise++);
+      window.addEventListener("unhandledrejection", () => window.harnessNoise++);
+    </script>
+    <script type="module" src="./move370.ts"></script>
+  </body>
+</html>

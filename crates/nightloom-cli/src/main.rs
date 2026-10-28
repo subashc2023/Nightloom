@@ -72,6 +72,9 @@ enum Command {
     PermissionHook {
         /// The chat's ask directory (`rules.json`, `decision.json`).
         dir: String,
+        /// An aside's or a fork's Playwright gate: never defer (backlog 367).
+        #[arg(long)]
+        side: bool,
     },
 }
 
@@ -90,8 +93,12 @@ async fn main() -> Result<()> {
         Some(Command::CouncilTrial(args)) => council_trial::run(args).await,
         Some(Command::McpServe(args)) => mcp_serve::run(args).await,
         Some(Command::Serve(args)) => serve::run(args).await,
-        Some(Command::PermissionHook { dir }) => {
-            nightloom_service::agent::ask::run_hook(&[dir]).map_err(Into::into)
+        Some(Command::PermissionHook { dir, side }) => {
+            let mut args = vec![dir];
+            if side {
+                args.push(nightloom_service::agent::own_browser::SIDE_ARG.into());
+            }
+            nightloom_service::agent::ask::run_hook(&args).map_err(Into::into)
         }
         // `--agent` swaps the engine, not the provider: Claude Code owns
         // the loop and the tools, and Nightloom renders what it streams.

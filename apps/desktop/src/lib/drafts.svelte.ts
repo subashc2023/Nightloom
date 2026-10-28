@@ -87,6 +87,7 @@
  */
 import type { Attachment, ChatMode } from "./types";
 import type { EditState } from "./edit";
+import type { BoxPlace } from "./boxPlace";
 
 export interface Draft {
   text: string;
@@ -101,6 +102,13 @@ export interface Draft {
    * never a reason to change the text.
    */
   sel?: DraftSel;
+  /**
+   * How far the box was scrolled, in pixels (backlog 355): a draft taller
+   * than its box comes back at the same place after a switch, a reload or
+   * a quit, not at its top. Absent until the box has scrolled; written and
+   * put back only by the composer (`ScrollHold`, `boxPlace.ts`).
+   */
+  scroll?: number;
 }
 
 /** A caret (`start === end`) or a selection, in characters of the draft. */
@@ -221,13 +229,20 @@ export function loadDrafts(storage: Pick<Storage, "getItem"> = localStorage): Re
       const attachments = Array.isArray(d.attachments) ? d.attachments.filter(isAttachment) : [];
       const queue = readQueue(d.queue);
       const sel = readSel(d.sel);
+      const scroll = typeof d.scroll === "number" && Number.isFinite(d.scroll) && d.scroll > 0 ? d.scroll : undefined;
       if (!text && attachments.length === 0 && queue.length === 0) continue;
       // The pre-094 pending key, read once into the unfiled ordinary slot.
       // Appended if that slot is already in the store, so neither is lost.
       const k = raw_k === LEGACY_NEW_DRAFT_KEY ? newDraftKey(null) : raw_k;
       const prior = out[k];
       if (!prior) {
-        out[k] = sel ? { text, attachments, queue, sel } : { text, attachments, queue };
+        out[k] = {
+          text,
+          attachments,
+          queue,
+          ...(sel ? { sel } : {}),
+          ...(scroll !== undefined ? { scroll } : {}),
+        };
       } else {
         prior.text = prior.text ? (text ? `${prior.text}\n${text}` : prior.text) : text;
         prior.attachments.push(...attachments);
@@ -286,6 +301,7 @@ export function serializeDrafts(map: Record<string, Draft>): string {
       attachments: keep(d.attachments),
       queue: queue.map((q) => ({ id: q.id, text: q.text, attachments: keep(q.attachments) })),
       ...(d.sel ? { sel: { start: d.sel.start, end: d.sel.end } } : {}),
+      ...(d.scroll ? { scroll: d.scroll } : {}),
     };
   }
   return JSON.stringify(out);
@@ -310,6 +326,7 @@ export function saveDrafts(
           attachments: pastedOnly(d.attachments),
           queue: (d.queue ?? []).map((q) => ({ id: q.id, text: q.text, attachments: pastedOnly(q.attachments) })),
           ...(d.sel ? { sel: d.sel } : {}),
+          ...(d.scroll ? { scroll: d.scroll } : {}),
         };
       storage.setItem(KEY, serializeDrafts(bare));
     } catch {
@@ -426,6 +443,25 @@ export function setDraftSelection(key: string, start: number, end: number): void
   schedule();
 }
 
+/**
+ * Keep how far the box is scrolled (backlog 355). As with the caret, only
+ * on an entry that exists, and never touching the text.
+ */
+export function setDraftScroll(key: string, top: number): void {
+  const d = drafts[key];
+  if (!d || !Number.isFinite(top)) return;
+  const v = Math.max(0, Math.round(top));
+  if ((d.scroll ?? 0) === v) return;
+  if (v === 0) delete d.scroll;
+  else d.scroll = v;
+  schedule();
+}
+
+/** The kept scroll; null when none (the box at its top). */
+export function draftScroll(key: string): number | null {
+  return drafts[key]?.scroll ?? null;
+}
+
 /** The kept caret, as stored (unclamped); null when none. */
 export function draftSelection(key: string): DraftSel | null {
   const s = drafts[key]?.sel;
@@ -482,6 +518,7 @@ export function clearDraft(key: string): void {
     d.text = "";
     d.attachments = [];
     delete d.sel;
+    delete d.scroll;
   }
   schedule();
 }
@@ -527,6 +564,55 @@ export function requeueFront(key: string, q: QueuedMessage): void {
   schedule();
 }
 
+/**
+ * Where the pending chat's draft went (`moveDraft`), by pending key: a
+ * turn sent from the New chat page drains the queue of the chat it made
+ * (backlog 375). Forgotten when a new turn leaves from that key.
+ */
+const movedTo = new Map<string, string>();
+
+/** A turn leaves from `key` now: an older move from it says nothing. */
+export function forgetMove(key: string): void {
+  movedTo.delete(key);
+}
+
+/**
+ * The queue a turn's end may send from (nightshift backlog 375,
+ * 2026-10-18): only the queue of the chat that turn ran in — `from`, the
+ * key it was sent from, or the chat the pending key became — and only
+ * while that chat is the one open (`live`). Anything else is `null`: the
+ * chat he queued in is not on screen, so its messages wait there rather
+ * than go to whatever chat is open. Before, the drain after a turn read
+ * the composer's key at that moment, and a message queued in a chat
+ * whose turn ended while he was in another project went into that one.
+ */
+export function queueAfterTurn(from: string, live: string): string | null {
+  return ranKey(from) === live ? live : null;
+}
+
+/** The draft key of the chat a turn sent from `from` ran in: `from`, or
+ *  the chat the pending key became (375). */
+export function ranKey(from: string): string {
+  return movedTo.get(from) ?? from;
+}
+
+/**
+ * The pending chat's queue follows the chat its first turn made when that
+ * turn goes off screen (backlog 375): rows he queued while it ran belong
+ * to it, not to the next New chat of the project. Only the queue — words
+ * in the box under the pending key may be a new draft for another chat.
+ */
+export function moveQueue(from: string, to: string): void {
+  if (from === to) return;
+  movedTo.set(from, to);
+  const src = drafts[from];
+  if (!src || src.queue.length === 0) return;
+  draftFor(to).queue.push(...src.queue);
+  src.queue = [];
+  if (!src.text && src.attachments.length === 0) delete drafts[from];
+  schedule();
+}
+
 /** The oldest held message, removed: what goes as the next turn. */
 export function shiftQueue(key: string): QueuedMessage | null {
   const d = drafts[key];
@@ -564,12 +650,17 @@ export function markInjected(key: string, qid: number, inject: { id: string; tur
 }
 
 /** The turn took the row whose uuid is `id` (backlog 328), `after` the
- *  step named; the row stays, marked, until the turn ends. */
-export function markDelivered(id: string, after: string): boolean {
-  for (const d of Object.values(drafts)) {
-    const q = d.queue.find((r) => r.inject?.id === id);
-    if (q && q.inject) {
-      q.inject.after = after;
+ *  step named. ~~The row stays, marked, until the turn ends.~~ It leaves
+ *  the queue at once (backlog 366, 2026-10-18): it is sent — the reply
+ *  shows it in place, and the log has it as his message at the turn's end
+ *  — and a queue box still holding it read as "not sent yet" beside a
+ *  transcript saying it was. */
+export function markDelivered(id: string): boolean {
+  for (const [key, d] of Object.entries(drafts)) {
+    const i = d.queue.findIndex((r) => r.inject?.id === id);
+    if (i >= 0) {
+      d.queue.splice(i, 1);
+      if (!d.text && d.attachments.length === 0 && d.queue.length === 0) delete drafts[key];
       schedule();
       return true;
     }
@@ -635,6 +726,8 @@ export function dropQueued(key: string, id: number): void {
  */
 export function moveDraft(from: string, to: string): void {
   if (from === to) return;
+  // The turn sent from `from` drains `to`'s queue at its end (375).
+  movedTo.set(from, to);
   const src = drafts[from];
   if (!src) return;
   const dst = drafts[to];
@@ -644,6 +737,7 @@ export function moveDraft(from: string, to: string): void {
       attachments: src.attachments.slice(),
       queue: src.queue.slice(),
       ...(src.sel ? { sel: { ...src.sel } } : {}),
+      ...(src.scroll ? { scroll: src.scroll } : {}),
     };
   } else {
     dst.text = dst.text ? (src.text ? `${dst.text}\n${src.text}` : dst.text) : src.text;
@@ -669,11 +763,13 @@ export function carryDraft(from: string, to: string): void {
   dst.text = dst.text ? (src.text ? `${dst.text}\n${src.text}` : dst.text) : src.text;
   dst.attachments.push(...src.attachments);
   if (!dst.sel && src.sel) dst.sel = { ...src.sel };
+  if (!dst.scroll && src.scroll) dst.scroll = src.scroll;
   if (src.queue.length === 0) delete drafts[from];
   else {
     src.text = "";
     src.attachments = [];
     delete src.sel;
+    delete src.scroll;
   }
   schedule();
 }
@@ -841,6 +937,10 @@ function moveHistory(from: string, to: string): void {
 export interface EditStash {
   editing: NonNullable<EditState>;
   line: string;
+  /** Each editor box's scroll and caret, in drawing order — the user
+   *  turn's one box, or a reply's blocks (backlog 355); absent when none
+   *  was recorded. */
+  boxes?: (BoxPlace | null)[];
 }
 
 const edits = new Map<string, EditStash>();

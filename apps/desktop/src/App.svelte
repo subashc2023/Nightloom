@@ -21,12 +21,14 @@
     reflectTabs,
     runMenuCommand,
     runToastAction,
+    dismissToast,
     answerAsideDiscard,
     setPaneWidth,
     splitTab,
     syncUndoMenu,
     setSidebarWidth,
     sidebarColumn,
+    sidebarShown,
     syncPromptLayers,
     toggleSidebar,
     useProject,
@@ -34,9 +36,10 @@
     SIDEBAR_MIN,
   } from "./lib/state.svelte";
   import * as tabs from "./lib/tabs";
+  import { stepFocusedField } from "./lib/fieldUndo";
   import { paneLine } from "./lib/browse";
   import { budgetChip } from "./lib/budget";
-  import { draggedShell, dropLabel } from "./lib/terminal.svelte";
+  import { draggedShell, dropLabel, term } from "./lib/terminal.svelte";
   import "./lib/tabsKeeper.svelte";
   import TabStrip from "./lib/TabStrip.svelte";
   import { tabDrag } from "./lib/tabDrag.svelte";
@@ -456,12 +459,15 @@
     // the window handler carries ⌘⇧Z instead, which is no longer a menu
     // item. Both go through `redo_app`, which hands a text box its own
     // redo. Other platforms keep the ⌘Y branch and the tables below.
+    // Not when the focused box already took the key (item 421: the
+    // formatted box's CodeMirror redoes on ⌘⇧Z itself, and a second redo
+    // here would skip a step).
     if (isMac) {
-      if (primary && e.shiftKey && e.code === "KeyZ") {
+      if (primary && e.shiftKey && e.code === "KeyZ" && !e.defaultPrevented) {
         runMenuCommand("redo_app");
         return true;
       }
-    } else if (primary && !e.shiftKey && e.code === "KeyY") {
+    } else if (primary && !e.shiftKey && e.code === "KeyY" && !e.defaultPrevented) {
       runMenuCommand("redo_app");
       return true;
     }
@@ -546,12 +552,21 @@
         runMenuCommand(e.code === "BracketRight" ? "next_tab" : "prev_tab");
         return true;
       }
+      // Ctrl+. stops the turn (item 398, blocker 1506); ⌘. is View → Stop
+      // on macOS. Not from the terminal, whose shell may want the key.
+      if (!e.shiftKey && e.code === "Period" && !term.focused) {
+        runMenuCommand("stop_turn");
+        return true;
+      }
     }
     if (isMac || !e.ctrlKey) return false;
     const k = e.key.toLowerCase();
     const id = e.shiftKey ? SHIFT_KEYS[k] : KEYS[k];
     if (!id) return false;
-    if ((id === "undo_app" || id === "redo_app") && inTextField()) return false;
+    // In a text box the key is the box's: a plain field steps its own
+    // history (item 421, `fieldUndo.ts`), never the browser's page-wide one.
+    if ((id === "undo_app" || id === "redo_app") && inTextField())
+      return !e.defaultPrevented && stepFocusedField(id === "undo_app" ? "undo" : "redo");
     runMenuCommand(id);
     return true;
   }
@@ -617,7 +632,7 @@
       </button>
       <div class="side-grip" style:left="{sidebarColumn() - 4}px">
         <Grip
-          width={app.layout.sidebarWidth}
+          width={sidebarShown()}
           min={SIDEBAR_MIN}
           max={SIDEBAR_MAX}
           edge="left"
@@ -705,7 +720,7 @@
                   {#if p}
                     <p class="tab-card-path">{p.root ?? "No folder — notes and chats only"}</p>
                     <p>
-                      {p.chats} chat{p.chats === 1 ? "" : "s"} · {p.notes} note{p.notes === 1 ? "" : "s"}{#if !p.exists} · folder missing{/if}
+                      {p.chats} chat{p.chats === 1 ? "" : "s"} · {p.notes} note{p.notes === 1 ? "" : "s"}{#if !p.exists}{" · "}folder missing{/if}
                     </p>
                     {#if app.project?.id === p.id}
                       <p>This is the open project.</p>
@@ -880,12 +895,15 @@
         <div class="toasts">
           {#each app.toasts as t (t.id)}
             <!-- A toast with an action (backlog 066: "Removed from
-                 context · Undo") takes the pointer; the rest stay
-                 inert, as they were. -->
+                 context · Undo"). Every toast takes the pointer for its
+                 X (backlog 410, his ask: dismiss any of them at once). -->
             <div class="toast" class:actionable={!!t.action}>
-              {t.text}{#if t.action}<span class="toast-sep"> · </span><button
+              <span class="toast-text">{t.text}{#if t.action}<span class="toast-sep">{" · "}</span><button
                   class="toast-action"
-                  onclick={() => runToastAction(t.id)}>{t.action.label}</button>{/if}
+                  onclick={() => runToastAction(t.id)}>{t.action.label}</button>{/if}</span>
+              <button class="toast-x" aria-label="Dismiss" onclick={() => dismissToast(t.id)}>
+                <Icon name="x" size={12} />
+              </button>
             </div>
           {/each}
         </div>
@@ -1254,9 +1272,32 @@
     padding: 0.4rem 0.7rem;
     border-radius: 6px;
     max-width: 22rem;
-  }
-  .toast.actionable {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
     pointer-events: auto;
+  }
+  .toast-text {
+    flex: 1;
+    min-width: 0;
+  }
+  /* The X (backlog 410): the dim text's colour, the ink on hover. */
+  .toast-x {
+    flex: none;
+    background: none;
+    border: none;
+    padding: 2px;
+    margin: -1px -4px 0 0;
+    color: var(--dim);
+    cursor: pointer;
+    display: flex;
+    border-radius: 4px;
+  }
+  .toast-x:hover,
+  .toast-x:focus-visible {
+    color: var(--ink);
+    background: color-mix(in srgb, var(--ink) 10%, transparent);
+    outline: none;
   }
   /* The action is the toast's own text with the accent — a word, not a
      button drawn as one. */

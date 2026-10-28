@@ -21,6 +21,9 @@
  *   left with none is null and the caller opens the empty one.
  * - The floating slot (an attachment zoomed over the panes) is transient
  *   and never stored.
+ * - The New project tab (backlog 394) is never stored per project: it
+ *   belongs to the whole workspace and has its own key
+ *   (`NEW_PROJECT_KEY`), with the form's draft.
  * - A malformed stored value costs the layout, never the launch: every
  *   read is guarded and falls back to nothing stored.
  */
@@ -71,6 +74,10 @@ export function snapshot(
     );
     const kept: { at: number; content: TabContent }[] = [];
     p.tabs.forEach((t, at) => {
+      // The New project tab is the workspace's, not this project's
+      // (backlog 394): `nightloom.newProject` keeps it, and the restore
+      // puts it back first.
+      if (t.content.kind === "new-project") return;
       const c = store(structuredCloneContent(t.content));
       if (c) kept.push({ at, content: c });
     });
@@ -179,7 +186,9 @@ export function rebuild(saved: SavedWorkspace, resolve: (c: TabContent) => TabCo
       } catch {
         c = null;
       }
-      if (!c) return;
+      // An older build stored the New project tab per project; it is the
+      // workspace's since backlog 394, put back from its own key.
+      if (!c || c.kind === "new-project") return;
       // One tab per content in a pane (the model's rule): a duplicate
       // stored by an older build is dropped.
       const live = c;
@@ -213,4 +222,125 @@ export function rebuild(saved: SavedWorkspace, resolve: (c: TabContent) => TabCo
   }
   const ws: Workspace = { panes, focused: (focused ?? panes[0]).id };
   return { ws, shells: shells.filter((s) => panes.some((p) => p.id === s.pane)) };
+}
+
+/**
+ * A chat moved to another project (nightshift backlog 370) takes its tab
+ * there: `contents` (its chat tab, stored form) join the end of that
+ * project's stored focused pane, once each, and the first becomes that
+ * pane's front — so opening the project shows the chat that was just
+ * moved into it. A project with nothing stored gets a workspace of just
+ * these. Best-effort, like every write here.
+ */
+export function carryTabsTo(
+  storage: Pick<Storage, "getItem" | "setItem">,
+  key: string,
+  contents: TabContent[],
+): void {
+  if (contents.length === 0) return;
+  const all = loadSavedWorkspaces(storage);
+  saveWorkspaceFor(storage, key, withCarried(all[key], contents));
+}
+
+/** The pure half of `carryTabsTo`. */
+export function withCarried(saved: SavedWorkspace | undefined, contents: TabContent[]): SavedWorkspace {
+  const plain = contents.map(structuredCloneContent);
+  if (!saved || saved.panes.length === 0) {
+    const unique = plain.filter((c, i) => plain.findIndex((d) => tabs.sameContent(c, d)) === i);
+    return { panes: [{ tabs: unique, active: 0 }], focused: 0 };
+  }
+  const at = Math.min(Math.max(0, saved.focused), saved.panes.length - 1);
+  const panes = saved.panes.map((p, i) => {
+    if (i !== at) return p;
+    const list = [...p.tabs];
+    let front = -1;
+    for (const c of plain) {
+      let k = list.findIndex((d) => tabs.sameContent(c, d));
+      if (k < 0) {
+        list.push(c);
+        k = list.length - 1;
+      }
+      if (front < 0) front = k;
+    }
+    return { ...p, tabs: list, active: front < 0 ? p.active : front };
+  });
+  return { panes, focused: at };
+}
+
+// ---- The New project form across a quit (nightshift backlog 394) ----
+
+export const NEW_PROJECT_KEY = "nightloom.newProject";
+
+export interface NewProjectDraft {
+  name: string;
+  instructions: string;
+  /** A folder chosen through Change…; null means `<projects folder>/<slug>`. */
+  pickedPath: string | null;
+  /** Backlog 432: `false` when the "Use my practices" box was unticked;
+   *  absent means ticked, the default. */
+  claudeMd?: boolean;
+}
+
+export interface SavedNewProject {
+  /** Whether the New project tab is open (until Create, Cancel, Discard or its ×). */
+  open: boolean;
+  /** Whether it was the tab in front. */
+  front: boolean;
+  draft: NewProjectDraft;
+}
+
+export function emptyNewProjectDraft(): NewProjectDraft {
+  return { name: "", instructions: "", pickedPath: null };
+}
+
+/** The stored form; closed and empty when there is none or it is malformed. */
+export function loadNewProject(storage: Pick<Storage, "getItem">): SavedNewProject {
+  const none: SavedNewProject = { open: false, front: false, draft: emptyNewProjectDraft() };
+  try {
+    const raw = storage.getItem(NEW_PROJECT_KEY);
+    if (!raw) return none;
+    const r = JSON.parse(raw) as { open?: unknown; front?: unknown; draft?: unknown };
+    if (!r || typeof r !== "object") return none;
+    const d = (r.draft && typeof r.draft === "object" ? r.draft : {}) as Record<string, unknown>;
+    const open = r.open === true;
+    return {
+      open,
+      front: open && r.front === true,
+      draft: {
+        name: typeof d.name === "string" ? d.name : "",
+        instructions: typeof d.instructions === "string" ? d.instructions : "",
+        pickedPath: typeof d.pickedPath === "string" ? d.pickedPath : null,
+        ...(d.claudeMd === false ? { claudeMd: false } : {}),
+      },
+    };
+  } catch {
+    return none;
+  }
+}
+
+/** Write the form, or remove the key when it is closed with nothing typed
+ *  (a Create or a Discard). Best-effort. */
+export function saveNewProject(storage: Pick<Storage, "setItem" | "removeItem">, saved: SavedNewProject): void {
+  try {
+    const d = saved.draft;
+    if (!saved.open && !d.name && !d.instructions && d.pickedPath === null) {
+      storage.removeItem(NEW_PROJECT_KEY);
+      return;
+    }
+    storage.setItem(
+      NEW_PROJECT_KEY,
+      JSON.stringify({
+        open: saved.open,
+        front: saved.open && saved.front,
+        draft: {
+          name: d.name,
+          instructions: d.instructions,
+          pickedPath: d.pickedPath,
+          ...(d.claudeMd === false ? { claudeMd: false } : {}),
+        },
+      }),
+    );
+  } catch {
+    // best-effort
+  }
 }

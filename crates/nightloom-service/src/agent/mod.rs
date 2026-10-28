@@ -35,6 +35,7 @@ pub mod connectors;
 pub mod fork;
 pub mod inbox;
 pub mod nested;
+pub mod own_browser;
 mod protocol;
 mod record;
 pub mod steer;
@@ -87,6 +88,10 @@ const INTERRUPT_GRACE: Duration = Duration::from_secs(5);
 
 /// Tail of the child's stderr kept for diagnosis, in bytes.
 const STDERR_TAIL: usize = 4096;
+
+/// Set to `1` on every `claude` process Nightloom starts (backlog 435), so
+/// a user's own Claude Code hooks can tell a Nightloom turn from theirs.
+pub const NIGHTLOOM_MARKER_ENV: &str = "NIGHTLOOM";
 
 /// The last [`STDERR_TAIL`] bytes of `text`, cut on a character boundary:
 /// a byte offset that lands inside a multi-byte character would panic the
@@ -477,6 +482,23 @@ pub struct AgentSpec {
     /// through the Ask hook's matcher like any MCP tool; under the Chat
     /// policy they are refused ([`BROWSER_TOOLS_MATCHER`], blocker 1414).
     pub browser: bool,
+    /// Playwright's gate (nightshift backlog 367): a `PreToolUse` entry on
+    /// [`own_browser::MATCHER`] in every position, bypass included, so a
+    /// call defers for the approval card unless the chat or the reply
+    /// already allows it. `None` when the chat has no Playwright server in
+    /// its `mcp_config` (not installed, or a spec that is not a chat's).
+    pub playwright: Option<own_browser::PlaywrightGate>,
+    /// An incognito chat (nightshift backlog 405): set by
+    /// [`apply_incognito`](Self::apply_incognito), never directly. On, the
+    /// CLI loads no setting file — so not his `~/.claude/CLAUDE.md`, his
+    /// hooks or his allowlist — no MCP server but the ones named here, and
+    /// no skill: the spelling safe mode uses, for the reason its doc's
+    /// table gives (`--setting-sources ""`, measured 2026-09-14).
+    pub incognito: bool,
+    /// The folders no read may reach (backlog 405), sent as
+    /// `permissions.deny` `Read(//…)` rules in the one `--settings` JSON
+    /// ([`crate::incognito::deny_rules`]; measured in the 405 report, M0).
+    pub denied_reads: Vec<PathBuf>,
     /// Passed through verbatim, last, so a caller can reach a flag this
     /// struct has not grown a field for.
     pub extra_args: Vec<String>,
@@ -528,10 +550,12 @@ fn ask_matcher_under_chat_policy(matcher: &str, browser: bool) -> String {
         .split('|')
         .filter(|alt| CHAT_POLICY_KEPT.iter().any(|kept| alt.starts_with(kept)))
         .map(|alt| {
-            if browser && alt == "mcp__.*" {
+            if alt != ask::MCP_ALTERNATIVE {
+                alt
+            } else if browser {
                 ASK_MCP_LESS_BROWSER
             } else {
-                alt
+                ASK_MCP_LESS_PREVIEW
             }
         })
         .collect::<Vec<_>>()
@@ -541,7 +565,14 @@ fn ask_matcher_under_chat_policy(matcher: &str, browser: bool) -> String {
 /// The Ask hook's `mcp__` alternative under the Chat policy with the
 /// Browser on: every MCP tool but Claude in Chrome's, by the same
 /// JavaScript negative lookahead [`CHAT_POLICY_MATCHER`] uses.
-const ASK_MCP_LESS_BROWSER: &str = "mcp__(?!claude-in-chrome__).*";
+/// Playwright's tools stay out too, as in [`ask::MATCHER`] (backlog 367).
+/// The preview's tool stays out too (item 430): the policy's own deny
+/// entry refuses it, and an Ask card for it would be backlog 147's bug.
+const ASK_MCP_LESS_BROWSER: &str = "mcp__(?!claude-in-chrome__|playwright__|nightloom__preview).*";
+
+/// The same without the Browser: every MCP tool but Playwright's and the
+/// preview's.
+const ASK_MCP_LESS_PREVIEW: &str = "mcp__(?!playwright__|nightloom__preview).*";
 
 /// The deny hook's command line. Single-quoted for the POSIX shell the CLI
 /// runs hooks through on macOS and Linux. On Windows, `cmd.exe`'s `echo`
@@ -567,6 +598,14 @@ fn chat_policy_command(reply: &str) -> String {
 /// Chat refuses these too — by hook, like the policy, so the tool list and
 /// the cached prefix stay what they were.
 pub const BROWSER_TOOLS_MATCHER: &str = "mcp__claude-in-chrome__.*";
+
+/// The `PreToolUse` matcher for the chat's preview (nightshift item 430)
+/// under the Chat policy: it runs a command, so a Chat refuses it as it
+/// refuses the shell.
+pub const PREVIEW_TOOL_MATCHER: &str = "mcp__nightloom__preview";
+
+/// Why a Chat refuses the preview.
+pub const PREVIEW_UNDER_CHAT_POLICY_REASON: &str = "This chat is a Chat now: the preview runs a command, and the shell and the tools that act are withdrawn. Reads, search and the web remain.";
 
 /// What the model reads when a Chat refuses a browser call.
 pub const BROWSER_UNDER_CHAT_POLICY_REASON: &str = "This chat is a Chat now: the browser is withdrawn with the other tools that act. Reads, search and the web remain.";
@@ -753,6 +792,9 @@ impl AgentSpec {
             claude_ai_connectors: false,
             claude_ai_blocked: Vec::new(),
             browser: false,
+            playwright: None,
+            incognito: false,
+            denied_reads: Vec::new(),
             extra_args: Vec::new(),
         }
     }
@@ -782,7 +824,31 @@ impl AgentSpec {
             // The read-only list above leaves nothing that would pause
             // anyway; this makes the fact explicit rather than incidental.
             self.ask = None;
+            // Playwright's tools are MCP tools, which the list does not
+            // narrow: with no card to show, its gate refuses (backlog 367).
+            if let Some(pw) = &mut self.playwright {
+                pw.no_card = true;
+            }
         }
+    }
+
+    /// Make this the chat that knows nothing about him (nightshift backlog
+    /// 405, blocker 1513) — for a chat whose mode writes nothing, beside
+    /// [`apply_mode`](Self::apply_mode), after the shell has chosen the
+    /// chat's own empty folder ([`crate::incognito::workspace`]) and built
+    /// the prompt without the project's layers. Here: no `--add-dir` (the
+    /// vault and the extra folders), no auto memory, none of his settings
+    /// files, skills or other MCP servers ([`incognito`](Self::incognito)),
+    /// neither his claude.ai connectors nor his own Chrome, and every read
+    /// of `denied` refused. Narrows, never widens.
+    pub fn apply_incognito(&mut self, denied: Vec<PathBuf>) {
+        self.incognito = true;
+        self.auto_memory = false;
+        self.add_dirs.clear();
+        self.claude_ai_connectors = false;
+        self.claude_ai_blocked.clear();
+        self.browser = false;
+        self.denied_reads = denied;
     }
 
     /// Shape the spec for a chat of `kind` (nightshift backlog 102,
@@ -904,6 +970,11 @@ impl AgentSpec {
         // No brief either: the aside is one question on the warm cache,
         // and its settings carry no hook (the test below pins that).
         spec.brief = None;
+        // Playwright's gate stays (the tools are listed), never deferring
+        // (backlog 367).
+        if let Some(pw) = &mut spec.playwright {
+            pw.side = true;
+        }
         Some(spec)
     }
 
@@ -951,6 +1022,11 @@ impl AgentSpec {
         let mut spec = self.clone();
         spec.fork_session = true;
         spec.no_session_persistence = true;
+        // No card waits on a fork: Playwright runs only if allowed already
+        // (backlog 367).
+        if let Some(pw) = &mut spec.playwright {
+            pw.side = true;
+        }
         if let Some(ask) = &mut spec.ask {
             if ask.mode.is_auto() {
                 // An Auto chat's fork stays on `auto`, as it ran before
@@ -1002,6 +1078,10 @@ impl AgentSpec {
         }
         // His claude.ai connectors (backlog 235): off unless the chat said on.
         env.extend(connectors::env(self.claude_ai_connectors));
+        // Nightloom's mark on its own `claude` processes (backlog 435): his
+        // `~/.claude/hooks/notify.sh` exits quietly when it is set, since
+        // Nightloom raises its own banner. Inherited by the CLI's hooks.
+        env.push((NIGHTLOOM_MARKER_ENV, "1".into()));
         env
     }
 
@@ -1175,6 +1255,21 @@ impl AgentSpec {
                     .or_insert_with(|| serde_json::Value::Array(Vec::new()));
                 if let serde_json::Value::Array(pre) = pre {
                     pre.push(entry);
+                    // The preview runs a command (item 430): it passes the
+                    // policy's matcher as `mcp__` and is refused here, as
+                    // the shell is.
+                    let reply = serde_json::json!({
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": PREVIEW_UNDER_CHAT_POLICY_REASON,
+                        }
+                    })
+                    .to_string();
+                    pre.push(serde_json::json!({
+                        "matcher": PREVIEW_TOOL_MATCHER,
+                        "hooks": [{ "type": "command", "command": chat_policy_command(&reply) }]
+                    }));
                     // The browser's tools pass the policy's matcher as
                     // `mcp__` (backlog 353, blocker 1414): refused here.
                     if self.browser {
@@ -1191,6 +1286,22 @@ impl AgentSpec {
                             "hooks": [{ "type": "command", "command": chat_policy_command(&reply) }]
                         }));
                     }
+                }
+            }
+        }
+        // Playwright's gate (backlog 367): its own entry in every position,
+        // the Chat policy's included — the policy lets `mcp__` through, and
+        // the gate asks as it would anywhere.
+        if let Some(pw) = &self.playwright {
+            let hooks = settings
+                .entry("hooks")
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+            if let serde_json::Value::Object(hooks) = hooks {
+                let pre = hooks
+                    .entry("PreToolUse")
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+                if let serde_json::Value::Array(pre) = pre {
+                    pre.push(pw.hook_entry());
                 }
             }
         }
@@ -1251,6 +1362,17 @@ impl AgentSpec {
         if !self.auto_memory {
             settings.insert("autoMemoryEnabled".into(), serde_json::Value::Bool(false));
         }
+        // An incognito chat's refused reads (backlog 405), in the same one
+        // JSON: a flag source, so it holds under the empty
+        // `--setting-sources` below (measured, 405 report M0).
+        if !self.denied_reads.is_empty() {
+            settings.insert(
+                "permissions".into(),
+                serde_json::json!({
+                    "deny": crate::incognito::deny_rules(&self.denied_reads)
+                }),
+            );
+        }
         if !self.auto_compact {
             settings.insert("autoCompactEnabled".into(), serde_json::Value::Bool(false));
         }
@@ -1286,7 +1408,7 @@ impl AgentSpec {
             a.push("--agents".into());
             a.push(fork::agents_json());
         }
-        if self.safe_mode {
+        if self.safe_mode || self.incognito {
             // Not `--safe-mode`: see the field doc's table — that flag
             // drops the `--mcp-config` server with everything else. No
             // setting source at all is what leaves Nightloom's server
@@ -1407,6 +1529,15 @@ impl PassSpec {
 }
 
 /// Runs turns by driving the CLI, reporting progress as [`TurnEvent`]s.
+/// A deferred call's resume runs on the stdin shape with nothing written
+/// (backlog 374). Measured on CLI 2.1.301 (nightshift `374-375-review.md`,
+/// M3): resumed that way, a session that holds **no** deferred call prints
+/// nothing and waits on stdin until its EOF, then exits 0 — where the old
+/// argv resume failed at once. So a resume that has printed nothing after
+/// this long has its feed closed and ends instead of hanging the turn.
+/// A real resume prints its first line within a second or two (M2: 0.7 s).
+pub const SILENT_RESUME: Duration = Duration::from_secs(30);
+
 pub struct ClaudeCodeAgent {
     spec: AgentSpec,
     /// The model id the CLI last resolved [`AgentSpec::model`] to.
@@ -1438,6 +1569,10 @@ pub struct ClaudeCodeAgent {
     /// seat's, an aside's or a name's — which mark when the CLI was
     /// spawned, said `init`, and sent its first text.
     timing: Option<std::sync::Arc<crate::turn_timing::TurnTiming>>,
+    /// How long a deferred call's resume on stdin may print nothing before
+    /// its feed is closed ([`SILENT_RESUME`]); a field so a test can
+    /// shorten it.
+    silent_resume: Duration,
     /// The next message's process, started while he types (item 256,
     /// [`warm`]); taken by [`Self::run_turn`] when it is the same command.
     warm: warm::WarmSlot,
@@ -1453,6 +1588,7 @@ impl ClaudeCodeAgent {
             refused: None,
             chair: std::sync::Mutex::new(None),
             timing: None,
+            silent_resume: SILENT_RESUME,
             warm: warm::WarmSlot::default(),
             inbox: inbox::Inbox::default(),
         }
@@ -1561,6 +1697,10 @@ impl ClaudeCodeAgent {
     /// log at every connect, so this holds until then and the record
     /// takes over.
     pub fn grant_dir(&mut self, dir: PathBuf) {
+        // Never a folder an incognito chat may not read (backlog 405).
+        if self.spec.denied_reads.iter().any(|d| dir.starts_with(d)) {
+            return;
+        }
         if !self.spec.add_dirs.contains(&dir) {
             self.spec.add_dirs.push(dir);
         }
@@ -1592,9 +1732,20 @@ impl ClaudeCodeAgent {
     /// — in every position, since a subagent gets no preamble in any of
     /// them — written only when it changed.
     pub fn set_ask_dir(&mut self, dir: PathBuf) {
+        if let Some(pw) = &mut self.spec.playwright {
+            pw.dir = dir.clone();
+        }
         if let Some(ask) = &mut self.spec.ask {
             ask.dir = dir.clone();
             let _ = AskDir::new(&ask.dir).set_subagents_auto(ask.subagents_auto);
+        }
+        // The chat's preview (nightshift item 430): the server's arguments
+        // name the chat whose folder this is, so its `preview` tool reaches
+        // this chat's preview and no other.
+        if let (Some(cfg), Some(chat)) = (&self.spec.mcp_config, dir.file_name())
+            && let Some(cfg) = crate::preview::with_chat(cfg, &chat.to_string_lossy())
+        {
+            self.spec.mcp_config = Some(cfg);
         }
         if let Some(brief) = &mut self.spec.brief {
             brief.dir = dir;
@@ -1713,8 +1864,16 @@ impl ClaudeCodeAgent {
         }
         // The chat's own turn: its text on stdin, and the waiting process
         // taken if it is this command (item 256).
-        self.drive_as(&self.spec, Some(input), translator, true, cancel, on_event)
-            .await
+        self.drive_as(
+            &self.spec,
+            Some(input),
+            translator,
+            true,
+            None,
+            cancel,
+            on_event,
+        )
+        .await
     }
 
     /// Continue the turn a deferred call paused (2026-09-16, nightshift
@@ -1724,16 +1883,27 @@ impl ClaudeCodeAgent {
     /// is refused. The caller has already pointed [`AgentSpec::resume`] at
     /// the session that deferred. Events stream as for any turn; the first
     /// is the deferred call's own result, paired by name from `call`.
+    ///
+    /// Since backlog 374 (2026-10-18) it runs on the stdin shape with the
+    /// chat's inbox, as the chat's own turn does: measured on 2.1.301
+    /// (nightshift `notes/runner-design/374-report.md`, M2), `-p
+    /// --input-format stream-json --resume <id>` with stdin held open and
+    /// nothing written resumes the deferred call on its own, and a line
+    /// written later is taken at once. Before, the resume had no stdin, so
+    /// a message he sent while it ran — four background subagents' worth,
+    /// in his case — waited for the very end.
     pub async fn resume_deferred(
         &self,
         call: &DeferredCall,
         cancel: &CancellationToken,
         on_event: &mut (dyn FnMut(TurnEvent) + Send),
     ) -> Result<AgentOutcome, AgentError> {
-        self.drive(
+        self.drive_as(
             &self.spec,
             None,
             Translator::resuming(call),
+            true,
+            None,
             cancel,
             on_event,
         )
@@ -1751,18 +1921,31 @@ impl ClaudeCodeAgent {
     /// aside's composer attaches images and documents as the chat's does —
     /// and `model` / `effort` override the chat's for this aside only
     /// ([`AgentSpec::aside_with`]).
+    ///
+    /// Since item 404 (2026-10-20) an aside has a timing line of its own in
+    /// `turn-timing.log`, as the chat's turns do (`timing`): an aside that
+    /// sat on the moon for minutes left no trace of where it waited.
     pub async fn ask_aside(
         &self,
         input: TurnInput,
         model: Option<&str>,
         effort: Option<&str>,
+        timing: Option<std::sync::Arc<crate::turn_timing::TurnTiming>>,
         cancel: &CancellationToken,
         on_event: &mut (dyn FnMut(TurnEvent) + Send),
     ) -> Option<Result<AgentOutcome, AgentError>> {
         let spec = self.spec.aside_with(model, effort)?;
         Some(
-            self.drive(&spec, Some(input), Translator::new(), cancel, on_event)
-                .await,
+            self.drive_as(
+                &spec,
+                Some(input),
+                Translator::new(),
+                false,
+                timing,
+                cancel,
+                on_event,
+            )
+            .await,
         )
     }
 
@@ -1799,28 +1982,33 @@ impl ClaudeCodeAgent {
         cancel: &CancellationToken,
         on_event: &mut (dyn FnMut(TurnEvent) + Send),
     ) -> Result<AgentOutcome, AgentError> {
-        self.drive_as(spec, input, translator, false, cancel, on_event)
+        self.drive_as(spec, input, translator, false, None, cancel, on_event)
             .await
     }
 
     /// [`Self::drive`]; `chat` for the chat's own turn, whose text goes on
     /// stdin and which may take the waiting process (item 256, [`warm`]).
+    /// `timing` marks this process's stages on a line of its own (an
+    /// aside's, item 404) in place of the chat turn's.
+    #[allow(clippy::too_many_arguments)]
     async fn drive_as(
         &self,
         spec: &AgentSpec,
         input: Option<TurnInput>,
         mut translator: Translator,
         chat: bool,
+        timing: Option<std::sync::Arc<crate::turn_timing::TurnTiming>>,
         cancel: &CancellationToken,
         on_event: &mut (dyn FnMut(TurnEvent) + Send),
     ) -> Result<AgentOutcome, AgentError> {
         let attached = input
             .as_ref()
             .is_some_and(|i| !i.images.is_empty() || !i.documents.is_empty());
-        let piped =
-            attached || (chat && input.as_ref().is_some_and(|i| warm::suits_stdin(&i.text)));
+        // The chat's deferred resume (no input) goes on stdin too (374):
+        // the stdin shape with nothing written resumes the deferred call.
+        let piped = attached || (chat && input.as_ref().is_none_or(|i| warm::suits_stdin(&i.text)));
         let (args, stdin) = match &input {
-            Some(_) if piped => (spec.stdin_args(), Stdio::piped()),
+            _ if piped => (spec.stdin_args(), Stdio::piped()),
             // Null rather than inherited: with a terminal on the other end
             // the CLI waits three seconds for piped input that is never
             // coming, on every turn.
@@ -1828,7 +2016,9 @@ impl ClaudeCodeAgent {
             None => (spec.resume_args(), Stdio::null()),
         };
         let key = warm::Key::of(spec, &args);
-        let taken = if chat && piped {
+        // Never for a deferred resume: a waiting process is one that has
+        // not yet been given its message, which a resume has none of.
+        let taken = if chat && piped && input.is_some() {
             self.warm.take(&key)
         } else {
             None
@@ -1848,7 +2038,7 @@ impl ClaudeCodeAgent {
         // The turn's timing line (item 256): the spawn (or the waiting
         // process taken), the CLI's `init` line, the model's first streamed
         // event and its first text. Only the chat's own turn sets it.
-        let timing = self.timing.clone();
+        let timing = timing.or_else(|| self.timing.clone());
         if let Some(t) = &timing {
             t.mark(crate::turn_timing::Mark::Spawned);
             t.set_warm(warm_start);
@@ -1876,12 +2066,13 @@ impl ClaudeCodeAgent {
         // waiting, at a Stop, or when the process ends.
         let inbox = (chat && piped).then(|| self.inbox.clone());
         let mut held_stdin: Option<tokio::sync::mpsc::UnboundedSender<String>> = None;
-        if piped
-            && let Some(input) = &input
-            && let Some(mut stdin) = child.stdin.take()
-        {
+        if piped && let Some(mut stdin) = child.stdin.take() {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-            let _ = tx.send(protocol::user_line(input));
+            // A deferred resume (374) has no opening line: the CLI resumes
+            // the call on its own and the feed carries only what he sends.
+            if let Some(input) = &input {
+                let _ = tx.send(protocol::user_line(input));
+            }
             match &inbox {
                 Some(inbox) => inbox.open(tx),
                 // Any other process takes its one message, and the EOF once
@@ -1926,13 +2117,48 @@ impl ClaudeCodeAgent {
         // Why the read loop ended early, when it did (backlog 332).
         let mut read_error: Option<String> = None;
         let mut any_line = false;
+        // A deferred resume with nothing written (374): if it prints
+        // nothing at all, the session held no deferred call — close the
+        // feed so the CLI exits rather than waiting on stdin for ever.
+        let silent = tokio::time::sleep(self.silent_resume);
+        tokio::pin!(silent);
+        let mut watch_silence = piped && input.is_none();
 
         loop {
+            // A subagent's end the main thread was not told of (406): the
+            // wake's deadline, recomputed after every line.
+            let wake_due = inbox.as_ref().and_then(|i| i.wake_due());
             let next = tokio::select! {
                 biased;
                 _ = cancel.cancelled() => {
                     interrupted = true;
                     break;
+                }
+                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(
+                    wake_due.unwrap_or_else(std::time::Instant::now),
+                )), if wake_due.is_some() => {
+                    if let Some(w) = inbox
+                        .as_ref()
+                        .and_then(|i| i.fire_wake_at(std::time::Instant::now()))
+                    {
+                        on_event(TurnEvent::Woke { text: w.text, agents: w.agents });
+                    }
+                    continue;
+                }
+                _ = &mut silent, if watch_silence && !any_line => {
+                    watch_silence = false;
+                    // A message he sent in the silence is on its way in:
+                    // its turn will print, so the feed stays open — closed
+                    // now, the CLI would still run it and the window would
+                    // send it again as untaken.
+                    if inbox.as_ref().is_some_and(|i| i.has_waiting()) {
+                        continue;
+                    }
+                    if let Some(inbox) = &inbox {
+                        inbox.close();
+                    }
+                    held_stdin = None;
+                    continue;
                 }
                 line = lines.next_line() => line,
             };
@@ -2411,6 +2637,37 @@ async fn kill_tree(child: &mut tokio::process::Child) {
     let _ = child.kill().await;
 }
 
+/// A turn of a stand-in CLI in `dir` that answers and ends on the EOF after
+/// its `result` — the shape of an ordinary turn, for tests outside this
+/// module (item 430: a preview outlives one).
+#[cfg(all(test, unix))]
+pub(crate) async fn run_stand_in_turn(dir: &std::path::Path) {
+    let path = dir.join("claude-stand-in-turn");
+    std::fs::write(
+        &path,
+        r#"#!/bin/sh
+printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"claude-haiku-4-5","permissionMode":"default","session_id":"t-430"}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"ok","session_id":"t-430","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}'
+cat >/dev/null
+"#,
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut s = AgentSpec::new(dir);
+    s.binary = path.to_string_lossy().into_owned();
+    let agent = ClaudeCodeAgent::new(s);
+    let cancel = CancellationToken::new();
+    let mut on_event = |_e: TurnEvent| {};
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        agent.run_turn("hi", &cancel, &mut on_event),
+    )
+    .await
+    .expect("the stand-in turn ended")
+    .expect("the stand-in turn ran");
+}
+
 /// Each aside's own cancel token, keyed by its exchange number `seq`
 /// (nightshift backlog 176, 2026-09-23). Several aside cards may be open
 /// at once, so the window's × must stop the exchange it was clicked on and
@@ -2737,26 +2994,65 @@ mod tests {
         let asks: Vec<&str> = pre
             .iter()
             .filter_map(|e| e["matcher"].as_str())
-            .filter(|m| *m != CHAT_POLICY_MATCHER && *m != BROWSER_TOOLS_MATCHER)
+            .filter(|m| {
+                *m != CHAT_POLICY_MATCHER
+                    && *m != BROWSER_TOOLS_MATCHER
+                    && *m != PREVIEW_TOOL_MATCHER
+            })
             .collect();
         assert_eq!(
             asks,
-            ["WebFetch|WebSearch|mcp__(?!claude-in-chrome__).*"],
+            ["WebFetch|WebSearch|mcp__(?!claude-in-chrome__|playwright__|nightloom__preview).*"],
             "{pre:?}"
         );
+        // Item 430: the preview is the policy's to refuse, not the Ask
+        // card's; the rest of Nightloom's server still asks.
+        assert!(!regex_like_matches(asks[0], "mcp__nightloom__preview"));
+        assert!(regex_like_matches(asks[0], "mcp__nightloom__remember"));
+        assert!(regex_like_matches(
+            PREVIEW_TOOL_MATCHER,
+            "mcp__nightloom__preview"
+        ));
         chat.browser = false;
         let pre = entries(&chat);
         assert!(
             pre.iter()
-                .any(|e| e["matcher"] == "WebFetch|WebSearch|mcp__.*"),
+                .any(|e| e["matcher"]
+                    == "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview).*"),
             "{pre:?}"
         );
     }
 
     /// The Ask matcher's `mcp__.*` alternative covers a browser tool name.
+    /// Understands the two shapes the matchers use: `prefix.*`, and
+    /// `prefix(?!a|b).*` (a negative lookahead after the prefix).
     fn regex_like_matches(matcher: &str, name: &str) -> bool {
-        matcher.split('|').any(|alt| match alt.strip_suffix(".*") {
-            Some(prefix) => name.starts_with(prefix),
+        // Split on `|` outside parentheses.
+        let mut alts: Vec<String> = vec![String::new()];
+        let mut depth = 0;
+        for c in matcher.chars() {
+            match c {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                '|' if depth == 0 => {
+                    alts.push(String::new());
+                    continue;
+                }
+                _ => {}
+            }
+            alts.last_mut().unwrap().push(c);
+        }
+        alts.iter().any(|alt| match alt.strip_suffix(".*") {
+            Some(p) => match p.split_once("(?!") {
+                Some((head, negs)) => {
+                    name.starts_with(head)
+                        && !negs
+                            .trim_end_matches(')')
+                            .split('|')
+                            .any(|n| name[head.len()..].starts_with(n))
+                }
+                None => name.starts_with(p),
+            },
             None => alt == name,
         })
     }
@@ -3324,8 +3620,10 @@ mod tests {
         let i = a.iter().position(|x| x == "--settings").unwrap();
         let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
         let pre = v["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq!(pre.len(), 1);
+        // The policy's deny, and the preview's beside it (item 430).
+        assert_eq!(pre.len(), 2);
         assert_eq!(pre[0]["matcher"], CHAT_POLICY_MATCHER);
+        assert_eq!(pre[1]["matcher"], PREVIEW_TOOL_MATCHER);
         let command = pre[0]["hooks"][0]["command"].as_str().unwrap();
         assert!(command.starts_with("echo "), "{command}");
         let reply: serde_json::Value = serde_json::from_str(
@@ -3354,13 +3652,14 @@ mod tests {
         let i = a.iter().position(|x| x == "--settings").unwrap();
         let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
         let pre = v["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq!(pre.len(), 2, "{v}");
+        assert_eq!(pre.len(), 3, "{v}");
         // Narrowed beside the policy (backlog 147): see the next test.
         assert_eq!(
             pre[0]["matcher"],
             ask_matcher_under_chat_policy(ask::MATCHER, false)
         );
         assert_eq!(pre[1]["matcher"], CHAT_POLICY_MATCHER);
+        assert_eq!(pre[2]["matcher"], PREVIEW_TOOL_MATCHER);
         assert_eq!(v["autoMemoryEnabled"], false);
 
         // The other pairings: nothing to refuse.
@@ -3391,7 +3690,11 @@ mod tests {
     #[test]
     fn under_the_chat_policy_the_ask_hook_names_only_what_the_policy_leaves() {
         let narrowed = ask_matcher_under_chat_policy(ask::MATCHER, false);
-        assert_eq!(narrowed, "WebFetch|WebSearch|mcp__.*");
+        // The preview's tool is out too (item 430): the policy refuses it.
+        assert_eq!(
+            narrowed,
+            "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview).*"
+        );
         for withdrawn in [
             "Bash",
             "Write",
@@ -3420,17 +3723,22 @@ mod tests {
         let i = a.iter().position(|x| x == "--settings").unwrap();
         let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
         let pre = v["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq!(pre.len(), 2, "{v}");
-        assert_eq!(pre[0]["matcher"], "WebFetch|WebSearch|mcp__.*");
+        assert_eq!(pre.len(), 3, "{v}");
+        assert_eq!(
+            pre[0]["matcher"],
+            "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview).*"
+        );
         assert_eq!(pre[1]["matcher"], CHAT_POLICY_MATCHER);
+        assert_eq!(pre[2]["matcher"], PREVIEW_TOOL_MATCHER);
         // The one resume that leaves plan mode: only the deny is registered.
         s.ask.as_mut().unwrap().mode = AskMode::ExitingToAuto;
         let a = s.args("hi");
         let i = a.iter().position(|x| x == "--settings").unwrap();
         let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
         let pre = v["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq!(pre.len(), 1, "{v}");
+        assert_eq!(pre.len(), 2, "{v}");
         assert_eq!(pre[0]["matcher"], CHAT_POLICY_MATCHER);
+        assert_eq!(pre[1]["matcher"], PREVIEW_TOOL_MATCHER);
         // Without the policy, the matcher is untouched.
         let mut plain = spec();
         plain.ask = s.ask.clone();
@@ -3444,6 +3752,54 @@ mod tests {
             "cmd.exe would read one of these as its own: {reply}"
         );
         assert!(!reply.contains('\''), "{reply}");
+    }
+
+    /// Backlog 405: an incognito chat's CLI loads no settings file (so not
+    /// his `CLAUDE.md`), no other MCP server, no skill and no auto memory;
+    /// is granted no folder; has neither connectors nor Chrome; and refuses
+    /// reads of every folder it was given, in the one `--settings` JSON.
+    #[test]
+    fn apply_incognito_drops_his_files_and_denies_his_folders() {
+        let mut s = spec();
+        s.add_dirs = vec![PathBuf::from("/vault")];
+        s.browser = true;
+        s.claude_ai_connectors = true;
+        s.apply_mode(ChatMode::Incognito);
+        s.apply_incognito(vec![
+            PathBuf::from("/Users/x/.nightloom"),
+            PathBuf::from("/Users/x/.claude"),
+        ]);
+        let a = s.args("hi");
+        let joined = a.join(" ");
+        assert!(!a.iter().any(|x| x == "--add-dir"), "{a:?}");
+        let i = a.iter().position(|x| x == "--setting-sources").unwrap();
+        assert_eq!(a[i + 1], "");
+        assert!(a.iter().any(|x| x == "--strict-mcp-config"));
+        assert!(a.iter().any(|x| x == "--disable-slash-commands"));
+        assert!(a.iter().any(|x| x == "--no-chrome"));
+        assert!(!joined.contains("--chrome "), "{joined}");
+        let i = a.iter().position(|x| x == "--settings").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
+        assert_eq!(v["autoMemoryEnabled"], false);
+        let deny: Vec<&str> = v["permissions"]["deny"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r.as_str().unwrap())
+            .collect();
+        for want in [
+            "Read(//Users/x/.nightloom/**)",
+            "Read(//Users/x/.nightloom)",
+            "Read(//Users/x/.claude/**)",
+        ] {
+            assert!(deny.contains(&want), "{want} not in {deny:?}");
+        }
+        // Only one `--settings` (the CLI keeps the last).
+        assert_eq!(a.iter().filter(|x| *x == "--settings").count(), 1);
+        // A normal chat is untouched.
+        let normal = spec().args("hi");
+        assert!(!normal.iter().any(|x| x == "--setting-sources"));
+        assert!(!normal.join(" ").contains("permissions"));
     }
 
     #[test]
@@ -3520,7 +3876,10 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
         assert_eq!(
             v["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
-            "'/app/nightloom-desktop' '--permission-hook' '/logs/ask/chat-1'"
+            format!(
+                "'/app/nightloom-desktop' '--permission-hook' '/logs/ask/chat-1' {}",
+                ask::FAIL_CLOSED
+            )
         );
         let i = a
             .iter()
@@ -3588,6 +3947,30 @@ mod tests {
         let mut plain = spec();
         plain.fork_mode = false;
         assert!(!plain.args("hi").iter().any(|x| x == "--settings"));
+    }
+
+    /// Backlog 435: every process Nightloom starts carries `NIGHTLOOM=1` —
+    /// a chat turn, a pass (dream, capture, chat name) and the checkpoint
+    /// fork alike — so his `notify.sh` hook can stay quiet on them.
+    #[test]
+    fn every_process_carries_the_nightloom_marker() {
+        let marked = |env: &[(String, String)]| {
+            env.iter()
+                .any(|(k, v)| k == NIGHTLOOM_MARKER_ENV && v == "1")
+        };
+        let env_of = |s: &AgentSpec| -> Vec<(String, String)> {
+            s.env_set()
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect()
+        };
+        assert!(marked(&env_of(&spec())));
+        let pass = PassSpec::new("claude", Vec::new()).spec_in("/w");
+        assert!(marked(&env_of(&pass)));
+        let mut resumed = spec();
+        resumed.resume = Some("s-1".into());
+        assert!(marked(&resumed.fork_spec().unwrap().env));
+        assert!(!spec().env_removed().contains(&NIGHTLOOM_MARKER_ENV));
     }
 
     /// Fork mode (backlog 104, pass 3): on by default, it puts
@@ -3804,8 +4187,8 @@ mod tests {
         assert_eq!(brief_entries(&a), 1);
         assert_eq!(
             entries(&a).len(),
-            2,
-            "the policy's own entry and the budget's"
+            3,
+            "the policy's own entry, the preview's deny (item 430) and the budget's"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3862,6 +4245,105 @@ mod tests {
             subagents_auto: true,
         });
         s
+    }
+
+    /// The `PreToolUse` entries of a spec's one `--settings` JSON.
+    fn pre_entries(s: &AgentSpec) -> Vec<serde_json::Value> {
+        let a = s.args("hi");
+        let Some(i) = a.iter().position(|x| x == "--settings") else {
+            return Vec::new();
+        };
+        let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
+        v["hooks"]["PreToolUse"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn with_playwright(mut s: AgentSpec) -> AgentSpec {
+        s.playwright = Some(own_browser::PlaywrightGate {
+            hook: vec!["/app/nl".into(), "--permission-hook".into()],
+            dir: PathBuf::from("/logs/ask/chat-3"),
+            side: false,
+            no_card: false,
+        });
+        s
+    }
+
+    /// Backlog 367: Playwright's gate is on the line in every position —
+    /// bypass (no Ask at all), Auto, Ask, Plan, the Chat policy — as the
+    /// chat's hook on the chat's directory, and it is the only entry that
+    /// matches a Playwright tool, so no second hook races it.
+    #[test]
+    fn the_playwright_gate_is_registered_in_every_position() {
+        let mut bypass = with_playwright(spec());
+        bypass.permission_mode = Some("bypassPermissions".into());
+        let mut chat = with_playwright(asking(AskMode::Ask));
+        chat.chat_policy = true;
+        chat.browser = true;
+        let positions = [
+            ("bypass", bypass),
+            ("auto", with_playwright(asking(AskMode::Auto))),
+            ("ask", with_playwright(asking(AskMode::Ask))),
+            ("plan", with_playwright(asking(AskMode::Plan))),
+            ("chat policy", chat),
+        ];
+        for (name, s) in positions {
+            let pre = pre_entries(&s);
+            let matching: Vec<&serde_json::Value> = pre
+                .iter()
+                .filter(|e| {
+                    let m = e["matcher"].as_str().unwrap_or("");
+                    // The brief's entry matches every tool and decides
+                    // nothing about permission; none is set here.
+                    regex_like_matches(m, "mcp__playwright__browser_navigate")
+                        && m != CHAT_POLICY_MATCHER
+                })
+                .collect();
+            assert_eq!(matching.len(), 1, "{name}: {pre:?}");
+            assert_eq!(matching[0]["matcher"], own_browser::MATCHER, "{name}");
+            assert_eq!(
+                matching[0]["hooks"][0]["command"],
+                format!(
+                    "'/app/nl' '--permission-hook' '/logs/ask/chat-3' {}",
+                    own_browser::FAIL_CLOSED
+                ),
+                "{name}"
+            );
+        }
+        // Without the server there is no gate.
+        assert!(pre_entries(&spec()).is_empty());
+        // The Ask matcher still asks about every other MCP tool.
+        assert!(regex_like_matches(ask::MATCHER, "mcp__nightloom__remember"));
+        assert!(!regex_like_matches(
+            ask::MATCHER,
+            "mcp__playwright__browser_click"
+        ));
+    }
+
+    /// An aside and a checkpoint fork keep the gate but never defer
+    /// (`--side`); an ephemeral chat's gate refuses outright.
+    #[test]
+    fn side_processes_and_ephemeral_chats_never_defer_playwright() {
+        let mut s = with_playwright(asking(AskMode::Auto));
+        s.resume = Some("sess".into());
+        let aside = s.aside().unwrap();
+        let cmd = |s: &AgentSpec| {
+            pre_entries(s)
+                .into_iter()
+                .find(|e| e["matcher"] == own_browser::MATCHER)
+                .unwrap()["hooks"][0]["command"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert!(cmd(&aside).contains("'--side' ||"));
+        let fork = s.checkpoint_fork().unwrap();
+        assert!(cmd(&fork).contains("'--side' ||"));
+        assert!(!cmd(&s).contains("--side"));
+        let mut eph = with_playwright(spec());
+        eph.apply_mode(ChatMode::Ephemeral);
+        assert!(cmd(&eph).contains("\"deny\""));
     }
 
     fn mode_of(a: &[String]) -> String {
@@ -4087,6 +4569,95 @@ mod tests {
         path.to_string_lossy().into_owned()
     }
 
+    /// Backlog 374: a deferred call's resume runs on the stdin shape with
+    /// the chat's inbox, so a message he sends while it runs — while its
+    /// subagents run, in his case — is written to the CLI and taken, rather
+    /// than held for the end of the last subagent. The stand-in records its
+    /// argv, waits for his line, and says it started it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_deferred_resume_takes_a_message_he_sends_while_it_runs() {
+        let dir = std::env::temp_dir().join(format!("nightloom-374-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let argv = dir.join("argv");
+        let body = format!(
+            r##"printf '%s\n' "$@" > '{argv}'
+printf '%s\n' '{{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"claude-haiku-4-5","permissionMode":"default","session_id":"s-374"}}'
+read -r line
+id=$(printf '%s' "$line" | sed 's/.*"uuid":"\([^"]*\)".*/\1/')
+printf '%s\n' "{{\"type\":\"command_lifecycle\",\"command_uuid\":\"$id\",\"state\":\"started\"}}"
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"ok","session_id":"s-374","stop_reason":"end_turn","usage":{{"input_tokens":1,"output_tokens":1}}}}'
+cat >/dev/null
+"##,
+            argv = argv.display()
+        );
+        let mut s = AgentSpec::new(&dir);
+        s.binary = stand_in(&dir, &body);
+        s.resume = Some("s-374".into());
+        let agent = ClaudeCodeAgent::new(s);
+        let inbox = agent.inbox();
+        let id = uuid::Uuid::new_v4().to_string();
+        let call = ask::DeferredCall {
+            id: "toolu_d".into(),
+            name: "Bash".into(),
+            input: serde_json::json!({}),
+        };
+        let cancel = CancellationToken::new();
+        let mut delivered = Vec::new();
+        {
+            let mut on_event = |e| match e {
+                TurnEvent::AgentInit { .. } => inbox.send(&id, "while it runs").unwrap(),
+                TurnEvent::MessageDelivered { id, .. } => delivered.push(id),
+                _ => {}
+            };
+            let run = agent.resume_deferred(&call, &cancel, &mut on_event);
+            tokio::time::timeout(std::time::Duration::from_secs(10), run)
+                .await
+                .expect("the stand-in ended on the EOF after its result")
+                .unwrap();
+        }
+        assert_eq!(delivered, vec![id.clone()]);
+        let args = std::fs::read_to_string(&argv).unwrap();
+        let args: Vec<&str> = args.lines().collect();
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["--input-format", "stream-json"]),
+            "{args:?}"
+        );
+        assert!(
+            args.windows(2).any(|w| w == ["--resume", "s-374"]),
+            "{args:?}"
+        );
+        assert!(!inbox.is_open(), "closed at the result");
+    }
+
+    /// 374 review: a deferred resume of a session that holds no deferred
+    /// call prints nothing and waits on stdin (measured, M3). The stand-in
+    /// does the same — reads stdin to its EOF, prints nothing, exits 0 — and
+    /// the resume must end on its own once the silence runs out, not hang.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_silent_deferred_resume_ends_instead_of_waiting_on_stdin() {
+        let dir = std::env::temp_dir().join(format!("nightloom-374s-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = AgentSpec::new(&dir);
+        s.binary = stand_in(&dir, "cat >/dev/null\n");
+        s.resume = Some("s-none".into());
+        let mut agent = ClaudeCodeAgent::new(s);
+        agent.silent_resume = Duration::from_millis(300);
+        let call = ask::DeferredCall {
+            id: "toolu_gone".into(),
+            name: "Bash".into(),
+            input: serde_json::json!({}),
+        };
+        let cancel = CancellationToken::new();
+        let mut on_event = |_e: TurnEvent| {};
+        let run = agent.resume_deferred(&call, &cancel, &mut on_event);
+        let ended = tokio::time::timeout(Duration::from_secs(10), run).await;
+        assert!(ended.is_ok(), "the resume hung on stdin");
+        assert!(!agent.inbox().is_open());
+    }
+
     #[cfg(unix)]
     const ENDS_ON_INTERRUPT: &str = r##"printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":["Bash"],"mcp_servers":[],"model":"claude-haiku-4-5","permissionMode":"bypassPermissions","session_id":"stop-1"}'
 printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_stop","name":"Bash","input":{"command":"python3 -c ..."}}]},"parent_tool_use_id":null}'
@@ -4147,6 +4718,228 @@ wait
             outcome.notices,
             vec!["interrupted — Claude Code ended the turn".to_string()],
             "one notice, one toast"
+        );
+    }
+
+    /// Items 440 + 441: a CLI with no connection — it retries the call,
+    /// one `api_retry` line per try with `error: "unknown"` and no status
+    /// (CLI 2.1.312's shape) — until Stop, then closes the turn as an
+    /// interrupt does mid-stream (`aborted_streaming`).
+    #[cfg(unix)]
+    const RETRIES_UNTIL_INTERRUPT: &str = r##"printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"claude-opus-4-5","permissionMode":"default","session_id":"offline-1"}'
+trap 'printf "%s\n" "{\"type\":\"system\",\"subtype\":\"api_retry\",\"attempt\":3,\"max_retries\":10,\"retry_delay_ms\":2000,\"error_status\":null,\"error\":\"unknown\"}"
+printf "%s\n" "{\"type\":\"result\",\"subtype\":\"error_during_execution\",\"is_error\":true,\"terminal_reason\":\"aborted_streaming\",\"num_turns\":1,\"session_id\":\"offline-1\",\"stop_reason\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}"
+exit 0' INT
+n=1
+while [ $n -le 2 ]; do
+  printf '{"type":"system","subtype":"api_retry","attempt":%d,"max_retries":10,"retry_delay_ms":500,"error_status":null,"error":"unknown"}\n' $n
+  n=$((n+1))
+done
+sleep 30 >/dev/null 2>&1 & child=$!
+wait
+"##;
+
+    /// Items 440 + 441: every try reaches the shell live as a `Retry` (one
+    /// status line there), and a Stop pressed during them ends with the one
+    /// stop notice — no "retrying after unknown (n/10)" notices, which the
+    /// shell toasted as a stack at the turn's end. (The shell drops that
+    /// one stop notice too when he pressed Stop himself: `turnNotices`.)
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stop_during_offline_retries_leaves_one_notice_and_live_retries() {
+        let dir = std::env::temp_dir().join(format!("nightloom-441-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = AgentSpec::new(&dir);
+        s.binary = stand_in(&dir, RETRIES_UNTIL_INTERRUPT);
+        let agent = ClaudeCodeAgent::new(s);
+        let cancel = CancellationToken::new();
+        let trigger = cancel.clone();
+        let mut tries = Vec::new();
+        let outcome = agent
+            .run_turn("hi", &cancel, &mut |e| {
+                if let TurnEvent::Retry {
+                    attempt,
+                    error,
+                    status,
+                    ..
+                } = e
+                {
+                    tries.push((attempt, error, status));
+                    if attempt == 2 {
+                        trigger.cancel();
+                    }
+                }
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            tries,
+            vec![
+                (1, Some("unknown".to_string()), None),
+                (2, Some("unknown".to_string()), None),
+                (3, Some("unknown".to_string()), None),
+            ],
+            "each try live, the one the CLI wrote on its way out too"
+        );
+        assert!(!outcome.is_error, "a stop is not a failed turn");
+        assert_eq!(
+            outcome.notices,
+            vec!["interrupted — Claude Code ended the turn".to_string()],
+            "no retry notices: nothing stacks up for the turn's end"
+        );
+    }
+
+    /// Item 430: the chat's id reaches the preview's server — each turn's
+    /// `set_ask_dir` names the chat whose folder it is, replacing the last.
+    #[test]
+    fn the_ask_dir_names_the_chat_to_the_preview_server() {
+        let mut s = AgentSpec::new("/w");
+        s.mcp_config = Some(
+            serde_json::json!({"mcpServers": {"nightloom": {"command": "/app", "args": ["--mcp-serve", "--preview", "/s.sock"]}}})
+                .to_string(),
+        );
+        let mut agent = ClaudeCodeAgent::new(s);
+        agent.set_ask_dir(PathBuf::from("/logs/ask/chat-7"));
+        agent.set_ask_dir(PathBuf::from("/logs/ask/chat-8"));
+        let cfg = agent.spec.mcp_config.clone().unwrap();
+        let v: serde_json::Value = serde_json::from_str(&cfg).unwrap();
+        assert_eq!(
+            v["mcpServers"]["nightloom"]["args"],
+            serde_json::json!([
+                "--mcp-serve",
+                "--preview",
+                "/s.sock",
+                "--preview-chat",
+                "chat-8"
+            ])
+        );
+    }
+
+    /// Item 430, step 1 (measured with a stand-in, no model): what
+    /// Nightloom's own turn end does to a server the CLI's process left
+    /// running. The stand-in starts `python3 -m http.server` the way a
+    /// model's `Bash` call would, prints its `result`, and exits on the EOF
+    /// Nightloom sends after it. `how` is the shell line that starts it.
+    #[cfg(unix)]
+    async fn server_after_turn(how: &str, stop: bool) -> (bool, bool, Duration, Option<u32>) {
+        let dir = std::env::temp_dir().join(format!("nightloom-430-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let pidfile = dir.join("server.pid");
+        let started = dir.join("started");
+        let tail = if stop {
+            // Parks in a call until the interrupt, as ENDS_ON_INTERRUPT does.
+            "trap 'exit 0' INT\nsleep 30 >/dev/null 2>&1 & wait\n"
+        } else {
+            r#"printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"ok","session_id":"p-430","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}'
+cat >/dev/null
+"#
+        };
+        let body = format!(
+            r##"printf '%s\n' '{{"type":"system","subtype":"init","cwd":"x","tools":["Bash"],"mcp_servers":[],"model":"claude-haiku-4-5","permissionMode":"bypassPermissions","session_id":"p-430"}}'
+printf '%s\n' '{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"toolu_srv","name":"Bash","input":{{"command":"serve"}}}}]}},"parent_tool_use_id":null}}'
+cd '{dir}'
+{how}
+echo $! > '{pidfile}'
+i=0; until python3 -c 'import socket,sys; socket.create_connection(("127.0.0.1",{port}),0.2)' 2>/dev/null; do i=$((i+1)); [ $i -gt 100 ] && break; sleep 0.1; done
+touch '{started}'
+{tail}"##,
+            dir = dir.display(),
+            pidfile = pidfile.display(),
+            started = started.display(),
+            how = how.replace("$PORT", &port.to_string()),
+        );
+        let mut s = AgentSpec::new(&dir);
+        s.binary = stand_in(&dir, &body);
+        let agent = ClaudeCodeAgent::new(s);
+        let cancel = CancellationToken::new();
+        let trigger = cancel.clone();
+        let t0 = std::time::Instant::now();
+        let started_c = started.clone();
+        let mut on_event = |_e: TurnEvent| {};
+        let run = agent.run_turn("serve", &cancel, &mut on_event);
+        let watcher = async move {
+            if stop {
+                while !started_c.exists() {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                trigger.cancel();
+            }
+        };
+        let (ended, _) = tokio::join!(tokio::time::timeout(Duration::from_secs(20), run), watcher);
+        let took = t0.elapsed();
+        let ended = ended.is_ok();
+        // After the turn: is the server still answering?
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let alive = std::net::TcpStream::connect_timeout(
+            &([127, 0, 0, 1], port).into(),
+            Duration::from_millis(500),
+        )
+        .is_ok();
+        let pid = std::fs::read_to_string(&pidfile)
+            .ok()
+            .and_then(|p| p.trim().parse::<u32>().ok());
+        if let Some(pid) = pid {
+            let _ = std::process::Command::new("kill")
+                .arg(pid.to_string())
+                .status();
+        }
+        (ended, alive, took, pid)
+    }
+
+    /// Item 430, step 1: a server started detached (`nohup … &`, output
+    /// to a file) outlives a turn that ends normally — Nightloom's turn
+    /// end closes the CLI's stdin and waits; it kills no process group.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_detached_server_outlives_a_turn_that_ends_normally() {
+        let (ended, alive, took, pid) = server_after_turn(
+            "nohup python3 -m http.server $PORT --bind 127.0.0.1 >server.log 2>&1 &",
+            false,
+        )
+        .await;
+        assert!(ended, "the turn did not end ({took:?})");
+        assert!(pid.is_some());
+        assert!(alive, "the server died with the turn ({took:?})");
+    }
+
+    /// Item 430, step 1: the same after a Stop — the interrupt goes to the
+    /// CLI's pid alone (`interrupt`, `kill_tree` on unix), not its group.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_detached_server_outlives_a_stopped_turn() {
+        let (ended, alive, took, pid) = server_after_turn(
+            "nohup python3 -m http.server $PORT --bind 127.0.0.1 >server.log 2>&1 &",
+            true,
+        )
+        .await;
+        assert!(ended, "the stopped turn did not end ({took:?})");
+        assert!(pid.is_some());
+        assert!(alive, "the server died with the stopped turn ({took:?})");
+    }
+
+    /// Item 430, step 1, measured 2026-10-27: a server started with a bare
+    /// `&` that keeps **the CLI's own** stdout and stderr holds the turn
+    /// open — Nightloom reads the CLI's output to its end, and the end
+    /// never comes while the server lives (the turn had not ended at 20 s).
+    /// The CLI's `Bash` tool gives a command its own pipes, not the CLI's
+    /// (`inferred`), so a model's `&` should not do this; a hook or MCP
+    /// server that backgrounds a child could. Ignored: it takes 20 s and
+    /// pins a fact, not a behaviour to keep. `-- --ignored` to re-measure.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore]
+    async fn measure_a_server_holding_the_clis_output() {
+        let (ended, alive, took, _) =
+            server_after_turn("python3 -m http.server $PORT --bind 127.0.0.1 &", false).await;
+        eprintln!("430 M3: turn ended = {ended}, alive after = {alive}, waited {took:?}");
+        assert!(
+            !ended,
+            "the turn ended: the measurement changed, update the 430 report"
         );
     }
 

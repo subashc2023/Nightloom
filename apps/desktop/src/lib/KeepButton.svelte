@@ -17,6 +17,7 @@
     from,
     pending = false,
     state = null,
+    source,
   }: {
     keyStr: string;
     name: string;
@@ -25,6 +26,8 @@
     /** An office file still converting: its PDF is not there yet. */
     pending?: boolean;
     state?: KeepState | null;
+    /** An office file's own SHA-256 (item 428). */
+    source?: string;
   } = $props();
 
   const s = $derived(state ?? keepStateOf(keyStr));
@@ -38,7 +41,7 @@
     disabled={pending || s.phase !== "idle"}
     aria-label={s.phase === "kept" ? `${name} kept in this project` : `Keep ${name} in this project`}
     use:tip={keepTip(s, name, pending)}
-    onclick={() => keepNow(keyStr, name, mediaType, from)}
+    onclick={() => keepNow(keyStr, name, mediaType, from, { source })}
     >{#if s.phase === "kept"}<span class="tick" aria-hidden="true">✓</span>{/if}{keepLabel(s)}</button
   >
 {/if}

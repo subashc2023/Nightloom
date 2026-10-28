@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tip } from "./tip";
+  import { renderReply } from "./markdown";
   // Every Copy button goes through the in-app clipboard ring (backlog 173).
   import { copyText } from "./clipRing.svelte";
   import {
@@ -20,9 +21,12 @@
   import type { Placement } from "./asideCard";
   import MoveZone from "./MoveZone.svelte";
   import AsideFoldPanel from "./AsideFoldPanel.svelte";
+  import CopyButton from "./CopyButton.svelte";
+  import { COPIED_MS } from "./copyIcon";
   // Backlog 283: the chat's composer and the chat's message pieces.
   import Composer from "./Composer.svelte";
   import AsideThread from "./AsideThread.svelte";
+  import { fmtTokens } from "./tokens";
 
   /**
    * The floating aside card (nightshift backlog 141, 2026-09-17; blocker
@@ -295,7 +299,7 @@
     try {
       await copyText(text);
       copied = true;
-      setTimeout(() => (copied = false), 1200);
+      setTimeout(() => (copied = false), COPIED_MS);
     } catch {
       // The clipboard refused; nothing to say.
     }
@@ -305,8 +309,11 @@
 <svelte:window onkeydown={windowKeys} />
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+<!-- Item 362 (review): a file dropped on the card outside its own box is
+     refused, never handed to the chat's composer beneath it. -->
 <div
   class="aside-card"
+  data-drop-none
   class:floating={placement !== null}
   class:foot={placement === null && !panel}
   class:folded
@@ -376,7 +383,11 @@
          quotes it at the top of the thread; the head's room goes to
          "Aside of ‹chat›". -->
     {#if last && last.answer !== null && last.cacheRead > 0}
-      <span class="ns-chip mono">{last.cacheRead.toLocaleString()} read from cache</span>
+      <!-- Short (backlog 358): the long "188,342 read from cache" lost the
+           head's room and drew as "1…"; the full count is its tip. -->
+      <span class="ns-chip mono aside-cache" use:tip={`${last.cacheRead.toLocaleString()} tokens read from cache`}
+        >{fmtTokens(last.cacheRead)} cached</span
+      >
     {/if}
     <span class="spacer"></span>
     {#if folded}
@@ -396,11 +407,11 @@
       <AsideFoldPanel {aside} part="button" open={!readOnly} />
     {/if}
     {#if last && last.partial.trim()}
-      <button
-        class="ns-btn ghost small"
-        use:tip={aside.turns.length > 1 ? "Copy the thread as text" : "Copy the answer as text"}
-        onclick={() => void copy()}>{copied ? "Copied" : "Copy"}</button
-      >
+      <CopyButton
+        {copied}
+        label={aside.turns.length > 1 ? "Copy the thread as text" : "Copy the answer as text"}
+        onclick={() => void copy()}
+      />
     {/if}
     {#if !readOnly}
       <button
@@ -421,7 +432,7 @@
         <!-- The passage it hangs off (283): under its passage the card
              needs none — the passage is marked right above — but in the
              side panel it is far from it. -->
-        <blockquote class="aside-card-quote">{aside.quote.text}</blockquote>
+        <blockquote class="aside-card-quote">{@html renderReply(aside.quote.text)}</blockquote>
       {/if}
       {#if !aside.draft}
         <AsideThread {aside} open={!readOnly} />
@@ -545,7 +556,8 @@
     white-space: nowrap;
   }
   .aside-card-head > .aside-card-grip,
-  .aside-card-head > .ns-btn {
+  .aside-card-head > .ns-btn,
+  .aside-card-head > .aside-cache {
     flex-shrink: 0;
   }
   .aside-card-grip {
@@ -601,6 +613,33 @@
   .aside-card-foot.draft {
     border-top: none;
   }
+  /* The composer's line under the box (backlog 358): one line, cut with an
+     ellipsis. Its "Answers from ‹chat›" names an untitled chat by its whole
+     first prompt — once the answer completed it replaced the short
+     "Answering —" line, grew to fifteen lines, and the pinned foot took the
+     card's room from the answer, which shrank to a line. The chat's name
+     inside it is cut short too, so a line that keeps a button (not the open
+     chat) still shows the button. The format chip never gives way. */
+  .aside-card :global(.composer.aside .aside-line) {
+    /* Its text is its basis, shrunk to the row: a 0 basis split the row
+       with the spacer and cut the chat's name whole. */
+    flex: 1 1 auto;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .aside-card :global(.composer.aside .aside-line em) {
+    display: inline-block;
+    max-width: 14em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: bottom;
+  }
+  .aside-card :global(.composer.aside .bottom-toggle) {
+    flex-shrink: 0;
+  }
   .aside-card-of {
     flex-shrink: 1;
     min-width: 0;
@@ -609,6 +648,12 @@
     text-overflow: ellipsis;
     font-size: 12px;
     color: var(--ink2, var(--dim));
+  }
+  /* In the side panel the panel's own title row already reads "Aside ·
+     ‹chat›", and the head's chips leave this ~10 px: it drew as "A…" at
+     every zoom (item 360). The chips get the room. */
+  .aside-card.panel .aside-card-of {
+    display: none;
   }
   .aside-card-of em {
     font-style: normal;
@@ -621,8 +666,10 @@
     border-left: 3px solid var(--accent);
     color: var(--dim);
     font-size: 12.5px;
-    white-space: pre-wrap;
     max-height: 7.5em;
     overflow: auto;
+  }
+  .aside-card-quote :global(p) {
+    margin: 0;
   }
 </style>

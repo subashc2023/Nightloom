@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   SseParser,
+  aimAction,
   backoffMs,
   cardKind,
   draftKey,
@@ -194,6 +195,9 @@ describe("the cards", () => {
     expect(cardKind({ id: "1", name: "AskUserQuestion", input: {}, effect: "read" as never })).toBe("question");
     expect(cardKind({ id: "1", name: "ExitPlanMode", input: {}, effect: "read" as never })).toBe("plan");
     expect(cardKind({ id: "1", name: "Bash", input: {}, effect: "read" as never })).toBe("call");
+    expect(
+      cardKind({ id: "1", name: "mcp__playwright__browser_navigate", input: {}, effect: "read" as never }),
+    ).toBe("playwright");
   });
 
   it("answers a question form the way the desktop does", () => {
@@ -328,6 +332,18 @@ describe("wave 1: the message menu over the log", () => {
     const rows = transcriptRows(log());
     expect(rowRemoval(rows[1], false)).toEqual([{ op: "remove", index: 2 }, { op: "remove", index: 4 }]);
     expect(rowRemoval(rows[0], true)).toEqual([{ op: "restore", index: 1 }]);
+  });
+
+  it("aims each action from the list its index was read from (backlog 364)", () => {
+    const events = log();
+    const at = (i: number) => (events[i] as { at: string }).at;
+    expect(aimAction(events, { op: "remove", index: 1 })).toEqual({ op: "remove", index: 1, at: at(1) });
+    expect(aimAction(events, { op: "restore", index: 4 })).toEqual({ op: "restore", index: 4, at: at(1), nth: 1 });
+    expect(aimAction(events, { op: "fork", upto: 1 })).toEqual({ op: "fork", upto: 1, at: at(1) });
+    expect(aimAction(events, { op: "rewind", to: 1 })).toEqual({ op: "rewind", to: 1, at: at(1) });
+    // A rewind or fork at a reply has no message's time to send: bare.
+    expect(aimAction(events, { op: "fork", upto: 2 })).toEqual({ op: "fork", upto: 2 });
+    expect(aimAction(events, { op: "continue" })).toEqual({ op: "continue" });
   });
 
   it("builds §4's payloads", () => {

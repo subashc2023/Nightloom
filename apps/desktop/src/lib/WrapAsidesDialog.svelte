@@ -66,10 +66,10 @@
               />
               <span class="name">{label}</span>
               <span class="sub"
-                >{r.aside.turns.length} exchange{r.aside.turns.length === 1 ? "" : "s"}{#if r.aside.quote} · about {quoteLabel(
+                >{r.aside.turns.length} exchange{r.aside.turns.length === 1 ? "" : "s"}{#if r.aside.quote}{" · "}about {quoteLabel(
                     r.aside.quote,
                     "card",
-                  )}{/if}{#if r.aside.foldedInto?.length} · folded before at {r.aside.foldedInto[r.aside.foldedInto.length - 1]!.at}{/if}</span
+                  )}{/if}{#if r.aside.foldedInto?.length}{" · "}folded before at {r.aside.foldedInto[r.aside.foldedInto.length - 1]!.at}{/if}</span
               >
             </label>
             {#if summarizing}

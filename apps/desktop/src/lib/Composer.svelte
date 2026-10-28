@@ -4,7 +4,7 @@
   import { isImeKey } from "./imeKey";
   import Kbd from "./Kbd.svelte";
   import ResizeHandle from "./ResizeHandle.svelte";
-  import { dragHeight, growHeight, loadBoxHeight, saveBoxHeight } from "./boxGrow";
+  import { dragHeight, growHeight, loadBoxHeight, overflows, saveBoxHeight } from "./boxGrow";
   import { sentSinceDrag } from "./composerSize";
   import {
     app,
@@ -27,14 +27,24 @@
   import { MODEL_KEYS, modelChipLabel, thinkingSupport } from "./catalog";
   import { modelList } from "./modelList.svelte";
   import { effortDefaultLabel } from "./effortDefaults";
-  import { cacheLine, cacheState, nextTickMs, remainingText } from "./cache";
+  import {
+    cacheBuiltWith,
+    cacheLine,
+    cacheLoss,
+    cacheLossLine,
+    cacheLossTitle,
+    cacheState,
+    nextTickMs,
+    remainingText,
+    restoreCacheSettings,
+  } from "./cache";
   import { HIDDEN_THINKING_TITLE, thinkingToggleDead } from "./activity";
   import { toggleTranscriptPref, transcript } from "./transcriptPrefs.svelte";
   import { composerFormat, toggleComposerFormat } from "./composerFormat.svelte";
   import { LiveBoxHandle, boxElement, type ComposerBox } from "./composerEditor";
   import LiveBox from "./LiveBox.svelte";
   import { isMac } from "./platform";
-  import { BoxHistory, editKind, historyInput } from "./boxHistory";
+  import { BoxHistory, editKind, historyInput, historyKey } from "./boxHistory";
   import {
     RE_ASK,
     abortWrapUp,
@@ -56,16 +66,24 @@
     setReadOrder,
     setThreshold,
     stayHere,
+    reopenHandoff,
     threadFor,
     threshold,
     noteThread,
+    mark,
+    cap,
+    codeProbePaths,
+    codeProjectFor,
+    noteCodeProject,
   } from "./handoff.svelte";
+  import { fold, isFolded, noteStay, stayedFromWrapped, unfold } from "./handoffFold.svelte";
   import ThreadPicker from "./ThreadPicker.svelte";
-  import { chatThread, refreshThreadFlags, injectIntoTurn, sendNowRow } from "./state.svelte";
-  import { injectChip } from "./midTurn";
+  import { chatThread, refreshThreadFlags, injectIntoTurn, sendNowRow, openChatKey, takeQueued } from "./state.svelte";
+  import { injectChip, queueHeadLabel } from "./midTurn";
+  import { rowsOf } from "./subagentRows";
   import { draftEstimate, draftEstimateTitle, draftExact, draftExactTitle, EXACT_TOKENS_FROM, fmtTokens } from "./tokens";
   import { exactCounter, type ExactResult } from "./draftCount";
-  import { countDraftTokens, pasteIntoFocus, takeBackInjected } from "./api";
+  import { countDraftTokens, namedFiles, pasteIntoFocus, takeBackInjected } from "./api";
   import KeepButton from "./KeepButton.svelte";
   import { keepKey } from "./keep";
   import { menuInterceptors } from "./state.svelte";
@@ -75,18 +93,16 @@
     isPasteAsAttachmentKey,
     longPasteOffer,
     normalizeNewlines,
-    pastedFile,
-    pastedLabel,
-    pastedName,
     pasteAction,
     undoConverted,
-    withoutSpan,
     type Converted,
     type LongPaste,
   } from "./pasteAttach";
   import { badgeOf, extOf } from "./attachKinds";
   import { sendTip, tip } from "./tip";
-  import { acceptFiles, conversionJobs, filesBlocked, splitChips } from "./attachFiles.svelte";
+  import { armStop, stopChordLabel, stopChordTarget } from "./stopButton";
+  import { stopPref } from "./stopShape.svelte";
+  import { acceptFiles, conversionJobs, filesBlocked, MAX_IMAGE_BASE64, splitChips, trackPending } from "./attachFiles.svelte";
   import { floatMenu } from "./floatMenu";
   import { ghostFor } from "./suggestions.svelte";
   import { queuedElsewhereToast } from "./browse";
@@ -107,8 +123,12 @@
     restoreDraft,
     setDraftAttachments,
     setDraftSelection,
+    setDraftScroll,
+    draftScroll,
     setDraftText,
     shiftQueue,
+    forgetMove,
+    ranKey,
     takeBackQueued,
     updateAttachment,
     NEW_DRAFT_PREFIX,
@@ -117,6 +137,7 @@
   // Scheduled send (backlog 224): the ▾ beside Send and the chip above.
   import ScheduleMenu from "./ScheduleMenu.svelte";
   import ScheduledChip from "./ScheduledChip.svelte";
+  import PreviewChip from "./PreviewChip.svelte";
   import { registerScheduleDrain } from "./scheduleRuntime";
   import CouncilPopover from "./CouncilPopover.svelte";
   import ClipPanel from "./ClipPanel.svelte";
@@ -124,15 +145,31 @@
   import type { CouncilPrefs } from "./council";
   import { foldToFit } from "./fold";
   import { Marks, chipMotion, prefersReducedMotion } from "./chipFade";
-  import { codePasteLanguage, fenced, findFences, layerLines, withFenceLanguage } from "./codeDetect";
-  import { mathPasteText } from "./mathPaste";
-  import { LANGUAGES } from "./codeHighlight";
+  import DropOverlay from "./DropOverlay.svelte";
+  import { chipDropIn, rowDropOpen } from "./dropLook";
+  import { dropPending, markPasted, takeDropped } from "./dropLook.svelte";
+  import { fenced, findFences, withFenceLanguage } from "./codeDetect";
+  import BoxLayer, { layerShown } from "./BoxLayer.svelte";
+  import PasteOfferRow from "./PasteOfferRow.svelte";
+  import {
+    AttachMark,
+    attachPastedText as sharedAttachPastedText,
+    convertOffer,
+    isConvertTag,
+    pasteAsAttachment as sharedPasteAsAttachment,
+    type ConvertTag,
+  } from "./pastedText.svelte";
+  import { pasteSteps, textPastePlan } from "./textPaste";
+  import { attachPastedImages, fetchPasteImage, htmlImagePaste, preparePaste, rasterize, type ImagePaste } from "./pasteImages";
   import { launch } from "./sendMotion";
   import { composerConnectHint, launch as launchState } from "./launch.svelte";
-  import { hasQuoteLine, insertQuote, mirrorLines, replyRequest, takeReply } from "./replyQuote.svelte";
+  import { insertQuote, replyRequest, takeReply } from "./replyQuote.svelte";
   import { composerFocus } from "./rewindDraft.svelte";
-  import { CaretKeeper, mayAutoFocus } from "./composerCaret";
+  import { CaretKeeper, clampSel, mayAutoFocus } from "./composerCaret";
+  import { ScrollHold } from "./boxPlace";
+  import { FocusThroughLock, boxLocked } from "./boxLock";
   import { chatBoxCount, chatBoxMounted, composerSummon } from "./composerSummon.svelte";
+  import { registerPasteHandler, type PasteRequest } from "./pasteToCompose";
   import { requestWrapUp } from "./wrapAsides.svelte";
   // Backlog 283: the same composer in an aside.
   import {
@@ -362,24 +399,9 @@
    * kept. It is still the textarea he types in: cursor, selection, IME,
    * undo, paste and auto-grow are the textarea's. The layer holds the same
    * characters with the same font, padding and wrapping, sized to the
-   * textarea's client box and scrolled with it (`syncMirror`).
+   * textarea's client box and scrolled with it — `BoxLayer.svelte`, shared
+   * with the edit box of one of his messages since item 399.
    */
-  let mirror = $state<HTMLDivElement | null>(null);
-  function syncMirror() {
-    if (!mirror || !ta) return;
-    mirror.style.width = ta.clientWidth + "px";
-    mirror.style.height = ta.clientHeight + "px";
-    mirror.scrollTop = ta.scrollTop;
-    // Item 315: each code block's label rides on its opening fence line,
-    // hidden while that line is scrolled out of the box.
-    const tops: (number | null)[] = [];
-    for (const el of mirror.querySelectorAll<HTMLElement>("[data-fence]")) {
-      const top = el.offsetTop - mirror.scrollTop;
-      tops[Number(el.dataset.fence)] = top >= 0 && top < mirror.clientHeight - 4 ? top : null;
-    }
-    fenceTops = tops;
-  }
-  let fenceTops = $state<(number | null)[]>([]);
   // Drag events fire per element, so a boolean flickers as the pointer crosses
   // children; count enters against leaves instead.
   let dragDepth = $state(0);
@@ -597,7 +619,10 @@
     ta.style.maxHeight = max + "px";
     ta.style.height = "auto";
     ta.style.height = growHeight(ta.scrollHeight, min, max) + "px";
-    syncMirror();
+    // Backlog 360: a pixel of rounding is not overflow (as the aside boxes).
+    ta.style.overflowY = overflows(ta.scrollHeight, ta.clientHeight) ? "auto" : "hidden";
+    // Backlog 355: a switched-to draft's place, once its height is right.
+    putScrollBack();
   }
 
   // A resized window moves the 40% line.
@@ -671,8 +696,19 @@
       handoff.chat !== null,
   );
   const handoffPct = $derived(Math.round(handoff.fill * 100));
-  const handoffThresholdPct = $derived(Math.round(threshold(app.activeSessionId) * 100));
-  const handoffDefaultPct = $derived(Math.round(threshold(null) * 100));
+  // Backlog 383: after *Stay here* the card can come back before the re-ask mark.
+  // Under handoffHere's own conditions too (review 2026-10-18): on an
+  // engine that shows no card, the button would reopen nothing.
+  const handoffStayed = $derived(handoffHere && !aside && handoff.stage === "idle" && handoff.dismissedAt > 0);
+  // Backlog 436: the mark the notice is compared to — the chat's own
+  // percent, else the Settings percent or the 300k cap, whichever is first.
+  const handoffThresholdPct = $derived(Math.round(mark(app.activeSessionId, handoff.limit) * 100));
+  /** The mark in tokens, for the heading; 0 with no window known. */
+  const handoffMarkTokens = $derived(handoff.limit ? Math.round(mark(app.activeSessionId, handoff.limit) * handoff.limit) : 0);
+  /** The default's rule in words, for the field's note. */
+  const handoffDefaultRule = $derived(
+    cap() > 0 ? `${Math.round(threshold(null) * 100)}% or ${fmtTokens(cap())}, whichever comes first` : `${Math.round(threshold(null) * 100)}%`,
+  );
   const reAskPct = Math.round(RE_ASK * 100);
   /*
    * The research thread (nightshift backlog 271): the open chat's binding,
@@ -693,6 +729,37 @@
   });
   /** Whether the hand-off writes the thread's files rather than HANDOFF.md. */
   const threadHandoff = $derived(threadFor(app.activeSessionId) !== null);
+  /*
+   * Backlog 431 (blocker 1567): whether the chat's project is a code
+   * project — a HANDOFF.md or a backlog/ at its top — so a thread chat's
+   * wrap-up also writes a STATE section and commits. Probed when the chat
+   * or the project changes, and again when the notice comes up (the first
+   * wrap-up may have made HANDOFF.md since). Best-effort: no answer is
+   * "not a code project", today's thread wrap-up.
+   */
+  const projectRoot = $derived(app.project?.root ?? null);
+  function probeCodeProject(chat: string | null, root: string | null): void {
+    if (!chat) return;
+    if (!root) {
+      noteCodeProject(chat, false);
+      return;
+    }
+    namedFiles(codeProbePaths(root)).then(
+      (found) => noteCodeProject(chat, found.some((f) => f !== null)),
+      () => noteCodeProject(chat, false),
+    );
+  }
+  $effect(() => {
+    if (aside) return;
+    const [chat, root] = [app.activeSessionId, projectRoot];
+    untrack(() => probeCodeProject(chat, root));
+  });
+  $effect(() => {
+    if (aside) return;
+    if (handoff.stage === "due") untrack(() => probeCodeProject(app.activeSessionId, projectRoot));
+  });
+  /** A thread chat in a code project also writes HANDOFF.md (blocker 1568). */
+  const threadAndHandoff = $derived(threadHandoff && codeProjectFor(app.activeSessionId));
   /** The wrap-up this chat would send: its own edit, else its thread's, else the Settings default. */
   const wrapUpText = $derived(message(app.activeSessionId));
   /** The read order this chat's continuation opens with (backlog 193). */
@@ -855,12 +922,40 @@
   function recordCaret(): void {
     keeper.record(key, ta, text);
   }
+  /*
+   * Backlog 355: a draft taller than its box keeps its scroll place. The
+   * box's scrollTop is kept in the drafts store beside the caret
+   * (`Draft.scroll`) as it scrolls, and once more just before the key
+   * changes; a key arriving holds its place (`ScrollHold`) until the box
+   * has settled — put back after every re-measure (`autogrow`), the
+   * browser's own scrolls meanwhile not recorded. With nothing kept (a
+   * draft from before this), the kept caret is scrolled into view instead.
+   */
+  const scrollHold = new ScrollHold(1500);
+  function recordScroll(): void {
+    if (!ta || ta.value !== text || scrollHold.holds(key, performance.now())) return;
+    setDraftScroll(key, ta.scrollTop);
+  }
+  function putScrollBack(): void {
+    if (!ta || !scrollHold.holds(key, performance.now())) return;
+    const top = draftScroll(key);
+    if (top !== null) {
+      ta.scrollTop = top;
+      return;
+    }
+    const sel = clampSel(draftSelection(key), ta.value.length);
+    if (!sel) return;
+    if (ta instanceof LiveBoxHandle) ta.revealAt(sel.end);
+    else if (sel.end === ta.value.length) ta.scrollTop = ta.scrollHeight;
+  }
   $effect.pre(() => {
     const k = key;
     untrack(() => {
       if (shownKey !== null && shownKey !== k) {
         valueBefore = ta?.value ?? null;
         keeper.record(shownKey, ta, readDraft(shownKey).text);
+        if (ta && ta.value === readDraft(shownKey).text && !scrollHold.holds(shownKey, performance.now()))
+          setDraftScroll(shownKey, ta.scrollTop);
       }
     });
   });
@@ -870,6 +965,7 @@
       if (shownKey === k) return;
       shownKey = k;
       keeper.arrive(k);
+      scrollHold.start(k, performance.now());
       void tick().then(() => {
         if (key !== k || !ta || typeof document === "undefined") return;
         const box = boxElement(ta);
@@ -882,6 +978,7 @@
           keeper.focus(k, ta, had, false);
           autogrow();
         }
+        putScrollBack();
       });
     });
   });
@@ -903,22 +1000,101 @@
     });
   });
 
-  const quoted = $derived(hasQuoteLine(text));
-  // Item 315: fenced code drawn coloured in the same layer as quotes.
-  const fences = $derived(findFences(text));
-  const codeLayer = $derived(fences.length > 0 ? layerLines(text) : []);
-  const layered = $derived(quoted || fences.length > 0);
-  // The layer follows the box: its size (a drag, the 40% line, a resized
-  // window) and its text (the scroll after a keystroke) — item 223.
-  $effect(() => {
-    const box = boxElement(ta);
-    if (!box || !mirror) return;
-    void text;
-    const ro = new ResizeObserver(() => syncMirror());
-    ro.observe(box);
-    void tick().then(syncMirror);
-    return () => ro.disconnect();
+  /*
+   * Backlog 365: the box locks only with no connection and none coming —
+   * a connect in flight (a chat switch to the other engine's chat) leaves
+   * it typeable, Send waiting (`sendHeld`). A lock still takes the focus
+   * from a textarea in WebKit, silently, and the unlock does not give it
+   * back: the box takes it back here with the kept caret, when the focus is
+   * still nowhere (`boxLock.ts`).
+   */
+  const boxIsLocked = $derived(boxLocked(!!app.connection, app.connecting));
+  const lockFocus = new FocusThroughLock();
+  let wasLocked = untrack(() => boxIsLocked);
+  $effect.pre(() => {
+    const l = boxIsLocked;
+    untrack(() => {
+      if (!l || wasLocked || typeof document === "undefined") return;
+      const box = boxElement(ta);
+      lockFocus.locking(!!box && !!document.activeElement && box.contains(document.activeElement));
+    });
   });
+  $effect(() => {
+    const l = boxIsLocked;
+    untrack(() => {
+      const was = wasLocked;
+      wasLocked = l;
+      if (l || !was || !ta || typeof document === "undefined") return;
+      const a = document.activeElement;
+      if (lockFocus.unlocked(!a || a === document.body || a === document.documentElement)) {
+        keeper.focus(key, ta, false, true);
+        autogrow();
+      }
+    });
+  });
+
+  /*
+   * ⌘V with nothing to type in (backlog 351, `pasteToCompose.ts`): the
+   * chat's box takes the focus with its kept caret, as ⌘L gives it, and the
+   * paste is then the box's own — AppKit's `paste:` into the focused box
+   * (the same call as ⌥⌘V), so `onpaste` sees a real paste event. A paste
+   * event that reached the window with nothing to paste into is handed to
+   * `onpaste` during its dispatch; plain text, which `onpaste` leaves to the
+   * browser, goes in at the caret as one paste.
+   */
+  $effect(() => {
+    const el = root;
+    if (aside || !el) return;
+    return registerPasteHandler(el, pasteFromOutside);
+  });
+  function pasteFromOutside(req: PasteRequest): void {
+    if (!ta) return;
+    const box = boxElement(ta);
+    const had = !!box && !!document.activeElement && box.contains(document.activeElement);
+    keeper.focus(key, ta, had, true);
+    scrollHold.release();
+    if ("event" in req) {
+      const e = req.event;
+      onpaste(e);
+      if (e.defaultPrevented) return;
+      const t = e.clipboardData?.getData("text/plain") ?? "";
+      if (!t) return;
+      e.preventDefault();
+      pasteMath(normalizeNewlines(t));
+      return;
+    }
+    if (req.kind === "attach") {
+      clipOpen = false;
+      void pasteAsAttachment();
+      return;
+    }
+    void pasteByKey();
+  }
+  async function pasteByKey(): Promise<void> {
+    let asked = false;
+    try {
+      asked = await pasteIntoFocus();
+    } catch {
+      asked = false;
+    }
+    if (asked) return;
+    // Off the Mac (no `paste:` to send): the clipboard's text, read here,
+    // goes in as a plain paste would, with the long-paste offer.
+    try {
+      const t = await navigator.clipboard.readText();
+      if (!t || !ta) return;
+      const at = Math.min(ta.selectionStart, ta.selectionEnd);
+      pasteMath(normalizeNewlines(t));
+      offer = longPasteOffer(t, at);
+      converted = null;
+    } catch (e) {
+      addToast(`Could not read the clipboard: ${String(e)}`);
+    }
+  }
+
+  // Item 223 / 315: quote lines and fenced code drawn in a layer behind
+  // the textarea (`BoxLayer`), while the draft has either.
+  const layered = $derived(layerShown(text));
 
   function onkeydown(e: KeyboardEvent) {
     // ⌥⌘V: paste the clipboard's text as an attachment (item 284).
@@ -1073,39 +1249,51 @@
     // Item 348: math copied from a web page (KaTeX, MathJax) comes as its
     // LaTeX in `$…$`, read from the clipboard's HTML; null for any other
     // paste, which goes on below unchanged.
-    const math = files.length === 0 ? mathPasteText(e.clipboardData?.getData("text/html") ?? "") : null;
+    const html = files.length === 0 ? (e.clipboardData?.getData("text/html") ?? "") : "";
+    // Item 382: text copied with images in it — the images' places marked
+    // `[image N]` in the text, each image a chip (pasteImages.ts). N counts
+    // on from the images already in the box: the model sees a turn's images
+    // in chip order, after its text.
+    const asAttachment = takeAttachMark();
+    const firstImage = readDraft(key).attachments.filter((a) => a.kind === "image").length + 1;
+    const withImages = files.length === 0 && !asAttachment ? htmlImagePaste(html, firstImage) : null;
+    // Item 399: math and code read by the one plan the edit box shares.
+    const caret = Math.min(ta?.selectionStart ?? text.length, ta?.selectionEnd ?? text.length);
+    const plan = withImages ? null : textPastePlan({ plain: pastedText, html, fileCount: files.length, text, caret });
+    const math = plan?.kind === "math" ? plan.text : null;
     // Into the in-app clipboard ring (backlog 173): the text, and below
     // each image the paste attached.
-    if (pastedText) recordText("pasted", math ?? pastedText);
+    if (pastedText && !(withImages && ta)) recordText("pasted", math ?? pastedText);
     // Item 284: ⌥⌘V's paste puts the text in as an attachment. A clipboard
     // holding a file (an image) is pasted as ⌘V would.
-    const act = pasteAction(takeAttachMark(), pastedText, files.length);
+    const act = pasteAction(asAttachment, pastedText, files.length);
     if (act !== "box") {
       e.preventDefault();
       if (act === "attach") void attachPastedText(pastedText);
       else addToast("The clipboard holds no text to attach");
       return;
     }
+    if (withImages && ta) {
+      e.preventDefault();
+      pasteWithImages(withImages);
+      return;
+    }
     if (math !== null && ta) {
       e.preventDefault();
       const at = Math.min(ta.selectionStart, ta.selectionEnd);
-      pasteMath(normalizeNewlines(math));
+      pasteMath(math);
       offer = longPasteOffer(math, at);
       converted = null;
       return;
     }
     // Item 315: code goes in as a fenced block with its language. A long
     // paste is left to the attachment offer below (codePasteLanguage).
-    if (pastedText && files.length === 0 && ta) {
-      const at = Math.min(ta.selectionStart, ta.selectionEnd);
-      const lang = codePasteLanguage(pastedText, text, at);
-      if (lang) {
-        e.preventDefault();
-        pasteAsCode(normalizeNewlines(pastedText), lang);
-        offer = null;
-        converted = null;
-        return;
-      }
+    if (plan?.kind === "code" && ta) {
+      e.preventDefault();
+      pasteAsCode(plan.raw, plan.lang);
+      offer = null;
+      converted = null;
+      return;
     }
     // A long ⌘V paste: the text goes in as always, and an offer under the
     // box can move it into an attachment.
@@ -1118,8 +1306,42 @@
     // Only swallow the paste when it carries no text of its own; some sources
     // put a screenshot and its caption on the clipboard together.
     if (!pastedText) e.preventDefault();
+    // Item 388: a pasted image lands with the drop's ending, not at once
+    // (names as `attachFiles`' describe gives them).
+    markPasted(files.filter((f) => f.type.startsWith("image/")).map((f) => f.name || "pasted image"));
     void accept(files).then((chips) => {
       for (const c of chips) if (c.kind === "image") recordImage("pasted", c);
+    });
+  }
+
+  /** Item 382: the paste's text with its markers at the caret (as a math
+   *  paste goes in), then its images as chips in marker order, under the
+   *  key of the moment of the paste. */
+  function pasteWithImages(paste: ImagePaste): void {
+    const chatKey = key;
+    const ready = preparePaste(paste, MAX_IMAGE_BASE64);
+    const at = Math.min(ta?.selectionStart ?? text.length, ta?.selectionEnd ?? text.length);
+    const raw = normalizeNewlines(ready.text);
+    pasteMath(raw);
+    recordText("pasted", raw);
+    offer = longPasteOffer(raw, at);
+    converted = null;
+    // Item 388: the paste's image chips land as dropped ones do.
+    markPasted(ready.images.map((i) => `image ${i.n}`));
+    void attachPastedImages(ready.images, ready.failed, {
+      nextId: nextAttachmentId,
+      add: (chip) => addAttachment(chatKey, chip),
+      update: (id, patch) => void updateAttachment(chatKey, id, patch),
+      remove: (id) => removeAttachment(chatKey, id),
+      chips: () => readDraft(chatKey).attachments,
+      readText: () => readDraft(chatKey).text,
+      setText: (t) => setDraftText(chatKey, t),
+      fetch: fetchPasteImage,
+      convert: rasterize,
+      track: trackPending,
+      record: (chip) => recordImage("pasted", chip),
+      cap: MAX_IMAGE_BASE64,
+      toast: (m) => addToast(m),
     });
   }
 
@@ -1160,17 +1382,15 @@
     }
     const from = Math.min(ta.selectionStart, ta.selectionEnd);
     const to = Math.max(ta.selectionStart, ta.selectionEnd);
-    const before = text.slice(0, from);
-    const after = text.slice(to);
-    const block = fenced(raw, lang, before, after);
-    const wrapped = before + block + after;
+    // Item 399: the steps the edit box takes too (`pasteSteps`).
+    const steps = pasteSteps(text, from, to, raw, lang);
+    const last = steps[steps.length - 1];
     hist.select(from, to);
-    hist.external(before + raw + after, from + raw.length);
-    hist.external(wrapped, from + block.length);
-    setDraftText(key, wrapped);
+    for (const st of steps) hist.external(st.text, st.caret);
+    setDraftText(key, last.text);
     void tick().then(() => {
       if (!ta) return;
-      ta.selectionStart = ta.selectionEnd = from + block.length;
+      ta.selectionStart = ta.selectionEnd = last.caret;
       autogrow();
     });
   }
@@ -1229,17 +1449,7 @@
   /** An input method's composition is open in the box (marked text). */
   let composing = false;
 
-  /** A history step that is 284's conversion, carrying its chip. */
-  interface ConvertTag {
-    convert: true;
-    chip: Attachment;
-    before: string;
-    after: string;
-    caret: number;
-  }
-  function isConvertTag(t: unknown): t is ConvertTag {
-    return typeof t === "object" && t !== null && (t as { convert?: unknown }).convert === true;
-  }
+  // 284's conversion step: `ConvertTag` / `isConvertTag` (pastedText.svelte.ts).
 
   function onboxinput(e: Event): void {
     if (!(ta instanceof HTMLTextAreaElement)) return;
@@ -1249,11 +1459,7 @@
   /** The box's undo / redo key, or null: ⌘Z, ⌘⇧Z and ⌘Y (Ctrl off the
    *  Mac). */
   function boxHistoryKey(e: KeyboardEvent): "undo" | "redo" | null {
-    const primary = isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
-    if (!primary || e.altKey) return null;
-    if (e.code === "KeyZ" || e.key.toLowerCase() === "z") return e.shiftKey ? "redo" : "undo";
-    if (!e.shiftKey && (e.code === "KeyY" || e.key.toLowerCase() === "y")) return "redo";
-    return null;
+    return historyKey(e, isMac);
   }
 
   /** One undo or redo in the textarea. False when the box is the
@@ -1316,30 +1522,13 @@
    * would and makes its text a chip. Off the Mac the clipboard is read
    * here instead.
    */
-  let attachMark = 0;
-  const ATTACH_MARK_MS = 1500;
+  // Shared with the edit box since item 399b (`pastedText.svelte.ts`).
+  const attachMark = new AttachMark();
   function takeAttachMark(): boolean {
-    const on = attachMark > 0 && performance.now() - attachMark < ATTACH_MARK_MS;
-    attachMark = 0;
-    return on;
+    return attachMark.take();
   }
-  async function pasteAsAttachment(): Promise<void> {
-    attachMark = performance.now();
-    let asked = false;
-    try {
-      asked = await pasteIntoFocus();
-    } catch {
-      asked = false;
-    }
-    if (asked) return;
-    attachMark = 0;
-    try {
-      const t = await navigator.clipboard.readText();
-      if (t) await attachPastedText(t);
-      else addToast("The clipboard holds no text to attach");
-    } catch (e) {
-      addToast(`Could not read the clipboard: ${String(e)}`);
-    }
+  function pasteAsAttachment(): Promise<void> {
+    return sharedPasteAsAttachment(attachMark, attachPastedText);
   }
 
   /*
@@ -1350,8 +1539,16 @@
    */
   const fadeInNames = new Marks<string>();
   const fadeOutIds = new Marks<number>();
-  function chipIn(_node: Element, a: Attachment) {
+  function chipIn(node: Element, a: Attachment) {
+    // Item 362: a dropped file's chip opens the row and scales in (A).
+    const dropped = takeDropped(a.name);
+    if (dropped !== null) return chipDropIn(dropped, node.getBoundingClientRect().width, prefersReducedMotion());
     return chipMotion(fadeInNames.take(a.name), prefersReducedMotion());
+  }
+  /** Item 362: the row the first dropped chip makes opens to its height. */
+  function rowIn(node: Element) {
+    if (!dropPending()) return { duration: 0 };
+    return rowDropOpen(node.getBoundingClientRect().height, prefersReducedMotion());
   }
   function chipOut(_node: Element, a: Attachment) {
     return chipMotion(fadeOutIds.take(a.id), prefersReducedMotion());
@@ -1359,22 +1556,12 @@
 
   /** Pasted text as a chip, by item 277's text route (`accept`): named
    *  "Pasted text", its words on the chip, kept with the draft. */
-  async function attachPastedText(raw: string): Promise<Attachment | null> {
-    const body = normalizeNewlines(raw);
-    const chatKey = key;
-    const name = pastedName(readDraft(chatKey).attachments.map((a) => a.name));
+  function attachPastedText(raw: string): Promise<Attachment | null> {
     // Item 312: this chip came from text, so it fades in.
-    fadeInNames.mark(name);
-    const [chip] = await accept([pastedFile(body, name)]);
-    if (!chip) {
-      fadeInNames.unmark(name);
-      return null;
-    }
-    updateAttachment(chatKey, chip.id, {
-      pasted: true,
-      ...(chip.kind === "document" ? { label: pastedLabel(body) } : {}),
+    return sharedAttachPastedText(key, raw, {
+      named: (name) => fadeInNames.mark(name),
+      failed: (name) => fadeInNames.unmark(name),
     });
-    return chip;
   }
 
   /*
@@ -1403,17 +1590,11 @@
     if (!o) return;
     offer = null;
     const chatKey = key;
-    if (withoutSpan(readDraft(chatKey).text, o) === null) return;
-    const chip = await attachPastedText(o.pasted);
-    // Refused (too long for this engine): the toast said why; the text stays.
-    if (!chip) return;
-    const now = readDraft(chatKey).text;
-    const after = withoutSpan(now, o);
-    if (after === null) {
-      // Typed into meanwhile: the text stays where he is working.
-      removeAttachment(chatKey, chip.id);
-      return;
-    }
+    // Refused (too long for this engine), or typed into meanwhile: the
+    // text stays where he is working (`convertOffer`, shared with 399b).
+    const done = await convertOffer(o, chatKey, () => readDraft(chatKey).text, attachPastedText);
+    if (!done) return;
+    const { chip, before: now, after } = done;
     // Blocker 1210: a step of the box's history that carries the chip, so
     // ⌘Z takes the chip away with the text and ⌘⇧Z brings both back.
     if (chatKey === key) {
@@ -1470,6 +1651,27 @@
       if (id === "undo_app" && undoable) return undoConvert();
       // Blocker 1210: the textarea's own history, not `execCommand`.
       return boxStep(id === "undo_app" ? "undo" : "redo");
+    };
+    menuInterceptors.push(take);
+    return () => {
+      const i = menuInterceptors.indexOf(take);
+      if (i >= 0) menuInterceptors.splice(i, 1);
+    };
+  });
+
+  // ⌘. in an aside's box (item 398, blocker 1506): the thread's Stop, as
+  // its button — its answer if one is coming, else nothing, never the
+  // chat's turn behind it. A chat's box needs no hook: `runMenuCommand`
+  // stops the chat's turn.
+  $effect(() => {
+    const thread = aside;
+    if (!thread) return;
+    const take = (id: string): boolean => {
+      if (id !== "stop_turn") return false;
+      const asideFocused = !!root && root.contains(document.activeElement);
+      if (!asideFocused) return false;
+      if (stopChordTarget({ asideFocused, asideBusy, turnBusy: app.busy }) === "aside") stopAside(thread);
+      return true;
     };
     menuInterceptors.push(take);
     return () => {
@@ -1542,6 +1744,11 @@
     council: CouncilPrefs | null = null,
   ): Promise<void> {
     const chat = app.activeSessionId;
+    // The chat this turn is for, by draft key (backlog 375): its failed
+    // words and its queue go back to it, never to the chat open when it
+    // ends.
+    const from = liveKey();
+    forgetMove(from);
     const { images, documents, files } = split(chips);
     await send(
       typed.trim(),
@@ -1553,22 +1760,24 @@
     // send() reports failures on app.error instead of throwing, and a turn
     // that never reached the model should not cost the user its attachments
     // — or, since 2026-09-15, its words. Both go back under the key of the
-    // chat now open (the pending chat's first turn may have made the chat
-    // before failing, and `key` has followed it), the text only if nothing
-    // new was typed meanwhile. A wrap-up that failed goes back to its
-    // notice rather than into the box.
+    // ~~chat now open~~ chat the turn was for (backlog 375: the chat now
+    // open may be another project's; the pending chat's first turn may
+    // have made the chat before failing, which `ranKey` follows), the text
+    // only if nothing new was typed meanwhile. A wrap-up that failed goes
+    // back to its notice rather than into the box.
     if (app.error) {
       if (wrapUp) {
         abortWrapUp(chat);
         return;
       }
-      if (!readDraft(key).text) {
-        setDraftText(key, typed);
-        setDraftAttachments(key, chips.concat(readDraft(key).attachments));
+      const back = ranKey(from);
+      if (!readDraft(back).text) {
+        setDraftText(back, typed);
+        setDraftAttachments(back, chips.concat(readDraft(back).attachments));
       } else if (typed || chips.length > 0) {
         // The box holds new words: the failed message goes back to the
         // head of the queue rather than nowhere (backlog 158).
-        requeueFront(key, { id: nextQueueId(), text: typed, attachments: chips });
+        requeueFront(back, { id: nextQueueId(), text: typed, attachments: chips });
       }
       return;
     }
@@ -1576,27 +1785,47 @@
     // the Resume rather than sending the next message into the same
     // exhausted window.
     if (app.limitPause) return;
-    await drain();
+    await drain(false, from);
+  }
+
+  /** The open chat's draft key, read now — not `key`, which a composer
+   *  torn down by a view change (the New chat page has its own) may hold
+   *  from before (backlog 375). */
+  function liveKey(): string {
+    return aside ? key : openChatKey();
   }
 
   /** Why the queue is waiting rather than sending itself, if it is. */
   const hold = $derived(aside ? null : queueHold(handoffHere ? handoff.stage : "idle", turnWasStopped()));
+  /** The main queue's head: one state at a time (backlog 366 + 374). */
+  const mainHead = $derived(
+    queueHeadLabel({
+      busy: app.busy,
+      hold,
+      rows: queue,
+      subagents: rowsOf(app.subagents, app.activeSessionId).filter((r) => r.status === "running").length,
+    }),
+  );
 
   /**
    * Send the oldest held message as the next turn, if there is one. At a
    * turn's end the queue holds when `queueHold` says so; *Send next* is
    * the explicit choice and goes regardless.
    */
-  async function drain(explicit = false): Promise<void> {
+  async function drain(explicit = false, from?: string): Promise<void> {
     if (aside) return asideDrain();
     // A provider turn off screen holds the engine (backlog 159, A4).
     if (app.busy || !app.connection || providerElsewhereName()) return;
     if (!explicit && hold) return;
-    // The held row is where this message leaves from (backlog 194).
-    const head = queue[0];
-    if (head) launch("chat", document.querySelector(`.queue-row[data-queue-id="${head.id}"] .queue-text`));
-    const q = shiftQueue(key);
+    // Only the open chat's own queue, and after a turn only when that turn
+    // was this chat's (backlog 375): a message never leaves for a chat it
+    // was not queued in.
+    // `takeQueued` (state.svelte.ts) is where that rule lives and is tested.
+    const q = takeQueued(key, aside !== null, from);
     if (!q) return;
+    // The held row is where this message leaves from (backlog 194); its
+    // element is still in the DOM until the next flush.
+    launch("chat", document.querySelector(`.queue-row[data-queue-id="${q.id}"] .queue-text`));
     // The row Nightloom queued while he was away is the wrap-up going.
     const wrapUp = handoffHere && q.id === handoff.queuedId;
     if (wrapUp) beginWrapUp(app.activeSessionId);
@@ -1779,7 +2008,10 @@
     // says so; the box keeps everything meanwhile.
     const sendKey = key;
     if (!(await conversionsDone(sendKey))) return;
-    if (sendKey !== key || !app.connection || app.busy) return;
+    // Against the open chat read now, not `key` (375 review): a composer
+    // torn down by a switch during the wait holds its old key, and its
+    // box's words would go to the chat open now.
+    if (sendKey !== key || sendKey !== liveKey() || !app.connection || app.busy) return;
     if (filesBlocked(attachments)) return;
     const pending = attachments.slice();
     const typed = text;
@@ -1807,7 +2039,7 @@
     if ((!t && attachments.length === 0) || !app.connection || app.busy || sendHeld()) return;
     const sendKey = key;
     if (!(await conversionsDone(sendKey))) return;
-    if (sendKey !== key || !app.connection || app.busy) return;
+    if (sendKey !== key || sendKey !== liveKey() || !app.connection || app.busy) return;
     if (filesBlocked(attachments)) return;
     noteActivity();
     const pending = attachments.slice();
@@ -2293,6 +2525,20 @@
       if (id != null) clearTimeout(id);
     };
   });
+  /**
+   * Backlog 408 (2026-10-24): what the warm cache was built with, and the
+   * rail's pending settings that would lose it — only the changes measured
+   * to (`cacheLoss`). While any stands, the chip says so and a click puts
+   * them back; offered only while the cache is warm, since a cold cache
+   * has nothing left to lose.
+   */
+  const cacheBuilt = $derived(floating ? null : cacheBuiltWith(app.events));
+  const cacheChanges = $derived(cacheBuilt && cache?.warm ? cacheLoss(cacheBuilt.key, app.draft) : []);
+  function restoreCache() {
+    if (!cacheBuilt || cacheChanges.length === 0) return;
+    restoreCacheSettings(cacheBuilt.key, cacheChanges, app.draft);
+    void applyDraft();
+  }
   const cacheShareTitle = "Share of the last request's prompt served from cache.";
   const cacheTitle = $derived.by(() => {
     if (!cache) return "";
@@ -2314,6 +2560,7 @@
   class:aside={aside !== null}
   class:compact
   class:dropping={dragDepth > 0}
+  data-drop-box={aside ? "aside" : "main"}
   role="group"
   aria-label={aside ? "aside composer" : "message composer"}
   {ondragenter}
@@ -2334,13 +2581,17 @@
       onreset={handleReset}
     />
   {/if}
+  {#if !aside && app.activeSessionId}
+    <!-- The chat's preview (item 430): its dev server, up between messages. -->
+    <PreviewChip chat={app.activeSessionId} />
+  {/if}
   {#if composerShows("schedule", !!aside)}
     <ScheduledChip {key} onedit={scheduleEdited} />
   {/if}
   {#if queue.length > 0}
     <div class="queue" role="list" aria-label="queued messages">
       <div class="queue-head">
-        <span class="ns-chip mono">queued · {aside ? (asideBusy ? "sent when this answer ends" : asideBlock === "not-open" ? "waiting — open the chat to send" : "waiting") : app.busy ? "sent when this turn ends" : hold === "stopped" ? "waiting — the turn was stopped" : hold === "wrapped" ? "waiting — HANDOFF.md is written; continue in a new chat, or Send next here" : "waiting"}</span>
+        <span class="ns-chip mono" data-queue-head>{aside ? `queued · ${asideBusy ? "sent when this answer ends" : asideBlock === "not-open" ? "waiting — open the chat to send" : "waiting"}` : mainHead}</span>
         {#if !busy}
           <button class="ns-btn ghost small" disabled={!app.connection || asideBlock !== null} onclick={() => void drain(true)}>Send next</button>
         {/if}
@@ -2361,8 +2612,13 @@
       {/each}
     </div>
   {/if}
+  {#if aside === null}
+    <!-- Item 362: the veil and zone while a file is held over the chat,
+         and the landing at the drop; drawn on `body`. -->
+    <DropOverlay root={() => root} accept={(files) => void accept(files)} />
+  {/if}
   {#if attachments.length > 0}
-    <div class="attachments">
+    <div class="attachments" in:rowIn>
       {#each attachments as a (a.id)}
         <div class="attachment" in:chipIn|global={a} out:chipOut|global={a}>
           <div class="attachment-face">
@@ -2394,19 +2650,29 @@
             mediaType={a.media_type}
             from={{ data: a.data }}
             pending={!!a.pending}
+            source={a.source_sha256}
           />
         </div>
       {/each}
     </div>
   {/if}
-  {#if handoffHere && handoff.stage === "due"}
+  {#if handoffHere && handoff.stage === "due" && isFolded(app.activeSessionId, "due")}
+    <div class="handoff handoff-min" role="status" aria-label="Hand-off notice, minimized">
+      <span class="handoff-mark" aria-hidden="true"><Icon name="branch" size={13} /></span>
+      <strong class="handoff-min-title">Context {handoffPct}% — past this chat's {handoffThresholdPct}%{handoffMarkTokens ? ` (${fmtTokens(handoffMarkTokens)})` : ""} hand-off mark</strong>
+      <span class="mono handoff-fill">{fmtTokens(handoff.used)} of {fmtTokens(handoff.limit)} · {handoffPct}%</span>
+      <span class="spacer"></span>
+      {#if !wrapUpQueued}<button class="ns-btn accent small" disabled={app.busy || !wrapUpText.trim()} onclick={() => void sendWrapUpNow()}>Wrap up now</button>{/if}
+      <button class="ns-btn ghost small" use:tip={"Show the whole card again"} onclick={() => unfold(app.activeSessionId)}>Expand</button>
+    </div>
+  {:else if handoffHere && handoff.stage === "due"}
     <!-- The notice (backlog 086 pass 2, blocker 120): the board's hand-off
          card — accent rule, a heading with the fill, one line of what
          happens, the two things he can change for this chat, the actions.
          Nothing goes by itself while it is on screen. -->
     <div class="handoff" role="status" aria-label="Hand-off notice">
       <div class="handoff-head">
-        <strong>Context {handoffPct}% — past this chat's {handoffThresholdPct}% hand-off mark</strong>
+        <strong>Context {handoffPct}% — past this chat's {handoffThresholdPct}%{handoffMarkTokens ? ` (${fmtTokens(handoffMarkTokens)})` : ""} hand-off mark</strong>
         <span class="spacer"></span>
         <span class="mono handoff-fill">{fmtTokens(handoff.used)} of {fmtTokens(handoff.limit)} · {handoffPct}%</span>
       </div>
@@ -2416,7 +2682,7 @@
           its × takes it back.
         {:else}
           <strong>Wrap up now</strong> sends the message below as a turn of its own: the model finishes what is
-          half-done, {#if threadHandoff}updates the thread's files{:else}writes <code>HANDOFF.md</code>{/if}, and
+          half-done, {#if threadAndHandoff}updates the thread's files, adds a section to <code>HANDOFF.md</code>, commits{:else if threadHandoff}updates the thread's files{:else}writes <code>HANDOFF.md</code>, commits{/if}, and
           ends with a start prompt for the new chat. Or raise this chat's mark and keep going. Nothing is sent by
           itself while this notice is open.
         {/if}
@@ -2433,7 +2699,7 @@
           aria-label="This chat's hand-off threshold, percent of the context window"
           onchange={(e) => setChatThreshold((e.currentTarget as HTMLInputElement).value)}
         />
-        <span>% of the window{hasOwnThreshold(app.activeSessionId) ? ` (the default is ${handoffDefaultPct}%)` : " (the default)"}</span>
+        <span>% of the window{hasOwnThreshold(app.activeSessionId) ? ` (the default is ${handoffDefaultRule})` : ` (the default: ${handoffDefaultRule})`}</span>
       </label>
       <textarea
         class="handoff-msg"
@@ -2453,7 +2719,8 @@
         {#if !wrapUpQueued}
           <button class="ns-btn accent small" disabled={app.busy || !wrapUpText.trim()} onclick={() => void sendWrapUpNow()}>Wrap up now</button>
         {/if}
-        <button class="ns-btn ghost small" use:tip={`No wrap-up; asked again past ${reAskPct}%`} onclick={stayHere}>Stay here</button>
+        <button class="ns-btn ghost small" use:tip={`No wrap-up; asked again past ${reAskPct}%`} onclick={() => { noteStay(app.activeSessionId, "due"); stayHere(); }}>Stay here</button>
+        <button class="ns-btn ghost small" use:tip={"Fold this card to one line above the box"} onclick={() => fold(app.activeSessionId, "due")}>Minimize</button>
         {#if hasOwnMessage(app.activeSessionId)}
           <button class="ns-btn ghost small" use:tip={"Back to the Settings default for this chat"} onclick={() => clearMessage(app.activeSessionId)}>Reset the message</button>
         {/if}
@@ -2462,13 +2729,22 @@
     </div>
   {:else if handoffHere && handoff.stage === "wrapping"}
     <div class="handoff" role="status">
-      <div class="handoff-head"><span>Wrapping up — the model is finishing what is half-done, {#if threadHandoff}updating the thread's files{:else}writing <code>HANDOFF.md</code>{/if}, and ending with the start prompt for the new chat.</span></div>
+      <div class="handoff-head"><span>Wrapping up — the model is finishing what is half-done, {#if threadAndHandoff}updating the thread's files and <code>HANDOFF.md</code>, committing{:else if threadHandoff}updating the thread's files{:else}writing <code>HANDOFF.md</code>, committing{/if}, and ending with the start prompt for the new chat.</span></div>
+    </div>
+  {:else if handoffHere && handoff.stage === "wrapped" && isFolded(app.activeSessionId, "wrapped")}
+    <div class="handoff handoff-min" role="status" aria-label="Hand-off notice, minimized">
+      <span class="handoff-mark" aria-hidden="true"><Icon name="branch" size={13} /></span>
+      <strong class="handoff-min-title">{threadAndHandoff ? "Thread and HANDOFF.md updated" : threadHandoff ? "Thread updated" : "HANDOFF.md written"}</strong>
+      <span class="mono handoff-fill">{fmtTokens(handoff.used)} of {fmtTokens(handoff.limit)} · {handoffPct}%</span>
+      <span class="spacer"></span>
+      <button class="ns-btn accent small" disabled={app.busy} onclick={() => void continueChat()}>Continue in a new chat</button>
+      <button class="ns-btn ghost small" use:tip={"Show the whole card again"} onclick={() => unfold(app.activeSessionId)}>Expand</button>
     </div>
   {:else if handoffHere && handoff.stage === "wrapped"}
     <div class="handoff" role="status" aria-label="Hand-off done">
       <div class="handoff-head">
         <span class="handoff-mark" aria-hidden="true"><Icon name="branch" size={15} /></span>
-        <strong>{threadHandoff ? "Thread updated" : "HANDOFF.md written"}</strong>
+        <strong>{threadAndHandoff ? "Thread and HANDOFF.md updated" : threadHandoff ? "Thread updated" : "HANDOFF.md written"}</strong>
         <span class="spacer"></span>
         <span class="mono handoff-fill">{fmtTokens(handoff.used)} of {fmtTokens(handoff.limit)} · {handoffPct}%</span>
       </div>
@@ -2504,7 +2780,8 @@
         {#if hasOwnReadOrder(app.activeSessionId)}
           <button class="ns-btn ghost small" use:tip={"Back to the Settings default for this chat"} onclick={() => clearReadOrder(app.activeSessionId)}>Reset the read order</button>
         {/if}
-        <button class="ns-btn ghost small" use:tip={`Keep going here; asked again past ${reAskPct}%`} onclick={stayHere}>Stay here</button>
+        <button class="ns-btn ghost small" use:tip={`Keep going here; asked again past ${reAskPct}%`} onclick={() => { noteStay(app.activeSessionId, "wrapped"); stayHere(); }}>Stay here</button>
+        <button class="ns-btn ghost small" use:tip={"Fold this card to one line above the box"} onclick={() => fold(app.activeSessionId, "wrapped")}>Minimize</button>
         <span class="handoff-keys mono">stay past {reAskPct}% and the wrap-up is asked again</span>
       </div>
     </div>
@@ -2559,7 +2836,14 @@
         recordCaret();
         pointerDown = false;
       }}
-      onmousedown={() => (pointerDown = true)}
+      onmousedown={() => {
+        pointerDown = true;
+        scrollHold.release();
+      }}
+      onkeydowncapture={() => scrollHold.release()}
+      onbeforeinputcapture={() => scrollHold.release()}
+      onwheel={() => scrollHold.release()}
+      onscrollcapture={recordScroll}
       onselect={recordCaret}
       oninput={recordCaret}
       onfocusin={() => {
@@ -2581,7 +2865,7 @@
         value={text}
         onchange={(v) => setDraftText(key, v)}
         placeholder={app.connection ? boxPlaceholder : ""}
-        disabled={!app.connection}
+        disabled={boxIsLocked}
         {floating}
         initialCaret={formatCaret}
         oninput={() => {
@@ -2596,41 +2880,22 @@
     {:else}
     {#if layered}
       <!-- Item 223: the draft drawn behind the textarea, quote lines as the
-           bubble draws them. An empty line holds a zero-width space so it
-           keeps its height, as the textarea's does. Item 315: a fenced
-           block's lines on a code ground, the body coloured, the same
-           characters in the same font so nothing moves. -->
-      <div class="ta-mirror" aria-hidden="true" bind:this={mirror}>{#each mirrorLines(text) as l, i (i)}{@const c = codeLayer[i]}{#if c && c.kind === "body"}<div class="ml code">{#each c.segs as sg, j (j)}<span class={sg.cls}>{sg.text}</span>{/each}{#if c.segs.length === 0}{"\u200b"}{/if}</div>{:else if c}<div class="ml code fence" data-fence={c.kind === "open" ? c.fence : undefined}>{l.marker}{l.rest || "\u200b"}</div>{:else}<div class="ml" class:q={l.quote}>{#if l.quote}<span class="qm">{l.marker}</span>{l.rest}{:else}{l.rest || "\u200b"}{/if}</div>{/if}{/each}</div>
-      {#each fences as f, k (k)}
-        {#if fenceTops[k] != null}
-          <!-- Item 315: the block's language; a pick rewrites only the
-               fence's info string. -->
-          <select
-            class="code-lang mono"
-            style:top="{fenceTops[k]}px"
-            aria-label="Code block language"
-            use:tip={"The block's language — the fence's ```name"}
-            value={f.lang ?? f.info}
-            onmousedown={(e) => e.stopPropagation()}
-            onchange={(e) => relabel(k, (e.currentTarget as HTMLSelectElement).value)}
-          >
-            {#if !f.lang}<option value={f.info}>{f.info || "code"}</option>{/if}
-            {#each LANGUAGES as lg (lg.id)}<option value={lg.id}>{lg.label}</option>{/each}
-          </select>
-        {/if}
-      {/each}
+           bubble draws them; item 315: a fenced block on a code ground, its
+           language picker on the fence. Shared with the edit box (399). -->
+      <BoxLayer {text} box={ta instanceof HTMLTextAreaElement ? ta : null} onrelabel={relabel} />
     {/if}
+    <!-- data-own-undo: its history is `hist`'s, not fieldUndo.ts's (item 421). -->
     <textarea
       bind:this={ta}
+      data-own-undo
       class:quoted={layered}
       bind:value={() => text, (v) => setDraftText(key, v)}
-      onscroll={syncMirror}
       rows="1"
       autocorrect="off"
       autocapitalize="off"
       spellcheck="false"
       placeholder={app.connection ? boxPlaceholder : ""}
-      disabled={!app.connection}
+      disabled={boxIsLocked}
       oninput={(e) => {
         // Blocker 1210: his edit, into the box's own undo history.
         onboxinput(e);
@@ -2650,36 +2915,8 @@
     ></textarea>
     {/if}
     </div>
-    {#if offer && offer.after !== null}
-      <!-- Item 284: a long ⌘V paste, offered as an attachment. -->
-      <div class="paste-offer" role="status">
-        <span class="mono dim">long paste · {pastedLabel(offer.pasted)}</span>
-        <button
-          class="ns-btn ghost small"
-          use:tip={"Move the pasted text out of the box into an attachment — Undo puts it back. ⌥⌘V pastes as an attachment from the start."}
-          onmousedown={(e) => e.preventDefault()}
-          onclick={() => void convertLongPaste()}>Make this an attachment</button
-        >
-        <!-- Item 318: keep the paste as text; the offer goes for this paste. -->
-        <button
-          class="offer-x"
-          aria-label="Dismiss — keep the paste as text"
-          use:tip={"Keep it as text (Esc)"}
-          onmousedown={(e) => e.preventDefault()}
-          onclick={dismissOffer}>×</button
-        >
-      </div>
-    {:else if undoable}
-      <div class="paste-offer" role="status">
-        <span class="mono dim">moved into an attachment</span>
-        <button
-          class="ns-btn ghost small"
-          use:tip={"Put the text back in the box (⌘Z)"}
-          onmousedown={(e) => e.preventDefault()}
-          onclick={() => undoConvert()}>Undo</button
-        >
-      </div>
-    {/if}
+    <!-- Item 284's offer; shared with the edit box since item 399b. -->
+    <PasteOfferRow {offer} {undoable} onconvert={() => void convertLongPaste()} ondismiss={dismissOffer} onundo={() => undoConvert()} />
     <div class="row" bind:this={rowEl} data-fold={rowFold}>
       <input
         bind:this={picker}
@@ -2769,6 +3006,13 @@
         </span>
       {/if}
       <span class="spacer"></span>
+      {#if handoffStayed}
+        <button
+          class="ns-btn ghost small act"
+          use:tip={`Bring back the hand-off card now; it asks by itself again past ${reAskPct}%`}
+          onclick={() => reopenHandoff(stayedFromWrapped(app.activeSessionId))}
+        ><Icon name="branch" size={12} /> Hand off</button>
+      {/if}
       {#if shown}
         <span class="draft-tokens mono act" data-fold-step="tokens" use:tip={shown.title}
           ><span class="fold-word">{shown.long}</span><span class="short-word">{shown.short}</span></span
@@ -2781,10 +3025,20 @@
           onclick={enqueue}
           disabled={!text.trim() && attachments.length === 0}>Queue</button
         >
+        <!-- Item 411: its shape is his pick in Settings → Appearance (square
+             unless he picks another); `wide` is item 398's, below.
+             Item 398: Stop is an icon button in Send's place at Send's size —
+             a filled square over an invisible "Send" that sizes it, so the
+             row keeps its height when a turn starts. Armed after 400 ms, so
+             a double-click on Send cannot stop the turn it started. -->
         {#if aside}
-          <button class="ns-btn danger small act" use:tip={"Stop this answer; what has arrived stays"} onclick={() => aside && stopAside(aside)}>Stop</button>
+          <button class="ns-btn danger send stop act shape-{stopPref.shape}" aria-label="Stop" use:armStop use:tip={`Stop this answer; what has arrived stays (${stopChordLabel(isMac)})`} onclick={() => aside && stopAside(aside)}
+            ><span class="stop-size" aria-hidden="true">Send</span><span class="stop-ico" aria-hidden="true"><Icon name="stop" size={stopPref.shape === "wide" ? 16 : 12} />{#if stopPref.shape === "labelled"}<span class="stop-word">Stop</span>{/if}</span></button
+          >
         {:else}
-          <button class="ns-btn danger small act" use:tip={app.parked ? `Stop the turn running in ${runningChatName()}` : "Stop this turn"} onclick={() => void cancelTurn()}>Stop</button>
+          <button class="ns-btn danger send stop act shape-{stopPref.shape}" aria-label="Stop" use:armStop use:tip={`${app.parked ? `Stop the turn running in ${runningChatName()}` : "Stop this turn"} (${stopChordLabel(isMac)})`} onclick={() => void cancelTurn()}
+            ><span class="stop-size" aria-hidden="true">Send</span><span class="stop-ico" aria-hidden="true"><Icon name="stop" size={stopPref.shape === "wide" ? 16 : 12} />{#if stopPref.shape === "labelled"}<span class="stop-word">Stop</span>{/if}</span></button
+          >
         {/if}
       {:else if aside}
         <!-- The aside's Send (backlog 283): no schedule ▾, no council. -->
@@ -2873,7 +3127,7 @@
         {:else if asideBusy}
           {aside && asideWaiting(aside) ? "Waiting — one aside answers at a time; ↵ holds the next message." : "Answering — ↵ holds the next message for when it ends."}
         {:else}
-          Answers from <em>{asideChatName}</em>'s context; nothing here enters the chat.
+          Answers from this chat's context; nothing here enters the chat.
         {/if}
       </span>
       <span class="spacer"></span>
@@ -2941,7 +3195,17 @@
            how long it stays warm, or `cold`. A chat whose last turn
            predates the timer's fields shows the share alone, and the
            title says why. Nothing before the first turn. -->
-      {#if cached != null || cache}
+      {#if cache && cacheBuilt && cacheChanges.length > 0}
+        <!-- Backlog 408: a pending change would lose the warm cache; the
+             click puts every changed setting back. -->
+        <button
+          class="ns-chip mono bottom-cache losing"
+          use:tip={cacheLossTitle(cacheChanges, cacheBuilt.cachedTokens, cache.remainingMs)}
+          onclick={restoreCache}
+        >
+          <span class="losing-what">{cacheLossLine(cacheChanges)}</span><span class="bottom-cache-when">&nbsp;· <span class="restore-word">restore</span></span>
+        </button>
+      {:else if cached != null || cache}
         <div
           class="ns-chip mono bottom-cache"
           class:cold={cache ? !cache.warm : false}
@@ -3213,6 +3477,29 @@
     font-variant-numeric: tabular-nums;
     color: var(--ink2);
   }
+  /* Backlog 408: the warning reads in the accent, and is a button. */
+  .bottom-cache.losing {
+    display: inline-flex;
+    min-width: 0;
+    max-width: 100%;
+    color: var(--accent);
+    border-color: var(--accent);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .losing-what {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .bottom-cache.losing .bottom-cache-when {
+    flex: none;
+    color: var(--accent);
+  }
+  .restore-word {
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
   /* Only the timer half dims when cold; the share is still a fact. */
   .bottom-cache.cold .bottom-cache-when {
     color: var(--dim);
@@ -3231,8 +3518,11 @@
     padding: 0;
     width: 100%;
   }
+  /* Held over the box (item 362, B's first frame): the edge turns accent
+     with a soft ring, so it reads apart from the focused box's edge. */
   .composer.dropping .card {
     border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
   }
   /* In an aside (backlog 283): the chat's composer inside the aside's
      frame — no panel fill of its own, the card on the aside's tint with a
@@ -3284,31 +3574,7 @@
   .composer.floating textarea {
     font-size: 15.5px;
   }
-  /* Item 284: the long paste's offer, a slim line under the box. */
-  .paste-offer {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 2px 10px 4px;
-    font-size: 12px;
-  }
-  /* Item 318: the offer's dismiss, a small × beside it. */
-  .offer-x {
-    width: 1.15rem;
-    height: 1.15rem;
-    padding: 0;
-    background: none;
-    color: var(--dim);
-    border: 1px solid transparent;
-    border-radius: 50%;
-    font-size: 0.85rem;
-    line-height: 1;
-    cursor: pointer;
-  }
-  .offer-x:hover {
-    color: var(--text);
-    border-color: var(--border);
-  }
+  /* The offer's look moved to `PasteOfferRow.svelte` with it (item 399b). */
   /* The queue tray: joined to the top of the card, dashed so it reads as
      "not sent yet" (backlog 089). Plain rows; the real design is the
      Fable board's. */
@@ -3368,6 +3634,9 @@
   .attachment-face {
     position: relative;
     line-height: 0;
+    /* Item 362: the accent ring a dropped chip arrives with (`chipDropIn`). */
+    border-radius: 8px;
+    box-shadow: var(--drop-ring, none);
   }
   .attachment img {
     width: 4rem;
@@ -3573,67 +3842,8 @@
     color: transparent;
     caret-color: var(--ink);
   }
-  .ta-mirror {
-    position: absolute;
-    top: 0;
-    left: 0;
-    z-index: 0;
-    overflow: hidden;
-    box-sizing: border-box;
-    padding: 2px 0 2px 10px;
-    font-size: 15px;
-    font-family: inherit;
-    line-height: 1.5;
-    color: var(--ink);
-    white-space: pre-wrap;
-    overflow-wrap: break-word;
-    pointer-events: none;
-  }
-  .composer.floating .ta-mirror {
-    font-size: 15.5px;
-  }
-  /* A quote line: the bubble's `.user-quote` look (bar, muted text), the
-     bar in the gutter; the `> ` marker dimmed further but kept, so the
-     characters and the caret stay where the textarea has them. */
-  .ml.q {
-    margin-left: -10px;
-    padding-left: 10px;
-    box-shadow: inset 3px 0 0 var(--accent);
-    color: var(--dim);
-  }
-  .qm {
-    opacity: 0.45;
-  }
-  /* Item 315: a fenced block in the box — a code ground under its lines
-     (out into the gutter, as a quote's bar), the fence lines dimmed. The
-     font stays the textarea's: the layer must match its glyphs. */
-  .ml.code {
-    margin-left: -10px;
-    padding-left: 10px;
-    background: var(--well);
-  }
-  .ml.fence {
-    color: var(--dim);
-  }
-  .code-lang {
-    position: absolute;
-    right: 8px;
-    z-index: 2;
-    height: 1.35rem;
-    margin-top: 0.1rem;
-    padding: 0 0.3rem;
-    border: 1px solid var(--line2);
-    border-radius: 6px;
-    background: var(--sheet);
-    color: var(--ink2);
-    font-family: var(--mono);
-    font-size: 0.7rem;
-    cursor: pointer;
-  }
-  .code-lang:hover {
-    color: var(--ink);
-    border-color: var(--dim);
-  }
+  /* The layer's own look (`.ta-mirror`, quote and code lines, the language
+     picker) moved to `BoxLayer.svelte` with it (item 399). */
   textarea:focus {
     outline: none;
   }
@@ -3642,6 +3852,54 @@
   }
   .send {
     padding: 6px 16px;
+  }
+  /* Item 398: the Stop in Send's place. "Send" in Send's weight, hidden,
+     gives it Send's width and height; the square sits centred over it. */
+  .stop {
+    position: relative;
+    font-weight: 500;
+  }
+  .stop .stop-size {
+    visibility: hidden;
+  }
+  .stop .stop-ico {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  /* Item 411 (blocker 1524): the compact shapes keep the hidden "Send" for
+     Send's height only, at no width; the button is as wide as it is high. */
+  .stop:not(.shape-wide) {
+    padding-left: 0;
+    padding-right: 0;
+    justify-content: center;
+  }
+  .stop:not(.shape-wide) .stop-size {
+    display: inline-block;
+    width: 0;
+    overflow: hidden;
+  }
+  /* 31 px: Send's height, measured in the 411 harness (30.9). */
+  .stop.shape-square,
+  .stop.shape-round {
+    width: 31px;
+    background: color-mix(in srgb, var(--failed) 16%, var(--sheet));
+  }
+  .stop.shape-round {
+    border-radius: 50%;
+  }
+  .stop.shape-labelled {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  .stop.shape-labelled .stop-ico {
+    position: static;
+    gap: 6px;
+  }
+  .stop-word {
+    font-size: 12.5px;
   }
   /* Send's split (backlog 224): the ▾ carries the right-hand corners. */
   .send-split {
@@ -3715,6 +3973,43 @@
     background: var(--sheet);
     font-size: 13px;
     color: var(--ink2);
+  }
+  /* Backlog 383: the card folded to one line. */
+  .handoff.handoff-min {
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  .handoff-min-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+  /* Review 2026-10-18: at a 700 pt window the title read "HA…"; the fill
+     (repeated in the due title, secondary on the wrapped one) gives up its
+     room first and is gone on a narrow line, so the title keeps what fits. */
+  .handoff.handoff-min {
+    container-type: inline-size;
+  }
+  .handoff-min .handoff-fill {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 0 1000 auto;
+  }
+  @container (max-width: 560px) {
+    .handoff-min .handoff-fill {
+      display: none;
+    }
+  }
+  .handoff-min .ns-btn {
+    flex: none;
+  }
+  .handoff-min .handoff-mark {
+    flex: none;
   }
   .handoff-head {
     display: flex;

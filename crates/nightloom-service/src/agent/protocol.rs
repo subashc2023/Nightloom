@@ -69,6 +69,13 @@ pub struct McpServerStatus {
     pub error: Option<String>,
 }
 
+/// `api_retry`'s `no_response`: how long the CLI waited for a first byte.
+#[derive(Debug, Deserialize)]
+pub(super) struct NoResponse {
+    #[serde(default)]
+    pub waited_ms: Option<u64>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "subtype")]
 pub(super) enum SystemLine {
@@ -111,6 +118,17 @@ pub(super) enum SystemLine {
         max_retries: u32,
         #[serde(default)]
         error: Option<String>,
+        /// The HTTP status, `null` when no response came back — a failed
+        /// connection (items 440 + 441; CLI 2.1.312's emitter sets
+        /// `error_status: h.error.status ?? null`, and calls such an
+        /// error `"unknown"`).
+        #[serde(default)]
+        error_status: Option<u16>,
+        #[serde(default)]
+        retry_delay_ms: Option<u64>,
+        /// Set when the call got no response at all within the CLI's wait.
+        #[serde(default)]
+        no_response: Option<NoResponse>,
     },
     /// A call the CLI refused because it would have prompted and nobody
     /// could answer — Manual mode, headless. Verbatim on 2.1.263
@@ -165,6 +183,10 @@ pub(super) enum SystemLine {
     },
     #[serde(rename = "task_progress")]
     TaskProgress {
+        /// The agent's id: the key a resume by SendMessage keeps when its
+        /// `tool_use_id` becomes the SendMessage call's (backlog 406).
+        #[serde(default)]
+        task_id: String,
         #[serde(default)]
         tool_use_id: String,
         #[serde(default)]
@@ -172,6 +194,8 @@ pub(super) enum SystemLine {
     },
     #[serde(rename = "task_notification")]
     TaskNotification {
+        #[serde(default)]
+        task_id: String,
         #[serde(default)]
         tool_use_id: String,
         #[serde(default)]

@@ -12,6 +12,7 @@ serde.workspace = true
 serde_json.workspace = true
 futures.workspace = true
 tokio.workspace = true
+libc = "0.2"
 tokio-util.workspace = true
 thiserror.workspace = true
 chrono.workspace = true

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasUsage, stopNote } from "./replyFooter";
+import { hasUsage, isStandIn, stopNote } from "./replyFooter";
 
 describe("reply footer (backlog 332)", () => {
   it("shows no figure for a reply with no usage", () => {
@@ -16,5 +16,16 @@ describe("reply footer (backlog 332)", () => {
     expect(stopNote("error: Output blocked")).toBe("stopped · Output blocked");
     expect(stopNote("end_turn")).toBeNull();
     expect(stopNote(null)).toBeNull();
+  });
+  it("names a turn stopped before any reply (backlog 361)", () => {
+    expect(stopNote("stopped")).toBe("stopped before a reply");
+  });
+  it("knows Nightloom's own stand-in from the model's words (backlog 407)", () => {
+    expect(isStandIn(["Stopped before any reply arrived."], "stopped")).toBe(true);
+    expect(isStandIn(["No reply: the CLI exited"], "error: exit 1")).toBe(true);
+    // The model saying the same words in a reply that ended normally is its own.
+    expect(isStandIn(["Stopped before any reply arrived."], "end_turn")).toBe(false);
+    expect(isStandIn(["Stopped before any reply arrived.", "more"], "stopped")).toBe(false);
+    expect(isStandIn(["Something else"], "stopped")).toBe(false);
   });
 });

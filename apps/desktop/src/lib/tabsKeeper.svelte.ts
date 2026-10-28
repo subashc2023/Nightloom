@@ -8,7 +8,7 @@
  * (`restoreTabs`). Imported for its effect, from `App.svelte`.
  */
 import { untrack } from "svelte";
-import { app, flushTabs } from "./state.svelte";
+import { app, flushNewProject, flushTabs } from "./state.svelte";
 import { term } from "./terminal.svelte";
 
 const SAVE_DELAY_MS = 250;
@@ -38,6 +38,18 @@ if (typeof window !== "undefined") {
       }
       for (const s of term.shells) void s.pane;
       untrack(schedule);
+    });
+    // The New project form (backlog 394): open, in front, and its draft,
+    // written as it changes — a keystroke's write is one small key.
+    $effect(() => {
+      void app.newProjectOpen;
+      void app.view;
+      const d = app.newProjectDraft;
+      void d.name;
+      void d.instructions;
+      void d.pickedPath;
+      void d.claudeMd;
+      untrack(flushNewProject);
     });
   });
   window.addEventListener("pagehide", flush);

@@ -583,6 +583,25 @@ pub(crate) fn render(
                 "{DIM}warning: reached {rounds} tool rounds this turn; stopping{RESET}"
             )
         }
+        // The CLI retrying a failed call (items 440 + 441): a line per try
+        // here, where it was a notice at the turn's end before.
+        TurnEvent::Retry {
+            attempt,
+            max_retries,
+            error,
+            status,
+            ..
+        } => {
+            let why = match (error.as_deref(), status) {
+                (_, Some(code)) => format!("HTTP {code}"),
+                (Some("unknown") | None, None) => "no connection".to_string(),
+                (Some(e), None) => e.to_string(),
+            };
+            writeln!(
+                stdout,
+                "{DIM}retrying after {why} ({attempt}/{max_retries}){RESET}"
+            )
+        }
         _ => Ok(()),
     }
 }

@@ -155,6 +155,19 @@ impl Chats {
         Target { id, log }
     }
 
+    /// The chat `id` as a [`Target`], whatever is open — `None` when it is
+    /// not held (nightshift blocker 1467: a chat's queued message sent in
+    /// the background, at its own turn's end, goes to that chat or nowhere;
+    /// never the focus, never a New chat made in its place).
+    pub fn target_at(&self, id: &str) -> Option<Target> {
+        let inner = self.inner();
+        let log = inner.held.get(id)?.clone();
+        Some(Target {
+            id: Some(id.to_string()),
+            log: Some(log),
+        })
+    }
+
     /// The open chat, locked: waits only on *that* chat's turn.
     pub async fn lock_focused(&self) -> Open {
         match self.focused() {
@@ -419,6 +432,24 @@ mod tests {
             chats.find(&normal).is_none(),
             "an idle normal chat stays held"
         );
+    }
+
+    /// Blocker 1467: a background send names its chat; a chat not held is
+    /// refused rather than read as the open chat or a New chat.
+    #[test]
+    fn a_target_by_id_is_that_chat_or_nothing() {
+        let chats = Chats::default();
+        let a = chat();
+        let a_id = a.id.clone();
+        chats.open(a);
+        let b = chat();
+        let b_id = b.id.clone();
+        chats.open(b);
+        // A was idle when B opened: let go.
+        assert!(chats.target_at(&a_id).is_none(), "A is not held");
+        let t = chats.target_at(&b_id).unwrap();
+        assert_eq!(t.id(), Some(b_id.as_str()));
+        assert!(chats.target_at("no-such-chat").is_none());
     }
 
     /// The step's claim (backlog 159 A1): while chat A's turn holds A's

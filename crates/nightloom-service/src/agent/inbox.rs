@@ -45,6 +45,55 @@ use tokio::sync::{mpsc, oneshot};
 /// How long a Take back waits for the CLI's answer before saying it went.
 const TAKE_BACK_WAIT: Duration = Duration::from_secs(5);
 
+/// How long the main thread must sit idle after a subagent's completion it
+/// was not told of before Nightloom wakes it (backlog 406). Measured on
+/// 2.1.309 (nightshift `406-report-2026-10-23.md` §2): the CLI starts its
+/// own wake command 43–49 ms after the main `result`, and a started command
+/// pauses this clock, so the model's own latency never counts against it.
+pub const WAKE_GRACE: Duration = Duration::from_secs(10);
+
+/// A subagent's end the main thread may not have been told of (406).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Completion {
+    pub task_id: String,
+    pub description: String,
+    pub status: String,
+    pub output_file: String,
+    /// When its `task_notification` came.
+    at: std::time::Instant,
+    /// A main-thread command started after it (its `init`).
+    command_after: bool,
+}
+
+/// What a wake wrote to the chat (406): the completions it named and the
+/// Nightloom-authored line's text.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Woken {
+    pub text: String,
+    pub agents: Vec<String>,
+}
+
+/// The note Nightloom writes for completions whose report never reached
+/// the main thread (406). Not his words, and it says so.
+pub fn wake_text(done: &[Completion]) -> String {
+    let each = done
+        .iter()
+        .map(|c| {
+            let out = if c.output_file.is_empty() {
+                String::new()
+            } else {
+                format!("; its output is at {}", c.output_file)
+            };
+            format!(
+                "the agent \u{201c}{}\u{201d} (`{}`) finished ({}) but its report did not reach you{out}",
+                c.description, c.task_id, c.status
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    format!("[Nightloom, not from Swaraag: {each}. Continue.]")
+}
+
 /// One message he sent mid-turn, written to the CLI and not yet taken.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Waiting {
@@ -109,7 +158,9 @@ pub struct Relayed {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SendError {
     /// No turn is running with an open stdin (none at all, a slash command
-    /// on argv, a deferred call's resume): the window keeps it queued.
+    /// on argv, ~~a deferred call's resume~~ — on stdin since backlog 374;
+    /// between a deferral and its answer no process runs): the window keeps
+    /// it queued, and tries again when the turn's next process starts.
     NotRunning,
     /// The id is not a uuid — the CLI compares it as one.
     BadId,
@@ -161,6 +212,22 @@ struct State {
     /// The main thread's SendMessage calls awaiting their result (339):
     /// call id → (`to`, `message`).
     relays: HashMap<String, (String, String)>,
+    /// Every local agent seen this turn (406): `task_id` → description.
+    known: HashMap<String, String>,
+    /// Spawning call id → `task_id`, for the child's own lines.
+    by_call: HashMap<String, String>,
+    /// The child's `SubagentHandback` calls awaiting their result.
+    handback_calls: HashMap<String, String>,
+    /// Agents whose report reached the main thread since their run began
+    /// or since the main thread last wrote to them with SendMessage.
+    carried: std::collections::HashSet<String>,
+    /// Completions not yet answered (406).
+    wakes: Vec<Completion>,
+    /// A main-thread command is running: from its `init` to its `result`.
+    busy: bool,
+    /// The command running began with a replayed hand-back from this agent.
+    about: Option<String>,
+    last_result: Option<std::time::Instant>,
 }
 
 /// The chat's inbox, shared between its agent (which runs the turn) and the
@@ -198,6 +265,7 @@ impl Inbox {
         *s = State {
             tx: Some(tx),
             seq: s.seq,
+            busy: true,
             ..State::default()
         };
     }
@@ -361,7 +429,7 @@ impl Inbox {
                 // An idle process kept open only for this message ends now
                 // — not while subagents run: their stdin carries Stop them
                 // and the nested-spawn notes (329).
-                if s.idle && s.waiting.is_empty() && s.agents.is_empty() {
+                if s.idle && s.waiting.is_empty() && s.agents.is_empty() && s.wakes.is_empty() {
                     s.tx = None;
                 }
                 TakeBack::Cancelled
@@ -375,6 +443,12 @@ impl Inbox {
 
     /// One stdout line of the turn's process.
     pub fn on_line(&self, line: &str) -> Option<Effect> {
+        self.on_line_at(line, std::time::Instant::now())
+    }
+
+    /// [`on_line`](Self::on_line) at `now` (the wake's clock, 406).
+    pub fn on_line_at(&self, line: &str, now: std::time::Instant) -> Option<Effect> {
+        self.track_wake(line, now);
         // Cheap tests first: most lines are none of these.
         let kind = if line.contains(r#""type":"command_lifecycle""#) {
             0
@@ -452,6 +526,8 @@ impl Inbox {
                                 .and_then(|d| d.as_str())
                                 .unwrap_or("a subagent")
                                 .to_string();
+                            // A resume (406) runs the same agent again.
+                            s.agents.retain(|(a, _)| *a != id);
                             s.agents.push((id, what));
                         }
                     }
@@ -460,7 +536,12 @@ impl Inbox {
                         // The last one ended with nothing else holding the
                         // process: the EOF now (the CLI still wakes the main
                         // agent for it — measured with an early EOF).
-                        if s.idle && s.agents.is_empty() && s.waiting.is_empty() {
+                        // Not while a completion waits for its wake (406).
+                        if s.idle
+                            && s.agents.is_empty()
+                            && s.waiting.is_empty()
+                            && s.wakes.is_empty()
+                        {
                             s.tx = None;
                         }
                     }
@@ -554,7 +635,7 @@ impl Inbox {
                     });
                 }
                 let running: Vec<String> = s.agents.iter().map(|(_, d)| d.clone()).collect();
-                let closed = s.waiting.is_empty() && running.is_empty();
+                let closed = s.waiting.is_empty() && running.is_empty() && s.wakes.is_empty();
                 if closed {
                     s.tx = None;
                 }
@@ -571,6 +652,7 @@ impl Inbox {
         let left = std::mem::take(&mut s.waiting);
         s.left = left.iter().map(|w| w.id.clone()).collect();
         s.replies.clear();
+        s.wakes.clear();
         left
     }
 
@@ -647,6 +729,238 @@ impl Inbox {
     pub fn idle_with_agents(&self) -> bool {
         let s = self.lock();
         s.idle && !s.agents.is_empty() && s.tx.is_some()
+    }
+
+    /// Whether a message he sent is written to the feed and not yet taken.
+    pub fn has_waiting(&self) -> bool {
+        !self.lock().waiting.is_empty()
+    }
+
+    /// The wake's bookkeeping for one stdout line (backlog 406). What it
+    /// watches, as measured on 2.1.309: an agent's `task_started` (a run
+    /// begins, nothing carried yet); the child's own `SubagentHandback`
+    /// call and its successful result (its report reached the main thread
+    /// — the only evidence before the notification, which comes first); the
+    /// main thread's SendMessage to it (it owes a new report); its
+    /// `task_notification` (a completion, armed unless carried); a main
+    /// `init` and `result` (a command runs, or the thread is idle); a
+    /// replayed hand-back (the command is about that agent); and a
+    /// main-thread assistant line in a command that began after the
+    /// completion — the main thread answered, so no wake.
+    fn track_wake(&self, line: &str, now: std::time::Instant) {
+        let assistant = line.starts_with(r#"{"type":"assistant""#);
+        let user = line.starts_with(r#"{"type":"user""#);
+        let interesting = line.contains(r#""subtype":"task_started""#)
+            || line.contains(r#""subtype":"task_notification""#)
+            || line.contains(r#""subtype":"init""#)
+            || line.starts_with(r#"{"type":"result""#)
+            || (line.contains(r#""type":"result""#) && !assistant && !user)
+            || (assistant && line.contains("SubagentHandback"))
+            || (assistant && line.contains(r#""name":"SendMessage""#))
+            || (user && line.contains(r#""isReplay":true"#))
+            || (user && !self.lock().handback_calls.is_empty() && line.contains("tool_result"))
+            || (assistant && !self.lock().wakes.is_empty());
+        if !interesting {
+            return;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            return;
+        };
+        let main = v.get("parent_tool_use_id").is_none_or(|p| p.is_null());
+        let str_of = |v: &serde_json::Value, k: &str| {
+            v.get(k)
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string()
+        };
+        let mut s = self.lock();
+        match v.get("type").and_then(|t| t.as_str()).unwrap_or_default() {
+            "system" => match v
+                .get("subtype")
+                .and_then(|t| t.as_str())
+                .unwrap_or_default()
+            {
+                "init" => {
+                    s.busy = true;
+                    s.about = None;
+                    for w in &mut s.wakes {
+                        w.command_after = true;
+                    }
+                }
+                "task_started" => {
+                    if str_of(&v, "task_type") != "local_agent" {
+                        return;
+                    }
+                    let id = str_of(&v, "task_id");
+                    let call = str_of(&v, "tool_use_id");
+                    s.by_call.entry(call).or_insert_with(|| id.clone());
+                    let what = str_of(&v, "description");
+                    s.known.entry(id.clone()).or_insert(what);
+                    s.carried.remove(&id);
+                    s.wakes.retain(|w| w.task_id != id);
+                }
+                "task_notification" => {
+                    let id = str_of(&v, "task_id");
+                    let Some(what) = s.known.get(&id).cloned() else {
+                        return;
+                    };
+                    let status = str_of(&v, "status");
+                    let status = if status.is_empty() {
+                        "completed".to_string()
+                    } else {
+                        status
+                    };
+                    // A stop is his (or the CLI's on his behalf), and the
+                    // CLI tells the main agent itself (329).
+                    if !matches!(status.as_str(), "completed" | "failed") || s.carried.contains(&id)
+                    {
+                        return;
+                    }
+                    s.wakes.retain(|w| w.task_id != id);
+                    s.wakes.push(Completion {
+                        task_id: id,
+                        description: what,
+                        status,
+                        output_file: str_of(&v, "output_file"),
+                        at: now,
+                        command_after: false,
+                    });
+                }
+                _ => {}
+            },
+            "result" => {
+                s.busy = false;
+                s.about = None;
+                s.last_result = Some(now);
+            }
+            "assistant" => {
+                let blocks = v
+                    .pointer("/message/content")
+                    .and_then(|c| c.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                if main {
+                    let about = s.about.clone();
+                    s.wakes.retain(|w| {
+                        !(w.command_after && about.as_ref().is_none_or(|a| *a == w.task_id))
+                    });
+                    for b in &blocks {
+                        if b.get("name").and_then(|n| n.as_str()) != Some("SendMessage") {
+                            continue;
+                        }
+                        let to = b
+                            .pointer("/input/to")
+                            .and_then(|t| t.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        let target = if s.known.contains_key(&to) {
+                            Some(to)
+                        } else {
+                            s.known
+                                .iter()
+                                .find(|(_, d)| **d == to)
+                                .map(|(a, _)| a.clone())
+                        };
+                        if let Some(id) = target {
+                            s.carried.remove(&id);
+                        }
+                    }
+                } else {
+                    let parent = str_of(&v, "parent_tool_use_id");
+                    let Some(id) = s.by_call.get(&parent).cloned() else {
+                        return;
+                    };
+                    for b in &blocks {
+                        if b.get("type").and_then(|t| t.as_str()) == Some("tool_use")
+                            && b.get("name").and_then(|n| n.as_str()) == Some("SubagentHandback")
+                            && let Some(call) = b.get("id").and_then(|i| i.as_str())
+                        {
+                            s.handback_calls.insert(call.to_string(), id.clone());
+                        }
+                    }
+                }
+            }
+            "user" => {
+                if main {
+                    if v.get("isReplay").and_then(|r| r.as_bool()) == Some(true)
+                        && v.pointer("/origin/handback").and_then(|h| h.as_bool()) == Some(true)
+                    {
+                        let from = v
+                            .pointer("/origin/from")
+                            .and_then(|f| f.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        s.carried.insert(from.clone());
+                        s.wakes.retain(|w| w.task_id != from);
+                        s.about = Some(from);
+                    }
+                    return;
+                }
+                for b in v
+                    .pointer("/message/content")
+                    .and_then(|c| c.as_array())
+                    .cloned()
+                    .unwrap_or_default()
+                {
+                    let Some(call) = b.get("tool_use_id").and_then(|i| i.as_str()) else {
+                        continue;
+                    };
+                    let Some(id) = s.handback_calls.remove(call) else {
+                        continue;
+                    };
+                    let ok = b.get("is_error").and_then(|e| e.as_bool()) != Some(true)
+                        && b.get("content")
+                            .is_some_and(|c| c.to_string().contains(r#"\"success\":true"#));
+                    if ok {
+                        s.carried.insert(id);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// When the wake is due (406): the main thread idle, a completion it
+    /// was not told of, nothing of his on the way in, and the grace run
+    /// out since the later of that completion and the last `result`.
+    pub fn wake_due(&self) -> Option<std::time::Instant> {
+        let s = self.lock();
+        if s.busy || s.wakes.is_empty() || !s.waiting.is_empty() || s.tx.is_none() {
+            return None;
+        }
+        let first = s.wakes.iter().map(|w| w.at).min()?;
+        let from = s.last_result.map_or(first, |r| r.max(first));
+        Some(from + WAKE_GRACE)
+    }
+
+    /// Wake the main thread if the wake is due at `now` (406): one
+    /// Nightloom-authored user line naming every completion still waiting,
+    /// each named once. `None` when not due (or nothing takes input).
+    pub fn fire_wake_at(&self, now: std::time::Instant) -> Option<Woken> {
+        let due = self.wake_due()?;
+        if now < due {
+            return None;
+        }
+        let mut s = self.lock();
+        let done = std::mem::take(&mut s.wakes);
+        let text = wake_text(&done);
+        let line = serde_json::json!({
+            "type": "user",
+            "message": { "role": "user", "content": [{ "type": "text", "text": text }] },
+            "parent_tool_use_id": serde_json::Value::Null,
+        });
+        let tx = s.tx.as_ref()?;
+        if tx.send(format!("{line}\n")).is_err() {
+            return None;
+        }
+        // The CLI starts it as the next command; its `result` closes the
+        // process as any other would.
+        s.idle = false;
+        s.busy = true;
+        Some(Woken {
+            text,
+            agents: done.into_iter().map(|c| c.description).collect(),
+        })
     }
 
     /// The ids the turn took since it began.
@@ -1234,6 +1548,446 @@ mod tests {
                 out.text
             ));
             println!("--- take_back={take_back}\n{}", log.join("\n"));
+        }
+    }
+
+    // ---- Backlog 406: the wake. Line shapes measured on 2.1.309
+    // (nightshift `406-report-2026-10-23.md` §2); the sequence is his chat's
+    // 08:15–08:23Z (2026-10-23) as its stdout would have read.
+
+    mod wake {
+        use super::super::*;
+        use super::ID;
+        use crate::TurnEvent;
+        use crate::agent::translate::Translator;
+        use serde_json::json;
+        use std::time::{Duration, Instant};
+
+        const HF: &str = "toolu_015awQvfRVecj2DZUHcrraVJ";
+        const BENCH: &str = "toolu_01NXZF9nanmMbnHzXbMjMCEw";
+        const MARKET: &str = "toolu_01JfLbujUck47fY3cVtZr8Ec";
+        const A_HF: &str = "a94e5527c15d551f6";
+        const A_BENCH: &str = "a05b3fd749ee094f2";
+        const A_MARKET: &str = "a162a44caa6992ce2";
+
+        /// A line as the CLI prints it, `type` first: the inbox's cheap
+        /// tests read the prefix, and `json!` sorts its keys.
+        fn typed(mut v: serde_json::Value) -> String {
+            let kind = v.as_object_mut().unwrap().remove("type").unwrap();
+            let rest = v.to_string();
+            if rest == "{}" {
+                return format!("{{\"type\":{kind}}}");
+            }
+            format!("{{\"type\":{kind},{}", &rest[1..])
+        }
+        fn init() -> String {
+            typed(
+                json!({"type":"system","subtype":"init","session_id":"s","model":"claude-opus-5-5"}),
+            )
+        }
+        fn result(turns: u32) -> String {
+            typed(
+                json!({"type":"result","subtype":"success","is_error":false,"num_turns":turns,"result":"","session_id":"s"}),
+            )
+        }
+        fn main_text(id: &str, text: &str) -> String {
+            typed(
+                json!({"type":"assistant","message":{"id":id,"role":"assistant","content":[{"type":"text","text":text}]},"parent_tool_use_id":null}),
+            )
+        }
+        fn spawn() -> String {
+            let call = |id: &str, d: &str| json!({"type":"tool_use","id":id,"name":"Agent","input":{"description":d,"prompt":"p","subagent_type":"general-purpose","run_in_background":true}});
+            typed(
+                json!({"type":"assistant","message":{"id":"m_spawn","role":"assistant","content":[
+                call(HF, "Hugging Face incident facts"), call(BENCH, "Benchmark suite feasibility"), call(MARKET, "Agent guardrail market scan")]},"parent_tool_use_id":null}),
+            )
+        }
+        fn started(task: &str, call: &str, d: &str) -> String {
+            typed(
+                json!({"type":"system","subtype":"task_started","task_id":task,"tool_use_id":call,"description":d,"subagent_type":"general-purpose","is_backgrounded":true,"task_type":"local_agent","prompt":"p"}),
+            )
+        }
+        fn launched() -> String {
+            let r = |id: &str| json!({"type":"tool_result","tool_use_id":id,"content":[{"type":"text","text":"Async agent launched successfully."}]});
+            typed(
+                json!({"type":"user","message":{"role":"user","content":[r(HF), r(BENCH), r(MARKET)]},"parent_tool_use_id":null}),
+            )
+        }
+        fn handback_call(parent: &str, call: &str) -> String {
+            typed(
+                json!({"type":"assistant","message":{"id":format!("m_{call}"),"role":"assistant","content":[{"type":"tool_use","id":call,"name":"SubagentHandback","input":{"message":"report"}}]},"parent_tool_use_id":parent}),
+            )
+        }
+        fn handback_result(parent: &str, call: &str) -> String {
+            typed(
+                json!({"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":call,"content":[{"type":"text","text":"{\"success\":true,\"message\":\"Report delivered to your caller.\"}"}]}]},"parent_tool_use_id":parent}),
+            )
+        }
+        fn child_text(parent: &str, id: &str) -> String {
+            typed(
+                json!({"type":"assistant","message":{"id":id,"role":"assistant","content":[{"type":"text","text":"writing the note"}]},"parent_tool_use_id":parent}),
+            )
+        }
+        fn notified(task: &str, call: &str, handback: Option<&str>) -> String {
+            let mut v = json!({"type":"system","subtype":"task_notification","task_id":task,"tool_use_id":call,"status":"completed","output_file":format!("/tmp/tasks/{task}.output"),"summary":"s","usage":{"total_tokens":1000,"tool_uses":3,"duration_ms":9000}});
+            if let Some(h) = handback {
+                v["handback"] = json!(h);
+            }
+            typed(v)
+        }
+        fn peer(from: &str) -> String {
+            typed(
+                json!({"type":"user","isReplay":true,"isSynthetic":true,"origin":{"kind":"peer","from":from,"handback":true,"handbackReportText":"r"},"message":{"role":"user","content":"Another Claude session sent a message: <agent-message>"},"parent_tool_use_id":null}),
+            )
+        }
+        fn send_message(call: &str, to: &str) -> String {
+            typed(
+                json!({"type":"assistant","message":{"id":format!("m_{call}"),"role":"assistant","content":[{"type":"tool_use","id":call,"name":"SendMessage","input":{"to":to,"message":"resend the rest"}}]},"parent_tool_use_id":null}),
+            )
+        }
+        fn send_result(call: &str) -> String {
+            typed(
+                json!({"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":call,"content":[{"type":"text","text":"{\"success\":true,\"message\":\"Message queued for delivery\"}"}]}]},"parent_tool_use_id":null}),
+            )
+        }
+
+        /// His 08:15–08:23Z: three background agents; the market scan's
+        /// and the benchmark's normal hand-back pairs; the incident agent's
+        /// hand-back while its task still ran, the main thread's
+        /// SendMessage to it, then its lone notification.
+        fn his_sequence() -> Vec<(&'static str, String)> {
+            vec![
+                ("init", init()),
+                ("spawn 3", spawn()),
+                (
+                    "started HF",
+                    started(A_HF, HF, "Hugging Face incident facts"),
+                ),
+                (
+                    "started bench",
+                    started(A_BENCH, BENCH, "Benchmark suite feasibility"),
+                ),
+                (
+                    "started market",
+                    started(A_MARKET, MARKET, "Agent guardrail market scan"),
+                ),
+                ("launched", launched()),
+                (
+                    "reply",
+                    main_text("m1", "While the agents run, I'm reading."),
+                ),
+                ("result", result(5)),
+                ("market handback call", handback_call(MARKET, "toolu_hb_m")),
+                ("market handback ok", handback_result(MARKET, "toolu_hb_m")),
+                ("market notified", notified(A_MARKET, MARKET, Some("send"))),
+                ("init", init()),
+                ("market peer", peer(A_MARKET)),
+                (
+                    "market answered",
+                    main_text("m2", "The market report is in."),
+                ),
+                ("result", result(1)),
+                ("init", init()),
+                ("result", result(0)),
+                ("HF handback call", handback_call(HF, "toolu_hb_h")),
+                ("HF handback ok", handback_result(HF, "toolu_hb_h")),
+                ("init", init()),
+                ("HF peer", peer(A_HF)),
+                (
+                    "HF answered",
+                    main_text("m3", "The incident report came back cut off."),
+                ),
+                ("SendMessage HF", send_message("toolu_016iaCtV", A_HF)),
+                ("SendMessage result", send_result("toolu_016iaCtV")),
+                (
+                    "reply",
+                    main_text("m4", "Even the partial report changes the plan."),
+                ),
+                ("result", result(3)),
+                ("HF works on", child_text(HF, "m_hf_more")),
+                ("bench handback call", handback_call(BENCH, "toolu_hb_b")),
+                ("bench handback ok", handback_result(BENCH, "toolu_hb_b")),
+                ("bench notified", notified(A_BENCH, BENCH, Some("send"))),
+                ("init", init()),
+                ("bench peer", peer(A_BENCH)),
+                (
+                    "bench answered",
+                    main_text(
+                        "m5",
+                        "The benchmark report is in. The incident agent is still writing.",
+                    ),
+                ),
+                ("result", result(1)),
+                ("init", init()),
+                ("result", result(0)),
+                ("HF notified (lone)", notified(A_HF, HF, Some("send"))),
+            ]
+        }
+
+        struct Run {
+            inbox: Inbox,
+            rx: mpsc::UnboundedReceiver<String>,
+            translator: Translator,
+            t0: Instant,
+            steps: Vec<serde_json::Value>,
+            woke: Vec<Woken>,
+        }
+
+        impl Run {
+            fn new() -> Self {
+                let inbox = Inbox::default();
+                let (tx, rx) = mpsc::unbounded_channel();
+                inbox.open(tx);
+                Run {
+                    inbox,
+                    rx,
+                    translator: Translator::new(),
+                    t0: Instant::now(),
+                    steps: Vec::new(),
+                    woke: Vec::new(),
+                }
+            }
+            /// One line at `secs`, through the inbox and the translator, as
+            /// `drive_as` does; then the wake's timer, as its select does.
+            fn line(&mut self, label: &str, line: &str, secs: u64) {
+                let now = self.t0 + Duration::from_secs(secs);
+                let effect = self.inbox.on_line_at(line, now);
+                let still = match effect {
+                    Some(Effect::Result { running, .. }) if !running.is_empty() => running,
+                    _ => Vec::new(),
+                };
+                let statuses: Vec<serde_json::Value> = self
+                    .translator
+                    .push(line)
+                    .into_iter()
+                    .filter(|e| matches!(e, TurnEvent::SubagentStatus { .. }))
+                    .map(|e| serde_json::to_value(&e).unwrap())
+                    .collect();
+                self.steps.push(json!({"label": label, "statuses": statuses, "still_running": still, "woke": null}));
+            }
+            /// The timer at `secs`: whether a wake fired.
+            fn tick(&mut self, secs: u64) -> bool {
+                let now = self.t0 + Duration::from_secs(secs);
+                match self.inbox.fire_wake_at(now) {
+                    Some(w) => {
+                        let ev = serde_json::to_value(TurnEvent::Woke {
+                            text: w.text.clone(),
+                            agents: w.agents.clone(),
+                        })
+                        .unwrap();
+                        self.steps.push(json!({"label": format!("wake at {secs}s"), "statuses": [], "still_running": [], "woke": ev}));
+                        self.woke.push(w);
+                        true
+                    }
+                    None => false,
+                }
+            }
+            fn written(&mut self) -> Vec<String> {
+                let mut out = Vec::new();
+                while let Ok(l) = self.rx.try_recv() {
+                    out.push(l);
+                }
+                out
+            }
+        }
+
+        #[test]
+        fn a_lone_notification_after_a_relayed_handback_wakes_the_chat_once() {
+            let mut r = Run::new();
+            let seq = his_sequence();
+            let last = seq.len() as u64;
+            for (i, (label, line)) in seq.iter().enumerate() {
+                r.line(label, line, i as u64);
+                // The timer never fires on the way: every other completion
+                // was carried by its hand-back.
+                assert!(
+                    !r.tick(i as u64 + 9),
+                    "no wake before the lone notification ({label})"
+                );
+            }
+            // The stdin is held open for the wake (before 406: EOF here).
+            assert!(r.inbox.is_open());
+            assert!(r.written().is_empty());
+            // Due 10 s after the notification (the main thread idle since
+            // the result before it).
+            let due = r.inbox.wake_due().unwrap();
+            assert_eq!(due, r.t0 + Duration::from_secs(last - 1) + WAKE_GRACE);
+            assert!(!r.tick(last + 8));
+            assert!(r.tick(last + 9));
+            assert!(!r.tick(last + 30), "exactly once");
+            let lines = r.written();
+            assert_eq!(lines.len(), 1);
+            let v: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+            assert_eq!(v["type"], "user");
+            assert!(v.get("uuid").is_none(), "not one of his messages");
+            let text = v["message"]["content"][0]["text"].as_str().unwrap();
+            assert!(text.starts_with("[Nightloom, not from Swaraag: the agent \u{201c}Hugging Face incident facts\u{201d}"), "{text}");
+            assert!(text.contains("finished (completed)"));
+            assert!(text.contains(&format!("/tmp/tasks/{A_HF}.output")));
+            assert_eq!(
+                r.woke[0].agents,
+                vec!["Hugging Face incident facts".to_string()]
+            );
+            // The wake's own command; its result closes the stdin.
+            r.line("init", &init(), last + 10);
+            r.line(
+                "woken reply",
+                &main_text("m6", "The incident report is at the note."),
+                last + 11,
+            );
+            r.line("result", &result(1), last + 12);
+            assert!(!r.inbox.is_open());
+
+            // The resume of a finished agent by SendMessage (the same
+            // chat, next turn's shape): its row runs again, the bottom
+            // notice names it, then done — and no wake, its hand-back came.
+            let mut r2 = Run::new();
+            for (i, (label, line)) in his_sequence().iter().enumerate() {
+                r2.line(label, line, i as u64);
+            }
+            r2.line("woken", &init(), last + 10);
+            r2.line(
+                "woken reply",
+                &main_text("m6", "Asking the benchmark agent for one more figure."),
+                last + 11,
+            );
+            r2.line(
+                "SendMessage bench",
+                &send_message("toolu_SM2", A_BENCH),
+                last + 12,
+            );
+            r2.line(
+                "bench resumed",
+                &started(A_BENCH, "toolu_SM2", "Benchmark suite feasibility"),
+                last + 12,
+            );
+            r2.line("SendMessage result", &send_result("toolu_SM2"), last + 12);
+            r2.line("result", &result(2), last + 13);
+            r2.line(
+                "bench handback call",
+                &handback_call(BENCH, "toolu_hb_b2"),
+                last + 20,
+            );
+            r2.line(
+                "bench handback ok",
+                &handback_result(BENCH, "toolu_hb_b2"),
+                last + 20,
+            );
+            r2.line(
+                "bench notified (resume)",
+                &notified(A_BENCH, "toolu_SM2", Some("send")),
+                last + 20,
+            );
+            assert!(r2.inbox.wake_due().is_none());
+
+            // The harness fixture for the window's side (vitest
+            // `replay406.test.ts`): written when asked.
+            if let Ok(path) = std::env::var("NIGHTLOOM_406_DUMP") {
+                let mut steps = r.steps.clone();
+                steps.push(json!({"label": "---- resume", "statuses": [], "still_running": [], "woke": null}));
+                steps.extend(r2.steps.iter().skip(his_sequence().len() + 2).cloned());
+                std::fs::write(path, serde_json::to_string_pretty(&steps).unwrap()).unwrap();
+            }
+        }
+
+        #[test]
+        fn a_handback_pair_alone_never_wakes_and_the_last_end_closes_the_stdin() {
+            let mut r = Run::new();
+            for (i, line) in [
+                init(),
+                spawn(),
+                started(A_MARKET, MARKET, "Agent guardrail market scan"),
+                main_text("m1", "Started."),
+                result(2),
+                handback_call(MARKET, "toolu_hb_m"),
+                handback_result(MARKET, "toolu_hb_m"),
+                notified(A_MARKET, MARKET, Some("send")),
+            ]
+            .iter()
+            .enumerate()
+            {
+                r.line("l", line, i as u64);
+            }
+            assert!(r.inbox.wake_due().is_none());
+            assert!(!r.tick(100));
+            // Nothing holds the process: the EOF at once, as before 406.
+            assert!(!r.inbox.is_open());
+        }
+
+        #[test]
+        fn a_completion_the_cli_answers_itself_is_not_woken() {
+            // Default mode, no hand-back tool (measured `bg.jsonl`): the
+            // notification, then the CLI's own command answers it.
+            let mut r = Run::new();
+            for (i, line) in [
+                init(),
+                spawn(),
+                started(A_MARKET, MARKET, "Agent guardrail market scan"),
+                notified(A_MARKET, MARKET, None),
+                main_text("m1", "Started."),
+                result(2),
+            ]
+            .iter()
+            .enumerate()
+            {
+                r.line("l", line, i as u64);
+            }
+            assert!(r.inbox.is_open(), "held for the wake");
+            assert!(r.inbox.wake_due().is_some());
+            r.line("init", &init(), 6);
+            assert!(
+                r.inbox.wake_due().is_none(),
+                "a command runs: the clock pauses"
+            );
+            r.line("answer", &main_text("m2", "GOT ONE"), 7);
+            r.line("result", &result(1), 8);
+            assert!(r.inbox.wake_due().is_none());
+            assert!(!r.tick(100));
+            assert!(!r.inbox.is_open());
+            assert!(r.written().is_empty());
+        }
+
+        #[test]
+        fn a_message_of_his_on_the_way_in_holds_the_wake() {
+            let mut r = Run::new();
+            for (i, line) in [
+                init(),
+                spawn(),
+                started(A_MARKET, MARKET, "m"),
+                result(1),
+                notified(A_MARKET, MARKET, Some("send")),
+            ]
+            .iter()
+            .enumerate()
+            {
+                r.line("l", line, i as u64);
+            }
+            assert!(r.inbox.wake_due().is_some());
+            r.inbox.send(ID, "what happened").unwrap();
+            let _ = r.written();
+            assert!(r.inbox.wake_due().is_none());
+            assert!(!r.tick(100));
+            assert!(r.written().is_empty());
+        }
+
+        #[test]
+        fn a_stop_drops_the_wake() {
+            let mut r = Run::new();
+            for (i, line) in [
+                init(),
+                spawn(),
+                started(A_MARKET, MARKET, "m"),
+                result(1),
+                notified(A_MARKET, MARKET, None),
+            ]
+            .iter()
+            .enumerate()
+            {
+                r.line("l", line, i as u64);
+            }
+            r.inbox.stop();
+            assert!(r.inbox.wake_due().is_none());
+            assert!(!r.tick(100));
         }
     }
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   focusKindOf,
+  enterSends,
   inFocusedPane,
   isPrintable,
   sendsToComposer,
@@ -154,5 +155,28 @@ describe("inFocusedPane (316 review)", () => {
   });
   it("no pane marked focused reads as yes", () => {
     expect(inFocusedPane(composer, null)).toBe(true);
+  });
+});
+
+// Item 387: Enter sends the draft from anywhere in the chat.
+describe("enterSends", () => {
+  const ctx = (focus: ComposeContext["focus"], over: Partial<ComposeContext> = {}): ComposeContext => ({ focus, blocked: false, composer: true, ...over });
+  const enter = (over: Partial<KeyLike> = {}): KeyLike => ({ key: "Enter", metaKey: false, ctrlKey: false, ...over });
+  it("sends a draft from the transcript or from nothing", () => {
+    expect(enterSends(enter(), ctx("content"), true)).toBe(true);
+    expect(enterSends(enter(), ctx("none"), true)).toBe(true);
+  });
+  it("leaves an empty box, a control, a field and other panes alone", () => {
+    expect(enterSends(enter(), ctx("content"), false)).toBe(false);
+    expect(enterSends(enter(), ctx("control"), true)).toBe(false);
+    expect(enterSends(enter(), ctx("editable"), true)).toBe(false);
+    expect(enterSends(enter(), ctx("elsewhere"), true)).toBe(false);
+  });
+  it("leaves menus, dialogs, a missing box and every modified or held Enter alone", () => {
+    expect(enterSends(enter(), ctx("content", { blocked: true }), true)).toBe(false);
+    expect(enterSends(enter(), ctx("content", { composer: false }), true)).toBe(false);
+    for (const m of [{ shiftKey: true }, { altKey: true }, { metaKey: true }, { ctrlKey: true }, { repeat: true }, { isComposing: true }, { keyCode: 229 }])
+      expect(enterSends(enter(m), ctx("content"), true)).toBe(false);
+    expect(enterSends({ key: "a", metaKey: false, ctrlKey: false }, ctx("content"), true)).toBe(false);
   });
 });

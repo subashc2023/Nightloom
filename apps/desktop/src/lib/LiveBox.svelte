@@ -20,6 +20,8 @@
   interface Props {
     value: string;
     placeholder?: string;
+    /** The box's accessible name (item 399: the edit box is "Edit this message"). */
+    label?: string;
     disabled?: boolean;
     floating?: boolean;
     /** Where the caret goes when the box first appears (the plain box's, on a toggle). */
@@ -36,6 +38,7 @@
   let {
     value,
     placeholder = "",
+    label = "Message",
     disabled = false,
     floating = false,
     initialCaret = null,
@@ -60,7 +63,7 @@
       // No autocorrect, capitalisation or spell-marking, as on the textarea
       // (macOS was rewriting his words, 2026-09-16).
       EditorView.contentAttributes.of({
-        "aria-label": "Message",
+        "aria-label": untrack(() => label),
         spellcheck: "false",
         autocorrect: "off",
         autocapitalize: "off",

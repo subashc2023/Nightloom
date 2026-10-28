@@ -597,6 +597,16 @@ export interface CliStatus {
   updates_disabled: string | null;
 }
 
+/** Whether Claude Code is signed in (backlog 409; `claude auth status`'s
+ *  `loggedIn` alone), the absolute CLI the Sign in button types `auth login`
+ *  after, and the home folder a Sign in tab opens in when the chat has no
+ *  folder. `signed_in` is null when the status could not be read. */
+export interface ClaudeAuthStatus {
+  binary: string;
+  signed_in: boolean | null;
+  home: string | null;
+}
+
 /** What a run of `claude update` did (backlog 182). */
 export interface CliUpdateResult {
   ok: boolean;
@@ -820,6 +830,20 @@ export interface Usage {
  *  wrote or last read it — the API's own suffixes, as the log spells them. */
 export type CacheTtl = "5m" | "1h";
 
+/** What a reply's prompt cache was built with, as far as a change is
+ *  measured to lose it (nightshift backlog 408): the core's `CacheKey`. */
+export interface CacheKey {
+  /** `"claude-code"`, the only engine measured. */
+  engine: string;
+  /** The model as picked (alias or id); absent is the CLI's default. */
+  model?: string;
+  tools: boolean;
+  safe_mode: boolean;
+  /** The Ask or the Plan position. */
+  ask?: boolean;
+  plan: boolean;
+}
+
 /** One MCP server, as reported by `connect`. */
 export interface McpServerInfo {
   name: string;
@@ -1039,6 +1063,9 @@ export interface Attachment {
   /** Text pasted as an attachment (item 284): there is no file on disk to
    *  drop again, so the drafts store keeps it like the box's own text. */
   pasted?: boolean;
+  /** An office file's own SHA-256, once converted (item 428): what Keep
+   *  matches it by, since its PDF's bytes differ on every conversion. */
+  source_sha256?: string;
 }
 
 /** A file for the Claude Code engine (item 277), as `send_agent` takes it. */
@@ -1070,6 +1097,9 @@ export interface ApprovalRequest {
   /** The chat whose turn asks (nightshift backlog 159, A2): two chats may
    *  be running. Only on a Claude Code deferred call. */
   chat?: string;
+  /** The model's text just before the call — Playwright's card shows it as
+   *  the reason (nightshift backlog 367). Only on a Playwright call. */
+  reason?: string;
 }
 
 export type ApprovalDecision = "allow" | "always" | "deny";
@@ -1088,7 +1118,9 @@ export interface FolderGrant {
 export interface AskQuestion {
   question: string;
   header?: string;
-  options: { label: string; description?: string }[];
+  /** `preview`: the CLI's optional option preview (markdown or an HTML fragment; single-select only), drawn as
+   *  preformatted text (backlog 354). */
+  options: { label: string; description?: string; preview?: string }[];
   multiSelect?: boolean;
 }
 
@@ -1142,6 +1174,10 @@ export type SessionEvent =
       // lifetime also absent when the request touched no cache.
       sent_at?: string;
       cache_ttl?: CacheTtl;
+      // The settings the request was sent with that, changed, lose its
+      // cache (nightshift backlog 408) — Claude Code turns since the field;
+      // absent before it, and never guessed (`cacheLoss` in cache.ts).
+      cache_key?: CacheKey;
       at: string;
     }
   // Supersedes events `to..` up to this marker. The log keeps them, so the
@@ -1273,6 +1309,16 @@ export type TurnEvent =
    *  (nightshift backlog 329): their descriptions. The turn waits for them
    *  unless he stops them. */
   | { type: "still_running"; tasks: string[] }
+  /** Nightloom woke an idle main thread (nightshift backlog 406): a
+   *  subagent finished and its report never reached the main agent. `text`
+   *  is the Nightloom-authored line written to the chat (not his words);
+   *  `agents` the descriptions it named. */
+  | { type: "woke"; text: string; agents: string[] }
+  /** The Claude Code CLI retrying a failed API call (items 440 + 441):
+   *  one per try; the live reply keeps one line for them (`retryLine.ts`).
+   *  `error` is the CLI's category — `unknown` with no `status` is a
+   *  failed connection; `waited_ms` is set when no response came at all. */
+  | { type: "retry"; attempt: number; max_retries: number; error: string | null; status: number | null; delay_ms: number | null; waited_ms: number | null }
   /** An event of a subagent's own turn on the Claude Code engine, carrying
    *  the id of the `Agent` call that spawned it (nightshift backlog 075);
    *  `event` is the child's text, thinking, call or result as the main

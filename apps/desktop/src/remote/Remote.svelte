@@ -84,8 +84,9 @@
     type Try,
   } from "./client";
   import { renderMarkdown } from "../lib/markdown";
+  import AskQuestions from "../lib/AskQuestions.svelte";
   // Wave 8B F2 (item 300): replies in order, code blocks, the keyboard.
-  import { liveSegments, sentOf } from "./client";
+  import { aimAction, liveSegments, sentOf } from "./client";
   import { sentExt, type SentFile } from "../lib/sentFiles";
   import { codeBlocks } from "./codeBlocks";
   import { trackViewport } from "./viewport";
@@ -108,6 +109,7 @@
   import ChatMenu from "./ChatMenu.svelte";
   import { chatSheetSub, fitVisual } from "./sheetLayout";
   import Hosts from "./Hosts.svelte";
+  import { PLAYWRIGHT_BUTTONS, PLAYWRIGHT_DECLINED, playwrightAction } from "../lib/playwright";
   // Item 300 (wave 8B F1): the drawer follows the finger; Recents and Projects.
   import { dragAxis, drawerX, fingerSpeed, settleOpen } from "./client";
   import { UNFILED, lastActive as chatWhen, projectSummaries, recentRows } from "./recents";
@@ -1460,7 +1462,7 @@
         // The Mac has it behind the running turn (backlog 132): it lands
         // in the transcript when its own turn runs, so nothing is drawn
         // yet — a row drawn now would vanish on the re-read.
-        note("The Mac is mid-turn — your message goes when it ends");
+        note("The Mac is mid-turn — Claude takes your message as soon as it can");
         return;
       }
       live = emptyTurn();
@@ -1562,7 +1564,9 @@
     try {
       const status = await chatClient.send(chatId, text, { project: sendProject, images, documents, nonce });
       lastTry = null;
-      note(status === "queued" ? `Sent to ${chatRole === "away" ? "Away" : "the Mac"} — it goes when its turn ends` : `Sent to ${chatRole === "away" ? "Away" : "the Mac"}`);
+      // Backlog 374: the Mac hands a queued message to the running turn at
+      // its next step (and holds it for the turn's end only when it cannot).
+      note(status === "queued" ? (chatRole === "away" ? "Sent to Away — it goes when its turn ends" : "Sent to the Mac mid-turn — Claude takes it as soon as it can") : `Sent to ${chatRole === "away" ? "Away" : "the Mac"}`);
       events = [
         ...events,
         {
@@ -1725,7 +1729,10 @@
     if (!via) return false;
     try {
       let reply = null;
-      for (const a of actions) reply = await via.act(chat, a, project);
+      // Backlog 364: each action aimed from the list its index was read
+      // from — this chat's, while it is the one shown.
+      const held = chat === chatId ? $state.snapshot(events) : null;
+      for (const a of actions) reply = await via.act(chat, held ? aimAction(held as SessionEvent[], a) : a, project);
       // The Mac opened the chat's project to act on it (665).
       if (project) await refreshProjects();
       if (reply && chat === chatId) {
@@ -2935,25 +2942,16 @@
         {@const kind = cardKind(req)}
         <section class="card" data-approval={req.id} in:fly={{ y: 16, duration: motion(260), easing: cubicOut }}>
           {#if kind === "question"}
-            <div class="card-head">The model asks</div>
-            {#each questions(req) as q, i (i)}
-              <div class="q">
-                <div class="q-text">{q.header ? `${q.header} — ` : ""}{q.question}</div>
-                <div class="opts">
-                  {#each q.options as o (o.label)}
-                    <button class="opt" class:on={(picks[req.id]?.[i] ?? []).includes(o.label)} onclick={() => toggle(req.id, i, o.label, !!q.multiSelect)}>
-                      <b>{o.label}</b>{#if o.description}<span>{o.description}</span>{/if}
-                    </button>
-                  {/each}
-                </div>
-                <input
-                  type="text"
-                  placeholder="Other…"
-                  value={others[req.id]?.[i] ?? ""}
-                  oninput={(e) => (others = { ...others, [req.id]: { ...(others[req.id] ?? {}), [i]: e.currentTarget.value } })}
-                />
-              </div>
-            {/each}
+            <!-- 354: the desktop's question form — tabs on top, the questions inline, Next, the tab following
+                 the scroll, previews (AskQuestions). The note, Answer and Skip stay this card's own. -->
+            <AskQuestions
+              questions={questions(req)}
+              idBase="r-{req.id}"
+              picks={picks[req.id] ?? {}}
+              others={others[req.id] ?? {}}
+              ontoggle={(i, label, multi) => toggle(req.id, i, label, multi)}
+              onother={(i, v) => (others = { ...others, [req.id]: { ...(others[req.id] ?? {}), [i]: v } })}
+            />
             <input type="text" placeholder="A note (goes as your next message)" bind:value={notes[req.id]} />
             <div class="actions">
               <button class="btn accent" disabled={!answered(req)} onclick={() => answer(req, "allow", questionAnswer(req.input, picks[req.id] ?? {}, others[req.id] ?? {}))}>Answer</button>
@@ -2971,6 +2969,25 @@
             <div class="actions">
               <button class="btn accent" onclick={() => answer(req, "allow", req.input, planThen[req.id] ?? "ask")}>Approve</button>
               <button class="btn" onclick={() => answer(req, "deny", undefined, undefined, KEEP_PLANNING)}>Keep planning</button>
+            </div>
+          {:else if kind === "playwright"}
+            <!-- 367: Playwright, Claude's own browser — the desktop's card. -->
+            {@const act = playwrightAction(req.name, req.input)}
+            <div class="card-head">Claude wants to use its own browser (Playwright)</div>
+            <div class="args">
+              <div class="arg"><span class="key">the model's reason</span><pre>{req.reason ?? "The model wrote nothing before the call."}</pre></div>
+              <div class="arg"><span class="key">the action</span><pre>{act.tool}{act.target ? `  ${act.target}` : ""}</pre></div>
+            </div>
+            <input type="text" placeholder="A note (the reason, if denied)" bind:value={notes[req.id]} />
+            <div class="actions">
+              {#each PLAYWRIGHT_BUTTONS as b (b.decision)}
+                <button
+                  class="btn"
+                  class:accent={b.decision === "allow"}
+                  class:danger={b.decision === "deny"}
+                  onclick={() => answer(req, b.decision, undefined, undefined, PLAYWRIGHT_DECLINED)}>{b.label}</button
+                >
+              {/each}
             </div>
           {:else}
             <div class="card-head">Allow <b>{req.name}</b>?</div>
@@ -4170,14 +4187,16 @@
     border-bottom: 1px solid var(--line);
     background: var(--well);
   }
+  /* Item 402: the copy icon, not the word — a 36px square, the header's
+     height, so the tap target stays what the word's was. */
   .md :global(.code-copy) {
     all: unset;
     cursor: pointer;
-    min-height: 36px;
-    padding: 0 10px;
+    display: inline-grid;
+    place-items: center;
+    width: 36px;
+    height: 36px;
     color: var(--accent-ink);
-    font-size: 13px;
-    font-weight: 500;
   }
   .md :global(.code-body) {
     position: relative;
@@ -4264,43 +4283,6 @@
     max-height: 55dvh;
     overflow: auto;
     font-size: 14px;
-  }
-  .q {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-  .q-text {
-    font-size: 15px;
-  }
-  .opts {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .opt {
-    all: unset;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    min-height: 44px;
-    padding: 8px 12px;
-    border: 1px solid var(--line2);
-    border-radius: 12px;
-    font-size: 15px;
-    cursor: pointer;
-    box-sizing: border-box;
-    transition:
-      border-color 0.15s,
-      background 0.15s;
-  }
-  .opt span {
-    font-size: 13px;
-    color: var(--dim);
-  }
-  .opt.on {
-    border-color: var(--accent);
-    background: var(--accent-soft);
   }
   .seg {
     display: flex;

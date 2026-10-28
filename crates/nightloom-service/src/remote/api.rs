@@ -177,29 +177,75 @@ pub enum ChatAction {
         mode: EditMode,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         block: Option<usize>,
+        /// Backlog 364: the send time of his message that opened the turn's
+        /// exchange, from the phone's list; the host aims by it or refuses.
+        /// Absent from an older phone: the bare index, as before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<chrono::DateTime<chrono::Utc>>,
+        /// Backlog 364: a reply's place among its exchange's replies.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        nth: Option<usize>,
     },
     Remove {
         index: usize,
+        /// Backlog 364: the send time of his message that opened the turn's
+        /// exchange, from the phone's list; the host aims by it or refuses.
+        /// Absent from an older phone: the bare index, as before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<chrono::DateTime<chrono::Utc>>,
+        /// Backlog 364: a reply's place among its exchange's replies.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        nth: Option<usize>,
     },
     Restore {
         index: usize,
+        /// Backlog 364: the send time of his message that opened the turn's
+        /// exchange, from the phone's list; the host aims by it or refuses.
+        /// Absent from an older phone: the bare index, as before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<chrono::DateTime<chrono::Utc>>,
+        /// Backlog 364: a reply's place among its exchange's replies.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        nth: Option<usize>,
     },
     RemoveBlock {
         index: usize,
         block: usize,
+        /// Backlog 364: the send time of his message that opened the turn's
+        /// exchange, from the phone's list; the host aims by it or refuses.
+        /// Absent from an older phone: the bare index, as before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<chrono::DateTime<chrono::Utc>>,
+        /// Backlog 364: a reply's place among its exchange's replies.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        nth: Option<usize>,
     },
     RestoreBlock {
         index: usize,
         block: usize,
+        /// Backlog 364: the send time of his message that opened the turn's
+        /// exchange, from the phone's list; the host aims by it or refuses.
+        /// Absent from an older phone: the bare index, as before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<chrono::DateTime<chrono::Utc>>,
+        /// Backlog 364: a reply's place among its exchange's replies.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        nth: Option<usize>,
     },
     Rewind {
         to: usize,
+        /// Backlog 364: when the message meant was sent (361's aim).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<chrono::DateTime<chrono::Utc>>,
     },
     Unrewind {
         of: usize,
     },
     Fork {
         upto: usize,
+        /// Backlog 364: when the message meant was sent (361's aim).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<chrono::DateTime<chrono::Utc>>,
     },
     Continue,
     Compact,
@@ -586,17 +632,24 @@ mod tests {
                 index: 3,
                 text: "hi".into(),
                 mode: EditMode::Send,
-                block: None
+                block: None,
+                at: None,
+                nth: None,
             }
         );
         for (v, want) in [
             (
                 json!({"op": "remove_block", "index": 1, "block": 2}),
-                ChatAction::RemoveBlock { index: 1, block: 2 },
+                ChatAction::RemoveBlock {
+                    index: 1,
+                    block: 2,
+                    at: None,
+                    nth: None,
+                },
             ),
             (
                 json!({"op": "rewind", "to": 4}),
-                ChatAction::Rewind { to: 4 },
+                ChatAction::Rewind { to: 4, at: None },
             ),
             (
                 json!({"op": "unrewind", "of": 4}),
@@ -604,7 +657,7 @@ mod tests {
             ),
             (
                 json!({"op": "fork", "upto": 5}),
-                ChatAction::Fork { upto: 5 },
+                ChatAction::Fork { upto: 5, at: None },
             ),
             (json!({"op": "continue"}), ChatAction::Continue),
             (json!({"op": "resume_limit"}), ChatAction::ResumeLimit),
@@ -627,6 +680,34 @@ mod tests {
         assert!(serde_json::from_value::<ChatAction>(json!({"op": "explode"})).is_err());
     }
 
+    /// Backlog 364: the phone's aim rides on the action and back out to the
+    /// Mac's window unchanged; an older phone's action, without it, reads
+    /// as before (the round trips above).
+    #[test]
+    fn an_action_carries_the_phones_aim() {
+        let at = "2026-10-13T07:19:57.123456789Z";
+        let v = json!({"op": "remove", "index": 6, "at": at, "nth": 1});
+        let a: ChatAction = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!(
+            a,
+            ChatAction::Remove {
+                index: 6,
+                at: Some(at.parse().unwrap()),
+                nth: Some(1),
+            }
+        );
+        assert_eq!(serde_json::to_value(&a).unwrap(), v);
+        let f: ChatAction =
+            serde_json::from_value(json!({"op": "fork", "upto": 5, "at": at})).unwrap();
+        assert_eq!(
+            f,
+            ChatAction::Fork {
+                upto: 5,
+                at: Some(at.parse().unwrap()),
+            }
+        );
+    }
+
     #[test]
     fn the_listener_refuses_what_no_host_could_use() {
         let empty = ChatAction::Edit {
@@ -634,6 +715,8 @@ mod tests {
             text: "  ".into(),
             mode: EditMode::Save,
             block: None,
+            at: None,
+            nth: None,
         };
         assert!(empty.check().is_err());
         assert!(ChatAction::Kind { kind: "x".into() }.check().is_err());
@@ -644,7 +727,7 @@ mod tests {
             .check()
             .is_ok()
         );
-        assert!(ChatAction::Rewind { to: 0 }.check().is_ok());
+        assert!(ChatAction::Rewind { to: 0, at: None }.check().is_ok());
     }
 
     #[test]

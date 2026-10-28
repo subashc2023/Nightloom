@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tip } from "./tip";
+  import { renderReply } from "./markdown";
   import { app, asideAsking, asideOf, asideTabThread } from "./state.svelte";
   import { quoteLabel } from "./asideQuote";
   import Icon from "./Icon.svelte";
@@ -14,6 +15,7 @@
   import AsideNameEdit from "./AsideNameEdit.svelte";
   import AsideFoldPanel from "./AsideFoldPanel.svelte";
   import * as tabs from "./tabs";
+  import { fmtTokens } from "./tokens";
 
   /**
    * An aside thread as a tab of its own (nightshift backlog 130 part 2,
@@ -90,6 +92,9 @@
 
 <div class="aside-view" role="note" aria-label="aside, not part of the chat">
   <div class="aside-view-scroll" bind:this={view} onscroll={scrolled}>
+    <!-- One centred column, the chat's (backlog 358): the transcript's
+         760 px measure, so the tab reads as the chat does at every zoom. -->
+    <div class="aside-view-col">
     {#if aside}
       <!-- The thread's name (item 265): his, or its first question until
            he names it; a click renames it, here as in the sidebar and the
@@ -113,14 +118,18 @@
       </div>
     {/if}
     <div class="aside-view-head">
-      <span class="aside-view-of" use:tip={"An aside: answered from this chat's context, never part of it"}
+      <!-- One line (358): an untitled chat is named by its whole first
+           prompt, which printed here in full; the tip carries all of it. -->
+      <span class="aside-view-of" use:tip={`An aside of “${chatName}”: answered from that chat's context, never part of it`}
         >Aside of <em>{chatName}</em></span
       >
       {#if aside?.quote}
         <span class="ns-chip mono">about {quoteLabel(aside.quote, "card")}</span>
       {/if}
       {#if last && last.answer !== null && last.cacheRead > 0}
-        <span class="ns-chip mono">{last.cacheRead.toLocaleString()} read from cache</span>
+        <span class="ns-chip mono aside-cache" use:tip={`${last.cacheRead.toLocaleString()} tokens read from cache`}
+          >{fmtTokens(last.cacheRead)} cached</span
+        >
       {/if}
       <span class="spacer"></span>
       {#if aside}
@@ -148,7 +157,7 @@
       </p>
     {:else}
       {#if aside.quote}
-        <blockquote class="aside-view-quote" use:tip={"The passage he highlighted, sent with the question exactly as selected"}>{aside.quote.text}</blockquote>
+        <blockquote class="aside-view-quote" use:tip={"The passage he highlighted, sent with the question exactly as selected"}>{@html renderReply(aside.quote.text)}</blockquote>
       {/if}
       {#if !aside.draft}
         <div class="aside-view-turns">
@@ -157,6 +166,7 @@
         </div>
       {/if}
     {/if}
+    </div>
   </div>
   {#if aside}
     <!-- The tab's composer (nightshift backlog 238, 2026-09-26, his words:
@@ -197,26 +207,58 @@
     font-size: var(--transcript-size, 14px);
     color: var(--ink);
   }
+  /* The chat's frame (backlog 358, his "the normal page looks fine"):
+     the transcript's padding and its centred 760 px column, the composer
+     the chat's width and place under it — ~~left-aligned with 24 px
+     sides, the head running the pane's full width~~. */
   .aside-view-scroll {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    padding: 16px 24px 24px;
+    padding: 28px 20px 20px;
+  }
+  .aside-view-col {
+    max-width: 760px;
+    margin: 0 auto;
     display: flex;
     flex-direction: column;
     gap: 10px;
   }
   .aside-view-foot {
     flex: none;
-    padding: 2px 24px 14px;
+    padding: 2px 20px 18px;
     border-top: 1px dashed var(--aside-edge);
     background: var(--aside-tint);
   }
   .aside-view-foot-inner {
     max-width: 760px;
+    margin: 0 auto;
     display: flex;
     flex-direction: column;
     gap: 8px;
+  }
+  /* The composer's line under the box (358): one line, cut, as in the
+     card — it named the chat by his whole prompt a second time; the
+     chat's name inside it cut short, the format chip never giving way. */
+  .aside-view :global(.composer.aside .aside-line) {
+    /* Its text is its basis, shrunk to the row: a 0 basis split the row
+       with the spacer and cut the chat's name whole. */
+    flex: 1 1 auto;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .aside-view :global(.composer.aside .aside-line em) {
+    display: inline-block;
+    max-width: 14em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: bottom;
+  }
+  .aside-view :global(.composer.aside .bottom-toggle) {
+    flex-shrink: 0;
   }
   .aside-view-title {
     display: flex;
@@ -255,7 +297,16 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    flex-wrap: wrap;
+    /* One row (358): the name gives way with an ellipsis, the chips and
+       buttons never do. */
+    flex-wrap: nowrap;
+    min-width: 0;
+  }
+  .aside-view-head > :global(*) {
+    flex-shrink: 0;
+  }
+  .aside-view-head > .aside-view-of {
+    flex-shrink: 1;
   }
   .aside-view-head .spacer {
     flex: 1;
@@ -271,7 +322,11 @@
     border-left: 3px solid var(--line2);
     color: var(--ink2);
     font-size: 13px;
-    white-space: pre-wrap;
+  }
+  /* The passage is rendered like the reply it came from (item 451): maths
+     and formatting, not its raw source. */
+  .aside-view-quote :global(p) {
+    margin: 0;
   }
   .aside-view-turns {
     display: flex;
@@ -282,6 +337,10 @@
   /* ~~`.aside-view-q` / `-a` / `-wait`~~ — `AsideThread.svelte` since
      backlog 283; the box is the chat's composer. */
   .aside-view-of {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
     font-size: 12.5px;
     color: var(--ink2, var(--dim));
   }

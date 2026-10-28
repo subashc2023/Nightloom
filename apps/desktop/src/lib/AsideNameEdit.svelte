@@ -42,7 +42,7 @@
   });
 </script>
 
-<input
+<input autocorrect="off" autocapitalize="off" spellcheck="false"
   class="aside-name-edit"
   aria-label="Aside name"
   maxlength={ASIDE_NAME_MAX}

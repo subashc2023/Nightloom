@@ -29,7 +29,9 @@ describe("the composer's row folds before it splits (289)", () => {
     expect(firstFit((l) => (tried.push(l), l >= 3), 6)).toBe(3);
     expect(tried).toEqual([0, 1, 2, 3]);
   });
-  it("the new-chat column is the chat composer's width, not the ring's", () => {
-    expect(welcomeSrc).toMatch(/const colMax = \$derived\(Math\.max\(320, Math\.min\(760, w - 40\)\)\);/);
+  // Item 422 (2026-10-27): ~~760, the chat composer's width~~ → 700, a
+  // little narrower than it at his ask; still a fixed column, not the ring's.
+  it("the new-chat column is a fixed width (700, item 422), not the ring's", () => {
+    expect(welcomeSrc).toMatch(/const colMax = \$derived\(Math\.max\(320, Math\.min\(700, w - 40\)\)\);/);
   });
 });

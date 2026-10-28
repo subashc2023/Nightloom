@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BoxHistory, caretAfterChange, editKind, historyInput, MAX_STEPS } from "./boxHistory";
+import { BoxHistory, caretAfterChange, editKind, GROUP_MS, historyInput, historyKey, MAX_STEPS } from "./boxHistory";
 
 const snap = (text: string, start = text.length, end = start) => ({ text, start, end });
 
@@ -157,5 +157,97 @@ describe("boxHistory (blocker 1210)", () => {
     expect(caretAfterChange("ab", "aXb")).toBe(2);
     expect(caretAfterChange("abc", "abc\n> q\n")).toBe(8);
     expect(caretAfterChange("hello", "")).toBe(0);
+  });
+});
+
+// Item 399: the key the composer and the edit box share.
+describe("historyKey", () => {
+  const k = (o: Partial<KeyboardEvent>) =>
+    ({ metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, code: "", key: "", ...o }) as KeyboardEvent;
+  it("⌘Z undoes, ⌘⇧Z and ⌘Y redo on the Mac", () => {
+    expect(historyKey(k({ metaKey: true, code: "KeyZ", key: "z" }), true)).toBe("undo");
+    expect(historyKey(k({ metaKey: true, shiftKey: true, code: "KeyZ", key: "Z" }), true)).toBe("redo");
+    expect(historyKey(k({ metaKey: true, code: "KeyY", key: "y" }), true)).toBe("redo");
+  });
+  it("Ctrl off the Mac; ⌥ and the other modifier are not it", () => {
+    expect(historyKey(k({ ctrlKey: true, code: "KeyZ", key: "z" }), false)).toBe("undo");
+    expect(historyKey(k({ ctrlKey: true, code: "KeyZ", key: "z" }), true)).toBeNull();
+    expect(historyKey(k({ metaKey: true, altKey: true, code: "KeyZ", key: "z" }), true)).toBeNull();
+  });
+
+  // Item 421: a message typed straight through was one step, so one ⌘Z
+  // emptied the box. A pause longer than GROUP_MS (CodeMirror's) ends a run.
+  describe("the pause rule (item 421)", () => {
+    function clocked() {
+      let t = 1_000;
+      const h = new BoxHistory("", () => t);
+      /** A word, 80 ms a letter, then a pause of `gap` ms. */
+      const word = (w: string, gap = 1_200) => {
+        for (const ch of w) {
+          t += 80;
+          const cur = h.current.text;
+          h.before(snap(cur));
+          h.input("type", snap(cur + ch));
+        }
+        t += gap;
+      };
+      const undoAll = () => {
+        let n = 0;
+        while (h.undo()) n++;
+        return n;
+      };
+      return { h, word, undoAll, del: (gap = 1_200) => {
+        t += 80;
+        const cur = h.current.text;
+        h.before(snap(cur));
+        h.input("delete", snap(cur.slice(0, -1)));
+        t += gap;
+      } };
+    }
+
+    it("60 words typed with pauses are 60 steps, and redo walks all of them back", () => {
+      const { h, word, undoAll } = clocked();
+      for (let i = 0; i < 60; i++) word(`w${i} `);
+      const full = h.current.text;
+      expect(undoAll()).toBe(60);
+      expect(h.current.text).toBe("");
+      let up = 0;
+      while (h.redo()) up++;
+      expect(up).toBe(60);
+      expect(h.current.text).toBe(full);
+    });
+
+    it("typing without a pause longer than GROUP_MS stays one step", () => {
+      const { h, word, undoAll } = clocked();
+      // The next letter lands GROUP_MS after the last: not a pause.
+      word("hello ", GROUP_MS - 80);
+      word("world", GROUP_MS - 80);
+      expect(h.current.text).toBe("hello world");
+      expect(undoAll()).toBe(1);
+    });
+
+    it("each undo lands on the text as it was at a pause", () => {
+      const { h, word } = clocked();
+      word("one ");
+      word("two ");
+      word("three");
+      expect(h.undo()?.text).toBe("one two ");
+      expect(h.undo()?.text).toBe("one ");
+      expect(h.undo()?.text).toBe("");
+      expect(h.undo()).toBeNull();
+    });
+
+    it("deleting after a pause is its own step, and a pause splits a run of deletes", () => {
+      const { h, word, del } = clocked();
+      word("abcdef");
+      del(10);
+      del(10);
+      del();
+      del();
+      expect(h.current.text).toBe("ab");
+      expect(h.undo()?.text).toBe("abc");
+      expect(h.undo()?.text).toBe("abcdef");
+      expect(h.undo()?.text).toBe("");
+    });
   });
 });

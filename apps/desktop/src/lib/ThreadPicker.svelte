@@ -20,7 +20,8 @@
    */
   import * as api from "./api";
   import { app, chatThread, createThread, setChatThread } from "./state.svelte";
-  import { NEW_THREAD, pickerOptions, slugFrom, validSlug } from "./thread";
+  import { tick } from "svelte";
+  import { NEW_THREAD, pickerOptions, slugFrom, threadFolder, validSlug } from "./thread";
   import type { ThreadInfo } from "./types";
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import { tip } from "./tip";
@@ -42,6 +43,11 @@
   let loadError = $state<string | null>(null);
   let working = $state(false);
   let confirmCancel = $state(false);
+  /** The slug field is shown (backlog 418): *edit* pressed, or the slug
+   *  already differs from the one the name makes. */
+  let slugOpen = $state(false);
+  let nameEl = $state<HTMLInputElement | null>(null);
+  let slugEl = $state<HTMLInputElement | null>(null);
 
   const bound = $derived(chatThread(app.events));
   const options = $derived(pickerOptions(threads, bound));
@@ -68,6 +74,8 @@
   async function pick(value: string): Promise<void> {
     if (value === NEW_THREAD) {
       pendingNames[projectKey] = { name: form?.name ?? "", slug: form?.slug ?? "", open: true };
+      await tick();
+      nameEl?.focus();
       return;
     }
     working = true;
@@ -93,6 +101,44 @@
   }
 
   const slugOk = $derived(!!form && validSlug(form.slug) && !threads.some((t) => t.slug === form.slug));
+  const slugShown = $derived(!!form && (slugOpen || (form.slug !== "" && form.slug !== slugFrom(form.name))));
+  const slugError = $derived(
+    !form || !form.slug || slugOk
+      ? ""
+      : threads.some((t) => t.slug === form.slug)
+        ? "a thread with that name exists — pick it above"
+        : "lowercase letters, digits, - and _ only",
+  );
+
+  async function editSlug(): Promise<void> {
+    slugOpen = true;
+    await tick();
+    slugEl?.focus();
+  }
+
+  /**
+   * Enter creates, Escape cancels (backlog 418). A native listener on the
+   * field, stopped there: the thread chip's card closes on an Escape that
+   * reaches the document, and the Discard dialog listens on the window —
+   * neither may see this one. The cancel runs after the key is done, so
+   * the dialog it may open never catches the same press.
+   */
+  function formKeys(node: HTMLInputElement) {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.isComposing) return;
+      if (e.key === "Enter") {
+        e.preventDefault();
+        e.stopPropagation();
+        void create();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        setTimeout(cancel, 0);
+      }
+    };
+    node.addEventListener("keydown", onKey);
+    return { destroy: () => node.removeEventListener("keydown", onKey) };
+  }
 
   async function create(): Promise<void> {
     if (!form || !slugOk) return;
@@ -100,6 +146,7 @@
     try {
       if (await createThread(form.name.trim() || form.slug, form.slug)) {
         delete pendingNames[projectKey];
+        slugOpen = false;
         await load();
       }
     } finally {
@@ -113,26 +160,42 @@
       return;
     }
     delete pendingNames[projectKey];
+    slugOpen = false;
   }
 </script>
 
 <div class="thread-picker" class:compact class:list>
   {#if list}
     <div class="tp-list" role="listbox" aria-label="The research thread this chat works from">
-      {#each options as o (o.value)}
-        {@const on = form?.open ? o.value === NEW_THREAD : o.value === (bound ?? "")}
+      {#each options.filter((o) => o.value !== NEW_THREAD) as o (o.value)}
+        {@const on = o.value === (bound ?? "")}
         <button
           class="tp-opt"
           class:on
           role="option"
           aria-selected={on}
           disabled={working || app.busy || app.connecting || !app.project}
+          use:tip={o.hint}
           onclick={() => void pick(o.value)}
         >
-          <span class="tp-opt-label">{o.label}</span>
-          {#if o.detail && o.value !== NEW_THREAD}<span class="tp-opt-detail">{o.detail}</span>{/if}
+          <span class="tp-opt-text">
+            <span class="tp-opt-label">{o.label}</span>
+            {#if o.detail}<span class="tp-opt-detail">{o.detail}</span>{/if}
+          </span>
+          {#if on}<span class="tp-check" aria-hidden="true">✓</span>{/if}
         </button>
       {/each}
+      <!-- Never marked selected: it is an action, not a binding (backlog 418). -->
+      <button
+        class="tp-opt tp-add"
+        role="option"
+        aria-selected="false"
+        disabled={working || app.busy || app.connecting || !app.project}
+        use:tip={"A new thread from the project's template; this chat is bound to it."}
+        onclick={() => void pick(NEW_THREAD)}
+      >
+        <span class="tp-opt-label"><span class="tp-plus" aria-hidden="true">+</span>New thread</span>
+      </button>
     </div>
     {#if app.busy || app.connecting}
       <p class="tp-detail">The binding changes once the chat's turn ends.</p>
@@ -163,33 +226,52 @@
     <p class="tp-detail tp-error">{loadError}</p>
   {/if}
   {#if form?.open}
-    <div class="tp-new">
+    <div class="tp-new" role="group" aria-label="New thread">
       <input
         type="text"
+        autocorrect="off"
+        autocapitalize="off"
+        spellcheck="false"
         placeholder="Name, e.g. Stuart brainstorm"
         aria-label="The new thread's name"
+        bind:this={nameEl}
+        use:formKeys
         value={form.name}
         oninput={(e) => setName((e.currentTarget as HTMLInputElement).value)}
       />
-      <input
-        type="text"
-        class="mono"
-        placeholder="slug"
-        aria-label="The new thread's folder name"
-        value={form.slug}
-        oninput={(e) => setSlug((e.currentTarget as HTMLInputElement).value)}
-      />
-      <button class="ns-btn accent small" disabled={!slugOk || working} onclick={() => void create()}>Create and bind</button>
-      <button class="ns-btn ghost small" onclick={cancel}>Cancel</button>
-      {#if form.slug && !slugOk}
-        <span class="tp-detail tp-error">
-          {threads.some((t) => t.slug === form.slug)
-            ? "a thread with that name exists — pick it above"
-            : "lowercase letters, digits, - and _ only"}
+      {#if slugShown}
+        <input
+          type="text"
+        autocorrect="off"
+        autocapitalize="off"
+        spellcheck="false"
+          class="mono"
+          placeholder="folder-name"
+          aria-label="The new thread's folder name"
+          bind:this={slugEl}
+          use:formKeys
+          value={form.slug}
+          oninput={(e) => setSlug((e.currentTarget as HTMLInputElement).value)}
+        />
+        {#if slugError}
+          <span class="tp-hint tp-error">{slugError}</span>
+        {:else}
+          <span class="tp-hint tp-folder mono">{threadFolder(form.slug || "…")}</span>
+        {/if}
+      {:else}
+        <span class="tp-hint">
+          {#if slugError}
+            <span class="tp-error">{slugError}</span>
+          {:else}
+            <span class="tp-folder mono">{threadFolder(form.slug || "…")}</span>
+          {/if}
+          <button class="tp-edit" type="button" onclick={() => void editSlug()}>edit</button>
         </span>
-      {:else if form.slug}
-        <span class="tp-detail mono">.agents/threads/{form.slug}/</span>
       {/if}
+      <div class="tp-actions">
+        <button class="ns-btn ghost small" onclick={cancel}>Cancel</button>
+        <button class="ns-btn accent small" disabled={!slugOk || working} onclick={() => void create()}>Create and bind</button>
+      </div>
     </div>
   {/if}
 </div>
@@ -240,18 +322,73 @@
     outline: none;
     border-color: var(--accent);
   }
+  /* The New thread form (backlog 418): one column whose left edge is the
+     rows' text (the rows' 8px inset), every control 28px tall. */
   .tp-new {
     display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
+    flex-direction: column;
     gap: 6px;
+    padding: 4px 8px 0;
+  }
+  .thread-picker:not(.list) .tp-new {
+    padding: 2px 0 0;
+    max-width: 24rem;
   }
   .tp-new input {
-    width: 14rem;
+    box-sizing: border-box;
+    width: 100%;
+    height: 28px;
+    padding: 0 8px;
+    font-size: 12.5px;
   }
   .tp-new input.mono {
     font-family: var(--mono);
-    width: 10rem;
+    font-size: 12px;
+  }
+  .tp-hint {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+    color: var(--dim);
+    font-size: 11px;
+    line-height: 1.4;
+  }
+  /* The folder wraps rather than cut: its end is the slug. */
+  .tp-hint > :first-child {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .tp-folder.mono {
+    font-family: var(--mono);
+    font-size: 10.5px;
+  }
+  .tp-edit {
+    flex: none;
+    margin-left: auto;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--dim);
+    font: inherit;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
+  }
+  .tp-edit:hover {
+    color: var(--accent);
+  }
+  .tp-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
+    margin-top: 2px;
+  }
+  .tp-actions .ns-btn {
+    box-sizing: border-box;
+    height: 28px;
+    padding: 0 12px;
+    font-size: 12px;
   }
   .tp-detail {
     margin: 0;
@@ -271,42 +408,70 @@
   }
   .tp-opt {
     display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 1px;
+    align-items: center;
+    gap: 8px;
     text-align: left;
     background: transparent;
     border: none;
     border-radius: 6px;
-    padding: 5px 8px;
+    padding: 6px 8px;
     color: var(--ink2);
     font: inherit;
     font-size: 12.5px;
     cursor: pointer;
     min-width: 0;
   }
+  .tp-opt-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+    min-width: 0;
+  }
   .tp-opt:hover:not(:disabled) {
     background: var(--well);
     color: var(--ink);
   }
+  /* The bound thread, and only it: the accent bar and a check (backlog 418). */
   .tp-opt.on {
     background: var(--well);
     color: var(--ink);
     box-shadow: inset 2px 0 0 var(--accent);
   }
+  .tp-check {
+    flex: none;
+    color: var(--accent);
+    font-size: 12px;
+  }
   .tp-opt:disabled {
     cursor: default;
     opacity: 0.6;
   }
-  .tp-opt-label,
-  .tp-opt-detail {
+  .tp-opt-label {
     max-width: 100%;
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
   }
+  /* The status line wraps to two lines before it is cut. */
   .tp-opt-detail {
     color: var(--dim);
     font-size: 11.5px;
+    line-height: 1.35;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+  }
+  .tp-add {
+    margin-top: 2px;
+    color: var(--ink2);
+  }
+  .tp-plus {
+    display: inline-block;
+    margin-right: 6px;
+    color: var(--accent);
   }
 </style>

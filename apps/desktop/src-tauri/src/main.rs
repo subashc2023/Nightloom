@@ -58,6 +58,9 @@ mod draft_count;
 /// A file card's Open as a tab: which paths may be read, and reading them
 /// (nightshift backlog 161).
 mod filetab;
+mod for_you;
+/// A `.tex` tab's rendered PDF (nightshift backlog 381).
+mod latex;
 mod model_list;
 /// Nightshift: the unattended runner's file contract, as commands.
 mod nightshift;
@@ -67,6 +70,10 @@ mod note_edit;
 /// compiled into a release (backlog 341): there it is a stub that is off.
 #[cfg(debug_assertions)]
 mod offscreen;
+/// Finder's Open With → Nightloom (nightshift backlog 378).
+mod opened_files;
+/// A paste's web images, fetched (nightshift backlog 382).
+mod paste_images;
 #[cfg(not(debug_assertions))]
 mod offscreen {
     /// Never in a release build.
@@ -78,6 +85,8 @@ mod offscreen {
 }
 /// Sleep-safe turns: the power assertion and the wake watcher.
 mod power;
+/// A chat's preview, run by the app between messages (nightshift item 430).
+mod preview;
 /// A changed prompt layer waits for the chat's cold moment (backlog 174).
 mod prompt_hold;
 /// Quitting while work runs asks first (nightshift backlog 308).
@@ -997,6 +1006,9 @@ struct ChatSpec {
     /// The open project, for the shared-notes prompt layer. `None` for an
     /// unfiled chat, which has no docspace to index.
     project: Option<ProjectContext>,
+    /// The open project's id, for `mark_file`'s records (nightshift
+    /// backlog 377); `None` for an unfiled chat.
+    project_id: Option<String>,
     /// The user's knowledge vault, when this chat may reach it.
     ///
     /// Its own switch rather than riding on `tools`, because turning tools on
@@ -1056,6 +1068,10 @@ struct ChatSpec {
     /// (nightshift backlog 143): the project's and the chat's own, as
     /// `extra_folders` lists them. Each becomes a named tree of the `Root`.
     extra_folders: Vec<PathBuf>,
+    /// The folders no file tool may reach (nightshift backlog 405): an
+    /// incognito chat's `incognito::denied_roots` — his config dir, the
+    /// vault, `~/.claude`, every project. Empty for every other chat.
+    denied: Vec<PathBuf>,
 }
 
 impl ChatSpec {
@@ -1076,7 +1092,7 @@ impl ChatSpec {
         for f in &self.extra_folders {
             root.add_extra(f.clone());
         }
-        root
+        root.with_denied(self.denied.iter().cloned())
     }
 }
 
@@ -1233,6 +1249,21 @@ fn build_chat(
                 .push(Box::new(nightloom_service::tools::SendFile::new(
                     spec.workspace.clone(),
                     store,
+                )));
+        }
+        // `mark_file` (nightshift backlog 377): the model says who each
+        // file it makes is for; his are listed under the top bar's Files
+        // for you. Not for a chat that writes nothing — the marks go in the
+        // config dir.
+        if !spec.mode.writes_nothing()
+            && let Some(config) = project::config_dir()
+        {
+            use nightloom_service::tools::mark_file;
+            chat.tools
+                .push(Box::new(nightloom_service::tools::MarkFile::new(
+                    spec.workspace.clone(),
+                    mark_file::manifest_in(&config),
+                    spec.project_id.clone(),
                 )));
         }
         if let Some(chats) = &spec.chats {
@@ -1447,9 +1478,40 @@ async fn connect(
     // the project's tree. By the declaration (backlog 144): a Chat that
     // was born Claude Code keeps its folder.
     let workspace = chat_workspace(declared_kind, workspace);
+    // An incognito chat knows nothing about him (nightshift backlog 405,
+    // blocker 1513): its own empty folder outside the project and
+    // `~/.nightloom`, no project, vault, extra folders or other chats, the
+    // project's layers never read, and every folder of his refused.
+    let mode = session_mode(&state).await;
+    let incognito = mode.writes_nothing();
+    let workspace = if incognito {
+        let id = state
+            .chats
+            .lock_focused()
+            .await
+            .as_ref()
+            .map(|s| s.id.clone());
+        nightloom_service::incognito::workspace(id.as_deref())
+    } else {
+        workspace
+    };
+    let denied = if incognito {
+        let projects = state.workspaces.lock().await.registry.projects();
+        nightloom_service::incognito::denied_roots(project::config_dir().as_deref(), &projects)
+    } else {
+        Vec::new()
+    };
+    // The project as the model sees it: none for an incognito chat. The
+    // window's own `active` stays — the rail still shows the project the
+    // chat is filed under.
+    let seen = active.as_ref().filter(|_| !incognito);
     // The extra folders (nightshift backlog 143): the project's and the
     // chat's own, each a further named tree the file tools may reach.
-    let granted = extra_folders(active.as_ref(), state.chats.lock_focused().await.as_ref());
+    let granted = if incognito {
+        Vec::new()
+    } else {
+        extra_folders(seen, state.chats.lock_focused().await.as_ref())
+    };
 
     // Every project's chats plus the unfiled ones, named as the picker names
     // them, with the sidebar's directory as the default scope. The registry
@@ -1500,19 +1562,28 @@ async fn connect(
         knowledge: knowledge
             .unwrap_or(true)
             .then(nightloom_service::knowledge::vault_dir)
-            .flatten(),
-        project: active.as_ref().map(|p| ProjectContext {
+            .flatten()
+            .filter(|_| !incognito),
+        project: seen.map(|p| ProjectContext {
             name: p.name.clone(),
             notes_dir: p.notes_dir(),
         }),
-        chats: Some(chats),
-        layers_off: layers_off(&state).await,
+        project_id: seen.map(|p| p.id.clone()),
+        chats: (!incognito).then_some(chats),
+        layers_off: {
+            let mut off = layers_off(&state).await;
+            if incognito {
+                off.extend(nightloom_service::incognito::LAYERS_OFF);
+            }
+            off
+        },
         layer_edits: layer_edits(&state).await,
-        thread: thread_context(active.as_ref(), chat_thread(&state).await.as_deref()),
-        mode: session_mode(&state).await,
+        thread: thread_context(seen, chat_thread(&state).await.as_deref()),
+        mode,
         chat_kind,
         declared_kind,
         extra_folders: granted.iter().map(|(p, _)| p.clone()).collect(),
+        denied,
     };
     let mcp = ensure_mcp(&state, &spec.workspace, spec.tools).await;
     let mcp_tools = state
@@ -1973,6 +2044,19 @@ async fn connect_agent_body(
     // not in the cached prefix, but the folder's memory and CLAUDE.md are
     // what the CLI loads, and the switch is meant to change nothing there.
     let workspace = chat_workspace(declared, workspace);
+    // An incognito chat knows nothing about him (nightshift backlog 405,
+    // blocker 1513): the CLI runs in an empty folder of the chat's own,
+    // outside the project and `~/.nightloom`, so no project name is in its
+    // cwd, its per-cwd files or an `--add-dir`; `seen` is the project as
+    // the model sees it — none. The window's `active` stays for the rail.
+    let mode = open.mode;
+    let incognito = mode.writes_nothing();
+    let workspace = if incognito {
+        nightloom_service::incognito::workspace(open.chat.as_deref())
+    } else {
+        workspace
+    };
+    let seen = active.as_ref().filter(|_| !incognito);
 
     let mut spec = AgentSpec::new(workspace.clone());
     spec.binary = binary
@@ -2023,7 +2107,8 @@ async fn connect_agent_body(
     let preamble = preamble.unwrap_or(true);
     let knowledge = preamble
         .then(nightloom_service::knowledge::vault_dir)
-        .flatten();
+        .flatten()
+        .filter(|_| !incognito);
     // The vault sits outside every workspace, and the preamble is about to
     // name it by its real path; granting the directory is what makes that
     // path one the CLI will open rather than route to a classifier that,
@@ -2034,15 +2119,22 @@ async fn connect_agent_body(
     // chat's own, each granted the same way — readable without a prompt,
     // edits under the permission mode (`external`, the CLI's permissions
     // reference, via blocker 050).
-    let granted = open.granted.clone();
+    let granted = if incognito {
+        Vec::new()
+    } else {
+        open.granted.clone()
+    };
     spec.add_dirs.extend(granted.iter().map(|(p, _)| p.clone()));
     // Built as segments and rendered from them, so the Context popover can
     // show the same segments the flag carries rather than a re-parse of the
     // string (see `PromptBuilt`). The chat's own exclusions apply here as on
     // the other engine, plus the one layer that exists only here.
-    let off = open.off.clone();
+    let mut off = open.off.clone();
+    // Backlog 405: never the project's layers or the vault index.
+    if incognito {
+        off.extend(nightloom_service::incognito::LAYERS_OFF);
+    }
     let edits = open.edits.clone();
-    let mode = open.mode;
     // The CLI's own memory is a layer the chat can switch off like the
     // rest (nightshift backlog 088), but never one Nightloom assembles:
     // the kind reaches the CLI as a setting, not as text.
@@ -2050,6 +2142,7 @@ async fn connect_agent_body(
     // The subagents layer says `reusable` only when the roster has it: the
     // user's own agent file, dropped under safe mode (nightshift backlog 251).
     let reusable = !spec.safe_mode
+        && !incognito
         && nightloom_service::usage::claude_dir()
             .is_some_and(|c| c.join("agents").join("reusable.md").exists());
     let prompt = nightloom_service::agent_prompt_with(
@@ -2072,7 +2165,7 @@ async fn connect_agent_body(
             chat_instructions: preamble && declared == ChatKind::Chat,
             project: preamble
                 .then(|| {
-                    active.as_ref().map(|p| ProjectContext {
+                    seen.map(|p| ProjectContext {
                         name: p.name.clone(),
                         notes_dir: p.notes_dir(),
                     })
@@ -2081,7 +2174,7 @@ async fn connect_agent_body(
             knowledge: knowledge.map(|dir| KnowledgeContext { dir }),
             // The thread layer (backlog 271), on the preamble switch.
             thread: preamble
-                .then(|| thread_context(active.as_ref(), open.thread.as_deref()))
+                .then(|| thread_context(seen, open.thread.as_deref()))
                 .flatten(),
             cwd: workspace.clone(),
             custom: None,
@@ -2108,6 +2201,9 @@ async fn connect_agent_body(
                     fork_mode: spec.fork_mode,
                 },
             ),
+            // Backlog 405: the engine note names only what an incognito
+            // chat's server serves.
+            incognito,
         },
     );
     // A changed layer waits for the chat's cold moment (nightshift backlog
@@ -2290,18 +2386,27 @@ async fn connect_agent_body(
         // point (nightshift backlog 046).
         if let Ok(exe) = std::env::current_exe() {
             let mut args = vec!["--mcp-serve".to_string()];
-            if let Some(p) = &active {
+            if let Some(p) = seen {
                 args.push("--project".into());
                 args.push(p.id.clone());
             }
-            // The server for a chat that writes nothing serves no
-            // `remember`; the two readers and the fetch stay (2026-09-15).
-            if mode.writes_nothing() {
-                args.push("--no-remember".into());
+            // ~~The server for a chat that writes nothing serves no
+            // `remember`; the two readers and the fetch stay (2026-09-15).~~
+            // Since backlog 405 (2026-10-24) such a chat's server is
+            // `--incognito`: no `remember`, and none of the readers of his
+            // chats, memory or Notion either; the fetch stays.
+            if incognito {
+                args.push("--incognito".into());
             }
             // The chat's folder, for `send_file` (nightshift backlog 343).
             args.push("--root".into());
             args.push(workspace.to_string_lossy().into_owned());
+            // The chat's preview (nightshift item 430): the app's socket;
+            // `set_ask_dir` adds the chat before each turn.
+            if let Some(sock) = preview::socket() {
+                args.push("--preview".into());
+                args.push(sock.to_string_lossy().into_owned());
+            }
             if questions {
                 // The permission host the CLI is pointed at, which must be a
                 // tool that exists (`agent::ask::PROMPT_TOOL` has the
@@ -2339,17 +2444,26 @@ async fn connect_agent_body(
                     text,
                 });
             }
-            spec.mcp_config = Some(
+            let mut servers = serde_json::Map::new();
+            servers.insert(
+                nightloom_service::mcp_server::SERVER_NAME.into(),
                 serde_json::json!({
-                    "mcpServers": {
-                        nightloom_service::mcp_server::SERVER_NAME: {
-                            "command": exe.to_string_lossy(),
-                            "args": args,
-                        }
-                    }
-                })
-                .to_string(),
+                    "command": exe.to_string_lossy(),
+                    "args": args,
+                }),
             );
+            // Playwright, Claude's own browser (nightshift backlog 367,
+            // blocker 1413): in every Claude Code chat when installed, each
+            // call gated by an approval card in every position.
+            nightloom_service::agent::own_browser::add_to(
+                &mut spec,
+                &mut servers,
+                vec![
+                    exe.to_string_lossy().into_owned(),
+                    "--permission-hook".into(),
+                ],
+            );
+            spec.mcp_config = Some(serde_json::json!({ "mcpServers": servers }).to_string());
         }
     } else {
         spec.tools = Some(Vec::new());
@@ -2358,6 +2472,16 @@ async fn connect_agent_body(
     // the measured read-only list for either non-normal mode, and no CLI
     // session file for an ephemeral one (`AgentSpec::apply_mode`).
     spec.apply_mode(mode);
+    // Backlog 405: no `--add-dir`, auto memory, settings files, skills,
+    // other MCP servers, connectors or Chrome, and every folder of his
+    // refused to Read, Glob and Grep (`AgentSpec::apply_incognito`).
+    if incognito {
+        let projects = state.workspaces.lock().await.registry.projects();
+        spec.apply_incognito(nightloom_service::incognito::denied_roots(
+            project::config_dir().as_deref(),
+            &projects,
+        ));
+    }
     // And the kind's own narrowing (nightshift backlog 102): a Chat gets
     // the same five read-only tools; the folder was chosen above. By the
     // declaration (backlog 144) — and the policy over it: a Chat that was
@@ -2916,13 +3040,12 @@ fn resume_of(session: &Session) -> Option<String> {
 /// connection, pointed at its recorded resume. Lock order as everywhere:
 /// the agent, then a chat. ~~The one agent, re-pointed at the open chat
 /// when `agent_readopt` said so (A1)~~.
-async fn lock_agent(state: &AppState) -> agents::Guard {
-    lock_agent_at(state, &state.chats.target()).await
-}
-
-/// [`lock_agent`] for a chat read once at the command's start (backlog
-/// 159, A3; A2 review finding 2): the agent and the log a command locks
-/// are then the same chat's even if he switches chats in between.
+///
+/// For a chat read once at the command's start (backlog 159, A3; A2
+/// review finding 2): the agent and the log a command locks are then the
+/// same chat's even if he switches chats in between. ~~`lock_agent`, the
+/// same for `state.chats.target()`~~ — removed 2026-10-20 (item 404): the
+/// aside, its last caller, now reads the target itself for its timing line.
 async fn lock_agent_at(state: &AppState, target: &chats::Target) -> agents::Guard {
     let slot = match state.agents.slot(target.id()) {
         agents::Found::Off => return agents::Guard::none(),
@@ -3279,6 +3402,10 @@ async fn keep_attachment(
     media_type: String,
     data: Option<String>,
     path: Option<String>,
+    dir: Option<String>,
+    // Item 428: the SHA-256 of the office file `data` was converted from,
+    // so the same file kept twice is found though its PDF differs.
+    source: Option<String>,
 ) -> Result<nightloom_service::keep::Kept, String> {
     use base64::Engine as _;
     let project = state
@@ -3293,12 +3420,74 @@ async fn keep_attachment(
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(data.trim())
                 .map_err(|e| format!("{name}: {e}"))?;
-            nightloom_service::keep::keep_in_project(&docspace, &name, &media_type, &bytes)
+            // Item 414: an entry of a dropped zip goes into its folder.
+            nightloom_service::keep::keep_in_project_from(
+                &docspace,
+                dir.as_deref().unwrap_or(""),
+                &name,
+                &media_type,
+                &bytes,
+                source.as_deref(),
+            )
         }
         (None, Some(path)) => {
             nightloom_service::keep::keep_chat_file(&workspace, &docspace, Path::new(&path))
         }
         (None, None) => Err(format!("{name}: nothing to keep")),
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// One file out of a dropped zip, for the window (item 414).
+#[derive(serde::Serialize)]
+struct ZipFileWire {
+    path: String,
+    data: String,
+}
+
+/// A dropped zip, read (item 414): the folder under `files/` it unpacks
+/// into, its files as base64 for the window to put through a dropped
+/// file's rules and keep with `keep_attachment`'s `dir`, and the entries
+/// left out. Nothing is written here.
+#[derive(serde::Serialize)]
+struct UnpackedWire {
+    folder: String,
+    files: Vec<ZipFileWire>,
+    skipped: Vec<nightloom_service::keep::ZipSkip>,
+}
+
+#[tauri::command]
+async fn unpack_zip(
+    state: State<'_, AppState>,
+    name: String,
+    data: String,
+) -> Result<UnpackedWire, String> {
+    use base64::Engine as _;
+    let project = state
+        .active()
+        .await
+        .filter(|p| !p.is_unfiled_holder())
+        .ok_or("this chat is not in a project, so there is no project to keep the files in")?;
+    let docspace = project.notes_dir();
+    tokio::task::spawn_blocking(move || {
+        let b64 = &base64::engine::general_purpose::STANDARD;
+        let bytes = b64
+            .decode(data.trim())
+            .map_err(|e| format!("{name}: {e}"))?;
+        let u = nightloom_service::keep::unpack_zip(&docspace, &name, &bytes)?;
+        Ok(UnpackedWire {
+            folder: u.folder,
+            files: u
+                .files
+                .into_iter()
+                .map(|f| ZipFileWire {
+                    path: f.path,
+                    data: b64.encode(f.bytes),
+                })
+                .collect(),
+            skipped: u.skipped,
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -3338,6 +3527,11 @@ async fn send_agent(
     // 3): copied into the chat's own folder under the workspace, and the
     // message names where, for the model to open with its tools.
     files: Option<Vec<nightloom_service::attach::FileInput>>,
+    // A queued message sent in the background at its chat's own turn's
+    // end (nightshift blocker 1467): the chat it was queued in and that
+    // chat's project. That chat or nothing — never the focus.
+    chat: Option<String>,
+    project: Option<String>,
 ) -> Result<AgentTurn, String> {
     // The message's timing line (nightshift item 256): begun here, before
     // any lock, under the window's name for the turn — its Send, call and
@@ -3355,8 +3549,31 @@ async fn send_agent(
     // A2 review finding 2): the agent and the log below are both its,
     // however fast he switches chats meanwhile. ~~`lock_agent` and then
     // `lock_or_start`, each reading the focus afresh~~.
-    let target = state.chats.target();
-    let mut agent_guard = lock_agent_at(&state, &target).await;
+    let target = match &chat {
+        Some(id) => state.chats.target_at(id).ok_or_else(|| {
+            "that chat is not loaded now — its message stays queued there".to_string()
+        })?,
+        None => state.chats.target(),
+    };
+    let active_project = state
+        .workspaces
+        .lock()
+        .await
+        .active
+        .as_ref()
+        .map(|p| p.id.clone());
+    let mut agent_guard = match &chat {
+        // Its own agent, built for its own project (1467); a new one from
+        // the rail's spec only when that spec is its project's.
+        Some(id) => match state.agents.existing(id) {
+            Some(slot) => agents::Guard::new(slot.lock_owned().await),
+            None if project == active_project => lock_agent_at(&state, &target).await,
+            None => {
+                return Err("that chat's project is not open and it has no agent now — its message stays queued there".to_string());
+            }
+        },
+        None => lock_agent_at(&state, &target).await,
+    };
     // Its slot, for New chat's first turn to hand to the chat it makes.
     let agent_slot = agent_guard.is_some().then(|| agent_guard.slot().clone());
     let agent = agent_guard
@@ -3370,13 +3587,12 @@ async fn send_agent(
     // The project the turn runs in (backlog 159, A4; blocker 630: he may
     // switch projects while it runs off screen): a folder granted "for the
     // project" mid-turn goes to this one, not the one open by then.
-    let turn_project = state
-        .workspaces
-        .lock()
-        .await
-        .active
-        .as_ref()
-        .map(|p| p.id.clone());
+    // A background send's is its chat's own (1467).
+    let turn_project = if chat.is_some() {
+        project.clone()
+    } else {
+        active_project
+    };
     let pending = *state.pending_mode.lock().await;
     let pending_kind = *state.pending_kind.lock().await;
     // The open chat's own lock, held for the turn — no other chat's
@@ -3387,6 +3603,16 @@ async fn send_agent(
         .lock_or_start_at(&target, pending, pending_kind, &log_dir)
         .await?;
     let session: &mut Session = &mut held;
+    if let Some(id) = &chat
+        && session.id != *id
+    {
+        return Err("the chat named is not the chat locked — nothing was sent".to_string());
+    }
+    // A background send's log folder is its chat's, not the open project's (1467).
+    let log_dir = match (&chat, session.log_path().and_then(|p| p.parent())) {
+        (Some(_), Some(dir)) => dir.to_path_buf(),
+        _ => log_dir,
+    };
     state.chats.mark_turn(&session.id);
     // The chat this turn runs in, on every event it sends the window
     // (backlog 159, A2): two chats may be streaming at once.
@@ -3488,6 +3714,9 @@ async fn send_agent(
     // Subagent rules changed while the cache is warm (nightshift backlog
     // 293): the new rules ride after this message, on the wire only.
     let wire_note = holds.take_rules_note(&chat_id).await;
+    // The chat's preview ended since the model last heard (item 445): it
+    // is told now, on the wire, rather than by failing tool calls.
+    let wire_note = preview::with_ended_note(&app, ask_dir.as_deref(), wire_note);
     let env = DesktopTurnEnv {
         app: &app,
         state: &state,
@@ -3651,7 +3880,8 @@ async fn prewarm_agent(state: State<'_, AppState>) -> Result<bool, String> {
     if let Some(dir) = ask_dir {
         let spec = agent.spec();
         let pointed = spec.ask.as_ref().is_none_or(|a| a.dir == dir)
-            && spec.brief.as_ref().is_none_or(|b| b.dir == dir);
+            && spec.brief.as_ref().is_none_or(|b| b.dir == dir)
+            && spec.playwright.as_ref().is_none_or(|p| p.dir == dir);
         if !pointed {
             agent.set_ask_dir(dir);
         }
@@ -3770,12 +4000,26 @@ async fn compact(
 /// On the Claude Code engine (since 2026-09-15) the CLI's session file is
 /// copied truncated before the turn and the copy resumed — see
 /// [`edit_on_cli`]; the log gets its `Rewind` marker either way.
+///
+/// `at`, when the window sends it, is when the message at `to` was sent: a
+/// rewind is aimed at that message as a fork is (backlog 361's
+/// `aim_user_message`; wave 8b review, 2026-10-13) — from a window whose
+/// list was out of step with the log, the bare index named a message
+/// exchanges earlier and would have hidden everything after it.
 #[tauri::command]
-async fn rewind(state: State<'_, AppState>, to: usize) -> Result<Vec<SessionEvent>, String> {
+async fn rewind(
+    state: State<'_, AppState>,
+    to: usize,
+    at: Option<chrono::DateTime<chrono::Utc>>,
+) -> Result<Vec<SessionEvent>, String> {
     let (mut agent_guard, mut session_guard) = lock_agent_and_chat(&state).await;
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "no active session".to_string())?;
+    let to = match at {
+        Some(at) => session.aim_user_message(to, at)?,
+        None => to,
+    };
     chat_ops::rewind(session, agent_guard.as_mut().map(OnCli::of), to)?;
     Ok(session.events().to_vec())
 }
@@ -3868,7 +4112,14 @@ async fn unrewind(state: State<'_, AppState>, of: usize) -> Result<Vec<SessionEv
 /// box's chips, sent only when they changed. On Claude Code the turn's
 /// node is rebuilt with them (`CliSession::rewrite_user`). `send` ignores
 /// it: the fork's first message carries the chips itself.
+///
+/// `at` and `nth` (nightshift backlog 364, 2026-10-13), when the window
+/// sends them: on a `save`, the turn is aimed by the send time of the
+/// message that opened its exchange and, for a reply, its place among that
+/// exchange's replies (`chat_ops::aimed`) — or refused; on a `send`, `at`
+/// aims the fork as backlog 361 made it.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn edit_message(
     state: State<'_, AppState>,
     index: usize,
@@ -3876,6 +4127,8 @@ async fn edit_message(
     mode: String,
     block: Option<usize>,
     attachments: Option<nightloom_core::EditedAttachments>,
+    at: Option<chrono::DateTime<chrono::Utc>>,
+    nth: Option<usize>,
 ) -> Result<MessageEdit, String> {
     match mode.as_str() {
         "save" => {
@@ -3883,6 +4136,7 @@ async fn edit_message(
             let session = session_guard
                 .as_mut()
                 .ok_or_else(|| "no active session".to_string())?;
+            let index = chat_ops::aimed(session, index, at, nth)?;
             chat_ops::edit_saved(
                 session,
                 agent_guard.as_mut().map(OnCli::of),
@@ -3897,7 +4151,7 @@ async fn edit_message(
                 forked: false,
             })
         }
-        "send" => fork_session(state, index).await,
+        "send" => fork_session(state, index, at).await,
         other => Err(format!(
             "unknown edit mode {other:?}; use \"save\" or \"send\""
         )),
@@ -3911,11 +4165,18 @@ async fn edit_message(
 /// will undo it. On the Claude Code engine the CLI's copy drops a text
 /// turn outright and marks a turn with tool calls ([`CliSession::remove`]).
 #[tauri::command]
-async fn remove_message(state: State<'_, AppState>, index: usize) -> Result<MessageEdit, String> {
+async fn remove_message(
+    state: State<'_, AppState>,
+    index: usize,
+    at: Option<chrono::DateTime<chrono::Utc>>,
+    nth: Option<usize>,
+) -> Result<MessageEdit, String> {
     let (mut agent_guard, mut session_guard) = lock_agent_and_chat(&state).await;
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "no active session".to_string())?;
+    // Backlog 364: aimed as `edit_message`'s save is.
+    let index = chat_ops::aimed(session, index, at, nth)?;
     chat_ops::remove_message(session, agent_guard.as_mut().map(OnCli::of), index)?;
     Ok(MessageEdit {
         events: session.events().to_vec(),
@@ -3941,11 +4202,18 @@ async fn remove_message(state: State<'_, AppState>, index: usize) -> Result<Mess
 /// behind it needs no file work. The copy is made *before* the marker, as
 /// every edit here is, so a refusal records nothing.
 #[tauri::command]
-async fn restore_message(state: State<'_, AppState>, index: usize) -> Result<MessageEdit, String> {
+async fn restore_message(
+    state: State<'_, AppState>,
+    index: usize,
+    at: Option<chrono::DateTime<chrono::Utc>>,
+    nth: Option<usize>,
+) -> Result<MessageEdit, String> {
     let (mut agent_guard, mut session_guard) = lock_agent_and_chat(&state).await;
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "no active session".to_string())?;
+    // Backlog 364: aimed as `edit_message`'s save is.
+    let index = chat_ops::aimed(session, index, at, nth)?;
     chat_ops::restore_message(session, agent_guard.as_mut().map(OnCli::of), index)?;
     Ok(MessageEdit {
         events: session.events().to_vec(),
@@ -3967,11 +4235,15 @@ async fn remove_block(
     state: State<'_, AppState>,
     index: usize,
     block: usize,
+    at: Option<chrono::DateTime<chrono::Utc>>,
+    nth: Option<usize>,
 ) -> Result<MessageEdit, String> {
     let (mut agent_guard, mut session_guard) = lock_agent_and_chat(&state).await;
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "no active session".to_string())?;
+    // Backlog 364: the reply aimed as `edit_message`'s save is.
+    let index = chat_ops::aimed(session, index, at, nth)?;
     chat_ops::remove_block(session, agent_guard.as_mut().map(OnCli::of), index, block)?;
     Ok(MessageEdit {
         events: session.events().to_vec(),
@@ -3989,11 +4261,15 @@ async fn restore_block(
     state: State<'_, AppState>,
     index: usize,
     block: usize,
+    at: Option<chrono::DateTime<chrono::Utc>>,
+    nth: Option<usize>,
 ) -> Result<MessageEdit, String> {
     let (mut agent_guard, mut session_guard) = lock_agent_and_chat(&state).await;
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "no active session".to_string())?;
+    // Backlog 364: the reply aimed as `edit_message`'s save is.
+    let index = chat_ops::aimed(session, index, at, nth)?;
     chat_ops::restore_block(session, agent_guard.as_mut().map(OnCli::of), index, block)?;
     Ok(MessageEdit {
         events: session.events().to_vec(),
@@ -4012,7 +4288,11 @@ async fn restore_block(
 /// The fork's own log is written in the same directory as the parent's;
 /// an ephemeral parent forks to another chat with no log.
 #[tauri::command]
-async fn fork_session(state: State<'_, AppState>, upto: usize) -> Result<MessageEdit, String> {
+async fn fork_session(
+    state: State<'_, AppState>,
+    upto: usize,
+    at: Option<chrono::DateTime<chrono::Utc>>,
+) -> Result<MessageEdit, String> {
     let target = state.chats.target();
     let mut agent_guard = lock_agent_at(&state, &target).await;
     let log_dir = state.log_dir().await;
@@ -4020,6 +4300,12 @@ async fn fork_session(state: State<'_, AppState>, upto: usize) -> Result<Message
     let parent = session_guard
         .as_ref()
         .ok_or_else(|| "no active session".to_string())?;
+    // The message the window meant, by when it was sent (backlog 361): its
+    // place in the window's list may not be its place in the log.
+    let upto = match at {
+        Some(at) => parent.aim_user_message(upto, at)?,
+        None => upto,
+    };
     let fork = chat_ops::fork(parent, &log_dir, agent_guard.as_mut().map(OnCli::of), upto)?;
     let events = fork.events().to_vec();
     let id = fork.id.clone();
@@ -4095,6 +4381,56 @@ struct AsideDelta {
     text: String,
 }
 
+/// The rest of an aside's stream (item 403, 2026-10-20): its thinking, a
+/// redacted block, a call and its result, as `aside-turn-event`, so the
+/// window draws an aside's turn with the chat's own pieces — the thinking
+/// block and its arrival, the activity rows, the working moon. Text stays
+/// on `aside-delta` (the phone's relay reads it, `remote.rs`).
+#[derive(Serialize, Clone)]
+struct AsideTurnEvent {
+    seq: u64,
+    event: TurnEvent,
+}
+
+/// Where an aside stands before its first event (item 404): `queued` once
+/// it has waited [`ASIDE_QUEUED_AFTER`] for the chat's agent — the chat's
+/// own turn holds it, and the aside runs after that turn ends — and
+/// `running` once it has the agent. The window says which on the moon's
+/// row instead of showing dots that say nothing.
+#[derive(Serialize, Clone)]
+struct AsidePhase {
+    seq: u64,
+    phase: &'static str,
+}
+
+/// How long an aside waits for the chat's agent before the window is told
+/// it is queued: a free agent is taken in microseconds.
+const ASIDE_QUEUED_AFTER: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The part of an aside's turn the window draws besides its text.
+fn aside_drawn(e: &TurnEvent) -> bool {
+    matches!(
+        e,
+        TurnEvent::ThinkingDelta { .. }
+            | TurnEvent::RedactedThinking
+            | TurnEvent::ToolCall { .. }
+            | TurnEvent::ToolResult { .. }
+            | TurnEvent::ToolDenied { .. }
+    )
+}
+
+/// The outcome an aside's timing line ends on (item 404): how it ended and
+/// what the question carried — counts only, never names or words.
+fn aside_outcome(end: &str, images: usize, documents: usize, files: usize) -> String {
+    let mut out = end.to_string();
+    for (n, one) in [(images, "image"), (documents, "document"), (files, "file")] {
+        if n > 0 {
+            out.push_str(&format!(", {n} {one}{}", if n == 1 { "" } else { "s" }));
+        }
+    }
+    out
+}
+
 /// Ask a side question of the open chat without adding to it (nightshift
 /// backlog 081) — the CLI's interactive `/btw`, which `-p` refuses, done as
 /// a throwaway fork of the chat's session on its warm cache
@@ -4138,10 +4474,54 @@ async fn ask_aside(
     // Its own token, by `seq` (backlog 176): the entry goes when this ends.
     let registered = state.aside_cancel.begin(seq);
     let cancel = registered.token().clone();
+    // Its timing line (item 404): entered now, `turn` when the chat's agent
+    // is taken, the process's stages from `drive_as`, the end below. A
+    // return before the end writes it as `error` (the guard).
+    use nightloom_service::turn_timing::{self, Mark, TurnTiming};
+    let timing = TurnTiming::begin(turn_timing::ASIDE, None, turn_timing::log_path());
+    let target = state.chats.target();
+    if let Some(chat) = target.id() {
+        timing.set_chat(chat);
+    }
+    let _ended = timing.end_guard();
+    let carried = (
+        images.as_ref().map_or(0, Vec::len),
+        documents.as_ref().map_or(0, Vec::len),
+        files.as_ref().map_or(0, Vec::len),
+    );
+    let ended = |end: &str| timing.end(&aside_outcome(end, carried.0, carried.1, carried.2));
+    // The chat's own running turn holds its agent and the aside waits for
+    // it (item 404): past a beat, the window is told, so the moon's row
+    // can say what it waits for.
+    let lock = lock_agent_at(&state, &target);
+    tokio::pin!(lock);
     let agent_guard = tokio::select! {
-        guard = lock_agent(&state) => guard,
-        _ = cancel.cancelled() => return Err("the aside was cancelled".to_string()),
+        biased;
+        _ = cancel.cancelled() => {
+            ended("stopped");
+            return Err("the aside was cancelled".to_string());
+        }
+        guard = &mut lock => guard,
+        _ = tokio::time::sleep(ASIDE_QUEUED_AFTER) => {
+            let _ = app.emit("aside-phase", AsidePhase { seq, phase: "queued" });
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    ended("stopped");
+                    return Err("the aside was cancelled".to_string());
+                }
+                guard = &mut lock => guard,
+            }
+        }
     };
+    timing.mark(Mark::Started);
+    let _ = app.emit(
+        "aside-phase",
+        AsidePhase {
+            seq,
+            phase: "running",
+        },
+    );
     let agent = agent_guard
         .as_ref()
         .ok_or_else(|| "not connected".to_string())?;
@@ -4149,6 +4529,7 @@ async fn ask_aside(
     let _awake = power.acquire();
     *state.cancel.lock().unwrap() = cancel.clone();
     let mut answer = String::new();
+    let marks = timing.clone();
     let mut on_event = |e: TurnEvent| {
         if let TurnEvent::TextDelta { text } = &e {
             answer.push_str(text);
@@ -4159,6 +4540,9 @@ async fn ask_aside(
                     text: text.clone(),
                 },
             );
+            marks.mark(Mark::Emitted);
+        } else if aside_drawn(&e) {
+            let _ = app.emit("aside-turn-event", AsideTurnEvent { seq, event: e });
         }
     };
     let mut text = text;
@@ -4183,6 +4567,7 @@ async fn ask_aside(
             input,
             model.as_deref(),
             effort.as_deref(),
+            Some(timing.clone()),
             &cancel,
             &mut on_event,
         )
@@ -4192,6 +4577,13 @@ async fn ask_aside(
                 .to_string()
         })?
         .map_err(|e| e.to_string())?;
+    ended(if cancel.is_cancelled() {
+        "stopped"
+    } else if outcome.is_error {
+        "error"
+    } else {
+        "ok"
+    });
     Ok(AsideResult {
         answer: if answer.trim().is_empty() {
             outcome.text
@@ -4555,6 +4947,56 @@ async fn new_thread(
     blocking(move || nightloom_service::thread::create_thread(&notes, slug.trim(), &name)).await
 }
 
+/// The open project's docspace, for the thread commands that need one.
+async fn thread_notes(state: &AppState) -> Result<PathBuf, String> {
+    state
+        .active()
+        .await
+        .map(|p| p.notes_dir())
+        .ok_or_else(|| "open a project first — threads live in a project".to_string())
+}
+
+/// Rename a thread in the open project (nightshift backlog 424): the title
+/// in its `thread.md` heading only; the slug and folder stay, so bound
+/// chats still find it (`thread::rename_thread`).
+#[tauri::command]
+async fn rename_thread(
+    state: State<'_, AppState>,
+    slug: String,
+    name: String,
+) -> Result<nightloom_service::thread::ThreadInfo, String> {
+    let notes = thread_notes(&state).await?;
+    blocking(move || nightloom_service::thread::rename_thread(&notes, slug.trim(), &name)).await
+}
+
+/// Delete a thread in the open project (nightshift backlog 424): its folder
+/// moves to `.agents/.trash/threads/<slug>-<when>`, never unlinked
+/// (`thread::trash_thread`). The shell unbinds its chats first. Returns
+/// where the folder went.
+#[tauri::command]
+async fn delete_thread(state: State<'_, AppState>, slug: String) -> Result<String, String> {
+    let notes = thread_notes(&state).await?;
+    let when = chrono::Local::now().format("%Y-%m-%d-%H%M%S").to_string();
+    blocking(move || {
+        nightloom_service::thread::trash_thread(&notes, slug.trim(), &when)
+            .map(|p| p.display().to_string())
+    })
+    .await
+}
+
+/// Show a thread's folder in the file manager, selected (backlog 424's
+/// Reveal in Finder). Nothing is created: a thread that has gone says so.
+#[tauri::command]
+async fn reveal_thread(state: State<'_, AppState>, slug: String) -> Result<(), String> {
+    let notes = thread_notes(&state).await?;
+    let dir = nightloom_service::thread::thread_dir(&notes, slug.trim())
+        .ok_or_else(|| format!("{slug:?} is not a thread name"))?;
+    if !dir.is_dir() {
+        return Err(format!("the thread {slug} is no longer there"));
+    }
+    project::reveal_file(&dir).map_err(|e| e.to_string())
+}
+
 /// Append an aside's fold entry to a thread's `log.md` in the open project
 /// (backlog 282). The shell builds the entry (dated, the aside and chat
 /// named, the model's summary as he approved or edited it); this only
@@ -4876,6 +5318,40 @@ async fn cli_prompt_snapshot(
     }))
 }
 
+/// The images tool calls returned (nightshift backlog 434): a browser
+/// screenshot drawn in the transcript. The stream and the log carry only
+/// `[image]` (`translate::flatten`); the bytes are in the CLI's session
+/// file `session`, read here for the calls `ids`. Empty when the file is
+/// not found (an ephemeral chat, another machine's session). Read-only;
+/// the window asks only for results whose text names an image.
+#[tauri::command]
+async fn tool_result_images(
+    state: State<'_, AppState>,
+    session: String,
+    ids: Vec<String>,
+) -> Result<
+    std::collections::HashMap<String, nightloom_service::agent::cli_session::ToolResultImages>,
+    String,
+> {
+    use nightloom_service::agent::cli_session;
+    if ids.is_empty() {
+        return Ok(Default::default());
+    }
+    // `find` tries this folder first and then every project folder.
+    let cwd = state.prompt.lock().await.cwd.clone().unwrap_or_default();
+    blocking(move || -> Result<_, String> {
+        let Some(projects) = cli_session::projects_dir() else {
+            return Ok(Default::default());
+        };
+        let Ok(path) = cli_session::find(&projects, &cwd, &session) else {
+            return Ok(Default::default());
+        };
+        let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        Ok(cli_session::tool_result_images(&text, &ids))
+    })
+    .await
+}
+
 /// Delete a session log the reversible way: it moves to `<logs>/trash/`
 /// rather than being unlinked (review round 1, 2026-09-13 — the rule that
 /// no click in the UI may lose work for good; `backlog/trash/` is the same
@@ -4886,6 +5362,7 @@ async fn cli_prompt_snapshot(
 #[tauri::command]
 async fn delete_session(
     state: State<'_, AppState>,
+    previews: State<'_, preview::Host>,
     id: String,
     active: Option<String>,
 ) -> Result<String, String> {
@@ -4908,6 +5385,9 @@ async fn delete_session(
         }
     };
     state.agents.forget(&full_id);
+    // The chat's preview goes with it (item 430): nothing could show it.
+    let gone = std::sync::Arc::clone(&previews.previews);
+    gone.stop(&full_id).await;
     if was_active {
         adopt_agent_session(&state, None).await;
     }
@@ -4927,6 +5407,56 @@ async fn delete_session(
 async fn restore_session(state: State<'_, AppState>, id: String) -> Result<String, String> {
     let log_dir = state.log_dir().await;
     chat_ops::restore_from_trash(&log_dir, &id)
+}
+
+/// Move a chat of the open project's list into another project, or out to
+/// the unfiled chats when `to` is `None` (nightshift backlog 370, *Move to
+/// project…*), while the app runs. Its log moves with its id unchanged —
+/// drafts, queued rows and tabs are keyed by that id — and is touched so
+/// capture reads it under its new project (`chat_ops::move_chat`). Like
+/// [`delete_session`], a chat whose turn is running is refused in words and
+/// any other is dropped from the held set first (the open one leaves New
+/// chat open), so no writer appends to the old path after the move.
+/// Returns the full id.
+#[tauri::command]
+async fn move_session(
+    state: State<'_, AppState>,
+    id: String,
+    to: Option<String>,
+) -> Result<String, String> {
+    let from_dir = state.log_dir().await;
+    let path = store::find_by_prefix(&from_dir, &id).map_err(|e| e.to_string())?;
+    let full_id = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let to_dir = match &to {
+        Some(pid) => state
+            .workspaces
+            .lock()
+            .await
+            .registry
+            .find(pid)
+            .map(Project::session_dir)
+            .ok_or_else(|| "that project is no longer in the list".to_string())?,
+        None => state.default_log_dir.clone(),
+    };
+    if to_dir == from_dir {
+        return Err("the chat is already there".into());
+    }
+    let was_active = match state.chats.forget(&full_id) {
+        Ok(open) => open,
+        Err(chats::Busy) => {
+            return Err("that chat is running a turn — move it when the turn ends".into());
+        }
+    };
+    state.agents.forget(&full_id);
+    if was_active {
+        adopt_agent_session(&state, None).await;
+    }
+    let moved = full_id.clone();
+    blocking(move || chat_ops::move_chat(&from_dir, &to_dir, &moved)).await?;
+    Ok(full_id)
 }
 
 // ---- projects ----------------------------------------------------------
@@ -5734,6 +6264,21 @@ async fn cli_version_check(
     Ok(nightloom_service::cli_update::check(&cli_binary(binary)).await)
 }
 
+/// Whether Claude Code is signed in (nightshift backlog 409), for the
+/// engine chip, and the absolute path of the CLI the Sign in button types
+/// `auth login` after. `loggedIn` alone is read; the account's details the
+/// command also prints are never kept or shown. Zero tokens.
+#[tauri::command]
+async fn claude_auth_status(
+    binary: Option<String>,
+) -> Result<nightloom_service::cli_auth::AuthStatus, String> {
+    let b = binary
+        .filter(|b| !b.trim().is_empty())
+        .unwrap_or_else(|| "claude".to_string());
+    let bin = nightloom_service::cli_auth::absolute_binary(&b);
+    Ok(nightloom_service::cli_auth::status(&bin).await)
+}
+
 /// One `claude update` at a time, whatever asks.
 static CLI_UPDATING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -5823,6 +6368,7 @@ async fn new_project(
     name: String,
     path: Option<String>,
     instructions: Option<String>,
+    claude_md: Option<bool>,
 ) -> Result<ProjectInfo, String> {
     let mut guard = state.workspaces.lock().await;
     let folder = match path
@@ -5836,11 +6382,56 @@ async fn new_project(
             project::NewProjectFolder::Resolved(project::NewProjectPath::resolve(&name, &base).path)
         }
     };
-    let project = guard
-        .registry
-        .new_project(&name, folder, instructions.as_deref())?;
+    let project = guard.registry.new_project_with(
+        &name,
+        folder,
+        instructions.as_deref(),
+        claude_md.unwrap_or(false),
+    )?;
     announce_migration(&app, &project);
     Ok(ProjectInfo::of(&project))
+}
+
+/// Backlog 432: whether a folder could take the practices `CLAUDE.md` —
+/// `exists` when it has one (never touched), `practices` when
+/// `~/.claude/practices/practices.md` is there for the line to import.
+#[derive(Serialize, Clone)]
+struct ClaudeMdOffer {
+    exists: bool,
+    practices: bool,
+}
+
+/// The offer's check, for a picked folder in the New project form and a
+/// folder just opened by Open project…. Reads only.
+#[tauri::command]
+async fn claude_md_offer(path: String) -> Result<ClaudeMdOffer, String> {
+    let dir = PathBuf::from(path);
+    Ok(ClaudeMdOffer {
+        // An empty path is a folder New project has yet to make: no file.
+        exists: !dir.as_os_str().is_empty()
+            && dir.join(project::CLAUDE_MD).symlink_metadata().is_ok(),
+        practices: project::practices_file_exists(),
+    })
+}
+
+/// Backlog 432: Open project…'s offer accepted — the practices `CLAUDE.md`
+/// in the project's folder, only if it has none. `false` when one was
+/// already there (left exactly as it was).
+#[tauri::command]
+async fn add_practices_claude_md(state: State<'_, AppState>, id: String) -> Result<bool, String> {
+    let (dir, name) = {
+        let guard = state.workspaces.lock().await;
+        let p = guard
+            .registry
+            .find(&id)
+            .ok_or_else(|| format!("no project {id}"))?;
+        let dir = p
+            .workspace
+            .clone()
+            .ok_or_else(|| format!("{} has no folder", p.name))?;
+        (dir, p.name.clone())
+    };
+    project::write_practices_claude_md(&dir, &name)
 }
 
 /// Open a project: its chats become the listing and its folder the workspace.
@@ -6613,7 +7204,15 @@ fn dream_git_line(
         ),
         _ => String::new(),
     };
-    match after {
+    // A folder with no history got one first (backlog 372) — said, not
+    // left to be found in `git log`.
+    let started = match before {
+        GitNote::Initialised { hash } => {
+            format!(" (it had no version history, so Nightloom started one first: {hash})")
+        }
+        _ => String::new(),
+    };
+    let line = match after {
         GitNote::Untouched => format!("{what} untouched"),
         GitNote::NotARepo => {
             format!("{what} is not in a git repository, so there is no rollback for it")
@@ -6621,8 +7220,10 @@ fn dream_git_line(
         GitNote::Committed { hash, .. } if hash.is_empty() => format!("{what} committed{swept}"),
         GitNote::Committed { hash, .. } => format!("{what} committed ({hash}){swept}"),
         GitNote::Clean => format!("{what} unchanged"),
+        GitNote::Initialised { hash } => format!("{what} version history started ({hash})"),
         GitNote::Failed(e) => format!("git snapshot of {what} failed: {e}"),
-    }
+    };
+    format!("{line}{started}")
 }
 
 /// Interrupt the in-flight dream, if any. Separate from `cancel` because a
@@ -6717,6 +7318,9 @@ async fn capture(
     thinking: Option<String>,
     binary: Option<String>,
     safe_mode: Option<bool>,
+    // "Save memory from this chat" (backlog 371): that one log, by id,
+    // whatever the cutoff; absent, the whole pass.
+    chat: Option<String>,
 ) -> Result<CaptureReport, String> {
     let Some(config) = project::config_dir() else {
         return Err("no user config directory — there are no session logs to read".into());
@@ -6735,13 +7339,34 @@ async fn capture(
     let mut on_event = move |event: TurnEvent| {
         let _ = emitter.emit("capture-event", &event);
     };
+    let chat_id = chat;
     let outcome = match pass_engine(&provider)? {
         // The Claude Code engine (2026-09-16): one no-tool `claude -p` per
         // batch, the reply parsed as on the other engine.
         PassEngine::Agent => {
             let pass = pass_spec(binary, model, safe_mode)?;
-            nightloom_service::capture::run_on_agent(&pass, &config, false, &cancel, &mut on_event)
-                .await?
+            match &chat_id {
+                Some(id) => {
+                    nightloom_service::capture::run_chat_on_agent(
+                        &pass,
+                        &config,
+                        id,
+                        &cancel,
+                        &mut on_event,
+                    )
+                    .await?
+                }
+                None => {
+                    nightloom_service::capture::run_on_agent(
+                        &pass,
+                        &config,
+                        false,
+                        &cancel,
+                        &mut on_event,
+                    )
+                    .await?
+                }
+            }
         }
         PassEngine::Provider(kind) => {
             let thinking = match thinking {
@@ -6760,11 +7385,37 @@ async fn capture(
             chat.thinking = thinking;
             chat.context_limit = nightloom_service::context_limit(kind, &chat.model);
             chat.price = nightloom_service::price(kind, &chat.model);
-            nightloom_service::capture::run(&mut chat, &config, false, &cancel, &mut on_event)
-                .await?
+            match &chat_id {
+                Some(id) => {
+                    nightloom_service::capture::run_chat(
+                        &mut chat,
+                        &config,
+                        id,
+                        &cancel,
+                        &mut on_event,
+                    )
+                    .await?
+                }
+                None => {
+                    nightloom_service::capture::run(
+                        &mut chat,
+                        &config,
+                        false,
+                        &cancel,
+                        &mut on_event,
+                    )
+                    .await?
+                }
+            }
         }
     }
-    .ok_or_else(|| "nothing left to capture".to_string())?;
+    .ok_or_else(|| {
+        if chat_id.is_some() {
+            "nothing new in this chat to save — it was saved to memory already".to_string()
+        } else {
+            "nothing left to capture".to_string()
+        }
+    })?;
     Ok(CaptureReport {
         observations: outcome.observations,
         logs_read: outcome.logs_read,
@@ -7057,6 +7708,11 @@ async fn read_file_tab(
         }
         (None, None) => facts(None),
     };
+    // A file he opened from the Finder (backlog 378) or one the model
+    // marked for him (backlog 377) needs no chat to vouch for it.
+    if opened_files::is_opened(&target) || for_you::is_for_you(&target) {
+        return filetab::read(&target, filetab::Via::Chosen);
+    }
     let via = filetab::permitted(&target, &trees, &written)?;
     filetab::read(&target, via)
 }
@@ -7338,6 +7994,37 @@ fn approve_call(
     Ok(())
 }
 
+/// The chat's Playwright switch (nightshift backlog 367): whether
+/// Playwright is installed, and whether this chat runs it without asking —
+/// the card's *Allow for this chat*. `on` sets it first; off means the next
+/// Playwright call shows the card again. `chat` is the chat's id (its log's
+/// stem, the ask directory's name), in the open project's log folder.
+#[derive(Serialize)]
+struct PlaywrightSwitch {
+    installed: bool,
+    on: bool,
+}
+
+#[tauri::command]
+async fn playwright_for_chat(
+    state: State<'_, AppState>,
+    chat: String,
+    on: Option<bool>,
+) -> Result<PlaywrightSwitch, String> {
+    let chat = chat.trim();
+    if chat.is_empty() || chat.contains(['/', '\\']) || chat.starts_with('.') {
+        return Err(format!("not a chat id: {chat}"));
+    }
+    let dir = state.log_dir().await.join("ask").join(chat);
+    if let Some(on) = on {
+        nightloom_service::agent::own_browser::set_for_chat(&dir, on).map_err(|e| e.to_string())?;
+    }
+    Ok(PlaywrightSwitch {
+        installed: nightloom_service::agent::own_browser::locate().is_some(),
+        on: nightloom_service::agent::own_browser::for_chat(&dir),
+    })
+}
+
 /// Migrate a project's pre-move `.nightloom/` and say so if anything moved.
 ///
 /// A toast rather than silence, unlike the unfiled chats: this one touches
@@ -7562,6 +8249,13 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     let engine = MenuItemBuilder::with_id("engine", "Switch Engine (Provider ⇄ Claude Code)")
         .accelerator("CmdOrCtrl+E")
         .build(app)?;
+    // ⌘. stops the running turn (nightshift item 398, blocker 1506 — his
+    // yes, 2026-10-19), the composer's Stop by key. Always enabled: with no
+    // turn running `runMenuCommand` does nothing, and an aside's box with
+    // the keyboard stops its own answer instead (Composer's interceptor).
+    let stop_turn = MenuItemBuilder::with_id("stop_turn", "Stop")
+        .accelerator("CmdOrCtrl+.")
+        .build(app)?;
     // Whole-app zoom (nightshift backlog 108): ⌘= is the key Chrome binds
     // Zoom In to (⌘+ needs Shift on a US layout; `zoom.ts` takes that one
     // too, since it is not a menu item), ⌘− out, ⌘0 back to 100 %. The
@@ -7665,6 +8359,7 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
         .item(&projects)
         .separator()
         .item(&engine)
+        .item(&stop_turn)
         .separator()
         .item(&next_tab)
         .item(&prev_tab)
@@ -7899,6 +8594,8 @@ fn main() {
 
     builder
         .setup(|app| {
+            // A chat's preview (nightshift item 430): served from the start.
+            preview::setup(app.handle());
             // The Mac's activity, watched while the app runs: ends a chat's
             // Continue anyway at the 85 % line after 10 minutes away
             // (nightshift backlog 192).
@@ -8033,6 +8730,7 @@ fn main() {
             send_agent,
             prepare_office_attachment,
             keep_attachment,
+            unpack_zip,
             office_converter,
             turn_timing_window,
             prewarm_agent,
@@ -8063,6 +8761,9 @@ fn main() {
             set_session_thread,
             list_threads,
             new_thread,
+            rename_thread,
+            delete_thread,
+            reveal_thread,
             append_thread_log,
             thread_upkeep,
             tidy_threads,
@@ -8073,10 +8774,12 @@ fn main() {
             set_voice_note,
             cli_memory_file,
             cli_prompt_snapshot,
+            tool_result_images,
             prompt_pending,
             set_prompt_layer_choice,
             continue_session,
             delete_session,
+            move_session,
             restore_session,
             set_undo_menu,
             paste_into_focus,
@@ -8084,6 +8787,7 @@ fn main() {
             quit_guard::quit_dialog_shown,
             quit_guard::quit_now,
             approve_call,
+            playwright_for_chat,
             pick_folder,
             pick_export,
             import_claude,
@@ -8097,6 +8801,7 @@ fn main() {
             plan_usage,
             plan_usage_refresh,
             cli_version_check,
+            claude_auth_status,
             cli_update,
             turn_budget,
             turn_usage,
@@ -8113,6 +8818,8 @@ fn main() {
             set_checkpoint,
             resolve_new_project_path,
             new_project,
+            claude_md_offer,
+            add_practices_claude_md,
             open_project,
             close_project,
             rename_project,
@@ -8154,9 +8861,11 @@ fn main() {
             named_files,
             reveal_file,
             open_file,
+            paste_images::fetch_paste_image,
             sent_files::save_sent_file,
             sent_files::drag_sent_file,
             read_file_tab,
+            latex::render_latex,
             open_url,
             notify,
             notify_usage_refreshed,
@@ -8232,12 +8941,29 @@ fn main() {
             webtab::web_labels,
             webtab::web_focused,
             webtab::web_find,
+            for_you::for_you_files,
+            for_you::for_you_stamp,
+            for_you::for_you_reveal,
+            opened_files::take_opened_files,
+            preview::preview_list,
+            preview::preview_get,
+            preview::preview_stop,
+            preview::preview_restart,
+            preview::preview_unavailable,
         ]))
         .build(tauri::generate_context!())
         .expect("error while building Nightloom")
         .run(|app, event| match event {
             // The away server's quit push (item 268 step 3), best effort.
-            tauri::RunEvent::Exit => away::on_exit(app),
+            tauri::RunEvent::Exit => {
+                // Every chat's preview ends with the app (item 430).
+                preview::on_exit(app);
+                away::on_exit(app);
+            }
+            // Finder's Open With → Nightloom (nightshift backlog 378): the
+            // file becomes a tab, whether the open launched the app or not.
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Opened { urls } => opened_files::on_opened(app, &urls),
             // The window's close button while work runs asks first (backlog
             // 308); with nothing running it closes, and the app quits, as
             // before.
@@ -8261,6 +8987,34 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An aside's timing line ends on how it ended and the counts of what
+    /// it carried, never names (item 404).
+    #[test]
+    fn an_aside_outcome_names_counts_only() {
+        assert_eq!(aside_outcome("ok", 0, 0, 0), "ok");
+        assert_eq!(aside_outcome("ok", 1, 0, 0), "ok, 1 image");
+        assert_eq!(
+            aside_outcome("stopped", 2, 1, 3),
+            "stopped, 2 images, 1 document, 3 files"
+        );
+    }
+
+    /// Thinking, redacted thinking and calls go to the window as the
+    /// aside's turn events (item 403); text keeps its own `aside-delta`,
+    /// and the rest (usage, init) is not drawn.
+    #[test]
+    fn an_aside_forwards_what_the_reply_draws() {
+        assert!(aside_drawn(&TurnEvent::ThinkingDelta { text: "x".into() }));
+        assert!(aside_drawn(&TurnEvent::RedactedThinking));
+        assert!(aside_drawn(&TurnEvent::ToolCall {
+            id: "1".into(),
+            name: "Read".into(),
+            input: serde_json::json!({}),
+        }));
+        assert!(!aside_drawn(&TurnEvent::TextDelta { text: "x".into() }));
+        assert!(!aside_drawn(&TurnEvent::RoundLimit { rounds: 2 }));
+    }
 
     /// A thread bound, unbound or switched is taken at once on the Claude
     /// Code engine (backlog 271); the same thread with a rewritten Start

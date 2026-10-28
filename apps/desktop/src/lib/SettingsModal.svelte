@@ -16,6 +16,8 @@
 <script lang="ts">
   import { tip } from "./tip";
   import { setLinkPref, web as webTabs } from "./webtabs.svelte";
+  import { STOP_SHAPES } from "./stopButton";
+  import { setStopShape, stopPref } from "./stopShape.svelte";
   import {
     app,
     applyDraft,
@@ -119,11 +121,28 @@
     setDefaultMessage as setHandoffDefaultMessage,
     setThreshold as setHandoffThreshold,
     threshold as handoffThreshold,
+    cap as handoffCap,
+    setCap as setHandoffCap,
   } from "./handoff.svelte";
   import { onDestroy, tick, untrack } from "svelte";
   import { isMac } from "./platform";
   import Icon from "./Icon.svelte";
+  import CopyButton from "./CopyButton.svelte";
+  import { COPIED_MS } from "./copyIcon";
   import Kbd from "./Kbd.svelte";
+  import { OFFERED_STYLES, chosenArrival, play as playArrival, setChosenArrival, type ArrivalStyle } from "./thinkingArrival";
+  import { reducedMotion } from "./sendMotion";
+  import {
+    DURATION as MOTION_MS,
+    OFFERED_MOTIONS,
+    chosenMotion,
+    prepareDelete,
+    prepareRewind,
+    setChosenMotion,
+    type MotionKind,
+    type MotionStyle,
+  } from "./messageMotion";
+  import { REMOVED_PLACEHOLDER } from "./edit";
 
   /**
    * Redesigned 2026-09-13 (nightshift surface-redesign-2026-09-13, canvas
@@ -145,6 +164,91 @@
   app.settingsOpenOn = null;
   onDestroy(() => {
     lastPane = { pane: selected, closedAt: Date.now() };
+  });
+  // Appearance → Animations (nightshift backlog 395): the thinking block's
+  // arrival, A or B, stored by thinkingArrival.ts and read at each arrival.
+  let arrival = $state<ArrivalStyle>(chosenArrival());
+  const arrivalBlock: Record<string, HTMLElement | null> = {};
+  const arrivalFrom: Record<string, HTMLElement | null> = {};
+  /** Each card's running preview, by look: the cards replay side by side (item 413). */
+  const stopPreview: Partial<Record<ArrivalStyle, () => void>> = {};
+  /** Play a look on its card's sample block, its streak leaving from the card's own composer. */
+  function previewArrival(style: ArrivalStyle) {
+    stopPreview[style]?.();
+    delete stopPreview[style];
+    const node = arrivalBlock[style];
+    if (!node) return;
+    stopPreview[style] = playArrival(node, reducedMotion() ? "fade" : style, 0, null, arrivalFrom[style] ?? null);
+  }
+  function pickArrival(style: ArrivalStyle) {
+    arrival = style;
+    setChosenArrival(style);
+    previewArrival(style);
+  }
+  onDestroy(() => Object.values(stopPreview).forEach((f) => f?.()));
+
+  // The rewind and delete picks (396 + 397 pass 2, his yes 2026-10-19,
+  // default A for both). Each choice card holds a small thread; Preview
+  // runs the real prepare → change → commit on it, as Transcript does,
+  // then puts the thread back once the motion is over.
+  let motionPick = $state<Record<MotionKind, MotionStyle>>({ rewind: chosenMotion("rewind"), delete: chosenMotion("delete") });
+  /** Which sample threads are showing the changed state, by `kind:style`. */
+  let motionDone = $state<Record<string, boolean>>({});
+  const motionView: Record<string, HTMLElement | null> = {};
+  const motionBox: Record<string, HTMLElement | null> = {};
+  const motionReset: Record<string, ReturnType<typeof setTimeout>> = {};
+  const MOTION_KINDS: { kind: MotionKind; title: string; note: string }[] = [
+    { kind: "rewind", title: "Rewinding a message", note: "How the thread goes back when you rewind to one of your messages." },
+    { kind: "delete", title: "Deleting a message", note: "How one of your messages leaves the context when you delete it." },
+  ];
+  async function previewMotion(kind: MotionKind, style: MotionStyle) {
+    const key = `${kind}:${style}`;
+    clearTimeout(motionReset[key]);
+    if (motionDone[key]) {
+      motionDone[key] = false;
+      await tick();
+    }
+    const prep = kind === "rewind" ? prepareRewind : prepareDelete;
+    const m = prep(motionView[key], 1, { style, composer: motionBox[key] ?? null });
+    motionDone[key] = true;
+    await tick();
+    m?.commit();
+    const ms = reducedMotion() ? MOTION_MS[kind].fade : MOTION_MS[kind][style];
+    // A held frame (the harness's `__messageMotionHold`) never ends, so the thread is left changed under it.
+    if (typeof (window as unknown as { __messageMotionHold?: number }).__messageMotionHold === "number") return;
+    motionReset[key] = setTimeout(() => (motionDone[key] = false), ms + 900);
+  }
+  function pickMotion(kind: MotionKind, style: MotionStyle) {
+    motionPick[kind] = style;
+    setChosenMotion(kind, style);
+    void previewMotion(kind, style);
+  }
+  onDestroy(() => Object.values(motionReset).forEach(clearTimeout));
+
+  // The previews play themselves (item 413, his ask 2026-10-25: "automatically
+  // running every like 2-3 seconds"): while Animations is the pane shown,
+  // every card replays each `PREVIEW_EVERY_MS`, staggered a little so they
+  // do not all fire at once. Preview still replays one at once.
+  const PREVIEW_EVERY_MS = 2500;
+  const PREVIEW_STAGGER_MS = 180;
+  $effect(() => {
+    if (selected !== "animations") return;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    const round = () => {
+      const plays: (() => void)[] = [
+        ...OFFERED_STYLES.map((st) => () => previewArrival(st.id)),
+        ...MOTION_KINDS.flatMap((mk) => OFFERED_MOTIONS[mk.kind].map((st) => () => void previewMotion(mk.kind, st.id))),
+      ];
+      timers.length = 0; // the last round's have all fired by now
+      plays.forEach((play, i) => timers.push(setTimeout(play, i * PREVIEW_STAGGER_MS)));
+    };
+    const first = setTimeout(round, 400);
+    const every = setInterval(round, PREVIEW_EVERY_MS);
+    return () => {
+      clearTimeout(first);
+      clearInterval(every);
+      timers.forEach(clearTimeout);
+    };
   });
   let keyDraft = $state("");
   let keyBusy = $state(false);
@@ -670,6 +774,19 @@
   let remoteError = $state<string | null>(null);
   let remotePort = $state("");
   let remoteRevealed = $state(false);
+  // The token's Copy (item 402: the copy icon, a check for COPIED_MS). Straight
+  // to the clipboard, as before — not through the clip ring's history.
+  let tokenCopied = $state(false);
+  async function copyToken(): Promise<void> {
+    try {
+      if (!navigator.clipboard || !remote?.token) return;
+      await navigator.clipboard.writeText(remote.token);
+      tokenCopied = true;
+      setTimeout(() => (tokenCopied = false), COPIED_MS);
+    } catch {
+      // The webview refused the clipboard; nothing to show but the button.
+    }
+  }
   async function remoteRun(call: () => Promise<RemoteStatus>) {
     if (remoteBusy) return;
     remoteBusy = true;
@@ -770,6 +887,17 @@
     const n = Number(v);
     if (!Number.isFinite(n)) return;
     setHandoffThreshold(null, Math.min(100, Math.max(1, Math.round(n))) / 100);
+  }
+
+  // The token cap on the default (backlog 436, blocker 1569): the hand-off
+  // is asked at the percent or at this many tokens, whichever comes first;
+  // shown and typed in thousands. 0 turns the cap off.
+  const handoffCapK = $derived(Math.round(handoffCap() / 1000));
+  function setHandoffCapK(v: string): void {
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < 0) return;
+    setHandoffCap(Math.round(n) * 1000);
+    if (handoffChat) reconsiderHandoff(handoffChat);
   }
 
   // The open chat's own mark (nightshift backlog 258, 2026-09-29): it
@@ -1230,6 +1358,15 @@
       <!-- The palette's name, not its letter: "B" read as a key (backlog 109). -->
       <span class="st">{PALETTES.find((p) => p.id === app.palette)?.name ?? app.palette}</span>
     </button>
+    <button
+      class="nav-item"
+      class:active={selected === "animations"}
+      onclick={() => select("animations")}
+    >
+      <span class="nav-label">Animations</span>
+      <!-- Names, not letters: a bare "B" read as a key (backlog 109). The thinking pick only; the row has no room for three. -->
+      <span class="st">{OFFERED_STYLES.find((s) => s.id === arrival)?.name ?? arrival}</span>
+    </button>
     <div class="nav-title">Remote<Kbd keys={keyOf("Remote")} dim /></div>
     <button
       class="nav-item"
@@ -1364,6 +1501,31 @@
         </div>
       </section>
 
+      <!-- The Stop button's shape (item 411, blocker 1524): the square is
+           his pick; the others stay here as choices. -->
+      <section class="card">
+        <div class="ch"><span class="t">Stop button</span></div>
+        <p class="note small">
+          The button that takes Send's place while a reply comes in. Applies
+          at once and is remembered.
+        </p>
+        <div class="type-rows">
+          <div class="type-row">
+            <span class="type-label">Shape</span>
+            <div class="seg" role="radiogroup" aria-label="Stop button shape">
+              {#each STOP_SHAPES as sh (sh.id)}
+                <button
+                  class:on={stopPref.shape === sh.id}
+                  role="radio"
+                  aria-checked={stopPref.shape === sh.id}
+                  onclick={() => setStopShape(sh.id)}
+                ><span class="stop-swatch {sh.id}" aria-hidden="true">{#if sh.id === "labelled"}<i></i>Stop{:else}<i></i>{/if}</span>{sh.name}</button>
+              {/each}
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- The turn-end banner (nightshift backlog 079): two switches, one
            per kind. The rule they cannot change is the focus one — a
            window in front is never notified. -->
@@ -1451,6 +1613,100 @@
           <span>Ask first (a Resume toast) instead of resuming automatically</span>
         </label>
       </section>
+    </div>
+  {:else if selected === "animations"}
+    <!-- Appearance → Animations (nightshift backlog 395, his ask 2026-10-19:
+         "put both A and B as two diff options for the thinking block's
+         animation"). One card per animated moment; the rewind and the
+         delete (396, 397) join as cards of their own below this one. -->
+    <div class="pane">
+      <div class="pane-head">
+        <h2 class="pane-title">Animations</h2>
+        <span class="spacer"></span>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+      </div>
+      <p class="note">
+        How things arrive and leave in the transcript. Each choice applies to
+        the next time it happens and is remembered. With Reduce motion on in
+        macOS, every one of them is a plain fade.
+      </p>
+      <section class="card">
+        <div class="ch"><span class="t">Thinking block</span></div>
+        <p class="note small">How a reply's thinking block comes in when the model starts thinking.</p>
+        <div class="anims" role="radiogroup" aria-label="Thinking block arrival">
+          {#each OFFERED_STYLES as s (s.id)}
+            <div class="anim" class:on={arrival === s.id}>
+              <button
+                class="anim-pick"
+                role="radio"
+                aria-checked={arrival === s.id}
+                onclick={() => pickArrival(s.id)}
+              >
+                <span class="anim-name"><b>{s.id}</b> {s.name}</span>
+                <span class="anim-blurb">{s.blurb}</span>
+              </button>
+              <div class="anim-stage" aria-hidden="true">
+                <div class="anim-block" bind:this={arrivalBlock[s.id]}>
+                  <span class="anim-label">Thinking</span>
+                  <span class="anim-text">The cache key hashes the lockfile and the toolchain file…</span>
+                </div>
+                <div class="anim-composer" bind:this={arrivalFrom[s.id]}></div>
+              </div>
+              <div class="anim-foot">
+                <button class="ns-btn ghost small" onclick={() => previewArrival(s.id)}>Preview</button>
+                {#if arrival === s.id}<span class="anim-on">In use</span>{/if}
+              </div>
+            </div>
+          {/each}
+        </div>
+      </section>
+      {#each MOTION_KINDS as mk (mk.kind)}
+        <section class="card">
+          <div class="ch"><span class="t">{mk.title}</span></div>
+          <p class="note small">{mk.note}</p>
+          <div class="anims three" role="radiogroup" aria-label={mk.title}>
+            {#each OFFERED_MOTIONS[mk.kind] as s (s.id)}
+              {@const key = `${mk.kind}:${s.id}`}
+              {@const done = !!motionDone[key]}
+              <div class="anim" class:on={motionPick[mk.kind] === s.id}>
+                <button
+                  class="anim-pick"
+                  role="radio"
+                  aria-checked={motionPick[mk.kind] === s.id}
+                  onclick={() => pickMotion(mk.kind, s.id)}
+                >
+                  <span class="anim-name"><b>{s.id}</b> {s.name}</span>
+                  <span class="anim-blurb">{s.blurb}</span>
+                </button>
+                <div class="anim-stage msg-stage" aria-hidden="true">
+                  <div class="mini-view" bind:this={motionView[key]}>
+                    <div class="mini-inner">
+                      <div class="mini-reply">Sure — it hashes the lockfile.</div>
+                      {#if mk.kind === "rewind" && done}
+                        <div class="mini-rewound">2 messages rewound</div>
+                      {:else}
+                        <div class="user-turn mini-turn" class:removed={mk.kind === "delete" && done} data-turn="1">
+                          <div class="user-bubble mini-bubble" class:gone={mk.kind === "delete" && done}>
+                            {mk.kind === "delete" && done ? REMOVED_PLACEHOLDER : "Why does CI still miss?"}
+                          </div>
+                        </div>
+                        <div class="mini-reply">The toolchain bump changes the key.</div>
+                      {/if}
+                    </div>
+                  </div>
+                  <div class="anim-composer mini-box" bind:this={motionBox[key]}>
+                    {#if mk.kind === "rewind" && done}<span class="mini-typed">Why does CI still miss?</span>{/if}
+                  </div>
+                </div>
+                <div class="anim-foot">
+                  <button class="ns-btn ghost small" onclick={() => previewMotion(mk.kind, s.id)}>Preview</button>
+                  {#if motionPick[mk.kind] === s.id}<span class="anim-on">In use</span>{/if}
+                </div>
+              </div>
+            {/each}
+          </div>
+        </section>
+      {/each}
     </div>
   {:else if selected === "remote"}
     <!-- The phone page over the tailnet (nightshift backlog 091, Shape B):
@@ -1540,7 +1796,7 @@
         <div class="remote-actions">
           {#if remote?.token}
             <button class="ns-btn" onclick={() => (remoteRevealed = !remoteRevealed)}>{remoteRevealed ? "Hide" : "Show"} the token</button>
-            <button class="ns-btn" onclick={() => void navigator.clipboard?.writeText(remote?.token ?? "")}>Copy</button>
+            <CopyButton copied={tokenCopied} label="Copy the token" onclick={() => void copyToken()} />
           {/if}
           <button class="ns-btn" disabled={remoteBusy} onclick={() => void remoteRun(() => api.remoteToken(!!remote?.has_token))}>
             {remote?.has_token ? "Regenerate" : "Make a token"}
@@ -1609,7 +1865,7 @@
           sync. Incognito chats are never sent.
         </p>
         {#if (away?.projects.length ?? 0) > 8}
-          <input class="away-filter" type="search" placeholder="Filter projects" bind:value={awayFilter} aria-label="Filter projects" />
+          <input autocorrect="off" autocapitalize="off" spellcheck="false" class="away-filter" type="search" placeholder="Filter projects" bind:value={awayFilter} aria-label="Filter projects" />
         {/if}
         <div class="away-projects">
           {#each orderedProjects(away?.projects ?? [], awayFilter) as p (p.id)}
@@ -1746,6 +2002,18 @@
             onchange={(e) => setHandoffDefaultPct((e.currentTarget as HTMLInputElement).value)}
           />
           <span>% of the window, for every chat without a mark of its own (70% to begin with)</span>
+        </label>
+        <label class="handoff-row">
+          <span>or at</span>
+          <input
+            type="number"
+            min="0"
+            step="10"
+            value={handoffCapK}
+            aria-label="Hand-off token cap, thousands of tokens, for every chat without a mark of its own"
+            onchange={(e) => setHandoffCapK((e.currentTarget as HTMLInputElement).value)}
+          />
+          <span>k tokens, whichever comes first (300k to begin with, the practices' stop point: 140k on a 200k window, 300k on a 1M one; 0 for no cap). A chat's own mark is not capped.</span>
         </label>
         {#if handoffChat}
           <label class="handoff-row">
@@ -2637,7 +2905,7 @@
             <option value={OTHER}>Other — type an id…</option>
           </select>
           {#if pickOther}
-            <input
+            <input autocorrect="off" autocapitalize="off" spellcheck="false"
               type="text"
               class="pick-id"
               placeholder="model id, exactly as the provider names it"
@@ -2739,7 +3007,7 @@
           <span class="spacer"></span>
           <span class="filter-wrap">
             <Icon name="search" size={13} />
-            <input
+            <input autocorrect="off" autocapitalize="off" spellcheck="false"
               class="filter"
               type="text"
               bind:value={filter}
@@ -2874,7 +3142,7 @@
             addCustom();
           }}
         >
-          <input type="text" bind:value={addDraft} placeholder="add a model id…" aria-label="Model id to add" />
+          <input autocorrect="off" autocapitalize="off" spellcheck="false" type="text" bind:value={addDraft} placeholder="add a model id…" aria-label="Model id to add" />
           <button type="submit" class="ns-btn" disabled={!addDraft.trim()}>
             <Icon name="plus" size={13} />
             Add
@@ -3449,6 +3717,7 @@
      threshold row and the composer's field face for the message. */
   .remote-actions {
     display: flex;
+    align-items: center;
     gap: 8px;
     flex-wrap: wrap;
     margin-top: 6px;
@@ -3975,6 +4244,211 @@
   .seg button.on {
     background: var(--accent);
     color: var(--paper);
+  }
+  /* Appearance → Animations (backlog 395): one card per look, each with a
+     sample stage — a thinking block over a stand-in composer, the streak's
+     launch point — and a Preview. Two columns, like the palette swatches. */
+  .anims {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.7rem;
+  }
+  .anim {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+    padding: 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+  /* Backlog 412: the whole card picks, not only its name and blurb — the
+     pick's ::after stretches over the stage and the foot; Preview sits above it. */
+  /* Item 411: each Stop shape drawn small in its own choice. */
+  .stop-swatch {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    height: 16px;
+    min-width: 16px;
+    margin-right: 6px;
+    vertical-align: -3px;
+    border: 1px solid #7a3d3f;
+    border-radius: 3px;
+    color: var(--failed);
+    font-size: 9px;
+    box-sizing: border-box;
+  }
+  .stop-swatch i {
+    width: 6px;
+    height: 6px;
+    border-radius: 1px;
+    background: currentColor;
+  }
+  .stop-swatch.square,
+  .stop-swatch.round {
+    background: color-mix(in srgb, var(--failed) 16%, var(--sheet));
+  }
+  .stop-swatch.round {
+    border-radius: 50%;
+  }
+  .stop-swatch.labelled {
+    padding: 0 4px;
+  }
+  .stop-swatch.wide {
+    width: 32px;
+  }
+  .anim-pick::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+  }
+  .anim-foot .ns-btn {
+    position: relative;
+    z-index: 1;
+  }
+  .anim:hover {
+    border-color: var(--dim);
+  }
+  .anim.on {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
+  }
+  /* The pick grows, so the two stages and Previews line up whatever the blurbs' lengths. */
+  .anim-pick {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+    gap: 0.25rem;
+    padding: 0;
+    background: transparent;
+    border: none;
+    text-align: left;
+    color: var(--text);
+    font: inherit;
+    cursor: pointer;
+  }
+  .anim-name {
+    font-size: 0.85rem;
+  }
+  .anim-name b {
+    font-weight: 600;
+    margin-right: 0.3rem;
+  }
+  .anim-blurb {
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--dim);
+  }
+  .anim-stage {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 34px;
+    padding: 12px 12px 10px;
+    border-radius: 6px;
+    background: var(--sheet);
+    border: 1px solid var(--line);
+  }
+  .anim-block {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 7px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--line2);
+    background: var(--paper);
+  }
+  .anim-label {
+    font-size: 11.5px;
+    color: var(--ink2);
+  }
+  .anim-text {
+    font-size: 11.5px;
+    color: var(--dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .anim-composer {
+    height: 22px;
+    border-radius: 7px;
+    border: 1px solid var(--line2);
+    background: var(--well);
+  }
+  .anim-foot {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .anim-on {
+    font-size: 11.5px;
+    color: var(--accent);
+  }
+  .anims.three {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  /* The rewind and delete samples: a small thread (one reply, his message,
+     the reply under it) in a scroll box over a stand-in composer — the
+     shape messageMotion.ts lays its copy over. */
+  .msg-stage {
+    gap: 10px;
+  }
+  .mini-view {
+    height: 112px;
+    overflow: hidden;
+    background: var(--sheet);
+  }
+  .mini-inner {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .mini-reply {
+    font-size: 11.5px;
+    color: var(--ink2);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .mini-turn {
+    display: flex;
+    justify-content: flex-end;
+  }
+  .mini-bubble {
+    max-width: 85%;
+    padding: 6px 10px;
+    border-radius: 12px;
+    font-size: 11.5px;
+    line-height: 1.35;
+    color: var(--ink);
+    background: color-mix(in srgb, var(--sheet) 88%, var(--ink));
+  }
+  .mini-bubble.gone {
+    color: var(--dim);
+    font-style: italic;
+    background: transparent;
+    border: 1px dashed var(--line2);
+  }
+  .mini-rewound {
+    align-self: center;
+    font-size: 11px;
+    color: var(--dim);
+  }
+  .mini-box {
+    display: flex;
+    align-items: center;
+    padding: 0 8px;
+    font-size: 11.5px;
+    color: var(--ink);
+  }
+  .mini-typed {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   /* Backlog 291: the default subagent rules box. */
   .rules-default {

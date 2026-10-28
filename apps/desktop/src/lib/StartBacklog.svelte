@@ -202,14 +202,14 @@
       </div>
     {/if}
     <div class="filter-row">
-      <input class="ns-fld" placeholder="filter…" bind:value={filterText} aria-label="Filter the backlog" />
+      <input autocorrect="off" autocapitalize="off" spellcheck="false" class="ns-fld" placeholder="filter…" bind:value={filterText} aria-label="Filter the backlog" />
       <button class="ns-btn small" class:on={draft.open} disabled={locked} use:tip={"Describe an idea; the interviewer asks what only you can answer, then writes the item"} onclick={() => { draft.open = !draft.open; creating = false; }}>
         <Icon name="plus" />New{#if hasDraft}<span class="ns-pill open draftpill">draft</span>{/if}
       </button>
     </div>
     {#if creating}
       <div class="new-item">
-        <input
+        <input autocorrect="off" autocapitalize="off" spellcheck="false"
           class="ns-fld"
           placeholder="Title"
           aria-label="New item title"

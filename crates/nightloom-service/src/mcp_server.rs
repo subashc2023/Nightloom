@@ -126,6 +126,14 @@ const INSTRUCTIONS: &str = "Nightloom's tools. For the whole text of a page use 
      then notion_read_page or notion_list_children — read-only, and only the page tree the \
      user shared; a page outside it is not found.";
 
+/// What `initialize` says to an incognito chat (`--incognito`, nightshift
+/// backlog 405): [`INSTRUCTIONS`] without the sentences about the tools it
+/// does not serve — a server must not name a reader it withheld.
+const INCOGNITO_INSTRUCTIONS: &str = "Nightloom's tools. For the whole text of a page use \
+     fetch_page (WebFetch summarises and truncates); if fetch_page reports the page as a \
+     JavaScript shell or returns only its title, use WebFetch on that URL instead of retrying. \
+     context_status says how full your context window was when this turn began.";
+
 /// The sentence for `send_file` (nightshift backlog 343), present only when
 /// the server serves it — a server started with `--root`. On this engine
 /// the tool is deferred and the model sees its name before its
@@ -133,6 +141,24 @@ const INSTRUCTIONS: &str = "Nightloom's tools. For the whole text of a page use 
 const SEND_FILE_INSTRUCTION: &str = " To give the user a file (a PDF, an image, anything \
      you made), use send_file: it attaches the file to your reply; a path in your text \
      does not.";
+
+/// The sentence for `preview` (nightshift item 430), present only when the
+/// server serves it: the model would otherwise start a dev server with a
+/// background shell command, which nothing promises will outlive the reply.
+const PREVIEW_INSTRUCTION: &str = " To run a dev server or anything else that must still \
+     be up after your reply (so the user, or your next message, can load it), use preview \
+     with action start: Nightloom runs it between messages and shows it to the user. A \
+     background shell command is not promised to outlive your reply.";
+
+/// The sentence for `mark_file` (nightshift backlog 377), present only
+/// when the server serves it — a server started with `--root` for a chat
+/// that writes. The CLI puts server instructions in the model's system
+/// prompt, and on this engine the tool is deferred, so this is where the
+/// model learns to tag what it makes.
+const MARK_FILE_INSTRUCTION: &str = " Each time you create a file or folder, call mark_file \
+     on it: for \"user\" when it is something the user should open (a report, a draft, a \
+     document they asked for), \"self\" when it is your own working material; the user's \
+     ones are listed for them in Nightloom.";
 
 /// The last sentence of [`INSTRUCTIONS`], present only when the tool is: a
 /// server started for an incognito chat (`--no-remember`) must not tell the
@@ -176,6 +202,9 @@ const OWN_EFFECTS: &[(&str, Effect)] = &[
     ("notion_read_page", Effect::ReadOnly),
     ("notion_list_children", Effect::ReadOnly),
     ("send_file", Effect::Session),
+    ("mark_file", Effect::Session),
+    // Runs a command of the model's (nightshift item 430): what Bash is.
+    ("preview", Effect::Mutating),
 ];
 
 /// The effect of a call by the name the CLI reports it under: this
@@ -200,12 +229,28 @@ fn instructions_for(tools: &[Box<dyn Tool>]) -> String {
     let sends = tools
         .iter()
         .any(|t| t.def().name == crate::tools::send_file::NAME);
-    let mut out = INSTRUCTIONS.to_string();
+    let mut out = if tools.iter().any(|t| t.def().name == "search_chats") {
+        INSTRUCTIONS.to_string()
+    } else {
+        INCOGNITO_INSTRUCTIONS.to_string()
+    };
     if remembers {
         out.push_str(REMEMBER_INSTRUCTION);
     }
     if sends {
         out.push_str(SEND_FILE_INSTRUCTION);
+    }
+    if tools
+        .iter()
+        .any(|t| t.def().name == crate::preview::TOOL_NAME)
+    {
+        out.push_str(PREVIEW_INSTRUCTION);
+    }
+    if tools
+        .iter()
+        .any(|t| t.def().name == crate::tools::mark_file::NAME)
+    {
+        out.push_str(MARK_FILE_INSTRUCTION);
     }
     out
 }
@@ -986,6 +1031,11 @@ pub async fn serve(
         Some(dream) => dream_tools(dream),
         None => tools_in(&config, args.project.as_deref(), args.remember)?,
     };
+    // An incognito chat's server (backlog 405): nothing that reads his
+    // chats, his memory or his Notion.
+    if args.incognito {
+        tools.retain(|t| !crate::incognito::SERVER_DROPS.contains(&t.def().name.as_str()));
+    }
     if args.ask {
         tools.push(Box::new(crate::agent::ask::PromptTool));
     }
@@ -1000,6 +1050,28 @@ pub async fn serve(
             send_file::scratch_store()
         };
         tools.push(Box::new(crate::tools::SendFile::new(root.clone(), store)));
+        // `mark_file` (nightshift backlog 377): beside it, for a chat that
+        // writes — the marks go in the config dir, which an incognito or
+        // ephemeral chat promised not to touch.
+        if args.remember {
+            use crate::tools::mark_file;
+            tools.push(Box::new(crate::tools::MarkFile::new(
+                root.clone(),
+                mark_file::manifest_in(&config),
+                args.project.clone(),
+            )));
+        }
+    }
+    // `preview` (nightshift item 430): the desktop's socket, the chat and
+    // its folder all named — never for a dream.
+    if let (Some(sock), Some(chat), Some(root), None) =
+        (&args.preview, &args.preview_chat, &args.root, &args.dream)
+    {
+        tools.push(Box::new(crate::preview::PreviewTool::new(
+            sock.clone(),
+            chat.clone(),
+            root.clone(),
+        )));
     }
     serve_tools(tools, reader, writer).await;
     Ok(())
@@ -1027,6 +1099,16 @@ pub struct ServeArgs {
     /// with it, `send_file` sends files from inside it. Absent, no
     /// `send_file` — the CLI's own `mcp-serve`, run by hand, has no chat.
     pub root: Option<PathBuf>,
+    /// An incognito chat's server (`--incognito`, nightshift backlog 405):
+    /// none of [`crate::incognito::SERVER_DROPS`] — the other chats, where
+    /// in memory a belief lives, his Notion. Implies `--no-remember`.
+    pub incognito: bool,
+    /// The desktop's preview socket and the chat (`--preview <socket>`,
+    /// `--preview-chat <id>`, nightshift item 430): with both and a
+    /// `--root`, `preview` is served. The chat is rewritten into the
+    /// arguments before each turn (`preview::with_chat`).
+    pub preview: Option<PathBuf>,
+    pub preview_chat: Option<String>,
 }
 
 impl ServeArgs {
@@ -1037,6 +1119,9 @@ impl ServeArgs {
             dream: None,
             ask: false,
             root: None,
+            incognito: false,
+            preview: None,
+            preview_chat: None,
         }
     }
 
@@ -1047,6 +1132,9 @@ impl ServeArgs {
             dream: Some(dream),
             ask: false,
             root: None,
+            incognito: false,
+            preview: None,
+            preview_chat: None,
         }
     }
 }
@@ -1259,6 +1347,9 @@ pub fn parse_args(args: &[String]) -> Result<ServeArgs, String> {
             out.project = Some(id.to_string());
         } else if arg == "--no-remember" {
             out.remember = false;
+        } else if arg == "--incognito" {
+            out.incognito = true;
+            out.remember = false;
         } else if arg == "--ask" {
             out.ask = true;
         } else if arg == "--root" {
@@ -1268,6 +1359,16 @@ pub fn parse_args(args: &[String]) -> Result<ServeArgs, String> {
             out.root = Some(PathBuf::from(dir));
         } else if let Some(dir) = arg.strip_prefix("--root=") {
             out.root = Some(PathBuf::from(dir));
+        } else if arg == "--preview" {
+            let sock = it
+                .next()
+                .ok_or_else(|| "--preview needs the desktop's socket".to_string())?;
+            out.preview = Some(PathBuf::from(sock));
+        } else if arg == "--preview-chat" {
+            let id = it
+                .next()
+                .ok_or_else(|| "--preview-chat needs the chat's id".to_string())?;
+            out.preview_chat = Some(id.clone());
         } else if arg == "--dream" {
             let json = it
                 .next()
@@ -1279,7 +1380,7 @@ pub fn parse_args(args: &[String]) -> Result<ServeArgs, String> {
             out.remember = false;
         } else {
             return Err(format!(
-                "unknown argument {arg:?}; the flags are --project <id>, --no-remember, --ask, --root <dir> and --dream <json>"
+                "unknown argument {arg:?}; the flags are --project <id>, --no-remember, --incognito, --ask, --root <dir>, --preview <socket>, --preview-chat <id> and --dream <json>"
             ));
         }
     }
@@ -1974,6 +2075,64 @@ mod tests {
         );
     }
 
+    /// Backlog 377: a server with `--root` for a chat that writes serves
+    /// `mark_file` and says in its instructions to tag what it makes; a
+    /// call over the wire lands in the config dir's manifest under the
+    /// project's id. A chat that writes nothing gets neither.
+    #[tokio::test]
+    async fn mark_file_is_served_to_a_chat_that_writes_and_records_in_the_manifest() {
+        use crate::tools::mark_file;
+        let (config, id) = fixture("mark-file");
+        let root = config.join("chat-folder");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("plan.md"), b"# plan").unwrap();
+        for remember in [true, false] {
+            let (client_side, server_side) = tokio::io::duplex(1 << 16);
+            let (sr, sw) = tokio::io::split(server_side);
+            let args = ServeArgs {
+                remember,
+                root: Some(root.clone()),
+                ..ServeArgs::for_project(Some(id.clone()))
+            };
+            let cfg = config.clone();
+            tokio::spawn(async move { serve(cfg, args, sr, sw).await.unwrap() });
+            let (r, mut w) = tokio::io::split(client_side);
+            let mut lines = BufReader::new(r).lines();
+            send(
+                &mut w,
+                r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+            )
+            .await;
+            let init = recv(&mut lines).await;
+            let says = init["result"]["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("call mark_file");
+            assert_eq!(says, remember, "{init}");
+            send(&mut w, r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#).await;
+            let list = recv(&mut lines).await;
+            let served = list["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t["name"] == "mark_file");
+            assert_eq!(served, remember, "{list}");
+            if remember {
+                send(
+                    &mut w,
+                    r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"mark_file","arguments":{"path":"plan.md","for":"user","title":"The plan"}}}"#,
+                )
+                .await;
+                let reply = recv(&mut lines).await;
+                assert_eq!(reply["result"]["isError"], false, "{reply}");
+            }
+        }
+        let listed = mark_file::for_user(&mark_file::manifest_in(&config), Some(&id), 10);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].title.as_deref(), Some("The plan"));
+        assert!(listed[0].path.ends_with("plan.md"));
+    }
+
     #[test]
     fn the_flag_parses_both_spellings_and_nothing_else() {
         let args = |s: &[&str]| s.iter().map(|a| a.to_string()).collect::<Vec<_>>();
@@ -2060,6 +2219,97 @@ mod tests {
         assert!(with.contains("use remember"), "{with}");
         assert!(!without.contains("remember"), "{without}");
         assert!(without.contains("search_chats"));
+    }
+
+    /// Backlog 405: `--incognito` parses (and implies `--no-remember`), and
+    /// the server it starts serves none of the tools that read his chats,
+    /// memory or Notion, and does not name them in `initialize`.
+    #[tokio::test]
+    async fn an_incognito_server_serves_nothing_of_his() {
+        let parsed = parse_args(&["--incognito".to_string()]).unwrap();
+        assert!(parsed.incognito && !parsed.remember);
+        let (config, _id) = fixture("incognito-server");
+        let (client_side, server_side) = tokio::io::duplex(1 << 16);
+        let (sr, sw) = tokio::io::split(server_side);
+        let root = config.join("chat-folder");
+        std::fs::create_dir_all(&root).unwrap();
+        let args = ServeArgs {
+            root: Some(root),
+            ..parsed
+        };
+        let cfg = config.clone();
+        tokio::spawn(async move { serve(cfg, args, sr, sw).await.unwrap() });
+        let (r, mut w) = tokio::io::split(client_side);
+        let mut lines = BufReader::new(r).lines();
+        send(
+            &mut w,
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+        )
+        .await;
+        let init = lines.next_line().await.unwrap().unwrap();
+        send(
+            &mut w,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#,
+        )
+        .await;
+        let list = lines.next_line().await.unwrap().unwrap();
+        for gone in crate::incognito::SERVER_DROPS
+            .iter()
+            .chain(&["remember", "mark_file"])
+        {
+            assert!(!list.contains(&format!("\"{gone}\"")), "{gone} in {list}");
+            assert!(!init.contains(gone), "{gone} named in {init}");
+        }
+        assert!(list.contains("\"fetch_page\""), "{list}");
+    }
+
+    /// Item 430: `--preview <socket> --preview-chat <id>` parse, and with
+    /// `--root` the server lists `preview` and says when to use it; without
+    /// the chat it serves no `preview`.
+    #[tokio::test]
+    async fn the_preview_tool_is_served_with_the_socket_the_chat_and_the_folder() {
+        let parsed = parse_args(&[
+            "--preview".to_string(),
+            "/tmp/p.sock".to_string(),
+            "--preview-chat".to_string(),
+            "chat-9".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(parsed.preview.as_deref(), Some(Path::new("/tmp/p.sock")));
+        assert_eq!(parsed.preview_chat.as_deref(), Some("chat-9"));
+        let (config, id) = fixture("preview-server");
+        let root = config.join("chat-folder");
+        std::fs::create_dir_all(&root).unwrap();
+        for (chat, served) in [(Some("chat-9".to_string()), true), (None, false)] {
+            let (client_side, server_side) = tokio::io::duplex(1 << 16);
+            let (sr, sw) = tokio::io::split(server_side);
+            let args = ServeArgs {
+                root: Some(root.clone()),
+                preview_chat: chat,
+                ..ServeArgs {
+                    project: Some(id.clone()),
+                    ..parsed.clone()
+                }
+            };
+            let cfg = config.clone();
+            tokio::spawn(async move { serve(cfg, args, sr, sw).await.unwrap() });
+            let (r, mut w) = tokio::io::split(client_side);
+            let mut lines = BufReader::new(r).lines();
+            send(
+                &mut w,
+                r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+            )
+            .await;
+            let init = lines.next_line().await.unwrap().unwrap();
+            send(
+                &mut w,
+                r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#,
+            )
+            .await;
+            let list = lines.next_line().await.unwrap().unwrap();
+            assert_eq!(list.contains("\"preview\""), served, "{list}");
+            assert_eq!(init.contains("use preview"), served, "{init}");
+        }
     }
 
     fn dream_target(config: &Path) -> DreamServe {
@@ -2270,6 +2520,14 @@ mod tests {
         served.extend(dream_tools(&dream_target(&config)));
         served.push(Box::new(crate::agent::ask::PromptTool));
         served.push(Box::new(crate::tools::SendFile::new(&config, &config)));
+        served.push(Box::new(crate::tools::MarkFile::new(
+            &config, &config, None,
+        )));
+        served.push(Box::new(crate::preview::PreviewTool::new(
+            config.clone(),
+            "c".into(),
+            config.clone(),
+        )));
         for tool in &served {
             let name = tool.def().name;
             assert_eq!(

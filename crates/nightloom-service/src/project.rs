@@ -918,6 +918,20 @@ impl Registry {
         folder: NewProjectFolder,
         instructions: Option<&str>,
     ) -> Result<Project, String> {
+        self.new_project_with(name, folder, instructions, false)
+    }
+
+    /// [`Self::new_project`], and with `claude_md` the practices
+    /// `CLAUDE.md` too (backlog 432, [`write_practices_claude_md`]) — written
+    /// only where there is none; one already in a picked folder is left
+    /// exactly as it is, not an error.
+    pub fn new_project_with(
+        &mut self,
+        name: &str,
+        folder: NewProjectFolder,
+        instructions: Option<&str>,
+        claude_md: bool,
+    ) -> Result<Project, String> {
         let name = name.trim();
         if name.is_empty() {
             return Err("a project needs a name".to_string());
@@ -973,8 +987,74 @@ impl Registry {
             fs::write(&agents, text)
                 .map_err(|e| format!("cannot write {}: {e}", agents.display()))?;
         }
+        if claude_md {
+            write_practices_claude_md(&dir, name)?;
+        }
+        // Version history from creation (backlog 372): the project's memory
+        // folder is a repository with a first commit — unless the folder is
+        // itself one (picked code), which already holds `.agents/`. Best
+        // effort: without git the project is still made, and the first
+        // dream tries again and says what failed.
+        if !crate::history::is_repo(&dir) {
+            let _ = crate::history::ensure(&dir.join(AGENTS_DIR));
+        }
         self.create(name, Some(dir), None)
     }
+}
+
+/// The file Claude Code reads a project's instructions from — beside
+/// Nightloom's own `AGENTS.md`, never in place of it (backlog 432).
+pub const CLAUDE_MD: &str = "CLAUDE.md";
+
+/// The line that opts a project in to his working practices: Claude Code
+/// expands an `@path` line in a `CLAUDE.md` into the file it names.
+pub const PRACTICES_IMPORT: &str = "@~/.claude/practices/practices.md";
+
+/// The `CLAUDE.md` New project offers (backlog 432): the practices line on
+/// top, as the `project-setup` skill writes it, then a short header.
+pub fn practices_claude_md(name: &str) -> String {
+    let name = name.trim();
+    let name = if name.is_empty() {
+        "This project"
+    } else {
+        name
+    };
+    format!(
+        "{PRACTICES_IMPORT}\n\n# {name}\n\n\
+         What is true of this project alone goes here; the line above brings in\n\
+         the working practices (~/.claude/practices/practices.md).\n"
+    )
+}
+
+/// Whether `~/.claude/practices/practices.md` is there — the offer is made
+/// only where the line would import something.
+pub fn practices_file_exists() -> bool {
+    home_dir().is_some_and(|h| h.join(".claude/practices/practices.md").is_file())
+}
+
+/// Write the practices `CLAUDE.md` into `dir` unless one is already there:
+/// `Ok(true)` written, `Ok(false)` one existed and was not touched. The
+/// file is opened `create_new`, so even a `CLAUDE.md` that appears between
+/// a check and the write is never overwritten.
+pub fn write_practices_claude_md(dir: &Path, name: &str) -> Result<bool, String> {
+    use std::io::Write as _;
+    let path = dir.join(CLAUDE_MD);
+    // A dangling symlink is "there" too: `exists` follows it and says no.
+    if path.symlink_metadata().is_ok() {
+        return Ok(false);
+    }
+    let mut file = match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
+        Err(e) => return Err(format!("cannot write {}: {e}", path.display())),
+    };
+    file.write_all(practices_claude_md(name).as_bytes())
+        .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    Ok(true)
 }
 
 /// Absolute, canonical where possible, and without Windows' verbatim prefix.
@@ -2437,6 +2517,108 @@ mod tests {
         .unwrap();
         assert!(target.is_dir());
         assert!(!target.join("AGENTS.md").exists());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Backlog 372: a new project's `.agents` is a repository with a first
+    /// commit from the moment it is made; a picked folder that is already a
+    /// repository is left as it was (its own history holds `.agents/`).
+    #[test]
+    fn a_new_projects_memory_folder_has_history_from_creation() {
+        let dir = temp_dir("new-project-history");
+        let mut reg = Registry::load_from(dir.join("registry.json"));
+        let made = reg
+            .new_project(
+                "Fresh",
+                NewProjectFolder::Resolved(dir.join("projects").join("Fresh")),
+                None,
+            )
+            .unwrap();
+        let agents = made.workspace.unwrap().join(AGENTS_DIR);
+        assert!(crate::history::is_repo(&agents));
+        let log = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&agents)
+            .args(["log", "--format=%s"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&log.stdout).trim(),
+            crate::history::FIRST_COMMIT
+        );
+
+        let code = dir.join("code");
+        crate::history::start(&code).unwrap();
+        reg.new_project("Code", NewProjectFolder::Picked(code.clone()), None)
+            .unwrap();
+        assert!(!code.join(AGENTS_DIR).exists(), "no nested repository");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Backlog 432: accepting the offer writes a `CLAUDE.md` whose top line
+    /// is the practices import; declining writes none; one already in a
+    /// picked folder is never overwritten or edited.
+    #[test]
+    fn new_project_writes_the_practices_claude_md_only_where_there_is_none() {
+        let dir = temp_dir("new-project-claude-md");
+        let mut reg = Registry::load_from(dir.join("registry.json"));
+
+        let made = reg
+            .new_project_with(
+                "Site Build",
+                NewProjectFolder::Resolved(dir.join("projects").join("Site-Build")),
+                None,
+                true,
+            )
+            .unwrap();
+        let text = fs::read_to_string(made.workspace.unwrap().join(CLAUDE_MD)).unwrap();
+        assert_eq!(text.lines().next(), Some(PRACTICES_IMPORT));
+        assert!(text.contains("# Site Build"), "{text}");
+
+        let plain = reg
+            .new_project(
+                "Plain",
+                NewProjectFolder::Resolved(dir.join("projects").join("Plain")),
+                None,
+            )
+            .unwrap();
+        assert!(!plain.workspace.unwrap().join(CLAUDE_MD).exists());
+
+        let mine = dir.join("mine");
+        fs::create_dir_all(&mine).unwrap();
+        fs::write(mine.join(CLAUDE_MD), "# his own\nno import here\n").unwrap();
+        reg.new_project_with("Mine", NewProjectFolder::Picked(mine.clone()), None, true)
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(mine.join(CLAUDE_MD)).unwrap(),
+            "# his own\nno import here\n"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Backlog 432: the Open project offer's write — `Ok(false)` and nothing
+    /// touched when a `CLAUDE.md` is there, a dangling link included.
+    #[test]
+    fn write_practices_claude_md_never_overwrites() {
+        let dir = temp_dir("practices-claude-md");
+        assert_eq!(write_practices_claude_md(&dir, "X"), Ok(true));
+        let first = fs::read_to_string(dir.join(CLAUDE_MD)).unwrap();
+        fs::write(dir.join(CLAUDE_MD), "edited by him\n").unwrap();
+        assert_eq!(write_practices_claude_md(&dir, "X"), Ok(false));
+        assert_eq!(
+            fs::read_to_string(dir.join(CLAUDE_MD)).unwrap(),
+            "edited by him\n"
+        );
+        assert!(first.starts_with(PRACTICES_IMPORT));
+
+        #[cfg(unix)]
+        {
+            let linked = dir.join("linked");
+            fs::create_dir_all(&linked).unwrap();
+            std::os::unix::fs::symlink(dir.join("nowhere.md"), linked.join(CLAUDE_MD)).unwrap();
+            assert_eq!(write_practices_claude_md(&linked, "X"), Ok(false));
+            assert!(!dir.join("nowhere.md").exists());
+        }
         fs::remove_dir_all(&dir).ok();
     }
 

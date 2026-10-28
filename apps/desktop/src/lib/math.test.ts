@@ -53,6 +53,13 @@ describe("the four dollar-guards", () => {
     expect(typeset(`A $${long}$ B`)).toBe(false);
   });
 
+  it("typesets an escaped dollar inside a formula", () => {
+    // Item 442, his screenshot: "an expected value of $-\\$0.05$ per bet"
+    // showed as raw `$-$0.05$` because the span could hold no `$` at all.
+    expect(typeset("A casino game has an expected value of $-\\$0.05$ per bet.")).toBe(true);
+    expect(typeset("The plan runs between $5 and $10 a month.")).toBe(false);
+  });
+
   it("still typesets a real formula that ends against a letter", () => {
     // The digit guard is deliberately narrow. Broadening it to any word
     // character would take out `$n$th` and most inline algebra in prose.

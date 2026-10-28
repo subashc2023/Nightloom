@@ -61,7 +61,8 @@ export function settingsGroups(providerKinds: string[], searchBackendNames: stri
     { title: "Projects", panes: ["projects"] },
     { title: "Providers", panes: [...providerKinds] },
     { title: "Web search", panes: searchBackendNames.map((n) => "search:" + n) },
-    { title: "Appearance", panes: ["appearance"] },
+    // Palette, then Animations (backlog 395): ⌘7 again steps between them.
+    { title: "Appearance", panes: ["appearance", "animations"] },
     { title: "Remote", panes: ["remote", "away"] },
   ];
 }

@@ -343,6 +343,8 @@ describe("chatMode", () => {
     // One line each, and each says the thing it drops.
     expect(MODE_LINES.incognito).toMatch(/writes nothing/);
     expect(MODE_LINES.incognito).toMatch(/unread by other chats/);
+    // Backlog 405: Incognito is also the chat that knows nothing about him.
+    expect(MODE_LINES.incognito).toMatch(/knows nothing about you/);
     expect(MODE_LINES.ephemeral).toMatch(/nothing is kept/);
   });
 });

@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // The phone's handlers in the Mac's window (item 246, wave 1, 1B) against a
 // stand-in for the app's state, the backend and Tauri's event bus.
 const calls: string[] = [];
+/** Backlog 364: what each message action was aimed with. */
+const aims: unknown[][] = [];
 /** `remote_claim`'s ids (132 (d)), apart from `calls` so the older
  *  tests' exact call lists stand as they were. */
 const claims: number[] = [];
@@ -77,8 +79,12 @@ vi.mock("@tauri-apps/api/event", () => ({
   },
 }));
 vi.mock("./api", () => ({
-  forkSession: async (upto: number) => ({ events: [{ event: "fork", upto }], session: "fork-1", forked: true }),
-  editMessage: async (index: number, text: string, mode: string) => {
+  forkSession: async (upto: number, at?: string) => {
+    aims.push(["forkSession", upto, at]);
+    return { events: [{ event: "fork", upto }], session: "fork-1", forked: true };
+  },
+  editMessage: async (index: number, text: string, mode: string, _set?: unknown, at?: string) => {
+    aims.push(["editMessage", index, mode, at]);
     calls.push(`editMessage ${index} ${text} ${mode}`);
     return { events: [{ event: "fork" }], session: "fork-2", forked: true };
   },
@@ -179,8 +185,12 @@ vi.mock("./state.svelte", () => {
       );
       return fake.knobs.sendOut;
     },
-    removeBlock: async () => true,
-    removeTurn: async (i: number) => {
+    removeBlock: async (i: number, b: number, _t: boolean, aim: unknown) => {
+      aims.push(["removeBlock", i, b, aim]);
+      return true;
+    },
+    removeTurn: async (i: number, aim: unknown) => {
+      aims.push(["removeTurn", i, aim]);
       if (i === 99) {
         fake.toast("that turn is not in this chat");
         return;
@@ -189,8 +199,12 @@ vi.mock("./state.svelte", () => {
     },
     renameProject: async () => {},
     resolveApproval: async () => {},
-    restoreBlock: async () => {},
-    restoreTurn: async () => {},
+    restoreBlock: async (i: number, b: number, aim: unknown) => {
+      aims.push(["restoreBlock", i, b, aim]);
+    },
+    restoreTurn: async (i: number, aim: unknown) => {
+      aims.push(["restoreTurn", i, aim]);
+    },
     resumeAfterLimit: () => {
       calls.push("resume");
       if (fake.knobs.resume === "schedule") a.limitResumeAt = (a.limitPause?.resetsAtMs ?? 0) + 30_000;
@@ -204,12 +218,18 @@ vi.mock("./state.svelte", () => {
     runCapture: async () => {
       calls.push("runCapture");
     },
-    rewindTo: async () => {},
-    saveEdit: async (i: number, t: string) => {
+    rewindTo: async (to: number, aim: unknown) => {
+      aims.push(["rewindTo", to, aim]);
+    },
+    saveEdit: async (i: number, t: string, _set: unknown, aim: unknown) => {
+      aims.push(["saveEdit", i, aim]);
       a.events = [{ event: "edit", index: i, text: t }];
       return true;
     },
-    saveReplyEdit: async () => false,
+    saveReplyEdit: async (i: number, _c: unknown, aim: unknown) => {
+      aims.push(["saveReplyEdit", i, aim]);
+      return false;
+    },
     send: async (text: string, images: unknown[]) => calls.push(`send ${text} ${images.length}`),
     setCheckpoint: async () => {},
     setPromptLayer: async () => {},
@@ -270,6 +290,48 @@ beforeEach(() => {
   fake.aside.finish.length = 0;
   fake.aside.cancelled.length = 0;
   Object.assign(fake.app.draft, { engine: "claude-code", agentModel: "opus", agentEffort: "", agentAsk: false, agentPlan: false });
+});
+
+describe("the phone's aim (backlog 364)", () => {
+  const at = "2026-10-13T07:19:57.1Z";
+  // A mocked state function changes no log, so `attempt` may call it
+  // refused; what was asked is what is checked here.
+  const go = (a: Parameters<typeof runAct>[2]) => runAct("c1", null, a).catch(() => null);
+  beforeEach(() => {
+    aims.length = 0;
+  });
+  it("goes with each message action as it came", async () => {
+    await go({ op: "remove", index: 3, at });
+    await go({ op: "restore", index: 4, at, nth: 0 });
+    await go({ op: "remove_block", index: 4, block: 1, at, nth: 0 });
+    await go({ op: "restore_block", index: 4, block: 1, at, nth: 0 });
+    await go({ op: "edit", index: 3, text: "x", mode: "save", at });
+    await go({ op: "edit", index: 4, text: "x", mode: "save", block: 0, at, nth: 0 });
+    await go({ op: "rewind", to: 3, at });
+    await go({ op: "fork", upto: 3, at });
+    await go({ op: "edit", index: 3, text: "x", mode: "send", at });
+    expect(aims).toEqual([
+      ["removeTurn", 3, { at }],
+      ["restoreTurn", 4, { at, nth: 0 }],
+      ["removeBlock", 4, 1, { at, nth: 0 }],
+      ["restoreBlock", 4, 1, { at, nth: 0 }],
+      ["saveEdit", 3, { at }],
+      ["saveReplyEdit", 4, { at, nth: 0 }],
+      ["rewindTo", 3, at],
+      ["forkSession", 3, at],
+      ["editMessage", 3, "send", at],
+    ]);
+  });
+  it("an older phone's action, with none, goes bare — never aimed from the Mac's own list", async () => {
+    await go({ op: "remove", index: 0 });
+    await go({ op: "rewind", to: 0 });
+    await go({ op: "fork", upto: 0 });
+    expect(aims).toEqual([
+      ["removeTurn", 0, null],
+      ["rewindTo", 0, false],
+      ["forkSession", 0, undefined],
+    ]);
+  });
 });
 
 describe("a chat action from the phone", () => {

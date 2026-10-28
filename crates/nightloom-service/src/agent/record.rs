@@ -22,7 +22,7 @@
 //! [`SessionEvent::AgentSession`]: nightloom_core::SessionEvent
 
 use chrono::{DateTime, Utc};
-use nightloom_core::{CacheTtl, ContentBlock, Role, Session, Usage};
+use nightloom_core::{CacheKey, CacheTtl, ContentBlock, Role, Session, Usage};
 
 use crate::TurnEvent;
 
@@ -181,6 +181,27 @@ pub struct Recorder<'a> {
     /// parent when the round's assistant message closes — see
     /// [`Recorder::flush_subagents`] for why then.
     subagents: Vec<(String, String)>,
+    /// The settings the turn was spawned with that a change to would lose
+    /// its cache (nightshift backlog 408), written on every assistant
+    /// message it records. `None` until the turn sets it.
+    cache_key: Option<CacheKey>,
+}
+
+/// The cache-relevant settings of a Claude Code spawn (nightshift backlog
+/// 408): what [`CacheKey`] keeps, read off the spec the turn runs with.
+/// Tools count as on unless the CLI gets the empty set — the read-only list
+/// of an Incognito or Chat turn is still tools, and the window's switch is
+/// what the comparison reads.
+pub fn cache_key(spec: &super::AgentSpec) -> CacheKey {
+    let mode = spec.ask.as_ref().map(|a| a.mode);
+    CacheKey {
+        engine: "claude-code".into(),
+        model: spec.model.clone(),
+        tools: spec.tools.as_ref().is_none_or(|t| !t.is_empty()),
+        safe_mode: spec.safe_mode,
+        ask: matches!(mode, Some(super::AskMode::Ask | super::AskMode::Plan)),
+        plan: mode == Some(super::AskMode::Plan),
+    }
 }
 
 impl<'a> Recorder<'a> {
@@ -198,7 +219,14 @@ impl<'a> Recorder<'a> {
             sent_at: Utc::now(),
             wrote: false,
             subagents: Vec::new(),
+            cache_key: None,
         }
+    }
+
+    /// The settings the turn was spawned with (nightshift backlog 408),
+    /// read off its spec by [`cache_key`].
+    pub fn key_cache_from(&mut self, spec: &super::AgentSpec) {
+        self.cache_key = Some(cache_key(spec));
     }
 
     /// The model the CLI resolved to, once its `init` line has named it.
@@ -432,7 +460,7 @@ impl<'a> Recorder<'a> {
             return;
         }
         let blocks = std::mem::take(&mut self.blocks);
-        self.session.record_assistant_timed(
+        self.session.record_assistant_keyed(
             self.model.clone(),
             blocks,
             stop_reason.map(String::from),
@@ -440,6 +468,7 @@ impl<'a> Recorder<'a> {
             None,
             self.sent_at,
             Some(CLAUDE_CODE_CACHE_TTL),
+            self.cache_key.clone(),
         );
         self.wrote = true;
     }
@@ -1166,5 +1195,61 @@ mod tests {
             subagent_block("p", "a\n"),
             "<subagent parent=\"p\">\na\n</subagent>"
         );
+    }
+
+    /// Backlog 408: each reply keeps the cache-relevant settings its turn
+    /// was spawned with; a recorder never told them records none.
+    #[test]
+    fn a_reply_keeps_the_settings_its_cache_was_built_with() {
+        let mut spec = crate::agent::AgentSpec::new("/tmp");
+        spec.model = Some("haiku".into());
+        spec.tools = Some(vec![]);
+        spec.safe_mode = true;
+        let mut s = Session::new();
+        s.record_user("q");
+        let mut r = Recorder::new(&mut s, "claude-haiku-5-5");
+        r.key_cache_from(&spec);
+        r.push_block(ContentBlock::Text { text: "a".into() });
+        r.finish(Some("end_turn"));
+        let SessionEvent::AssistantMessage {
+            cache_key: kept, ..
+        } = s.events().last().unwrap()
+        else {
+            panic!("no reply");
+        };
+        assert_eq!(
+            kept.as_ref(),
+            Some(&CacheKey {
+                engine: "claude-code".into(),
+                model: Some("haiku".into()),
+                tools: false,
+                safe_mode: true,
+                ask: false,
+                plan: false,
+            })
+        );
+        let line = serde_json::to_string(s.events().last().unwrap()).unwrap();
+        assert!(
+            line.contains(r#""cache_key":{"engine":"claude-code","model":"haiku","tools":false"#),
+            "{line}"
+        );
+
+        // Tools on (no `--tools`) and the CLI's default model.
+        let spec = crate::agent::AgentSpec::new("/tmp");
+        let key = cache_key(&spec);
+        assert!(key.tools && key.model.is_none() && !key.plan);
+
+        let mut s = Session::new();
+        s.record_user("q");
+        let mut r = Recorder::new(&mut s, "m");
+        r.push_block(ContentBlock::Text { text: "a".into() });
+        r.finish(Some("end_turn"));
+        assert!(matches!(
+            s.events().last().unwrap(),
+            SessionEvent::AssistantMessage {
+                cache_key: None,
+                ..
+            }
+        ));
     }
 }

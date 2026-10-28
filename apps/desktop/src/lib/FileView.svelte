@@ -17,6 +17,8 @@
   import { renderMarkdown } from "./markdown";
   import { fmtSize } from "./cards";
   import type { TabContent } from "./tabs";
+  import { fileSegments } from "./codeHighlight";
+  import { firstTexError, isTexPath } from "./latexLog";
 
   let { content }: { content: Extract<TabContent, { kind: "file" }> } = $props();
 
@@ -47,6 +49,44 @@
   });
 
   const src = $derived(file?.data ? `data:${file.media_type};base64,${file.data}` : null);
+  // Item 380: text drawn in the chat's code colours, by the file's extension
+  // (plain past the highlighter's cap).
+  const segs = $derived(file?.text != null ? fileSegments(file.text, content.path) : []);
+
+  // Item 381: a `.tex` tab is split, its source left and the PDF TeX makes
+  // of it right. It renders once each time the file is read: on open, and
+  // on Re-render (which reads the source again first).
+  const tex = $derived(file?.kind === "text" && isTexPath(content.path));
+  let render = $state<api.LatexRender | null>(null);
+  let renderFailed = $state<string | null>(null);
+  let rendering = $state(false);
+  $effect(() => {
+    if (!tex || !file) return;
+    const path = content.path;
+    const chat = content.session ?? app.activeSessionId;
+    let stale = false;
+    rendering = true;
+    renderFailed = null;
+    api
+      .renderLatex(path, chat)
+      .then((r) => {
+        if (!stale) render = r;
+      })
+      .catch((e) => {
+        if (!stale) {
+          render = null;
+          renderFailed = String(e);
+        }
+      })
+      .finally(() => {
+        if (!stale) rendering = false;
+      });
+    return () => {
+      stale = true;
+    };
+  });
+  const pdfSrc = $derived(render?.pdf ? `data:application/pdf;base64,${render.pdf}` : null);
+  const texError = $derived(render && !render.pdf && render.log ? firstTexError(render.log) : null);
 
   async function reveal(): Promise<void> {
     try {
@@ -78,6 +118,14 @@
         >{plain ? "Formatted" : "Plain"}</button
       >
     {/if}
+    {#if tex && !render?.missing_tex}
+      <button
+        class="ns-btn ghost small"
+        disabled={rendering}
+        onclick={() => reads++}
+        use:tip={"Read the source again and compile it with TeX"}>{rendering ? "Rendering…" : "Re-render"}</button
+      >
+    {/if}
     <button class="ns-btn ghost small" onclick={() => reads++} use:tip={"Read the file again"}>Reload</button>
     <button class="ns-btn ghost small" onclick={() => void reveal()} use:tip={"Show in the file manager"}>Reveal</button>
   </header>
@@ -107,8 +155,36 @@
     </div>
   {:else if file.kind === "markdown" && !plain}
     <div class="body markdown">{@html renderMarkdown(file.text ?? "")}</div>
+  {:else if tex && !render?.missing_tex}
+    <div class="tex-wrap">
+      <div class="tex-split">
+        <pre class="body text mono"><code>{#each segs as sg, j (j)}<span class={sg.cls}>{sg.text}</span>{/each}</code></pre>
+        <div class="tex-out">
+          {#if pdfSrc}
+            {#key pdfSrc}<embed class="pdf" src={pdfSrc} type="application/pdf" title={`${content.path} rendered`} />{/key}
+          {:else if rendering}
+            <p class="dim">Rendering with TeX…</p>
+          {:else if renderFailed}
+            <div class="tex-error"><p>{renderFailed}</p></div>
+          {:else if render}
+            <div class="tex-error">
+              {#if texError}
+                <p class="tex-error-title">TeX stopped{texError.line != null ? ` at line ${texError.line}` : ""}:</p>
+                <pre class="mono">! {texError.message}{texError.line != null ? `\nl.${texError.line} ${texError.context ?? ""}` : ""}</pre>
+              {:else}
+                <p class="tex-error-title">TeX did not make a PDF:</p>
+                <pre class="mono">{render.message ?? "no error line in its log"}</pre>
+              {/if}
+            </div>
+          {/if}
+        </div>
+      </div>
+    </div>
   {:else if file.kind === "markdown" || file.kind === "text"}
-    <pre class="body text mono">{file.text ?? ""}</pre>
+    {#if tex && render?.missing_tex}
+      <p class="tex-note">No TeX is installed on this Mac (Nightloom looks in /Library/TeX/texbin, where MacTeX puts it), so only the source is shown.</p>
+    {/if}
+    <pre class="body text mono"><code>{#each segs as sg, j (j)}<span class={sg.cls}>{sg.text}</span>{/each}</code></pre>
   {:else}
     <div class="note-card">
       <p>Nightloom does not draw this kind of file. Its own application can open it.</p>
@@ -169,6 +245,9 @@
     white-space: pre-wrap;
     word-break: break-word;
   }
+  .text code {
+    font: inherit;
+  }
   .media {
     flex: 1;
     min-height: 0;
@@ -199,6 +278,68 @@
     width: 100%;
     height: 100%;
     border: none;
+  }
+  /* Item 381: source | PDF, half and half; stacked (source above) when the
+     pane is narrower than 640 px, as a 700 pt window's pane is. */
+  .tex-wrap {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    container-type: inline-size;
+  }
+  .tex-split {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
+  .tex-split > .body {
+    border-right: 1px solid var(--line);
+  }
+  @container (max-width: 639px) {
+    .tex-split {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+    }
+    .tex-split > .body {
+      border-right: none;
+      border-bottom: 1px solid var(--line);
+    }
+  }
+  .tex-out {
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--well);
+  }
+  .tex-error {
+    margin: 16px;
+    padding: 14px 18px;
+    border: 1px solid var(--line2);
+    border-radius: 8px;
+    background: var(--bg);
+    font-size: 13px;
+    color: var(--ink);
+    overflow: auto;
+  }
+  .tex-error-title {
+    margin: 0 0 8px;
+  }
+  .tex-error pre {
+    margin: 0;
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--del-fg);
+  }
+  .tex-note {
+    margin: 0;
+    padding: 10px 24px 0;
+    font-size: 12.5px;
+    color: var(--dim);
   }
   .note-card {
     margin: 32px auto;

@@ -121,9 +121,9 @@
           {/if}
         </div>
         {#if unread}
-          <span class="ns-pill open"><span class="dot"></span>unread{#if entry?.modified} · written {hhmm(entry.modified)}{/if}</span>
+          <span class="ns-pill open"><span class="dot"></span>unread{#if entry?.modified}{" · "}written {hhmm(entry.modified)}{/if}</span>
         {:else}
-          <span class="ns-pill grey">read{#if entry?.modified} · written {hhmm(entry.modified)}{/if}</span>
+          <span class="ns-pill grey">read{#if entry?.modified}{" · "}written {hhmm(entry.modified)}{/if}</span>
         {/if}
         <span class="spacer"></span>
         <button class="ns-btn ghost small" onclick={openInNotes}>Open in Notes</button>

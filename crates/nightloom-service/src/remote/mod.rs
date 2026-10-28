@@ -2989,10 +2989,12 @@ mod tests {
                         index: 0,
                         text: "better".into(),
                         mode: api::EditMode::Save,
-                        block: None
+                        block: None,
+                        at: None,
+                        nth: None,
                     }
                 ),
-                ("abc".to_string(), ChatAction::Fork { upto: 0 }),
+                ("abc".to_string(), ChatAction::Fork { upto: 0, at: None }),
             ]
         );
         server.stop().await;

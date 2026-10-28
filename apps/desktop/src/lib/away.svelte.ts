@@ -25,9 +25,19 @@ export const presence = $state({ away: false });
 let started = false;
 let windowFocused = true;
 
+const awayListeners: Array<() => void> = [];
+
+/** Called each time he leaves (away turns true) — the held needs-you
+ *  banner (nightshift backlog 373) posts then. */
+export function onAway(cb: () => void): void {
+  awayListeners.push(cb);
+}
+
 function update(): void {
   const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
+  const was = presence.away;
   presence.away = hidden || !windowFocused;
+  if (presence.away && !was) for (const cb of awayListeners) cb();
 }
 
 /** For tests and the harness: what the listeners would have set. */

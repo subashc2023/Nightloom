@@ -23,6 +23,7 @@ describe("dreamEngineRows", () => {
 
   it("says what the rail is on right now, on either engine", () => {
     const d = defaultDraft();
+    d.engine = "provider"; // a fresh draft is on Claude Code since 449
     expect(railNow(d)).toMatch(/^Anthropic · .* · its API key$/);
     d.engine = "claude-code";
     d.agentModel = "haiku";

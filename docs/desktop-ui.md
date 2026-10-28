@@ -752,6 +752,19 @@ written over an `AGENTS.md` a picked folder has — then makes the folder, write
 `AGENTS.md` when there was text (the file the preamble reads whole; nothing
 else), registers under the typed name and opens the project. No dialog appears.
 
+**Use my practices (nightshift backlog 432, 2026-10-27).** His practices file
+reaches a Claude Code chat only through a project `CLAUDE.md` that imports it,
+so the form has a *Practices* row: a "Use my practices" box, ticked by default
+(blocker 1573), that has Create also write `CLAUDE.md` with
+`@~/.claude/practices/practices.md` as its first line and the project's name
+as a header (`project::write_practices_claude_md`, opened `create_new`). A
+picked folder that already has a `CLAUDE.md` gets a line saying it is kept,
+not a box; nothing is ever written over or into an existing one. The row is
+absent when `~/.claude/practices/practices.md` is not there. Unticking is
+kept in the draft (`claudeMd: false`) across a quit. *Open project…* on a
+folder with no `CLAUDE.md` offers rather than writes: a toast whose
+"Add CLAUDE.md" button calls `add_practices_claude_md` (blocker 1574).
+
 The draft is `app.newProjectDraft`, not component state (the never-lose-work
 rule): Escape, Cancel, a click on a chat and a project switch all leave the form
 with the name, the instructions and a picked folder still in it, marked
@@ -1082,7 +1095,10 @@ the buttons:
   back. Cancel, Escape, and opening another turn's editor ask before
   dropping a changed edit (`editDirty`).
 
-**Remove** asks nothing: it is the same `elide` marker the context panel
+**Remove** ~~asks nothing~~ (2026-10-13, nightshift item 356: a trash
+button, red on hover, apart from Edit's pencil; it asks first in a
+confirmation naming the message, then the "Removed from context" undo toast
+follows; `removeAsk.ts` holds the words): it is the same `elide` marker the context panel
 records, and the transcript now draws a removed turn as its placeholder
 ("removed from the context — still in the log"), greyed, with "what was
 removed" a click away; an assistant reply keeps its tool-call chips. It is
@@ -1227,7 +1243,13 @@ a rename in progress — and the app's stack is untouched. On macOS the Edit
 menu's Undo and Redo are the app's own items now, retitled live with the
 operation ("Undo rewind", "Redo remove") and disabled when there is nothing
 to reverse and no text box has the focus (`set_undo_menu`); a click or ⌘Z
-with a text box focused hands the box its own undo through the webview.
+with a text box focused hands the box its own undo — ~~through the webview~~
+(2026-10-27, item 421: WebKit's `execCommand` stack is the whole page's, so
+⌘Z in the Find bar undid the message box) from the box's own history: the
+message box's and edit box's `BoxHistory`, CodeMirror's for a formatted box
+or note, and `fieldUndo.ts`'s per-field `BoxHistory` for every other plain
+field. A run of typing is one step until the caret moves or a pause of
+over 500 ms, as in CodeMirror.
 Elsewhere `App.svelte` binds the keys. ⌘K has "Undo …" / "Redo …" rows in
 an Edit group, greyed when there is nothing. A toast names every step
 ("Undid rename"), since the change may be off screen. Both are no-ops while
@@ -1282,6 +1304,33 @@ is no file to drop again), and × on it offers it back in a toast. In the
 transcript a text attachment shows its word count beside the chip; a click
 unfolds the text in place. Rules: `pasteAttach.ts` (pure, tested). The phone
 composer is not changed.
+
+**⌘V with nothing to type in (2026-10-13, nightshift item 351).** With the
+focus outside every text field — the transcript, a button, the sidebar,
+nothing — ⌘V (and ⌥⌘V) pastes into the open chat's box as a focused paste
+would. The window's keydown (capture, `pasteToCompose.ts`) prevents the key
+and asks the chat's composer, which focuses its box with its kept caret (⌘L's,
+blocker 980) and calls `paste_into_focus`, so the box's own `onpaste` handles
+it: images to chips, 348's math, 315's code fence, the long-paste offer, the
+clipboard ring. A `paste` event that still reaches the window with nothing to
+paste into (Edit ▸ Paste from the menu, if WebKit sends one) is handed to the
+same `onpaste` during its dispatch, plain text then put in at the caret. Any
+focused text field keeps its own paste; a floating aside card, a modal, menu,
+the palette or the find bar open, ⌘⇧V, or (with two panes) the chat not in
+the focused pane leave the key alone. Rules: `pastesToComposer` (pure, tested).
+
+**A long draft keeps its scroll place (2026-10-13, nightshift item 355).** A
+draft taller than its box comes back scrolled where he left it after a chat
+switch, a tab switch, a reload or a quit — not at its top. The composer (the
+chat's box and an aside's) keeps the box's scrollTop in the drafts store
+beside the caret (`Draft.scroll`), recorded as the box scrolls and once more
+just before the key changes; a key arriving holds its place (`ScrollHold`,
+`boxPlace.ts`) for up to 1.5 s, put back after every re-measure of the box,
+until he presses, scrolls, types or pastes in it. A draft with no kept scroll
+shows its kept caret instead. The message-edit box keeps each textarea's
+scroll and caret with its stashed edit (`EditStash.boxes`, `trackPlace`) and
+puts them back once the editor is drawn again (`putPlace`). Tested:
+`boxPlace.test.ts`.
 
 `Attachment.kind` is carried rather than sniffed from the media type: a document
 has no thumbnail, and a chip that guessed wrong would render a broken `<img>`. The
@@ -1379,7 +1428,9 @@ else, so a switch swaps the box. The pending chat's draft follows the chat it
 makes: `send` and `sendAgent` pick the id off the re-synced `session_created`
 line and one line there calls ~~`moveDraft("new", id)`~~ `moveDraft(pendingKey,
 id)` before `activeSessionId` changes, which carries anything typed *during*
-the first turn (the box is not locked while a reply streams). Sending clears that chat's entry; nothing else does — not
+the first turn (the box is not locked while a reply streams, nor — since backlog 365, 2026-10-13 — while a
+connect runs with no connection yet, as on a switch to a chat on the other engine; it locks only with no connection and
+none coming, and a lock that took the focus gives it back, kept caret and all, when it lifts: `boxLock.ts`). Sending clears that chat's entry; nothing else does — not
 a switch, not Escape, not deleting the chat. A failed send puts the words and
 the chips back under the chat now open (the text only if nothing new was typed
 meanwhile); until today only the attachments came back.
@@ -1766,6 +1817,17 @@ message, else *New chat*. Nothing is sent anywhere: no push, no phone
 (blocker 078). The pure parts — the preference, the copy, the file count —
 are in `src/lib/notify.ts`, pinned by `notify.test.ts`.
 
+Since 2026-10-18 (nightshift backlog 373) a needs-you call the focused
+window received is **held**, not dropped: if he leaves (the native window
+loses focus or the document is hidden — `away.svelte.ts`'s `onAway`) while
+the call still waits, its banner posts then; a card answered before he
+leaves posts nothing. He watched a question card land, switched apps, and
+got no banner — the decision had been made once, at arrival. Measured the
+same day: Nightloom's banners do reach Notification Centre on macOS 27
+(usernoted logs "Presenting … as banner" for `app.nightloom.desktop`),
+though `com.apple.ncprefs.plist` has no entry for it. Pinned by
+`notify373.test.ts`.
+
 A third switch since 2026-09-16 evening (nightshift backlog 116): *When
 Usage → Refresh now finishes*, the one banner that is posted to a focused
 window too and whose click opens a page — [usage-ledger.md](usage-ledger.md)
@@ -1879,6 +1941,28 @@ composer's bar, the top bar's mark and one control on the Context page.
 → Conversation, *Hand off at [70] % of the window*. Lowering it to a few
 percent on a test chat is how to see the whole flow on Haiku without a
 long context.
+
+**The mark since 2026-10-27 (nightshift backlog 436, blocker 1569):** a chat
+without its own percent is asked at the Settings percent (70%) **or at
+300k tokens, whichever comes first** (`mark` in `handoff.svelte.ts`) —
+140k on a 200k window, 300k on a 1M one. 300k is his own stop point in the
+practices file (§2, his call 2026-09-24); the 70% was backlog 086's default
+when every window was 200k, and alone it asked at 700k on a 1M window.
+Settings → Subscription → Hand-off holds the cap (*or at [300] k tokens*;
+0 turns it off). A chat's own percent is his explicit choice and is not
+capped. The re-ask after *Stay here* is still 85% of the window.
+
+**Code chats (backlog 431, blockers 1567–1568):** an unbound chat's
+built-in wrap-up now closes as practices §2 does — mdcheck flags into the
+queue, the STATE section, a commit by path, the backlog index (the command
+the project's CLAUDE.md names, else `backlogctl.py index`), a push only
+where the project says so (`CODE_CLOSE`); each step is skipped where it
+does not apply. A thread-bound chat whose project has a `HANDOFF.md` or a
+`backlog/` at its top (probed through `named_files` when the chat or
+project changes and when the notice comes up) keeps the thread wrap-up, but
+its step 5 adds a short STATE section pointing at the thread and the same
+close instead of "Do not write HANDOFF.md"; the card says *Thread and
+HANDOFF.md updated*. A thread chat in any other project is unchanged.
 
 ### Pass 2 (2026-09-16 afternoon, nightshift blocker 120; answers blocker 092)
 

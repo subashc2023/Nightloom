@@ -128,7 +128,7 @@
   </nav>
 
   <div class="pane">
-    <input
+    <input autocorrect="off" autocapitalize="off"
       class="name"
       type="text"
       value={d.name}

@@ -22,7 +22,7 @@
  */
 import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
-import { app, addToast, menuInterceptors, registerTerminalHooks } from "./state.svelte";
+import { app, addToast, menuInterceptors, registerTerminalHooks, sidebarShown } from "./state.svelte";
 import { TERM_DRAG } from "./tabs";
 import {
   TERM_DEFAULT_HEIGHT,
@@ -239,7 +239,7 @@ export async function initTerminalEvents(): Promise<void> {
  * (`.pane-dock`'s parent), or the window's less the sidebar.
  */
 function firstGrid(pane: string | null): { cols: number; rows: number } {
-  let width = window.innerWidth - (app.layout.sidebarCollapsed ? 0 : app.layout.sidebarWidth);
+  let width = window.innerWidth - (app.layout.sidebarCollapsed ? 0 : sidebarShown());
   try {
     const slot = document.querySelector<HTMLElement>(`.pane-dock[data-pane="${pane ?? app.tabs.focused}"]`);
     const column = slot?.parentElement ?? document.querySelector<HTMLElement>(".main");
@@ -258,10 +258,12 @@ function firstGrid(pane: string | null): { cols: number; rows: number } {
  * dock); without one it goes to `targetDock()` — the focused pane's dock,
  * else the window's — or opens the window's dock under the focused pane
  * (one dock for the window by default, blocker 155). Opens the dock if it
- * was hidden.
+ * was hidden. `at` is where it opens when the project has no folder.
  */
-export async function newShell(pane?: string | null): Promise<ShellRow | null> {
-  const cwd = terminalCwd();
+export async function newShell(pane?: string | null, at?: string | null): Promise<ShellRow | null> {
+  // `at`: a folder of the caller's (backlog 409's Sign in tab, which needs
+  // no project and opens in the home folder when the chat has none).
+  const cwd = terminalCwd() ?? at ?? null;
   if (!cwd) {
     addToast("No folder to open a shell in — a terminal needs a project with a folder.");
     return null;
@@ -279,7 +281,7 @@ export async function newShell(pane?: string | null): Promise<ShellRow | null> {
     dock.active = row.id;
     dock.open = true;
     dock.collapsed = false;
-    term.cwd ??= cwd;
+    if (cwd === terminalCwd()) term.cwd ??= cwd;
     term.pane ??= key;
     requestFocus(key);
     return row;

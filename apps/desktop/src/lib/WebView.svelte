@@ -172,7 +172,7 @@
     <button class="wb" use:tip={"Back"} aria-label="Back" onclick={() => nav("back")}><Icon name="chevl" size={13} /></button>
     <button class="wb" use:tip={"Forward"} aria-label="Forward" onclick={() => nav("forward")}><Icon name="chevr" size={13} /></button>
     <button class="wb" use:tip={"Reload"} aria-label="Reload" onclick={() => nav("reload")}><Icon name="refresh" size={12} /></button>
-    <input
+    <input autocorrect="off" autocapitalize="off" spellcheck="false"
       class="addr"
       readonly
       value={content.url}
@@ -182,7 +182,7 @@
     />
     {#if loading}<span class="spin" use:tip={"Loading"}>…</span>{/if}
     {#if finding}
-      <input
+      <input autocorrect="off" autocapitalize="off" spellcheck="false"
         class="find"
         class:miss
         bind:this={field}

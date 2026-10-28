@@ -30,6 +30,9 @@ export interface PickerOption {
   label: string;
   /** The line under the label: status and last touched. */
   detail: string;
+  /** The row's tooltip: a thread's folder (`.agents/threads/<slug>/`), so the
+   *  slug is one hover away; empty for the other rows (backlog 418). */
+  hint: string;
 }
 
 /** The value "New thread…" carries; never a slug (slugs have no `:`). */
@@ -44,21 +47,29 @@ export const NO_THREAD = "";
  * shows a binding it cannot name.
  */
 export function pickerOptions(threads: ThreadInfo[], bound: string | null): PickerOption[] {
-  const rows: PickerOption[] = [{ value: NO_THREAD, label: "No thread", detail: "wrap-up writes HANDOFF.md" }];
+  const rows: PickerOption[] = [{ value: NO_THREAD, label: "No thread", detail: "wrap-up writes HANDOFF.md", hint: "" }];
   for (const t of threads) {
     const when = t.touched ? `touched ${t.touched}` : "";
     const flags = t.flags > 0 ? `${t.flags} upkeep flag${t.flags === 1 ? "" : "s"}` : "";
     rows.push({
       value: t.slug,
-      label: t.title === t.slug ? t.slug : `${t.title} (${t.slug})`,
+      // The name only (backlog 418): "Title (slug)" was what cut the rows
+      // off; the slug is in the hint.
+      label: t.title.trim() || t.slug,
       detail: [t.status, when, flags].filter((x) => x).join(" · "),
+      hint: threadFolder(t.slug),
     });
   }
   if (bound && !threads.some((t) => t.slug === bound)) {
-    rows.push({ value: bound, label: `${bound} (missing)`, detail: "no thread.md in this project" });
+    rows.push({ value: bound, label: `${bound} (missing)`, detail: "no thread.md in this project", hint: threadFolder(bound) });
   }
-  rows.push({ value: NEW_THREAD, label: "New thread…", detail: "from the project's template" });
+  rows.push({ value: NEW_THREAD, label: "New thread…", detail: "from the project's template", hint: "" });
   return rows;
+}
+
+/** A thread's folder, as the picker shows it: `.agents/threads/<slug>/`. */
+export function threadFolder(slug: string): string {
+  return `.agents/threads/${slug}/`;
 }
 
 /** The chat's thread, projected from the log: the latest live `thread`
@@ -198,6 +209,61 @@ export function threadGroups(
     if (!g.open && active && g.rows.some((r) => r.meta.id === active)) g.open = true;
   }
   return { groups: [...groups.values()], loose };
+}
+
+// ---- his order of the threads (nightshift backlog 426) ----
+
+/** Where the sidebar keeps his order of each project's threads, across launches: `{project: slugs}`. */
+export const THREAD_ORDER_KEY = "nightloom.threadOrder";
+
+/**
+ * The project's threads in his order: the backend's (most recently touched
+ * first) until he has dragged one; after that, the slugs as he left them,
+ * with any thread new since then first, in the backend's order (a new
+ * thread is the most recently touched). A slug in the order that is no
+ * longer a thread is skipped.
+ */
+export function orderedThreads(threads: ThreadInfo[], order: readonly string[] | undefined): ThreadInfo[] {
+  if (!order || order.length === 0) return threads;
+  const at = new Map(order.map((s, i) => [s, i] as const));
+  const fresh = threads.filter((t) => !at.has(t.slug));
+  const placed = threads.filter((t) => at.has(t.slug)).sort((a, b) => at.get(a.slug)! - at.get(b.slug)!);
+  return [...fresh, ...placed];
+}
+
+/** `slugs` with `slug` moved to just before `before` (`null`: to the end). */
+export function reordered(slugs: readonly string[], slug: string, before: string | null): string[] {
+  if (slug === before) return [...slugs];
+  const rest = slugs.filter((s) => s !== slug);
+  const at = before === null ? -1 : rest.indexOf(before);
+  if (at < 0) return [...rest, slug];
+  return [...rest.slice(0, at), slug, ...rest.slice(at)];
+}
+
+function readOrders(): Record<string, string[]> {
+  try {
+    const v = JSON.parse(localStorage.getItem(THREAD_ORDER_KEY) ?? "{}");
+    return v && typeof v === "object" && !Array.isArray(v) ? v : {};
+  } catch {
+    return {};
+  }
+}
+
+/** His saved order of `project`'s threads, or undefined before his first drag. */
+export function loadThreadOrder(project: string): string[] | undefined {
+  const o = readOrders()[project];
+  return Array.isArray(o) && o.every((s) => typeof s === "string") ? o : undefined;
+}
+
+/** Keep his order of `project`'s threads; best-effort, like the closed groups. */
+export function saveThreadOrder(project: string, slugs: readonly string[]): void {
+  try {
+    const all = readOrders();
+    all[project] = [...slugs];
+    localStorage.setItem(THREAD_ORDER_KEY, JSON.stringify(all));
+  } catch {
+    // best-effort
+  }
 }
 
 /** The tooltip that says the two weights apart (backlog 288): this one is light. */

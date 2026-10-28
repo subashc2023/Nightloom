@@ -1,0 +1,22 @@
+<!doctype html>
+<!-- Backlog 380 + 381: the real FileView over a mocked backend. ?file=table.tex|x.py; ?stage=ok|error|missing for the
+     .tex render; ?palette=B for a second palette. latex381-table.pdf is pdflatex's output of latex381-table.tex
+     (regenerate with /Library/TeX/texbin/pdflatex). Served by vite on a spare port, snapped with nightshift-code
+     bin/snap (WebKit); the caption carries the measurement. -->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      body { margin: 0; background: var(--paper, #111); }
+      #wrap { display: flex; height: calc(100vh - 60px); }
+      #side { width: 260px; flex: none; background: var(--well); }
+      #pane { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--sheet); }
+      #cap { font: 12px/1.5 ui-monospace, monospace; color: #ddd; background: #000; padding: 6px 8px; white-space: pre-wrap; height: 48px; overflow: hidden; }
+    </style>
+  </head>
+  <body>
+    <div id="wrap"><div id="side"></div><section id="pane"></section></div>
+    <div id="cap"></div>
+    <script type="module" src="./latex381.ts"></script>
+  </body>
+</html>

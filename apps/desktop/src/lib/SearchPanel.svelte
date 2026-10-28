@@ -251,7 +251,7 @@
   <div class="search-head">
     <div class="search-field-wrap">
       <Icon name="search" size={14} />
-      <input
+      <input autocorrect="off" autocapitalize="off"
         class="search-field"
         bind:this={field}
         bind:value={app.search.query}

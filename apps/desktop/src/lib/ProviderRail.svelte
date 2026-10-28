@@ -29,6 +29,7 @@
   } from "./state.svelte";
   import { hasOwnRules, limitsSummary, rulesFor } from "./subagentRules";
   import * as api from "./api";
+  import { PLAYWRIGHT_CHANGED } from "./playwright";
   import { launch } from "./launch.svelte";
   import { fmtTokens } from "./tokens";
   import { connectorLabel, connectorNames, setConnectorAllowed } from "./connectors";
@@ -101,6 +102,37 @@
   // longer greys the rail. A change made during one is kept and connected
   // when it settles (`scheduleApply`); a turn still locks it (backlog 214).
   const locked = $derived(app.busy);
+
+  // Playwright, Claude's own browser (nightshift backlog 367): per chat, not
+  // the rail's — on is the card's "Allow for this chat", off asks again on
+  // the next call. Read from the chat's ask folder whenever the open chat
+  // changes, and after the card's "Allow for this chat".
+  let playwright = $state<{ installed: boolean; on: boolean } | null>(null);
+  let playwrightTick = $state(0);
+  $effect(() => {
+    void playwrightTick;
+    const chat = app.activeSessionId;
+    if (!agentMode || !chat) {
+      playwright = null;
+      return;
+    }
+    api
+      .playwrightForChat(chat)
+      .then((p) => {
+        if (app.activeSessionId === chat) playwright = p;
+      })
+      .catch(() => (playwright = null));
+  });
+  $effect(() => {
+    const bump = () => (playwrightTick += 1);
+    window.addEventListener(PLAYWRIGHT_CHANGED, bump);
+    return () => window.removeEventListener(PLAYWRIGHT_CHANGED, bump);
+  });
+  function togglePlaywright(on: boolean) {
+    const chat = app.activeSessionId;
+    if (!chat) return;
+    void api.playwrightForChat(chat, on).then((p) => (playwright = p));
+  }
   // What still waits for a connect to settle: the engine, the kind and the
   // folders, whose actions return early while one runs and so would drop
   // the click (item 222's report).
@@ -670,7 +702,7 @@
       {#if showAgentField}
         <div class="row">
           <span class="lbl">Id</span>
-          <input
+          <input autocorrect="off" autocapitalize="off" spellcheck="false"
             type="text"
             bind:value={app.draft.agentModel}
             onchange={apply}
@@ -721,7 +753,7 @@
       {#if models.length > 0}
         <div class="ml" role="radiogroup" aria-label="Model">
           {#if models.length > 6}
-            <input
+            <input autocorrect="off" autocapitalize="off" spellcheck="false"
               class="mfilter"
               type="text"
               bind:value={modelFilter}
@@ -755,7 +787,7 @@
       {:else}
         <div class="row">
           <span class="lbl">Model</span>
-          <input
+          <input autocorrect="off" autocapitalize="off" spellcheck="false"
             type="text"
             bind:value={app.draft.model}
             onchange={onModelChange}
@@ -771,7 +803,7 @@
       {#if app.draft.provider === "openai-chat"}
         <div class="row">
           <span class="lbl">Base URL</span>
-          <input
+          <input autocorrect="off" autocapitalize="off" spellcheck="false"
             type="text"
             bind:value={app.draft.baseUrl}
             onchange={apply}
@@ -1241,6 +1273,20 @@
           aria-label="Browser (Claude in Chrome)"
         />
       </label>
+      <!-- Playwright, Claude's own browser (nightshift backlog 367): this
+           chat's, unlike the switches above. -->
+      <label class="swq">
+        <span class="t">Playwright for this chat</span>
+        <Hint text="Claude's own browser — a separate, invisible WebKit with no logins, not your Chrome. Every Claude Code chat has it; the first time the model reaches for it in a reply, a card asks you: Allow once (until that reply ends), Allow for this chat, or Deny. On here is Allow for this chat; turn it off and the next call asks again. The model is never told whether it is on. Off and greyed when Playwright is not installed." />
+        <input
+          type="checkbox"
+          class="sw"
+          checked={playwright?.on ?? false}
+          onchange={(e) => togglePlaywright((e.currentTarget as HTMLInputElement).checked)}
+          disabled={!playwright?.installed || !app.activeSessionId}
+          aria-label="Playwright for this chat"
+        />
+      </label>
     {/if}
 
     <!-- Shown on both engines (2026-09-14): the preamble crosses to Claude
@@ -1293,7 +1339,7 @@
             <span class="path locked dim-path" use:tip={workspaceTitle}>no folder — a Chat runs in a neutral, empty directory</span>
           {:else}
             {#if app.project}<span class="lock"><Icon name="lock" size={12} /></span>{/if}
-            <input
+            <input autocorrect="off" autocapitalize="off" spellcheck="false"
               class="path"
               class:tail={!!app.project}
               class:locked={!!app.project}
@@ -1463,7 +1509,7 @@
       <div class="sect-h"><span class="ns-k">CLI</span></div>
       <div class="row">
         <span class="lbl">Binary</span>
-        <input
+        <input autocorrect="off" autocapitalize="off" spellcheck="false"
           type="text"
           bind:value={app.draft.agentBinary}
           onchange={apply}

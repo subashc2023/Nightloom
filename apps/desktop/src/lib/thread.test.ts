@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "./api";
-import { readDraft } from "./drafts.svelte";
+import { newDraftKey, readDraft, setDraftText } from "./drafts.svelte";
 import {
   READ_ORDER,
   WRAP_UP,
@@ -21,6 +21,10 @@ import {
   threadFor,
   threadReadOrder,
   threadWrapUp,
+  CODE_CLOSE,
+  codeProbePaths,
+  codeProjectFor,
+  noteCodeProject,
 } from "./handoff.svelte";
 import { app, chatThread, continueChat, setChatThread } from "./state.svelte";
 import { NEW_THREAD, NO_THREAD, pickerOptions, replaceStartHere, slugFrom, validSlug } from "./thread";
@@ -86,9 +90,18 @@ describe("the picker's rows", () => {
       null,
     );
     expect(rows.map((r) => r.value)).toEqual([NO_THREAD, "stuart-brainstorm", "side", NEW_THREAD]);
-    expect(rows[1].label).toBe("Stuart brainstorm (stuart-brainstorm)");
+    // The name only; the slug is the row's hint (backlog 418).
+    expect(rows[1].label).toBe("Stuart brainstorm");
+    expect(rows[1].hint).toBe(".agents/threads/stuart-brainstorm/");
     expect(rows[1].detail).toBe("As of 1:00 AM — round 3 · touched 2026-10-02 · 1 upkeep flag");
     expect(rows[2].label).toBe("side");
+    expect(rows[0].hint).toBe("");
+    expect(rows[3].hint).toBe("");
+  });
+
+  it("names a thread whose title is blank by its slug", () => {
+    const rows = pickerOptions([info("blank", { title: "  " })], null);
+    expect(rows[1].label).toBe("blank");
   });
 
   it("keeps a binding the project no longer has, marked, so it is never shown as none", () => {
@@ -132,6 +145,42 @@ describe("the wrap-up and the read order a chat gets", () => {
     expect(readOrder("c1")).toBe(threadReadOrder("stuart-brainstorm"));
     expect(readOrder("c1")).toContain('the "## Queue" section of .agents/threads/stuart-brainstorm/thread.md');
     expect(readOrder("c1")).not.toContain("backlog/INDEX.md");
+  });
+
+  // Backlog 431 (blockers 1567, 1568): a thread chat in a code project —
+  // a HANDOFF.md or a backlog/ at the top — keeps the thread wrap-up and
+  // adds a STATE section and practices §2's close; anywhere else it is as
+  // before. The read order stays the thread's either way.
+  it("a bound chat in a code project also writes a STATE section and commits", () => {
+    noteThread("c1", "stuart-brainstorm");
+    noteCodeProject("c1", true);
+    expect(codeProjectFor("c1")).toBe(true);
+    const w = message("c1");
+    expect(w).toBe(threadWrapUp("stuart-brainstorm", [], true));
+    expect(w).not.toContain("Do not write HANDOFF.md");
+    expect(w).toContain("Add a short new section at the top of HANDOFF.md");
+    expect(w).toContain("## STATE AS OF <date time AM/PM>");
+    expect(w).toContain("its reasoning is in .agents/threads/stuart-brainstorm/");
+    expect(w).toContain(CODE_CLOSE);
+    expect(w).toContain("thread.md by small edits, never a rewrite");
+    expect(readOrder("c1")).toBe(threadReadOrder("stuart-brainstorm"));
+    noteCodeProject("c1", false);
+    expect(codeProjectFor("c1")).toBe(false);
+    expect(message("c1")).toContain("Do not write HANDOFF.md for this chat.");
+  });
+
+  it("an unbound chat is a code chat whatever the probe says", () => {
+    noteCodeProject("c1", false);
+    expect(message("c1")).toBe(WRAP_UP);
+    expect(message("c1")).toContain(CODE_CLOSE);
+    noteCodeProject("c1", true);
+    expect(message("c1")).toBe(WRAP_UP);
+    noteCodeProject("c1", false);
+  });
+
+  it("probes HANDOFF.md and backlog/ at the project's top", () => {
+    expect(codeProbePaths("/p/site/")).toEqual(["/p/site/HANDOFF.md", "/p/site/backlog/INDEX.md", "/p/site/backlog/order.json"]);
+    expect(codeProbePaths("/p/site")[0]).toBe("/p/site/HANDOFF.md");
   });
 
   it("carries the upkeep flags Nightloom found", () => {
@@ -233,5 +282,26 @@ describe("Continue on a bound chat", () => {
     expect(readDraft("chat-next").text).toBe(`${threadReadOrder("stuart-brainstorm")}\n\nStart with T-04.`);
     expect(threadFor("chat-next")).toBe("stuart-brainstorm");
     expect(api.threadUpkeep).toHaveBeenCalledWith("stuart-brainstorm", true);
+  });
+});
+
+describe("binding the draft New chat (backlog 420)", () => {
+  it("binds that same chat and its draft stays in its box — no second New chat holds it", async () => {
+    vi.mocked(api.setChatThread).mockClear();
+    app.busy = false;
+    app.connecting = false;
+    app.events = [];
+    app.activeSessionId = null;
+    app.pendingMode = "normal";
+    const pending = newDraftKey(app.project?.id, app.pendingMode);
+    setDraftText(pending, "half a thought about Stuart");
+    expect(await setChatThread("stuart-brainstorm")).toBe(true);
+    expect(app.activeSessionId).toBe("t1");
+    expect(chatThread(app.events)).toBe("stuart-brainstorm");
+    expect(readDraft("t1").text).toBe("half a thought about Stuart");
+    expect(readDraft(pending).text).toBe("");
+    setDraftText("t1", "");
+    app.events = [];
+    app.activeSessionId = null;
   });
 });

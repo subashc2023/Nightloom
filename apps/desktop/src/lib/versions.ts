@@ -105,37 +105,58 @@ export function sidebarSessions(sessions: SessionMeta[], map: VersionMap): Sessi
 }
 
 /**
- * The chat whose row `id` would take on *Make main*: what has the place
- * of its parent (an edit fork not yet main), or what has its own place
- * (a hidden version being put back). Null when there is nothing to take.
+ * The chat whose row `id` would take on *Make main*: the nearest of
+ * `replacedAll` — one layer per click (blocker 1511, his answer:
+ * ~~the topmost, the whole line in one click~~, 2026-10-19). Null when
+ * there is nothing to take.
  */
 export function replacedBy(sessions: SessionMeta[], map: VersionMap, id: string): string | null {
+  return replacedAll(sessions, map, id)[0] ?? null;
+}
+
+/**
+ * Every chat whose place *Make main* on `id` takes, nearest first: what
+ * has its own place (a hidden version being put back), then, up its line
+ * of edit forks to the first chat that is not one, what has each
+ * ancestor's place. Make main takes only the first (one layer per click,
+ * blocker 1511); the walk is so a chat that is still a fork at any depth
+ * keeps its button (item 400): before 400 only the parent was looked at,
+ * so a thread inside a thread, once in its parent's place, was still a
+ * thread of the original with no button. A hand-off continuation ends the
+ * line (another chat, not a version). Empty: nothing to take.
+ */
+export function replacedAll(sessions: SessionMeta[], map: VersionMap, id: string): string[] {
   const listed = new Set(sessions.map((s) => s.id));
-  if (!listed.has(id)) return null;
-  const own = mainOf(id, map, listed);
-  if (own !== id) return own;
-  const meta = sessions.find((s) => s.id === id);
-  if (!isEditFork(meta)) return null;
-  const parent = meta!.forked_from!.session;
-  if (!listed.has(parent)) return null;
-  const m = mainOf(parent, map, listed);
-  return m === id ? null : m;
+  if (!listed.has(id)) return [];
+  const byId = new Map(sessions.map((s) => [s.id, s]));
+  const out: string[] = [];
+  const seen = new Set<string>();
+  let cur: string | undefined = id;
+  while (cur && listed.has(cur) && !seen.has(cur)) {
+    seen.add(cur);
+    const m = mainOf(cur, map, listed);
+    if (m !== id && !out.includes(m)) out.push(m);
+    const meta = byId.get(cur);
+    cur = isEditFork(meta) ? meta!.forked_from!.session : undefined;
+  }
+  return out;
 }
 
 /** Whether the ⋯ menus offer *Make main* on `id`. */
 export function canMakeMain(sessions: SessionMeta[], map: VersionMap, id: string): boolean {
-  return replacedBy(sessions, map, id) !== null;
+  return replacedAll(sessions, map, id).length > 0;
 }
 
 /**
  * The map after *Make main* on `id`: every chat of the group whose place
- * it takes now points at it, and its own entry is gone. Null when it
- * cannot be made main. Entries are flattened to the new main, so a later
- * Make main on any of them moves the whole group again.
+ * it takes (`replacedBy`, one layer) now points at it, and its own entry is gone.
+ * Null when it cannot be made main. Entries are flattened to the new
+ * main, so a later Make main on any of them moves the whole group again.
  */
 export function makeMain(sessions: SessionMeta[], map: VersionMap, id: string): VersionMap | null {
-  const replaced = replacedBy(sessions, map, id);
-  if (!replaced) return null;
+  const first = replacedBy(sessions, map, id);
+  if (!first) return null;
+  const replaced = new Set([first]);
   const listed = new Set(sessions.map((s) => s.id));
   const next: VersionMap = {};
   for (const [k, v] of Object.entries(map)) {
@@ -144,9 +165,9 @@ export function makeMain(sessions: SessionMeta[], map: VersionMap, id: string): 
       continue;
     }
     const m = mainOf(k, map, listed);
-    next[k] = m === replaced ? id : v;
+    next[k] = replaced.has(m) ? id : v;
   }
-  next[replaced] = id;
+  for (const r of replaced) next[r] = id;
   delete next[id];
   return next;
 }

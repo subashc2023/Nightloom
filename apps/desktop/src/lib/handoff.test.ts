@@ -42,6 +42,13 @@ describe("nextStage", () => {
     expect(nextStage("idle", 0.91, 0.7, 0.9)).toBe("due");
   });
 
+  // Item 390 (his bug): a rewind under the mark puts the notice away.
+  it("goes back to idle when the fill drops under the mark", () => {
+    expect(nextStage("due", 0.5, 0.7, 0)).toBe("idle");
+    expect(nextStage("wrapped", 0.5, 0.7, 0)).toBe("idle");
+    expect(nextStage("wrapping", 0.5, 0.7, 0)).toBe("wrapped");
+  });
+
   it("respects a per-chat threshold lower or higher than the default", () => {
     expect(nextStage("idle", 0.05, 0.03, 0)).toBe("due");
     expect(nextStage("idle", 0.8, 0.9, 0)).toBe("idle");
@@ -220,6 +227,7 @@ import {
   noteActivity,
   noteAgentTurnEnd,
   noteFill,
+  noteRewound,
   reconsider,
   resetHandoff,
   setDefaultMessage,
@@ -466,5 +474,131 @@ describe("the read order", () => {
     const old = parseStored(JSON.stringify({ default: 0.5 }));
     expect(old.readOrder).toBeNull();
     expect(old.readOrders).toEqual({});
+  });
+});
+
+// Item 390 (his bug, 2026-10-18): a rewind back under the mark.
+describe("noteRewound", () => {
+  it("puts the notice away, takes back its queued wrap-up, and asks afresh at the next crossing", () => {
+    resetHandoff();
+    noteFill("rw390-a", 60, 100, true);
+    noteFill("rw390-a", 75, 100, true);
+    expect(handoff.stage).toBe("due");
+    const queued = readDraft("rw390-a").queue.length;
+    expect(queued).toBeGreaterThan(0);
+    noteRewound("rw390-a", 40, 100);
+    expect(handoff.stage).toBe("idle");
+    expect(handoff.queuedId).toBe(0);
+    expect(readDraft("rw390-a").queue).toHaveLength(queued - 1);
+    noteFill("rw390-a", 72, 100, false);
+    expect(handoff.stage).toBe("due");
+  });
+
+  it("forgets a Stay here once under the mark", () => {
+    resetHandoff();
+    noteFill("rw390-b", 75, 100, false);
+    stayHere();
+    expect(handoff.dismissedAt).toBe(0.75);
+    noteRewound("rw390-b", 30, 100);
+    expect(handoff.dismissedAt).toBe(0);
+    noteFill("rw390-b", 71, 100, false);
+    expect(handoff.stage).toBe("due");
+  });
+
+  it("leaves another chat's notice alone, and a redo past the mark queues nothing", () => {
+    resetHandoff();
+    noteFill("rw390-c", 75, 100, false);
+    noteRewound("rw390-other", 10, 100);
+    expect(handoff.chat).toBe("rw390-c");
+    expect(handoff.stage).toBe("due");
+    noteRewound("rw390-c", 40, 100);
+    noteRewound("rw390-c", 80, 100);
+    expect(handoff.stage).toBe("due");
+    expect(handoff.queuedId).toBe(0);
+  });
+});
+
+// Backlog 436 (blocker 1569): one stop point for both windows — the
+// Settings percent or the 300k cap, whichever comes first; a chat's own
+// percent is his explicit choice and is not capped.
+import { CODE_CLOSE, DEFAULT_CAP_TOKENS, cap, cappedMark, mark, setCap } from "./handoff.svelte";
+
+describe("the mark: 70% or 300k, whichever comes first", () => {
+  it("is 140k on a 200k window and 300k on a 1M one", () => {
+    expect(DEFAULT_CAP_TOKENS).toBe(300_000);
+    expect(cappedMark(0.7, 300_000, 200_000) * 200_000).toBeCloseTo(140_000);
+    expect(cappedMark(0.7, 300_000, 1_000_000) * 1_000_000).toBeCloseTo(300_000);
+  });
+  it("falls back to the percent with no window or no cap", () => {
+    expect(cappedMark(0.7, 300_000, null)).toBe(0.7);
+    expect(cappedMark(0.7, 300_000, 0)).toBe(0.7);
+    expect(cappedMark(0.7, 0, 1_000_000)).toBe(0.7);
+  });
+  it("reads the cap back from storage, default 300k, 0 kept, junk dropped", () => {
+    expect(parseStored(null).cap).toBe(300_000);
+    expect(parseStored(JSON.stringify({ default: 0.7 })).cap).toBe(300_000);
+    expect(parseStored(JSON.stringify({ cap: 0 })).cap).toBe(0);
+    expect(parseStored(JSON.stringify({ cap: 250_000 })).cap).toBe(250_000);
+    expect(parseStored(JSON.stringify({ cap: -5 })).cap).toBe(300_000);
+    expect(parseStored(JSON.stringify({ cap: "x" })).cap).toBe(300_000);
+  });
+  it("asks at 300k on a 1M window and at 140k on a 200k one, end to end", () => {
+    setThreshold(null, 0.7);
+    setCap(300_000);
+    resetHandoff();
+    noteFill("cap-1m", 290_000, 1_000_000, false);
+    expect(handoff.stage).toBe("idle");
+    noteFill("cap-1m", 310_000, 1_000_000, false);
+    expect(handoff.stage).toBe("due");
+    resetHandoff();
+    noteFill("cap-200k", 130_000, 200_000, false);
+    expect(handoff.stage).toBe("idle");
+    noteFill("cap-200k", 145_000, 200_000, false);
+    expect(handoff.stage).toBe("due");
+  });
+  it("leaves a chat's own percent uncapped, and a raised own mark puts the notice away", () => {
+    setThreshold(null, 0.7);
+    setCap(300_000);
+    resetHandoff();
+    noteFill("cap-own", 310_000, 1_000_000, false);
+    expect(handoff.stage).toBe("due");
+    expect(mark("cap-own", 1_000_000)).toBeCloseTo(0.3);
+    setThreshold("cap-own", 0.5);
+    expect(mark("cap-own", 1_000_000)).toBe(0.5);
+    reconsider("cap-own");
+    expect(handoff.stage).toBe("idle");
+    setThreshold("cap-own", 0);
+  });
+  it("a cap of 0 is the percent alone; a negative cap is ignored", () => {
+    setCap(0);
+    expect(cap()).toBe(0);
+    expect(mark("cap-none", 1_000_000)).toBe(0.7);
+    setCap(-1);
+    expect(cap()).toBe(0);
+    setCap(300_000);
+    expect(mark("cap-none", 1_000_000)).toBeCloseTo(0.3);
+  });
+});
+
+// Backlog 431: an unbound chat is a code chat; its wrap-up closes as
+// practices §2 does — commit by path, the backlog index, push only where
+// the project says so.
+describe("the code chat's close", () => {
+  it("commits by path, refreshes the index, and pushes only where the project says", () => {
+    expect(WRAP_UP).toContain(CODE_CLOSE);
+    expect(CODE_CLOSE).toContain("commit by path");
+    expect(CODE_CLOSE).toContain("never `git add -A` or `git add .`, never `git stash`");
+    expect(CODE_CLOSE).toContain("backlogctl.py index");
+    expect(CODE_CLOSE).toContain("the command the project's CLAUDE.md names");
+    expect(CODE_CLOSE).toContain("Push only if the project's instructions say to push.");
+    expect(CODE_CLOSE).toContain("no AI attribution");
+    expect(WRAP_UP).toContain("mdcheck.py");
+    expect(WRAP_UP).toContain("do not trim now");
+  });
+  it("keeps the order: STATE section, close, start prompt, stop", () => {
+    const i = (t: string) => WRAP_UP.indexOf(t);
+    expect(i("## STATE AS OF")).toBeLessThan(i(CODE_CLOSE));
+    expect(i(CODE_CLOSE)).toBeLessThan(i("start-prompt"));
+    expect(i("start-prompt")).toBeLessThan(i("Then stop"));
   });
 });

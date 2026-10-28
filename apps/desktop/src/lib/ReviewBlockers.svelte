@@ -143,8 +143,8 @@
         <span class="ns-pill {pillClass(blocker.status)}"><span class="dot"></span>{blocker.status}</span>
         <span class="meta">
           {#if blocker.raised}raised {blocker.raised}{/if}
-          {#if blocker.shift} · by shift <span class="ns-mono">{blocker.shift}</span>{/if}
-          {#if blocker.item} · item <span class="ns-mono">{blocker.item}</span>{/if}
+          {#if blocker.shift}{" · "}by shift <span class="ns-mono">{blocker.shift}</span>{/if}
+          {#if blocker.item}{" · "}item <span class="ns-mono">{blocker.item}</span>{/if}
         </span>
       </div>
       <div class="metarow">
@@ -183,7 +183,7 @@
         {/if}
         {#if blocker.status !== "open"}
           <div class="msg you">
-            <span class="ns-k">you · answer{#if answered === blocker.id} · written{/if}</span>
+            <span class="ns-k">you · answer{#if answered === blocker.id}{" · "}written{/if}</span>
             {#if blocker.answer}
               <div class="bubble you"><div class="ns-prose small">{@html renderMarkdown(blocker.answer)}</div></div>
             {:else}

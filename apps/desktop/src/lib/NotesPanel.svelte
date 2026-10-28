@@ -19,6 +19,33 @@
   import type { Note, NoteScope } from "./types";
   import { relativeTime } from "./time";
   import * as api from "./api";
+  import { onMount, tick, untrack } from "svelte";
+  import { projectFilesChanged, refreshNotes } from "./state.svelte";
+  import { carriesFiles } from "./dropLook";
+  import { acceptFiles, conversionJobs, readBase64 } from "./attachFiles.svelte";
+  import { discardDraft, readDraft } from "./drafts.svelte";
+  import {
+    holdKeptNotices,
+    keepNow,
+    keepStateOf,
+    keeps,
+    keptNotices,
+    noticeKept,
+    releaseKeptNotices,
+    takeKeptNotices,
+  } from "./keep.svelte";
+  import {
+    FLASH_MS,
+    HOLD_LINE,
+    NOTES_TOAST_MS,
+    Hold,
+    centredScrollTop,
+    flashPlan,
+    holdTitle,
+    keepDropped,
+  } from "./notesDrop";
+  import { foldQuery, hitsByScope, narrowNotes } from "./notesSearch";
+  import { prefersReducedMotion } from "./chipFade";
 
   /**
    * Two stores, one panel.
@@ -80,6 +107,106 @@
     })();
   });
 
+  /**
+   * Item 415: the search box. Names are matched here as he types; text by
+   * the backend's note search, a moment after the typing pauses, its
+   * answer used only while the box still holds the query it was asked.
+   * The lists it narrows are re-searched when they change.
+   */
+  let query = $state("");
+  let textHits = $state<{
+    q: string;
+    project: Set<string>;
+    knowledge: Set<string>;
+  } | null>(null);
+  let searchSeq = 0;
+  const searching = $derived(foldQuery(query) !== "");
+  $effect(() => {
+    const q = query.trim();
+    void app.notes;
+    void app.vault;
+    const mine = ++searchSeq;
+    if (!foldQuery(q)) {
+      textHits = null;
+      return;
+    }
+    const t = setTimeout(() => {
+      api.searchEverywhere(q, "notes").then(
+        (r) => {
+          if (mine === searchSeq) textHits = { q, ...hitsByScope(r.notes) };
+        },
+        () => {},
+      );
+    }, 120);
+    return () => clearTimeout(t);
+  });
+  function hitsFor(scope: "project" | "knowledge"): Set<string> | null {
+    return textHits && textHits.q === query.trim() ? textHits[scope] : null;
+  }
+  const shownProject = $derived(narrowNotes(app.notes, query, hitsFor("project")));
+  const shownVault = $derived(narrowNotes(app.vault, query, hitsFor("knowledge")));
+  /** A section collapsed by hand opens while a search runs: the matches
+   *  are what the box is for. */
+  const shut = (scope: "project" | "knowledge") => collapsed[scope] && !searching;
+  function onSearchKey(e: KeyboardEvent) {
+    if (e.key === "Escape" && query) {
+      e.preventDefault();
+      e.stopPropagation();
+      query = "";
+    }
+  }
+
+  /**
+   * Item 416: after a keep (a drop here, or a chat chip's Keep), scroll
+   * the kept file's row to the middle of the list and flash it — the
+   * existing row when the file was already there. A search hiding it is
+   * cleared first. Reduced motion: a jump and a still highlight.
+   */
+  let panelEl = $state<HTMLDivElement | null>(null);
+  let flashing = $state<Set<string>>(new Set());
+  let flashSeq = 0;
+  $effect(() => {
+    void keptNotices.seq;
+    untrack(() => void reveal());
+  });
+  async function reveal() {
+    const notices = takeKeptNotices();
+    if (notices.length === 0) return;
+    const plan = flashPlan(
+      notices,
+      app.notes.map((n) => n.name),
+      performance.now(),
+    );
+    if (!plan.scrollTo) return;
+    query = "";
+    textHits = null;
+    collapsed.project = false;
+    await tick();
+    const box = panelEl;
+    const row = box?.querySelector<HTMLElement>(
+      `[data-note="${CSS.escape(`project:${plan.scrollTo}`)}"]`,
+    );
+    if (!box || !row) return;
+    const reduced = prefersReducedMotion();
+    const b = box.getBoundingClientRect();
+    const r = row.getBoundingClientRect();
+    box.scrollTo({
+      top: centredScrollTop(box.scrollTop, r.top - b.top, r.height, box.clientHeight, box.scrollHeight),
+      behavior: reduced ? "auto" : "smooth",
+    });
+    // Off, then on a frame later: a row still flashing from a keep a
+    // moment ago starts its flash again. A timeout, not a frame callback,
+    // which a window in the background never runs.
+    const mine = ++flashSeq;
+    flashing = new Set();
+    await tick();
+    setTimeout(() => {
+      if (mine !== flashSeq) return;
+      flashing = new Set(plan.flash.map((n) => `project:${n}`));
+      setTimeout(() => mine === flashSeq && (flashing = new Set()), FLASH_MS + 150);
+    }, 20);
+  }
+
   function begin(scope: "project" | "knowledge") {
     creating = scope;
     draftName = "";
@@ -118,6 +245,102 @@
       app.openNote?.scope === scope &&
       app.openNote.name === name
     );
+  }
+
+  /**
+   * Item 391: files dropped on the Project section are kept in the
+   * project, as attaching them and pressing Keep would (`notesDrop.ts`).
+   * The section carries `data-drop-none`, so the window's drop watcher
+   * (`dropLook.svelte.ts`) never takes this drop for a chat's box.
+   */
+  const hold = new Hold();
+  let held = $state(false);
+  let keeping = $state(0);
+  const sync = () => (held = hold.held(performance.now()));
+
+  /*
+   * Item 428 (his bug, 2026-10-27: "it like did nothing both times"): a
+   * drop's words — kept, already there, refused — and "Keeping…" while an
+   * office file converts, held at the panel's foot where he is looking.
+   * The window's toasts sit at the far corner of the chat pane, a thousand
+   * pixels from the panel, and came only after the conversion.
+   */
+  let dropToasts = $state<{ id: number; text: string }[]>([]);
+  let dropToastSeq = 0;
+  function dismissDropToast(id: number) {
+    dropToasts = dropToasts.filter((t) => t.id !== id);
+  }
+  function notesToast(text: string) {
+    const id = ++dropToastSeq;
+    dropToasts = [...dropToasts, { id, text }];
+    setTimeout(() => dismissDropToast(id), NOTES_TOAST_MS);
+  }
+  onMount(() => {
+    const t = setInterval(() => held && sync(), 500);
+    const end = () => {
+      hold.end();
+      sync();
+    };
+    window.addEventListener("dragend", end, true);
+    window.addEventListener("drop", end, true);
+    return () => {
+      clearInterval(t);
+      window.removeEventListener("dragend", end, true);
+      window.removeEventListener("drop", end, true);
+    };
+  });
+  function onDragEnter(e: DragEvent) {
+    if (!carriesFiles(e.dataTransfer)) return;
+    hold.enter(performance.now());
+    sync();
+  }
+  function onDragOver(e: DragEvent) {
+    if (!carriesFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    hold.over(performance.now());
+    sync();
+  }
+  function onDragLeave(e: DragEvent) {
+    if (!carriesFiles(e.dataTransfer)) return;
+    hold.leave();
+    sync();
+  }
+  async function onDrop(e: DragEvent) {
+    const files = Array.from(e.dataTransfer?.files ?? []);
+    hold.end();
+    sync();
+    if (files.length === 0) return;
+    e.preventDefault();
+    keeping += files.length;
+    holdKeptNotices();
+    try {
+      await keepDropped(files, {
+        project: () => app.project,
+        toast: notesToast,
+        attach: acceptFiles,
+        jobs: conversionJobs,
+        chips: (k) => readDraft(k).attachments,
+        state: keepStateOf,
+        forget: (k) => delete keeps[k],
+        keep: (k, name, mediaType, from, source) => keepNow(k, name, mediaType, from, { source, toast: notesToast }),
+        discard: (k) => discardDraft(k),
+        // Item 414: a zip is unpacked into files/<its name>/.
+        zip: {
+          read: readBase64,
+          unpack: api.unpackZip,
+          keepAt: (name, mediaType, data, dir) => api.keepAttachment(name, mediaType, { data }, dir),
+          kept: async (rels, anyNew) => {
+            if (anyNew) projectFilesChanged();
+            await refreshNotes().catch(() => {});
+            for (const rel of rels) noticeKept(rel);
+          },
+        },
+      });
+    } finally {
+      keeping -= files.length;
+      releaseKeptNotices();
+    }
   }
 
   function size(bytes: number): string {
@@ -161,7 +384,12 @@
 {#snippet list(scope: NoteScope, notes: Note[])}
   <div class="list">
     {#each notes as n (n.name)}
-      <div class="item" class:active={isOpen(scope, n.name)}>
+      <div
+        class="item"
+        class:active={isOpen(scope, n.name)}
+        class:flash={flashing.has(`${scope}:${n.name}`)}
+        data-note="{scope}:{n.name}"
+      >
         <!-- Draggable (backlog 140 pass 2): onto a strip for a tab of
              this note at that slot, onto a pane's half to open it beside. -->
         <button
@@ -202,7 +430,7 @@
   <div class="bar">
     {#if creating === scope}
       <!-- svelte-ignore a11y_autofocus -->
-      <input
+      <input autocorrect="off" autocapitalize="off" spellcheck="false"
         class="new-name"
         autofocus
         placeholder="note name"
@@ -277,21 +505,54 @@
   </div>
 {/snippet}
 
-<div class="panel">
+<div class="panel" bind:this={panelEl}>
+  <!-- Item 415: narrows both sections as he types; the pinned rows stay. -->
+  <div class="find-bar">
+    <input autocorrect="off" autocapitalize="off" spellcheck="false"
+      class="find"
+      type="search"
+      placeholder="Search notes"
+      aria-label="Search notes by name or text"
+      bind:value={query}
+      onkeydown={onSearchKey}
+    />
+  </div>
   <!-- The project's own notes. Absent rather than empty when nothing is
        open: there is no folder for them to be about. -->
-  <section>
+  <section
+    class="keep-drop"
+    class:held
+    role="group"
+    aria-label="Project notes — drop files here to keep them in the project"
+    data-drop-none
+    data-notes-drop
+    aria-busy={keeping > 0}
+    ondragenter={onDragEnter}
+    ondragover={onDragOver}
+    ondragleave={onDragLeave}
+    ondrop={onDrop}
+  >
+    {#if held}
+      <div class="hold" aria-hidden="true">
+        <div class="words">
+          <b>{holdTitle(app.project)}</b>
+          {#if app.project && !app.project.unfiled}<span>{HOLD_LINE}</span>{/if}
+        </div>
+      </div>
+    {/if}
     <button
       class="head"
       onclick={() => (collapsed.project = !collapsed.project)}
       aria-expanded={!collapsed.project}
     >
-      <span class="chev" class:shut={collapsed.project}>▾</span>
+      <span class="chev" class:shut={shut("project")}>▾</span>
       <span class="title">Project</span>
-      {#if app.project}<span class="count">{app.notes.length}</span>{/if}
+      {#if app.project}<span class="count"
+          >{searching ? `${shownProject.length} of ${app.notes.length}` : app.notes.length}</span
+        >{/if}
     </button>
 
-    {#if !collapsed.project}
+    {#if !shut("project")}
       {#if !app.project}
         <div class="empty">
           <p>
@@ -315,8 +576,10 @@
             the index of the folder is in its system prompt — so a task list
             left here is still there in the next chat.
           </p>
+        {:else if shownProject.length === 0}
+          <p class="hint no-match">No notes match</p>
         {:else}
-          {@render list("project", app.notes)}
+          {@render list("project", shownProject)}
         {/if}
       {/if}
     {/if}
@@ -330,13 +593,15 @@
       onclick={() => (collapsed.knowledge = !collapsed.knowledge)}
       aria-expanded={!collapsed.knowledge}
     >
-      <span class="chev" class:shut={collapsed.knowledge}>▾</span>
+      <span class="chev" class:shut={shut("knowledge")}>▾</span>
       <span class="title">Knowledge</span>
-      <span class="count">{app.vault.length}</span>
+      <span class="count"
+        >{searching ? `${shownVault.length} of ${app.vault.length}` : app.vault.length}</span
+      >
       {#if app.knowledge}<span class="alias">{app.knowledge.alias}</span>{/if}
     </button>
 
-    {#if !collapsed.knowledge}
+    {#if !shut("knowledge")}
       {#if !app.knowledge}
         <p class="hint">
           No user config directory on this machine, so there is nowhere to keep
@@ -356,12 +621,29 @@
             it was made, a person, something that took real work to figure out.
             Notes link to each other with <code>[[name]]</code>.
           </p>
+        {:else if shownVault.length === 0}
+          <p class="hint no-match">No notes match</p>
         {:else}
-          {@render list("knowledge", app.vault)}
+          {@render list("knowledge", shownVault)}
         {/if}
       {/if}
     {/if}
   </section>
+  <!-- Item 428: the drop's words, at the panel's foot while the list
+       scrolls; "Keeping…" moved here from the section's top. -->
+  {#if keeping > 0 || dropToasts.length > 0}
+    <div class="drop-toasts" aria-live="polite">
+      {#if keeping > 0}
+        <p class="keeping" role="status">Keeping {keeping} {keeping === 1 ? "file" : "files"}…</p>
+      {/if}
+      {#each dropToasts as t (t.id)}
+        <div class="drop-toast" role="status">
+          <span class="drop-toast-text">{t.text}</span>
+          <button class="drop-toast-x" aria-label="Dismiss" onclick={() => dismissDropToast(t.id)}>×</button>
+        </div>
+      {/each}
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -372,10 +654,138 @@
     display: flex;
     flex-direction: column;
   }
+  /* Item 415: held at the top while the list scrolls under it. */
+  .find-bar {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    padding: 0.5rem 0.75rem 0.15rem;
+    background: var(--paper);
+  }
+  .find {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0.3rem 0.45rem;
+    font: inherit;
+    font-size: 0.78rem;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+  }
+  .find:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  .find::placeholder {
+    color: var(--dim);
+  }
+  .no-match {
+    opacity: 0.8;
+  }
   section {
     display: flex;
     flex-direction: column;
     flex-shrink: 0;
+  }
+  /* Item 391: files held over the Project section — the composer's drop
+     zone tokens (DropOverlay's `.zone.on`), drawn over the section so its
+     rows do not move. Reduced motion: it comes and goes without fading. */
+  .keep-drop {
+    position: relative;
+    border-radius: 12px;
+  }
+  .keep-drop.held {
+    background: color-mix(in srgb, var(--accent-soft) 85%, transparent);
+    box-shadow:
+      inset 0 0 0 2px var(--accent),
+      0 0 0 6px color-mix(in srgb, var(--accent) 10%, transparent);
+  }
+  .hold {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    pointer-events: none;
+    padding: 0 0.75rem;
+    text-align: center;
+    border: 2px dashed var(--accent);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--accent-soft) 85%, var(--paper));
+    color: var(--accent-ink);
+    font-size: 0.72rem;
+    animation: hold-fade 140ms ease-out;
+  }
+  /* Near the head and held in view while the panel scrolls: a project
+     with many kept files makes the section taller than the panel. */
+  .hold .words {
+    position: sticky;
+    top: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 3.2rem 0 1rem;
+  }
+  .hold b {
+    font-size: 0.9rem;
+    font-weight: 500;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .hold {
+      animation: none;
+    }
+  }
+  @keyframes hold-fade {
+    from {
+      opacity: 0;
+    }
+  }
+  .keeping {
+    margin: 0;
+    padding: 0.1rem 0.15rem;
+    font-size: 0.72rem;
+    color: var(--dim);
+  }
+  /* Item 428: held at the panel's foot, over the list as it scrolls. */
+  .drop-toasts {
+    position: sticky;
+    bottom: 0;
+    z-index: 3;
+    margin-top: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    padding: 0.4rem 0.6rem 0.6rem;
+    background: linear-gradient(to bottom, transparent, var(--paper) 0.6rem);
+  }
+  .drop-toast {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.4rem;
+    padding: 0.4rem 0.55rem;
+    border: 1px solid var(--accent, var(--border));
+    border-radius: 6px;
+    background: var(--panel, var(--paper));
+    color: var(--text);
+    font-size: 0.76rem;
+    line-height: 1.35;
+  }
+  .drop-toast-text {
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .drop-toast-x {
+    border: none;
+    background: none;
+    color: var(--dim);
+    font: inherit;
+    font-size: 0.9rem;
+    line-height: 1;
+    padding: 0 0.1rem;
+    cursor: pointer;
+  }
+  .drop-toast-x:hover {
+    color: var(--text);
   }
   /* A header the whole width so the hit target is the row, not the caret. */
   .head {
@@ -543,6 +953,29 @@
   }
   .item.active {
     background: #211d38;
+  }
+  /* Item 416: a kept file's row, flashed with the accent for a second and
+     faded back. Reduced motion: the highlight holds still, then goes. */
+  .item.flash {
+    animation: note-flash 1000ms ease-out;
+  }
+  @keyframes note-flash {
+    0%,
+    30% {
+      background: color-mix(in srgb, var(--accent) 26%, transparent);
+      box-shadow: inset 0 0 0 1px var(--accent);
+    }
+    100% {
+      background: transparent;
+      box-shadow: inset 0 0 0 1px transparent;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .item.flash {
+      animation: none;
+      background: color-mix(in srgb, var(--accent) 22%, transparent);
+      box-shadow: inset 0 0 0 1px var(--accent);
+    }
   }
   /* The always-loaded file sits above the list, in the list's own gutter,
      with a hairline under it so it reads as the head of the section rather

@@ -15,6 +15,9 @@
  *              tint fills in over the first 45 %: the typed text becomes a
  *              bubble on the way. The thread runs from the launch point to
  *              the ghost's foot, brightest near the ghost, fading out.
+ *              A bubble taller than the transcript's view (item 417) flies
+ *              as a window one view high onto its foot, clipped at the
+ *              view's top, so no copy of it ever reaches the tabs or header.
  *   340–520    the real turn fades in under the ghost (seamless: the ghost
  *              sits exactly over the bubble), then the ghost goes.
  *   340–760    a soft accent ring settles out from the landed bubble.
@@ -196,6 +199,38 @@ function ghostOf(bubble: HTMLElement): { el: HTMLElement; bg: string } {
   return { el, bg: cs.backgroundColor };
 }
 
+/**
+ * How much of the ghost's top to cut so none of it shows above the
+ * transcript's scroll box (item 417, his bug 2026-10-26): a message taller
+ * than the view lands with its top above the view, and the ghost, fixed over
+ * the page, drew it over the tabs and the header on the way. Its foot and the
+ * part rising from the composer stay whole.
+ */
+export function topCut(viewTop: number, ghostTop: number): number {
+  return Math.max(0, viewTop - ghostTop);
+}
+
+/**
+ * How much of a tall bubble's head the ghost leaves behind (item 417). A
+ * bubble no taller than the view flies whole (0, as before). A taller one
+ * flies as a window one view high onto its foot — the part the view shows
+ * once it lands, scrolled to the foot — so the flight is one view's travel,
+ * not the whole message sweeping past, and the ghost never carries more
+ * than a screen of text. The cut head is clipped off the ghost's top.
+ */
+export function footHide(bubbleH: number, viewH: number): number {
+  return viewH > 0 && bubbleH > viewH ? bubbleH - viewH : 0;
+}
+
+/**
+ * Where the ghost goes for a frame whose visible window's top is `windowY`
+ * (the timeline's y): its own top sits `hide` higher, and its clip cuts the
+ * hidden head plus anything still above the transcript's top.
+ */
+export function ghostPlace(windowY: number, hide: number, viewTop: number): { y: number; cut: number } {
+  return { y: windowY - hide, cut: hide + topCut(viewTop, windowY) };
+}
+
 const SVG = "http://www.w3.org/2000/svg";
 let threadSeq = 0;
 
@@ -254,6 +289,8 @@ export function fly(node: HTMLElement, bubble: HTMLElement, l: Launch, hold: num
   const first = bubble.getBoundingClientRect();
   const view = viewOf(node);
   if (first.bottom < view.top || first.top > view.bottom || first.width === 0) return () => {};
+  const viewH = view.bottom - view.top;
+  const tall = footHide(first.height, viewH) > 0;
   const { el: ghost, bg } = ghostOf(bubble);
   const { svg, path, grad } = threadOf();
   const from: Box = { x: l.x - (parseFloat(ghost.style.paddingLeft) || 0), y: l.y - (parseFloat(ghost.style.paddingTop) || 0) };
@@ -283,12 +320,17 @@ export function fly(node: HTMLElement, bubble: HTMLElement, l: Launch, hold: num
     // Only a bubble wholly outside is clamped — a visible one is always
     // landed on exactly (an aside's scroll box can start below its question).
     const ty = to.bottom < view.top ? view.top : to.top > view.bottom ? Math.max(view.top, view.bottom - to.height) : to.top;
-    const f = frameAt(ms, from, { x: to.left, y: ty });
+    // A bubble taller than the view flies as its foot (item 417): the
+    // timeline moves the visible window, aimed where the foot lands.
+    const hide = tall ? footHide(to.height, viewH) : 0;
+    const f = frameAt(ms, from, { x: to.left, y: ty + hide });
+    const g = ghostPlace(f.y, hide, view.top);
     // Follow the bubble's width: an aside card grows in as the ghost flies,
     // and a width fixed at the start wrapped the ghost's words onto a
     // second line that snapped back on landing (194 fix pass).
     if (to.width > 0) ghost.style.width = `${to.width}px`;
-    ghost.style.transform = `translate3d(${f.x}px, ${f.y}px, 0)`;
+    ghost.style.transform = `translate3d(${f.x}px, ${g.y}px, 0)`;
+    ghost.style.clipPath = g.cut > 0 ? `inset(${g.cut}px 0 0 0)` : "";
     ghost.style.opacity = String(f.ghostOpacity);
     ghost.style.backgroundColor = `color-mix(in srgb, ${bg} ${Math.round(f.tint * 100)}%, transparent)`;
     ghost.style.display = f.ghost ? "" : "none";
@@ -296,7 +338,7 @@ export function fly(node: HTMLElement, bubble: HTMLElement, l: Launch, hold: num
     if (f.thread > 0.01) {
       const gh = ghost.offsetHeight;
       const bx = f.x + Math.min(ghost.offsetWidth / 2, 40);
-      const by = f.y + gh;
+      const by = g.y + gh;
       // Leaves the box straight up, then bends toward the ghost's foot.
       path.setAttribute("d", `M ${ax} ${ay} C ${ax} ${lerp(ay, by, 0.6)}, ${bx} ${lerp(ay, by, 0.5)}, ${bx} ${by}`);
       grad.setAttribute("x1", String(ax));

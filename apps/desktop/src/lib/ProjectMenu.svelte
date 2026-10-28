@@ -67,7 +67,7 @@
       <div class="row" class:active={app.project?.id === p.id}>
         {#if renaming === p.id}
           <!-- svelte-ignore a11y_autofocus -->
-          <input
+          <input autocorrect="off" autocapitalize="off" spellcheck="false"
             class="rename"
             autofocus
             bind:value={draftName}

@@ -392,6 +392,10 @@ pub struct EngineLayers<'a> {
     /// This chat's subagent rules layer (nightshift backlog 291 + 293):
     /// `None` when it is switched off or the shell does not offer it.
     pub subagent_rules: Option<SubagentRules<'a>>,
+    /// An incognito chat (nightshift backlog 405): the engine note names
+    /// only the Nightloom tool its server serves (`--incognito`) and says
+    /// nothing of other chats, memory or the CLI's transcripts.
+    pub incognito: bool,
 }
 
 impl EngineLayers<'static> {
@@ -402,6 +406,7 @@ impl EngineLayers<'static> {
         reusable: false,
         subagent_model: crate::agent::brief::SubagentModel::Choose,
         subagent_rules: None,
+        incognito: false,
     };
 }
 
@@ -442,7 +447,11 @@ pub fn agent_prompt_with(
     }
     let preamble = !prompt.is_empty();
     if engine_note && preamble {
-        prompt.push(engine_note_segment(config.knowledge.as_ref()));
+        prompt.push(if layers.incognito {
+            incognito_engine_note_segment()
+        } else {
+            engine_note_segment(config.knowledge.as_ref())
+        });
     }
     if layers.pacing && preamble {
         prompt.push(Segment::new(SegmentKind::Pacing, "pacing", PACING_NOTE));
@@ -791,9 +800,52 @@ fn engine_note_segment(knowledge: Option<&KnowledgeContext>) -> Segment {
     // Markdown links, which it did as one list at the foot of every reply.
     // The marker below is such a link, placed where the claim is; the
     // desktop draws it as a chip and folds any foot list.
+    // His account details (nightshift backlog 446, 2026-10-28): in the 429
+    // run the model wrote his account email and school into a public page
+    // "using details from your account" before taking them out itself.
+    text.push(' ');
+    text.push_str(PERSONAL_DATA_NOTE);
     text.push(' ');
     text.push_str(CITE_NOTE);
     text.push_str("\n</engine-note>");
+    Segment::new(SegmentKind::EngineNote, "engine-note", text)
+}
+
+/// What a non-incognito chat on the Claude Code engine is told about the
+/// account details the CLI attaches as context (nightshift backlog 446,
+/// from the 429 run: message 1 wrote his account email and "UC Irvine" into
+/// a landing page's footer and About, then removed both itself). The
+/// incognito chat has the stricter [`INCOGNITO_NOTE`] instead.
+pub const PERSONAL_DATA_NOTE: &str = "Claude Code attaches the account's email address as \
+     context: do not put it, or the user's school, employer or other personal details, into \
+     files the user might publish or share (a page, a README, a commit) unless they ask for it.";
+
+/// What an incognito chat is told about the one fact of his it cannot be
+/// kept from (nightshift backlog 405, blocker 1515): Claude Code attaches
+/// the subscription account's email to every request as `userEmail`
+/// context, unconditionally on a subscription login (read from the CLI
+/// 2.1.310 bundle: it is left out only under `ANTHROPIC_UNIX_SOCKET`), and
+/// no flag or setting drops it. Measured in the 405 report: without this
+/// sentence a Haiku turn asked "what do you know about me?" named it.
+pub const INCOGNITO_NOTE: &str = "This chat is incognito: the user started it so that it knows \
+     nothing about them. Claude Code attaches the account's email address as context; do not \
+     use it, repeat it or infer anything from it (a name, a school, an employer), and answer as \
+     someone who knows nothing about the user.";
+
+/// The engine note of an incognito chat (nightshift backlog 405): the file
+/// tools' mapping, the one Nightloom tool its server serves, and the cite
+/// rule — no vault, no `search_chats`/`read_chat`/`remember`, no pointer
+/// into `~/.claude` (refused to it anyway).
+fn incognito_engine_note_segment() -> Segment {
+    let text = format!(
+        "<engine-note>\n\
+         On this engine the file tools are Claude Code's own: read a note with Read. Where \
+         the sections above say read_file, they mean Read. Nightloom's own tool is the MCP \
+         tool mcp__nightloom__fetch_page (ToolSearch it by that full name). For the whole \
+         text of a page use fetch_page (WebFetch summarises and truncates); if fetch_page \
+         reports a JavaScript shell or returns only a title, use WebFetch on that URL instead \
+         of retrying. {INCOGNITO_NOTE} {CITE_NOTE}\n</engine-note>"
+    );
     Segment::new(SegmentKind::EngineNote, "engine-note", text)
 }
 
@@ -2301,6 +2353,47 @@ the body text",
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// The account-details rule (backlog 446) is in the engine note of a
+    /// normal chat, and the incognito note keeps its own stricter one.
+    #[test]
+    fn the_engine_note_says_not_to_publish_his_account_details() {
+        let dir = temp_dir("agent-bridge-personal");
+        std::fs::write(dir.join("AGENTS.md"), "a rule").unwrap();
+        let text = agent_preamble(
+            &PromptConfig {
+                project_instructions: true,
+                ..bare(dir.clone())
+            },
+            None,
+        )
+        .unwrap();
+        let at = text
+            .find(PERSONAL_DATA_NOTE)
+            .expect("the personal-data note");
+        assert!(at > text.find("<engine-note>").unwrap(), "{text}");
+        assert!(at < text.find("</engine-note>").unwrap(), "{text}");
+        assert!(PERSONAL_DATA_NOTE.contains("email"));
+        assert!(PERSONAL_DATA_NOTE.contains("school"));
+        assert!(PERSONAL_DATA_NOTE.contains("unless they ask"));
+        let incognito = agent_prompt_with(
+            &PromptConfig {
+                project_instructions: true,
+                ..bare(dir.clone())
+            },
+            None,
+            EngineLayers {
+                engine_note: true,
+                incognito: true,
+                ..EngineLayers::NONE
+            },
+        )
+        .render_flat()
+        .unwrap();
+        assert!(!incognito.contains(PERSONAL_DATA_NOTE), "{incognito}");
+        assert!(incognito.contains(INCOGNITO_NOTE), "{incognito}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// The engine note names the vault's real directory only when there is
     /// a vault: an `@kb` gloss with nowhere to point would be an alias for
     /// nothing.
@@ -2601,6 +2694,7 @@ As of now — the front.
             reusable: true,
             subagent_model: crate::agent::brief::SubagentModel::Choose,
             subagent_rules: None,
+            incognito: false,
         };
         let full = agent_prompt_with(&config, Some("Be terse."), all);
         assert_eq!(

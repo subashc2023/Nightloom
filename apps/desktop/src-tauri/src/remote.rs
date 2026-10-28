@@ -1352,7 +1352,10 @@ pub struct Remote {
 /// (his ask, 2026-09-18: "make sure the phone section is still on" after
 /// the update installs — until now the listener lived only in memory and
 /// every relaunch left the phone unable to connect, backlog 154's likely
-/// cause). `~/.nightloom/remote.json`.
+/// cause). `~/.nightloom/remote.json` — or `remote.json` in the home
+/// `NIGHTLOOM_HOME` names, so a dev build on a scratch home keeps its own
+/// switch and never reads his (nightshift item 447: the 429 run's dev
+/// build tried to take his phone listener on 8642).
 #[derive(Debug, Clone, Default, Serialize, serde::Deserialize)]
 struct Persisted {
     on: bool,
@@ -1361,12 +1364,35 @@ struct Persisted {
 }
 
 fn persisted_path() -> Option<std::path::PathBuf> {
-    let home = std::env::var("HOME").ok().filter(|h| !h.is_empty())?;
+    persisted_path_in(
+        std::env::var("NIGHTLOOM_HOME").ok().as_deref(),
+        std::env::var("HOME").ok().as_deref(),
+    )
+}
+
+/// `remote.json` under the named home when `NIGHTLOOM_HOME` is set (item
+/// 447), else under `~/.nightloom`.
+fn persisted_path_in(
+    nightloom_home: Option<&str>,
+    home: Option<&str>,
+) -> Option<std::path::PathBuf> {
+    if let Some(named) = nightloom_home.filter(|h| !h.is_empty()) {
+        return Some(std::path::PathBuf::from(named).join("remote.json"));
+    }
+    let home = home.filter(|h| !h.is_empty())?;
     Some(
         std::path::PathBuf::from(home)
             .join(nightloom_service::project::DOT_DIR)
             .join("remote.json"),
     )
+}
+
+/// Whether this launch may bring the listener back from the saved switch
+/// (item 447): a release build always; a debug build only on a home
+/// `NIGHTLOOM_HOME` names — a dev build on his real `~/.nightloom` would
+/// read his switch and take his phone's port.
+fn may_restore_listener(debug: bool, named_home: bool) -> bool {
+    !debug || named_home
 }
 
 fn read_persisted() -> Persisted {
@@ -1407,7 +1433,16 @@ impl Remote {
             keep_awake: Mutex::new(saved.keep_awake),
             awake: Mutex::new(None),
         });
-        if saved.on {
+        if saved.on
+            && !may_restore_listener(
+                cfg!(debug_assertions),
+                nightloom_service::project::named_home(),
+            )
+        {
+            eprintln!(
+                "remote: a dev build on the real home leaves the phone listener off (item 447); set NIGHTLOOM_HOME to give it its own"
+            );
+        } else if saved.on {
             let app = app.clone();
             tauri::async_runtime::spawn(async move {
                 let remote = app.state::<Remote>();
@@ -1861,6 +1896,35 @@ pub async fn remote_self_test(remote: State<'_, Remote>) -> Result<SelfTest, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Item 447: a named home keeps its own switch, and a dev build on the
+    /// real home never brings his listener back.
+    #[test]
+    fn a_named_home_keeps_its_own_switch_and_a_dev_build_leaves_his_listener_alone() {
+        assert_eq!(
+            persisted_path_in(Some("/tmp/nl429"), Some("/Users/s")),
+            Some(std::path::PathBuf::from("/tmp/nl429/remote.json"))
+        );
+        assert_eq!(
+            persisted_path_in(Some(""), Some("/Users/s")),
+            Some(std::path::PathBuf::from("/Users/s/.nightloom/remote.json"))
+        );
+        assert_eq!(
+            persisted_path_in(None, Some("/Users/s")),
+            Some(std::path::PathBuf::from("/Users/s/.nightloom/remote.json"))
+        );
+        assert_eq!(persisted_path_in(None, None), None);
+        assert!(may_restore_listener(false, false), "the installed app");
+        assert!(may_restore_listener(false, true));
+        assert!(
+            may_restore_listener(true, true),
+            "a dev build on its own home"
+        );
+        assert!(
+            !may_restore_listener(true, false),
+            "a dev build on his home"
+        );
+    }
 
     #[test]
     fn the_self_test_asks_the_listeners_own_address_and_says_what_it_found() {

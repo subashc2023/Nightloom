@@ -5,6 +5,7 @@
   import type { Segment } from "./state.svelte";
   import type { ApprovalRequest, Usage } from "./types";
   import { renderReply } from "./markdown";
+  import { codeCopy } from "./codeCopy";
   import CouncilBlocks from "./CouncilBlocks.svelte";
   import { parseCouncilRecord, parseCouncilSeat } from "./council";
   import { wordDiff } from "./textdiff";
@@ -54,17 +55,31 @@
   import { agentCallContent, agentRowLine, isAgentCall } from "./subagentRows";
   import type { TabContent } from "./tabs";
   import ApprovalPrompt from "./ApprovalPrompt.svelte";
+  import AskAnswered from "./AskAnswered.svelte";
   import Icon from "./Icon.svelte";
+  import CopyButton from "./CopyButton.svelte";
+  import { COPIED_MS } from "./copyIcon";
   import { REMOVED_TEXT_PLACEHOLDER, REMOVED_TOOL_PLACEHOLDER } from "./edit";
+  import { removeTip } from "./removeAsk";
   import MemoryHits from "./MemoryHits.svelte";
   import { hitsOfCalls } from "./memoryHits";
   import { isDragMove, sentExt, sentFilesOfCalls, type SentFile } from "./sentFiles";
   import { memoryRefs, openMemoryEdit } from "./memoryOpen";
   import { memoryEditOf, type MemoryEdit } from "./memoryEdits";
   import type { ReplyUsageView } from "./replyUsage";
-  import { hasUsage, stopNote } from "./replyFooter";
+  import { hasUsage, isSignedOut, isStandIn, stopNote } from "./replyFooter";
+  import EditDiffView from "./EditDiffView.svelte";
+  import { editDiffOf } from "./editDiff";
+  import ToolImagesView from "./ToolImagesView.svelte";
+  import { namesImage } from "./toolImages.svelte";
+  import SignedOutNotice from "./SignedOutNotice.svelte";
+  import StillRunningLine from "./StillRunningLine.svelte";
+  import RetryLine from "./RetryLine.svelte";
   // The streaming motion (backlog 342, his pick of 338: "Loom + fade-in").
   import { Births, needleIn, needleOut, replyMotion } from "./replyMotion";
+  // The thinking block's arrival (backlog 389): a live thinking row's first
+  // appearance is thrown in along the send flight's path, not spawned.
+  import { thinkingArrival, type ArrivalParams } from "./thinkingArrival";
 
   interface Footer {
     model: string;
@@ -91,7 +106,7 @@
     try {
       await copyText(textOf());
       copied = true;
-      setTimeout(() => (copied = false), 1200);
+      setTimeout(() => (copied = false), COPIED_MS);
     } catch {
       // The webview refused the clipboard; nothing to show but the button.
     }
@@ -181,6 +196,7 @@
     onremoveturn = null,
     planUsage = null,
     onretry = null,
+    cliSession = null,
   }: {
     segs: Segment[];
     footer?: Footer | null;
@@ -229,6 +245,9 @@
     /** Run this reply's prompt again in a fork from it (item 333), on a
      *  turn's last reply; null where Retry is not offered. */
     onretry?: (() => void) | null;
+    /** The chat's Claude Code session id, where a tool result's images are
+     *  read from (backlog 434); null draws none. */
+    cliSession?: string | null;
   } = $props();
 
   // Per-block clicks, keyed by the block's stable id (`segmentIds`) rather
@@ -242,6 +261,11 @@
   // The reply as the transcript draws it: runs of thinking and tool calls
   // as one activity block each, everything else on its own (backlog 096).
   const groups = $derived(groupSegments(segs, ids));
+  // Nightloom's own stand-in for a turn with no reply (backlog 407): drawn
+  // as its notice under a "Nightloom" header, never as the model's prose.
+  const standIn = $derived(
+    segs.length === 1 && segs[0].kind === "text" && isStandIn([segs[0].text], footer?.stop_reason),
+  );
 
   function kindOf(seg: Segment): BlockKind {
     return seg.kind === "thinking" ? "thinking" : "tool";
@@ -339,6 +363,12 @@
   // words under it); with no block yet it sits under the text alone.
   const lastGroup = $derived([...groups].reverse().find((g) => g.kind === "activity"));
   const moonInBlock = $derived(streaming && !!lastGroup);
+  // A block whose first row is a live thinking is that thinking's arrival
+  // (backlog 389): the whole block — its box, fold line and row — comes in.
+  function blockArrival(rows: readonly { seg: Segment }[]): ArrivalParams {
+    const s = rows[0]?.seg;
+    return s?.kind === "thinking" ? { at: s.at, live: streaming && !s.done } : { live: false };
+  }
   const moonAlone = $derived(streaming && segs.length > 0 && !moonInBlock);
 
   // The cards under the reply (backlog 078): an artifact the model published
@@ -523,12 +553,17 @@
       {#each children as c, k (k)}
         {#if c.kind === "tool"}
           {@const icon = toolIcon(c.call.name)}
+          {@const childDiff = editDiffOf(c.call.name, c.call.input)}
           <div class="arow static" class:error={!!c.call.result?.is_error}>
             <span class="ico">{#if icon}<Icon name={icon} size={13} />{:else}⚒{/if}</span>
             <span class="name" use:tip={c.call.name}>{shortToolName(c.call.name)}</span>
             <span class="arg">{toolInputSummary(c.call.input)}</span>
             <span class="size">{toolResultSummary(c.call, streaming)}</span>
           </div>
+          {#if childDiff}
+            <!-- A subagent's edit as a diff too (backlog 433). -->
+            <EditDiffView diff={childDiff} denied={!!c.call.denied} />
+          {/if}
           {#if c.call.children?.length}
             {@render subagent(c.call.children)}
           {/if}
@@ -557,7 +592,7 @@
 
 <div class="assistant" use:replyMotion={streaming}>
   {#if footer && headed}
-    <span class="ns-k">{footer.model}</span>
+    <span class="ns-k">{standIn ? "Nightloom" : footer.model}</span>
   {/if}
   {#each groups as g (g.kind === "activity" ? g.key : `one:${g.i}`)}
     {#if g.kind === "activity"}
@@ -566,7 +601,7 @@
       <!-- One block for the run: a left rule, accent while the turn is
            live; a summary line that folds and unfolds the rows; the rows
            on one grid — icon · name · argument · size (backlog 096). -->
-      <div class="activity" class:live={streaming}>
+      <div class="activity" class:live={streaming} use:thinkingArrival={blockArrival(g.rows)}>
         <button
           class="fold"
           aria-expanded={!folded}
@@ -591,8 +626,12 @@
                   <span class="size"></span>
                 </div>
               {:else if !seg.done && seg.text.trim() === ""}
-                <!-- Begun, nothing arrived yet: under way, not yet a button. -->
-                <div class="arow static thinking wide">
+                <!-- Begun, nothing arrived yet: under way, not yet a button.
+                     A thinking later in a block arrives on its own row (389). -->
+                <div
+                  class="arow static thinking wide"
+                  use:thinkingArrival={{ at: seg.at, live: streaming && g.rows[0].i !== i }}
+                >
                   <span class="ico"><Icon name="think" size={13} /></span>
                   <span class="name">thinking</span>
                   <span class="size">…</span>
@@ -603,7 +642,8 @@
                 <!-- The needle (backlog 342): a live block's margin thread is
                      accent with a glowing needle at its newest line; on done
                      the thread retracts and the icon turns once. -->
-                <div class="row-wrap" class:rm-live={streaming && !seg.done} class:rm-thought={bornT && seg.done}>
+                <div class="row-wrap" class:rm-live={streaming && !seg.done} class:rm-thought={bornT && seg.done}
+                  use:thinkingArrival={{ at: seg.at, live: streaming && !seg.done && g.rows[0].i !== i }}>
                   <button
                     class="arow thinking"
                     class:wide={!summary}
@@ -640,6 +680,7 @@
               {@const agentRow = agentTab ? rowOf(seg.call.id) : null}
               {@const running = streaming && !seg.call.result && !seg.call.denied}
               {@const bornW = births.of(ids[i] || `tool:${i}`, streaming, !running)}
+              {@const editDiff = editDiffOf(seg.call.name, seg.call.input)}
               <div class="row-wrap tool" class:rm-born={bornW} class:rm-finished={bornW && !running}>
                 <!-- An Agent call's row is a drag source (backlog 160): its
                      subagent's transcript as a tab, dropped on a strip or a
@@ -674,9 +715,21 @@
                        the call runs, and on finish it fills and fades. -->
                   <span class="rm-weft" class:rm-done={!running} aria-hidden="true"></span>
                 {/if}
+                <!-- A file edit as a diff (backlog 433), drawn whether the row is
+                     open or not: the change is what the row is about. -->
+                {#if editDiff}
+                  <EditDiffView diff={editDiff} denied={!!seg.call.denied} />
+                {/if}
+                <!-- What a screenshot showed the model (backlog 434). -->
+                {#if !seg.call.denied && namesImage(seg.call.result?.content)}
+                  <ToolImagesView session={cliSession} id={seg.call.id} name={shortToolName(seg.call.name)} />
+                {/if}
                 {#if open}
-                  <!-- The full call: its whole input, then what came back. -->
-                  <div class="tool-full">{compactJson(seg.call.input)}</div>
+                  <!-- The full call: its whole input (an edit's is the diff
+                       above), then what came back. -->
+                  {#if !editDiff}
+                    <div class="tool-full">{compactJson(seg.call.input)}</div>
+                  {/if}
                   {#if seg.call.denied}
                     <!-- The reason can come from the gate itself (a cancelled turn
                          refuses what it left parked), so it stands in for "you said no"
@@ -698,6 +751,10 @@
                 {#each approvals.filter((a) => a.id === seg.call.id) as req (req.id)}
                   <ApprovalPrompt {req} />
                 {/each}
+                <!-- 354: what he answered, under the question once it is no longer waiting. -->
+                {#if seg.call.name === "AskUserQuestion" && !approvals.some((a) => a.id === seg.call.id)}
+                  <AskAnswered call={seg.call} />
+                {/if}
                 <!-- The subagent this call spawned (backlog 075): one indented
                      row that opens to the child's turn — its calls, thinking and
                      words, nested subagents included. Live the children are
@@ -748,6 +805,9 @@
               {#each approvals.filter((a) => a.id === seg.call.id) as req (req.id)}
                 <ApprovalPrompt {req} />
               {/each}
+              {#if seg.call.name === "AskUserQuestion" && !approvals.some((a) => a.id === seg.call.id)}
+                <AskAnswered call={seg.call} />
+              {/if}
             {/if}
           {/each}
         {/if}
@@ -773,6 +833,11 @@
           <span>{ed.verb} <span class="mem-edit-name">{ed.label}</span></span>
         </button>
       {/each}
+    {:else if g.seg.kind === "text" && standIn && isSignedOut(footer?.stop_reason)}
+      <!-- Signed out (backlog 409): says so, with Sign in. -->
+      <SignedOutNotice reason={footer?.stop_reason} />
+    {:else if g.seg.kind === "text" && standIn}
+      <div class="notice nl-own">{g.seg.text}</div>
     {:else if g.seg.kind === "text"}
       {@const councilSeat = parseCouncilSeat(g.seg.text)}
       {@const councilRecord = councilSeat ? null : parseCouncilRecord(g.seg.text)}
@@ -789,7 +854,7 @@
           {#each wordDiff(before, g.seg.text) as op, k (k)}{#if op.kind === "del"}<del>{op.text}</del>{:else if op.kind === "add"}<ins>{op.text}</ins>{:else}{op.text}{/if}{/each}
         </div>
       {:else}
-        <div class="markdown" use:memoryRefs={{ hits: memHits, text: g.seg.text }}>{@html renderReply(g.seg.text)}</div>
+        <div class="markdown" use:memoryRefs={{ hits: memHits, text: g.seg.text }} use:codeCopy>{@html renderReply(g.seg.text)}</div>
       {/if}
     {:else if g.seg.kind === "removed_tool" || g.seg.kind === "removed_text"}
       {@const seg = g.seg}
@@ -826,6 +891,12 @@
       </div>
     {:else if g.seg.kind === "notice"}
       <div class="notice">{g.seg.text}</div>
+    {:else if g.seg.kind === "still_running"}
+      <!-- Backlog 357: the still-running line, Stop and the names on it. -->
+      <StillRunningLine seg={g.seg} />
+    {:else if g.seg.kind === "retry"}
+      <!-- Items 440 + 441: the CLI retrying, one line updated in place. -->
+      <RetryLine seg={g.seg} />
     {/if}
   {/each}
   {#if moonAlone}
@@ -897,16 +968,19 @@
   {#if footer && !streaming}
     {@const share = size ? shareOf(size.tokens, limit) : null}
     <div class="footer">
-      <button class="ns-btn ghost small" onclick={() => void copy()}>{copied ? "Copied" : "Copy"}</button>
+      <CopyButton {copied} label="Copy this reply" onclick={() => void copy()} />
       {#if onretry}
         <!-- Retry (item 333): the prompt again, in a fork from it; this
              reply stays where it is, a version (‹ ›) away. -->
+        <!-- Item 439: called Redo, with Claude's circular arrow, as the
+             same action is in the icon row under his last message. -->
         <button
-          class="ns-btn ghost small"
-          use:tip={"Run your message again in a fork from it. This reply stays here; ‹ › under your message flips between the two."}
+          class="ns-btn ghost small redo"
+          use:tip={"Redo: Claude answers your message again, without retyping it. This reply stays — ‹ › under your message flips between the two."}
+          aria-label="Redo this reply"
           onclick={() => onretry?.()}
         >
-          Retry
+          <Icon name="refresh" size={12} /> Redo
         </button>
       {/if}
       {#if !footer.bare && (size || hasUsage(footer.usage))}
@@ -955,13 +1029,15 @@
             </button>
           {/if}
           {#if onremoveturn}
+            <!-- A delete look, apart from Edit's pencil (item 356); the
+                 transcript asks before it removes. -->
             <button
-              class="tool-btn"
-              use:tip={"Remove this reply from the context. Its tool calls stay; it stays in the log."}
-              aria-label="Remove this reply from the context"
+              class="tool-btn danger"
+              use:tip={removeTip("reply")}
+              aria-label="Remove this reply from the chat history"
               onclick={() => onremoveturn?.()}
             >
-              <Icon name="minus" size={14} />
+              <Icon name="trash" size={14} />
             </button>
           {/if}
         </span>
@@ -1551,6 +1627,12 @@
   .tool-btn:focus-visible {
     color: var(--ink);
     border-color: var(--line2);
+  }
+  /* Remove (item 356): red on hover, so it never reads as Edit. */
+  .tool-btn.danger:hover,
+  .tool-btn.danger:focus-visible {
+    color: var(--error);
+    border-color: color-mix(in srgb, var(--error) 45%, transparent);
   }
   /* A removed block: the placeholder in the tool line's face, greyed and
      italic like a removed turn, Restore at its side. */

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "./api";
-import { app, backgroundTurnOf, cancelTurn, stopTarget } from "./state.svelte";
+import { app, backgroundTurnOf, cancelTurn, menuInterceptors, runMenuCommand, stopTarget } from "./state.svelte";
 
 /**
  * The phone's Stop names the chat it shows (nightshift backlog 159, A3):
@@ -64,5 +64,44 @@ describe("what the screen's Stop names (found live, A3)", () => {
   });
   it("names nothing only when no Claude Code turn runs", () => {
     expect(stopTarget(null)).toBeNull();
+  });
+});
+
+/** ⌘. (item 398, blocker 1506): the menu's Stop, the same path as the button. */
+describe("⌘. — the stop_turn menu command", () => {
+  beforeEach(() => {
+    vi.mocked(api.cancel).mockClear();
+    app.parked = null;
+    app.activeSessionId = "screen-chat";
+    app.background = {};
+  });
+
+  it("stops the chat's turn while one runs", async () => {
+    app.busy = true;
+    runMenuCommand("stop_turn");
+    await Promise.resolve();
+    expect(vi.mocked(api.cancel)).toHaveBeenCalledTimes(1);
+    app.busy = false;
+  });
+
+  it("does nothing when no turn runs", async () => {
+    app.busy = false;
+    runMenuCommand("stop_turn");
+    await Promise.resolve();
+    expect(vi.mocked(api.cancel)).not.toHaveBeenCalled();
+  });
+
+  it("lets an aside's box take it first (Composer registers the hook)", async () => {
+    app.busy = true;
+    const take = (id: string) => id === "stop_turn";
+    menuInterceptors.push(take);
+    try {
+      runMenuCommand("stop_turn");
+      await Promise.resolve();
+      expect(vi.mocked(api.cancel)).not.toHaveBeenCalled();
+    } finally {
+      menuInterceptors.splice(menuInterceptors.indexOf(take), 1);
+      app.busy = false;
+    }
   });
 });

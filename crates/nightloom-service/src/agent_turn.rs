@@ -78,6 +78,29 @@ pub struct ApprovalPrompt<'a> {
     pub outside: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chat: Option<&'a str>,
+    /// The model's text just before the call — the reason Playwright's
+    /// card shows (nightshift backlog 367). Only on a Playwright call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Playwright's *Allow once* and *Deny* last for one reply (nightshift
+/// backlog 367): cleared as the turn starts — a crash may have left one —
+/// and when it ends, whichever way it ends.
+struct ReplyEnd(AskDir);
+
+impl ReplyEnd {
+    fn begin(dir: &Path) -> Self {
+        let d = AskDir::new(dir);
+        d.end_reply();
+        Self(d)
+    }
+}
+
+impl Drop for ReplyEnd {
+    fn drop(&mut self) {
+        self.0.end_reply();
+    }
 }
 
 /// What became of a folder the card granted "for the project".
@@ -197,6 +220,7 @@ async fn turn_body(
     // `rate_limit_event` and the next reading after it (`turn_usage`).
     // Dropped on any other way out, it records nothing.
     let usage_turn = ask_dir.as_deref().map(crate::turn_usage::begin);
+    let _reply_end = ask_dir.as_deref().map(ReplyEnd::begin);
     // Sampled before the first append of the turn: a log that seals during
     // it says so once, as a notice.
     let sealed_before = session.write_failure().is_some();
@@ -329,11 +353,20 @@ async fn turn_body(
         .or_else(|| agent.resolved_model().map(String::from))
         .or_else(|| agent.spec().model.clone())
         .unwrap_or_else(|| AGENT.into());
+    // Backlog 361: named on a reply that never came, if none does.
+    let seed_model = seed.clone();
     // Rendered live and recorded in one pass.
     let mut recorder = Recorder::new(session, seed);
+    // What a change would lose this turn's cache to (backlog 408).
+    recorder.key_cache_from(agent.spec());
     // The first text handed to the window (or the phone) — item 256.
     let mut emitted = false;
+    // The model's words before a call, for Playwright's card (backlog 367).
+    let reason = std::sync::Mutex::new(crate::agent::own_browser::ReasonTracker::default());
     let mut on_event = |e: TurnEvent| {
+        if let Ok(mut r) = reason.lock() {
+            r.push(&e);
+        }
         env.event(chat_id, &e);
         if !emitted && matches!(e, TurnEvent::TextDelta { .. }) {
             emitted = true;
@@ -370,6 +403,9 @@ async fn turn_body(
             effect: crate::mcp_server::effect_of(&call.name),
             outside,
             chat: Some(chat_id),
+            reason: crate::agent::own_browser::is_playwright(&call.name)
+                .then(|| reason.lock().ok().and_then(|r| r.reason()))
+                .flatten(),
         });
         let answer = tokio::select! {
             _ = cancel.cancelled() => None,
@@ -461,6 +497,10 @@ async fn turn_body(
             }
             // The reason rides in the stop reason (backlog 202).
             let reason = match (&outcome.api_error, outcome.is_error, &outcome.cut_off) {
+                // Signed out (backlog 409): the mark the window reads.
+                (Some(e), true, _) if outcome.signed_out => {
+                    format!("{}{e}", nightloom_core::SIGNED_OUT_REASON)
+                }
                 (Some(e), true, _) => format!("error: {e}"),
                 (None, true, _) => "error".to_string(),
                 // Ended before its `result` (backlog 332): the footer
@@ -469,6 +509,21 @@ async fn turn_body(
                 (_, false, None) => "end_turn".to_string(),
             };
             recorder.finish(Some(&reason));
+            // Stopped or failed before a word (backlog 361): say so.
+            if cancel.is_cancelled() {
+                record_unanswered(session, outcome.model.clone().unwrap_or(seed_model), None);
+            } else if outcome.is_error {
+                let why = outcome
+                    .api_error
+                    .clone()
+                    .unwrap_or_else(|| "the turn failed before any reply arrived".into());
+                let model = outcome.model.clone().unwrap_or(seed_model);
+                if outcome.signed_out {
+                    record_signed_out(session, model, &why);
+                } else {
+                    record_unanswered(session, model, Some(&why));
+                }
+            }
             // After the turn: an id from a run that failed to start is a
             // handle to nothing.
             if let Some(id) = &outcome.session_id {
@@ -495,7 +550,11 @@ async fn turn_body(
                     .iter()
                     .rev()
                     .find_map(|e| match e {
-                        SessionEvent::AssistantMessage { usage, .. } => {
+                        // A reply with no usage (backlog 361's stopped or
+                        // failed turn) says nothing of the window.
+                        SessionEvent::AssistantMessage { usage, .. }
+                            if usage.input_tokens + usage.output_tokens > 0 =>
+                        {
                             Some(usage.input_tokens + usage.output_tokens)
                         }
                         _ => None,
@@ -533,9 +592,71 @@ async fn turn_body(
             // Whatever streamed before the failure is still what happened;
             // `finish` closes the calls a killed round left open.
             recorder.finish(Some("error"));
-            Err(e.to_string())
+            let why = e.to_string();
+            if cancel.is_cancelled() {
+                record_unanswered(session, seed_model, None);
+            } else if crate::cli_auth::is_sign_in_failure(None, None, &why) {
+                // A CLI that will not start signed out (backlog 409).
+                record_signed_out(session, seed_model, &why);
+            } else {
+                record_unanswered(session, seed_model, Some(&why));
+            }
+            Err(why)
         }
     }
+}
+
+/// The reply recorded for a turn stopped before anything arrived (backlog
+/// 361); core's, so the projection and the CLI edits can tell it apart.
+pub use nightloom_core::STOPPED_BEFORE_REPLY;
+
+/// A turn that ended — stopped (`error` `None`) or failed — with nothing
+/// recorded after his message leaves a reply that says so (backlog 361,
+/// 2026-10-13). Without it his message sat with nothing under it once the
+/// window re-read the log, which read as a reply that had vanished. The
+/// reply carries no usage (the gauges skip it) and no cache window; its
+/// stop reason is `stopped` or `error: <why>`, which the footer names.
+pub(crate) fn record_unanswered(session: &mut Session, model: String, error: Option<&str>) {
+    let (text, reason) = match error {
+        None => (STOPPED_BEFORE_REPLY.to_string(), "stopped".to_string()),
+        Some(why) => (
+            format!("{}{why}", nightloom_core::NO_REPLY_PREFIX),
+            format!("error: {why}"),
+        ),
+    };
+    record_stand_in(session, model, text, reason);
+}
+
+/// Backlog 409: the same stand-in for a turn Claude Code refused because it
+/// is signed out, its stop reason marked so the window offers Sign in
+/// (`error: signed out: <why>`).
+pub(crate) fn record_signed_out(session: &mut Session, model: String, why: &str) {
+    let text = format!("{}{why}", nightloom_core::NO_REPLY_PREFIX);
+    let reason = format!("{}{why}", nightloom_core::SIGNED_OUT_REASON);
+    record_stand_in(session, model, text, reason);
+}
+
+fn record_stand_in(session: &mut Session, model: String, text: String, reason: String) {
+    let last = session.events().iter().rev().find(|e| {
+        matches!(
+            e,
+            SessionEvent::UserMessage { .. }
+                | SessionEvent::AssistantMessage { .. }
+                | SessionEvent::ToolResult { .. }
+        )
+    });
+    if !matches!(last, Some(SessionEvent::UserMessage { .. })) {
+        return;
+    }
+    session.record_assistant_timed(
+        model,
+        vec![ContentBlock::Text { text }],
+        Some(reason),
+        nightloom_core::Usage::default(),
+        None,
+        chrono::Utc::now(),
+        None,
+    );
 }
 
 #[cfg(all(test, unix))]
@@ -683,6 +804,161 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns"
                 .collect();
             assert!(v.windows(2).all(|w| w[0] <= w[1]), "{v:?}");
         }
+    }
+
+    /// One turn against a stand-in `claude` with `body`; `stop_after`
+    /// stops it that long after it starts. The chat's events after.
+    async fn one_turn(body: &str, stop_after: Option<u64>) -> Vec<SessionEvent> {
+        let root = std::env::temp_dir().join(format!("nightloom-361-{}", uuid::Uuid::new_v4()));
+        let logs = root.join("sessions");
+        std::fs::create_dir_all(&logs).unwrap();
+        let bin = root.join("claude-stand-in");
+        std::fs::write(&bin, body).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut session = Session::start(&logs, ChatMode::Normal, ChatKind::Build).unwrap();
+        let mut spec = AgentSpec::new(&root);
+        spec.binary = bin.to_string_lossy().into_owned();
+        let mut agent = ClaudeCodeAgent::new(spec);
+        let ask = AskGate::new();
+        let chat = session.id.clone();
+        let env = Env {
+            timing: TurnTiming::begin(turn_timing::DESKTOP, None, None),
+        };
+        let cancel = CancellationToken::new();
+        if let Some(ms) = stop_after {
+            let c = cancel.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+                c.cancel();
+            });
+        }
+        let _ = run_agent_turn(
+            AgentTurnRun {
+                agent: &mut agent,
+                session: &mut session,
+                chat_id: &chat,
+                input: TurnInput::from("Fareed Mosavat in brief"),
+                spoken: false,
+                wire_note: None,
+                council: None,
+                cancel: &cancel,
+                ask_dir: None,
+                ask: &ask,
+            },
+            &env,
+        )
+        .await;
+        // What the window reads back at the turn's end: the file.
+        let path = session.log_path().unwrap().to_path_buf();
+        let events = Session::load(&path).unwrap().events().to_vec();
+        let _ = std::fs::remove_dir_all(&root);
+        events
+    }
+
+    /// The last assistant message after his message, with its stop reason.
+    fn reply_after_his(events: &[SessionEvent]) -> Option<(String, Option<String>)> {
+        let his = events
+            .iter()
+            .rposition(|e| matches!(e, SessionEvent::UserMessage { .. }))?;
+        events[his + 1..].iter().find_map(|e| match e {
+            SessionEvent::AssistantMessage {
+                blocks,
+                stop_reason,
+                usage,
+                ..
+            } => {
+                assert_eq!(usage.input_tokens + usage.output_tokens, 0);
+                let text = blocks
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<String>();
+                Some((text, stop_reason.clone()))
+            }
+            _ => None,
+        })
+    }
+
+    /// Backlog 361 (found live, 2026-10-13): a turn stopped before its
+    /// first word left his message with nothing under it once the window
+    /// re-read the log — it read as a reply that had vanished. Now the log
+    /// says it was stopped.
+    #[tokio::test]
+    async fn a_turn_stopped_before_any_reply_leaves_a_reply_that_says_so() {
+        let body = r##"#!/bin/sh
+printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"claude-haiku-4-5","permissionMode":"default","session_id":"s-1"}'
+sleep 30
+"##;
+        let events = one_turn(body, Some(400)).await;
+        let (text, reason) = reply_after_his(&events).expect("a reply under his message");
+        assert_eq!(text, STOPPED_BEFORE_REPLY);
+        assert_eq!(reason.as_deref(), Some("stopped"));
+    }
+
+    /// Backlog 361: the same for a turn that ended in an error before any
+    /// text (the "Can't reach the API server" turn of 2026-10-13).
+    #[tokio::test]
+    async fn a_turn_that_fails_before_any_reply_leaves_a_reply_that_says_so() {
+        let body = r##"#!/bin/sh
+printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"claude-haiku-4-5","permissionMode":"default","session_id":"s-1"}'
+printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":1,"session_id":"s-1","usage":{"input_tokens":0,"output_tokens":0}}'
+"##;
+        let events = one_turn(body, None).await;
+        let (text, reason) = reply_after_his(&events).expect("a reply under his message");
+        assert!(text.starts_with("No reply: "), "{text}");
+        assert!(
+            reason.as_deref().is_some_and(|r| r.starts_with("error")),
+            "{reason:?}"
+        );
+    }
+
+    /// Backlog 409: the CLI signed out — its own failure line (2.1.310,
+    /// `external`, ids trimmed) — leaves the stand-in with the stop reason
+    /// marked signed out, which the window reads to offer Sign in.
+    #[tokio::test]
+    async fn a_signed_out_cli_leaves_a_reply_marked_signed_out() {
+        let body = r##"#!/bin/sh
+printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"claude-haiku-4-5","permissionMode":"default","session_id":"s-1"}'
+printf '%s\n' '{"type":"assistant","message":{"id":"61cfc640","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"Failed to authenticate: OAuth session expired and could not be refreshed"}]},"parent_tool_use_id":null,"error":"authentication_failed","isApiErrorMessage":true,"session_id":"s-1"}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"num_turns":1,"result":"Failed to authenticate: OAuth session expired and could not be refreshed","session_id":"s-1","usage":{"input_tokens":0,"output_tokens":0}}'
+"##;
+        let events = one_turn(body, None).await;
+        let (text, reason) = reply_after_his(&events).expect("a reply under his message");
+        assert_eq!(
+            text,
+            "No reply: Failed to authenticate: OAuth session expired and could not be refreshed"
+        );
+        assert_eq!(
+            reason.as_deref(),
+            Some(
+                "error: signed out: Failed to authenticate: OAuth session expired and could not be refreshed"
+            )
+        );
+        // Still the stand-in core keeps off the wire.
+        assert!(reason.unwrap().starts_with("error: "));
+    }
+
+    /// Backlog 361: a turn that answered gets no second, empty-handed reply.
+    #[tokio::test]
+    async fn a_turn_that_answered_gets_no_extra_reply() {
+        let root = std::env::temp_dir().join(format!("nightloom-361b-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let body = std::fs::read_to_string(stand_in(&root)).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        let events = one_turn(&body, None).await;
+        let replies = events
+            .iter()
+            .filter(|e| matches!(e, SessionEvent::AssistantMessage { .. }))
+            .count();
+        assert_eq!(replies, 1);
+        assert!(!events.iter().any(|e| matches!(
+            e,
+            SessionEvent::AssistantMessage { blocks, .. }
+                if blocks.iter().any(|b| matches!(b, ContentBlock::Text { text } if text == STOPPED_BEFORE_REPLY))
+        )));
     }
 
     /// Two stages of a turn, the span between them.

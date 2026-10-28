@@ -268,6 +268,20 @@ What each edit does to the copy, and why:
   *with* a tool call cannot be dropped (its results would answer nothing),
   so it keeps its `tool_use` nodes, loses its thinking, and says the same
   marker sentence the API engine's elision projects (`REMOVED_MARKER`).
+- **Finding the turn** (`locate`, nightshift item 356, 2026-10-13): the
+  target is addressed by its count from the newest prompt, checked by text.
+  ~~The count was the address, and a text mismatch refused.~~ (2026-10-13)
+  The count drifts — a turn removed from the copy is gone from the file but
+  still a live turn in the log, a message stopped before the CLI wrote it is
+  in the log alone — and every Remove or Edit on an earlier turn was then
+  refused ("that turn reads differently in Claude Code's history…").
+  So when the counted turn does not read the same, the prompt (or the reply,
+  if it has words) is looked for by its text in every turn, and ~~the match
+  nearest the counted place is taken; two equally near refuse~~ (struck
+  2026-10-13, wave 8 review: with the count off, the nearest of two turns
+  that read the same can be the wrong one) taken only when exactly one turn
+  in the file reads so; two or more refuse and nothing changes. A tool call
+  is found by its id anywhere in the chain.
 - **Rewind** and **edit and send** (`truncate`): the copy cut before the
   user prompt, as measured. A cut that leaves no turn at all — at the
   oldest prompt, or before the CLI session began — writes no copy: the
@@ -1150,6 +1164,41 @@ on auto it would have driven his Chrome with no card; a standing rule on
 the tool still covers it. Flipping the switch on a running chat changes the tool
 list (34 → 56 in the measurement), so the next turn re-writes the prefix once.
 
+## Playwright: Claude's own browser behind a card (2026-10-15, nightshift backlog 367)
+
+Every Claude Code chat gets Microsoft's Playwright MCP server (`@playwright/mcp`
+0.0.83, pinned) in the `--mcp-config` JSON beside Nightloom's own, driving
+**WebKit** headless with an in-memory profile — never Chrome
+(`agent/own_browser.rs`). Installed outside the bundle and outside
+`~/.nightloom`: `~/.local/share/nightloom/playwright-mcp` (override
+`NIGHTLOOM_PLAYWRIGHT_DIR`), WebKit in Playwright's cache
+(`~/Library/Caches/ms-playwright/webkit-2368`, 296 MB). node is found at
+`NIGHTLOOM_NODE`, Homebrew's prefixes, the newest nvm install, then `PATH`;
+no install, no server, nothing to gate.
+
+The model is told nothing about on or off: the tools are always listed (the
+prefix never moves) and a `PreToolUse` entry on `mcp__playwright__.*` — the
+Ask position's own hook binary on the chat's ask directory — gates each call
+**in every position, bypass included**. Measured on CLI 2.1.300 before it was
+built (nightshift `wave9-367-report.md`, M1–M2): under `bypassPermissions`
+with no prompt tool named, the hook's `defer` ends the process with
+`deferred_tool_use`, and `--resume` with the hook answering `allow` runs the
+call. The Ask matcher's MCP alternative became `mcp__(?!playwright__).*` so
+only one hook sees a Playwright call (matching hooks run in parallel and would
+race for the one-shot decision file).
+
+The card: "Claude wants to use its own browser (Playwright)", the model's
+last text before the call (`ApprovalPrompt.reason`), the action, and
+**Allow once** (`rules.json` `playwright_reply: "allow"` — until the reply
+ends), **Allow for this chat** (`playwright_chat: true`, the rail's per-chat
+*Playwright for this chat* switch, `playwright_for_chat`), **Deny** ("The
+user declined Playwright for now.", and `playwright_reply: "deny"` so the
+reply does not raise a card per retry). The turn clears `playwright_reply`
+as it starts and as it ends (`agent_turn::ReplyEnd`). A subagent's, an
+aside's or a fork's call (`--side`) is never deferred: it runs if already
+allowed, else is refused in words; an ephemeral chat's gate is an `echo`
+deny. The phone draws the same card. The API engine is out of scope.
+
 ## What `--append-system-prompt` carries
 
 Three parts, in this order, joined by blank lines (`prompt::agent_prompt`
@@ -1175,6 +1224,12 @@ cannot differ by a byte — 2026-09-14):
    does, the note also asks for the dream's discipline — amend, strike through
    with a date, never rewrite a note whole — because a chat is not given the
    dream's instruction and the vault is git-snapshotted only by dreams.
+   **Since 2026-10-28 (nightshift backlog 446)** it also carries
+   `PERSONAL_DATA_NOTE`: the CLI attaches the account's email as context, and
+   the model must not put it, or the user's school, employer or other personal
+   details, into files they might publish unless asked — in the 429 run a chat
+   wrote his email and school into a landing page before taking them out. An
+   incognito chat has the stricter `INCOGNITO_NOTE` in its place.
 
    Naming the vault is not enough to make it readable: the CLI routes a path
    outside its working directories to approval, and headless that is the

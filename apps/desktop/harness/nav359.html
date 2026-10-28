@@ -1,0 +1,32 @@
+<!doctype html>
+<!-- Item 359 (wave 9): the message navigator as ported from LibreChat, drawn by the real Transcript over a fixture
+     log. Only the Tauri bridge is faked, and requestAnimationFrame is a 16 ms timer (an offscreen WKWebView — bin/snap —
+     does not run rAF). ?n= exchanges (default 84; 3 for the short chat is n=2 → 4 messages, n=1.5 → 3: see nav359.ts);
+     ?at=0..1 scroll position; ?hover=i puts the pointer on rib i (?dy= px off its centre); ?stream=1 a reply being
+     written (?words= of it; 0 = before its first word); ?scroll=i&t=0..1 the eased jump to rib i frozen at t;
+     ?palette=A|B|C|D; ?theme=light. Snapped with nightshift-code bin/snap (WebKit). -->
+<html lang="en" data-palette="B">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Navigator 359</title>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; }
+      body { background: var(--paper, #111); }
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+      #root { position: relative; display: flex; flex-direction: column; width: 100vw; height: 100vh; }
+      #tag { position: fixed; left: 10px; bottom: 8px; z-index: 99999; font: 12px/1.4 ui-monospace, monospace; color: #aaa; background: rgba(0,0,0,0.6); padding: 3px 7px; border-radius: 5px; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="tag">nav359</div>
+    <script>
+      window.addEventListener("error", (e) => (document.getElementById("tag").textContent = "error: " + e.message));
+      window.addEventListener("unhandledrejection", (e) => (document.getElementById("tag").textContent = "rejection: " + e.reason));
+      window.requestAnimationFrame = (cb) => setTimeout(() => cb(performance.now()), 16);
+      window.cancelAnimationFrame = (id) => clearTimeout(id);
+    </script>
+    <script type="module" src="./nav359.ts"></script>
+  </body>
+</html>

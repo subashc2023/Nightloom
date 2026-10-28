@@ -21,6 +21,7 @@
   import { foldToFit } from "./fold";
   const POP_WIDTH = 340;
   import NotificationCentre from "./NotificationCentre.svelte";
+  import ForYouButton from "./ForYouButton.svelte";
   import { chatKind, kindLabel, liveChats, openSession } from "./state.svelte";
   import { forkLine } from "./edit";
   // Item 299: Make main on the open fork, from the bar.
@@ -29,6 +30,8 @@
   import ThreadChip from "./ThreadChip.svelte";
   import { threadChip } from "./thread";
   import { chatThread } from "./state.svelte";
+  import { auth } from "./claudeAuth.svelte";
+  import { chipWord } from "./claudeAuth";
 
   /**
    * The chat top bar in the redesign (item 036, the mock-up's Chat artboard):
@@ -122,7 +125,7 @@
   );
   const modeTitle = $derived(
     mode === "incognito"
-      ? "Incognito: kept and marked; writes nothing, unread by other chats"
+      ? "Incognito: kept and marked; knows nothing about you (no profile, memory, vault or project), writes nothing, unread by other chats"
       : "Ephemeral: no log, no name, no CLI session; gone when you close it",
   );
 
@@ -310,10 +313,15 @@
 
   const openTasks = $derived(currentTodos().filter((t) => t.status !== "completed").length);
 
+  /** Backlog 409: "signed out" in place of `subscription` once Claude
+   *  Code's own status said so (`claude auth status`), and the dot red. */
+  const signedOut = $derived(app.connection?.engine === "claude-code" ? chipWord(auth.signedIn) : null);
   /** The chip's second word: `subscription` on the Claude Code engine,
    *  the provider's name on the other. Folds at step 3 (backlog 129). */
   const engineName = $derived(
-    app.connection?.engine === "claude-code" ? "subscription" : (app.connection?.provider ?? ""),
+    app.connection?.engine === "claude-code"
+      ? (signedOut ?? "subscription")
+      : (app.connection?.provider ?? ""),
   );
   /** The spend, for the gauge's hover once its chip has folded (backlog
    *  129, step 2) — carried always, so the hover reads the same at every
@@ -548,10 +556,10 @@
       aria-expanded={app.showRail}
       onclick={toggleRail}
     >
-      <span class="dot" class:unknown={!app.connection}></span>
+      <span class="dot" class:unknown={!app.connection} class:failed={!!signedOut}></span>
       {#if app.connection}
         <span class="model-name"
-          >{kindLabel(chatKind(app.events), app.connection.engine)}<span class="fold2"> · {engineName}</span></span
+          >{kindLabel(chatKind(app.events), app.connection.engine)}<span class="fold2">{" · "}{engineName}</span></span
         >
       {:else}
         <!-- "not connected" only once it is true (item 220): while the
@@ -672,6 +680,9 @@
          … right next to the settings button; that might save some space"). -->
     <!-- The bell (nightshift backlog 069, agent I's hunk): what waits on
          him, five kinds; the Nightshift header carries the same one. -->
+    <!-- Files for you (nightshift backlog 377): what the model marked for
+         him, a dot for new ones. -->
+    <ForYouButton />
     <NotificationCentre />
   </div>
 

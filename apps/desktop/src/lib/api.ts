@@ -3,6 +3,7 @@ import type {
   AsideResult,
   EditedAttachments,
   AsideSendOptions,
+  ClaudeAuthStatus,
   CliStatus,
   CliUpdateResult,
   AgentConnectArgs,
@@ -80,7 +81,9 @@ import type {
   TurnResult,
   WireView,
 } from "./types";
+import { aimArgs, type Aim } from "./aim";
 import type { CouncilRequest } from "./council";
+import type { ForYouRow } from "./forYou";
 import type { PriorExchange } from "./noteEdit";
 import type { TurnUsageLine } from "./replyUsage";
 
@@ -125,9 +128,12 @@ export function countDraftTokens(
   return invoke("count_draft_tokens", { provider, model, text });
 }
 
-/** Rewind to the turn at log index `to`; resolves with the new transcript. */
-export function rewind(to: number): Promise<SessionEvent[]> {
-  return invoke("rewind", { to });
+/** Rewind to the turn at log index `to`; resolves with the new transcript.
+ *  `at`, when given, is when the message at `to` was sent: the backend aims
+ *  at that message even when the window's list is out of step with the log
+ *  (as `editMessage`'s, backlog 361). */
+export function rewind(to: number, at?: string): Promise<SessionEvent[]> {
+  return invoke("rewind", at ? { to, at } : { to });
 }
 
 /**
@@ -206,12 +212,25 @@ export function sendAgent(
   stopKey?: string,
   spoken?: boolean,
   files?: FileInput[],
+  target?: { chat: string; project: string | null },
 ): Promise<AgentTurnResult> {
   // `stopKey` (backlog 159, A3): the window's name for this turn, which a
   // Stop can use before the turn's first event names its chat. `spoken`
   // (item 246 wave 3): said aloud on the phone — answered for the ear.
   // `files` (item 277): saved in the chat's folder, named in the message.
-  return invoke("send_agent", { text, images, documents, council, stopKey, spoken, files });
+  // `target` (blocker 1467): a queued message sent in the background goes
+  // to that chat, in its project, or is refused — never the open chat.
+  return invoke("send_agent", {
+    text,
+    images,
+    documents,
+    council,
+    stopKey,
+    spoken,
+    files,
+    chat: target?.chat,
+    project: target?.project ?? undefined,
+  });
 }
 
 /** What an office file became (item 277): a PDF, or its text. */
@@ -222,6 +241,9 @@ export interface PreparedOffice {
   via: "pdf" | "text";
   count: number | null;
   note: string | null;
+  /** SHA-256 (hex) of the office file itself (item 428): Keep finds the
+   *  same file kept before by this, its PDF differing on every run. */
+  source_sha256?: string;
 }
 
 /** An office file as a PDF (LibreOffice) or its text; `textOnly` skips the
@@ -250,8 +272,30 @@ export function keepAttachment(
   name: string,
   mediaType: string,
   from: { data: string } | { path: string },
+  dir?: string,
+  // Item 428: the SHA-256 of the office file `data` was converted from.
+  source?: string,
 ): Promise<KeptFile> {
-  return invoke("keep_attachment", { name, mediaType, ...from });
+  // Item 414: `dir` (a folder under `files/`) only for a zip's entries.
+  return invoke("keep_attachment", {
+    name,
+    mediaType,
+    ...from,
+    ...(dir ? { dir } : {}),
+    ...(source ? { source } : {}),
+  });
+}
+
+/** A dropped zip, read (item 414): the folder under `files/` it unpacks
+ *  into, its safe entries (`path` under that folder, bytes as base64), and
+ *  what was left out (system files, paths that escape, too large). */
+export interface UnpackedZip {
+  folder: string;
+  files: { path: string; data: string }[];
+  skipped: { name: string; why: string }[];
+}
+export function unpackZip(name: string, data: string): Promise<UnpackedZip> {
+  return invoke("unpack_zip", { name, data });
 }
 
 /**
@@ -388,6 +432,15 @@ export function approveCall(
     grantDir: grant?.dir,
     grantScope: grant?.scope,
   });
+}
+
+/**
+ * A chat's Playwright switch (nightshift backlog 367): whether Playwright is
+ * installed, and whether the chat runs it without asking — the card's
+ * "Allow for this chat". `on` sets it first; off asks again on the next call.
+ */
+export function playwrightForChat(chat: string, on?: boolean): Promise<{ installed: boolean; on: boolean }> {
+  return invoke("playwright_for_chat", { chat, on });
 }
 
 export function listSessions(): Promise<SessionMeta[]> {
@@ -527,6 +580,12 @@ export function deleteSession(id: string, active: string | null = null): Promise
   return invoke("delete_session", { id, active });
 }
 
+/** Move a chat of the open project's list into project `to`, or to the
+ *  unfiled chats when `to` is null (nightshift backlog 370); its full id. */
+export function moveSession(id: string, to: string | null): Promise<string> {
+  return invoke("move_session", { id, to });
+}
+
 /** Put a deleted session back from the trash (nightshift backlog 064). */
 export function restoreSession(id: string): Promise<string> {
   return invoke("restore_session", { id });
@@ -565,8 +624,20 @@ export function editMessage(
   /** Item 336: on a `save`, the user message's whole set of attachments
    *  from here on; absent leaves them as they are. */
   attachments: EditedAttachments | null = null,
+  /** Backlog 361: when the user message at `index` was sent, so the
+   *  backend forks before the message meant even when the window's list
+   *  is out of step with the log; absent, `index` alone, as before.
+   *  Backlog 364: a `save` is aimed by it too. */
+  at: string | null = null,
+  /** Backlog 364: on a `save` of a reply, its place among its exchange's
+   *  replies (`aim.ts`); `at` is then its exchange's send time. */
+  nth: number | null = null,
 ): Promise<MessageEdit> {
-  return invoke("edit_message", attachments ? { index, text, mode, attachments } : { index, text, mode });
+  const args: Record<string, unknown> = { index, text, mode };
+  if (attachments) args.attachments = attachments;
+  if (at) args.at = at;
+  if (at && nth !== null) args.nth = nth;
+  return invoke("edit_message", args);
 }
 
 /**
@@ -574,13 +645,14 @@ export function editMessage(
  * `edit_message` with `block`, an index into the reply's `blocks`; the
  * calls and the other text blocks around it stay where they were.
  */
-export function editBlock(index: number, block: number, text: string): Promise<MessageEdit> {
-  return invoke("edit_message", { index, text, mode: "save", block });
+export function editBlock(index: number, block: number, text: string, aim?: Aim | null): Promise<MessageEdit> {
+  return invoke("edit_message", { index, text, mode: "save", block, ...aimArgs(aim) });
 }
 
-/** Remove the turn at `index` from the context: the `elide` marker, from the transcript. */
-export function removeMessage(index: number): Promise<MessageEdit> {
-  return invoke("remove_message", { index });
+/** Remove the turn at `index` from the context: the `elide` marker, from the transcript.
+ *  `aim` (backlog 364, `aim.ts`): the backend removes the turn meant, or refuses. */
+export function removeMessage(index: number, aim?: Aim | null): Promise<MessageEdit> {
+  return invoke("remove_message", { index, ...aimArgs(aim) });
 }
 
 /**
@@ -588,13 +660,13 @@ export function removeMessage(index: number): Promise<MessageEdit> {
  * backlog 066): a text block, or a tool call with its result — the pair
  * leaves together. On Claude Code the CLI's copy drops the nodes.
  */
-export function removeBlock(index: number, block: number): Promise<MessageEdit> {
-  return invoke("remove_block", { index, block });
+export function removeBlock(index: number, block: number, aim?: Aim | null): Promise<MessageEdit> {
+  return invoke("remove_block", { index, block, ...aimArgs(aim) });
 }
 
 /** Put back a block `removeBlock` took out. */
-export function restoreBlock(index: number, block: number): Promise<MessageEdit> {
-  return invoke("restore_block", { index, block });
+export function restoreBlock(index: number, block: number, aim?: Aim | null): Promise<MessageEdit> {
+  return invoke("restore_block", { index, block, ...aimArgs(aim) });
 }
 
 /**
@@ -602,13 +674,15 @@ export function restoreBlock(index: number, block: number): Promise<MessageEdit>
  * `unelide` marker; on Claude Code a third copy of the CLI's file with the
  * turn's nodes back from the original, recorded and resumed.
  */
-export function restoreMessage(index: number): Promise<MessageEdit> {
-  return invoke("restore_message", { index });
+export function restoreMessage(index: number, aim?: Aim | null): Promise<MessageEdit> {
+  return invoke("restore_message", { index, ...aimArgs(aim) });
 }
 
-/** Fork the open chat before the user turn at `upto`; the fork becomes the open chat. */
-export function forkSession(upto: number): Promise<MessageEdit> {
-  return invoke("fork_session", { upto });
+/** Fork the open chat before the user turn at `upto`; the fork becomes the open chat.
+ *  `at` (backlog 364, the phone's Fork): when that message was sent, so the
+ *  backend forks before the message meant, or refuses (361's aim). */
+export function forkSession(upto: number, at?: string | null): Promise<MessageEdit> {
+  return invoke("fork_session", at ? { upto, at } : { upto });
 }
 
 /** A fresh chat that continues the open one after a hand-off (nightshift
@@ -680,6 +754,21 @@ export function listThreads(): Promise<ThreadInfo[]> {
 /** Start a thread from the template in the open project; never overwrites. */
 export function newThread(slug: string, name: string): Promise<ThreadInfo> {
   return invoke("new_thread", { slug, name });
+}
+
+/** Rename a thread in the open project: its title only; the slug and folder stay (backlog 424). */
+export function renameThread(slug: string, name: string): Promise<ThreadInfo> {
+  return invoke("rename_thread", { slug, name });
+}
+
+/** Move a thread's folder to the project's `.agents/.trash/threads/`; returns where it went (backlog 424). */
+export function deleteThread(slug: string): Promise<string> {
+  return invoke("delete_thread", { slug });
+}
+
+/** Show a thread's folder in the file manager, selected (backlog 424). */
+export function revealThread(slug: string): Promise<null> {
+  return invoke("reveal_thread", { slug });
 }
 
 /** Append an aside's fold entry to a thread's log.md in the open project
@@ -759,6 +848,17 @@ export function cliMemoryFile(): Promise<CliMemoryFile> {
  *  turn, for an ephemeral chat, and on the other engine. */
 export function cliPromptSnapshot(): Promise<CliPromptSnapshot | null> {
   return invoke("cli_prompt_snapshot");
+}
+
+/** The images tool calls returned (nightshift backlog 434), read from the
+ *  CLI session file `session` for the calls `ids`; an id without one is
+ *  absent. `skipped` counts images left out by the size and count caps. */
+export interface ToolResultImages {
+  images: { media_type: string; data: string }[];
+  skipped: number;
+}
+export function toolResultImages(session: string, ids: string[]): Promise<Record<string, ToolResultImages>> {
+  return invoke("tool_result_images", { session, ids });
 }
 
 /** The *newer version exists* marks of the connected chat (backlog 174). */
@@ -872,6 +972,12 @@ export function planUsageRefresh(afterMs?: number): Promise<PlanUsage> {
  *  the connected chat's resolved CLI, or null for `claude` resolved. */
 export function cliVersionCheck(binary: string | null): Promise<CliStatus> {
   return invoke("cli_version_check", { binary });
+}
+
+/** Whether Claude Code is signed in (backlog 409), by `claude auth status`.
+ *  Zero tokens; no account detail comes back. */
+export function claudeAuthStatus(binary: string | null): Promise<ClaudeAuthStatus> {
+  return invoke("claude_auth_status", { binary });
 }
 
 /** Run `claude update` (backlog 182) — only at a cold moment, or on "now"
@@ -1012,8 +1118,21 @@ export function newProject(
   name: string,
   path: string | null,
   instructions: string,
+  claudeMd = false,
 ): Promise<ProjectInfo> {
-  return invoke("new_project", { name, path, instructions });
+  return invoke("new_project", { name, path, instructions, claudeMd });
+}
+
+/** Backlog 432: whether a folder has a `CLAUDE.md` (never touched if so)
+ *  and whether `~/.claude/practices/practices.md` is there to import. */
+export function claudeMdOffer(path: string): Promise<{ exists: boolean; practices: boolean }> {
+  return invoke("claude_md_offer", { path });
+}
+
+/** Backlog 432: write the practices `CLAUDE.md` into a project's folder;
+ *  `false` when one was already there (left as it was). */
+export function addPracticesClaudeMd(id: string): Promise<boolean> {
+  return invoke("add_practices_claude_md", { id });
 }
 
 /**
@@ -1153,11 +1272,76 @@ export interface FileTabData {
   size: number;
   text: string | null;
   data: string | null;
-  /** Why it could be read: inside the chat's folders, or written by it. */
-  via: "folder" | "written";
+  /** Why it could be read: inside the chat's folders, written by it, or
+   *  chosen by him (opened from the Finder, or marked for him — 377/378). */
+  via: "folder" | "written" | "chosen";
 }
 export function readFileTab(path: string, chat: string | null): Promise<FileTabData> {
   return invoke("read_file_tab", { path, chat });
+}
+
+/** A `.tex` tab's rendered side (nightshift backlog 381): the PDF (base64)
+ *  on success; else the TeX log and/or a message; `missing_tex` when this
+ *  Mac has no TeX. Refused like `readFileTab`. */
+export interface LatexRender {
+  pdf: string | null;
+  missing_tex: boolean;
+  log: string | null;
+  message: string | null;
+}
+export function renderLatex(path: string, chat: string | null): Promise<LatexRender> {
+  return invoke("render_latex", { path, chat });
+}
+
+/** Files for him (nightshift backlog 377): the open project's, newest first. */
+/** A chat's preview (nightshift item 430): a dev server the app runs for
+ *  the chat between its messages (`preview.rs`'s `Snapshot`). */
+export interface PreviewSnapshot {
+  chat: string;
+  command: string;
+  cwd: string;
+  port: number;
+  url: string;
+  status: "starting" | "listening" | "exited";
+  exit_code: number | null;
+  /** The last 200 lines, oldest first. */
+  log: string[];
+  started_ms: number;
+  pgid: number | null;
+  /** It ended with the app (a quit or restart), found at launch (item 445). */
+  ended_by_app?: boolean;
+}
+export function previewList(): Promise<PreviewSnapshot[]> {
+  return invoke("preview_list");
+}
+export function previewGet(chat: string): Promise<PreviewSnapshot | null> {
+  return invoke("preview_get", { chat });
+}
+export function previewStop(chat: string): Promise<void> {
+  return invoke("preview_stop", { chat });
+}
+/** Start an ended preview again with its command and port (item 445). */
+export function previewRestart(chat: string): Promise<PreviewSnapshot> {
+  return invoke("preview_restart", { chat });
+}
+/** Why previews are not served in this app process, or null (item 444). */
+export function previewUnavailable(): Promise<string | null> {
+  return invoke("preview_unavailable");
+}
+export function forYouFiles(): Promise<ForYouRow[]> {
+  return invoke("for_you_files");
+}
+/** The manifest's length and time — re-read the list only when it moves. */
+export function forYouStamp(): Promise<string> {
+  return invoke("for_you_stamp");
+}
+/** A file marked for him shown in the Finder; a folder opened there. */
+export function forYouReveal(path: string): Promise<null> {
+  return invoke("for_you_reveal", { path });
+}
+/** Files opened with Nightloom from the Finder (backlog 378), each once. */
+export function takeOpenedFiles(): Promise<string[]> {
+  return invoke("take_opened_files");
 }
 
 /** Open an `https://` link in the browser. */
@@ -1315,7 +1499,7 @@ export function macIdleMs(): Promise<number | null> {
  * `TurnEvent` shape, on its own channel) while it works, and resolves with
  * what the pass did.
  */
-export function capture(args: PassArgs): Promise<CaptureReport> {
+export function capture(args: PassArgs, chat?: string): Promise<CaptureReport> {
   return invoke("capture", {
     provider: args.provider,
     model: args.model,
@@ -1323,6 +1507,9 @@ export function capture(args: PassArgs): Promise<CaptureReport> {
     thinking: args.thinking,
     binary: args.binary,
     safeMode: args.safeMode,
+    // "Save memory from this chat" (backlog 371): that one chat, whatever
+    // the cutoff; absent, the whole pass.
+    ...(chat ? { chat } : {}),
   });
 }
 

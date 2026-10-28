@@ -1,6 +1,8 @@
 <script lang="ts">
   import { canLeaveProject, canDeleteChat } from "./state.svelte";
+  import { saveMemoryFromChat } from "./state.svelte";
   import { tip } from "./tip";
+  import { renamedTo, selectAllOnMount } from "./renameField";
   import {
     app,
     openProjectFolder,
@@ -11,6 +13,7 @@
     endContentDrag,
     droppedContent,
     moveChatToThread,
+    moveSession,
     newChatInThread,
     startContentDrag,
     enableNightshift,
@@ -34,9 +37,28 @@
   import { hasBoxDraft, newDraftKey } from "./drafts.svelte";
   import TerminalButton from "./TerminalButton.svelte";
   import { forkLine } from "./edit";
+  import { FORK_GLYPH, forkMark } from "./forkMark";
   import type { SidebarRow } from "./forkTree";
-  import { THREADS_CLOSED_KEY, newInThreadTip, threadGroups, threadKey } from "./thread";
-  import { openThreadView, refreshThreadList, threadList } from "./threadPanel.svelte";
+  import {
+    THREADS_CLOSED_KEY,
+    loadThreadOrder,
+    newInThreadTip,
+    orderedThreads,
+    reordered,
+    saveThreadOrder,
+    threadGroups,
+    threadKey,
+    type ThreadGroup,
+  } from "./thread";
+  import {
+    deleteThread,
+    openThreadAs,
+    openThreadView,
+    refreshThreadList,
+    renameThread,
+    revealThread,
+    threadList,
+  } from "./threadPanel.svelte";
   import {
     sidebarRows,
     loadOpen as loadForksOpen,
@@ -50,11 +72,12 @@
   // A chat's asides under its row and in its menu (item 265).
   import SidebarAsides from "./SidebarAsides.svelte";
   import AsideMenuItems from "./AsideMenuItems.svelte";
+  import { aimsAt, placeMenu, placeSubmenu, type Placed, type Point } from "./menuPlace";
   import { asidesListedOf, asidesShown, toggleAsidesOf } from "./asideSidebar.svelte";
   import { findChord } from "./find";
   import { findBar } from "./search";
   import { isMac } from "./platform";
-  import { untrack } from "svelte";
+  import { tick, untrack } from "svelte";
   import type { ChatKind, ChatMode, NightshiftInfo, NightshiftRow, SessionMeta } from "./types";
   import { relativeTime } from "./time";
   import { sameMorning } from "./nightshift";
@@ -133,9 +156,16 @@
   const threads = $derived(threadList.project === (app.project?.id ?? "") ? threadList.list : []);
   let threadsClosed = $state<Set<string>>(loadForksOpen(THREADS_CLOSED_KEY));
   const projectKey = $derived(app.project?.id ?? "");
+  // His order of the threads (item 426): the backend's, most recently
+  // touched first, until he drags one; then his, kept per project.
+  let threadOrder = $state<string[] | undefined>(undefined);
+  $effect(() => {
+    threadOrder = loadThreadOrder(projectKey);
+  });
+  const ordered = $derived(orderedThreads(threads, threadOrder));
   const split = $derived(
     app.project
-      ? threadGroups(rows, threads, threadsClosed, projectKey, app.activeSessionId)
+      ? threadGroups(rows, ordered, threadsClosed, projectKey, app.activeSessionId)
       : { groups: [], loose: rows },
   );
   const groups = $derived(split.groups);
@@ -187,15 +217,128 @@
     void moveChatToThread(c.session, slug);
   }
   $effect(() => {
-    if (!app.draggingContent) dropOn = null;
+    if (!app.draggingContent) {
+      dropOn = null;
+      insertBefore = undefined;
+    }
   });
 
-  // The row menu's *Move to thread ▸*: opens the project's threads inside
-  // the menu; one click binds.
-  let moveOpen = $state(false);
+  // Drag a thread to reorder (item 426): its name row carries the tab
+  // drag's `{kind: "thread"}` (so onto a strip or a pane it still opens
+  // the thread's tab); over the Threads section a line shows where it
+  // lands — above the group whose head the pointer is in the top half of,
+  // else below it — and the drop keeps the new order for this project.
+  /** Where a dragged thread would land: before that slug, `null` at the end; undefined when no thread is dragged here. */
+  let insertBefore = $state<string | null | undefined>(undefined);
+  const realSlugs = $derived(ordered.map((t) => t.slug));
+  function draggedThread(): string | null {
+    const c = app.draggingContent;
+    return c?.kind === "thread" ? c.slug : null;
+  }
+  function overThread(e: DragEvent, g: ThreadGroup): boolean {
+    if (!draggedThread()) return false;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    const head = (e.currentTarget as HTMLElement).querySelector(".tg-head") ?? (e.currentTarget as HTMLElement);
+    const r = head.getBoundingClientRect();
+    const i = realSlugs.indexOf(g.slug);
+    if (i < 0) insertBefore = null;
+    else if (e.clientY < r.top + r.height / 2) insertBefore = g.slug;
+    else insertBefore = realSlugs[i + 1] ?? null;
+    return true;
+  }
+  function overThreadsEnd(e: DragEvent): boolean {
+    if (!draggedThread()) return false;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    insertBefore = null;
+    return true;
+  }
+  function dropThread(e: DragEvent): boolean {
+    const c = droppedContent(e);
+    if (c?.kind !== "thread") return false;
+    e.preventDefault();
+    e.stopPropagation();
+    const before = insertBefore;
+    insertBefore = undefined;
+    endContentDrag();
+    if (before === undefined || !realSlugs.includes(c.slug)) return true;
+    const next = reordered(realSlugs, c.slug, before);
+    if (next.join("/") === realSlugs.join("/")) return true;
+    threadOrder = next;
+    saveThreadOrder(projectKey, next);
+    return true;
+  }
+  /** The group the insertion line is drawn on: above `before`, or below the last thread for the end. */
+  function lineAt(g: ThreadGroup): "before" | "after" | null {
+    if (insertBefore === undefined) return null;
+    if (insertBefore === g.slug) return "before";
+    if (insertBefore === null && realSlugs.at(-1) === g.slug) return "after";
+    return null;
+  }
+
+  // The thread's right-click menu (item 424): Open · Open in a new tab ·
+  // Open beside · New chat in this thread · Rename · Reveal in Finder ·
+  // Delete thread…, placed as the chat menu is (`placeMenu`, item 425).
+  let threadMenu = $state<{ g: ThreadGroup; x: number; below: number; above: number } | null>(null);
+  function openThreadMenu(e: MouseEvent, g: ThreadGroup) {
+    e.preventDefault();
+    rowMenu = null;
+    threadMenu = { g, x: e.clientX, below: e.clientY, above: e.clientY };
+  }
+  function threadPick<T>(run: (g: ThreadGroup) => T) {
+    const g = threadMenu?.g;
+    threadMenu = null;
+    if (g) run(g);
+  }
+  let threadRenaming = $state<string | null>(null);
+  let threadDraft = $state("");
+  let threadRenameFrom = "";
+  function startThreadRename(g: ThreadGroup) {
+    threadRenaming = g.slug;
+    threadDraft = g.title;
+    threadRenameFrom = g.title;
+  }
+  async function commitThreadRename(slug: string) {
+    // As a chat's rename: only the field still open commits; unchanged or
+    // emptied is a cancel.
+    if (threadRenaming !== slug) return;
+    const name = renamedTo(threadDraft, threadRenameFrom);
+    threadRenaming = null;
+    if (!name) return;
+    await renameThread(slug, name);
+  }
+  let deletingThread = $state<ThreadGroup | null>(null);
+  function confirmDeleteThread() {
+    const g = deletingThread;
+    deletingThread = null;
+    if (g) void deleteThread(g.slug);
+  }
+
+  // The row menu's *Move to thread ▸* (the project's threads; one click
+  // binds) and *Move to project ▸* (backlog 370: every other project, and
+  // No project when one is open; one click moves). Since item 425 both are
+  // flyout submenus to the right of the menu — opened on hover, click, → or
+  // ↵ — instead of lists unfolding inside it (his "when you highlight over
+  // that line, it opens up to the right, cause that's how the arrow makes
+  // it look").
+  type RowSub = "thread" | "project";
+  let rowSub = $state<RowSub | null>(null);
+  /** The row that opened the submenu: it places the submenu and takes focus back. */
+  let rowSubFrom: HTMLElement | null = null;
+  let rowSubEl = $state<HTMLElement | null>(null);
   $effect(() => {
-    if (!rowMenu) moveOpen = false;
+    if (!rowMenu) closeRowSub();
   });
+  const rowOthers = $derived(threads.filter((t) => t.slug !== (rowMenu?.s.thread ?? null)));
+  const moveTargets = $derived(app.projects.filter((p) => p.id !== app.project?.id));
+  function rowMoveProject(to: string | null) {
+    const s = rowMenu?.s;
+    rowMenu = null;
+    if (s) void moveSession(s.id, to);
+  }
   function rowMove(slug: string | null) {
     const s = rowMenu?.s;
     rowMenu = null;
@@ -229,28 +372,152 @@
    * a turn, and a whole-chat fork from a row needs the backend (blocker
    * 380). Each item does what the row's own gesture does.
    */
-  let rowMenu = $state<{ s: SessionMeta; x: number; y: number; up?: boolean } | null>(null);
+  /**
+   * Where the menu opens (item 425): `x` its left edge (its right edge with
+   * `alignRight`), `below` the top it takes dropping down, `above` the
+   * bottom it takes flipping up. `placeMenu` picks, once the menu is drawn
+   * and its size known, so it always fits the window.
+   */
+  let rowMenu = $state<{ s: SessionMeta; x: number; below: number; above: number; alignRight?: boolean } | null>(null);
   function openRowMenu(e: MouseEvent, s: SessionMeta) {
     e.preventDefault();
-    rowMenu = { s, x: e.clientX, y: e.clientY };
+    threadMenu = null;
+    rowMenu = { s, x: e.clientX, below: e.clientY, above: e.clientY };
   }
   /**
    * The row's one tool, ··· (backlog 208, design C, blocker 436: "the triple
    * dots thing might be the way to go"): the same menu as a right-click,
    * its right edge under the button's, dropped below it — or raised above
-   * it when the row sits too near the window's foot for the menu to fit.
+   * it when the row sits too near the window's foot for the menu to fit
+   * (since item 425 measured, not guessed: `placeMenu`).
    */
-  const ROW_MENU_W = 200;
-  const ROW_MENU_ROOM = 190;
   function openRowMenuFrom(e: MouseEvent, s: SessionMeta) {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const up = window.innerHeight - r.bottom < ROW_MENU_ROOM;
-    rowMenu = {
-      s,
-      x: Math.max(4, r.right - ROW_MENU_W),
-      y: up ? window.innerHeight - r.top + 4 : r.bottom + 4,
-      up,
+    threadMenu = null;
+    rowMenu = { s, x: r.right, below: r.bottom + 4, above: r.top - 4, alignRight: true };
+  }
+  const viewSize = () => ({ w: window.innerWidth, h: window.innerHeight });
+  /** A menu's natural size: its content's full height, not the capped box's (so a cap never feeds back). */
+  const naturalSize = (el: HTMLElement) => ({ w: el.offsetWidth, h: el.scrollHeight + (el.offsetHeight - el.clientHeight) });
+  function setPlaced(el: HTMLElement, p: Placed) {
+    el.style.left = `${p.left}px`;
+    el.style.top = `${p.top}px`;
+    el.style.maxHeight = p.maxHeight === undefined ? "" : `${p.maxHeight}px`;
+  }
+  /** Places the menu from its drawn size, and again whenever that size changes (the asides load late). */
+  type MenuAnchor = { x: number; below: number; above: number; alignRight?: boolean };
+  function placeRowMenu(el: HTMLElement, at: MenuAnchor) {
+    let anchor = at;
+    const place = () => {
+      setPlaced(el, placeMenu(anchor, naturalSize(el), viewSize()));
+      if (rowSubEl) placeRowSub(rowSubEl);
     };
+    place();
+    const ro = new ResizeObserver(place);
+    ro.observe(el);
+    window.addEventListener("resize", place);
+    return {
+      update(next: MenuAnchor) {
+        if (next.x === anchor.x && next.below === anchor.below && next.above === anchor.above) return;
+        anchor = next;
+        place();
+      },
+      destroy() {
+        ro.disconnect();
+        window.removeEventListener("resize", place);
+      },
+    };
+  }
+  let rowMenuEl = $state<HTMLElement | null>(null);
+  function placeRowSub(el: HTMLElement) {
+    if (!rowSubFrom || !rowMenuEl) return;
+    setPlaced(el, placeSubmenu(rowSubFrom.getBoundingClientRect(), rowMenuEl.getBoundingClientRect(), naturalSize(el), viewSize()));
+  }
+
+  // Hover intent for the submenus (item 425): a submenu opens a beat after
+  // the pointer rests on its row, and a move across the rows below toward
+  // it — the diagonal into a flyout — does not close it (`aimsAt`, the
+  // safe triangle); a move anywhere else switches at once.
+  const SUB_OPEN_MS = 120;
+  const SUB_AIM_MS = 300;
+  let subTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastPt: Point | null = null;
+  function closeRowSub() {
+    clearTimeout(subTimer);
+    rowSub = null;
+    rowSubFrom = null;
+  }
+  function openRowSub(k: RowSub, from: HTMLElement, focusFirst = false) {
+    clearTimeout(subTimer);
+    rowSubFrom = from;
+    rowSub = k;
+    if (focusFirst) {
+      // After the flyout is drawn (`tick`, not a frame: a frame never comes in a hidden view).
+      void tick().then(() => rowSubEl?.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled)')?.focus());
+    }
+  }
+  function rowMenuMove(e: PointerEvent) {
+    const prev = lastPt;
+    const now = { x: e.clientX, y: e.clientY };
+    lastPt = now;
+    const item = (e.target as Element).closest<HTMLElement>('[role="menuitem"]');
+    const k = (item?.dataset.sub as RowSub | undefined) ?? null;
+    if (k && (item as HTMLButtonElement).disabled) return;
+    if (k && k === rowSub && item === rowSubFrom) {
+      clearTimeout(subTimer);
+      return;
+    }
+    const aiming = !!(rowSub && rowSubEl && prev && aimsAt(prev, now, rowSubEl.getBoundingClientRect()));
+    clearTimeout(subTimer);
+    const go = () => {
+      if (k && item) openRowSub(k, item);
+      else closeRowSub();
+    };
+    if (aiming) subTimer = setTimeout(go, SUB_AIM_MS);
+    else if (k) subTimer = setTimeout(go, rowSub ? 0 : SUB_OPEN_MS);
+    else if (rowSub) go();
+  }
+  /** The pointer reached the submenu: whatever was pending (a close while aiming) is off. */
+  function rowSubMove(e: PointerEvent) {
+    clearTimeout(subTimer);
+    lastPt = { x: e.clientX, y: e.clientY };
+  }
+  function rowSubClick(e: MouseEvent, k: RowSub) {
+    const from = e.currentTarget as HTMLElement;
+    // A click (or ↵ / space, which click with detail 0) opens it; a second
+    // click on its own row closes it, as the old toggles did.
+    if (rowSub === k && rowSubFrom === from) closeRowSub();
+    else openRowSub(k, from, e.detail === 0);
+  }
+  /** ↑ ↓ walk a menu's rows; → opens a submenu row's flyout, ← and esc go back to its row. */
+  function menuKeys(e: KeyboardEvent, inSub: boolean) {
+    const box = e.currentTarget as HTMLElement;
+    const items = [...box.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled)')];
+    const at = items.indexOf(document.activeElement as HTMLElement);
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const n = items.length;
+      if (n === 0) return;
+      const next = at < 0 ? (e.key === "ArrowDown" ? 0 : n - 1) : (at + (e.key === "ArrowDown" ? 1 : n - 1)) % n;
+      items[next].focus();
+      return;
+    }
+    if (!inSub && e.key === "ArrowRight") {
+      const el = document.activeElement as HTMLElement | null;
+      const k = el?.dataset.sub as RowSub | undefined;
+      if (k && el && !(el as HTMLButtonElement).disabled) {
+        e.preventDefault();
+        openRowSub(k, el, true);
+      }
+      return;
+    }
+    if (inSub && (e.key === "ArrowLeft" || e.key === "Escape")) {
+      e.preventDefault();
+      e.stopPropagation();
+      const from = rowSubFrom;
+      closeRowSub();
+      from?.focus();
+    }
   }
   function rowOpen(how: "replace" | "new" | "beside") {
     const s = rowMenu?.s;
@@ -269,6 +536,12 @@
     rowMenu = null;
     if (s) void makeMainChat(s.id);
   }
+  // Backlog 371: the capture pass over this one chat, then Dream offered.
+  function rowSaveMemory() {
+    const s = rowMenu?.s;
+    rowMenu = null;
+    if (s) void saveMemoryFromChat(s.id);
+  }
   function rowDelete() {
     const s = rowMenu?.s;
     rowMenu = null;
@@ -277,10 +550,13 @@
 
   let renaming = $state<string | null>(null);
   let draft = $state("");
+  /** The name the field opened with (backlog 376): unchanged is a cancel. */
+  let renameFrom = "";
 
   function startRename(id: string, current: string) {
     renaming = id;
     draft = current;
+    renameFrom = current;
   }
 
   async function commitRename(id: string) {
@@ -289,10 +565,10 @@
     // DOM, and the blur that removal can fire must not turn the cancel
     // into a rename; Enter's own blur is the one commit.
     if (renaming !== id) return;
-    const name = draft.trim();
-    renaming = null;
     // Unchanged or emptied is a cancel, not a rename: an empty name would
     // leave the row labelled by its opening message with no way back.
+    const name = renamedTo(draft, renameFrom);
+    renaming = null;
     if (!name) return;
     // Through the state's version, which puts the inverse on the undo
     // stack and toasts a failure itself (nightshift backlog 064).
@@ -320,8 +596,20 @@
   function windowKeys(e: KeyboardEvent) {
     // The row menu is reachable from the keyboard now (the ··· button,
     // backlog 208), so Escape closes it.
+    if (threadMenu && e.key === "Escape") {
+      e.preventDefault();
+      threadMenu = null;
+      return;
+    }
     if (rowMenu && e.key === "Escape") {
       e.preventDefault();
+      // An open submenu goes first (item 425); the next esc closes the menu.
+      if (rowSub) {
+        const from = rowSubFrom;
+        closeRowSub();
+        from?.focus();
+        return;
+      }
       rowMenu = null;
       return;
     }
@@ -466,14 +754,19 @@
 
   {#snippet chatRow(r: SidebarRow, group: string | null = null)}
     {@const s = r.meta}
+    <!-- A fork carries ⑂ before its title (backlog 379), its parent named
+         on hover; `r.meta` is the row as drawn, so a version made main
+         over a top-level original has no mark. -->
+    {@const fork = forkMark(s, app.sessions)}
     <div class="session-item" class:active={rowLit(s.id)} class:fork={r.depth > 0} style:--depth={r.depth > 0 ? r.depth : undefined}>
       {#if renaming === s.id}
-        <!-- svelte-ignore a11y_autofocus -->
-        <input
+        <!-- Opens with the whole title selected (backlog 376): typing
+             replaces it, Esc leaves the name as it was. -->
+        <input autocorrect="off" autocapitalize="off" spellcheck="false"
           class="rename"
           aria-label="Session name"
           bind:value={draft}
-          autofocus
+          use:selectAllOnMount
           onblur={() => void commitRename(s.id)}
           onkeydown={(e) => {
             if (e.key === "Enter") (e.target as HTMLInputElement).blur();
@@ -504,13 +797,13 @@
           ondragend={endContentDrag}
         >
           <span class="snippet"
-            >{#if s.mode === "incognito"}<span class="mark" use:tip={"Incognito: writes nothing, unread by other chats"}>{MODE_GLYPH.incognito}</span> {/if}{#if hasBoxDraft(s.id)}<span class="mark draft" role="img" aria-label="has a draft" use:tip={"has a draft"}></span> {/if}{s.title ?? s.first_user ?? "empty session"}</span
+            >{#if s.mode === "incognito"}<span class="mark" use:tip={"Incognito: knows nothing about you, writes nothing, unread by other chats"}>{MODE_GLYPH.incognito}</span> {/if}{#if hasBoxDraft(s.id)}<span class="mark draft" role="img" aria-label="has a draft" use:tip={"has a draft"}></span> {/if}{#if fork}<span class="mark fork" role="img" aria-label={fork.tip} use:tip={fork.tip}>{FORK_GLYPH}</span> {/if}{s.title ?? s.first_user ?? "empty session"}</span
           >
           <!-- A fork says where it came from (backlog 062): the
                parent's name as its own row shows it, or that the
                parent is gone. -->
           <span class="meta"
-            >{s.id.slice(0, 8)}{#if s.kind === "chat"} · chat{/if}{#if s.mode === "incognito"} · incognito{/if} · {relativeTime(s.modified)}{#if s.thread && s.thread !== group} · <span class="thread" use:tip={`Works from the research thread ${s.thread}`}>◇ {s.thread}</span>{/if}{#if r.depth === 0 && forkLine(s, app.sessions)} · <span class="from" use:tip={"Forked from that chat; the parent is unchanged"}>{forkLine(s, app.sessions)}</span>{/if}</span
+            >{s.id.slice(0, 8)}{#if s.kind === "chat"}{" · "}chat{/if}{#if s.mode === "incognito"}{" · "}incognito{/if} · {relativeTime(s.modified)}{#if s.thread && s.thread !== group}{" · "}<span class="thread" use:tip={`Works from the research thread ${s.thread}`}>◇ {s.thread}</span>{/if}{#if r.depth === 0 && forkLine(s, app.sessions)}{" · "}<span class="from" use:tip={"Forked from that chat; the parent is unchanged"}>{forkLine(s, app.sessions)}</span>{/if}</span
           >
         </button>
         <!-- The origin's forks (backlog 207): a chevron and the count,
@@ -752,7 +1045,7 @@
       <!-- The panel's field, at rest (board 11b): typing or focusing opens
            the panel in place; the count reopens it. -->
       <div class="search-wrap">
-        <input
+        <input autocorrect="off" autocapitalize="off" spellcheck="false"
           class="search"
           type="search"
           placeholder="Search chats"
@@ -785,16 +1078,20 @@
           <div
             class="thread-group"
             class:drop={dropOn === g.slug}
+            class:ins-before={lineAt(g) === "before"}
+            class:ins-after={lineAt(g) === "after"}
+            class:dragging={draggedThread() === g.slug}
             role="group"
             aria-label={`Thread ${g.title}`}
-            ondragover={(e) => overDrop(e, g.slug)}
+            ondragover={(e) => overThread(e, g) || overDrop(e, g.slug)}
             ondragleave={leaveDrop}
-            ondrop={(e) => onDropChat(e, g.slug)}
+            ondrop={(e) => dropThread(e) || onDropChat(e, g.slug)}
           >
             <!-- Backlog 292: the chevron folds the group; the name (and status
                  line) opens the thread's tab — what the thread stores. A slug
                  with no thread.md has nothing to show, so its name folds too. -->
-            <div class="tg-head" class:active={threadSelected(g.slug)}>
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div class="tg-head" class:active={threadSelected(g.slug)} oncontextmenu={(e) => openThreadMenu(e, g)}>
               <button
                 class="tg-toggle"
                 class:open={g.open}
@@ -805,12 +1102,33 @@
               >
                 <span class="tg-chev"><Icon name="chevr" size={11} /></span>
               </button>
+              {#if threadRenaming === g.slug}
+                <!-- Rename (item 424): the title only; the slug stays. -->
+                <input autocorrect="off" autocapitalize="off" spellcheck="false"
+                  class="rename tg-rename"
+                  aria-label="Thread name"
+                  bind:value={threadDraft}
+                  use:selectAllOnMount
+                  onblur={() => void commitThreadRename(g.slug)}
+                  onkeydown={(e) => {
+                    if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                    else if (e.key === "Escape") {
+                      e.stopPropagation();
+                      threadRenaming = null;
+                      threadDraft = "";
+                    }
+                  }}
+                />
+              {:else}
               <button
                 class="tg-open"
                 use:tip={g.missing
                   ? `${g.open ? "Hide" : "Show"} the chats bound to ${g.slug} (no thread.md in this project)`
                   : `Open what the thread ${g.slug} stores: thread.md (Start here, Queue, Claims, His view…), log.md, archive.md`}
                 onclick={() => (g.missing ? toggleThread(g.slug) : void openThreadView(g.slug, g.title))}
+                ondragend={endContentDrag}
+                draggable={!g.missing}
+                ondragstart={(e) => startContentDrag(e, g.title && g.title !== g.slug ? { kind: "thread", slug: g.slug, title: g.title } : { kind: "thread", slug: g.slug })}
               >
                 <span class="tg-text">
                   <span class="tg-name"><span class="tg-mark" aria-hidden="true">◇</span> {g.title}</span>
@@ -818,6 +1136,7 @@
                 </span>
                 <span class="tg-count" aria-label={`${g.chats} chat${g.chats === 1 ? "" : "s"}`}>{g.chats}</span>
               </button>
+              {/if}
               {#if !g.missing}
                 <button
                   class="tg-new"
@@ -844,9 +1163,9 @@
             class:drop={dropOn === ""}
             role="group"
             aria-label="Chats in no thread"
-            ondragover={(e) => overDrop(e, null)}
+            ondragover={(e) => overThreadsEnd(e) || overDrop(e, null)}
             ondragleave={leaveDrop}
-            ondrop={(e) => onDropChat(e, null)}
+            ondrop={(e) => dropThread(e) || onDropChat(e, null)}
           >
             <span role="heading" aria-level="3">Not in a thread</span>
             {#if loose.length === 0}
@@ -865,14 +1184,49 @@
           {#each loose as r (r.meta.id)}{@render chatRow(r)}{/each}
         </div>
       </div>
+      {#if threadMenu}
+        {@const tg = threadMenu.g}
+        <button class="scrim" aria-label="Close" onclick={() => (threadMenu = null)} oncontextmenu={(e) => { e.preventDefault(); threadMenu = null; }}></button>
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+        <div
+          class="row-menu thread-menu"
+          role="menu"
+          tabindex="-1"
+          aria-label={`Thread ${tg.title}`}
+          use:placeRowMenu={threadMenu}
+          onkeydown={(e) => menuKeys(e, false)}
+        >
+          {#if tg.missing}
+            <p class="row-note">No thread.md for ◇ {tg.slug} in this project — nothing to open, rename or delete. Its chats can be moved out of it.</p>
+          {:else}
+            <button role="menuitem" onclick={() => threadPick((g) => void openThreadAs(g.slug, g.title, "replace"))}>Open</button>
+            <button role="menuitem" onclick={() => threadPick((g) => void openThreadAs(g.slug, g.title, "new"))}>Open in a new tab</button>
+            <button role="menuitem" onclick={() => threadPick((g) => void openThreadAs(g.slug, g.title, "beside"))}>Open beside <span class="row-key">drag</span></button>
+            <div class="row-sep"></div>
+            <button
+              role="menuitem"
+              disabled={app.busy || app.connecting}
+              use:tip={newInThreadTip(tg.slug)}
+              onclick={() => threadPick((g) => void newChatInThread(g.slug))}>New chat in this thread</button
+            >
+            <button role="menuitem" use:tip={"The thread's name only; its folder and slug stay, so its chats still find it"} onclick={() => threadPick(startThreadRename)}>Rename</button>
+            <button role="menuitem" onclick={() => threadPick((g) => void revealThread(g.slug))}>Reveal in Finder</button>
+            <div class="row-sep"></div>
+            <button role="menuitem" onclick={() => threadPick((g) => (deletingThread = g))}>Delete thread…</button>
+          {/if}
+        </div>
+      {/if}
       {#if rowMenu}
         <button class="scrim" aria-label="Close" onclick={() => (rowMenu = null)} oncontextmenu={(e) => { e.preventDefault(); rowMenu = null; }}></button>
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
         <div
           class="row-menu"
           role="menu"
-          style:left="{rowMenu.x}px"
-          style:top={rowMenu.up ? undefined : `${rowMenu.y}px`}
-          style:bottom={rowMenu.up ? `${rowMenu.y}px` : undefined}
+          tabindex="-1"
+          bind:this={rowMenuEl}
+          use:placeRowMenu={rowMenu}
+          onpointermove={rowMenuMove}
+          onkeydown={(e) => menuKeys(e, false)}
         >
           <button role="menuitem" onclick={() => rowOpen("replace")}>Open</button>
           <button role="menuitem" onclick={() => rowOpen("new")}>Open in a new tab <span class="row-key">{mod}-click</span></button>
@@ -890,30 +1244,72 @@
           {/if}
           {#if app.project && rowMenu.s.mode !== "ephemeral"}
             {@const inThread = rowMenu.s.thread ?? null}
-            {@const others = threads.filter((t) => t.slug !== inThread)}
-            {#if others.length > 0}
+            {#if rowOthers.length > 0}
               <button
                 role="menuitem"
                 aria-haspopup="menu"
-                aria-expanded={moveOpen}
-                class:on={moveOpen}
-                onclick={() => (moveOpen = !moveOpen)}
-              >Move to thread <span class="row-key">{moveOpen ? "▾" : "▸"}</span></button>
-              {#if moveOpen}
-                <div class="row-threads" role="group" aria-label="Move to thread">
-                  {#each others as t (t.slug)}
-                    <button role="menuitem" class="row-thread" use:tip={t.status || t.slug} onclick={() => rowMove(t.slug)}>◇ {t.title}</button>
-                  {/each}
-                </div>
-              {/if}
+                aria-expanded={rowSub === "thread"}
+                class:on={rowSub === "thread"}
+                data-sub="thread"
+                onclick={(e) => rowSubClick(e, "thread")}
+              >Move to thread <span class="row-key">▸</span></button>
             {/if}
             {#if inThread}
               <button role="menuitem" onclick={() => rowMove(null)}>Remove from thread <span class="row-key">◇ {inThread}</span></button>
             {/if}
           {/if}
+          {#if rowMenu.s.mode !== "ephemeral" && (moveTargets.length > 0 || app.project)}
+            <button
+              role="menuitem"
+              aria-haspopup="menu"
+              aria-expanded={rowSub === "project"}
+              class:on={rowSub === "project"}
+              data-sub="project"
+              disabled={!canDeleteChat(rowMenu.s.id)}
+              onclick={(e) => rowSubClick(e, "project")}
+            >Move to project <span class="row-key">▸</span></button>
+          {/if}
+          {#if rowMenu.s.mode !== "incognito" && rowMenu.s.mode !== "ephemeral"}
+            <button
+              role="menuitem"
+              disabled={app.capturing || app.dreaming}
+              use:tip={"Read this chat for things worth remembering — an imported or old one too — then offer Dream to file them"}
+              onclick={rowSaveMemory}>Save memory from this chat</button
+            >
+          {/if}
           <button role="menuitem" disabled={!!rowMenu?.s && !canDeleteChat(rowMenu.s.id)} onclick={rowDelete}>Delete…</button>
           <AsideMenuItems session={rowMenu.s.id} onpick={() => (rowMenu = null)} />
         </div>
+        {#if rowSub}
+          {#key rowSub}
+            <!-- The flyout (item 425): beside the menu, not inside it, so
+                 the menu never grows and neither box clips the other. -->
+            <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+            <div
+              class="row-menu row-sub"
+              role="menu"
+              tabindex="-1"
+              aria-label={rowSub === "thread" ? "Move to thread" : "Move to project"}
+              bind:this={rowSubEl}
+              use:placeRowSub
+              onpointermove={rowSubMove}
+              onkeydown={(e) => menuKeys(e, true)}
+            >
+              {#if rowSub === "thread"}
+                {#each rowOthers as t (t.slug)}
+                  <button role="menuitem" class="row-thread" use:tip={t.status || t.slug} onclick={() => rowMove(t.slug)}>◇ {t.title}</button>
+                {/each}
+              {:else}
+                {#each moveTargets as p (p.id)}
+                  <button role="menuitem" class="row-thread" use:tip={p.root ?? "No folder"} onclick={() => rowMoveProject(p.id)}>{p.name}</button>
+                {/each}
+                {#if app.project}
+                  <button role="menuitem" class="row-thread" use:tip={"Unfiled chats: no project"} onclick={() => rowMoveProject(null)}>No project</button>
+                {/if}
+              {/if}
+            </div>
+          {/key}
+        {/if}
       {/if}
     {/if}
   {:else if app.leftTab === "notes"}
@@ -984,7 +1380,7 @@
                   <label class="enable-label" for="ns-runner-{openRow.id}">
                     Runner — the folder holding bin/nightshift.sh
                   </label>
-                  <input
+                  <input autocorrect="off" autocapitalize="off"
                     id="ns-runner-{openRow.id}"
                     class="ns-fld enable-input"
                     type="text"
@@ -1028,6 +1424,24 @@
       confirmLabel="Move to trash"
       onconfirm={confirmDelete}
       onclose={() => (deleting = null)}
+    />
+  {/if}
+  {#if deletingThread}
+    {@const dt = deletingThread}
+    {@const nBound = app.sessions.filter((x) => x.thread === dt.slug).length}
+    <!-- Item 424: the folder moves to the project's trash, never unlinked;
+         its chats stay, in no thread. -->
+    <ConfirmDialog
+      title="Delete this thread?"
+      lead={`Its folder moves to the project's trash (.agents/.trash/threads/), out of the list but still on disk.${nBound ? ` ${nBound === 1 ? "Its chat moves" : `Its ${nBound} chats move`} to Not in a thread, messages untouched.` : ""}`}
+      facts={[
+        ["thread", dt.title],
+        ["folder", `.agents/threads/${dt.slug}/`],
+        ["chats", nBound === 0 ? "none" : `${nBound}`],
+      ]}
+      confirmLabel="Move to trash"
+      onconfirm={confirmDeleteThread}
+      onclose={() => (deletingThread = null)}
     />
   {/if}
 
@@ -1146,6 +1560,19 @@
     border: 1px solid var(--line2);
     border-radius: 8px;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    /* Item 425: placed by `placeMenu`; capped (and scrolling) only when
+       taller than the window, so its rows never squash. */
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .row-menu > :global(*) {
+    flex-shrink: 0;
+  }
+  /* The flyout beside it (item 425): Move to thread ▸ / Move to project ▸. */
+  .row-sub {
+    z-index: 37;
+    min-width: 160px;
+    max-width: 300px;
   }
   .row-menu button {
     display: flex;
@@ -1172,6 +1599,14 @@
   .row-key {
     color: var(--dim);
     font-size: 11.5px;
+  }
+  /* Item 424: a thread with no thread.md has nothing the menu can act on. */
+  .row-note {
+    margin: 4px 8px;
+    max-width: 220px;
+    color: var(--dim);
+    font-size: 12px;
+    line-height: 1.4;
   }
   .row-sep {
     height: 1px;
@@ -1552,7 +1987,12 @@
     background: var(--sheet);
     box-shadow: 0 0 0 1px var(--line2);
   }
+  /* Item 423 (his ask 2026-10-27): a right-click opens the row's menu
+     without first selecting the word under the pointer, as WebKit does
+     for selectable text; the tab strip's rows were already unselectable. */
   .session-row {
+    -webkit-user-select: none;
+    user-select: none;
     flex: 1;
     min-width: 0;
     display: flex;
@@ -1657,8 +2097,11 @@
   }
   /* The box with its count (backlog 117): the count sits inside the box's
      right edge, in the accent, and reopens the panel. */
+  /* Inset as the New chat row above it (item 360): flush, the field's
+     right edge ran under the sidebar's border at every zoom. */
   .search-wrap {
     position: relative;
+    margin: 0 0.75rem;
   }
   .search-wrap:has(.search-cnt) .search {
     padding-right: 2.8rem;
@@ -1770,6 +2213,34 @@
     border-radius: 8px;
     outline: 1px dashed transparent;
     outline-offset: -1px;
+  }
+  /* Item 426: where a dragged thread lands — an accent line between groups;
+     the thread being dragged is dimmed in place. */
+  .thread-group {
+    position: relative;
+  }
+  .thread-group.ins-before::before,
+  .thread-group.ins-after::after {
+    content: "";
+    position: absolute;
+    left: 6px;
+    right: 6px;
+    height: 2px;
+    border-radius: 1px;
+    background: var(--accent);
+    pointer-events: none;
+  }
+  .thread-group.ins-before::before {
+    top: -2px;
+  }
+  .thread-group.ins-after::after {
+    bottom: -2px;
+  }
+  .thread-group.dragging .tg-head {
+    opacity: 0.5;
+  }
+  .tg-rename {
+    margin: 3px 4px 3px 0;
   }
   .thread-group.drop,
   .loose-head.drop {
@@ -1950,15 +2421,11 @@
   .row-menu button.on {
     background: var(--well);
   }
-  .row-threads {
-    display: flex;
-    flex-direction: column;
-    max-height: 180px;
-    overflow-y: auto;
-    margin: 0 0 2px 10px;
-    border-left: 1px solid var(--line);
-  }
   .row-menu .row-thread {
+    /* Backlog 401 (nightshift): never shrink — with more rows than the
+       list's 180 px holds, the column squashed each one to slivers
+       (overflow: hidden drops the min-height floor); the list scrolls. */
+    flex-shrink: 0;
     justify-content: flex-start;
     white-space: nowrap;
     overflow: hidden;
