@@ -304,7 +304,14 @@ export interface ConnectionDraft {
 
 export function defaultDraft(): ConnectionDraft {
   return {
-    engine: "provider",
+    // ~~"provider"~~ — 2026-10-28 (nightshift backlog 449): a fresh home's
+    // first chat opened as "Build · anthropic", the API engine, and the 429
+    // run had to switch it by hand. With nothing saved (no last connection,
+    // no New-chat choice) a chat starts on the Claude Code engine, his
+    // Subscription one; anything saved still wins (`loadLastConnection`,
+    // `chatChoice.ts`'s default). A saved draft without the field still
+    // reads as "provider" there: that is the engine it was written on.
+    engine: "claude-code",
     agentBinary: "",
     agentModel: "",
     agentSafeMode: false,
