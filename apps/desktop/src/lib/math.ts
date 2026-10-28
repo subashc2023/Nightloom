@@ -40,7 +40,10 @@ const PAIRS: { open: string; close: string; display: boolean }[] = [
  * an extension tokenizer runs *before* those exist, which is exactly why a
  * `$` two lines down could reach into one.
  */
-const DOLLAR = /^\$([^\s$`][^\n$`]{0,158}[^\s$`]|[^\s$`])\$(?!\d)/;
+// An escaped dollar (`\$`) is part of the formula, not a delimiter: a model
+// writes a negative amount as `$-\$0.05$` (item 442), and without escape pairs
+// that span fell back to raw text.
+const DOLLAR = /^\$((?:\\[^\n]|[^\s$`\\])(?:(?:\\[^\n]|[^\n$`\\]){0,158}(?:\\[^\n]|[^\s$`\\]))?)\$(?!\d)/;
 
 /** Where the next thing that could open a formula starts. */
 const OPENER = /\$|\\[[(]/;
