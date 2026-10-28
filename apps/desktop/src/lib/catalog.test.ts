@@ -242,6 +242,14 @@ describe("loadLastConnection", () => {
     expect(loadLastConnection()!.agentChrome).toBe(false);
   });
 
+  it("a fresh draft, with nothing saved, is on the Claude Code engine (449)", () => {
+    expect(defaultDraft().engine).toBe("claude-code");
+    // The API engine's own fields stay filled, so switching to it works.
+    expect(defaultDraft().provider).toBe("anthropic");
+    localStorage.clear();
+    expect(loadLastConnection()).toBeNull();
+  });
+
   it("reads the engine strictly, defaulting to provider", () => {
     // A stray value would land the rail on an engine with no controls
     // showing. A draft from before the agent engine has no field, and the

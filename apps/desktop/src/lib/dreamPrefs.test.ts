@@ -49,8 +49,10 @@ describe("dream preferences", () => {
 });
 
 describe("what a pass is sent", () => {
+  // A rail on the provider engine (a fresh draft is on Claude Code since 449).
   const rail = () => ({
     ...defaultDraft(),
+    engine: "provider" as const,
     agentBinary: " /opt/claude ",
     agentModel: "sonnet",
     agentSafeMode: true,

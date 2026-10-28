@@ -1224,6 +1224,12 @@ cannot differ by a byte — 2026-09-14):
    does, the note also asks for the dream's discipline — amend, strike through
    with a date, never rewrite a note whole — because a chat is not given the
    dream's instruction and the vault is git-snapshotted only by dreams.
+   **Since 2026-10-28 (nightshift backlog 446)** it also carries
+   `PERSONAL_DATA_NOTE`: the CLI attaches the account's email as context, and
+   the model must not put it, or the user's school, employer or other personal
+   details, into files they might publish unless asked — in the 429 run a chat
+   wrote his email and school into a landing page before taking them out. An
+   incognito chat has the stricter `INCOGNITO_NOTE` in its place.
 
    Naming the vault is not enough to make it readable: the CLI routes a path
    outside its working directories to approval, and headless that is the

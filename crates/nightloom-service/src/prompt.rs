@@ -800,11 +800,25 @@ fn engine_note_segment(knowledge: Option<&KnowledgeContext>) -> Segment {
     // Markdown links, which it did as one list at the foot of every reply.
     // The marker below is such a link, placed where the claim is; the
     // desktop draws it as a chip and folds any foot list.
+    // His account details (nightshift backlog 446, 2026-10-28): in the 429
+    // run the model wrote his account email and school into a public page
+    // "using details from your account" before taking them out itself.
+    text.push(' ');
+    text.push_str(PERSONAL_DATA_NOTE);
     text.push(' ');
     text.push_str(CITE_NOTE);
     text.push_str("\n</engine-note>");
     Segment::new(SegmentKind::EngineNote, "engine-note", text)
 }
+
+/// What a non-incognito chat on the Claude Code engine is told about the
+/// account details the CLI attaches as context (nightshift backlog 446,
+/// from the 429 run: message 1 wrote his account email and "UC Irvine" into
+/// a landing page's footer and About, then removed both itself). The
+/// incognito chat has the stricter [`INCOGNITO_NOTE`] instead.
+pub const PERSONAL_DATA_NOTE: &str = "Claude Code attaches the account's email address as \
+     context: do not put it, or the user's school, employer or other personal details, into \
+     files the user might publish or share (a page, a README, a commit) unless they ask for it.";
 
 /// What an incognito chat is told about the one fact of his it cannot be
 /// kept from (nightshift backlog 405, blocker 1515): Claude Code attaches
@@ -2336,6 +2350,47 @@ the body text",
         let note = text.find("<engine-note>").unwrap();
         assert!(instructions < index && index < note, "{text}");
         assert!(text.ends_with("\n\nBe terse."), "{text}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The account-details rule (backlog 446) is in the engine note of a
+    /// normal chat, and the incognito note keeps its own stricter one.
+    #[test]
+    fn the_engine_note_says_not_to_publish_his_account_details() {
+        let dir = temp_dir("agent-bridge-personal");
+        std::fs::write(dir.join("AGENTS.md"), "a rule").unwrap();
+        let text = agent_preamble(
+            &PromptConfig {
+                project_instructions: true,
+                ..bare(dir.clone())
+            },
+            None,
+        )
+        .unwrap();
+        let at = text
+            .find(PERSONAL_DATA_NOTE)
+            .expect("the personal-data note");
+        assert!(at > text.find("<engine-note>").unwrap(), "{text}");
+        assert!(at < text.find("</engine-note>").unwrap(), "{text}");
+        assert!(PERSONAL_DATA_NOTE.contains("email"));
+        assert!(PERSONAL_DATA_NOTE.contains("school"));
+        assert!(PERSONAL_DATA_NOTE.contains("unless they ask"));
+        let incognito = agent_prompt_with(
+            &PromptConfig {
+                project_instructions: true,
+                ..bare(dir.clone())
+            },
+            None,
+            EngineLayers {
+                engine_note: true,
+                incognito: true,
+                ..EngineLayers::NONE
+            },
+        )
+        .render_flat()
+        .unwrap();
+        assert!(!incognito.contains(PERSONAL_DATA_NOTE), "{incognito}");
+        assert!(incognito.contains(INCOGNITO_NOTE), "{incognito}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
