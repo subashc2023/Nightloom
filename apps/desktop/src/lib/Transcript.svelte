@@ -147,7 +147,7 @@
   import Navigator from "./Navigator.svelte";
   // Edits as versions (item 299): ‹ n/N › under an edited message.
   import { ensureForkInfo, openVersion, versionsOf } from "./versions.svelte";
-  import { endsTurn } from "./retry";
+  import { endsTurn, redoOf } from "./retry";
   import { retryReply } from "./retry.svelte";
   import { versionPlace } from "./versions";
   import { arrive, hasLaunch } from "./sendMotion";
@@ -466,6 +466,9 @@
 
   // Retry (item 333) rides the last reply of each turn.
   const turnEnds = $derived(endsTurn(items.map((it) => ({ kind: it.kind, superseded: it.superseded }))));
+  // Redo (item 439): the same Retry, in the icon row under his last
+  // message, beside Rewind — where he looked for it.
+  const redo = $derived(redoOf(items, turnEnds));
 
   // Rewound turns are not drawn (backlog 247): one quiet line stands where
   // each run of them was (blocker 582).
@@ -2300,6 +2303,20 @@
                   >
                     <Icon name="revert" size={14} />
                   </button>
+                  {#if redo && redo.prompt === item.index && app.activeSessionId}
+                    <!-- Redo (item 439): Claude answers this message again,
+                         no retyping — the Retry under the reply (item 333),
+                         here beside Rewind. The old reply stays a version
+                         away; a half-typed draft follows him. -->
+                    <button
+                      class="tool-btn"
+                      use:tip={"Redo: Claude answers this message again, without retyping it. The old reply stays — ‹ › under your message flips between the two."}
+                      aria-label="Redo the reply to this message"
+                      onclick={() => void retryReply(redo.reply)}
+                    >
+                      <Icon name="refresh" size={14} />
+                    </button>
+                  {/if}
                   {#if item.editable}
                     <button
                       class="tool-btn"

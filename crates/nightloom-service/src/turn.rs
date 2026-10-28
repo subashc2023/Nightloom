@@ -142,6 +142,25 @@ pub enum TurnEvent {
         text: String,
         agents: Vec<String>,
     },
+    /// The Claude Code CLI is retrying a failed API call (nightshift items
+    /// 440 + 441, 2026-10-27): its `system/api_retry` line, one per try.
+    /// Live only — a shell keeps **one** status line for the turn and
+    /// updates it in place ("Can't reach Claude — retrying (2/10)"); it is
+    /// not a notice, so a stalled turn does not end in a stack of toasts.
+    /// `error` is the CLI's category (`overloaded`, `rate_limit`,
+    /// `authentication_failed`, `server_error`, `cloud_credential_error`,
+    /// or `unknown` — what a failed connection, with no HTTP status, is
+    /// called); `status` the HTTP status when one came back; `delay_ms`
+    /// the wait before the next try; `waited_ms` set when the call timed
+    /// out with no response at all. Claude Code engine only.
+    Retry {
+        attempt: u32,
+        max_retries: u32,
+        error: Option<String>,
+        status: Option<u16>,
+        delay_ms: Option<u64>,
+        waited_ms: Option<u64>,
+    },
     /// An event of a subagent's own turn — one the Claude Code CLI spawned
     /// through its `Agent` tool — carrying the id of the call that spawned
     /// it (2026-09-16, nightshift backlog 075; `--forward-subagent-text`).

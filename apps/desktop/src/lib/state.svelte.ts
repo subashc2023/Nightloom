@@ -127,6 +127,7 @@ import { midTurnWire, chipsFromInputs, sendNowToast, deliveredNotice, type SendN
 import { recordRelay } from "./relay.svelte";
 import { adoptPending, closeRunningRows, latestAgents, mergeRows, rowsFromLog, rowsOf } from "./subagentRows";
 import { lineText, lineView, matchTasks, type StillRunningSegment } from "./stillRunning";
+import { applyRetry, clearRetry, markRetryStopping, turnNotices, type RetrySegment } from "./retryLine";
 import { cli, startCliClock } from "./cliUpdate.svelte";
 import { probeAuth } from "./claudeAuth.svelte";
 import { chatIsCold, loadLayerPrefs, reconnectBeforeTurn, saveLayerPrefs } from "./promptVersions";
@@ -590,7 +591,10 @@ export type Segment =
   | { kind: "notice"; text: string }
   /** The reply ended with subagents still running (backlog 357): a status
    *  line with Stop and the agents' names, read live (`stillRunning.ts`). */
-  | StillRunningSegment;
+  | StillRunningSegment
+  /** The CLI retrying a failed call (items 440 + 441): one line, updated
+   *  in place, gone at the first word; live only (`retryLine.ts`). */
+  | RetrySegment;
 
 export interface Connection {
   provider: string;
@@ -6856,7 +6860,7 @@ function endBackground(t: TurnCtx, failed: string | null, res: AgentTurnResult |
     cliError: res?.is_error === true,
   });
   addToast(backgroundEndToast(name, failed));
-  for (const n of res?.notices ?? []) addToast(n);
+  for (const n of turnNotices(res?.notices ?? [], t.stopped === true)) addToast(n);
   // Its list and notes are its project's (blocker 630): re-read only when
   // that is the one open; coming back to it reads them fresh anyway.
   if (!b || !inOtherProject(b, app.project?.id ?? null)) {
@@ -7700,7 +7704,9 @@ async function sendAgent(
       if (res.folders) app.connection.folders = res.folders;
       app.connection.refused = res.refused ?? [];
     }
-    for (const notice of res.notices) addToast(notice);
+    // A Stop he pressed toasts nothing (item 441): the reply's own
+    // "stopped" mark says it (`turnNotices`).
+    for (const notice of turnNotices(res.notices, stopped)) addToast(notice);
   } catch (e) {
     failed = String(e);
     if (turn.detached) {
@@ -8361,6 +8367,8 @@ export async function cancelTurn(chat?: string | null): Promise<void> {
     // Marked before the call, as the screen's `stopped` (A4).
     const t = bgTurns.get(bg);
     if (t) t.stopped = true;
+    // A retry line says "stopping" from here (item 441).
+    if (markRetryStopping(app.background[bg]?.live?.segments)) app.paneVersion++;
     try {
       await api.cancel(bg);
       const b = app.background[bg];
@@ -8380,6 +8388,9 @@ export async function cancelTurn(chat?: string | null): Promise<void> {
   // Before the call, not after: the stopped turn can return before the
   // cancel's own reply does, and the queue reads the flag at that return.
   stopped = true;
+  // A retry line says "stopping" from here, and later tries leave it
+  // (item 441: the count kept climbing after Stop).
+  if (markRetryStopping(liveHost(app).live?.segments)) app.liveVersion++;
   try {
     // The turn on screen (or parked) only (backlog 159, A2): a chat
     // running in the background keeps running.
@@ -8598,7 +8609,15 @@ export function applyTurnEventTo(host: TurnHost, ev: TurnEvent & { chat?: string
     case "tool_call":
     case "tool_result":
     case "tool_denied":
+      // The reply is coming (items 440 + 441): the retry line goes.
+      clearRetry(segments);
       applyToSegments(segments, ev);
+      break;
+    case "retry":
+      // The CLI retrying (items 440 + 441): one line, updated in place —
+      // never a toast; a Stop's line is left saying "stopping".
+      if (!segments.some((g) => g.kind === "retry")) closeThinking(segments);
+      applyRetry(segments, ev);
       break;
     case "subagent": {
       // A subagent's event (backlog 075) goes under the row of the call

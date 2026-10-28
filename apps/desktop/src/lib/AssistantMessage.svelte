@@ -74,6 +74,7 @@
   import { namesImage } from "./toolImages.svelte";
   import SignedOutNotice from "./SignedOutNotice.svelte";
   import StillRunningLine from "./StillRunningLine.svelte";
+  import RetryLine from "./RetryLine.svelte";
   // The streaming motion (backlog 342, his pick of 338: "Loom + fade-in").
   import { Births, needleIn, needleOut, replyMotion } from "./replyMotion";
   // The thinking block's arrival (backlog 389): a live thinking row's first
@@ -893,6 +894,9 @@
     {:else if g.seg.kind === "still_running"}
       <!-- Backlog 357: the still-running line, Stop and the names on it. -->
       <StillRunningLine seg={g.seg} />
+    {:else if g.seg.kind === "retry"}
+      <!-- Items 440 + 441: the CLI retrying, one line updated in place. -->
+      <RetryLine seg={g.seg} />
     {/if}
   {/each}
   {#if moonAlone}
@@ -968,12 +972,15 @@
       {#if onretry}
         <!-- Retry (item 333): the prompt again, in a fork from it; this
              reply stays where it is, a version (‹ ›) away. -->
+        <!-- Item 439: called Redo, with Claude's circular arrow, as the
+             same action is in the icon row under his last message. -->
         <button
-          class="ns-btn ghost small"
-          use:tip={"Run your message again in a fork from it. This reply stays here; ‹ › under your message flips between the two."}
+          class="ns-btn ghost small redo"
+          use:tip={"Redo: Claude answers your message again, without retyping it. This reply stays — ‹ › under your message flips between the two."}
+          aria-label="Redo this reply"
           onclick={() => onretry?.()}
         >
-          Retry
+          <Icon name="refresh" size={12} /> Redo
         </button>
       {/if}
       {#if !footer.bare && (size || hasUsage(footer.usage))}

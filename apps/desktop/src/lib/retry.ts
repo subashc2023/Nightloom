@@ -62,3 +62,33 @@ export function endsTurn(items: { kind: "user" | "assistant" | "compaction"; sup
   }
   return out;
 }
+
+/**
+ * Redo (nightshift item 439, 2026-10-27): the same Retry, offered where he
+ * looked for it — in the icon row under his **last** message, beside
+ * Rewind, which put the message back in the box and left him to send it
+ * again. Which message carries it and which reply it redoes: the last
+ * drawn prompt, and the reply that ends its turn (`endsTurn`). Null while
+ * that prompt has no reply standing (none yet, or removed). `index` is
+ * each item's log index.
+ */
+export function redoOf(
+  items: { kind: "user" | "assistant" | "compaction"; superseded: boolean; removed?: boolean; index: number }[],
+  ends: boolean[],
+): { prompt: number; reply: number } | null {
+  let prompt = -1;
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (items[i].kind === "user" && !items[i].superseded) {
+      prompt = i;
+      break;
+    }
+  }
+  if (prompt < 0 || items[prompt].removed) return null;
+  for (let i = items.length - 1; i > prompt; i--) {
+    const it = items[i];
+    if (it.kind === "assistant" && ends[i] && !it.superseded && !it.removed) {
+      return { prompt: items[prompt].index, reply: it.index };
+    }
+  }
+  return null;
+}

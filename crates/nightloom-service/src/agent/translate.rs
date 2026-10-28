@@ -606,15 +606,28 @@ impl Translator {
                     agents,
                 }];
             }
+            // ~~One notice per try ("retrying after {error} (n/m)")~~ —
+            // struck 2026-10-27 (items 440 + 441): the notices toasted only
+            // when the turn returned, so the stall showed nothing and a
+            // Stop ended in a stack of toasts reading "unknown" (the CLI's
+            // word for a failed connection). Each try is a live event now;
+            // the shell keeps one status line and says why in words.
             SystemLine::ApiRetry {
                 attempt,
                 max_retries,
                 error,
+                error_status,
+                retry_delay_ms,
+                no_response,
             } => {
-                let what = error.unwrap_or_else(|| "transient failure".into());
-                self.outcome
-                    .notices
-                    .push(format!("retrying after {what} ({attempt}/{max_retries})"));
+                return vec![TurnEvent::Retry {
+                    attempt,
+                    max_retries,
+                    error,
+                    status: error_status,
+                    delay_ms: retry_delay_ms,
+                    waited_ms: no_response.and_then(|n| n.waited_ms),
+                }];
             }
             // The engine's own vocabulary for a refusal, so the transcript
             // marks the call denied where it stands instead of leaving it
@@ -1341,6 +1354,63 @@ mod tests {
     const RESUME_RESULT_LINE: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"File created successfully at: /tmp/b.txt","is_error":false,"tool_use_id":"toolu_0183kRSEVfCJqZ7Xkb2qtMU8"}]},"parent_tool_use_id":null}"#;
     /// A headless Manual-mode refusal, verbatim (4(a)'s first run).
     const PERMISSION_DENIED: &str = r#"{"type":"system","subtype":"permission_denied","tool_name":"Write","tool_use_id":"toolu_01ARqRycp8phHpqzvrPHQTZ1","message":"Claude requested permissions to write to /tmp/a.txt, but you haven't granted it yet.","uuid":"12a21463","session_id":"c222b9af"}"#;
+
+    /// Items 440 + 441: the CLI's `api_retry` line for a failed connection,
+    /// in the shape CLI 2.1.312 emits it (`error` is its category, and a
+    /// call with no HTTP status is `"unknown"`; `error_status` null). Each
+    /// try is a live `Retry` event — never a notice, which toasted every
+    /// try at the turn's end ("retrying after unknown (1/10)" … (5/10)).
+    #[test]
+    fn an_api_retry_is_a_live_event_not_a_notice() {
+        let retry = |n: u32| {
+            format!(
+                r#"{{"type":"system","subtype":"api_retry","attempt":{n},"max_retries":10,"retry_delay_ms":{},"error_status":null,"error":"unknown","session_id":"s","uuid":"u{n}"}}"#,
+                500 * n
+            )
+        };
+        let timed_out = r#"{"type":"system","subtype":"api_retry","attempt":3,"max_retries":10,"retry_delay_ms":2000,"error_status":null,"error":"unknown","no_response":{"waited_ms":60000,"retry_wait_ms":2000}}"#;
+        let overloaded = r#"{"type":"system","subtype":"api_retry","attempt":4,"max_retries":10,"retry_delay_ms":4000,"error_status":529,"error":"overloaded"}"#;
+        let (r1, r2) = (retry(1), retry(2));
+        let (events, outcome) = drive(&[INIT, &r1, &r2, timed_out, overloaded]);
+        let tries: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                TurnEvent::Retry {
+                    attempt,
+                    max_retries,
+                    error,
+                    status,
+                    delay_ms,
+                    waited_ms,
+                } => Some((
+                    *attempt,
+                    *max_retries,
+                    error.clone(),
+                    *status,
+                    *delay_ms,
+                    *waited_ms,
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            tries,
+            vec![
+                (1, 10, Some("unknown".into()), None, Some(500), None),
+                (2, 10, Some("unknown".into()), None, Some(1000), None),
+                (3, 10, Some("unknown".into()), None, Some(2000), Some(60000)),
+                (
+                    4,
+                    10,
+                    Some("overloaded".into()),
+                    Some(529),
+                    Some(4000),
+                    None
+                ),
+            ]
+        );
+        assert!(outcome.notices.is_empty(), "{:?}", outcome.notices);
+    }
 
     /// A deferred result carries the call out on the outcome, not as an
     /// error and not as an ended turn: the call was already announced on

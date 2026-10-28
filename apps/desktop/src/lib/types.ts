@@ -1314,6 +1314,11 @@ export type TurnEvent =
    *  is the Nightloom-authored line written to the chat (not his words);
    *  `agents` the descriptions it named. */
   | { type: "woke"; text: string; agents: string[] }
+  /** The Claude Code CLI retrying a failed API call (items 440 + 441):
+   *  one per try; the live reply keeps one line for them (`retryLine.ts`).
+   *  `error` is the CLI's category — `unknown` with no `status` is a
+   *  failed connection; `waited_ms` is set when no response came at all. */
+  | { type: "retry"; attempt: number; max_retries: number; error: string | null; status: number | null; delay_ms: number | null; waited_ms: number | null }
   /** An event of a subagent's own turn on the Claude Code engine, carrying
    *  the id of the `Agent` call that spawned it (nightshift backlog 075);
    *  `event` is the child's text, thinking, call or result as the main

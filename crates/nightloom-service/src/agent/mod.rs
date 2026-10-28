@@ -4721,6 +4721,74 @@ wait
         );
     }
 
+    /// Items 440 + 441: a CLI with no connection — it retries the call,
+    /// one `api_retry` line per try with `error: "unknown"` and no status
+    /// (CLI 2.1.312's shape) — until Stop, then closes the turn as an
+    /// interrupt does mid-stream (`aborted_streaming`).
+    #[cfg(unix)]
+    const RETRIES_UNTIL_INTERRUPT: &str = r##"printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"claude-opus-4-5","permissionMode":"default","session_id":"offline-1"}'
+trap 'printf "%s\n" "{\"type\":\"system\",\"subtype\":\"api_retry\",\"attempt\":3,\"max_retries\":10,\"retry_delay_ms\":2000,\"error_status\":null,\"error\":\"unknown\"}"
+printf "%s\n" "{\"type\":\"result\",\"subtype\":\"error_during_execution\",\"is_error\":true,\"terminal_reason\":\"aborted_streaming\",\"num_turns\":1,\"session_id\":\"offline-1\",\"stop_reason\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}"
+exit 0' INT
+n=1
+while [ $n -le 2 ]; do
+  printf '{"type":"system","subtype":"api_retry","attempt":%d,"max_retries":10,"retry_delay_ms":500,"error_status":null,"error":"unknown"}\n' $n
+  n=$((n+1))
+done
+sleep 30 >/dev/null 2>&1 & child=$!
+wait
+"##;
+
+    /// Items 440 + 441: every try reaches the shell live as a `Retry` (one
+    /// status line there), and a Stop pressed during them ends with the one
+    /// stop notice — no "retrying after unknown (n/10)" notices, which the
+    /// shell toasted as a stack at the turn's end. (The shell drops that
+    /// one stop notice too when he pressed Stop himself: `turnNotices`.)
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stop_during_offline_retries_leaves_one_notice_and_live_retries() {
+        let dir = std::env::temp_dir().join(format!("nightloom-441-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = AgentSpec::new(&dir);
+        s.binary = stand_in(&dir, RETRIES_UNTIL_INTERRUPT);
+        let agent = ClaudeCodeAgent::new(s);
+        let cancel = CancellationToken::new();
+        let trigger = cancel.clone();
+        let mut tries = Vec::new();
+        let outcome = agent
+            .run_turn("hi", &cancel, &mut |e| {
+                if let TurnEvent::Retry {
+                    attempt,
+                    error,
+                    status,
+                    ..
+                } = e
+                {
+                    tries.push((attempt, error, status));
+                    if attempt == 2 {
+                        trigger.cancel();
+                    }
+                }
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            tries,
+            vec![
+                (1, Some("unknown".to_string()), None),
+                (2, Some("unknown".to_string()), None),
+                (3, Some("unknown".to_string()), None),
+            ],
+            "each try live, the one the CLI wrote on its way out too"
+        );
+        assert!(!outcome.is_error, "a stop is not a failed turn");
+        assert_eq!(
+            outcome.notices,
+            vec!["interrupted — Claude Code ended the turn".to_string()],
+            "no retry notices: nothing stacks up for the turn's end"
+        );
+    }
+
     /// Item 430: the chat's id reaches the preview's server — each turn's
     /// `set_ask_dir` names the chat whose folder it is, replacing the last.
     #[test]

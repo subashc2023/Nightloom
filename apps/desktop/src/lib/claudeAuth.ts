@@ -42,13 +42,13 @@ export type SignInPhase = "idle" | "opening" | "typed" | "signed-in" | "failed";
 export function phaseLine(phase: SignInPhase): string {
   switch (phase) {
     case "idle":
-      return "Your message was not sent. Sign in, then press Retry.";
+      return "Your message was not sent. Sign in, then press Redo.";
     case "opening":
       return "Opening a terminal…";
     case "typed":
-      return "Finish signing in in the terminal below (a browser page opens), then press Retry.";
+      return "Finish signing in in the terminal below (a browser page opens), then press Redo.";
     case "signed-in":
-      return "Claude Code is signed in again. Press Retry to send your message.";
+      return "Claude Code is signed in again. Press Redo to send your message.";
     case "failed":
       return "Could not open a terminal for the sign-in. In any terminal, run the command below.";
   }
