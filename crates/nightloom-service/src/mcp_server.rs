@@ -142,6 +142,14 @@ const SEND_FILE_INSTRUCTION: &str = " To give the user a file (a PDF, an image, 
      you made), use send_file: it attaches the file to your reply; a path in your text \
      does not.";
 
+/// The sentence for `preview` (nightshift item 430), present only when the
+/// server serves it: the model would otherwise start a dev server with a
+/// background shell command, which nothing promises will outlive the reply.
+const PREVIEW_INSTRUCTION: &str = " To run a dev server or anything else that must still \
+     be up after your reply (so the user, or your next message, can load it), use preview \
+     with action start: Nightloom runs it between messages and shows it to the user. A \
+     background shell command is not promised to outlive your reply.";
+
 /// The sentence for `mark_file` (nightshift backlog 377), present only
 /// when the server serves it — a server started with `--root` for a chat
 /// that writes. The CLI puts server instructions in the model's system
@@ -195,6 +203,8 @@ const OWN_EFFECTS: &[(&str, Effect)] = &[
     ("notion_list_children", Effect::ReadOnly),
     ("send_file", Effect::Session),
     ("mark_file", Effect::Session),
+    // Runs a command of the model's (nightshift item 430): what Bash is.
+    ("preview", Effect::Mutating),
 ];
 
 /// The effect of a call by the name the CLI reports it under: this
@@ -229,6 +239,12 @@ fn instructions_for(tools: &[Box<dyn Tool>]) -> String {
     }
     if sends {
         out.push_str(SEND_FILE_INSTRUCTION);
+    }
+    if tools
+        .iter()
+        .any(|t| t.def().name == crate::preview::TOOL_NAME)
+    {
+        out.push_str(PREVIEW_INSTRUCTION);
     }
     if tools
         .iter()
@@ -1046,6 +1062,17 @@ pub async fn serve(
             )));
         }
     }
+    // `preview` (nightshift item 430): the desktop's socket, the chat and
+    // its folder all named — never for a dream.
+    if let (Some(sock), Some(chat), Some(root), None) =
+        (&args.preview, &args.preview_chat, &args.root, &args.dream)
+    {
+        tools.push(Box::new(crate::preview::PreviewTool::new(
+            sock.clone(),
+            chat.clone(),
+            root.clone(),
+        )));
+    }
     serve_tools(tools, reader, writer).await;
     Ok(())
 }
@@ -1076,6 +1103,12 @@ pub struct ServeArgs {
     /// none of [`crate::incognito::SERVER_DROPS`] — the other chats, where
     /// in memory a belief lives, his Notion. Implies `--no-remember`.
     pub incognito: bool,
+    /// The desktop's preview socket and the chat (`--preview <socket>`,
+    /// `--preview-chat <id>`, nightshift item 430): with both and a
+    /// `--root`, `preview` is served. The chat is rewritten into the
+    /// arguments before each turn (`preview::with_chat`).
+    pub preview: Option<PathBuf>,
+    pub preview_chat: Option<String>,
 }
 
 impl ServeArgs {
@@ -1087,6 +1120,8 @@ impl ServeArgs {
             ask: false,
             root: None,
             incognito: false,
+            preview: None,
+            preview_chat: None,
         }
     }
 
@@ -1098,6 +1133,8 @@ impl ServeArgs {
             ask: false,
             root: None,
             incognito: false,
+            preview: None,
+            preview_chat: None,
         }
     }
 }
@@ -1322,6 +1359,16 @@ pub fn parse_args(args: &[String]) -> Result<ServeArgs, String> {
             out.root = Some(PathBuf::from(dir));
         } else if let Some(dir) = arg.strip_prefix("--root=") {
             out.root = Some(PathBuf::from(dir));
+        } else if arg == "--preview" {
+            let sock = it
+                .next()
+                .ok_or_else(|| "--preview needs the desktop's socket".to_string())?;
+            out.preview = Some(PathBuf::from(sock));
+        } else if arg == "--preview-chat" {
+            let id = it
+                .next()
+                .ok_or_else(|| "--preview-chat needs the chat's id".to_string())?;
+            out.preview_chat = Some(id.clone());
         } else if arg == "--dream" {
             let json = it
                 .next()
@@ -1333,7 +1380,7 @@ pub fn parse_args(args: &[String]) -> Result<ServeArgs, String> {
             out.remember = false;
         } else {
             return Err(format!(
-                "unknown argument {arg:?}; the flags are --project <id>, --no-remember, --incognito, --ask, --root <dir> and --dream <json>"
+                "unknown argument {arg:?}; the flags are --project <id>, --no-remember, --incognito, --ask, --root <dir>, --preview <socket>, --preview-chat <id> and --dream <json>"
             ));
         }
     }
@@ -2216,6 +2263,55 @@ mod tests {
         assert!(list.contains("\"fetch_page\""), "{list}");
     }
 
+    /// Item 430: `--preview <socket> --preview-chat <id>` parse, and with
+    /// `--root` the server lists `preview` and says when to use it; without
+    /// the chat it serves no `preview`.
+    #[tokio::test]
+    async fn the_preview_tool_is_served_with_the_socket_the_chat_and_the_folder() {
+        let parsed = parse_args(&[
+            "--preview".to_string(),
+            "/tmp/p.sock".to_string(),
+            "--preview-chat".to_string(),
+            "chat-9".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(parsed.preview.as_deref(), Some(Path::new("/tmp/p.sock")));
+        assert_eq!(parsed.preview_chat.as_deref(), Some("chat-9"));
+        let (config, id) = fixture("preview-server");
+        let root = config.join("chat-folder");
+        std::fs::create_dir_all(&root).unwrap();
+        for (chat, served) in [(Some("chat-9".to_string()), true), (None, false)] {
+            let (client_side, server_side) = tokio::io::duplex(1 << 16);
+            let (sr, sw) = tokio::io::split(server_side);
+            let args = ServeArgs {
+                root: Some(root.clone()),
+                preview_chat: chat,
+                ..ServeArgs {
+                    project: Some(id.clone()),
+                    ..parsed.clone()
+                }
+            };
+            let cfg = config.clone();
+            tokio::spawn(async move { serve(cfg, args, sr, sw).await.unwrap() });
+            let (r, mut w) = tokio::io::split(client_side);
+            let mut lines = BufReader::new(r).lines();
+            send(
+                &mut w,
+                r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+            )
+            .await;
+            let init = lines.next_line().await.unwrap().unwrap();
+            send(
+                &mut w,
+                r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#,
+            )
+            .await;
+            let list = lines.next_line().await.unwrap().unwrap();
+            assert_eq!(list.contains("\"preview\""), served, "{list}");
+            assert_eq!(init.contains("use preview"), served, "{init}");
+        }
+    }
+
     fn dream_target(config: &Path) -> DreamServe {
         DreamServe {
             store: config.to_path_buf(),
@@ -2426,6 +2522,11 @@ mod tests {
         served.push(Box::new(crate::tools::SendFile::new(&config, &config)));
         served.push(Box::new(crate::tools::MarkFile::new(
             &config, &config, None,
+        )));
+        served.push(Box::new(crate::preview::PreviewTool::new(
+            config.clone(),
+            "c".into(),
+            config.clone(),
         )));
         for tool in &served {
             let name = tool.def().name;

@@ -2640,6 +2640,7 @@ dependencies = [
  "futures",
  "globset",
  "keyring",
+ "libc",
  "nightloom-core",
  "nightloom-mcp",
  "nightloom-providers",

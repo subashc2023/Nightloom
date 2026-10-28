@@ -85,6 +85,8 @@ mod offscreen {
 }
 /// Sleep-safe turns: the power assertion and the wake watcher.
 mod power;
+/// A chat's preview, run by the app between messages (nightshift item 430).
+mod preview;
 /// A changed prompt layer waits for the chat's cold moment (backlog 174).
 mod prompt_hold;
 /// Quitting while work runs asks first (nightshift backlog 308).
@@ -2399,6 +2401,12 @@ async fn connect_agent_body(
             // The chat's folder, for `send_file` (nightshift backlog 343).
             args.push("--root".into());
             args.push(workspace.to_string_lossy().into_owned());
+            // The chat's preview (nightshift item 430): the app's socket;
+            // `set_ask_dir` adds the chat before each turn.
+            if let Some(sock) = preview::socket() {
+                args.push("--preview".into());
+                args.push(sock.to_string_lossy().into_owned());
+            }
             if questions {
                 // The permission host the CLI is pointed at, which must be a
                 // tool that exists (`agent::ask::PROMPT_TOOL` has the
@@ -5351,6 +5359,7 @@ async fn tool_result_images(
 #[tauri::command]
 async fn delete_session(
     state: State<'_, AppState>,
+    previews: State<'_, preview::Host>,
     id: String,
     active: Option<String>,
 ) -> Result<String, String> {
@@ -5373,6 +5382,9 @@ async fn delete_session(
         }
     };
     state.agents.forget(&full_id);
+    // The chat's preview goes with it (item 430): nothing could show it.
+    let gone = std::sync::Arc::clone(&previews.previews);
+    gone.stop(&full_id).await;
     if was_active {
         adopt_agent_session(&state, None).await;
     }
@@ -8579,6 +8591,8 @@ fn main() {
 
     builder
         .setup(|app| {
+            // A chat's preview (nightshift item 430): served from the start.
+            preview::setup(app.handle());
             // The Mac's activity, watched while the app runs: ends a chat's
             // Continue anyway at the 85 % line after 10 minutes away
             // (nightshift backlog 192).
@@ -8928,12 +8942,19 @@ fn main() {
             for_you::for_you_stamp,
             for_you::for_you_reveal,
             opened_files::take_opened_files,
+            preview::preview_list,
+            preview::preview_get,
+            preview::preview_stop,
         ]))
         .build(tauri::generate_context!())
         .expect("error while building Nightloom")
         .run(|app, event| match event {
             // The away server's quit push (item 268 step 3), best effort.
-            tauri::RunEvent::Exit => away::on_exit(app),
+            tauri::RunEvent::Exit => {
+                // Every chat's preview ends with the app (item 430).
+                preview::on_exit(app);
+                away::on_exit(app);
+            }
             // Finder's Open With → Nightloom (nightshift backlog 378): the
             // file becomes a tab, whether the open launched the app or not.
             #[cfg(target_os = "macos")]

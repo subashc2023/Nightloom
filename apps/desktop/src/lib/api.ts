@@ -1294,6 +1294,30 @@ export function renderLatex(path: string, chat: string | null): Promise<LatexRen
 }
 
 /** Files for him (nightshift backlog 377): the open project's, newest first. */
+/** A chat's preview (nightshift item 430): a dev server the app runs for
+ *  the chat between its messages (`preview.rs`'s `Snapshot`). */
+export interface PreviewSnapshot {
+  chat: string;
+  command: string;
+  cwd: string;
+  port: number;
+  url: string;
+  status: "starting" | "listening" | "exited";
+  exit_code: number | null;
+  /** The last 200 lines, oldest first. */
+  log: string[];
+  started_ms: number;
+  pgid: number | null;
+}
+export function previewList(): Promise<PreviewSnapshot[]> {
+  return invoke("preview_list");
+}
+export function previewGet(chat: string): Promise<PreviewSnapshot | null> {
+  return invoke("preview_get", { chat });
+}
+export function previewStop(chat: string): Promise<void> {
+  return invoke("preview_stop", { chat });
+}
 export function forYouFiles(): Promise<ForYouRow[]> {
   return invoke("for_you_files");
 }

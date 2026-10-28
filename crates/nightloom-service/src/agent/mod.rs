@@ -550,10 +550,12 @@ fn ask_matcher_under_chat_policy(matcher: &str, browser: bool) -> String {
         .split('|')
         .filter(|alt| CHAT_POLICY_KEPT.iter().any(|kept| alt.starts_with(kept)))
         .map(|alt| {
-            if browser && alt == ask::MCP_ALTERNATIVE {
+            if alt != ask::MCP_ALTERNATIVE {
+                alt
+            } else if browser {
                 ASK_MCP_LESS_BROWSER
             } else {
-                alt
+                ASK_MCP_LESS_PREVIEW
             }
         })
         .collect::<Vec<_>>()
@@ -564,7 +566,13 @@ fn ask_matcher_under_chat_policy(matcher: &str, browser: bool) -> String {
 /// Browser on: every MCP tool but Claude in Chrome's, by the same
 /// JavaScript negative lookahead [`CHAT_POLICY_MATCHER`] uses.
 /// Playwright's tools stay out too, as in [`ask::MATCHER`] (backlog 367).
-const ASK_MCP_LESS_BROWSER: &str = "mcp__(?!claude-in-chrome__|playwright__).*";
+/// The preview's tool stays out too (item 430): the policy's own deny
+/// entry refuses it, and an Ask card for it would be backlog 147's bug.
+const ASK_MCP_LESS_BROWSER: &str = "mcp__(?!claude-in-chrome__|playwright__|nightloom__preview).*";
+
+/// The same without the Browser: every MCP tool but Playwright's and the
+/// preview's.
+const ASK_MCP_LESS_PREVIEW: &str = "mcp__(?!playwright__|nightloom__preview).*";
 
 /// The deny hook's command line. Single-quoted for the POSIX shell the CLI
 /// runs hooks through on macOS and Linux. On Windows, `cmd.exe`'s `echo`
@@ -590,6 +598,14 @@ fn chat_policy_command(reply: &str) -> String {
 /// Chat refuses these too — by hook, like the policy, so the tool list and
 /// the cached prefix stay what they were.
 pub const BROWSER_TOOLS_MATCHER: &str = "mcp__claude-in-chrome__.*";
+
+/// The `PreToolUse` matcher for the chat's preview (nightshift item 430)
+/// under the Chat policy: it runs a command, so a Chat refuses it as it
+/// refuses the shell.
+pub const PREVIEW_TOOL_MATCHER: &str = "mcp__nightloom__preview";
+
+/// Why a Chat refuses the preview.
+pub const PREVIEW_UNDER_CHAT_POLICY_REASON: &str = "This chat is a Chat now: the preview runs a command, and the shell and the tools that act are withdrawn. Reads, search and the web remain.";
 
 /// What the model reads when a Chat refuses a browser call.
 pub const BROWSER_UNDER_CHAT_POLICY_REASON: &str = "This chat is a Chat now: the browser is withdrawn with the other tools that act. Reads, search and the web remain.";
@@ -1239,6 +1255,21 @@ impl AgentSpec {
                     .or_insert_with(|| serde_json::Value::Array(Vec::new()));
                 if let serde_json::Value::Array(pre) = pre {
                     pre.push(entry);
+                    // The preview runs a command (item 430): it passes the
+                    // policy's matcher as `mcp__` and is refused here, as
+                    // the shell is.
+                    let reply = serde_json::json!({
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": PREVIEW_UNDER_CHAT_POLICY_REASON,
+                        }
+                    })
+                    .to_string();
+                    pre.push(serde_json::json!({
+                        "matcher": PREVIEW_TOOL_MATCHER,
+                        "hooks": [{ "type": "command", "command": chat_policy_command(&reply) }]
+                    }));
                     // The browser's tools pass the policy's matcher as
                     // `mcp__` (backlog 353, blocker 1414): refused here.
                     if self.browser {
@@ -1707,6 +1738,14 @@ impl ClaudeCodeAgent {
         if let Some(ask) = &mut self.spec.ask {
             ask.dir = dir.clone();
             let _ = AskDir::new(&ask.dir).set_subagents_auto(ask.subagents_auto);
+        }
+        // The chat's preview (nightshift item 430): the server's arguments
+        // name the chat whose folder this is, so its `preview` tool reaches
+        // this chat's preview and no other.
+        if let (Some(cfg), Some(chat)) = (&self.spec.mcp_config, dir.file_name())
+            && let Some(cfg) = crate::preview::with_chat(cfg, &chat.to_string_lossy())
+        {
+            self.spec.mcp_config = Some(cfg);
         }
         if let Some(brief) = &mut self.spec.brief {
             brief.dir = dir;
@@ -2598,6 +2637,37 @@ async fn kill_tree(child: &mut tokio::process::Child) {
     let _ = child.kill().await;
 }
 
+/// A turn of a stand-in CLI in `dir` that answers and ends on the EOF after
+/// its `result` — the shape of an ordinary turn, for tests outside this
+/// module (item 430: a preview outlives one).
+#[cfg(all(test, unix))]
+pub(crate) async fn run_stand_in_turn(dir: &std::path::Path) {
+    let path = dir.join("claude-stand-in-turn");
+    std::fs::write(
+        &path,
+        r#"#!/bin/sh
+printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"claude-haiku-4-5","permissionMode":"default","session_id":"t-430"}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"ok","session_id":"t-430","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}'
+cat >/dev/null
+"#,
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut s = AgentSpec::new(dir);
+    s.binary = path.to_string_lossy().into_owned();
+    let agent = ClaudeCodeAgent::new(s);
+    let cancel = CancellationToken::new();
+    let mut on_event = |_e: TurnEvent| {};
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        agent.run_turn("hi", &cancel, &mut on_event),
+    )
+    .await
+    .expect("the stand-in turn ended")
+    .expect("the stand-in turn ran");
+}
+
 /// Each aside's own cancel token, keyed by its exchange number `seq`
 /// (nightshift backlog 176, 2026-09-23). Several aside cards may be open
 /// at once, so the window's × must stop the exchange it was clicked on and
@@ -2924,18 +2994,31 @@ mod tests {
         let asks: Vec<&str> = pre
             .iter()
             .filter_map(|e| e["matcher"].as_str())
-            .filter(|m| *m != CHAT_POLICY_MATCHER && *m != BROWSER_TOOLS_MATCHER)
+            .filter(|m| {
+                *m != CHAT_POLICY_MATCHER
+                    && *m != BROWSER_TOOLS_MATCHER
+                    && *m != PREVIEW_TOOL_MATCHER
+            })
             .collect();
         assert_eq!(
             asks,
-            ["WebFetch|WebSearch|mcp__(?!claude-in-chrome__|playwright__).*"],
+            ["WebFetch|WebSearch|mcp__(?!claude-in-chrome__|playwright__|nightloom__preview).*"],
             "{pre:?}"
         );
+        // Item 430: the preview is the policy's to refuse, not the Ask
+        // card's; the rest of Nightloom's server still asks.
+        assert!(!regex_like_matches(asks[0], "mcp__nightloom__preview"));
+        assert!(regex_like_matches(asks[0], "mcp__nightloom__remember"));
+        assert!(regex_like_matches(
+            PREVIEW_TOOL_MATCHER,
+            "mcp__nightloom__preview"
+        ));
         chat.browser = false;
         let pre = entries(&chat);
         assert!(
             pre.iter()
-                .any(|e| e["matcher"] == "WebFetch|WebSearch|mcp__(?!playwright__).*"),
+                .any(|e| e["matcher"]
+                    == "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview).*"),
             "{pre:?}"
         );
     }
@@ -3537,8 +3620,10 @@ mod tests {
         let i = a.iter().position(|x| x == "--settings").unwrap();
         let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
         let pre = v["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq!(pre.len(), 1);
+        // The policy's deny, and the preview's beside it (item 430).
+        assert_eq!(pre.len(), 2);
         assert_eq!(pre[0]["matcher"], CHAT_POLICY_MATCHER);
+        assert_eq!(pre[1]["matcher"], PREVIEW_TOOL_MATCHER);
         let command = pre[0]["hooks"][0]["command"].as_str().unwrap();
         assert!(command.starts_with("echo "), "{command}");
         let reply: serde_json::Value = serde_json::from_str(
@@ -3567,13 +3652,14 @@ mod tests {
         let i = a.iter().position(|x| x == "--settings").unwrap();
         let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
         let pre = v["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq!(pre.len(), 2, "{v}");
+        assert_eq!(pre.len(), 3, "{v}");
         // Narrowed beside the policy (backlog 147): see the next test.
         assert_eq!(
             pre[0]["matcher"],
             ask_matcher_under_chat_policy(ask::MATCHER, false)
         );
         assert_eq!(pre[1]["matcher"], CHAT_POLICY_MATCHER);
+        assert_eq!(pre[2]["matcher"], PREVIEW_TOOL_MATCHER);
         assert_eq!(v["autoMemoryEnabled"], false);
 
         // The other pairings: nothing to refuse.
@@ -3604,7 +3690,11 @@ mod tests {
     #[test]
     fn under_the_chat_policy_the_ask_hook_names_only_what_the_policy_leaves() {
         let narrowed = ask_matcher_under_chat_policy(ask::MATCHER, false);
-        assert_eq!(narrowed, "WebFetch|WebSearch|mcp__(?!playwright__).*");
+        // The preview's tool is out too (item 430): the policy refuses it.
+        assert_eq!(
+            narrowed,
+            "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview).*"
+        );
         for withdrawn in [
             "Bash",
             "Write",
@@ -3633,20 +3723,22 @@ mod tests {
         let i = a.iter().position(|x| x == "--settings").unwrap();
         let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
         let pre = v["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq!(pre.len(), 2, "{v}");
+        assert_eq!(pre.len(), 3, "{v}");
         assert_eq!(
             pre[0]["matcher"],
-            "WebFetch|WebSearch|mcp__(?!playwright__).*"
+            "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview).*"
         );
         assert_eq!(pre[1]["matcher"], CHAT_POLICY_MATCHER);
+        assert_eq!(pre[2]["matcher"], PREVIEW_TOOL_MATCHER);
         // The one resume that leaves plan mode: only the deny is registered.
         s.ask.as_mut().unwrap().mode = AskMode::ExitingToAuto;
         let a = s.args("hi");
         let i = a.iter().position(|x| x == "--settings").unwrap();
         let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
         let pre = v["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq!(pre.len(), 1, "{v}");
+        assert_eq!(pre.len(), 2, "{v}");
         assert_eq!(pre[0]["matcher"], CHAT_POLICY_MATCHER);
+        assert_eq!(pre[1]["matcher"], PREVIEW_TOOL_MATCHER);
         // Without the policy, the matcher is untouched.
         let mut plain = spec();
         plain.ask = s.ask.clone();
@@ -4095,8 +4187,8 @@ mod tests {
         assert_eq!(brief_entries(&a), 1);
         assert_eq!(
             entries(&a).len(),
-            2,
-            "the policy's own entry and the budget's"
+            3,
+            "the policy's own entry, the preview's deny (item 430) and the budget's"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -4626,6 +4718,160 @@ wait
             outcome.notices,
             vec!["interrupted — Claude Code ended the turn".to_string()],
             "one notice, one toast"
+        );
+    }
+
+    /// Item 430: the chat's id reaches the preview's server — each turn's
+    /// `set_ask_dir` names the chat whose folder it is, replacing the last.
+    #[test]
+    fn the_ask_dir_names_the_chat_to_the_preview_server() {
+        let mut s = AgentSpec::new("/w");
+        s.mcp_config = Some(
+            serde_json::json!({"mcpServers": {"nightloom": {"command": "/app", "args": ["--mcp-serve", "--preview", "/s.sock"]}}})
+                .to_string(),
+        );
+        let mut agent = ClaudeCodeAgent::new(s);
+        agent.set_ask_dir(PathBuf::from("/logs/ask/chat-7"));
+        agent.set_ask_dir(PathBuf::from("/logs/ask/chat-8"));
+        let cfg = agent.spec.mcp_config.clone().unwrap();
+        let v: serde_json::Value = serde_json::from_str(&cfg).unwrap();
+        assert_eq!(
+            v["mcpServers"]["nightloom"]["args"],
+            serde_json::json!([
+                "--mcp-serve",
+                "--preview",
+                "/s.sock",
+                "--preview-chat",
+                "chat-8"
+            ])
+        );
+    }
+
+    /// Item 430, step 1 (measured with a stand-in, no model): what
+    /// Nightloom's own turn end does to a server the CLI's process left
+    /// running. The stand-in starts `python3 -m http.server` the way a
+    /// model's `Bash` call would, prints its `result`, and exits on the EOF
+    /// Nightloom sends after it. `how` is the shell line that starts it.
+    #[cfg(unix)]
+    async fn server_after_turn(how: &str, stop: bool) -> (bool, bool, Duration, Option<u32>) {
+        let dir = std::env::temp_dir().join(format!("nightloom-430-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let pidfile = dir.join("server.pid");
+        let started = dir.join("started");
+        let tail = if stop {
+            // Parks in a call until the interrupt, as ENDS_ON_INTERRUPT does.
+            "trap 'exit 0' INT\nsleep 30 >/dev/null 2>&1 & wait\n"
+        } else {
+            r#"printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"ok","session_id":"p-430","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}'
+cat >/dev/null
+"#
+        };
+        let body = format!(
+            r##"printf '%s\n' '{{"type":"system","subtype":"init","cwd":"x","tools":["Bash"],"mcp_servers":[],"model":"claude-haiku-4-5","permissionMode":"bypassPermissions","session_id":"p-430"}}'
+printf '%s\n' '{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"toolu_srv","name":"Bash","input":{{"command":"serve"}}}}]}},"parent_tool_use_id":null}}'
+cd '{dir}'
+{how}
+echo $! > '{pidfile}'
+i=0; until python3 -c 'import socket,sys; socket.create_connection(("127.0.0.1",{port}),0.2)' 2>/dev/null; do i=$((i+1)); [ $i -gt 100 ] && break; sleep 0.1; done
+touch '{started}'
+{tail}"##,
+            dir = dir.display(),
+            pidfile = pidfile.display(),
+            started = started.display(),
+            how = how.replace("$PORT", &port.to_string()),
+        );
+        let mut s = AgentSpec::new(&dir);
+        s.binary = stand_in(&dir, &body);
+        let agent = ClaudeCodeAgent::new(s);
+        let cancel = CancellationToken::new();
+        let trigger = cancel.clone();
+        let t0 = std::time::Instant::now();
+        let started_c = started.clone();
+        let mut on_event = |_e: TurnEvent| {};
+        let run = agent.run_turn("serve", &cancel, &mut on_event);
+        let watcher = async move {
+            if stop {
+                while !started_c.exists() {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                trigger.cancel();
+            }
+        };
+        let (ended, _) = tokio::join!(tokio::time::timeout(Duration::from_secs(20), run), watcher);
+        let took = t0.elapsed();
+        let ended = ended.is_ok();
+        // After the turn: is the server still answering?
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let alive = std::net::TcpStream::connect_timeout(
+            &([127, 0, 0, 1], port).into(),
+            Duration::from_millis(500),
+        )
+        .is_ok();
+        let pid = std::fs::read_to_string(&pidfile)
+            .ok()
+            .and_then(|p| p.trim().parse::<u32>().ok());
+        if let Some(pid) = pid {
+            let _ = std::process::Command::new("kill")
+                .arg(pid.to_string())
+                .status();
+        }
+        (ended, alive, took, pid)
+    }
+
+    /// Item 430, step 1: a server started detached (`nohup … &`, output
+    /// to a file) outlives a turn that ends normally — Nightloom's turn
+    /// end closes the CLI's stdin and waits; it kills no process group.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_detached_server_outlives_a_turn_that_ends_normally() {
+        let (ended, alive, took, pid) = server_after_turn(
+            "nohup python3 -m http.server $PORT --bind 127.0.0.1 >server.log 2>&1 &",
+            false,
+        )
+        .await;
+        assert!(ended, "the turn did not end ({took:?})");
+        assert!(pid.is_some());
+        assert!(alive, "the server died with the turn ({took:?})");
+    }
+
+    /// Item 430, step 1: the same after a Stop — the interrupt goes to the
+    /// CLI's pid alone (`interrupt`, `kill_tree` on unix), not its group.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_detached_server_outlives_a_stopped_turn() {
+        let (ended, alive, took, pid) = server_after_turn(
+            "nohup python3 -m http.server $PORT --bind 127.0.0.1 >server.log 2>&1 &",
+            true,
+        )
+        .await;
+        assert!(ended, "the stopped turn did not end ({took:?})");
+        assert!(pid.is_some());
+        assert!(alive, "the server died with the stopped turn ({took:?})");
+    }
+
+    /// Item 430, step 1, measured 2026-10-27: a server started with a bare
+    /// `&` that keeps **the CLI's own** stdout and stderr holds the turn
+    /// open — Nightloom reads the CLI's output to its end, and the end
+    /// never comes while the server lives (the turn had not ended at 20 s).
+    /// The CLI's `Bash` tool gives a command its own pipes, not the CLI's
+    /// (`inferred`), so a model's `&` should not do this; a hook or MCP
+    /// server that backgrounds a child could. Ignored: it takes 20 s and
+    /// pins a fact, not a behaviour to keep. `-- --ignored` to re-measure.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore]
+    async fn measure_a_server_holding_the_clis_output() {
+        let (ended, alive, took, _) =
+            server_after_turn("python3 -m http.server $PORT --bind 127.0.0.1 &", false).await;
+        eprintln!("430 M3: turn ended = {ended}, alive after = {alive}, waited {took:?}");
+        assert!(
+            !ended,
+            "the turn ended: the measurement changed, update the 430 report"
         );
     }
 

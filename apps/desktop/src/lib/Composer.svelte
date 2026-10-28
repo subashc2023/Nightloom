@@ -137,6 +137,7 @@
   // Scheduled send (backlog 224): the ▾ beside Send and the chip above.
   import ScheduleMenu from "./ScheduleMenu.svelte";
   import ScheduledChip from "./ScheduledChip.svelte";
+  import PreviewChip from "./PreviewChip.svelte";
   import { registerScheduleDrain } from "./scheduleRuntime";
   import CouncilPopover from "./CouncilPopover.svelte";
   import ClipPanel from "./ClipPanel.svelte";
@@ -2579,6 +2580,10 @@
       ondown={handleDown}
       onreset={handleReset}
     />
+  {/if}
+  {#if !aside && app.activeSessionId}
+    <!-- The chat's preview (item 430): its dev server, up between messages. -->
+    <PreviewChip chat={app.activeSessionId} />
   {/if}
   {#if composerShows("schedule", !!aside)}
     <ScheduledChip {key} onedit={scheduleEdited} />

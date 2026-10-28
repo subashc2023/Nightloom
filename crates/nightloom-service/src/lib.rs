@@ -37,6 +37,7 @@ pub mod notion;
 pub mod observe;
 pub mod pass_lock;
 pub mod plan_usage;
+pub mod preview;
 pub mod project;
 pub mod prompt;
 pub mod proposal;
