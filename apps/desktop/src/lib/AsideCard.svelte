@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tip } from "./tip";
+  import { renderReply } from "./markdown";
   // Every Copy button goes through the in-app clipboard ring (backlog 173).
   import { copyText } from "./clipRing.svelte";
   import {
@@ -431,7 +432,7 @@
         <!-- The passage it hangs off (283): under its passage the card
              needs none — the passage is marked right above — but in the
              side panel it is far from it. -->
-        <blockquote class="aside-card-quote">{aside.quote.text}</blockquote>
+        <blockquote class="aside-card-quote">{@html renderReply(aside.quote.text)}</blockquote>
       {/if}
       {#if !aside.draft}
         <AsideThread {aside} open={!readOnly} />
@@ -665,8 +666,10 @@
     border-left: 3px solid var(--accent);
     color: var(--dim);
     font-size: 12.5px;
-    white-space: pre-wrap;
     max-height: 7.5em;
     overflow: auto;
+  }
+  .aside-card-quote :global(p) {
+    margin: 0;
   }
 </style>

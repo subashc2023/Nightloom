@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tip } from "./tip";
+  import { renderReply } from "./markdown";
   import { app, asideAsking, asideOf, asideTabThread } from "./state.svelte";
   import { quoteLabel } from "./asideQuote";
   import Icon from "./Icon.svelte";
@@ -156,7 +157,7 @@
       </p>
     {:else}
       {#if aside.quote}
-        <blockquote class="aside-view-quote" use:tip={"The passage he highlighted, sent with the question exactly as selected"}>{aside.quote.text}</blockquote>
+        <blockquote class="aside-view-quote" use:tip={"The passage he highlighted, sent with the question exactly as selected"}>{@html renderReply(aside.quote.text)}</blockquote>
       {/if}
       {#if !aside.draft}
         <div class="aside-view-turns">
@@ -321,7 +322,11 @@
     border-left: 3px solid var(--line2);
     color: var(--ink2);
     font-size: 13px;
-    white-space: pre-wrap;
+  }
+  /* The passage is rendered like the reply it came from (item 451): maths
+     and formatting, not its raw source. */
+  .aside-view-quote :global(p) {
+    margin: 0;
   }
   .aside-view-turns {
     display: flex;
