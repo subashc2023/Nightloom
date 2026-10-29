@@ -105,6 +105,7 @@
     type LongPaste,
   } from "./pasteAttach";
   import { badgeOf, extOf } from "./attachKinds";
+  import { draftImageContent, openAttachment } from "./attachments.svelte";
   import { sendTip, tip } from "./tip";
   import { armStop, stopChordLabel, stopChordTarget } from "./stopButton";
   import { stopPref } from "./stopShape.svelte";
@@ -2794,7 +2795,23 @@
         <div class="attachment" in:chipIn|global={a} out:chipOut|global={a}>
           <div class="attachment-face">
             {#if a.kind === "image"}
-              <img src={`data:${a.media_type};base64,${a.data}`} alt={a.name} />
+              <!-- Item 467: the thumbnail opens the image in front, as a
+                   sent one does (UserBubble's), zooming from here. -->
+              <button
+                class="image-open"
+                use:tip={"Open in front"}
+                aria-label="open {a.name}"
+                onclick={(e) => {
+                  const el = e.currentTarget.querySelector("img");
+                  openAttachment(
+                    draftImageContent(key, a.id, a.name),
+                    e.currentTarget.getBoundingClientRect(),
+                    el && el.naturalWidth > 0 ? { width: el.naturalWidth, height: el.naturalHeight } : null,
+                  );
+                }}
+              >
+                <img src={`data:${a.media_type};base64,${a.data}`} alt={a.name} />
+              </button>
             {:else}
               {@const kept = keepStateOf(keepKey(a.name, a.data)).phase === "kept"}
               <!-- Item 459: a kept file's chip opens Notes at that file. -->
@@ -3838,6 +3855,18 @@
     /* Item 362: the accent ring a dropped chip arrives with (`chipDropIn`). */
     border-radius: 8px;
     box-shadow: var(--drop-ring, none);
+  }
+  .image-open {
+    padding: 0;
+    border: none;
+    background: none;
+    cursor: zoom-in;
+    display: block;
+    border-radius: 8px;
+  }
+  .image-open:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
   .attachment img {
     width: 4rem;

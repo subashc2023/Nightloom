@@ -78,6 +78,8 @@
   function headDown(e: PointerEvent): void {
     const c = content;
     if (!card || !c) return;
+    // Item 467: a chip not yet sent stays a card — a tab would outlive it.
+    if (c.draft) return;
     if ((e.target as HTMLElement | null)?.closest("button")) return;
     const r = card.getBoundingClientRect();
     const before = at;

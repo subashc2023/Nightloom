@@ -3,6 +3,7 @@ import {
   LEGACY_NEW_DRAFT_KEY,
   PERSIST_ATTACHMENT_MAX,
   addAttachment,
+  findChip,
   clearDraft,
   draftKey,
   drafts,
@@ -459,5 +460,29 @@ describe("the in-place edit's stash (backlog 137)", () => {
   it("answers null for a chat with no edit open", () => {
     expect(takeEdit("never")).toBeNull();
     expect(hasEdit("never")).toBe(false);
+  });
+});
+
+describe("findChip (item 467: a draft image's open card)", () => {
+  const img = (id: number) => ({ id, kind: "image" as const, media_type: "image/png", name: `p${id}.png`, data: `B${id}` });
+  it("reads the chip from its box, and from the box it moved to", () => {
+    addAttachment("k1", img(901));
+    addAttachment("k1", img(902));
+    expect(findChip("k1", 902)?.data).toBe("B902");
+    moveDraft("k1", "k2");
+    expect(findChip("k1", 902)?.data).toBe("B902");
+  });
+  it("is null once the chip is removed or the box is sent", () => {
+    addAttachment("k1", img(903));
+    addAttachment("k1", img(904));
+    removeAttachment("k1", 903);
+    expect(findChip("k1", 903)).toBeNull();
+    expect(findChip("k1", 904)?.data).toBe("B904");
+    clearDraft("k1");
+    expect(findChip("k1", 904)).toBeNull();
+  });
+  it("never answers with another chip's bytes", () => {
+    addAttachment("k1", img(905));
+    expect(findChip("k1", 906)).toBeNull();
   });
 });

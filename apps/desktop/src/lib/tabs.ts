@@ -67,7 +67,19 @@ export type TabContent =
   /** `thread`: which of the chat's aside threads (backlog 176 — several
    *  are open at once); absent reads as the chat's front thread. */
   | { kind: "aside"; session: string; thread?: number }
-  | { kind: "attachment"; session: string; turn: number; index: number; media: "image" | "document"; name: string }
+  /** `draft` (item 467): an image chip in a message box, not yet sent —
+   *  addressed by the box's draft key and the chip's id, its bytes read
+   *  from the draft; `turn`/`index` are then unused. It stays in the
+ *  floating slot (transient, never persisted) and is never kept as a tab. */
+  | {
+      kind: "attachment";
+      session: string;
+      turn: number;
+      index: number;
+      media: "image" | "document";
+      name: string;
+      draft?: { key: string; chip: number };
+    }
   /** A subagent's transcript (nightshift backlog 152): the Running-tasks
    *  panel's *View transcript*, drawn from the chat's row for the `Agent`
    *  call `toolUseId`; `name` is the task's description, for the strip. */
@@ -197,7 +209,10 @@ export function parseContentDrag(json: string | null | undefined): TabContent | 
         return typeof w.title === "string" ? { kind: "web", url: w.url, title: w.title } : { kind: "web", url: w.url };
       }
       case "attachment": {
-        const a = c as { session?: unknown; turn?: unknown; index?: unknown; media?: unknown; name?: unknown };
+        const a = c as { session?: unknown; turn?: unknown; index?: unknown; media?: unknown; name?: unknown; draft?: unknown };
+        // A draft chip's card (item 467) never leaves its floating slot:
+        // a dragged one is refused rather than landed as a tab.
+        if (a.draft !== undefined) return null;
         if (typeof a.session !== "string" || typeof a.turn !== "number" || typeof a.index !== "number") return null;
         if (a.media !== "image" && a.media !== "document") return null;
         return {
@@ -258,6 +273,7 @@ export function sameContent(a: TabContent, b: TabContent): boolean {
   // One tab per thread (backlog 176): two threads of a chat, two tabs.
   if (a.kind === "aside" && b.kind === "aside") return a.session === b.session && a.thread === b.thread;
   if (a.kind === "attachment" && b.kind === "attachment") {
+    if (a.draft || b.draft) return a.draft?.chip === b.draft?.chip && a.draft?.key === b.draft?.key;
     return a.session === b.session && a.turn === b.turn && a.index === b.index && a.media === b.media;
   }
   if (a.kind === "subagent" && b.kind === "subagent") {

@@ -482,6 +482,13 @@ function holderOf(key: string, id: number): Draft | undefined {
   return Object.values(drafts).find((d) => d.attachments.some((a) => a.id === id));
 }
 
+/** Chip `id` as it is now — in `key`'s box or the box it moved to — or
+ *  null once removed or sent (item 467: a draft image's open card reads
+ *  its bytes here, and closes when there are none). */
+export function findChip(key: string, id: number): Attachment | null {
+  return holderOf(key, id)?.attachments.find((a) => a.id === id) ?? null;
+}
+
 /** Change a chip in place — a conversion finishing (item 277). A chip
  *  removed meanwhile stays removed; `false` says so. */
 export function updateAttachment(key: string, id: number, patch: Partial<Attachment>): boolean {
