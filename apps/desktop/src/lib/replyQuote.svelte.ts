@@ -204,19 +204,23 @@ export function splitQuotes(text: string): QuoteSegment[] {
   return out;
 }
 
-/** The pending reply: the transcript sets it, the composer takes it. */
-export const replyRequest = $state<{ seq: number; passage: string }>({ seq: 0, passage: "" });
+/** The pending reply: the transcript sets it, the composer takes it.
+ *  `target` (item 481): the box it is for — null for the chat's, an
+ *  aside's draft key for that aside's follow-up box. */
+export const replyRequest = $state<{ seq: number; passage: string; target: string | null }>({ seq: 0, passage: "", target: null });
 
-export function requestReply(passage: string): void {
+export function requestReply(passage: string, target: string | null = null): void {
   replyRequest.passage = passage;
+  replyRequest.target = target;
   replyRequest.seq += 1;
 }
 
-/** The pending passage, once: a second composer (or a re-run effect)
- *  finds nothing and inserts nothing. */
-export function takeReply(): string | null {
+/** The pending passage, once, for the box it names (`target`; null is the
+ *  chat's): a second composer, another box or a re-run effect finds
+ *  nothing and inserts nothing. */
+export function takeReply(target: string | null = null): string | null {
   const p = replyRequest.passage;
-  if (!p) return null;
+  if (!p || replyRequest.target !== target) return null;
   replyRequest.passage = "";
   return p;
 }

@@ -117,7 +117,8 @@ describe("requestReply", () => {
   it("bumps the sequence with the passage", () => {
     const seq = replyRequest.seq;
     requestReply("p");
-    expect(replyRequest).toEqual({ seq: seq + 1, passage: "p" });
+    // Item 481: with the box it is for — null, the chat's.
+    expect(replyRequest).toEqual({ seq: seq + 1, passage: "p", target: null });
   });
   it("is taken once", () => {
     requestReply("q");
@@ -207,5 +208,24 @@ describe("quoteRuns and quoteNeedsRender (item 470: a reply's maths in the box)"
     const before = draft;
     quoteRuns(draft);
     expect(draft).toBe(before);
+  });
+});
+
+describe("Reply in an aside (item 481): a quote goes only to the box it is for", () => {
+  it("the chat's box takes the chat's Reply, not an aside's", () => {
+    requestReply("from the aside", "aside:w1");
+    expect(takeReply(null)).toBeNull();
+    expect(takeReply("aside:w2")).toBeNull();
+    expect(takeReply("aside:w1")).toBe("from the aside");
+    expect(takeReply("aside:w1")).toBeNull();
+  });
+  it("an aside's box does not take the chat's Reply", () => {
+    requestReply("from the chat");
+    expect(takeReply("aside:w1")).toBeNull();
+    expect(takeReply()).toBe("from the chat");
+  });
+  it("the aside's quote is the chat's quote form (item 453)", () => {
+    const r = insertQuote("", 0, 0, "Before.\n\n$$x^2$$\n\nAfter.");
+    expect(r.text).toBe("> Before.\n> $$x^2$$\n> After.\n\n");
   });
 });

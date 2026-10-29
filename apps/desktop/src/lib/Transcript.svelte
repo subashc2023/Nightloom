@@ -1849,6 +1849,8 @@
     const el = node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement;
     const prose = el?.closest(".markdown, .user-text") ?? null;
     if (!prose || !viewport.contains(prose)) return null;
+    // Item 481: an aside card's thread has its own Reply (`AsideThread`).
+    if (prose.closest(".aside-thread")) return null;
     const turnEl = prose.closest<HTMLElement>("[data-turn]");
     if (!turnEl) return null;
     const turn = Number(turnEl.dataset.turn);

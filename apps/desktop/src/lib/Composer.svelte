@@ -997,9 +997,10 @@
    */
   $effect(() => {
     void replyRequest.seq;
-    // Reply is to the chat (283): an aside's box must not take the quote.
-    if (aside) return;
-    const passage = untrack(() => takeReply());
+    // ~~Reply is to the chat (283): an aside's box must not take the quote.~~
+    // Item 481 (2026-10-29): a Reply in an aside's thread is for that
+    // aside's box; each box takes only the quotes meant for it.
+    const passage = untrack(() => takeReply(aside ? key : null));
     if (passage === null) return;
     untrack(() => {
       const start = ta?.selectionStart ?? text.length;
