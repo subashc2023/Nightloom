@@ -141,7 +141,9 @@ describe("the wrap-up and the read order a chat gets", () => {
     expect(w).toContain('"As of <date, time AM/PM> — <one line>"');
     expect(w).toContain("claim by claim, each claim keeping its pointer");
     expect(w).toContain("no [brackets] or placeholders");
-    expect(w).toContain("tagged start-prompt");
+    // ~~`toContain("tagged start-prompt")`~~ — item 464: the tagged hand-off.
+    expect(w).toContain("<handoff>");
+    expect(w).not.toContain("start-prompt");
     expect(readOrder("c1")).toBe(threadReadOrder("stuart-brainstorm"));
     expect(readOrder("c1")).toContain('the "## Queue" section of .agents/threads/stuart-brainstorm/thread.md');
     expect(readOrder("c1")).not.toContain("backlog/INDEX.md");

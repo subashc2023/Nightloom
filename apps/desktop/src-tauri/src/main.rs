@@ -4997,6 +4997,44 @@ async fn reveal_thread(state: State<'_, AppState>, slug: String) -> Result<(), S
     project::reveal_file(&dir).map_err(|e| e.to_string())
 }
 
+/// Keep a thread chat's `<handoff>` prompt on its thread in the open project
+/// (nightshift item 464): `handoff.json` beside `thread.md`, replacing any
+/// earlier one (`thread_handoff::save_handoff`).
+#[tauri::command]
+async fn save_thread_handoff(
+    state: State<'_, AppState>,
+    slug: String,
+    text: String,
+    from_chat: String,
+) -> Result<(), String> {
+    let notes = thread_notes(&state).await?;
+    let now = chrono::Local::now().to_rfc3339();
+    blocking(move || {
+        nightloom_service::thread_handoff::save_handoff(
+            &notes,
+            slug.trim(),
+            &text,
+            &from_chat,
+            &now,
+        )
+        .map(|_| ())
+    })
+    .await
+}
+
+/// The thread's + (item 464): the saved hand-off's text when no child chat
+/// has started from it yet, `chat` then named as the one that did; else null.
+#[tauri::command]
+async fn take_thread_handoff(
+    state: State<'_, AppState>,
+    slug: String,
+    chat: String,
+) -> Result<Option<String>, String> {
+    let notes = thread_notes(&state).await?;
+    blocking(move || nightloom_service::thread_handoff::take_handoff(&notes, slug.trim(), &chat))
+        .await
+}
+
 /// Append an aside's fold entry to a thread's `log.md` in the open project
 /// (backlog 282). The shell builds the entry (dated, the aside and chat
 /// named, the model's summary as he approved or edited it); this only
@@ -8765,6 +8803,8 @@ fn main() {
             delete_thread,
             reveal_thread,
             append_thread_log,
+            save_thread_handoff,
+            take_thread_handoff,
             thread_upkeep,
             tidy_threads,
             set_project_folders,

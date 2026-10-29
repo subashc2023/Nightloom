@@ -3,6 +3,7 @@ import DOMPurify from "dompurify";
 import { math, renderMath } from "./math";
 import { tilde } from "./tilde";
 import { cite } from "./cite";
+import { handoffTag } from "./handoffTag";
 import "katex/dist/katex.min.css";
 
 marked.use(math);
@@ -46,6 +47,8 @@ const replyMarked = new Marked();
 replyMarked.use(math);
 replyMarked.use(tilde);
 replyMarked.use(cite);
+// Item 464: a `<handoff>` block shows as the next chat's prompt card.
+replyMarked.use(handoffTag);
 
 export function renderReply(src: string): string {
   const html = replyMarked.parse(src, { async: false, gfm: true });

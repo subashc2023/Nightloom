@@ -2007,7 +2007,10 @@ unit-tested, the app was not driven):
    project (doing, done, next, decisions and why, files that matter, in
    the model's words); end the reply with a short start prompt for the new
    chat — which files to read, in which order, what to do first — in a
-   fenced block tagged `start-prompt`; then stop. ~~`---` rule and *Added
+   ~~fenced block tagged `start-prompt`~~ `<handoff>…</handoff>` block,
+   plain prose, no fence (item 464, 2026-10-28; `handoffTag.ts` — the reply
+   shows it as a *Next chat's prompt* card with Copy, and a fenced
+   `start-prompt` block from an older reply is still read); then stop. ~~`---` rule and *Added
    by Nightloom* marker~~ — gone with the append. **Settings → Claude
    Code** (a new pane, nav under Providers) holds the default mark (*Hand
    off at [70] %* for every chat without its own) and the message in a
@@ -2027,6 +2030,14 @@ unit-tested, the app was not driven):
    start-prompt block…*) repeats it until he types. ~~"Read HANDOFF.md and
    continue." in its box~~. The wrapped bar says which of the two it will
    be before he clicks.
+   **A thread's +** (item 464): at a thread chat's turn end the reply's last
+   `<handoff>` block (none inside a fence or inline code, none unclosed,
+   never mid-stream) is saved in the thread's `handoff.json` beside
+   `thread.md` (Rust `thread_handoff`). *New chat in this thread* puts
+   exactly that text in the new chat's box, unsent, the first time only
+   (the file names the child that took it; *Continue* counts too); with no
+   hand-off, or one already taken, the box opens empty. ~~The thread's
+   read order ending "Then do what I ask below."~~
 6. **The queue after the hand-off.** `queueHold`: ~~due holds (F11)~~ —
    the wrap-up rides no message, so a notice holds nothing and the queued
    wrap-up drains through the queue like any row; what holds is a Stop

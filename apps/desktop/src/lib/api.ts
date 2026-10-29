@@ -778,6 +778,18 @@ export function appendThreadLog(slug: string, entry: string): Promise<number> {
   return invoke("append_thread_log", { slug, entry });
 }
 
+/** Keep a thread chat's `<handoff>` prompt on its thread (item 464),
+ *  replacing any earlier one. */
+export function saveThreadHandoff(slug: string, text: string, fromChat: string): Promise<null> {
+  return invoke("save_thread_handoff", { slug, text, fromChat });
+}
+
+/** The thread's + (item 464): the saved hand-off's text if no child chat
+ *  has started from it yet (`chat` is then the one that did), else null. */
+export function takeThreadHandoff(slug: string, chat: string): Promise<string | null> {
+  return invoke("take_thread_handoff", { slug, chat });
+}
+
 /** One thread's upkeep: a dry run for the wrap-up's flags, or (apply) the
  *  mechanical moves and the index rewritten. */
 export function threadUpkeep(slug: string, apply: boolean): Promise<ThreadUpkeep> {

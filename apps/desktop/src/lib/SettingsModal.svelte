@@ -2058,9 +2058,9 @@
           oninput={(e) => setHandoffDefaultMessage((e.currentTarget as HTMLTextAreaElement).value)}
         ></textarea>
         <p class="note small">
-          Sent as typed. Keep the ask for a fenced block tagged
-          <code>start-prompt</code>: that is what the new chat's first message
-          is read out of; without one its box opens with the read order alone. A chat can edit its
+          Sent as typed. Keep the ask for a prompt between
+          <code>&lt;handoff&gt;</code> and <code>&lt;/handoff&gt;</code>: that is what the new chat's first message
+          is read out of (a fenced <code>start-prompt</code> block still works); without one its box opens with the read order alone. A chat can edit its
           own copy on the notice without changing this.
           {#if hasOwnDefaultMessage()}<em>Edited; Reset to default restores the built-in text (a box left empty reads as the built-in after a relaunch).</em>{:else}<em>The built-in text ({WRAP_UP.length} characters).</em>{/if}
         </p>
