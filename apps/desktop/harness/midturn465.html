@@ -1,0 +1,39 @@
+<!doctype html>
+<!-- Item 465: a message sent mid-turn as his bubble — the real Transcript and Composer, app state stubbed,
+     the Tauri bridge faked. ?view=pending | arrive (after Let it arrive) | confirm (Cancel asked) | delivered (the turn took it). Snapped with nightshift-code bin/snap (WebKit). -->
+<html lang="en" data-palette="B">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="color-scheme" content="dark" />
+    <title>Mid-turn 465</title>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; }
+      body { background: var(--paper, #111); }
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+      #wrap { display: flex; height: 100vh; }
+      #side { position: relative; display: flex; flex-direction: column; width: 280px; height: 100vh; flex: none; }
+      #root { position: relative; display: flex; flex-direction: column; flex: 1; min-width: 0; height: 100vh; }
+      .content { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+      #tag { position: fixed; left: 290px; bottom: 4px; right: 10px; white-space: pre-wrap; z-index: 99999; font: 11px/1.4 ui-monospace, monospace; color: #aaa; background: rgba(0,0,0,0.7); padding: 3px 7px; border-radius: 5px; }
+    </style>
+    <script>
+      window.__NIGHTLOOM_PLATFORM__ = "macos";
+      localStorage.removeItem("nightloom.drafts");
+      localStorage.removeItem("nightloom.threadsClosed");
+      window.__TAURI_INTERNALS__ = {
+        invoke: (cmd, args) => (window.__stub ? window.__stub(cmd, args) : Promise.resolve(null)),
+        transformCallback: () => 0,
+        metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
+      };
+    </script>
+  </head>
+  <body>
+    <div id="wrap"><div id="side"></div><div id="root"><div class="content" id="tr"></div></div></div>
+    <div id="tag">midturn465</div>
+    <script>
+      window.addEventListener("error", (e) => (document.getElementById("tag").textContent += "\nerror: " + e.message));
+      window.addEventListener("unhandledrejection", (e) => (document.getElementById("tag").textContent += "\nrejection: " + e.reason));
+    </script>
+    <script type="module" src="./midturn465.ts"></script>
+  </body>
+</html>

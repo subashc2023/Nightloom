@@ -1,4 +1,5 @@
 import { tick } from "svelte";
+import { noteThreadHandoff, takeThreadHandoff } from "./threadHandoff.svelte";
 import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
 import {
@@ -11,9 +12,7 @@ import {
   noteThreadFlags,
   readOrder,
   resetHandoff,
-  THEN_HIS_ASK,
   threadFor,
-  threadReadOrder,
 } from "./handoff.svelte";
 import { replaceStartHere, threadOfEvents } from "./thread";
 import type { AsideFold, FoldRecord } from "./asideFold";
@@ -588,7 +587,10 @@ export type Segment =
    *  click away and Restore beside it. Never in a live message. */
   | { kind: "removed_text"; block: number; text: string }
   | { kind: "removed_tool"; block: number; call: ToolCallView }
-  | { kind: "notice"; text: string }
+  /** `delivered` (item 465): his mid-turn message the turn took, drawn as
+   *  his bubble in place (`MidTurnBubble`); `text` keeps the old line for
+   *  anything that reads notices as text. */
+  | { kind: "notice"; text: string; delivered?: { text: string; after: string } }
   /** The reply ended with subagents still running (backlog 357): a status
    *  line with Stop and the agents' names, read live (`stillRunning.ts`). */
   | StillRunningSegment
@@ -5920,7 +5922,13 @@ export async function newChatInThread(slug: string): Promise<boolean> {
   if (!(await applyThread(slug, false))) return false;
   const id = app.activeSessionId;
   if (!id) return false;
-  setDraftText(id, threadReadOrder(slug, THEN_HIS_ASK));
+  // Item 464 (his report, 2026-10-28): the box holds the thread's saved
+  // hand-off — the last `<handoff>` prompt a reply in it wrote — when no
+  // child chat has started from it yet, else nothing. ~~`setDraftText(id,
+  // threadReadOrder(slug, THEN_HIS_ASK))`~~: a canned "start this new chat"
+  // text beside the model's own prompt was two sources of truth.
+  const handed = await takeThreadHandoff(slug, id);
+  if (handed && app.activeSessionId === id) setDraftText(id, handed);
   requestComposerFocus();
   return true;
 }
@@ -6132,6 +6140,9 @@ export async function continueChat(): Promise<void> {
     // is writing it: the wrapped one has stopped, the new one has not begun.
     noteThread(res.session, thread);
     if (thread) void applyThreadUpkeep(thread);
+    // Item 464: this chat started from the thread's saved hand-off, so the
+    // thread's + does not hand it out again.
+    if (thread && start) void takeThreadHandoff(thread, res.session);
     const first = firstMessage(lead, start);
     if (first) setDraftText(res.session, first);
     // The chat just left is finished as far as memory is concerned (item 278).
@@ -6140,8 +6151,8 @@ export async function continueChat(): Promise<void> {
       handoff.noStartPromptChat = res.session;
       addToast(
         first
-          ? "The wrap-up reply had no start-prompt block — the new chat's box holds only the read order; say what to do first."
-          : "The wrap-up reply had no start-prompt block — the new chat's box is empty; say what to read first.",
+          ? "The wrap-up reply had no <handoff> prompt — the new chat's box holds only the read order; say what to do first."
+          : "The wrap-up reply had no <handoff> prompt — the new chat's box is empty; say what to read first.",
       );
     }
     leaveNote();
@@ -7007,6 +7018,9 @@ function endBackground(t: TurnCtx, failed: string | null, res: AgentTurnResult |
   if (!b || !inOtherProject(b, app.project?.id ?? null)) {
     void refreshSessions();
     void refreshNotes();
+    // Item 464: a thread chat's `<handoff>` prompt is kept on its thread
+    // (the open project's threads only).
+    if (b) noteThreadHandoff(id, b.events);
   }
   if (t.provider) {
     // A provider turn's end (A4 review, 2026-09-29) does what the
@@ -7712,6 +7726,8 @@ export async function send(
   app.busy = false;
   // Sessions are created lazily on first send; the id is picked up here.
   await settleTurnView(pendingKey, turn.chat, choice);
+  // Item 464: a thread chat's `<handoff>` prompt is kept on its thread.
+  if (!app.parked) noteThreadHandoff(app.activeSessionId, app.events);
   void refreshSessions();
   // The turn may have written to the docspace, and the sidebar showing a
   // note the model just left is the visible half of "shared knowledge".
@@ -7915,6 +7931,8 @@ async function sendAgent(
       app.connection?.contextLimit ?? null,
       browsed ? null : app.events,
     );
+    // Item 464: a thread chat's `<handoff>` prompt is kept on its thread.
+    if (!browsed) noteThreadHandoff(app.activeSessionId, app.events);
     // A turn that wrote HANDOFF.md is a hand-off (item 278).
     if (!browsed && turnWroteHandoff(app.events)) maybeHandoffPass();
     // Last, once the turn is fully over: was it sleep that ended it
@@ -8879,7 +8897,7 @@ export function applyTurnEventTo(host: TurnHost, ev: TurnEvent & { chat?: string
       // message.
       markDelivered(ev.id);
       closeThinking(segments);
-      segments.push({ kind: "notice", text: deliveredNotice(ev.after, ev.text) });
+      segments.push({ kind: "notice", text: deliveredNotice(ev.after, ev.text), delivered: { text: ev.text, after: ev.after } });
       break;
     }
     default:

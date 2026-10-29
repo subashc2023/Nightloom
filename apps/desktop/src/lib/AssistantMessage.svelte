@@ -75,6 +75,7 @@
   import { namesImage } from "./toolImages.svelte";
   import SignedOutNotice from "./SignedOutNotice.svelte";
   import StillRunningLine from "./StillRunningLine.svelte";
+  import MidTurnBubble from "./MidTurnBubble.svelte";
   import RetryLine from "./RetryLine.svelte";
   // The streaming motion (backlog 342, his pick of 338: "Loom + fade-in").
   import { Births, needleIn, needleOut, replyMotion } from "./replyMotion";
@@ -892,6 +893,9 @@
           </button>
         {/if}
       </div>
+    {:else if g.seg.kind === "notice" && g.seg.delivered}
+      <!-- Item 465: his mid-turn message, taken by the turn, as his bubble in place. -->
+      <MidTurnBubble delivered={g.seg.delivered} />
     {:else if g.seg.kind === "notice"}
       <div class="notice">{g.seg.text}</div>
     {:else if g.seg.kind === "still_running"}

@@ -76,6 +76,7 @@
 import type { SessionEvent } from "./types";
 import { dropQueued, enqueueMessage } from "./drafts.svelte";
 import { windowFocused } from "./notify";
+import { extractHandoff, HANDOFF_ASK } from "./handoffTag";
 
 export type HandoffStage = "idle" | "due" | "wrapping" | "wrapped";
 
@@ -130,8 +131,10 @@ export const WRAP_UP =
   "4. End your reply with a short start prompt for the new chat. The new chat is already told to " +
   "read the newest HANDOFF.md section, then backlog/INDEX.md, then blockers/INDEX.md, so say only " +
   "what that does not: what changed since the section was written, any other file to read, and " +
-  "what to do first. Put it in a fenced code block tagged `start-prompt` " +
-  "(a line of three backticks followed by start-prompt, the prompt, then a line of three backticks).\n" +
+  // ~~"Put it in a fenced code block tagged `start-prompt` (a line of three
+  // backticks followed by start-prompt, the prompt, then a line of three
+  // backticks)."~~ — item 464 (2026-10-28): the tagged hand-off.
+  `what to do first. ${HANDOFF_ASK}\n` +
   "Then stop; do not start the next step.";
 
 /**
@@ -241,12 +244,17 @@ export function autoQueues(before: HandoffStage, after: HandoffStage, away: bool
 }
 
 /**
- * The last fenced block tagged `start-prompt` in the reply, trimmed; null
+ * The last `<handoff>` block of the reply (item 464, `extractHandoff`), else
+ * the last fenced block tagged `start-prompt` in the reply, trimmed; null
  * when there is none or it is blank. The tag may share the fence line
  * with other words (` ```md start-prompt `), and the closing fence may
  * follow the text without a newline.
  */
 export function extractStartPrompt(reply: string): string | null {
+  // Item 464: the tagged hand-off first; the fence below is read only for a
+  // wrap-up sent before the change (or a chat's own edited wrap-up text).
+  const tagged = extractHandoff(reply);
+  if (tagged) return tagged;
   const re = /```[^\n`]*\bstart-prompt\b[^\n`]*\n([\s\S]*?)```/g;
   let last: string | null = null;
   for (const m of reply.matchAll(re)) last = m[1];
@@ -585,7 +593,10 @@ export function threadWrapUp(slug: string, flags: readonly string[] = [], code =
     code
       ? `5. This project keeps a HANDOFF.md or a backlog/, so this chat's work lands there too. Add a short new section at the top of HANDOFF.md (create the file if there is none; never delete or rewrite the sections already in it), headed \`## STATE AS OF <date time AM/PM> — <one line>\`: what this chat changed in the project's files, that its reasoning is in ${dir}/, and the queue of next steps in order as its last list. Then: ${CODE_CLOSE} Commit the thread's files the same way.`
       : "5. Do not write HANDOFF.md for this chat.",
-    "6. End your reply with a short start prompt for the new chat (what to do first, and only what thread.md's Start here does not already say), ready to paste as is — no [brackets] or placeholders — in a fenced code block tagged start-prompt (a line of three backticks followed by start-prompt, the prompt, then a line of three backticks).",
+    // ~~"…ready to paste as is — no [brackets] or placeholders — in a fenced
+    // code block tagged start-prompt…"~~ — item 464 (2026-10-28): the tagged
+    // hand-off, which the thread's + opens the next chat with, alone.
+    `6. End your reply with a short prompt for the next chat in this thread. It is all that chat's first message will say (the thread's Start here is already in its context), so name what to read and what to do first. ${HANDOFF_ASK}`,
   ];
   if (flags.length > 0) {
     lines.push("Upkeep Nightloom found in the thread files (fix these in the same small edits):");

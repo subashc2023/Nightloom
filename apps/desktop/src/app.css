@@ -301,6 +301,36 @@ button {
   line-height: 1.5;
 }
 
+/* Item 464: a reply's `<handoff>` block (handoffTag.ts) — the next chat's
+   prompt, as a card: a label, then the text wrapping as prose in the code
+   blocks' frame, with their Copy button (codeCopy.ts). */
+.markdown .handoff-card {
+  margin: 0.8em 0;
+  border: 1px solid var(--accent-soft);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: var(--well);
+  padding: 0.5em 0.6em 0.1em;
+}
+.markdown .handoff-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--accent-ink);
+  padding: 0 0.3em;
+}
+.markdown .handoff-card pre.handoff-text {
+  margin: 0.4em 0 0.5em;
+  font-family: inherit;
+}
+.markdown .handoff-card pre.handoff-text code {
+  font-family: inherit;
+  font-size: 0.9rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .markdown blockquote {
   margin: 0.6em 0;
   padding: 0.1em 0 0.1em 0.9em;
