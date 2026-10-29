@@ -16,7 +16,7 @@
     stopCapture,
     stopDream,
   } from "./state.svelte";
-  import type { Note, NoteScope } from "./types";
+  import type { NoteScope } from "./types";
   import { relativeTime } from "./time";
   import * as api from "./api";
   import { onMount, tick, untrack } from "svelte";
@@ -46,6 +46,26 @@
   } from "./notesDrop";
   import { foldQuery, hitsByScope, narrowNotes } from "./notesSearch";
   import { prefersReducedMotion } from "./chipFade";
+  import { deleteNoteFolder, moveNoteTo, newNoteFolder } from "./state.svelte";
+  import { runningTurn } from "./noteEdit.svelte";
+  import { placeMenu } from "./menuPlace";
+  import {
+    ancestorsOf,
+    baseOf,
+    buildTree,
+    cleanName,
+    dropTarget,
+    fileIcon,
+    joinPath,
+    loadOpen,
+    openKey,
+    parentOf,
+    renamedOpen,
+    renamedTo,
+    saveOpen,
+    visibleRows,
+    type TreeRow,
+  } from "./notesTree";
 
   /**
    * Two stores, one panel.
@@ -181,6 +201,9 @@
     query = "";
     textHits = null;
     collapsed.project = false;
+    // Item 457: a kept file inside a closed folder has no row to flash
+    // until its folders open.
+    openAncestors("project", plan.scrollTo);
     await tick();
     const box = panelEl;
     const row = box?.querySelector<HTMLElement>(
@@ -343,6 +366,249 @@
     }
   }
 
+  // ---- item 457: the panel as a file manager ----
+  //
+  // Folder rows open and close (remembered per section, the project's per
+  // project); a note dragged onto a folder moves there; a right-click gives
+  // Rename, Move to…, New note / New folder here and Delete. Every move
+  // goes through `moveNoteTo`, which carries tabs and drafts along.
+
+  type Sec = "project" | "knowledge";
+  const storage = () => (typeof localStorage === "undefined" ? null : localStorage);
+  const keyOf = (scope: Sec) => openKey(scope, scope === "project" ? (app.project?.id ?? null) : null);
+  let openFolders = $state<Record<Sec, Set<string>>>({
+    project: new Set(),
+    knowledge: loadOpen(storage(), openKey("knowledge", null)),
+  });
+  $effect(() => {
+    const id = app.project?.id ?? null;
+    untrack(() => (openFolders.project = loadOpen(storage(), openKey("project", id))));
+  });
+  function setOpen(scope: Sec, next: Set<string>) {
+    openFolders[scope] = next;
+    saveOpen(storage(), keyOf(scope), next);
+  }
+  function toggleFolder(scope: Sec, path: string) {
+    const next = new Set(openFolders[scope]);
+    if (next.has(path)) next.delete(path);
+    else next.add(path);
+    setOpen(scope, next);
+  }
+  function openAncestors(scope: Sec, name: string, self = false) {
+    const want = self ? [...ancestorsOf(name), name] : ancestorsOf(name);
+    if (want.every((a) => openFolders[scope].has(a))) return;
+    setOpen(scope, new Set([...openFolders[scope], ...want]));
+  }
+  // The note open in the editor has its row on screen: opened from a
+  // search, the graph or a link, its folders open.
+  $effect(() => {
+    const o = app.openNote;
+    if (!o || (o.scope !== "project" && o.scope !== "knowledge")) return;
+    const scope = o.scope;
+    untrack(() => openAncestors(scope, o.name));
+  });
+
+  const projectRows = $derived(
+    visibleRows(buildTree(shownProject, searching ? [] : app.noteFolders.project), openFolders.project, searching),
+  );
+  const vaultRows = $derived(
+    visibleRows(buildTree(shownVault, searching ? [] : app.noteFolders.knowledge), openFolders.knowledge, searching),
+  );
+  /** Every folder in a section, listed or implied by a note's path. */
+  function foldersOf(scope: Sec): string[] {
+    const all = new Set(app.noteFolders[scope]);
+    for (const n of scope === "project" ? app.notes : app.vault) for (const a of ancestorsOf(n.name)) all.add(a);
+    return [...all].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  }
+  const busy = (key: string) => runningTurn(key) !== null;
+
+  async function move(scope: Sec, from: string, to: string, isFolder: boolean) {
+    const landed = await moveNoteTo(scope, from, to, busy);
+    if (landed === null || landed === from) return;
+    if (isFolder) setOpen(scope, renamedOpen(openFolders[scope], from, landed));
+    openAncestors(scope, landed);
+  }
+
+  /** The inline name box: a rename of a row, or a new note or folder in
+   *  `path` (a folder; `""` for the top level). */
+  let editing = $state<{ scope: Sec; what: "rename" | "note" | "folder"; path: string; isFolder: boolean } | null>(null);
+  let editValue = $state("");
+  function startEdit(scope: Sec, what: "rename" | "note" | "folder", path: string, isFolder = false) {
+    menu = null;
+    collapsed[scope] = false;
+    if (what !== "rename" && path) openAncestors(scope, path, true);
+    else if (what === "rename") openAncestors(scope, path);
+    editValue = what === "rename" ? baseOf(path) : "";
+    editing = { scope, what, path, isFolder };
+  }
+  async function commitEdit() {
+    const e = editing;
+    if (!e) return;
+    editing = null;
+    const typed = cleanName(editValue);
+    if (!typed) return;
+    if (e.what === "rename") {
+      // A note keeps its extension when he types a bare name.
+      const to = renamedTo(e.path, typed, e.isFolder);
+      if (to) await move(e.scope, e.path, to, e.isFolder);
+    } else if (e.what === "folder") {
+      const made = await newNoteFolder(e.scope, joinPath(e.path, typed));
+      if (made) openAncestors(e.scope, made);
+    } else {
+      const full = /\.[a-z0-9]+$/i.test(typed) ? typed : `${typed}.md`;
+      const name = joinPath(e.path, full);
+      if (await saveNote(e.scope, name, "")) showNote(e.scope, name);
+    }
+  }
+  function editKeys(ev: KeyboardEvent) {
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      void commitEdit();
+    } else if (ev.key === "Escape") {
+      ev.preventDefault();
+      ev.stopPropagation();
+      editing = null;
+    }
+  }
+  function focusEdit(el: HTMLInputElement) {
+    el.focus();
+    // The name, not its extension, selected — as Finder does.
+    const dot = el.value.lastIndexOf(".");
+    el.setSelectionRange(0, dot > 0 && editing && !editing.isFolder ? dot : el.value.length);
+  }
+
+  /** The right-click menu on a row. */
+  let menu = $state<{
+    scope: Sec;
+    path: string;
+    isFolder: boolean;
+    count: number;
+    x: number;
+    y: number;
+    page: "main" | "move";
+    confirm: boolean;
+    filter: string;
+  } | null>(null);
+  function openMenu(e: MouseEvent, scope: Sec, path: string, isFolder: boolean, count = 0) {
+    e.preventDefault();
+    e.stopPropagation();
+    confirming = null;
+    menu = { scope, path, isFolder, count, x: e.clientX, y: e.clientY, page: "main", confirm: false, filter: "" };
+  }
+  function placeAt(el: HTMLElement, at: { x: number; y: number }) {
+    const place = () => {
+      const p = placeMenu(
+        { x: at.x, below: at.y, above: at.y },
+        { w: el.offsetWidth, h: el.scrollHeight + (el.offsetHeight - el.clientHeight) },
+        { w: window.innerWidth, h: window.innerHeight },
+      );
+      el.style.left = `${p.left}px`;
+      el.style.top = `${p.top}px`;
+      el.style.maxHeight = p.maxHeight === undefined ? "" : `${p.maxHeight}px`;
+    };
+    place();
+    const ro = new ResizeObserver(place);
+    ro.observe(el);
+    return { destroy: () => ro.disconnect() };
+  }
+  /** Where Move to… can send the menu's row: the top level and every
+   *  folder, less the one it is in and (a folder) itself and its own. */
+  const moveChoices = $derived.by(() => {
+    const m = menu;
+    if (!m || m.page !== "move") return [];
+    const q = m.filter.trim().toLowerCase();
+    return ["", ...foldersOf(m.scope)].filter(
+      (f) => dropTarget(m.path, f) !== null && (!q || (f || "top level").toLowerCase().includes(q)),
+    );
+  });
+  async function menuMoveTo(folder: string) {
+    const m = menu;
+    menu = null;
+    if (!m) return;
+    const to = dropTarget(m.path, folder);
+    if (to) await move(m.scope, m.path, to, m.isFolder);
+  }
+  async function menuDelete() {
+    const m = menu;
+    if (!m) return;
+    if (!m.confirm) {
+      m.confirm = true;
+      return;
+    }
+    menu = null;
+    if (m.isFolder) await deleteNoteFolder(m.scope, m.path);
+    else await deleteNote(m.scope, m.path);
+  }
+  function menuKeys(e: KeyboardEvent) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      menu = null;
+    }
+  }
+
+  /** A row being dragged inside the panel, for the folders it may land on. */
+  let dragging = $state<{ scope: Sec; path: string; isFolder: boolean } | null>(null);
+  let dropOn = $state<string | null>(null);
+  let springTimer: ReturnType<typeof setTimeout> | null = null;
+  const FOLDER_DRAG = "application/x-nightloom-note-folder";
+  function clearSpring() {
+    if (springTimer !== null) clearTimeout(springTimer);
+    springTimer = null;
+  }
+  function endRowDrag() {
+    dragging = null;
+    dropOn = null;
+    clearSpring();
+  }
+  function onNoteDragStart(e: DragEvent, scope: Sec, name: string) {
+    startContentDrag(e, { kind: "note", scope, name });
+    // Copy for a tab strip (a tab of it), move for a folder here.
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = "copyMove";
+    dragging = { scope, path: name, isFolder: false };
+  }
+  function onFolderDragStart(e: DragEvent, scope: Sec, path: string) {
+    if (!e.dataTransfer) return;
+    e.dataTransfer.setData(FOLDER_DRAG, path);
+    e.dataTransfer.effectAllowed = "move";
+    dragging = { scope, path, isFolder: true };
+  }
+  /** `folder` is `""` for the section's head: the top level. */
+  function canDrop(scope: Sec, folder: string): boolean {
+    const d = dragging;
+    return !!d && d.scope === scope && dropTarget(d.path, folder) !== null;
+  }
+  function onFolderDragOver(e: DragEvent, scope: Sec, folder: string, isOpen = true) {
+    if (!canDrop(scope, folder)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    const key = `${scope}:${folder}`;
+    if (dropOn !== key) {
+      dropOn = key;
+      clearSpring();
+      // Held over a closed folder for a moment, it opens — so a note can
+      // be dropped into a folder inside it.
+      if (!isOpen && folder) springTimer = setTimeout(() => openAncestors(scope, folder, true), 700);
+    }
+  }
+  function onFolderDragLeave(scope: Sec, folder: string) {
+    if (dropOn === `${scope}:${folder}`) {
+      dropOn = null;
+      clearSpring();
+    }
+  }
+  async function onFolderDrop(e: DragEvent, scope: Sec, folder: string) {
+    const d = dragging;
+    if (!d || !canDrop(scope, folder)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    endRowDrag();
+    endContentDrag();
+    const to = dropTarget(d.path, folder);
+    if (to) await move(scope, d.path, to, d.isFolder);
+  }
+
   function size(bytes: number): string {
     if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
     if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -381,49 +647,162 @@
   </div>
 {/snippet}
 
-{#snippet list(scope: NoteScope, notes: Note[])}
-  <div class="list">
-    {#each notes as n (n.name)}
-      <div
-        class="item"
-        class:active={isOpen(scope, n.name)}
-        class:flash={flashing.has(`${scope}:${n.name}`)}
-        data-note="{scope}:{n.name}"
-      >
-        <!-- Draggable (backlog 140 pass 2): onto a strip for a tab of
-             this note at that slot, onto a pane's half to open it beside. -->
-        <button
-          class="row"
-          onclick={(e) => {
-            // ⌘-click opens the note in a new tab (nightshift backlog
-            // 099, blocker 140); a plain click replaces the active one.
-            if (e.metaKey || e.ctrlKey) app.openNext = "new";
-            showNote(scope, n.name);
-          }}
-          draggable="true"
-          ondragstart={(e) => startContentDrag(e, { kind: "note", scope, name: n.name })}
-          ondragend={endContentDrag}
+{#snippet fileGlyph(kind: ReturnType<typeof fileIcon>)}
+  <!-- Item 457: what a row is at a glance — a folder, or a file of a kind. -->
+  <svg class="glyph file {kind}" viewBox="0 0 16 16" aria-hidden="true">
+    <path d="M4 1.5h5.2L12.5 4.8V14a.5.5 0 0 1-.5.5H4a.5.5 0 0 1-.5-.5V2a.5.5 0 0 1 .5-.5Z" fill="none" stroke="currentColor" stroke-width="1.1" />
+    <path d="M9 1.7V5h3.3" fill="none" stroke="currentColor" stroke-width="1.1" />
+    {#if kind === "text"}
+      <path d="M5.6 8h4.8M5.6 10h4.8M5.6 12h3" stroke="currentColor" stroke-width="1" />
+    {:else if kind === "pdf"}
+      <rect x="4.6" y="8.6" width="6.8" height="3.6" rx=".6" fill="currentColor" opacity=".85" />
+    {:else if kind === "image"}
+      <path d="M5 12.4l2-2.6 1.4 1.6 1-1.2 1.6 2.2Z" fill="currentColor" /><circle cx="6.4" cy="7.8" r=".9" fill="currentColor" />
+    {:else if kind === "deck"}
+      <rect x="5" y="7.6" width="6" height="4" rx=".4" fill="none" stroke="currentColor" stroke-width="1" />
+    {:else if kind === "sheet"}
+      <path d="M5 8h6v4.4H5ZM5 10.2h6M8 8v4.4" fill="none" stroke="currentColor" stroke-width=".9" />
+    {/if}
+  </svg>
+{/snippet}
+
+{#snippet folderGlyph(open: boolean)}
+  <svg class="glyph dir" class:open viewBox="0 0 16 16" aria-hidden="true">
+    {#if open}
+      <path d="M1.8 4V12.6c0 .3.2.5.5.5h10.2l2-6H4.4L2.4 13" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round" />
+      <path d="M1.8 4.2c0-.3.2-.5.5-.5h3.3l1.3 1.3h5.3c.3 0 .5.2.5.5v1.6" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round" />
+    {:else}
+      <path d="M1.8 3.7h3.8l1.3 1.3h6.8c.3 0 .5.2.5.5v7.1c0 .3-.2.5-.5.5H2.3a.5.5 0 0 1-.5-.5Z" fill="currentColor" fill-opacity=".22" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round" />
+    {/if}
+  </svg>
+{/snippet}
+
+{#snippet nameBox(depth: number, placeholder: string, folder: boolean)}
+  <div class="item editing" style:--depth={depth}>
+    <span class="edit-row">
+      {#if folder}{@render folderGlyph(false)}{:else}{@render fileGlyph("text")}{/if}
+      <input
+        class="new-name inline"
+        autocorrect="off"
+        autocapitalize="off"
+        spellcheck="false"
+        {placeholder}
+        aria-label={placeholder}
+        bind:value={editValue}
+        use:focusEdit
+        onkeydown={editKeys}
+        onblur={() => void commitEdit()}
+      />
+    </span>
+  </div>
+{/snippet}
+
+{#snippet tree(scope: Sec, rows: TreeRow[])}
+  <div class="list" role="tree" aria-label="{scope === 'project' ? 'Project' : 'Knowledge'} notes">
+    {#if editing && editing.scope === scope && editing.what !== "rename" && editing.path === ""}
+      {@render nameBox(0, editing.what === "folder" ? "folder name" : "note name", editing.what === "folder")}
+    {/if}
+    {#each rows as r (r.kind === "folder" ? `d:${r.path}` : `n:${r.note.name}`)}
+      {#if r.kind === "folder"}
+        {#if editing && editing.scope === scope && editing.what === "rename" && editing.path === r.path}
+          {@render nameBox(r.depth, "folder name", true)}
+        {:else}
+          <div
+            class="item dir-row"
+            class:drop-on={dropOn === `${scope}:${r.path}`}
+            style:--depth={r.depth}
+            data-folder="{scope}:{r.path}"
+            role="treeitem"
+            aria-selected="false"
+            aria-expanded={r.open}
+          >
+            <button
+              class="row dir"
+              onclick={() => toggleFolder(scope, r.path)}
+              oncontextmenu={(e) => openMenu(e, scope, r.path, true, r.count)}
+              draggable={!searching}
+              ondragstart={(e) => onFolderDragStart(e, scope, r.path)}
+              ondragend={endRowDrag}
+              ondragover={(e) => onFolderDragOver(e, scope, r.path, r.open)}
+              ondragleave={() => onFolderDragLeave(scope, r.path)}
+              ondrop={(e) => void onFolderDrop(e, scope, r.path)}
+              use:tip={r.path}
+            >
+              <span class="line">
+                <span class="caret" class:shut={!r.open}>▾</span>
+                {@render folderGlyph(r.open)}
+                <span class="name">{r.name}</span>
+                <span class="n">{r.count}</span>
+              </span>
+            </button>
+          </div>
+        {/if}
+        {#if editing && editing.scope === scope && editing.what !== "rename" && editing.path === r.path && r.open}
+          {@render nameBox(r.depth + 1, editing.what === "folder" ? "folder name" : "note name", editing.what === "folder")}
+        {/if}
+      {:else if editing && editing.scope === scope && editing.what === "rename" && editing.path === r.note.name}
+        {@render nameBox(r.depth, "note name", false)}
+      {:else}
+        {@const n = r.note}
+        <div
+          class="item"
+          class:active={isOpen(scope, n.name)}
+          class:flash={flashing.has(`${scope}:${n.name}`)}
+          style:--depth={r.depth}
+          data-note="{scope}:{n.name}"
+          role="treeitem"
+          aria-selected={isOpen(scope, n.name)}
         >
-          <span class="name">{n.name}</span>
-          {#if n.summary}<span class="summary">{n.summary}</span>{/if}
-          <span class="meta">{size(n.bytes)} · {relativeTime(n.modified)}</span>
-        </button>
-        <button
-          class="delete"
-          class:confirming={confirming === `${scope}:${n.name}`}
-          use:tip={confirming === `${scope}:${n.name}`
-            ? "Click again to delete this file"
-            : "Delete note"}
-          aria-label="Delete {n.name}"
-          onclick={() => onDelete(scope, n.name)}
-          onmouseleave={() =>
-            confirming === `${scope}:${n.name}` && (confirming = null)}
-        >
-          {confirming === `${scope}:${n.name}` ? "sure?" : "×"}
-        </button>
-      </div>
+          <!-- Draggable (backlog 140 pass 2): onto a strip for a tab of
+               this note at that slot, onto a pane's half to open it beside;
+               onto a folder here to move it there (item 457). -->
+          <button
+            class="row"
+            onclick={(e) => {
+              // ⌘-click opens the note in a new tab (nightshift backlog
+              // 099, blocker 140); a plain click replaces the active one.
+              if (e.metaKey || e.ctrlKey) app.openNext = "new";
+              showNote(scope, n.name);
+            }}
+            oncontextmenu={(e) => openMenu(e, scope, n.name, false)}
+            draggable="true"
+            ondragstart={(e) => onNoteDragStart(e, scope, n.name)}
+            ondragend={() => {
+              endContentDrag();
+              endRowDrag();
+            }}
+            use:tip={searching && n.name.includes("/") ? n.name : undefined}
+          >
+            <span class="line">
+              {@render fileGlyph(fileIcon(n))}
+              <span class="name">{r.label}</span>
+            </span>
+            {#if n.summary}<span class="summary">{n.summary}</span>{/if}
+            <span class="meta">{size(n.bytes)} · {relativeTime(n.modified)}</span>
+          </button>
+          <button
+            class="delete"
+            class:confirming={confirming === `${scope}:${n.name}`}
+            use:tip={confirming === `${scope}:${n.name}`
+              ? "Click again to delete this file"
+              : "Delete note"}
+            aria-label="Delete {n.name}"
+            onclick={() => onDelete(scope, n.name)}
+            onmouseleave={() =>
+              confirming === `${scope}:${n.name}` && (confirming = null)}
+          >
+            {confirming === `${scope}:${n.name}` ? "sure?" : "×"}
+          </button>
+        </div>
+      {/if}
     {/each}
   </div>
+  {#if !app.notesComplete[scope]}
+    <p class="hint">
+      Some files are not shown: this folder goes more than 12 folders deep or
+      holds more than 20,000 files. Show the folder to see them all.
+    </p>
+  {/if}
 {/snippet}
 
 {#snippet newRow(scope: "project" | "knowledge")}
@@ -443,6 +822,12 @@
       />
     {:else}
       <button class="add" onclick={() => begin(scope)}>New note</button>
+      <button
+        class="folder"
+        use:tip={"New folder"}
+        aria-label="New folder"
+        onclick={() => startEdit(scope, "folder", "")}>{@render folderGlyph(false)}</button
+      >
       {#if scope === "knowledge"}
         <!-- The Capture button is always there, unlike Dream's: the inbox
              count says nothing about what the chats hold, and the count on
@@ -542,6 +927,10 @@
     {/if}
     <button
       class="head"
+      class:drop-on={dropOn === "project:"}
+      ondragover={(e) => onFolderDragOver(e, "project", "")}
+      ondragleave={() => onFolderDragLeave("project", "")}
+      ondrop={(e) => void onFolderDrop(e, "project", "")}
       onclick={() => (collapsed.project = !collapsed.project)}
       aria-expanded={!collapsed.project}
     >
@@ -579,7 +968,7 @@
         {:else if shownProject.length === 0}
           <p class="hint no-match">No notes match</p>
         {:else}
-          {@render list("project", shownProject)}
+          {@render tree("project", projectRows)}
         {/if}
       {/if}
     {/if}
@@ -590,6 +979,10 @@
   <section>
     <button
       class="head"
+      class:drop-on={dropOn === "knowledge:"}
+      ondragover={(e) => onFolderDragOver(e, "knowledge", "")}
+      ondragleave={() => onFolderDragLeave("knowledge", "")}
+      ondrop={(e) => void onFolderDrop(e, "knowledge", "")}
       onclick={() => (collapsed.knowledge = !collapsed.knowledge)}
       aria-expanded={!collapsed.knowledge}
     >
@@ -624,11 +1017,64 @@
         {:else if shownVault.length === 0}
           <p class="hint no-match">No notes match</p>
         {:else}
-          {@render list("knowledge", shownVault)}
+          {@render tree("knowledge", vaultRows)}
         {/if}
       {/if}
     {/if}
   </section>
+  {#if menu}
+    {@const m = menu}
+    <button class="scrim" aria-label="Close" onclick={() => (menu = null)} oncontextmenu={(e) => { e.preventDefault(); menu = null; }}></button>
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <div class="note-menu" role="menu" tabindex="-1" use:placeAt={{ x: m.x, y: m.y }} onkeydown={menuKeys}>
+      {#if m.page === "main"}
+        {#if !m.isFolder}
+          <button role="menuitem" onclick={() => { menu = null; showNote(m.scope, m.path); }}>Open</button>
+          <button role="menuitem" onclick={() => { menu = null; app.openNext = "new"; showNote(m.scope, m.path); }}>Open in a new tab</button>
+          <div class="sep"></div>
+        {/if}
+        <button role="menuitem" onclick={() => startEdit(m.scope, "rename", m.path, m.isFolder)}>Rename</button>
+        <button role="menuitem" onclick={() => { m.page = "move"; m.filter = ""; }}>Move to… <span class="key">▸</span></button>
+        <div class="sep"></div>
+        <button role="menuitem" onclick={() => startEdit(m.scope, "note", m.isFolder ? m.path : parentOf(m.path))}>New note here</button>
+        <button role="menuitem" onclick={() => startEdit(m.scope, "folder", m.isFolder ? m.path : parentOf(m.path))}>New folder here</button>
+        <div class="sep"></div>
+        <button role="menuitem" class="danger" class:confirm={m.confirm} onclick={() => void menuDelete()}>
+          {#if m.confirm}
+            Click again — to the trash
+          {:else if m.isFolder}
+            Delete folder{m.count ? ` (${m.count} ${m.count === 1 ? "note" : "notes"})` : ""}
+          {:else}
+            Delete
+          {/if}
+        </button>
+      {:else}
+        <!-- svelte-ignore a11y_autofocus -->
+        <input
+          class="new-name move-filter"
+          autofocus
+          autocorrect="off"
+          autocapitalize="off"
+          spellcheck="false"
+          placeholder="Move {baseOf(m.path)} to…"
+          aria-label="Filter folders"
+          bind:value={m.filter}
+          onkeydown={(e) => {
+            if (e.key === "Enter" && moveChoices.length > 0) void menuMoveTo(moveChoices[0]);
+          }}
+        />
+        <div class="choices">
+          {#each moveChoices as f (f)}
+            <button role="menuitem" onclick={() => void menuMoveTo(f)}>
+              {@render folderGlyph(false)}<span class="choice">{f || "Top level"}</span>
+            </button>
+          {:else}
+            <p class="none">No other folder</p>
+          {/each}
+        </div>
+      {/if}
+    </div>
+  {/if}
   <!-- Item 428: the drop's words, at the panel's foot while the list
        scrolls; "Keeping…" moved here from the section's top. -->
   {#if keeping > 0 || dropToasts.length > 0}
@@ -1058,5 +1504,162 @@
   }
   .delete.confirming {
     font-size: 0.72rem;
+  }
+  /* Item 457: the tree. A row indents by its depth; folders are one line. */
+  .list .item {
+    margin-left: calc(var(--depth, 0) * 14px);
+  }
+  .line {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    min-width: 0;
+  }
+  .line .name {
+    flex: 1;
+    min-width: 0;
+  }
+  .row .summary,
+  .row .meta {
+    padding-left: calc(14px + 0.4rem);
+  }
+  .row.dir {
+    padding: 0.3rem 0.6rem 0.3rem 0.35rem;
+  }
+  .caret {
+    width: 0.7rem;
+    flex-shrink: 0;
+    font-size: 0.6rem;
+    color: var(--dim);
+    text-align: center;
+    transition: transform 0.12s ease;
+  }
+  .caret.shut {
+    transform: rotate(-90deg);
+  }
+  .glyph {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    color: var(--dim);
+  }
+  .glyph.dir {
+    color: var(--accent);
+  }
+  .glyph.file.pdf {
+    color: var(--error);
+  }
+  .bar .folder .glyph {
+    display: block;
+    color: inherit;
+  }
+  .n {
+    flex-shrink: 0;
+    font-size: 0.66rem;
+    color: var(--dim);
+    opacity: 0.8;
+  }
+  .dir-row.drop-on,
+  .head.drop-on {
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    box-shadow: inset 0 0 0 1px var(--accent);
+    border-radius: 8px;
+  }
+  .item.editing {
+    padding: 0.2rem 0.35rem;
+  }
+  .edit-row {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    min-width: 0;
+  }
+  .new-name.inline {
+    padding: 0.2rem 0.4rem;
+    border-radius: 6px;
+  }
+  .scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 35;
+    background: transparent;
+    border: none;
+    padding: 0;
+    cursor: default;
+  }
+  .note-menu {
+    position: fixed;
+    z-index: 36;
+    display: flex;
+    flex-direction: column;
+    min-width: 200px;
+    max-width: 300px;
+    padding: 4px;
+    background: var(--sheet);
+    border: 1px solid var(--line2);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .note-menu > :global(*) {
+    flex-shrink: 0;
+  }
+  .note-menu button {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    text-align: left;
+    background: transparent;
+    border: none;
+    border-radius: 5px;
+    color: var(--ink2, var(--text));
+    font: inherit;
+    font-size: 12.5px;
+    padding: 6px 10px;
+    cursor: pointer;
+  }
+  .note-menu button:hover {
+    background: var(--well);
+    color: var(--text);
+  }
+  .note-menu .danger:hover,
+  .note-menu .danger.confirm {
+    color: var(--error);
+  }
+  .note-menu .key {
+    color: var(--dim);
+  }
+  .note-menu .sep {
+    height: 1px;
+    margin: 4px 6px;
+    background: var(--line);
+  }
+  .move-filter {
+    margin: 2px 2px 4px;
+    font-size: 12px;
+  }
+  .choices {
+    display: flex;
+    flex-direction: column;
+    max-height: 260px;
+    overflow-y: auto;
+  }
+  .choices button {
+    justify-content: flex-start;
+  }
+  .choice {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .none {
+    margin: 4px 10px 6px;
+    font-size: 12px;
+    color: var(--dim);
   }
 </style>

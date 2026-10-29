@@ -37,6 +37,8 @@
   import { noteEditUi, onLanded, runningTurn } from "./noteEdit.svelte";
   import { changedLines, editBlock, jumpTarget } from "./noteEdit";
   import { lineOffset } from "./memoryHits";
+  import { moveNoteTo } from "./state.svelte";
+  import { baseOf, parentOf, renamedTo } from "./notesTree";
 
   /**
    * Which note the editor has loaded, as `scope:name`. A plain variable, not
@@ -554,6 +556,46 @@
   const folder = $derived(
     isVault ? app.knowledge?.dir : app.project?.notes_dir,
   );
+
+  /**
+   * Item 460 (his bug: "i dont see a way for me to rename the file"): the
+   * title is the name, and clicking it edits it in place — Enter renames,
+   * Escape leaves it as it was. Only the two folders of notes can be
+   * renamed; the fixed files (`AGENTS.md`, a model's file) cannot. Tabs
+   * and the draft follow the file (`moveNoteTo`).
+   */
+  const canRename = $derived(!!open && (open.scope === "project" || open.scope === "knowledge") && !reviewing);
+  let renaming = $state(false);
+  let renameValue = $state("");
+  function startRename() {
+    if (!canRename || !open) return;
+    renameValue = baseOf(open.name);
+    renaming = true;
+  }
+  async function commitRename() {
+    if (!renaming) return;
+    renaming = false;
+    const o = open;
+    if (!o || (o.scope !== "project" && o.scope !== "knowledge")) return;
+    const to = renamedTo(o.name, renameValue);
+    if (!to) return;
+    await moveNoteTo(o.scope, o.name, to, (k) => runningTurn(k) !== null);
+  }
+  function renameKeys(e: KeyboardEvent) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void commitRename();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      renaming = false;
+    }
+  }
+  function focusRename(el: HTMLInputElement) {
+    el.focus();
+    const dot = el.value.lastIndexOf(".");
+    el.setSelectionRange(0, dot > 0 ? dot : el.value.length);
+  }
 </script>
 
 <svelte:window {onkeydown} />
@@ -566,7 +608,32 @@
     <span class="scope" class:vault={isVault}>
       {open?.scope ?? "project"}
     </span>
-    <span class="title">{open?.name ?? "no note"}</span>
+    {#if renaming && open}
+      <span class="title renaming">
+        {#if parentOf(open.name)}<span class="folder-part">{parentOf(open.name)}/</span>{/if}
+        <input
+          class="rename"
+          autocorrect="off"
+          autocapitalize="off"
+          spellcheck="false"
+          aria-label="Rename {open.name}"
+          bind:value={renameValue}
+          use:focusRename
+          onkeydown={renameKeys}
+          onblur={() => void commitRename()}
+        />
+      </span>
+    {:else if canRename && open}
+      <button
+        class="title rename-btn"
+        use:tip={"Click to rename"}
+        aria-label="Rename {open.name}"
+        onclick={startRename}
+        >{#if parentOf(open.name)}<span class="folder-part">{parentOf(open.name)}/</span>{/if}{baseOf(open.name)}</button
+      >
+    {:else}
+      <span class="title">{open?.name ?? "no note"}</span>
+    {/if}
     {#if reviewing}<span class="proposed" use:tip={"The dream proposed a replacement; nothing is applied until you Accept it (or open it in the editor and save)"}>proposed change</span>{/if}
     {#if dirty}<span class="dirty" use:tip={"Unsaved changes — kept as a draft until you save or revert"}>● draft</span>{/if}
     <span class="spacer"></span>
@@ -943,6 +1010,45 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  /* Item 460: the title renames in place. */
+  .rename-btn {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    color: var(--text);
+    padding: 0.1rem 0.3rem;
+    cursor: text;
+    min-width: 0;
+  }
+  .rename-btn:hover {
+    border-color: var(--border);
+  }
+  .folder-part {
+    color: var(--dim);
+  }
+  .title.renaming {
+    display: flex;
+    align-items: center;
+    /* Room to type even in a narrow pane: the box never squeezes to
+       nothing beside the header's buttons. */
+    min-width: 12rem;
+    flex: 1 0 12rem;
+    max-width: 30rem;
+    overflow: visible;
+  }
+  .rename {
+    flex: 1;
+    min-width: 6rem;
+    font: inherit;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--accent);
+    border-radius: 5px;
+    padding: 0.1rem 0.3rem;
+  }
+  .rename:focus {
+    outline: none;
   }
   .dirty {
     color: var(--accent);

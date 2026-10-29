@@ -774,6 +774,13 @@ export const app = $state({
    * is the point of it — an unfiled chat has a vault.
    */
   vault: [] as Note[],
+  /**
+   * Item 457: each section's folders (empty ones too, so a New folder
+   * shows), and whether its listing is whole — false when a bound (depth
+   * 12, 20,000 files) left something out and the panel says so.
+   */
+  noteFolders: { project: [] as string[], knowledge: [] as string[] },
+  notesComplete: { project: true, knowledge: true },
   /** Where the vault is; null on a machine with no user config directory. */
   knowledge: null as KnowledgeInfo | null,
   /**
@@ -1831,21 +1838,35 @@ export async function refreshProjects(): Promise<void> {
  * refreshed together because the model can write to either.
  */
 export async function refreshNotes(): Promise<void> {
+  // As a tree since item 457: the same notes, plus the folders (an empty
+  // one is still a place to drop a note) and whether the list is whole.
   if (app.project) {
     try {
-      app.notes = await api.listNotes("project");
+      const t = await api.listNoteTree("project");
+      app.notes = t.notes;
+      app.noteFolders.project = t.folders;
+      app.notesComplete.project = t.complete;
     } catch {
       // A store that cannot be listed shows as empty; the failure surfaces
       // when something is actually read or written.
       app.notes = [];
+      app.noteFolders.project = [];
+      app.notesComplete.project = true;
     }
   } else {
     app.notes = [];
+    app.noteFolders.project = [];
+    app.notesComplete.project = true;
   }
   try {
-    app.vault = await api.listNotes("knowledge");
+    const t = await api.listNoteTree("knowledge");
+    app.vault = t.notes;
+    app.noteFolders.knowledge = t.folders;
+    app.notesComplete.knowledge = t.complete;
   } catch {
     app.vault = [];
+    app.noteFolders.knowledge = [];
+    app.notesComplete.knowledge = true;
   }
   await refreshProposals();
 }
@@ -3234,6 +3255,126 @@ export async function deleteNote(scope: NoteScope, name: string): Promise<void> 
   if (scope === "project") app.notes = withoutNote(app.notes, name);
   else if (scope === "knowledge") app.vault = withoutNote(app.vault, name);
   void refreshWithin("deleting " + name, [refreshNotes, refreshProjects]);
+}
+
+/**
+ * Move or rename a note, or a folder of notes (item 457), and carry
+ * everything that names it along: its tabs, the open note, and — the
+ * never-lose-work rule — an unsaved draft, which moves to the new name's
+ * key so the editor reopens on it. Refused while an edit-by-prompt turn is
+ * running on a note it would move (that turn writes to the old path).
+ * The new name, or null when nothing moved.
+ */
+export async function moveNoteTo(
+  scope: "project" | "knowledge",
+  from: string,
+  to: string,
+  /** Whether a draft key has an edit-by-prompt turn running (the caller
+   *  passes `noteEdit.svelte`'s `runningTurn`; that module imports this one). */
+  busy: (key: string) => boolean = () => false,
+): Promise<string | null> {
+  const list = scope === "project" ? app.notes : app.vault;
+  const touched = list.filter((n) => movedNameOf(n.name, from, to) !== null);
+  if (touched.some((n) => busy(noteDraftKey(scope, n.name)))) {
+    addToast(`${from} is being edited by a prompt right now — move it when that turn ends`);
+    return null;
+  }
+  let landed: string;
+  try {
+    landed = await api.moveNote(scope, from, to);
+  } catch (e) {
+    addToast(String(e));
+    return null;
+  }
+  if (landed === from) return landed;
+  followNoteMove(scope, from, landed);
+  return landed;
+}
+
+/**
+ * Everything that names `from` follows it to `landed`, after the file has
+ * moved on disk — by `moveNoteTo`, or by the note editor's `rename_note`
+ * tool (item 460), which renames in the backend and reports it here.
+ */
+export function followNoteMove(scope: "project" | "knowledge", from: string, landed: string): void {
+  const list = scope === "project" ? app.notes : app.vault;
+  const touched = list.filter((n) => movedNameOf(n.name, from, landed) !== null);
+  // The open note may not be in the list yet (a note just made).
+  if (!touched.some((n) => n.name === from)) touched.push({ name: from, bytes: 0, modified: "", summary: null });
+  // Drafts first, then the names that point at them: the editor reloads
+  // when its tab's name changes, and must find the draft already there.
+  for (const n of touched) {
+    const next = movedNameOf(n.name, from, landed);
+    if (next === null) continue;
+    const oldKey = noteDraftKey(scope, n.name);
+    const draft = app.noteDrafts[oldKey];
+    if (draft !== undefined) {
+      app.noteDrafts[noteDraftKey(scope, next)] = draft;
+      delete app.noteDrafts[oldKey];
+    }
+  }
+  for (const t of tabs.allTabs(app.tabs)) {
+    if (t.content.kind !== "note" || t.content.scope !== scope) continue;
+    const next = movedNameOf(t.content.name, from, landed);
+    if (next !== null) t.content = { ...t.content, name: next };
+  }
+  if (app.openNote?.scope === scope) {
+    const next = movedNameOf(app.openNote.name, from, landed);
+    if (next !== null) app.openNote = { scope, name: next };
+  }
+  // The list now, from the move's own answer; re-read in the background.
+  const renamed = list.map((n) => {
+    const next = movedNameOf(n.name, from, landed);
+    return next === null ? n : { ...n, name: next };
+  });
+  if (scope === "project") app.notes = renamed;
+  else app.vault = renamed;
+  app.noteFolders[scope] = app.noteFolders[scope].map((f) => movedNameOf(f, from, landed) ?? f);
+  void refreshWithin("moving " + from, [refreshNotes, refreshProjects]);
+}
+
+/** `name` once `from` moved to `to`, or null (`notesTree.movedName`). */
+function movedNameOf(name: string, from: string, to: string): string | null {
+  if (name === from) return to;
+  if (name.startsWith(`${from}/`)) return to + name.slice(from.length);
+  return null;
+}
+
+/** Make a folder among the notes (item 457); its name, or null. */
+export async function newNoteFolder(scope: "project" | "knowledge", name: string): Promise<string | null> {
+  let made: string;
+  try {
+    made = await api.newNoteFolder(scope, name);
+  } catch (e) {
+    addToast(String(e));
+    return null;
+  }
+  if (!app.noteFolders[scope].includes(made)) app.noteFolders[scope] = [...app.noteFolders[scope], made];
+  void refreshWithin("making " + made, [refreshNotes]);
+  return made;
+}
+
+/**
+ * Delete a folder of notes (item 457): to the docspace's trash, whole, as
+ * a note's Delete is. Its notes' tabs close, as a deleted note's do.
+ */
+export async function deleteNoteFolder(scope: "project" | "knowledge", folder: string): Promise<void> {
+  try {
+    await api.deleteNote(scope, folder);
+  } catch (e) {
+    addToast(String(e));
+    return;
+  }
+  const inside = (n: string) => n.startsWith(`${folder}/`);
+  const list = scope === "project" ? app.notes : app.vault;
+  for (const n of list.filter((n) => inside(n.name))) {
+    if (app.openNote?.scope === scope && app.openNote.name === n.name) leaveNote();
+    dropNoteTabs(scope, n.name);
+  }
+  if (scope === "project") app.notes = list.filter((n) => !inside(n.name));
+  else app.vault = list.filter((n) => !inside(n.name));
+  app.noteFolders[scope] = app.noteFolders[scope].filter((f) => f !== folder && !inside(f));
+  void refreshWithin("deleting " + folder, [refreshNotes, refreshProjects]);
 }
 
 // ---- proposals: the dream's suggested edits to the fixed files ----

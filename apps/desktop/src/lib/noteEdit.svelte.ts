@@ -32,7 +32,7 @@
  */
 import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
-import { app, addToast, noteDraftKey, saveNote } from "./state.svelte";
+import { app, addToast, followNoteMove, noteDraftKey, saveNote } from "./state.svelte";
 import type { NoteScope } from "./types";
 import {
   STORE_KEY,
@@ -223,6 +223,17 @@ export async function runNoteEdit(scope: NoteScope, name: string, before: string
     });
     for (const n of r.notices) addToast(n);
     finish(key, t, row, r);
+    // Item 460: the model renamed the note with its `rename_note` tool.
+    // The thread, tabs and any draft follow the file to its new name.
+    const to = r.renamed_to;
+    if (to && to !== name && (scope === "project" || scope === "knowledge")) {
+      const moved = noteDraftKey(scope, to);
+      if (!noteEdits[moved]) {
+        noteEdits[moved] = t;
+        delete noteEdits[key];
+      }
+      followNoteMove(scope, name, to);
+    }
   } catch (e) {
     // Refused before the model ran (no project open, a bad name): the
     // note is as it was.

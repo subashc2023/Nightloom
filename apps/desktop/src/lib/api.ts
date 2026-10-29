@@ -359,6 +359,9 @@ export interface NoteEditResult {
   was_on_disk: string | null;
   cost_usd: number | null;
   notices: string[];
+  /** The note's new name when the model renamed it with `rename_note`
+   *  (item 460), same folder; null or absent when it did not. */
+  renamed_to?: string | null;
 }
 
 /**
@@ -1195,6 +1198,30 @@ export function saveNote(scope: NoteScope, name: string, content: string): Promi
 
 export function deleteNote(scope: NoteScope, name: string): Promise<null> {
   return invoke("delete_note", { scope, name });
+}
+
+/** The docspace as the Notes panel draws it (item 457): every note, every
+ *  folder (`a/b`, no trailing slash; empty ones too), and whether the walk
+ *  saw everything (false: a bound left something out, and the panel says so). */
+export interface NoteTree {
+  notes: Note[];
+  folders: string[];
+  complete: boolean;
+}
+
+export function listNoteTree(scope: NoteScope): Promise<NoteTree> {
+  return invoke("list_note_tree", { scope });
+}
+
+/** Move or rename a note or a folder of notes (item 457); the new name.
+ *  Refused when `to` is taken — a move never writes over a note. */
+export function moveNote(scope: NoteScope, from: string, to: string): Promise<string> {
+  return invoke("move_note", { scope, from, to });
+}
+
+/** Make a folder among the notes (item 457); its name as listed. */
+export function newNoteFolder(scope: NoteScope, name: string): Promise<string> {
+  return invoke("new_note_folder", { scope, name });
 }
 
 // ---- proposals: the dream's suggested edits to the two fixed files ----

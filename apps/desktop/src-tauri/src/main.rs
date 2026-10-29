@@ -6708,9 +6708,65 @@ async fn list_notes(
     if scope.is_fixed_file() {
         return Err(format!("{scope:?} is one file, not a folder to list"));
     }
-    Ok(project::list_notes(
+    // The panel's listing, not the system prompt's (item 457): every note
+    // is reachable from the Notes panel and the phone's Notes, where the
+    // index's 200 used to cut the list mid-walk with nothing said.
+    Ok(project::list_note_tree(&scope_dir_in(&state, scope, project.as_deref()).await?).notes)
+}
+
+/// The docspace as a tree for the Notes panel (item 457): every note, every
+/// folder (empty ones too), and whether the walk saw everything.
+#[tauri::command]
+async fn list_note_tree(
+    state: State<'_, AppState>,
+    scope: Option<NoteScope>,
+    project: Option<String>,
+) -> Result<project::NoteTree, String> {
+    let scope = scope.unwrap_or_default();
+    if scope.is_fixed_file() {
+        return Err(format!("{scope:?} is one file, not a folder to list"));
+    }
+    Ok(project::list_note_tree(
         &scope_dir_in(&state, scope, project.as_deref()).await?,
     ))
+}
+
+/// Move or rename a note or a folder of notes (item 457); the new name.
+#[tauri::command]
+async fn move_note(
+    state: State<'_, AppState>,
+    scope: Option<NoteScope>,
+    from: String,
+    to: String,
+    project: Option<String>,
+) -> Result<String, String> {
+    let scope = scope.unwrap_or_default();
+    if scope.is_fixed_file() {
+        return Err(format!("{scope:?} is one file; it is not moved from here"));
+    }
+    project::move_note(
+        &scope_dir_in(&state, scope, project.as_deref()).await?,
+        &from,
+        &to,
+    )
+}
+
+/// Make a folder among the notes (item 457's New folder).
+#[tauri::command]
+async fn new_note_folder(
+    state: State<'_, AppState>,
+    scope: Option<NoteScope>,
+    name: String,
+    project: Option<String>,
+) -> Result<String, String> {
+    let scope = scope.unwrap_or_default();
+    if scope.is_fixed_file() {
+        return Err(format!("{scope:?} is one file, not a folder"));
+    }
+    project::make_note_folder(
+        &scope_dir_in(&state, scope, project.as_deref()).await?,
+        &name,
+    )
 }
 
 #[tauri::command]
@@ -6850,10 +6906,12 @@ async fn delete_note(
             "{fixed} is not deleted from here — empty it instead"
         ));
     }
+    // To the docspace's trash since item 457, not unlinked.
     project::delete_note(
         &scope_dir_in(&state, scope, project.as_deref()).await?,
         &name,
     )
+    .map(|_| ())
 }
 
 // ---- proposals: the dream's suggested edits to the fixed files ------------
@@ -8825,6 +8883,9 @@ fn main() {
             rename_project,
             forget_project,
             list_notes,
+            list_note_tree,
+            move_note,
+            new_note_folder,
             read_note,
             read_note_media,
             memory_note_for,
