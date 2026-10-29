@@ -15,12 +15,44 @@
  * key, does the insertion.
  */
 
+/** A display formula in a passage: `$$…$$` or `\[…\]`, across lines or not. */
+const DISPLAY_MATH = /\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]/g;
+
+/**
+ * Item 453: no blank line beside or inside a display formula. A selection
+ * read from the transcript (`selectionText`) ends the paragraph before a
+ * formula with a blank line — KaTeX's display is a span, not a block, and
+ * marked writes a newline after each paragraph — and a formula's TeX may
+ * hold one of its own; each became a bare `>` line, a gap in the quote's
+ * bar beside every formula (his report, 2026-10-28). The formula keeps its
+ * own lines; only the empty ones around and inside it go.
+ */
+export function tightenDisplayMath(text: string): string {
+  let out = "";
+  let at = 0;
+  for (const m of text.matchAll(DISPLAY_MATH)) {
+    const i = m.index ?? 0;
+    // The text before it: a run of blank lines that ends there becomes one newline.
+    out += text.slice(at, i).replace(/\n[ \t]*\n\s*$/, "\n");
+    out += m[0].replace(/\n(?:[ \t]*\n)+/g, "\n");
+    at = i + m[0].length;
+    // The text after it: a run of blank lines that starts there becomes one newline.
+    const rest = text.slice(at);
+    const lead = /^[ \t]*\n(?:[ \t]*\n)+/.exec(rest);
+    if (lead) {
+      out += "\n";
+      at += lead[0].length;
+    }
+  }
+  return out + text.slice(at);
+}
+
 /** The passage as a Markdown quote block: each line behind `> `, a blank
- *  line inside it as a bare `>` (so the block does not end there). */
+ *  line inside it as a bare `>` (so the block does not end there) — except
+ *  beside or inside a display formula (item 453, `tightenDisplayMath`). */
 export function quoteBlock(passage: string): string {
   if (passage.trim() === "") return "";
-  const lines = passage
-    .replace(/\r\n?/g, "\n")
+  const lines = tightenDisplayMath(passage.replace(/\r\n?/g, "\n"))
     .replace(/^\n+|\s+$/g, "")
     .split("\n");
   return lines.map((l) => (l.trim() === "" ? ">" : `> ${l}`)).join("\n");

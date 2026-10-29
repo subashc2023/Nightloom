@@ -9,6 +9,7 @@ import {
   requestReply,
   splitQuotes,
   takeReply,
+  tightenDisplayMath,
 } from "./replyQuote.svelte";
 import transcriptSrc from "./Transcript.svelte?raw";
 
@@ -18,6 +19,35 @@ describe("quoteBlock (backlog 215)", () => {
   });
   it("drops leading blank lines and trailing whitespace", () => {
     expect(quoteBlock("\n\nhello  \n")).toBe("> hello");
+  });
+});
+
+// Item 453: the passages are what `selectionText` read from the rendered
+// replies in the harness (nightshift-code notes/runner-design/452-453-harness, #quote).
+describe("quoteBlock with display maths (item 453)", () => {
+  const aligned = "The two steps are\n\n$$\\begin{aligned}\na &= b + c \\\\\nd &= e - f\n\\end{aligned}$$\nand then the last one.";
+  const tight = "The update is\n\n$$w \\leftarrow w - \\eta \\nabla L$$\nwhere eta is the rate.\n\n$$L = \\tfrac12 (y - \\hat y)^2$$\nand that is all.";
+  const list = "First\n\n$$a^2 + b^2\n= c^2$$\n\nSecond\n\n$$e^{i\\pi} + 1 = 0$$";
+  const cases = "Define\n\n$$f(x) = \\begin{cases}\n1 & x > 0 \\\\\n\n0 & \\text{otherwise}\n\\end{cases}$$\nThen go on.";
+  const bracket = "Gauss says\n\n\\[\\sum_{i=1}^{n} i\n= \\frac{n(n+1)}{2}\\]\n\nwhich is the trick.";
+  const bare = (q: string) => q.split("\n").filter((l) => l === ">").length;
+
+  it("has no bare `>` line beside or inside a formula", () => {
+    for (const p of [aligned, tight, list, cases, bracket]) expect(bare(quoteBlock(p))).toBe(0);
+  });
+  it("keeps every line of a multi-line formula, each quoted", () => {
+    expect(quoteBlock(aligned)).toBe(
+      "> The two steps are\n> $$\\begin{aligned}\n> a &= b + c \\\\\n> d &= e - f\n> \\end{aligned}$$\n> and then the last one.",
+    );
+    expect(quoteBlock(bracket)).toBe("> Gauss says\n> \\[\\sum_{i=1}^{n} i\n> = \\frac{n(n+1)}{2}\\]\n> which is the trick.");
+  });
+  it("is one quote block in the bubble (one bar)", () => {
+    const sent = insertQuote("", 0, 0, list).text + "why?";
+    expect(splitQuotes(sent).filter((s) => s.kind === "quote")).toHaveLength(1);
+  });
+  it("leaves paragraph breaks away from maths, and inline maths, as they were", () => {
+    expect(quoteBlock("one\n\ntwo $x$ and $$y$$ here\n\nthree")).toBe("> one\n>\n> two $x$ and $$y$$ here\n>\n> three");
+    expect(tightenDisplayMath("no maths\n\nat all")).toBe("no maths\n\nat all");
   });
 });
 
