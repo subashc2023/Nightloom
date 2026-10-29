@@ -46,7 +46,7 @@
   } from "./notesDrop";
   import { foldQuery, hitsByScope, narrowNotes } from "./notesSearch";
   import { prefersReducedMotion } from "./chipFade";
-  import { deleteNoteFolder, moveNoteTo, newNoteFolder } from "./state.svelte";
+  import { addToast, deleteNoteFolder, moveNoteTo, newNoteFolder } from "./state.svelte";
   import { runningTurn } from "./noteEdit.svelte";
   import { placeMenu } from "./menuPlace";
   import {
@@ -60,6 +60,7 @@
     loadOpen,
     openKey,
     parentOf,
+    readSaysTaken,
     renamedOpen,
     renamedTo,
     saveOpen,
@@ -247,7 +248,40 @@
     creating = null;
     if (!name) return;
     const full = /\.[a-z0-9]+$/i.test(name) ? name : `${name}.md`;
+    if (await openIfTaken(scope, full)) return;
     if (await saveNote(scope, full, "")) showNote(scope, full);
+  }
+
+  /** Review fix (457): New note writes an empty file, so a name already
+   *  there (in the list, any case — the disk may not tell case apart — or
+   *  on disk past a list that is stale or cut short) opens that note
+   *  instead of writing over it. A read that fails for any reason but
+   *  "no such file" (a PDF, say) counts as taken. */
+  async function openIfTaken(scope: NoteScope, name: string): Promise<boolean> {
+    const lower = name.toLowerCase();
+    const listed = (scope === "project" ? app.notes : scope === "knowledge" ? app.vault : []).find(
+      (n) => n.name.toLowerCase() === lower,
+    );
+    let taken = listed !== undefined;
+    // Only the two note folders read a missing file as an error; a fixed
+    // file or a model's reads as empty, so the list is all there is.
+    if (!taken && (scope === "project" || scope === "knowledge")) {
+      try {
+        await api.readNote(scope, name);
+        taken = true;
+      } catch (e) {
+        const read = readSaysTaken(e);
+        if (read === "folder") {
+          addToast(`${name} is a folder already`);
+          return true;
+        }
+        taken = read === "taken";
+      }
+    }
+    if (!taken) return false;
+    addToast(`${name} already exists — opened it rather than writing over it`);
+    showNote(scope, listed?.name ?? name);
+    return true;
   }
 
   /** Keyed by scope as well as name: the two stores can hold `plan.md` each,
@@ -457,6 +491,7 @@
     } else {
       const full = /\.[a-z0-9]+$/i.test(typed) ? typed : `${typed}.md`;
       const name = joinPath(e.path, full);
+      if (await openIfTaken(e.scope, name)) return;
       if (await saveNote(e.scope, name, "")) showNote(e.scope, name);
     }
   }

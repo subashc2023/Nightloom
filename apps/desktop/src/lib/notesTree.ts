@@ -190,3 +190,20 @@ export function renamedTo(path: string, typed: string, isFolder = false): string
   const to = joinPath(parentOf(path), base);
   return to === path ? null : to;
 }
+
+/**
+ * What a failed `read_note` says about a name New note is about to write
+ * (review fix, item 457 — New note never writes over a note). Only the
+ * read's own "cannot read …: <io error>" speaks to the disk: "no such
+ * file" (os error 2) is `free`, a directory (os error 21) is `folder`,
+ * any other read failure (a PDF is not UTF-8, a permission) is `taken`.
+ * Anything else — no project open, a name outside the folder — is `free`
+ * here, and the save reports it as it always has.
+ */
+export function readSaysTaken(err: unknown): "free" | "taken" | "folder" {
+  const why = String(err);
+  if (!why.includes("cannot read")) return "free";
+  if (why.includes("(os error 21)")) return "folder";
+  if (why.includes("(os error 2)")) return "free";
+  return "taken";
+}
