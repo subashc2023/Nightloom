@@ -101,6 +101,15 @@
     gap: 6px;
     margin: 14px 0;
   }
+  /* Item 478: taken by the turn, it is drawn inside the reply (640 px at
+     most), but sits where his own messages sit — the right edge of the
+     turns' column (`.inner`, the transcript's `turns` container), not the
+     reply's. Only where that container is; elsewhere it keeps the reply's. */
+  @container turns (min-width: 0px) {
+    .midturn:not(.pending) {
+      width: 100cqw;
+    }
+  }
   .mt-key {
     display: flex;
     align-items: center;

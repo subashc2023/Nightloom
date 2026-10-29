@@ -2896,6 +2896,10 @@
     display: flex;
     flex-direction: column;
     gap: 26px;
+    /* Item 478: the turns' column, for a bubble drawn inside a reply (his
+       mid-turn message) to reach the column's right edge, where his own
+       messages sit. */
+    container: turns / inline-size;
     /* The floating aside card (backlog 141) is placed in this frame. */
     position: relative;
   }
