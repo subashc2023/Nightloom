@@ -107,7 +107,7 @@
   import { sendTip, tip } from "./tip";
   import { armStop, stopChordLabel, stopChordTarget } from "./stopButton";
   import { stopPref } from "./stopShape.svelte";
-  import { acceptFiles, conversionJobs, filesBlocked, MAX_IMAGE_BASE64, splitChips, trackPending } from "./attachFiles.svelte";
+  import { acceptFiles, conversionJobs, filesBlocked, MAX_IMAGE_BASE64, settleRestored, splitChips, trackPending } from "./attachFiles.svelte";
   import { floatMenu } from "./floatMenu";
   import { ghostFor } from "./suggestions.svelte";
   import { queuedElsewhereToast } from "./browse";
@@ -1629,7 +1629,15 @@
     // Item 458: an attach or a remove, undone or redone.
     if (isChipTag(s.tag)) {
       // Leaves at once, as a chip's × takes it: no fade to wait out.
-      setDraftAttachments(key, chipStep(s.tag, dir, $state.snapshot(attachments) as Attachment[]).chips);
+      const stepped = chipStep(s.tag, dir, $state.snapshot(attachments) as Attachment[]).chips;
+      // A conversion that ended while the chip was out lands on it now (review fix).
+      setDraftAttachments(
+        key,
+        stepped.flatMap((c) => {
+          const back = settleRestored(c);
+          return back ? [back] : [];
+        }),
+      );
     }
     setDraftText(key, s.text);
     void tick().then(() => {

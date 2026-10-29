@@ -83,6 +83,25 @@ const hasConverter = () => (converter ??= officeConverter().catch(() => false));
 /** Office conversions in flight, by chip id: Send waits on these. */
 const converting = new Map<number, Promise<void>>();
 
+/**
+ * Review fix (item 458 meeting 277): a conversion that ends while its chip
+ * is out of the box — ⌘Z took back the attach, or × removed it, and ⌘Z may
+ * yet put it back — keeps its result here (null: it failed, and said so),
+ * so a chip put back is the converted one, not a pending chip with no job
+ * behind it that Send would no longer wait for and would send empty.
+ */
+const settledWhileOut = new Map<number, Partial<Attachment> | null>();
+
+/** A chip coming back into a box by undo or redo: the conversion's result
+ *  if it finished while the chip was out, null if it failed (the chip
+ *  stays out), the chip itself otherwise. */
+export function settleRestored(chip: Attachment): Attachment | null {
+  if (!chip.pending || converting.has(chip.id) || !settledWhileOut.has(chip.id)) return chip;
+  const done = settledWhileOut.get(chip.id) ?? null;
+  settledWhileOut.delete(chip.id);
+  return done === null ? null : { ...chip, ...done };
+}
+
 /** Item 382: a pasted image being fetched is waited on as a conversion is —
  *  Send holds until it settles. */
 export function trackPending(id: number, job: Promise<void>): void {
@@ -137,15 +156,17 @@ async function attachOffice(chatKey: string, file: File, addToast: (text: string
         );
         out = await prepareOfficeAttachment(chip.name, data, true);
       }
-      updateAttachment(chatKey, chip.id, {
+      const done: Partial<Attachment> = {
         media_type: out.media_type,
         data: out.data,
         label: convertedLabel(chip.name, out.via, out.count),
         pending: false,
         ...(out.source_sha256 ? { source_sha256: out.source_sha256 } : {}),
-      });
+      };
+      if (!updateAttachment(chatKey, chip.id, done)) settledWhileOut.set(chip.id, done);
     } catch (e) {
       removeAttachment(chatKey, chip.id);
+      settledWhileOut.set(chip.id, null);
       addToast(`${chip.name}: ${String(e)}`);
     } finally {
       converting.delete(chip.id);
