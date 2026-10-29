@@ -12,6 +12,7 @@ describe("384: reply code blocks wrap when they are prose, and carry Copy", () =
     // app.css's wrap and Copy rules: vitest empties CSS imports, so they are
     // measured in WebKit instead (nightshift-code notes/runner-design/384-snap-700.png: 638/638 wrapped).
     const msg = msgSrc;
-    expect(msg).toContain("use:codeCopy>{@html renderReply(g.seg.text)}");
+    // Item 452: the HTML is patched in place by liveHtml rather than {@html}.
+    expect(msg).toContain("use:liveHtml={renderReply(g.seg.text)} use:memoryRefs={{ hits: memHits, text: g.seg.text }} use:codeCopy>");
   });
 });
