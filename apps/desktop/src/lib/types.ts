@@ -807,6 +807,9 @@ export interface Note {
   modified: string;
   /** First heading or first non-empty line; null for a non-text file. */
   summary: string | null;
+  /** What a non-text file is (`PDF`, `slide deck`, `PNG image`); absent
+   *  for text (backend backlog 307). The Notes panel's file icon (item 457). */
+  kind?: string | null;
 }
 
 export interface Usage {

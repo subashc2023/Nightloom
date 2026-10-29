@@ -1334,10 +1334,64 @@ pub struct Note {
 /// should not have an empty folder planted in it.
 pub fn list_notes(dir: &Path) -> Vec<Note> {
     let mut out = Vec::new();
-    walk_notes(dir, dir, 0, &mut out);
+    let bounds = Walk {
+        depth: NOTE_DEPTH,
+        limit: NOTE_LIMIT,
+    };
+    walk_notes(dir, dir, 0, bounds, &mut out, &mut None);
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out.truncate(NOTE_LIMIT);
     out
+}
+
+/// Notes the Notes panel lists at most (item 457). The panel is a file
+/// manager, not an index read into a prompt, so every note should be
+/// reachable from it; this is a guard against a folder that is really a
+/// checkout or a photo library, and `NoteTree::complete` says when it bit.
+/// [`list_notes`] — the system prompt's index — keeps [`NOTE_LIMIT`].
+pub const PANEL_NOTE_LIMIT: usize = 20_000;
+/// How deep the panel's walk goes: deeper than the index's [`NOTE_DEPTH`],
+/// so a note filed four folders down is still something he can click.
+const PANEL_DEPTH: usize = 12;
+
+/// The bounds one walk runs under.
+#[derive(Clone, Copy)]
+struct Walk {
+    depth: usize,
+    limit: usize,
+}
+
+/// The docspace as the Notes panel shows it (item 457): every note, every
+/// folder (an empty one included, so New folder has something to show),
+/// and whether the walk saw everything.
+#[derive(Debug, Clone, Serialize)]
+pub struct NoteTree {
+    pub notes: Vec<Note>,
+    /// Folder paths relative to the docspace, `/`-separated, no trailing
+    /// slash, name-sorted.
+    pub folders: Vec<String>,
+    /// False when [`PANEL_NOTE_LIMIT`] or the depth bound left something
+    /// out — the panel says so rather than showing a short list as whole.
+    pub complete: bool,
+}
+
+/// Every note and folder in the docspace, for the panel (item 457).
+pub fn list_note_tree(dir: &Path) -> NoteTree {
+    let mut notes = Vec::new();
+    let mut folders = Some(Vec::new());
+    let bounds = Walk {
+        depth: PANEL_DEPTH,
+        limit: PANEL_NOTE_LIMIT,
+    };
+    let complete = walk_notes(dir, dir, 0, bounds, &mut notes, &mut folders);
+    notes.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut folders = folders.unwrap_or_default();
+    folders.sort();
+    NoteTree {
+        notes,
+        folders,
+        complete,
+    }
 }
 
 /// Ceiling on the counting walk. Far above [`NOTE_LIMIT`] because counting is
@@ -1428,13 +1482,35 @@ fn hidden(entry: &fs::DirEntry) -> bool {
     entry.file_name().to_string_lossy().starts_with('.')
 }
 
-fn walk_notes(base: &Path, dir: &Path, depth: usize, out: &mut Vec<Note>) {
-    if depth > NOTE_DEPTH || out.len() >= NOTE_LIMIT {
-        return;
+/// Walk `dir` under `bounds`, pushing notes to `out` and, when `folders` is
+/// given, each folder's relative path. `false` when a bound left something
+/// out (only the panel's walk reads it; the index's cut is its own design).
+fn walk_notes(
+    base: &Path,
+    dir: &Path,
+    depth: usize,
+    bounds: Walk,
+    out: &mut Vec<Note>,
+    folders: &mut Option<Vec<String>>,
+) -> bool {
+    if out.len() >= bounds.limit {
+        return false;
+    }
+    if depth > bounds.depth {
+        // The index's walk stops here by design and reads nothing more; the
+        // panel's asks whether anything sits below the bound, unshown.
+        if folders.is_none() {
+            return true;
+        }
+        return fs::read_dir(dir).map_or(true, |e| {
+            !e.flatten()
+                .any(|e| !e.file_name().to_string_lossy().starts_with('.'))
+        });
     }
     let Ok(entries) = fs::read_dir(dir) else {
-        return;
+        return true;
     };
+    let mut complete = true;
     // In name order, not the filesystem's: APFS hands entries back sorted
     // and ext4 does not, so which notes survive the cap mid-walk differed
     // between a Mac and CI's Linux runner (the vault-folders test) — and a
@@ -1448,7 +1524,16 @@ fn walk_notes(base: &Path, dir: &Path, depth: usize, out: &mut Vec<Note>) {
         let path = entry.path();
         let Ok(meta) = entry.metadata() else { continue };
         if meta.is_dir() {
-            walk_notes(base, &path, depth + 1, out);
+            if let Some(list) = folders.as_mut()
+                && depth < bounds.depth
+                && let Ok(relative) = path.strip_prefix(base)
+            {
+                list.push(relative.to_string_lossy().replace('\\', "/"));
+            }
+            complete &= walk_notes(base, &path, depth + 1, bounds, out, folders);
+            if out.len() >= bounds.limit {
+                return false;
+            }
             continue;
         }
         if !meta.is_file() {
@@ -1468,10 +1553,11 @@ fn walk_notes(base: &Path, dir: &Path, depth: usize, out: &mut Vec<Note>) {
             summary,
             kind,
         });
-        if out.len() >= NOTE_LIMIT {
-            return;
+        if out.len() >= bounds.limit {
+            return false;
         }
     }
+    complete
 }
 
 /// A note's one-line gist and, for a file that is not text, what it is.
@@ -1654,9 +1740,137 @@ pub fn write_note(dir: &Path, name: &str, content: &str) -> Result<Note, String>
     })
 }
 
-pub fn delete_note(dir: &Path, name: &str) -> Result<(), String> {
+/// Delete a note or a folder of notes: moved, never unlinked, to the
+/// docspace's trash, `<docspace>/.trash/notes/<its path>` (item 457 —
+/// practices §7, Delete goes to a trash folder; it was `remove_file`). The
+/// trash is a dot-folder, so neither the index nor the panel lists it, and
+/// it sits beside the threads' (`thread::TRASH_DIR`). A name already in the
+/// trash gets ` 2`, ` 3`, … before its extension. Returns where it went.
+pub fn delete_note(dir: &Path, name: &str) -> Result<PathBuf, String> {
     let path = note_path(dir, name)?;
-    fs::remove_file(&path).map_err(|e| format!("cannot delete {name}: {e}"))
+    let rel = clean_note_name(name)?;
+    if rel.split('/').next() == Some(".trash") {
+        return Err(format!("{name} is in the trash already"));
+    }
+    if !path.exists() {
+        return Err(format!("cannot delete {name}: there is no such note"));
+    }
+    let to = free_path(&dir.join(".trash").join("notes").join(&rel));
+    if let Some(parent) = to.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+    }
+    fs::rename(&path, &to).map_err(|e| format!("cannot delete {name}: {e}"))?;
+    Ok(to)
+}
+
+/// A note or folder name as the panel sends it, trimmed, `/`-separated,
+/// without empty, `.` or `..` parts. Containment is [`note_path`]'s job;
+/// this is the shape the rename and move answers are given in.
+fn clean_note_name(name: &str) -> Result<String, String> {
+    let parts: Vec<&str> = name
+        .trim()
+        .split(['/', '\\'])
+        .filter(|p| !p.is_empty() && *p != ".")
+        .collect();
+    if parts.is_empty() {
+        return Err("a note needs a name".to_string());
+    }
+    if parts.contains(&"..") {
+        return Err(format!("{name} reaches outside the notes folder"));
+    }
+    Ok(parts.join("/"))
+}
+
+/// `path`, or the first of `stem 2.ext`, `stem 3.ext`, … that is free.
+fn free_path(path: &Path) -> PathBuf {
+    if !path.exists() {
+        return path.to_path_buf();
+    }
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let ext = path
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    (2..)
+        .map(|n| path.with_file_name(format!("{stem} {n}{ext}")))
+        .find(|p| !p.exists())
+        .expect("an unbounded range finds a free name")
+}
+
+/// Move or rename a note or a folder of notes (item 457): `from` to `to`,
+/// both docspace-relative. Refuses a `to` that is taken — a move never
+/// writes over a note — a hidden name (the panel would never show it
+/// again), and a folder moved into itself. Creates `to`'s folders on the
+/// way. Returns `to` as the panel names it.
+pub fn move_note(dir: &Path, from: &str, to: &str) -> Result<String, String> {
+    let src = note_path(dir, from)?;
+    let dst = note_path(dir, to)?;
+    let from_rel = clean_note_name(from)?;
+    let to_rel = clean_note_name(to)?;
+    if to_rel.split('/').any(|p| p.starts_with('.')) {
+        return Err(format!(
+            "{to} is a hidden name — the Notes panel would not show it"
+        ));
+    }
+    if from_rel == to_rel {
+        return Ok(to_rel);
+    }
+    if !src.exists() {
+        return Err(format!("cannot move {from}: there is no such note"));
+    }
+    if to_rel.starts_with(&format!("{from_rel}/")) {
+        return Err(format!("cannot move {from} into itself"));
+    }
+    // Case-only renames (`Plan.md` → `plan.md`) on a case-insensitive disk
+    // find `dst` "taken" by `src` itself; that one is allowed through.
+    if dst.exists() && !same_entry(&src, &dst) {
+        return Err(format!("{to} already exists"));
+    }
+    if let Some(parent) = dst.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+    }
+    fs::rename(&src, &dst).map_err(|e| format!("cannot move {from} to {to}: {e}"))?;
+    Ok(to_rel)
+}
+
+/// Whether two paths name one directory entry (a case-only rename on a
+/// case-insensitive disk), by device and inode where there are inodes.
+fn same_entry(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match (fs::metadata(a), fs::metadata(b)) {
+            (Ok(x), Ok(y)) => x.dev() == y.dev() && x.ino() == y.ino(),
+            _ => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        a.to_string_lossy()
+            .eq_ignore_ascii_case(&b.to_string_lossy())
+    }
+}
+
+/// Make a folder in the docspace (item 457's New folder), and the docspace
+/// itself when it is not there yet. An existing folder is not an error.
+pub fn make_note_folder(dir: &Path, name: &str) -> Result<String, String> {
+    let path = note_path(dir, name)?;
+    let rel = clean_note_name(name)?;
+    if rel.split('/').any(|p| p.starts_with('.')) {
+        return Err(format!(
+            "{name} is a hidden name — the Notes panel would not show it"
+        ));
+    }
+    if path.is_file() {
+        return Err(format!("{name} is a note, not a folder"));
+    }
+    fs::create_dir_all(&path).map_err(|e| format!("cannot create {name}: {e}"))?;
+    Ok(rel)
 }
 
 /// Open a path in the platform's file manager.
@@ -2846,5 +3060,140 @@ mod tests {
         let (counts, exhaustive) = note_counts(&notes);
         assert!(exhaustive);
         assert_eq!(counts.values().sum::<usize>(), 1);
+    }
+
+    /// Item 457: the panel's listing reaches every note — past the index's
+    /// 200 and past its depth of four — lists folders (an empty one too),
+    /// and leaves the index exactly as bounded as it was.
+    #[test]
+    fn the_panel_lists_every_note_and_folder_and_the_index_stays_bounded() {
+        let dir = temp_dir("panel-tree");
+        let notes = dir.join("notes");
+        for i in 0..250 {
+            write_note(&notes, &format!("f{}/n{i:03}.md", i % 5), "# x\n").unwrap();
+        }
+        write_note(&notes, "a/b/c/d/e/deep.md", "# deep\n").unwrap();
+        fs::create_dir_all(notes.join("empty")).unwrap();
+        fs::create_dir_all(notes.join(".trash/notes")).unwrap();
+
+        let tree = list_note_tree(&notes);
+        assert!(tree.complete);
+        assert_eq!(tree.notes.len(), 251);
+        assert!(tree.notes.iter().any(|n| n.name == "a/b/c/d/e/deep.md"));
+        for f in ["a", "a/b/c/d/e", "empty", "f0", "f4"] {
+            assert!(tree.folders.iter().any(|x| x == f), "{f} listed");
+        }
+        assert!(!tree.folders.iter().any(|x| x.starts_with('.')));
+
+        let index = list_notes(&notes);
+        assert_eq!(index.len(), NOTE_LIMIT);
+        assert!(!index.iter().any(|n| n.name == "a/b/c/d/e/deep.md"));
+    }
+
+    /// Past the panel's depth bound the listing says it is not whole.
+    #[test]
+    fn the_panel_says_when_a_bound_left_notes_out() {
+        let dir = temp_dir("panel-deep");
+        let notes = dir.join("notes");
+        let deep = (0..=PANEL_DEPTH)
+            .map(|i| format!("d{i}"))
+            .collect::<Vec<_>>()
+            .join("/");
+        write_note(&notes, &format!("{deep}/too-deep.md"), "x").unwrap();
+        let tree = list_note_tree(&notes);
+        assert!(!tree.complete);
+        assert!(tree.notes.is_empty());
+    }
+
+    #[test]
+    fn a_note_moves_into_a_folder_and_a_folder_renames_whole() {
+        let dir = temp_dir("move");
+        let notes = dir.join("notes");
+        write_note(&notes, "alice.md", "# Alice\n").unwrap();
+        write_note(&notes, "people/bob.md", "# Bob\n").unwrap();
+
+        assert_eq!(
+            move_note(&notes, "alice.md", "people/alice.md").unwrap(),
+            "people/alice.md"
+        );
+        assert!(notes.join("people/alice.md").is_file());
+        assert!(!notes.join("alice.md").exists());
+
+        // A taken name is refused; nothing is written over.
+        write_note(&notes, "bob.md", "# Other Bob\n").unwrap();
+        assert!(move_note(&notes, "bob.md", "people/bob.md").is_err());
+        assert_eq!(read_note(&notes, "people/bob.md").unwrap(), "# Bob\n");
+
+        // A folder renames with everything in it; a new parent is made.
+        assert_eq!(
+            move_note(&notes, "people", "crm/contacts").unwrap(),
+            "crm/contacts"
+        );
+        assert!(notes.join("crm/contacts/alice.md").is_file());
+        assert!(notes.join("crm/contacts/bob.md").is_file());
+
+        // Into itself, outside the docspace, hidden: refused.
+        assert!(move_note(&notes, "crm", "crm/inner/crm").is_err());
+        assert!(move_note(&notes, "bob.md", "../bob.md").is_err());
+        assert!(move_note(&notes, "bob.md", ".hidden/bob.md").is_err());
+        assert!(move_note(&notes, "nope.md", "x.md").is_err());
+
+        // A case-only rename goes through on either kind of disk.
+        assert_eq!(move_note(&notes, "bob.md", "Bob.md").unwrap(), "Bob.md");
+        let listed: Vec<String> = list_note_tree(&notes)
+            .notes
+            .into_iter()
+            .map(|n| n.name)
+            .collect();
+        assert!(listed.contains(&"Bob.md".to_string()), "{listed:?}");
+    }
+
+    #[test]
+    fn a_new_folder_is_made_and_shown_and_a_note_is_not_one() {
+        let dir = temp_dir("mkdir");
+        let notes = dir.join("notes");
+        assert_eq!(
+            make_note_folder(&notes, "projects/2026/").unwrap(),
+            "projects/2026"
+        );
+        assert!(notes.join("projects/2026").is_dir());
+        assert!(
+            make_note_folder(&notes, "projects").is_ok(),
+            "an existing folder is fine"
+        );
+        write_note(&notes, "plan.md", "x").unwrap();
+        assert!(make_note_folder(&notes, "plan.md").is_err());
+        assert!(make_note_folder(&notes, ".secret").is_err());
+        assert!(make_note_folder(&notes, "../out").is_err());
+        let tree = list_note_tree(&notes);
+        assert!(tree.folders.contains(&"projects/2026".to_string()));
+    }
+
+    /// Practices §7: Delete moves to a trash folder, never unlinks — a note
+    /// and a whole folder alike, and a second delete of one name keeps both.
+    #[test]
+    fn delete_moves_a_note_or_folder_to_the_trash() {
+        let dir = temp_dir("trash");
+        let notes = dir.join("notes");
+        write_note(&notes, "people/alice.md", "first").unwrap();
+        let to = delete_note(&notes, "people/alice.md").unwrap();
+        assert_eq!(to, notes.join(".trash/notes/people/alice.md"));
+        assert_eq!(fs::read_to_string(&to).unwrap(), "first");
+        assert!(!notes.join("people/alice.md").exists());
+
+        write_note(&notes, "people/alice.md", "second").unwrap();
+        let again = delete_note(&notes, "people/alice.md").unwrap();
+        assert_eq!(again, notes.join(".trash/notes/people/alice 2.md"));
+
+        write_note(&notes, "old/a.md", "a").unwrap();
+        delete_note(&notes, "old").unwrap();
+        assert!(notes.join(".trash/notes/old/a.md").is_file());
+        assert!(
+            list_note_tree(&notes).notes.is_empty(),
+            "the trash is not listed"
+        );
+
+        assert!(delete_note(&notes, "gone.md").is_err());
+        assert!(delete_note(&notes, ".trash/notes/old").is_err());
     }
 }
