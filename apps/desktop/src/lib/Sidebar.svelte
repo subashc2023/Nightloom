@@ -77,7 +77,9 @@
   import { findChord } from "./find";
   import { findBar } from "./search";
   import { isMac } from "./platform";
-  import { tick, untrack } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
+  import { carriesFiles } from "./dropLook";
+  import { DragToNotes } from "./dragToNotes";
   import type { ChatKind, ChatMode, NightshiftInfo, NightshiftRow, SessionMeta } from "./types";
   import { relativeTime } from "./time";
   import { sameMorning } from "./nightshift";
@@ -664,6 +666,53 @@
     app.leftTab = "notes";
   }
 
+  /**
+   * Item 461: a file from Finder held over the sidebar while it shows
+   * Chats switches it to Notes after 300 ms, where the Project section's
+   * drop box takes the file; a drag that leaves without dropping here
+   * puts Chats back (`dragToNotes.ts`). Real files only — `carriesFiles`
+   * — so a chat, a tab or a note dragged inside the app switches nothing.
+   */
+  const dragNotes = new DragToNotes();
+  let asideEl = $state<HTMLElement | null>(null);
+  function dragTick() {
+    const want = dragNotes.tick(performance.now(), app.leftTab);
+    if (want) app.leftTab = want;
+  }
+  function onAsideDragEnter(e: DragEvent) {
+    if (!carriesFiles(e.dataTransfer)) return;
+    dragNotes.enter(performance.now());
+    dragTick();
+  }
+  function onAsideDragOver(e: DragEvent) {
+    if (!carriesFiles(e.dataTransfer)) return;
+    dragNotes.over(performance.now());
+    dragTick();
+  }
+  function onAsideDragLeave(e: DragEvent) {
+    if (!carriesFiles(e.dataTransfer)) return;
+    dragNotes.leave();
+    dragTick();
+  }
+  onMount(() => {
+    // The 300 ms passes with the pointer held still, and a drag that
+    // vanished (Escape, a drop elsewhere) is noticed, between events.
+    const t = setInterval(dragTick, 100);
+    const ended = (e: DragEvent) => {
+      if (!carriesFiles(e.dataTransfer) && e.type !== "dragend") return;
+      const inside = e.type === "drop" && !!asideEl && e.target instanceof Node && asideEl.contains(e.target);
+      dragNotes.end(inside);
+      dragTick();
+    };
+    window.addEventListener("drop", ended, true);
+    window.addEventListener("dragend", ended, true);
+    return () => {
+      clearInterval(t);
+      window.removeEventListener("drop", ended, true);
+      window.removeEventListener("dragend", ended, true);
+    };
+  });
+
   // ---- Nightshift mode: the open project's card (round 2, point 12). The
   // page shows the project in the top-left chip — there is no second list
   // and no second selection — so this mode shows that one project: its row
@@ -861,7 +910,13 @@
     {#if asidesShown.open.has(s.id)}<SidebarAsides session={s.id} depth={r.depth} />{/if}
   {/snippet}
 
-<aside class="sidebar">
+<aside
+  class="sidebar"
+  bind:this={asideEl}
+  ondragentercapture={onAsideDragEnter}
+  ondragovercapture={onAsideDragOver}
+  ondragleavecapture={onAsideDragLeave}
+>
   <div class="project">
     <button
       class="chip"
