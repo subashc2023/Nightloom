@@ -61,13 +61,6 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
-/// How long to keep reading after the child is asked to stop.
-///
-/// The same backstop `tools::shell` puts under a killed command, for the
-/// same reason: whatever the CLI managed to write is worth having, and a
-/// read that cannot finish must not hold the turn open.
-const DRAIN_GRACE: Duration = Duration::from_secs(2);
-
 /// How long an interrupted CLI gets to end the turn itself before it is
 /// killed (2026-09-16, nightshift backlog 074).
 ///
@@ -85,6 +78,17 @@ const DRAIN_GRACE: Duration = Duration::from_secs(2);
 /// as a new one. The grace is ten times the measured time to exit, for a
 /// slower machine; past it the kill below is the backstop it always was.
 const INTERRUPT_GRACE: Duration = Duration::from_secs(5);
+
+/// How long to keep reading after a kill (item 466, 2026-10-29): what the
+/// CLI wrote before it is already in the pipe; this is only the backstop
+/// for a child of its that holds the pipe open.
+const KILLED_DRAIN: Duration = Duration::from_millis(500);
+
+/// How long a stopped CLI that has closed its turn gets to exit on its own,
+/// in the background, before it is killed (item 466). The turn is over in
+/// its session by then, so the kill loses nothing; the grace is the same as
+/// the interrupt's, since nobody waits on it.
+const EXIT_GRACE: Duration = INTERRUPT_GRACE;
 
 /// Tail of the child's stderr kept for diagnosis, in bytes.
 const STDERR_TAIL: usize = 4096;
@@ -2316,8 +2320,19 @@ impl ClaudeCodeAgent {
                     // Until the end of the stream (or a broken pipe): the
                     // process is on its way out either way.
                     while let Ok(Some(line)) = lines.next_line().await {
+                        // Item 466 (2026-10-29): the `result` line is the
+                        // turn closed in its session, and the end of what
+                        // the window waits for. The process's own way out
+                        // (an exit held up on a slow connection) is
+                        // `wind_down`'s, in the background: read to the end
+                        // of the stream, a Stop that had already worked
+                        // took the whole grace and was then called a kill.
+                        let closed = line.starts_with(r#"{"type":"result""#);
                         for event in translator.push(&line) {
                             on_event(event);
+                        }
+                        if closed {
+                            break;
                         }
                     }
                 })
@@ -2334,7 +2349,11 @@ impl ClaudeCodeAgent {
                 // Whatever was already buffered is still worth translating,
                 // but a reader that cannot finish must not hold the turn
                 // open.
-                let _ = tokio::time::timeout(DRAIN_GRACE, async {
+                // `KILLED_DRAIN`, not the 2 s it was (item 466): what the
+                // CLI wrote before the kill is in the pipe already and reads
+                // at once; the rest of a longer wait was only ever for a
+                // child of its holding the pipe open, with nothing to say.
+                let _ = tokio::time::timeout(KILLED_DRAIN, async {
                     while let Ok(Some(line)) = lines.next_line().await {
                         for event in translator.push(&line) {
                             on_event(event);
@@ -2349,21 +2368,13 @@ impl ClaudeCodeAgent {
         if let Some(inbox) = &inbox {
             inbox.close();
         }
-        let status = child.wait().await?;
-        // A killed CLI can leave a grandchild holding its stderr open —
-        // the pipe's end never comes, and the tail is not worth the wait.
-        let stderr = if interrupted {
-            tokio::time::timeout(DRAIN_GRACE, stderr_task)
-                .await
-                .ok()
-                .and_then(Result::ok)
-                .unwrap_or_default()
-        } else {
-            stderr_task.await.unwrap_or_default()
-        };
-        let mut outcome = translator.finish();
-
+        // A stopped turn ends here (item 466): the process's exit and its
+        // stderr tail (which a stop never shows) are waited for in the
+        // background, so a CLI slow to exit — or a grandchild holding its
+        // pipes — no longer holds the Stop on screen.
         if interrupted {
+            wind_down(child, stderr_task);
+            let mut outcome = translator.finish();
             // The CLI's `result` on an interrupt is `is_error: true` with
             // `subtype: "error_during_execution"` (`terminal_reason:
             // "aborted_tools"` or `"aborted_streaming"`); that is the
@@ -2378,6 +2389,10 @@ impl ClaudeCodeAgent {
             outcome.notices.push(stop.into());
             return Ok(outcome);
         }
+        let status = child.wait().await?;
+        let stderr = stderr_task.await.unwrap_or_default();
+        let mut outcome = translator.finish();
+
         // A stream that ended before its `result` line (backlog 332): what
         // arrived is kept, and the reply says it was cut off and why,
         // rather than ending silently mid-word with no usage.
@@ -2616,6 +2631,22 @@ async fn interrupt(child: &tokio::process::Child) -> bool {
         let _ = child;
         false
     }
+}
+
+/// A stopped turn's process, let go of (item 466): it gets [`EXIT_GRACE`]
+/// to exit, then the kill; its stderr reader is dropped once it has, since a
+/// stop shows no stderr and a grandchild may hold the pipe for ever.
+fn wind_down(mut child: tokio::process::Child, stderr: tokio::task::JoinHandle<String>) {
+    tokio::spawn(async move {
+        if tokio::time::timeout(EXIT_GRACE, child.wait())
+            .await
+            .is_err()
+        {
+            kill_tree(&mut child).await;
+            let _ = child.wait().await;
+        }
+        stderr.abort();
+    });
 }
 
 /// Kill the child and anything it started.
@@ -5082,7 +5113,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"num_turns":
             .await
             .unwrap();
         assert!(started.elapsed() >= INTERRUPT_GRACE);
-        assert!(started.elapsed() < INTERRUPT_GRACE + DRAIN_GRACE + Duration::from_secs(3));
+        assert!(started.elapsed() < INTERRUPT_GRACE + KILLED_DRAIN + Duration::from_secs(3));
         assert!(
             outcome
                 .notices
@@ -5137,5 +5168,93 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"num_turns":
             searched_locations().first().map(String::as_str),
             Some("PATH")
         );
+    }
+
+    /// Item 466's stand-ins, one per way a Stop can go (2026-10-29). The
+    /// init line, then on SIGINT:
+    /// - `prompt`: the CLI closes the turn and exits at once (online);
+    /// - `slow_ack`: it takes 3 s to write its `result` and exit (a CLI
+    ///   whose abort waits on a stalled connection);
+    /// - `lingers`: it writes its `result` at once but its process stays up
+    ///   8 s, holding stdout (an exit held up on the network);
+    /// - `ignores`: it ignores the interrupt (a stalled CLI);
+    /// - `ignores_orphan`: as `ignores`, and a child it started holds its
+    ///   pipes 8 s past the kill.
+    #[cfg(unix)]
+    fn stop_stand_in(kind: &str) -> String {
+        let init = r#"printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"m","permissionMode":"auto","session_id":"stop-466"}'"#;
+        let result = r#"printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_streaming","num_turns":1,"session_id":"stop-466","stop_reason":null,"usage":{"input_tokens":0,"output_tokens":0}}'"#;
+        let on_int = match kind {
+            "prompt" => "trap 'res; exit 0' INT",
+            "slow_ack" => "trap 'sleep 3; res; exit 0' INT",
+            "lingers" => "trap 'res; sleep 8; exit 0' INT",
+            // Ignores it, and a process it started holds its stdout and
+            // stderr 8 s past its kill (an MCP server, a hook).
+            "ignores_orphan" => "trap '' INT\nsleep 8 &",
+            _ => "trap '' INT",
+        };
+        format!("res() {{ {result}; }}\n{init}\n{on_int}\nsleep 30 >/dev/null 2>&1 & wait\nwait\n")
+    }
+
+    /// Click-to-ended for each stand-in: the Stop lands on the init line,
+    /// the clock runs until `run_turn` returns (what the window waits on).
+    #[cfg(unix)]
+    async fn time_stop(kind: &str) -> (Duration, Vec<String>) {
+        let dir = std::env::temp_dir().join(format!("nightloom-466-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = AgentSpec::new(&dir);
+        s.binary = stand_in(&dir, &stop_stand_in(kind));
+        let agent = ClaudeCodeAgent::new(s);
+        let cancel = CancellationToken::new();
+        let trigger = cancel.clone();
+        let mut at: Option<std::time::Instant> = None;
+        let outcome = agent
+            .run_turn("go", &cancel, &mut |e| {
+                if at.is_none() && matches!(e, TurnEvent::AgentInit { .. }) {
+                    at = Some(std::time::Instant::now());
+                    trigger.cancel();
+                }
+            })
+            .await
+            .unwrap();
+        (at.expect("stopped at init").elapsed(), outcome.notices)
+    }
+
+    /// Item 466: a CLI that closes the turn on the interrupt but is slow to
+    /// exit ends the Stop at its `result` line — not 5 s later, and not
+    /// called a kill.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stop_ends_at_the_result_line_not_at_the_slow_exit() {
+        let (t, notices) = time_stop("lingers").await;
+        assert!(t < Duration::from_secs(1), "{t:?}");
+        assert_eq!(
+            notices,
+            vec!["interrupted — Claude Code ended the turn".to_string()]
+        );
+    }
+
+    /// Item 466: after the kill, a child holding the CLI's pipes holds the
+    /// Stop no more than `KILLED_DRAIN` past the grace (was 3 s more).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_killed_cli_s_orphan_does_not_hold_the_stop() {
+        let (t, _) = time_stop("ignores_orphan").await;
+        assert!(t >= INTERRUPT_GRACE);
+        assert!(
+            t < INTERRUPT_GRACE + KILLED_DRAIN + Duration::from_millis(700),
+            "{t:?}"
+        );
+    }
+
+    /// Item 466's measurement, printed (`--ignored --nocapture`).
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore]
+    async fn measure_466_stop_latency_claude_code() {
+        for kind in ["prompt", "slow_ack", "lingers", "ignores", "ignores_orphan"] {
+            let (t, notices) = time_stop(kind).await;
+            println!("466 cli {kind}: {:.2} s {notices:?}", t.as_secs_f64());
+        }
     }
 }

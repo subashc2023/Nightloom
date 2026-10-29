@@ -12,6 +12,7 @@
     applyDraft,
     cacheHitRate,
     cancelTurn,
+    stopClock,
     continueChat,
     runningChatName,
     providerElsewhereName,
@@ -106,6 +107,7 @@
   import { sendTip, tip } from "./tip";
   import { armStop, stopChordLabel, stopChordTarget } from "./stopButton";
   import { stopPref } from "./stopShape.svelte";
+  import { releaseStop, slowDueIn, slowStopLine, stopPhase } from "./stopState";
   import { acceptFiles, conversionJobs, filesBlocked, MAX_IMAGE_BASE64, splitChips, trackPending } from "./attachFiles.svelte";
   import { floatMenu } from "./floatMenu";
   import { ghostFor } from "./suggestions.svelte";
@@ -299,6 +301,21 @@
   });
   /** The chat's turn or this thread's answer: what Queue / Stop are about. */
   const busy = $derived(aside ? asideBusy : app.busy);
+  // Item 466: the chat's Stop, pressed, until its turn has ended. `stopNow`
+  // moves once, at the slow mark, for the quiet line; the clock is let go
+  // of when the turn ends however it ends.
+  let stopNow = $state(0);
+  const stopState = $derived(aside ? "idle" : stopPhase(app.busy, stopClock, stopNow));
+  const stopPressed = $derived(stopState === "stopping" || stopState === "slow");
+  $effect(() => {
+    const due = slowDueIn(stopClock, performance.now());
+    if (due === null || !app.busy) return;
+    const t = setTimeout(() => (stopNow = performance.now()), due + 16);
+    return () => clearTimeout(t);
+  });
+  $effect(() => {
+    if (!app.busy && stopClock.since !== null) releaseStop(stopClock);
+  });
   // Item 256: the next message's process starts while he types, so Send
   // finds the CLI, his hooks and the MCP servers already done.
   $effect(() => {
@@ -3166,6 +3183,13 @@
         </span>
       {/if}
       <span class="spacer"></span>
+      {#if stopPressed && (stopState === "slow" || stopPref.shape !== "labelled")}
+        <!-- Item 466: a Stop with no room for the word (all but the
+             labelled shape) has it here; past 3 s, why it is still waiting. -->
+        <span class="stop-why" role="status" use:tip={stopState === "slow" ? `Stopping… ${slowStopLine(app.connection?.engine)}. The reply so far and your draft stay.` : "Stopping…"}
+          >Stopping…{#if stopState === "slow"}<span class="stop-why-more">{" "}{slowStopLine(app.connection?.engine)}</span>{/if}</span
+        >
+      {/if}
       {#if handoffStayed}
         <button
           class="ns-btn ghost small act"
@@ -3196,8 +3220,11 @@
             ><span class="stop-size" aria-hidden="true">Send</span><span class="stop-ico" aria-hidden="true"><Icon name="stop" size={stopPref.shape === "wide" ? 16 : 12} />{#if stopPref.shape === "labelled"}<span class="stop-word">Stop</span>{/if}</span></button
           >
         {:else}
-          <button class="ns-btn danger send stop act shape-{stopPref.shape}" aria-label="Stop" use:armStop use:tip={`${app.parked ? `Stop the turn running in ${runningChatName()}` : "Stop this turn"} (${stopChordLabel(isMac)})`} onclick={() => void cancelTurn()}
-            ><span class="stop-size" aria-hidden="true">Send</span><span class="stop-ico" aria-hidden="true"><Icon name="stop" size={stopPref.shape === "wide" ? 16 : 12} />{#if stopPref.shape === "labelled"}<span class="stop-word">Stop</span>{/if}</span></button
+          <!-- Item 466: pressed, it stays pressed — deflated, dimmed, a
+               spinner for the square — until the turn has ended, and a
+               second click asks nothing again. -->
+          <button class="ns-btn danger send stop act shape-{stopPref.shape}" class:stopping={stopPressed} aria-label={stopPressed ? "Stopping…" : "Stop"} aria-disabled={stopPressed} use:armStop use:tip={stopPressed ? "Stopping… — the turn ends when Claude has stopped; the reply so far and your draft stay" : `${app.parked ? `Stop the turn running in ${runningChatName()}` : "Stop this turn"} (${stopChordLabel(isMac)})`} onclick={() => { if (!stopPressed) void cancelTurn(); }}
+            ><span class="stop-size" aria-hidden="true">Send</span><span class="stop-ico" aria-hidden="true">{#if stopPressed}<span class="stop-spin"></span>{:else}<Icon name="stop" size={stopPref.shape === "wide" ? 16 : 12} />{/if}{#if stopPref.shape === "labelled"}<span class="stop-word">{stopPressed ? "Stopping…" : "Stop"}</span>{/if}</span></button
           >
         {/if}
       {:else if aside}
@@ -4068,6 +4095,48 @@
   }
   .stop-word {
     font-size: 12.5px;
+  }
+  /* Item 466: the Stop pressed — sunk, dimmed, its square a spinner — held
+     until the turn has ended. */
+  .stop.stopping {
+    transform: scale(0.92);
+    opacity: 0.6;
+    box-shadow: inset 0 1px 3px color-mix(in srgb, #000 35%, transparent);
+    cursor: progress;
+  }
+  .stop.shape-labelled.stopping .stop-ico {
+    gap: 6px;
+  }
+  .stop-spin {
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    border: 1.6px solid currentColor;
+    border-right-color: transparent;
+    animation: stop-spin 0.8s linear infinite;
+    flex: none;
+  }
+  @keyframes stop-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .stop-spin {
+      animation-duration: 2.4s;
+    }
+  }
+  .stop-why {
+    font-size: 11.5px;
+    color: var(--dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+    /* A basis of 0: it takes the room the row has and ellipsizes in it,
+       never pushing Queue and Stop onto a line of their own. */
+    flex: 1 1 0;
+    text-align: right;
   }
   /* Send's split (backlog 224): the ▾ carries the right-hand corners. */
   .send-split {
