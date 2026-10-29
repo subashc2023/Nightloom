@@ -91,6 +91,7 @@
   import { keepKey } from "./keep";
   import { keepStateOf, revealKept } from "./keep.svelte";
   import { menuInterceptors } from "./state.svelte";
+  import { pendingRows } from "./pendingBubble.svelte";
   import {
     canUndo,
     followOffer,
@@ -390,6 +391,11 @@
    * 062, and this is the half that needs nothing from it.
    */
   const queue = $derived(draft.queue);
+  /* Item 465 (merge patch note from agent E): the rows the transcript
+   * already draws as pending bubbles (`PendingBubbles`, main chat only)
+   * are left out of the queue box, so each mid-turn row shows in one place. */
+  const bubbledIds = $derived(new Set(aside ? [] : pendingRows(queue, app.busy && !app.parked).map((q) => q.id)));
+  const boxQueue = $derived(queue.filter((q) => !bubbledIds.has(q.id)));
   /*
    * The box he types in: the textarea, or — with the format toggle on
    * (item 276) — the formatted editor's `LiveBoxHandle`, which answers the
@@ -2728,7 +2734,7 @@
   {#if composerShows("schedule", !!aside)}
     <ScheduledChip {key} onedit={scheduleEdited} />
   {/if}
-  {#if queue.length > 0}
+  {#if boxQueue.length > 0}
     <div class="queue" role="list" aria-label="queued messages">
       <div class="queue-head">
         <span class="ns-chip mono" data-queue-head>{aside ? `queued · ${asideBusy ? "sent when this answer ends" : asideBlock === "not-open" ? "waiting — open the chat to send" : "waiting"}` : mainHead}</span>
@@ -2736,7 +2742,7 @@
           <button class="ns-btn ghost small" disabled={!app.connection || asideBlock !== null} onclick={() => void drain(true)}>Send next</button>
         {/if}
       </div>
-      {#each queue as q, i (q.id)}
+      {#each boxQueue as q, i (q.id)}
         <div class="queue-row" role="listitem" data-queue-id={q.id}>
           <span class="queue-n mono">{i + 1}</span>
           <span class="queue-text" use:tip={q.text} data-find-text={q.text}>{#if handoffHere && q.id === handoff.queuedId}<span class="ns-chip mono" use:tip={"Put here by Nightloom: the window crossed this chat's hand-off mark while you were away. × takes it back."}>wrap-up · queued while you were away</span> {/if}{firstLine(q.text) || "(no text)"}{#if q.attachments.length > 0} <span class="ns-chip mono">{q.attachments.length} {q.attachments.length === 1 ? "file" : "files"}</span>{/if}</span>
@@ -2909,8 +2915,8 @@
         Check the reply above. <strong>Continue in a new chat</strong> opens a linked chat in the same folder with
         {#if handoff.startPrompt}{readOrderText.trim() ? "the read order below and then " : ""}the model's start prompt
           in the box, not sent{:else if readOrderText.trim()}the read order below in the box, not sent — the reply had no
-          <code>start-prompt</code> block, so add what to do first{:else}an empty box — the reply had no
-          <code>start-prompt</code> block, so say what to read first{/if}. This chat stays readable.
+          <code>&lt;handoff&gt;</code> prompt, so add what to do first{:else}an empty box — the reply had no
+          <code>&lt;handoff&gt;</code> prompt, so say what to read first{/if}. This chat stays readable.
         {#if threadHandoff}The new chat opens on the same thread.{/if}
       </p>
       <ThreadPicker compact />
@@ -3395,7 +3401,7 @@
   {:else if !aside && handoff.noStartPromptChat !== null && handoff.noStartPromptChat === app.activeSessionId && !text}
     <!-- The continued chat whose box was left empty (backlog 086 pass 2):
          the note lives here, under the box, until he types. -->
-    <div class="hint">continued from the earlier chat — its wrap-up reply had no start-prompt block, so the box is empty; say which files to read first (HANDOFF.md is in the project)</div>
+    <div class="hint">continued from the earlier chat — its wrap-up reply had no &lt;handoff&gt; prompt, so the box is empty; say which files to read first (HANDOFF.md is in the project)</div>
   {/if}
 </div>
 
