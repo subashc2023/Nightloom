@@ -104,6 +104,48 @@ export function quoteLine(line: string): { marker: string; rest: string } | null
 
 export type MirrorLine = { quote: boolean; marker: string; rest: string };
 
+/** A run of quote lines in a draft (item 470): its first and last line
+ *  (0-based), the character range it covers in the draft (`end` at the
+ *  last line's end), and its text without the markers — what renders. */
+export type QuoteRun = { first: number; last: number; start: number; end: number; src: string };
+
+/** The draft's quote runs, top to bottom (item 470). Pure. */
+export function quoteRuns(text: string): QuoteRun[] {
+  const out: QuoteRun[] = [];
+  let at = 0;
+  let cur: QuoteRun | null = null;
+  let rests: string[] = [];
+  text.split("\n").forEach((line, i) => {
+    const q = quoteLine(line);
+    if (q) {
+      if (!cur) {
+        cur = { first: i, last: i, start: at, end: at + line.length, src: "" };
+        rests = [];
+      }
+      cur.last = i;
+      cur.end = at + line.length;
+      rests.push(q.rest);
+    } else if (cur) {
+      cur.src = rests.join("\n");
+      out.push(cur);
+      cur = null;
+    }
+    at += line.length + 1;
+  });
+  if (cur) {
+    (cur as QuoteRun).src = rests.join("\n");
+    out.push(cur);
+  }
+  return out;
+}
+
+/** Whether a quote's text reads differently rendered (item 470: a reply's
+ *  maths showed as its TeX): maths, or Markdown's marks — emphasis, code,
+ *  a heading, a list. A plain quote keeps the line-for-line look. Pure. */
+export function quoteNeedsRender(src: string): boolean {
+  return /\$|\\\(|\\\[|\*\*|__|`|^#{1,6} |^\s*[-*+] |^\s*\d+\. /m.test(src);
+}
+
 /**
  * The composer's draft, line by line, for the layer drawn behind its
  * textarea (item 223): a quote line is styled as the bubble draws it while

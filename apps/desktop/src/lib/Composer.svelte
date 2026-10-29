@@ -3766,6 +3766,8 @@
     max-width: none;
   }
   .composer.aside .card {
+    /* Item 470: a rendered quote in the box sits on the card's own ground. */
+    --q-ground: var(--aside-well, var(--sheet));
     border-style: dashed;
     background: var(--aside-well, var(--sheet));
     padding: 8px 10px;
