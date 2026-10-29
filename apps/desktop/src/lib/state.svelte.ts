@@ -587,7 +587,10 @@ export type Segment =
    *  click away and Restore beside it. Never in a live message. */
   | { kind: "removed_text"; block: number; text: string }
   | { kind: "removed_tool"; block: number; call: ToolCallView }
-  | { kind: "notice"; text: string }
+  /** `delivered` (item 465): his mid-turn message the turn took, drawn as
+   *  his bubble in place (`MidTurnBubble`); `text` keeps the old line for
+   *  anything that reads notices as text. */
+  | { kind: "notice"; text: string; delivered?: { text: string; after: string } }
   /** The reply ended with subagents still running (backlog 357): a status
    *  line with Stop and the agents' names, read live (`stillRunning.ts`). */
   | StillRunningSegment
@@ -8753,7 +8756,7 @@ export function applyTurnEventTo(host: TurnHost, ev: TurnEvent & { chat?: string
       // message.
       markDelivered(ev.id);
       closeThinking(segments);
-      segments.push({ kind: "notice", text: deliveredNotice(ev.after, ev.text) });
+      segments.push({ kind: "notice", text: deliveredNotice(ev.after, ev.text), delivered: { text: ev.text, after: ev.after } });
       break;
     }
     default:

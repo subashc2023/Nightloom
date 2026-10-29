@@ -138,6 +138,7 @@
   import AssistantMessage from "./AssistantMessage.svelte";
   import WaitingMoon from "./WaitingMoon.svelte";
   import UserBubble from "./UserBubble.svelte";
+  import PendingBubbles from "./PendingBubbles.svelte";
   import AsideLayer from "./AsideLayer.svelte";
   import { openAttachment } from "./attachments.svelte";
   import ApprovalPrompt from "./ApprovalPrompt.svelte";
@@ -2543,6 +2544,9 @@
       {/if}
       </div>
     {/if}
+    <!-- Item 465: messages he sent while this turn runs, not yet taken —
+         greyed bubbles with Send now / Let it arrive / Edit / Cancel. -->
+    {#if !inPane}<PendingBubbles />{/if}
     {#each stranded as req (req.id)}
       <ApprovalPrompt {req} />
     {/each}
