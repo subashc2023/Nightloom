@@ -3,6 +3,7 @@ import DOMPurify from "dompurify";
 import { math, renderMath } from "./math";
 import { tilde } from "./tilde";
 import { cite } from "./cite";
+import { proseBlocks } from "./proseBlock";
 import "katex/dist/katex.min.css";
 
 marked.use(math);
@@ -46,6 +47,8 @@ const replyMarked = new Marked();
 replyMarked.use(math);
 replyMarked.use(tilde);
 replyMarked.use(cite);
+// Item 463: a fenced prompt (a hand-off's `start-prompt`, a ```text paragraph) wraps.
+replyMarked.use(proseBlocks);
 
 export function renderReply(src: string): string {
   const html = replyMarked.parse(src, { async: false, gfm: true });

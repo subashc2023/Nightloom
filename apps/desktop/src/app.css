@@ -244,6 +244,12 @@ button {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+/* Item 463: so does a block marked prose (proseBlock.ts) though it has a
+   tag — a hand-off's `start-prompt`, a ```text or ```markdown paragraph. */
+.markdown pre.prose-block code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 
 /* Backlog 384: Copy on every reply code block (codeCopy.ts). The scroll is
    the code's, not the block's, so the button stays put; room is kept for it. */
