@@ -5,6 +5,7 @@
 </script>
 
 <script lang="ts">
+  import { chatLabel } from "./chatLabel";
   import { tip } from "./tip";
   import { onDestroy, onMount, tick } from "svelte";
   import { addToast, app, openSession, showNote, useProject } from "./state.svelte";
@@ -328,7 +329,7 @@
             <button class="chev" class:closed={folded[k]} use:tip={folded[k] ? "Unfold" : "Fold"} aria-expanded={!folded[k]} onclick={() => toggleFold(k)}>
               <Icon name="chev" size={11} />
             </button>
-            <span class="gt">{g.title ?? g.first_user ?? "empty session"}</span>
+            <span class="gt">{chatLabel(g, "empty session")}</span>
             {#if elsewhere(g)}<span class="proj">{g.project?.name ?? "unfiled"}</span>{/if}
             <span class="gm">{groupMeta(g)}</span>
             <span class="gn">{g.hits}</span>

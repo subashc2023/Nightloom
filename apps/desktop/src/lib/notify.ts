@@ -20,6 +20,7 @@ import type { ApprovalRequest, PlanUsage, UsageSummary } from "./types";
 import { toolInputSummary } from "./transcriptPrefs.svelte";
 import { fmtTokens } from "./tokens";
 import * as api from "./api";
+import { nameLine } from "./chatLabel";
 
 export interface NotifyPrefs {
   /** A turn finished while the window was in the background. */
@@ -111,8 +112,7 @@ export function fmtElapsed(ms: number): string {
 
 /** The chat as the banner names it: its title, else its first message, else "New chat". */
 export function chatName(title: string | null | undefined, firstUser: string | null | undefined): string {
-  const t = (title ?? firstUser ?? "").trim().split("\n")[0];
-  return t ? (t.length > 60 ? `${t.slice(0, 57)}…` : t) : "New chat";
+  return nameLine(title ?? firstUser ?? "") || "New chat";
 }
 
 /** `<chat> — turn finished`, or `— turn failed`. */

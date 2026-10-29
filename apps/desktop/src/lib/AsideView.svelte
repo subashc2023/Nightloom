@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { chatLabel } from "./chatLabel";
   import { tip } from "./tip";
   import { renderReply } from "./markdown";
   import { app, asideAsking, asideOf, asideTabThread } from "./state.svelte";
@@ -58,7 +59,7 @@
   let naming = $state(false);
   const chatName = $derived.by(() => {
     const s = app.sessions.find((x) => x.id === session);
-    return s?.title ?? s?.first_user ?? session.slice(0, 8);
+    return chatLabel(s, session.slice(0, 8));
   });
 
   // Where he was in the thread (nightshift backlog 237, 2026-09-26): the

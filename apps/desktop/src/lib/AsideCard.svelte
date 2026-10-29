@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { chatLabel } from "./chatLabel";
   import { tip } from "./tip";
   import { renderReply } from "./markdown";
   // Every Copy button goes through the in-app clipboard ring (backlog 173).
@@ -123,7 +124,7 @@
   const chatName = $derived.by(() => {
     if (!owner) return "this chat";
     const s = app.sessions.find((x) => x.id === owner);
-    return s?.title ?? s?.first_user ?? "this chat";
+    return chatLabel(s, "this chat");
   });
   // A draft drags too (backlog 148, his ask on 5847cca): the card sits
   // under the passage and can cover what he is reading before a word is
