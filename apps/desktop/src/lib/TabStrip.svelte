@@ -18,6 +18,7 @@
   import { TAB_DRAG, TERM_DRAG, type Pane } from "./tabs";
   import { draggedShell } from "./terminal.svelte";
   import Icon from "./Icon.svelte";
+  import { tabIn, tabOut } from "./tabMotion";
   import TabChooser from "./TabChooser.svelte";
   import RunningBadge from "./RunningBadge.svelte";
   import { isMac } from "./platform";
@@ -366,6 +367,8 @@
       tabindex="0"
       aria-selected={pane.active === t.id}
       data-tab={t.id}
+      in:tabIn
+      out:tabOut
       use:tip={hint(t)}
       onpointerdown={(e) => onTabPointerDown(e, t)}
       onclick={() => void activateTab(t.id)}

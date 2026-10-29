@@ -4085,6 +4085,17 @@ function frontOpenChat(): void {
  * toast says why. The tab is made active first, so the reflection finds
  * it in front and has nothing to change.
  */
+/**
+ * The chat a tab click is opening (item 454). The tab comes forward before
+ * the chat's log arrives, so for that moment the pane draws it as a chat
+ * that is not the open one — and that transcript read the same log a second
+ * time (`loadPaneLog`), a whole extra read of the file and trip over IPC on
+ * every switch, for a view replaced the moment `openSession` returns. While
+ * this names the chat the pane waits; cleared when the open settles, so a
+ * failed open still reads it.
+ */
+export const tabOpening = $state<{ chat: string | null }>({ chat: null });
+
 export async function activateTab(tabId: string): Promise<void> {
   const tab = tabs.tabById(app.tabs, tabId);
   if (!tab) return;
@@ -4101,10 +4112,13 @@ export async function activateTab(tabId: string): Promise<void> {
   }
   tabs.activate(app.tabs, tabId);
   activating += 1;
+  const opening = c.kind === "chat" && c.session !== null && c.session !== app.activeSessionId ? c.session : null;
+  if (opening) tabOpening.chat = opening;
   try {
     await showContentOf(c);
   } finally {
     activating -= 1;
+    if (opening && tabOpening.chat === opening) tabOpening.chat = null;
   }
 }
 

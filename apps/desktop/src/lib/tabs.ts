@@ -52,6 +52,7 @@
  * the model holds only its address and title; the page itself is a child
  * webview the pane places over its content (`webtabs.svelte.ts`).
  */
+import { chatLabel } from "./chatLabel";
 import type { NoteScope, SessionMeta } from "./types";
 import { forkMark, type ForkMark } from "./forkMark";
 import type { IconName } from "./icons";
@@ -737,12 +738,12 @@ export function tabTitle(
       return projects.find((p) => p.id === content.id)?.name ?? "Project";
     case "aside": {
       const s = sessions.find((x) => x.id === content.session);
-      return `Aside · ${s?.title ?? s?.first_user ?? content.session.slice(0, 8)}`;
+      return `Aside · ${chatLabel(s, content.session.slice(0, 8))}`;
     }
     case "chat": {
       if (content.session === null) return "New chat";
       const s = sessions.find((x) => x.id === content.session);
-      return s?.title ?? s?.first_user ?? content.session.slice(0, 8);
+      return chatLabel(s, content.session.slice(0, 8));
     }
     case "attachment":
       return content.name;

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { chatLabel } from "./chatLabel";
   import { canLeaveProject, canDeleteChat } from "./state.svelte";
   import { saveMemoryFromChat } from "./state.svelte";
   import { tip } from "./tip";
@@ -136,7 +137,14 @@
   const activeMain = $derived(
     app.activeSessionId ? mainOf(app.activeSessionId, versions.map, listedIds) : null,
   );
-  const rows = $derived(sidebarRows(sidebarSessions(app.sessions, versions.map), forksOpen, activeMain));
+  // Item 454: the open chat reaches the rows only when it is a fork (the
+  // one case `sidebarRows` opens a path for) — a switch between two plain
+  // chats then leaves `reveal` null, and the whole list (1,800 rows in his
+  // main project) is not rebuilt on every tab click.
+  const reveal = $derived(
+    activeMain && app.sessions.some((s) => s.id === activeMain && !!s.forked_from) ? activeMain : null,
+  );
+  const rows = $derived(sidebarRows(sidebarSessions(app.sessions, versions.map), forksOpen, reveal));
   /** The row is lit: its chat is in front, or a version it replaced is. */
   function rowLit(id: string): boolean {
     if (chatSelected(id)) return true;
@@ -165,11 +173,19 @@
     threadOrder = loadThreadOrder(projectKey);
   });
   const ordered = $derived(orderedThreads(threads, threadOrder));
-  const split = $derived(
-    app.project
-      ? threadGroups(rows, ordered, threadsClosed, projectKey, app.activeSessionId)
-      : { groups: [], loose: rows },
+  // The groups without the open chat, then (item 454) a closed group that
+  // holds it opened over them — the same object back when none does, so a
+  // tab click between chats outside closed groups redraws no row.
+  const split0 = $derived(
+    app.project ? threadGroups(rows, ordered, threadsClosed, projectKey) : { groups: [], loose: rows },
   );
+  const split = $derived.by(() => {
+    const a = app.activeSessionId;
+    const s = split0;
+    const holds = (g: (typeof s.groups)[number]) => !g.open && g.rows.some((r) => r.meta.id === a);
+    if (!a || !s.groups.some(holds)) return s;
+    return { groups: s.groups.map((g) => (holds(g) ? { ...g, open: true } : g)), loose: s.loose };
+  });
   const groups = $derived(split.groups);
   const loose = $derived(split.loose);
   // Re-read the project's threads when the project changes and whenever
@@ -846,7 +862,7 @@
           ondragend={endContentDrag}
         >
           <span class="snippet"
-            >{#if s.mode === "incognito"}<span class="mark" use:tip={"Incognito: knows nothing about you, writes nothing, unread by other chats"}>{MODE_GLYPH.incognito}</span> {/if}{#if hasBoxDraft(s.id)}<span class="mark draft" role="img" aria-label="has a draft" use:tip={"has a draft"}></span> {/if}{#if fork}<span class="mark fork" role="img" aria-label={fork.tip} use:tip={fork.tip}>{FORK_GLYPH}</span> {/if}{s.title ?? s.first_user ?? "empty session"}</span
+            >{#if s.mode === "incognito"}<span class="mark" use:tip={"Incognito: knows nothing about you, writes nothing, unread by other chats"}>{MODE_GLYPH.incognito}</span> {/if}{#if hasBoxDraft(s.id)}<span class="mark draft" role="img" aria-label="has a draft" use:tip={"has a draft"}></span> {/if}{#if fork}<span class="mark fork" role="img" aria-label={fork.tip} use:tip={fork.tip}>{FORK_GLYPH}</span> {/if}{chatLabel(s, "empty session")}</span
           >
           <!-- A fork says where it came from (backlog 062): the
                parent's name as its own row shows it, or that the

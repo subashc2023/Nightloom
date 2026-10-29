@@ -54,8 +54,47 @@ replyMarked.use(proseBlocks);
 replyMarked.use(handoffTag);
 
 export function renderReply(src: string): string {
-  const html = replyMarked.parse(src, { async: false, gfm: true });
-  return DOMPurify.sanitize(html, ALLOW_MATHML);
+  // Item 454: a tab switch remounts the whole transcript, and every reply
+  // went through marked, KaTeX and DOMPurify again — a maths chat paid the
+  // full typesetting on every visit. The output is a pure function of the
+  // text (the instance's extensions are fixed at load), so it is kept.
+  const hit = replyCache.get(src);
+  if (hit !== undefined) {
+    // Most recently used last, so the trim drops the oldest.
+    replyCache.delete(src);
+    replyCache.set(src, hit);
+    return hit;
+  }
+  const html = DOMPurify.sanitize(replyMarked.parse(src, { async: false, gfm: true }), ALLOW_MATHML);
+  keepReply(src, html);
+  return html;
+}
+
+/**
+ * The rendered replies, by their text (item 454): least recently used
+ * first, trimmed past `REPLY_CACHE_CHARS` of source + output. A streaming
+ * reply's every intermediate text is a new key, so the cap is what keeps
+ * a long turn from growing it without bound; the settled reply is the one
+ * a later visit asks for.
+ */
+const replyCache = new Map<string, string>();
+let replyCacheChars = 0;
+export const REPLY_CACHE_CHARS = 24_000_000;
+function keepReply(src: string, html: string): void {
+  const size = src.length + html.length;
+  if (size > REPLY_CACHE_CHARS / 4) return;
+  replyCache.set(src, html);
+  replyCacheChars += size;
+  for (const [k, v] of replyCache) {
+    if (replyCacheChars <= REPLY_CACHE_CHARS) break;
+    replyCache.delete(k);
+    replyCacheChars -= k.length + v.length;
+  }
+}
+
+/** The cache's size, for the tests. */
+export function replyCacheStats(): { entries: number; chars: number } {
+  return { entries: replyCache.size, chars: replyCacheChars };
 }
 
 /**
