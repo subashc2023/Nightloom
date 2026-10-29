@@ -89,6 +89,7 @@
   import { countDraftTokens, namedFiles, pasteIntoFocus, takeBackInjected } from "./api";
   import KeepButton from "./KeepButton.svelte";
   import { keepKey } from "./keep";
+  import { keepStateOf, revealKept } from "./keep.svelte";
   import { menuInterceptors } from "./state.svelte";
   import {
     canUndo,
@@ -2764,10 +2765,27 @@
             {#if a.kind === "image"}
               <img src={`data:${a.media_type};base64,${a.data}`} alt={a.name} />
             {:else}
+              {@const kept = keepStateOf(keepKey(a.name, a.data)).phase === "kept"}
+              <!-- Item 459: a kept file's chip opens Notes at that file. -->
+              <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
               <span
                 class="file"
                 class:pending={a.pending}
-                use:tip={a.label ? `${a.name} — ${a.pending ? "converting; Send waits for it" : a.label}` : a.name}
+                class:kept
+                role={kept ? "button" : undefined}
+                tabindex={kept ? 0 : undefined}
+                use:tip={kept
+                  ? `${a.name} — kept in this project: click to show it in Notes`
+                  : a.label
+                    ? `${a.name} — ${a.pending ? "converting; Send waits for it" : a.label}`
+                    : a.name}
+                onclick={() => kept && revealKept(keepKey(a.name, a.data))}
+                onkeydown={(e) => {
+                  if (kept && (e.key === "Enter" || e.key === " ")) {
+                    e.preventDefault();
+                    revealKept(keepKey(a.name, a.data));
+                  }
+                }}
               >
                 <span class="file-ext">{a.pending ? extOf(a.name).toUpperCase() : badgeOf(a)}</span>
                 <span class="file-name">{a.name}</span>
@@ -3802,6 +3820,14 @@
     border-radius: 8px;
     background: var(--panel);
     line-height: 1.2;
+  }
+  /* Item 459: a kept file's chip is a way to it in Notes. */
+  .file.kept {
+    cursor: pointer;
+  }
+  .file.kept:hover,
+  .file.kept:focus-visible {
+    border-color: var(--accent);
   }
   .file-ext {
     font-size: 0.65rem;

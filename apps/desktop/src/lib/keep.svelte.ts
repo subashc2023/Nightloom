@@ -6,7 +6,7 @@
  * same bytes and writes nothing).
  */
 import { keepAttachment } from "./api";
-import { addToast as toastNow, projectFilesChanged, refreshNotes } from "./state.svelte";
+import { addToast as toastNow, app, projectFilesChanged, refreshNotes, toggleSidebar } from "./state.svelte";
 import type { KeepState } from "./keep";
 import type { KeptNotice } from "./notesDrop";
 
@@ -35,6 +35,22 @@ export function takeKeptNotices(): KeptNotice[] {
 export function noticeKept(rel: string): void {
   keptNotices.list.push({ rel, at: performance.now() });
   if (holding === 0) keptNotices.seq++;
+}
+
+/**
+ * Item 459: a kept file's chip, clicked — the Notes panel opens (the
+ * sidebar too, if it was folded away) and the kept file's row scrolls into
+ * view and flashes, by item 416's own path: the panel watches
+ * `keptNotices`, and reads a notice as it mounts. False when the chip's
+ * file was not kept here, so the click does nothing new.
+ */
+export function revealKept(key: string): boolean {
+  const k = keepStateOf(key);
+  if (k.phase !== "kept" || !k.rel) return false;
+  if (app.layout.sidebarCollapsed) toggleSidebar();
+  app.leftTab = "notes";
+  noticeKept(k.rel);
+  return true;
 }
 
 export function keepStateOf(key: string): KeepState {
