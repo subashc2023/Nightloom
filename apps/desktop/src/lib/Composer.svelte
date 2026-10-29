@@ -137,6 +137,7 @@
     NEW_DRAFT_PREFIX,
   } from "./drafts.svelte";
   import type { Attachment } from "./types";
+  import { chipStep, isChipTag } from "./chipSteps";
   // Scheduled send (backlog 224): the ▾ beside Send and the chip above.
   import ScheduleMenu from "./ScheduleMenu.svelte";
   import ScheduledChip from "./ScheduledChip.svelte";
@@ -934,7 +935,9 @@
     clipOpen = false;
     if (!c) return;
     if (c.kind === "image") {
-      addAttachment(key, { id: nextAttachmentId(), kind: "image", name: c.name, media_type: c.media_type, data: c.data });
+      const chip: Attachment = { id: nextAttachmentId(), kind: "image", name: c.name, media_type: c.media_type, data: c.data };
+      addAttachment(key, chip);
+      markAttached(key, [chip]);
       ta?.focus();
       return;
     }
@@ -1350,7 +1353,25 @@
   async function accept(files: Iterable<File>): Promise<Attachment[]> {
     // Under the key of the moment the file was dropped: a read can
     // outlive a chat switch, and the chip belongs where it was pasted.
-    return acceptFiles(key, files);
+    const chatKey = key;
+    const chips = await acceptFiles(chatKey, files);
+    markAttached(chatKey, chips);
+    return chips;
+  }
+
+  /*
+   * Item 458: attaching and removing a chip are steps of the box's history
+   * (`chipSteps.ts`), so ⌘Z takes back an attach or a remove and ⌘⇧Z
+   * redoes it, in order with the text's steps (456's maths accept and
+   * 284's conversion among them). Only in the box the chip landed in, and
+   * only while that chat is the open one: its history is the one ⌘Z walks.
+   */
+  function markAttached(chatKey: string, chips: Attachment[]): void {
+    if (chatKey !== key) return;
+    for (const c of chips) {
+      const i = attachments.findIndex((a) => a.id === c.id);
+      if (i >= 0) hist.mark({ chipStep: "add", chip: $state.snapshot(attachments[i]) as Attachment, index: i });
+    }
   }
 
   function onpaste(e: ClipboardEvent) {
@@ -1598,6 +1619,11 @@
         converted = { before: t.before, after: t.after, chipId: t.chip.id, caret: t.caret };
       }
     }
+    // Item 458: an attach or a remove, undone or redone.
+    if (isChipTag(s.tag)) {
+      // Leaves at once, as a chip's × takes it: no fade to wait out.
+      setDraftAttachments(key, chipStep(s.tag, dir, $state.snapshot(attachments) as Attachment[]).chips);
+    }
     setDraftText(key, s.text);
     void tick().then(() => {
       if (!(ta instanceof HTMLTextAreaElement)) return;
@@ -1825,8 +1851,11 @@
 
   function remove(id: number) {
     const chatKey = key;
-    const a = attachments.find((x) => x.id === id);
+    const at = attachments.findIndex((x) => x.id === id);
+    const a = attachments[at];
     removeAttachment(chatKey, id);
+    // Item 458: ⌘Z puts it back where it sat.
+    if (a) hist.mark({ chipStep: "remove", chip: $state.snapshot(a) as Attachment, index: at });
     // Pasted text has no file to drop again (item 284): × says so and
     // offers it back.
     if (a?.pasted) {
