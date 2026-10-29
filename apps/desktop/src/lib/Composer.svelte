@@ -45,6 +45,9 @@
   import LiveBox from "./LiveBox.svelte";
   import { isMac } from "./platform";
   import { BoxHistory, editKind, historyInput, historyKey } from "./boxHistory";
+  import TypedMathBar from "./TypedMathBar.svelte";
+  import { applyTypedMath, findTypedMath, type TypedMathSpan } from "./typedMath";
+  import { clearDenied, deniedFor, denyTypedMath, typedMathPrefs } from "./typedMathPrefs.svelte";
   import {
     RE_ASK,
     abortWrapUp,
@@ -825,6 +828,95 @@
   }
 
   /*
+   * Item 456: maths typed as text (`s^2`, "s squared") offered back as
+   * LaTeX in a bar above the box, after a typing pause. Never applied
+   * unasked: "Use maths" or Tab wraps the formulas as `$…$` in one undo
+   * step, × or Esc declines and that text is not offered again in this
+   * draft (`typedMathPrefs.svelte.ts`). The rules: `typedMath.ts`.
+   */
+  const MATH_PAUSE_MS = 600;
+  let mathSpans = $state<TypedMathSpan[]>([]);
+  let mathTimer: ReturnType<typeof setTimeout> | null = null;
+  let mathKey = untrack(() => key);
+  $effect(() => {
+    const t = text;
+    const k = key;
+    const on = typedMathPrefs.on;
+    untrack(() => scheduleMath(t, k, on));
+  });
+  $effect(() => () => {
+    if (mathTimer) clearTimeout(mathTimer);
+  });
+  /** Per keystroke: drop offers whose text moved, restart the pause. */
+  function scheduleMath(t: string, k: string, on: boolean): void {
+    if (mathTimer) clearTimeout(mathTimer);
+    mathTimer = null;
+    if (k !== mathKey) {
+      mathKey = k;
+      mathSpans = [];
+    }
+    if (!on || !t) {
+      if (mathSpans.length) mathSpans = [];
+      // A sent or emptied draft is a new draft: what was declined may be offered again.
+      if (!t) clearDenied(k);
+      return;
+    }
+    if (mathSpans.length && mathSpans.some((s) => t.slice(s.from, s.to) !== s.src))
+      mathSpans = mathSpans.filter((s) => t.slice(s.from, s.to) === s.src);
+    mathTimer = setTimeout(findMathNow, MATH_PAUSE_MS);
+  }
+  function findMathNow(): void {
+    mathTimer = null;
+    // Not under an open input-method composition: its text is not his yet.
+    if (composing) {
+      mathTimer = setTimeout(findMathNow, MATH_PAUSE_MS);
+      return;
+    }
+    const d = deniedFor(key);
+    mathSpans = findTypedMath(text).filter((s) => !d.has(s.src));
+  }
+  /** Wrap `one` (or every offered formula) as `$…$`: one undo step. */
+  function acceptMath(one: TypedMathSpan | null): void {
+    if (!ta) return;
+    const t = text;
+    const offered = one ? [one] : mathSpans;
+    // Found again on the text as it stands, so the offsets are current.
+    const chosen = findTypedMath(t).filter((s) => offered.some((o) => o.src === s.src && (!one || o.from === s.from)));
+    if (chosen.length === 0) {
+      mathSpans = [];
+      return;
+    }
+    let next: string;
+    if (ta instanceof LiveBoxHandle) {
+      ta.replaceRanges(chosen.map((s) => ({ from: s.from, to: s.to, insert: `$${s.tex}$` })));
+      next = ta.value;
+    } else {
+      const start = ta.selectionStart;
+      const end = ta.selectionEnd;
+      const r = applyTypedMath(t, chosen, end);
+      next = r.text;
+      hist.select(start, end);
+      hist.external(r.text, r.caret);
+      setDraftText(key, r.text);
+      void tick().then(() => {
+        if (!(ta instanceof HTMLTextAreaElement)) return;
+        ta.selectionStart = ta.selectionEnd = r.caret;
+        autogrow();
+      });
+    }
+    const d = deniedFor(key);
+    mathSpans = findTypedMath(next).filter((s) => !d.has(s.src));
+    ta.focus();
+  }
+  /** Keep `one` (or every offered formula) as typed, for this draft. */
+  function denyMath(one: TypedMathSpan | null): void {
+    const srcs = (one ? [one] : mathSpans).map((s) => s.src);
+    denyTypedMath(key, srcs);
+    mathSpans = mathSpans.filter((s) => !srcs.includes(s.src));
+    ta?.focus();
+  }
+
+  /*
    * The in-app clipboard history (nightshift backlog 173): ⌘⇧V (Ctrl+Shift+V
    * elsewhere) opens the ring over the box — what was copied, pasted or
    * sent in Nightloom, newest first (`clipRing.svelte.ts`). ↑↓ move, ↵ or a
@@ -1009,6 +1101,10 @@
    * still nowhere (`boxLock.ts`).
    */
   const boxIsLocked = $derived(boxLocked(!!app.connection, app.connecting));
+  // Item 456: the typed-maths bar shows only when no other offer owns the keys.
+  const mathShown = $derived(
+    typedMathPrefs.on && mathSpans.length > 0 && !slashOpen && !ghost && !boxIsLocked && !clipOpen,
+  );
   const lockFocus = new FocusThroughLock();
   let wasLocked = untrack(() => boxIsLocked);
   $effect.pre(() => {
@@ -1160,6 +1256,20 @@
     if (e.altKey && (e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
       e.preventDefault();
       stepHeight(e.key === "ArrowUp" ? 1 : -1);
+      return;
+    }
+    // Item 456: Tab takes the typed-maths offer, Esc declines it. Tab is
+    // free here: the ghost line shows only in an empty box and the slash
+    // list only on a leading "/", and the bar hides for both.
+    if (mathShown && e.key === "Tab" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault();
+      acceptMath(null);
+      return;
+    }
+    if (mathShown && e.key === "Escape" && !composing && !e.isComposing && e.keyCode !== 229) {
+      e.preventDefault();
+      e.stopPropagation();
+      denyMath(null);
       return;
     }
     if (ghost && e.key === "Tab" && !e.shiftKey) {
@@ -2811,6 +2921,9 @@
         <div class="slash-row dim">↑↓ move · ↵ or Tab insert · Esc close · the CLI runs a skill named in the message</div>
       {/if}
     </div>
+  {/if}
+  {#if mathShown}
+    <TypedMathBar spans={mathSpans} onaccept={acceptMath} ondeny={denyMath} />
   {/if}
   <div class="card">
     <!-- No autocorrect, capitalisation or spell-marking on a message to a

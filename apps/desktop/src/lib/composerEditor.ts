@@ -764,6 +764,12 @@ export class LiveBoxHandle implements ComposerBox {
   replaceRange(from: number, to: number, insert: string): void {
     this.view.dispatch({ changes: { from, to, insert }, userEvent: "input" });
   }
+  /** Item 456: several ranges replaced as one undo step (the typed-maths
+   *  offer), the caret mapped through the change. Ranges in order, not
+   *  overlapping, offsets into the text as it stands. */
+  replaceRanges(changes: { from: number; to: number; insert: string }[]): void {
+    this.view.dispatch({ changes, userEvent: "input", annotations: isolateHistory.of("full"), scrollIntoView: true });
+  }
   getBoundingClientRect(): DOMRect {
     return this.view.dom.getBoundingClientRect();
   }
