@@ -29,6 +29,7 @@
     keepRewound,
     loadPaneLog,
     paneChat,
+    tabOpening,
     chatAgentSession,
   } from "./state.svelte";
   import type { Segment } from "./state.svelte";
@@ -245,9 +246,10 @@
     void app.sessions;
     if (id) untrack(() => ensureForkInfo(id, events));
   });
-  // A pane's chat whose log has not been read yet: read it.
+  // A pane's chat whose log has not been read yet: read it — unless a tab
+  // click is opening this very chat, whose log is on its way (item 454).
   $effect(() => {
-    if (chat !== undefined && paneView === null) void loadPaneLog(chat);
+    if (chat !== undefined && paneView === null && tabOpening.chat !== chat) void loadPaneLog(chat);
   });
 
   // Project SessionEvents into renderable items. tool_result events are
@@ -1673,7 +1675,21 @@
       navActive = 0;
       return;
     }
-    const tops = navTicks.map((t) => anchorTop(t.index) ?? 0);
+    // Item 454: every anchor in one pass. `anchorTop` per tick ran a
+    // selector over the whole transcript for each — quadratic in the
+    // chat's length, ~190 ms per measure at 300 turns, five measures a
+    // switch. The first match in document order, as `querySelector`'s.
+    const found = new Map<string, HTMLElement>();
+    for (const el of viewport.querySelectorAll<HTMLElement>("[data-turn], [data-nav-live]")) {
+      const turn = el.getAttribute("data-turn");
+      if (turn !== null && !found.has(turn)) found.set(turn, el);
+      if (el.hasAttribute("data-nav-live") && !found.has("live")) found.set("live", el);
+    }
+    const base = viewport.getBoundingClientRect().top - viewport.scrollTop;
+    const tops = navTicks.map((t) => {
+      const el = found.get(t.index < 0 ? "live" : String(t.index));
+      return el ? el.getBoundingClientRect().top - base : 0;
+    });
     navActive = activeTick(tops, viewport.scrollTop, viewport.clientHeight, viewport.scrollHeight);
   }
 

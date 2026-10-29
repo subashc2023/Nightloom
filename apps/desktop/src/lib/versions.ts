@@ -235,6 +235,26 @@ export function lineageForks(sessions: SessionMeta[], id: string): string[] {
 }
 
 /**
+ * Every (chat, event index) that has another version (item 454): the
+ * endpoints of the links `versionsAt` walks, as `chat\u0000index` keys.
+ * A message not in this set has one version, so `versionsAt` would return
+ * null for it — the transcript asks for every message on every mount, and
+ * each ask walked the whole chat list (1,800 chats in his main project).
+ */
+export function versionStarts(sessions: SessionMeta[], info: ReadonlyMap<string, ForkInfo>): Set<string> {
+  const out = new Set<string>();
+  const listed = new Set(sessions.map((s) => s.id));
+  for (const s of sessions) {
+    if (!isEditFork(s) || !listed.has(s.forked_from!.session)) continue;
+    const cut = info.get(s.id)?.cut;
+    if (cut == null) continue;
+    out.add(`${s.id}\u0000${cut}`);
+    out.add(`${s.forked_from!.session}\u0000${s.forked_from!.index}`);
+  }
+  return out;
+}
+
+/**
  * The versions of the message at event `index` of chat `id`, in order
  * (the original first, then by when each was made), or null when it has
  * only the one. `info` holds what the loader read of each edit fork.
