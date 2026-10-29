@@ -359,6 +359,9 @@ export interface NoteEditResult {
   was_on_disk: string | null;
   cost_usd: number | null;
   notices: string[];
+  /** The note's new name when the model renamed it with `rename_note`
+   *  (item 460), same folder; null or absent when it did not. */
+  renamed_to?: string | null;
 }
 
 /**

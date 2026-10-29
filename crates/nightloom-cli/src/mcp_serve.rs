@@ -61,6 +61,7 @@ pub async fn run(args: McpServeArgs) -> Result<()> {
             incognito: args.incognito,
             preview: None,
             preview_chat: None,
+            rename: None,
         },
     };
     mcp_server::serve_stdio(config, serve_args)

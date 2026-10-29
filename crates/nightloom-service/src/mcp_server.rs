@@ -198,6 +198,8 @@ const OWN_EFFECTS: &[(&str, Effect)] = &[
     ("memory_where", Effect::ReadOnly),
     ("ask", Effect::ReadOnly),
     ("propose_instructions", Effect::Mutating),
+    // The note editor's rename (item 460), served alone in `--rename-note`.
+    ("rename_note", Effect::Mutating),
     ("notion_search", Effect::ReadOnly),
     ("notion_read_page", Effect::ReadOnly),
     ("notion_list_children", Effect::ReadOnly),
@@ -1027,6 +1029,13 @@ pub async fn serve(
     reader: impl AsyncRead + Send + Unpin + 'static,
     writer: impl AsyncWrite + Send + Unpin + 'static,
 ) -> Result<(), String> {
+    // The note editor's server (item 460): `rename_note` for one note and
+    // nothing else — none of the chat tools, whatever else was passed.
+    if let Some(rename) = &args.rename {
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(crate::note_edit::RenameNote::new(rename))];
+        serve_tools(tools, reader, writer).await;
+        return Ok(());
+    }
     let mut tools = match &args.dream {
         Some(dream) => dream_tools(dream),
         None => tools_in(&config, args.project.as_deref(), args.remember)?,
@@ -1109,6 +1118,9 @@ pub struct ServeArgs {
     /// arguments before each turn (`preview::with_chat`).
     pub preview: Option<PathBuf>,
     pub preview_chat: Option<String>,
+    /// The note editor's server (`--rename-note <json>`, item 460): serves
+    /// `rename_note` for that one note, alone.
+    pub rename: Option<crate::note_edit::RenameServe>,
 }
 
 impl ServeArgs {
@@ -1122,6 +1134,7 @@ impl ServeArgs {
             incognito: false,
             preview: None,
             preview_chat: None,
+            rename: None,
         }
     }
 
@@ -1135,6 +1148,7 @@ impl ServeArgs {
             incognito: false,
             preview: None,
             preview_chat: None,
+            rename: None,
         }
     }
 }
@@ -1369,6 +1383,12 @@ pub fn parse_args(args: &[String]) -> Result<ServeArgs, String> {
                 .next()
                 .ok_or_else(|| "--preview-chat needs the chat's id".to_string())?;
             out.preview_chat = Some(id.clone());
+        } else if arg == "--rename-note" {
+            let json = it
+                .next()
+                .ok_or_else(|| "--rename-note needs the note".to_string())?;
+            out.rename = Some(crate::note_edit::RenameServe::parse(json)?);
+            out.remember = false;
         } else if arg == "--dream" {
             let json = it
                 .next()
@@ -1398,7 +1418,7 @@ pub fn run_blocking(args: &[String]) -> Result<(), String> {
     let args = parse_args(args)?;
     let config = match crate::project::config_dir() {
         Some(config) => config,
-        None if args.dream.is_some() => PathBuf::new(),
+        None if args.dream.is_some() || args.rename.is_some() => PathBuf::new(),
         None => return Err("no user config directory — there are no chats to serve".to_string()),
     };
     let runtime = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
@@ -2527,6 +2547,12 @@ mod tests {
             config.clone(),
             "c".into(),
             config.clone(),
+        )));
+        served.push(Box::new(crate::note_edit::RenameNote::new(
+            &crate::note_edit::RenameServe {
+                dir: config.clone(),
+                name: "n.md".into(),
+            },
         )));
         for tool in &served {
             let name = tool.def().name;

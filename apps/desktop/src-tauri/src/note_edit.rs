@@ -64,6 +64,9 @@ pub struct NoteEditResult {
     /// The CLI's estimate of the API cost — not a bill under a subscription.
     cost_usd: Option<f64>,
     notices: Vec<String>,
+    /// The note's new name when the model renamed it with `rename_note`
+    /// (item 460) — the window moves its tabs, draft and thread along.
+    renamed_to: Option<String>,
 }
 
 /// Edit one note to fit `request` — or answer it in words when it is a
@@ -119,12 +122,17 @@ pub async fn edit_note_by_prompt(
 
     let registered = CANCELS.begin(seq);
     let cancel = registered.token().clone();
+    // Nightloom's own MCP server, for `rename_note` (item 460): this
+    // binary, as a chat's and the dream's servers are.
+    let server = std::env::current_exe()
+        .map(|exe| vec![exe.to_string_lossy().into_owned(), "--mcp-serve".into()])
+        .unwrap_or_default();
     let mut pass = PassSpec::new(
         binary
             .map(|b| b.trim().to_string())
             .filter(|b| !b.is_empty())
             .unwrap_or_else(|| "claude".into()),
-        Vec::new(),
+        server,
     );
     pass.model = model
         .map(|m| m.trim().to_string())
@@ -135,7 +143,23 @@ pub async fn edit_note_by_prompt(
     let scratch = std::env::temp_dir().join("nightloom-note-edit");
     std::fs::create_dir_all(&scratch)
         .map_err(|e| format!("could not make the note editor's scratch folder: {e}"))?;
-    let spec = note_edit::spec_for(&pass, &scratch, &file);
+    let mut spec = note_edit::spec_for(&pass, &scratch, &file);
+    // Renamable notes only: the fixed files keep their names.
+    let renamable = matches!(scope, NoteScope::Project | NoteScope::Knowledge);
+    if renamable {
+        note_edit::with_rename(
+            &mut spec,
+            &pass,
+            &note_edit::RenameServe {
+                dir: dir.clone(),
+                name: name.clone(),
+            },
+        );
+    }
+    let rename_name = nightloom_service::mcp_server::mcp_name(note_edit::RENAME_TOOL);
+    // The name the note has now, and each rename call's target by its id.
+    let mut current_name = name.clone();
+    let mut pending: std::collections::HashMap<String, String> = Default::default();
     // The thread's earlier exchanges (backlog 326); the service bounds them.
     let history = history.unwrap_or_default();
     let instruction = note_edit::compose_instruction_of(
@@ -163,12 +187,31 @@ pub async fn edit_note_by_prompt(
                 },
             );
         }
-        TurnEvent::ToolCall { name, input, .. } => {
+        TurnEvent::ToolCall { id, name, input } => {
             if let Err(why) = note_edit::check_call(&file, name, input)
                 && tripped.is_none()
             {
                 tripped = Some(why);
                 cancel.cancel();
+            }
+            // The server renames with the same rule; this follows it.
+            if *name == rename_name
+                && let Some(new) = input.get("new_name").and_then(|v| v.as_str())
+                && let Ok(to) = note_edit::rename_target(&current_name, new)
+            {
+                pending.insert(id.clone(), to);
+            }
+        }
+        TurnEvent::ToolResult {
+            tool_use_id,
+            name,
+            is_error,
+            ..
+        } if *name == rename_name => {
+            if let Some(to) = pending.remove(tool_use_id)
+                && !is_error
+            {
+                current_name = to;
             }
         }
         TurnEvent::ToolResult { name, is_error, .. } if name == "Edit" && !is_error => {
@@ -189,7 +232,12 @@ pub async fn edit_note_by_prompt(
     let ran = ClaudeCodeAgent::new(spec)
         .run_turn(instruction.as_str(), &cancel, &mut on_event)
         .await;
-    let final_text = std::fs::read_to_string(&file).unwrap_or_else(|_| text.clone());
+    let renamed_to = (current_name != name).then(|| current_name.clone());
+    let final_file = match &renamed_to {
+        Some(to) => project::note_file(&dir, to).unwrap_or_else(|_| file.clone()),
+        None => file.clone(),
+    };
+    let final_text = std::fs::read_to_string(&final_file).unwrap_or_else(|_| text.clone());
     let interrupted = cancel.is_cancelled() && tripped.is_none();
     let (summary, error, cost_usd, notices) = match ran {
         Ok(outcome) => {
@@ -231,6 +279,7 @@ pub async fn edit_note_by_prompt(
         was_on_disk,
         cost_usd,
         notices,
+        renamed_to,
     })
 }
 
