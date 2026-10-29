@@ -17,7 +17,8 @@
   import type { TabContent } from "./tabs";
   import { outcome, startMove } from "./floatingMove";
   import type { Zone } from "./floatingMove";
-  import { tick } from "svelte";
+  import { tick, untrack } from "svelte";
+  import { asideSendJumps } from "./sendScroll";
   import type { Aside } from "./state.svelte";
   import type { Placement } from "./asideCard";
   import MoveZone from "./MoveZone.svelte";
@@ -234,6 +235,32 @@
       ro.disconnect();
       el.removeEventListener("scroll", keep);
     };
+  });
+  // Item 468: a follow-up Send from near the foot lands at the bottom, as
+  // the transcript's does (item 313's `sendJumps`, the body's height for
+  // the screen). The distance is read before the new turn is drawn, so it
+  // is the reader's, not the reader's plus the new question's height. Run
+  // before the follow effect below, which then sees the body pinned.
+  /** The thread's turn count at the last look; -1 before the first. */
+  let preTurns = -1;
+  let preDistance = 0;
+  let preHeight = 0;
+  $effect.pre(() => {
+    void aside.turns.length;
+    untrack(() => {
+      if (!body) return;
+      preDistance = body.scrollHeight - body.scrollTop - body.clientHeight;
+      preHeight = body.clientHeight;
+    });
+  });
+  $effect(() => {
+    const n = aside.turns.length;
+    untrack(() => {
+      const t = aside.turns[n - 1];
+      const asking = !!t && t.answer === null && !t.error && !t.cancelled;
+      if (preTurns >= 0 && asideSendJumps(bodyPinned, preTurns, n, asking, preDistance, preHeight)) bodyPinned = true;
+      preTurns = n;
+    });
   });
   $effect(() => {
     void last?.partial;

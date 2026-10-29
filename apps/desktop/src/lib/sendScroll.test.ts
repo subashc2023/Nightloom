@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { restDistance, SEND_JUMP_SCREENS, sendJumps } from "./sendScroll";
+import { asideSendJumps, restDistance, SEND_JUMP_SCREENS, sendJumps } from "./sendScroll";
 
 // Item 313: a Send within one viewport height of the foot lands at the
 // bottom; from further up it keeps the place.
@@ -56,5 +56,22 @@ describe("restDistance (313 review: a tall paste)", () => {
   });
   it("never below zero", () => {
     expect(restDistance(100, 257, 507).distance).toBe(0);
+  });
+});
+
+describe("asideSendJumps (item 468: an aside's follow-up Send)", () => {
+  it("lands at the foot from within one body height, keeps the place from further up", () => {
+    expect(asideSendJumps(false, 2, 3, true, 120, 300)).toBe(true);
+    expect(asideSendJumps(false, 2, 3, true, 300, 300)).toBe(true);
+    expect(asideSendJumps(false, 2, 3, true, 301, 300)).toBe(false);
+  });
+  it("is a Send only for one new turn still being asked", () => {
+    expect(asideSendJumps(false, 2, 2, true, 50, 300)).toBe(false); // nothing added
+    expect(asideSendJumps(false, 2, 4, true, 50, 300)).toBe(false); // a rewind's undo
+    expect(asideSendJumps(false, 2, 3, false, 50, 300)).toBe(false); // not asking
+    expect(asideSendJumps(false, 3, 2, true, 50, 300)).toBe(false); // a rewind
+  });
+  it("leaves a pinned body to the follow it already has", () => {
+    expect(asideSendJumps(true, 2, 3, true, 0, 300)).toBe(false);
   });
 });
