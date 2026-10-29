@@ -143,6 +143,7 @@
     type MotionStyle,
   } from "./messageMotion";
   import { REMOVED_PLACEHOLDER } from "./edit";
+  import { setTypedMathOn, typedMathPrefs } from "./typedMathPrefs.svelte";
 
   /**
    * Redesigned 2026-09-13 (nightshift surface-redesign-2026-09-13, canvas
@@ -1524,6 +1525,26 @@
             </div>
           </div>
         </div>
+      </section>
+
+      <!-- Item 456: the composer's typed-maths offer, beside the Stop
+           button, the other message-box option here. On by default. -->
+      <section class="card">
+        <div class="ch"><span class="t">Typed maths</span></div>
+        <p class="note small">
+          When a message has maths typed as text (s^2, x_1, sqrt(x), “s squared”),
+          a bar above the box offers it as formulas after a pause. Tab or
+          Use maths wraps it as LaTeX, Esc or × keeps it as typed. Nothing
+          changes unless you accept.
+        </p>
+        <label class="dream-auto">
+          <input
+            type="checkbox"
+            checked={typedMathPrefs.on}
+            onchange={(e) => setTypedMathOn(e.currentTarget.checked)}
+          />
+          <span>Offer typed maths as formulas</span>
+        </label>
       </section>
 
       <!-- The turn-end banner (nightshift backlog 079): two switches, one

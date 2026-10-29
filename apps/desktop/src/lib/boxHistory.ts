@@ -210,6 +210,19 @@ export class BoxHistory {
     return true;
   }
 
+  /**
+   * Item 458: a step that changes something beside the text — a chip
+   * attached or removed — carried by `tag`, the text the same before and
+   * after. ⌘Z and ⌘⇧Z reach it in order with the text's steps; the caller
+   * reads the tag and does the rest.
+   */
+  mark(tag: unknown): void {
+    this.push({ before: this.cur, after: this.cur, tag });
+    this.future = [];
+    this.open = null;
+    this.pending = null;
+  }
+
   /** ⌘Z: the box as it was before the top step, or null with nothing to
    *  undo. The caller puts it in the box. */
   undo(): Moved | null {

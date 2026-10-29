@@ -1,0 +1,1146 @@
+{
+ "dev": [
+  {
+   "kind": "pos",
+   "text": "so the variance is s^2 here",
+   "expect": [
+    "s^2"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "is s squared the same as the variance?",
+   "expect": [
+    "s^2"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "what is sqrt(x) when x is 9",
+   "expect": [
+    "\\sqrt{x}"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "take x_1 and x_2 as the roots",
+   "expect": [
+    "x_1",
+    "x_2"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "why does a/b stay rational",
+   "expect": [
+    "\\frac{a}{b}"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "so alpha = 0.05 is the threshold?",
+   "expect": [
+    "\\alpha = 0.05"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "it holds when x <= 5",
+   "expect": [
+    "x \\le 5"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "compute the sum from i=1 to n of i^2",
+   "expect": [
+    "\\sum_{i=1}^{n} i^2"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "I got x^2 + 3x - 4 = 0 and I'm stuck",
+   "expect": [
+    "x^2 + 3x - 4 = 0"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "the area is pi r^2 right",
+   "expect": [
+    "\\pi r^2"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "why is e^(i pi) + 1 = 0 true",
+   "expect": [
+    "e^{i\\pi} + 1 = 0"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "so f(x) = 3x + 2 is linear",
+   "expect": [
+    "f(x) = 3x + 2"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "prove sin(x)^2 + cos(x)^2 = 1",
+   "expect": [
+    "\\sin(x)^2 + \\cos(x)^2 = 1"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "what's the square root of 2 to three places",
+   "expect": [
+    "\\sqrt{2}"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "if y = x cubed then dy/dx is what",
+   "expect": [
+    "y = x^3",
+    "\\frac{dy}{dx}"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "for n >= 2 the claim fails",
+   "expect": [
+    "n \\ge 2"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "for n greater than or equal to 2 it works",
+   "expect": [
+    "n \\ge 2"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "is a != b enough here",
+   "expect": [
+    "a \\ne b"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "the runtime is O(n log n) on average",
+   "expect": [
+    "O(n \\log n)"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "evaluate the integral from 0 to 1 of x^2 dx",
+   "expect": [
+    "\\int_0^1 x^2 dx"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "so x to the power of n grows fast",
+   "expect": [
+    "x^n"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "what is 2 to the 10th",
+   "expect": [
+    "2^{10}"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "let theta_0 be the starting angle",
+   "expect": [
+    "\\theta_0"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "the circumference is 2 pi r",
+   "expect": [
+    "2\\pi r"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "why is lim_(x->0) sin(x)/x = 1",
+   "expect": [
+    "\\lim_{x\\to 0} \\frac{\\sin(x)}{x} = 1"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "then sqrt(x^2 + y^2) is the distance",
+   "expect": [
+    "\\sqrt{x^2 + y^2}"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "what is (a+b)/(c+d) simplified",
+   "expect": [
+    "\\frac{a+b}{c+d}"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "so a_n = a_(n-1) + 2",
+   "expect": [
+    "a_n = a_{n-1} + 2"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "is x + y = 10 one equation or two",
+   "expect": [
+    "x + y = 10"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "set lambda >= 0 in the penalty",
+   "expect": [
+    "\\lambda \\ge 0"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "we need the matrix to satisfy A^T A = I",
+   "expect": [
+    "A^T A = I"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "is it n choose k or k choose n",
+   "expect": [
+    "\\binom{n}{k}",
+    "\\binom{k}{n}"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "why does 1/x blow up near 0",
+   "expect": [
+    "\\frac{1}{x}"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "then x_i is the i-th sample",
+   "expect": [
+    "x_i"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "so mu = 0 and sigma = 1 for the standard normal",
+   "expect": [
+    "\\mu = 0",
+    "\\sigma = 1"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "take the log of p/(1-p)",
+   "expect": [
+    "\\frac{p}{1-p}"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "x squared plus y squared equals r squared",
+   "expect": [
+    "x^2 + y^2 = r^2"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "is 3x + 2 = 11 solved by x = 3",
+   "expect": [
+    "3x + 2 = 11",
+    "x = 3"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "so the derivative of x^n is n x^(n-1)",
+   "expect": [
+    "x^n",
+    "n x^{n-1}"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "P(A|B) = P(B|A) P(A) / P(B) is Bayes",
+   "expect": [
+    "P(A|B) = P(B|A) \\frac{P(A)}{P(B)}"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "the cube root of 27 is 3",
+   "expect": [
+    "\\sqrt[3]{27}"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "what is delta x in that formula",
+   "expect": [
+    "\\delta x"
+   ]
+  },
+  {
+   "kind": "neg",
+   "text": "we ran an a/b testing round last week",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "I write mostly C++ and some Rust",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "the x-ray showed nothing",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "the deadline is 2026-10-28",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "open src/lib/math.ts and look at line 80",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "it costs $5 a month or $50 a year",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "the meeting is on 10/28/2026",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "rename file_name to user_id in the schema",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "we shipped the alpha release yesterday",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "beta testing starts monday",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "my Delta flight was delayed",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "this build is 2x faster",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "it takes 1-2 hours and 3-4 people",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "set DEBUG=true and rerun",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "press ^C to stop it",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "and/or is ugly but fine",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "support is 24/7 now",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "the I/O is the bottleneck",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "call __init__ before anything",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "it's a 50/50 chance",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "see https://example.com/a/b?x=1 for details",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "email me at a_b@example.com",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "the score went from 3 to 5",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "version 1.2.3 fixed it",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "it's at 3:30 PM",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "I squared away the paperwork",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "the game is over",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "use a 4x4 grid",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "the sum of the parts is greater than the whole",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "run npm i -D vitest",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "the ratio was 3:2 in our favour",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "gamma correction makes it look washed out",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "I'll be there in 5 min",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "use git log --oneline -n 5",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "it's already $x^2$ in my message",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "the code is `x^2 + 1` in Python",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "a + b testing is not a thing",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "use the s/he form",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "he said w/o thinking",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "P.S. the root of the problem is the cache",
+   "expect": []
+  },
+  {
+   "kind": "amb",
+   "text": "let theta be the angle",
+   "expect": [
+    "\\theta"
+   ]
+  },
+  {
+   "kind": "amb",
+   "text": "what is 1/2 of 10",
+   "expect": [
+    "\\frac{1}{2}"
+   ]
+  },
+  {
+   "kind": "amb",
+   "text": "x is less than 5",
+   "expect": [
+    "x < 5"
+   ]
+  },
+  {
+   "kind": "amb",
+   "text": "so a over b is the slope",
+   "expect": [
+    "\\frac{a}{b}"
+   ]
+  },
+  {
+   "kind": "amb",
+   "text": "the x-y plane",
+   "expect": []
+  },
+  {
+   "kind": "amb",
+   "text": "n! grows faster than 2^n",
+   "expect": [
+    "n!",
+    "2^n"
+   ]
+  }
+ ],
+ "holdout1": [
+  {
+   "kind": "pos",
+   "text": "why is the derivative of e^x just e^x",
+   "expect": [
+    "e^x",
+    "e^x"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "if p = 0.3 what's 1 - p",
+   "expect": [
+    "p = 0.3",
+    "1 - p"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "show that n^2 - n is always even",
+   "expect": [
+    "n^2 - n"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "the eigenvalues satisfy lambda^2 - 4 lambda + 3 = 0",
+   "expect": [
+    "\\lambda^2 - 4\\lambda + 3 = 0"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "how do I get from y'' + y = 0 to sin and cos",
+   "expect": [
+    "y'' + y = 0"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "is z squared minus 1 factorable",
+   "expect": [
+    "z^2 - 1"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "what's the sum from k=0 to infinity of 1/2^k",
+   "expect": [
+    "\\sum_{k=0}^{\\infty} \\frac{1}{2^k}"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "so beta_1 is the slope coefficient",
+   "expect": [
+    "\\beta_1"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "we want |x - 3| < 2",
+   "expect": [
+    "|x - 3| < 2"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "the variance of X is E[X^2] - E[X]^2",
+   "expect": [
+    "E[X^2] - E[X]^2"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "then t = 2 and s = t + 1",
+   "expect": [
+    "t = 2",
+    "s = t + 1"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "is log(xy) = log(x) + log(y) always",
+   "expect": [
+    "\\log(xy) = \\log(x) + \\log(y)"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "the gradient of x^T A x is 2Ax for symmetric A",
+   "expect": [
+    "x^T A x",
+    "2Ax"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "why does omega = 2 pi f",
+   "expect": [
+    "\\omega = 2\\pi f"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "so k to the third power",
+   "expect": [
+    "k^3"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "let a_1, a_2, a_3 be the terms",
+   "expect": [
+    "a_1",
+    "a_2",
+    "a_3"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "what's sqrt(2)/2 as a decimal",
+   "expect": [
+    "\\frac{\\sqrt{2}}{2}"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "the loss is (y - y_hat)^2",
+   "expect": [
+    "(y - \\hat{y})^2"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "for all epsilon > 0 there is a delta",
+   "expect": [
+    "\\epsilon > 0"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "x over 2 plus 3 equals 7",
+   "expect": [
+    "\\frac{x}{2} + 3 = 7"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "it's O(n^2) in the worst case",
+   "expect": [
+    "O(n^2)"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "what is 3 squared plus 4 squared",
+   "expect": [
+    "3^2 + 4^2"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "so f'(x) = 2x",
+   "expect": [
+    "f'(x) = 2x"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "the square root of b^2 - 4ac",
+   "expect": [
+    "\\sqrt{b^2 - 4ac}"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "isn't x/0 undefined",
+   "expect": [
+    "\\frac{x}{0}"
+   ]
+  },
+  {
+   "kind": "neg",
+   "text": "cargo build --release took 3 min",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "the PR is at github.com/subashc2023/Nightloom",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "i'm 5'10 and 160 lbs",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "push it to origin/nightshift",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "rate it 8/10",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "the T-shirt was $20",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "read ~/.claude/practices/practices.md first",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "we need a plan B",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "it's a self-hosted thing",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "the A-team handled it",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "I = me, obviously",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "try ctrl+c then ctrl+v",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "the Rust type is Vec<String>",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "use Option<T> instead",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "set x to 5 in the config",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "the score is 3-1 at halftime",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "I give it a 9.5/10",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "call the fn with (a, b) and see",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "my_function_name is too long",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "page 3 of 10",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "it has a 1:1 aspect ratio",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "it's on the 5th floor",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "the cost went from $3 to $5",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "he's a 10x engineer",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "go to the 2nd tab",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "use x = foo() in JS",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "the B+ tree index",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "k8s is overkill",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "he pinged me re: the build",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "the year 2025 vs 2026",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "apps/desktop/src/lib is where it lives",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "the price is up 3% to 40",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "add -- --skip to the command",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "is it pi day today",
+   "expect": []
+  }
+ ],
+ "holdout2": [
+  {
+   "kind": "pos",
+   "text": "ok so if the mean is mu and the sd is sigma then z = (x - mu)/sigma right?",
+   "expect": [
+    "z = \\frac{x - \\mu}{\\sigma}"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "can you explain why 0.1 + 0.2 != 0.3 in floats",
+   "expect": [
+    "0.1 + 0.2 \\ne 0.3"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "i keep getting x = -2 but the book says x = 2",
+   "expect": [
+    "x = -2",
+    "x = 2"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "what's the integral of 1/x",
+   "expect": [
+    "\\frac{1}{x}"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "so the recurrence T(n) = 2T(n/2) + n gives n log n?",
+   "expect": [
+    "T(n) = 2T(\\frac{n}{2}) + n"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "how is a^2 + b^2 = c^2 proved geometrically",
+   "expect": [
+    "a^2 + b^2 = c^2"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "the softmax is e^(z_i) / sum of e^(z_j)",
+   "expect": [
+    "\\frac{e^{z_i}}{\\sum e^{z_j}}"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "if r = 0.8 then r squared is 0.64",
+   "expect": [
+    "r = 0.8",
+    "r^2"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "why does 1/n go to 0 but the sum of 1/n diverges",
+   "expect": [
+    "\\frac{1}{n}",
+    "\\frac{1}{n}"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "we need k >= 1 and k <= n",
+   "expect": [
+    "k \\ge 1",
+    "k \\le n"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "x cubed minus 8 factors how",
+   "expect": [
+    "x^3 - 8"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "is the half-life t_(1/2) = ln(2)/k",
+   "expect": [
+    "t_{1/2} = \\frac{\\ln(2)}{k}"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "let phi be the golden ratio, so phi^2 = phi + 1",
+   "expect": [
+    "\\phi^2 = \\phi + 1"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "the gradient step is w = w - eta * grad",
+   "expect": [
+    "w = w - \\eta \\cdot grad"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "so p(x) = 1/(1+e^(-x)) is the sigmoid",
+   "expect": [
+    "p(x) = \\frac{1}{1+e^{-x}}"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "the number of subsets is 2^n",
+   "expect": [
+    "2^n"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "show sqrt(2) is irrational",
+   "expect": [
+    "\\sqrt{2}"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "what is cos(pi/3)",
+   "expect": [
+    "\\cos(\\frac{\\pi}{3})"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "then delta = b^2 - 4ac decides the roots",
+   "expect": [
+    "\\delta = b^2 - 4ac"
+   ]
+  },
+  {
+   "kind": "pos",
+   "text": "compute 7 choose 3",
+   "expect": [
+    "\\binom{7}{3}"
+   ]
+  },
+  {
+   "kind": "neg",
+   "text": "lol that's 100% a bug",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "the tab bar is 28px tall and 1px off",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "rebuild with nice -n 15 and -j 3",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "I think A is better than B here",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "try it on iOS 18 / macOS 15",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "the commit is 2876bd6 on nightshift",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "it went from 3s to 12s after the change",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "it's at 4:44 PM, not 16:44",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "the vitest suite has 412 tests and 3 fail",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "make the font 14 or 15",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "a, b, and c are the options",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "Plan A: ship it. Plan B: wait.",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "the ratio of cats to dogs is high",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "he gave it 5 stars out of 5",
+   "expect": []
+  },
+  {
+   "kind": "amb",
+   "text": "use the T(n) notation from the slides",
+   "expect": [
+    "T(n)"
+   ]
+  },
+  {
+   "kind": "neg",
+   "text": "the 3D view is broken",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "is GPT-4 better than Claude 3",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "merge into main, then rebase on origin/main",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "it should say \"x items\" not \"x item(s)\"",
+   "expect": []
+  },
+  {
+   "kind": "neg",
+   "text": "the delta between versions is small",
+   "expect": []
+  }
+ ]
+}

@@ -45,6 +45,9 @@
   import LiveBox from "./LiveBox.svelte";
   import { isMac } from "./platform";
   import { BoxHistory, editKind, historyInput, historyKey } from "./boxHistory";
+  import TypedMathBar from "./TypedMathBar.svelte";
+  import { applyTypedMath, findTypedMath, type TypedMathSpan } from "./typedMath";
+  import { clearDenied, deniedFor, denyTypedMath, typedMathPrefs } from "./typedMathPrefs.svelte";
   import {
     RE_ASK,
     abortWrapUp,
@@ -86,6 +89,7 @@
   import { countDraftTokens, namedFiles, pasteIntoFocus, takeBackInjected } from "./api";
   import KeepButton from "./KeepButton.svelte";
   import { keepKey } from "./keep";
+  import { keepStateOf, revealKept } from "./keep.svelte";
   import { menuInterceptors } from "./state.svelte";
   import {
     canUndo,
@@ -134,6 +138,7 @@
     NEW_DRAFT_PREFIX,
   } from "./drafts.svelte";
   import type { Attachment } from "./types";
+  import { chipStep, isChipTag } from "./chipSteps";
   // Scheduled send (backlog 224): the ▾ beside Send and the chip above.
   import ScheduleMenu from "./ScheduleMenu.svelte";
   import ScheduledChip from "./ScheduledChip.svelte";
@@ -825,6 +830,95 @@
   }
 
   /*
+   * Item 456: maths typed as text (`s^2`, "s squared") offered back as
+   * LaTeX in a bar above the box, after a typing pause. Never applied
+   * unasked: "Use maths" or Tab wraps the formulas as `$…$` in one undo
+   * step, × or Esc declines and that text is not offered again in this
+   * draft (`typedMathPrefs.svelte.ts`). The rules: `typedMath.ts`.
+   */
+  const MATH_PAUSE_MS = 600;
+  let mathSpans = $state<TypedMathSpan[]>([]);
+  let mathTimer: ReturnType<typeof setTimeout> | null = null;
+  let mathKey = untrack(() => key);
+  $effect(() => {
+    const t = text;
+    const k = key;
+    const on = typedMathPrefs.on;
+    untrack(() => scheduleMath(t, k, on));
+  });
+  $effect(() => () => {
+    if (mathTimer) clearTimeout(mathTimer);
+  });
+  /** Per keystroke: drop offers whose text moved, restart the pause. */
+  function scheduleMath(t: string, k: string, on: boolean): void {
+    if (mathTimer) clearTimeout(mathTimer);
+    mathTimer = null;
+    if (k !== mathKey) {
+      mathKey = k;
+      mathSpans = [];
+    }
+    if (!on || !t) {
+      if (mathSpans.length) mathSpans = [];
+      // A sent or emptied draft is a new draft: what was declined may be offered again.
+      if (!t) clearDenied(k);
+      return;
+    }
+    if (mathSpans.length && mathSpans.some((s) => t.slice(s.from, s.to) !== s.src))
+      mathSpans = mathSpans.filter((s) => t.slice(s.from, s.to) === s.src);
+    mathTimer = setTimeout(findMathNow, MATH_PAUSE_MS);
+  }
+  function findMathNow(): void {
+    mathTimer = null;
+    // Not under an open input-method composition: its text is not his yet.
+    if (composing) {
+      mathTimer = setTimeout(findMathNow, MATH_PAUSE_MS);
+      return;
+    }
+    const d = deniedFor(key);
+    mathSpans = findTypedMath(text).filter((s) => !d.has(s.src));
+  }
+  /** Wrap `one` (or every offered formula) as `$…$`: one undo step. */
+  function acceptMath(one: TypedMathSpan | null): void {
+    if (!ta) return;
+    const t = text;
+    const offered = one ? [one] : mathSpans;
+    // Found again on the text as it stands, so the offsets are current.
+    const chosen = findTypedMath(t).filter((s) => offered.some((o) => o.src === s.src && (!one || o.from === s.from)));
+    if (chosen.length === 0) {
+      mathSpans = [];
+      return;
+    }
+    let next: string;
+    if (ta instanceof LiveBoxHandle) {
+      ta.replaceRanges(chosen.map((s) => ({ from: s.from, to: s.to, insert: `$${s.tex}$` })));
+      next = ta.value;
+    } else {
+      const start = ta.selectionStart;
+      const end = ta.selectionEnd;
+      const r = applyTypedMath(t, chosen, end);
+      next = r.text;
+      hist.select(start, end);
+      hist.external(r.text, r.caret);
+      setDraftText(key, r.text);
+      void tick().then(() => {
+        if (!(ta instanceof HTMLTextAreaElement)) return;
+        ta.selectionStart = ta.selectionEnd = r.caret;
+        autogrow();
+      });
+    }
+    const d = deniedFor(key);
+    mathSpans = findTypedMath(next).filter((s) => !d.has(s.src));
+    ta.focus();
+  }
+  /** Keep `one` (or every offered formula) as typed, for this draft. */
+  function denyMath(one: TypedMathSpan | null): void {
+    const srcs = (one ? [one] : mathSpans).map((s) => s.src);
+    denyTypedMath(key, srcs);
+    mathSpans = mathSpans.filter((s) => !srcs.includes(s.src));
+    ta?.focus();
+  }
+
+  /*
    * The in-app clipboard history (nightshift backlog 173): ⌘⇧V (Ctrl+Shift+V
    * elsewhere) opens the ring over the box — what was copied, pasted or
    * sent in Nightloom, newest first (`clipRing.svelte.ts`). ↑↓ move, ↵ or a
@@ -842,7 +936,9 @@
     clipOpen = false;
     if (!c) return;
     if (c.kind === "image") {
-      addAttachment(key, { id: nextAttachmentId(), kind: "image", name: c.name, media_type: c.media_type, data: c.data });
+      const chip: Attachment = { id: nextAttachmentId(), kind: "image", name: c.name, media_type: c.media_type, data: c.data };
+      addAttachment(key, chip);
+      markAttached(key, [chip]);
       ta?.focus();
       return;
     }
@@ -1009,6 +1105,10 @@
    * still nowhere (`boxLock.ts`).
    */
   const boxIsLocked = $derived(boxLocked(!!app.connection, app.connecting));
+  // Item 456: the typed-maths bar shows only when no other offer owns the keys.
+  const mathShown = $derived(
+    typedMathPrefs.on && mathSpans.length > 0 && !slashOpen && !ghost && !boxIsLocked && !clipOpen,
+  );
   const lockFocus = new FocusThroughLock();
   let wasLocked = untrack(() => boxIsLocked);
   $effect.pre(() => {
@@ -1162,6 +1262,20 @@
       stepHeight(e.key === "ArrowUp" ? 1 : -1);
       return;
     }
+    // Item 456: Tab takes the typed-maths offer, Esc declines it. Tab is
+    // free here: the ghost line shows only in an empty box and the slash
+    // list only on a leading "/", and the bar hides for both.
+    if (mathShown && e.key === "Tab" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault();
+      acceptMath(null);
+      return;
+    }
+    if (mathShown && e.key === "Escape" && !composing && !e.isComposing && e.keyCode !== 229) {
+      e.preventDefault();
+      e.stopPropagation();
+      denyMath(null);
+      return;
+    }
     if (ghost && e.key === "Tab" && !e.shiftKey) {
       e.preventDefault();
       acceptGhost();
@@ -1240,7 +1354,25 @@
   async function accept(files: Iterable<File>): Promise<Attachment[]> {
     // Under the key of the moment the file was dropped: a read can
     // outlive a chat switch, and the chip belongs where it was pasted.
-    return acceptFiles(key, files);
+    const chatKey = key;
+    const chips = await acceptFiles(chatKey, files);
+    markAttached(chatKey, chips);
+    return chips;
+  }
+
+  /*
+   * Item 458: attaching and removing a chip are steps of the box's history
+   * (`chipSteps.ts`), so ⌘Z takes back an attach or a remove and ⌘⇧Z
+   * redoes it, in order with the text's steps (456's maths accept and
+   * 284's conversion among them). Only in the box the chip landed in, and
+   * only while that chat is the open one: its history is the one ⌘Z walks.
+   */
+  function markAttached(chatKey: string, chips: Attachment[]): void {
+    if (chatKey !== key) return;
+    for (const c of chips) {
+      const i = attachments.findIndex((a) => a.id === c.id);
+      if (i >= 0) hist.mark({ chipStep: "add", chip: $state.snapshot(attachments[i]) as Attachment, index: i });
+    }
   }
 
   function onpaste(e: ClipboardEvent) {
@@ -1488,6 +1620,11 @@
         converted = { before: t.before, after: t.after, chipId: t.chip.id, caret: t.caret };
       }
     }
+    // Item 458: an attach or a remove, undone or redone.
+    if (isChipTag(s.tag)) {
+      // Leaves at once, as a chip's × takes it: no fade to wait out.
+      setDraftAttachments(key, chipStep(s.tag, dir, $state.snapshot(attachments) as Attachment[]).chips);
+    }
     setDraftText(key, s.text);
     void tick().then(() => {
       if (!(ta instanceof HTMLTextAreaElement)) return;
@@ -1715,8 +1852,11 @@
 
   function remove(id: number) {
     const chatKey = key;
-    const a = attachments.find((x) => x.id === id);
+    const at = attachments.findIndex((x) => x.id === id);
+    const a = attachments[at];
     removeAttachment(chatKey, id);
+    // Item 458: ⌘Z puts it back where it sat.
+    if (a) hist.mark({ chipStep: "remove", chip: $state.snapshot(a) as Attachment, index: at });
     // Pasted text has no file to drop again (item 284): × says so and
     // offers it back.
     if (a?.pasted) {
@@ -2625,10 +2765,27 @@
             {#if a.kind === "image"}
               <img src={`data:${a.media_type};base64,${a.data}`} alt={a.name} />
             {:else}
+              {@const kept = keepStateOf(keepKey(a.name, a.data)).phase === "kept"}
+              <!-- Item 459: a kept file's chip opens Notes at that file. -->
+              <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
               <span
                 class="file"
                 class:pending={a.pending}
-                use:tip={a.label ? `${a.name} — ${a.pending ? "converting; Send waits for it" : a.label}` : a.name}
+                class:kept
+                role={kept ? "button" : undefined}
+                tabindex={kept ? 0 : undefined}
+                use:tip={kept
+                  ? `${a.name} — kept in this project: click to show it in Notes`
+                  : a.label
+                    ? `${a.name} — ${a.pending ? "converting; Send waits for it" : a.label}`
+                    : a.name}
+                onclick={() => kept && revealKept(keepKey(a.name, a.data))}
+                onkeydown={(e) => {
+                  if (kept && (e.key === "Enter" || e.key === " ")) {
+                    e.preventDefault();
+                    revealKept(keepKey(a.name, a.data));
+                  }
+                }}
               >
                 <span class="file-ext">{a.pending ? extOf(a.name).toUpperCase() : badgeOf(a)}</span>
                 <span class="file-name">{a.name}</span>
@@ -2811,6 +2968,9 @@
         <div class="slash-row dim">↑↓ move · ↵ or Tab insert · Esc close · the CLI runs a skill named in the message</div>
       {/if}
     </div>
+  {/if}
+  {#if mathShown}
+    <TypedMathBar spans={mathSpans} onaccept={acceptMath} ondeny={denyMath} />
   {/if}
   <div class="card">
     <!-- No autocorrect, capitalisation or spell-marking on a message to a
@@ -3660,6 +3820,14 @@
     border-radius: 8px;
     background: var(--panel);
     line-height: 1.2;
+  }
+  /* Item 459: a kept file's chip is a way to it in Notes. */
+  .file.kept {
+    cursor: pointer;
+  }
+  .file.kept:hover,
+  .file.kept:focus-visible {
+    border-color: var(--accent);
   }
   .file-ext {
     font-size: 0.65rem;
