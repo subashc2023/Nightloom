@@ -127,6 +127,7 @@ import { recordRelay } from "./relay.svelte";
 import { adoptPending, closeRunningRows, latestAgents, mergeRows, rowsFromLog, rowsOf } from "./subagentRows";
 import { lineText, lineView, matchTasks, type StillRunningSegment } from "./stillRunning";
 import { applyRetry, clearRetry, markRetryStopping, turnNotices, type RetrySegment } from "./retryLine";
+import { pressStop, releaseStop, type StopClock } from "./stopState";
 import { cli, startCliClock } from "./cliUpdate.svelte";
 import { probeAuth } from "./claudeAuth.svelte";
 import { chatIsCold, loadLayerPrefs, reconnectBeforeTurn, saveLayerPrefs } from "./promptVersions";
@@ -7359,6 +7360,7 @@ export async function openSession(id: string): Promise<void> {
 /** Compact the active session: earlier turns collapse into a summary. */
 export async function compactSession(): Promise<void> {
   if (!app.connection || app.busy) return;
+  releaseStop(stopClock);
   app.busy = true;
   app.error = null;
   try {
@@ -7659,6 +7661,7 @@ export async function send(
   turnClock.sent();
   const spoken = turnSpoken;
   stopped = false;
+  releaseStop(stopClock);
   // A turn the model answers is not undoable, and nothing under it is:
   // a rewind lifted from under a reply would put the model in a
   // conversation it never had (nightshift backlog 064).
@@ -8531,6 +8534,14 @@ export function turnWasStopped(): boolean {
   return stopped;
 }
 
+/**
+ * When the Stop for the turn on screen was pressed (item 466): the
+ * composer's button is a pressed "Stopping…" from here until the turn has
+ * ended, whichever way it was pressed (the button, ⌘., the phone). The
+ * composer releases it when `busy` clears; a send releases it too.
+ */
+export const stopClock = $state<StopClock>({ since: null });
+
 export async function cancelTurn(chat?: string | null): Promise<void> {
   // A named chat that is not the one on screen (backlog 159, A3: the
   // phone's Stop for the chat it shows): stop that chat's turn only; the
@@ -8561,6 +8572,8 @@ export async function cancelTurn(chat?: string | null): Promise<void> {
   // Before the call, not after: the stopped turn can return before the
   // cancel's own reply does, and the queue reads the flag at that return.
   stopped = true;
+  // The button shows it pressed from this frame (item 466).
+  pressStop(stopClock, performance.now());
   // A retry line says "stopping" from here, and later tries leave it
   // (item 441: the count kept climbing after Stop).
   if (markRetryStopping(liveHost(app).live?.segments)) app.liveVersion++;
@@ -8577,6 +8590,7 @@ export async function cancelTurn(chat?: string | null): Promise<void> {
     app.pendingApprovals = [];
   } catch (e) {
     stopped = false;
+    releaseStop(stopClock);
     addToast(String(e));
   }
 }
