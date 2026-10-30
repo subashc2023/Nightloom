@@ -28,7 +28,7 @@
   import type { NoteResolution } from "./links";
   import { modelOfInstructionFile } from "./catalog";
   import type { NoteScope } from "./types";
-  import { tick } from "svelte";
+  import { tick, untrack } from "svelte";
   import NoteEditor from "./NoteEditor.svelte";
   import NoteMedia from "./NoteMedia.svelte";
   import { clampCaret, loadNoteMode, saveNoteMode, type NoteMode } from "./noteMode";
@@ -56,7 +56,14 @@
    * name. Absent — every caller before tabs — the view follows
    * `app.openNote` as it always has.
    */
-  let { note = null }: { note?: { scope: NoteScope; name: string } | null } = $props();
+  /**
+   * `away` (item 487): the view is a kept tab behind another one in its
+   * pane — mounted, hidden, keeping its caret, selection and scroll. It
+   * then takes no keys (⌘S is the note in front's), and coming back to the
+   * front it takes up the mode last picked in another note (one setting for
+   * every note, 150's rule), the cursor carried over as a switch does.
+   */
+  let { note = null, away = false }: { note?: { scope: NoteScope; name: string } | null; away?: boolean } = $props();
 
   let loaded: string | null = null;
   let text = $state("");
@@ -504,6 +511,16 @@
       : linkTitle(target, found);
   }
 
+  $effect(() => {
+    if (away) return;
+    untrack(() => {
+      const last = loadNoteMode();
+      if (last === mode) return;
+      readCaret();
+      mode = last;
+    });
+  });
+
   /** Read the cursor off whichever side is showing. */
   function readCaret() {
     if (area) caret = area.selectionStart;
@@ -544,6 +561,7 @@
   }
 
   function onkeydown(e: KeyboardEvent) {
+    if (away) return;
     // A key ends the marks of a landed rewrite, back to the editor — unless
     // it is typed into the prompt panel, which sits beside the marks.
     if (marks && !(e.target instanceof HTMLElement && e.target.closest(".panel"))) clearMarks();

@@ -83,6 +83,8 @@
   import NewProject from "./lib/NewProject.svelte";
   import Palette from "./lib/Palette.svelte";
   import NightshiftSurface from "./lib/NightshiftSurface.svelte";
+  import { isKeptKind, keptBox, keptIn } from "./lib/keptTabs.svelte";
+  import { placeKey, tabPlace } from "./lib/tabPlace";
   import TerminalDock from "./lib/TerminalDock.svelte";
   import Icon from "./lib/Icon.svelte";
   import { externalHref } from "./lib/extlink";
@@ -685,16 +687,45 @@
             {#if barPane === pane.id}
               <TopBar />
             {/if}
-            {#if t.content.kind === "note"}
-              <div class="content">
-                <NoteView note={t.content} />
-                {#if focused}<FindBar bind:this={findBar} />{/if}
+            <!-- Item 487: the note and the read-only views stay mounted
+                 once shown, hidden while another tab is in front, so a
+                 switch back finds them as they were — a PDF on its page
+                 (WebKit's PDF view keeps its place only while the element
+                 lives, and only under visibility: hidden), a note's caret
+                 and selection, every scroll (`keptTabs.svelte.ts`). Drawn
+                 in the order first shown, never re-sorted. -->
+            {#each keptIn(pane, t) as k (k.id)}
+              {@const away = k.id !== t.id}
+              <div class="content" class:away inert={away} aria-hidden={away ? "true" : undefined} use:keptBox={away} use:tabPlace={placeKey(k.content)}>
+                {#if k.content.kind === "note"}
+                  <NoteView note={k.content} {away} />
+                {:else if k.content.kind === "attachment"}
+                  <!-- An attachment kept as a tab (backlog 145 pass 2): the
+                       floating tab dropped on a strip or a half. -->
+                  <AttachmentView content={k.content} />
+                {:else if k.content.kind === "subagent"}
+                  <!-- A subagent's transcript (backlog 152): the Running-tasks
+                       panel's View transcript, drawn from the chat's row. -->
+                  <SubagentView content={k.content} />
+                {:else if k.content.kind === "file"}
+                  <!-- A file a reply named (backlog 161): the file card's
+                       Open, read-only. -->
+                  <FileView content={k.content} />
+                {:else if k.content.kind === "thread"}
+                  <!-- What a research thread stores (backlog 292): its name
+                       clicked in the sidebar, read-only. -->
+                  <ThreadView content={k.content} />
+                {/if}
+                {#if focused && !away}<FindBar bind:this={findBar} />{/if}
               </div>
+            {/each}
+            {#if isKeptKind(t.content)}
+              <!-- Drawn by the kept block above. -->
             {:else if t.content.kind === "nightshift"}
               <!-- The whole-centre pages as tabs (backlog 140): the
                    strip stays, the chat's top bar does not. Nightshift
                    keeps its own header inside. -->
-              <div class="content">
+              <div class="content" use:tabPlace={placeKey(t.content)}>
                 <NightshiftSurface />
                 {#if focused}<FindBar bind:this={findBar} />{/if}
               </div>
@@ -704,7 +735,7 @@
                 {#if focused}<FindBar bind:this={findBar} />{/if}
               </div>
             {:else if t.content.kind === "new-project"}
-              <div class="content">
+              <div class="content" use:tabPlace={placeKey(t.content)}>
                 <NewProject />
                 {#if focused}<FindBar bind:this={findBar} />{/if}
               </div>
@@ -739,34 +770,6 @@
             {:else if t.content.kind === "aside"}
               <div class="content">
                 <AsideView session={t.content.session} thread={asideTabThread(t.content) ?? null} />
-                {#if focused}<FindBar bind:this={findBar} />{/if}
-              </div>
-            {:else if t.content.kind === "attachment"}
-              <!-- An attachment kept as a tab (backlog 145 pass 2): the
-                   floating tab dropped on a strip or a half. -->
-              <div class="content">
-                <AttachmentView content={t.content} />
-                {#if focused}<FindBar bind:this={findBar} />{/if}
-              </div>
-            {:else if t.content.kind === "subagent"}
-              <!-- A subagent's transcript (backlog 152): the Running-tasks
-                   panel's View transcript, drawn from the chat's row. -->
-              <div class="content">
-                <SubagentView content={t.content} />
-                {#if focused}<FindBar bind:this={findBar} />{/if}
-              </div>
-            {:else if t.content.kind === "file"}
-              <!-- A file a reply named (backlog 161): the file card's
-                   Open, read-only. -->
-              <div class="content">
-                <FileView content={t.content} />
-                {#if focused}<FindBar bind:this={findBar} />{/if}
-              </div>
-            {:else if t.content.kind === "thread"}
-              <!-- What a research thread stores (backlog 292): its name
-                   clicked in the sidebar, read-only. -->
-              <div class="content">
-                <ThreadView content={t.content} />
                 {#if focused}<FindBar bind:this={findBar} />{/if}
               </div>
             {:else if t.content.kind === "web"}
@@ -1244,6 +1247,16 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
+  }
+  /* Item 487: a kept tab behind the one in front — out of the flow, at the
+     box it had (keptBox sets top and height), and hidden by visibility:
+     display: none would make WebKit drop a PDF's place. */
+  .content.away {
+    position: absolute;
+    left: 0;
+    right: 0;
+    visibility: hidden;
+    pointer-events: none;
   }
   .settings-overlay {
     position: absolute;
