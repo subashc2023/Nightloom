@@ -118,7 +118,13 @@ export function patch(live: Node, prev: Node, next: Node): number {
         // The words that arrived, after the ones already there.
         const more = now.slice(was.length);
         if (last.nodeType === Node.TEXT_NODE) (last as Text).appendData(more);
-        else live.insertBefore(document.createTextNode(more), last.nextSibling);
+        else {
+          // Item 480: the run now ends in this new node, so a node new to the
+          // HTML (the next `$…$`) goes after it — not after the motion's span,
+          // which drew "bec" [Y] "." "omes" for "becomes $Y$.".
+          const t = live.insertBefore(document.createTextNode(more), last.nextSibling);
+          if (tail === last) tail = t;
+        }
       } else {
         const t = document.createTextNode(now);
         live.insertBefore(t, u.nodes[0]);
@@ -144,6 +150,19 @@ export function patch(live: Node, prev: Node, next: Node): number {
   return touched;
 }
 
+/** How often the text check redrew a block whole (the harnesses read it; 0 when `patch` is right). */
+export const liveHtmlStats = { fallbacks: 0 };
+
+/** The text `live` shows, less the nodes other code adds (Copy buttons) — comparable with the drawn tree's. */
+export function shownText(live: Node): string {
+  let s = "";
+  for (const c of Array.from(live.childNodes)) {
+    if (extra(c)) continue;
+    s += c.nodeType === Node.TEXT_NODE ? (c as Text).data : shownText(c);
+  }
+  return s;
+}
+
 function parse(html: string): DocumentFragment {
   const t = document.createElement("template");
   t.innerHTML = html;
@@ -163,6 +182,12 @@ export function liveHtml(node: HTMLElement, html: string) {
       if (next === last) return;
       const tree = parse(next);
       patch(node, prev, tree);
+      // Item 480: the patched DOM must read exactly as a full render; if it
+      // ever does not, draw it whole (as `{@html}` would have).
+      if (shownText(node) !== tree.textContent) {
+        redraw(node, tree);
+        liveHtmlStats.fallbacks++;
+      }
       prev = tree;
       last = next;
     },
