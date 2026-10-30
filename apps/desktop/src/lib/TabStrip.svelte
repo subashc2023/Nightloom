@@ -29,6 +29,8 @@
   // Item 299: Make main on a fork's tab, as on its sidebar row.
   import { canMakeMain } from "./versions";
   import { makeMainChat, versions } from "./versions.svelte";
+  // Item 477: the tab menu fits the window (item 425's placement).
+  import { placeMenu } from "./menuPlace";
 
   /**
    * One pane's strip of tabs (nightshift backlog 099, boards 9a and 9d):
@@ -292,6 +294,36 @@
     menuAt = { x: e.clientX, y: e.clientY };
   }
   /**
+   * Item 477: the menu fits the window at every edge, as the sidebar's
+   * does (`placeMenu`, item 425) — measured once drawn, so a tab near the
+   * right edge opens it leftward and a short window lifts it. Placed again
+   * when its size or the window's changes.
+   */
+  function placeTabMenu(el: HTMLElement, at: { x: number; y: number }) {
+    let anchor = at;
+    const place = () => {
+      const size = { w: el.offsetWidth, h: el.scrollHeight + (el.offsetHeight - el.clientHeight) };
+      const p = placeMenu({ x: anchor.x, below: anchor.y, above: anchor.y }, size, { w: window.innerWidth, h: window.innerHeight });
+      el.style.left = `${p.left}px`;
+      el.style.top = `${p.top}px`;
+      el.style.maxHeight = p.maxHeight === undefined ? "" : `${p.maxHeight}px`;
+    };
+    place();
+    const ro = new ResizeObserver(place);
+    ro.observe(el);
+    window.addEventListener("resize", place);
+    return {
+      update(next: { x: number; y: number }) {
+        anchor = next;
+        place();
+      },
+      destroy() {
+        ro.disconnect();
+        window.removeEventListener("resize", place);
+      },
+    };
+  }
+  /**
    * A menu item's action on the tab the menu is for, the menu closed.
    * The tab is read **before** `menuFor` clears (found by backlog 376's
    * harness, 2026-10-18): the markup's `{@const t}` re-derives from
@@ -474,7 +506,7 @@
 {#if menuFor}
   {@const t = pane.tabs.find((x) => x.id === menuFor)}
   <button class="tab-scrim" aria-label="Close" onclick={() => (menuFor = null)} oncontextmenu={(e) => { e.preventDefault(); menuFor = null; }}></button>
-  <div class="tab-menu" role="menu" style:left="{menuAt.x}px" style:top="{menuAt.y}px">
+  <div class="tab-menu" role="menu" use:placeTabMenu={menuAt}>
     <button role="menuitem" onclick={() => menuAct((x) => void closeTab(x.id))}>Close</button>
     <button role="menuitem" disabled={pane.tabs.length < 2} onclick={() => menuAct((x) => closeOthers(x.id))}>Close others</button>
     {#if other}
@@ -707,6 +739,8 @@
     border: 1px solid var(--line2);
     border-radius: 8px;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    /* Item 477: capped by placeMenu only when taller than the window. */
+    overflow-y: auto;
   }
   .tab-menu button {
     text-align: left;

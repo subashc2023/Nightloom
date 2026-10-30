@@ -1368,9 +1368,93 @@ pub fn tool_result_images(
     out
 }
 
+/// The images for `ids` from the session file at `path` and, for ids it
+/// does not hold, from its subagents' files (item 476). Claude Code writes
+/// a subagent's own turn — its calls and their results — to
+/// `<session id>/subagents/agent-<id>.jsonl` beside the session's file, in
+/// the same line shape (observed, CLI 2.1.x), so a screenshot a subagent
+/// took is found there. A file that cannot be read is skipped.
+pub fn tool_result_images_in(
+    path: &Path,
+    ids: &[String],
+) -> io::Result<std::collections::HashMap<String, ToolResultImages>> {
+    let mut out = tool_result_images(&fs::read_to_string(path)?, ids);
+    let mut left: Vec<String> = ids
+        .iter()
+        .filter(|id| !out.contains_key(id.as_str()))
+        .cloned()
+        .collect();
+    if left.is_empty() {
+        return Ok(out);
+    }
+    let dir = path.with_extension("").join("subagents");
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Ok(out);
+    };
+    let mut files: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
+        .collect();
+    files.sort();
+    for f in files {
+        let Ok(text) = fs::read_to_string(&f) else {
+            continue;
+        };
+        for (id, got) in tool_result_images(&text, &left) {
+            out.insert(id, got);
+        }
+        left.retain(|id| !out.contains_key(id.as_str()));
+        if left.is_empty() {
+            break;
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Item 476: a screenshot a subagent took is in its own file under the
+    /// session's `subagents/` folder; the main file's results still win,
+    /// and an id in neither is absent.
+    #[test]
+    fn tool_result_images_in_reads_the_subagents_files_too() {
+        let dir = std::env::temp_dir().join(format!("nightloom-476-{}", uuid::Uuid::new_v4()));
+        let sid = "0ec12560-0000-4000-8000-000000000476";
+        fs::create_dir_all(dir.join(sid).join("subagents")).unwrap();
+        let line = |id: &str, data: &str| {
+            json!({
+                "type": "user",
+                "isSidechain": true,
+                "message": {"role": "user", "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": id,
+                    "content": [{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": data}}],
+                }]},
+            })
+            .to_string()
+        };
+        let main = dir.join(format!("{sid}.jsonl"));
+        fs::write(&main, line("toolu_top", "QUJD") + "\n").unwrap();
+        fs::write(
+            dir.join(sid).join("subagents").join("agent-a1.jsonl"),
+            line("toolu_sub", "REVG") + "\n" + &line("toolu_top", "WFla") + "\n",
+        )
+        .unwrap();
+        let ids = ["toolu_top", "toolu_sub", "toolu_none"].map(String::from);
+        let got = tool_result_images_in(&main, &ids).unwrap();
+        assert_eq!(got["toolu_top"].images[0].data, "QUJD");
+        assert_eq!(got["toolu_sub"].images[0].data, "REVG");
+        assert!(!got.contains_key("toolu_none"));
+        // No subagents folder: the main file's answer alone.
+        let other = dir.join("other.jsonl");
+        fs::write(&other, line("toolu_x", "WA==") + "\n").unwrap();
+        let got = tool_result_images_in(&other, &["toolu_x".to_string()]).unwrap();
+        assert_eq!(got["toolu_x"].images[0].data, "WA==");
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     /// Backlog 434: a browser screenshot's result line, in the shape the
     /// CLI writes (`message.content[].tool_result.content[]`, a base64
