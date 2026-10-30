@@ -17,6 +17,7 @@
   import AsideFoldPanel from "./AsideFoldPanel.svelte";
   import * as tabs from "./tabs";
   import { fmtTokens } from "./tokens";
+  import { followThread } from "./asideFollow.svelte";
 
   /**
    * An aside thread as a tab of its own (nightshift backlog 130 part 2,
@@ -68,7 +69,14 @@
   // scrolls and put back when the view mounts or shows another thread.
   let view = $state<HTMLDivElement | null>(null);
   const viewKey = $derived(aside ? asideScrollKey(session, aside.id) : null);
+  // Item 485: a follow-up sent near the foot lands at the bottom and
+  // follows the answer (468's rule, the card's; the tab had none).
+  const follow = followThread(
+    () => view,
+    () => aside ?? null,
+  );
   function scrolled() {
+    follow.scrolled();
     if (!view || !viewKey) return;
     rememberScroll(viewKey, view.scrollTop, view.scrollHeight - view.scrollTop - view.clientHeight < 4);
   }
