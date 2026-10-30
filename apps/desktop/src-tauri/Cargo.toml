@@ -51,7 +51,9 @@ mac-notification-sys = "0.6"
 # Web tabs' keys (backlog 172 pass 2): which page holds the first responder,
 # and Undo/Redo sent to it as AppKit actions. Already in the lockfile (tauri
 # and wry use it); two messages and a class lookup, no feature needed.
-objc2 = "0.6"
+# Item 486: `exception::catch` for the event guard (the lockfile's objc2
+# already builds with it: objc2-exception-helper is in Cargo.lock).
+objc2 = { version = "0.6", features = ["exception"] }
 # Item 448: the off-screen window's page capture hands WebKit a completion
 # block. Already in the lockfile (objc2-web-kit and wry use it).
 block2 = "0.6"

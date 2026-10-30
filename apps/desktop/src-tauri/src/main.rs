@@ -55,6 +55,9 @@ mod chats;
 mod connect_deadline;
 /// The composer's exact token count on the provider engine (backlog 155).
 mod draft_count;
+/// An AppKit exception in event dispatch is logged, not fatal (item 486).
+#[cfg(target_os = "macos")]
+mod event_guard;
 /// A file card's Open as a tab: which paths may be read, and reading them
 /// (nightshift backlog 161).
 mod filetab;
@@ -72,6 +75,8 @@ mod note_edit;
 mod offscreen;
 /// Finder's Open With → Nightloom (nightshift backlog 378).
 mod opened_files;
+/// Panics written to `~/.nightloom/logs/panic.log` (nightshift item 486).
+mod panic_log;
 /// A paste's web images, fetched (nightshift backlog 382).
 mod paste_images;
 #[cfg(not(debug_assertions))]
@@ -8650,6 +8655,9 @@ fn refuse_to_open(why: &str) {
 fn main() {
     // The startup log's clock (item 220): every line's `+N ms` counts from here.
     startup_log::mark_launch();
+    // Item 486: every panic is written to `~/.nightloom/logs/panic.log`;
+    // a Finder-launched app's stderr goes nowhere.
+    panic_log::install();
     // `nightloom-desktop --mcp-serve [--project <id>]`: this binary as an
     // MCP server on stdio, for the Claude Code engine. The app's `connect_agent`
     // hands `claude -p` a `--mcp-config` naming `current_exe()` with these
@@ -8726,6 +8734,14 @@ fn main() {
 
     builder
         .setup(|app| {
+            // Item 486: an exception AppKit raises while dispatching an event
+            // is logged instead of aborting the app through tao's `extern "C"`
+            // `sendEvent:` (the 11:27 AM 2026-10-30 crash).
+            #[cfg(target_os = "macos")]
+            {
+                let what = event_guard::install();
+                eprintln!("event guard: {what}");
+            }
             // A chat's preview (nightshift item 430): served from the start.
             preview::setup(app.handle());
             // The Mac's activity, watched while the app runs: ends a chat's
