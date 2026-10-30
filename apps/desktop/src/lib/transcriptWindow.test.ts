@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FIRST_ITEMS, GROW_ITEMS, firstWindow, grown, wantsMore, windowFor } from "./transcriptWindow.svelte";
+import { FIRST_ITEMS, GROW_ITEMS, cardWaits, firstWindow, grown, wantsMore, windowFor } from "./transcriptWindow.svelte";
 import { recallScroll, rememberScroll, resetScroll } from "./scroll.svelte";
 import { displayTexts } from "./edit";
 import type { SessionEvent } from "./types";
@@ -60,5 +60,19 @@ describe("displayTexts (item 482: linear now)", () => {
     ] as unknown as SessionEvent[];
     expect(displayTexts(evs)[1]).toBe("new");
     expect(displayTexts(evs)[0]).toBe(null);
+  });
+});
+
+describe("an aside card on an undrawn turn (item 484)", () => {
+  const drawn = (t: number) => t >= 500;
+  it("waits for its turn instead of stacking above the composer", () => {
+    expect(cardWaits({ anchor: { turn: 22 } }, drawn)).toBe(true);
+  });
+  it("shows once its turn is drawn", () => {
+    expect(cardWaits({ anchor: { turn: 522 } }, drawn)).toBe(false);
+  });
+  it("never waits for a composer aside or a card he moved", () => {
+    expect(cardWaits({ anchor: null }, drawn)).toBe(false);
+    expect(cardWaits({ anchor: { turn: 22 }, moved: { left: 1, top: 1, width: 300 } }, drawn)).toBe(false);
   });
 });

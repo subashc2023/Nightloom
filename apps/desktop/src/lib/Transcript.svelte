@@ -1415,6 +1415,15 @@
 
   /** Draw the turn at log index `index` (the rail's, ⌥↑'s targets) before
    *  scrolling to it. */
+  /** Item 484: each logged turn's place in `items`, for `turnDrawn`. */
+  const itemAt = $derived(new Map(items.map((it, i) => [it.index, i])));
+  /** Whether the turn at log index `turn` is drawn — true for a turn not
+   *  in the items at all, so what cannot be placed keeps its old home. */
+  function turnDrawn(turn: number): boolean {
+    const at = itemAt.get(turn);
+    return at === undefined || at >= drawFrom;
+  }
+
   async function revealTurn(index: number): Promise<void> {
     const at = items.findIndex((it) => it.index >= index);
     await growTo(windowFor(drawFrom, at));
@@ -2776,7 +2785,7 @@
          column's last children, absolute under their passages, stuck
          above the composer when there is none. -->
     {#if !inPane}
-      <AsideLayer {viewport} {inner} {proseBlocks} version={items.length} />
+      <AsideLayer {viewport} {inner} {proseBlocks} version={items.length} drawn={turnDrawn} reveal={revealTurn} />
     {/if}
   </div>
 </div>

@@ -64,3 +64,17 @@ export function windowFor(from: number, target: number, margin = 2): number {
   if (target < 0) return from;
   return Math.min(from, Math.max(0, target - margin));
 }
+
+/**
+ * Item 484: whether an aside's card waits for its passage's turn to be
+ * drawn. A card about a passage on a turn outside the window was taken
+ * for one whose passage cannot be found and stacked above the composer —
+ * every old aside in a long chat, each squeezed to its head. A composer
+ * aside (no anchor) and a card he moved (fixed to the window) never wait.
+ */
+export function cardWaits(
+  aside: { anchor: { turn: number } | null; moved?: unknown },
+  drawn: (turn: number) => boolean,
+): boolean {
+  return !!aside.anchor && !aside.moved && !drawn(aside.anchor.turn);
+}

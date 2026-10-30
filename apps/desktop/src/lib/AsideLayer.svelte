@@ -4,6 +4,7 @@
   import type { Aside } from "./state.svelte";
   import AsideCard from "./AsideCard.svelte";
   import AsidesList from "./AsidesList.svelte";
+  import { cardWaits } from "./transcriptWindow.svelte";
   import {
     CARD_GAP,
     PREFERRED_CARD_HEIGHT,
@@ -41,6 +42,8 @@
     inner,
     proseBlocks,
     version = 0,
+    drawn = () => true,
+    reveal = async () => {},
   }: {
     viewport: HTMLElement | null;
     inner: HTMLElement | null;
@@ -48,11 +51,23 @@
     proseBlocks: (turn: number) => Element[];
     /** Anything whose change can move the text (the items' count). */
     version?: unknown;
+    /** Item 484: whether a turn is drawn (the transcript's render window,
+     *  item 482). A passage on a turn not drawn yet is not lost, only not
+     *  there: its card waits for the turn rather than piling above the
+     *  composer with every other old one. */
+    drawn?: (turn: number) => boolean;
+    /** Draws the transcript down to a turn (a list row's card on one). */
+    reveal?: (turn: number) => Promise<void>;
   } = $props();
 
   const session = $derived(app.activeSessionId);
-  /** The cards drawn here: every open thread not in a tab or the panel. */
-  const shown = $derived(app.asides.filter((a) => !asideInTab(session, a.id)));
+  /** Item 484: a thread about a passage on a turn the transcript has not
+   *  drawn — its card is drawn when the turn is. One he moved is fixed to
+   *  the window, not to the passage, and stays. */
+  const waitsForTurn = (a: Aside) => cardWaits(a, drawn);
+  /** The cards drawn here: every open thread not in a tab or the panel,
+   *  and not waiting for its turn to be drawn. */
+  const shown = $derived(app.asides.filter((a) => !asideInTab(session, a.id) && !waitsForTurn(a)));
   /** The thread the side panel shows beside this chat, if any. */
   const besideId = $derived.by(() => {
     if (session === null || app.asidePanel !== session) return null;
@@ -219,6 +234,9 @@
     const a = app.asides.find((x) => x.id === id);
     if (!a || asideInTab(session, id)) return;
     if (a.folded) unfoldAside(a);
+    // Its turn above the drawn window (item 484): drawn first, so the card
+    // has its passage to sit under.
+    if (waitsForTurn(a)) await reveal(a.anchor!.turn);
     await place();
     const el = cards[id]?.element();
     if (!el) return;
