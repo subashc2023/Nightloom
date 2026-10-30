@@ -9,7 +9,6 @@
     RIB_GAP,
     RIB_ROW,
     TOOLTIP_OPEN_DELAY,
-    anchorSelector,
     columnFollow,
     inViewRange,
     magnified,
@@ -129,11 +128,6 @@
     return range !== null && i >= range[0] && i <= range[1];
   }
 
-  function anchor(i: number): HTMLElement | null {
-    const t = ticks[i];
-    return t && viewport ? viewport.querySelector<HTMLElement>(anchorSelector(t.index)) : null;
-  }
-
   // ---- Reading the viewport (their scroll-spy `tick`) ----
 
   function measure() {
@@ -144,8 +138,18 @@
     const st = viewport.scrollTop;
     const max = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
     const bottoms: number[] = [];
-    tops = ticks.map((_, i) => {
-      const el = anchor(i);
+    // Item 482: every anchor in one pass, as Transcript's `measureNav` (item
+    // 454). `anchor(i)` per tick ran a selector over the whole transcript
+    // for each — quadratic in the chat's length, on every scroll frame. The
+    // first match in document order, as `querySelector`'s.
+    const found = new Map<string, HTMLElement>();
+    for (const el of viewport.querySelectorAll<HTMLElement>("[data-turn], [data-nav-live]")) {
+      const turn = el.getAttribute("data-turn");
+      if (turn !== null && !found.has(turn)) found.set(turn, el);
+      if (el.hasAttribute("data-nav-live") && !found.has("live")) found.set("live", el);
+    }
+    tops = ticks.map((t) => {
+      const el = found.get(t.index < 0 ? "live" : String(t.index)) ?? null;
       if (!el) {
         bottoms.push(Infinity);
         return Infinity;

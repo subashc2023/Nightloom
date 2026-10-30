@@ -29,6 +29,10 @@ export interface ScrollEntry {
   top: number;
   /** Following the foot; `top` is irrelevant while this is true. */
   pinned: boolean;
+  /** Item 482: the first message drawn when `top` was measured (the
+   *  transcript's render window, `transcriptWindow.svelte.ts`), so a switch
+   *  back draws the same ones and `top` lands on the same line. */
+  from?: number;
 }
 
 /** The pending chat's key while no chat is open. */
@@ -40,8 +44,8 @@ export function scrollKey(activeSessionId: string | null): string {
   return activeSessionId ?? NEW_SCROLL_KEY;
 }
 
-export function rememberScroll(key: string, top: number, pinned: boolean): void {
-  positions.set(key, { top: Math.max(0, top), pinned });
+export function rememberScroll(key: string, top: number, pinned: boolean, from?: number): void {
+  positions.set(key, from === undefined ? { top: Math.max(0, top), pinned } : { top: Math.max(0, top), pinned, from });
 }
 
 /** The entry, or null for a chat never scrolled in this launch. */

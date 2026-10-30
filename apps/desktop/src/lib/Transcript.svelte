@@ -72,6 +72,16 @@
   import { loadReplyUsage, replyUsageOf } from "./replyUsage.svelte";
   import { cacheState } from "./cache";
   import { moveScroll, recallScroll, rememberScroll, scrollKey, NEW_SCROLL_KEY } from "./scroll.svelte";
+  import {
+    BUFFER_SCREENS,
+    FILL_SCREENS,
+    FIRST_ITEMS,
+    firstWindow,
+    grown,
+    wantsMore,
+    windowFor,
+    windowWants,
+  } from "./transcriptWindow.svelte";
   import { presence, watchPresence } from "./away.svelte";
   import {
     addAttachment,
@@ -1336,12 +1346,96 @@
   let lastKey: string | null = null;
   let scrollFrame = 0;
 
+  // ---- The render window (item 482) ----
+  //
+  // Only `items` from `windowFrom` on are drawn (`transcriptWindow.svelte.ts`).
+  // Re-derived when the chat changes, or when its items arrive after the
+  // key (a pane's log read); grown by assignment as he scrolls up. Its
+  // first value comes before the DOM is built, so a switch never draws
+  // the whole chat first.
+  const hasItems = $derived(items.length > 0);
+  let windowFrom = $derived.by(() => {
+    const key = sessionKey;
+    void hasItems;
+    return untrack(() => firstWindow(items.length, recallScroll(key)));
+  });
+  /** What is drawn: the window, never past the chat's last `FIRST_ITEMS`
+   *  (a log re-read shorter than the window was must still draw its foot). */
+  const drawFrom = $derived(Math.min(windowFrom, Math.max(0, items.length - FIRST_ITEMS)));
+  let growing = false;
+  let fillTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** Draw from `to` on, holding the view where it is: the batch lands above
+   *  it, so the view moves down by however much taller the page became. */
+  async function growTo(to: number): Promise<void> {
+    const vp = viewport;
+    if (to >= drawFrom) return;
+    if (!vp) {
+      windowFrom = to;
+      return;
+    }
+    const height = vp.scrollHeight;
+    const top = vp.scrollTop;
+    windowFrom = to;
+    await tick();
+    const delta = vp.scrollHeight - height;
+    if (Math.abs(delta) >= 1) {
+      scrollingSelf = true;
+      vp.scrollTop = top + delta;
+      requestAnimationFrame(() => (scrollingSelf = false));
+    }
+    // The place, under the window it is now measured in.
+    rememberScroll(sessionKey, vp.scrollTop, pinned, drawFrom);
+  }
+
+  /** Grow until `screens` screen heights are drawn above the view, one
+   *  batch per task after the first paint (`later`), or all at once before
+   *  it. A switch mid-fill stops it (the key is checked per batch). */
+  async function fillWindow(screens: number, later: boolean): Promise<void> {
+    if (growing) return;
+    growing = true;
+    const key = sessionKey;
+    try {
+      while (viewport && sessionKey === key && wantsMore(drawFrom, viewport.scrollTop, viewport.clientHeight, screens)) {
+        if (later) await new Promise<void>((r) => (fillTimer = setTimeout(r, 0)));
+        if (!viewport || sessionKey !== key) return;
+        await growTo(grown(drawFrom));
+      }
+    } finally {
+      growing = false;
+    }
+  }
+
+  /** The first paint's window filled, then the buffer above it after. */
+  async function openWindow(): Promise<void> {
+    await fillWindow(FILL_SCREENS, false);
+    clearTimeout(fillTimer);
+    fillTimer = setTimeout(() => void fillWindow(BUFFER_SCREENS, true), 0);
+  }
+
+  /** Draw the turn at log index `index` (the rail's, ⌥↑'s targets) before
+   *  scrolling to it. */
+  async function revealTurn(index: number): Promise<void> {
+    const at = items.findIndex((it) => it.index >= index);
+    await growTo(windowFor(drawFrom, at));
+  }
+
+  // Find in chat searches the page's text: the whole chat is drawn while
+  // the bar is open.
+  $effect(() => {
+    if (windowWants.all && drawFrom > 0) void growTo(0);
+  });
+  onDestroy(() => clearTimeout(fillTimer));
+
   function scheduleScrollWork() {
     if (scrollFrame) return;
     scrollFrame = requestAnimationFrame(() => {
       scrollFrame = 0;
-      if (viewport) rememberScroll(sessionKey, viewport.scrollTop, pinned);
+      if (viewport) rememberScroll(sessionKey, viewport.scrollTop, pinned, drawFrom);
       measureNav();
+      // Near the top of what is drawn: the next batches above.
+      if (viewport && wantsMore(drawFrom, viewport.scrollTop, viewport.clientHeight, BUFFER_SCREENS / 2))
+        void fillWindow(BUFFER_SCREENS, true);
     });
   }
 
@@ -1393,7 +1487,15 @@
         scrollingSelf = true;
         viewport.scrollTop = entry.top;
         requestAnimationFrame(() => (scrollingSelf = false));
+      } else if (pinned) {
+        // Item 482: at the foot before the window is filled, so the fill
+        // measures from where the view lands (the follow effect's scroll
+        // may not have run yet).
+        scrollingSelf = true;
+        viewport.scrollTop = viewport.scrollHeight;
+        requestAnimationFrame(() => (scrollingSelf = false));
       }
+      void openWindow().then(() => measureNav());
       measureNav();
     });
   });
@@ -1706,9 +1808,12 @@
    *  longer following the reply. Item 359: LibreChat's 400 ms ease-out
    *  cubic, re-aimed every frame, rather than the browser's smooth scroll;
    *  `instant` for a drag along the rail. */
-  function jumpTo(i: number, instant = false) {
+  async function jumpTo(i: number, instant = false) {
     const t = navTicks[i];
     if (!t || !viewport) return;
+    // Item 482: a message above the render window is drawn first.
+    if (t.index >= 0 && anchorTop(t.index) === null) await revealTurn(t.index);
+    if (!viewport) return;
     const top = anchorTop(t.index);
     if (top === null) return;
     pinned = false;
@@ -1728,10 +1833,13 @@
     // on the strip would otherwise leave focus on the strip.
     viewport.focus({ preventScroll: true });
   }
-  function toTop(instant = false) {
+  async function toTop(instant = false) {
     if (!viewport) return;
     pinned = false;
     cancelScroll();
+    // Item 482: the top is the chat's first message, not the window's.
+    if (drawFrom > 0) await growTo(0);
+    if (!viewport) return;
     viewport.scrollTo({ top: 0, behavior: instant ? "instant" : "smooth" });
     viewport.focus({ preventScroll: true });
   }
@@ -1776,7 +1884,7 @@
     if (navTicks.length === 0) return;
     e.preventDefault();
     const next = stepTick(navActive, e.key === "ArrowDown" ? 1 : -1, navTicks.length);
-    if (next !== null) jumpTo(next);
+    if (next !== null) void jumpTo(next);
   }
 
   /**
@@ -2037,7 +2145,7 @@
   onkeydown={viewportKeys}
 >
   <div class="inner" bind:this={inner}>
-    {#if continuedFrom}
+    {#if continuedFrom && drawFrom === 0}
       <div class="continued">
         <span class="continued-ic"><Icon name="branch" size={14} /></span>
         <span>Continued from <span class="continued-t">“{continuedFrom.name}”</span> · <span class="mono">HANDOFF.md</span></span>
@@ -2046,7 +2154,8 @@
       </div>
     {/if}
     {#each items as item, i (i)}
-      {#if item.superseded}
+      <!-- Item 482: only the render window is drawn. -->
+      {#if i < drawFrom}{:else if item.superseded}
         {#if rewound[i] !== null}
           <div
             class="rewound"
