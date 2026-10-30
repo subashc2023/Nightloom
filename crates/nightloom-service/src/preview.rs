@@ -543,6 +543,47 @@ impl Previews {
                     me.changed(&chat_owned, Some(&snap));
                 }
             }
+            if !listening {
+                return;
+            }
+            // Item 475: the command forked its server and returned, so no
+            // wait sees the server end. Watch its port instead, while this
+            // preview is the chat's; once nothing answers it has exited —
+            // said, recorded, and the chip offers Restart and Dismiss, not
+            // a Stop for a server that is gone.
+            loop {
+                tokio::time::sleep(SERVER_WATCH).await;
+                let Some(me) = me.upgrade() else { return };
+                let current = me
+                    .entries
+                    .lock()
+                    .unwrap()
+                    .get(&chat_owned)
+                    .is_some_and(|e| e.generation == generation);
+                if !current {
+                    return;
+                }
+                if port_answers(port) {
+                    continue;
+                }
+                state_w.lock().unwrap().status = Status::Exited;
+                #[cfg(unix)]
+                if let Some(pgid) = pgid {
+                    signal_group(pgid, libc::SIGKILL);
+                }
+                let snap = {
+                    let entries = me.entries.lock().unwrap();
+                    entries
+                        .get(&chat_owned)
+                        .filter(|e| e.generation == generation)
+                        .map(|e| e.snapshot(&chat_owned))
+                };
+                if let Some(snap) = snap {
+                    me.save_entry_record(&chat_owned);
+                    me.changed(&chat_owned, Some(&snap));
+                }
+                return;
+            }
         });
 
         let deadline = tokio::time::Instant::now() + self.ready_wait;
@@ -678,6 +719,9 @@ fn pid_alive(_pid: u32) -> bool {
 pub fn url_for(port: u16) -> String {
     format!("http://localhost:{port}")
 }
+
+/// How often a server whose command returned is checked (item 475).
+const SERVER_WATCH: Duration = Duration::from_secs(1);
 
 /// Whether something answers on the port, on either loopback.
 pub fn port_answers(port: u16) -> bool {
@@ -1473,6 +1517,47 @@ mod tests {
         );
         assert_eq!(p.all().len(), 1);
         p.stop("chat-r").await;
+    }
+
+    /// Item 475: a command that starts its server in the background and
+    /// returns is Listening; when that server later dies, the preview is
+    /// Exited — said to the window — not a Listening chip with Stop.
+    #[tokio::test]
+    async fn a_forked_server_that_dies_is_exited() {
+        let p = previews();
+        let seen: Arc<Mutex<Vec<Option<Status>>>> = Arc::default();
+        let s2 = Arc::clone(&seen);
+        p.set_on_change(Arc::new(move |_chat, snap| {
+            s2.lock().unwrap().push(snap.map(|s| s.status));
+        }));
+        let dir = tmp("forked");
+        let port = free_port();
+        // The shell returns once the server answers, leaving it running.
+        let cmd = format!(
+            "python3 -m http.server {port} --bind 127.0.0.1 >/dev/null 2>&1 & echo $! > server.pid; \
+             until nc -z 127.0.0.1 {port}; do sleep 0.1; done"
+        );
+        let snap = p.start("chat-k", &dir, &cmd, port).await.unwrap();
+        assert_eq!(snap.status, Status::Listening, "{snap:?}");
+        let pid: i32 = std::fs::read_to_string(dir.join("server.pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        // The shell has returned; the server is still up, and Listening.
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert_eq!(p.status("chat-k").unwrap().status, Status::Listening);
+        // SAFETY: a signal to the server this test started.
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+        let until = std::time::Instant::now() + Duration::from_secs(6);
+        while p.status("chat-k").unwrap().status != Status::Exited
+            && std::time::Instant::now() < until
+        {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(p.status("chat-k").unwrap().status, Status::Exited);
+        assert_eq!(seen.lock().unwrap().last(), Some(&Some(Status::Exited)));
+        p.stop("chat-k").await;
     }
 
     #[tokio::test]
