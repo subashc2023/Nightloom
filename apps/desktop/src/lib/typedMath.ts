@@ -18,6 +18,7 @@
  */
 
 import AsciiMathParser from "asciimath2tex";
+import { findBareLatex } from "./bareLatex";
 
 export interface TypedMathSpan {
   /** Offsets into the text, the span as typed. */
@@ -27,6 +28,17 @@ export interface TypedMathSpan {
   src: string;
   /** The TeX, without delimiters: `s^{2}`. */
   tex: string;
+  /** Item 479: already LaTeX, typed without its dollars (`\sigma{1, 2, 4}`);
+   *  `tex` is `src`, and the offer is "Wrap as maths". */
+  bare?: boolean;
+  /** Item 479: a bare run that is its whole line — wrapped as `$$…$$`. */
+  display?: boolean;
+}
+
+/** The delimited text a span is replaced with on accept: `$…$`, or `$$…$$`
+ *  for a bare-LaTeX line (item 479). */
+export function wrapTypedMath(s: TypedMathSpan): string {
+  return s.display ? `$$${s.tex}$$` : `$${s.tex}$`;
 }
 
 let parser: AsciiMathParser | null = null;
@@ -548,14 +560,26 @@ function texOfRun(run: Item[]): string {
   return parts.join(" ");
 }
 
-/** Every span of typed maths in `text`, in order. */
+/** Every span of typed maths in `text`, in order — and, since item 479,
+ *  every run of bare LaTeX (`bareLatex.ts`), which wins where they overlap. */
 export function findTypedMath(text: string): TypedMathSpan[] {
   if (!/[A-Za-z0-9]/.test(text)) return [];
-  return spansOf(items(text)).map((run) => {
+  const typed: TypedMathSpan[] = spansOf(items(text)).map((run) => {
     const from = run[0].from;
     const to = run[run.length - 1].to;
     return { from, to, src: text.slice(from, to), tex: texOfRun(run) };
   });
+  const bare: TypedMathSpan[] = findBareLatex(text, protectedRanges(text)).map((b) => ({
+    from: b.from,
+    to: b.to,
+    src: b.src,
+    tex: b.src,
+    bare: true,
+    display: b.display,
+  }));
+  if (bare.length === 0) return typed;
+  const free = typed.filter((t) => !bare.some((b) => t.from < b.to && t.to > b.from));
+  return [...free, ...bare].sort((a, b) => a.from - b.from);
 }
 
 /**
@@ -569,7 +593,7 @@ export function applyTypedMath(text: string, spans: TypedMathSpan[], caret = tex
   let c = caret;
   let shift = 0;
   for (const s of spans) {
-    const rep = `$${s.tex}$`;
+    const rep = wrapTypedMath(s);
     out += text.slice(k, s.from) + rep;
     k = s.to;
     if (caret >= s.to) c = caret + shift + rep.length - (s.to - s.from);

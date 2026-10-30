@@ -22,11 +22,15 @@
   } = $props();
 
   const many = $derived(spans.length > 1);
+  /** Item 479: every offer is LaTeX already, typed without its dollars —
+   *  the offer is to wrap it, not to convert it. */
+  const allBare = $derived(spans.length > 0 && spans.every((s) => s.bare));
+  const wraps = $derived(spans.some((s) => s.display) ? "$…$, or $$…$$ for a whole line" : "$…$");
 </script>
 
 {#if spans.length > 0}
   <div class="tm-bar" role="status" aria-label="Typed maths can be shown as formulas">
-    <span class="tm-label dim">Show as maths</span>
+    <span class="tm-label dim">{allBare ? "Wrap as maths" : "Show as maths"}</span>
     <ul class="tm-list">
       {#each spans as s (s.from + ":" + s.src)}
         <li class="tm-item" class:many>
@@ -61,10 +65,11 @@
     <button
       type="button"
       class="ns-btn small tm-use"
-      use:tip={many ? "Wrap every formula as LaTeX ($…$) — ⌘Z undoes it" : "Wrap it as LaTeX ($…$) — ⌘Z undoes it"}
+      use:tip={many ? `Wrap every formula as LaTeX (${wraps}) — ⌘Z undoes it` : `Wrap it as LaTeX (${wraps}) — ⌘Z undoes it`}
       onmousedown={(e) => e.preventDefault()}
       onclick={() => onaccept(null)}
-      >{many ? "Use maths for all" : "Use maths"} <span class="tm-key">Tab</span></button
+      >{allBare ? (many ? "Wrap all as maths" : "Wrap as maths") : many ? "Use maths for all" : "Use maths"}
+      <span class="tm-key">Tab</span></button
     >
     <button
       type="button"
