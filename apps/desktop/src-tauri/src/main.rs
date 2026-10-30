@@ -5384,8 +5384,8 @@ async fn tool_result_images(
         let Ok(path) = cli_session::find(&projects, &cwd, &session) else {
             return Ok(Default::default());
         };
-        let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        Ok(cli_session::tool_result_images(&text, &ids))
+        // Its subagents' files too (item 476): their calls' screenshots.
+        cli_session::tool_result_images_in(&path, &ids).map_err(|e| e.to_string())
     })
     .await
 }

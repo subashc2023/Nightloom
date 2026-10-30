@@ -566,6 +566,11 @@
             <!-- A subagent's edit as a diff too (backlog 433). -->
             <EditDiffView diff={childDiff} denied={!!c.call.denied} />
           {/if}
+          {#if !c.call.denied && namesImage(c.call.result?.content)}
+            <!-- A subagent's screenshot too (item 476): read from its own
+                 file under the session's subagents/ folder. -->
+            <ToolImagesView session={cliSession} id={c.call.id} name={shortToolName(c.call.name)} />
+          {/if}
           {#if c.call.children?.length}
             {@render subagent(c.call.children)}
           {/if}
