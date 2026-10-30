@@ -1,7 +1,9 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   LEGACY_NEW_DRAFT_KEY,
   PERSIST_ATTACHMENT_MAX,
+  SAVE_MAX_WAIT_MS,
+  saveDelay,
   addAttachment,
   findChip,
   clearDraft,
@@ -436,6 +438,50 @@ describe("persistence", () => {
     setDraftText("a", "flushed");
     flushDrafts();
     expect(loadDrafts(localStorage).a?.text).toBe("flushed");
+  });
+});
+
+// Item 486: a crash mid-burst lost the typing since his last pause, because
+// the debounce reset on every keystroke. Now a change is on disk within
+// SAVE_MAX_WAIT_MS however steadily he types.
+describe("the save cadence under steady typing (item 486)", () => {
+  afterEach(() => {
+    flushDrafts();
+    vi.useRealTimers();
+  });
+
+  it("saveDelay is the debounce, capped at the max wait from the oldest change", () => {
+    expect(saveDelay(0, 0)).toBe(400);
+    expect(saveDelay(0, 700)).toBe(300);
+    expect(saveDelay(0, 1000)).toBe(0);
+    expect(saveDelay(0, 5000)).toBe(0);
+  });
+
+  it("a key every 150 ms is written within a second, not only at a pause", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    let typed = "";
+    // 3 s of typing, never pausing 400 ms.
+    for (let t = 0; t < 3000; t += 150) {
+      typed += "x";
+      setDraftText("a", typed);
+      vi.advanceTimersByTime(150);
+      const onDisk = loadDrafts(localStorage).a?.text ?? "";
+      // What a crash at this moment would leave: never more than ~1 s behind.
+      const behindMs = (typed.length - onDisk.length) * 150;
+      expect(behindMs).toBeLessThanOrEqual(SAVE_MAX_WAIT_MS + 150);
+    }
+    expect((loadDrafts(localStorage).a?.text ?? "").length).toBeGreaterThan(10);
+  });
+
+  it("a single change still waits only the debounce", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    setDraftText("a", "one");
+    vi.advanceTimersByTime(399);
+    expect(loadDrafts(localStorage).a).toBeUndefined();
+    vi.advanceTimersByTime(1);
+    expect(loadDrafts(localStorage).a?.text).toBe("one");
   });
 });
 

@@ -364,17 +364,38 @@ export function nextQueueId(): number {
 }
 
 let timer: ReturnType<typeof setTimeout> | null = null;
+// When the oldest unwritten change was made (item 486), or null when all is
+// written.
+let pendingSince: number | null = null;
+
+/** The longest a change waits unwritten while typing never pauses (item 486). */
+export const SAVE_MAX_WAIT_MS = 1000;
+
+/**
+ * How long to wait before writing, `now` ms after the oldest unwritten
+ * change at `since`: the 400 ms debounce, but never past
+ * `SAVE_MAX_WAIT_MS` from that change. The plain debounce reset on every
+ * keystroke, so steady typing (a key every 100–300 ms) wrote nothing until
+ * he paused — a crash mid-burst (2026-10-30) loses all of it. Now it loses
+ * at most ~1 s.
+ */
+export function saveDelay(since: number, now: number): number {
+  return Math.max(0, Math.min(SAVE_DELAY_MS, since + SAVE_MAX_WAIT_MS - now));
+}
 
 /** Write soon. Debounced: a keystroke is not worth a synchronous write. */
 function schedule(): void {
   if (timer !== null) clearTimeout(timer);
-  timer = setTimeout(flushDrafts, SAVE_DELAY_MS);
+  const now = Date.now();
+  if (pendingSince === null) pendingSince = now;
+  timer = setTimeout(flushDrafts, saveDelay(pendingSince, now));
 }
 
 /** Write now. Called on the debounce and when the page is going away. */
 export function flushDrafts(): void {
   if (timer !== null) clearTimeout(timer);
   timer = null;
+  pendingSince = null;
   if (typeof localStorage === "undefined") return;
   saveDrafts(drafts);
 }
