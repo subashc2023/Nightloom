@@ -6937,19 +6937,36 @@ async fn delete_note(
     scope: Option<NoteScope>,
     name: String,
     project: Option<String>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let scope = scope.unwrap_or_default();
     if let Some(fixed) = scope.fixed_name() {
         return Err(format!(
             "{fixed} is not deleted from here — empty it instead"
         ));
     }
-    // To the docspace's trash since item 457, not unlinked.
-    project::delete_note(
+    // To the docspace's trash since item 457, not unlinked. Item 471: the
+    // answer is where it went inside the trash, so its drafts can follow.
+    let dir = scope_dir_in(&state, scope, project.as_deref()).await?;
+    project::delete_note(&dir, &name).map(|to| project::trash_name(&dir, &to))
+}
+
+/// Item 471: unsaved drafts into the notes trash, beside their deleted
+/// notes (or alone, for a draft with no note left); the names written.
+#[tauri::command]
+async fn trash_note_drafts(
+    state: State<'_, AppState>,
+    scope: Option<NoteScope>,
+    drafts: Vec<(String, String)>,
+    project: Option<String>,
+) -> Result<Vec<String>, String> {
+    let scope = scope.unwrap_or_default();
+    if scope.is_fixed_file() {
+        return Err(format!("{scope:?} is one file; it has no trash"));
+    }
+    project::trash_note_drafts(
         &scope_dir_in(&state, scope, project.as_deref()).await?,
-        &name,
+        &drafts,
     )
-    .map(|_| ())
 }
 
 // ---- proposals: the dream's suggested edits to the fixed files ------------
@@ -8932,6 +8949,7 @@ fn main() {
             memory_strike,
             save_note,
             delete_note,
+            trash_note_drafts,
             list_proposals,
             read_proposal,
             dismiss_proposal,

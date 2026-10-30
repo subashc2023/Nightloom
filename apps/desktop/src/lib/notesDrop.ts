@@ -255,6 +255,11 @@ export class Hold {
   held(now: number): boolean {
     return this.depth > 0 && now - this.last <= this.staleMs;
   }
+  /** When a hold that sees no more events goes stale (item 471: a timer
+   *  set for then, not a poll); null when nothing is held. */
+  staleAt(): number | null {
+    return this.depth > 0 ? this.last + this.staleMs : null;
+  }
 }
 
 /*

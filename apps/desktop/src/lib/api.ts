@@ -1208,8 +1208,17 @@ export function saveNote(scope: NoteScope, name: string, content: string): Promi
   return invoke("save_note", { scope, name, content });
 }
 
-export function deleteNote(scope: NoteScope, name: string): Promise<null> {
+/** To the docspace's trash (item 457). Item 471: the answer is where it
+ *  went inside the trash (`people 2` for `.trash/notes/people 2`). */
+export function deleteNote(scope: NoteScope, name: string): Promise<string> {
   return invoke("delete_note", { scope, name });
+}
+
+/** Item 471: unsaved drafts into the notes trash, each `[name inside the
+ *  trash, text]`, beside its deleted note as `<stem> (unsaved draft).md`;
+ *  the names written. */
+export function trashNoteDrafts(scope: NoteScope, drafts: [string, string][]): Promise<string[]> {
+  return invoke("trash_note_drafts", { scope, drafts });
 }
 
 /** The docspace as the Notes panel draws it (item 457): every note, every

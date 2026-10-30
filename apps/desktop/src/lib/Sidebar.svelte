@@ -691,9 +691,17 @@
    */
   const dragNotes = new DragToNotes();
   let asideEl = $state<HTMLElement | null>(null);
+  /** Item 471: one timer, set only while a file drag is held, for the
+   *  next moment the answer can change (`wakeAt`) — 461 polled every
+   *  100 ms for the life of the window. */
+  let dragWake: ReturnType<typeof setTimeout> | null = null;
   function dragTick() {
-    const want = dragNotes.tick(performance.now(), app.leftTab);
+    const now = performance.now();
+    const want = dragNotes.tick(now, app.leftTab);
     if (want) app.leftTab = want;
+    if (dragWake !== null) clearTimeout(dragWake);
+    const at = dragNotes.wakeAt(now);
+    dragWake = at === null ? null : setTimeout(dragTick, Math.max(0, at - now));
   }
   function onAsideDragEnter(e: DragEvent) {
     if (!carriesFiles(e.dataTransfer)) return;
@@ -712,8 +720,8 @@
   }
   onMount(() => {
     // The 300 ms passes with the pointer held still, and a drag that
-    // vanished (Escape, a drop elsewhere) is noticed, between events.
-    const t = setInterval(dragTick, 100);
+    // vanished (Escape, a drop elsewhere) is noticed, between events:
+    // `dragTick` sets its own timer for that while a drag is held.
     const ended = (e: DragEvent) => {
       if (!carriesFiles(e.dataTransfer) && e.type !== "dragend") return;
       const inside = e.type === "drop" && !!asideEl && e.target instanceof Node && asideEl.contains(e.target);
@@ -723,7 +731,7 @@
     window.addEventListener("drop", ended, true);
     window.addEventListener("dragend", ended, true);
     return () => {
-      clearInterval(t);
+      if (dragWake !== null) clearTimeout(dragWake);
       window.removeEventListener("drop", ended, true);
       window.removeEventListener("dragend", ended, true);
     };

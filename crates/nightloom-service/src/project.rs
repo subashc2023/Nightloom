@@ -1764,6 +1764,47 @@ pub fn delete_note(dir: &Path, name: &str) -> Result<PathBuf, String> {
     Ok(to)
 }
 
+/// Where [`delete_note`] put a note, as a path inside the notes trash
+/// (`people 2/alice.md` for `<docspace>/.trash/notes/people 2/alice.md`).
+pub fn trash_name(dir: &Path, trashed: &Path) -> String {
+    trashed
+        .strip_prefix(dir.join(".trash").join("notes"))
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default()
+}
+
+/// Write unsaved drafts into the notes trash (item 471 — practices §7, no
+/// UI mechanic loses his work): a deleted note's draft lands beside the
+/// note in the trash as `<stem> (unsaved draft).<ext>`, and a draft left
+/// with no note to belong to goes there the same way. Each name is a path
+/// inside the trash ([`trash_name`]'s shape) and never reaches outside it.
+/// Never writes over anything (` 2`, ` 3`, …). The written names, in the
+/// same shape, one per draft.
+pub fn trash_note_drafts(dir: &Path, drafts: &[(String, String)]) -> Result<Vec<String>, String> {
+    let trash = dir.join(".trash").join("notes");
+    let mut out = Vec::with_capacity(drafts.len());
+    for (name, text) in drafts {
+        let rel = clean_note_name(name)?;
+        let base = trash.join(&rel);
+        let stem = base
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let ext = base
+            .extension()
+            .map(|e| format!(".{}", e.to_string_lossy()))
+            .unwrap_or_else(|| ".md".to_string());
+        let to = free_path(&base.with_file_name(format!("{stem} (unsaved draft){ext}")));
+        if let Some(parent) = to.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+        }
+        fs::write(&to, text).map_err(|e| format!("cannot keep the draft of {name}: {e}"))?;
+        out.push(trash_name(dir, &to));
+    }
+    Ok(out)
+}
+
 /// A note or folder name as the panel sends it, trimmed, `/`-separated,
 /// without empty, `.` or `..` parts. Containment is [`note_path`]'s job;
 /// this is the shape the rename and move answers are given in.
@@ -3195,5 +3236,46 @@ mod tests {
 
         assert!(delete_note(&notes, "gone.md").is_err());
         assert!(delete_note(&notes, ".trash/notes/old").is_err());
+    }
+
+    /// Item 471: a deleted note's unsaved draft goes to the trash beside it,
+    /// never over anything, and never outside the trash.
+    #[test]
+    fn drafts_go_to_the_trash_beside_their_notes() {
+        let dir = temp_dir("trash-drafts");
+        let notes = dir.join("notes");
+        write_note(&notes, "people/alice.md", "saved").unwrap();
+        write_note(&notes, "people/eng/carol.md", "saved").unwrap();
+        let to = delete_note(&notes, "people").unwrap();
+        assert_eq!(trash_name(&notes, &to), "people");
+        let written = trash_note_drafts(
+            &notes,
+            &[
+                ("people/alice.md".into(), "half-typed".into()),
+                ("people/eng/carol.md".into(), "also".into()),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            written,
+            vec![
+                "people/alice (unsaved draft).md",
+                "people/eng/carol (unsaved draft).md"
+            ]
+        );
+        assert_eq!(
+            fs::read_to_string(notes.join(".trash/notes/people/alice (unsaved draft).md")).unwrap(),
+            "half-typed"
+        );
+        assert_eq!(
+            fs::read_to_string(notes.join(".trash/notes/people/alice.md")).unwrap(),
+            "saved",
+            "the saved note is untouched beside its draft"
+        );
+        let again =
+            trash_note_drafts(&notes, &[("people/alice.md".into(), "second".into())]).unwrap();
+        assert_eq!(again, vec!["people/alice (unsaved draft) 2.md"]);
+        assert!(trash_note_drafts(&notes, &[("../../out.md".into(), "x".into())]).is_err());
+        assert!(!dir.join("out (unsaved draft).md").exists());
     }
 }

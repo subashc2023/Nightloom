@@ -3245,13 +3245,27 @@ export async function saveNote(
   return true;
 }
 
-export async function deleteNote(scope: NoteScope, name: string): Promise<void> {
+export async function deleteNote(
+  scope: NoteScope,
+  name: string,
+  /** As `moveNoteTo`'s (item 471): a running edit-by-prompt turn on the
+   *  note refuses the delete — its writes would bring the file back. */
+  busy: (key: string) => boolean = () => false,
+): Promise<void> {
+  if (busy(noteDraftKey(scope, name))) {
+    addToast(`${name} is being edited by a prompt right now — delete it when that turn ends`);
+    return;
+  }
+  let trashed: string;
   try {
-    await api.deleteNote(scope, name);
+    trashed = await api.deleteNote(scope, name);
   } catch (e) {
     addToast(String(e));
     return;
   }
+  // Item 471: its unsaved draft goes to the trash beside it, not left
+  // under a name no note has.
+  draftsToTrash(scope, [name], name, trashed);
   if (app.openNote?.scope === scope && app.openNote.name === name) leaveNote();
   dropNoteTabs(scope, name);
   // As `saveNote` (backlog 211): off the list now, re-read in the background.
@@ -3312,7 +3326,13 @@ export function followNoteMove(scope: "project" | "knowledge", from: string, lan
     const oldKey = noteDraftKey(scope, n.name);
     const draft = app.noteDrafts[oldKey];
     if (draft !== undefined) {
-      app.noteDrafts[noteDraftKey(scope, next)] = draft;
+      const newKey = noteDraftKey(scope, next);
+      // Item 471: a draft already under the new name (a note of that name
+      // is gone — the backend refuses a taken target) is never written
+      // over: it is kept aside and sent to the trash.
+      const older = app.noteDrafts[newKey];
+      if (older !== undefined && older !== draft) parkOlderDraft(scope, next, older);
+      app.noteDrafts[newKey] = draft;
       delete app.noteDrafts[oldKey];
     }
   }
@@ -3334,6 +3354,55 @@ export function followNoteMove(scope: "project" | "knowledge", from: string, lan
   else app.vault = renamed;
   app.noteFolders[scope] = app.noteFolders[scope].map((f) => movedNameOf(f, from, landed) ?? f);
   void refreshWithin("moving " + from, [refreshNotes, refreshProjects]);
+}
+
+/**
+ * Item 471 (practices §7, no UI mechanic loses his work): the unsaved
+ * drafts of deleted notes go to the notes trash beside them, as
+ * `<stem> (unsaved draft).md`, and a toast says where. `names` are the
+ * deleted notes, `from` what was deleted (a note or a folder) and
+ * `trashed` where it went inside the trash. A draft stays in app state
+ * until the write lands, and stays there if it fails.
+ */
+function draftsToTrash(scope: NoteScope, names: string[], from: string, trashed: string): void {
+  const entries: { key: string; at: string; text: string }[] = [];
+  for (const n of new Set(names)) {
+    const key = noteDraftKey(scope, n);
+    const text = app.noteDrafts[key];
+    if (text === undefined) continue;
+    entries.push({ key, at: (trashed && movedNameOf(n, from, trashed)) || n, text });
+  }
+  void sendDraftsToTrash(scope, entries);
+}
+
+/** A draft that would have been written over (item 471): parked under a
+ *  key no note has, so it survives a failed write, then sent to the trash. */
+function parkOlderDraft(scope: NoteScope, name: string, text: string): void {
+  let i = 1;
+  let key = noteDraftKey(scope, `${name} (older draft)`);
+  while (app.noteDrafts[key] !== undefined) key = noteDraftKey(scope, `${name} (older draft ${++i})`);
+  app.noteDrafts[key] = text;
+  void sendDraftsToTrash(scope, [{ key, at: name, text }]);
+}
+
+async function sendDraftsToTrash(scope: NoteScope, entries: { key: string; at: string; text: string }[]): Promise<void> {
+  if (entries.length === 0) return;
+  let written: string[];
+  try {
+    written = await api.trashNoteDrafts(
+      scope,
+      entries.map((e) => [e.at, e.text]),
+    );
+  } catch (e) {
+    addToast(`Kept ${entries.length === 1 ? "an unsaved draft" : `${entries.length} unsaved drafts`} in the app — could not write to the trash: ${String(e)}`);
+    return;
+  }
+  for (const e of entries) if (app.noteDrafts[e.key] === e.text) delete app.noteDrafts[e.key];
+  addToast(
+    written.length === 1
+      ? `Its unsaved draft is in the notes trash: .trash/notes/${written[0]}`
+      : `${written.length} unsaved drafts are in the notes trash, beside their notes (.trash/notes/)`,
+  );
 }
 
 /** `name` once `from` moved to `to`, or null (`notesTree.movedName`). */
@@ -3361,14 +3430,35 @@ export async function newNoteFolder(scope: "project" | "knowledge", name: string
  * Delete a folder of notes (item 457): to the docspace's trash, whole, as
  * a note's Delete is. Its notes' tabs close, as a deleted note's do.
  */
-export async function deleteNoteFolder(scope: "project" | "knowledge", folder: string): Promise<void> {
+export async function deleteNoteFolder(
+  scope: "project" | "knowledge",
+  folder: string,
+  /** As `moveNoteTo`'s (item 471): refused while an edit-by-prompt turn
+   *  runs on a note inside — its writes would recreate the old path. */
+  busy: (key: string) => boolean = () => false,
+): Promise<void> {
+  const inside = (n: string) => n.startsWith(`${folder}/`);
+  const listed = scope === "project" ? app.notes : app.vault;
+  // The open note may not be in the list yet (a note just made).
+  const names = listed.filter((n) => inside(n.name)).map((n) => n.name);
+  if (app.openNote?.scope === scope && inside(app.openNote.name)) names.push(app.openNote.name);
+  for (const k of Object.keys(app.noteDrafts)) {
+    const prefix = noteDraftKey(scope, `${folder}/`);
+    if (k.startsWith(prefix)) names.push(`${folder}/${k.slice(prefix.length)}`);
+  }
+  if (names.some((n) => busy(noteDraftKey(scope, n)))) {
+    addToast(`A note in ${folder} is being edited by a prompt right now — delete the folder when that turn ends`);
+    return;
+  }
+  let trashed: string;
   try {
-    await api.deleteNote(scope, folder);
+    trashed = await api.deleteNote(scope, folder);
   } catch (e) {
     addToast(String(e));
     return;
   }
-  const inside = (n: string) => n.startsWith(`${folder}/`);
+  // Item 471: the folder's unsaved drafts go to the trash beside its notes.
+  draftsToTrash(scope, names, folder, trashed);
   const list = scope === "project" ? app.notes : app.vault;
   for (const n of list.filter((n) => inside(n.name))) {
     if (app.openNote?.scope === scope && app.openNote.name === n.name) leaveNote();
