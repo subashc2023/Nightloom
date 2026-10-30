@@ -47,7 +47,7 @@
   import { isMac } from "./platform";
   import { BoxHistory, editKind, historyInput, historyKey } from "./boxHistory";
   import TypedMathBar from "./TypedMathBar.svelte";
-  import { applyTypedMath, findTypedMath, type TypedMathSpan } from "./typedMath";
+  import { applyTypedMath, findTypedMath, wrapTypedMath, type TypedMathSpan } from "./typedMath";
   import { clearDenied, deniedFor, denyTypedMath, typedMathPrefs } from "./typedMathPrefs.svelte";
   import {
     RE_ASK,
@@ -911,7 +911,7 @@
     const d = deniedFor(key);
     mathSpans = findTypedMath(text).filter((s) => !d.has(s.src));
   }
-  /** Wrap `one` (or every offered formula) as `$…$`: one undo step. */
+  /** Wrap `one` (or every offered formula) as `$…$` (`$$…$$` for a whole line): one undo step. */
   function acceptMath(one: TypedMathSpan | null): void {
     if (!ta) return;
     const t = text;
@@ -924,7 +924,7 @@
     }
     let next: string;
     if (ta instanceof LiveBoxHandle) {
-      ta.replaceRanges(chosen.map((s) => ({ from: s.from, to: s.to, insert: `$${s.tex}$` })));
+      ta.replaceRanges(chosen.map((s) => ({ from: s.from, to: s.to, insert: wrapTypedMath(s) })));
       next = ta.value;
     } else {
       const start = ta.selectionStart;
