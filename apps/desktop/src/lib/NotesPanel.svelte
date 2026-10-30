@@ -293,7 +293,7 @@
       return;
     }
     confirming = null;
-    void deleteNote(scope, name);
+    void deleteNote(scope, name, busy);
   }
 
   function isOpen(scope: NoteScope, name: string): boolean {
@@ -571,8 +571,8 @@
       return;
     }
     menu = null;
-    if (m.isFolder) await deleteNoteFolder(m.scope, m.path);
-    else await deleteNote(m.scope, m.path);
+    if (m.isFolder) await deleteNoteFolder(m.scope, m.path, busy);
+    else await deleteNote(m.scope, m.path, busy);
   }
   function menuKeys(e: KeyboardEvent) {
     if (e.key === "Escape") {

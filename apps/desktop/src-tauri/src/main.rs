@@ -1266,6 +1266,16 @@ fn build_chat(
                     spec.project_id.clone(),
                 )));
         }
+        // The note organisers (item 472): list, make a folder, move — over
+        // the vault, on the knowledge switch, for a chat that writes. The
+        // writers are `Mutating`, so they pass the approval gate as a file
+        // write does.
+        if let Some(vault) = spec.knowledge.clone()
+            && !spec.mode.writes_nothing()
+        {
+            chat.tools
+                .extend(nightloom_service::tools::notes::note_tools(vault));
+        }
         if let Some(chats) = &spec.chats {
             chat.tools
                 .push(Box::new(nightloom_service::tools::SearchChats::new(
@@ -2115,6 +2125,9 @@ async fn connect_agent_body(
     // headless, can only decline (nightshift blocker 050; `AgentSpec::add_dirs`
     // says what the grant covers).
     spec.add_dirs = knowledge.iter().cloned().collect();
+    // The same grant names the folder the note organisers work in (item
+    // 472, `--notes` below).
+    let notes_root = knowledge.clone();
     // The extra folders (nightshift backlog 143): the project's and the
     // chat's own, each granted the same way — readable without a prompt,
     // edits under the permission mode (`external`, the CLI's permissions
@@ -2397,6 +2410,12 @@ async fn connect_agent_body(
             // chats, memory or Notion either; the fetch stays.
             if incognito {
                 args.push("--incognito".into());
+            }
+            // The vault this chat was granted, for the note organisers
+            // (item 472); none for an incognito chat, which has no vault.
+            if let Some(dir) = &notes_root {
+                args.push("--notes".into());
+                args.push(dir.to_string_lossy().into_owned());
             }
             // The chat's folder, for `send_file` (nightshift backlog 343).
             args.push("--root".into());
@@ -6937,19 +6956,36 @@ async fn delete_note(
     scope: Option<NoteScope>,
     name: String,
     project: Option<String>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let scope = scope.unwrap_or_default();
     if let Some(fixed) = scope.fixed_name() {
         return Err(format!(
             "{fixed} is not deleted from here — empty it instead"
         ));
     }
-    // To the docspace's trash since item 457, not unlinked.
-    project::delete_note(
+    // To the docspace's trash since item 457, not unlinked. Item 471: the
+    // answer is where it went inside the trash, so its drafts can follow.
+    let dir = scope_dir_in(&state, scope, project.as_deref()).await?;
+    project::delete_note(&dir, &name).map(|to| project::trash_name(&dir, &to))
+}
+
+/// Item 471: unsaved drafts into the notes trash, beside their deleted
+/// notes (or alone, for a draft with no note left); the names written.
+#[tauri::command]
+async fn trash_note_drafts(
+    state: State<'_, AppState>,
+    scope: Option<NoteScope>,
+    drafts: Vec<(String, String)>,
+    project: Option<String>,
+) -> Result<Vec<String>, String> {
+    let scope = scope.unwrap_or_default();
+    if scope.is_fixed_file() {
+        return Err(format!("{scope:?} is one file; it has no trash"));
+    }
+    project::trash_note_drafts(
         &scope_dir_in(&state, scope, project.as_deref()).await?,
-        &name,
+        &drafts,
     )
-    .map(|_| ())
 }
 
 // ---- proposals: the dream's suggested edits to the fixed files ------------
@@ -8932,6 +8968,7 @@ fn main() {
             memory_strike,
             save_note,
             delete_note,
+            trash_note_drafts,
             list_proposals,
             read_proposal,
             dismiss_proposal,

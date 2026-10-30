@@ -46,6 +46,20 @@ export class DragToNotes {
     if (inside) this.switched = false;
   }
 
+  /** Item 471: when `tick` could next answer differently without another
+   *  drag event — the switch's 300 ms, or the hold going stale — so the
+   *  sidebar sets one timer for then instead of polling; null when idle.
+   *  A time already past is not one (a switch the tab was not Chats for,
+   *  a hold already stale and ticked): only a drag event changes those.
+   *  Times are just past each edge (`tick` compares with `>=` and `>`). */
+  wakeAt(now: number): number | null {
+    const stale = this.hold.staleAt();
+    if (stale === null) return null;
+    const switchAt = !this.switched && this.since !== null ? this.since + this.delayMs : Infinity;
+    const next = Math.min(...[switchAt, stale + 1].filter((t) => t > now));
+    return Number.isFinite(next) ? next : null;
+  }
+
   /** What to show now, given the tab showing: `"notes"` once a file has
    *  been held over Chats for `delayMs`, `"chats"` once a drag that
    *  switched has gone, else null (leave it). */
