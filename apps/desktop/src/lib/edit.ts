@@ -126,11 +126,19 @@ export function blockElisions(events: SessionEvent[]): Set<number>[] {
  * nothing has touched (and for anything that is not a reply). What the
  * navigator's bubble and an undo of a block edit read; `Session::reply_text`.
  */
-export function replyText(events: SessionEvent[], index: number): string | null {
+export function replyText(
+  events: SessionEvent[],
+  index: number,
+  // Item 482: a caller asking for every turn passes both projections in;
+  // read per call they made `displayTexts` quadratic (44 ms per call at
+  // 300 turns, several calls a tab switch).
+  allEdits: Map<number, string>[] = blockEdits(events),
+  allGone: Set<number>[] = blockElisions(events),
+): string | null {
   const e = events[index];
   if (e?.event !== "assistant_message") return null;
-  const edits = blockEdits(events)[index];
-  const gone = blockElisions(events)[index];
+  const edits = allEdits[index];
+  const gone = allGone[index];
   if (edits.size === 0 && gone.size === 0) return null;
   let out = "";
   e.blocks.forEach((b, n) => {
@@ -148,7 +156,9 @@ export function replyText(events: SessionEvent[], index: number): string | null 
  */
 export function displayTexts(events: SessionEvent[]): (string | null)[] {
   const texts = editTexts(events);
-  return texts.map((t, i) => t ?? replyText(events, i));
+  const edits = blockEdits(events);
+  const gone = blockElisions(events);
+  return texts.map((t, i) => t ?? replyText(events, i, edits, gone));
 }
 
 /**
