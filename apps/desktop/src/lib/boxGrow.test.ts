@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { growHeight, linesHeight, overflows, roomForBox } from "./boxGrow";
+import { caretAtEnd, growHeight, linesHeight, measureHeld, overflows, roomForBox } from "./boxGrow";
 
 /**
  * The aside box's grow rule (backlog 226, his "three or four lines max
@@ -76,5 +76,67 @@ describe("roomForBox (backlog 233)", () => {
     const dragged = 400;
     const room = roomForBox(450, 43, 10, 43, one);
     expect(Math.min(growHeight(need(2), dragged, dragged), room)).toBe(354);
+  });
+});
+
+describe("measureHeld (item 469: typing in a full box scrolled the chat up)", () => {
+  /** A box whose scrollHeight is `need` once its height is auto, and whose
+   *  scroll a one-line height clamps to 0, as a textarea's is. */
+  function fakes(need: number, top: number) {
+    const seen: string[] = [];
+    const hold = { style: { height: "" }, offsetHeight: 420 };
+    const box = {
+      _h: "320px",
+      _top: top,
+      style: {} as { height: string },
+      get scrollHeight() {
+        // What the measure saw around it: the holder's height at the read.
+        seen.push(hold.style.height);
+        return need;
+      },
+      get scrollTop() {
+        return this._top;
+      },
+      set scrollTop(v: number) {
+        this._top = v;
+      },
+    };
+    Object.defineProperty(box.style, "height", {
+      get: () => box._h,
+      set: (v: string) => {
+        box._h = v;
+        if (v === "auto") box._top = 0;
+      },
+    });
+    return { box, hold, seen };
+  }
+
+  it("holds the composer's height while the box is one line, then lets it go", () => {
+    const { box, hold, seen } = fakes(500, 0);
+    const need = measureHeld(box, hold, (n) => `${Math.min(n, 320)}px`);
+    expect(need).toBe(500);
+    expect(seen).toEqual(["420px"]);
+    expect(hold.style.height).toBe("");
+    expect(box.style.height).toBe("320px");
+  });
+
+  it("puts the box's own scroll back after the one-line moment", () => {
+    const { box, hold } = fakes(657, 337);
+    measureHeld(box, hold, () => "320px");
+    expect(box.scrollTop).toBe(337);
+  });
+
+  it("measures as before with nothing to hold", () => {
+    const { box } = fakes(80, 0);
+    expect(measureHeld(box, null, (n) => `${n}px`)).toBe(80);
+    expect(box.style.height).toBe("80px");
+  });
+});
+
+describe("caretAtEnd (item 469)", () => {
+  it("is a collapsed caret after the last character only", () => {
+    expect(caretAtEnd(10, 10, 10)).toBe(true);
+    expect(caretAtEnd(9, 9, 10)).toBe(false);
+    expect(caretAtEnd(4, 10, 10)).toBe(false);
   });
 });

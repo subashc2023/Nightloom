@@ -26,6 +26,9 @@
   import WaitingMoon from "./WaitingMoon.svelte";
   import { prepareRewind } from "./messageMotion";
   import { asideWait, quietLabel } from "./asideWait";
+  import { requestReply } from "./replyQuote.svelte";
+  import { selectionText } from "./asideQuote";
+  import { asideDraftKey } from "./asides";
 
   /**
    * An aside's exchanges, drawn as the chat's turns are (nightshift backlog
@@ -84,6 +87,59 @@
   const wait = $derived(asking ? asideWait(asking, now) : null);
 
   let threadEl = $state<HTMLElement | null>(null);
+
+  /*
+   * Reply in an aside (item 481, his "why can't you reply in an aside"):
+   * text selected in the thread — an answer or his question — offers the
+   * chat's Reply pill; Reply quotes it into this aside's own follow-up box
+   * at its caret, in the chat's quote form (`requestReply` with the
+   * aside's draft key; `insertQuote`, item 453's `tightenDisplayMath`),
+   * equations as their `$…$` source (`selectionText`). Only while the
+   * thread takes follow-ups (`open`).
+   */
+  let replyPill = $state<{ top: number; left: number } | null>(null);
+  function threadPassage(): { range: Range; text: string } | null {
+    const sel = document.getSelection();
+    if (!threadEl || !sel || sel.isCollapsed || sel.rangeCount === 0) return null;
+    const inProse = (n: Node | null) => {
+      const el = n && (n.nodeType === Node.ELEMENT_NODE ? (n as Element) : n.parentElement);
+      const prose = el?.closest(".markdown, .user-text");
+      return !!prose && threadEl!.contains(prose);
+    };
+    if (!inProse(sel.anchorNode) || !inProse(sel.focusNode)) return null;
+    const range = sel.getRangeAt(0);
+    const text = selectionText(range);
+    return text ? { range, text } : null;
+  }
+  function placeReplyPill(): void {
+    const p = open && !aside.draft ? threadPassage() : null;
+    if (!p || !threadEl) {
+      replyPill = null;
+      return;
+    }
+    const r = p.range.getBoundingClientRect();
+    const t = threadEl.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) {
+      replyPill = null;
+      return;
+    }
+    // Above the selection when there is room in the thread, else below it.
+    const above = r.top - t.top >= REPLY_PILL_H + 4;
+    const top = above ? r.top - t.top - REPLY_PILL_H - 4 : r.bottom - t.top + 4;
+    const left = Math.min(Math.max(r.left - t.left + r.width / 2, 40), t.width - 40);
+    replyPill = { top, left };
+  }
+  const REPLY_PILL_H = 26;
+  function replyInAside(): void {
+    const p = threadPassage();
+    document.getSelection()?.removeAllRanges();
+    replyPill = null;
+    if (p) requestReply(p.text, asideDraftKey(aside));
+  }
+  $effect(() => {
+    document.addEventListener("selectionchange", placeReplyPill);
+    return () => document.removeEventListener("selectionchange", placeReplyPill);
+  });
   /** The box the thread scrolls in (the card's body, the tab's view): the
    *  rewind motion's window. */
   function scrollBox(el: HTMLElement | null): HTMLElement | null {
@@ -230,6 +286,18 @@
 </script>
 
 <div class="aside-thread" bind:this={threadEl}>
+  {#if replyPill}
+    <!-- Item 481: the chat's Reply pill, over a selection in this thread;
+         mousedown is swallowed so the click keeps the selection. -->
+    <div class="reply-pill" style:top="{replyPill.top}px" style:left="{replyPill.left}px">
+      <button
+        class="reply-pill-btn"
+        use:tip={"Reply: quote the highlighted passage in this aside's follow-up, at the cursor, and keep typing after it"}
+        onmousedown={(e) => e.preventDefault()}
+        onclick={replyInAside}>Reply</button
+      >
+    </div>
+  {/if}
   {#each aside.turns as turn, i (turn.seq)}
     <div class="aside-q" data-turn={i} use:arrive={{ channel: "aside", bubble: ".user-bubble" }}>
       {#if editing?.index === i}
@@ -349,6 +417,8 @@
     flex-direction: column;
     gap: 8px;
     min-width: 0;
+    /* Item 481: the Reply pill is placed in this frame. */
+    position: relative;
     /* His bubble keeps to most of the column, as in the chat. */
     --user-bubble-max: min(560px, 88%);
   }
@@ -437,5 +507,33 @@
   .aside-err {
     color: var(--danger, #d66);
     font-size: 12.5px;
+  }
+  /* Item 481: the chat's pill (Transcript's `.aside-pill`), Reply alone. */
+  .reply-pill {
+    position: absolute;
+    transform: translateX(-50%);
+    z-index: 10;
+    display: flex;
+    white-space: nowrap;
+    border: 1px solid var(--line2);
+    border-radius: 999px;
+    background: var(--sheet);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+    overflow: hidden;
+  }
+  .reply-pill-btn {
+    display: inline-flex;
+    align-items: center;
+    padding: 5px 12px;
+    border: none;
+    background: transparent;
+    color: var(--ink);
+    font-size: 11.5px;
+    font-family: var(--sans);
+    line-height: 1.3;
+    cursor: pointer;
+  }
+  .reply-pill-btn:hover {
+    background: color-mix(in srgb, var(--ink) 8%, transparent);
   }
 </style>

@@ -4,7 +4,7 @@
   import { isImeKey } from "./imeKey";
   import Kbd from "./Kbd.svelte";
   import ResizeHandle from "./ResizeHandle.svelte";
-  import { dragHeight, growHeight, loadBoxHeight, overflows, saveBoxHeight } from "./boxGrow";
+  import { caretAtEnd, dragHeight, growHeight, loadBoxHeight, measureHeld, overflows, saveBoxHeight } from "./boxGrow";
   import { sentSinceDrag } from "./composerSize";
   import {
     app,
@@ -535,10 +535,9 @@
   function textHeight(): number {
     if (!ta) return 0;
     const was = ta.style.height;
-    ta.style.height = "auto";
-    const need = ta.scrollHeight;
-    ta.style.height = was;
-    return need;
+    // Item 469: measured with the composer's height held, so the chat
+    // above is not given the room for a moment (its scroll was clamped).
+    return measureHeld(ta, root, () => was);
   }
 
   /** The tallest the box may be dragged: most of the column, never all. */
@@ -646,12 +645,23 @@
     // sizing to its text.
     const min = floating ? 0 : Math.min(max, sentSinceDrag.floor(key, floorPx) ?? 0);
     ta.style.maxHeight = max + "px";
-    ta.style.height = "auto";
-    ta.style.height = growHeight(ta.scrollHeight, min, max) + "px";
+    // Item 469: the measure holds the composer's height (`measureHeld`),
+    // so a key typed in a full box no longer scrolls the chat up.
+    measureHeld(ta, root, (need) => growHeight(need, min, max) + "px");
     // Backlog 360: a pixel of rounding is not overflow (as the aside boxes).
     ta.style.overflowY = overflows(ta.scrollHeight, ta.clientHeight) ? "auto" : "hidden";
     // Backlog 355: a switched-to draft's place, once its height is right.
     putScrollBack();
+    // Item 469: a caret at the very end of a full box is at its foot. WebKit
+    // left a caret on an empty last line one line under the edge (23 px).
+    // Not while 355 holds a switched-to draft's place.
+    if (
+      ta instanceof HTMLTextAreaElement &&
+      document.activeElement === ta &&
+      !scrollHold.holds(key, performance.now()) &&
+      caretAtEnd(ta.selectionStart, ta.selectionEnd, ta.value.length)
+    )
+      ta.scrollTop = ta.scrollHeight;
   }
 
   // A resized window moves the 40% line.
@@ -987,9 +997,10 @@
    */
   $effect(() => {
     void replyRequest.seq;
-    // Reply is to the chat (283): an aside's box must not take the quote.
-    if (aside) return;
-    const passage = untrack(() => takeReply());
+    // ~~Reply is to the chat (283): an aside's box must not take the quote.~~
+    // Item 481 (2026-10-29): a Reply in an aside's thread is for that
+    // aside's box; each box takes only the quotes meant for it.
+    const passage = untrack(() => takeReply(aside ? key : null));
     if (passage === null) return;
     untrack(() => {
       const start = ta?.selectionStart ?? text.length;
@@ -3756,6 +3767,8 @@
     max-width: none;
   }
   .composer.aside .card {
+    /* Item 470: a rendered quote in the box sits on the card's own ground. */
+    --q-ground: var(--aside-well, var(--sheet));
     border-style: dashed;
     background: var(--aside-well, var(--sheet));
     padding: 8px 10px;

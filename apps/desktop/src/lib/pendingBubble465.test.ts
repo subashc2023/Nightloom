@@ -94,3 +94,10 @@ describe("the wiring", () => {
     expect(bubbleSource).toContain('data-mt="arrive"');
   });
 });
+
+describe("item 478: the taken mid-turn bubble sits where his messages sit", () => {
+  it("the turns' column is a container, and the taken bubble spans it (measured: right edge 930 = his bubbles' 930, was 810)", () => {
+    expect(transcriptSource).toMatch(/\.inner \{[^}]*container: turns \/ inline-size;/);
+    expect(bubbleSource).toMatch(/@container turns \(min-width: 0px\) \{\s*\.midturn:not\(\.pending\) \{\s*width: 100cqw;/);
+  });
+});

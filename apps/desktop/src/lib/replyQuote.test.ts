@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   hasQuoteLine,
+  quoteNeedsRender,
+  quoteRuns,
   insertQuote,
   mirrorLines,
   pillParts,
@@ -115,7 +117,8 @@ describe("requestReply", () => {
   it("bumps the sequence with the passage", () => {
     const seq = replyRequest.seq;
     requestReply("p");
-    expect(replyRequest).toEqual({ seq: seq + 1, passage: "p" });
+    // Item 481: with the box it is for — null, the chat's.
+    expect(replyRequest).toEqual({ seq: seq + 1, passage: "p", target: null });
   });
   it("is taken once", () => {
     requestReply("q");
@@ -167,5 +170,62 @@ describe("the selection pill (item 223)", () => {
     const pill = transcriptSrc.slice(transcriptSrc.indexOf('<div class="aside-pill"'));
     expect(pill).toMatch(/^<div class="aside-pill"[^>]*>\s*(<!--[\s\S]*?-->\s*)?\{#each pillParts\(canAsk\)/);
     expect(pill).toMatch(/class="pill-div"/);
+  });
+});
+
+describe("quoteRuns and quoteNeedsRender (item 470: a reply's maths in the box)", () => {
+  const draft = [
+    "> $$\\begin{aligned}",
+    "> A(\\overline{A}+B) + AB &= A\\overline{A} + AB + AB && \\text{T8}\\\\",
+    "> &= AB && \\text{T3}'",
+    "> \\end{aligned}$$",
+    "",
+    "Okay what I did was",
+    "> a plain quote",
+  ].join("\n");
+
+  it("finds each run's lines, its range in the draft and its text without markers", () => {
+    const runs = quoteRuns(draft);
+    expect(runs.map((r) => [r.first, r.last])).toEqual([
+      [0, 3],
+      [6, 6],
+    ]);
+    expect(draft.slice(runs[0]!.start, runs[0]!.end).split("\n")).toHaveLength(4);
+    expect(draft.slice(runs[0]!.start, runs[0]!.end).endsWith("\\end{aligned}$$")).toBe(true);
+    expect(runs[0]!.src.startsWith("$$\\begin{aligned}\nA(")).toBe(true);
+    expect(runs[1]!).toMatchObject({ src: "a plain quote", end: draft.length });
+  });
+
+  it("renders a quote with maths or Markdown, keeps a plain one line for line", () => {
+    expect(quoteNeedsRender("$$x^2$$")).toBe(true);
+    expect(quoteNeedsRender("inline \\(x\\) maths")).toBe(true);
+    expect(quoteNeedsRender("some **bold** words")).toBe(true);
+    expect(quoteNeedsRender("- a list item")).toBe(true);
+    expect(quoteNeedsRender("a plain quote, nothing to typeset")).toBe(false);
+  });
+
+  it("leaves the text sent unchanged: the runs are read from it, never written", () => {
+    const before = draft;
+    quoteRuns(draft);
+    expect(draft).toBe(before);
+  });
+});
+
+describe("Reply in an aside (item 481): a quote goes only to the box it is for", () => {
+  it("the chat's box takes the chat's Reply, not an aside's", () => {
+    requestReply("from the aside", "aside:w1");
+    expect(takeReply(null)).toBeNull();
+    expect(takeReply("aside:w2")).toBeNull();
+    expect(takeReply("aside:w1")).toBe("from the aside");
+    expect(takeReply("aside:w1")).toBeNull();
+  });
+  it("an aside's box does not take the chat's Reply", () => {
+    requestReply("from the chat");
+    expect(takeReply("aside:w1")).toBeNull();
+    expect(takeReply()).toBe("from the chat");
+  });
+  it("the aside's quote is the chat's quote form (item 453)", () => {
+    const r = insertQuote("", 0, 0, "Before.\n\n$$x^2$$\n\nAfter.");
+    expect(r.text).toBe("> Before.\n> $$x^2$$\n> After.\n\n");
   });
 });

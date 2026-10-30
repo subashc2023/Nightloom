@@ -137,7 +137,8 @@ describe("355: the wiring", () => {
   it("the composer holds a switched-to key's scroll, puts it back on each re-measure, and records his scrolls", () => {
     expect(composerSrc).toContain("scrollHold.start(k, performance.now());");
     // Within a few lines of the re-measure (360's overflowY line sits between).
-    expect(composerSrc).toMatch(/ta\.style\.height = growHeight\([^\n]*\n(?:[^\n]*\n){1,4}\s*putScrollBack\(\);/);
+    // Item 469: the re-measure is `measureHeld`'s, with the composer held.
+    expect(composerSrc).toMatch(/measureHeld\(ta, root, \(need\) => growHeight\([^\n]*\n(?:[^\n]*\n){1,4}\s*putScrollBack\(\);/);
     expect(composerSrc).toContain("onscrollcapture={recordScroll}");
     for (const ev of ["onkeydowncapture", "onbeforeinputcapture", "onwheel"])
       expect(composerSrc).toContain(`${ev}={() => scrollHold.release()}`);

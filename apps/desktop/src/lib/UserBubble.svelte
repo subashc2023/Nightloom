@@ -3,7 +3,8 @@
   import { tip } from "./tip";
   import { badgeOf } from "./attachKinds";
   import { decodeText, pastedLabel } from "./pasteAttach";
-  import { splitQuotes } from "./replyQuote.svelte";
+  import { quoteNeedsRender, splitQuotes } from "./replyQuote.svelte";
+  import { renderReply } from "./markdown";
   import { splitFences } from "./codeDetect";
   import { languageOf, segments } from "./codeHighlight";
   import KeepButton from "./KeepButton.svelte";
@@ -159,7 +160,7 @@
          quotes where they sit in his words. -->
     <!-- Item 315: a ``` fenced block is drawn as code, coloured, its
          language on a label; the rest of his words stay plain text. -->
-    <div class="user-text">{#each splitFences(text) as part, p (p)}{#if part.kind === "code"}<div class="user-code"><span class="user-code-lang mono">{languageOf(part.info)?.label ?? (part.info || "code")}</span><pre><code>{#each segments(part.code, part.info) as sg, j (j)}<span class={sg.cls}>{sg.text}</span>{/each}</code></pre></div>{:else}{#each splitQuotes(part.text) as seg, k (k)}{#if seg.kind === "quote"}<blockquote class="user-quote">{seg.text}</blockquote>{:else}{seg.text}{/if}{/each}{/if}{/each}</div>
+    <div class="user-text">{#each splitFences(text) as part, p (p)}{#if part.kind === "code"}<div class="user-code"><span class="user-code-lang mono">{languageOf(part.info)?.label ?? (part.info || "code")}</span><pre><code>{#each segments(part.code, part.info) as sg, j (j)}<span class={sg.cls}>{sg.text}</span>{/each}</code></pre></div>{:else}{#each splitQuotes(part.text) as seg, k (k)}{#if seg.kind === "quote" && quoteNeedsRender(seg.text)}<blockquote class="user-quote markdown rendered">{@html renderReply(seg.text)}</blockquote>{:else if seg.kind === "quote"}<blockquote class="user-quote">{seg.text}</blockquote>{:else}{seg.text}{/if}{/each}{/if}{/each}</div>
   {/if}
   {@render extra?.()}
 </div>
@@ -219,6 +220,17 @@
     padding: 0.1rem 0 0.1rem 0.7rem;
     border-left: 3px solid var(--accent);
     color: var(--dim);
+  }
+  /* Item 470: a quote with maths or Markdown in it, typeset as the reply
+     it came from was. */
+  .user-quote.rendered {
+    white-space: normal;
+  }
+  .user-quote.rendered :global(p) {
+    margin: 0.2em 0;
+  }
+  .user-quote.rendered :global(.katex-display) {
+    margin: 0.3em 0;
   }
   .user-images {
     display: flex;

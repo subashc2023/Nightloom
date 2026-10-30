@@ -14,6 +14,43 @@ export function growHeight(need: number, floor: number, cap: number): number {
   return Math.max(floor, Math.min(need, Math.max(cap, floor)));
 }
 
+/**
+ * Measure what a box's text asks for without moving anything around it
+ * (nightshift item 469, 2026-10-29). The measure sets the box's height to
+ * `auto` and reads its `scrollHeight`; for that moment the box is one line
+ * tall, and a layout forced by the read shrinks everything it sits in. The
+ * composer under the transcript gave the transcript that room: a chat at
+ * its foot had its scroll clamped up by the box's height less a line (294
+ * px in the harness for a full box) and stayed there, so every key typed
+ * or deleted in a full box "slightly scrolled the chat up". `hold` (the
+ * composer's outer element) keeps its height through the measure, so the
+ * collapse stays inside it. The box's own scroll is put back too: the
+ * one-line moment clamps it, and a caret on an empty last line was left
+ * a line below the box's edge (23 px in the harness). `apply` gives the
+ * height the box ends at. Returns the height the text asked for.
+ */
+export function measureHeld(
+  box: { readonly style: { height: string }; readonly scrollHeight: number; scrollTop: number },
+  hold: { readonly style: { height: string }; readonly offsetHeight: number } | null,
+  apply: (need: number) => string,
+): number {
+  const held = hold ? hold.style.height : "";
+  const top = box.scrollTop;
+  if (hold) hold.style.height = `${hold.offsetHeight}px`;
+  box.style.height = "auto";
+  const need = box.scrollHeight;
+  box.style.height = apply(need);
+  if (hold) hold.style.height = held;
+  if (box.scrollTop !== top) box.scrollTop = top;
+  return need;
+}
+
+/** A collapsed caret after the last character (item 469): the box's foot
+ *  is where he is typing. Pure. */
+export function caretAtEnd(start: number, end: number, length: number): boolean {
+  return start === end && end === length;
+}
+
 /** The box's height for `lines` lines of text: the lines plus the box's
  *  own padding and border (`chrome`), for a border-box textarea. Pure. */
 export function linesHeight(lineHeight: number, lines: number, chrome: number): number {

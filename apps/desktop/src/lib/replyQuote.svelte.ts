@@ -104,6 +104,48 @@ export function quoteLine(line: string): { marker: string; rest: string } | null
 
 export type MirrorLine = { quote: boolean; marker: string; rest: string };
 
+/** A run of quote lines in a draft (item 470): its first and last line
+ *  (0-based), the character range it covers in the draft (`end` at the
+ *  last line's end), and its text without the markers — what renders. */
+export type QuoteRun = { first: number; last: number; start: number; end: number; src: string };
+
+/** The draft's quote runs, top to bottom (item 470). Pure. */
+export function quoteRuns(text: string): QuoteRun[] {
+  const out: QuoteRun[] = [];
+  let at = 0;
+  let cur: QuoteRun | null = null;
+  let rests: string[] = [];
+  text.split("\n").forEach((line, i) => {
+    const q = quoteLine(line);
+    if (q) {
+      if (!cur) {
+        cur = { first: i, last: i, start: at, end: at + line.length, src: "" };
+        rests = [];
+      }
+      cur.last = i;
+      cur.end = at + line.length;
+      rests.push(q.rest);
+    } else if (cur) {
+      cur.src = rests.join("\n");
+      out.push(cur);
+      cur = null;
+    }
+    at += line.length + 1;
+  });
+  if (cur) {
+    (cur as QuoteRun).src = rests.join("\n");
+    out.push(cur);
+  }
+  return out;
+}
+
+/** Whether a quote's text reads differently rendered (item 470: a reply's
+ *  maths showed as its TeX): maths, or Markdown's marks — emphasis, code,
+ *  a heading, a list. A plain quote keeps the line-for-line look. Pure. */
+export function quoteNeedsRender(src: string): boolean {
+  return /\$|\\\(|\\\[|\*\*|__|`|^#{1,6} |^\s*[-*+] |^\s*\d+\. /m.test(src);
+}
+
 /**
  * The composer's draft, line by line, for the layer drawn behind its
  * textarea (item 223): a quote line is styled as the bubble draws it while
@@ -162,19 +204,23 @@ export function splitQuotes(text: string): QuoteSegment[] {
   return out;
 }
 
-/** The pending reply: the transcript sets it, the composer takes it. */
-export const replyRequest = $state<{ seq: number; passage: string }>({ seq: 0, passage: "" });
+/** The pending reply: the transcript sets it, the composer takes it.
+ *  `target` (item 481): the box it is for — null for the chat's, an
+ *  aside's draft key for that aside's follow-up box. */
+export const replyRequest = $state<{ seq: number; passage: string; target: string | null }>({ seq: 0, passage: "", target: null });
 
-export function requestReply(passage: string): void {
+export function requestReply(passage: string, target: string | null = null): void {
   replyRequest.passage = passage;
+  replyRequest.target = target;
   replyRequest.seq += 1;
 }
 
-/** The pending passage, once: a second composer (or a re-run effect)
- *  finds nothing and inserts nothing. */
-export function takeReply(): string | null {
+/** The pending passage, once, for the box it names (`target`; null is the
+ *  chat's): a second composer, another box or a re-run effect finds
+ *  nothing and inserts nothing. */
+export function takeReply(target: string | null = null): string | null {
   const p = replyRequest.passage;
-  if (!p) return null;
+  if (!p || replyRequest.target !== target) return null;
   replyRequest.passage = "";
   return p;
 }
