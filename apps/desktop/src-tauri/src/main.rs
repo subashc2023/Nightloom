@@ -1266,6 +1266,16 @@ fn build_chat(
                     spec.project_id.clone(),
                 )));
         }
+        // The note organisers (item 472): list, make a folder, move — over
+        // the vault, on the knowledge switch, for a chat that writes. The
+        // writers are `Mutating`, so they pass the approval gate as a file
+        // write does.
+        if let Some(vault) = spec.knowledge.clone()
+            && !spec.mode.writes_nothing()
+        {
+            chat.tools
+                .extend(nightloom_service::tools::notes::note_tools(vault));
+        }
         if let Some(chats) = &spec.chats {
             chat.tools
                 .push(Box::new(nightloom_service::tools::SearchChats::new(
@@ -2115,6 +2125,9 @@ async fn connect_agent_body(
     // headless, can only decline (nightshift blocker 050; `AgentSpec::add_dirs`
     // says what the grant covers).
     spec.add_dirs = knowledge.iter().cloned().collect();
+    // The same grant names the folder the note organisers work in (item
+    // 472, `--notes` below).
+    let notes_root = knowledge.clone();
     // The extra folders (nightshift backlog 143): the project's and the
     // chat's own, each granted the same way — readable without a prompt,
     // edits under the permission mode (`external`, the CLI's permissions
@@ -2397,6 +2410,12 @@ async fn connect_agent_body(
             // chats, memory or Notion either; the fetch stays.
             if incognito {
                 args.push("--incognito".into());
+            }
+            // The vault this chat was granted, for the note organisers
+            // (item 472); none for an incognito chat, which has no vault.
+            if let Some(dir) = &notes_root {
+                args.push("--notes".into());
+                args.push(dir.to_string_lossy().into_owned());
             }
             // The chat's folder, for `send_file` (nightshift backlog 343).
             args.push("--root".into());

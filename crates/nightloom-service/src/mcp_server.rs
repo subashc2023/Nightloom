@@ -207,6 +207,10 @@ const OWN_EFFECTS: &[(&str, Effect)] = &[
     ("mark_file", Effect::Session),
     // Runs a command of the model's (nightshift item 430): what Bash is.
     ("preview", Effect::Mutating),
+    // The note organisers (item 472), served with `--notes`.
+    (crate::tools::notes::LIST_NAME, Effect::ReadOnly),
+    (crate::tools::notes::FOLDER_NAME, Effect::Mutating),
+    (crate::tools::notes::MOVE_NAME, Effect::Mutating),
 ];
 
 /// The effect of a call by the name the CLI reports it under: this
@@ -253,6 +257,14 @@ fn instructions_for(tools: &[Box<dyn Tool>]) -> String {
         .any(|t| t.def().name == crate::tools::mark_file::NAME)
     {
         out.push_str(MARK_FILE_INSTRUCTION);
+    }
+    // Item 472: present only when the organisers are served.
+    if tools
+        .iter()
+        .any(|t| t.def().name == crate::tools::notes::MOVE_NAME)
+    {
+        out.push(' ');
+        out.push_str(&crate::tools::notes::prompt_sentence(|n| n.to_string()));
     }
     out
 }
@@ -1071,6 +1083,12 @@ pub async fn serve(
             )));
         }
     }
+    // The note organisers (item 472): over the vault the desktop granted
+    // this chat, for a chat that writes — never a dream's, an incognito
+    // one's (whose `remember` is off) or the note editor's.
+    if let (Some(dir), None, true) = (&args.notes, &args.dream, args.remember) {
+        tools.extend(crate::tools::notes::note_tools(dir.clone()));
+    }
     // `preview` (nightshift item 430): the desktop's socket, the chat and
     // its folder all named — never for a dream.
     if let (Some(sock), Some(chat), Some(root), None) =
@@ -1121,6 +1139,10 @@ pub struct ServeArgs {
     /// The note editor's server (`--rename-note <json>`, item 460): serves
     /// `rename_note` for that one note, alone.
     pub rename: Option<crate::note_edit::RenameServe>,
+    /// The knowledge vault a chat was granted (`--notes <dir>`, item 472):
+    /// with it, and for a chat that writes, `list_notes`,
+    /// `make_note_folder` and `move_notes` are served over that folder.
+    pub notes: Option<PathBuf>,
 }
 
 impl ServeArgs {
@@ -1135,6 +1157,7 @@ impl ServeArgs {
             preview: None,
             preview_chat: None,
             rename: None,
+            notes: None,
         }
     }
 
@@ -1149,6 +1172,7 @@ impl ServeArgs {
             preview: None,
             preview_chat: None,
             rename: None,
+            notes: None,
         }
     }
 }
@@ -1383,6 +1407,11 @@ pub fn parse_args(args: &[String]) -> Result<ServeArgs, String> {
                 .next()
                 .ok_or_else(|| "--preview-chat needs the chat's id".to_string())?;
             out.preview_chat = Some(id.clone());
+        } else if arg == "--notes" {
+            let dir = it
+                .next()
+                .ok_or_else(|| "--notes needs the knowledge folder".to_string())?;
+            out.notes = Some(PathBuf::from(dir));
         } else if arg == "--rename-note" {
             let json = it
                 .next()
@@ -1400,7 +1429,7 @@ pub fn parse_args(args: &[String]) -> Result<ServeArgs, String> {
             out.remember = false;
         } else {
             return Err(format!(
-                "unknown argument {arg:?}; the flags are --project <id>, --no-remember, --incognito, --ask, --root <dir>, --preview <socket>, --preview-chat <id> and --dream <json>"
+                "unknown argument {arg:?}; the flags are --project <id>, --no-remember, --incognito, --ask, --root <dir>, --preview <socket>, --preview-chat <id>, --notes <dir> and --dream <json>"
             ));
         }
     }
@@ -2153,6 +2182,70 @@ mod tests {
         assert!(listed[0].path.ends_with("plan.md"));
     }
 
+    /// Item 472: `--notes <dir>` serves the note organisers over that
+    /// folder to a chat that writes, with the sentence that says so; a chat
+    /// that writes nothing gets neither. A call over the wire moves a note
+    /// in the fixture vault.
+    #[tokio::test]
+    async fn the_note_organisers_are_served_with_notes_to_a_chat_that_writes() {
+        let (config, id) = fixture("notes-tools");
+        let vault = config.join("fixture-vault");
+        std::fs::create_dir_all(&vault).unwrap();
+        std::fs::write(vault.join("alice.md"), b"# alice").unwrap();
+        assert_eq!(
+            parse_args(&["--notes".to_string(), "/v".to_string()])
+                .unwrap()
+                .notes,
+            Some(PathBuf::from("/v"))
+        );
+        for remember in [true, false] {
+            let (client_side, server_side) = tokio::io::duplex(1 << 16);
+            let (sr, sw) = tokio::io::split(server_side);
+            let args = ServeArgs {
+                remember,
+                notes: Some(vault.clone()),
+                ..ServeArgs::for_project(Some(id.clone()))
+            };
+            let cfg = config.clone();
+            tokio::spawn(async move { serve(cfg, args, sr, sw).await.unwrap() });
+            let (r, mut w) = tokio::io::split(client_side);
+            let mut lines = BufReader::new(r).lines();
+            send(
+                &mut w,
+                r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+            )
+            .await;
+            let init = recv(&mut lines).await;
+            let says = init["result"]["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("move_notes to move or rename");
+            assert_eq!(says, remember, "{init}");
+            send(&mut w, r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#).await;
+            let list = recv(&mut lines).await;
+            let names: Vec<&str> = list["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|t| t["name"].as_str())
+                .collect();
+            for n in ["list_notes", "make_note_folder", "move_notes"] {
+                assert_eq!(names.contains(&n), remember, "{n}: {names:?}");
+            }
+            if remember {
+                send(
+                    &mut w,
+                    r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"move_notes","arguments":{"moves":[{"from":"alice.md","to":"people/"}]}}}"#,
+                )
+                .await;
+                let reply = recv(&mut lines).await;
+                assert_eq!(reply["result"]["isError"], false, "{reply}");
+            }
+        }
+        assert!(vault.join("people/alice.md").is_file());
+        assert!(!vault.join("alice.md").exists());
+    }
+
     #[test]
     fn the_flag_parses_both_spellings_and_nothing_else() {
         let args = |s: &[&str]| s.iter().map(|a| a.to_string()).collect::<Vec<_>>();
@@ -2554,6 +2647,7 @@ mod tests {
                 name: "n.md".into(),
             },
         )));
+        served.extend(crate::tools::notes::note_tools(config.clone()));
         for tool in &served {
             let name = tool.def().name;
             assert_eq!(
