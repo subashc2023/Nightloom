@@ -690,11 +690,26 @@ pub fn port_answers(port: u16) -> bool {
         .is_ok()
 }
 
-/// Whether the port is taken: something answers on it, or it cannot be
-/// bound. Both, because a listener on the wildcard address does not stop
-/// a bind of 127.0.0.1 with `SO_REUSEADDR` on macOS.
+/// Whether the port is taken: something answers on it, on either loopback
+/// (a listener on the wildcard address answers on both).
+///
+/// ~~2026-10-27 (item 430): "or it cannot be bound" — a trial bind of
+/// 127.0.0.1 as well.~~ 2026-10-29 (item 473): no trial bind. macOS has no
+/// atomic close-on-exec for a new socket (`SOCK_CLOEXEC` is Linux's): Rust
+/// makes the socket, then marks it a moment later, and a child another
+/// thread spawns in that moment — a preview's server, its watchdog, the
+/// CLI — inherits it unmarked and keeps it past exec. The trial bind's
+/// socket is a listener on the very port asked for, so a child that
+/// caught it held the port bound and listening after the check had
+/// dropped it, for the child's whole life, and the next start read "already
+/// in use on this Mac" with nothing of his on it (measured with `lsof`:
+/// one listening socket shared by two other previews' servers, a watchdog
+/// shell and its `sleep`; 9 runs in 15 under load). Asking by connecting
+/// leaves no socket on the port to inherit. What the bind also caught — a
+/// socket bound to the port but not listening — the server's own bind
+/// still refuses, and the chip shows its "Address already in use" line.
 pub fn port_busy(port: u16) -> bool {
-    port_answers(port) || std::net::TcpListener::bind(("127.0.0.1", port)).is_err()
+    port_answers(port)
 }
 
 async fn wait_port_free(port: u16, within: Duration) {
@@ -1261,23 +1276,38 @@ impl Tool for PreviewTool {
 mod tests {
     use super::*;
 
+    /// A port nothing answers on, found without making a socket on it
+    /// (item 473): ~~a bind of port 0~~ — that listener, caught by another
+    /// test's child in the moment before it is marked close-on-exec, stayed
+    /// listening in that child and the test read its own fresh port as
+    /// "already in use" (see `port_busy`). Ports below macOS's ephemeral
+    /// range (49152 up), so no outgoing connection is ever given one; a
+    /// random start and a step per call keep this process's ports apart
+    /// and away from another test run's.
     fn free_port() -> u16 {
-        std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port()
+        use std::sync::atomic::AtomicU16;
+        static NEXT: AtomicU16 = AtomicU16::new(0);
+        let _ = NEXT.compare_exchange(
+            0,
+            20_000 + (uuid::Uuid::new_v4().as_u128() % 20_000) as u16,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        );
+        loop {
+            let p = NEXT.fetch_add(1, Ordering::SeqCst);
+            let p = 20_000 + p.wrapping_sub(20_000) % 25_000;
+            if !port_answers(p) {
+                return p;
+            }
+        }
     }
 
-    /// One server test at a time. Run side by side they saw a start's
-    /// port check read a fresh port as busy now and then (1 to 5 runs in
-    /// 15 once item 445's tests were added, 2026-10-28; cause not found —
-    /// the port was free again a moment later). Each test holds this for
-    /// its length.
-    fn serial() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: Mutex<()> = Mutex::new(());
-        LOCK.lock().unwrap_or_else(|e| e.into_inner())
-    }
+    // The server tests run side by side again (item 473). ~~2026-10-28:
+    // one at a time behind a shared lock, since a start's port check read
+    // a fresh port as busy 1 to 5 runs in 15, cause not found.~~ The cause
+    // (2026-10-29): another test's child inherited the port's listener in
+    // the moment before Rust marks a new socket close-on-exec, and held it
+    // (see `port_busy`).
 
     fn tmp(tag: &str) -> PathBuf {
         let dir =
@@ -1296,7 +1326,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_start_answers_once_the_port_does_and_keeps_the_log() {
-        let _serial = serial();
         let p = previews();
         let dir = tmp("start");
         std::fs::write(dir.join("index.html"), "hello 430").unwrap();
@@ -1317,7 +1346,6 @@ mod tests {
     /// before, during and after.
     #[tokio::test]
     async fn a_preview_survives_a_turn_ending() {
-        let _serial = serial();
         let p = previews();
         let dir = tmp("turn");
         let port = free_port();
@@ -1331,7 +1359,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_stop_ends_the_whole_group_and_frees_the_port() {
-        let _serial = serial();
         let p = previews();
         let dir = tmp("stop");
         let port = free_port();
@@ -1350,7 +1377,6 @@ mod tests {
 
     #[tokio::test]
     async fn shutdown_kills_every_preview() {
-        let _serial = serial();
         let p = previews();
         let dir = tmp("quit");
         let (a, b) = (free_port(), free_port());
@@ -1378,7 +1404,6 @@ mod tests {
     /// The app gone without its exit (a crash): the watchdog ends the group.
     #[tokio::test]
     async fn the_watchdog_ends_a_preview_whose_app_is_gone() {
-        let _serial = serial();
         let mut fake_app = std::process::Command::new("sleep")
             .arg("30")
             .spawn()
@@ -1403,7 +1428,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_port_in_use_is_refused_before_anything_runs() {
-        let _serial = serial();
         let p = previews();
         let dir = tmp("clash");
         let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1436,7 +1460,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_restart_replaces_the_chats_preview_on_the_same_port() {
-        let _serial = serial();
         let p = previews();
         let dir = tmp("restart");
         let port = free_port();
@@ -1454,7 +1477,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_command_that_dies_says_so_with_its_log() {
-        let _serial = serial();
         let p = previews();
         let dir = tmp("dies");
         let port = free_port();
@@ -1474,7 +1496,6 @@ mod tests {
 
     #[tokio::test]
     async fn the_log_keeps_the_last_two_hundred_lines() {
-        let _serial = serial();
         let p = previews();
         let dir = tmp("log");
         let port = free_port();
@@ -1496,7 +1517,6 @@ mod tests {
     /// previews the desktop owns.
     #[tokio::test]
     async fn the_tool_reaches_the_desktop_over_its_socket() {
-        let _serial = serial();
         let p = previews();
         let dir = tmp("socket");
         // A socket path must fit `sun_path` (104 bytes on macOS), and the
@@ -1584,7 +1604,6 @@ mod tests {
     /// short folder, and the socket there binds and answers.
     #[tokio::test]
     async fn a_long_home_binds_its_socket_in_the_short_folder() {
-        let _serial = serial();
         let long = tmp(&"h".repeat(120));
         assert!(
             !socket_path_fits(&socket_path(&long)),
@@ -1633,7 +1652,6 @@ mod tests {
     /// again with the same command and port.
     #[tokio::test]
     async fn a_preview_ended_by_the_app_is_told_once_and_restarts() {
-        let _serial = serial();
         let dir = tmp("record");
         let record = dir.join("run").join("previews.json");
         let port = free_port();
@@ -1700,7 +1718,6 @@ mod tests {
     /// a `status` reply counts as telling it.
     #[tokio::test]
     async fn a_preview_that_exited_is_told_with_its_code_and_a_status_counts() {
-        let _serial = serial();
         let p = previews();
         let dir = tmp("exit-note");
         let port = free_port();
@@ -1735,7 +1752,6 @@ mod tests {
     /// can say the preview ended with it.
     #[tokio::test]
     async fn the_apps_exit_keeps_the_record() {
-        let _serial = serial();
         let dir = tmp("exit-keeps");
         let record = dir.join("previews.json");
         let p = Arc::new(
