@@ -8,7 +8,7 @@
    */
   import { tip } from "./tip";
   import { renderMathHtml } from "./markdown";
-  import type { TypedMathSpan } from "./typedMath";
+  import { groupTypedMath, type TypedMathSpan } from "./typedMath";
 
   let {
     spans,
@@ -21,7 +21,12 @@
     ondeny: (one: TypedMathSpan | null) => void;
   } = $props();
 
-  const many = $derived(spans.length > 1);
+  /** Item 490: one chip per distinct formula; it acts on every occurrence. */
+  const groups = $derived(groupTypedMath(spans));
+  const many = $derived(groups.length > 1);
+  const several = $derived(spans.length > 1);
+  /** The chip shows exactly the text it changes: a line break or tab drawn, never collapsed. */
+  const shown = (src: string) => src.replace(/\n/g, "⏎").replace(/\t/g, "⇥");
   /** Item 479: every offer is LaTeX already, typed without its dollars —
    *  the offer is to wrap it, not to convert it. */
   const allBare = $derived(spans.length > 0 && spans.every((s) => s.bare));
@@ -32,9 +37,11 @@
   <div class="tm-bar" role="status" aria-label="Typed maths can be shown as formulas">
     <span class="tm-label dim">{allBare ? "Wrap as maths" : "Show as maths"}</span>
     <ul class="tm-list">
-      {#each spans as s (s.from + ":" + s.src)}
+      {#each groups as g (g.span.src + "\u0000" + g.span.tex)}
+        {@const s = g.span}
         <li class="tm-item" class:many>
-          <span class="tm-src mono">{s.src}</span>
+          <span class="tm-src mono">{shown(s.src)}</span>
+          {#if g.count > 1}<span class="tm-count dim" aria-label={`${g.count} times`}>×{g.count}</span>{/if}
           <span class="tm-arrow dim" aria-hidden="true">→</span>
           <!-- eslint-disable-next-line svelte/no-at-html-tags -- KaTeX output, sanitised by renderMathHtml -->
           <span class="tm-tex">{@html renderMathHtml(s.tex, false)}</span>
@@ -44,7 +51,7 @@
                 type="button"
                 class="tm-mini yes"
                 aria-label={`Use maths for ${s.src}`}
-                use:tip={"Use maths for this one"}
+                use:tip={s.close ? "Close this formula with $" : g.count > 1 ? `Use maths for all ${g.count}` : "Use maths for this one"}
                 onmousedown={(e) => e.preventDefault()}
                 onclick={() => onaccept(s)}>✓</button
               >
@@ -52,7 +59,7 @@
                 type="button"
                 class="tm-mini no"
                 aria-label={`Keep ${s.src} as typed`}
-                use:tip={"Keep this one as typed"}
+                use:tip={g.count > 1 ? `Keep all ${g.count} as typed` : "Keep this one as typed"}
                 onmousedown={(e) => e.preventDefault()}
                 onclick={() => ondeny(s)}>×</button
               >
@@ -65,10 +72,10 @@
     <button
       type="button"
       class="ns-btn small tm-use"
-      use:tip={many ? `Wrap every formula as LaTeX (${wraps}) — ⌘Z undoes it` : `Wrap it as LaTeX (${wraps}) — ⌘Z undoes it`}
+      use:tip={several ? `Wrap every formula as LaTeX (${wraps}) — ⌘Z undoes it` : `Wrap it as LaTeX (${wraps}) — ⌘Z undoes it`}
       onmousedown={(e) => e.preventDefault()}
       onclick={() => onaccept(null)}
-      >{allBare ? (many ? "Wrap all as maths" : "Wrap as maths") : many ? "Use maths for all" : "Use maths"}
+      >{allBare ? (several ? "Wrap all as maths" : "Wrap as maths") : several ? "Use maths for all" : "Use maths"}
       <span class="tm-key">Tab</span></button
     >
     <button
@@ -141,6 +148,9 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .tm-count {
+    font-size: 11px;
   }
   .tm-tex {
     color: var(--text);

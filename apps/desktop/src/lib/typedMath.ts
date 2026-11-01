@@ -18,6 +18,7 @@
  */
 
 import AsciiMathParser from "asciimath2tex";
+import katex from "katex";
 import { findBareLatex } from "./bareLatex";
 
 export interface TypedMathSpan {
@@ -33,12 +34,37 @@ export interface TypedMathSpan {
   bare?: boolean;
   /** Item 479: a bare run that is its whole line — wrapped as `$$…$$`. */
   display?: boolean;
+  /** Item 490: a formula opened with `$` and never closed (`$O (1)`, what
+   *  a cross-line accept used to leave); `tex` is the text after the `$`,
+   *  and accepting adds only the closing `$`. */
+  close?: boolean;
 }
 
 /** The delimited text a span is replaced with on accept: `$…$`, or `$$…$$`
  *  for a bare-LaTeX line (item 479). */
 export function wrapTypedMath(s: TypedMathSpan): string {
+  if (s.close) return `${s.src}$`;
   return s.display ? `$$${s.tex}$$` : `$${s.tex}$`;
+}
+
+/** Item 490: one chip per distinct formula. `span` is the first, `all`
+ *  every occurrence (accepting or keeping the chip acts on all of them). */
+export interface TypedMathGroup {
+  span: TypedMathSpan;
+  all: TypedMathSpan[];
+  count: number;
+}
+export function groupTypedMath(spans: TypedMathSpan[]): TypedMathGroup[] {
+  const by = new Map<string, TypedMathGroup>();
+  for (const s of spans) {
+    const k = `${s.src}\u0000${s.tex}\u0000${s.display ? 1 : 0}${s.close ? 1 : 0}`;
+    const g = by.get(k);
+    if (g) {
+      g.all.push(s);
+      g.count++;
+    } else by.set(k, { span: s, all: [s], count: 1 });
+  }
+  return [...by.values()];
 }
 
 let parser: AsciiMathParser | null = null;
@@ -96,6 +122,9 @@ function protectedRanges(text: string): [number, number][] {
   add(/(^|\s)--?[A-Za-z]\S*/g); // command-line flags
   add(/\b\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}\b/g); // dates
   add(/\b\d+\.\d+\.\d+\b/g); // versions
+  // Item 490: a list marker at the start of a line ("4.", "2)", "-") is the
+  // list's, never a formula's: "O(1)⏎4." once ran together as `O(1) 4`.
+  add(/^[ \t]*(\d{1,3}[.)]|[-*+•])(?=[ \t]|$)/gm);
   return out;
 }
 
@@ -110,8 +139,7 @@ interface Tok {
   next?: string;
 }
 
-function tokenize(text: string): Tok[] {
-  const prot = protectedRanges(text);
+function tokenize(text: string, prot: [number, number][] = protectedRanges(text)): Tok[] {
   const inProt = (a: number, b: number) => prot.some(([p, q]) => a < q && b > p);
   const toks: Tok[] = [];
   // A prime is maths, not a closing quote: y'', f'(x).
@@ -314,8 +342,8 @@ const SPOKEN_OPS: [string[], string][] = [
 
 const operandItem = (it: Cls | undefined) => !!it && (it.kind === "ATOM" || it.kind === "GREEK" || it.kind === "STRONG");
 
-function items(text: string): Item[] {
-  const toks = tokenize(text);
+function items(text: string, prot?: [number, number][]): Item[] {
+  const toks = tokenize(text, prot);
   const cls = toks.map((t, k) => classify({ ...t, next: toks[k + 1]?.s.toLowerCase() }));
   const low = toks.map((t) => (t.prot ? "\u0000" : t.s.toLowerCase()));
   const at = (i: number, words: string[]) => words.every((w, k) => low[i + k] === w);
@@ -564,12 +592,29 @@ function texOfRun(run: Item[]): string {
  *  every run of bare LaTeX (`bareLatex.ts`), which wins where they overlap. */
 export function findTypedMath(text: string): TypedMathSpan[] {
   if (!/[A-Za-z0-9]/.test(text)) return [];
-  const typed: TypedMathSpan[] = spansOf(items(text)).map((run) => {
-    const from = run[0].from;
-    const to = run[run.length - 1].to;
-    return { from, to, src: text.slice(from, to), tex: texOfRun(run) };
-  });
-  const bare: TypedMathSpan[] = findBareLatex(text, protectedRanges(text)).map((b) => ({
+  const prot = protectedRanges(text);
+  // Item 490: one line at a time, so a formula never runs across a line
+  // break into the next line's list number (`O(1)⏎4` read as `O(1) 4`, and
+  // accepting it joined his two lines). Protected regions are found on the
+  // whole draft (a fence spans lines) and clipped to each line.
+  const typed: TypedMathSpan[] = [];
+  let base = 0;
+  for (const line of text.split("\n")) {
+    const end = base + line.length;
+    if (/[A-Za-z0-9]/.test(line)) {
+      const lp = prot
+        .filter(([p, q]) => p < end && q > base)
+        .map(([p, q]): [number, number] => [Math.max(p, base) - base, Math.min(q, end) - base]);
+      for (const run of spansOf(items(line, lp))) {
+        const from = base + run[0].from;
+        const to = base + run[run.length - 1].to;
+        typed.push({ from, to, src: text.slice(from, to), tex: texOfRun(run) });
+      }
+    }
+    base = end + 1;
+  }
+  const opened = findUnclosedDollar(text, prot);
+  const bare: TypedMathSpan[] = findBareLatex(text, prot).map((b) => ({
     from: b.from,
     to: b.to,
     src: b.src,
@@ -577,9 +622,55 @@ export function findTypedMath(text: string): TypedMathSpan[] {
     bare: true,
     display: b.display,
   }));
-  if (bare.length === 0) return typed;
-  const free = typed.filter((t) => !bare.some((b) => t.from < b.to && t.to > b.from));
-  return [...free, ...bare].sort((a, b) => a.from - b.from);
+  const wins = [...opened, ...bare.filter((b) => !opened.some((o) => b.from < o.to && b.to > o.from))];
+  if (wins.length === 0) return typed;
+  const free = typed.filter((t) => !wins.some((b) => t.from < b.to && t.to > b.from));
+  return [...free, ...wins].sort((a, b) => a.from - b.from);
+}
+
+/**
+ * Item 490: a formula opened with `$` and left open to the end of its line
+ * — `dequeue: $O (1)`, the opening half of a wrap whose close went when he
+ * put back a line break the old cross-line accept had eaten. Offered with
+ * the closing `$` added and nothing else changed. Only the last single `$`
+ * of a line with an odd count, outside code and quotes, not a price (`$5`),
+ * followed directly by a short tail that is maths, not prose (no word of
+ * three or more letters but a LaTeX command or a function name), and that
+ * KaTeX renders.
+ */
+function findUnclosedDollar(text: string, prot: [number, number][]): TypedMathSpan[] {
+  if (!text.includes("$")) return [];
+  const out: TypedMathSpan[] = [];
+  let base = 0;
+  for (const line of text.split("\n")) {
+    const ds = [...line.matchAll(/(?<![\\$])\$(?!\$)/g)].map((m) => m.index);
+    if (ds.length % 2 === 1) {
+      const p = ds[ds.length - 1];
+      const tail = line.slice(p + 1).replace(/[\s.,;:]+$/, "");
+      const at = base + p;
+      const words = tail.match(/\\?[A-Za-z]{3,}/g) ?? [];
+      if (
+        tail &&
+        tail.length <= 40 &&
+        !/^[\s\d]/.test(tail) &&
+        words.every((w) => w.startsWith("\\") || FUNCS.has(w)) &&
+        !prot.some(([a, b]) => a <= at && at < b && !text.slice(a, b).startsWith("$")) &&
+        rendersAsTex(tail)
+      )
+        out.push({ from: at, to: at + 1 + tail.length, src: "$" + tail, tex: tail, close: true });
+    }
+    base += line.length + 1;
+  }
+  return out;
+}
+
+function rendersAsTex(tex: string): boolean {
+  try {
+    katex.renderToString(tex, { throwOnError: true });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**

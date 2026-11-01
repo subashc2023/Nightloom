@@ -917,7 +917,9 @@
     const t = text;
     const offered = one ? [one] : mathSpans;
     // Found again on the text as it stands, so the offsets are current.
-    const chosen = findTypedMath(t).filter((s) => offered.some((o) => o.src === s.src && (!one || o.from === s.from)));
+    // Item 490: one chip stands for every occurrence of its formula, so
+    // accepting it wraps them all (keeping one already keeps them all).
+    const chosen = findTypedMath(t).filter((s) => offered.some((o) => o.src === s.src && o.tex === s.tex));
     if (chosen.length === 0) {
       mathSpans = [];
       return;
