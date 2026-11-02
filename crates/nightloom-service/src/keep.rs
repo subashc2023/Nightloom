@@ -855,6 +855,7 @@ mod tests {
             &[crate::attach::FileInput {
                 name: "data.parquet".into(),
                 data: "AAEC".into(),
+                pages: None,
             }],
         )
         .unwrap();

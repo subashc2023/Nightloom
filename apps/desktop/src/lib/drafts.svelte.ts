@@ -195,7 +195,7 @@ function readQueue(v: unknown): QueuedMessage[] {
     if (q === null || typeof q !== "object") continue;
     const m = q as Record<string, unknown>;
     const text = typeof m.text === "string" ? m.text : "";
-    const attachments = Array.isArray(m.attachments) ? m.attachments.filter(isAttachment) : [];
+    const attachments = Array.isArray(m.attachments) ? m.attachments.filter(isAttachment).map(revive) : [];
     if (!text && attachments.length === 0) continue;
     out.push({ id: typeof m.id === "number" ? m.id : 0, text, attachments });
   }
@@ -214,6 +214,12 @@ function isAttachment(v: unknown): v is Attachment {
   );
 }
 
+/** A chip read back without its bytes but with a copy on disk (item 491,
+ *  `stash`): pending until `restoreStashed` fills it, so Send waits. */
+function revive(a: Attachment): Attachment {
+  return a.stash && !a.data ? { ...a, pending: true } : a;
+}
+
 /** Read the store. A malformed entry costs that entry, not the store. */
 export function loadDrafts(storage: Pick<Storage, "getItem"> = localStorage): Record<string, Draft> {
   const out: Record<string, Draft> = {};
@@ -226,7 +232,7 @@ export function loadDrafts(storage: Pick<Storage, "getItem"> = localStorage): Re
       if (v === null || typeof v !== "object") continue;
       const d = v as Record<string, unknown>;
       const text = typeof d.text === "string" ? d.text : "";
-      const attachments = Array.isArray(d.attachments) ? d.attachments.filter(isAttachment) : [];
+      const attachments = Array.isArray(d.attachments) ? d.attachments.filter(isAttachment).map(revive) : [];
       const queue = readQueue(d.queue);
       const sel = readSel(d.sel);
       const scroll = typeof d.scroll === "number" && Number.isFinite(d.scroll) && d.scroll > 0 ? d.scroll : undefined;
@@ -266,22 +272,31 @@ export function serializeDrafts(map: Record<string, Draft>): string {
     const kept: Attachment[] = [];
     for (const a of list) {
       // A chip still converting has no bytes to keep (item 277); his file
-      // is still where he dropped it from.
-      if (a.pending) continue;
+      // is still where he dropped it from. One being read back from its
+      // copy on disk (item 491) keeps its place.
+      if (a.pending && !a.stash) continue;
+      let data = a.data;
       // Pasted text (item 284) is kept like the box's text, past the caps:
       // there is no file to drop again, and the clipboard may have moved on.
       if (!a.pasted) {
-        if (a.data.length > PERSIST_ATTACHMENT_MAX || a.data.length > budget) continue;
-        budget -= a.data.length;
+        if (a.data.length > PERSIST_ATTACHMENT_MAX || a.data.length > budget) {
+          // A long PDF over the caps (item 491) is kept by its copy on
+          // disk: the chip, its pages and his route choice, no bytes.
+          if (!a.stash) continue;
+          data = "";
+        } else budget -= a.data.length;
       }
       kept.push({
         id: a.id,
         kind: a.kind,
         media_type: a.media_type,
         name: a.name,
-        data: a.data,
+        data,
         ...(a.label ? { label: a.label } : {}),
         ...(a.pasted ? { pasted: true } : {}),
+        ...(a.pages ? { pages: a.pages } : {}),
+        ...(a.whole ? { whole: true } : {}),
+        ...(a.stash ? { stash: a.stash } : {}),
       });
     }
     return kept;
@@ -508,6 +523,32 @@ function holderOf(key: string, id: number): Draft | undefined {
  *  its bytes here, and closes when there are none). */
 export function findChip(key: string, id: number): Attachment | null {
   return holderOf(key, id)?.attachments.find((a) => a.id === id) ?? null;
+}
+
+/** Every chip, box and queue alike, read back without its bytes but with a
+ *  copy on disk (item 491): what `restoreStashed` fills after a relaunch. */
+export function stashedChips(): { key: string; chip: Attachment }[] {
+  const out: { key: string; chip: Attachment }[] = [];
+  for (const [key, d] of Object.entries(drafts)) {
+    for (const chip of d.attachments) if (chip.stash && !chip.data) out.push({ key, chip });
+    for (const q of d.queue ?? []) for (const chip of q.attachments) if (chip.stash && !chip.data) out.push({ key, chip });
+  }
+  return out;
+}
+
+/** Fill, or with `null` drop, a chip `stashedChips` gave — wherever it
+ *  now sits, box or queue. */
+export function settleStashed(chip: Attachment, patch: Partial<Attachment> | null): void {
+  for (const d of Object.values(drafts)) {
+    for (const list of [d.attachments, ...(d.queue ?? []).map((q) => q.attachments)]) {
+      const i = list.findIndex((a) => a.id === chip.id);
+      if (i < 0) continue;
+      if (patch) Object.assign(list[i], patch);
+      else list.splice(i, 1);
+      schedule();
+      return;
+    }
+  }
 }
 
 /** Change a chip in place — a conversion finishing (item 277). A chip

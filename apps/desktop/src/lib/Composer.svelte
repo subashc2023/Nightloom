@@ -104,7 +104,8 @@
     type Converted,
     type LongPaste,
   } from "./pasteAttach";
-  import { badgeOf, extOf } from "./attachKinds";
+  import { badgeOf, extOf, routeLabel, type Engine } from "./attachKinds";
+  import PdfRouteSwitch from "./PdfRouteSwitch.svelte";
   import { draftImageContent, openAttachment } from "./attachments.svelte";
   import { sendTip, tip } from "./tip";
   import { armStop, stopChordLabel, stopChordTarget } from "./stopButton";
@@ -2277,6 +2278,9 @@
   // An aside runs on Claude Code only (081), so its pickers are always
   // the subscription engine's model and effort.
   const agentMode = $derived(!!aside || app.draft.engine === "claude-code");
+  /** The engine a chip's route is decided for at Send (item 491): the
+   *  connection's, as `splitChips` reads it; an aside is always Claude Code. */
+  const chipEngine = $derived<Engine>(aside || app.connection?.engine === "claude-code" ? "claude-code" : "api");
   const locked = $derived(app.busy || app.connecting);
   const mod = isMac ? "⌘" : "Ctrl+";
   const shift = isMac ? "⇧" : "Shift+";
@@ -2832,6 +2836,7 @@
               <span
                 class="file"
                 class:pending={a.pending}
+                class:long={!!routeLabel(a, chipEngine)}
                 class:kept
                 role={kept ? "button" : undefined}
                 tabindex={kept ? 0 : undefined}
@@ -2850,7 +2855,10 @@
               >
                 <span class="file-ext">{a.pending ? extOf(a.name).toUpperCase() : badgeOf(a)}</span>
                 <span class="file-name">{a.name}</span>
-                {#if a.label}<span class="file-label">{a.label}</span>{/if}
+                <!-- Item 491: a long PDF's route stands in for the label
+                     (its pages are in both; the label stays in the tip). -->
+                {#if a.label && !routeLabel(a, chipEngine)}<span class="file-label">{a.label}</span>{/if}
+                <PdfRouteSwitch chip={a} draftKey={key} engine={chipEngine} />
               </span>
             {/if}
             <button
@@ -3905,6 +3913,13 @@
     border-radius: 8px;
     background: var(--panel);
     line-height: 1.2;
+  }
+  /* Item 491: a long PDF's chip carries its route and the switch. */
+  .file.long {
+    width: 9.5rem;
+    height: auto;
+    min-height: 4rem;
+    padding-block: 0.35rem;
   }
   /* Item 459: a kept file's chip is a way to it in Notes. */
   .file.kept {

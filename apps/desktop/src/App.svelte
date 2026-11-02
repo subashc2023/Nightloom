@@ -1,6 +1,7 @@
 <script lang="ts">
   import { canLeaveProject } from "./lib/state.svelte";
   import { loadModelList } from "./lib/modelList.svelte";
+  import { restoreStashed } from "./lib/attachFiles.svelte";
   import { tip } from "./lib/tip";
   import { onMount, untrack } from "svelte";
   import {
@@ -95,6 +96,9 @@
     // The pickers' models from `model-list.json` (item 272); the built-in
     // list until it lands.
     void loadModelList();
+    // A draft's long PDF kept on disk across the relaunch (item 491) gets
+    // its bytes back; Send waits for it meanwhile.
+    void restoreStashed();
     // A launch that fails outright must not leave the launch screen up
     // over the reason (item 220).
     void init().catch((e: unknown) => {

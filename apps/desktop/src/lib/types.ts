@@ -1069,12 +1069,23 @@ export interface Attachment {
   /** An office file's own SHA-256, once converted (item 428): what Keep
    *  matches it by, since its PDF's bytes differ on every conversion. */
   source_sha256?: string;
+  /** A PDF's pages (item 491), counted at attach: over 10 on the Claude
+   *  Code engine, it goes by path for the model to read (`pdfRoute`). */
+  pages?: number;
+  /** His "Send whole" on a long PDF's chip (item 491): inline as before. */
+  whole?: boolean;
+  /** A long PDF's bytes kept on disk for the draft (item 491, the
+   *  `stash_draft_file` id), so a relaunch keeps a chip too big for the
+   *  drafts store. */
+  stash?: string;
 }
 
 /** A file for the Claude Code engine (item 277), as `send_agent` takes it. */
 export interface FileInput {
   name: string;
   data: string;
+  /** A long PDF sent by path (item 491): its pages, for the note. */
+  pages?: number;
 }
 
 /** What running a tool can touch. Classified on the backend, per tool. */

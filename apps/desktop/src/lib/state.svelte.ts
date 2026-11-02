@@ -123,6 +123,7 @@ import {
 import { SEARCH_COLUMN_MAX, searchGrowth } from "./search.svelte";
 import * as tabs from "./tabs";
 import { midTurnWire, chipsFromInputs, sendNowToast, deliveredNotice, type SendNowResult } from "./midTurn";
+import { pdfFileName, pdfRoute } from "./attachKinds";
 import { recordRelay } from "./relay.svelte";
 import { adoptPending, closeRunningRows, latestAgents, mergeRows, rowsFromLog, rowsOf } from "./subagentRows";
 import { lineText, lineView, matchTasks, type StillRunningSegment } from "./stillRunning";
@@ -8211,8 +8212,15 @@ export function asideWire(thread: Pick<Aside, "model" | "effort"> | null, chips:
   const out: AsideSendOptions = {};
   const live = chips.filter((c) => c.data && !c.pending);
   const images = live.filter((c) => c.kind === "image").map(({ media_type, data }) => ({ media_type, data }));
-  const documents = live.filter((c) => c.kind === "document").map(({ media_type, name, data }) => ({ media_type, name, data }));
-  const files = live.filter((c) => c.kind === "file").map(({ name, data }) => ({ name, data }));
+  // A long PDF goes by path (item 491): an aside always runs on Claude Code.
+  const byPath = (c: Attachment) => pdfRoute(c, "claude-code") === "path";
+  const documents = live
+    .filter((c) => c.kind === "document" && !byPath(c))
+    .map(({ media_type, name, data }) => ({ media_type, name, data }));
+  const files = [
+    ...live.filter((c) => c.kind === "file").map(({ name, data }) => ({ name, data })),
+    ...live.filter(byPath).map(({ name, data, pages }) => ({ name: pdfFileName(name), data, pages })),
+  ];
   if (images.length) out.images = images;
   if (documents.length) out.documents = documents;
   if (files.length) out.files = files;

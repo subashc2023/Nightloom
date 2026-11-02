@@ -220,6 +220,90 @@ pub fn pdf_page_count(pdf: &[u8]) -> usize {
     n
 }
 
+/// Pages in a PDF, for routing a long one by path (item 491): page objects
+/// counted once per object number, in the file's plain objects and inside
+/// its compressed object streams (`/ObjStm`, FlateDecode). [`pdf_page_count`]
+/// reads neither: it saw 0 for decks whose pages sit in object streams and
+/// double for files saved incrementally. Measured on 296 PDFs of his: 295
+/// agree with `pdfinfo` (it 258), and none over 10 pages reads as 10 or
+/// fewer. `None` when no page is found — the caller treats that as short.
+pub fn pdf_pages(pdf: &[u8]) -> Option<usize> {
+    use std::collections::HashSet;
+    use std::sync::LazyLock;
+    static OBJ: LazyLock<regex::bytes::Regex> =
+        LazyLock::new(|| regex::bytes::Regex::new(r"(\d+)\s+\d+\s+obj\b").unwrap());
+    static PAGE: LazyLock<regex::bytes::Regex> =
+        LazyLock::new(|| regex::bytes::Regex::new(r"/Type\s*/Page(?:[^A-Za-z]|$)").unwrap());
+    static OBJSTM: LazyLock<regex::bytes::Regex> =
+        LazyLock::new(|| regex::bytes::Regex::new(r"/Type\s*/ObjStm").unwrap());
+    static FIRST: LazyLock<regex::bytes::Regex> =
+        LazyLock::new(|| regex::bytes::Regex::new(r"/First\s+(\d+)").unwrap());
+    static N: LazyLock<regex::bytes::Regex> =
+        LazyLock::new(|| regex::bytes::Regex::new(r"/N\s+(\d+)").unwrap());
+    let find = |hay: &[u8], needle: &[u8], from: usize| -> Option<usize> {
+        hay.get(from..)?
+            .windows(needle.len())
+            .position(|w| w == needle)
+            .map(|i| i + from)
+    };
+    let num = |b: &[u8]| std::str::from_utf8(b).ok()?.parse::<usize>().ok();
+    let mut pages: HashSet<usize> = HashSet::new();
+    for m in OBJ.captures_iter(pdf) {
+        let Some(id) = num(&m[1]) else { continue };
+        let start = m.get(0).map_or(0, |g| g.end());
+        let end = find(pdf, b"endobj", start).unwrap_or(pdf.len());
+        let body = &pdf[start..end];
+        let st = find(body, b"stream", 0);
+        let head = &body[..st.unwrap_or(body.len())];
+        if PAGE.is_match(head) {
+            pages.insert(id);
+        }
+        let Some(st) = st else { continue };
+        if !OBJSTM.is_match(head) || find(head, b"/FlateDecode", 0).is_none() {
+            continue;
+        }
+        let mut s = st + b"stream".len();
+        if body[s..].starts_with(b"\r\n") {
+            s += 2;
+        } else if body[s..].starts_with(b"\n") || body[s..].starts_with(b"\r") {
+            s += 1;
+        }
+        let e = body
+            .windows(b"endstream".len())
+            .rposition(|w| w == b"endstream")
+            .unwrap_or(body.len())
+            .max(s);
+        let mut data = Vec::new();
+        // A stream cut short still inflates as far as it goes.
+        let _ = flate2::read::ZlibDecoder::new(&body[s..e]).read_to_end(&mut data);
+        let (Some(first), Some(n)) = (
+            FIRST.captures(head).and_then(|c| num(&c[1])),
+            N.captures(head).and_then(|c| num(&c[1])),
+        ) else {
+            continue;
+        };
+        let Some(index) = data.get(..first) else {
+            continue;
+        };
+        let nums: Vec<usize> = index
+            .split(|b| b.is_ascii_whitespace())
+            .filter_map(num)
+            .take(2 * n)
+            .collect();
+        for (i, pair) in nums.chunks_exact(2).enumerate() {
+            let from = first + pair[1];
+            let to = nums
+                .get(2 * i + 3)
+                .map_or(data.len(), |next| first + next)
+                .min(data.len());
+            if from < to && PAGE.is_match(&data[from..to]) {
+                pages.insert(pair[0]);
+            }
+        }
+    }
+    (!pages.is_empty()).then_some(pages.len())
+}
+
 /// What an office file became, for the composer's chip and the wire.
 #[derive(Debug, Clone, Serialize)]
 pub struct Prepared {
@@ -259,7 +343,7 @@ pub async fn prepare_office(
                 return Ok(Prepared {
                     media_type: "application/pdf".into(),
                     name: name.to_string(),
-                    count: Some(pdf_page_count(&pdf)),
+                    count: Some(pdf_pages(&pdf).unwrap_or_else(|| pdf_page_count(&pdf))),
                     data: base64::engine::general_purpose::STANDARD.encode(&pdf),
                     via: "pdf",
                     note: None,
@@ -1120,6 +1204,10 @@ pub fn chat_files_dir(workspace: &Path, chat_id: &str) -> PathBuf {
 pub struct FileInput {
     pub name: String,
     pub data: String,
+    /// A long PDF sent by path rather than whole (item 491): its page
+    /// count, for the note's reading instructions. Absent for other files.
+    #[serde(default)]
+    pub pages: Option<usize>,
 }
 
 /// Copy `files` into the chat's folder; the paths written, in order. A name
@@ -1172,6 +1260,73 @@ pub fn files_note(paths: &[PathBuf]) -> String {
         "[Attached {} — saved for you to open with your tools:\n{}]",
         if paths.len() == 1 { "a file" } else { "files" },
         list.join("\n")
+    )
+}
+
+/// Where an unsent draft's long PDF is kept across a relaunch (item 491):
+/// `<config>/draft-files/`, by the SHA-256 of its bytes. The drafts store
+/// (localStorage, a few megabytes) holds only small chips; a deck of 10+
+/// pages is nearly always past its cap, and a relaunch would drop it.
+pub fn draft_files_dir(config: &Path) -> PathBuf {
+    config.join("draft-files")
+}
+
+/// Keep `data` (base64) for a draft; its id, the hex SHA-256. The same
+/// bytes kept twice are one file.
+pub fn stash_draft_file(config: &Path, data: &str) -> Result<String, String> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data.trim())
+        .map_err(|e| format!("draft file: {e}"))?;
+    let sha = crate::sync::manifest::sha256_hex(&bytes);
+    let dir = draft_files_dir(config);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let path = dir.join(format!("{sha}.bin"));
+    if !path.exists() {
+        let tmp = dir.join(format!("{sha}.part"));
+        std::fs::write(&tmp, &bytes).map_err(|e| format!("{}: {e}", tmp.display()))?;
+        std::fs::rename(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    Ok(sha)
+}
+
+/// A kept draft file back as base64, by the id [`stash_draft_file`] gave.
+pub fn read_draft_file(config: &Path, sha: &str) -> Result<String, String> {
+    if sha.len() != 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!("not a draft file id: {sha}"));
+    }
+    let path = draft_files_dir(config).join(format!("{sha}.bin"));
+    let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+/// [`files_note`] for files that may include long PDFs sent by path (item
+/// 491, `paths` in the order of `files`): a PDF with a page count gets its
+/// own lines — how long it is, its text first with `pdftotext`, then only
+/// the pages it needs with Read's `pages` — and the rest the plain note.
+pub fn files_note_for(paths: &[PathBuf], files: &[FileInput]) -> String {
+    let mut plain = Vec::new();
+    let mut parts = Vec::new();
+    for (i, p) in paths.iter().enumerate() {
+        match files.get(i).and_then(|f| f.pages) {
+            Some(n) => parts.push(long_pdf_note(p, n)),
+            None => plain.push(p.clone()),
+        }
+    }
+    if !plain.is_empty() {
+        parts.insert(0, files_note(&plain));
+    }
+    parts.join("\n\n")
+}
+
+/// The note for one long PDF sent by path (item 491).
+fn long_pdf_note(path: &Path, pages: usize) -> String {
+    let p = path.display();
+    format!(
+        "[Attached a PDF of {pages} pages, saved for you to read with your tools rather than sent whole:\n\
+         - {p}\n\
+         Pull its text first (`pdftotext -layout \"{p}\" -`, or `-f A -l B` for pages A to B) to find what the \
+         question needs, then Read only those pages with the Read tool's `pages` parameter (at most 20 a call) \
+         to see them as drawn — figures, equations and diagrams are not in the text.]"
     )
 }
 
@@ -1505,14 +1660,17 @@ mod tests {
             FileInput {
                 name: "bundle.zip".into(),
                 data: b64("one"),
+                pages: None,
             },
             FileInput {
                 name: "../../escape.zip".into(),
                 data: b64("two"),
+                pages: None,
             },
             FileInput {
                 name: "bundle.zip".into(),
                 data: b64("three"),
+                pages: None,
             },
         ];
         let paths = save_chat_files(&ws, "chat/1", &files).unwrap();
@@ -1534,6 +1692,118 @@ mod tests {
         assert!(note.contains(&paths[0].display().to_string()));
         assert!(note.starts_with("[Attached files"));
         let _ = std::fs::remove_dir_all(ws);
+    }
+
+    /// A PDF of `n` pages as plain objects, page objects written `twice` as
+    /// an incremental save does (same object numbers again).
+    fn plain_pdf(n: usize, twice: bool) -> Vec<u8> {
+        let mut out = String::from("%PDF-1.4\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n");
+        out.push_str(&format!("2 0 obj << /Type /Pages /Count {n} >> endobj\n"));
+        for round in 0..if twice { 2 } else { 1 } {
+            for i in 0..n {
+                out.push_str(&format!(
+                    "{} 0 obj << /Type /Page /Parent 2 0 R /Rotate {round} >> endobj\n",
+                    10 + i
+                ));
+            }
+        }
+        out.push_str("%%EOF\n");
+        out.into_bytes()
+    }
+
+    /// A PDF of `n` pages whose page objects sit in one compressed object
+    /// stream — what the old byte scan read as 0.
+    fn objstm_pdf(n: usize) -> Vec<u8> {
+        use std::io::Write as _;
+        let objs: Vec<String> = (0..n)
+            .map(|_| "<</Type/Page/Parent 2 0 R>>".to_string())
+            .chain(["<</Type/Pages/Count 0>>".to_string()])
+            .collect();
+        let mut index = String::new();
+        let mut off = 0;
+        for (i, o) in objs.iter().enumerate() {
+            index.push_str(&format!("{} {off} ", 10 + i));
+            off += o.len() + 1;
+        }
+        let first = index.len();
+        let body = format!("{index}{}", objs.join(" "));
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        z.write_all(body.as_bytes()).unwrap();
+        let packed = z.finish().unwrap();
+        let mut out = b"%PDF-1.5\n".to_vec();
+        out.extend_from_slice(
+            format!(
+                "5 0 obj\n<</Type/ObjStm/N {}/First {first}/Filter/FlateDecode/Length {}>>\nstream\n",
+                objs.len(),
+                packed.len()
+            )
+            .as_bytes(),
+        );
+        out.extend_from_slice(&packed);
+        out.extend_from_slice(b"\nendstream\nendobj\n%%EOF\n");
+        out
+    }
+
+    #[test]
+    fn pages_are_counted_once_each_in_plain_objects_and_object_streams() {
+        assert_eq!(pdf_pages(&plain_pdf(10, false)), Some(10));
+        assert_eq!(pdf_pages(&plain_pdf(11, false)), Some(11));
+        // An incremental save writes the pages again: still 11, where the
+        // old scan read 22.
+        assert_eq!(pdf_pages(&plain_pdf(11, true)), Some(11));
+        assert_eq!(pdf_page_count(&plain_pdf(11, true)), 22);
+        // Pages inside an object stream: the old scan saw none.
+        assert_eq!(pdf_pages(&objstm_pdf(12)), Some(12));
+        assert_eq!(pdf_page_count(&objstm_pdf(12)), 0);
+        assert_eq!(pdf_pages(b"not a pdf"), None);
+    }
+
+    #[test]
+    fn a_long_pdf_by_path_gets_its_page_count_and_how_to_read_it() {
+        let paths = vec![
+            PathBuf::from("/w/deck.pdf"),
+            PathBuf::from("/w/data.parquet"),
+        ];
+        let files = vec![
+            FileInput {
+                name: "deck.pdf".into(),
+                data: String::new(),
+                pages: Some(98),
+            },
+            FileInput {
+                name: "data.parquet".into(),
+                data: String::new(),
+                pages: None,
+            },
+        ];
+        let note = files_note_for(&paths, &files);
+        assert!(note.starts_with(
+            "[Attached a file — saved for you to open with your tools:\n- /w/data.parquet]"
+        ));
+        assert!(note.contains("a PDF of 98 pages"));
+        assert!(note.contains("pdftotext -layout \"/w/deck.pdf\" -"));
+        assert!(note.contains("`pages` parameter"));
+        // No long PDF: exactly the old note.
+        assert_eq!(
+            files_note_for(&paths[1..], &files[1..]),
+            files_note(&paths[1..])
+        );
+    }
+
+    #[test]
+    fn a_drafts_long_pdf_is_kept_on_disk_by_its_hash() {
+        let config = scratch("draft-files");
+        let data = b64("%PDF-1.4 a deck");
+        let id = stash_draft_file(&config, &data).unwrap();
+        assert_eq!(id.len(), 64);
+        assert_eq!(stash_draft_file(&config, &data).unwrap(), id);
+        assert_eq!(read_draft_file(&config, &id).unwrap(), data);
+        assert!(read_draft_file(&config, "../../etc/passwd").is_err());
+        assert_eq!(
+            std::fs::read_dir(draft_files_dir(&config)).unwrap().count(),
+            1
+        );
+        let _ = std::fs::remove_dir_all(config);
     }
 
     #[test]

@@ -9,20 +9,32 @@
  * sits (`updateAttachment`, the wave 5 review fix 51798f5).
  */
 import { app, addToast as toastNow } from "./state.svelte";
-import { officeConverter, prepareOfficeAttachment } from "./api";
+import { officeConverter, pdfPages, prepareOfficeAttachment, readDraftFile, stashDraftFile } from "./api";
 import {
   convertedLabel,
   convertingLabel,
   decide,
   extOf,
   imageType,
+  isLongPdf,
   looksLikeText,
   MAX_OFFICE_BYTES,
   notebookText,
   OFFICE_EXTS,
+  pdfFileName,
+  pdfRoute,
   routeOf,
+  type Engine,
 } from "./attachKinds";
-import { addAttachment, nextAttachmentId, readDraft, removeAttachment, updateAttachment } from "./drafts.svelte";
+import {
+  addAttachment,
+  nextAttachmentId,
+  readDraft,
+  removeAttachment,
+  settleStashed,
+  stashedChips,
+  updateAttachment,
+} from "./drafts.svelte";
 import type { Attachment } from "./types";
 
 // Anthropic rejects a base64 image over ~10 MB and a PDF over ~32 MB, and
@@ -79,6 +91,52 @@ function bytesToBase64(bytes: Uint8Array): string {
 /** Whether LibreOffice is installed, asked once a window (item 277). */
 let converter: Promise<boolean> | null = null;
 const hasConverter = () => (converter ??= officeConverter().catch(() => false));
+
+/**
+ * A long PDF's bytes on disk for its draft (item 491): the drafts store
+ * keeps only small chips, so without this a relaunch would drop a deck of
+ * 10+ pages. Best-effort, in the background: a chip whose stash failed
+ * keeps today's rule (in memory only), and says nothing.
+ */
+function stashLong(chatKey: string, chip: Attachment): void {
+  if (!isLongPdf(chip) || !chip.data) return;
+  void stashDraftFile(chip.data)
+    .then((stash) => {
+      updateAttachment(chatKey, chip.id, { stash });
+    })
+    .catch(() => {});
+}
+
+/**
+ * After a relaunch (item 491): the long PDFs the drafts store kept by their
+ * copy on disk get their bytes back. Once a window; Send waits on each as
+ * on a conversion. A copy gone from disk drops its chip and says so — the
+ * text and his other chips stay.
+ */
+let restoring: Promise<void> | null = null;
+export function restoreStashed(addToast: (text: string) => void = toastNow): Promise<void> {
+  return (restoring ??= Promise.all(
+    stashedChips().map(({ chip }) => {
+      const job = readDraftFile(chip.stash!)
+        .then((data) => settleStashed(chip, { data, pending: false }))
+        .catch(() => {
+          settleStashed(chip, null);
+          addToast(`${chip.name} could not be brought back after the restart — attach it again`);
+        });
+      trackPending(chip.id, job);
+      return job;
+    }),
+  ).then(() => {}));
+}
+
+/** A PDF's pages, or nothing when they cannot be counted (item 491). */
+async function countPages(data: string): Promise<number | undefined> {
+  try {
+    return (await pdfPages(data)) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /** Office conversions in flight, by chip id: Send waits on these. */
 const converting = new Map<number, Promise<void>>();
@@ -162,8 +220,12 @@ async function attachOffice(chatKey: string, file: File, addToast: (text: string
         label: convertedLabel(chip.name, out.via, out.count),
         pending: false,
         ...(out.source_sha256 ? { source_sha256: out.source_sha256 } : {}),
+        // Its pages route it (item 491): a deck that became a long PDF goes
+        // by path on the Claude Code engine, as a dropped one does.
+        ...(out.via === "pdf" && out.count ? { pages: out.count } : {}),
       };
       if (!updateAttachment(chatKey, chip.id, done)) settledWhileOut.set(chip.id, done);
+      else stashLong(chatKey, { ...chip, ...done });
     } catch (e) {
       removeAttachment(chatKey, chip.id);
       settledWhileOut.set(chip.id, null);
@@ -208,15 +270,20 @@ export async function acceptFiles(
       }
       try {
         const data = await readBase64(file);
+        // A PDF's pages, counted before the chip shows (item 491), so its
+        // route is on the chip before Send can be pressed.
+        const pages = route === "pdf" ? await countPages(data) : undefined;
         const chip: Attachment = {
           id: nextAttachmentId(),
           kind,
           name: describe(file),
           media_type: route === "image" ? imageType(file.name, file.type) : "application/pdf",
           data,
+          ...(pages ? { pages } : {}),
         };
         addAttachment(chatKey, chip);
         added.push(chip);
+        stashLong(chatKey, chip);
       } catch (e) {
         addToast(`${describe(file)}: ${String(e)}`);
       }
@@ -265,14 +332,21 @@ export async function acceptFiles(
 }
 
 /** The wire shape of a set of chips. A chip still converting carries
- *  nothing yet; the send paths wait for it first. */
-export function splitChips(chips: Attachment[]) {
+ *  nothing yet; the send paths wait for it first. A long PDF on the Claude
+ *  Code engine goes as a file with its pages (item 491, `pdfRoute`) unless
+ *  he chose "Send whole"; `engine` is the rail's unless the caller knows
+ *  better (an aside is always Claude Code). */
+export function splitChips(chips: Attachment[], engine: Engine = engineNow()) {
+  const byPath = (a: Attachment) => !a.pending && pdfRoute(a, engine) === "path";
   return {
     images: chips.filter((a) => a.kind === "image").map(({ media_type, data }) => ({ media_type, data })),
     documents: chips
-      .filter((a) => a.kind === "document" && !a.pending)
+      .filter((a) => a.kind === "document" && !a.pending && !byPath(a))
       .map(({ media_type, name, data }) => ({ media_type, name, data })),
-    files: chips.filter((a) => a.kind === "file").map(({ name, data }) => ({ name, data })),
+    files: [
+      ...chips.filter((a) => a.kind === "file").map(({ name, data }) => ({ name, data })),
+      ...chips.filter(byPath).map(({ name, data, pages }) => ({ name: pdfFileName(name), data, pages })),
+    ],
   };
 }
 

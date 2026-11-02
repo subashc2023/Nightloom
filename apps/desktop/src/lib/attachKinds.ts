@@ -200,3 +200,60 @@ export function badgeOf(a: { kind: string; media_type: string; name: string }): 
   }
   return "FILE";
 }
+
+/**
+ * A long PDF by path (item 491, blocker 1617, his "narrow is fine"): on the
+ * Claude Code engine a PDF of more than `PATH_PDF_PAGES` pages — dropped as
+ * one, or an office file that converted to one — is saved in the chat's
+ * folder and named in the message, with its page count and how to read it
+ * (its text by `pdftotext`, then only the pages it needs), instead of
+ * going whole as a `document` block: every page inline is ~1.7k tokens of
+ * picture (the 489 report). His "Send whole" on the chip (`whole`) sends
+ * it inline as before. Unchanged: 10 pages or fewer, a PDF whose pages
+ * could not be counted, images, text, and the API engine (no tools to read
+ * a path). `null`: not a PDF chip, nothing to choose.
+ */
+export const PATH_PDF_PAGES = 10;
+export type PdfRoute = "inline" | "path";
+
+export function isLongPdf(a: { kind: string; media_type: string; pages?: number }): boolean {
+  return a.kind === "document" && a.media_type === "application/pdf" && (a.pages ?? 0) > PATH_PDF_PAGES;
+}
+
+export function pdfRoute(
+  a: { kind: string; media_type: string; pages?: number; whole?: boolean },
+  engine: Engine,
+): PdfRoute | null {
+  if (a.kind !== "document" || a.media_type !== "application/pdf") return null;
+  return engine === "claude-code" && isLongPdf(a) && !a.whole ? "path" : "inline";
+}
+
+/** The name a long PDF is saved under: an office file's converted bytes
+ *  are a PDF, so `deck.pptx` lands as `deck.pdf`. */
+export function pdfFileName(name: string): string {
+  if (extOf(name) === "pdf") return name;
+  const dot = name.lastIndexOf(".");
+  return `${dot > 0 ? name.slice(0, dot) : name}.pdf`;
+}
+
+/** The chip's words for a long PDF's route, before Send; `null` when the
+ *  chip has no choice to show (short, not a PDF, or the API engine). */
+export function routeLabel(
+  a: { kind: string; media_type: string; pages?: number; whole?: boolean },
+  engine: Engine,
+): { text: string; toggle: string; title: string } | null {
+  if (engine !== "claude-code" || !isLongPdf(a)) return null;
+  const n = a.pages ?? 0;
+  const tokens = `about ${Math.round(n * 1.7)}k tokens`;
+  return pdfRoute(a, engine) === "path"
+    ? {
+        text: `${n} pages · read by path`,
+        toggle: "Send whole",
+        title: `Saved as a file in this chat's folder: Claude pulls its text, then looks at only the pages your question needs. "Send whole" puts all ${n} pages in the message instead (${tokens}).`,
+      }
+    : {
+        text: `${n} pages · sent whole`,
+        toggle: "Read by path",
+        title: `All ${n} pages go in the message (${tokens}). "Read by path" saves it as a file and Claude reads only the pages it needs.`,
+      };
+}

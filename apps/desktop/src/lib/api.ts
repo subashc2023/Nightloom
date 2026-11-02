@@ -257,6 +257,21 @@ export function officeConverter(): Promise<boolean> {
   return invoke("office_converter");
 }
 
+/** A PDF's page count (item 491), or null when none is found. */
+export function pdfPages(data: string): Promise<number | null> {
+  return invoke("pdf_pages", { data });
+}
+
+/** A draft's long PDF kept on disk (item 491); its id. */
+export function stashDraftFile(data: string): Promise<string> {
+  return invoke("stash_draft_file", { data });
+}
+
+/** A kept draft file's bytes (base64) by its id. */
+export function readDraftFile(id: string): Promise<string> {
+  return invoke("read_draft_file", { id });
+}
+
 /** Where a kept attachment went (item 306): `rel` as the system prompt
  *  lists it (`files/deck.pdf`); `already` when those bytes were there. */
 export interface KeptFile {

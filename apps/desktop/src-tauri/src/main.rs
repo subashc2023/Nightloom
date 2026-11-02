@@ -3404,6 +3404,31 @@ async fn prepare_office_attachment(
     .await
 }
 
+/// A PDF's page count (nightshift item 491): what routes one over 10 pages
+/// by path on the Claude Code engine. `None` when none is found.
+#[tauri::command]
+fn pdf_pages(data: String) -> Option<usize> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data.trim())
+        .ok()?;
+    nightloom_service::attach::pdf_pages(&bytes)
+}
+
+/// An unsent draft's long PDF kept on disk across a relaunch (item 491);
+/// its id. `read_draft_file` gives it back.
+#[tauri::command]
+fn stash_draft_file(data: String) -> Result<String, String> {
+    let config = project::config_dir().ok_or("no config folder")?;
+    nightloom_service::attach::stash_draft_file(&config, &data)
+}
+
+#[tauri::command]
+fn read_draft_file(id: String) -> Result<String, String> {
+    let config = project::config_dir().ok_or("no config folder")?;
+    nightloom_service::attach::read_draft_file(&config, &id)
+}
+
 /// Whether an office file will become a PDF (LibreOffice is installed) or
 /// text — what the composer's chip says before the conversion starts.
 #[tauri::command]
@@ -3666,7 +3691,7 @@ async fn send_agent(
     if !files.is_empty() {
         let paths =
             nightloom_service::attach::save_chat_files(&agent.spec().workspace, &chat_id, &files)?;
-        let note = nightloom_service::attach::files_note(&paths);
+        let note = nightloom_service::attach::files_note_for(&paths, &files);
         text = if text.trim().is_empty() {
             note
         } else {
@@ -4574,7 +4599,7 @@ async fn ask_aside(
     if !files.is_empty() {
         let paths =
             nightloom_service::attach::save_chat_files(&agent.spec().workspace, "asides", &files)?;
-        let note = nightloom_service::attach::files_note(&paths);
+        let note = nightloom_service::attach::files_note_for(&paths, &files);
         text = if text.trim().is_empty() {
             note
         } else {
@@ -8880,6 +8905,9 @@ fn main() {
             keep_attachment,
             unpack_zip,
             office_converter,
+            pdf_pages,
+            stash_draft_file,
+            read_draft_file,
             turn_timing_window,
             prewarm_agent,
             council_turns,
