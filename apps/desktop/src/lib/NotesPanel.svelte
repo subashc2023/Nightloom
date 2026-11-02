@@ -26,7 +26,7 @@
   import { discardDraft, readDraft } from "./drafts.svelte";
   import {
     holdKeptNotices,
-    keepNow,
+    keepInto,
     keepStateOf,
     keeps,
     keptNotices,
@@ -45,6 +45,8 @@
     keepDropped,
   } from "./notesDrop";
   import { foldQuery, hitsByScope, narrowNotes } from "./notesSearch";
+  import { canKeep } from "./keep";
+  import { clashWords, holdWords, landingFolder, pointedFolder, safeFolder, type ClashAnswer } from "./notesTarget";
   import { prefersReducedMotion } from "./chipFade";
   import { addToast, deleteNoteFolder, moveNoteTo, newNoteFolder } from "./state.svelte";
   import { runningTurn } from "./noteEdit.svelte";
@@ -357,6 +359,7 @@
     if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
     hold.over(performance.now());
     sync();
+    pointAt(pointedAt(e));
   }
   function onDragLeave(e: DragEvent) {
     if (!carriesFiles(e.dataTransfer)) return;
@@ -365,10 +368,49 @@
   }
   async function onDrop(e: DragEvent) {
     const files = Array.from(e.dataTransfer?.files ?? []);
+    const pointed = pointedAt(e);
     hold.end();
     sync();
+    pointAt(null);
     if (files.length === 0) return;
     e.preventDefault();
+    await keepFilesInto(files, pointed);
+  }
+
+  /*
+   * Item 492: every way a file comes in lands where he points — a Finder
+   * drop on a folder row (or a note row: its folder), the + on a folder,
+   * the + on the section's head (the root: `files/`, as a drop always
+   * went). `notesTarget.ts` says where; `keepInto` asks on a clash.
+   */
+  /** The folder under a drag (`""`: the root), from the row it is over. */
+  function pointedAt(e: DragEvent): string {
+    const el = e.target instanceof Element ? e.target : null;
+    const row = el?.closest("[data-folder],[data-note]");
+    return pointedFolder({ folder: row?.getAttribute("data-folder"), note: row?.getAttribute("data-note") });
+  }
+  /** The folder a held file points at, for its row's highlight; null when
+   *  nothing is held. A closed folder held over opens after a moment. */
+  let fileOn = $state<string | null>(null);
+  let fileSpring: ReturnType<typeof setTimeout> | null = null;
+  function pointAt(pointed: string | null) {
+    if (fileOn === pointed) return;
+    fileOn = pointed;
+    if (fileSpring !== null) clearTimeout(fileSpring);
+    fileSpring = null;
+    if (pointed && !openFolders.project.has(pointed))
+      fileSpring = setTimeout(() => openAncestors("project", pointed, true), 700);
+  }
+  $effect(() => {
+    if (!held) untrack(() => pointAt(null));
+  });
+
+  async function keepFilesInto(files: File[], pointed: string) {
+    const folder = safeFolder(landingFolder(pointed));
+    if (folder === null || folder === "") {
+      notesToast(`${pointed} is not a folder files can be kept in`);
+      return;
+    }
     keeping += files.length;
     holdKeptNotices();
     try {
@@ -380,24 +422,95 @@
         chips: (k) => readDraft(k).attachments,
         state: keepStateOf,
         forget: (k) => delete keeps[k],
-        keep: (k, name, mediaType, from, source) => keepNow(k, name, mediaType, from, { source, toast: notesToast }),
+        keep: async (_k, name, mediaType, from, source) => {
+          await keepInto(folder, name, mediaType, from.data, { source, toast: notesToast, ask: askClash });
+        },
         discard: (k) => discardDraft(k),
-        // Item 414: a zip is unpacked into files/<its name>/.
+        // Item 414: a zip is unpacked into <folder>/<its name>/ (492: the
+        // folder he pointed at; files/ for the root).
         zip: {
           read: readBase64,
-          unpack: api.unpackZip,
-          keepAt: (name, mediaType, data, dir) => api.keepAttachment(name, mediaType, { data }, dir),
+          unpack: (name, data) => api.unpackZip(name, data, folder),
+          keepAt: async (name, mediaType, data, dir) => {
+            const l = await api.keepInFolder(name, mediaType, data, `${folder}/${dir}`, "both");
+            if (l.kind !== "kept") throw new Error(`${l.rel} is taken`);
+            return { rel: l.rel, already: l.already };
+          },
           kept: async (rels, anyNew) => {
             if (anyNew) projectFilesChanged();
             await refreshNotes().catch(() => {});
             for (const rel of rels) noticeKept(rel);
           },
+          base: folder,
         },
       });
     } finally {
       keeping -= files.length;
       releaseKeptNotices();
     }
+  }
+
+  /** The + menu on a folder row or a section's head (`path` `""`). */
+  let addMenu = $state<{ scope: Sec; path: string; x: number; y: number } | null>(null);
+  function openAddMenu(e: MouseEvent, scope: Sec, path: string) {
+    e.preventDefault();
+    e.stopPropagation();
+    menu = null;
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    addMenu = { scope, path, x: r.left, y: r.bottom + 2 };
+  }
+  let picker = $state<HTMLInputElement | null>(null);
+  let uploadTo: string | null = null;
+  function startUpload(path: string) {
+    addMenu = null;
+    uploadTo = path;
+    picker?.click();
+  }
+  function onPick(e: Event) {
+    const input = e.currentTarget as HTMLInputElement;
+    const files = Array.from(input.files ?? []);
+    input.value = "";
+    const to = uploadTo;
+    uploadTo = null;
+    if (files.length === 0 || to === null) return;
+    void keepFilesInto(files, to);
+  }
+  function addNew(what: "note" | "folder") {
+    const m = addMenu;
+    addMenu = null;
+    if (m) startEdit(m.scope, what, m.path);
+  }
+
+  /** A name clash, put to him: Keep both (the default), Replace (asks
+   *  twice; the old file goes to the notes trash), Cancel. One at a time. */
+  let clash = $state<{ rel: string; both: string; sure: boolean; resolve: (a: ClashAnswer) => void } | null>(null);
+  let clashQueue: Promise<unknown> = Promise.resolve();
+  function askClash(rel: string, both: string): Promise<ClashAnswer> {
+    const p = clashQueue.then(
+      () => new Promise<ClashAnswer>((resolve) => (clash = { rel, both, sure: false, resolve })),
+    );
+    clashQueue = p.catch(() => {});
+    return p;
+  }
+  function answerClash(a: ClashAnswer) {
+    const c = clash;
+    if (!c) return;
+    if (a === "replace" && !c.sure) {
+      c.sure = true;
+      return;
+    }
+    clash = null;
+    c.resolve(a);
+  }
+  function clashKeys(e: KeyboardEvent) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      answerClash("cancel");
+    }
+  }
+  function focusFirst(el: HTMLElement, on = true) {
+    if (on) el.focus();
   }
 
   // ---- item 457: the panel as a file manager ----
@@ -744,7 +857,7 @@
         {:else}
           <div
             class="item dir-row"
-            class:drop-on={dropOn === `${scope}:${r.path}`}
+            class:drop-on={dropOn === `${scope}:${r.path}` || (held && scope === "project" && fileOn === r.path)}
             style:--depth={r.depth}
             data-folder="{scope}:{r.path}"
             role="treeitem"
@@ -770,6 +883,15 @@
                 <span class="n">{r.count}</span>
               </span>
             </button>
+            <!-- Item 492: upload into, or make a folder or note in, this folder. -->
+            <button
+              class="plus"
+              class:on={addMenu?.scope === scope && addMenu.path === r.path}
+              use:tip={scope === "project" ? `Upload, new folder or new note in ${r.path}/` : `New folder or note in ${r.path}/`}
+              aria-label="Add to {r.path}"
+              aria-haspopup="menu"
+              onclick={(e) => openAddMenu(e, scope, r.path)}>+</button
+            >
           </div>
         {/if}
         {#if editing && editing.scope === scope && editing.what !== "rename" && editing.path === r.path && r.open}
@@ -952,14 +1074,17 @@
     ondragleave={onDragLeave}
     ondrop={onDrop}
   >
-    {#if held}
+    <!-- Item 492: over a folder row the row lights instead (the rows stay
+         in view); this sheet is for the root and for no project. -->
+    {#if held && (fileOn === null || fileOn === "" || !canKeep(app.project))}
       <div class="hold" aria-hidden="true">
         <div class="words">
-          <b>{holdTitle(app.project)}</b>
-          {#if app.project && !app.project.unfiled}<span>{HOLD_LINE}</span>{/if}
+          <b>{canKeep(app.project) ? holdWords("") : holdTitle(app.project)}</b>
+          {#if canKeep(app.project)}<span>{HOLD_LINE}</span>{/if}
         </div>
       </div>
     {/if}
+    <div class="head-row">
     <button
       class="head"
       class:drop-on={dropOn === "project:"}
@@ -975,6 +1100,17 @@
           >{searching ? `${shownProject.length} of ${app.notes.length}` : app.notes.length}</span
         >{/if}
     </button>
+    {#if app.project && !shut("project")}
+      <button
+        class="plus"
+        class:on={addMenu?.scope === "project" && addMenu.path === ""}
+        use:tip={"Upload into files/, or a new folder or note at the top"}
+        aria-label="Add to the project's notes"
+        aria-haspopup="menu"
+        onclick={(e) => openAddMenu(e, "project", "")}>+</button
+      >
+    {/if}
+    </div>
 
     {#if !shut("project")}
       {#if !app.project}
@@ -995,6 +1131,9 @@
         )}
         {@render newRow("project")}
         {#if app.notes.length === 0}
+          {#if editing && editing.scope === "project" && editing.what !== "rename" && editing.path === ""}
+            <div class="list">{@render nameBox(0, editing.what === "folder" ? "folder name" : "note name", editing.what === "folder")}</div>
+          {/if}
           <p class="hint">
             Nothing here yet. The model writes these with the file tools, and
             the index of the folder is in its system prompt — so a task list
@@ -1012,6 +1151,7 @@
   <!-- The vault. Shown whether or not a project is open, which is the whole
        point of it being separate. -->
   <section>
+    <div class="head-row">
     <button
       class="head"
       class:drop-on={dropOn === "knowledge:"}
@@ -1028,6 +1168,17 @@
       >
       {#if app.knowledge}<span class="alias">{app.knowledge.alias}</span>{/if}
     </button>
+    {#if app.knowledge && !shut("knowledge")}
+      <button
+        class="plus"
+        class:on={addMenu?.scope === "knowledge" && addMenu.path === ""}
+        use:tip={"A new folder or note at the top"}
+        aria-label="Add to the knowledge notes"
+        aria-haspopup="menu"
+        onclick={(e) => openAddMenu(e, "knowledge", "")}>+</button
+      >
+    {/if}
+    </div>
 
     {#if !shut("knowledge")}
       {#if !app.knowledge}
@@ -1043,6 +1194,9 @@
         )}
         {@render newRow("knowledge")}
         {#if app.vault.length === 0}
+          {#if editing && editing.scope === "knowledge" && editing.what !== "rename" && editing.path === ""}
+            <div class="list">{@render nameBox(0, editing.what === "folder" ? "folder name" : "note name", editing.what === "folder")}</div>
+          {/if}
           <p class="hint">
             Yours, not this folder's — the same set in every project and in a
             chat with no project at all. Worth keeping here: a decision and why
@@ -1108,6 +1262,52 @@
           {/each}
         </div>
       {/if}
+    </div>
+  {/if}
+  {#if addMenu}
+    {@const a = addMenu}
+    <button class="scrim" aria-label="Close" onclick={() => (addMenu = null)} oncontextmenu={(e) => { e.preventDefault(); addMenu = null; }}></button>
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <div
+      class="note-menu add-menu"
+      role="menu"
+      tabindex="-1"
+      use:placeAt={{ x: a.x, y: a.y }}
+      onkeydown={(e) => {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          e.stopPropagation();
+          addMenu = null;
+        }
+      }}
+    >
+      <p class="menu-head">{a.path ? `${a.path}/` : a.scope === "project" ? "Project notes" : "Knowledge"}</p>
+      {#if a.scope === "project"}
+        <button role="menuitem" use:focusFirst onclick={() => startUpload(a.path)}>
+          Upload file(s)… <span class="key">{a.path ? `${a.path}/` : "files/"}</span>
+        </button>
+      {:else}
+        <button role="menuitem" disabled use:tip={"Files are kept only in a project's notes, not in the knowledge vault"}>
+          Upload file(s)…
+        </button>
+      {/if}
+      <button role="menuitem" use:focusFirst={a.scope !== "project"} onclick={() => addNew("folder")}>New folder</button>
+      <button role="menuitem" onclick={() => addNew("note")}>New note</button>
+    </div>
+  {/if}
+  <input bind:this={picker} class="picker" type="file" multiple hidden onchange={onPick} />
+  {#if clash}
+    {@const c = clash}
+    {@const w = clashWords(c.rel, c.both)}
+    <div class="clash-scrim" aria-hidden="true"></div>
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <div class="clash" role="alertdialog" aria-modal="true" aria-label="A file by that name is there" tabindex="-1" onkeydown={clashKeys}>
+      <p class="clash-q">{w.question}</p>
+      <div class="clash-actions">
+        <button class="clash-both" use:focusFirst onclick={() => answerClash("both")}>{w.both}</button>
+        <button class="clash-replace" class:sure={c.sure} onclick={() => answerClash("replace")}>{c.sure ? w.sure : w.replace}</button>
+        <button class="clash-cancel" onclick={() => answerClash("cancel")}>Cancel</button>
+      </div>
     </div>
   {/if}
   <!-- Item 428: the drop's words, at the panel's foot while the list
@@ -1593,6 +1793,114 @@
     font-size: 0.66rem;
     color: var(--dim);
     opacity: 0.8;
+  }
+  /* Item 492: the + on a folder row and on a section's head — shown on
+     hover, and while its menu is open. */
+  .head-row {
+    display: flex;
+    align-items: center;
+  }
+  .head-row .head {
+    flex: 1;
+    min-width: 0;
+  }
+  .plus {
+    flex-shrink: 0;
+    align-self: center;
+    width: 22px;
+    height: 22px;
+    margin-right: 0.35rem;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    color: var(--dim);
+    font: inherit;
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+    visibility: hidden;
+  }
+  .dir-row:hover .plus,
+  .head-row:hover .plus,
+  .plus.on,
+  .plus:focus-visible {
+    visibility: visible;
+  }
+  .plus:hover,
+  .plus.on {
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+    color: var(--accent);
+  }
+  .note-menu .menu-head {
+    margin: 2px 10px 4px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--dim);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .note-menu button:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+  .note-menu button:disabled:hover {
+    background: transparent;
+    color: var(--ink2, var(--text));
+  }
+  /* The clash question: over everything, Keep both first and focused. */
+  .clash-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background: rgba(0, 0, 0, 0.25);
+  }
+  .clash {
+    position: fixed;
+    z-index: 41;
+    left: 50%;
+    top: 30%;
+    transform: translateX(-50%);
+    width: min(380px, calc(100vw - 32px));
+    padding: 14px 14px 12px;
+    background: var(--sheet);
+    border: 1px solid var(--line2);
+    border-radius: 10px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+    color: var(--text);
+  }
+  .clash-q {
+    margin: 0 0 12px;
+    font-size: 13px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+  }
+  .clash-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .clash-actions button {
+    font: inherit;
+    font-size: 12.5px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--line2);
+    background: transparent;
+    color: var(--text);
+    cursor: pointer;
+  }
+  .clash-actions .clash-both {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--paper);
+  }
+  .clash-actions .clash-replace.sure {
+    border-color: var(--error);
+    color: var(--error);
   }
   .dir-row.drop-on,
   .head.drop-on {

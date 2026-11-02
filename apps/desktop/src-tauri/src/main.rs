@@ -3488,6 +3488,47 @@ async fn keep_attachment(
     .map_err(|e| e.to_string())?
 }
 
+/// Item 492: a file kept in the notes folder he points at (`folder`,
+/// docspace-relative: `people`, `files/bundle`) — a folder row he dropped
+/// on, or the + on it. `clash`: `"ask"` answers `Taken` with nothing
+/// written when the name holds other bytes; `"both"` numbers it;
+/// `"replace"` moves the old file to the notes trash first
+/// (`keep::keep_in_folder`).
+#[tauri::command]
+async fn keep_in_folder(
+    state: State<'_, AppState>,
+    name: String,
+    media_type: String,
+    data: String,
+    folder: String,
+    clash: Option<String>,
+    source: Option<String>,
+) -> Result<nightloom_service::keep::Landing, String> {
+    use base64::Engine as _;
+    let project = state
+        .active()
+        .await
+        .filter(|p| !p.is_unfiled_holder())
+        .ok_or("this chat is not in a project, so there is no project to keep the file in")?;
+    let docspace = project.notes_dir();
+    tokio::task::spawn_blocking(move || {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data.trim())
+            .map_err(|e| format!("{name}: {e}"))?;
+        nightloom_service::keep::keep_in_folder(
+            &docspace,
+            &folder,
+            &name,
+            &media_type,
+            &bytes,
+            source.as_deref(),
+            nightloom_service::keep::OnClash::parse(clash.as_deref()),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// One file out of a dropped zip, for the window (item 414).
 #[derive(serde::Serialize)]
 struct ZipFileWire {
@@ -3511,6 +3552,9 @@ async fn unpack_zip(
     state: State<'_, AppState>,
     name: String,
     data: String,
+    // Item 492: the notes folder the zip was dropped on; its folder is
+    // named free there rather than in `files/`.
+    folder: Option<String>,
 ) -> Result<UnpackedWire, String> {
     use base64::Engine as _;
     let project = state
@@ -3525,8 +3569,15 @@ async fn unpack_zip(
             .decode(data.trim())
             .map_err(|e| format!("{name}: {e}"))?;
         let u = nightloom_service::keep::unpack_zip(&docspace, &name, &bytes)?;
+        let in_folder = match folder.as_deref() {
+            Some(f) => {
+                let (dir, _) = nightloom_service::keep::note_folder(&docspace, f)?;
+                nightloom_service::keep::zip_folder_in(&dir, &name)
+            }
+            None => u.folder,
+        };
         Ok(UnpackedWire {
-            folder: u.folder,
+            folder: in_folder,
             files: u
                 .files
                 .into_iter()
@@ -8903,6 +8954,7 @@ fn main() {
             send_agent,
             prepare_office_attachment,
             keep_attachment,
+            keep_in_folder,
             unpack_zip,
             office_converter,
             pdf_pages,

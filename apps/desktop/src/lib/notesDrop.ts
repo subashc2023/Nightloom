@@ -135,6 +135,9 @@ export type ZipDeps = {
   keepAt: (name: string, mediaType: string, data: string, dir: string) => Promise<{ rel: string; already: boolean }>;
   /** After the keeps: refresh Notes and hand the rows to 416's flash. */
   kept: (rels: string[], anyNew: boolean) => Promise<void>;
+  /** Item 492: the notes folder the zip's folder is made in, for the
+   *  toast's words; `files` when not given. */
+  base?: string;
 };
 
 export function isZip(f: { name: string; type?: string }): boolean {
@@ -144,9 +147,15 @@ export function isZip(f: { name: string; type?: string }): boolean {
 const SYSTEM = "system file";
 
 /** The one toast for a zip: what was kept where, and what was not. */
-export function zipToast(zip: string, folder: string, kept: number, skipped: readonly { name: string; why: string }[]): string {
+export function zipToast(
+  zip: string,
+  folder: string,
+  kept: number,
+  skipped: readonly { name: string; why: string }[],
+  base = "files",
+): string {
   const files = (n: number) => `${n} file${n === 1 ? "" : "s"}`;
-  let line = kept > 0 ? `Kept ${files(kept)} from ${zip} in files/${folder}/` : `Kept nothing from ${zip}`;
+  let line = kept > 0 ? `Kept ${files(kept)} from ${zip} in ${base}/${folder}/` : `Kept nothing from ${zip}`;
   if (skipped.length === 0) return line;
   const system = skipped.filter((s) => s.why === SYSTEM).length;
   const others = skipped.filter((s) => s.why !== SYSTEM);
@@ -225,7 +234,7 @@ export async function keepZip(file: File, d: KeepDeps, z: ZipDeps): Promise<numb
     d.discard(key);
   }
   if (rels.length > 0) await z.kept(rels, anyNew);
-  d.toast(zipToast(file.name, u.folder, rels.length, skipped));
+  d.toast(zipToast(file.name, u.folder, rels.length, skipped, z.base));
   return rels.length;
 }
 

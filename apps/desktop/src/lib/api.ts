@@ -309,8 +309,31 @@ export interface UnpackedZip {
   files: { path: string; data: string }[];
   skipped: { name: string; why: string }[];
 }
-export function unpackZip(name: string, data: string): Promise<UnpackedZip> {
-  return invoke("unpack_zip", { name, data });
+export function unpackZip(name: string, data: string, folder?: string): Promise<UnpackedZip> {
+  // Item 492: `folder`, the notes folder it was dropped on — its folder is
+  // named free there instead of in `files/`.
+  return invoke("unpack_zip", { name, data, ...(folder !== undefined ? { folder } : {}) });
+}
+
+/** Item 492: what came of a keep into a notes folder — kept (`replaced`:
+ *  where the old file went in the notes trash, for a Replace), or the name
+ *  is taken by other bytes and nothing was written (`both`: the name Keep
+ *  both would use). */
+export type Landing =
+  | { kind: "kept"; path: string; rel: string; already: boolean; replaced?: string }
+  | { kind: "taken"; rel: string; both: string };
+
+/** Item 492: keep bytes in the notes folder `folder` (docspace-relative:
+ *  `people`, `files/bundle`). `clash`: "ask" answers `taken` on a clash. */
+export function keepInFolder(
+  name: string,
+  mediaType: string,
+  data: string,
+  folder: string,
+  clash: "ask" | "both" | "replace",
+  source?: string,
+): Promise<Landing> {
+  return invoke("keep_in_folder", { name, mediaType, data, folder, clash, ...(source ? { source } : {}) });
 }
 
 /**
