@@ -9,14 +9,19 @@
  * on its line, a formula's TeX when the cursor enters it — the shape
  * Obsidian calls Live Preview.
  *
- * Nothing here writes to the text. Every decoration is drawn over the
- * document, never into it, and the editor's line separator is fixed to
- * "\n" with nothing else recognised, so a `\r` stays a character in its
- * line and the text read back out is byte-for-byte the text put in
- * (`noteState` and its test). The only way the text changes is his typing,
- * which the plain textarea would have typed the same: no Markdown keymap
- * (it continues list markup on Enter), no paste-URL-as-link, no
- * autocompletion.
+ * Nothing here writes to the text on its own. Every decoration is drawn
+ * over the document, never into it, and the editor's line separator is
+ * fixed to "\n" with nothing else recognised, so a `\r` stays a character
+ * in its line and the text read back out is byte-for-byte the text put in
+ * (`noteState` and its test). The text changes only by his hand: his typing
+ * (no Markdown keymap — it continues list markup on Enter — no
+ * paste-URL-as-link, no autocompletion), and since item 498 the toolbar's
+ * buttons, ⌘B / ⌘I and a click on a drawn task box, each one transaction of
+ * ordinary Markdown (`noteFormat.ts`).
+ *
+ * Item 498: the drawing sits in a Compartment (`drawing`), so the Markdown
+ * switch turns it off and on in the same editor — the caret, the undo
+ * history and the scroll place stay where they were.
  *
  * The decorations are computed from the whole document in one state field,
  * not per viewport by a view plugin, because a display formula spanning
@@ -25,17 +30,21 @@
  * measurable; the parse is bounded by `ensureSyntaxTree`'s time budget.
  */
 import {
+  Compartment,
   EditorSelection,
   EditorState,
+  Facet,
   StateField,
   type Extension,
   type Range,
+  type StateEffect,
 } from "@codemirror/state";
 import { Decoration, EditorView, WidgetType, keymap, placeholder, type DecorationSet } from "@codemirror/view";
 import { LanguageSupport, ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import { markdownLanguage } from "@codemirror/lang-markdown";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { findMath, type MathSpan } from "./math";
+import { toggleInline, toggleTaskAt, type Command } from "./noteFormat";
 import { renderMarkdown, renderMathHtml } from "./markdown";
 
 /** The same one-line `[[target|alias]]` shape `links.ts` parses. */
@@ -181,8 +190,9 @@ export function tableWikilinks(src: string): string {
   });
 }
 
-/** A task list's `[ ]` / `[x]`, drawn as a box off the cursor's line. Shown,
- *  not a control: the editor writes nothing but his typing (see the top). */
+/** A task list's `[ ]` / `[x]`, drawn as a box off the cursor's line. A
+ *  click ticks it (item 498): the one character between the brackets
+ *  changes, as one undo step (`toggleTaskAt`). */
 class TaskWidget extends WidgetType {
   constructor(readonly done: boolean) {
     super();
@@ -190,17 +200,39 @@ class TaskWidget extends WidgetType {
   eq(other: TaskWidget): boolean {
     return other.done === this.done;
   }
-  toDOM(): HTMLElement {
+  toDOM(view: EditorView): HTMLElement {
     const el = document.createElement("span");
     el.className = this.done ? "cm-ntask cm-ntask-done" : "cm-ntask";
+    el.setAttribute("role", "checkbox");
+    el.setAttribute("aria-checked", this.done ? "true" : "false");
     el.setAttribute("aria-label", this.done ? "done" : "to do");
+    el.dataset.tip = this.done ? "Click to untick" : "Click to tick";
     el.textContent = this.done ? "✓" : "";
+    el.addEventListener("mousedown", (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      const spec = toggleTaskAt(view.state, view.posAtDOM(el));
+      if (spec) view.dispatch(spec);
+    });
     return el;
+  }
+  ignoreEvent(): boolean {
+    return true;
   }
 }
 
+/**
+ * How a relative image link is drawn (item 498): the note view gives the
+ * editor a function that reads the file beside the note and answers a URL
+ * the `<img>` can load (a `data:` URL), or null. Without one, a relative
+ * link is drawn as before, against the app's own origin.
+ */
+export const imageSource = Facet.define<(src: string) => Promise<string | null>, ((src: string) => Promise<string | null>) | null>({
+  combine: (all) => all[0] ?? null,
+});
+
 /** An image drawn where its `![alt](url)` is, off the cursor — the src the
- *  preview's `<img>` gets. */
+ *  preview's `<img>` gets, or for a relative link, what `imageSource` reads. */
 export class ImageWidget extends WidgetType {
   constructor(
     readonly src: string,
@@ -211,13 +243,19 @@ export class ImageWidget extends WidgetType {
   eq(other: ImageWidget): boolean {
     return other.src === this.src && other.alt === this.alt;
   }
-  toDOM(): HTMLElement {
+  toDOM(view: EditorView): HTMLElement {
     const el = document.createElement("img");
     el.className = "cm-nimage";
+    el.alt = this.alt;
+    el.addEventListener("load", () => view.requestMeasure());
     // Only what an <img> may load; anything else (`javascript:`) is left raw
     // by `noteDecorations`, never reaches here.
-    el.src = this.src;
-    el.alt = this.alt;
+    const resolve = view.state.facet(imageSource);
+    if (resolve && !/^[a-z][a-z0-9+.-]*:/i.test(this.src.trim())) {
+      void resolve(this.src).then((url) => {
+        if (url) el.src = url;
+      });
+    } else el.src = this.src;
     return el;
   }
 }
@@ -504,10 +542,31 @@ export function noteDecorations(state: EditorState): DecorationSet {
 const livePreview = StateField.define<DecorationSet>({
   create: (state) => noteDecorations(state),
   update(value, tr) {
-    return tr.docChanged || tr.selection ? noteDecorations(tr.state) : value;
+    return tr.docChanged || tr.selection || tr.reconfigured ? noteDecorations(tr.state) : value;
   },
   provide: (f) => EditorView.decorations.from(f),
 });
+
+/**
+ * The drawing, in a compartment (item 498): the formatted view has
+ * `livePreview`; the Markdown view has none of it, every mark showing, set
+ * in mono like the old Plain textarea.
+ */
+export const drawing = new Compartment();
+const sourceView: Extension = EditorView.editorAttributes.of({ class: "cm-nsource" });
+function drawingFor(markdown: boolean): Extension {
+  return markdown ? sourceView : livePreview;
+}
+
+/** The effect that switches an editor between the two views. */
+export function setMarkdown(markdown: boolean): StateEffect<unknown> {
+  return drawing.reconfigure(drawingFor(markdown));
+}
+
+/** Is this state showing the raw Markdown? */
+export function isMarkdown(state: EditorState): boolean {
+  return state.field(livePreview, false) === undefined;
+}
 
 /** The theme: the app's own tokens, so it follows the palette he picked. */
 const theme = EditorView.theme({
@@ -531,6 +590,9 @@ const theme = EditorView.theme({
   ".cm-line": { padding: "0" },
   "&.cm-focused .cm-cursor": { borderLeftColor: "var(--accent)" },
   ".cm-placeholder": { color: "var(--dim)" },
+  // The Markdown view (item 498): the source in mono, as Plain was.
+  "&.cm-nsource .cm-scroller": { fontFamily: "var(--mono)", fontSize: "0.84rem", lineHeight: "1.6" },
+  ".cm-ntask[role=checkbox]": { cursor: "pointer" },
   ".cm-nh": { fontWeight: "600", lineHeight: "1.35" },
   ".cm-nh1": { fontSize: "1.6em", paddingTop: "0.4em" },
   ".cm-nh2": { fontSize: "1.35em", paddingTop: "0.35em" },
@@ -612,6 +674,8 @@ export interface NoteEditorHooks {
   /** ⌘-click (Ctrl elsewhere) on a `[[link]]`. */
   onFollow?: (target: string) => void;
   placeholder?: string;
+  /** A relative image link's loadable URL (item 498, `imageSource`). */
+  imageSource?: (src: string) => Promise<string | null>;
 }
 
 /**
@@ -619,7 +683,12 @@ export interface NoteEditorHooks {
  * the suite can prove the round trip without a view: `doc.toString()` of
  * this state is `text`, byte for byte.
  */
-export function noteState(text: string, cursor: number, extensions: Extension[] = []): EditorState {
+export function noteState(
+  text: string,
+  cursor: number,
+  extensions: Extension[] = [],
+  opts: { markdown?: boolean } = {},
+): EditorState {
   const at = Math.max(0, Math.min(cursor, text.length));
   return EditorState.create({
     doc: text,
@@ -629,16 +698,32 @@ export function noteState(text: string, cursor: number, extensions: Extension[] 
       // CRLF and lone-CR text survives untouched.
       EditorState.lineSeparator.of("\n"),
       new LanguageSupport(markdownLanguage),
-      livePreview,
+      drawing.of(drawingFor(!!opts.markdown)),
       ...extensions,
     ],
   });
 }
 
+/** Run a toolbar command on a view: true when it applied. */
+export function runCommand(view: EditorView, cmd: Command): boolean {
+  const spec = cmd(view.state);
+  if (!spec) return false;
+  view.dispatch(spec);
+  return true;
+}
+
+/** ⌘B / ⌘I (item 498), ahead of the default keymap (whose ⌘I selects the
+ *  enclosing syntax node). */
+const formatKeymap = keymap.of([
+  { key: "Mod-b", run: (v) => (runCommand(v, toggleInline("bold")), true) },
+  { key: "Mod-i", run: (v) => (runCommand(v, toggleInline("italic")), true) },
+]);
+
 /** The view's extensions beyond `noteState`'s: editing, the theme, hooks. */
 export function noteExtensions(hooks: NoteEditorHooks): Extension[] {
   return [
     history(),
+    formatKeymap,
     keymap.of([...defaultKeymap, ...historyKeymap]),
     EditorView.lineWrapping,
     EditorView.contentAttributes.of({
@@ -646,6 +731,7 @@ export function noteExtensions(hooks: NoteEditorHooks): Extension[] {
       spellcheck: "false",
     }),
     ...(hooks.placeholder ? [placeholder(hooks.placeholder)] : []),
+    ...(hooks.imageSource ? [imageSource.of(hooks.imageSource)] : []),
     theme,
     EditorView.updateListener.of((u) => {
       if (u.docChanged) hooks.onChange(u.state.doc.toString());

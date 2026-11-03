@@ -3552,6 +3552,43 @@ async fn keep_in_folder(
     .map_err(|e| e.to_string())?
 }
 
+/// Item 498: an image the note toolbar inserts, kept in `folder` (the
+/// `attachments/` folder beside the note, store-relative) of the note's own
+/// store — the project's notes or the vault. The same keep as
+/// [`keep_in_folder`] (`keep::keep_in_folder`), with Keep both on a clash:
+/// a name taken by other bytes is numbered, the same bytes are reused.
+#[tauri::command]
+async fn keep_note_file(
+    state: State<'_, AppState>,
+    scope: NoteScope,
+    folder: String,
+    name: String,
+    media_type: String,
+    data: String,
+) -> Result<nightloom_service::keep::Landing, String> {
+    use base64::Engine as _;
+    if !matches!(scope, NoteScope::Project | NoteScope::Knowledge) {
+        return Err("images are kept beside notes in the project's notes or the vault only".into());
+    }
+    let docspace = scope_dir(&state, scope).await?;
+    tokio::task::spawn_blocking(move || {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data.trim())
+            .map_err(|e| format!("{name}: {e}"))?;
+        nightloom_service::keep::keep_in_folder(
+            &docspace,
+            &folder,
+            &name,
+            &media_type,
+            &bytes,
+            None,
+            nightloom_service::keep::OnClash::Both,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// One file out of a dropped zip, for the window (item 414).
 #[derive(serde::Serialize)]
 struct ZipFileWire {
@@ -8978,6 +9015,7 @@ fn main() {
             prepare_office_attachment,
             keep_attachment,
             keep_in_folder,
+            keep_note_file,
             unpack_zip,
             office_converter,
             pdf_pages,

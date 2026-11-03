@@ -342,6 +342,19 @@ export function keepInFolder(
   return invoke("keep_in_folder", { name, mediaType, data, folder, clash, ...(source ? { source } : {}) });
 }
 
+/** Item 498: an image the note toolbar inserts, kept in `folder` (the
+ *  `attachments/` beside the note) of the note's own store, project notes
+ *  or the vault; a name taken by other bytes is numbered. */
+export function keepNoteFile(
+  scope: NoteScope,
+  folder: string,
+  name: string,
+  mediaType: string,
+  data: string,
+): Promise<Landing> {
+  return invoke("keep_note_file", { scope, folder, name, mediaType, data });
+}
+
 /**
  * The recent council turns across the chats of the open project
  * (nightshift backlog 149): each chat's `<council>` records, newest first,

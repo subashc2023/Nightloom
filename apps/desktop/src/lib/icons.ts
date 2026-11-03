@@ -52,6 +52,13 @@ export const ICONS = {
   branch: '<circle cx="6" cy="5" r="2"/><circle cx="6" cy="15" r="2"/><circle cx="14" cy="8" r="2"/><path d="M6 7v6M14 10c0 3-8 2-8 5"/>',
   /* The link card under a reply (board 6). */
   link: '<path d="M8.5 11.5a3 3 0 0 0 4.2 0l2-2a3 3 0 0 0-4.2-4.2l-1 1M11.5 8.5a3 3 0 0 0-4.2 0l-2 2a3 3 0 0 0 4.2 4.2l1-1"/>',
+  // The note toolbar (item 498).
+  textstyle: '<path d="M3 5h8M7 5v10M11.5 9.5h5.5M14.25 9.5V15"/>',
+  code: '<path d="m7 6-4 4 4 4M13 6l4 4-4 4"/>',
+  table: '<rect x="3" y="4" width="14" height="12" rx="1.5"/><path d="M3 8h14M3 12h14M7.7 4v12M12.3 4v12"/>',
+  image: '<rect x="3" y="4" width="14" height="12" rx="1.5"/><circle cx="7.5" cy="8" r="1.3"/><path d="m3.5 14.5 4-4 3 3 2-2 4 4"/>',
+  checklist: '<path d="m3 5.5 1.5 1.5L7 4.5M3 12.5 4.5 14 7 11.5M10 6h7M10 13h7"/>',
+  markdown: '<path d="m6.5 6-3.5 4 3.5 4M13.5 6l3.5 4-3.5 4M11 4.5l-2 11"/>',
 } as const;
 
 export type IconName = keyof typeof ICONS;

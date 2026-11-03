@@ -581,6 +581,53 @@ happened to be showing. The load effect is guarded on that pair changing rather
 than running on any state change: the textarea is bound to the same `text`, so an
 unguarded effect would discard what the user was typing on their own keystroke.
 
+### The note editor: one editor, a toolbar, a Markdown switch (item 498)
+
+A text note opens directly editable as formatted text: `NoteEditor.svelte`
+over `noteEditor.ts`, CodeMirror 6 with the Markdown drawn in place (headings
+sized, marks hidden off the caret's line, maths typeset, tables, task boxes and
+images drawn). There is no mode to pick: the Plain textarea and the `marked`
+Preview that items 150 and 495 offered beside it are gone from the note (their
+settings, `nightloom.noteMode` and `nightloom.notePreview`, are left in storage
+and no longer read, so every note opens formatted after the update even if
+Plain was the last pick — blocker 1653). ⌘-click follows a `[[link]]` as the
+Preview's anchors did. (The textarea mentioned above is now this editor; it is
+bound to `text` the same way.)
+
+A **toolbar row** sits under the top row, outside the scroller, so it stays put
+while the note scrolls (`NoteToolbar.svelte`): *Text style* (Normal text,
+Heading 1–3, Bold ⌘B, Italic ⌘I, Strikethrough, Quote; the caret line's block
+style ticked), *Code* (inline on a one-line selection, a fenced block
+otherwise), *Table* (3 columns, a header and two rows), *Image*, *Checklist*
+(`- [ ] ` on the selected lines; again to remove), *Insert +* (link,
+`[[note link]]`, `$formula$`, `---`), and at the end the **Markdown** switch.
+Every action is a function from the editor state to one transaction of
+ordinary Markdown (`noteFormat.ts`, unit-tested), isolated in the undo history
+so it is exactly one undo step; a block (table, divider, fence) goes on lines
+of its own with a blank line around it, so a `---` never turns the paragraph
+above into a heading. A click on a drawn task box ticks it (`[ ]` ↔ `[x]`, one
+character). No list-continuing Markdown keymap was added. Nothing rewrites the
+text on open, on the switch or on save: `noteRoundTrip498.test.ts` opens every
+`.md` in the repository, switches views both ways and reads back the same
+bytes, CRLF and lone CR included.
+
+The **Markdown switch** reconfigures one Compartment (`drawing` in
+`noteEditor.ts`) in the same `EditorView`: the drawing goes, the source shows
+in mono, and the caret, the undo history and the scroll survive (the
+reconfigure carries `view.scrollSnapshot()`, so the line at the top stays at
+the top). It is one setting for every note, `nightloom.noteMarkdown`, the last
+picked, re-read when a kept tab (487) comes back to the front.
+
+**Images** (blocker 1652): *Image* opens a file picker and copies the file into
+`attachments/` beside the note — `keep_note_file`, which runs the notes panel's
+own `keep::keep_in_folder` (item 492) in the note's store, the project's notes
+or the vault, with Keep both on a clash (the same bytes reuse the file there; a
+name taken by other bytes is numbered) — then inserts `![name](attachments/…)`,
+the path percent-encoded. The fixed files (AGENTS.md, memory, a model's file)
+take no images; the button says so. A relative image link is drawn from the
+store (`imageSource` → `readNoteMedia` → a `data:` URL); before 498 it pointed
+at the app's own origin and drew nothing.
+
 `refreshNotes` reads **both** stores after every turn, which is the visible half
 of shared knowledge — the note the model just left appears in the sidebar without
 a reload. A new note gets `.md` appended when the name has no extension, since

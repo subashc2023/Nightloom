@@ -15,24 +15,19 @@
     stageProposal,
     unstageProposal,
   } from "./state.svelte";
-  import { renderMarkdown } from "./markdown";
   import ProposalReview from "./ProposalReview.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
-  import {
-    hrefTarget,
-    linkTitle,
-    parseLinks,
-    renderNote,
-    resolveLink,
-  } from "./links";
+  import { linkTitle, parseLinks, resolveLink } from "./links";
   import type { NoteResolution } from "./links";
   import { modelOfInstructionFile } from "./catalog";
   import type { NoteScope } from "./types";
   import { tick, untrack } from "svelte";
   import NoteEditor from "./NoteEditor.svelte";
   import NoteMedia from "./NoteMedia.svelte";
-  import { clampCaret, loadNoteMode, loadNotePreview, saveNoteMode, saveNotePreview, type NoteMode } from "./noteMode";
-  import { fieldScrollTop } from "./find";
+  import NoteToolbar from "./NoteToolbar.svelte";
+  import { loadNoteMarkdown, saveNoteMarkdown } from "./noteMode";
+  import { attachmentsFolder, imageAlt, imageNoteName, insertImage, linkPath, relativeToNote } from "./noteFormat";
+  import { readBase64 } from "./attachFiles.svelte";
   import NoteEditPanel from "./NoteEditPanel.svelte";
   import { noteEditUi, onLanded, runningTurn } from "./noteEdit.svelte";
   import { changedLines, editBlock, jumpTarget } from "./noteEdit";
@@ -41,7 +36,7 @@
   import { baseOf, parentOf, renamedTo } from "./notesTree";
   import { floatMenu } from "./floatMenu";
   import { viewGet, viewSet } from "./viewState";
-  import { shownOf, splitExt, whoFoldKey, type NoteShown } from "./noteHead";
+  import { splitExt, whoFoldKey } from "./noteHead";
 
   /**
    * Which note the editor has loaded, as `scope:name`. A plain variable, not
@@ -75,20 +70,17 @@
   let error = $state<string | null>(null);
   /** A note that is not text (backlog 307): drawn, never edited. */
   let media = $state<api.FileTabData | null>(null);
-  /** The Preview, as last picked in any note (item 495, `noteMode.ts`):
-   *  survives a chat switch, a tab switch and a relaunch. */
-  let preview = $state(loadNotePreview());
   /**
-   * Plain (the textarea) or formatted (the CodeMirror editor that draws the
-   * Markdown and math in place) — nightshift backlog 150. One setting for
-   * every note, the last picked (`noteMode.ts`). Both sides bind `text`, so
-   * the draft, Revert and Save are the same whichever is showing.
+   * Item 498: one editor (the CodeMirror one, `noteEditor.ts`), opened
+   * formatted — the Plain textarea and the Preview are gone from the note.
+   * `markdown` is the toolbar's switch to the raw Markdown in the same
+   * editor: one setting for every note, the last picked (`noteMode.ts`),
+   * kept across a chat switch, a tab switch and a relaunch.
    */
-  let mode = $state<NoteMode>(loadNoteMode());
-  /** Where the cursor was, as an offset into `text`: carried across a
-   *  switch between the two sides and back from the preview. */
+  let markdown = $state(loadNoteMarkdown());
+  /** Where the cursor was, as an offset into `text`: where the editor
+   *  mounts it (a jump to a line, a reload). */
   let caret = $state(0);
-  let area = $state<HTMLTextAreaElement | null>(null);
   let formatted = $state<ReturnType<typeof NoteEditor> | null>(null);
 
   const dirty = $derived(text !== saved);
@@ -231,11 +223,9 @@
     marks = { lines, marked: new Set([at]) };
     jumped = true;
     caret = offset;
-    preview = false;
     marksTimer = setTimeout(() => {
       clearMarks();
       jump += 1;
-      if (mode === "plain") void focusArea();
     }, JUMP_MS);
   }
   $effect(() => {
@@ -312,9 +302,7 @@
     if (`${at.scope}:${at.name}` !== loaded || open.scope !== at.scope || open.name !== at.name) return;
     caret = lineOffset(text, at.line);
     app.noteAt = null;
-    preview = false;
     jump += 1;
-    if (mode === "plain") void focusArea();
   });
 
   async function load(target: { scope: NoteScope; name: string } | null) {
@@ -325,6 +313,7 @@
     error = null;
     media = null;
     backlinks = [];
+    images.clear();
     if (!target) return;
     loading = true;
     try {
@@ -349,8 +338,6 @@
       if (at && at.scope === target.scope && at.name === target.name) {
         caret = lineOffset(text, at.line);
         app.noteAt = null;
-        preview = false;
-        if (mode === "plain") void focusArea();
       }
       bufferKey = key;
     } catch (e) {
@@ -471,24 +458,13 @@
   }
 
   /**
-   * Follow a `[[link]]` from the preview.
-   *
-   * Delegated from the pane rather than bound per anchor, because the HTML is
-   * produced by the markdown renderer and there is nothing to bind to. A
-   * target that resolves to nothing *creates* the note — writing `[[thing]]`
-   * before it exists is how a note gets planned, so the click is the natural
-   * moment to start it. An *ambiguous* one does not: the note it names already
-   * exists more than once, and a third copy is the one outcome that makes the
-   * vault worse.
+   * Follow a `[[link]]` (⌘-click in the editor, a chip). A target that
+   * resolves to nothing *creates* the note — writing `[[thing]]` before it
+   * exists is how a note gets planned, so the click is the natural moment to
+   * start it. An *ambiguous* one does not: the note it names already exists
+   * more than once, and a third copy is the one outcome that makes the vault
+   * worse. (The Preview's anchor clicks came here too until item 498.)
    */
-  async function onPreviewClick(e: MouseEvent) {
-    const anchor = (e.target as HTMLElement | null)?.closest("a");
-    const target = hrefTarget(anchor?.getAttribute("href") ?? null);
-    if (target === null) return;
-    e.preventDefault();
-    await follow(target);
-  }
-
   async function follow(target: string) {
     const found = resolveLink(target, app.vault);
     if (found.kind === "note") {
@@ -516,64 +492,75 @@
       : linkTitle(target, found);
   }
 
+  /* Coming back to the front (487's kept tab), the Markdown switch is as
+     last picked in another note (one setting, 495's rule for the Preview). */
   $effect(() => {
     if (away) return;
     untrack(() => {
-      // Item 495: the Preview too, as last picked in another note.
-      const lastPreview = loadNotePreview();
-      if (lastPreview !== preview) {
-        readCaret();
-        preview = lastPreview;
-      }
-      const last = loadNoteMode();
-      if (last === mode) return;
-      readCaret();
-      mode = last;
+      const last = loadNoteMarkdown();
+      if (last !== markdown) markdown = last;
     });
   });
 
-  /** Read the cursor off whichever side is showing. */
-  function readCaret() {
-    if (area) caret = area.selectionStart;
-    else if (formatted) caret = formatted.head();
+  /** The toolbar's Markdown switch: the same editor, drawn or not. */
+  function setMarkdownView(on: boolean) {
+    markdown = on;
+    saveNoteMarkdown(on);
   }
 
   /**
-   * Switch plain ↔ formatted. The text is one buffer, so nothing is copied
-   * and nothing can be lost; the cursor is read off the side going away and
-   * put back on the side arriving. From the preview, either choice also
-   * leaves the preview.
+   * Images (item 498, blocker 1652). The toolbar's Image copies the file
+   * picked into `attachments/` beside the note (`keep_note_file`, the notes
+   * panel's keep with Keep both) and inserts `![name](attachments/…)` at
+   * the caret, as one undo step. Only the two stores of notes have a folder
+   * beside the note; the fixed files (AGENTS.md, memory, a model's file)
+   * do not take images.
    */
-  async function setMode(next: NoteMode) {
-    readCaret();
-    const was = mode;
-    if (preview) saveNotePreview(false);
-    preview = false;
-    mode = next;
-    if (next !== was) saveNoteMode(next);
-    if (next === "plain") await focusArea();
+  const canImage = $derived(open?.scope === "project" || open?.scope === "knowledge");
+  async function addImage(file: File) {
+    const target = open;
+    const key = bufferKey;
+    if (!target || !key || !canImage) return;
+    try {
+      const data = await readBase64(file);
+      const landing = await api.keepNoteFile(
+        target.scope,
+        attachmentsFolder(target.name),
+        file.name,
+        file.type || "application/octet-stream",
+        data,
+      );
+      if (landing.kind !== "kept") throw new Error(`${landing.rel} is taken`);
+      // The round trip is long enough to switch notes: the link goes only
+      // into the note it was picked for.
+      if (bufferKey !== key || !formatted) return;
+      formatted.run(insertImage(imageAlt(file.name), linkPath(relativeToNote(target.name, landing.rel))));
+    } catch (e) {
+      addToast(`Could not add the image: ${String(e)}`);
+    }
   }
 
-  function togglePreview() {
-    readCaret();
-    preview = !preview;
-    saveNotePreview(preview);
-    if (!preview && mode === "plain") void focusArea();
-  }
-
-  /** The textarea, focused with the cursor where it was and its line in view. */
-  async function focusArea() {
-    await tick();
-    const el = area;
-    if (!el) return;
-    const at = clampCaret(caret, el.value);
-    el.focus({ preventScroll: true });
-    el.setSelectionRange(at, at);
-    const cs = getComputedStyle(el);
-    const lh = parseFloat(cs.lineHeight) || 20;
-    // Item 496: the text starts below the document head's room.
-    const top = parseFloat(cs.paddingTop) || 0;
-    if (el.scrollHeight > el.clientHeight) el.scrollTop = top + fieldScrollTop(el.value, at, lh, el.clientHeight);
+  /** A relative image link drawn from the file beside the note: its bytes
+   *  as a `data:` URL (the way an image tab draws one), kept per note. */
+  const images = new Map<string, Promise<string | null>>();
+  function imageSource(src: string): Promise<string | null> {
+    const target = open;
+    if (!target) return Promise.resolve(null);
+    const name = imageNoteName(target.name, src);
+    if (!name) return Promise.resolve(null);
+    const k = `${target.scope}:${name}`;
+    const have = images.get(k);
+    if (have) return have;
+    const p = api
+      .readNoteMedia(target.scope, name)
+      .then((m) => (m?.kind === "image" && m.data ? `data:${m.media_type};base64,${m.data}` : null))
+      .catch(() => null);
+    // A miss is not kept: the file may land a moment later.
+    void p.then((u) => {
+      if (!u) images.delete(k);
+    });
+    images.set(k, p);
+    return p;
   }
 
   function onkeydown(e: KeyboardEvent) {
@@ -648,8 +635,9 @@
    * an image, the proposal review, a read error and "Reading…" keep the head
    * in the flow above them instead (`overlay` false).
    */
-  const shown = $derived(shownOf(mode, preview));
   const overlay = $derived(!media && !reviewing && !error && !loading);
+  /** The editor is what shows (item 498: the toolbar is only over it). */
+  const editorShown = $derived(overlay && !streamed && !marks && !!open);
   /* Blocker 1649 (answered by his pick): the large name always shows, and
      a note's own first heading stays in its text as it is. */
   const nameParts = $derived(splitExt(baseOf(open?.name ?? "")));
@@ -677,7 +665,7 @@
   /** A different pane came in (a mode switch, the stream, a reload): the
    *  head follows that pane's own scroll. */
   $effect(() => {
-    void shown;
+    void markdown;
     void streamed;
     void marks;
     void bufferKey;
@@ -688,14 +676,6 @@
   function onHeadWheel(e: WheelEvent) {
     if (!overlay) return;
     activePane()?.scrollBy({ top: e.deltaY, left: e.deltaX });
-  }
-
-  /** The three-way switch (blocker 1643): Plain and Formatted leave the
-   *  preview, as before; Preview keeps the mode underneath. */
-  function setShown(next: NoteShown) {
-    if (next === "preview") {
-      if (!preview) togglePreview();
-    } else void setMode(next);
   }
 
   /** The ⋯ menu: Show the folder, and Rename for the notes that can be. */
@@ -755,33 +735,8 @@
     <span class="spacer"></span>
     <div class="tools">
       {#if !media}
-        <!-- Plain / Formatted / Preview (backlog 150, blocker 1643): one
-             switch, the lit segment what shows. -->
-        <span class="modes" role="group" aria-label="View">
-          <button
-            class="seg"
-            class:on={shown === "plain"}
-            aria-pressed={shown === "plain"}
-            use:tip={"Plain: the Markdown source as typed"}
-            onclick={() => setShown("plain")}
-            disabled={!open || !!reviewing}>Plain</button
-          ><button
-            class="seg"
-            class:on={shown === "formatted"}
-            aria-pressed={shown === "formatted"}
-            use:tip={"Formatted: headings, emphasis, code and math drawn in place, still editable — the cursor's line shows its source"}
-            onclick={() => setShown("formatted")}
-            disabled={!open || !!reviewing}>Formatted</button
-          ><button
-            class="seg"
-            class:on={shown === "preview"}
-            aria-pressed={shown === "preview"}
-            use:tip={"Preview: the note as it reads, links followable; Plain or Formatted goes back to editing"}
-            onclick={() => setShown("preview")}
-            disabled={!open || !!reviewing}>Preview</button
-          >
-        </span>
-        <span class="vr"></span>
+        <!-- Item 498: no Plain / Formatted / Preview — the note opens
+             formatted, and the toolbar below carries the Markdown switch. -->
         <button
           class="seg ask"
           class:on={noteEditUi.open}
@@ -832,6 +787,17 @@
 
   <div class="body" class:editing={noteEditUi.open && !!open && !media}>
   <div class="main" bind:this={mainEl} onscrollcapture={onPaneScroll}>
+  {#if editorShown}
+    <NoteToolbar
+      run={(cmd) => formatted?.run(cmd)}
+      current={() => formatted?.editorState() ?? null}
+      {markdown}
+      onmarkdown={setMarkdownView}
+      {canImage}
+      imageWhy="Images go beside a note in the project's notes or the vault; this file takes text only"
+      onimage={(f) => void addImage(f)}
+    />
+  {/if}
   <div class="scrolls" class:overlay style:--head-h="{overlay ? headH : 0}px">
   <!-- The document head (item 496): where the note lives, its name, who
        reads it. Over the pane's top and moved with its scroll (see the
@@ -977,22 +943,14 @@
         >
       </div>
     </div>
-  {:else if preview}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="pane preview markdown" onclick={onPreviewClick}>
-      {#if isVault}
-        {@html renderNote(text, app.vault)}
-      {:else}
-        {@html renderMarkdown(text)}
-      {/if}
-    </div>
-  {:else if mode === "formatted"}
+  {:else}
     {#key `${bufferKey}#${jump}`}
       <NoteEditor
         bind:this={formatted}
         bind:value={text}
         {caret}
+        {markdown}
+        {imageSource}
         placeholder={isVault
           ? "Yours, and readable from every project. Link another note with [[name]]."
           : isModel
@@ -1002,25 +960,6 @@
         onfollow={(t) => void follow(t)}
       />
     {/key}
-  {:else}
-    <!-- Named, so the field has an accessible name when it is empty (an
-         unnamed empty textarea is invisible to assistive tech and to the
-         driving tools alike — the prompt library's fields had the same fix). -->
-    <textarea
-      class="pane"
-      aria-label="Note text"
-      bind:this={area}
-      bind:value={text}
-      onblur={() => {
-        if (area) caret = area.selectionStart;
-      }}
-      spellcheck="false"
-      placeholder={isVault
-        ? "Yours, and readable from every project. Link another note with [[name]]."
-        : isModel
-          ? `How you want ${modelId} in particular to behave. Empty means no file.`
-          : "Anything here is read by every chat in this project."}
-    ></textarea>
   {/if}
 
   </div>
@@ -1215,10 +1154,6 @@
     padding: 3px;
     min-width: 0;
     flex-shrink: 1;
-  }
-  .modes {
-    display: inline-flex;
-    gap: 2px;
   }
   .seg {
     border: 0;
@@ -1680,16 +1615,6 @@
      pill) as the other panes, and the same side padding. */
   .scrolls :global(.cm-content) {
     padding: calc(var(--head-h, 0px) + 1rem) var(--pad, 1.2rem) var(--pill-room, 1rem) !important;
-  }
-  textarea.pane {
-    border: none;
-    resize: none;
-    font-family: var(--mono);
-    font-size: 0.84rem;
-    line-height: 1.6;
-  }
-  textarea.pane:focus {
-    outline: none;
   }
   .err {
     margin: 1rem 1.2rem;
