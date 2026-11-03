@@ -36,7 +36,7 @@ import { LanguageSupport, ensureSyntaxTree, syntaxTree } from "@codemirror/langu
 import { markdownLanguage } from "@codemirror/lang-markdown";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { findMath, type MathSpan } from "./math";
-import { renderMathHtml } from "./markdown";
+import { renderMarkdown, renderMathHtml } from "./markdown";
 
 /** The same one-line `[[target|alias]]` shape `links.ts` parses. */
 const WIKILINK = /\[\[([^\[\]\n]{1,200})\]\]/g;
@@ -124,6 +124,114 @@ class RuleWidget extends WidgetType {
   }
 }
 
+/**
+ * A GFM table drawn as one (item 494: "why is formatting not actually
+ * formatting"), off the cursor's lines — the same marked + DOMPurify render
+ * the preview gives, so cells carry their bold, code, links and maths, and
+ * the app's `.markdown` table style (wrapping cells, a sideways scroll when
+ * too wide). A click puts the cursor into the cell clicked, which brings the
+ * source back, as a formula does.
+ */
+export class TableWidget extends WidgetType {
+  constructor(
+    readonly source: string,
+    /** Each row's cell starts, relative to the table's first character:
+     *  the header row first, then the body rows (the `|---|` row is not one). */
+    readonly cells: number[][],
+  ) {
+    super();
+  }
+  eq(other: TableWidget): boolean {
+    return other.source === this.source;
+  }
+  toDOM(view: EditorView): HTMLElement {
+    const el = document.createElement("div");
+    el.className = "cm-ntable markdown";
+    el.innerHTML = renderMarkdown(tableWikilinks(this.source));
+    el.dataset.tip = "Click to edit the table";
+    el.addEventListener("mousedown", (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      const start = view.posAtDOM(el);
+      const cell = (e.target as HTMLElement | null)?.closest?.("th, td") as HTMLTableCellElement | null;
+      const row = cell?.parentElement as HTMLTableRowElement | null;
+      const rowIndex = row ? Array.from(el.querySelectorAll("tr")).indexOf(row) : -1;
+      const rel = rowIndex >= 0 && cell ? (this.cells[rowIndex]?.[cell.cellIndex] ?? 0) : 0;
+      view.dispatch({ selection: EditorSelection.cursor(Math.min(view.state.doc.length, start + rel)) });
+      view.focus();
+    });
+    return el;
+  }
+  ignoreEvent(): boolean {
+    return true;
+  }
+}
+
+/** `[[target|alias]]` inside a drawn table: shown as its alias (or target),
+ *  styled as a link, the way the editor draws one outside a table. */
+export function tableWikilinks(src: string): string {
+  return src.replace(WIKILINK, (_m, inner: string) => {
+    const bar = inner.indexOf("|");
+    // Inside a table cell an alias bar is written `\|`; take either.
+    const cut = inner.indexOf("\\|");
+    const at = cut >= 0 ? cut : bar;
+    const shown = (at < 0 ? inner : inner.slice(at + (cut >= 0 ? 2 : 1))).trim() || inner.trim();
+    const esc = shown.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\|/g, "&#124;");
+    return `<span class="cm-nwikilink">${esc}</span>`;
+  });
+}
+
+/** A task list's `[ ]` / `[x]`, drawn as a box off the cursor's line. Shown,
+ *  not a control: the editor writes nothing but his typing (see the top). */
+class TaskWidget extends WidgetType {
+  constructor(readonly done: boolean) {
+    super();
+  }
+  eq(other: TaskWidget): boolean {
+    return other.done === this.done;
+  }
+  toDOM(): HTMLElement {
+    const el = document.createElement("span");
+    el.className = this.done ? "cm-ntask cm-ntask-done" : "cm-ntask";
+    el.setAttribute("aria-label", this.done ? "done" : "to do");
+    el.textContent = this.done ? "✓" : "";
+    return el;
+  }
+}
+
+/** An image drawn where its `![alt](url)` is, off the cursor — the src the
+ *  preview's `<img>` gets. */
+export class ImageWidget extends WidgetType {
+  constructor(
+    readonly src: string,
+    readonly alt: string,
+  ) {
+    super();
+  }
+  eq(other: ImageWidget): boolean {
+    return other.src === this.src && other.alt === this.alt;
+  }
+  toDOM(): HTMLElement {
+    const el = document.createElement("img");
+    el.className = "cm-nimage";
+    // Only what an <img> may load; anything else (`javascript:`) is left raw
+    // by `noteDecorations`, never reaches here.
+    el.src = this.src;
+    el.alt = this.alt;
+    return el;
+  }
+}
+
+/** A URL an image widget may load: the preview's own (relative, http(s), data:image). */
+export function drawableImage(url: string): boolean {
+  const u = url.trim();
+  if (!u) return false;
+  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(u);
+  if (!scheme) return true;
+  const s = scheme[1].toLowerCase();
+  return s === "http" || s === "https" || s === "asset" || (s === "data" && /^data:image\//i.test(u));
+}
+
 const hide = Decoration.replace({});
 const bullet = Decoration.replace({ widget: new BulletWidget() });
 const rule = Decoration.replace({ widget: new RuleWidget() });
@@ -169,16 +277,27 @@ export function noteDecorations(state: EditorState): DecorationSet {
       out.push(Decoration.line({ class: cls }).range(doc.line(n).from));
   };
 
+  // Tables drawn whole (item 494): every table whose lines the cursor is
+  // not on. Found first, so nothing inside one — a formula, a `[[link]]` —
+  // is drawn a second time over the widget.
+  const tables: { from: number; to: number; drawn: boolean }[] = [];
   tree.iterate({
     enter(node) {
       if (CODE_NODES.has(node.name)) code.push([node.from, node.to]);
+      if (node.name === "Table") {
+        const from = doc.lineAt(node.from).from;
+        const to = doc.lineAt(node.to).to;
+        tables.push({ from, to, drawn: !onLines(state, from, to) });
+        return false;
+      }
     },
   });
   const inCode = (from: number, to: number) => code.some(([a, b]) => from < b && to > a);
+  const inTable = (from: number, to: number) => tables.some((t) => t.drawn && from < t.to && to > t.from);
 
   // Math first: syntax inside a formula (`$a*b*c$` parses as emphasis) is
   // the formula's, so nothing else is drawn over one.
-  const maths = findMath(text).filter((m) => !inCode(m.from, m.to));
+  const maths = findMath(text).filter((m) => !inCode(m.from, m.to) && !inTable(m.from, m.to));
   const inMath = (from: number, to: number) => maths.some((m) => from < m.to && to > m.from);
   for (const m of maths) {
     const d = mathDecoration(state, m);
@@ -220,6 +339,58 @@ export function noteDecorations(state: EditorState): DecorationSet {
         return;
       }
       switch (name) {
+        case "Table": {
+          const t = tables.find((x) => x.from <= from && x.to >= to);
+          if (!t?.drawn) {
+            // The cursor is in it: the source, in mono so the columns line up.
+            eachLine(from, to, "cm-ntablesrc");
+            return;
+          }
+          const cells: number[][] = [];
+          for (let row = node.node.firstChild; row; row = row.nextSibling) {
+            if (row.name !== "TableHeader" && row.name !== "TableRow") continue;
+            cells.push(row.getChildren("TableCell").map((c) => c.from - t.from));
+          }
+          out.push(
+            Decoration.replace({
+              widget: new TableWidget(doc.sliceString(t.from, t.to), cells),
+              block: true,
+            }).range(t.from, t.to),
+          );
+          return false;
+        }
+        case "TaskMarker": {
+          if (!onLines(state, from, to)) {
+            const done = /x/i.test(doc.sliceString(from, to));
+            out.push(Decoration.replace({ widget: new TaskWidget(done) }).range(from, to));
+          }
+          return;
+        }
+        case "Image": {
+          const url = node.node.getChild("URL");
+          const marks = node.node.getChildren("LinkMark");
+          const src = url ? doc.sliceString(url.from, url.to) : "";
+          if (url && marks.length >= 2 && drawableImage(src) && !touches(state, from, to)) {
+            const alt = doc.sliceString(marks[0].to, marks[1].from);
+            out.push(Decoration.replace({ widget: new ImageWidget(src, alt) }).range(from, to));
+          } else {
+            out.push(Decoration.mark({ class: "cm-nlink" }).range(from, to));
+          }
+          return false;
+        }
+        case "Autolink": {
+          // `<https://…>`: the URL is a link, the angle brackets hide off the cursor.
+          const url = node.node.getChild("URL");
+          if (url) out.push(Decoration.mark({ class: "cm-nlink" }).range(url.from, url.to));
+          if (!touches(state, from, to))
+            for (const m of node.node.getChildren("LinkMark")) out.push(hide.range(m.from, m.to));
+          return false;
+        }
+        case "URL": {
+          // A bare `https://…` or `www.…` (GFM's autolinks; the preview links them).
+          out.push(Decoration.mark({ class: "cm-nlink" }).range(from, to));
+          return;
+        }
         case "Emphasis":
         case "StrongEmphasis":
         case "Strikethrough": {
@@ -309,7 +480,7 @@ export function noteDecorations(state: EditorState): DecorationSet {
   for (const m of text.matchAll(WIKILINK)) {
     const from = m.index ?? 0;
     const to = from + m[0].length;
-    if (inCode(from, to) || inMath(from, to)) continue;
+    if (inCode(from, to) || inMath(from, to) || inTable(from, to)) continue;
     const inner = m[1];
     const bar = inner.indexOf("|");
     const target = (bar < 0 ? inner : inner.slice(0, bar)).trim();
@@ -399,6 +570,32 @@ const theme = EditorView.theme({
     verticalAlign: "middle",
     borderTop: "1px solid var(--border)",
   },
+  // `white-space: normal`: CodeMirror's content is pre-wrap, which made the
+  // newlines marked leaves between <thead> and <tbody> count as text — the
+  // header drew as a table of its own, with blank lines around it.
+  ".cm-ntable": { cursor: "pointer", padding: "0.2em 0", fontSize: "1em", whiteSpace: "normal" },
+  ".cm-ntable table": { margin: "0.3em 0" },
+  ".cm-ntable:hover table": {
+    outline: "1px dashed color-mix(in srgb, var(--accent) 50%, transparent)",
+    outlineOffset: "2px",
+  },
+  ".cm-ntablesrc": { fontFamily: "var(--mono)", fontSize: "0.86em", whiteSpace: "pre-wrap" },
+  ".cm-ntask": {
+    display: "inline-block",
+    width: "1.15em",
+    height: "1.15em",
+    lineHeight: "1.1em",
+    verticalAlign: "-0.15em",
+    marginRight: "0.15em",
+    textAlign: "center",
+    fontSize: "0.8em",
+    fontWeight: "700",
+    boxSizing: "border-box",
+    border: "1.5px solid var(--dim)",
+    borderRadius: "3px",
+  },
+  ".cm-ntask-done": { background: "var(--accent)", borderColor: "var(--accent)", color: "var(--bg)" },
+  ".cm-nimage": { maxWidth: "100%", verticalAlign: "middle", borderRadius: "4px" },
   ".cm-nmath": { cursor: "pointer" },
   ".cm-nmath-block": { textAlign: "center", padding: "0.3em 0" },
   ".cm-nmath:hover": {

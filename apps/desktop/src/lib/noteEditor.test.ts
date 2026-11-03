@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { EditorSelection } from "@codemirror/state";
-import { noteDecorations, noteState } from "./noteEditor";
+import { TableWidget, drawableImage, noteDecorations, noteState, tableWikilinks } from "./noteEditor";
+import { Marked } from "marked";
 import { clampCaret, loadNoteMode, minimalChange, parseNoteMode, saveNoteMode } from "./noteMode";
 import { findMath } from "./math";
 
@@ -187,5 +188,77 @@ describe("Markdown marks hide off the cursor and come back on it", () => {
     const text = "see [[Plan|the plan]] here";
     const d = decorations(text, 0);
     expect(d.some((x) => x.cls === "cm-nwikilink")).toBe(true);
+  });
+});
+
+describe("item 494: what the preview renders, Formatted draws", () => {
+  const table = "| Option | Cost |\n|:--|--:|\n| **A** | $5 |\n| B with [[Plan|the plan]] | `x` $y^2$ |";
+  const doc = `Intro.\n\n${table}\n\nAfter.`;
+  const start = doc.indexOf("| Option");
+
+  it("a GFM table is one widget over its lines while the cursor is elsewhere", () => {
+    const w = decorations(doc, 0).filter((d) => d.widget === "TableWidget");
+    expect(w).toHaveLength(1);
+    expect(doc.slice(w[0].from, w[0].to)).toBe(table);
+    // Nothing inside it is drawn a second time: no formula, no [[link]] over the widget.
+    const inside = decorations(doc, 0).filter((d) => d.from > w[0].from && d.to <= w[0].to);
+    expect(inside).toEqual([]);
+  });
+
+  it("the cursor in the table brings the source back, in mono", () => {
+    const d = decorations(doc, start + 3);
+    expect(d.some((x) => x.widget === "TableWidget")).toBe(false);
+    expect(d.filter((x) => x.cls === "cm-ntablesrc")).toHaveLength(4);
+  });
+
+  it("the widget renders the preview's table, cells and all", () => {
+    const set = noteDecorations(noteState(doc, 0));
+    let w: TableWidget | null = null;
+    set.between(0, doc.length, (_f, _t, d) => {
+      const spec = d.spec as { widget?: unknown };
+      if (spec.widget instanceof TableWidget) w = spec.widget;
+    });
+    expect(w).not.toBeNull();
+    const tw = w as unknown as TableWidget;
+    // Header row, then two body rows, each cell's start relative to the table.
+    expect(tw.cells.length).toBe(3);
+    expect(table.slice(tw.cells[1][0], tw.cells[1][0] + 5)).toBe("**A**");
+    // The widget draws this through `renderMarkdown` (marked + DOMPurify, the
+    // preview's own path; DOMPurify needs a DOM, so the harness checks the
+    // drawn table). Here: marked turns the source into a table with its cells.
+    const src = tableWikilinks(tw.source);
+    expect(src).toContain('<span class="cm-nwikilink">the plan</span>');
+    const html = new Marked({ gfm: true }).parse(src, { async: false }) as string;
+    expect(html).toContain("<table>");
+    expect(html).toContain("<th");
+    expect(html).toContain("<strong>A</strong>");
+    expect(html).not.toContain("|---");
+  });
+
+  it("a task list's [ ] and [x] are boxes off the cursor's line", () => {
+    const text = "- [ ] todo\n- [x] done\n\nend";
+    const off = decorations(text, text.length).filter((d) => d.widget === "TaskWidget");
+    expect(off.map((d) => text.slice(d.from, d.to))).toEqual(["[ ]", "[x]"]);
+    expect(decorations(text, 3).filter((d) => d.widget === "TaskWidget")).toHaveLength(1);
+  });
+
+  it("an image is drawn off the cursor, a javascript: one never", () => {
+    const text = "see ![a cat](https://x.y/cat.png) and ![bad](javascript:alert(1))\n\nend";
+    const w = decorations(text, text.length).filter((d) => d.widget === "ImageWidget");
+    expect(w.map((d) => text.slice(d.from, d.to))).toEqual(["![a cat](https://x.y/cat.png)"]);
+    expect(decorations(text, 6).filter((d) => d.widget === "ImageWidget")).toEqual([]);
+    expect(drawableImage("pics/a.png")).toBe(true);
+    expect(drawableImage("data:text/html,x")).toBe(false);
+  });
+
+  it("autolinks and bare URLs are drawn as links", () => {
+    const text = "<https://a.b> and https://c.d\n\nend";
+    const links = decorations(text, text.length).filter((d) => d.cls === "cm-nlink");
+    expect(links.map((d) => text.slice(d.from, d.to))).toEqual(["https://a.b", "https://c.d"]);
+  });
+
+  it("every new construct still round-trips byte for byte", () => {
+    const text = `${doc}\n\n- [ ] t\n\n![i](p.png) <https://a.b>\n`;
+    for (const c of [0, start + 3, text.length]) expect(roundTrip(text, c)).toBe(text);
   });
 });
