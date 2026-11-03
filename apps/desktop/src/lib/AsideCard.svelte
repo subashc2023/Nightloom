@@ -19,6 +19,7 @@
   import type { Zone } from "./floatingMove";
   import { tick, untrack } from "svelte";
   import { asideSendJumps } from "./sendScroll";
+  import { asideCardScrollKey, putBack, recallScroll, rememberScroll } from "./scroll.svelte";
   import type { Aside } from "./state.svelte";
   import type { Placement } from "./asideCard";
   import MoveZone from "./MoveZone.svelte";
@@ -209,10 +210,31 @@
   // streaming answer, then the follow-up box — is what he is reading.
   // Released the moment he scrolls up in it, held again at the foot.
   let bodyPinned = true;
+  // Item 502: the card keeps his place in its thread across a remount (a
+  // chat switch, the card folded and opened): held at the foot as before
+  // when it was, else the line he left, put back while the thread draws.
+  const placeKey = $derived(owner ? asideCardScrollKey(owner, aside.id) : null);
+  let putting: ReturnType<typeof putBack> | null = null;
   function bodyScrolled(): void {
     if (!body) return;
     bodyPinned = body.scrollHeight - body.scrollTop - body.clientHeight < 4;
+    if (placeKey && !putting?.busy()) rememberScroll(placeKey, body.scrollTop, bodyPinned);
   }
+  $effect(() => {
+    const key = placeKey;
+    const el = body;
+    if (!key || !el) return;
+    return untrack(() => {
+      const entry = recallScroll(key);
+      if (entry) bodyPinned = entry.pinned;
+      const p = putBack(el, entry);
+      putting = p;
+      return () => {
+        p.cancel();
+        if (putting === p) putting = null;
+      };
+    });
+  });
   // A card whose room shrinks — a shorter window, more cards stacked
   // above the composer — keeps its foot where it was: held at the bottom
   // before the change, held there after, so the buttons stay (backlog

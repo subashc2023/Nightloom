@@ -87,6 +87,51 @@ export function asideScrollKey(session: string, thread: number): string {
   return `aside:${session}:${thread}`;
 }
 
+/** An aside card's place (item 502), apart from the same thread's tab. */
+export function asideCardScrollKey(session: string, thread: number): string {
+  return `aside-card:${session}:${thread}`;
+}
+
+/** How long a mounting view is put back while it draws, in ms (487's span). */
+export const PUT_BACK_MS = 1500;
+const PUT_BACK_AT = [0, 50, 150, 300, 600, 1000];
+
+/**
+ * Put a view back where `entry` says while its content draws (item 502):
+ * at once, on every change under it, and on a few timers, until he
+ * scrolls, clicks or types in it, or `PUT_BACK_MS` has gone. A remembered
+ * top is set only once the view has room for it — one tick after mount
+ * the aside's thread was still short, so the top was cut to near 0 and
+ * the scroll that cut made recorded the cut place over his. `busy()` is
+ * true meanwhile: the view must not record its own scroll events as his.
+ */
+export function putBack(el: HTMLElement, entry: ScrollEntry | null): { busy: () => boolean; cancel: () => void } {
+  if (!entry) return { busy: () => false, cancel: () => {} };
+  let live = true;
+  const attempt = (last = false) => {
+    if (!live) return;
+    const end = Math.max(0, el.scrollHeight - el.clientHeight);
+    if (!entry.pinned && !last && end < entry.top - 1) return;
+    const top = restoreTop(entry, el.scrollHeight, el.clientHeight);
+    if (top !== null && Math.abs(el.scrollTop - top) > 1) el.scrollTop = top;
+  };
+  const mo = typeof MutationObserver === "undefined" ? null : new MutationObserver(() => attempt());
+  mo?.observe(el, { childList: true, subtree: true, characterData: true });
+  const timers = PUT_BACK_AT.map((ms) => setTimeout(() => attempt(), ms));
+  timers.push(setTimeout(() => (attempt(true), stop()), PUT_BACK_MS));
+  const input = ["wheel", "pointerdown", "keydown", "touchstart"] as const;
+  function stop() {
+    if (!live) return;
+    live = false;
+    mo?.disconnect();
+    for (const t of timers) clearTimeout(t);
+    for (const ev of input) el.removeEventListener(ev, stop, true);
+  }
+  for (const ev of input) el.addEventListener(ev, stop, true);
+  attempt();
+  return { busy: () => live, cancel: stop };
+}
+
 /**
  * Where to put a view back on mount or on a switch back: nothing for a view
  * never scrolled (it opens where it always did); the foot for one that was
