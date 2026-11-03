@@ -154,3 +154,69 @@ export function appliedWords(results: Moved[]): string {
   if (failed) bits.push(`${failed} could not move`);
   return bits.join("; ") + ".";
 }
+
+// ---- the unapplied plan survives a quit (practices §7) ----
+//
+// Kept in localStorage the way the drafts and the note side chats are: his
+// instruction and his edits to a proposed plan come back after a relaunch.
+// A sort or an Apply that was running when the app quit comes back as the
+// plan it started from (nothing moved that was not reported).
+
+export const SAVED_KEY = "nightloom.inboxSort.v1";
+
+export interface SavedSort {
+  scope: InboxScope;
+  instruction: string;
+  rows: Proposal[];
+  folders: string[];
+  cost: string;
+  /** When the plan was proposed (ISO), for "kept from 6:50 PM". */
+  savedAt: string;
+}
+
+export function serializeSort(s: SavedSort): string {
+  return JSON.stringify(s);
+}
+
+const str = (v: unknown): v is string => typeof v === "string";
+
+/** A stored sort, checked field by field; null when there is nothing worth offering back. */
+export function parseSort(raw: string | null): SavedSort | null {
+  if (!raw) return null;
+  let v: Record<string, unknown>;
+  try {
+    v = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!v || typeof v !== "object") return null;
+  const scope: InboxScope = v.scope === "knowledge" ? "knowledge" : "project";
+  const rows = Array.isArray(v.rows)
+    ? (v.rows as Record<string, unknown>[])
+        .filter((r) => r && str(r.item) && r.item.startsWith(INBOX + "/") && str(r.to))
+        .map((r) => ({
+          item: r.item as string,
+          folder: r.folder === true,
+          to: r.to as string,
+          reason: str(r.reason) ? r.reason : "",
+          new_folder: r.new_folder === true,
+          tick: r.tick === true,
+        }))
+    : [];
+  const out: SavedSort = {
+    scope,
+    instruction: str(v.instruction) ? v.instruction : "",
+    rows,
+    folders: Array.isArray(v.folders) ? (v.folders as unknown[]).filter(str) : [],
+    cost: str(v.cost) ? v.cost : "",
+    savedAt: str(v.savedAt) ? v.savedAt : "",
+  };
+  return out.rows.length || out.instruction.trim() ? out : null;
+}
+
+/** "6:50 PM" (his clock is 12-hour). */
+export function keptAt(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+}
