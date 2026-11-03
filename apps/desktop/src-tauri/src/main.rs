@@ -7961,7 +7961,11 @@ async fn read_file_tab(
         );
         if let Some(config) = project::config_dir() {
             trees.push(nightloom_service::knowledge::vault_dir_in(&config));
+            // Item 499: the copies `send_file` keeps of what a chat sent
+            // him are Nightloom's own store; its chip opens them here.
+            trees.push(nightloom_service::tools::send_file::store_in(&config));
         }
+        trees.push(nightloom_service::tools::send_file::scratch_store());
         let written = session
             .map(|s| filetab::written_paths(s.events(), trees.first().map(PathBuf::as_path)))
             .unwrap_or_default();
