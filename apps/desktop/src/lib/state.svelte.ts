@@ -80,6 +80,7 @@ import {
   type ChatChoices,
 } from "./chatChoice";
 import { madeChatRow, refreshWithin, withNote, withoutNote } from "./afterWrite";
+import { isMoveNotesTool, movesInAnswer } from "./notesMoved";
 import {
   adoptNewChat,
   emptyRules,
@@ -1610,6 +1611,8 @@ export async function init(): Promise<void> {
   await listen<{ seq: number; event: TurnEvent }>("aside-turn-event", (e) => {
     const t = findAsideTurn(e.payload.seq);
     if (t) asideTurnEvent(t, e.payload.event);
+    // Item 483: an aside's moves are followed too, card or no card.
+    followToolMoves(e.payload.event);
   });
   // Queued behind the chat's own turn, or running (item 404).
   await listen<{ seq: number; phase: "queued" | "running" }>("aside-phase", (e) => {
@@ -3314,7 +3317,13 @@ export async function moveNoteTo(
  * moved on disk — by `moveNoteTo`, or by the note editor's `rename_note`
  * tool (item 460), which renames in the backend and reports it here.
  */
-export function followNoteMove(scope: "project" | "knowledge", from: string, landed: string): void {
+export function followNoteMove(
+  scope: "project" | "knowledge",
+  from: string,
+  landed: string,
+  /** False for all but the last of a batch (item 483): one re-read. */
+  refresh = true,
+): void {
   const list = scope === "project" ? app.notes : app.vault;
   const touched = list.filter((n) => movedNameOf(n.name, from, landed) !== null);
   // The open note may not be in the list yet (a note just made).
@@ -3337,6 +3346,9 @@ export function followNoteMove(scope: "project" | "knowledge", from: string, lan
       delete app.noteDrafts[oldKey];
     }
   }
+  // Item 483: stores this module cannot import (it is imported by them —
+  // the note editor's threads, with his half-typed request) follow too.
+  for (const fn of noteMoveListeners) fn(scope, from, landed);
   for (const t of tabs.allTabs(app.tabs)) {
     if (t.content.kind !== "note" || t.content.scope !== scope) continue;
     const next = movedNameOf(t.content.name, from, landed);
@@ -3354,7 +3366,40 @@ export function followNoteMove(scope: "project" | "knowledge", from: string, lan
   if (scope === "project") app.notes = renamed;
   else app.vault = renamed;
   app.noteFolders[scope] = app.noteFolders[scope].map((f) => movedNameOf(f, from, landed) ?? f);
-  void refreshWithin("moving " + from, [refreshNotes, refreshProjects]);
+  if (refresh) void refreshWithin("moving " + from, [refreshNotes, refreshProjects]);
+}
+
+type NoteMoveListener = (scope: "project" | "knowledge", from: string, landed: string) => void;
+const noteMoveListeners: NoteMoveListener[] = [];
+
+/** Item 483: be told of every followed move (`followNoteMove`), after the
+ *  drafts moved and before the tabs do; the unsubscribe. */
+export function onNoteMove(fn: NoteMoveListener): () => void {
+  noteMoveListeners.push(fn);
+  return () => {
+    const i = noteMoveListeners.indexOf(fn);
+    if (i >= 0) noteMoveListeners.splice(i, 1);
+  };
+}
+
+/** `name` once `from` moved to `landed`, or null — for the listeners. */
+export function movedNoteName(name: string, from: string, landed: string): string | null {
+  return movedNameOf(name, from, landed);
+}
+
+/**
+ * Item 483: a chat's `move_notes` (item 472) moved notes in the vault on
+ * the backend; its answer names each move that landed — a part-way
+ * failure's too — and each is followed as the panel's own move is, in
+ * order, so a tab, the open note and an unsaved draft go to the new name.
+ * Any chat's result (on screen, in the background, a subagent's or an
+ * aside's), the live event only — a transcript re-read never replays it.
+ */
+export function followToolMoves(ev: TurnEvent): void {
+  const r = ev.type === "subagent" ? ev.event : ev;
+  if (r.type !== "tool_result" || !isMoveNotesTool(r.name)) return;
+  const moves = movesInAnswer(r.content);
+  moves.forEach(([from, landed], i) => followNoteMove("knowledge", from, landed, i === moves.length - 1));
 }
 
 /**
@@ -8873,6 +8918,8 @@ export function applyTurnEventTo(host: TurnHost, ev: TurnEvent & { chat?: string
     const i = host.approvals.findIndex((r) => r.id === ev.tool_use_id);
     if (i >= 0) host.approvals.splice(i, 1);
   }
+  // Item 483: notes a chat moved take their tabs and drafts along.
+  followToolMoves(ev);
   // The Running-tasks rows outlive the live message (backlog 160): a
   // status or a child's event that lands after it ended still reaches its
   // row, which is the chat's and not the message's.
