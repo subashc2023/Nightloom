@@ -29,6 +29,7 @@
   import { requestReply } from "./replyQuote.svelte";
   import { selectionText } from "./asideQuote";
   import { asideDraftKey } from "./asides";
+  import type { FoldScope } from "./keptFolds.svelte";
 
   /**
    * An aside's exchanges, drawn as the chat's turns are (nightshift backlog
@@ -65,6 +66,10 @@
    * silent past `ASIDE_STALL_MS` says so, with Ask again and Stop.
    */
   let { aside, open }: { aside: Aside; open: boolean } = $props();
+  // Item 495 part 2: an exchange's folds kept as the chat's are, by the
+  // thread's stable name and the exchange's sequence number.
+  const foldChat = $derived(`aside:${aside.uid ?? aside.id}`);
+  const foldsOf = (seq: number): FoldScope => ({ chat: foldChat, turn: String(seq) });
 
   const asking = $derived(asideAsking(aside));
   const waiting = $derived(asideWaiting(aside));
@@ -327,7 +332,7 @@
           </div>
         </div>
       {:else}
-        <UserBubble images={imagesOf(turn)} documents={docsOf(turn)} text={turn.question} />
+        <UserBubble images={imagesOf(turn)} documents={docsOf(turn)} text={turn.question} keep={`fold:${foldChat}|${turn.seq}|bubble`} />
       {/if}
       {#if editing?.index !== i}
         <div class="aside-q-foot">
@@ -373,6 +378,7 @@
           streaming={turn === asking}
           since={turn === asking ? (turn.startedAt ?? null) : null}
           footer={footerOf(turn)}
+          folds={foldsOf(turn.seq)}
         />
       </div>
     {:else if turn === asking}

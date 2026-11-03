@@ -62,6 +62,17 @@ describe("the kept switches of a view", () => {
     expect(Object.keys(JSON.parse(disk.m.get(VIEW_STATE_KEY)!)).length).toBe(MAX_KEYS);
   });
 
+  it("over the bound, session-only keys go before a kept choice (item 495 part 2)", () => {
+    viewSet("file.plain:/a.md", true, false);
+    for (let i = 0; i <= MAX_KEYS; i++) viewSet(`fold:c|tool:${i}`, true, false, { session: true });
+    expect(viewGet("file.plain:/a.md", false)).toBe(true);
+    expect(viewGet("fold:c|tool:0", false)).toBe(false);
+    expect(viewGet("fold:c|tool:1", false)).toBe(false);
+    expect(viewGet(`fold:c|tool:${MAX_KEYS}`, false)).toBe(true);
+    viewSet("file.plain:/b.md", true, false);
+    expect(JSON.parse(disk.m.get(VIEW_STATE_KEY)!)).toEqual({ "file.plain:/a.md": true, "file.plain:/b.md": true });
+  });
+
   it("a per-note switch follows the note's move", () => {
     viewSet("noteMedia.full:inbox/pic.png", true, false);
     viewSet("noteMedia.full:other.png", true, false);

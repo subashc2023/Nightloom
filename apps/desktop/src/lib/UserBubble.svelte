@@ -10,6 +10,7 @@
   import KeepButton from "./KeepButton.svelte";
   import { canKeep, imageName, keepKey, leafOf, savedFilePaths } from "./keep";
   import { app } from "./state.svelte";
+  import { keptGet, keptSet } from "./keptFolds.svelte";
 
   /**
    * His message's bubble (nightshift backlog 283, 2026-10-02): the chat's
@@ -43,6 +44,7 @@
     extra,
     onopenimage = null,
     onopendoc = null,
+    keep = null,
   }: {
     images?: readonly Img[];
     documents?: readonly Doc[];
@@ -56,9 +58,25 @@
     onopenimage?: ((j: number, rect: DOMRect, size: { width: number; height: number } | null) => void) | null;
     /** A click on a file chip: its index and rect. Null: a plain chip. */
     onopendoc?: ((j: number, rect: DOMRect) => void) | null;
+    /** Where a text attachment's fold is kept past a chat switch (item 495
+     *  part 2: the chat + turn); null, the bubble's own. */
+    keep?: string | null;
   } = $props();
 
-  let textOpen = $state<Record<number, boolean>>({});
+  let localOpen = $state<Record<number, boolean>>({});
+  /** A text attachment unfolded (284), kept under `keep` when there is one. */
+  const textOpen = $derived.by<Record<number, boolean>>(() => {
+    if (keep === null) return localOpen;
+    const out: Record<number, boolean> = {};
+    documents.forEach((_, j) => {
+      if (keptGet(`${keep}|text:${j}`, false)) out[j] = true;
+    });
+    return out;
+  });
+  function flipText(j: number): void {
+    if (keep === null) localOpen[j] = !localOpen[j];
+    else keptSet(`${keep}|text:${j}`, !textOpen[j], false);
+  }
   /** A document with bytes to show: a text one unfolds (284). */
   const isText = (d: Doc) => d.media_type.startsWith("text/") && d.data !== "";
   /** Files the Claude Code engine saved for this message (item 277), by
@@ -130,7 +148,7 @@
             class="user-file-toggle"
             aria-expanded={!!textOpen[j]}
             use:tip={textOpen[j] ? "Fold the text away" : "Show the text here"}
-            onclick={() => (textOpen[j] = !textOpen[j])}
+            onclick={() => flipText(j)}
             >{textOpen[j] ? "▾ hide" : `▸ ${pastedLabel(decodeText(doc.data))}`}</button
           >
         {/if}

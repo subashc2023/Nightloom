@@ -122,10 +122,20 @@ export function viewSet<T extends ViewValue>(
   memory.set(key, value);
   if (opts.session) persisted.delete(key);
   else persisted.add(key);
+  // Over the bound, the oldest session-only key goes first (item 495 part 2:
+  // the transcript's folds are many and session-only, and opening a few
+  // hundred of them must not push out a choice kept on disk).
   while (memory.size > MAX_KEYS) {
-    const oldest = memory.keys().next().value as string;
-    memory.delete(oldest);
-    persisted.delete(oldest);
+    let drop: string | undefined;
+    for (const k of memory.keys()) {
+      if (!persisted.has(k)) {
+        drop = k;
+        break;
+      }
+    }
+    drop ??= memory.keys().next().value as string;
+    memory.delete(drop);
+    persisted.delete(drop);
   }
   if (!opts.session || wasOnDisk) save();
 }
