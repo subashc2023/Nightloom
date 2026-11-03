@@ -1,3 +1,4 @@
+import { viewRenameKeys } from "./viewState";
 import { tick } from "svelte";
 import { noteThreadHandoff, takeThreadHandoff } from "./threadHandoff.svelte";
 import { listen } from "@tauri-apps/api/event";
@@ -3386,6 +3387,8 @@ export function onNoteMove(fn: NoteMoveListener): () => void {
 export function movedNoteName(name: string, from: string, landed: string): string | null {
   return movedNameOf(name, from, landed);
 }
+// Item 495: a note's kept view switches follow it when it moves (483's listener).
+onNoteMove((_scope, from, landed) => viewRenameKeys("noteMedia.full:", (name) => movedNoteName(name, from, landed)));
 
 /**
  * Item 483: a chat's `move_notes` (item 472) moved notes in the vault on

@@ -52,6 +52,9 @@
   import { prefersReducedMotion } from "./chipFade";
   import { addToast, deleteNoteFolder, moveNoteTo, newNoteFolder } from "./state.svelte";
   import { runningTurn } from "./noteEdit.svelte";
+  import InboxSortSheet from "./InboxSortSheet.svelte";
+  import { openInboxSort } from "./inboxSort.svelte";
+  import { INBOX } from "./inboxSort";
   import { placeMenu } from "./menuPlace";
   import {
     ancestorsOf,
@@ -1300,6 +1303,16 @@
       {/if}
       <button role="menuitem" use:focusFirst={a.scope !== "project"} onclick={() => addNew("folder")}>New folder</button>
       <button role="menuitem" onclick={() => addNew("note")}>New note</button>
+      {#if a.path === "" || a.path === INBOX}
+        <button
+          role="menuitem"
+          onclick={() => {
+            const s = a.scope;
+            addMenu = null;
+            void openInboxSort(s === "knowledge" ? "knowledge" : "project");
+          }}>Sort inbox… <span class="key">{INBOX}/</span></button
+        >
+      {/if}
     </div>
   {/if}
   <input bind:this={picker} class="picker" type="file" multiple hidden onchange={onPick} />
@@ -1333,6 +1346,7 @@
     </div>
   {/if}
 </div>
+<InboxSortSheet />
 
 <style>
   .panel {
