@@ -90,6 +90,7 @@
   import Icon from "./Icon.svelte";
   import DisableDialog from "./DisableDialog.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
+  import { tabPlace } from "./tabPlace";
 
   // Delete confirms in a dialog and moves the log to a trash folder
   // (review round 1, 2026-09-13; memory never-lose-work). It replaced a ×
@@ -1149,7 +1150,8 @@
         {/if}
       </p>
     {:else}
-      <div class="session-list">
+      <!-- Item 495: the chat list's scroll survives Notes and back, per project. -->
+      <div class="session-list" use:tabPlace={`chat-list:${app.project?.id ?? "unfiled"}`}>
         {#if groups.length > 0}
           <div class="section-head threads-head" role="heading" aria-level="3">Threads</div>
         {/if}

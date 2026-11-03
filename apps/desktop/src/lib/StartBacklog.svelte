@@ -29,9 +29,13 @@
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import Grip from "./Grip.svelte";
   import Icon from "./Icon.svelte";
+  import { viewGet, viewSet } from "./viewState";
 
   let listWidth = $state(paneWidth("start.list", 340));
-  let filterText = $state("");
+  // Item 495: the typed filter survives the Nightshift tab going to the back;
+  // in memory only — a filter met days later would hide most of the list.
+  let filterText = $state(viewGet("start.filter", ""));
+  $effect(() => viewSet("start.filter", filterText, "", { session: true }));
 
   const itemList = $derived(app.nightshift.items);
   const items = $derived(itemList?.items ?? []);

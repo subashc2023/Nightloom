@@ -7,15 +7,23 @@
    * Open and Reveal. Read-only: there is no text to edit, so the note
    * view's Plain / Formatted / Preview / Edit / Save are not offered.
    */
+  import { untrack } from "svelte";
   import { tip } from "./tip";
   import * as api from "./api";
   import { addToast } from "./state.svelte";
   import { fmtSize } from "./cards";
   import { noteMediaShape } from "./noteMedia";
+  import { viewGet, viewSet } from "./viewState";
 
   let { file, name }: { file: api.FileTabData; name: string } = $props();
 
+  // Item 495: fit-or-own-size, kept per note past this view.
+  const fullKey = $derived(`noteMedia.full:${name}`);
   let full = $state(false);
+  $effect.pre(() => {
+    full = viewGet(fullKey, false);
+  });
+  $effect(() => viewSet(untrack(() => fullKey), full, false));
   const shape = $derived(noteMediaShape(file));
   const src = $derived(file.data ? `data:${file.media_type};base64,${file.data}` : null);
 

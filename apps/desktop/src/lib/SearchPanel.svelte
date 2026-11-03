@@ -29,6 +29,8 @@
     type FlatRow,
   } from "./search";
   import type { ChatGroup, SearchScope } from "./types";
+  import { tabPlace } from "./tabPlace";
+  import { viewGet, viewSet } from "./viewState";
 
   /**
    * Search everywhere (nightshift backlog 117, with 106's second half;
@@ -55,7 +57,18 @@
   let field = $state<HTMLInputElement | null>(null);
   let list = $state<HTMLDivElement | null>(null);
   let searching = $state(false);
-  let folded = $state<Record<string, boolean>>({});
+  // Item 495: the folded groups and the scroll survive the panel closing and
+  // opening on the same answer (in memory; a new answer starts unfolded).
+  let folded = $state<Record<string, boolean>>(parseFolded(viewGet("search.folded", "")));
+  function parseFolded(raw: string): Record<string, boolean> {
+    try {
+      const v = raw ? (JSON.parse(raw) as unknown) : {};
+      return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, boolean>) : {};
+    } catch {
+      return {};
+    }
+  }
+  $effect(() => viewSet("search.folded", JSON.stringify(folded), "{}", { session: true }));
   let seq = 0;
 
   // The scope row folds by measurement (backlog 183): ~~an `@container
@@ -321,7 +334,7 @@
         <span>{count.elapsed}</span>
       </div>
     {/if}
-    <div class="search-res" bind:this={list}>
+    <div class="search-res" bind:this={list} use:tabPlace={"search-res"}>
       {#each app.search.result.groups as g (g.id)}
         {@const k = groupKey(g)}
         <div class="search-grp">

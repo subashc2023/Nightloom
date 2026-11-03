@@ -34,6 +34,7 @@
   import Icon from "./Icon.svelte";
   import DiffView from "./DiffView.svelte";
   import RevertDialog from "./RevertDialog.svelte";
+  import { viewGet, viewSet } from "./viewState";
 
   const shifts = $derived(app.nightshift.shifts);
   const shift = $derived(
@@ -44,8 +45,12 @@
   const word = $derived(shift ? shiftWord(shift) : "");
 
   let listWidth = $state(paneWidth("runs.list", 290));
-  let listOpen = $state(true);
-  let drawerOpen = $state(true);
+  // Item 495: kept past the Nightshift tab going to the back (a singleton,
+  // drawn afresh) and past a relaunch.
+  let listOpen = $state(viewGet("runs.list", true));
+  let drawerOpen = $state(viewGet("runs.drawer", true));
+  $effect(() => viewSet("runs.list", listOpen, true));
+  $effect(() => viewSet("runs.drawer", drawerOpen, true));
   // The docked terminal's height, dragged by the handle on its top edge and
   // kept with the other pane sizes.
   let termH = $state(paneWidth("runs.term", 180));

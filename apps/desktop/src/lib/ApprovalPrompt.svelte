@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tip } from "./tip";
-  import { tick } from "svelte";
+  import { tick, untrack } from "svelte";
   import { app, resolveApproval } from "./state.svelte";
   import { draftKey, enqueueMessage } from "./drafts.svelte";
   import { routeNote } from "./askNote";
@@ -8,6 +8,7 @@
   import { inputFields } from "./toolinput";
   import Icon from "./Icon.svelte";
   import { cardBox, MIN_HEIGHT } from "./askSizing";
+  import { viewGet, viewSet } from "./viewState";
   import type { ApprovalRequest, AskQuestion, FolderGrant } from "./types";
   import AskQuestions from "./AskQuestions.svelte";
   import { answeredRows, buildAnswer } from "./askQuestions";
@@ -132,7 +133,14 @@
   // whole card scrolls; it has no drag edge and keeps no height — a third
   // of the transcript left its question one line tall and its options out
   // of sight. The rule is `cardBox` (askSizing.ts).
+  // Item 495: collapsed stays collapsed when the chat is drawn again (a chat
+  // switch remounts its transcript), per request, for this run.
+  const foldedKey = $derived(`approval.folded:${req.id}`);
   let folded = $state(false);
+  $effect.pre(() => {
+    folded = viewGet(foldedKey, false);
+  });
+  $effect(() => viewSet(untrack(() => foldedKey), folded, false, { session: true }));
   let viewportH = $state(0);
   let windowH = $state(0);
   let dragged = $state<number | null>(null);
@@ -231,7 +239,12 @@
   const why = $derived(kind === "call" ? (fields.find((f) => f.key === REASON_KEY)?.value ?? null) : null);
   let whyEl = $state<HTMLDivElement | null>(null);
   let whyLong = $state(false);
+  const whyOpenKey = $derived(`approval.why:${req.id}`);
   let whyOpen = $state(false);
+  $effect.pre(() => {
+    whyOpen = viewGet(whyOpenKey, false);
+  });
+  $effect(() => viewSet(untrack(() => whyOpenKey), whyOpen, false, { session: true }));
   $effect(() => {
     void why;
     if (whyEl && !whyOpen) whyLong = whyEl.scrollHeight > whyEl.clientHeight + 1;

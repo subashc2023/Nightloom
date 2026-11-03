@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { tip } from "./tip";
   /**
    * A file as a tab (nightshift backlog 161, 2026-09-25): the file card's
@@ -19,13 +20,26 @@
   import type { TabContent } from "./tabs";
   import { fileSegments } from "./codeHighlight";
   import { firstTexError, isTexPath } from "./latexLog";
+  import { viewGet, viewSet } from "./viewState";
 
   let { content }: { content: Extract<TabContent, { kind: "file" }> } = $props();
 
   let file = $state<api.FileTabData | null>(null);
   let error = $state<string | null>(null);
+  // Item 495: a file's Plain/Formatted and image-size switches, kept by its
+  // path past this view (a project switch, a relaunch, the kept list).
+  const plainKey = $derived(`file.plain:${content.path}`);
   let plain = $state(false);
+  $effect.pre(() => {
+    plain = viewGet(plainKey, false);
+  });
+  $effect(() => viewSet(untrack(() => plainKey), plain, false));
+  const fullKey = $derived(`file.full:${content.path}`);
   let full = $state(false);
+  $effect.pre(() => {
+    full = viewGet(fullKey, false);
+  });
+  $effect(() => viewSet(untrack(() => fullKey), full, false));
   let reads = $state(0);
 
   $effect(() => {

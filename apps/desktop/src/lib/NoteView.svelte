@@ -31,7 +31,7 @@
   import { tick, untrack } from "svelte";
   import NoteEditor from "./NoteEditor.svelte";
   import NoteMedia from "./NoteMedia.svelte";
-  import { clampCaret, loadNoteMode, saveNoteMode, type NoteMode } from "./noteMode";
+  import { clampCaret, loadNoteMode, loadNotePreview, saveNoteMode, saveNotePreview, type NoteMode } from "./noteMode";
   import { fieldScrollTop } from "./find";
   import NoteEditPanel from "./NoteEditPanel.svelte";
   import { noteEditUi, onLanded, runningTurn } from "./noteEdit.svelte";
@@ -72,7 +72,9 @@
   let error = $state<string | null>(null);
   /** A note that is not text (backlog 307): drawn, never edited. */
   let media = $state<api.FileTabData | null>(null);
-  let preview = $state(false);
+  /** The Preview, as last picked in any note (item 495, `noteMode.ts`):
+   *  survives a chat switch, a tab switch and a relaunch. */
+  let preview = $state(loadNotePreview());
   /**
    * Plain (the textarea) or formatted (the CodeMirror editor that draws the
    * Markdown and math in place) — nightshift backlog 150. One setting for
@@ -514,6 +516,12 @@
   $effect(() => {
     if (away) return;
     untrack(() => {
+      // Item 495: the Preview too, as last picked in another note.
+      const lastPreview = loadNotePreview();
+      if (lastPreview !== preview) {
+        readCaret();
+        preview = lastPreview;
+      }
       const last = loadNoteMode();
       if (last === mode) return;
       readCaret();
@@ -536,6 +544,7 @@
   async function setMode(next: NoteMode) {
     readCaret();
     const was = mode;
+    if (preview) saveNotePreview(false);
     preview = false;
     mode = next;
     if (next !== was) saveNoteMode(next);
@@ -545,6 +554,7 @@
   function togglePreview() {
     readCaret();
     preview = !preview;
+    saveNotePreview(preview);
     if (!preview && mode === "plain") void focusArea();
   }
 

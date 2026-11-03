@@ -20,6 +20,8 @@
   import { relativeTime } from "./time";
   import * as api from "./api";
   import { onMount, tick, untrack } from "svelte";
+  import { tabPlace } from "./tabPlace";
+  import { viewGet, viewSet } from "./viewState";
   import { projectFilesChanged, refreshNotes } from "./state.svelte";
   import { carriesFiles } from "./dropLook";
   import { acceptFiles, conversionJobs, readBase64 } from "./attachFiles.svelte";
@@ -136,7 +138,11 @@
    * answer used only while the box still holds the query it was asked.
    * The lists it narrows are re-searched when they change.
    */
-  let query = $state("");
+  // Item 495: the search box keeps what he typed past the sidebar going to
+  // Chats and back (this panel is drawn afresh), in memory only — a filter
+  // met after a relaunch would hide most of his notes.
+  let query = $state(viewGet("notes.query", ""));
+  $effect(() => viewSet("notes.query", query, "", { session: true }));
   let textHits = $state<{
     q: string;
     project: Set<string>;
@@ -1047,7 +1053,8 @@
   </div>
 {/snippet}
 
-<div class="panel" bind:this={panelEl}>
+<!-- Item 495: its scroll comes back with it, per project (tabPlace's store). -->
+<div class="panel" bind:this={panelEl} use:tabPlace={`notes-panel:${app.project?.id ?? "unfiled"}`}>
   <!-- Item 415: narrows both sections as he types; the pinned rows stay. -->
   <div class="find-bar">
     <input autocorrect="off" autocapitalize="off" spellcheck="false"
