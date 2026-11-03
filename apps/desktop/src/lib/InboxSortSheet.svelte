@@ -13,7 +13,7 @@
     stopSort,
   } from "./inboxSort.svelte";
   import { tip } from "./tip";
-  import { appliedWords, checkDest, leafOf, movesOf } from "./inboxSort";
+  import { appliedWords, checkDest, keptAt, leafOf, movesOf } from "./inboxSort";
 
   let sureReset = $state(false);
   const running = $derived(inboxSort.phase === "running");
@@ -88,7 +88,7 @@
       </div>
     {:else}
       {#if inboxSort.rows.length}
-        <p class="lead">Untick what should stay, or edit a destination. A name already taken is kept as “name (2)”; nothing is deleted.</p>
+        <p class="lead">{#if inboxSort.savedAt && keptAt(inboxSort.savedAt)}Plan from {keptAt(inboxSort.savedAt)}, kept until you apply it or start over.{" "}{/if}Untick what should stay, or edit a destination. A name already taken is kept as “name (2)”; nothing is deleted.</p>
         <datalist id="inbox-sort-folders">
           <option value="">top of the notes</option>
           {#each inboxSort.folders as f (f)}<option value={f}></option>{/each}
@@ -150,6 +150,7 @@
       </label>
       {#if inboxSort.cost}<p class="cost" use:tip={"The Claude Code CLI's estimate at API prices; a subscription is not billed per token"}>{inboxSort.cost}</p>{/if}
     {/if}
+    {#if inboxSort.notice}<p class="notice">{inboxSort.notice}</p>{/if}
     {#if inboxSort.error}<p class="err" role="alert">{inboxSort.error}</p>{/if}
   </div>
 {/if}
@@ -215,6 +216,11 @@
   .cost {
     font-size: 11.5px;
     color: var(--muted, var(--ink2, var(--text)));
+  }
+  .notice {
+    margin: 0;
+    font-size: 12px;
+    color: var(--accent);
   }
   .err {
     color: var(--error);
