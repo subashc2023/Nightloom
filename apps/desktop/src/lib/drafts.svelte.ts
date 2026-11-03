@@ -536,6 +536,48 @@ export function stashedChips(): { key: string; chip: Attachment }[] {
   return out;
 }
 
+/**
+ * Item 491 follow-up: every draft-file id (`stash`, a hex SHA-256) a stored
+ * value names, found anywhere in its JSON — so a change of the drafts'
+ * shape cannot hide a copy from the prune. `null` when the value cannot be
+ * read: the prune then deletes nothing.
+ */
+export function draftFileIdsIn(raw: string | null): string[] | null {
+  if (raw === null) return [];
+  let v: unknown;
+  try {
+    v = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  const out = new Set<string>();
+  const walk = (x: unknown) => {
+    if (Array.isArray(x)) for (const y of x) walk(y);
+    else if (x && typeof x === "object")
+      for (const [k, y] of Object.entries(x)) {
+        if (k === "stash" && typeof y === "string" && /^[0-9a-f]{64}$/i.test(y)) out.add(y.toLowerCase());
+        else walk(y);
+      }
+  };
+  walk(v);
+  return [...out];
+}
+
+/** The draft-file ids the saved drafts (and their history ring) and the
+ *  drafts in memory name; `null` when the store cannot be read. */
+export function draftFileIds(storage: Pick<Storage, "getItem"> | null = typeof localStorage === "undefined" ? null : localStorage): string[] | null {
+  if (!storage) return null;
+  let saved: (string[] | null)[];
+  try {
+    saved = [draftFileIdsIn(storage.getItem(KEY)), draftFileIdsIn(storage.getItem(HISTORY_KEY))];
+  } catch {
+    return null;
+  }
+  if (saved.some((l) => l === null)) return null;
+  const live = draftFileIdsIn(JSON.stringify(drafts)) ?? [];
+  return [...new Set([...saved.flat(), ...live] as string[])];
+}
+
 /** Fill, or with `null` drop, a chip `stashedChips` gave — wherever it
  *  now sits, box or queue. */
 export function settleStashed(chip: Attachment, patch: Partial<Attachment> | null): void {

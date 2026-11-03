@@ -267,6 +267,12 @@ export function stashDraftFile(data: string): Promise<string> {
   return invoke("stash_draft_file", { data });
 }
 
+/** Item 491 follow-up: delete the draft copies over 30 days old that no
+ *  id in `keep` names; what was done. */
+export function pruneDraftFiles(keep: string[]): Promise<{ removed: number; kept: number; freed: number }> {
+  return invoke("prune_draft_files", { keep });
+}
+
 /** A kept draft file's bytes (base64) by its id. */
 export function readDraftFile(id: string): Promise<string> {
   return invoke("read_draft_file", { id });

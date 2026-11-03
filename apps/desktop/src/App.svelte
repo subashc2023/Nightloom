@@ -1,7 +1,7 @@
 <script lang="ts">
   import { canLeaveProject } from "./lib/state.svelte";
   import { loadModelList } from "./lib/modelList.svelte";
-  import { restoreStashed } from "./lib/attachFiles.svelte";
+  import { pruneDraftCopies, restoreStashed } from "./lib/attachFiles.svelte";
   import { tip } from "./lib/tip";
   import { onMount, untrack } from "svelte";
   import {
@@ -99,6 +99,8 @@
     // A draft's long PDF kept on disk across the relaunch (item 491) gets
     // its bytes back; Send waits for it meanwhile.
     void restoreStashed();
+    // Copies no draft names, over 30 days old, are deleted (491 follow-up).
+    void pruneDraftCopies();
     // A launch that fails outright must not leave the launch screen up
     // over the reason (item 220).
     void init().catch((e: unknown) => {

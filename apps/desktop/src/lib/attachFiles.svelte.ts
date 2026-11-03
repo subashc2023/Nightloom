@@ -9,7 +9,7 @@
  * sits (`updateAttachment`, the wave 5 review fix 51798f5).
  */
 import { app, addToast as toastNow } from "./state.svelte";
-import { officeConverter, pdfPages, prepareOfficeAttachment, readDraftFile, stashDraftFile } from "./api";
+import { officeConverter, pdfPages, prepareOfficeAttachment, pruneDraftFiles, readDraftFile, stashDraftFile } from "./api";
 import {
   convertedLabel,
   convertingLabel,
@@ -28,6 +28,7 @@ import {
 } from "./attachKinds";
 import {
   addAttachment,
+  draftFileIds,
   nextAttachmentId,
   readDraft,
   removeAttachment,
@@ -127,6 +128,22 @@ export function restoreStashed(addToast: (text: string) => void = toastNow): Pro
       return job;
     }),
   ).then(() => {}));
+}
+
+/**
+ * Item 491 follow-up: once a launch, after the restore, the copies in
+ * `~/.nightloom/draft-files/` that no draft names and that are over 30 days
+ * old are deleted (the backend's `prune_draft_files`, off the main thread).
+ * A store that cannot be read prunes nothing.
+ */
+let pruned = false;
+export async function pruneDraftCopies(): Promise<void> {
+  if (pruned) return;
+  pruned = true;
+  await (restoring ?? Promise.resolve()).catch(() => {});
+  const keep = draftFileIds();
+  if (keep === null) return;
+  await pruneDraftFiles(keep).catch(() => {});
 }
 
 /** A PDF's pages, or nothing when they cannot be counted (item 491). */

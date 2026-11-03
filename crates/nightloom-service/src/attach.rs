@@ -1299,16 +1299,112 @@ pub fn read_draft_file(config: &Path, sha: &str) -> Result<String, String> {
     Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
+/// How old an unnamed draft copy must be before [`prune_draft_files`]
+/// deletes it (item 491 follow-up): 30 days.
+pub const DRAFT_FILE_MAX_AGE: std::time::Duration =
+    std::time::Duration::from_secs(30 * 24 * 60 * 60);
+
+/// What [`prune_draft_files`] did.
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct DraftPrune {
+    /// Copies deleted: no draft named them and they were older than the age.
+    pub removed: usize,
+    /// Copies left: named by a draft (whatever their age), or young.
+    pub kept: usize,
+    /// Bytes freed.
+    pub freed: u64,
+}
+
+/// Delete the draft copies (`<sha>.bin`, and a `<sha>.part` a crash left)
+/// that no saved draft names (`keep`, the ids the drafts store holds) and
+/// that were last written more than `max_age` before `now`. A copy a draft
+/// names is never deleted, whatever its age (practices §7: no mechanic loses
+/// his work); a young one is left too, so a copy stashed by another window
+/// whose draft is not saved yet survives. Anything else in the folder is
+/// not touched. A missing folder is nothing to do.
+pub fn prune_draft_files(
+    config: &Path,
+    keep: &std::collections::HashSet<String>,
+    max_age: std::time::Duration,
+    now: std::time::SystemTime,
+) -> DraftPrune {
+    let mut out = DraftPrune::default();
+    let Ok(entries) = std::fs::read_dir(draft_files_dir(config)) else {
+        return out;
+    };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Some(sha) = name
+            .strip_suffix(".bin")
+            .or_else(|| name.strip_suffix(".part"))
+        else {
+            continue;
+        };
+        if sha.len() != 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+            continue;
+        }
+        let Ok(meta) = e.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        let old = meta
+            .modified()
+            .ok()
+            .and_then(|m| now.duration_since(m).ok())
+            .is_some_and(|age| age > max_age);
+        if keep.contains(&sha.to_ascii_lowercase()) || !old {
+            out.kept += 1;
+            continue;
+        }
+        if std::fs::remove_file(e.path()).is_ok() {
+            out.removed += 1;
+            out.freed += meta.len();
+        } else {
+            out.kept += 1;
+        }
+    }
+    out
+}
+
 /// [`files_note`] for files that may include long PDFs sent by path (item
 /// 491, `paths` in the order of `files`): a PDF with a page count gets its
 /// own lines — how long it is, its text first with `pdftotext`, then only
 /// the pages it needs with Read's `pages` — and the rest the plain note.
 pub fn files_note_for(paths: &[PathBuf], files: &[FileInput]) -> String {
+    files_note_with(paths, files, find_pdftotext().as_deref())
+}
+
+/// `pdftotext`, wherever Homebrew or a package put it; `None` when it is
+/// not installed. Looked for by absolute path first (item 491 follow-up): a
+/// Finder-launched app — and the `claude` CLI it starts — has launchd's
+/// `PATH` (`/usr/bin:/bin:/usr/sbin:/sbin`), where Homebrew's
+/// `/opt/homebrew/bin/pdftotext` does not resolve by name.
+pub fn find_pdftotext() -> Option<PathBuf> {
+    for candidate in [
+        "/opt/homebrew/bin/pdftotext",
+        "/usr/local/bin/pdftotext",
+        "/usr/bin/pdftotext",
+    ] {
+        let p = PathBuf::from(candidate);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|d| d.join("pdftotext"))
+        .find(|p| p.is_file())
+}
+
+/// [`files_note_for`] with `pdftotext` given: its absolute path is what the
+/// note names, so the model's shell needs no `PATH` to find it; `None` (not
+/// installed) and the note says to Read the pages alone.
+pub fn files_note_with(paths: &[PathBuf], files: &[FileInput], pdftotext: Option<&Path>) -> String {
     let mut plain = Vec::new();
     let mut parts = Vec::new();
     for (i, p) in paths.iter().enumerate() {
         match files.get(i).and_then(|f| f.pages) {
-            Some(n) => parts.push(long_pdf_note(p, n)),
+            Some(n) => parts.push(long_pdf_note(p, n, pdftotext)),
             None => plain.push(p.clone()),
         }
     }
@@ -1319,15 +1415,27 @@ pub fn files_note_for(paths: &[PathBuf], files: &[FileInput]) -> String {
 }
 
 /// The note for one long PDF sent by path (item 491).
-fn long_pdf_note(path: &Path, pages: usize) -> String {
+fn long_pdf_note(path: &Path, pages: usize, pdftotext: Option<&Path>) -> String {
     let p = path.display();
-    format!(
-        "[Attached a PDF of {pages} pages, saved for you to read with your tools rather than sent whole:\n\
-         - {p}\n\
-         Pull its text first (`pdftotext -layout \"{p}\" -`, or `-f A -l B` for pages A to B) to find what the \
-         question needs, then Read only those pages with the Read tool's `pages` parameter (at most 20 a call) \
-         to see them as drawn — figures, equations and diagrams are not in the text.]"
-    )
+    match pdftotext {
+        Some(bin) => {
+            let bin = bin.display();
+            format!(
+                "[Attached a PDF of {pages} pages, saved for you to read with your tools rather than sent whole:\n\
+                 - {p}\n\
+                 Pull its text first (`\"{bin}\" -layout \"{p}\" -`, or `-f A -l B` for pages A to B) to find what the \
+                 question needs, then Read only those pages with the Read tool's `pages` parameter (at most 20 a call) \
+                 to see them as drawn — figures, equations and diagrams are not in the text.]"
+            )
+        }
+        // Item 491 follow-up: no pdftotext on this machine — Read alone.
+        None => format!(
+            "[Attached a PDF of {pages} pages, saved for you to read with your tools rather than sent whole:\n\
+             - {p}\n\
+             Read only the pages the question needs with the Read tool's `pages` parameter (at most 20 a call); \
+             to find them, start with the first few pages (contents, headings).]"
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -1776,13 +1884,20 @@ mod tests {
                 pages: None,
             },
         ];
-        let note = files_note_for(&paths, &files);
+        let bin = Path::new("/opt/homebrew/bin/pdftotext");
+        let note = files_note_with(&paths, &files, Some(bin));
         assert!(note.starts_with(
             "[Attached a file — saved for you to open with your tools:\n- /w/data.parquet]"
         ));
         assert!(note.contains("a PDF of 98 pages"));
-        assert!(note.contains("pdftotext -layout \"/w/deck.pdf\" -"));
+        // The absolute path: a Finder-launched app's PATH has no Homebrew.
+        assert!(note.contains("`\"/opt/homebrew/bin/pdftotext\" -layout \"/w/deck.pdf\" -`"));
         assert!(note.contains("`pages` parameter"));
+        // No pdftotext installed: Read with `pages` alone, no pdftotext named.
+        let bare = files_note_with(&paths, &files, None);
+        assert!(bare.contains("a PDF of 98 pages"));
+        assert!(!bare.contains("pdftotext"));
+        assert!(bare.contains("`pages` parameter"));
         // No long PDF: exactly the old note.
         assert_eq!(
             files_note_for(&paths[1..], &files[1..]),
@@ -1838,5 +1953,65 @@ mod tests {
             resolve("ppt/slides", "../notesSlides/n1.xml"),
             "ppt/notesSlides/n1.xml"
         );
+    }
+
+    #[test]
+    fn pruning_draft_files_spares_every_named_copy_and_every_young_one() {
+        let config = std::env::temp_dir().join(format!(
+            "nightloom-prune-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let dir = draft_files_dir(&config);
+        std::fs::create_dir_all(&dir).unwrap();
+        let named_old = stash_draft_file(&config, "bmFtZWQ=").unwrap();
+        let unnamed_old = stash_draft_file(&config, "b2xk").unwrap();
+        let unnamed_young = stash_draft_file(&config, "eW91bmc=").unwrap();
+        let part = "a".repeat(64);
+        std::fs::write(dir.join(format!("{part}.part")), b"half").unwrap();
+        std::fs::write(dir.join("notes.txt"), b"not a copy").unwrap();
+        let day = std::time::Duration::from_secs(24 * 60 * 60);
+        // "Now" is 40 days on for the old ones: set their times back.
+        let now = std::time::SystemTime::now();
+        let back = now - day * 40;
+        for f in [
+            format!("{named_old}.bin"),
+            format!("{unnamed_old}.bin"),
+            format!("{part}.part"),
+            "notes.txt".to_string(),
+        ] {
+            std::fs::File::options()
+                .write(true)
+                .open(dir.join(&f))
+                .unwrap()
+                .set_modified(back)
+                .unwrap();
+        }
+        let keep: std::collections::HashSet<String> = [named_old.clone()].into_iter().collect();
+        let r = prune_draft_files(&config, &keep, DRAFT_FILE_MAX_AGE, now);
+        assert_eq!(r.removed, 2, "{r:?}");
+        assert_eq!(r.kept, 2);
+        assert!(
+            dir.join(format!("{named_old}.bin")).exists(),
+            "a named copy stays at any age"
+        );
+        assert!(
+            dir.join(format!("{unnamed_young}.bin")).exists(),
+            "a young copy stays"
+        );
+        assert!(!dir.join(format!("{unnamed_old}.bin")).exists());
+        assert!(!dir.join(format!("{part}.part")).exists());
+        assert!(
+            dir.join("notes.txt").exists(),
+            "anything else is not touched"
+        );
+        assert_eq!(read_draft_file(&config, &named_old).unwrap(), "bmFtZWQ=");
+        // A missing folder is nothing to do.
+        let none = prune_draft_files(&config.join("nope"), &keep, DRAFT_FILE_MAX_AGE, now);
+        assert_eq!(none, DraftPrune::default());
+        let _ = std::fs::remove_dir_all(config);
     }
 }

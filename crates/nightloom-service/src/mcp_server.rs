@@ -889,22 +889,10 @@ pub fn pointer_reply(
 }
 
 /// `pdftotext`, wherever Homebrew or a package put it; `None` when it is
-/// not installed.
+/// not installed ([`crate::attach::find_pdftotext`], shared with the
+/// long-PDF note since the item 491 follow-up).
 fn pdftotext_binary() -> Option<PathBuf> {
-    for candidate in [
-        "/opt/homebrew/bin/pdftotext",
-        "/usr/local/bin/pdftotext",
-        "/usr/bin/pdftotext",
-    ] {
-        let p = PathBuf::from(candidate);
-        if p.is_file() {
-            return Some(p);
-        }
-    }
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|d| d.join("pdftotext"))
-        .find(|p| p.is_file())
+    crate::attach::find_pdftotext()
 }
 
 /// A PDF's text through `pdftotext -layout`, or why not.

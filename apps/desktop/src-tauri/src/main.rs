@@ -3429,6 +3429,27 @@ fn read_draft_file(id: String) -> Result<String, String> {
     nightloom_service::attach::read_draft_file(&config, &id)
 }
 
+/// Item 491 follow-up: at start, delete the draft copies no saved draft
+/// names (`keep`) that are over 30 days old; off the main thread. A named
+/// copy is never deleted.
+#[tauri::command]
+async fn prune_draft_files(
+    keep: Vec<String>,
+) -> Result<nightloom_service::attach::DraftPrune, String> {
+    let config = project::config_dir().ok_or("no config folder")?;
+    let keep = keep.into_iter().map(|k| k.to_ascii_lowercase()).collect();
+    tokio::task::spawn_blocking(move || {
+        nightloom_service::attach::prune_draft_files(
+            &config,
+            &keep,
+            nightloom_service::attach::DRAFT_FILE_MAX_AGE,
+            std::time::SystemTime::now(),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 /// Whether an office file will become a PDF (LibreOffice is installed) or
 /// text — what the composer's chip says before the conversion starts.
 #[tauri::command]
@@ -8959,6 +8980,7 @@ fn main() {
             office_converter,
             pdf_pages,
             stash_draft_file,
+            prune_draft_files,
             read_draft_file,
             turn_timing_window,
             prewarm_agent,
