@@ -32,7 +32,7 @@
  */
 import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
-import { app, addToast, followNoteMove, noteDraftKey, saveNote } from "./state.svelte";
+import { app, addToast, followNoteMove, movedNoteName, noteDraftKey, onNoteMove, saveNote } from "./state.svelte";
 import type { NoteScope } from "./types";
 import {
   STORE_KEY,
@@ -168,6 +168,34 @@ export function runningTurn(key: string): NoteEditTurn | null {
   const last = turns[turns.length - 1];
   return last && last.status === "running" ? last : null;
 }
+
+/**
+ * Item 483: a note moved — by the panel, a chat's `move_notes` or the
+ * model's `rename_note` — takes its side chat along, his half-typed
+ * request with it. A thread already under the new name is never written
+ * over (item 460's rule), and one with a turn running stays: that turn
+ * writes to the old name.
+ */
+export function followThreads(scope: "project" | "knowledge", from: string, landed: string): void {
+  const head = noteDraftKey(scope, "");
+  let moved = false;
+  for (const key of Object.keys(noteEdits)) {
+    if (!key.startsWith(head)) continue;
+    const next = movedNoteName(key.slice(head.length), from, landed);
+    if (next === null) continue;
+    const to = noteDraftKey(scope, next);
+    if (noteEdits[to]) continue;
+    if (runningTurn(key)) {
+      addToast(`${key.slice(head.length)} moved while a prompt was editing it — that edit goes to the old name`);
+      continue;
+    }
+    noteEdits[to] = noteEdits[key];
+    delete noteEdits[key];
+    moved = true;
+  }
+  if (moved) schedule();
+}
+onNoteMove(followThreads);
 
 /** The seq of the running exchange on `key`, for Stop. */
 const seqOf = new Map<string, number>();
