@@ -1495,6 +1495,19 @@ first under the top edge; found again in the new DOM by tag and the start of
 its text, nearest to where it was. A pinned reader is left to the pin effect
 and lands at the foot as before.
 
+~~Held by the first element with text under the top edge~~ — item 493
+(2026-11-02): WebKit clamps `scrollTop` as the ghost leaves (to the foot of his
+question, measured 331), so the hold is what puts the view back, and the first
+element with text was often one with no twin in the recorded reply: the
+thinking row ("thought for 1 s" live, "thought · summary" recorded) or a word
+still in the streaming motion's span. Those left the view at the clamp, up to
+2,900 px above his line. Now the hold is the reply's prose blocks in view
+(`src/lib/readingPlace.ts`: `.markdown`'s top-level blocks and list items,
+never inside an `.activity`), tried in order, then the old element; none found,
+the scroll position from before the swap. Measured after: every case within
+0.7 px, except a reader left unpinned at the very foot, whom the page's
+shorter foot moves 10.6 px.
+
 **Navigator (`src/lib/navigator.ts`, `src/lib/Navigator.svelte`).** The strip
 at the transcript's right edge, from his screenshot of LibreChat's rail (their
 `client/src/components/Chat/Messages/MessageNav.tsx`, read 2026-09-15; the

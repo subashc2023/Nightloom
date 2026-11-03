@@ -155,6 +155,7 @@
   import ApprovalPrompt from "./ApprovalPrompt.svelte";
   import BudgetStopCard from "./BudgetStopCard.svelte";
   import { afterWrapTurn, wrapAsk } from "./budgetWrap.svelte";
+  import { PROSE_BLOCKS, nearestDelta, proseHolds, settledTop, type BlockEl, type Hold } from "./readingPlace";
   import Icon from "./Icon.svelte";
   import Navigator from "./Navigator.svelte";
   // Edits as versions (item 299): ‹ n/N › under an edited message.
@@ -1652,9 +1653,9 @@
     clearTimeout(ghostTimer);
     ghostTimer = 0;
     if (!ghost) return;
-    const hold = anchored && !pinned ? readingAnchor() : null;
+    const hold = anchored && !pinned ? readingPlace() : null;
     ghost = null;
-    if (hold) void tick().then(() => holdAnchor(hold));
+    if (hold) void tick().then(() => holdPlace(hold));
   }
 
   $effect.pre(() => {
@@ -1719,20 +1720,51 @@
     return first;
   }
 
-  /** Move the viewport so the anchor's element is back where it was — the
-   *  nearest same-tag element with the same text start, since a paragraph
-   *  can be repeated. Nothing matched: the view is left alone. */
-  function holdAnchor(hold: { tag: string; text: string; top: number }): void {
-    if (!viewport) return;
-    let best: number | null = null;
-    for (const el of viewport.querySelectorAll<HTMLElement>(hold.tag)) {
-      if ((el.textContent ?? "").trim().slice(0, 160) !== hold.text) continue;
-      const delta = el.getBoundingClientRect().top - hold.top;
-      if (best === null || Math.abs(delta) < Math.abs(best)) best = delta;
-    }
-    if (best === null || Math.abs(best) < 1) return;
+  // ~~`holdAnchor`: the nearest same-tag element with the same text start
+  // moved back to where it was; nothing matched, the view left alone~~ —
+  // item 493 (2026-11-02): `holdPlace` below, the match `nearestDelta`
+  // unchanged; nothing matched, the view goes back to where it was, since
+  // "left alone" was left at WebKit's clamp.
+
+  // ---- Item 493: which lines he is reading, found again after the swap ----
+  //
+  // Measured (493 harness, 1440×900): WebKit clamps `scrollTop` the moment
+  // the ghost goes — against the layout before the recorded reply was laid
+  // out, so to the foot of his own question (331) — and only the hold
+  // brings the view back. `readingAnchor` alone missed whenever the element
+  // under the top edge reads differently once recorded: the thinking row
+  // ("thought for 1 s" live, "thought · summary" recorded — a Claude Code
+  // reply read from its first lines, 746 px up) or a word still in the
+  // streaming motion's span (an API reply read mid-reply, 1,860 px up).
+  // So the place is the reply's prose blocks in view, the same text either
+  // side of the swap (`readingPlace.ts`), tried in order, then the old
+  // walk's element; none found, the scroll position from before the swap —
+  // never the clamp.
+  interface Place {
+    holds: Hold[];
+    scrollTop: number;
+  }
+  const isLiveReply = (el: BlockEl) => !!el.closest(".assistant") && !el.closest("[data-turn]");
+  function readingPlace(): Place | null {
+    if (!viewport) return null;
+    const holds = proseHolds(
+      viewport.querySelectorAll<HTMLElement>(PROSE_BLOCKS),
+      viewport.getBoundingClientRect(),
+      isLiveReply,
+    );
+    const walk = readingAnchor();
+    if (walk) holds.push(walk);
+    return { holds, scrollTop: viewport.scrollTop };
+  }
+  function holdPlace(place: Place): void {
+    const vp = viewport;
+    if (!vp) return;
+    const to = settledTop(place.holds, place.scrollTop, vp.scrollTop, (h) =>
+      nearestDelta(h, vp.querySelectorAll<HTMLElement>(h.tag)),
+    );
+    if (to === null) return;
     scrollingSelf = true;
-    viewport.scrollTop += best;
+    vp.scrollTop = to;
     requestAnimationFrame(() => (scrollingSelf = false));
   }
 
