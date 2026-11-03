@@ -41,7 +41,7 @@
   import { baseOf, parentOf, renamedTo } from "./notesTree";
   import { floatMenu } from "./floatMenu";
   import { viewGet, viewSet } from "./viewState";
-  import { leadsWithTitle, shownOf, splitExt, whoFoldKey, type NoteShown } from "./noteHead";
+  import { shownOf, splitExt, whoFoldKey, type NoteShown } from "./noteHead";
 
   /**
    * Which note the editor has loaded, as `scope:name`. A plain variable, not
@@ -650,9 +650,8 @@
    */
   const shown = $derived(shownOf(mode, preview));
   const overlay = $derived(!media && !reviewing && !error && !loading);
-  /** Blocker 1649: a note that opens with its own `# Title` keeps that as
-   *  the page's title; the name drops to the folder line. */
-  const titled = $derived(!media && leadsWithTitle(text));
+  /* Blocker 1649 (answered by his pick): the large name always shows, and
+     a note's own first heading stays in its text as it is. */
   const nameParts = $derived(splitExt(baseOf(open?.name ?? "")));
   let mainEl = $state<HTMLDivElement | null>(null);
   let headEl = $state<HTMLDivElement | null>(null);
@@ -840,7 +839,6 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="head"
-    class:titled
     bind:this={headEl}
     style:transform={overlay && shift > 0 ? `translateY(${-Math.min(shift, headH + 8)}px)` : undefined}
     onwheel={onHeadWheel}
@@ -849,32 +847,8 @@
       <span class="scope" class:vault={isVault}>{open?.scope === "knowledge" ? "knowledge" : (open?.scope ?? "project")}</span>
       {#if reviewing}<span class="proposed" use:tip={"The dream proposed a replacement; nothing is applied until you Accept it (or open it in the editor and save)"}>proposed change</span>{/if}
       {#if open && parentOf(open.name)}<span class="folder-part">{parentOf(open.name)} /</span>{/if}
-      {#if titled && open}
-        <!-- Blocker 1649: the note's own `# Title` is the title; the name
-             sits here, small, and still renames on a click. -->
-        {#if renaming}
-          <input
-            class="rename small"
-            autocorrect="off"
-            autocapitalize="off"
-            spellcheck="false"
-            aria-label="Rename {open.name}"
-            bind:value={renameValue}
-            use:focusRename
-            onkeydown={renameKeys}
-            onblur={() => void commitRename()}
-          />
-        {:else if canRename}
-          <button class="name-small rename-btn" use:tip={"Click to rename"} aria-label="Rename {open.name}" onclick={startRename}
-            >{baseOf(open.name)}</button
-          >
-        {:else}
-          <span class="name-small">{baseOf(open.name)}</span>
-        {/if}
-      {/if}
     </div>
-    {#if !titled}
-      {#if renaming && open}
+    {#if renaming && open}
         <input
           class="rename big"
           autocorrect="off"
@@ -895,7 +869,6 @@
       {:else}
         <h1 class="name"><span class="fixed">{open ? nameParts.stem : "no note"}<span class="ext">{nameParts.ext}</span></span></h1>
       {/if}
-    {/if}
     <!-- Who reads this (the old footer). One line; the long texts for the
          instructions, memory, a model's file and a file that is not text
          keep their whole a click away (drawback 3). -->
@@ -1404,12 +1377,6 @@
     color: var(--dim);
     font-size: 0.62em;
   }
-  .name-small {
-    font-family: var(--mono);
-    font-size: 0.74rem;
-    color: var(--ink2);
-    padding: 0.05rem 0.3rem;
-  }
   .who {
     display: flex;
     align-items: baseline;
@@ -1418,9 +1385,6 @@
     color: var(--dim);
     line-height: 1.5;
     min-width: 0;
-  }
-  .head.titled .who {
-    margin-top: 0.45rem;
   }
   .who-text {
     min-width: 0;
@@ -1503,11 +1467,6 @@
     font-size: clamp(1.55rem, 4.2cqi, 2.1rem);
     line-height: 1.15;
     margin: 0.35rem 0 0.4rem -0.4rem;
-  }
-  .rename.small {
-    font-family: var(--mono);
-    font-size: 0.74rem;
-    width: min(100%, 18rem);
   }
   .rename:focus {
     outline: none;
