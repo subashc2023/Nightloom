@@ -167,7 +167,8 @@ export function hasQuoteLine(text: string): boolean {
 
 /** The selection pill's parts, left to right (item 223): one outline,
  *  a thin divider between Ask aside and Reply; Reply alone when asking
- *  aside is not offered (the API engine, or a turn running). */
+ *  aside is not offered (the API engine; ~~or a turn running~~ — offered
+ *  mid-turn since item 500, the aside waits for the turn). */
 export function pillParts(canAsk: boolean): Array<"ask" | "divider" | "reply"> {
   return canAsk ? ["ask", "divider", "reply"] : ["reply"];
 }

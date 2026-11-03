@@ -1990,9 +1990,13 @@
   // ~~A turn starting, or the engine changing, takes the pill down without
   // waiting for the next selection change.~~ Since backlog 215
   // (2026-09-25) the pill also carries *Reply*, which works on any engine
-  // and mid-turn (the composer queues), so the pill stays; only its Ask
-  // aside half needs the Claude Code engine and an idle chat.
-  const canAsk = $derived(onClaudeCode && !locked);
+  // and mid-turn (the composer queues), so the pill stays; ~~only its Ask
+  // aside half needs the Claude Code engine and an idle chat.~~ Since
+  // item 500 (2026-11-03) mid-turn too: since item 404 an aside asked
+  // while the chat's turn runs waits for it ("queued") and then answers,
+  // as the composer's own aside box already allowed. A pane still offers
+  // no pill (piece 5).
+  const canAsk = $derived(onClaudeCode && chat === undefined);
 
   // Per turn index, the message's 1-based place among the live messages
   // of its kind — "your 3rd reply" in the framing. Rewound and removed
