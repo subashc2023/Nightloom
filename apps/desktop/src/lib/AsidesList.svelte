@@ -11,6 +11,7 @@
   import { renameAside } from "./asides.svelte";
   import { asideLabel } from "./asides";
   import AsideNameEdit from "./AsideNameEdit.svelte";
+  import { viewGet, viewSet } from "./viewState";
 
   /**
    * A chat's asides at a glance (nightshift item 229, night batch B,
@@ -44,7 +45,9 @@
   const past = $derived([...pastOf(session)].reverse());
   const shown = $derived(session !== null && (open.length > 0 || past.length > 0));
 
-  let listOpen = $state(false);
+  // Item 495: open or shut as he left it, past a chat switch.
+  let listOpen = $state(viewGet("asides.list", false));
+  $effect(() => viewSet("asides.list", listOpen, false));
   let now = $state(Date.now());
   let confirming = $state<PastAside | null>(null);
   /** The row being renamed (item 265): an open thread's id, or a past

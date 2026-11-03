@@ -15,11 +15,23 @@
   import { previews, refreshPreview, restartPreview, startPreviews, stopPreview } from "./preview.svelte";
   import { previewCommandLine, previewHost, previewStatusText } from "./preview";
   import { openWebTab } from "./webtabs.svelte";
+  import { viewGet, viewSet } from "./viewState";
 
   let { chat }: { chat: string } = $props();
 
   const p = $derived(previews.byChat[chat] ?? null);
+  // Item 495: the log stays open past a chat switch and back, per chat (the
+  // chip stays mounted while `chat` changes, so it reads on each change).
   let showLog = $state(false);
+  let logFor = "";
+  $effect.pre(() => {
+    logFor = `preview.log:${chat}`;
+    showLog = viewGet(logFor, false);
+  });
+  $effect(() => {
+    const on = showLog;
+    if (logFor) viewSet(logFor, on, false, { session: true });
+  });
   let stopping = $state(false);
   let restarting = $state(false);
   let restartError = $state<string | null>(null);

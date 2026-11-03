@@ -12,10 +12,20 @@
   import { app, chooseLayerVersion, updateLayerNow } from "./state.svelte";
   import { chatIsCold, choicesFor, markLine, updateNowCost } from "./promptVersions";
   import type { PendingLayer } from "./types";
+  import { textKey, viewGet, viewSet } from "./viewState";
 
   let { pending }: { pending: PendingLayer } = $props();
 
+  // Item 495: the diff stays open past the panel closing, per layer and text.
+  const diffKey = $derived(`layer.diff:${pending.kind}:${textKey(pending.newer)}`);
   let showDiff = $state(false);
+  $effect.pre(() => {
+    showDiff = viewGet(diffKey, false);
+  });
+  function toggleDiff(): void {
+    showDiff = !showDiff;
+    viewSet(diffKey, showDiff, false, { session: true });
+  }
   const auto = $derived(app.layerPrefs.autoAtCold);
   const cold = $derived(chatIsCold(app.events, Date.now()));
   const cost = $derived(updateNowCost(prefixTokens(app.events), cold));
@@ -30,7 +40,7 @@
     <span class="say">{markLine(pending, auto, cold)}</span>
   </div>
   <div class="actions">
-    <button class="ns-btn ghost small" aria-expanded={showDiff} onclick={() => (showDiff = !showDiff)}>
+    <button class="ns-btn ghost small" aria-expanded={showDiff} onclick={toggleDiff}>
       {showDiff ? "Hide changes" : "Show changes"}
     </button>
     {#each choicesFor(pending, auto) as c (c.choice)}

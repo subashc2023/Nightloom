@@ -50,6 +50,7 @@
   import Icon from "./Icon.svelte";
   import Kbd from "./Kbd.svelte";
   import { isMac } from "./platform";
+  import { viewGet, viewSet } from "./viewState";
 
   /**
    * The Model pane of the popover, redesigned 2026-09-13 (nightshift
@@ -71,7 +72,9 @@
   /** *Use the default* asks first when it would drop typed text (§7). */
   let droppingRules = $state(false);
   // The exact limits fold open by themselves only when he opens them.
-  let exactOpen = $state(false);
+  // Item 495: kept past a chat switch and a relaunch.
+  let exactOpen = $state(viewGet("rail.exact", false));
+  $effect(() => viewSet("rail.exact", exactOpen, false));
   const agent = $derived(app.connection?.agent ?? null);
   // The open chat's own CLI session, off its log (backlog 159's label fix,
   // 2026-09-25): `agent.resume` is the chat that was open at connect time.
