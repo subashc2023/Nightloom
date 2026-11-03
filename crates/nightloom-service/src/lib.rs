@@ -25,6 +25,7 @@ pub mod dream;
 pub mod grounding;
 pub mod history;
 pub mod import;
+pub mod inbox_sort;
 pub mod incognito;
 pub mod keep;
 pub mod knowledge;

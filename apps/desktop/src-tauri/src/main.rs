@@ -62,6 +62,8 @@ mod event_guard;
 /// (nightshift backlog 161).
 mod filetab;
 mod for_you;
+/// The notes Inbox's Sort inbox (nightshift backlog 488).
+mod inbox_sort;
 /// A `.tex` tab's rendered PDF (nightshift backlog 381).
 mod latex;
 mod model_list;
@@ -8990,6 +8992,10 @@ fn main() {
             cancel_aside,
             note_edit::edit_note_by_prompt,
             note_edit::cancel_note_edit,
+            inbox_sort::inbox_sort_list,
+            inbox_sort::inbox_sort_plan,
+            inbox_sort::inbox_sort_cancel,
+            inbox_sort::inbox_sort_apply,
             cancel,
             compact,
             rewind,
