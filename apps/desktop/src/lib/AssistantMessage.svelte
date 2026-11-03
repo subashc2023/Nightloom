@@ -82,6 +82,8 @@
   // The thinking block's arrival (backlog 389): a live thinking row's first
   // appearance is thrown in along the send flight's path, not spawned.
   import { thinkingArrival, type ArrivalParams } from "./thinkingArrival";
+  // Item 495 part 2: the folds kept past a chat switch.
+  import { decodeOverride, encodeOverride, foldKey, keptGet, keptOpen, keptSet, type FoldScope } from "./keptFolds.svelte";
 
   interface Footer {
     model: string;
@@ -199,6 +201,7 @@
     planUsage = null,
     onretry = null,
     cliSession = null,
+    folds = null,
   }: {
     segs: Segment[];
     footer?: Footer | null;
@@ -250,6 +253,11 @@
     /** The chat's Claude Code session id, where a tool result's images are
      *  read from (backlog 434); null draws none. */
     cliSession?: string | null;
+    /** Where this reply's folds are kept (item 495 part 2): its chat and
+     *  turn, so a thinking block, tool call, block, subagent group or diff
+     *  he opened or closed is drawn so again after a chat switch. Null:
+     *  this component's own, as before (gone with the message). */
+    folds?: FoldScope | null;
   } = $props();
 
   // Per-block clicks, keyed by the block's stable id (`segmentIds`) rather
@@ -258,11 +266,35 @@
   // on a block always wins over its default. The map is this component's,
   // so it lives as long as the message on screen does. An activity block's
   // fold line (backlog 096) keeps its click here too, under `block:<id>`.
-  let overrides = $state<Record<string, Override>>({});
+  // ~~The map is this component's, so it lives as long as the message on
+  // screen does~~ — since item 495 part 2 (2026-11-02) a reply with `folds`
+  // reads and writes them in `keptFolds` (session only), so a chat switch,
+  // or the live reply giving way to the recorded one, keeps every click;
+  // `local` is the map for a reply with nowhere to keep them.
+  let local = $state<Record<string, Override>>({});
   const ids = $derived(segmentIds(segs));
   // The reply as the transcript draws it: runs of thinking and tool calls
   // as one activity block each, everything else on its own (backlog 096).
   const groups = $derived(groupSegments(segs, ids));
+  const overrides = $derived.by<Record<string, Override>>(() => {
+    const scope = folds;
+    if (!scope) return local;
+    const out: Record<string, Override> = {};
+    const keys = [...ids.filter(Boolean), ...groups.flatMap((g) => (g.kind === "activity" ? [g.key] : []))];
+    for (const id of keys) {
+      const o = decodeOverride(keptGet(foldKey(scope, id), ""));
+      if (o) out[id] = o;
+    }
+    return out;
+  });
+  function setOverride(id: string, o: Override): void {
+    if (folds) keptSet(foldKey(folds, id), encodeOverride(o), "");
+    else local[id] = o;
+  }
+  /** A native fold's kept key (a subagent group, a removed block), or null. */
+  function detailsKey(id: string): string | null {
+    return folds ? foldKey(folds, id) : null;
+  }
   // Nightloom's own stand-in for a turn with no reply (backlog 407): drawn
   // as its notice under a "Nightloom" header, never as the model's prose.
   const standIn = $derived(
@@ -281,20 +313,20 @@
     return resolveOpen(kindOf(seg), ids[i], streaming, doneOf(seg), overrides, transcript);
   }
   function toggle(i: number, seg: Segment): void {
-    overrides[ids[i]] = flipOverride(
+    setOverride(ids[i], flipOverride(
       kindOf(seg),
       ids[i],
       streaming,
       doneOf(seg),
       overrides,
       transcript,
-    );
+    ));
   }
   function isFolded(key: string): boolean {
     return resolveFolded(key, streaming, overrides, transcript);
   }
   function toggleFold(key: string): void {
-    overrides[key] = { open: isFolded(key), rev: transcript.rev.tool };
+    setOverride(key, { open: isFolded(key), rev: transcript.rev.tool });
   }
 
   // Toggled on pointerdown, not click. While a reply streams the transcript
@@ -532,7 +564,7 @@
   }
 </script>
 
-{#snippet subagent(children: Segment[])}
+{#snippet subagent(children: Segment[], parent: string)}
   {@const calls = children.filter((c) => c.kind === "tool").length}
   {@const names = children
     .filter((c) => c.kind === "tool")
@@ -542,7 +574,8 @@
   {@const words = children
     .filter((c) => c.kind === "text")
     .reduce((n, c) => n + (c.kind === "text" ? c.text.split(/\s+/).filter(Boolean).length : 0), 0)}
-  <details class="sub">
+  <!-- Kept by the spawning call's id (item 495 part 2). -->
+  <details class="sub" use:keptOpen={{ key: detailsKey(`tool:${parent}:sub`) }}>
     <summary class="sub-line">
       <span class="ico">▸</span>
       <span class="name">subagent</span>
@@ -564,7 +597,7 @@
           </div>
           {#if childDiff}
             <!-- A subagent's edit as a diff too (backlog 433). -->
-            <EditDiffView diff={childDiff} denied={!!c.call.denied} />
+            <EditDiffView diff={childDiff} denied={!!c.call.denied} keep={detailsKey(`tool:${c.call.id}:diff`)} />
           {/if}
           {#if !c.call.denied && namesImage(c.call.result?.content)}
             <!-- A subagent's screenshot too (item 476): read from its own
@@ -572,7 +605,7 @@
             <ToolImagesView session={cliSession} id={c.call.id} name={shortToolName(c.call.name)} />
           {/if}
           {#if c.call.children?.length}
-            {@render subagent(c.call.children)}
+            {@render subagent(c.call.children, c.call.id)}
           {/if}
         {:else if c.kind === "thinking"}
           <div class="arow static thinking">
@@ -725,7 +758,7 @@
                 <!-- A file edit as a diff (backlog 433), drawn whether the row is
                      open or not: the change is what the row is about. -->
                 {#if editDiff}
-                  <EditDiffView diff={editDiff} denied={!!seg.call.denied} />
+                  <EditDiffView diff={editDiff} denied={!!seg.call.denied} keep={detailsKey(`tool:${seg.call.id}:diff`)} />
                 {/if}
                 <!-- What a screenshot showed the model (backlog 434). -->
                 {#if !seg.call.denied && namesImage(seg.call.result?.content)}
@@ -769,7 +802,7 @@
                      narrative, one text segment. Outside the collapse, like the
                      prompt: a subagent at work is what the row is about. -->
                 {#if seg.call.children?.length}
-                  {@render subagent(seg.call.children)}
+                  {@render subagent(seg.call.children, seg.call.id)}
                 {/if}
                 <!-- The hover on the call itself (backlog 066): the call and its
                      result leave the context together, the log keeps both. -->
@@ -851,7 +884,7 @@
       {#if councilSeat || councilRecord}
         <!-- The council's blocks (nightshift backlog 149): a seat's answer
              folded under its map line, the record as the sources table. -->
-        <CouncilBlocks seat={councilSeat} record={councilRecord} />
+        <CouncilBlocks seat={councilSeat} record={councilRecord} keep={detailsKey(`council:${g.i}`)} />
       {:else if diff && originals?.[g.i] != null}
         {@const before = originals[g.i]!}
         <!-- The edit as a diff over the markdown source (backlog 105): the
@@ -870,7 +903,7 @@
       <!-- A removed block's placeholder, greyed, the original a click
            away, Restore beside it (backlog 066). -->
       <div class="removed-block">
-        <details class="removed-original">
+        <details class="removed-original" use:keptOpen={{ key: detailsKey(`removed:${seg.block}`) }}>
           <summary>
             <span class="removed-label">
               {seg.kind === "removed_tool" ? REMOVED_TOOL_PLACEHOLDER : REMOVED_TEXT_PLACEHOLDER}

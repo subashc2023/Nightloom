@@ -7,12 +7,28 @@
   import { foldDiff, shortPath, type EditDiff } from "./editDiff";
   import { textKey, viewGet, viewSet } from "./viewState";
 
-  let { diff, denied = false }: { diff: EditDiff; denied?: boolean } = $props();
+  let {
+    diff,
+    denied = false,
+    keep = null,
+  }: {
+    diff: EditDiff;
+    denied?: boolean;
+    /** The call's own key (item 495 part 2: chat + call id, from
+     *  `AssistantMessage`), so the switch is this diff's alone. */
+    keep?: string | null;
+  } = $props();
 
   // Item 495: a diff opened to every line stays open when the chat is drawn
-  // again (a chat switch remounts its transcript). Keyed by the diff itself:
-  // a tool call has no id here, and two identical diffs may share the switch.
-  const allKey = $derived(`diff.all:${textKey(diff.path + "\n" + diff.lines.map((l) => l.text).join("\n"))}`);
+  // again (a chat switch remounts its transcript). ~~Keyed by the diff itself:
+  // a tool call has no id here, and two identical diffs may share the switch.~~
+  // Since part 2 (2026-11-02) keyed by the call when the reply passes `keep`;
+  // by the diff's text only where nothing does.
+  const allKey = $derived(
+    keep !== null
+      ? `diff.all:${keep}`
+      : `diff.all:${textKey(diff.path + "\n" + diff.lines.map((l) => l.text).join("\n"))}`,
+  );
   let all = $state(false);
   $effect.pre(() => {
     all = viewGet(allKey, false);

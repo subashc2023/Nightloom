@@ -147,6 +147,8 @@
     Usage,
   } from "./types";
   import AssistantMessage from "./AssistantMessage.svelte";
+  // Item 495 part 2: the chat view's folds kept past a chat switch.
+  import { keptGet, keptOpen, keptSet, type FoldScope } from "./keptFolds.svelte";
   import WaitingMoon from "./WaitingMoon.svelte";
   import UserBubble from "./UserBubble.svelte";
   import PendingBubbles from "./PendingBubbles.svelte";
@@ -530,8 +532,16 @@
   // The edited mark's toggle (nightshift backlog 105): the turns whose edit
   // is drawn as a diff over the current text — what the edit removed struck
   // through, what it added marked — rather than as the plain text. Per
-  // turn index, this screen only; a click on the mark flips it.
-  let diffOpen = $state<Record<number, boolean>>({});
+  // turn index, ~~this screen only~~ kept per chat and turn since item 495
+  // part 2 (`keptFolds`, session only: a chat switch and back keeps it;
+  // a chat with no id yet keeps its own); a click on the mark flips it.
+  let diffLocal = $state<Record<number, boolean>>({});
+  const isDiffOpen = (index: number): boolean =>
+    chatId ? keptGet(`fold:${chatId}|${index}|edited`, false) : !!diffLocal[index];
+  /** Where turn `index`'s folds are kept: this chat's, by turn. */
+  const turnFolds = (turn: number | string): FoldScope | null => (chatId ? { chat: chatId, turn: String(turn) } : null);
+  /** A native fold of turn `index` (`<details use:keptOpen>`), or null. */
+  const turnFold = (index: number, name: string): string | null => (chatId ? `fold:${chatId}|${index}|${name}` : null);
   // ~~`textOpen`~~ — a text attachment's fold (item 284) is the bubble's
   // own state since backlog 283 (`UserBubble.svelte`).
   // The toggle keeps the reader's place (backlog 115): the diff view is a
@@ -547,7 +557,8 @@
     void keepPlace(
       index,
       () => {
-        diffOpen[index] = !diffOpen[index];
+        if (chatId) keptSet(`fold:${chatId}|${index}|edited`, !isDiffOpen(index), false);
+        else diffLocal[index] = !diffLocal[index];
       },
       anchor,
     );
@@ -2222,10 +2233,10 @@
             {#if item.original !== null && !item.removed}
               <button
                 class="edited-mark"
-                class:on={!!diffOpen[item.index]}
+                class:on={isDiffOpen(item.index)}
                 type="button"
-                aria-pressed={!!diffOpen[item.index]}
-                use:tip={diffOpen[item.index] ? "Edited — show the current text" : "Edited — show the edit as a diff"}
+                aria-pressed={isDiffOpen(item.index)}
+                use:tip={isDiffOpen(item.index) ? "Edited — show the current text" : "Edited — show the edit as a diff"}
                 onclick={(e) => toggleDiff(item.index, e.currentTarget)}>edited</button
               >
             {/if}
@@ -2334,11 +2345,12 @@
                  attachment is the event's index and its own; the bytes
                  stay in the log. -->
             {@const adoptedMsg = splitAdopted(item.text)}
-            {@const diffShown = !!diffOpen[item.index] && item.original !== null && !item.removed}
+            {@const diffShown = isDiffOpen(item.index) && item.original !== null && !item.removed}
             <UserBubble
               images={item.images}
               documents={item.documents}
               text={item.text}
+              keep={turnFold(item.index, "bubble")}
               custom={diffShown || !!adoptedMsg.carried}
               onopenimage={(j, rect, size) => {
                 if (!app.activeSessionId) return;
@@ -2370,7 +2382,7 @@
                 {:else if adoptedMsg.carried}
                   <!-- An adopted agent's run (backlog 157): what this chat
                        was given, folded; his question below it. -->
-                  <details class="adopted-carry">
+                  <details class="adopted-carry" use:keptOpen={{ key: turnFold(item.index, "carried") }}>
                     <summary>Carried from agent “{adoptedMsg.agent ?? "subagent"}” — its task and run, which this chat answers from</summary>
                     <pre>{adoptedMsg.carried}</pre>
                   </details>
@@ -2393,7 +2405,7 @@
               {/snippet}
             </UserBubble>
             {#if item.original !== null && item.removed}
-              <details class="original">
+              <details class="original" use:keptOpen={{ key: turnFold(item.index, "removed") }}>
                 <summary>what was removed</summary>
                 <div class="original-text">{item.original}</div>
               </details>
@@ -2550,7 +2562,7 @@
           </div>
         </div>
       {:else if item.kind === "compaction"}
-        <details class="compaction" class:superseded={item.superseded}>
+        <details class="compaction" class:superseded={item.superseded} use:keptOpen={{ key: turnFold(item.index, "compaction") }}>
           <summary>conversation compacted — earlier turns replaced by a summary</summary>
           <div class="compaction-body">{item.summary}</div>
         </details>
@@ -2622,7 +2634,7 @@
               onremove={editable ? (block) => void removeBlock(item.index, block) : null}
               onrestore={editable ? (block) => void restoreBlock(item.index, block) : null}
               originals={item.originals ?? null}
-              diff={!!diffOpen[item.index]}
+              diff={isDiffOpen(item.index)}
               clock={now}
               headed={!continued[i]}
               onedit={editable && item.editable ? () => beginEdit(item) : null}
@@ -2632,9 +2644,10 @@
               planUsage={replyUsageView(usageLines.get(item.index))}
               onretry={editable && turnEnds[i] && app.activeSessionId ? () => void retryReply(item.index) : null}
               {cliSession}
+              folds={turnFolds(item.index)}
             />
             {#if item.original !== null && item.removed}
-              <details class="original">
+              <details class="original" use:keptOpen={{ key: turnFold(item.index, "removed") }}>
                 <summary>what was removed</summary>
                 <div class="original-text">{item.original}</div>
               </details>
@@ -2642,10 +2655,10 @@
               <div class="edited-row">
                 <button
                   class="edited-mark"
-                  class:on={!!diffOpen[item.index]}
+                  class:on={isDiffOpen(item.index)}
                   type="button"
-                  aria-pressed={!!diffOpen[item.index]}
-                  use:tip={diffOpen[item.index] ? "Edited — show the current text" : "Edited — show the edit as a diff"}
+                  aria-pressed={isDiffOpen(item.index)}
+                  use:tip={isDiffOpen(item.index) ? "Edited — show the current text" : "Edited — show the edit as a diff"}
                   onclick={(e) => toggleDiff(item.index, e.currentTarget)}>edited</button
                 >
               </div>
@@ -2708,6 +2721,7 @@
           since={shown.since}
           approvals={approvalsNow}
           {cliSession}
+          folds={turnFolds(`live:${shown.since ?? ""}`)}
         />
       {/if}
       </div>
