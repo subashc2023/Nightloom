@@ -158,6 +158,7 @@
   import BudgetStopCard from "./BudgetStopCard.svelte";
   import { afterWrapTurn, wrapAsk } from "./budgetWrap.svelte";
   import { PROSE_BLOCKS, nearestDelta, proseHolds, settledTop, type BlockEl, type Hold } from "./readingPlace";
+  import { nudgeDone } from "./doneNudge";
   import Icon from "./Icon.svelte";
   import Navigator from "./Navigator.svelte";
   // Edits as versions (item 299): ‹ n/N › under an edited message.
@@ -1666,7 +1667,13 @@
     if (!ghost) return;
     const hold = anchored && !pinned ? readingPlace() : null;
     ghost = null;
-    if (hold) void tick().then(() => holdPlace(hold));
+    // Item 497: the reply ended here (not a new turn starting over its
+    // ghost, not another chat) — after the hold, the turn-done nudge.
+    if (anchored)
+      void tick().then(() => {
+        if (hold) holdPlace(hold);
+        nudgeDone(inner);
+      });
   }
 
   $effect.pre(() => {

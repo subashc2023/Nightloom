@@ -1508,6 +1508,16 @@ the scroll position from before the swap. Measured after: every case within
 0.7 px, except a reader left unpinned at the very foot, whom the page's
 shorter foot moves 10.6 px.
 
+**The turn-done nudge (item 497, 2026-11-02; blocker 1629 "Yes to the
+nudge").** With the line held, the reply's end had no visible movement left,
+and he reads one as "done". After the hold, the transcript's inner column dips
+4 px and settles back over 340 ms (`src/lib/doneNudge.ts`, Web Animations on
+a transform: no layout, no `scrollTop` change). Only when a reply ends in the
+chat on screen (the ghost dropped with its own session key), pinned or not;
+never when a new turn starts over a ghost. None under `prefers-reduced-motion`.
+Measured (`nightshift-code/notes/runner-design/497-harness/`): the line
+moves 4.0 px at the peak and ends where the hold left it, in every 493 case.
+
 **Navigator (`src/lib/navigator.ts`, `src/lib/Navigator.svelte`).** The strip
 at the transcript's right edge, from his screenshot of LibreChat's rail (their
 `client/src/components/Chat/Messages/MessageNav.tsx`, read 2026-09-15; the
