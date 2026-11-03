@@ -82,6 +82,26 @@ export interface AnsweredRow {
   answer: string;
 }
 
+/**
+ * An answer's chips (item 501): the picked option labels it starts with, one chip each, then whatever is left
+ * (Other as typed) as one chip. Splitting at every ", " cut his typed sentences into fragments; only a known
+ * label is split off.
+ */
+export function answerParts(answer: string, labels: string[]): string[] {
+  const parts: string[] = [];
+  let rest = answer;
+  for (;;) {
+    const hit = labels
+      .filter((l) => l !== "" && (rest === l || rest.startsWith(l + ", ")))
+      .sort((a, b) => b.length - a.length)[0];
+    if (hit === undefined) break;
+    parts.push(hit);
+    rest = rest === hit ? "" : rest.slice(hit.length + 2);
+  }
+  if (rest !== "") parts.push(rest);
+  return parts;
+}
+
 /** The table's rows from the questions and the answers map (question text → answer). */
 export function answeredRows(questions: AskQuestion[], answers: Record<string, string>): AnsweredRow[] {
   return questions

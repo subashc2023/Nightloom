@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  answerParts,
   answerText,
   answeredRows,
   answersFromResult,
@@ -128,5 +129,22 @@ describe("354 answered table", () => {
   it("reads unknown wording, or none, as no answers", () => {
     expect(answersFromResult("The user skipped the question")).toEqual({});
     expect(answersFromResult(null)).toEqual({});
+  });
+});
+
+describe("answerParts (item 501)", () => {
+  const labels = ["All three (Recommended)", "Later (Recommended)", "A, B"];
+  it("keeps typed text with commas as one chip", () => {
+    expect(answerParts("All three (Recommended), So, I would say all three, like", labels)).toEqual([
+      "All three (Recommended)",
+      "So, I would say all three, like",
+    ]);
+  });
+  it("splits several picked labels, a label with a comma whole", () => {
+    expect(answerParts("Later (Recommended), A, B", labels)).toEqual(["Later (Recommended)", "A, B"]);
+  });
+  it("a lone label, or typed text alone", () => {
+    expect(answerParts("Later (Recommended)", labels)).toEqual(["Later (Recommended)"]);
+    expect(answerParts("no, not yet", labels)).toEqual(["no, not yet"]);
   });
 });
