@@ -551,6 +551,10 @@ impl Previews {
             // preview is the chat's; once nothing answers it has exited —
             // said, recorded, and the chip offers Restart and Dismiss, not
             // a Stop for a server that is gone.
+            // 2026-11-02: "once nothing answers" now means SERVER_MISSES
+            // checks in a row, so a server that restarts itself (a second
+            // with no listener) or is too busy to accept once is not killed.
+            let mut misses = 0u32;
             loop {
                 tokio::time::sleep(SERVER_WATCH).await;
                 let Some(me) = me.upgrade() else { return };
@@ -564,6 +568,11 @@ impl Previews {
                     return;
                 }
                 if port_answers(port) {
+                    misses = 0;
+                    continue;
+                }
+                misses += 1;
+                if misses < SERVER_MISSES {
                     continue;
                 }
                 state_w.lock().unwrap().status = Status::Exited;
@@ -722,6 +731,11 @@ pub fn url_for(port: u16) -> String {
 
 /// How often a server whose command returned is checked (item 475).
 const SERVER_WATCH: Duration = Duration::from_secs(1);
+
+/// How many checks in a row must find nothing answering before such a
+/// server is Exited and its group killed (2026-11-02, from the merge-469-482
+/// review: one missed connect killed a server that was restarting itself).
+const SERVER_MISSES: u32 = 2;
 
 /// Whether something answers on the port, on either loopback.
 pub fn port_answers(port: u16) -> bool {
@@ -1558,6 +1572,46 @@ mod tests {
         assert_eq!(p.status("chat-k").unwrap().status, Status::Exited);
         assert_eq!(seen.lock().unwrap().last(), Some(&Some(Status::Exited)));
         p.stop("chat-k").await;
+    }
+
+    /// 2026-11-02: a forked server that is gone for less than one check
+    /// interval (it restarted itself) is at most one miss, and one miss is
+    /// not Exited — the preview stays Listening with Stop.
+    #[tokio::test]
+    async fn a_forked_server_that_restarts_quickly_stays_listening() {
+        let p = previews();
+        let dir = tmp("restart");
+        let port = free_port();
+        let cmd = format!(
+            "python3 -m http.server {port} --bind 127.0.0.1 >/dev/null 2>&1 & echo $! > server.pid; \
+             until nc -z 127.0.0.1 {port}; do sleep 0.1; done"
+        );
+        let snap = p.start("chat-q", &dir, &cmd, port).await.unwrap();
+        assert_eq!(snap.status, Status::Listening, "{snap:?}");
+        let pid: i32 = std::fs::read_to_string(dir.join("server.pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        // SAFETY: a signal to the server this test started.
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+        // Nothing listens for 0.8 s (less than one check interval), then
+        // the port answers again — the "restarted" server.
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        let back = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+        tokio::time::sleep(Duration::from_millis(3000)).await;
+        assert_eq!(p.status("chat-q").unwrap().status, Status::Listening);
+        drop(back);
+        // Gone for good: two misses, then Exited.
+        let until = std::time::Instant::now() + Duration::from_secs(6);
+        while p.status("chat-q").unwrap().status != Status::Exited
+            && std::time::Instant::now() < until
+        {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(p.status("chat-q").unwrap().status, Status::Exited);
+        p.stop("chat-q").await;
     }
 
     #[tokio::test]
