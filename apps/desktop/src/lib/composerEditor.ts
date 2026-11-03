@@ -24,8 +24,8 @@ import { history, historyKeymap, insertNewline, isolateHistory, standardKeymap }
 import { findFences } from "./codeDetect";
 import { LANGUAGES, segments } from "./codeHighlight";
 import { findMath, type MathSpan } from "./math";
-import { renderMathHtml } from "./markdown";
-import { quoteLine } from "./replyQuote.svelte";
+import { renderMathHtml, renderReply } from "./markdown";
+import { quoteLine, quoteNeedsRender, quoteRuns } from "./replyQuote.svelte";
 
 /** Node types whose content is code: nothing inside is math or emphasis. */
 const CODE_NODES = new Set(["InlineCode", "FencedCode", "CodeBlock", "HTMLBlock", "CommentBlock"]);
@@ -111,7 +111,7 @@ export function composerMathOk(text: string, m: MathSpan): boolean {
 }
 
 /** What a stretch of the box is drawn as — the testable shape of the decorations. */
-export type LiveKind = "math" | "math-block" | "heading" | "strong" | "em" | "strike" | "code" | "codeblock" | "quote";
+export type LiveKind = "math" | "math-block" | "heading" | "strong" | "em" | "strike" | "code" | "codeblock" | "quote" | "quote-render";
 export interface LiveSpan {
   kind: LiveKind;
   from: number;
@@ -179,9 +179,24 @@ export function liveSpans(state: EditorState): LiveSpan[] {
   });
   const inCode = (from: number, to: number) => code.some(([a, b]) => from < b && to > a);
 
+  // Item 470 follow-up (2026-11-02): a quote with maths or Markdown is drawn
+  // whole, typeset, as the plain box's layer draws it (`BoxLayer.svelte`),
+  // and shows its source — every line with its bar — while the caret is on
+  // one of its lines. Before, a `$$…$$` over several quote lines was one
+  // formula holding the `> ` markers (typeset as ">" signs, no bar), and a
+  // quote line with `$a$` in it lost its bar. Nothing inside such a quote is
+  // drawn on its own.
+  const rendered = quoteRuns(text)
+    .filter((r) => quoteNeedsRender(r.src) && !inCode(r.start, r.start + 1))
+    .map((r) => ({ ...r, open: onLines(state, r.start, r.end) }));
+  const inRendered = (from: number, to: number) => rendered.some((r) => from < r.end && to > r.start);
+  for (const r of rendered) out.push({ kind: "quote-render", from: r.start, to: r.end, open: r.open });
+
   // Math first: what a formula holds (`$a*b*c$` parses as emphasis) is the
   // formula's, so nothing else is drawn over one.
-  const maths = findMath(text).filter((m) => !inCode(m.from, m.to) && composerMathOk(text, m));
+  const maths = findMath(text).filter(
+    (m) => !inCode(m.from, m.to) && !inRendered(m.from, m.to) && composerMathOk(text, m),
+  );
   const inMath = (from: number, to: number) => maths.some((m) => from < m.to && to > m.from);
   for (const m of maths) {
     const first = doc.lineAt(m.from);
@@ -204,6 +219,7 @@ export function liveSpans(state: EditorState): LiveSpan[] {
     enter(node) {
       const { from, to, name } = node;
       if (maths.some((m) => from >= m.from && to <= m.to)) return false;
+      if (rendered.some((r) => from >= r.start && to <= r.end)) return false;
       const heading = /^ATXHeading(\d)$/.exec(name);
       if (heading) {
         // A bare `#` (typing toward `#hashtag`) is an empty heading to
@@ -240,6 +256,8 @@ export function liveSpans(state: EditorState): LiveSpan[] {
   // per-line rule, so a quote looks the same with the toggle on or off.
   for (let n = 1; n <= doc.lines; n++) {
     const line = doc.line(n);
+    // A drawn quote's lines are under its block; an open one's keep their bar.
+    if (rendered.some((r) => !r.open && line.from >= r.start && line.to <= r.end)) continue;
     if (quoteLine(line.text) && !inMath(line.from, line.to) && !inCode(line.from, line.to)) {
       out.push({ kind: "quote", from: line.from, to: line.to, open: false });
     }
@@ -283,6 +301,40 @@ class ComposerMathWidget extends WidgetType {
   ignoreEvent(e: Event): boolean {
     // Its own mousedown handles a plain click; a shift-click extends the
     // selection as it would over text.
+    return !(e instanceof MouseEvent && e.shiftKey);
+  }
+}
+
+/**
+ * A quote with maths or Markdown, drawn typeset with its bar (item 470
+ * follow-up), as a block over its lines. A click opens its source with the
+ * caret after the first line's `> `; the text sent is the source, unchanged.
+ */
+class QuoteRenderWidget extends WidgetType {
+  constructor(
+    readonly src: string,
+    readonly markerLen: number,
+  ) {
+    super();
+  }
+  eq(other: QuoteRenderWidget): boolean {
+    return other.src === this.src && other.markerLen === this.markerLen;
+  }
+  toDOM(view: EditorView): HTMLElement {
+    const el = document.createElement("div");
+    el.className = "cm-cqrender markdown";
+    el.dataset.quoteRender = "";
+    el.innerHTML = renderReply(this.src);
+    el.addEventListener("mousedown", (e: MouseEvent) => {
+      if (e.button !== 0 || e.shiftKey) return;
+      e.preventDefault();
+      const at = view.posAtDOM(el);
+      view.dispatch({ selection: EditorSelection.cursor(Math.min(view.state.doc.length, at + this.markerLen)) });
+      view.focus();
+    });
+    return el;
+  }
+  ignoreEvent(e: Event): boolean {
     return !(e instanceof MouseEvent && e.shiftKey);
   }
 }
@@ -445,6 +497,19 @@ export function composerDecorations(state: EditorState): DecorationSet {
         }
         break;
       }
+      case "quote-render": {
+        if (s.open) break;
+        const src = quoteRuns(doc.sliceString(s.from, s.to))[0]?.src;
+        if (src === undefined) break;
+        const q = quoteLine(doc.lineAt(s.from).text);
+        out.push(
+          Decoration.replace({ widget: new QuoteRenderWidget(src, q ? q.marker.length : 0), block: true }).range(
+            s.from,
+            s.to,
+          ),
+        );
+        break;
+      }
       case "quote": {
         out.push(Decoration.line({ class: "cm-cquote" }).range(s.from));
         const q = quoteLine(doc.sliceString(s.from, s.to));
@@ -601,6 +666,17 @@ export const composerTheme = EditorView.theme({
     color: "var(--dim)",
   },
   ".cm-cqm": { opacity: "0.45" },
+  // Item 470 follow-up: a drawn quote, the plain box's `.q-render` look.
+  ".cm-cqrender": {
+    marginLeft: "-10px",
+    paddingLeft: "10px",
+    boxShadow: "inset 3px 0 0 var(--accent)",
+    color: "var(--dim)",
+    whiteSpace: "normal",
+    cursor: "text",
+  },
+  ".cm-cqrender p": { margin: "0" },
+  ".cm-cqrender .katex-display": { margin: "0", padding: "0" },
   ".cm-cmark": { color: "var(--dim)" },
   ".cm-cmathsrc": { fontFamily: "var(--mono)", fontSize: "0.9em", color: "var(--ink2)" },
   ".cm-nmath": { cursor: "pointer" },

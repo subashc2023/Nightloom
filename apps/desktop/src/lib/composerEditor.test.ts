@@ -263,3 +263,49 @@ describe("item 386: ⌘A over a long paste selects, and shows, the whole text", 
     expect(state.doc.length).toBe(0);
   });
 });
+
+// Item 470 follow-up (2026-11-02): a Reply quote with maths in the formatted
+// box. Before, `$$…$$` over several `> ` lines was one formula holding the
+// markers (drawn as ">" signs, no bar); now the quote is drawn whole, as the
+// plain box's layer draws it, and its source shows while the caret is in it.
+describe("a quote with maths or Markdown", () => {
+  const Q = ["$$\\begin{aligned}", "a &= b && \\text{T5}\\\\", "&= c", "\\end{aligned}$$"];
+  const block = Q.map((l) => "> " + l).join("\n") + "\n\nOkay what I did was";
+  const spans = (text: string, caret: number, focus = true) =>
+    liveSpans(composerState(text, [], caret, focus)).map((s) => ({ kind: s.kind, open: s.open, text: text.slice(s.from, s.to) }));
+
+  it("caret outside: one drawn quote, no formula holding the markers", () => {
+    const s = spans(block, block.length);
+    expect(s).toEqual([{ kind: "quote-render", open: false, text: Q.map((l) => "> " + l).join("\n") }]);
+  });
+  it("unfocused: drawn", () => {
+    expect(spans(block, block.indexOf("T5"), false).map((s) => [s.kind, s.open])).toEqual([["quote-render", false]]);
+  });
+  it("caret inside: the source, every line with its bar, nothing typeset", () => {
+    const s = spans(block, block.indexOf("T5"));
+    expect(s.filter((x) => x.kind === "quote-render").map((x) => x.open)).toEqual([true]);
+    expect(s.filter((x) => x.kind === "quote")).toHaveLength(Q.length);
+    expect(s.some((x) => x.kind === "math" || x.kind === "math-block")).toBe(false);
+  });
+  it("a quote line with inline maths and bold is drawn whole too", () => {
+    const t = "> the sum $a+b$ is **bold**\n\nmine $x$";
+    const s = spans(t, t.length);
+    expect(s.map((x) => [x.kind, x.text])).toEqual([
+      ["quote-render", "> the sum $a+b$ is **bold**"],
+      ["math", "$x$"],
+    ]);
+  });
+  it("a plain quote keeps its line-by-line look", () => {
+    const t = "> just words\nanswer";
+    expect(spans(t, t.length).map((x) => x.kind)).toEqual(["quote"]);
+  });
+  it("the block covers the quote's lines and the text is unchanged", () => {
+    const state = composerState(block, [], block.length, true);
+    const found: { from: number; to: number; block: boolean }[] = [];
+    composerDecorations(state).between(0, state.doc.length, (from, to, d) => {
+      if (d.spec.block) found.push({ from, to, block: true });
+    });
+    expect(found).toEqual([{ from: 0, to: block.indexOf("\n\n"), block: true }]);
+    expect(state.doc.toString()).toBe(block);
+  });
+});
