@@ -6,7 +6,8 @@
  * Two triggers that happen for him replace it as the ones that matter:
  *
  * 1. **A hand-off.** A turn that wrote `HANDOFF.md` (his hand-run wrap-up,
- *    or the hand-off card's), and *Continue in a new chat*. The chat being
+ *    or the hand-off notice's), and continuing in a new chat (the card's
+ *    *Continue with this prompt*, or the no-prompt line's). The chat being
  *    left is finished as far as memory is concerned, so it is the moment
  *    to read it. Two hand-off signals minutes apart (the wrap-up turn, then
  *    Continue) are one pass: `handoffPassDue` spaces them.

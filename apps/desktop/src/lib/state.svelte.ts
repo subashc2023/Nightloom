@@ -11,8 +11,9 @@ import {
   noteRewound,
   noteThread,
   noteThreadFlags,
+  leaveHandoff,
   readOrder,
-  resetHandoff,
+  sentHere,
   threadFor,
 } from "./handoff.svelte";
 import { replaceStartHere, threadOfEvents } from "./thread";
@@ -31,6 +32,7 @@ import {
   queueAfterTurn,
   ranKey,
   shiftQueue,
+  nextQueueId,
   requeueFront,
   type QueuedMessage,
   markInjected,
@@ -6256,7 +6258,9 @@ export const MODE_GLYPH: Record<ChatMode, string> = {
 
 /**
  * Continue the open chat in a fresh, linked one after the hand-off
- * (nightshift backlog 086): the *Continue in a new chat* card. The new
+ * (nightshift backlog 086). Since item 506 this unsent path is the
+ * no-prompt line's *Continue in a new chat* and the phone's Continue;
+ * the card's button is `continueWithPrompt`. The new
  * chat opens with the model's own start prompt — the last `start-prompt`
  * block of the wrap-up reply, kept by `noteAgentTurnEnd` — in its box,
  * never sent (blocker 120, answering blocker 092). ~~with "Read HANDOFF.md
@@ -6276,33 +6280,11 @@ export async function continueChat(): Promise<void> {
     const start = handoff.startPrompt;
     const from = handoff.chat ?? app.activeSessionId;
     const lead = readOrder(from);
-    const thread = threadFor(from);
-    const res = await api.continueSession();
-    // The aside thread stays with the chat being left (backlog 130).
-    switchAside(res.session);
-    app.events = res.events;
-    app.activeSessionId = res.session;
-    app.error = null;
-    app.agentTurn = null;
-    app.agentInit = null;
-    // ~~`app.subagents = []`~~ — rows are per chat since backlog 160.
-    app.suggestion = null;
-    resetHandoff();
-    carryReadOrder(from, res.session);
-    // The research thread went on with the chat (backlog 271; the log's
-    // `thread` event). Its mechanical upkeep runs now, while neither chat
-    // is writing it: the wrapped one has stopped, the new one has not begun.
-    noteThread(res.session, thread);
-    if (thread) void applyThreadUpkeep(thread);
-    // Item 464: this chat started from the thread's saved hand-off, so the
-    // thread's + does not hand it out again.
-    if (thread && start) void takeThreadHandoff(thread, res.session);
+    const opened = await openContinuation(from, !!start);
     const first = firstMessage(lead, start);
-    if (first) setDraftText(res.session, first);
-    // The chat just left is finished as far as memory is concerned (item 278).
-    maybeHandoffPass();
+    if (first) setDraftText(opened, first);
     if (!start) {
-      handoff.noStartPromptChat = res.session;
+      handoff.noStartPromptChat = opened;
       addToast(
         first
           ? "The wrap-up reply had no <handoff> prompt — the new chat's box holds only the read order; say what to do first."
@@ -6315,6 +6297,91 @@ export async function continueChat(): Promise<void> {
     return;
   }
   void refreshSessions();
+}
+
+/** The new linked chat and everything that goes with it: what `continueChat`
+ *  and the card's button share. `prompted`: it starts from a prompt, so the
+ *  thread's + does not hand that prompt out again. Throws what the call threw. */
+async function openContinuation(from: string | null, prompted: boolean): Promise<string> {
+  const thread = threadFor(from);
+  const res = await api.continueSession();
+  // The aside thread stays with the chat being left (backlog 130).
+  switchAside(res.session);
+  app.events = res.events;
+  app.activeSessionId = res.session;
+  app.error = null;
+  app.agentTurn = null;
+  app.agentInit = null;
+  // ~~`app.subagents = []`~~ — rows are per chat since backlog 160.
+  app.suggestion = null;
+  leaveHandoff(from);
+  carryReadOrder(from, res.session);
+  // The research thread went on with the chat (backlog 271; the log's
+  // `thread` event). Its mechanical upkeep runs now, while neither chat
+  // is writing it: the wrapped one has stopped, the new one has not begun.
+  noteThread(res.session, thread);
+  if (thread) void applyThreadUpkeep(thread);
+  // Item 464: this chat started from the thread's saved hand-off, so the
+  // thread's + does not hand it out again.
+  if (thread && prompted) void takeThreadHandoff(thread, res.session);
+  // The chat just left is finished as far as memory is concerned (item 278).
+  maybeHandoffPass();
+  return res.session;
+}
+
+/** The click in flight, and the replies continued this run (`chat|index`):
+ *  the listing is the durable record, this covers the moments before it is
+ *  read again and a chat the listing does not hold (an ephemeral one). */
+let continuing = false;
+const continuedHere = $state<Record<string, true>>({});
+
+/** Whether the button on this reply was pressed in this run of the app. */
+export function continuedThisRun(chat: string, index: number): boolean {
+  return continuedHere[`${chat}|${index}`] === true;
+}
+
+/**
+ * *Continue with this prompt* on a reply's next-chat card (item 506): a new
+ * linked chat, as `continueChat` opens it, with `firstMessage` — the read
+ * order the card shows, then the prompt — sent as its first message. His
+ * "automatically send" supersedes "in its box, never sent" (blockers 092, 120)
+ * for this button only. Needs no wrap-up: the card is enough. A send that
+ * fails, or cannot go, leaves the text in the new chat's box.
+ */
+export async function continueWithPrompt(from: string, index: number, prompt: string): Promise<void> {
+  if (continuing) return;
+  if (app.busy || app.activeSessionId !== from) {
+    addToast("A turn is running — continue when it ends");
+    return;
+  }
+  continuing = true;
+  try {
+    const text = firstMessage(readOrder(from), prompt);
+    let opened: string;
+    try {
+      opened = await openContinuation(from, true);
+    } catch (e) {
+      addToast(String(e));
+      return;
+    }
+    continuedHere[`${from}|${index}`] = true;
+    leaveNote();
+    void refreshSessions();
+    if (!app.connection || app.busy) {
+      setDraftText(opened, text);
+      addToast("Nothing is connected — the prompt is in the new chat's box; send it when the engine is back");
+      requestComposerFocus();
+      return;
+    }
+    await send(text);
+    // send() reports a failure on app.error (see the composer's `dispatch`).
+    if (app.error) {
+      if (!readDraft(opened).text) setDraftText(opened, text);
+      else requeueFront(opened, { id: nextQueueId(), text, attachments: [] });
+    }
+  } finally {
+    continuing = false;
+  }
 }
 
 /** The mechanical upkeep of a thread at *Continue*: a toast when it moved
@@ -7818,6 +7885,8 @@ export async function send(
   files: FileInput[] = [],
 ): Promise<void> {
   if (!app.connection || app.busy) return;
+  // Item 506: a message sent in a wrapped chat is staying in it.
+  sentHere(app.activeSessionId);
   // Send pressed: the timing line's zero (item 256).
   turnClock.sent();
   const spoken = turnSpoken;

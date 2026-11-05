@@ -2081,12 +2081,12 @@
         <p class="note small">
           Sent as typed. Keep the ask for a prompt between
           <code>&lt;handoff&gt;</code> and <code>&lt;/handoff&gt;</code>: that is what the new chat's first message
-          is read out of (a fenced <code>start-prompt</code> block still works); without one its box opens with the read order alone. A chat can edit its
+          is read out of, shown as a card with <em>Continue with this prompt</em> (a fenced <code>start-prompt</code> block still works); without one the chat box offers an unsent new chat with the read order alone. A chat can edit its
           own copy on the notice without changing this.
           {#if hasOwnDefaultMessage()}<em>Edited; Reset to default restores the built-in text (a box left empty reads as the built-in after a relaunch).</em>{:else}<em>The built-in text ({WRAP_UP.length} characters).</em>{/if}
         </p>
         <!-- The read order (nightshift backlog 193): the fixed prompt above
-             the model's start prompt in the continued chat's box. -->
+             the model's prompt in the continued chat's first message. -->
         <div class="ch"><span class="t">The read order</span>
           <span class="spacer"></span>
           {#if hasOwnDefaultReadOrder()}
@@ -2105,10 +2105,11 @@
           oninput={(e) => setDefaultReadOrder((e.currentTarget as HTMLTextAreaElement).value)}
         ></textarea>
         <p class="note small">
-          What a continued chat's box opens with, above the model's start
-          prompt — both in the box, editable, not sent. Left empty, it stays
-          empty. A chat can edit its own copy on the hand-off card, and the
-          chats that continue it keep that copy.
+          Goes above the model's prompt when a chat continues: <em>Continue
+          with this prompt</em> on the reply's card sends both as the new
+          chat's first message, and the card shows this text on a folded line
+          first. Left empty, it stays empty, and only the prompt goes. A copy a
+          chat already has of its own stays with it and the chats that continue it.
           {#if hasOwnDefaultReadOrder()}<em>Edited; Reset to default restores the built-in read order.</em>{:else}<em>The built-in read order: the newest HANDOFF.md section, then the two indexes.</em>{/if}
         </p>
       </section>
@@ -2647,7 +2648,7 @@
           A dream pass consolidates the memory inbox into the vault — the
           Dream button in the Notes panel runs one by hand. Switched on here,
           one also runs at every hand-off — a turn that writes HANDOFF.md, or
-          Continue in a new chat — and after a compaction, the moments a chat
+          continuing in a new chat — and after a compaction, the moments a chat
           is finished as far as memory is concerned. A capture pass runs first,
           reading the chats since the last one into the inbox, on the same
           engine (the Claude Code engine bills the subscription). When there

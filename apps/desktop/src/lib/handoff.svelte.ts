@@ -43,7 +43,13 @@
  *    this one (`forked_from` with `reason: "handoff"`), with the model's
  *    start prompt in its box — never sent. No block found: the box is
  *    left empty and the composer says so. Staying past 85% asks the
- *    wrap-up again.
+ *    wrap-up again. ~~The composer's offer~~ — superseded by item 506
+ *    (2026-11-05, "why are there both?"): the reply's next-chat card is the
+ *    one surface, its *Continue with this prompt* (`handoffButton.ts`) starts
+ *    the linked chat and sends read order + prompt; the send here is why the
+ *    wrapped stage now only holds the queue (`queueHold`, `sentHere`). A reply
+ *    with no prompt gets one line in the composer, whose *Continue in a new
+ *    chat* is this unsent path.
  * 6. **The read order** (backlog 193, 2026-09-25): the continued chat's
  *    box holds a fixed prompt — the read order, a Settings default with a
  *    per-chat override, practices §5's by default (blocker 366, question
@@ -52,7 +58,8 @@
  *    first. Both visible and editable in the box; nothing is sent. The
  *    wrap-up adds a new `## STATE AS OF` section at the top of
  *    `HANDOFF.md` ~~overwrites HANDOFF.md~~ (superseded 2026-09-25: an
- *    overwrite lost every earlier hand-off).
+ *    overwrite lost every earlier hand-off). Item 506: the card's folded line
+ *    shows this text, read-only, so all that is sent is visible (blocker 1659).
  *
  * 7. **Code chats** (backlog 431, 2026-10-27; blockers 1567, 1568): a
  *    chat is a code chat when it is unbound, or bound to a thread in a
@@ -413,9 +420,10 @@ function dropAutoQueued(): void {
  * this same queue. What holds: the turn that just ended was one he stopped
  * (F12 — a new turn on its heels leaves no moment to take the message
  * back), or the wrap-up's own turn just ended (`wrapped`) — the model has
- * written HANDOFF.md and stopped, and the next thing is *Continue in a new
- * chat*, not more work in the full one. *Send next* is the explicit choice
- * either way.
+ * written HANDOFF.md and stopped, and the next thing is the card's *Continue
+ * with this prompt* (item 506), not more work in the full one. *Send next* is
+ * the explicit choice either way, and any send in the chat ends the hold
+ * (`sentHere`): with *Stay here* gone, sending here is how he stays.
  */
 export function queueHold(stage: HandoffStage, stopped: boolean): "wrapped" | "stopped" | null {
   if (stage === "wrapped") return "wrapped";
@@ -431,12 +439,20 @@ export function stayHere(): void {
   handoff.stage = "idle";
 }
 
-/** The *Hand off* button after a *Stay here* (backlog 383): the card comes
- *  back before the re-ask mark — "HANDOFF.md written" again if the wrap-up
- *  had already run, else the notice. Where it was dismissed stays, so a
- *  second *Stay here* is no different from the first. */
-export function reopenHandoff(wasWrapped: boolean): void {
-  handoff.stage = wasWrapped ? "wrapped" : "due";
+/** Item 506: a message sent in a wrapped chat is *Stay here* — the wrapped
+ *  card and its button are gone, so this is what releases the queue's hold
+ *  and arms the re-ask, remembering the fill as the button did. */
+export function sentHere(chat: string | null): void {
+  if (handoff.chat === chat && handoff.stage === "wrapped") stayHere();
+}
+
+/** The *Hand off* button after a *Stay here* (backlog 383): the notice comes
+ *  back before the re-ask mark. ~~"HANDOFF.md written" again if the wrap-up
+ *  had already run~~ — item 506: that card is gone, and the chat has moved on
+ *  from that wrap-up. Where it was dismissed stays, so a second *Stay here*
+ *  is no different from the first. */
+export function reopenHandoff(): void {
+  handoff.stage = "due";
 }
 
 /** After the mark was raised on the notice: a fill now under it goes quiet
@@ -452,6 +468,8 @@ export function reconsider(chat: string | null): void {
 /** After *Continue*: the new chat starts clean, and the chat that was
  *  wrapped up is forgotten here — its hand-off is done. */
 export function resetHandoff(): void {
+  // Item 506: the button can leave a chat with the wrap-up still queued.
+  dropAutoQueued();
   if (handoff.chat !== null) stages.delete(handoff.chat);
   handoff.chat = null;
   handoff.stage = "idle";
@@ -462,6 +480,16 @@ export function resetHandoff(): void {
   handoff.queuedId = 0;
   handoff.startPrompt = null;
   handoff.noStartPromptChat = null;
+}
+
+/** Item 506: leaving `chat` by the card's button, whichever chat `handoff`
+ *  shows; the card works from any stage, and for a chat it is not showing
+ *  only the kept stage goes. */
+export function leaveHandoff(chat: string | null): void {
+  if (handoff.chat === null || handoff.chat === chat) return resetHandoff();
+  const kept = chat === null ? undefined : stages.get(chat);
+  if (chat && kept?.queuedId) dropQueued(chat, kept.queuedId);
+  if (chat) stages.delete(chat);
 }
 
 // ---- the preferences: the threshold and the message, global and per chat ----

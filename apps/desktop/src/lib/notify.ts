@@ -163,9 +163,9 @@ export function handoffWrittenTitle(chat: string): string {
   return `${chat} — handoff written`;
 }
 
-/** `72% · Continue in a new chat, or stay` — the window's fill, 0..1. */
+/** `72% · Continue with the next chat's prompt, or stay` — the window's fill, 0..1. */
 export function handoffWrittenBody(fill: number): string {
-  return `${Math.round(Math.min(Math.max(fill, 0), 1) * 100)}% · Continue in a new chat, or stay`;
+  return `${Math.round(Math.min(Math.max(fill, 0), 1) * 100)}% · Continue with the next chat's prompt, or stay`;
 }
 
 /**

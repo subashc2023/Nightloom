@@ -31,8 +31,12 @@
     paneChat,
     tabOpening,
     chatAgentSession,
+    continuedThisRun,
+    continueWithPrompt,
   } from "./state.svelte";
   import type { Segment } from "./state.svelte";
+  import { continuableReply, continuedFromReply, type NextChat } from "./handoffButton";
+  import { readOrder } from "./handoff.svelte";
   import { checkpointLine, checkpointOwner } from "./checkpoint";
   import { pauseLabel, resetLabel, resumeDelayMs } from "./limit";
   import {
@@ -480,6 +484,25 @@
       })),
     ),
   );
+
+  // Item 506: the reply whose card carries *Continue with this prompt*. Only
+  // the chat open here: `continue_session` acts on the open chat, so a pane,
+  // which draws another, shows Copy alone.
+  const nextChat = $derived.by((): NextChat | null => {
+    const from = chatId;
+    if (inPane || !from) return null;
+    const reply = continuableReply(items.map((it) => ({ ...it, segs: it.kind === "assistant" ? it.segs : undefined })));
+    if (!reply) return null;
+    return {
+      chat: from,
+      index: reply.index,
+      prompt: reply.prompt,
+      readOrder: readOrder(from),
+      used: continuedThisRun(from, reply.index) || continuedFromReply(app.sessions, from, reply.index),
+      blocked: app.busy ? "A turn is running — continue when it ends" : null,
+      onContinue: () => void continueWithPrompt(from, reply.index, reply.prompt),
+    };
+  });
 
   // Retry (item 333) rides the last reply of each turn.
   const turnEnds = $derived(endsTurn(items.map((it) => ({ kind: it.kind, superseded: it.superseded }))));
@@ -2693,6 +2716,7 @@
               {cliSession}
               folds={turnFolds(item.index)}
               runFrom={{ chat: chatId }}
+              nextChat={nextChat?.index === item.index ? nextChat : null}
             />
             {#if item.original !== null && item.removed}
               <details class="original" use:keptOpen={{ key: turnFold(item.index, "removed") }}>
