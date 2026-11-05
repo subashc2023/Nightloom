@@ -269,8 +269,8 @@
   } = $props();
 
   function runBlocks(text: string): RunBlocks | null {
-    const from = runFrom;
-    return from ? { text, streaming, onRun: (command) => void runBlock(command, from) } : null;
+    // `runFrom` is read at the click: this element may be drawing another chat by then.
+    return runFrom ? { text, streaming, onRun: (command) => runFrom && void runBlock(command, runFrom) } : null;
   }
 
   // Per-block clicks, keyed by the block's stable id (`segmentIds`) rather

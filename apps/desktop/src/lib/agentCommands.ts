@@ -196,8 +196,9 @@ export function commandsText(rows: readonly AgentCommand[], turnRunning: boolean
   const out: string[] = [];
   for (const r of rows) {
     if (r.output === null && turnRunning) break;
-    const label = r.agent ? `${DIM}[${r.agent}]${OFF} ` : "";
-    const cmd = r.command.split("\n").join(`\n${BOLD}> ${OFF}`);
+    // Every recorded string goes through `stripAnsi`: the grid obeys what it is given.
+    const label = r.agent ? `${DIM}[${stripAnsi(r.agent)}]${OFF} ` : "";
+    const cmd = stripAnsi(r.command).split("\n").join(`\n${BOLD}> ${OFF}`);
     out.push(`${label}${BOLD}$ ${cmd}${OFF}\n`);
     if (r.output === null) {
       out.push(`${DIM}[no result recorded: the call was open when the run ended]${OFF}\n\n`);
@@ -207,7 +208,7 @@ export function commandsText(rows: readonly AgentCommand[], turnRunning: boolean
     if (text) out.push(`${r.error ? RED : ""}${text}${r.error ? OFF : ""}\n`);
     if (r.firstLineOnly) out.push(`${DIM}[first line only: a subagent's output is not kept whole]${OFF}\n`);
     if (r.error) out.push(`${RED}✗ failed${OFF}\n`);
-    if (r.background) out.push(`${DIM}[left running in the background: ${r.background}]${OFF}\n`);
+    if (r.background) out.push(`${DIM}[left running in the background: ${stripAnsi(r.background)}]${OFF}\n`);
     for (const l of r.later) {
       out.push(`${DIM}── later output ──${OFF}\n`);
       const more = stripAnsi(l.output).trimEnd();

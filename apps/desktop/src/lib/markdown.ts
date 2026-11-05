@@ -1,10 +1,11 @@
-import { Marked, marked } from "marked";
+import { Marked, marked, Renderer, type Tokens } from "marked";
 import DOMPurify from "dompurify";
 import { math, renderMath } from "./math";
 import { tilde } from "./tilde";
 import { cite } from "./cite";
 import { proseBlocks } from "./proseBlock";
 import { handoffTag } from "./handoffTag";
+import { isRunFence, markRunFence } from "./shellRun";
 import "katex/dist/katex.min.css";
 
 marked.use(math);
@@ -52,6 +53,15 @@ replyMarked.use(cite);
 replyMarked.use(proseBlocks);
 // Item 464: a `<handoff>` block shows as the next chat's prompt card.
 replyMarked.use(handoffTag);
+// Item 503: a real shell fence is told apart from raw HTML shaped like one.
+const plainBlock = new Renderer();
+replyMarked.use({
+  renderer: {
+    code(token: Tokens.Code) {
+      return isRunFence(token) ? markRunFence(plainBlock.code(token)) : false;
+    },
+  },
+});
 
 export function renderReply(src: string): string {
   // Item 454: a tab switch remounts the whole transcript, and every reply

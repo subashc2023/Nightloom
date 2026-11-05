@@ -176,7 +176,7 @@
       {/if}
       {#if !aside.draft}
         <div class="aside-view-turns">
-          <AsideThread {aside} {open} />
+          <AsideThread {aside} {open} owner={session} />
           <AsideFoldPanel {aside} part="panel" {open} />
         </div>
       {/if}

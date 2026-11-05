@@ -178,7 +178,7 @@
     {@render body()}
   {:else if ran}
     <!-- Item 503: the output of a block he ran, folded; not a wall of his. -->
-    <RanCard {ran} />
+    <RanCard {ran} {keep} />
   {:else if text}
     <!-- `> ` lines are quotes he placed with Reply (backlog 215), drawn as
          quotes where they sit in his words. -->

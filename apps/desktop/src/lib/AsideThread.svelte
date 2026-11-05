@@ -65,7 +65,12 @@
    * the aside is queued behind the chat's turn, and a running exchange
    * silent past `ASIDE_STALL_MS` says so, with Ask again and Stop.
    */
-  let { aside, open }: { aside: Aside; open: boolean } = $props();
+  let { aside, open, owner }: {
+    aside: Aside;
+    open: boolean;
+    /** The chat the thread belongs to, which need not be the open one (item 503). */
+    owner: string | null;
+  } = $props();
   // Item 495 part 2: an exchange's folds kept as the chat's are, by the
   // thread's stable name and the exchange's sequence number.
   const foldChat = $derived(`aside:${aside.uid ?? aside.id}`);
@@ -379,7 +384,7 @@
           since={turn === asking ? (turn.startedAt ?? null) : null}
           footer={footerOf(turn)}
           folds={foldsOf(turn.seq)}
-          runFrom={{ chat: app.activeSessionId, aside: aside.id }}
+          runFrom={{ chat: owner, aside: aside.id }}
         />
       </div>
     {:else if turn === asking}

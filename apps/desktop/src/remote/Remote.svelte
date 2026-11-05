@@ -88,6 +88,7 @@
   // Wave 8B F2 (item 300): replies in order, code blocks, the keyboard.
   import { aimAction, liveSegments, retryStopping, sentOf } from "./client";
   import { retryText } from "../lib/retryLine";
+  import { parseRan } from "../lib/shellRun";
   import { sentExt, type SentFile } from "../lib/sentFiles";
   import { codeBlocks } from "./codeBlocks";
   import { trackViewport } from "./viewport";
@@ -2859,9 +2860,11 @@
       {/if}
       {#each rows as r, i (i)}
         {#if r.kind === "user"}
+          <!-- Item 503: a block he ran at the Mac, its output folded as there. -->
+          {@const ran = parseRan(r.text)}
           <div class="turn user" data-row={i} class:enter={i >= enterFrom && !still} class:removed={r.removed} use:arrive={{ channel: "phone" }}>
             <div class="bubble" use:press={() => openMenu(r)}>
-              {#if r.images > 0}<span class="pics">{r.images} photo{r.images === 1 ? "" : "s"}</span>{/if}{r.text}
+              {#if r.images > 0}<span class="pics">{r.images} photo{r.images === 1 ? "" : "s"}</span>{/if}{#if ran}<div class="ran-card"><div class="ran-head">Ran in terminal · {ran.status}</div><div class="ran-cmd">{ran.command}</div>{#if ran.output}<details><summary>Output</summary><pre>{ran.output}</pre></details>{/if}</div>{:else}{r.text}{/if}
             </div>
             <div class="stamp">
               {#if r.removed}{"removed from the context · "}{:else if r.edited}{"edited · "}{/if}{shortWhen(r.at)}
@@ -4865,6 +4868,26 @@
   }
   .tool.removed .tool-sum {
     text-decoration: line-through;
+  }
+  .ran-card {
+    white-space: normal;
+    min-width: 0;
+  }
+  .ran-head {
+    font-size: 12px;
+    opacity: 0.75;
+  }
+  .ran-cmd,
+  .ran-card pre {
+    font-family: var(--mono, monospace);
+    font-size: 12px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    margin: 4px 0 0;
+  }
+  .ran-card summary {
+    margin-top: 4px;
+    font-size: 12px;
   }
   .pics {
     display: block;

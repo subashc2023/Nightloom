@@ -6,7 +6,7 @@
  */
 
 import { flashCopied, setCopyState } from "./copyIcon";
-import { endsInOpenFence, isShellClass } from "./shellRun";
+import { endsInOpenFence, hasHiddenChars, isShellClass, RUN_FENCE_ATTR, RUN_MARK } from "./shellRun";
 
 /** The code-block Copy button's name, for a reader and the tooltip. */
 export const COPY_BLOCK = "Copy this block";
@@ -33,22 +33,48 @@ export interface RunBlocks {
 /** How long a Run stays pressed: a double click runs once. */
 const RUN_PRESSED_MS = 1200;
 
+/** What a fence may sit in: marked's own containers, bare. Anything else is a
+ *  reply's raw HTML, which can clip or hide the block round the words it shows. */
+const BARE_PARENTS = new Set(["OL", "UL", "LI", "BLOCKQUOTE"]);
+
+/**
+ * The command a block runs, or null if it may not: only what marked drew as a
+ * shell fence (`RUN_MARK`, which raw HTML cannot carry), with text alone in
+ * its `code`, nothing hidden in that text, and nothing in the reply placed to
+ * hide part of it. Read when the button is drawn and again at the click.
+ */
+function runCommand(pre: Element, root: Element): string | null {
+  if (pre.getAttribute(RUN_FENCE_ATTR) !== RUN_MARK) return null;
+  const code = pre.querySelector(":scope > code");
+  if (!code || code.children.length > 0 || !isShellClass(code.className)) return null;
+  for (let el = pre.parentElement; el && el !== root; el = el.parentElement) {
+    if (!BARE_PARENTS.has(el.tagName) || el.hasAttribute("style") || el.hasAttribute("hidden") || el.hasAttribute("class")) return null;
+  }
+  if (root.querySelector("style")) return null;
+  const text = code.textContent ?? "";
+  if (hasHiddenChars(text)) return null;
+  return text.trim() || null;
+}
+
 /**
  * Run beside Copy on a shell block, once it is whole: only the last `pre` can
- * be the fence the reply is still in, so that one waits.
+ * be the fence the reply is still in, so that one waits while the reply
+ * streams, or if it was cut off inside it. A block that no longer qualifies
+ * loses its button: `liveHtml` re-uses a `pre` for whatever comes next at its
+ * place. `read` is the reply as it stands, so a click goes by what is drawn
+ * then, never by what was when the button was made.
  */
-export function addRunButtons(root: HTMLElement, run: RunBlocks | null | undefined): void {
-  const onRun = run?.onRun;
-  if (!onRun) return;
+export function addRunButtons(root: HTMLElement, read: () => RunBlocks | null | undefined): void {
+  const run = read();
   const all = Array.from(root.querySelectorAll("pre"));
-  const open = endsInOpenFence(run.text, run.streaming);
+  const open = !!run && (run.streaming || endsInOpenFence(run.text));
   all.forEach((pre, i) => {
-    if (pre.querySelector(":scope > .code-run")) return;
-    if (open && i === all.length - 1) return;
-    const code = pre.querySelector(":scope > code");
-    if (!code || !isShellClass(code.className)) return;
-    const command = codeText(pre).trim();
-    if (!command) return;
+    const have = pre.querySelector(":scope > .code-run");
+    if (!run?.onRun || (open && i === all.length - 1) || runCommand(pre, root) === null) {
+      have?.remove();
+      return;
+    }
+    if (have) return;
     const b = document.createElement("button");
     b.type = "button";
     b.className = "code-run";
@@ -58,10 +84,12 @@ export function addRunButtons(root: HTMLElement, run: RunBlocks | null | undefin
     b.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      if (b.disabled) return;
+      const onRun = read()?.onRun;
+      const command = runCommand(pre, root);
+      if (b.disabled || !onRun || command === null) return;
       b.disabled = true;
       setTimeout(() => (b.disabled = false), RUN_PRESSED_MS);
-      onRun(codeText(pre).trim());
+      onRun(command);
     });
     pre.appendChild(b);
   });
@@ -93,7 +121,7 @@ export function codeCopy(node: HTMLElement, run?: RunBlocks | null) {
   let params = run;
   const add = () => {
     addCopyButtons(node);
-    addRunButtons(node, params);
+    addRunButtons(node, () => params);
   };
   add();
   const obs = new MutationObserver(add);

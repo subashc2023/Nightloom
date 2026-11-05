@@ -58,7 +58,7 @@ const { app } = await import("./state.svelte");
 const store = await import("./state.svelte");
 const { initTerminalEvents, term } = await import("./terminal.svelte");
 const { runBlock, sendSoFar, stopRun, STOP_GRACE_MS } = await import("./shellRun.svelte");
-const { readDraft, drafts } = await import("./drafts.svelte");
+const { enqueueMessage, readDraft, drafts, requeueFront, shiftQueue } = await import("./drafts.svelte");
 const { parseRan } = await import("./shellRun");
 
 await initTerminalEvents();
@@ -97,7 +97,7 @@ beforeEach(() => {
 describe("503 harness: a passing command", () => {
   it("opens a tab in the chat's folder, and the chat gets command, code and clean output", async () => {
     const drained: string[] = [];
-    const off = store.registerRunDrain(async () => void drained.push(readDraft("a").queue[0]?.text ?? ""));
+    const off = store.registerRunDrain(async () => void drained.push(shiftQueue("a")?.text ?? ""));
     const row = await runBlock("echo hi", { chat: "a" });
     expect(h.run).toEqual([{ cwd: "/work", command: "echo hi" }]);
     expect(row?.run?.title).toBe("echo hi");
@@ -211,7 +211,8 @@ describe("503 harness: the source chat, never the open one", () => {
   });
   it("deleted meanwhile: sent nowhere, and the tab says so", async () => {
     const row = await runBlock("ls", { chat: "a" });
-    h.transcripts.a = [];
+    app.sessions = app.sessions.filter((c) => c.id !== "a");
+    app.activeSessionId = "b";
     data(row!.id, "x\r\n");
     exit(row!.id, 0);
     await settle();
@@ -219,6 +220,14 @@ describe("503 harness: the source chat, never the open one", () => {
     expect(queued("b")).toHaveLength(0);
     expect(h.sendAgent).toEqual([]);
     expect(term.shells.find((s) => s.id === row!.id)?.run?.note).toContain("gone");
+  });
+  it("the same deleted chat, held open by nothing, even with a log read as empty: no read at all", async () => {
+    const row = await runBlock("ls", { chat: "a" });
+    const reads = vi.spyOn(await import("./api"), "transcript");
+    exit(row!.id, 0);
+    await settle();
+    expect(reads).not.toHaveBeenCalled();
+    reads.mockRestore();
   });
   it("a chat mid-turn refuses the read, and counts as there", async () => {
     const row = await runBlock("ls", { chat: "a" });
@@ -267,5 +276,152 @@ describe("503: Agent commands tabs", () => {
     expect(openAgentTab("b").id).not.toBe(a.id);
     closeShell(a.id);
     expect(h.closed).toEqual([]);
+  });
+});
+
+describe("503 review 3: an aside of a chat that is not open", () => {
+  it("the owning chat comes from the caller, not the open chat", async () => {
+    const src = (await import("./AsideThread.svelte?raw")).default;
+    expect(src).not.toContain("chat: app.activeSessionId");
+    expect((await import("./AsideView.svelte?raw")).default).toContain("<AsideThread {aside} {open} owner={session} />");
+    expect((await import("./AsideCard.svelte?raw")).default).toContain("<AsideThread {aside} open={!readOnly} {owner} />");
+  });
+  it("an aside no longer found keeps the output in the tab, and the chat's line gets nothing", async () => {
+    const row = await runBlock("ls", { chat: "b", aside: 999 });
+    data(row!.id, "x\r\n");
+    exit(row!.id, 0);
+    await settle();
+    expect(queued("a")).toHaveLength(0);
+    expect(queued("b")).toHaveLength(0);
+    expect(h.sendAgent).toEqual([]);
+    expect(term.shells.find((s) => s.id === row!.id)?.run?.note).toContain("aside");
+  });
+});
+
+describe("503 review 4: a project switch while it runs", () => {
+  it("the chat is in the other project, and is sent there by id, not called gone", async () => {
+    const row = await runBlock("ls", { chat: "a" });
+    app.project = { id: "p2", name: "Q", root: "/q", exists: true } as never;
+    app.sessions = [{ id: "q1", title: "Other" }] as never;
+    app.activeSessionId = "q1";
+    h.transcripts.a = [];
+    data(row!.id, "x\r\n");
+    exit(row!.id, 0);
+    await settle();
+    await settle();
+    expect(term.shells.find((s) => s.id === row!.id)?.run?.note).not.toContain("gone");
+    expect(h.sendAgent.map((s) => s.chat)).toEqual(["a"]);
+    delete app.background.a;
+  });
+});
+
+describe("503 review 5: what he held stays held", () => {
+  it("the chat on screen: no drain, his row first, the output behind it", async () => {
+    let drains = 0;
+    const off = store.registerRunDrain(async () => void drains++);
+    const row = await runBlock("ls", { chat: "a" });
+    enqueueMessage("a", "held after a Stop", []);
+    exit(row!.id, 0);
+    await settle();
+    expect(drains).toBe(0);
+    expect(readDraft("a").queue.map((q) => q.text)[0]).toBe("held after a Stop");
+    expect(queued("a")[1]).toMatchObject({ command: "ls" });
+    expect(term.shells.find((s) => s.id === row!.id)?.run?.note).toContain("Waiting");
+    off();
+  });
+  it("a chat off screen: nothing leaves for it", async () => {
+    const row = await runBlock("ls", { chat: "a" });
+    enqueueMessage("a", "held", []);
+    app.activeSessionId = "b";
+    exit(row!.id, 0);
+    await settle();
+    await settle();
+    expect(h.sendAgent).toEqual([]);
+    expect(readDraft("a").queue.map((q) => q.text)[0]).toBe("held");
+    expect(readDraft("a").queue).toHaveLength(2);
+  });
+});
+
+describe("503 review 7: Send output so far with nothing new", () => {
+  it("a double click sends once; the tab says why the second did nothing", async () => {
+    const row = await runBlock("npm run dev", { chat: "a" });
+    data(row!.id, "up\r\n");
+    await Promise.all([sendSoFar(row!.id), sendSoFar(row!.id)]);
+    expect(queued("a")).toHaveLength(1);
+    await sendSoFar(row!.id);
+    expect(queued("a")).toHaveLength(1);
+    expect(term.shells.find((s) => s.id === row!.id)?.run?.note).toContain("Nothing new");
+  });
+});
+
+describe("503 review 9: the tab says what truly happened", () => {
+  it("a drain that took nothing (a busy engine, no composer): waiting, never Sent", async () => {
+    const off = store.registerRunDrain(async () => {});
+    const row = await runBlock("ls", { chat: "a" });
+    exit(row!.id, 0);
+    await settle();
+    expect(queued("a")).toHaveLength(1);
+    expect(term.shells.find((s) => s.id === row!.id)?.run?.note).toContain("Waiting");
+    off();
+  });
+  it("no composer at all: the same", async () => {
+    const row = await runBlock("ls", { chat: "a" });
+    exit(row!.id, 0);
+    await settle();
+    expect(term.shells.find((s) => s.id === row!.id)?.run?.note).toContain("Waiting");
+  });
+  it("a drain that takes the row: Sent, while the turn it started still runs", async () => {
+    let end = () => {};
+    const off = store.registerRunDrain(() => {
+      shiftQueue("a");
+      return new Promise<void>((r) => (end = r));
+    });
+    const row = await runBlock("ls", { chat: "a" });
+    exit(row!.id, 0);
+    await settle();
+    expect(term.shells.find((s) => s.id === row!.id)?.run?.note).toBe("Sent to this chat.");
+    end();
+    off();
+  });
+  it("a send that fails and gives the row back: waiting again", async () => {
+    let fail = () => {};
+    const off = store.registerRunDrain(async () => {
+      const q = shiftQueue("a")!;
+      await new Promise<void>((r) => (fail = r));
+      requeueFront("a", q);
+    });
+    const row = await runBlock("ls", { chat: "a" });
+    exit(row!.id, 0);
+    await settle();
+    fail();
+    await settle();
+    await settle();
+    expect(term.shells.find((s) => s.id === row!.id)?.run?.note).toContain("Waiting");
+    off();
+  });
+});
+
+describe("503 review 11: Agent commands tabs across a relaunch", () => {
+  it("the restore writes nothing, so a second dock's entry survives the first's", async () => {
+    const { openAgentTab } = await import("./terminal.svelte");
+    const store_: Record<string, string> = {};
+    const was = (globalThis as { localStorage?: unknown }).localStorage;
+    (globalThis as { localStorage?: unknown }).localStorage = {
+      getItem: (k: string) => store_[k] ?? null,
+      setItem: (k: string, v: string) => void (store_[k] = v),
+    };
+    openAgentTab("a", null, false, false);
+    expect(Object.keys(store_)).toEqual([]);
+    openAgentTab("b", null, false);
+    expect(Object.keys(store_)).toHaveLength(1);
+    (globalThis as { localStorage?: unknown }).localStorage = was;
+  });
+});
+
+describe("503 review 6 and 12: the Agent commands tab's source", () => {
+  it("draws nothing while it has no record to draw (6), and takes the focus it is asked for (12)", async () => {
+    const src = (await import("./AgentTerminal.svelte?raw")).default;
+    expect(src).toContain("if (!held && !disk) return;");
+    expect(src).toContain("xterm?.focus()");
   });
 });

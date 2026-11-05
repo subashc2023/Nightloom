@@ -406,7 +406,7 @@ export function chatOfPane(pane: string | null | undefined): string | null {
  * comes to the front wherever it is; otherwise it joins `pane`'s dock, or
  * the dock New terminal would use, or a new one under the focused pane.
  */
-export function openAgentTab(chat: string, pane?: string | null, front = true): ShellRow {
+export function openAgentTab(chat: string, pane?: string | null, front = true, save = true): ShellRow {
   const known = term.shells.find((s) => s.agentChat === chat);
   if (known) {
     if (front) showShell(known);
@@ -432,7 +432,9 @@ export function openAgentTab(chat: string, pane?: string | null, front = true): 
     dock.collapsed = false;
   }
   term.pane ??= key;
-  saveAgentTabs();
+  // The restore passes false: a save part way through would overwrite the
+  // entries of the docks it has not reached.
+  if (save) saveAgentTabs();
   return term.shells.find((s) => s.id === row.id)!;
 }
 
@@ -752,7 +754,7 @@ registerTerminalHooks({
     // The Agent commands tabs first: they rebuild from the chats' logs.
     const place = app.tabs.panes.findIndex((p) => p.id === pane);
     const agents = (loadAgentTabs()[app.project?.id ?? ""]?.[place] ?? []).slice(0, n);
-    for (const chat of agents) openAgentTab(chat, pane, false);
+    for (const chat of agents) openAgentTab(chat, pane, false, false);
     for (let i = agents.length; i < n; i++) {
       if (!(await newShell(pane))) return;
     }

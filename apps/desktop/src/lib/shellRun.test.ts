@@ -8,6 +8,8 @@ import {
   isShellClass,
   parseRan,
   ranMessage,
+  hasHiddenChars,
+  isRunFence,
   routeRun,
   runStatus,
   runTabTitle,
@@ -137,7 +139,7 @@ describe("503: the message", () => {
 });
 
 describe("503: where the message goes", () => {
-  const base = { chat: "a", exists: true, aside: false, open: "a", busy: false, runningElsewhere: false, engine: "claude-code" };
+  const base = { queued: false, asideGone: false, chat: "a", exists: true, aside: false, open: "a", busy: false, runningElsewhere: false, engine: "claude-code" };
   it("the chat on screen, idle: sent", () => {
     expect(routeRun(base).kind).toBe("send");
   });
@@ -160,5 +162,50 @@ describe("503: where the message goes", () => {
   });
   it("an aside still open takes its own", () => {
     expect(routeRun({ ...base, aside: true }).kind).toBe("aside");
+  });
+});
+
+describe("503 review: what Run may carry", () => {
+  it("only a fence of a shell language, never an indented block", () => {
+    expect(isRunFence({ lang: "bash" })).toBe(true);
+    expect(isRunFence({ lang: "ZSH extra words" })).toBe(true);
+    expect(isRunFence({ lang: "python" })).toBe(false);
+    expect(isRunFence({ lang: "" })).toBe(false);
+    expect(isRunFence({ lang: undefined })).toBe(false);
+    expect(isRunFence({ lang: "bash", codeBlockStyle: "indented" })).toBe(false);
+  });
+  it("control and format characters are refused; a newline, a tab and plain Unicode are not", () => {
+    expect(hasHiddenChars("echo safe\u200b")).toBe(true);
+    expect(hasHiddenChars("echo \u202egnp.exe")).toBe(true);
+    expect(hasHiddenChars("echo a\x07")).toBe(true);
+    expect(hasHiddenChars("echo a\x1b[8mb")).toBe(true);
+    expect(hasHiddenChars("echo a\tb\necho é ✓")).toBe(false);
+  });
+});
+
+describe("503 review: stripAnsi leaves nothing a terminal would obey, and eats nothing", () => {
+  it("drops C1 controls, the one-byte CSI among them", () => {
+    expect(stripAnsi("a\u009b1;1H\u009b2Jb")).toBe("a1;1H2Jb");
+    expect(/[\u0080-\u009f]/.test(stripAnsi("x\u0085y\u009dz"))).toBe(false);
+  });
+  it("an unterminated string or a stray ESC X does not swallow the rest", () => {
+    expect(stripAnsi("ok\n\x1bXabc\nrest of the output")).toContain("rest of the output");
+    expect(stripAnsi("ok\n\x1b]0;title\nrest")).toContain("rest");
+  });
+});
+
+describe("503 review: rows already queued", () => {
+  const b = { chat: "a", exists: true, aside: false, asideGone: false, queued: true, open: "a", busy: false, runningElsewhere: false, engine: "claude-code" };
+  it("wait there, wherever the chat stands: a run's end sends nothing of his", () => {
+    expect(routeRun(b).kind).toBe("queue");
+    expect(routeRun({ ...b, busy: true }).kind).toBe("queue");
+    expect(routeRun({ ...b, open: "b" }).kind).toBe("queue");
+  });
+  it("a chat that is gone is still gone; an aside's run still goes to the aside", () => {
+    expect(routeRun({ ...b, exists: false }).kind).toBe("gone");
+    expect(routeRun({ ...b, aside: true }).kind).toBe("aside");
+  });
+  it("an aside that is gone keeps the output in the tab, never the chat's main line", () => {
+    expect(routeRun({ ...b, queued: false, asideGone: true }).kind).toBe("aside-gone");
   });
 });

@@ -15,6 +15,39 @@ export function isShellClass(className: string): boolean {
 }
 
 /**
+ * Whether marked's code token is a fence of a shell language: never an
+ * indented block, which names no language. The renderer marks these and only
+ * these (`markRunFence`), because a reply's raw HTML can draw a `pre` of any
+ * class with text the eye does not get: Run reads the mark, not the class.
+ */
+export function isRunFence(token: { lang?: string; codeBlockStyle?: string }): boolean {
+  if (token.codeBlockStyle === "indented") return false;
+  return SHELL_LANGS.has((token.lang ?? "").trim().split(/\s+/)[0].toLowerCase());
+}
+
+/** The attribute a real shell fence's `<pre>` carries. */
+export const RUN_FENCE_ATTR = "data-run-fence";
+/**
+ * Its value, new each launch and never shown to a model: raw HTML in a reply
+ * keeps `data-` attributes through DOMPurify, so a fixed value could be copied.
+ */
+export const RUN_MARK = Array.from(crypto.getRandomValues(new Uint32Array(3)), (n) => n.toString(36)).join("");
+
+/** marked's block HTML for a run fence, with the mark on its `<pre>`. */
+export function markRunFence(html: string): string {
+  return html.replace(/^<pre\b/, `<pre ${RUN_FENCE_ATTR}="${RUN_MARK}"`);
+}
+
+/**
+ * Whether a block holds a control or format character (Unicode Cc, Cf) other
+ * than a newline or a tab: a zero-width character or a right-to-left override
+ * makes what shows differ from what runs, so such a block keeps Copy and gets no Run.
+ */
+export function hasHiddenChars(text: string): boolean {
+  return /[\p{Cc}\p{Cf}]/u.test(text.replace(/[\n\t]/g, ""));
+}
+
+/**
  * Whether the reply's source ends inside a fenced block — that block is still
  * arriving, or was cut off, and its last `pre` must not run: never half a
  * command. While `streaming`, a closing fence that is the very last thing
@@ -54,13 +87,16 @@ export function runTabTitle(command: string): string {
  */
 export function stripAnsi(raw: string): string {
   const plain = raw
-    // OSC, DCS, APC, PM, SOS: up to BEL or ST.
-    .replace(/\x1b[\]P_^X][\s\S]*?(?:\x07|\x1b\\|$)/g, "")
+    // OSC, DCS, APC, PM, SOS: up to BEL or ST. One never ended is not a
+    // string: its ESC goes below and the rest stays, rather than all of it.
+    .replace(/\x1b[\]P_^X][\s\S]*?(?:\x07|\x1b\\)/g, "")
     // CSI.
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
     // Charset and other two- and three-byte escapes.
     .replace(/\x1b[ -/]*[0-~]/g, "")
-    .replace(/\x1b/g, "");
+    .replace(/\x1b/g, "")
+    // C1 controls: U+009B is a one-byte CSI, and xterm obeys it.
+    .replace(/[\u0080-\u009f]/g, "");
   const out: string[] = [];
   for (const line of plain.replace(/\r\n/g, "\n").split("\n")) {
     const last = line.replace(/\r+$/, "").split("\r").pop() ?? "";
@@ -189,6 +225,8 @@ export function parseRan(text: string): RanMessage | null {
 export type RunRoute =
   /** That chat is gone: the output stays in the tab, and the tab says so. */
   | { kind: "gone" }
+  /** The aside it came from is gone: the same, never the chat's main line. */
+  | { kind: "aside-gone" }
   /** The aside it came from: asked there, or held in its queue. */
   | { kind: "aside" }
   /** On screen and idle: sent as the next turn. */
@@ -209,6 +247,10 @@ export function routeRun(s: {
   chat: string | null;
   exists: boolean;
   aside: boolean;
+  /** It came from an aside that can no longer be found. */
+  asideGone: boolean;
+  /** `chat`'s queue already has rows: its head may be his, and held. */
+  queued: boolean;
   open: string | null;
   busy: boolean;
   /** A turn of `chat` runs off screen or parked. */
@@ -216,8 +258,9 @@ export function routeRun(s: {
   engine: string | null;
 }): RunRoute {
   if (!s.chat || !s.exists) return { kind: "gone" };
+  if (s.asideGone) return { kind: "aside-gone" };
   if (s.aside) return { kind: "aside" };
-  if (s.runningElsewhere) return { kind: "queue" };
+  if (s.queued || s.runningElsewhere) return { kind: "queue" };
   if (s.open === s.chat) return s.busy ? { kind: "inject" } : { kind: "send" };
   return s.engine === "claude-code" ? { kind: "background" } : { kind: "queue" };
 }

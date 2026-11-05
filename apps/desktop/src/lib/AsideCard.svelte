@@ -485,7 +485,7 @@
         <blockquote class="aside-card-quote">{@html renderReply(aside.quote.text)}</blockquote>
       {/if}
       {#if !aside.draft}
-        <AsideThread {aside} open={!readOnly} />
+        <AsideThread {aside} open={!readOnly} {owner} />
         <AsideFoldPanel {aside} part="panel" open={!readOnly} />
       {/if}
     </div>

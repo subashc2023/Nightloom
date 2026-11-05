@@ -113,3 +113,22 @@ describe("503: following a running turn", () => {
     expect(commandsText(rows, false)).not.toContain("[2J");
   });
 });
+
+describe("503 review: recorded text cannot rewrite the grid", () => {
+  it("a command, an agent's label and a background name go through stripAnsi", () => {
+    const row = {
+      id: "1",
+      command: "ls\x1b[2J\u009b1;1H",
+      output: "ok\u009b2J",
+      error: false,
+      agent: "x\x1b]0;t\x07y",
+      background: "b\x1b[2Jg",
+      later: [],
+      firstLineOnly: false,
+    };
+    const text = commandsText([row], false);
+    // Only this file's own colours are left: an SGR, nothing else.
+    expect(text.replace(/\x1b\[[0-9]*m/g, "")).not.toMatch(/[\x1b\u0080-\u009f]/);
+    expect(text).toContain("xy");
+  });
+});

@@ -62,7 +62,7 @@ const sources = new Map<number, Source>();
 
 /** The pane to open under: the one showing that chat, else the focused one. */
 function paneFor(chat: string | null): string {
-  const shown = app.tabs.panes.find((p) => chatOfPane(p.id) === chat);
+  const shown = chat ? app.tabs.panes.find((p) => chatOfPane(p.id) === chat) : null;
   return shown?.id ?? app.tabs.focused ?? app.tabs.panes[0]?.id ?? "main";
 }
 
@@ -102,14 +102,18 @@ export async function runBlock(command: string, from: RunFrom): Promise<ShellRow
   return row;
 }
 
-/** Whether the chat still has a log: a deleted one reads as empty, and one
- *  running a turn refuses the read, which says it is there. */
-async function chatExists(chat: string): Promise<boolean> {
-  try {
-    return (await api.transcript(false, chat)).length > 0;
-  } catch {
-    return true;
-  }
+/**
+ * Whether the chat is still there. Only the project open now is listed here,
+ * so a chat of another project counts as there: he switched, he did not delete.
+ */
+function chatExists(chat: string, src: Source): boolean {
+  if (src.project !== (app.project?.id ?? null)) return true;
+  return (
+    chat === app.activeSessionId ||
+    !!app.background[chat] ||
+    app.parked?.session === chat ||
+    app.sessions.some((s) => s.id === chat)
+  );
 }
 
 function chatLabel(s: Source): string {
@@ -125,12 +129,14 @@ async function send(row: ShellRow, how: Parameters<typeof runStatus>[0]): Promis
   const output = capture ? capture.take() : "";
   const text = ranMessage({ command: run.command, status: runStatus(how), output });
   const chat = src.chat ?? src.turnChat();
-  const exists = chat ? await chatExists(chat) : false;
+  const exists = chat ? chatExists(chat, src) : false;
   const aside = chat && src.aside != null ? asideOf(chat, src.aside) : null;
   const route = routeRun({
     chat,
     exists,
     aside: aside !== null,
+    asideGone: src.aside != null && aside === null,
+    queued: !!chat && readDraft(chat).queue.length > 0,
     open: app.activeSessionId,
     busy: app.busy && !app.parked,
     runningElsewhere: !!chat && (!!app.background[chat] || app.parked?.session === chat),
@@ -143,6 +149,10 @@ async function send(row: ShellRow, how: Parameters<typeof runStatus>[0]): Promis
       run.note = "Not sent: the chat this came from is gone. The output stays in this tab.";
       addToast(`"${run.title}" ended, but the chat it came from is gone: its output stays in the terminal tab.`);
       return;
+    case "aside-gone":
+      run.note = "Not sent: the aside this came from is gone. The output stays in this tab.";
+      addToast(`"${run.title}" ended, but the aside it came from is gone: its output stays in the terminal tab.`);
+      return;
     case "aside": {
       const key = asideDraftKey(aside!);
       if (app.activeSessionId === chat && !asideAsking(aside) && !aside!.draft) {
@@ -154,11 +164,18 @@ async function send(row: ShellRow, how: Parameters<typeof runStatus>[0]): Promis
       }
       return;
     }
-    case "send":
-      enqueueMessage(chat!, text, []);
-      run.note = "Sent to this chat.";
-      await runDrainNow();
+    case "send": {
+      const q = enqueueMessage(chat!, text, []);
+      const waiting = "Waiting in this chat's queue: a turn can't start right now.";
+      const queuedStill = () => readDraft(chat!).queue.some((r) => r.id === q.id);
+      // A drain takes its row at once, then awaits the whole send.
+      const drained = runDrainNow();
+      run.note = queuedStill() ? waiting : "Sent to this chat.";
+      await drained;
+      // A failed send gives the row back.
+      if (queuedStill()) run.note = waiting;
       return;
+    }
     case "inject": {
       const q = enqueueMessage(chat!, text, []);
       run.note = "Queued for the running turn.";
@@ -179,7 +196,7 @@ async function send(row: ShellRow, how: Parameters<typeof runStatus>[0]): Promis
     }
     case "queue":
       enqueueMessage(chat!, text, []);
-      run.note = `Waiting in the queue of ${chatLabel(src)}: it goes when that chat is next free.`;
+      run.note = `Waiting in the queue of ${chatLabel(src)}, behind what is already there or the turn it is running.`;
       return;
   }
 }
@@ -201,6 +218,11 @@ registerRunEnd((row) => void finish(row));
 export async function sendSoFar(id: number): Promise<void> {
   const row = term.shells.find((s) => s.id === id);
   if (!row?.run || row.run.finished) return;
+  // Nothing since the last one, a double click among them: not a turn's worth.
+  if (runCapture(id)?.empty) {
+    row.run.note = "Nothing new to send yet.";
+    return;
+  }
   await send(row, { soFar: true });
 }
 

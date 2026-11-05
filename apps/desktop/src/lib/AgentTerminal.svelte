@@ -38,6 +38,8 @@
 
   $effect(() => {
     const chat = shell.agentChat;
+    // A log read before the window held the chat is behind it now.
+    if (held) disk = null;
     if (!visible || held || !chat) return;
     let stale = false;
     void api
@@ -75,6 +77,9 @@
   function draw() {
     const t = xterm;
     if (!t || !live) return;
+    // The chat just left the window and its log is not read yet: what is
+    // drawn stays, rather than an empty list wiping his place.
+    if (!held && !disk) return;
     const list = commandsOf(held?.events ?? disk ?? [], held?.live?.segments ?? null);
     rows = list;
     const text = commandsText(list, held?.running ?? false);
@@ -175,7 +180,12 @@
   $effect(() => {
     void term.focusTick;
     if (!visible) return;
-    requestAnimationFrame(() => refit());
+    const asked = term.focusDock === (shell.pane ?? null);
+    requestAnimationFrame(() => {
+      refit();
+      // As a shell does, so ⌃`'s third press finds the dock focused and hides it.
+      if (asked && term.docks[shell.pane ?? ""]?.active === shell.id) xterm?.focus();
+    });
   });
 
 </script>

@@ -9,11 +9,15 @@
   import { keptOpen } from "./keptFolds.svelte";
   import type { RanMessage } from "./shellRun";
 
-  let { ran }: { ran: RanMessage } = $props();
+  let { ran, keep = null }: {
+    ran: RanMessage;
+    /** The bubble's fold key: equal runs in two chats keep their own fold. */
+    keep?: string | null;
+  } = $props();
 
   const failed = $derived(/^exit [1-9]/.test(ran.status) || ran.status.startsWith("ended by"));
   const lines = $derived(ran.output ? ran.output.split("\n").length : 0);
-  const key = $derived(`ran|${ran.command.length}|${ran.output.length}|${ran.command.slice(0, 60)}`);
+  const key = $derived(`${keep ?? "ran"}|${ran.command.length}|${ran.output.length}|${ran.command.slice(0, 60)}`);
 </script>
 
 <div class="ran-card" data-find-text={`${ran.command}\n${ran.output}`}>

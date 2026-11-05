@@ -24,6 +24,7 @@
   import { addToast } from "./state.svelte";
   import { isMac } from "./platform";
   import { keepLive, liveShell, registerSink, term } from "./terminal.svelte";
+  import { stripAnsi } from "./shellRun";
   import { terminalChord, type LiveShell, type ShellRow } from "./terminal";
   import { termTheme } from "./termTheme";
 
@@ -73,7 +74,7 @@
     // on `open`, and a detached element measures as nothing.
     t.open(host);
     // A block's tab says what it runs (item 503): the pty never prints it.
-    if (shell.run) t.write(`\x1b[2m$ ${shell.run.command.trim().split("\n").join("\r\n> ")}\x1b[0m\r\n`);
+    if (shell.run) t.write(`\x1b[2m$ ${stripAnsi(shell.run.command).trim().split("\n").join("\r\n> ")}\x1b[0m\r\n`);
     // The pane's chords stay the window's: ⌃` (open · focus · hide) and,
     // on macOS, the ⌘ chords the dock handles while it has the focus
     // (⌘T, ⌘W, ⌘⇧], ⌘⇧[). Every other ⌘ chord is the app's too — ⌘K the
