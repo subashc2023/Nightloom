@@ -209,3 +209,10 @@ describe("503 review: rows already queued", () => {
     expect(routeRun({ ...b, queued: false, asideGone: true }).kind).toBe("aside-gone");
   });
 });
+
+describe("a hand-off's fence (item 503)", () => {
+  it("a shell tag with start-prompt is not a command", () => {
+    expect(isRunFence({ lang: "bash" })).toBe(true);
+    expect(isRunFence({ lang: "bash start-prompt" })).toBe(false);
+  });
+});

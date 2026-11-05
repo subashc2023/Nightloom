@@ -22,7 +22,9 @@ export function isShellClass(className: string): boolean {
  */
 export function isRunFence(token: { lang?: string; codeBlockStyle?: string }): boolean {
   if (token.codeBlockStyle === "indented") return false;
-  return SHELL_LANGS.has((token.lang ?? "").trim().split(/\s+/)[0].toLowerCase());
+  // `bash start-prompt` is a hand-off's prose (item 463), not a command.
+  const words = (token.lang ?? "").trim().split(/\s+/);
+  return !words.includes("start-prompt") && SHELL_LANGS.has(words[0].toLowerCase());
 }
 
 /** The attribute a real shell fence's `<pre>` carries. */
