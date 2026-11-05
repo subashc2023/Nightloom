@@ -24,6 +24,8 @@
  * on every frame.
  */
 
+import type { Hold } from "./readingPlace";
+
 export interface ScrollEntry {
   /** `scrollTop` of the viewport, in px. */
   top: number;
@@ -33,6 +35,10 @@ export interface ScrollEntry {
    *  transcript's render window, `transcriptWindow.svelte.ts`), so a switch
    *  back draws the same ones and `top` lands on the same line. */
   from?: number;
+  /** Item 504: the lines in view when he left, found again by their text on
+   *  return: a reply that ended meanwhile folds and relabels rows above them,
+   *  so `top` alone can name another line. */
+  holds?: Hold[];
 }
 
 /** The pending chat's key while no chat is open. */
@@ -46,6 +52,16 @@ export function scrollKey(activeSessionId: string | null): string {
 
 export function rememberScroll(key: string, top: number, pinned: boolean, from?: number): void {
   positions.set(key, from === undefined ? { top: Math.max(0, top), pinned } : { top: Math.max(0, top), pinned, from });
+}
+
+/**
+ * He left this chat (item 504): the entry is the place he left, never "the
+ * foot". A chat left held at the foot mid-reply used to come back at the new
+ * foot, past everything written meanwhile, for him to scroll back up. The
+ * transcript sets `pinned` again on return if the place is still the foot.
+ */
+export function leaveScroll(key: string, top: number, from: number | undefined, holds?: Hold[]): void {
+  positions.set(key, { top: Math.max(0, top), pinned: false, from, holds });
 }
 
 /** The entry, or null for a chat never scrolled in this launch. */
@@ -90,6 +106,16 @@ export function asideScrollKey(session: string, thread: number): string {
 /** An aside card's place (item 502), apart from the same thread's tab. */
 export function asideCardScrollKey(session: string, thread: number): string {
   return `aside-card:${session}:${thread}`;
+}
+
+/**
+ * An aside's entry on return (item 504, the chat's rule): held at the foot
+ * stays held only if that is still the foot; an answer that grew while he
+ * was away leaves him on the line he left.
+ */
+export function returnEntry(entry: ScrollEntry | null, scrollHeight: number, clientHeight: number): ScrollEntry | null {
+  if (!entry?.pinned) return entry;
+  return entry.top >= scrollHeight - clientHeight - 8 ? entry : { ...entry, pinned: false };
 }
 
 /** How long a mounting view is put back while it draws, in ms (487's span). */

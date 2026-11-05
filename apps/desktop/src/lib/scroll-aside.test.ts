@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { asideScrollKey, putBack, recallScroll, rememberScroll, resetScroll, restoreTop, scrollKey } from "./scroll.svelte";
+import { asideScrollKey, leaveScroll, putBack, recallScroll, rememberScroll, resetScroll, restoreTop, returnEntry, scrollKey } from "./scroll.svelte";
 
 /** Backlog 237: an aside tab keeps its place, apart from its chat's. */
 describe("aside tab scroll (backlog 237)", () => {
@@ -78,5 +78,23 @@ describe("putBack (item 502)", () => {
     expect(el.scrollTop).toBe(0);
     vi.advanceTimersByTime(2000);
     expect(el.scrollTop).toBe(400);
+  });
+});
+
+/** Item 504: coming back lands where he left, not at a new foot. */
+describe("the place left (item 504)", () => {
+  beforeEach(() => resetScroll());
+
+  it("a chat left at the foot is not held there", () => {
+    rememberScroll("c", 1800, true, 40);
+    leaveScroll("c", 1800, 40);
+    expect(recallScroll("c")).toMatchObject({ top: 1800, pinned: false, from: 40 });
+  });
+
+  it("an aside stays held only if that is still the foot", () => {
+    const entry = { top: 1800, pinned: true };
+    expect(returnEntry(entry, 2400, 600)?.pinned).toBe(true);
+    expect(returnEntry(entry, 5000, 600)).toEqual({ top: 1800, pinned: false });
+    expect(returnEntry(null, 2400, 600)).toBeNull();
   });
 });
