@@ -1,6 +1,6 @@
 import { viewRenameKeys } from "./viewState";
 import { tick } from "svelte";
-import { noteThreadHandoff, takeThreadHandoff } from "./threadHandoff.svelte";
+import { noteThreadHandoff, peekThreadHandoff, takeThreadHandoff } from "./threadHandoff.svelte";
 import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
 import {
@@ -15,7 +15,7 @@ import {
   resetHandoff,
   threadFor,
 } from "./handoff.svelte";
-import { replaceStartHere, threadOfEvents } from "./thread";
+import { boxForHandoff, replaceStartHere, threadOfEvents } from "./thread";
 import type { AsideFold, FoldRecord } from "./asideFold";
 import { suggestions } from "./suggestions.svelte";
 import { isMac } from "./platform";
@@ -23,6 +23,7 @@ import { stopChordTarget } from "./stopButton";
 import { hasUsage } from "./replyFooter";
 import {
   UNFILED,
+  clearDraft,
   draftKey,
   enqueueMessage,
   clearInjected,
@@ -882,6 +883,14 @@ export const app = $state({
    * and the project switch set it from `defaultKind()`.
    */
   pendingKind: "chat" as ChatKind,
+  /**
+   * The thread the first send binds the new-chat screen to (item 510), on
+   * the same terms as `pendingMode`: a thread's + or the chip's pick sets
+   * it, nothing is written until that send, and `chatThread` reads it while
+   * no chat is open. Plain New chat and a project switch clear it; while a
+   * chat is open it means nothing, and the New chat tab finds it again.
+   */
+  pendingThread: null as string | null,
   /** Source of truth for the transcript (re-synced from the backend after each turn). */
   events: [] as SessionEvent[],
   /** In-progress assistant turn built from turn-events; null when idle. */
@@ -2808,6 +2817,7 @@ export async function useProject(id: string | null): Promise<void> {
   // chat, saved under that chat's id too.
   switchAside(null);
   app.activeSessionId = null;
+  clearPendingThread();
   app.events = [];
   // The tabs were the list just left too (backlog 099): a workspace is a
   // project's, as an editor's is a folder's. The view that stays (the
@@ -4282,7 +4292,7 @@ async function showContentOf(c: TabContent): Promise<void> {
         if (app.view !== "chat") leaveNote();
         return;
       }
-      if (c.session === null) await newSession();
+      if (c.session === null) await backToNewChat();
       else await openSession(c.session);
       return;
     case "nightshift":
@@ -5761,6 +5771,7 @@ export async function newSession(mode?: ChatMode, kind?: ChatKind): Promise<void
     // The aside thread stays with the chat being left (backlog 130).
     switchAside(null);
     app.activeSessionId = null;
+    clearPendingThread();
     app.events = [];
     app.pendingMode = mode ?? "normal";
     app.pendingKind = wanted;
@@ -5893,7 +5904,7 @@ export function kindWorkspace(events: SessionEvent[]): string | null {
  * backlog 420).
  */
 function pendingChatKey(): string | null {
-  return app.activeSessionId === null ? newDraftKey(app.project?.id, app.pendingMode) : null;
+  return app.activeSessionId === null ? newDraftKey(app.project?.id, app.pendingMode, app.pendingThread) : null;
 }
 
 /**
@@ -5919,6 +5930,7 @@ function adoptCreatedChat(pending: string | null): void {
 async function applyKind(kind: ChatKind, workspace?: string): Promise<boolean> {
   const pending = pendingChatKey();
   try {
+    await writePendingThread();
     app.events = await api.setChatKind(kind, workspace);
     adoptCreatedChat(pending);
     app.error = null;
@@ -5973,24 +5985,38 @@ export async function setChatFolders(folders: string[]): Promise<void> {
 
 /**
  * The open chat's research thread (nightshift backlog 271), projected
- * from the log like the folders: the latest live `thread` event, or null.
+ * from the log like the folders: the latest live `thread` event, or null;
+ * and, when there is no chat yet, the thread the next one will be in
+ * (`app.pendingThread`, item 510), as `chatMode` falls back on its pending
+ * kind, so the chip, the picker and the hand-off all see it.
  */
 export function chatThread(events: SessionEvent[]): string | null {
-  return threadOfEvents(events, liveFlags(events));
+  return threadOfEvents(events, liveFlags(events)) ?? (app.activeSessionId === null ? app.pendingThread : null);
 }
 
 /**
  * Bind the open chat to a research thread, or unbind it (null) — the same
- * two steps as the folders: the log first, creating the chat's log if the
- * first send has not yet, then the reconnect that builds the thread layer.
- * Undoable, scoped to the chat. The binding is noted for the hand-off at
- * once, so the wrap-up and the read order follow it without a reload.
+ * two steps as the folders: the log first, then the reconnect that builds
+ * the thread layer. Undoable, scoped to the chat. The binding is noted for
+ * the hand-off at once, so the wrap-up and the read order follow it without
+ * a reload. On the new-chat screen nothing is written (item 510): the pick
+ * waits in `app.pendingThread` for the first send, and the box's words go
+ * with it, as a binding has carried them since backlog 420.
  */
 export async function setChatThread(slug: string | null): Promise<boolean> {
   if (app.busy || app.connecting) return false;
   const current = chatThread(app.events);
   const wanted = slug || null;
   if (wanted === current) return true;
+  if (app.activeSessionId === null) {
+    moveToPendingThread(wanted);
+    pushUndo(chatScope(), {
+      label: wanted ? `bind thread ${wanted}` : "unbind thread",
+      undo: async () => moveToPendingThread(current),
+      redo: async () => moveToPendingThread(wanted),
+    });
+    return true;
+  }
   if (!(await applyThread(wanted))) return false;
   pushUndo(chatScope(), {
     label: wanted ? `bind thread ${wanted}` : "unbind thread",
@@ -6004,8 +6030,8 @@ export async function setChatThread(slug: string | null): Promise<boolean> {
   return true;
 }
 
-async function applyThread(slug: string | null, adopt = true): Promise<boolean> {
-  const pending = adopt ? pendingChatKey() : null;
+async function applyThread(slug: string | null): Promise<boolean> {
+  const pending = pendingChatKey();
   try {
     app.events = await api.setChatThread(slug);
     adoptCreatedChat(pending);
@@ -6054,35 +6080,163 @@ export async function moveChatToThread(id: string, slug: string | null): Promise
   return true;
 }
 
+/** The first send's take of the saved hand-off (item 510): only a screen a
+ *  thread's + opened; a thread picked on the chip never took one. */
+let pendingFromPlus = false;
+/** What a + put in each pending box, so that a later + can tell it from
+ *  what he typed, and nothing but his words follows him. */
+const prefilled = new Map<string, string>();
+
+function clearPendingThread(): void {
+  app.pendingThread = null;
+  pendingFromPlus = false;
+}
+
+/** The New chat tab brought back: as `newSession`, and the screen's thread
+ *  with it (a view keeps its state; only an explicit New chat leaves it). */
+async function backToNewChat(): Promise<void> {
+  const [thread, plus] = [app.pendingThread, pendingFromPlus];
+  await newSession();
+  if (app.activeSessionId !== null || (app.busy && !app.parked)) return;
+  app.pendingThread = thread;
+  pendingFromPlus = plus;
+}
+
 /**
- * *New chat in this thread* (nightshift backlog 288) — the light hand-off:
- * a new chat of the project's default kind, bound to `slug` at once (its
- * log is made then, as a binding on a pending chat makes it), so the
- * connect loads the thread layer; the thread's read order in its box,
- * unsent, ending "do what I ask below" since no wrap-up ran and there is
- * no start prompt. The chat he was in is left as it is — no wrap-up turn,
- * no upkeep (a chat bound to the thread may still be writing it). A draft
- * typed on the plain New chat stays under its own key.
+ * The new-chat screen's thread changed by the chip (item 510): nothing is
+ * written, and the box follows the binding, unless all it holds is the
+ * hand-off a + put there, which stays with its thread.
+ */
+function moveToPendingThread(slug: string | null): void {
+  const from = pendingChatKey();
+  clearPendingThread();
+  app.pendingThread = slug;
+  const to = pendingChatKey();
+  if (!from || !to || from === to) return;
+  const d = readDraft(from);
+  if (d.attachments.length === 0 && d.queue.length === 0 && d.text === prefilled.get(from)) return;
+  moveDraft(from, to);
+}
+
+/** A thread went to the trash (item 510): its screen closes and what was
+ *  typed under its + goes to the plain New chat, never with it; an unedited
+ *  hand-off went with the thread's own file. */
+export function pendingThreadDeleted(slug: string): void {
+  if (app.pendingThread === slug) clearPendingThread();
+  const project = app.project?.id;
+  for (const mode of ["normal", "incognito"] as const) {
+    const from = newDraftKey(project, mode, slug);
+    if (!hasDraft(from)) continue;
+    if (readDraft(from).text === prefilled.get(from)) clearDraft(from);
+    else moveDraft(from, newDraftKey(project, mode));
+    prefilled.delete(from);
+  }
+}
+
+/**
+ * The binding on the log, on the chat this makes, when the new-chat screen
+ * has one waiting (item 510): the one place `pendingThread` reaches the
+ * disk. False with nothing waiting; throws when the log was not written, and
+ * nothing has moved then. A hand-off a + showed is taken here. Every call
+ * that can make the chat's log writes this first, so a setting changed on
+ * the screen cannot lose the thread.
+ */
+async function writePendingThread(): Promise<boolean> {
+  const slug = app.activeSessionId === null ? app.pendingThread : null;
+  if (!slug) return false;
+  const [pending, plus] = [pendingChatKey(), pendingFromPlus];
+  const events = await api.setChatThread(slug);
+  if (app.activeSessionId !== null || app.pendingThread !== slug) {
+    throw new Error("The new chat was left before its thread was bound; nothing was sent");
+  }
+  app.events = events;
+  adoptCreatedChat(pending);
+  const id = app.activeSessionId as string | null;
+  clearPendingThread();
+  if (pending) prefilled.delete(pending);
+  noteThread(id, slug);
+  if (id) adoptChatRules(id);
+  void refreshThreadFlags(slug);
+  if (plus && id) await takeThreadHandoff(slug, id);
+  return true;
+}
+
+let binding: Promise<boolean> | null = null;
+
+/**
+ * Before the first turn (item 510): the waiting thread on the log, then the
+ * reconnect that loads its layer, since the thread must be on the chat before
+ * the model's first word. False, with `app.error` saying why, when the turn
+ * must not go: the caller keeps the words. Two sends at once share one bind.
+ */
+export function bindPendingThread(): Promise<boolean> {
+  if (app.activeSessionId !== null || !app.pendingThread) return Promise.resolve(true);
+  binding ??= runBind().finally(() => (binding = null));
+  return binding;
+}
+
+async function runBind(): Promise<boolean> {
+  // A connect in flight would swallow the one below (`applyDraft` defers),
+  // and the turn would go without the thread's layer.
+  if (app.connecting) {
+    app.error = "Still connecting; nothing was sent. Send again in a moment";
+    return false;
+  }
+  try {
+    await writePendingThread();
+  } catch (e) {
+    app.error = String(e);
+    return false;
+  }
+  await applyDraft();
+  if (app.connectError || !app.connection) {
+    app.error = app.connectError ?? "No engine is connected; nothing was sent";
+    return false;
+  }
+  return true;
+}
+
+/** The bound chat's row, from what was sent (backlog 211's `showMadeChat`,
+ *  in its thread): the list's re-read at the turn's end replaces it. */
+function showBoundChat(slug: string, sent: string): void {
+  const id = app.activeSessionId;
+  const row = id ? madeChatRow(app.sessions, id, sent || null, app.pendingMode, app.pendingKind) : null;
+  if (row) app.sessions = [{ ...row, thread: slug }, ...app.sessions];
+}
+
+/**
+ * *New chat in this thread* (nightshift backlog 288; item 510, his report
+ * 2026-11-05) — the light hand-off: exactly the plain New chat, with the
+ * screen bound to `slug`. Nothing is created until he sends: `pendingThread`
+ * holds the thread, the first send binds it (`bindPendingThread`) so the
+ * connect loads the thread layer, and the box has its own draft
+ * (`newDraftKey`), so a plain New chat's words stay under theirs and the same
+ * + finds these. ~~Bound at once, its log made here~~: that left an empty
+ * session in the list on every click. The chat he was in is left as it is —
+ * no wrap-up turn, no upkeep (a chat bound to the thread may still be
+ * writing it). While a turn runs it opens as New chat does (`peekNew`).
  */
 export async function newChatInThread(slug: string): Promise<boolean> {
   if (!app.project) return false;
-  if (app.busy || app.connecting) {
-    addToast("A turn is running — start the new chat in this thread when it ends");
-    return false;
-  }
   await newSession();
-  if (app.activeSessionId !== null) return false;
-  // The plain New chat's draft is not this chat's: it stays where it is.
-  if (!(await applyThread(slug, false))) return false;
-  const id = app.activeSessionId;
-  if (!id) return false;
+  // Refused as New chat is: the pending chat's own first turn is on screen.
+  if (app.activeSessionId !== null || (app.busy && !app.parked)) return false;
+  app.pendingThread = slug;
+  pendingFromPlus = true;
   // Item 464 (his report, 2026-10-28): the box holds the thread's saved
   // hand-off — the last `<handoff>` prompt a reply in it wrote — when no
   // child chat has started from it yet, else nothing. ~~`setDraftText(id,
   // threadReadOrder(slug, THEN_HIS_ASK))`~~: a canned "start this new chat"
-  // text beside the model's own prompt was two sources of truth.
-  const handed = await takeThreadHandoff(slug, id);
-  if (handed && app.activeSessionId === id) setDraftText(id, handed);
+  // text beside the model's own prompt was two sources of truth. Read, not
+  // taken (item 510): the first send takes it, so a second + shows it again.
+  const key = pendingChatKey();
+  const handed = await peekThreadHandoff(slug);
+  if (key && pendingChatKey() === key) {
+    const box = boxForHandoff(readDraft(key).text, handed, prefilled.get(key) ?? null);
+    if (box !== null) setDraftText(key, box);
+    if (handed) prefilled.set(key, handed);
+    else prefilled.delete(key);
+  }
   requestComposerFocus();
   return true;
 }
@@ -6133,6 +6287,7 @@ async function promoteThreadText(text: string): Promise<void> {
 async function applyFolders(folders: string[]): Promise<boolean> {
   const pending = pendingChatKey();
   try {
+    await writePendingThread();
     app.events = await api.setChatFolders(folders);
     adoptCreatedChat(pending);
     app.error = null;
@@ -6204,7 +6359,13 @@ export const KIND_LINES: Record<ChatKind, string> = {
  * suite can pin them without a DOM.
  */
 export function newChatSelected(): boolean {
-  return chatSelected(null);
+  return chatSelected(null) && !app.pendingThread;
+}
+
+/** Whether the new-chat screen in front is thread `slug`'s (item 510): the
+ *  plain New chat is not lit then, the thread's + is. */
+export function threadPlusSelected(slug: string): boolean {
+  return chatSelected(null) && app.pendingThread === slug;
 }
 
 /**
@@ -6487,7 +6648,7 @@ export function turnOwnsKey(turn: { chat: string | null; pendingKey?: string | n
 
 /** The open chat's draft key, read from the app now (375). */
 export function openChatKey(): string {
-  return draftKey(app.activeSessionId, app.project?.id, app.pendingMode);
+  return draftKey(app.activeSessionId, app.project?.id, app.pendingMode, app.pendingThread);
 }
 
 /**
@@ -7410,6 +7571,7 @@ async function peekNew(mode?: ChatMode, kind?: ChatKind): Promise<void> {
   park();
   switchAside(null);
   app.activeSessionId = null;
+  clearPendingThread();
   app.events = [];
   app.pendingMode = mode ?? "normal";
   app.pendingKind = kind ?? defaultKind();
@@ -7555,6 +7717,7 @@ export async function deleteSession(id: string): Promise<void> {
     if (id === app.activeSessionId || full === app.activeSessionId) {
       switchAside(null); // its asides stay its own (backlog 203), for the undo
       app.activeSessionId = null;
+      clearPendingThread();
       app.events = [];
     }
     dropChatTabs(full);
@@ -7579,6 +7742,7 @@ export async function deleteSession(id: string): Promise<void> {
       if (full === app.activeSessionId) {
         switchAside(null);
         app.activeSessionId = null;
+        clearPendingThread();
         app.events = [];
       }
       await refreshSessions();
@@ -7616,6 +7780,7 @@ export async function moveSession(id: string, to: string | null): Promise<boolea
   if (id === app.activeSessionId || full === app.activeSessionId) {
     switchAside(null);
     app.activeSessionId = null;
+    clearPendingThread();
     app.events = [];
   }
   dropChatTabs(full);
@@ -7669,12 +7834,15 @@ export async function remoteSend(
     const chips = chipsFromInputs(images, documents, nextAttachmentId);
     if (council !== null || (chips.length > 0 && (!app.busy || app.parked)))
       throw new Error("this chat is running a turn on the Mac — the message and its files are held on the phone until it ends");
-    const key = draftKey(app.activeSessionId, app.project?.id, app.pendingMode);
+    const key = openChatKey();
     const row = enqueueMessage(key, text, chips);
     if (app.busy && !app.parked) void injectIntoTurn(key, row);
     return "queued";
   }
   if (!app.connection) throw new Error("no engine is connected on the desktop — connect one there first");
+  // The Mac's new-chat screen in a thread (item 510): bound before the phone
+  // hears the message was taken, so a refusal leaves it held there.
+  if (!(await bindPendingThread())) throw new Error(app.error ?? "the desktop could not bind the new chat's thread");
   // Answered before the turn, not after: `send` resolves at the turn's
   // end, and the phone is waiting to hear the message was taken. A queued
   // message (above) goes later as a typed one — spoken or not, the words
@@ -7828,6 +7996,14 @@ export async function send(
   // conversation it never had (nightshift backlog 064).
   history.clear(chatScope());
   app.undoTick++;
+  // The new-chat screen in a thread (item 510): the thread is on the chat,
+  // its layer loaded, before the model's first turn. A failed bind sends
+  // nothing; `app.error` puts the words back in the box (`dispatch`).
+  const inThread = app.activeSessionId === null ? app.pendingThread : null;
+  if (inThread) {
+    if (!(await bindPendingThread())) return;
+    showBoundChat(inThread, text);
+  }
   if (app.connection.engine === "claude-code") {
     return sendAgent(text, images, documents, council, spoken, files);
   }
@@ -7842,7 +8018,7 @@ export async function send(
   // words are queued in this chat too, never dropped.
   const elsewhere = providerElsewhereName();
   if (elsewhere) {
-    enqueueMessage(draftKey(app.activeSessionId, app.project?.id, app.pendingMode), text, []);
+    enqueueMessage(openChatKey(), text, []);
     addToast(
       queuedElsewhereToast(elsewhere) +
         (images.length + documents.length > 0 ? " (without its attachments — add them again)" : ""),
@@ -7851,7 +8027,7 @@ export async function send(
   }
   // The pending chat's draft key, taken now: it names the project and the
   // kind this send is making a chat in (nightshift backlog 094).
-  const pendingKey = app.activeSessionId === null ? newDraftKey(app.project?.id, app.pendingMode) : null;
+  const pendingKey = pendingChatKey();
   // The model and engine this turn runs on (backlog 205).
   const choice = choiceOf(app.draft);
   app.error = null;
@@ -7951,7 +8127,7 @@ async function sendAgent(
   await layersBeforeTurn();
   // Same as `send`: the pending chat's key at the moment of the send
   // (nightshift backlog 094).
-  const pendingKey = app.activeSessionId === null ? newDraftKey(app.project?.id, app.pendingMode) : null;
+  const pendingKey = pendingChatKey();
   app.error = null;
   app.events.push({
     event: "user_message",
@@ -9356,6 +9532,7 @@ export async function setPromptLayer(layer: PromptLayer, on: boolean): Promise<v
 async function applyLayers(off: PromptLayer[]): Promise<boolean> {
   const pending = pendingChatKey();
   try {
+    await writePendingThread();
     app.events = await api.setPromptLayers(off);
     // A chat whose log was just created by this call: pick up its id the way
     // `send` does, so the sidebar and the next open agree on which chat this is.
@@ -9427,6 +9604,7 @@ export async function setPromptLayerText(
 async function applyLayerText(layer: EditableLayer, text: string | null): Promise<boolean> {
   const pending = pendingChatKey();
   try {
+    await writePendingThread();
     app.events = await api.setPromptLayerText(layer, text);
     adoptCreatedChat(pending);
     app.error = null;
@@ -9683,7 +9861,7 @@ export async function rewindTo(to: number, aim: boolean | string = false): Promi
           done: null,
         }
       : null;
-  const key = draftKey(app.activeSessionId, app.project?.id, app.pendingMode);
+  const key = openChatKey();
   let swap = back ? fillBox(key, back) : null;
   // The inverse lifts the marker this call landed — and, after a redo,
   // the marker *that* call lands, which is why the index is a variable.

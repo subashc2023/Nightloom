@@ -2104,10 +2104,26 @@ unit-tested, the app was not driven):
    `<handoff>` block (none inside a fence or inline code, none unclosed,
    never mid-stream) is saved in the thread's `handoff.json` beside
    `thread.md` (Rust `thread_handoff`). *New chat in this thread* puts
-   exactly that text in the new chat's box, unsent, the first time only
-   (the file names the child that took it; *Continue* counts too); with no
-   hand-off, or one already taken, the box opens empty. ~~The thread's
-   read order ending "Then do what I ask below."~~
+   exactly that text in the new chat's box, unsent, until a child chat
+   starts from it (the file names the child that took it; *Continue*
+   counts too); with no hand-off, or one already taken, the box opens
+   empty. ~~The thread's read order ending "Then do what I ask below."~~
+   **It works as the plain New chat does** (item 510, 2026-11-05): + opens
+   the new-chat screen with the thread on it (`app.pendingThread`, which
+   `chatThread` reads while no chat is open, so the chip shows it and its
+   *No thread* takes it off) and creates nothing. ~~Bound at once, its log
+   made on the click~~: every click left an empty session. The first send
+   binds the thread (log, then the reconnect that loads its layer), takes
+   the hand-off, then sends, on every route (`send`, the queue, the phone);
+   a failed bind sends nothing and the words go back in the box. A setting
+   that makes the chat's log on that screen (kind, folders, prompt layers)
+   writes the binding first. Picking a thread on the chip on the plain New
+   chat waits the same way, and the box's words follow the binding. The
+   screen has its own draft per project, kind and thread
+   (`new:<project>:<kind>:thread:<slug>`), marked on the thread's row;
+   deleting the thread moves what was typed to the plain New chat. The
+   hand-off is read with `peek_thread_handoff` and replaces only an empty
+   box or its own earlier, unedited prefill.
 6. **The queue after the hand-off.** `queueHold`: ~~due holds (F11)~~ —
    the wrap-up rides no message, so a notice holds nothing and the queued
    wrap-up drains through the queue like any row; what holds is a Stop

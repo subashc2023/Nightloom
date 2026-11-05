@@ -269,10 +269,24 @@ export function saveThreadOrder(project: string, slugs: readonly string[]): void
 /** The tooltip that says the two weights apart (backlog 288): this one is light. */
 export function newInThreadTip(slug: string): string {
   return (
-    `A new chat bound to ◇ ${slug}: its Start here loaded, the thread's read order in the box, unsent. ` +
+    `A new chat in ◇ ${slug}: its Start here loaded, the thread's saved hand-off in the box, unsent; nothing is created until you send. ` +
     "No wrap-up runs — the chat you are in stays as it is. " +
     "To hand this chat's work over first, use Wrap up → Continue: a wrap-up turn updates the thread's files, then the next chat opens."
   );
+}
+
+/**
+ * What the box of a thread's new-chat screen becomes when the thread's +
+ * reads the saved hand-off (item 510): the hand-off goes in only when the box
+ * is empty or still holds, unedited, the hand-off an earlier + put there
+ * (`last`), and an old prefill goes when there is no hand-off now. Anything
+ * he typed stays. Null: leave the box alone.
+ */
+export function boxForHandoff(box: string, handed: string | null, last: string | null): string | null {
+  const untouched = last !== null && box === last;
+  if (!untouched && box.trim()) return null;
+  if (handed === null) return untouched ? "" : null;
+  return handed === box ? null : handed;
 }
 
 // ---- what a thread stores, read in the sidebar's thread view (nightshift backlog 292) ----

@@ -14,7 +14,7 @@
  */
 import * as api from "./api";
 import * as tabs from "./tabs";
-import { activateTab, addToast, app, chatThread, moveChatToThread, openContent, showNote } from "./state.svelte";
+import { activateTab, addToast, app, chatThread, moveChatToThread, openContent, pendingThreadDeleted, showNote } from "./state.svelte";
 import { threadNoteName, type ThreadFile } from "./thread";
 import type { ThreadInfo } from "./types";
 
@@ -163,6 +163,7 @@ export async function deleteThread(slug: string): Promise<boolean> {
     addToast(String(e));
     return false;
   }
+  pendingThreadDeleted(slug);
   for (const t of tabs.allTabs(app.tabs).filter((t) => t.content.kind === "thread" && t.content.slug === slug)) {
     const r = tabs.close(app.tabs, t.id);
     if (r.show) void activateTab(r.show.id);

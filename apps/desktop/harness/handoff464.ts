@@ -57,6 +57,8 @@ let made = 0;
     case "save_thread_handoff":
       if (!saved || saved.text !== args.text || saved.from !== args.fromChat) saved = { text: String(args.text), from: String(args.fromChat), taken: null };
       return null;
+    case "peek_thread_handoff":
+      return saved && !saved.taken ? saved.text : null;
     case "take_thread_handoff": {
       if (!saved || saved.taken) return null;
       saved.taken = String(args.chat);

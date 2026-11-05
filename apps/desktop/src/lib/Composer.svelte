@@ -255,7 +255,7 @@
    * entry moves to the chat its first message creates (the one line in
    * `send`). Sending clears the entry, and nothing else does.
    */
-  const key = $derived(aside ? asideDraftKey(aside) : draftKey(app.activeSessionId, app.project?.id, app.pendingMode));
+  const key = $derived(aside ? asideDraftKey(aside) : draftKey(app.activeSessionId, app.project?.id, app.pendingMode, app.pendingThread));
   const draft = $derived(readDraft(key));
   const text = $derived(draft.text);
 

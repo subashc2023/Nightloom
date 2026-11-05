@@ -846,6 +846,10 @@ export function saveThreadHandoff(slug: string, text: string, fromChat: string):
 
 /** The thread's + (item 464): the saved hand-off's text if no child chat
  *  has started from it yet (`chat` is then the one that did), else null. */
+export function peekThreadHandoff(slug: string): Promise<string | null> {
+  return invoke("peek_thread_handoff", { slug });
+}
+
 export function takeThreadHandoff(slug: string, chat: string): Promise<string | null> {
   return invoke("take_thread_handoff", { slug, chat });
 }

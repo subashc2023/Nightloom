@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "./api";
-import { readDraft } from "./drafts.svelte";
+import { clearDraft, newDraftKey, readDraft } from "./drafts.svelte";
 import { THEN_HIS_ASK, THEN_START_PROMPT, threadReadOrder } from "./handoff.svelte";
 import { loadOpen, saveOpen, sidebarRows, toggled } from "./forkTree";
 import { app, chatThread, moveChatToThread, newChatInThread } from "./state.svelte";
@@ -38,6 +38,7 @@ vi.mock("./api", async (importOriginal) => ({
     throw new Error("not connected in tests");
   }),
   takeThreadHandoff: vi.fn(async () => null),
+  peekThreadHandoff: vi.fn(async () => null),
 }));
 
 const when = (m: number) => new Date(Date.UTC(2026, 9, 2, 20, m)).toISOString();
@@ -181,6 +182,7 @@ describe("New chat in this thread (288)", () => {
   beforeEach(() => {
     vi.mocked(api.newSession).mockClear();
     vi.mocked(api.setChatThread).mockClear();
+    vi.mocked(api.takeThreadHandoff).mockClear();
     app.project = { id: "p1", name: "Value Generalization" } as unknown as typeof app.project;
     app.activeSessionId = "s9";
     app.busy = false;
@@ -191,32 +193,40 @@ describe("New chat in this thread (288)", () => {
   // ~~"opens a new chat already bound, with the thread's read order in the
   // box, unsent"~~ — item 464 (2026-10-28): the canned read order is gone;
   // the box holds the thread's saved hand-off or nothing.
-  it("opens a new chat already bound, with an empty box when no hand-off is saved (464)", async () => {
-    vi.mocked(api.takeThreadHandoff).mockResolvedValueOnce(null);
+  // ~~"opens a new chat already bound"~~ — item 510 (his report, 2026-11-05):
+  // + opens the new-chat screen and creates nothing; the first send binds.
+  // The send-side rules are pinned in thread510.state.test.ts.
+  it("opens the new-chat screen in the thread, with an empty box when no hand-off is saved (464, 510)", async () => {
+    vi.mocked(api.peekThreadHandoff).mockResolvedValueOnce(null);
     expect(await newChatInThread("stuart")).toBe(true);
     expect(api.newSession).toHaveBeenCalledTimes(1);
-    expect(api.setChatThread).toHaveBeenCalledWith("stuart");
-    expect(app.activeSessionId).toBe("c-new");
+    expect(api.setChatThread).not.toHaveBeenCalled();
+    expect(api.takeThreadHandoff).not.toHaveBeenCalled();
+    expect(app.activeSessionId).toBe(null);
     expect(chatThread(app.events)).toBe("stuart");
-    expect(api.takeThreadHandoff).toHaveBeenCalledWith("stuart", "c-new");
-    expect(readDraft("c-new").text).toBe("");
-    expect(app.events.map((e) => e.event)).toEqual(["session_created", "thread"]);
+    expect(readDraft(newDraftKey("p1", "normal", "stuart")).text).toBe("");
+    expect(app.events).toEqual([]);
   });
 
-  it("puts exactly the saved hand-off in the new chat's box, unsent (464)", async () => {
+  it("puts exactly the saved hand-off in the screen's box, unsent (464, 510)", async () => {
     const text = "Read the Queue in thread.md, then run T-04 on the cut data.";
-    vi.mocked(api.takeThreadHandoff).mockResolvedValueOnce(text);
+    const key = newDraftKey("p1", "normal", "stuart");
+    vi.mocked(api.peekThreadHandoff).mockResolvedValueOnce(text);
     expect(await newChatInThread("stuart")).toBe(true);
-    expect(readDraft("c-new").text).toBe(text);
-    expect(readDraft("c-new").text).not.toContain(THEN_HIS_ASK);
-    // Unsent: nothing is in the log but the creation and the binding.
-    expect(app.events.map((e) => e.event)).toEqual(["session_created", "thread"]);
+    expect(readDraft(key).text).toBe(text);
+    expect(readDraft(key).text).not.toContain(THEN_HIS_ASK);
+    clearDraft(key);
   });
 
-  it("is refused while a turn runs, starting nothing", async () => {
+  // ~~"is refused while a turn runs, starting nothing"~~ — item 510: it
+  // matches New chat, which opens as a view while a turn runs (`peekNew`);
+  // only the pending chat's own first turn refuses, as New chat's does.
+  it("is refused only while the pending chat's own first turn runs, as New chat is (510)", async () => {
+    app.activeSessionId = null;
+    app.pendingThread = null;
     app.busy = true;
     expect(await newChatInThread("stuart")).toBe(false);
-    expect(api.newSession).not.toHaveBeenCalled();
+    expect(app.pendingThread).toBe(null);
     expect(app.toasts.length).toBe(1);
     app.busy = false;
   });

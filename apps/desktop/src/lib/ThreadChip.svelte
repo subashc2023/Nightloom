@@ -100,17 +100,16 @@
     use:portal
     style="top: {pos.top}px; left: {pos.left}px; width: {WIDTH}px"
   >
-    {#if bound}
+    {#if bound && app.activeSessionId !== null}
       <button
         class="tc-new"
-        disabled={app.busy || app.connecting}
         use:tip={newInThreadTip(bound)}
         onclick={() => void newInThread()}
       >
         <span class="tc-plus" aria-hidden="true">+</span>
         <span class="tc-new-text">
           <span class="tc-new-name">New chat in this thread</span>
-          <span class="tc-new-line">read order in the box, unsent · no wrap-up</span>
+          <span class="tc-new-line">nothing created until you send · no wrap-up</span>
         </span>
       </button>
       <div class="tc-sep"></div>

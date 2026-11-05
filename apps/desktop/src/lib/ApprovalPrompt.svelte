@@ -90,7 +90,7 @@
     if (route.enqueue) {
       // The composer's own key, so the held message shows in its queue
       // with a take-back, like one typed there.
-      enqueueMessage(draftKey(app.activeSessionId, app.project?.id, app.pendingMode), route.enqueue, []);
+      enqueueMessage(draftKey(app.activeSessionId, app.project?.id, app.pendingMode, app.pendingThread), route.enqueue, []);
     }
     void resolveApproval(req.id, req.name, decision, route.reason, answer, then, grant);
   }

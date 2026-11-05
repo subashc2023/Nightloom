@@ -350,7 +350,7 @@
    * kept. `editChat` is the chat the editor belongs to, so a chat switch
    * under the open page cannot file the text under the other chat.
    */
-  const chatKey = $derived(draftKey(app.activeSessionId, app.project?.id, app.pendingMode));
+  const chatKey = $derived(draftKey(app.activeSessionId, app.project?.id, app.pendingMode, app.pendingThread));
   let base = $state("");
   let editChat = $state<string | null>(null);
   let restored = $state(false);

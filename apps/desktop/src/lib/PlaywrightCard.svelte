@@ -30,7 +30,7 @@
     done = true;
     const route = routeNote(decision, note, PLAYWRIGHT_DECLINED);
     if (route.enqueue) {
-      enqueueMessage(draftKey(app.activeSessionId, app.project?.id, app.pendingMode), route.enqueue, []);
+      enqueueMessage(draftKey(app.activeSessionId, app.project?.id, app.pendingMode, app.pendingThread), route.enqueue, []);
     }
     void resolveApproval(req.id, req.name, decision, route.reason).then(() => {
       // The rail's per-chat switch follows "Allow for this chat".
