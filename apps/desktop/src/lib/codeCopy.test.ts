@@ -13,6 +13,6 @@ describe("384: reply code blocks wrap when they are prose, and carry Copy", () =
     // measured in WebKit instead (nightshift-code notes/runner-design/384-snap-700.png: 638/638 wrapped).
     const msg = msgSrc;
     // Item 452: the HTML is patched in place by liveHtml rather than {@html}.
-    expect(msg).toContain("use:liveHtml={renderReply(g.seg.text)} use:memoryRefs={{ hits: memHits, text: g.seg.text }} use:codeCopy>");
+    expect(msg).toContain("use:liveHtml={renderReply(g.seg.text)} use:memoryRefs={{ hits: memHits, text: g.seg.text }} use:codeCopy={runBlocks(g.seg.text)}>");
   });
 });

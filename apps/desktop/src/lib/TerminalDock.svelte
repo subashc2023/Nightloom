@@ -25,13 +25,17 @@
   import { isMac } from "./platform";
   import Icon from "./Icon.svelte";
   import TerminalShell from "./TerminalShell.svelte";
+  import AgentTerminal from "./AgentTerminal.svelte";
+  import { sendSoFar, stopRun } from "./shellRun.svelte";
   import {
+    chatOfPane,
     closePane,
     closeShell,
     dockPaneCheck,
     hidePane,
     initTerminalEvents,
     newShell,
+    openAgentTab,
     resetHeight,
     restartShell,
     saveHeight,
@@ -51,6 +55,7 @@
     focusedChord,
     isRunning,
     latestCall,
+    restartsOnClick,
     shortCwd,
     tabLabel,
     terminalChord,
@@ -80,6 +85,11 @@
 
   let dock = $state<HTMLElement | null>(null);
   let dragging = $state(false);
+
+  /** The block in front, for the row under the strip (item 503). */
+  const front = $derived(shells.find((s) => s.id === d?.active) ?? null);
+  /** The chat this dock's Agent commands button opens. */
+  const paneChatId = $derived(chatOfPane(key) ?? (key === app.tabs.focused ? app.activeSessionId : null));
 
   /** The column the dock sits in — the pane's — for the height's cap:
    *  the `.pane-dock` slot's parent, or the harness's column. */
@@ -204,8 +214,8 @@
           role="tab"
           aria-selected={s.id === d.active}
           tabindex="-1"
-          use:tip={s.exit ? `${label} ended — click to start a new shell in ${shortCwd(s.cwd, home)}` : `${s.shell} in ${shortCwd(s.cwd, home)} — drag onto the other pane for a terminal there`}
-          onclick={() => (s.exit ? void restartShell(s.id) : selectShell(s.id))}
+          use:tip={s.agentChat ? "This chat's commands and their output, view only — drag onto the other pane to move it" : s.run ? s.run.command : s.exit ? `${label} ended — click to start a new shell in ${shortCwd(s.cwd, home)}` : `${s.shell} in ${shortCwd(s.cwd, home)} — drag onto the other pane for a terminal there`}
+          onclick={() => (restartsOnClick(s) ? void restartShell(s.id) : selectShell(s.id))}
           draggable="true"
           ondragstart={(e) => {
             // Agent P's hunk (nightshift backlog 113's 12b, 2026-09-17),
@@ -229,14 +239,14 @@
           onkeydown={(e) => {
             if (e.key === "Enter" || e.key === " ") {
               e.preventDefault();
-              if (s.exit) void restartShell(s.id);
+              if (restartsOnClick(s)) void restartShell(s.id);
               else selectShell(s.id);
             }
           }}
         >
           {#if isRunning(s)}<span class="term-dot" aria-label="running"></span>{/if}
           <span class="term-tab-label">{label}</span>
-          {#if exit}<span class="term-exit">{exit}</span>{/if}
+          {#if exit}<span class="term-exit" class:ok={s.run && s.exit?.code === 0}>{exit}</span>{/if}
           <button
             class="term-x"
             use:tip={`Close this shell${isMac ? ' (⌘W)' : ''}`}
@@ -250,6 +260,15 @@
       {/each}
       <button class="term-plus" use:tip={`New shell${isMac ? ' (⌘T)' : ''}`} aria-label="New shell" onclick={() => void newShell(key)}>
         <Icon name="plus" size={12} />
+      </button>
+      <button
+        class="term-plus"
+        use:tip={paneChatId ? "Agent commands: what this chat's agent ran, and the output, view only" : "No chat in this pane, so no agent commands to show"}
+        aria-label="Agent commands"
+        disabled={!paneChatId}
+        onclick={() => paneChatId && openAgentTab(paneChatId, key)}
+      >
+        <Icon name="agent" size={12} />
       </button>
       <span class="term-hint mono" use:tip={"⌃` opens, focuses, hides the terminal"}>⌃`</span>
       {#if term.cwd}
@@ -281,9 +300,25 @@
         {#if notice.clock}<span class="term-notice-sep">·</span><span class="mono">{notice.clock}</span>{/if}
       </div>
     {/if}
+    {#if front?.run && !d.collapsed}
+      <!-- A block run from a reply (item 503): what became of its output, and
+           the two ways out of a command that never ends. -->
+      <div class="term-run" role="status">
+        <span class="term-run-note">{front.exit ? (front.run.note ?? "Ended.") : `${front.run.note ? `${front.run.note} ` : ""}Running: what comes next goes to the chat when it ends.`}</span>
+        {#if !front.exit}
+          <span class="term-spacer"></span>
+          <button class="term-run-btn" onclick={() => front && void sendSoFar(front.id)}>Send output so far</button>
+          <button class="term-run-btn" onclick={() => front && void stopRun(front.id)}>Stop</button>
+        {/if}
+      </div>
+    {/if}
     <div class="term-body" class:hidden={d.collapsed}>
       {#each shells as s (s.id)}
-        <TerminalShell shell={s} visible={s.id === d.active && d.open && !d.collapsed} />
+        {#if s.agentChat}
+          <AgentTerminal shell={s} visible={s.id === d.active && d.open && !d.collapsed} />
+        {:else}
+          <TerminalShell shell={s} visible={s.id === d.active && d.open && !d.collapsed} />
+        {/if}
       {/each}
     </div>
   </section>
@@ -378,6 +413,9 @@
     color: var(--failed);
     font-size: 11px;
   }
+  .term-exit.ok {
+    color: var(--done);
+  }
   /* The × appears on hover, and stays on the active tab. */
   .term-x {
     background: none;
@@ -413,6 +451,10 @@
     border-radius: 4px;
     color: var(--dim);
     cursor: pointer;
+  }
+  .term-plus:disabled {
+    opacity: 0.4;
+    cursor: default;
   }
   .term-plus:hover,
   .term-ctl:hover {
@@ -470,6 +512,40 @@
   }
   .term-notice-sep {
     color: var(--dim);
+  }
+  /* A running block's row: where its output goes, Send so far, Stop. */
+  .term-run {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: none;
+    min-height: 28px;
+    padding: 0 8px 0 10px;
+    font-size: 12px;
+    color: var(--ink2);
+    background: var(--sheet);
+    border-bottom: 1px solid var(--line);
+  }
+  .term-run-note {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .term-run-btn {
+    flex: none;
+    height: 22px;
+    padding: 0 8px;
+    font: inherit;
+    font-size: 12px;
+    color: var(--ink);
+    background: var(--well);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    cursor: pointer;
+  }
+  .term-run-btn:hover {
+    border-color: var(--line2);
   }
   .term-body {
     display: flex;

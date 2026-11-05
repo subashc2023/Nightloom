@@ -379,6 +379,7 @@
           since={turn === asking ? (turn.startedAt ?? null) : null}
           footer={footerOf(turn)}
           folds={foldsOf(turn.seq)}
+          runFrom={{ chat: app.activeSessionId, aside: aside.id }}
         />
       </div>
     {:else if turn === asking}

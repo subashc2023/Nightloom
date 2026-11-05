@@ -60,7 +60,9 @@ pub const DEFAULT_IDENTITY: &str = "You are Nightloom, a model-agnostic assistan
 
 Be direct and concrete. Answer what was asked, at the length the question deserves — no preamble, no restating the question back, no summary of what you just said.
 
-When tools are available, use them to check rather than guessing, and say plainly when something is unverified. If a request is ambiguous in a way that changes the answer, ask; otherwise take the sensible reading and proceed.";
+When tools are available, use them to check rather than guessing, and say plainly when something is unverified. If a request is ambiguous in a way that changes the answer, ask; otherwise take the sensible reading and proceed.
+
+A command for the user to run themselves goes in its own ```bash block, one command per block: the desktop app gives that block a Run button and sends you its output.";
 
 /// The instruction file honoured in every directory on the walk, and in the
 /// user's config dir.
@@ -819,9 +821,19 @@ fn engine_note_segment(knowledge: Option<&KnowledgeContext>) -> Segment {
     text.push_str(PERSONAL_DATA_NOTE);
     text.push(' ');
     text.push_str(CITE_NOTE);
+    text.push(' ');
+    text.push_str(RUN_BLOCK_NOTE);
     text.push_str("\n</engine-note>");
     Segment::new(SegmentKind::EngineNote, "engine-note", text)
 }
+
+/// Where a command for him goes (nightshift item 503): a `bash` block gets
+/// a Run button whose output comes back as a message. The API engine reads
+/// the same sentence at the end of [`DEFAULT_IDENTITY`], which the Claude
+/// Code engine does not send.
+pub const RUN_BLOCK_NOTE: &str = "A command for the user to run themselves goes in its own \
+     ```bash block, one command per block: the desktop app gives that block a Run button and \
+     sends you its output.";
 
 /// What a non-incognito chat on the Claude Code engine is told about the
 /// account details the CLI attaches as context (nightshift backlog 446,
@@ -856,7 +868,7 @@ fn incognito_engine_note_segment() -> Segment {
          tool mcp__nightloom__fetch_page (ToolSearch it by that full name). For the whole \
          text of a page use fetch_page (WebFetch summarises and truncates); if fetch_page \
          reports a JavaScript shell or returns only a title, use WebFetch on that URL instead \
-         of retrying. {INCOGNITO_NOTE} {CITE_NOTE}\n</engine-note>"
+         of retrying. {INCOGNITO_NOTE} {CITE_NOTE} {RUN_BLOCK_NOTE}\n</engine-note>"
     );
     Segment::new(SegmentKind::EngineNote, "engine-note", text)
 }

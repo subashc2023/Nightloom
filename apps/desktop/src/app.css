@@ -293,6 +293,36 @@ button {
   border-color: var(--line2);
 }
 
+/* Item 503: Run beside Copy on a shell block; the word, not an icon, and
+   always shown, since it is what the block is for. */
+.markdown pre:has(> .code-run) {
+  padding-right: 84px;
+}
+.markdown pre > .code-run {
+  position: absolute;
+  top: 10px;
+  right: 34px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line2);
+  background: var(--term);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  line-height: 20px;
+  cursor: pointer;
+  user-select: none;
+}
+.markdown pre > .code-run:hover {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+.markdown pre > .code-run:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .markdown pre code {
   background: transparent;
   border: none;

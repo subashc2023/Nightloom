@@ -28,6 +28,25 @@ export interface LiveShell<X = unknown, F = unknown> {
   /** The "[zsh exit 0 — …]" line was written: once, not per mount. */
   exitWritten: boolean;
   dispose: () => void;
+  /** What the Agent commands view has written so far (item 503). */
+  written?: string;
+}
+
+/**
+ * A block of a reply's, running in this tab (item 503): what it ran, whom
+ * its output goes to, and what the tab says about that. Absent on his own
+ * shells. The output itself is `RunCapture`'s, beside the store.
+ */
+export interface RunState {
+  command: string;
+  /** The tab's name. */
+  title: string;
+  /** The row under the strip: where the output went, or why it did not. */
+  note: string | null;
+  /** He pressed Stop: the message says so. */
+  stopped: boolean;
+  /** Its end has been handled; a late report does nothing. */
+  finished: boolean;
 }
 
 /** What `terminal_open` answers, plus what the events add. */
@@ -46,6 +65,11 @@ export interface ShellRow {
    *  when the shell opens, changed by a drag onto another pane (blocker
    *  155, 2026-09-22: one dock by default, a drag makes a second). */
   pane?: string;
+  /** The Agent commands view of this chat (item 503): a view-only tab with
+   *  no pty; its id is negative, so it can never meet a shell's. */
+  agentChat?: string;
+  /** A block run from a reply (item 503). */
+  run?: RunState;
 }
 
 /** The pane's default height (the boards' 220–260px), its floor, and the
@@ -64,11 +88,15 @@ export function clampHeight(px: number, columnHeight: number): number {
 
 /** A foreground process other than the shell itself — the blue dot. */
 export function isRunning(row: ShellRow): boolean {
+  if (row.agentChat) return false;
+  if (row.run) return row.exit === null;
   return row.exit === null && row.title !== "" && row.title !== row.shell;
 }
 
 /** The tab's text: the shell, then the running command (12c). */
 export function tabLabel(row: ShellRow): string {
+  if (row.agentChat) return row.shell;
+  if (row.run) return row.run.title;
   if (row.exit) return row.shell;
   return isRunning(row) ? row.title : row.shell;
 }
@@ -78,6 +106,12 @@ export function exitLabel(row: ShellRow): string | null {
   if (!row.exit) return null;
   if (row.exit.code !== null) return `exit ${row.exit.code}`;
   return row.exit.signal ? `ended (${row.exit.signal})` : "ended";
+}
+
+/** A click on the tab starts a new shell: only his own shells; a run's tab
+ *  stays, showing how it ended (item 503). */
+export function restartsOnClick(row: ShellRow): boolean {
+  return !!row.exit && !row.run && !row.agentChat;
 }
 
 /**

@@ -11,6 +11,8 @@
   import { canKeep, imageName, keepKey, leafOf, savedFilePaths } from "./keep";
   import { app } from "./state.svelte";
   import { keptGet, keptSet } from "./keptFolds.svelte";
+  import RanCard from "./RanCard.svelte";
+  import { parseRan } from "./shellRun";
 
   /**
    * His message's bubble (nightshift backlog 283, 2026-10-02): the chat's
@@ -62,6 +64,7 @@
      *  part 2: the chat + turn); null, the bubble's own. */
     keep?: string | null;
   } = $props();
+  const ran = $derived(parseRan(text));
 
   let localOpen = $state<Record<number, boolean>>({});
   /** A text attachment unfolded (284), kept under `keep` when there is one. */
@@ -173,6 +176,9 @@
   {/if}
   {#if custom && body}
     {@render body()}
+  {:else if ran}
+    <!-- Item 503: the output of a block he ran, folded; not a wall of his. -->
+    <RanCard {ran} />
   {:else if text}
     <!-- `> ` lines are quotes he placed with Reply (backlog 215), drawn as
          quotes where they sit in his words. -->

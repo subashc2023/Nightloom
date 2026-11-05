@@ -25,6 +25,7 @@
   import { isMac } from "./platform";
   import { keepLive, liveShell, registerSink, term } from "./terminal.svelte";
   import { terminalChord, type LiveShell, type ShellRow } from "./terminal";
+  import { termTheme } from "./termTheme";
 
   /** `visible`: this shell's tab is in front *and* the dock is on screen
    *  and not collapsed — a hidden dock keeps the instance (backlog 137)
@@ -38,36 +39,6 @@
   let xterm: Terminal | null = null;
   let fit: FitAddon | null = null;
   let live: LiveShell<Terminal, FitAddon> | null = null;
-
-  /** The app's tokens, read once at mount so the grid matches the theme
-   *  the window is in (`--term` is the ground the boards draw). */
-  function theme() {
-    const cs = getComputedStyle(document.documentElement);
-    const v = (name: string, fallback: string) => cs.getPropertyValue(name).trim() || fallback;
-    return {
-      background: v("--term", "#131110"),
-      foreground: v("--ink", "#ece7dc"),
-      cursor: v("--accent", "#e0a458"),
-      cursorAccent: v("--term", "#131110"),
-      selectionBackground: v("--accent-soft", "#3a2d1c"),
-      black: "#1b1916",
-      brightBlack: v("--dim", "#8d8676"),
-      red: v("--failed", "#e57373"),
-      brightRed: "#f2bcbc",
-      green: v("--done", "#7cc48a"),
-      brightGreen: "#bfe6c4",
-      yellow: v("--accent", "#e0a458"),
-      brightYellow: v("--accent-ink", "#f0c27a"),
-      blue: v("--live", "#7fb3f0"),
-      brightBlue: "#a9ccf5",
-      magenta: "#c9a3d6",
-      brightMagenta: "#dcbfe6",
-      cyan: "#7fc7c0",
-      brightCyan: "#a8ddd8",
-      white: v("--ink2", "#c9c2b3"),
-      brightWhite: v("--ink", "#ece7dc"),
-    };
-  }
 
   function refit() {
     if (!xterm || !fit || !container || container.offsetWidth === 0 || container.offsetHeight === 0) return;
@@ -84,7 +55,7 @@
   function build(host: HTMLDivElement): LiveShell<Terminal, FitAddon> {
     const cs = getComputedStyle(document.documentElement);
     const t = new Terminal({
-      theme: theme(),
+      theme: termTheme(),
       fontFamily: cs.getPropertyValue("--mono").trim() || "IBM Plex Mono, Menlo, monospace",
       fontSize: 13,
       lineHeight: 1.2,
@@ -101,6 +72,8 @@
     // Opened into an element already on screen: xterm measures its cell
     // on `open`, and a detached element measures as nothing.
     t.open(host);
+    // A block's tab says what it runs (item 503): the pty never prints it.
+    if (shell.run) t.write(`\x1b[2m$ ${shell.run.command.trim().split("\n").join("\r\n> ")}\x1b[0m\r\n`);
     // The pane's chords stay the window's: ⌃` (open · focus · hide) and,
     // on macOS, the ⌘ chords the dock handles while it has the focus
     // (⌘T, ⌘W, ⌘⇧], ⌘⇧[). Every other ⌘ chord is the app's too — ⌘K the
@@ -206,7 +179,11 @@
     if (!exit || !xterm || !live || live.exitWritten) return;
     live.exitWritten = true;
     const how = exit.code !== null ? `exit ${exit.code}` : exit.signal ? `ended by ${exit.signal}` : "ended";
-    xterm.write(`\r\n\x1b[2m[${shell.shell} ${how} — click the tab for a new shell here]\x1b[0m\r\n`);
+    xterm.write(
+      shell.run
+        ? `\r\n\x1b[2m[${shell.run.stopped ? "stopped by you" : how}]\x1b[0m\r\n`
+        : `\r\n\x1b[2m[${shell.shell} ${how} — click the tab for a new shell here]\x1b[0m\r\n`,
+    );
   });
 
   // Coming to the front: fit to the pane (a hidden grid could not), and

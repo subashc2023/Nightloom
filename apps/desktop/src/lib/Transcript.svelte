@@ -2656,6 +2656,7 @@
               onretry={editable && turnEnds[i] && app.activeSessionId ? () => void retryReply(item.index) : null}
               {cliSession}
               folds={turnFolds(item.index)}
+              runFrom={{ chat: chatId }}
             />
             {#if item.original !== null && item.removed}
               <details class="original" use:keptOpen={{ key: turnFold(item.index, "removed") }}>
@@ -2733,6 +2734,7 @@
           approvals={approvalsNow}
           {cliSession}
           folds={turnFolds(`live:${shown.since ?? ""}`)}
+          runFrom={{ chat: chatId }}
         />
       {/if}
       </div>

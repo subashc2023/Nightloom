@@ -6998,6 +6998,28 @@ export function registerProviderDrain(fn: () => Promise<void>): () => void {
   };
 }
 
+/** The same composers' explicit drain (item 503): a block he ran has ended
+ *  and the chat on screen is idle, so its output goes now. Explicit: a Stop's
+ *  hold on the queue is about what he had queued, not what he just ran. */
+const runDrains: Array<() => Promise<void>> = [];
+export function registerRunDrain(fn: () => Promise<void>): () => void {
+  runDrains.push(fn);
+  return () => {
+    const i = runDrains.lastIndexOf(fn);
+    if (i >= 0) runDrains.splice(i, 1);
+  };
+}
+export async function runDrainNow(): Promise<void> {
+  await runDrains.at(-1)?.();
+}
+
+/** The chat of the turn on screen, read later (item 503): a New chat's first
+ *  reply has a Run before the chat has an id, and the turn learns it. */
+export function turnChatRef(): () => string | null {
+  const t = fg;
+  return () => t?.chat ?? null;
+}
+
 /** Whether the turn on screen can go to the background right now (A2):
  *  what lifts the New-chat refusals during a New chat's first turn. */
 export function canLeaveRunning(): boolean {

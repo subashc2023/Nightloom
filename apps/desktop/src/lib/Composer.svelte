@@ -17,6 +17,7 @@
     runningChatName,
     providerElsewhereName,
     registerProviderDrain,
+    registerRunDrain,
     contextUsed,
     pickerModels,
     send,
@@ -2026,6 +2027,8 @@
   // And when a provider turn off screen ends (A4 review): the message
   // queued behind it here goes, as its notice said.
   $effect(() => untrack(() => (aside ? undefined : registerProviderDrain(() => drain()))));
+  // And a block he ran has ended (item 503): its output goes as the next turn.
+  $effect(() => untrack(() => (aside ? undefined : registerRunDrain(() => drain(true)))));
   /** Why nothing can be scheduled from this box, if nothing can. */
   const scheduleBlocked = $derived(
     key.startsWith(NEW_DRAFT_PREFIX)

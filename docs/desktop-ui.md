@@ -2358,7 +2358,10 @@ a pane's content, the *open beside* half lights and a drop splits
 
 **The terminal's dock.** Each pane ends in `<div class="pane-dock"
 data-pane={pane.id}>`, under the composer, empty until backlog 113's
-terminal mounts into it.
+terminal mounts into it. Since item 503 the dock's strip also holds a chat's
+**Agent commands** (view only, rebuilt from its log) and a tab per **Run** on
+a reply's shell block, whose output comes back to the chat it came from as a
+compact "Ran in terminal" card. Both are in [terminal.md](terminal.md).
 
 ### Tabs above everything; the + chooser; drags in (nightshift backlog 140, 2026-09-17; blockers 193, 194, 195)
 

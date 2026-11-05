@@ -20,7 +20,7 @@
   import Icon from "./Icon.svelte";
   import Kbd from "./Kbd.svelte";
   import { isMac } from "./platform";
-  import { openTerminalFromBar, terminalCwd } from "./terminal.svelte";
+  import { openAgentTab, openTerminalFromBar, terminalCwd } from "./terminal.svelte";
 
   /**
    * The two keyboard overlays of the 2026-09-13 redesign (canvas row 5,
@@ -241,6 +241,17 @@
         group: "Panels",
         run: () => go(() => void openTerminalFromBar()),
         disabled: !terminalCwd(),
+      },
+      // Item 503: what this chat's agent ran, as a view-only terminal.
+      {
+        id: "agent-commands",
+        label: "Agent commands",
+        meta: app.activeSessionId ? "this chat's commands and output, view only" : "no chat open",
+        icon: "term",
+        key: "",
+        group: "Panels",
+        run: () => go(() => app.activeSessionId && void openAgentTab(app.activeSessionId)),
+        disabled: !app.activeSessionId,
       },
       // The two transcript toggles (nightshift backlog 052, 2026-09-14):
       // what the open transcript shows of a reply's working. The label

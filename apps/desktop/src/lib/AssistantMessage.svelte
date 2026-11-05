@@ -6,7 +6,10 @@
   import type { ApprovalRequest, Usage } from "./types";
   import { renderReply } from "./markdown";
   import { liveHtml } from "./liveHtml";
-  import { codeCopy } from "./codeCopy";
+  import { codeCopy, type RunBlocks } from "./codeCopy";
+  import { runBlock, type RunFrom } from "./shellRun.svelte";
+  import { openAgentTab } from "./terminal.svelte";
+  import { isShellCall } from "./agentCommands";
   import CouncilBlocks from "./CouncilBlocks.svelte";
   import { parseCouncilRecord, parseCouncilSeat } from "./council";
   import { wordDiff } from "./textdiff";
@@ -202,6 +205,7 @@
     onretry = null,
     cliSession = null,
     folds = null,
+    runFrom = null,
   }: {
     segs: Segment[];
     footer?: Footer | null;
@@ -258,7 +262,16 @@
      *  he opened or closed is drawn so again after a chat switch. Null:
      *  this component's own, as before (gone with the message). */
     folds?: FoldScope | null;
+    /** The chat, and the aside, this reply was drawn in (item 503): a shell
+     *  block's Run and a shell call's way to Agent commands go by it. Null: a
+     *  surface with no terminal to send to. */
+    runFrom?: RunFrom | null;
   } = $props();
+
+  function runBlocks(text: string): RunBlocks | null {
+    const from = runFrom;
+    return from ? { text, streaming, onRun: (command) => void runBlock(command, from) } : null;
+  }
 
   // Per-block clicks, keyed by the block's stable id (`segmentIds`) rather
   // than its index, and consulted before the streaming rule and the two
@@ -806,10 +819,10 @@
                 {/if}
                 <!-- The hover on the call itself (backlog 066): the call and its
                      result leave the context together, the log keeps both. -->
-                {#if (onremove && seg.block != null) || agentTab}
+                {#if (onremove && seg.block != null) || agentTab || (isShellCall(seg.call.name) && runFrom?.chat)}
                   <span
                     class="block-tools"
-                    class:two={!!agentTab && !!onremove && seg.block != null}
+                    class:two={(!!agentTab || isShellCall(seg.call.name)) && !!onremove && seg.block != null}
                     use:tip={onremove && seg.block != null ? controlsTitle : ""}
                   >
                     {#if agentTab}
@@ -821,6 +834,17 @@
                         onclick={() => void openContent(agentTab)}
                       >
                         <Icon name="ext" size={12} />
+                      </button>
+                    {/if}
+                    {#if isShellCall(seg.call.name) && runFrom?.chat}
+                      <!-- Item 503: this chat's commands as a view-only terminal. -->
+                      <button
+                        class="tool-btn"
+                        use:tip={"Show this chat's commands in the terminal"}
+                        aria-label="Show this chat's commands in the terminal"
+                        onclick={() => runFrom?.chat && openAgentTab(runFrom.chat)}
+                      >
+                        <Icon name="term" size={12} />
                       </button>
                     {/if}
                     {#if onremove && seg.block != null}
@@ -896,7 +920,7 @@
       {:else}
         <!-- Item 452: patched in place (liveHtml), not replaced whole per
              streamed delta, so a selection in its written part survives. -->
-        <div class="markdown" use:liveHtml={renderReply(g.seg.text)} use:memoryRefs={{ hits: memHits, text: g.seg.text }} use:codeCopy></div>
+        <div class="markdown" use:liveHtml={renderReply(g.seg.text)} use:memoryRefs={{ hits: memHits, text: g.seg.text }} use:codeCopy={runBlocks(g.seg.text)}></div>
       {/if}
     {:else if g.seg.kind === "removed_tool" || g.seg.kind === "removed_text"}
       {@const seg = g.seg}

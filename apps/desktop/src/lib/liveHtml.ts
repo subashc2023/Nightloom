@@ -24,7 +24,7 @@ function inRun(n: Node): boolean {
 
 /** Nodes other code adds that have no counterpart in the drawn HTML (codeCopy). */
 function extra(n: Node): boolean {
-  return n instanceof Element && n.tagName === "BUTTON" && n.classList.contains("code-copy");
+  return n instanceof Element && n.tagName === "BUTTON" && (n.classList.contains("code-copy") || n.classList.contains("code-run"));
 }
 
 /** One counterpart of a drawn node in the live DOM: a single element, or a run of text pieces. */
