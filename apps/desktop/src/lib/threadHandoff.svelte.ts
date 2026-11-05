@@ -33,6 +33,19 @@ export function noteThreadHandoff(chat: string | null, events: SessionEvent[] | 
   pending = pending.then(() => api.saveThreadHandoff(save.slug, save.text, chat).catch(() => null));
 }
 
+/** The thread's + before any chat exists (item 510): the saved prompt if no
+ *  child chat has started from it yet, else null. Consumes nothing; the first
+ *  send takes it (`takeThreadHandoff`). */
+export async function peekThreadHandoff(slug: string): Promise<string | null> {
+  await pending;
+  try {
+    const text = await api.peekThreadHandoff(slug);
+    return text && text.trim() ? text : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The thread's + for the new child chat `chat`: the saved prompt if no child
  *  chat has started from it yet, else null (an empty box). */
 export async function takeThreadHandoff(slug: string, chat: string): Promise<string | null> {

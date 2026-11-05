@@ -10,7 +10,7 @@
    * 1020 answered "tab"). The logic is in `threadPanel.svelte.ts`.
    */
   import { tick } from "svelte";
-  import { app, newChatInThread } from "./state.svelte";
+  import { newChatInThread } from "./state.svelte";
   import { renderMarkdown } from "./markdown";
   import { THREAD_FILES, fileSections, newInThreadTip, openingSection, type ThreadFile } from "./thread";
   import { editThreadFile, readThreadFile, setThreadPlace, threadPlace, threadRead } from "./threadPanel.svelte";
@@ -93,7 +93,6 @@
     >
     <button
       class="ns-btn small"
-      disabled={app.busy || app.connecting}
       use:tip={newInThreadTip(slug)}
       onclick={() => void newChatInThread(slug)}>+ New chat in this thread</button
     >

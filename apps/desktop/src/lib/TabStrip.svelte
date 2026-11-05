@@ -75,7 +75,7 @@
       return app.noteDrafts[noteDraftKey(c.scope, c.name)] !== undefined;
     }
     if (c.kind !== "chat") return false;
-    return hasBoxDraft(c.session ?? newDraftKey(app.project?.id, app.pendingMode));
+    return hasBoxDraft(c.session ?? newDraftKey(app.project?.id, app.pendingMode, app.pendingThread));
   }
 
   /** The chat's turn runs, or waits on him. ~~Only the live tab can~~ —

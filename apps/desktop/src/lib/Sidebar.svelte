@@ -25,6 +25,7 @@
     kindLabel,
     newChatLabel,
     newChatSelected,
+    threadPlusSelected,
     chatSelected,
     threadSelected,
     newSession,
@@ -35,7 +36,7 @@
     toggleSidebar,
   } from "./state.svelte";
   import * as api from "./api";
-  import { hasBoxDraft, newDraftKey } from "./drafts.svelte";
+  import { hasBoxDraft, hasThreadDraft, newDraftKey } from "./drafts.svelte";
   import TerminalButton from "./TerminalButton.svelte";
   import { forkLine } from "./edit";
   import { FORK_GLYPH, forkMark } from "./forkMark";
@@ -1212,7 +1213,7 @@
                 ondragstart={(e) => startContentDrag(e, g.title && g.title !== g.slug ? { kind: "thread", slug: g.slug, title: g.title } : { kind: "thread", slug: g.slug })}
               >
                 <span class="tg-text">
-                  <span class="tg-name"><span class="tg-mark" aria-hidden="true">◇</span> {g.title}</span>
+                  <span class="tg-name"><span class="tg-mark" aria-hidden="true">◇</span> {g.title}{#if hasThreadDraft(app.project?.id, g.slug)} <span class="mark draft" role="img" aria-label="a new chat here has a draft" use:tip={"A new chat in this thread has a draft: its + opens it"}></span>{/if}</span>
                   <span class="tg-status">{g.missing ? "no thread.md in this project" : g.status || "no status line yet"}</span>
                 </span>
                 <span class="tg-count" aria-label={`${g.chats} chat${g.chats === 1 ? "" : "s"}`}>{g.chats}</span>
@@ -1222,8 +1223,8 @@
                 <button
                   class="tg-new"
                   aria-label={`New chat in the thread ${g.slug}`}
+                  class:active={threadPlusSelected(g.slug)}
                   use:tip={newInThreadTip(g.slug)}
-                  disabled={app.busy || app.connecting}
                   onclick={() => void newChatInThread(g.slug)}
                 >+</button>
               {/if}
@@ -1286,7 +1287,6 @@
             <div class="row-sep"></div>
             <button
               role="menuitem"
-              disabled={app.busy || app.connecting}
               use:tip={newInThreadTip(tg.slug)}
               onclick={() => threadPick((g) => void newChatInThread(g.slug))}>New chat in this thread</button
             >
@@ -2440,6 +2440,12 @@
   .tg-head:hover .tg-new {
     border-color: var(--line2);
     color: var(--ink2);
+  }
+  .tg-name .mark.draft {
+    margin-left: 4px;
+  }
+  .tg-new.active {
+    color: var(--accent);
   }
   .tg-new:hover:not(:disabled) {
     border-color: var(--accent);

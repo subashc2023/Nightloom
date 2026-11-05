@@ -5182,8 +5182,26 @@ async fn save_thread_handoff(
     .await
 }
 
-/// The thread's + (item 464): the saved hand-off's text when no child chat
-/// has started from it yet, `chat` then named as the one that did; else null.
+/// The thread's + (item 510): the saved hand-off's text when no child chat
+/// has started from it yet, else null. Reads only; nothing exists yet.
+#[tauri::command]
+async fn peek_thread_handoff(
+    state: State<'_, AppState>,
+    slug: String,
+) -> Result<Option<String>, String> {
+    let notes = thread_notes(&state).await?;
+    blocking(move || {
+        Ok::<_, String>(nightloom_service::thread_handoff::peek_handoff(
+            &notes,
+            slug.trim(),
+        ))
+    })
+    .await
+}
+
+/// The first send from a thread's + (item 464, 510): the saved hand-off's text
+/// when no child chat has started from it yet, `chat` then named as the one
+/// that did; else null.
 #[tauri::command]
 async fn take_thread_handoff(
     state: State<'_, AppState>,
@@ -9064,6 +9082,7 @@ fn main() {
             reveal_thread,
             append_thread_log,
             save_thread_handoff,
+            peek_thread_handoff,
             take_thread_handoff,
             thread_upkeep,
             tidy_threads,

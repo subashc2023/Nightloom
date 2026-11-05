@@ -28,12 +28,13 @@ export async function retryReply(reply: number): Promise<boolean> {
   }
   const project = app.project?.id;
   const mode = app.pendingMode;
+  const thread = app.pendingThread;
   const mine = {};
   forking = mine;
   try {
     return await sendEdit(p.index, p.text, p.images, p.documents, (parent, fork) => {
       if (forking === mine) forking = null;
-      carryDraft(draftKey(parent, project, mode), draftKey(fork, project, mode));
+      carryDraft(draftKey(parent, project, mode, thread), draftKey(fork, project, mode, thread));
     });
   } finally {
     if (forking === mine) forking = null;

@@ -26,7 +26,7 @@ import {
   codeProjectFor,
   noteCodeProject,
 } from "./handoff.svelte";
-import { app, chatThread, continueChat, setChatThread } from "./state.svelte";
+import { app, bindPendingThread, chatThread, continueChat, setChatThread } from "./state.svelte";
 import { NEW_THREAD, NO_THREAD, pickerOptions, replaceStartHere, slugFrom, validSlug } from "./thread";
 import type { SessionEvent, ThreadInfo } from "./types";
 
@@ -225,7 +225,9 @@ describe("binding a chat through the state", () => {
     app.busy = false;
     app.connecting = false;
     app.events = [];
-    app.activeSessionId = null;
+    // ~~`app.activeSessionId = null`~~: on the new-chat screen a binding now
+    // waits for the first send (item 510, pinned below); this is an open chat.
+    app.activeSessionId = "t1";
     expect(await setChatThread(null)).toBe(true);
     expect(api.setChatThread).not.toHaveBeenCalled();
     expect(await setChatThread("stuart-brainstorm")).toBe(true);
@@ -288,7 +290,9 @@ describe("Continue on a bound chat", () => {
 });
 
 describe("binding the draft New chat (backlog 420)", () => {
-  it("binds that same chat and its draft stays in its box — no second New chat holds it", async () => {
+  // ~~binds at once, the log written on the pick~~ — item 510 (2026-11-05):
+  // the pick waits for the first send; the draft still goes with the binding.
+  it("waits for the first send, and its draft stays in its box — no second New chat holds it", async () => {
     vi.mocked(api.setChatThread).mockClear();
     app.busy = false;
     app.connecting = false;
@@ -298,10 +302,16 @@ describe("binding the draft New chat (backlog 420)", () => {
     const pending = newDraftKey(app.project?.id, app.pendingMode);
     setDraftText(pending, "half a thought about Stuart");
     expect(await setChatThread("stuart-brainstorm")).toBe(true);
+    expect(api.setChatThread).not.toHaveBeenCalled();
+    expect(app.activeSessionId).toBe(null);
+    expect(chatThread(app.events)).toBe("stuart-brainstorm");
+    expect(readDraft(pending).text).toBe("");
+    expect(readDraft(newDraftKey(app.project?.id, app.pendingMode, "stuart-brainstorm")).text).toBe("half a thought about Stuart");
+    await bindPendingThread();
+    expect(api.setChatThread).toHaveBeenCalledWith("stuart-brainstorm");
     expect(app.activeSessionId).toBe("t1");
     expect(chatThread(app.events)).toBe("stuart-brainstorm");
     expect(readDraft("t1").text).toBe("half a thought about Stuart");
-    expect(readDraft(pending).text).toBe("");
     setDraftText("t1", "");
     app.events = [];
     app.activeSessionId = null;

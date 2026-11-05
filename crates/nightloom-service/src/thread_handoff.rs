@@ -79,8 +79,17 @@ pub fn save_handoff(
     Ok(h)
 }
 
-/// The + on the thread: the saved text when no child chat has started from
-/// it yet, and `chat` named as the one that did; none otherwise.
+/// What the + shows (item 510): the saved text when no child chat has started
+/// from it yet. Reads only; [`take_handoff`] at the first send consumes it.
+pub fn peek_handoff(notes_dir: &Path, slug: &str) -> Option<String> {
+    read_handoff(notes_dir, slug)
+        .filter(|h| h.taken_by.is_none())
+        .map(|h| h.text)
+}
+
+/// The first send from the + (item 510; ~~the + itself~~): the saved text when
+/// no child chat has started from it yet, and `chat` named as the one that
+/// did; none otherwise.
 pub fn take_handoff(notes_dir: &Path, slug: &str, chat: &str) -> Result<Option<String>, String> {
     let path = file(notes_dir, slug)?;
     let Some(mut h) = read_handoff(notes_dir, slug) else {
@@ -106,9 +115,13 @@ mod tests {
     }
 
     fn docspace() -> (Scratch, PathBuf) {
+        // A counter, not only the clock: macOS's clock ticks in microseconds,
+        // and tests starting together shared a folder (and its deletion).
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let notes = std::env::temp_dir().join(format!(
-            "nightloom-handoff-{}-{}",
+            "nightloom-handoff-{}-{}-{}",
             std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -119,6 +132,20 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(THREAD_FILE), "# Thread: Alpha\n").unwrap();
         (tmp, notes)
+    }
+
+    #[test]
+    fn a_peek_shows_the_hand_off_and_consumes_nothing() {
+        let (_t, notes) = docspace();
+        assert_eq!(peek_handoff(&notes, "alpha"), None);
+        save_handoff(&notes, "alpha", "Run T-04.", "p", "2026-11-05T15:00:00").unwrap();
+        assert_eq!(peek_handoff(&notes, "alpha").as_deref(), Some("Run T-04."));
+        assert_eq!(peek_handoff(&notes, "alpha").as_deref(), Some("Run T-04."));
+        assert_eq!(
+            take_handoff(&notes, "alpha", "c1").unwrap().as_deref(),
+            Some("Run T-04.")
+        );
+        assert_eq!(peek_handoff(&notes, "alpha"), None);
     }
 
     #[test]
