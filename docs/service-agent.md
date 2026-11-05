@@ -1166,6 +1166,8 @@ list (34 → 56 in the measurement), so the next turn re-writes the prefix once.
 
 ## Playwright: Claude's own browser behind a card (2026-10-15, nightshift backlog 367)
 
+**Subagents, since 2026-11-05 (blocker 1658):** a subagent's call runs unasked on *Subagents run on auto*, is refused with that switch off, and stops on a *Deny* for the reply; a side process's call stays refused unless already allowed (`ask::decide_playwright`).
+
 Every Claude Code chat gets Microsoft's Playwright MCP server (`@playwright/mcp`
 0.0.83, pinned) in the `--mcp-config` JSON beside Nightloom's own, driving
 **WebKit** headless with an in-memory profile — never Chrome
@@ -1194,7 +1196,8 @@ ends), **Allow for this chat** (`playwright_chat: true`, the rail's per-chat
 *Playwright for this chat* switch, `playwright_for_chat`), **Deny** ("The
 user declined Playwright for now.", and `playwright_reply: "deny"` so the
 reply does not raise a card per retry). The turn clears `playwright_reply`
-as it starts and as it ends (`agent_turn::ReplyEnd`). A subagent's, an
+as it starts and as it ends (`agent_turn::ReplyEnd`). ~~A subagent's, an
+aside's~~ (2026-11-05: a subagent's is the note at this section's head) An
 aside's or a fork's call (`--side`) is never deferred: it runs if already
 allowed, else is refused in words; an ephemeral chat's gate is an `echo`
 deny. The phone draws the same card. The API engine is out of scope.

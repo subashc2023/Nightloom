@@ -28,11 +28,14 @@
 //! The turn clears `playwright_reply` when it ends ([`AskDir::end_reply`]),
 //! and at its start in case a crash left one behind.
 //!
-//! A call that cannot show a card is never deferred: a subagent's (the CLI
-//! drops a deferral at depth — `ask::decide`'s doc), an aside's or a
-//! checkpoint fork's (`side`), and an ephemeral chat's (no session to
-//! resume, no ask directory): each runs when the chat or the reply already
-//! allows it and is refused in words otherwise.
+//! A call that cannot show a card is never deferred: an aside's or a
+//! checkpoint fork's (`side`) and an ephemeral chat's (no session to resume,
+//! no ask directory) run when the chat or the reply already allows them and
+//! are refused in words otherwise. A subagent's (the CLI drops a deferral at
+//! depth — `ask::decide`'s doc) runs unasked on *Subagents run on auto*, his
+//! yes on nightshift blocker 1658: the browser is headless, logged in to
+//! nothing and kept in memory. ~~refused in words unless already allowed~~
+//! (until 2026-11-05). A *Deny* for the reply stops it too.
 
 use super::ask::AskDir;
 use serde_json::Value;
@@ -56,8 +59,9 @@ pub const PINNED_VERSION: &str = "0.0.83";
 /// (blocker 1413).
 pub const DECLINED: &str = "The user declined Playwright for now.";
 
-/// A subagent's call, not covered by the chat or the reply.
-pub const SUBAGENT_REFUSED: &str = "a subagent cannot use Playwright until the user allows it: each first use asks the user, which only the main conversation can do — make the call from there, or report what you would have done";
+/// A subagent's call with *Subagents run on auto* off, not covered by the
+/// chat or the reply.
+pub const SUBAGENT_REFUSED: &str = "a subagent cannot use Playwright with Subagents run on auto off: each first use asks the user, which only the main conversation can do — make the call from there, or report what you would have done";
 
 /// An aside's or a checkpoint fork's call, not covered.
 pub const SIDE_REFUSED: &str = "Playwright needs the user's approval first, which a side process cannot ask for — leave the browsing to the main conversation";

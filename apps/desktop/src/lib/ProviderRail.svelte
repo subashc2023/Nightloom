@@ -1280,7 +1280,7 @@
            chat's, unlike the switches above. -->
       <label class="swq">
         <span class="t">Playwright for this chat</span>
-        <Hint text="Claude's own browser — a separate, invisible WebKit with no logins, not your Chrome. Every Claude Code chat has it; the first time the model reaches for it in a reply, a card asks you: Allow once (until that reply ends), Allow for this chat, or Deny. On here is Allow for this chat; turn it off and the next call asks again. The model is never told whether it is on. Off and greyed when Playwright is not installed." />
+        <Hint text="Claude's own browser — a separate, invisible WebKit with no logins, not your Chrome. Every Claude Code chat has it; the first time the model reaches for it in a reply, a card asks you: Allow once (until that reply ends), Allow for this chat, or Deny. A subagent cannot show a card, so its calls run unasked while Subagents run on auto is on, unless you denied this reply. On here is Allow for this chat; turn it off and the next call asks again. The model is never told whether it is on. Off and greyed when Playwright is not installed." />
         <input
           type="checkbox"
           class="sw"

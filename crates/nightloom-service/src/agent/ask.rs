@@ -854,8 +854,10 @@ pub fn decide_in(dir: &Path, stdin_json: &str, side: bool) -> HookReply {
 /// A Playwright call (backlog 367). Order: this very call's answer
 /// (consumed — first, so a refusal written by a Stop is delivered even to
 /// a chat allowed since), the chat's switch, the reply's answer, then a
-/// call no card can wait on is refused in words, and anything else defers
-/// for the card.
+/// side process's call is refused in words, a subagent's follows *Subagents
+/// run on auto* (his yes, nightshift blocker 1658: a subagent's calls are the
+/// parent's, and no card can wait on one), and anything else defers for the
+/// card. A *Deny* for this reply stops a subagent too.
 fn decide_playwright(dir: &Path, input: &HookInput, side: bool) -> HookReply {
     use super::own_browser::{DECLINED, SIDE_REFUSED, SUBAGENT_REFUSED};
     let path = dir.join(DECISION_FILE);
@@ -885,11 +887,15 @@ fn decide_playwright(dir: &Path, input: &HookInput, side: bool) -> HookReply {
         Some("deny") => return HookReply::deny(DECLINED.into()),
         _ => {}
     }
-    if input.agent_id.as_deref().is_some_and(|id| !id.is_empty()) {
-        return HookReply::deny(SUBAGENT_REFUSED.into());
-    }
     if side {
         return HookReply::deny(SIDE_REFUSED.into());
+    }
+    if input.agent_id.as_deref().is_some_and(|id| !id.is_empty()) {
+        return if rules.subagents_auto.unwrap_or(SUBAGENTS_AUTO_DEFAULT) {
+            HookReply::allow(None)
+        } else {
+            HookReply::deny(SUBAGENT_REFUSED.into())
+        };
     }
     HookReply::defer()
 }
@@ -1174,22 +1180,36 @@ mod tests {
         );
     }
 
-    /// A call no card can wait on is never deferred: a subagent's, and a
-    /// side process's (an aside, a checkpoint fork). Allowed ones run.
+    /// A subagent's call is never deferred: it runs on *Subagents run on
+    /// auto* (blocker 1658), is refused with that switch off, and a *Deny*
+    /// for this reply stops it either way.
     #[test]
-    fn a_subagent_or_side_call_is_refused_unless_already_allowed() {
+    fn a_subagents_call_follows_the_auto_switch_and_a_deny() {
         let dir = scratch();
+        let ask = AskDir::new(&dir);
         let r = decide(&dir, &pw_stdin("t1", "bypassPermissions", Some("a1")));
+        assert_eq!(r.decision(), "allow");
+        ask.set_subagents_auto(false).unwrap();
+        let r = decide(&dir, &pw_stdin("t2", "default", Some("a1")));
         assert_eq!((r.decision(), r.reason()), ("deny", Some(SUBAGENT_REFUSED)));
+        ask.set_subagents_auto(true).unwrap();
+        ask.set_playwright_reply(Some("deny")).unwrap();
+        let r = decide(&dir, &pw_stdin("t3", "auto", Some("a1")));
+        assert_eq!((r.decision(), r.reason()), ("deny", Some(DECLINED)));
+    }
+
+    /// A side process's call (an aside, a checkpoint fork) is never
+    /// deferred, and a subagent inside one is refused too. Allowed ones run.
+    #[test]
+    fn a_side_call_is_refused_unless_already_allowed() {
+        let dir = scratch();
+        let r = decide_in(&dir, &pw_stdin("t0", "auto", Some("a1")), true);
+        assert_eq!((r.decision(), r.reason()), ("deny", Some(SIDE_REFUSED)));
         let r = decide_in(&dir, &pw_stdin("t1", "dontAsk", None), true);
         assert_eq!((r.decision(), r.reason()), ("deny", Some(SIDE_REFUSED)));
         AskDir::new(&dir)
             .set_playwright_reply(Some("allow"))
             .unwrap();
-        assert_eq!(
-            decide(&dir, &pw_stdin("t2", "auto", Some("a1"))).decision(),
-            "allow"
-        );
         assert_eq!(
             decide_in(&dir, &pw_stdin("t2", "auto", None), true).decision(),
             "allow"
