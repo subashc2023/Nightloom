@@ -24,11 +24,21 @@
  * on every frame.
  */
 
+import type { Hold } from "./readingPlace";
+
 export interface ScrollEntry {
   /** `scrollTop` of the viewport, in px. */
   top: number;
   /** Following the foot; `top` is irrelevant while this is true. */
   pinned: boolean;
+  /** Item 482: the first message drawn when `top` was measured (the
+   *  transcript's render window, `transcriptWindow.svelte.ts`), so a switch
+   *  back draws the same ones and `top` lands on the same line. */
+  from?: number;
+  /** Item 504: the lines in view when he left, found again by their text on
+   *  return: a reply that ended meanwhile folds and relabels rows above them,
+   *  so `top` alone can name another line. */
+  holds?: Hold[];
 }
 
 /** The pending chat's key while no chat is open. */
@@ -40,8 +50,18 @@ export function scrollKey(activeSessionId: string | null): string {
   return activeSessionId ?? NEW_SCROLL_KEY;
 }
 
-export function rememberScroll(key: string, top: number, pinned: boolean): void {
-  positions.set(key, { top: Math.max(0, top), pinned });
+export function rememberScroll(key: string, top: number, pinned: boolean, from?: number): void {
+  positions.set(key, from === undefined ? { top: Math.max(0, top), pinned } : { top: Math.max(0, top), pinned, from });
+}
+
+/**
+ * He left this chat (item 504): the entry is the place he left, never "the
+ * foot". A chat left held at the foot mid-reply used to come back at the new
+ * foot, past everything written meanwhile, for him to scroll back up. The
+ * transcript sets `pinned` again on return if the place is still the foot.
+ */
+export function leaveScroll(key: string, top: number, from: number | undefined, holds?: Hold[]): void {
+  positions.set(key, { top: Math.max(0, top), pinned: false, from, holds });
 }
 
 /** The entry, or null for a chat never scrolled in this launch. */
@@ -81,6 +101,61 @@ export function resetScroll(): void {
  */
 export function asideScrollKey(session: string, thread: number): string {
   return `aside:${session}:${thread}`;
+}
+
+/** An aside card's place (item 502), apart from the same thread's tab. */
+export function asideCardScrollKey(session: string, thread: number): string {
+  return `aside-card:${session}:${thread}`;
+}
+
+/**
+ * An aside's entry on return (item 504, the chat's rule): held at the foot
+ * stays held only if that is still the foot; an answer that grew while he
+ * was away leaves him on the line he left.
+ */
+export function returnEntry(entry: ScrollEntry | null, scrollHeight: number, clientHeight: number): ScrollEntry | null {
+  if (!entry?.pinned) return entry;
+  return entry.top >= scrollHeight - clientHeight - 8 ? entry : { ...entry, pinned: false };
+}
+
+/** How long a mounting view is put back while it draws, in ms (487's span). */
+export const PUT_BACK_MS = 1500;
+const PUT_BACK_AT = [0, 50, 150, 300, 600, 1000];
+
+/**
+ * Put a view back where `entry` says while its content draws (item 502):
+ * at once, on every change under it, and on a few timers, until he
+ * scrolls, clicks or types in it, or `PUT_BACK_MS` has gone. A remembered
+ * top is set only once the view has room for it — one tick after mount
+ * the aside's thread was still short, so the top was cut to near 0 and
+ * the scroll that cut made recorded the cut place over his. `busy()` is
+ * true meanwhile: the view must not record its own scroll events as his.
+ */
+export function putBack(el: HTMLElement, entry: ScrollEntry | null): { busy: () => boolean; cancel: () => void } {
+  if (!entry) return { busy: () => false, cancel: () => {} };
+  let live = true;
+  const attempt = (last = false) => {
+    if (!live) return;
+    const end = Math.max(0, el.scrollHeight - el.clientHeight);
+    if (!entry.pinned && !last && end < entry.top - 1) return;
+    const top = restoreTop(entry, el.scrollHeight, el.clientHeight);
+    if (top !== null && Math.abs(el.scrollTop - top) > 1) el.scrollTop = top;
+  };
+  const mo = typeof MutationObserver === "undefined" ? null : new MutationObserver(() => attempt());
+  mo?.observe(el, { childList: true, subtree: true, characterData: true });
+  const timers = PUT_BACK_AT.map((ms) => setTimeout(() => attempt(), ms));
+  timers.push(setTimeout(() => (attempt(true), stop()), PUT_BACK_MS));
+  const input = ["wheel", "pointerdown", "keydown", "touchstart"] as const;
+  function stop() {
+    if (!live) return;
+    live = false;
+    mo?.disconnect();
+    for (const t of timers) clearTimeout(t);
+    for (const ev of input) el.removeEventListener(ev, stop, true);
+  }
+  for (const ev of input) el.addEventListener(ev, stop, true);
+  attempt();
+  return { busy: () => live, cancel: stop };
 }
 
 /**

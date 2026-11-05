@@ -14,6 +14,7 @@ import { parseSubagentBlock } from "../lib/subagent";
 import { isSendFile, parseSentFile, sentFileRoute, type SentFile } from "../lib/sentFiles";
 import { aimOf } from "../lib/aim";
 import { isPlaywright } from "../lib/playwright";
+import { applyRetry, type RetrySegment } from "../lib/retryLine";
 // Pure over the log (only a type import inside): the desktop's per-reply
 // sizes, so the phone's line under a reply says the Mac's number.
 import { fmtTokens, turnSizes, type TurnSize } from "../lib/tokens";
@@ -1095,6 +1096,17 @@ export interface LiveTurn {
   tools: ToolRow[];
   /** The model compacted mid-turn; the transcript re-reads at the end. */
   compacted: boolean;
+  /** The CLI retrying a failed call (item 474, the Mac's line of items
+   *  440 + 441): one line, updated per try, gone at the first word or call;
+   *  "stopping" once Stop was pressed here (`retryLine.ts`). */
+  retry?: RetrySegment | null;
+}
+
+/** Stop pressed here while the CLI retried (item 474): the line says
+ *  "stopping" and later tries leave it, as on the Mac. */
+export function retryStopping(live: LiveTurn | null): LiveTurn | null {
+  if (!live?.retry || live.retry.stopping) return live;
+  return { ...live, retry: { ...live.retry, stopping: true } };
 }
 
 export function emptyTurn(): LiveTurn {
@@ -1163,10 +1175,11 @@ function findTool(rows: ToolRow[], id: string): ToolRow | null {
 export function foldTurnEvent(live: LiveTurn, ev: TurnEvent): LiveTurn {
   switch (ev.type) {
     case "text_delta":
-      return { ...live, text: live.text + ev.text };
+      return { ...live, retry: null, text: live.text + ev.text };
     case "tool_call":
       return {
         ...live,
+        retry: null,
         tools: [...live.tools, { id: ev.id, name: ev.name, summary: toolSummary(ev.name, ev.input), ok: null, children: [], textAt: live.text.length }],
       };
     case "tool_result": {
@@ -1177,13 +1190,20 @@ export function foldTurnEvent(live: LiveTurn, ev: TurnEvent): LiveTurn {
         const sent = sentFrom(row.name, ev.content, ev.is_error);
         if (sent) row.sent = sent;
       }
-      return { ...live, tools };
+      return { ...live, retry: null, tools };
     }
     case "tool_denied": {
       const tools = structuredClone(live.tools);
       const row = findTool(tools, ev.tool_use_id);
       if (row) row.ok = false;
-      return { ...live, tools };
+      return { ...live, retry: null, tools };
+    }
+    case "retry": {
+      // Item 474: the Mac's rules (`applyRetry`) — replaced in place, and a
+      // line already "stopping" is left alone.
+      const segs: { kind: string }[] = live.retry ? [{ ...live.retry }] : [];
+      if (!applyRetry(segs, ev)) return live;
+      return { ...live, retry: segs[0] as unknown as RetrySegment };
     }
     case "compacted":
       return { ...live, compacted: true };

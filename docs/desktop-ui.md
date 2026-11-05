@@ -581,6 +581,53 @@ happened to be showing. The load effect is guarded on that pair changing rather
 than running on any state change: the textarea is bound to the same `text`, so an
 unguarded effect would discard what the user was typing on their own keystroke.
 
+### The note editor: one editor, a toolbar, a Markdown switch (item 498)
+
+A text note opens directly editable as formatted text: `NoteEditor.svelte`
+over `noteEditor.ts`, CodeMirror 6 with the Markdown drawn in place (headings
+sized, marks hidden off the caret's line, maths typeset, tables, task boxes and
+images drawn). There is no mode to pick: the Plain textarea and the `marked`
+Preview that items 150 and 495 offered beside it are gone from the note (their
+settings, `nightloom.noteMode` and `nightloom.notePreview`, are left in storage
+and no longer read, so every note opens formatted after the update even if
+Plain was the last pick — blocker 1653). ⌘-click follows a `[[link]]` as the
+Preview's anchors did. (The textarea mentioned above is now this editor; it is
+bound to `text` the same way.)
+
+A **toolbar row** sits under the top row, outside the scroller, so it stays put
+while the note scrolls (`NoteToolbar.svelte`): *Text style* (Normal text,
+Heading 1–3, Bold ⌘B, Italic ⌘I, Strikethrough, Quote; the caret line's block
+style ticked), *Code* (inline on a one-line selection, a fenced block
+otherwise), *Table* (3 columns, a header and two rows), *Image*, *Checklist*
+(`- [ ] ` on the selected lines; again to remove), *Insert +* (link,
+`[[note link]]`, `$formula$`, `---`), and at the end the **Markdown** switch.
+Every action is a function from the editor state to one transaction of
+ordinary Markdown (`noteFormat.ts`, unit-tested), isolated in the undo history
+so it is exactly one undo step; a block (table, divider, fence) goes on lines
+of its own with a blank line around it, so a `---` never turns the paragraph
+above into a heading. A click on a drawn task box ticks it (`[ ]` ↔ `[x]`, one
+character). No list-continuing Markdown keymap was added. Nothing rewrites the
+text on open, on the switch or on save: `noteRoundTrip498.test.ts` opens every
+`.md` in the repository, switches views both ways and reads back the same
+bytes, CRLF and lone CR included.
+
+The **Markdown switch** reconfigures one Compartment (`drawing` in
+`noteEditor.ts`) in the same `EditorView`: the drawing goes, the source shows
+in mono, and the caret, the undo history and the scroll survive (the
+reconfigure carries `view.scrollSnapshot()`, so the line at the top stays at
+the top). It is one setting for every note, `nightloom.noteMarkdown`, the last
+picked, re-read when a kept tab (487) comes back to the front.
+
+**Images** (blocker 1652): *Image* opens a file picker and copies the file into
+`attachments/` beside the note — `keep_note_file`, which runs the notes panel's
+own `keep::keep_in_folder` (item 492) in the note's store, the project's notes
+or the vault, with Keep both on a clash (the same bytes reuse the file there; a
+name taken by other bytes is numbered) — then inserts `![name](attachments/…)`,
+the path percent-encoded. The fixed files (AGENTS.md, memory, a model's file)
+take no images; the button says so. A relative image link is drawn from the
+store (`imageSource` → `readNoteMedia` → a `data:` URL); before 498 it pointed
+at the app's own origin and drew nothing.
+
 `refreshNotes` reads **both** stores after every turn, which is the visible half
 of shared knowledge — the note the model just left appears in the sidebar without
 a reload. A new note gets `.md` appended when the name has no extension, since
@@ -1495,6 +1542,29 @@ first under the top edge; found again in the new DOM by tag and the start of
 its text, nearest to where it was. A pinned reader is left to the pin effect
 and lands at the foot as before.
 
+~~Held by the first element with text under the top edge~~ — item 493
+(2026-11-02): WebKit clamps `scrollTop` as the ghost leaves (to the foot of his
+question, measured 331), so the hold is what puts the view back, and the first
+element with text was often one with no twin in the recorded reply: the
+thinking row ("thought for 1 s" live, "thought · summary" recorded) or a word
+still in the streaming motion's span. Those left the view at the clamp, up to
+2,900 px above his line. Now the hold is the reply's prose blocks in view
+(`src/lib/readingPlace.ts`: `.markdown`'s top-level blocks and list items,
+never inside an `.activity`), tried in order, then the old element; none found,
+the scroll position from before the swap. Measured after: every case within
+0.7 px, except a reader left unpinned at the very foot, whom the page's
+shorter foot moves 10.6 px.
+
+**The turn-done nudge (item 497, 2026-11-02; blocker 1629 "Yes to the
+nudge").** With the line held, the reply's end had no visible movement left,
+and he reads one as "done". After the hold, the transcript's inner column dips
+4 px and settles back over 340 ms (`src/lib/doneNudge.ts`, Web Animations on
+a transform: no layout, no `scrollTop` change). Only when a reply ends in the
+chat on screen (the ghost dropped with its own session key), pinned or not;
+never when a new turn starts over a ghost. None under `prefers-reduced-motion`.
+Measured (`nightshift-code/notes/runner-design/497-harness/`): the line
+moves 4.0 px at the peak and ends where the hold left it, in every 493 case.
+
 **Navigator (`src/lib/navigator.ts`, `src/lib/Navigator.svelte`).** The strip
 at the transcript's right edge, from his screenshot of LibreChat's rail (their
 `client/src/components/Chat/Messages/MessageNav.tsx`, read 2026-09-15; the
@@ -2007,7 +2077,10 @@ unit-tested, the app was not driven):
    project (doing, done, next, decisions and why, files that matter, in
    the model's words); end the reply with a short start prompt for the new
    chat — which files to read, in which order, what to do first — in a
-   fenced block tagged `start-prompt`; then stop. ~~`---` rule and *Added
+   ~~fenced block tagged `start-prompt`~~ `<handoff>…</handoff>` block,
+   plain prose, no fence (item 464, 2026-10-28; `handoffTag.ts` — the reply
+   shows it as a *Next chat's prompt* card with Copy, and a fenced
+   `start-prompt` block from an older reply is still read); then stop. ~~`---` rule and *Added
    by Nightloom* marker~~ — gone with the append. **Settings → Claude
    Code** (a new pane, nav under Providers) holds the default mark (*Hand
    off at [70] %* for every chat without its own) and the message in a
@@ -2027,6 +2100,14 @@ unit-tested, the app was not driven):
    start-prompt block…*) repeats it until he types. ~~"Read HANDOFF.md and
    continue." in its box~~. The wrapped bar says which of the two it will
    be before he clicks.
+   **A thread's +** (item 464): at a thread chat's turn end the reply's last
+   `<handoff>` block (none inside a fence or inline code, none unclosed,
+   never mid-stream) is saved in the thread's `handoff.json` beside
+   `thread.md` (Rust `thread_handoff`). *New chat in this thread* puts
+   exactly that text in the new chat's box, unsent, the first time only
+   (the file names the child that took it; *Continue* counts too); with no
+   hand-off, or one already taken, the box opens empty. ~~The thread's
+   read order ending "Then do what I ask below."~~
 6. **The queue after the hand-off.** `queueHold`: ~~due holds (F11)~~ —
    the wrap-up rides no message, so a notice holds nothing and the queued
    wrap-up drains through the queue like any row; what holds is a Stop
@@ -2277,7 +2358,10 @@ a pane's content, the *open beside* half lights and a drop splits
 
 **The terminal's dock.** Each pane ends in `<div class="pane-dock"
 data-pane={pane.id}>`, under the composer, empty until backlog 113's
-terminal mounts into it.
+terminal mounts into it. Since item 503 the dock's strip also holds a chat's
+**Agent commands** (view only, rebuilt from its log) and a tab per **Run** on
+a reply's shell block, whose output comes back to the chat it came from as a
+compact "Ran in terminal" card. Both are in [terminal.md](terminal.md).
 
 ### Tabs above everything; the + chooser; drags in (nightshift backlog 140, 2026-09-17; blockers 193, 194, 195)
 

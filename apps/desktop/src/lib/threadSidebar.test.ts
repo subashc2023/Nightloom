@@ -37,6 +37,7 @@ vi.mock("./api", async (importOriginal) => ({
   connect: vi.fn(async () => {
     throw new Error("not connected in tests");
   }),
+  takeThreadHandoff: vi.fn(async () => null),
 }));
 
 const when = (m: number) => new Date(Date.UTC(2026, 9, 2, 20, m)).toISOString();
@@ -187,19 +188,27 @@ describe("New chat in this thread (288)", () => {
     app.toasts = [];
   });
 
-  it("opens a new chat already bound, with the thread's read order in the box, unsent", async () => {
+  // ~~"opens a new chat already bound, with the thread's read order in the
+  // box, unsent"~~ — item 464 (2026-10-28): the canned read order is gone;
+  // the box holds the thread's saved hand-off or nothing.
+  it("opens a new chat already bound, with an empty box when no hand-off is saved (464)", async () => {
+    vi.mocked(api.takeThreadHandoff).mockResolvedValueOnce(null);
     expect(await newChatInThread("stuart")).toBe(true);
     expect(api.newSession).toHaveBeenCalledTimes(1);
     expect(api.setChatThread).toHaveBeenCalledWith("stuart");
     expect(app.activeSessionId).toBe("c-new");
     expect(chatThread(app.events)).toBe("stuart");
-    const box = readDraft("c-new").text;
-    expect(box).toBe(threadReadOrder("stuart", THEN_HIS_ASK));
-    expect(box).toContain(".agents/threads/stuart/");
-    expect(box).toContain("do what I ask below");
-    // Light: no start prompt is promised and no wrap-up was asked for.
-    expect(box).not.toContain("start prompt");
-    expect(box).not.toContain("hand off");
+    expect(api.takeThreadHandoff).toHaveBeenCalledWith("stuart", "c-new");
+    expect(readDraft("c-new").text).toBe("");
+    expect(app.events.map((e) => e.event)).toEqual(["session_created", "thread"]);
+  });
+
+  it("puts exactly the saved hand-off in the new chat's box, unsent (464)", async () => {
+    const text = "Read the Queue in thread.md, then run T-04 on the cut data.";
+    vi.mocked(api.takeThreadHandoff).mockResolvedValueOnce(text);
+    expect(await newChatInThread("stuart")).toBe(true);
+    expect(readDraft("c-new").text).toBe(text);
+    expect(readDraft("c-new").text).not.toContain(THEN_HIS_ASK);
     // Unsent: nothing is in the log but the creation and the binding.
     expect(app.events.map((e) => e.event)).toEqual(["session_created", "thread"]);
   });

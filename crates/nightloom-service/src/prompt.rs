@@ -60,7 +60,9 @@ pub const DEFAULT_IDENTITY: &str = "You are Nightloom, a model-agnostic assistan
 
 Be direct and concrete. Answer what was asked, at the length the question deserves — no preamble, no restating the question back, no summary of what you just said.
 
-When tools are available, use them to check rather than guessing, and say plainly when something is unverified. If a request is ambiguous in a way that changes the answer, ask; otherwise take the sensible reading and proceed.";
+When tools are available, use them to check rather than guessing, and say plainly when something is unverified. If a request is ambiguous in a way that changes the answer, ask; otherwise take the sensible reading and proceed.
+
+A command for the user to run themselves goes in its own ```bash block, one command per block: the desktop app gives that block a Run button and sends you its output.";
 
 /// The instruction file honoured in every directory on the walk, and in the
 /// user's config dir.
@@ -747,6 +749,18 @@ fn engine_note_segment(knowledge: Option<&KnowledgeContext>) -> Segment {
     if let Some(knowledge) = knowledge {
         let alias = crate::tools::VAULT_ALIAS;
         let dir = knowledge.dir.display();
+        // Item 472: the organisers the knowledge section names are
+        // Nightloom's MCP tools here.
+        {
+            use crate::tools::notes::{FOLDER_NAME, LIST_NAME, MOVE_NAME};
+            text.push_str(&format!(
+                " The knowledge base's {LIST_NAME}, {FOLDER_NAME} and {MOVE_NAME} are \
+                 {}, {} and {} (ToolSearch them by those full names).",
+                crate::mcp_server::mcp_name(LIST_NAME),
+                crate::mcp_server::mcp_name(FOLDER_NAME),
+                crate::mcp_server::mcp_name(MOVE_NAME),
+            ));
+        }
         text.push_str(&format!(
             " {alias} stands for the vault directory {dir}, so {alias}/<name> means the file \
              {dir}/<name>; [[name]] means {alias}/<name>.md. That directory is granted to you. \
@@ -807,9 +821,19 @@ fn engine_note_segment(knowledge: Option<&KnowledgeContext>) -> Segment {
     text.push_str(PERSONAL_DATA_NOTE);
     text.push(' ');
     text.push_str(CITE_NOTE);
+    text.push(' ');
+    text.push_str(RUN_BLOCK_NOTE);
     text.push_str("\n</engine-note>");
     Segment::new(SegmentKind::EngineNote, "engine-note", text)
 }
+
+/// Where a command for him goes (nightshift item 503): a `bash` block gets
+/// a Run button whose output comes back as a message. The API engine reads
+/// the same sentence at the end of [`DEFAULT_IDENTITY`], which the Claude
+/// Code engine does not send.
+pub const RUN_BLOCK_NOTE: &str = "A command for the user to run themselves goes in its own \
+     ```bash block, one command per block: the desktop app gives that block a Run button and \
+     sends you its output.";
 
 /// What a non-incognito chat on the Claude Code engine is told about the
 /// account details the CLI attaches as context (nightshift backlog 446,
@@ -844,7 +868,7 @@ fn incognito_engine_note_segment() -> Segment {
          tool mcp__nightloom__fetch_page (ToolSearch it by that full name). For the whole \
          text of a page use fetch_page (WebFetch summarises and truncates); if fetch_page \
          reports a JavaScript shell or returns only a title, use WebFetch on that URL instead \
-         of retrying. {INCOGNITO_NOTE} {CITE_NOTE}\n</engine-note>"
+         of retrying. {INCOGNITO_NOTE} {CITE_NOTE} {RUN_BLOCK_NOTE}\n</engine-note>"
     );
     Segment::new(SegmentKind::EngineNote, "engine-note", text)
 }
@@ -1429,6 +1453,12 @@ pub fn knowledge_segment(knowledge: &KnowledgeContext) -> Segment {
          goes in the project's own notes instead. The distinction is the whole value of having \
          both, so put a note where it belongs rather than where it is convenient.\n"
     ));
+    // Item 472 (his ask on 457: could he ask Claude to organise a heap of
+    // notes): the organisers, by the names the API engine calls them; the
+    // Claude Code engine's note maps them to their MCP names.
+    text.push('\n');
+    text.push_str(&crate::tools::notes::prompt_sentence(|n| n.to_string()));
+    text.push('\n');
 
     if notes.is_empty() {
         text.push_str("\nThe knowledge base is currently empty.\n");
@@ -1899,6 +1929,24 @@ the body text",
             .resolve("@kb/rust/async.md")
             .expect("the aliased path the segment names must resolve");
         assert!(resolved.is_file(), "{resolved:?}");
+    }
+
+    /// Item 472: the knowledge section says a chat can organise the notes,
+    /// by the API engine's names; the Claude Code engine's note maps them
+    /// to the MCP names the CLI resolves.
+    #[test]
+    fn the_prompt_says_a_chat_can_sort_the_notes_into_folders() {
+        let dir = temp_dir("vault-organise");
+        let vault = dir.join("vault");
+        crate::project::write_note(&vault, "a.md", "# a").unwrap();
+        let k = KnowledgeContext { dir: vault };
+        let text = knowledge_segment(&k).text;
+        assert!(text.contains("use list_notes"), "{text}");
+        assert!(text.contains("make_note_folder to make a folder"), "{text}");
+        assert!(text.contains("move_notes to move or rename"), "{text}");
+        let note = engine_note_segment(Some(&k)).text;
+        assert!(note.contains("mcp__nightloom__move_notes"), "{note}");
+        assert!(!engine_note_segment(None).text.contains("move_notes"));
     }
 
     /// The sentence that stops the two stores collapsing into one. If it goes

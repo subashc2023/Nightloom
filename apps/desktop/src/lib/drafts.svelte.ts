@@ -195,7 +195,7 @@ function readQueue(v: unknown): QueuedMessage[] {
     if (q === null || typeof q !== "object") continue;
     const m = q as Record<string, unknown>;
     const text = typeof m.text === "string" ? m.text : "";
-    const attachments = Array.isArray(m.attachments) ? m.attachments.filter(isAttachment) : [];
+    const attachments = Array.isArray(m.attachments) ? m.attachments.filter(isAttachment).map(revive) : [];
     if (!text && attachments.length === 0) continue;
     out.push({ id: typeof m.id === "number" ? m.id : 0, text, attachments });
   }
@@ -214,6 +214,12 @@ function isAttachment(v: unknown): v is Attachment {
   );
 }
 
+/** A chip read back without its bytes but with a copy on disk (item 491,
+ *  `stash`): pending until `restoreStashed` fills it, so Send waits. */
+function revive(a: Attachment): Attachment {
+  return a.stash && !a.data ? { ...a, pending: true } : a;
+}
+
 /** Read the store. A malformed entry costs that entry, not the store. */
 export function loadDrafts(storage: Pick<Storage, "getItem"> = localStorage): Record<string, Draft> {
   const out: Record<string, Draft> = {};
@@ -226,7 +232,7 @@ export function loadDrafts(storage: Pick<Storage, "getItem"> = localStorage): Re
       if (v === null || typeof v !== "object") continue;
       const d = v as Record<string, unknown>;
       const text = typeof d.text === "string" ? d.text : "";
-      const attachments = Array.isArray(d.attachments) ? d.attachments.filter(isAttachment) : [];
+      const attachments = Array.isArray(d.attachments) ? d.attachments.filter(isAttachment).map(revive) : [];
       const queue = readQueue(d.queue);
       const sel = readSel(d.sel);
       const scroll = typeof d.scroll === "number" && Number.isFinite(d.scroll) && d.scroll > 0 ? d.scroll : undefined;
@@ -266,22 +272,31 @@ export function serializeDrafts(map: Record<string, Draft>): string {
     const kept: Attachment[] = [];
     for (const a of list) {
       // A chip still converting has no bytes to keep (item 277); his file
-      // is still where he dropped it from.
-      if (a.pending) continue;
+      // is still where he dropped it from. One being read back from its
+      // copy on disk (item 491) keeps its place.
+      if (a.pending && !a.stash) continue;
+      let data = a.data;
       // Pasted text (item 284) is kept like the box's text, past the caps:
       // there is no file to drop again, and the clipboard may have moved on.
       if (!a.pasted) {
-        if (a.data.length > PERSIST_ATTACHMENT_MAX || a.data.length > budget) continue;
-        budget -= a.data.length;
+        if (a.data.length > PERSIST_ATTACHMENT_MAX || a.data.length > budget) {
+          // A long PDF over the caps (item 491) is kept by its copy on
+          // disk: the chip, its pages and his route choice, no bytes.
+          if (!a.stash) continue;
+          data = "";
+        } else budget -= a.data.length;
       }
       kept.push({
         id: a.id,
         kind: a.kind,
         media_type: a.media_type,
         name: a.name,
-        data: a.data,
+        data,
         ...(a.label ? { label: a.label } : {}),
         ...(a.pasted ? { pasted: true } : {}),
+        ...(a.pages ? { pages: a.pages } : {}),
+        ...(a.whole ? { whole: true } : {}),
+        ...(a.stash ? { stash: a.stash } : {}),
       });
     }
     return kept;
@@ -364,17 +379,38 @@ export function nextQueueId(): number {
 }
 
 let timer: ReturnType<typeof setTimeout> | null = null;
+// When the oldest unwritten change was made (item 486), or null when all is
+// written.
+let pendingSince: number | null = null;
+
+/** The longest a change waits unwritten while typing never pauses (item 486). */
+export const SAVE_MAX_WAIT_MS = 1000;
+
+/**
+ * How long to wait before writing, `now` ms after the oldest unwritten
+ * change at `since`: the 400 ms debounce, but never past
+ * `SAVE_MAX_WAIT_MS` from that change. The plain debounce reset on every
+ * keystroke, so steady typing (a key every 100–300 ms) wrote nothing until
+ * he paused — a crash mid-burst (2026-10-30) loses all of it. Now it loses
+ * at most ~1 s.
+ */
+export function saveDelay(since: number, now: number): number {
+  return Math.max(0, Math.min(SAVE_DELAY_MS, since + SAVE_MAX_WAIT_MS - now));
+}
 
 /** Write soon. Debounced: a keystroke is not worth a synchronous write. */
 function schedule(): void {
   if (timer !== null) clearTimeout(timer);
-  timer = setTimeout(flushDrafts, SAVE_DELAY_MS);
+  const now = Date.now();
+  if (pendingSince === null) pendingSince = now;
+  timer = setTimeout(flushDrafts, saveDelay(pendingSince, now));
 }
 
 /** Write now. Called on the debounce and when the page is going away. */
 export function flushDrafts(): void {
   if (timer !== null) clearTimeout(timer);
   timer = null;
+  pendingSince = null;
   if (typeof localStorage === "undefined") return;
   saveDrafts(drafts);
 }
@@ -480,6 +516,81 @@ export function addAttachment(key: string, a: Attachment): void {
 function holderOf(key: string, id: number): Draft | undefined {
   if (drafts[key]?.attachments.some((a) => a.id === id)) return drafts[key];
   return Object.values(drafts).find((d) => d.attachments.some((a) => a.id === id));
+}
+
+/** Chip `id` as it is now — in `key`'s box or the box it moved to — or
+ *  null once removed or sent (item 467: a draft image's open card reads
+ *  its bytes here, and closes when there are none). */
+export function findChip(key: string, id: number): Attachment | null {
+  return holderOf(key, id)?.attachments.find((a) => a.id === id) ?? null;
+}
+
+/** Every chip, box and queue alike, read back without its bytes but with a
+ *  copy on disk (item 491): what `restoreStashed` fills after a relaunch. */
+export function stashedChips(): { key: string; chip: Attachment }[] {
+  const out: { key: string; chip: Attachment }[] = [];
+  for (const [key, d] of Object.entries(drafts)) {
+    for (const chip of d.attachments) if (chip.stash && !chip.data) out.push({ key, chip });
+    for (const q of d.queue ?? []) for (const chip of q.attachments) if (chip.stash && !chip.data) out.push({ key, chip });
+  }
+  return out;
+}
+
+/**
+ * Item 491 follow-up: every draft-file id (`stash`, a hex SHA-256) a stored
+ * value names, found anywhere in its JSON — so a change of the drafts'
+ * shape cannot hide a copy from the prune. `null` when the value cannot be
+ * read: the prune then deletes nothing.
+ */
+export function draftFileIdsIn(raw: string | null): string[] | null {
+  if (raw === null) return [];
+  let v: unknown;
+  try {
+    v = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  const out = new Set<string>();
+  const walk = (x: unknown) => {
+    if (Array.isArray(x)) for (const y of x) walk(y);
+    else if (x && typeof x === "object")
+      for (const [k, y] of Object.entries(x)) {
+        if (k === "stash" && typeof y === "string" && /^[0-9a-f]{64}$/i.test(y)) out.add(y.toLowerCase());
+        else walk(y);
+      }
+  };
+  walk(v);
+  return [...out];
+}
+
+/** The draft-file ids the saved drafts (and their history ring) and the
+ *  drafts in memory name; `null` when the store cannot be read. */
+export function draftFileIds(storage: Pick<Storage, "getItem"> | null = typeof localStorage === "undefined" ? null : localStorage): string[] | null {
+  if (!storage) return null;
+  let saved: (string[] | null)[];
+  try {
+    saved = [draftFileIdsIn(storage.getItem(KEY)), draftFileIdsIn(storage.getItem(HISTORY_KEY))];
+  } catch {
+    return null;
+  }
+  if (saved.some((l) => l === null)) return null;
+  const live = draftFileIdsIn(JSON.stringify(drafts)) ?? [];
+  return [...new Set([...saved.flat(), ...live] as string[])];
+}
+
+/** Fill, or with `null` drop, a chip `stashedChips` gave — wherever it
+ *  now sits, box or queue. */
+export function settleStashed(chip: Attachment, patch: Partial<Attachment> | null): void {
+  for (const d of Object.values(drafts)) {
+    for (const list of [d.attachments, ...(d.queue ?? []).map((q) => q.attachments)]) {
+      const i = list.findIndex((a) => a.id === chip.id);
+      if (i < 0) continue;
+      if (patch) Object.assign(list[i], patch);
+      else list.splice(i, 1);
+      schedule();
+      return;
+    }
+  }
 }
 
 /** Change a chip in place — a conversion finishing (item 277). A chip

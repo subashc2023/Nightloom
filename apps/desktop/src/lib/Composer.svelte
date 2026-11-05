@@ -4,7 +4,7 @@
   import { isImeKey } from "./imeKey";
   import Kbd from "./Kbd.svelte";
   import ResizeHandle from "./ResizeHandle.svelte";
-  import { dragHeight, growHeight, loadBoxHeight, overflows, saveBoxHeight } from "./boxGrow";
+  import { caretAtEnd, dragHeight, growHeight, loadBoxHeight, measureHeld, overflows, saveBoxHeight } from "./boxGrow";
   import { sentSinceDrag } from "./composerSize";
   import {
     app,
@@ -12,10 +12,12 @@
     applyDraft,
     cacheHitRate,
     cancelTurn,
+    stopClock,
     continueChat,
     runningChatName,
     providerElsewhereName,
     registerProviderDrain,
+    registerRunDrain,
     contextUsed,
     pickerModels,
     send,
@@ -45,6 +47,9 @@
   import LiveBox from "./LiveBox.svelte";
   import { isMac } from "./platform";
   import { BoxHistory, editKind, historyInput, historyKey } from "./boxHistory";
+  import TypedMathBar from "./TypedMathBar.svelte";
+  import { applyTypedMath, findTypedMath, wrapTypedMath, type TypedMathSpan } from "./typedMath";
+  import { clearDenied, deniedFor, denyTypedMath, typedMathPrefs } from "./typedMathPrefs.svelte";
   import {
     RE_ASK,
     abortWrapUp,
@@ -86,7 +91,9 @@
   import { countDraftTokens, namedFiles, pasteIntoFocus, takeBackInjected } from "./api";
   import KeepButton from "./KeepButton.svelte";
   import { keepKey } from "./keep";
+  import { keepStateOf, revealKept } from "./keep.svelte";
   import { menuInterceptors } from "./state.svelte";
+  import { pendingRows } from "./pendingBubble.svelte";
   import {
     canUndo,
     followOffer,
@@ -98,11 +105,14 @@
     type Converted,
     type LongPaste,
   } from "./pasteAttach";
-  import { badgeOf, extOf } from "./attachKinds";
+  import { badgeOf, extOf, routeLabel, type Engine } from "./attachKinds";
+  import PdfRouteSwitch from "./PdfRouteSwitch.svelte";
+  import { draftImageContent, openAttachment } from "./attachments.svelte";
   import { sendTip, tip } from "./tip";
   import { armStop, stopChordLabel, stopChordTarget } from "./stopButton";
   import { stopPref } from "./stopShape.svelte";
-  import { acceptFiles, conversionJobs, filesBlocked, MAX_IMAGE_BASE64, splitChips, trackPending } from "./attachFiles.svelte";
+  import { releaseStop, slowDueIn, slowStopLine, stopPhase } from "./stopState";
+  import { acceptFiles, conversionJobs, filesBlocked, MAX_IMAGE_BASE64, settleRestored, splitChips, trackPending } from "./attachFiles.svelte";
   import { floatMenu } from "./floatMenu";
   import { ghostFor } from "./suggestions.svelte";
   import { queuedElsewhereToast } from "./browse";
@@ -134,6 +144,7 @@
     NEW_DRAFT_PREFIX,
   } from "./drafts.svelte";
   import type { Attachment } from "./types";
+  import { chipStep, isChipTag } from "./chipSteps";
   // Scheduled send (backlog 224): the ▾ beside Send and the chip above.
   import ScheduleMenu from "./ScheduleMenu.svelte";
   import ScheduledChip from "./ScheduledChip.svelte";
@@ -294,6 +305,21 @@
   });
   /** The chat's turn or this thread's answer: what Queue / Stop are about. */
   const busy = $derived(aside ? asideBusy : app.busy);
+  // Item 466: the chat's Stop, pressed, until its turn has ended. `stopNow`
+  // moves once, at the slow mark, for the quiet line; the clock is let go
+  // of when the turn ends however it ends.
+  let stopNow = $state(0);
+  const stopState = $derived(aside ? "idle" : stopPhase(app.busy, stopClock, stopNow));
+  const stopPressed = $derived(stopState === "stopping" || stopState === "slow");
+  $effect(() => {
+    const due = slowDueIn(stopClock, performance.now());
+    if (due === null || !app.busy) return;
+    const t = setTimeout(() => (stopNow = performance.now()), due + 16);
+    return () => clearTimeout(t);
+  });
+  $effect(() => {
+    if (!app.busy && stopClock.since !== null) releaseStop(stopClock);
+  });
   // Item 256: the next message's process starts while he types, so Send
   // finds the CLI, his hooks and the MCP servers already done.
   $effect(() => {
@@ -385,6 +411,11 @@
    * 062, and this is the half that needs nothing from it.
    */
   const queue = $derived(draft.queue);
+  /* Item 465 (merge patch note from agent E): the rows the transcript
+   * already draws as pending bubbles (`PendingBubbles`, main chat only)
+   * are left out of the queue box, so each mid-turn row shows in one place. */
+  const bubbledIds = $derived(new Set(aside ? [] : pendingRows(queue, app.busy && !app.parked).map((q) => q.id)));
+  const boxQueue = $derived(queue.filter((q) => !bubbledIds.has(q.id)));
   /*
    * The box he types in: the textarea, or — with the format toggle on
    * (item 276) — the formatted editor's `LiveBoxHandle`, which answers the
@@ -506,10 +537,9 @@
   function textHeight(): number {
     if (!ta) return 0;
     const was = ta.style.height;
-    ta.style.height = "auto";
-    const need = ta.scrollHeight;
-    ta.style.height = was;
-    return need;
+    // Item 469: measured with the composer's height held, so the chat
+    // above is not given the room for a moment (its scroll was clamped).
+    return measureHeld(ta, root, () => was);
   }
 
   /** The tallest the box may be dragged: most of the column, never all. */
@@ -617,12 +647,23 @@
     // sizing to its text.
     const min = floating ? 0 : Math.min(max, sentSinceDrag.floor(key, floorPx) ?? 0);
     ta.style.maxHeight = max + "px";
-    ta.style.height = "auto";
-    ta.style.height = growHeight(ta.scrollHeight, min, max) + "px";
+    // Item 469: the measure holds the composer's height (`measureHeld`),
+    // so a key typed in a full box no longer scrolls the chat up.
+    measureHeld(ta, root, (need) => growHeight(need, min, max) + "px");
     // Backlog 360: a pixel of rounding is not overflow (as the aside boxes).
     ta.style.overflowY = overflows(ta.scrollHeight, ta.clientHeight) ? "auto" : "hidden";
     // Backlog 355: a switched-to draft's place, once its height is right.
     putScrollBack();
+    // Item 469: a caret at the very end of a full box is at its foot. WebKit
+    // left a caret on an empty last line one line under the edge (23 px).
+    // Not while 355 holds a switched-to draft's place.
+    if (
+      ta instanceof HTMLTextAreaElement &&
+      document.activeElement === ta &&
+      !scrollHold.holds(key, performance.now()) &&
+      caretAtEnd(ta.selectionStart, ta.selectionEnd, ta.value.length)
+    )
+      ta.scrollTop = ta.scrollHeight;
   }
 
   // A resized window moves the 40% line.
@@ -825,6 +866,97 @@
   }
 
   /*
+   * Item 456: maths typed as text (`s^2`, "s squared") offered back as
+   * LaTeX in a bar above the box, after a typing pause. Never applied
+   * unasked: "Use maths" or Tab wraps the formulas as `$…$` in one undo
+   * step, × or Esc declines and that text is not offered again in this
+   * draft (`typedMathPrefs.svelte.ts`). The rules: `typedMath.ts`.
+   */
+  const MATH_PAUSE_MS = 600;
+  let mathSpans = $state<TypedMathSpan[]>([]);
+  let mathTimer: ReturnType<typeof setTimeout> | null = null;
+  let mathKey = untrack(() => key);
+  $effect(() => {
+    const t = text;
+    const k = key;
+    const on = typedMathPrefs.on;
+    untrack(() => scheduleMath(t, k, on));
+  });
+  $effect(() => () => {
+    if (mathTimer) clearTimeout(mathTimer);
+  });
+  /** Per keystroke: drop offers whose text moved, restart the pause. */
+  function scheduleMath(t: string, k: string, on: boolean): void {
+    if (mathTimer) clearTimeout(mathTimer);
+    mathTimer = null;
+    if (k !== mathKey) {
+      mathKey = k;
+      mathSpans = [];
+    }
+    if (!on || !t) {
+      if (mathSpans.length) mathSpans = [];
+      // A sent or emptied draft is a new draft: what was declined may be offered again.
+      if (!t) clearDenied(k);
+      return;
+    }
+    if (mathSpans.length && mathSpans.some((s) => t.slice(s.from, s.to) !== s.src))
+      mathSpans = mathSpans.filter((s) => t.slice(s.from, s.to) === s.src);
+    mathTimer = setTimeout(findMathNow, MATH_PAUSE_MS);
+  }
+  function findMathNow(): void {
+    mathTimer = null;
+    // Not under an open input-method composition: its text is not his yet.
+    if (composing) {
+      mathTimer = setTimeout(findMathNow, MATH_PAUSE_MS);
+      return;
+    }
+    const d = deniedFor(key);
+    mathSpans = findTypedMath(text).filter((s) => !d.has(s.src));
+  }
+  /** Wrap `one` (or every offered formula) as `$…$` (`$$…$$` for a whole line): one undo step. */
+  function acceptMath(one: TypedMathSpan | null): void {
+    if (!ta) return;
+    const t = text;
+    const offered = one ? [one] : mathSpans;
+    // Found again on the text as it stands, so the offsets are current.
+    // Item 490: one chip stands for every occurrence of its formula, so
+    // accepting it wraps them all (keeping one already keeps them all).
+    const chosen = findTypedMath(t).filter((s) => offered.some((o) => o.src === s.src && o.tex === s.tex));
+    if (chosen.length === 0) {
+      mathSpans = [];
+      return;
+    }
+    let next: string;
+    if (ta instanceof LiveBoxHandle) {
+      ta.replaceRanges(chosen.map((s) => ({ from: s.from, to: s.to, insert: wrapTypedMath(s) })));
+      next = ta.value;
+    } else {
+      const start = ta.selectionStart;
+      const end = ta.selectionEnd;
+      const r = applyTypedMath(t, chosen, end);
+      next = r.text;
+      hist.select(start, end);
+      hist.external(r.text, r.caret);
+      setDraftText(key, r.text);
+      void tick().then(() => {
+        if (!(ta instanceof HTMLTextAreaElement)) return;
+        ta.selectionStart = ta.selectionEnd = r.caret;
+        autogrow();
+      });
+    }
+    const d = deniedFor(key);
+    mathSpans = findTypedMath(next).filter((s) => !d.has(s.src));
+    ta.focus();
+  }
+  /** Keep `one` (or every offered formula) as typed, for this draft. */
+  function denyMath(one: TypedMathSpan | null): void {
+    const srcs = (one ? [one] : mathSpans).map((s) => s.src);
+    denyTypedMath(key, srcs);
+    mathSpans = mathSpans.filter((s) => !srcs.includes(s.src));
+    ta?.focus();
+  }
+
+  /*
    * The in-app clipboard history (nightshift backlog 173): ⌘⇧V (Ctrl+Shift+V
    * elsewhere) opens the ring over the box — what was copied, pasted or
    * sent in Nightloom, newest first (`clipRing.svelte.ts`). ↑↓ move, ↵ or a
@@ -842,7 +974,9 @@
     clipOpen = false;
     if (!c) return;
     if (c.kind === "image") {
-      addAttachment(key, { id: nextAttachmentId(), kind: "image", name: c.name, media_type: c.media_type, data: c.data });
+      const chip: Attachment = { id: nextAttachmentId(), kind: "image", name: c.name, media_type: c.media_type, data: c.data };
+      addAttachment(key, chip);
+      markAttached(key, [chip]);
       ta?.focus();
       return;
     }
@@ -867,9 +1001,10 @@
    */
   $effect(() => {
     void replyRequest.seq;
-    // Reply is to the chat (283): an aside's box must not take the quote.
-    if (aside) return;
-    const passage = untrack(() => takeReply());
+    // ~~Reply is to the chat (283): an aside's box must not take the quote.~~
+    // Item 481 (2026-10-29): a Reply in an aside's thread is for that
+    // aside's box; each box takes only the quotes meant for it.
+    const passage = untrack(() => takeReply(aside ? key : null));
     if (passage === null) return;
     untrack(() => {
       const start = ta?.selectionStart ?? text.length;
@@ -1009,6 +1144,10 @@
    * still nowhere (`boxLock.ts`).
    */
   const boxIsLocked = $derived(boxLocked(!!app.connection, app.connecting));
+  // Item 456: the typed-maths bar shows only when no other offer owns the keys.
+  const mathShown = $derived(
+    typedMathPrefs.on && mathSpans.length > 0 && !slashOpen && !ghost && !boxIsLocked && !clipOpen,
+  );
   const lockFocus = new FocusThroughLock();
   let wasLocked = untrack(() => boxIsLocked);
   $effect.pre(() => {
@@ -1162,6 +1301,20 @@
       stepHeight(e.key === "ArrowUp" ? 1 : -1);
       return;
     }
+    // Item 456: Tab takes the typed-maths offer, Esc declines it. Tab is
+    // free here: the ghost line shows only in an empty box and the slash
+    // list only on a leading "/", and the bar hides for both.
+    if (mathShown && e.key === "Tab" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault();
+      acceptMath(null);
+      return;
+    }
+    if (mathShown && e.key === "Escape" && !composing && !e.isComposing && e.keyCode !== 229) {
+      e.preventDefault();
+      e.stopPropagation();
+      denyMath(null);
+      return;
+    }
     if (ghost && e.key === "Tab" && !e.shiftKey) {
       e.preventDefault();
       acceptGhost();
@@ -1240,7 +1393,25 @@
   async function accept(files: Iterable<File>): Promise<Attachment[]> {
     // Under the key of the moment the file was dropped: a read can
     // outlive a chat switch, and the chip belongs where it was pasted.
-    return acceptFiles(key, files);
+    const chatKey = key;
+    const chips = await acceptFiles(chatKey, files);
+    markAttached(chatKey, chips);
+    return chips;
+  }
+
+  /*
+   * Item 458: attaching and removing a chip are steps of the box's history
+   * (`chipSteps.ts`), so ⌘Z takes back an attach or a remove and ⌘⇧Z
+   * redoes it, in order with the text's steps (456's maths accept and
+   * 284's conversion among them). Only in the box the chip landed in, and
+   * only while that chat is the open one: its history is the one ⌘Z walks.
+   */
+  function markAttached(chatKey: string, chips: Attachment[]): void {
+    if (chatKey !== key) return;
+    for (const c of chips) {
+      const i = attachments.findIndex((a) => a.id === c.id);
+      if (i >= 0) hist.mark({ chipStep: "add", chip: $state.snapshot(attachments[i]) as Attachment, index: i });
+    }
   }
 
   function onpaste(e: ClipboardEvent) {
@@ -1488,6 +1659,19 @@
         converted = { before: t.before, after: t.after, chipId: t.chip.id, caret: t.caret };
       }
     }
+    // Item 458: an attach or a remove, undone or redone.
+    if (isChipTag(s.tag)) {
+      // Leaves at once, as a chip's × takes it: no fade to wait out.
+      const stepped = chipStep(s.tag, dir, $state.snapshot(attachments) as Attachment[]).chips;
+      // A conversion that ended while the chip was out lands on it now (review fix).
+      setDraftAttachments(
+        key,
+        stepped.flatMap((c) => {
+          const back = settleRestored(c);
+          return back ? [back] : [];
+        }),
+      );
+    }
     setDraftText(key, s.text);
     void tick().then(() => {
       if (!(ta instanceof HTMLTextAreaElement)) return;
@@ -1715,8 +1899,11 @@
 
   function remove(id: number) {
     const chatKey = key;
-    const a = attachments.find((x) => x.id === id);
+    const at = attachments.findIndex((x) => x.id === id);
+    const a = attachments[at];
     removeAttachment(chatKey, id);
+    // Item 458: ⌘Z puts it back where it sat.
+    if (a) hist.mark({ chipStep: "remove", chip: $state.snapshot(a) as Attachment, index: at });
     // Pasted text has no file to drop again (item 284): × says so and
     // offers it back.
     if (a?.pasted) {
@@ -1840,6 +2027,8 @@
   // And when a provider turn off screen ends (A4 review): the message
   // queued behind it here goes, as its notice said.
   $effect(() => untrack(() => (aside ? undefined : registerProviderDrain(() => drain()))));
+  // And a block he ran has ended (item 503): its output goes as the next turn.
+  $effect(() => untrack(() => (aside ? undefined : registerRunDrain(() => drain(true)))));
   /** Why nothing can be scheduled from this box, if nothing can. */
   const scheduleBlocked = $derived(
     key.startsWith(NEW_DRAFT_PREFIX)
@@ -2092,6 +2281,9 @@
   // An aside runs on Claude Code only (081), so its pickers are always
   // the subscription engine's model and effort.
   const agentMode = $derived(!!aside || app.draft.engine === "claude-code");
+  /** The engine a chip's route is decided for at Send (item 491): the
+   *  connection's, as `splitChips` reads it; an aside is always Claude Code. */
+  const chipEngine = $derived<Engine>(aside || app.connection?.engine === "claude-code" ? "claude-code" : "api");
   const locked = $derived(app.busy || app.connecting);
   const mod = isMac ? "⌘" : "Ctrl+";
   const shift = isMac ? "⇧" : "Shift+";
@@ -2588,7 +2780,7 @@
   {#if composerShows("schedule", !!aside)}
     <ScheduledChip {key} onedit={scheduleEdited} />
   {/if}
-  {#if queue.length > 0}
+  {#if boxQueue.length > 0}
     <div class="queue" role="list" aria-label="queued messages">
       <div class="queue-head">
         <span class="ns-chip mono" data-queue-head>{aside ? `queued · ${asideBusy ? "sent when this answer ends" : asideBlock === "not-open" ? "waiting — open the chat to send" : "waiting"}` : mainHead}</span>
@@ -2596,7 +2788,7 @@
           <button class="ns-btn ghost small" disabled={!app.connection || asideBlock !== null} onclick={() => void drain(true)}>Send next</button>
         {/if}
       </div>
-      {#each queue as q, i (q.id)}
+      {#each boxQueue as q, i (q.id)}
         <div class="queue-row" role="listitem" data-queue-id={q.id}>
           <span class="queue-n mono">{i + 1}</span>
           <span class="queue-text" use:tip={q.text} data-find-text={q.text}>{#if handoffHere && q.id === handoff.queuedId}<span class="ns-chip mono" use:tip={"Put here by Nightloom: the window crossed this chat's hand-off mark while you were away. × takes it back."}>wrap-up · queued while you were away</span> {/if}{firstLine(q.text) || "(no text)"}{#if q.attachments.length > 0} <span class="ns-chip mono">{q.attachments.length} {q.attachments.length === 1 ? "file" : "files"}</span>{/if}</span>
@@ -2623,16 +2815,53 @@
         <div class="attachment" in:chipIn|global={a} out:chipOut|global={a}>
           <div class="attachment-face">
             {#if a.kind === "image"}
-              <img src={`data:${a.media_type};base64,${a.data}`} alt={a.name} />
+              <!-- Item 467: the thumbnail opens the image in front, as a
+                   sent one does (UserBubble's), zooming from here. -->
+              <button
+                class="image-open"
+                use:tip={"Open in front"}
+                aria-label="open {a.name}"
+                onclick={(e) => {
+                  const el = e.currentTarget.querySelector("img");
+                  openAttachment(
+                    draftImageContent(key, a.id, a.name),
+                    e.currentTarget.getBoundingClientRect(),
+                    el && el.naturalWidth > 0 ? { width: el.naturalWidth, height: el.naturalHeight } : null,
+                  );
+                }}
+              >
+                <img src={`data:${a.media_type};base64,${a.data}`} alt={a.name} />
+              </button>
             {:else}
+              {@const kept = keepStateOf(keepKey(a.name, a.data)).phase === "kept"}
+              <!-- Item 459: a kept file's chip opens Notes at that file. -->
+              <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
               <span
                 class="file"
                 class:pending={a.pending}
-                use:tip={a.label ? `${a.name} — ${a.pending ? "converting; Send waits for it" : a.label}` : a.name}
+                class:long={!!routeLabel(a, chipEngine)}
+                class:kept
+                role={kept ? "button" : undefined}
+                tabindex={kept ? 0 : undefined}
+                use:tip={kept
+                  ? `${a.name} — kept in this project: click to show it in Notes`
+                  : a.label
+                    ? `${a.name} — ${a.pending ? "converting; Send waits for it" : a.label}`
+                    : a.name}
+                onclick={() => kept && revealKept(keepKey(a.name, a.data))}
+                onkeydown={(e) => {
+                  if (kept && (e.key === "Enter" || e.key === " ")) {
+                    e.preventDefault();
+                    revealKept(keepKey(a.name, a.data));
+                  }
+                }}
               >
                 <span class="file-ext">{a.pending ? extOf(a.name).toUpperCase() : badgeOf(a)}</span>
                 <span class="file-name">{a.name}</span>
-                {#if a.label}<span class="file-label">{a.label}</span>{/if}
+                <!-- Item 491: a long PDF's route stands in for the label
+                     (its pages are in both; the label stays in the tip). -->
+                {#if a.label && !routeLabel(a, chipEngine)}<span class="file-label">{a.label}</span>{/if}
+                <PdfRouteSwitch chip={a} draftKey={key} engine={chipEngine} />
               </span>
             {/if}
             <button
@@ -2752,8 +2981,8 @@
         Check the reply above. <strong>Continue in a new chat</strong> opens a linked chat in the same folder with
         {#if handoff.startPrompt}{readOrderText.trim() ? "the read order below and then " : ""}the model's start prompt
           in the box, not sent{:else if readOrderText.trim()}the read order below in the box, not sent — the reply had no
-          <code>start-prompt</code> block, so add what to do first{:else}an empty box — the reply had no
-          <code>start-prompt</code> block, so say what to read first{/if}. This chat stays readable.
+          <code>&lt;handoff&gt;</code> prompt, so add what to do first{:else}an empty box — the reply had no
+          <code>&lt;handoff&gt;</code> prompt, so say what to read first{/if}. This chat stays readable.
         {#if threadHandoff}The new chat opens on the same thread.{/if}
       </p>
       <ThreadPicker compact />
@@ -2811,6 +3040,9 @@
         <div class="slash-row dim">↑↓ move · ↵ or Tab insert · Esc close · the CLI runs a skill named in the message</div>
       {/if}
     </div>
+  {/if}
+  {#if mathShown}
+    <TypedMathBar spans={mathSpans} onaccept={acceptMath} ondeny={denyMath} />
   {/if}
   <div class="card">
     <!-- No autocorrect, capitalisation or spell-marking on a message to a
@@ -3006,6 +3238,13 @@
         </span>
       {/if}
       <span class="spacer"></span>
+      {#if stopPressed && (stopState === "slow" || stopPref.shape !== "labelled")}
+        <!-- Item 466: a Stop with no room for the word (all but the
+             labelled shape) has it here; past 3 s, why it is still waiting. -->
+        <span class="stop-why" role="status" use:tip={stopState === "slow" ? `Stopping… ${slowStopLine(app.connection?.engine)}. The reply so far and your draft stay.` : "Stopping…"}
+          >Stopping…{#if stopState === "slow"}<span class="stop-why-more">{" "}{slowStopLine(app.connection?.engine)}</span>{/if}</span
+        >
+      {/if}
       {#if handoffStayed}
         <button
           class="ns-btn ghost small act"
@@ -3036,8 +3275,11 @@
             ><span class="stop-size" aria-hidden="true">Send</span><span class="stop-ico" aria-hidden="true"><Icon name="stop" size={stopPref.shape === "wide" ? 16 : 12} />{#if stopPref.shape === "labelled"}<span class="stop-word">Stop</span>{/if}</span></button
           >
         {:else}
-          <button class="ns-btn danger send stop act shape-{stopPref.shape}" aria-label="Stop" use:armStop use:tip={`${app.parked ? `Stop the turn running in ${runningChatName()}` : "Stop this turn"} (${stopChordLabel(isMac)})`} onclick={() => void cancelTurn()}
-            ><span class="stop-size" aria-hidden="true">Send</span><span class="stop-ico" aria-hidden="true"><Icon name="stop" size={stopPref.shape === "wide" ? 16 : 12} />{#if stopPref.shape === "labelled"}<span class="stop-word">Stop</span>{/if}</span></button
+          <!-- Item 466: pressed, it stays pressed — deflated, dimmed, a
+               spinner for the square — until the turn has ended, and a
+               second click asks nothing again. -->
+          <button class="ns-btn danger send stop act shape-{stopPref.shape}" class:stopping={stopPressed} aria-label={stopPressed ? "Stopping…" : "Stop"} aria-disabled={stopPressed} use:armStop use:tip={stopPressed ? "Stopping… — the turn ends when Claude has stopped; the reply so far and your draft stay" : `${app.parked ? `Stop the turn running in ${runningChatName()}` : "Stop this turn"} (${stopChordLabel(isMac)})`} onclick={() => { if (!stopPressed) void cancelTurn(); }}
+            ><span class="stop-size" aria-hidden="true">Send</span><span class="stop-ico" aria-hidden="true">{#if stopPressed}<span class="stop-spin"></span>{:else}<Icon name="stop" size={stopPref.shape === "wide" ? 16 : 12} />{/if}{#if stopPref.shape === "labelled"}<span class="stop-word">{stopPressed ? "Stopping…" : "Stop"}</span>{/if}</span></button
           >
         {/if}
       {:else if aside}
@@ -3235,7 +3477,7 @@
   {:else if !aside && handoff.noStartPromptChat !== null && handoff.noStartPromptChat === app.activeSessionId && !text}
     <!-- The continued chat whose box was left empty (backlog 086 pass 2):
          the note lives here, under the box, until he types. -->
-    <div class="hint">continued from the earlier chat — its wrap-up reply had no start-prompt block, so the box is empty; say which files to read first (HANDOFF.md is in the project)</div>
+    <div class="hint">continued from the earlier chat — its wrap-up reply had no &lt;handoff&gt; prompt, so the box is empty; say which files to read first (HANDOFF.md is in the project)</div>
   {/if}
 </div>
 
@@ -3538,6 +3780,8 @@
     max-width: none;
   }
   .composer.aside .card {
+    /* Item 470: a rendered quote in the box sits on the card's own ground. */
+    --q-ground: var(--aside-well, var(--sheet));
     border-style: dashed;
     background: var(--aside-well, var(--sheet));
     padding: 8px 10px;
@@ -3638,6 +3882,18 @@
     border-radius: 8px;
     box-shadow: var(--drop-ring, none);
   }
+  .image-open {
+    padding: 0;
+    border: none;
+    background: none;
+    cursor: zoom-in;
+    display: block;
+    border-radius: 8px;
+  }
+  .image-open:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
   .attachment img {
     width: 4rem;
     height: 4rem;
@@ -3660,6 +3916,21 @@
     border-radius: 8px;
     background: var(--panel);
     line-height: 1.2;
+  }
+  /* Item 491: a long PDF's chip carries its route and the switch. */
+  .file.long {
+    width: 9.5rem;
+    height: auto;
+    min-height: 4rem;
+    padding-block: 0.35rem;
+  }
+  /* Item 459: a kept file's chip is a way to it in Notes. */
+  .file.kept {
+    cursor: pointer;
+  }
+  .file.kept:hover,
+  .file.kept:focus-visible {
+    border-color: var(--accent);
   }
   .file-ext {
     font-size: 0.65rem;
@@ -3900,6 +4171,48 @@
   }
   .stop-word {
     font-size: 12.5px;
+  }
+  /* Item 466: the Stop pressed — sunk, dimmed, its square a spinner — held
+     until the turn has ended. */
+  .stop.stopping {
+    transform: scale(0.92);
+    opacity: 0.6;
+    box-shadow: inset 0 1px 3px color-mix(in srgb, #000 35%, transparent);
+    cursor: progress;
+  }
+  .stop.shape-labelled.stopping .stop-ico {
+    gap: 6px;
+  }
+  .stop-spin {
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    border: 1.6px solid currentColor;
+    border-right-color: transparent;
+    animation: stop-spin 0.8s linear infinite;
+    flex: none;
+  }
+  @keyframes stop-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .stop-spin {
+      animation-duration: 2.4s;
+    }
+  }
+  .stop-why {
+    font-size: 11.5px;
+    color: var(--dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+    /* A basis of 0: it takes the room the row has and ellipsizes in it,
+       never pushing Queue and Stop onto a line of their own. */
+    flex: 1 1 0;
+    text-align: right;
   }
   /* Send's split (backlog 224): the ▾ carries the right-hand corners. */
   .send-split {

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   hasQuoteLine,
+  quoteNeedsRender,
+  quoteRuns,
   insertQuote,
   mirrorLines,
   pillParts,
@@ -9,6 +11,7 @@ import {
   requestReply,
   splitQuotes,
   takeReply,
+  tightenDisplayMath,
 } from "./replyQuote.svelte";
 import transcriptSrc from "./Transcript.svelte?raw";
 
@@ -18,6 +21,35 @@ describe("quoteBlock (backlog 215)", () => {
   });
   it("drops leading blank lines and trailing whitespace", () => {
     expect(quoteBlock("\n\nhello  \n")).toBe("> hello");
+  });
+});
+
+// Item 453: the passages are what `selectionText` read from the rendered
+// replies in the harness (nightshift-code notes/runner-design/452-453-harness, #quote).
+describe("quoteBlock with display maths (item 453)", () => {
+  const aligned = "The two steps are\n\n$$\\begin{aligned}\na &= b + c \\\\\nd &= e - f\n\\end{aligned}$$\nand then the last one.";
+  const tight = "The update is\n\n$$w \\leftarrow w - \\eta \\nabla L$$\nwhere eta is the rate.\n\n$$L = \\tfrac12 (y - \\hat y)^2$$\nand that is all.";
+  const list = "First\n\n$$a^2 + b^2\n= c^2$$\n\nSecond\n\n$$e^{i\\pi} + 1 = 0$$";
+  const cases = "Define\n\n$$f(x) = \\begin{cases}\n1 & x > 0 \\\\\n\n0 & \\text{otherwise}\n\\end{cases}$$\nThen go on.";
+  const bracket = "Gauss says\n\n\\[\\sum_{i=1}^{n} i\n= \\frac{n(n+1)}{2}\\]\n\nwhich is the trick.";
+  const bare = (q: string) => q.split("\n").filter((l) => l === ">").length;
+
+  it("has no bare `>` line beside or inside a formula", () => {
+    for (const p of [aligned, tight, list, cases, bracket]) expect(bare(quoteBlock(p))).toBe(0);
+  });
+  it("keeps every line of a multi-line formula, each quoted", () => {
+    expect(quoteBlock(aligned)).toBe(
+      "> The two steps are\n> $$\\begin{aligned}\n> a &= b + c \\\\\n> d &= e - f\n> \\end{aligned}$$\n> and then the last one.",
+    );
+    expect(quoteBlock(bracket)).toBe("> Gauss says\n> \\[\\sum_{i=1}^{n} i\n> = \\frac{n(n+1)}{2}\\]\n> which is the trick.");
+  });
+  it("is one quote block in the bubble (one bar)", () => {
+    const sent = insertQuote("", 0, 0, list).text + "why?";
+    expect(splitQuotes(sent).filter((s) => s.kind === "quote")).toHaveLength(1);
+  });
+  it("leaves paragraph breaks away from maths, and inline maths, as they were", () => {
+    expect(quoteBlock("one\n\ntwo $x$ and $$y$$ here\n\nthree")).toBe("> one\n>\n> two $x$ and $$y$$ here\n>\n> three");
+    expect(tightenDisplayMath("no maths\n\nat all")).toBe("no maths\n\nat all");
   });
 });
 
@@ -85,7 +117,8 @@ describe("requestReply", () => {
   it("bumps the sequence with the passage", () => {
     const seq = replyRequest.seq;
     requestReply("p");
-    expect(replyRequest).toEqual({ seq: seq + 1, passage: "p" });
+    // Item 481: with the box it is for — null, the chat's.
+    expect(replyRequest).toEqual({ seq: seq + 1, passage: "p", target: null });
   });
   it("is taken once", () => {
     requestReply("q");
@@ -137,5 +170,62 @@ describe("the selection pill (item 223)", () => {
     const pill = transcriptSrc.slice(transcriptSrc.indexOf('<div class="aside-pill"'));
     expect(pill).toMatch(/^<div class="aside-pill"[^>]*>\s*(<!--[\s\S]*?-->\s*)?\{#each pillParts\(canAsk\)/);
     expect(pill).toMatch(/class="pill-div"/);
+  });
+});
+
+describe("quoteRuns and quoteNeedsRender (item 470: a reply's maths in the box)", () => {
+  const draft = [
+    "> $$\\begin{aligned}",
+    "> A(\\overline{A}+B) + AB &= A\\overline{A} + AB + AB && \\text{T8}\\\\",
+    "> &= AB && \\text{T3}'",
+    "> \\end{aligned}$$",
+    "",
+    "Okay what I did was",
+    "> a plain quote",
+  ].join("\n");
+
+  it("finds each run's lines, its range in the draft and its text without markers", () => {
+    const runs = quoteRuns(draft);
+    expect(runs.map((r) => [r.first, r.last])).toEqual([
+      [0, 3],
+      [6, 6],
+    ]);
+    expect(draft.slice(runs[0]!.start, runs[0]!.end).split("\n")).toHaveLength(4);
+    expect(draft.slice(runs[0]!.start, runs[0]!.end).endsWith("\\end{aligned}$$")).toBe(true);
+    expect(runs[0]!.src.startsWith("$$\\begin{aligned}\nA(")).toBe(true);
+    expect(runs[1]!).toMatchObject({ src: "a plain quote", end: draft.length });
+  });
+
+  it("renders a quote with maths or Markdown, keeps a plain one line for line", () => {
+    expect(quoteNeedsRender("$$x^2$$")).toBe(true);
+    expect(quoteNeedsRender("inline \\(x\\) maths")).toBe(true);
+    expect(quoteNeedsRender("some **bold** words")).toBe(true);
+    expect(quoteNeedsRender("- a list item")).toBe(true);
+    expect(quoteNeedsRender("a plain quote, nothing to typeset")).toBe(false);
+  });
+
+  it("leaves the text sent unchanged: the runs are read from it, never written", () => {
+    const before = draft;
+    quoteRuns(draft);
+    expect(draft).toBe(before);
+  });
+});
+
+describe("Reply in an aside (item 481): a quote goes only to the box it is for", () => {
+  it("the chat's box takes the chat's Reply, not an aside's", () => {
+    requestReply("from the aside", "aside:w1");
+    expect(takeReply(null)).toBeNull();
+    expect(takeReply("aside:w2")).toBeNull();
+    expect(takeReply("aside:w1")).toBe("from the aside");
+    expect(takeReply("aside:w1")).toBeNull();
+  });
+  it("an aside's box does not take the chat's Reply", () => {
+    requestReply("from the chat");
+    expect(takeReply("aside:w1")).toBeNull();
+    expect(takeReply()).toBe("from the chat");
+  });
+  it("the aside's quote is the chat's quote form (item 453)", () => {
+    const r = insertQuote("", 0, 0, "Before.\n\n$$x^2$$\n\nAfter.");
+    expect(r.text).toBe("> Before.\n> $$x^2$$\n> After.\n\n");
   });
 });

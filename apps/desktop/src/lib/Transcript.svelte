@@ -29,6 +29,7 @@
     keepRewound,
     loadPaneLog,
     paneChat,
+    tabOpening,
     chatAgentSession,
   } from "./state.svelte";
   import type { Segment } from "./state.svelte";
@@ -70,7 +71,17 @@
   import { replyUsageView } from "./replyUsage";
   import { loadReplyUsage, replyUsageOf } from "./replyUsage.svelte";
   import { cacheState } from "./cache";
-  import { moveScroll, recallScroll, rememberScroll, scrollKey, NEW_SCROLL_KEY } from "./scroll.svelte";
+  import { leaveScroll, moveScroll, recallScroll, rememberScroll, scrollKey, NEW_SCROLL_KEY } from "./scroll.svelte";
+  import {
+    BUFFER_SCREENS,
+    FILL_SCREENS,
+    FIRST_ITEMS,
+    firstWindow,
+    grown,
+    wantsMore,
+    windowFor,
+    windowWants,
+  } from "./transcriptWindow.svelte";
   import { presence, watchPresence } from "./away.svelte";
   import {
     addAttachment,
@@ -136,13 +147,18 @@
     Usage,
   } from "./types";
   import AssistantMessage from "./AssistantMessage.svelte";
+  // Item 495 part 2: the chat view's folds kept past a chat switch.
+  import { keptGet, keptOpen, keptSet, type FoldScope } from "./keptFolds.svelte";
   import WaitingMoon from "./WaitingMoon.svelte";
   import UserBubble from "./UserBubble.svelte";
+  import PendingBubbles from "./PendingBubbles.svelte";
   import AsideLayer from "./AsideLayer.svelte";
   import { openAttachment } from "./attachments.svelte";
   import ApprovalPrompt from "./ApprovalPrompt.svelte";
   import BudgetStopCard from "./BudgetStopCard.svelte";
   import { afterWrapTurn, wrapAsk } from "./budgetWrap.svelte";
+  import { PROSE_BLOCKS, nearestDelta, proseHolds, settledTop, type BlockEl, type Hold } from "./readingPlace";
+  import { nudgeDone } from "./doneNudge";
   import Icon from "./Icon.svelte";
   import Navigator from "./Navigator.svelte";
   // Edits as versions (item 299): ‹ n/N › under an edited message.
@@ -245,9 +261,10 @@
     void app.sessions;
     if (id) untrack(() => ensureForkInfo(id, events));
   });
-  // A pane's chat whose log has not been read yet: read it.
+  // A pane's chat whose log has not been read yet: read it — unless a tab
+  // click is opening this very chat, whose log is on its way (item 454).
   $effect(() => {
-    if (chat !== undefined && paneView === null) void loadPaneLog(chat);
+    if (chat !== undefined && paneView === null && tabOpening.chat !== chat) void loadPaneLog(chat);
   });
 
   // Project SessionEvents into renderable items. tool_result events are
@@ -516,8 +533,16 @@
   // The edited mark's toggle (nightshift backlog 105): the turns whose edit
   // is drawn as a diff over the current text — what the edit removed struck
   // through, what it added marked — rather than as the plain text. Per
-  // turn index, this screen only; a click on the mark flips it.
-  let diffOpen = $state<Record<number, boolean>>({});
+  // turn index, ~~this screen only~~ kept per chat and turn since item 495
+  // part 2 (`keptFolds`, session only: a chat switch and back keeps it;
+  // a chat with no id yet keeps its own); a click on the mark flips it.
+  let diffLocal = $state<Record<number, boolean>>({});
+  const isDiffOpen = (index: number): boolean =>
+    chatId ? keptGet(`fold:${chatId}|${index}|edited`, false) : !!diffLocal[index];
+  /** Where turn `index`'s folds are kept: this chat's, by turn. */
+  const turnFolds = (turn: number | string): FoldScope | null => (chatId ? { chat: chatId, turn: String(turn) } : null);
+  /** A native fold of turn `index` (`<details use:keptOpen>`), or null. */
+  const turnFold = (index: number, name: string): string | null => (chatId ? `fold:${chatId}|${index}|${name}` : null);
   // ~~`textOpen`~~ — a text attachment's fold (item 284) is the bubble's
   // own state since backlog 283 (`UserBubble.svelte`).
   // The toggle keeps the reader's place (backlog 115): the diff view is a
@@ -533,7 +558,8 @@
     void keepPlace(
       index,
       () => {
-        diffOpen[index] = !diffOpen[index];
+        if (chatId) keptSet(`fold:${chatId}|${index}|edited`, !isDiffOpen(index), false);
+        else diffLocal[index] = !diffLocal[index];
       },
       anchor,
     );
@@ -1333,12 +1359,105 @@
   let lastKey: string | null = null;
   let scrollFrame = 0;
 
+  // ---- The render window (item 482) ----
+  //
+  // Only `items` from `windowFrom` on are drawn (`transcriptWindow.svelte.ts`).
+  // Re-derived when the chat changes, or when its items arrive after the
+  // key (a pane's log read); grown by assignment as he scrolls up. Its
+  // first value comes before the DOM is built, so a switch never draws
+  // the whole chat first.
+  const hasItems = $derived(items.length > 0);
+  let windowFrom = $derived.by(() => {
+    const key = sessionKey;
+    void hasItems;
+    return untrack(() => firstWindow(items.length, recallScroll(key)));
+  });
+  /** What is drawn: the window, never past the chat's last `FIRST_ITEMS`
+   *  (a log re-read shorter than the window was must still draw its foot). */
+  const drawFrom = $derived(Math.min(windowFrom, Math.max(0, items.length - FIRST_ITEMS)));
+  let growing = false;
+  let fillTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** Draw from `to` on, holding the view where it is: the batch lands above
+   *  it, so the view moves down by however much taller the page became. */
+  async function growTo(to: number): Promise<void> {
+    const vp = viewport;
+    if (to >= drawFrom) return;
+    if (!vp) {
+      windowFrom = to;
+      return;
+    }
+    const height = vp.scrollHeight;
+    const top = vp.scrollTop;
+    windowFrom = to;
+    await tick();
+    const delta = vp.scrollHeight - height;
+    if (Math.abs(delta) >= 1) {
+      scrollingSelf = true;
+      vp.scrollTop = top + delta;
+      requestAnimationFrame(() => (scrollingSelf = false));
+    }
+    // The place, under the window it is now measured in.
+    rememberScroll(sessionKey, vp.scrollTop, pinned, drawFrom);
+  }
+
+  /** Grow until `screens` screen heights are drawn above the view, one
+   *  batch per task after the first paint (`later`), or all at once before
+   *  it. A switch mid-fill stops it (the key is checked per batch). */
+  async function fillWindow(screens: number, later: boolean): Promise<void> {
+    if (growing) return;
+    growing = true;
+    const key = sessionKey;
+    try {
+      while (viewport && sessionKey === key && wantsMore(drawFrom, viewport.scrollTop, viewport.clientHeight, screens)) {
+        if (later) await new Promise<void>((r) => (fillTimer = setTimeout(r, 0)));
+        if (!viewport || sessionKey !== key) return;
+        await growTo(grown(drawFrom));
+      }
+    } finally {
+      growing = false;
+    }
+  }
+
+  /** The first paint's window filled, then the buffer above it after. */
+  async function openWindow(): Promise<void> {
+    await fillWindow(FILL_SCREENS, false);
+    clearTimeout(fillTimer);
+    fillTimer = setTimeout(() => void fillWindow(BUFFER_SCREENS, true), 0);
+  }
+
+  /** Draw the turn at log index `index` (the rail's, ⌥↑'s targets) before
+   *  scrolling to it. */
+  /** Item 484: each logged turn's place in `items`, for `turnDrawn`. */
+  const itemAt = $derived(new Map(items.map((it, i) => [it.index, i])));
+  /** Whether the turn at log index `turn` is drawn — true for a turn not
+   *  in the items at all, so what cannot be placed keeps its old home. */
+  function turnDrawn(turn: number): boolean {
+    const at = itemAt.get(turn);
+    return at === undefined || at >= drawFrom;
+  }
+
+  async function revealTurn(index: number): Promise<void> {
+    const at = items.findIndex((it) => it.index >= index);
+    await growTo(windowFor(drawFrom, at));
+  }
+
+  // Find in chat searches the page's text: the whole chat is drawn while
+  // the bar is open.
+  $effect(() => {
+    if (windowWants.all && drawFrom > 0) void growTo(0);
+  });
+  onDestroy(() => clearTimeout(fillTimer));
+
   function scheduleScrollWork() {
     if (scrollFrame) return;
     scrollFrame = requestAnimationFrame(() => {
       scrollFrame = 0;
-      if (viewport) rememberScroll(sessionKey, viewport.scrollTop, pinned);
+      if (viewport) rememberScroll(sessionKey, viewport.scrollTop, pinned, drawFrom);
       measureNav();
+      // Near the top of what is drawn: the next batches above.
+      if (viewport && wantsMore(drawFrom, viewport.scrollTop, viewport.clientHeight, BUFFER_SCREENS / 2))
+        void fillWindow(BUFFER_SCREENS, true);
     });
   }
 
@@ -1384,15 +1503,59 @@
     }
     const entry = recallScroll(key);
     pinned = entry?.pinned ?? true;
+    const place = entry?.holds?.length ? { holds: entry.holds, scrollTop: entry.top } : null;
     void tick().then(() => {
       if (!viewport) return;
       if (entry && !entry.pinned) {
         scrollingSelf = true;
         viewport.scrollTop = entry.top;
         requestAnimationFrame(() => (scrollingSelf = false));
+        if (place) holdPlace(place);
+        // Item 504: the place left may still be the foot; then a reply
+        // running here is followed, as when he never left.
+        pinned = atBottom();
+      } else if (pinned) {
+        // Item 482: at the foot before the window is filled, so the fill
+        // measures from where the view lands (the follow effect's scroll
+        // may not have run yet).
+        scrollingSelf = true;
+        viewport.scrollTop = viewport.scrollHeight;
+        requestAnimationFrame(() => (scrollingSelf = false));
       }
+      void openWindow().then(() => {
+        if (entry && !entry.pinned && place) {
+          holdPlace(place);
+          pinned = atBottom();
+        }
+        measureNav();
+      });
       measureNav();
     });
+  });
+
+  // Item 504: the lines he leaves, read before the DOM takes the next chat
+  // (`$effect.pre`, the old chat still drawn). On unmount the view may be
+  // gone already; then the last entry, no longer held at the foot.
+  let drawnKey: string | null = null;
+  let drawnFrom: number | undefined;
+  $effect(() => {
+    drawnFrom = drawFrom;
+  });
+  function noteLeft(key: string): void {
+    const place = viewport?.isConnected && viewport.clientHeight > 0 ? readingPlace() : null;
+    const last = recallScroll(key);
+    if (place) leaveScroll(key, place.scrollTop, drawnFrom ?? last?.from, place.holds);
+    else if (last) leaveScroll(key, last.top, last.from, last.holds);
+  }
+  $effect.pre(() => {
+    const key = sessionKey;
+    untrack(() => {
+      if (drawnKey !== null && drawnKey !== key && drawnKey !== NEW_SCROLL_KEY) noteLeft(drawnKey);
+      drawnKey = key;
+    });
+  });
+  onDestroy(() => {
+    if (drawnKey !== null && drawnKey !== NEW_SCROLL_KEY) noteLeft(drawnKey);
   });
 
   // Unmounted with an editor open — the pane's active tab became a note,
@@ -1538,9 +1701,15 @@
     clearTimeout(ghostTimer);
     ghostTimer = 0;
     if (!ghost) return;
-    const hold = anchored && !pinned ? readingAnchor() : null;
+    const hold = anchored && !pinned ? readingPlace() : null;
     ghost = null;
-    if (hold) void tick().then(() => holdAnchor(hold));
+    // Item 497: the reply ended here (not a new turn starting over its
+    // ghost, not another chat) — after the hold, the turn-done nudge.
+    if (anchored)
+      void tick().then(() => {
+        if (hold) holdPlace(hold);
+        nudgeDone(inner);
+      });
   }
 
   $effect.pre(() => {
@@ -1605,20 +1774,51 @@
     return first;
   }
 
-  /** Move the viewport so the anchor's element is back where it was — the
-   *  nearest same-tag element with the same text start, since a paragraph
-   *  can be repeated. Nothing matched: the view is left alone. */
-  function holdAnchor(hold: { tag: string; text: string; top: number }): void {
-    if (!viewport) return;
-    let best: number | null = null;
-    for (const el of viewport.querySelectorAll<HTMLElement>(hold.tag)) {
-      if ((el.textContent ?? "").trim().slice(0, 160) !== hold.text) continue;
-      const delta = el.getBoundingClientRect().top - hold.top;
-      if (best === null || Math.abs(delta) < Math.abs(best)) best = delta;
-    }
-    if (best === null || Math.abs(best) < 1) return;
+  // ~~`holdAnchor`: the nearest same-tag element with the same text start
+  // moved back to where it was; nothing matched, the view left alone~~ —
+  // item 493 (2026-11-02): `holdPlace` below, the match `nearestDelta`
+  // unchanged; nothing matched, the view goes back to where it was, since
+  // "left alone" was left at WebKit's clamp.
+
+  // ---- Item 493: which lines he is reading, found again after the swap ----
+  //
+  // Measured (493 harness, 1440×900): WebKit clamps `scrollTop` the moment
+  // the ghost goes — against the layout before the recorded reply was laid
+  // out, so to the foot of his own question (331) — and only the hold
+  // brings the view back. `readingAnchor` alone missed whenever the element
+  // under the top edge reads differently once recorded: the thinking row
+  // ("thought for 1 s" live, "thought · summary" recorded — a Claude Code
+  // reply read from its first lines, 746 px up) or a word still in the
+  // streaming motion's span (an API reply read mid-reply, 1,860 px up).
+  // So the place is the reply's prose blocks in view, the same text either
+  // side of the swap (`readingPlace.ts`), tried in order, then the old
+  // walk's element; none found, the scroll position from before the swap —
+  // never the clamp.
+  interface Place {
+    holds: Hold[];
+    scrollTop: number;
+  }
+  const isLiveReply = (el: BlockEl) => !!el.closest(".assistant") && !el.closest("[data-turn]");
+  function readingPlace(): Place | null {
+    if (!viewport) return null;
+    const holds = proseHolds(
+      viewport.querySelectorAll<HTMLElement>(PROSE_BLOCKS),
+      viewport.getBoundingClientRect(),
+      isLiveReply,
+    );
+    const walk = readingAnchor();
+    if (walk) holds.push(walk);
+    return { holds, scrollTop: viewport.scrollTop };
+  }
+  function holdPlace(place: Place): void {
+    const vp = viewport;
+    if (!vp) return;
+    const to = settledTop(place.holds, place.scrollTop, vp.scrollTop, (h) =>
+      nearestDelta(h, vp.querySelectorAll<HTMLElement>(h.tag)),
+    );
+    if (to === null) return;
     scrollingSelf = true;
-    viewport.scrollTop += best;
+    vp.scrollTop = to;
     requestAnimationFrame(() => (scrollingSelf = false));
   }
 
@@ -1673,7 +1873,21 @@
       navActive = 0;
       return;
     }
-    const tops = navTicks.map((t) => anchorTop(t.index) ?? 0);
+    // Item 454: every anchor in one pass. `anchorTop` per tick ran a
+    // selector over the whole transcript for each — quadratic in the
+    // chat's length, ~190 ms per measure at 300 turns, five measures a
+    // switch. The first match in document order, as `querySelector`'s.
+    const found = new Map<string, HTMLElement>();
+    for (const el of viewport.querySelectorAll<HTMLElement>("[data-turn], [data-nav-live]")) {
+      const turn = el.getAttribute("data-turn");
+      if (turn !== null && !found.has(turn)) found.set(turn, el);
+      if (el.hasAttribute("data-nav-live") && !found.has("live")) found.set("live", el);
+    }
+    const base = viewport.getBoundingClientRect().top - viewport.scrollTop;
+    const tops = navTicks.map((t) => {
+      const el = found.get(t.index < 0 ? "live" : String(t.index));
+      return el ? el.getBoundingClientRect().top - base : 0;
+    });
     navActive = activeTick(tops, viewport.scrollTop, viewport.clientHeight, viewport.scrollHeight);
   }
 
@@ -1689,9 +1903,12 @@
    *  longer following the reply. Item 359: LibreChat's 400 ms ease-out
    *  cubic, re-aimed every frame, rather than the browser's smooth scroll;
    *  `instant` for a drag along the rail. */
-  function jumpTo(i: number, instant = false) {
+  async function jumpTo(i: number, instant = false) {
     const t = navTicks[i];
     if (!t || !viewport) return;
+    // Item 482: a message above the render window is drawn first.
+    if (t.index >= 0 && anchorTop(t.index) === null) await revealTurn(t.index);
+    if (!viewport) return;
     const top = anchorTop(t.index);
     if (top === null) return;
     pinned = false;
@@ -1711,10 +1928,13 @@
     // on the strip would otherwise leave focus on the strip.
     viewport.focus({ preventScroll: true });
   }
-  function toTop(instant = false) {
+  async function toTop(instant = false) {
     if (!viewport) return;
     pinned = false;
     cancelScroll();
+    // Item 482: the top is the chat's first message, not the window's.
+    if (drawFrom > 0) await growTo(0);
+    if (!viewport) return;
     viewport.scrollTo({ top: 0, behavior: instant ? "instant" : "smooth" });
     viewport.focus({ preventScroll: true });
   }
@@ -1759,7 +1979,7 @@
     if (navTicks.length === 0) return;
     e.preventDefault();
     const next = stepTick(navActive, e.key === "ArrowDown" ? 1 : -1, navTicks.length);
-    if (next !== null) jumpTo(next);
+    if (next !== null) void jumpTo(next);
   }
 
   /**
@@ -1806,9 +2026,13 @@
   // ~~A turn starting, or the engine changing, takes the pill down without
   // waiting for the next selection change.~~ Since backlog 215
   // (2026-09-25) the pill also carries *Reply*, which works on any engine
-  // and mid-turn (the composer queues), so the pill stays; only its Ask
-  // aside half needs the Claude Code engine and an idle chat.
-  const canAsk = $derived(onClaudeCode && !locked);
+  // and mid-turn (the composer queues), so the pill stays; ~~only its Ask
+  // aside half needs the Claude Code engine and an idle chat.~~ Since
+  // item 500 (2026-11-03) mid-turn too: since item 404 an aside asked
+  // while the chat's turn runs waits for it ("queued") and then answers,
+  // as the composer's own aside box already allowed. A pane still offers
+  // no pill (piece 5).
+  const canAsk = $derived(onClaudeCode && chat === undefined);
 
   // Per turn index, the message's 1-based place among the live messages
   // of its kind — "your 3rd reply" in the framing. Rewound and removed
@@ -1832,6 +2056,8 @@
     const el = node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement;
     const prose = el?.closest(".markdown, .user-text") ?? null;
     if (!prose || !viewport.contains(prose)) return null;
+    // Item 481: an aside card's thread has its own Reply (`AsideThread`).
+    if (prose.closest(".aside-thread")) return null;
     const turnEl = prose.closest<HTMLElement>("[data-turn]");
     if (!turnEl) return null;
     const turn = Number(turnEl.dataset.turn);
@@ -2020,7 +2246,7 @@
   onkeydown={viewportKeys}
 >
   <div class="inner" bind:this={inner}>
-    {#if continuedFrom}
+    {#if continuedFrom && drawFrom === 0}
       <div class="continued">
         <span class="continued-ic"><Icon name="branch" size={14} /></span>
         <span>Continued from <span class="continued-t">“{continuedFrom.name}”</span> · <span class="mono">HANDOFF.md</span></span>
@@ -2029,7 +2255,8 @@
       </div>
     {/if}
     {#each items as item, i (i)}
-      {#if item.superseded}
+      <!-- Item 482: only the render window is drawn. -->
+      {#if i < drawFrom}{:else if item.superseded}
         {#if rewound[i] !== null}
           <div
             class="rewound"
@@ -2053,10 +2280,10 @@
             {#if item.original !== null && !item.removed}
               <button
                 class="edited-mark"
-                class:on={!!diffOpen[item.index]}
+                class:on={isDiffOpen(item.index)}
                 type="button"
-                aria-pressed={!!diffOpen[item.index]}
-                use:tip={diffOpen[item.index] ? "Edited — show the current text" : "Edited — show the edit as a diff"}
+                aria-pressed={isDiffOpen(item.index)}
+                use:tip={isDiffOpen(item.index) ? "Edited — show the current text" : "Edited — show the edit as a diff"}
                 onclick={(e) => toggleDiff(item.index, e.currentTarget)}>edited</button
               >
             {/if}
@@ -2165,11 +2392,12 @@
                  attachment is the event's index and its own; the bytes
                  stay in the log. -->
             {@const adoptedMsg = splitAdopted(item.text)}
-            {@const diffShown = !!diffOpen[item.index] && item.original !== null && !item.removed}
+            {@const diffShown = isDiffOpen(item.index) && item.original !== null && !item.removed}
             <UserBubble
               images={item.images}
               documents={item.documents}
               text={item.text}
+              keep={turnFold(item.index, "bubble")}
               custom={diffShown || !!adoptedMsg.carried}
               onopenimage={(j, rect, size) => {
                 if (!app.activeSessionId) return;
@@ -2201,7 +2429,7 @@
                 {:else if adoptedMsg.carried}
                   <!-- An adopted agent's run (backlog 157): what this chat
                        was given, folded; his question below it. -->
-                  <details class="adopted-carry">
+                  <details class="adopted-carry" use:keptOpen={{ key: turnFold(item.index, "carried") }}>
                     <summary>Carried from agent “{adoptedMsg.agent ?? "subagent"}” — its task and run, which this chat answers from</summary>
                     <pre>{adoptedMsg.carried}</pre>
                   </details>
@@ -2224,7 +2452,7 @@
               {/snippet}
             </UserBubble>
             {#if item.original !== null && item.removed}
-              <details class="original">
+              <details class="original" use:keptOpen={{ key: turnFold(item.index, "removed") }}>
                 <summary>what was removed</summary>
                 <div class="original-text">{item.original}</div>
               </details>
@@ -2381,7 +2609,7 @@
           </div>
         </div>
       {:else if item.kind === "compaction"}
-        <details class="compaction" class:superseded={item.superseded}>
+        <details class="compaction" class:superseded={item.superseded} use:keptOpen={{ key: turnFold(item.index, "compaction") }}>
           <summary>conversation compacted — earlier turns replaced by a summary</summary>
           <div class="compaction-body">{item.summary}</div>
         </details>
@@ -2453,7 +2681,7 @@
               onremove={editable ? (block) => void removeBlock(item.index, block) : null}
               onrestore={editable ? (block) => void restoreBlock(item.index, block) : null}
               originals={item.originals ?? null}
-              diff={!!diffOpen[item.index]}
+              diff={isDiffOpen(item.index)}
               clock={now}
               headed={!continued[i]}
               onedit={editable && item.editable ? () => beginEdit(item) : null}
@@ -2463,9 +2691,11 @@
               planUsage={replyUsageView(usageLines.get(item.index))}
               onretry={editable && turnEnds[i] && app.activeSessionId ? () => void retryReply(item.index) : null}
               {cliSession}
+              folds={turnFolds(item.index)}
+              runFrom={{ chat: chatId }}
             />
             {#if item.original !== null && item.removed}
-              <details class="original">
+              <details class="original" use:keptOpen={{ key: turnFold(item.index, "removed") }}>
                 <summary>what was removed</summary>
                 <div class="original-text">{item.original}</div>
               </details>
@@ -2473,10 +2703,10 @@
               <div class="edited-row">
                 <button
                   class="edited-mark"
-                  class:on={!!diffOpen[item.index]}
+                  class:on={isDiffOpen(item.index)}
                   type="button"
-                  aria-pressed={!!diffOpen[item.index]}
-                  use:tip={diffOpen[item.index] ? "Edited — show the current text" : "Edited — show the edit as a diff"}
+                  aria-pressed={isDiffOpen(item.index)}
+                  use:tip={isDiffOpen(item.index) ? "Edited — show the current text" : "Edited — show the edit as a diff"}
                   onclick={(e) => toggleDiff(item.index, e.currentTarget)}>edited</button
                 >
               </div>
@@ -2539,10 +2769,15 @@
           since={shown.since}
           approvals={approvalsNow}
           {cliSession}
+          folds={turnFolds(`live:${shown.since ?? ""}`)}
+          runFrom={{ chat: chatId }}
         />
       {/if}
       </div>
     {/if}
+    <!-- Item 465: messages he sent while this turn runs, not yet taken —
+         greyed bubbles with Send now / Let it arrive / Edit / Cancel. -->
+    {#if !inPane}<PendingBubbles />{/if}
     {#each stranded as req (req.id)}
       <ApprovalPrompt {req} />
     {/each}
@@ -2645,7 +2880,7 @@
          column's last children, absolute under their passages, stuck
          above the composer when there is none. -->
     {#if !inPane}
-      <AsideLayer {viewport} {inner} {proseBlocks} version={items.length} />
+      <AsideLayer {viewport} {inner} {proseBlocks} version={items.length} drawn={turnDrawn} reveal={revealTurn} />
     {/if}
   </div>
 </div>
@@ -2876,6 +3111,10 @@
     display: flex;
     flex-direction: column;
     gap: 26px;
+    /* Item 478: the turns' column, for a bubble drawn inside a reply (his
+       mid-turn message) to reach the column's right edge, where his own
+       messages sit. */
+    container: turns / inline-size;
     /* The floating aside card (backlog 141) is placed in this frame. */
     position: relative;
   }

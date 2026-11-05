@@ -5,7 +5,7 @@
   // the phone, or before 354, reads them back out of the CLI's result. Nothing readable → nothing drawn.
   import { app, type ToolCallView } from "./state.svelte";
   import type { AskQuestion } from "./types";
-  import { answeredRows, answersFromResult } from "./askQuestions";
+  import { answeredRows, answerParts, answersFromResult } from "./askQuestions";
   import { recordedAnswers } from "./askAnswers.svelte";
   import { tip } from "./tip";
 
@@ -15,6 +15,8 @@
     const q = (call.input as { questions?: unknown } | null)?.questions;
     return Array.isArray(q) ? (q as AskQuestion[]) : [];
   });
+  const labelsOf = (question: string): string[] =>
+    questions.find((q) => q.question === question)?.options.map((o) => o.label) ?? [];
   const rows = $derived.by(() => {
     // Still waiting (its card may be drawn at the transcript's foot rather than under this row): no table yet.
     if (call.denied || app.pendingApprovals.some((a) => a.id === call.id)) return [];
@@ -47,7 +49,7 @@
           <tr>
             <th scope="row" use:tip={r.question}>{r.header}</th>
             <td
-              >{#each r.answer.split(", ") as a, k (k)}<span class="aa-ans">{a}</span>{/each}</td
+              >{#each answerParts(r.answer, labelsOf(r.question)) as a, k (k)}<span class="aa-ans">{a}</span>{/each}</td
             >
           </tr>
         {/each}

@@ -678,7 +678,23 @@ impl Chat {
             // when the reply lands (nightshift backlog 063): a round that
             // streams for four minutes leaves one on a five-minute entry.
             let sent_at = chrono::Utc::now();
-            let mut stream = self.provider.stream_chat(request).await?;
+            // Raced against the Stop (item 466, 2026-10-29): opening covers
+            // the connection, the headers and the retry wrapper's backoff,
+            // and on bad internet a Stop waited for all of it — a stall of
+            // 8 s took 7.8 s to stop. Dropping the open aborts the request.
+            let opened = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => None,
+                s = self.provider.stream_chat(request) => Some(s),
+            };
+            let Some(opened) = opened else {
+                return Ok(TurnOutcome {
+                    interrupted: true,
+                    stop_reason: None,
+                    usage: turn_usage,
+                });
+            };
+            let mut stream = opened?;
             let mut blocks = Vec::new();
             let mut text_buf = String::new();
             let mut thinking_buf = String::new();
@@ -1074,7 +1090,20 @@ impl Chat {
             thinking: Thinking::Default,
             tools: Vec::new(),
         };
-        let mut stream = self.provider.stream_chat(request).await?;
+        // Raced against the Stop, as a turn's open is (item 466).
+        let opened = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => None,
+            s = self.provider.stream_chat(request) => Some(s),
+        };
+        let Some(opened) = opened else {
+            return Ok(CompactOutcome {
+                interrupted: true,
+                summary: String::new(),
+                usage: Usage::default(),
+            });
+        };
+        let mut stream = opened?;
         let mut summary = String::new();
         let mut usage = Usage::default();
         loop {
@@ -3120,5 +3149,91 @@ pub(crate) mod tests {
                 ("typed now".to_string(), false)
             ]
         );
+    }
+
+    /// Item 466 (2026-10-29): a provider whose request does not open for
+    /// `0` — a connection stalled on bad internet, or the retry wrapper's
+    /// backoff between failed tries — then streams `1`.
+    struct SlowOpen(std::time::Duration, Mutex<Vec<StreamEvent>>);
+
+    #[async_trait::async_trait]
+    impl Provider for SlowOpen {
+        fn name(&self) -> &'static str {
+            "slow-open"
+        }
+
+        async fn stream_chat(&self, _: ChatRequest) -> Result<EventStream, ProviderError> {
+            tokio::time::sleep(self.0).await;
+            let events = std::mem::take(&mut *self.1.lock().unwrap());
+            Ok(Box::pin(
+                futures::stream::iter(events.into_iter().map(Ok)).chain(futures::stream::pending()),
+            ))
+        }
+    }
+
+    /// Click-to-ended on the provider engine: the Stop lands `after` the
+    /// turn starts; the clock runs until `run_turn` returns.
+    async fn time_api_stop(
+        provider: Box<dyn Provider>,
+        after: std::time::Duration,
+    ) -> (std::time::Duration, TurnOutcome) {
+        let chat = Chat::new(provider, "test-model");
+        let mut session = Session::new();
+        let cancel = CancellationToken::new();
+        let trigger = cancel.clone();
+        let at = Arc::new(Mutex::new(None::<std::time::Instant>));
+        let mark = Arc::clone(&at);
+        tokio::spawn(async move {
+            tokio::time::sleep(after).await;
+            *mark.lock().unwrap() = Some(std::time::Instant::now());
+            trigger.cancel();
+        });
+        let out = chat
+            .run_turn(&mut session, "hi", &cancel, &mut |_e| {})
+            .await
+            .unwrap();
+        let t = at.lock().unwrap().expect("stopped").elapsed();
+        (t, out)
+    }
+
+    /// Item 466: a Stop while the request is still opening (a stalled
+    /// connection, the retry backoff) ends the turn at once, interrupted.
+    #[tokio::test]
+    async fn a_stop_while_the_request_opens_ends_the_turn_at_once() {
+        let ms = std::time::Duration::from_millis;
+        let (t, out) = time_api_stop(
+            Box::new(SlowOpen(
+                ms(8000),
+                Mutex::new(vec![StreamEvent::TextDelta("late".into())]),
+            )),
+            ms(100),
+        )
+        .await;
+        assert!(out.interrupted);
+        assert!(t < ms(500), "{t:?}");
+    }
+
+    /// Item 466's measurement, printed (`--ignored --nocapture`).
+    #[tokio::test]
+    #[ignore]
+    async fn measure_466_stop_latency_api() {
+        let ms = std::time::Duration::from_millis;
+        let (t, _) = time_api_stop(
+            Box::new(Stall(Mutex::new(vec![StreamEvent::TextDelta(
+                "partial".into(),
+            )]))),
+            ms(200),
+        )
+        .await;
+        println!("466 api streaming: {:.2} s", t.as_secs_f64());
+        let (t, _) = time_api_stop(
+            Box::new(SlowOpen(
+                ms(8000),
+                Mutex::new(vec![StreamEvent::TextDelta("late".into())]),
+            )),
+            ms(200),
+        )
+        .await;
+        println!("466 api opening (8 s stall): {:.2} s", t.as_secs_f64());
     }
 }

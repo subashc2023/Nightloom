@@ -244,6 +244,12 @@ button {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+/* Item 463: so does a block marked prose (proseBlock.ts) though it has a
+   tag — a hand-off's `start-prompt`, a ```text or ```markdown paragraph. */
+.markdown pre.prose-block code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 
 /* Backlog 384: Copy on every reply code block (codeCopy.ts). The scroll is
    the code's, not the block's, so the button stays put; room is kept for it. */
@@ -287,12 +293,72 @@ button {
   border-color: var(--line2);
 }
 
+/* Item 503: Run beside Copy on a shell block; the word, not an icon, and
+   always shown, since it is what the block is for. */
+.markdown pre:has(> .code-run) {
+  padding-right: 84px;
+}
+.markdown pre > .code-run {
+  position: absolute;
+  top: 10px;
+  right: 34px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line2);
+  background: var(--term);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  line-height: 20px;
+  cursor: pointer;
+  user-select: none;
+}
+.markdown pre > .code-run:hover {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+.markdown pre > .code-run:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .markdown pre code {
   background: transparent;
   border: none;
   padding: 0;
   font-size: 0.8rem;
   line-height: 1.5;
+}
+
+/* Item 464: a reply's `<handoff>` block (handoffTag.ts) — the next chat's
+   prompt, as a card: a label, then the text wrapping as prose in the code
+   blocks' frame, with their Copy button (codeCopy.ts). */
+.markdown .handoff-card {
+  margin: 0.8em 0;
+  border: 1px solid var(--accent-soft);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: var(--well);
+  padding: 0.5em 0.6em 0.1em;
+}
+.markdown .handoff-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--accent-ink);
+  padding: 0 0.3em;
+}
+.markdown .handoff-card pre.handoff-text {
+  margin: 0.4em 0 0.5em;
+  font-family: inherit;
+}
+.markdown .handoff-card pre.handoff-text code {
+  font-family: inherit;
+  font-size: 0.9rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .markdown blockquote {

@@ -407,7 +407,8 @@ pub fn note_delete(places: &Places, scope: &str, name: &str) -> Result<(), Strin
             "could not keep a copy of the note in the trash, so it was not deleted: {e}"
         ));
     }
-    project::delete_note(&dir, name)
+    // Moved to the docspace's own trash too since item 457, not unlinked.
+    project::delete_note(&dir, name).map(|_| ())
 }
 
 // ---- projects ----

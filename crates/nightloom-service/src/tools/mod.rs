@@ -25,6 +25,7 @@ mod chats;
 mod compact;
 mod files;
 pub mod mark_file;
+pub mod notes;
 mod remember;
 mod review;
 mod root;

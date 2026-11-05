@@ -3,12 +3,16 @@
   import { tip } from "./tip";
   import { badgeOf } from "./attachKinds";
   import { decodeText, pastedLabel } from "./pasteAttach";
-  import { splitQuotes } from "./replyQuote.svelte";
+  import { quoteNeedsRender, splitQuotes } from "./replyQuote.svelte";
+  import { renderReply } from "./markdown";
   import { splitFences } from "./codeDetect";
   import { languageOf, segments } from "./codeHighlight";
   import KeepButton from "./KeepButton.svelte";
   import { canKeep, imageName, keepKey, leafOf, savedFilePaths } from "./keep";
   import { app } from "./state.svelte";
+  import { keptGet, keptSet } from "./keptFolds.svelte";
+  import RanCard from "./RanCard.svelte";
+  import { parseRan } from "./shellRun";
 
   /**
    * His message's bubble (nightshift backlog 283, 2026-10-02): the chat's
@@ -42,6 +46,7 @@
     extra,
     onopenimage = null,
     onopendoc = null,
+    keep = null,
   }: {
     images?: readonly Img[];
     documents?: readonly Doc[];
@@ -55,9 +60,26 @@
     onopenimage?: ((j: number, rect: DOMRect, size: { width: number; height: number } | null) => void) | null;
     /** A click on a file chip: its index and rect. Null: a plain chip. */
     onopendoc?: ((j: number, rect: DOMRect) => void) | null;
+    /** Where a text attachment's fold is kept past a chat switch (item 495
+     *  part 2: the chat + turn); null, the bubble's own. */
+    keep?: string | null;
   } = $props();
+  const ran = $derived(parseRan(text));
 
-  let textOpen = $state<Record<number, boolean>>({});
+  let localOpen = $state<Record<number, boolean>>({});
+  /** A text attachment unfolded (284), kept under `keep` when there is one. */
+  const textOpen = $derived.by<Record<number, boolean>>(() => {
+    if (keep === null) return localOpen;
+    const out: Record<number, boolean> = {};
+    documents.forEach((_, j) => {
+      if (keptGet(`${keep}|text:${j}`, false)) out[j] = true;
+    });
+    return out;
+  });
+  function flipText(j: number): void {
+    if (keep === null) localOpen[j] = !localOpen[j];
+    else keptSet(`${keep}|text:${j}`, !textOpen[j], false);
+  }
   /** A document with bytes to show: a text one unfolds (284). */
   const isText = (d: Doc) => d.media_type.startsWith("text/") && d.data !== "";
   /** Files the Claude Code engine saved for this message (item 277), by
@@ -129,7 +151,7 @@
             class="user-file-toggle"
             aria-expanded={!!textOpen[j]}
             use:tip={textOpen[j] ? "Fold the text away" : "Show the text here"}
-            onclick={() => (textOpen[j] = !textOpen[j])}
+            onclick={() => flipText(j)}
             >{textOpen[j] ? "▾ hide" : `▸ ${pastedLabel(decodeText(doc.data))}`}</button
           >
         {/if}
@@ -154,12 +176,15 @@
   {/if}
   {#if custom && body}
     {@render body()}
+  {:else if ran}
+    <!-- Item 503: the output of a block he ran, folded; not a wall of his. -->
+    <RanCard {ran} {keep} />
   {:else if text}
     <!-- `> ` lines are quotes he placed with Reply (backlog 215), drawn as
          quotes where they sit in his words. -->
     <!-- Item 315: a ``` fenced block is drawn as code, coloured, its
          language on a label; the rest of his words stay plain text. -->
-    <div class="user-text">{#each splitFences(text) as part, p (p)}{#if part.kind === "code"}<div class="user-code"><span class="user-code-lang mono">{languageOf(part.info)?.label ?? (part.info || "code")}</span><pre><code>{#each segments(part.code, part.info) as sg, j (j)}<span class={sg.cls}>{sg.text}</span>{/each}</code></pre></div>{:else}{#each splitQuotes(part.text) as seg, k (k)}{#if seg.kind === "quote"}<blockquote class="user-quote">{seg.text}</blockquote>{:else}{seg.text}{/if}{/each}{/if}{/each}</div>
+    <div class="user-text">{#each splitFences(text) as part, p (p)}{#if part.kind === "code"}<div class="user-code"><span class="user-code-lang mono">{languageOf(part.info)?.label ?? (part.info || "code")}</span><pre><code>{#each segments(part.code, part.info) as sg, j (j)}<span class={sg.cls}>{sg.text}</span>{/each}</code></pre></div>{:else}{#each splitQuotes(part.text) as seg, k (k)}{#if seg.kind === "quote" && quoteNeedsRender(seg.text)}<blockquote class="user-quote markdown rendered">{@html renderReply(seg.text)}</blockquote>{:else if seg.kind === "quote"}<blockquote class="user-quote">{seg.text}</blockquote>{:else}{seg.text}{/if}{/each}{/if}{/each}</div>
   {/if}
   {@render extra?.()}
 </div>
@@ -219,6 +244,17 @@
     padding: 0.1rem 0 0.1rem 0.7rem;
     border-left: 3px solid var(--accent);
     color: var(--dim);
+  }
+  /* Item 470: a quote with maths or Markdown in it, typeset as the reply
+     it came from was. */
+  .user-quote.rendered {
+    white-space: normal;
+  }
+  .user-quote.rendered :global(p) {
+    margin: 0.2em 0;
+  }
+  .user-quote.rendered :global(.katex-display) {
+    margin: 0.3em 0;
   }
   .user-images {
     display: flex;

@@ -37,6 +37,62 @@ export function saveNoteMode(mode: NoteMode, storage: Pick<Storage, "setItem"> =
 }
 
 /**
+ * Whether a note opens in the Preview (item 495: "if I click on preview …
+ * that should be saved so that when I go to another chat and then go back,
+ * it still holds which thing I'm on"). The same one setting as the mode
+ * above, kept beside it rather than folded into it: Preview's Edit button
+ * goes back to whichever side, Plain or Formatted, was picked last, so the
+ * two are separate facts. Only his own clicks write it — a jump to a line
+ * (a memory hit, a search result) leaves the Preview for that one view and
+ * does not change what the next note opens in.
+ */
+export const NOTE_PREVIEW_KEY = "nightloom.notePreview";
+
+export function loadNotePreview(storage: Pick<Storage, "getItem"> = localStorage): boolean {
+  try {
+    return storage.getItem(NOTE_PREVIEW_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function saveNotePreview(on: boolean, storage: Pick<Storage, "setItem"> = localStorage): void {
+  try {
+    storage.setItem(NOTE_PREVIEW_KEY, on ? "1" : "0");
+  } catch {
+    // As with the mode: kept for this session even when it cannot be stored.
+  }
+}
+
+/**
+ * Item 498: a note has one editor now, opened formatted, with one switch to
+ * its raw Markdown. The Plain / Formatted / Preview settings above are no
+ * longer read by the note view (left as they were, keys and all; blocker
+ * 1653: every note opens formatted after the update, even if Plain was the
+ * last pick, so `nightloom.noteMode` does not carry over). The Markdown
+ * switch is its own setting under a new key, one for every note, the last
+ * picked (blocker 1632's "global"), kept across a chat switch, a tab switch
+ * and a relaunch as 495 kept the Preview.
+ */
+export const NOTE_MARKDOWN_KEY = "nightloom.noteMarkdown";
+
+export function loadNoteMarkdown(storage: Pick<Storage, "getItem"> = localStorage): boolean {
+  try {
+    return storage.getItem(NOTE_MARKDOWN_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function saveNoteMarkdown(on: boolean, storage: Pick<Storage, "setItem"> = localStorage): void {
+  try {
+    storage.setItem(NOTE_MARKDOWN_KEY, on ? "1" : "0");
+  } catch {
+    // Kept for this session even when it cannot be stored.
+  }
+}
+
+/**
  * The smallest single edit that turns `from` into `to`: the common prefix
  * and suffix kept, the middle replaced. How the editor takes a text set
  * from outside (Revert, a proposal loaded) without moving a cursor that

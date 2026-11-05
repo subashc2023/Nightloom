@@ -397,6 +397,17 @@ describe("drops from outside (backlog 140 pass 2)", () => {
     ).toBeNull();
     expect(parseContentDrag("")).toBeNull();
   });
+
+  it("refuses a dragged draft chip's card (item 467) and tells two draft chips apart", () => {
+    const sent = { kind: "attachment" as const, session: "s", turn: 3, index: 0, media: "image" as const, name: "image" };
+    const d1 = { kind: "attachment" as const, session: "", turn: -1, index: -1, media: "image" as const, name: "a.png", draft: { key: "k", chip: 1 } };
+    const d2 = { ...d1, draft: { key: "k", chip: 2 } };
+    expect(parseContentDrag(JSON.stringify(d1))).toBeNull();
+    expect(parseContentDrag(JSON.stringify(sent))).toEqual(sent);
+    expect(sameContent(d1, { ...d1 })).toBe(true);
+    expect(sameContent(d1, d2)).toBe(false);
+    expect(sameContent(d1, sent)).toBe(false);
+  });
 });
 
 describe("the floating slot (backlog 145)", () => {

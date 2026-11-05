@@ -32,8 +32,10 @@ import {
   droppedMarker,
   trimPending,
   type LiveShell,
+  type RunState,
   type ShellRow,
 } from "./terminal";
+import { RunCapture } from "./shellRun";
 
 function loadHeight(): number {
   try {
@@ -129,6 +131,21 @@ export function terminalCwd(): string | null {
 
 type Sink = (bytes: Uint8Array | string) => void;
 const sinks = new Map<number, Sink>();
+/** What each running block has printed (item 503): read here, at the event,
+ *  so a tab nobody is looking at still has it whole. */
+const captures = new Map<number, RunCapture>();
+/** Ends reported before `terminal_run` had answered: a `true` can finish
+ *  first, and its row must still learn of it. */
+const earlyExits = new Map<number, ShellRow["exit"]>();
+/** Set by `shellRun.svelte.ts`, which this file cannot import: a run ended. */
+let onRunEnd: ((row: ShellRow) => void) | null = null;
+export function registerRunEnd(fn: (row: ShellRow) => void): void {
+  onRunEnd = fn;
+}
+/** A run's capture, for the message. */
+export function runCapture(id: number): RunCapture | undefined {
+  return captures.get(id);
+}
 /** Bytes that arrived before a shell's component had a sink, capped at
  *  `PENDING_MAX_BYTES` (backlog 137) — the oldest go, and `dropped`
  *  counts them for the marker the replay writes first. */
@@ -150,6 +167,7 @@ export function registerSink(id: number, sink: Sink): () => void {
 }
 
 function deliver(id: number, bytes: Uint8Array) {
+  captures.get(id)?.add(bytes);
   const sink = sinks.get(id);
   if (sink) sink(bytes);
   else {
@@ -220,7 +238,11 @@ export async function initTerminalEvents(): Promise<void> {
   });
   await listen<{ id: number; code: number | null; signal: string | null }>("terminal-exit", (e) => {
     const row = term.shells.find((s) => s.id === e.payload.id);
-    if (row) row.exit = { code: e.payload.code, signal: e.payload.signal };
+    const exit = { code: e.payload.code, signal: e.payload.signal };
+    if (row) {
+      row.exit = exit;
+      if (row.run) onRunEnd?.(row);
+    } else earlyExits.set(e.payload.id, exit);
   });
   await listen<{ id: number; title: string }>("terminal-title", (e) => {
     const row = term.shells.find((s) => s.id === e.payload.id);
@@ -289,6 +311,141 @@ export async function newShell(pane?: string | null, at?: string | null): Promis
     addToast(`Could not open a shell: ${String(e)}`);
     return null;
   }
+}
+
+/**
+ * A block run from a reply (item 503): a tab of its own in `pane`'s dock, in
+ * front, a new pty under his login shell. What printed before this line has
+ * the row is in the pending queue, and is read into the capture here.
+ */
+export async function openRunShell(pane: string, cwd: string, run: RunState): Promise<ShellRow | null> {
+  try {
+    const grid = firstGrid(pane);
+    const info = await api.terminalRun(cwd, grid.cols, grid.rows, run.command);
+    const row: ShellRow = { ...info, title: info.shell, exit: null, pane, run };
+    const capture = new RunCapture();
+    for (const c of pending.get(row.id)?.chunks ?? []) capture.add(c);
+    captures.set(row.id, capture);
+    term.shells.push(row);
+    term.docks[pane] ??= { open: true, collapsed: false, active: null };
+    const dock = term.docks[pane];
+    dock.active = row.id;
+    dock.open = true;
+    dock.collapsed = false;
+    term.pane ??= pane;
+    term.cwd ??= cwd;
+    requestFocus(pane);
+    const live = term.shells.find((s) => s.id === row.id)!;
+    const early = earlyExits.get(row.id);
+    if (early) {
+      earlyExits.delete(row.id);
+      live.exit = early;
+      onRunEnd?.(live);
+    }
+    return live;
+  } catch (e) {
+    addToast(`Could not run the block: ${String(e)}`);
+    return null;
+  }
+}
+
+/** The ended run the store could not see end itself (Stop past its grace):
+ *  the pty is gone, and the tab stays. */
+export function markRunEnded(row: ShellRow, exit: NonNullable<ShellRow["exit"]>): void {
+  if (row.exit) return;
+  row.exit = exit;
+  onRunEnd?.(row);
+}
+
+// ---- Agent commands (item 503) --------------------------------------------
+
+/** The strip's view-only tabs have ids of their own, below every pty's. */
+let nextAgentTab = -1;
+
+/**
+ * The Agent commands tabs to bring back, per project, by the pane's place: a
+ * rebuilt workspace numbers its panes afresh, and the shell count it keeps
+ * (`tabsStore.ts`) says only how many. In strip order.
+ */
+const AGENT_TABS_KEY = "nightloom.term.agentTabs";
+type AgentTabs = Record<string, Record<string, string[]>>;
+
+function loadAgentTabs(): AgentTabs {
+  try {
+    const v = JSON.parse(localStorage.getItem(AGENT_TABS_KEY) ?? "{}");
+    return v && typeof v === "object" ? v : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveAgentTabs(): void {
+  const here: Record<string, string[]> = {};
+  for (const s of term.shells) {
+    const at = app.tabs.panes.findIndex((p) => p.id === s.pane);
+    if (s.agentChat && at >= 0) (here[at] ??= []).push(s.agentChat);
+  }
+  try {
+    const all = loadAgentTabs();
+    all[app.project?.id ?? ""] = here;
+    localStorage.setItem(AGENT_TABS_KEY, JSON.stringify(all));
+  } catch {
+    /* no storage — the tabs last the session */
+  }
+}
+
+/** The chat a pane shows now. */
+export function chatOfPane(pane: string | null | undefined): string | null {
+  const p = app.tabs.panes.find((x) => x.id === pane);
+  const tab = p?.tabs.find((t) => t.id === p.active);
+  return tab?.content.kind === "chat" ? (tab.content.session ?? null) : null;
+}
+
+/**
+ * The view-only tab of a chat's commands: one per chat. Opened already, it
+ * comes to the front wherever it is; otherwise it joins `pane`'s dock, or
+ * the dock New terminal would use, or a new one under the focused pane.
+ */
+export function openAgentTab(chat: string, pane?: string | null, front = true, save = true): ShellRow {
+  const known = term.shells.find((s) => s.agentChat === chat);
+  if (known) {
+    if (front) showShell(known);
+    return known;
+  }
+  const key = pane ?? targetDock() ?? app.tabs.focused ?? "main";
+  const row: ShellRow = {
+    id: nextAgentTab--,
+    shell: "Agent commands",
+    title: "Agent commands",
+    cwd: terminalCwd() ?? "",
+    pid: null,
+    exit: null,
+    pane: key,
+    agentChat: chat,
+  };
+  term.shells.push(row);
+  term.docks[key] ??= { open: true, collapsed: false, active: null };
+  const dock = term.docks[key];
+  if (front || dock.active === null) {
+    dock.active = row.id;
+    dock.open = true;
+    dock.collapsed = false;
+  }
+  term.pane ??= key;
+  // The restore passes false: a save part way through would overwrite the
+  // entries of the docks it has not reached.
+  if (save) saveAgentTabs();
+  return term.shells.find((s) => s.id === row.id)!;
+}
+
+/** A tab to the front, its dock on screen. */
+function showShell(row: ShellRow): void {
+  const dock = dockAt(row.pane);
+  if (!dock) return;
+  dock.open = true;
+  dock.collapsed = false;
+  dock.active = row.id;
+  requestFocus(row.pane!);
 }
 
 /**
@@ -375,11 +532,19 @@ export function closeShell(id: number): void {
   if (i < 0) return;
   const pane = term.shells[i].pane ?? "";
   const at = shellsIn(pane).findIndex((s) => s.id === id);
+  const gone = term.shells[i];
   term.shells.splice(i, 1);
   sinks.delete(id);
   pending.delete(id);
+  captures.delete(id);
   dropLive(id);
-  void api.terminalClose(id).catch(() => {});
+  // A view-only tab has no pty to close.
+  // Gone with its pane (a project switch) it is still wanted on the way back.
+  if (gone.agentChat) {
+    if (app.tabs.panes.some((p) => p.id === pane)) saveAgentTabs();
+  } else void api.terminalClose(id).catch(() => {});
+  // Nothing is asked (blocker 041), but nothing goes half-way unsaid either.
+  if (gone.run && !gone.exit) addToast(`Closed "${gone.run.title}" while it ran: it was ended, and nothing was sent to the chat.`);
   nextActive(pane, id, at);
   if (shellsIn(pane).length === 0) dropDockIfEmpty(pane);
   else requestFocus(pane);
@@ -398,7 +563,16 @@ export function closePane(pane: string): void {
  */
 export function dockPaneCheck(): void {
   for (const pane of Object.keys(term.docks)) {
-    if (!app.tabs.panes.some((p) => p.id === pane)) closePane(pane);
+    if (app.tabs.panes.some((p) => p.id === pane)) continue;
+    // A running block outlives the chat's tab (item 503): its output still
+    // goes to its chat, so its tab moves to a pane that is still there.
+    const stay = app.tabs.panes[0]?.id;
+    if (stay) {
+      for (const s of shellsIn(pane)) {
+        if (s.run && !s.run.finished) moveShell(s.id, stay);
+      }
+    }
+    if (term.docks[pane]) closePane(pane);
   }
 }
 
@@ -431,6 +605,7 @@ export function moveShell(id: number, to: string): void {
   const wasWindows = term.pane === from;
   dropDockIfEmpty(from);
   if (wasWindows && !term.docks[from]) term.pane = to;
+  if (row.agentChat) saveAgentTabs();
   requestFocus(to);
 }
 
@@ -571,10 +746,16 @@ export function toggleCollapsed(pane: string): void {
  * Registered, since `state.svelte.ts` cannot import this module.
  */
 registerTerminalHooks({
-  count: (pane) => shellsIn(pane).length,
+  // A run's tab does not come back: its process died with the app, and a
+  // bare shell in its place would be a tab he never opened (item 503).
+  count: (pane) => shellsIn(pane).filter((s) => !s.run).length,
   any: () => term.shells.length > 0,
   open: async (pane, n) => {
-    for (let i = 0; i < n; i++) {
+    // The Agent commands tabs first: they rebuild from the chats' logs.
+    const place = app.tabs.panes.findIndex((p) => p.id === pane);
+    const agents = (loadAgentTabs()[app.project?.id ?? ""]?.[place] ?? []).slice(0, n);
+    for (const chat of agents) openAgentTab(chat, pane, false, false);
+    for (let i = agents.length; i < n; i++) {
       if (!(await newShell(pane))) return;
     }
   },

@@ -26,6 +26,15 @@
 //! opening `/dev/ptmx` from the signed app is allowed on the same terms as
 //! spawning `caffeinate` or `claude`.
 //!
+//! # A block run from a reply (item 503, 2026-11-04)
+//!
+//! [`terminal_run`] is [`terminal_open`] with a command: the same pty, the
+//! same reader, emitter, writer and backpressure, but the program is his
+//! login shell asked to run one block (`$SHELL -lic <block>`), so his PATH
+//! and aliases apply, he can type into it while it runs, and his zsh files
+//! are neither changed nor told. Nothing here knows about chats: the window
+//! reads the bytes it already gets and sends them on at `terminal-exit`.
+//!
 //! # Bytes, not text
 //!
 //! The pty hands back bytes, and a read can end in the middle of a UTF-8
@@ -284,13 +293,15 @@ pub struct Terminals {
 
 impl Terminals {
     /// Open a shell in `cwd` at `cols`×`rows` and start streaming it to
-    /// `sink`. Returns what the window shows.
+    /// `sink`. Returns what the window shows. With `command`, the shell
+    /// runs that block and ends with it (item 503) rather than prompting.
     fn open(
         &self,
         sink: Arc<dyn Sink>,
         cwd: &str,
         cols: u16,
         rows: u16,
+        command: Option<&str>,
     ) -> Result<ShellInfo, String> {
         let dir = PathBuf::from(cwd);
         if !dir.is_dir() {
@@ -306,6 +317,14 @@ impl Terminals {
             })
             .map_err(|e| format!("could not open a pty: {e}"))?;
         let mut cmd = CommandBuilder::new_default_prog();
+        if let Some(block) = command {
+            // Login and interactive, as a tab he opened himself: `-l` for
+            // the PATH a Finder-launched app does not have, `-i` for his
+            // aliases and a job-control terminal, so ⌃C reaches the block.
+            cmd = CommandBuilder::new(cmd.get_shell());
+            cmd.arg(if cfg!(windows) { "/C" } else { "-lic" });
+            cmd.arg(block);
+        }
         cmd.cwd(&dir);
         // xterm.js speaks xterm; without this a login shell inherits
         // whatever TERM the app was launched with, which from Finder is
@@ -742,7 +761,25 @@ pub async fn terminal_open(
     cols: u16,
     rows: u16,
 ) -> Result<ShellInfo, String> {
-    terminals.open(Arc::new(WindowSink(app)), &cwd, cols, rows)
+    terminals.open(Arc::new(WindowSink(app)), &cwd, cols, rows, None)
+}
+
+/// A block of a reply's, run under his login shell in its own pty (item
+/// 503). The same answer and the same events as [`terminal_open`]; its
+/// `terminal-exit` is the block's end.
+#[tauri::command]
+pub async fn terminal_run(
+    app: AppHandle,
+    terminals: State<'_, Terminals>,
+    cwd: String,
+    cols: u16,
+    rows: u16,
+    command: String,
+) -> Result<ShellInfo, String> {
+    if command.trim().is_empty() {
+        return Err("the block is empty".to_string());
+    }
+    terminals.open(Arc::new(WindowSink(app)), &cwd, cols, rows, Some(&command))
 }
 
 /// Keystrokes (and pastes) to the shell, as the text xterm.js produced.
@@ -818,9 +855,83 @@ mod tests {
         unsafe { std::env::set_var("SHELL", "/bin/sh") };
         let (sink, rx) = sink();
         let info = t
-            .open(sink, dir.to_str().unwrap(), 80, 24)
+            .open(sink, dir.to_str().unwrap(), 80, 24, None)
             .expect("open a shell");
         (info, rx)
+    }
+
+    /// `terminal_run`'s path, under the suite's `/bin/sh`.
+    fn run_sh(
+        t: &Terminals,
+        dir: &std::path::Path,
+        block: &str,
+    ) -> (ShellInfo, mpsc::Receiver<Outgoing>) {
+        unsafe { std::env::set_var("SHELL", "/bin/sh") };
+        let (sink, rx) = sink();
+        let info = t
+            .open(sink, dir.to_str().unwrap(), 80, 24, Some(block))
+            .expect("run a block");
+        (info, rx)
+    }
+
+    /// Everything a run printed, and how it ended.
+    fn until_exit(rx: &mpsc::Receiver<Outgoing>) -> (String, Option<i32>, Option<String>) {
+        let mut out = String::new();
+        let start = Instant::now();
+        loop {
+            let left = PATIENCE.saturating_sub(start.elapsed());
+            assert!(!left.is_zero(), "timed out; the run said {out:?}");
+            match rx.recv_timeout(left) {
+                Ok(Outgoing::Data { bytes, .. }) => out.push_str(&String::from_utf8_lossy(&bytes)),
+                Ok(Outgoing::Exit { code, signal, .. }) => {
+                    return (out, code.map(|c| c as i32), signal);
+                }
+                Ok(_) => {}
+                Err(_) => panic!("the run went quiet; it said {out:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_run_block_prints_ends_and_reports_its_code() {
+        let dir = std::env::temp_dir().join(format!("nightloom-run-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let t = Terminals::default();
+        let (_, rx) = run_sh(&t, &dir, "echo PASSED; exit 0");
+        let (out, code, _) = until_exit(&rx);
+        assert!(out.contains("PASSED"), "{out:?}");
+        assert_eq!(code, Some(0));
+        let (_, rx) = run_sh(&t, &dir, "echo FAILED >&2; exit 3");
+        let (out, code, _) = until_exit(&rx);
+        assert!(out.contains("FAILED"), "{out:?}");
+        assert_eq!(code, Some(3));
+    }
+
+    /// He can answer a prompt: the pty's input reaches the block.
+    #[test]
+    fn a_run_block_reads_what_he_types() {
+        let dir = std::env::temp_dir().join(format!("nightloom-run3-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let t = Terminals::default();
+        let (info, rx) = run_sh(&t, &dir, "read a; echo GOT-$a; exit 4");
+        t.write(info.id, "yes\n").unwrap();
+        let (out, code, _) = until_exit(&rx);
+        assert!(out.contains("GOT-yes"), "{out:?}");
+        assert_eq!(code, Some(4));
+    }
+
+    /// A never-ending block: a ⌃C at the pty ends it, and the end is
+    /// reported, which is what the dock's Stop is.
+    #[test]
+    fn interrupt_ends_a_never_ending_block() {
+        let dir = std::env::temp_dir().join(format!("nightloom-run2-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let t = Terminals::default();
+        let (info, rx) = run_sh(&t, &dir, "echo UP; while :; do sleep 1; done");
+        read_until(&rx, |o| o.contains("UP"));
+        t.write(info.id, "\u{3}").unwrap();
+        let (_, code, signal) = until_exit(&rx);
+        assert!(code != Some(0) || signal.is_some(), "{code:?} {signal:?}");
     }
 
     const PATIENCE: Duration = Duration::from_secs(10);
@@ -882,7 +993,9 @@ mod tests {
     fn refuses_a_folder_that_is_not_one() {
         let t = Terminals::default();
         let (s, _rx) = sink();
-        let err = t.open(s, "/nonexistent/nightloom", 80, 24).unwrap_err();
+        let err = t
+            .open(s, "/nonexistent/nightloom", 80, 24, None)
+            .unwrap_err();
         assert!(err.contains("not a folder"), "{err}");
     }
 

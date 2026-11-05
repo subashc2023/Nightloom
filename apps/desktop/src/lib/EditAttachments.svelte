@@ -12,7 +12,8 @@
   import Icon from "./Icon.svelte";
   import { app } from "./state.svelte";
   import { tip } from "./tip";
-  import { badgeOf, extOf } from "./attachKinds";
+  import { badgeOf, extOf, routeLabel } from "./attachKinds";
+  import PdfRouteSwitch from "./PdfRouteSwitch.svelte";
   import { acceptFiles } from "./attachFiles.svelte";
   import { readDraft, removeAttachment } from "./drafts.svelte";
   import { chipDropIn } from "./dropLook";
@@ -23,6 +24,9 @@
   let { key }: { key: string } = $props();
 
   const chips = $derived(readDraft(key).attachments);
+  /** A long PDF's route is the connection's engine's (item 491), as the
+   *  edit's send (`splitChips`) reads it. */
+  const engine = $derived(app.connection?.engine === "claude-code" ? "claude-code" : "api");
   let picker = $state<HTMLInputElement | null>(null);
 
   function onpick(): void {
@@ -48,11 +52,13 @@
         <span
           class="file"
           class:pending={a.pending}
+          class:long={!!routeLabel(a, engine)}
           use:tip={a.label ? `${a.name} — ${a.pending ? "converting; Send waits for it" : a.label}` : a.name}
         >
           <span class="file-ext">{a.pending ? extOf(a.name).toUpperCase() : badgeOf(a)}</span>
           <span class="file-name">{a.name}</span>
-          {#if a.label}<span class="file-label">{a.label}</span>{/if}
+          {#if a.label && !routeLabel(a, engine)}<span class="file-label">{a.label}</span>{/if}
+          <PdfRouteSwitch chip={a} draftKey={key} {engine} />
         </span>
       {/if}
       <button
@@ -109,6 +115,13 @@
     border-radius: 8px;
     background: var(--panel);
     line-height: 1.2;
+  }
+  /* Item 491: a long PDF's chip carries its route and the switch. */
+  .file.long {
+    width: 9.5rem;
+    height: auto;
+    min-height: 4rem;
+    padding-block: 0.35rem;
   }
   .file-ext {
     font-size: 0.65rem;

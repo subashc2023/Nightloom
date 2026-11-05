@@ -1,8 +1,11 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   LEGACY_NEW_DRAFT_KEY,
   PERSIST_ATTACHMENT_MAX,
+  SAVE_MAX_WAIT_MS,
+  saveDelay,
   addAttachment,
+  findChip,
   clearDraft,
   draftKey,
   drafts,
@@ -438,6 +441,50 @@ describe("persistence", () => {
   });
 });
 
+// Item 486: a crash mid-burst lost the typing since his last pause, because
+// the debounce reset on every keystroke. Now a change is on disk within
+// SAVE_MAX_WAIT_MS however steadily he types.
+describe("the save cadence under steady typing (item 486)", () => {
+  afterEach(() => {
+    flushDrafts();
+    vi.useRealTimers();
+  });
+
+  it("saveDelay is the debounce, capped at the max wait from the oldest change", () => {
+    expect(saveDelay(0, 0)).toBe(400);
+    expect(saveDelay(0, 700)).toBe(300);
+    expect(saveDelay(0, 1000)).toBe(0);
+    expect(saveDelay(0, 5000)).toBe(0);
+  });
+
+  it("a key every 150 ms is written within a second, not only at a pause", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    let typed = "";
+    // 3 s of typing, never pausing 400 ms.
+    for (let t = 0; t < 3000; t += 150) {
+      typed += "x";
+      setDraftText("a", typed);
+      vi.advanceTimersByTime(150);
+      const onDisk = loadDrafts(localStorage).a?.text ?? "";
+      // What a crash at this moment would leave: never more than ~1 s behind.
+      const behindMs = (typed.length - onDisk.length) * 150;
+      expect(behindMs).toBeLessThanOrEqual(SAVE_MAX_WAIT_MS + 150);
+    }
+    expect((loadDrafts(localStorage).a?.text ?? "").length).toBeGreaterThan(10);
+  });
+
+  it("a single change still waits only the debounce", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    setDraftText("a", "one");
+    vi.advanceTimersByTime(399);
+    expect(loadDrafts(localStorage).a).toBeUndefined();
+    vi.advanceTimersByTime(1);
+    expect(loadDrafts(localStorage).a?.text).toBe("one");
+  });
+});
+
 describe("the in-place edit's stash (backlog 137)", () => {
   it("keeps one open edit per chat across a switch, an unmount and a turn", () => {
     // What the transcript does on the way out: stash under the chat.
@@ -459,5 +506,29 @@ describe("the in-place edit's stash (backlog 137)", () => {
   it("answers null for a chat with no edit open", () => {
     expect(takeEdit("never")).toBeNull();
     expect(hasEdit("never")).toBe(false);
+  });
+});
+
+describe("findChip (item 467: a draft image's open card)", () => {
+  const img = (id: number) => ({ id, kind: "image" as const, media_type: "image/png", name: `p${id}.png`, data: `B${id}` });
+  it("reads the chip from its box, and from the box it moved to", () => {
+    addAttachment("k1", img(901));
+    addAttachment("k1", img(902));
+    expect(findChip("k1", 902)?.data).toBe("B902");
+    moveDraft("k1", "k2");
+    expect(findChip("k1", 902)?.data).toBe("B902");
+  });
+  it("is null once the chip is removed or the box is sent", () => {
+    addAttachment("k1", img(903));
+    addAttachment("k1", img(904));
+    removeAttachment("k1", 903);
+    expect(findChip("k1", 903)).toBeNull();
+    expect(findChip("k1", 904)?.data).toBe("B904");
+    clearDraft("k1");
+    expect(findChip("k1", 904)).toBeNull();
+  });
+  it("never answers with another chip's bytes", () => {
+    addAttachment("k1", img(905));
+    expect(findChip("k1", 906)).toBeNull();
   });
 });

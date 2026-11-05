@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { chatLabel } from "./chatLabel";
   import { tip } from "./tip";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import type { UnlistenFn } from "@tauri-apps/api/event";
@@ -88,7 +89,7 @@
    */
   const label = $derived.by(() => {
     const open = app.sessions.find((s) => s.id === app.activeSessionId);
-    const name = open?.title ?? open?.first_user ?? null;
+    const name = open ? chatLabel(open, "") || null : null;
     if (name) return name.length > 64 ? `${name.slice(0, 64)}…` : name;
     return app.project?.name ?? null;
   });

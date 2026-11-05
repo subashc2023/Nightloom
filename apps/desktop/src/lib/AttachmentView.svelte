@@ -3,6 +3,7 @@
   import { app, activateTab, browseFree } from "./state.svelte";
   import { attachmentBytes, type AttachmentContent } from "./attachments.svelte";
   import * as tabs from "./tabs";
+  import { viewGet, viewSet } from "./viewState";
 
   /**
    * An attachment kept as an ordinary tab (nightshift backlog 145 pass 2):
@@ -23,7 +24,16 @@
     const s = app.sessions.find((x) => x.id === content.session);
     return s?.title ?? s?.first_user ?? content.session.slice(0, 8);
   });
+  // Item 495: fit-or-own-size, kept per attachment past this view.
+  const fullKey = $derived(`attachment.full:${content.session}:${content.turn}:${content.media}:${content.index}`);
   let full = $state(false);
+  $effect.pre(() => {
+    full = viewGet(fullKey, false);
+  });
+  function setFull(v: boolean) {
+    full = v;
+    viewSet(fullKey, v, false);
+  }
 
   /** Bring the attachment's chat forward: its chat tab if there is one,
    *  else the chat lands in this pane's active tab. */
@@ -61,7 +71,7 @@
       {src}
       alt={bytes.name}
       use:tip={full ? "Click to fit the pane" : "Click for the image's own size"}
-      onclick={() => (full = !full)}
+      onclick={() => setFull(!full)}
     />
   </div>
 {:else}

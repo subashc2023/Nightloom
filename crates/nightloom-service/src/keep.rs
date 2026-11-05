@@ -195,25 +195,34 @@ pub fn keep_in_project_from(
     };
     let files_dir = docspace.join(KEPT_DIR);
     let _guard = SOURCES_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(rel) = read_sources(&files_dir).sources.get(&sha)
-        && let Some(leaf) = rel.strip_prefix(&format!("{KEPT_DIR}/"))
-        // Only a file directly in `files/`, by a plain name: the manifest
-        // is a file on disk, and a line in it must not point anywhere else.
-        && !leaf.is_empty()
-        && !leaf.contains('/')
-        && !leaf.contains('\\')
-        && !leaf.starts_with('.')
-        && files_dir.join(leaf).is_file()
-    {
-        return Ok(Kept {
-            path: files_dir.join(leaf),
-            rel: rel.clone(),
-            already: true,
-        });
+    if let Some(hit) = source_hit(&files_dir, &sha) {
+        return Ok(hit);
     }
     let kept = keep_bytes(docspace, sub, name, media_type, bytes)?;
     record_source(&files_dir, &sha, &kept.rel);
     Ok(kept)
+}
+
+/// The kept file the manifest names for source `sha`, when it is still
+/// there. Split out of [`keep_in_project_from`] for item 492.
+fn source_hit(files_dir: &Path, sha: &str) -> Option<Kept> {
+    let rel = read_sources(files_dir).sources.get(sha)?.clone();
+    let leaf = rel.strip_prefix(&format!("{KEPT_DIR}/"))?;
+    // Only a file directly in `files/`, by a plain name: the manifest
+    // is a file on disk, and a line in it must not point anywhere else.
+    if leaf.is_empty()
+        || leaf.contains('/')
+        || leaf.contains('\\')
+        || leaf.starts_with('.')
+        || !files_dir.join(leaf).is_file()
+    {
+        return None;
+    }
+    Some(Kept {
+        path: files_dir.join(leaf),
+        rel: rel.clone(),
+        already: true,
+    })
 }
 
 fn keep_bytes(
@@ -239,12 +248,20 @@ fn keep_bytes(
             format!("{KEPT_DIR}/{sub}/"),
         )
     };
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let leaf = kept_name(name, media_type);
+    keep_bytes_into(&dir, &prefix, &kept_name(name, media_type), bytes)
+}
+
+/// Write `bytes` into `dir` as `leaf` (`prefix` + the name is its rel):
+/// the same bytes already there under any name are that file; a name taken
+/// by other bytes gets ` (2)`, ` (3)`…. Split out of [`keep_bytes`] for
+/// item 492's [`keep_in_folder`].
+fn keep_bytes_into(dir: &Path, prefix: &str, leaf: &str, bytes: &[u8]) -> Result<Kept, String> {
+    let leaf = leaf.to_string();
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     // The same bytes under any name in the folder are that file: a sent
     // image is named `image-1.png` where the composer had its real name,
     // and pressing Keep on both must not make two copies.
-    if let Some(file) = same_bytes_in(&dir, bytes) {
+    if let Some(file) = same_bytes_in(dir, bytes) {
         return Ok(Kept {
             path: dir.join(&file),
             rel: format!("{prefix}{file}"),
@@ -307,6 +324,166 @@ fn keep_bytes(
             return Err(format!("{}: too many files named {leaf}", dir.display()));
         }
     }
+}
+
+/*
+ * Item 492 (his words, 2026-11-01: "if i upload a file into notes i can't
+ * put it into like a specific folder"): a file lands in the notes folder he
+ * points at — a folder row he drops on, or the + on it — not only in
+ * `files/`. The folder is docspace-relative (`people`, `files/bundle`); it
+ * came over the bridge, so it must be a plain path inside the docspace: no
+ * `..`, nothing absolute, no hidden part (the trash is `.trash/`), and it
+ * must not lead out through a symlink. A name taken by other bytes asks
+ * (`OnClash::Ask` answers `Taken`, nothing written); Keep both numbers it
+ * as before; Replace moves the old file to the notes trash first
+ * ([`crate::project::delete_note`]) — never an unlink.
+ */
+
+/// What to do when the file's name is taken in the folder by other bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnClash {
+    /// Write nothing; answer [`Landing::Taken`] so the window can ask.
+    Ask,
+    /// ` (2)`, ` (3)`… — what Keep has always done.
+    Both,
+    /// The old file to the notes trash, the new one under its name.
+    Replace,
+}
+
+impl OnClash {
+    /// `"ask"`, `"replace"`; anything else (or nothing) is Keep both.
+    pub fn parse(s: Option<&str>) -> Self {
+        match s {
+            Some("ask") => OnClash::Ask,
+            Some("replace") => OnClash::Replace,
+            _ => OnClash::Both,
+        }
+    }
+}
+
+/// What came of a keep into a folder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum Landing {
+    /// Written (or the same bytes were there). `replaced`: where the old
+    /// file went, inside the notes trash, when Replace moved one.
+    Kept {
+        #[serde(flatten)]
+        kept: Kept,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        replaced: Option<String>,
+    },
+    /// The name is taken by other bytes and nothing was written: `rel` is
+    /// the file there, `both` the name Keep both would use.
+    Taken { rel: String, both: String },
+}
+
+/// A docspace-relative folder the window names, checked: `""` is the
+/// docspace itself; otherwise `/`-separated parts, none empty after
+/// trimming, none `..`, hidden or holding `:`. Returns the folder's path
+/// and its rel. Containment through symlinks is checked once it exists
+/// ([`confined`]).
+pub fn note_folder(docspace: &Path, folder: &str) -> Result<(PathBuf, String), String> {
+    let t = folder.trim().trim_end_matches('/');
+    if t.is_empty() {
+        return Ok((docspace.to_path_buf(), String::new()));
+    }
+    match safe_entry_path(&format!("{t}/x")) {
+        EntryPath::Keep(p) => {
+            let rel = p.trim_end_matches("/x").to_string();
+            Ok((docspace.join(&rel), rel))
+        }
+        _ => Err(format!("{folder}: not a folder in these notes")),
+    }
+}
+
+/// Whether `dir` (existing) is inside `docspace` once symlinks resolve.
+fn confined(docspace: &Path, dir: &Path) -> Result<(), String> {
+    let root = docspace
+        .canonicalize()
+        .map_err(|e| format!("{}: {e}", docspace.display()))?;
+    let real = dir
+        .canonicalize()
+        .map_err(|e| format!("{}: {e}", dir.display()))?;
+    if real.starts_with(&root) {
+        Ok(())
+    } else {
+        Err(format!("{}: leads outside the notes folder", dir.display()))
+    }
+}
+
+/// The first of `stem (2).ext`, `stem (3).ext`… free in `dir`.
+fn numbered_free(dir: &Path, leaf: &str) -> String {
+    let (stem, ext) = split_ext(leaf);
+    let dot_ext = if ext.is_empty() {
+        String::new()
+    } else {
+        format!(".{ext}")
+    };
+    (2..10_000)
+        .map(|n| format!("{stem} ({n}){dot_ext}"))
+        .find(|f| std::fs::symlink_metadata(dir.join(f)).is_err())
+        .unwrap_or_else(|| leaf.to_string())
+}
+
+/// Keep `bytes` in the notes folder `folder` (docspace-relative; item
+/// 492). `source` (an office file's SHA-256, item 428) is looked up and
+/// recorded only for `files/` itself, where the manifest lives.
+pub fn keep_in_folder(
+    docspace: &Path,
+    folder: &str,
+    name: &str,
+    media_type: &str,
+    bytes: &[u8],
+    source: Option<&str>,
+    on_clash: OnClash,
+) -> Result<Landing, String> {
+    let (dir, rel) = note_folder(docspace, folder)?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    confined(docspace, &dir)?;
+    let prefix = if rel.is_empty() {
+        String::new()
+    } else {
+        format!("{rel}/")
+    };
+    let sha = source
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| rel == KEPT_DIR && is_sha256_hex(s));
+    let _guard = sha
+        .as_ref()
+        .map(|_| SOURCES_LOCK.lock().unwrap_or_else(|e| e.into_inner()));
+    if let Some(sha) = &sha
+        && let Some(hit) = source_hit(&dir, sha)
+    {
+        return Ok(Landing::Kept {
+            kept: hit,
+            replaced: None,
+        });
+    }
+    let leaf = kept_name(name, media_type);
+    let target = dir.join(&leaf);
+    let taken_file = target.is_file() && same_bytes_in(&dir, bytes).is_none();
+    let mut replaced = None;
+    if taken_file {
+        match on_clash {
+            OnClash::Ask => {
+                return Ok(Landing::Taken {
+                    rel: format!("{prefix}{leaf}"),
+                    both: format!("{prefix}{}", numbered_free(&dir, &leaf)),
+                });
+            }
+            OnClash::Replace => {
+                let to = crate::project::delete_note(docspace, &format!("{prefix}{leaf}"))?;
+                replaced = Some(crate::project::trash_name(docspace, &to));
+            }
+            OnClash::Both => {}
+        }
+    }
+    let kept = keep_bytes_into(&dir, &prefix, &leaf, bytes)?;
+    if let Some(sha) = &sha {
+        record_source(&dir, sha, &kept.rel);
+    }
+    Ok(Landing::Kept { kept, replaced })
 }
 
 /// A file directly in `dir` holding exactly `bytes`: sizes compared first,
@@ -442,6 +619,12 @@ fn safe_entry_path(raw: &str) -> EntryPath {
 /// too, so it is not hidden), with ` (2)`, ` (3)`… while `files/` already
 /// has something by that name. Nothing is ever unpacked over what is there.
 pub fn zip_folder(docspace: &Path, zip_name: &str) -> String {
+    zip_folder_in(&docspace.join(KEPT_DIR), zip_name)
+}
+
+/// [`zip_folder`] for a zip dropped into the notes folder `dir` (item
+/// 492): its name, free in that folder.
+pub fn zip_folder_in(dir: &Path, zip_name: &str) -> String {
     let leaf = Path::new(zip_name)
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -455,7 +638,11 @@ pub fn zip_folder(docspace: &Path, zip_name: &str) -> String {
     };
     let stem = stem.trim_start_matches('.').trim();
     let stem = if stem.is_empty() { "archive" } else { stem };
-    let dir = docspace.join(KEPT_DIR);
+    free_folder(dir, stem)
+}
+
+/// `stem`, or `stem (2)`, `stem (3)`… while `dir` has something by it.
+fn free_folder(dir: &Path, stem: &str) -> String {
     let mut n = 1;
     loop {
         let name = if n == 1 {
@@ -855,6 +1042,7 @@ mod tests {
             &[crate::attach::FileInput {
                 name: "data.parquet".into(),
                 data: "AAEC".into(),
+                pages: None,
             }],
         )
         .unwrap();
@@ -1014,5 +1202,204 @@ mod tests {
         // Nothing was written for any of them.
         assert!(!docs.join("files").exists());
         let _ = std::fs::remove_dir_all(docs);
+    }
+
+    // ---- item 492: into the folder he points at ----
+
+    fn kept(l: Landing) -> (Kept, Option<String>) {
+        match l {
+            Landing::Kept { kept, replaced } => (kept, replaced),
+            Landing::Taken { rel, .. } => panic!("taken: {rel}"),
+        }
+    }
+
+    #[test]
+    fn a_file_lands_in_the_folder_named_nested_or_top() {
+        let docs = scratch("492-into");
+        let (a, _) = kept(
+            keep_in_folder(
+                &docs,
+                "people",
+                "a.txt",
+                "text/plain",
+                b"one",
+                None,
+                OnClash::Ask,
+            )
+            .unwrap(),
+        );
+        assert_eq!(a.rel, "people/a.txt");
+        assert!(docs.join("people/a.txt").is_file());
+        let (b, _) = kept(
+            keep_in_folder(
+                &docs,
+                "files/bundle/src/",
+                "b.txt",
+                "text/plain",
+                b"two",
+                None,
+                OnClash::Ask,
+            )
+            .unwrap(),
+        );
+        assert_eq!(b.rel, "files/bundle/src/b.txt");
+        let (c, _) = kept(
+            keep_in_folder(
+                &docs,
+                "",
+                "c.txt",
+                "text/plain",
+                b"three",
+                None,
+                OnClash::Ask,
+            )
+            .unwrap(),
+        );
+        assert_eq!(c.rel, "c.txt");
+        let _ = std::fs::remove_dir_all(docs);
+    }
+
+    #[test]
+    fn a_folder_outside_the_notes_is_refused() {
+        let docs = scratch("492-confine");
+        for bad in [
+            "..",
+            "../x",
+            "a/../../x",
+            "/etc",
+            ".trash/notes",
+            "people/.hidden",
+            "C:/x",
+        ] {
+            assert!(
+                keep_in_folder(&docs, bad, "a.txt", "text/plain", b"x", None, OnClash::Both)
+                    .is_err(),
+                "{bad} should be refused"
+            );
+        }
+        assert!(!docs.join(".trash").exists());
+        // A symlinked folder that leads out is refused too.
+        let out = scratch("492-outside");
+        std::os::unix::fs::symlink(&out, docs.join("link")).unwrap();
+        assert!(
+            keep_in_folder(
+                &docs,
+                "link",
+                "a.txt",
+                "text/plain",
+                b"x",
+                None,
+                OnClash::Both
+            )
+            .is_err()
+        );
+        assert!(std::fs::read_dir(&out).unwrap().next().is_none());
+        let _ = std::fs::remove_dir_all(docs);
+        let _ = std::fs::remove_dir_all(out);
+    }
+
+    #[test]
+    fn a_clash_asks_then_keeps_both_or_replaces_to_the_trash() {
+        let docs = scratch("492-clash");
+        kept(
+            keep_in_folder(
+                &docs,
+                "people",
+                "a.txt",
+                "text/plain",
+                b"old",
+                None,
+                OnClash::Ask,
+            )
+            .unwrap(),
+        );
+        // The same bytes again: no question, the file that is there.
+        let (same, _) = kept(
+            keep_in_folder(
+                &docs,
+                "people",
+                "a.txt",
+                "text/plain",
+                b"old",
+                None,
+                OnClash::Ask,
+            )
+            .unwrap(),
+        );
+        assert!(same.already);
+        // Other bytes: asked, nothing written.
+        let asked = keep_in_folder(
+            &docs,
+            "people",
+            "a.txt",
+            "text/plain",
+            b"new",
+            None,
+            OnClash::Ask,
+        )
+        .unwrap();
+        assert_eq!(
+            asked,
+            Landing::Taken {
+                rel: "people/a.txt".into(),
+                both: "people/a (2).txt".into()
+            }
+        );
+        assert_eq!(std::fs::read(docs.join("people/a.txt")).unwrap(), b"old");
+        // Keep both: the numbered name.
+        let (both, _) = kept(
+            keep_in_folder(
+                &docs,
+                "people",
+                "a.txt",
+                "text/plain",
+                b"new",
+                None,
+                OnClash::Both,
+            )
+            .unwrap(),
+        );
+        assert_eq!(both.rel, "people/a (2).txt");
+        // Replace: the old one goes to the notes trash, never unlinked.
+        let (rep, replaced) = kept(
+            keep_in_folder(
+                &docs,
+                "people",
+                "a.txt",
+                "text/plain",
+                b"newer",
+                None,
+                OnClash::Replace,
+            )
+            .unwrap(),
+        );
+        assert_eq!(rep.rel, "people/a.txt");
+        assert_eq!(std::fs::read(docs.join("people/a.txt")).unwrap(), b"newer");
+        assert_eq!(replaced.as_deref(), Some("people/a.txt"));
+        assert_eq!(
+            std::fs::read(docs.join(".trash/notes/people/a.txt")).unwrap(),
+            b"old"
+        );
+        let _ = std::fs::remove_dir_all(docs);
+    }
+
+    #[test]
+    fn a_zip_dropped_on_a_folder_gets_a_free_name_there() {
+        let docs = scratch("492-zip");
+        std::fs::create_dir_all(docs.join("people/bundle")).unwrap();
+        assert_eq!(
+            zip_folder_in(&docs.join("people"), "bundle.zip"),
+            "bundle (2)"
+        );
+        assert_eq!(zip_folder_in(&docs.join("other"), "bundle.zip"), "bundle");
+        let _ = std::fs::remove_dir_all(docs);
+    }
+
+    #[test]
+    fn the_clash_word_parses() {
+        assert_eq!(OnClash::parse(Some("ask")), OnClash::Ask);
+        assert_eq!(OnClash::parse(Some("replace")), OnClash::Replace);
+        assert_eq!(OnClash::parse(Some("both")), OnClash::Both);
+        assert_eq!(OnClash::parse(None), OnClash::Both);
     }
 }

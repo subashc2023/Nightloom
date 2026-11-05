@@ -143,6 +143,7 @@
     type MotionStyle,
   } from "./messageMotion";
   import { REMOVED_PLACEHOLDER } from "./edit";
+  import { setTypedMathOn, typedMathPrefs } from "./typedMathPrefs.svelte";
 
   /**
    * Redesigned 2026-09-13 (nightshift surface-redesign-2026-09-13, canvas
@@ -1526,6 +1527,26 @@
         </div>
       </section>
 
+      <!-- Item 456: the composer's typed-maths offer, beside the Stop
+           button, the other message-box option here. On by default. -->
+      <section class="card">
+        <div class="ch"><span class="t">Typed maths</span></div>
+        <p class="note small">
+          When a message has maths typed as text (s^2, x_1, sqrt(x), “s squared”),
+          a bar above the box offers it as formulas after a pause. Tab or
+          Use maths wraps it as LaTeX, Esc or × keeps it as typed. Nothing
+          changes unless you accept.
+        </p>
+        <label class="dream-auto">
+          <input
+            type="checkbox"
+            checked={typedMathPrefs.on}
+            onchange={(e) => setTypedMathOn(e.currentTarget.checked)}
+          />
+          <span>Offer typed maths as formulas</span>
+        </label>
+      </section>
+
       <!-- The turn-end banner (nightshift backlog 079): two switches, one
            per kind. The rule they cannot change is the focus one — a
            window in front is never notified. -->
@@ -2058,9 +2079,9 @@
           oninput={(e) => setHandoffDefaultMessage((e.currentTarget as HTMLTextAreaElement).value)}
         ></textarea>
         <p class="note small">
-          Sent as typed. Keep the ask for a fenced block tagged
-          <code>start-prompt</code>: that is what the new chat's first message
-          is read out of; without one its box opens with the read order alone. A chat can edit its
+          Sent as typed. Keep the ask for a prompt between
+          <code>&lt;handoff&gt;</code> and <code>&lt;/handoff&gt;</code>: that is what the new chat's first message
+          is read out of (a fenced <code>start-prompt</code> block still works); without one its box opens with the read order alone. A chat can edit its
           own copy on the notice without changing this.
           {#if hasOwnDefaultMessage()}<em>Edited; Reset to default restores the built-in text (a box left empty reads as the built-in after a relaunch).</em>{:else}<em>The built-in text ({WRAP_UP.length} characters).</em>{/if}
         </p>

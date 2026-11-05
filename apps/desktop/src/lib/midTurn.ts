@@ -3,6 +3,7 @@
  * rows can go into the running turn, and their wire form. Pure, for the
  * suite.
  */
+import { pdfRoute } from "./attachKinds";
 import type { Attachment, DocumentInput, ImageInput } from "./types";
 
 /**
@@ -13,7 +14,9 @@ import type { Attachment, DocumentInput, ImageInput } from "./types";
  * chat's folder by `send_agent`, a path the stdin line has no way to make).
  */
 export function midTurnWire(chips: readonly Attachment[]): { images: ImageInput[]; documents: DocumentInput[] } | null {
-  if (chips.some((c) => c.pending || !c.data || c.kind === "file")) return null;
+  // A long PDF going by path (item 491) is a file too: the turn runs on
+  // Claude Code, the only engine with a running turn to join.
+  if (chips.some((c) => c.pending || !c.data || c.kind === "file" || pdfRoute(c, "claude-code") === "path")) return null;
   return {
     images: chips.filter((c) => c.kind === "image").map(({ media_type, data }) => ({ media_type, data })),
     documents: chips.filter((c) => c.kind === "document").map(({ media_type, name, data }) => ({ media_type, name, data })),

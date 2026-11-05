@@ -15,28 +15,28 @@
     stageProposal,
     unstageProposal,
   } from "./state.svelte";
-  import { renderMarkdown } from "./markdown";
   import ProposalReview from "./ProposalReview.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
-  import {
-    hrefTarget,
-    linkTitle,
-    parseLinks,
-    renderNote,
-    resolveLink,
-  } from "./links";
+  import { linkTitle, parseLinks, resolveLink } from "./links";
   import type { NoteResolution } from "./links";
   import { modelOfInstructionFile } from "./catalog";
   import type { NoteScope } from "./types";
-  import { tick } from "svelte";
+  import { tick, untrack } from "svelte";
   import NoteEditor from "./NoteEditor.svelte";
   import NoteMedia from "./NoteMedia.svelte";
-  import { clampCaret, loadNoteMode, saveNoteMode, type NoteMode } from "./noteMode";
-  import { fieldScrollTop } from "./find";
+  import NoteToolbar from "./NoteToolbar.svelte";
+  import { loadNoteMarkdown, saveNoteMarkdown } from "./noteMode";
+  import { attachmentsFolder, imageAlt, imageNoteName, insertImage, linkPath, relativeToNote } from "./noteFormat";
+  import { readBase64 } from "./attachFiles.svelte";
   import NoteEditPanel from "./NoteEditPanel.svelte";
   import { noteEditUi, onLanded, runningTurn } from "./noteEdit.svelte";
   import { changedLines, editBlock, jumpTarget } from "./noteEdit";
   import { lineOffset } from "./memoryHits";
+  import { moveNoteTo } from "./state.svelte";
+  import { baseOf, parentOf, renamedTo } from "./notesTree";
+  import { floatMenu } from "./floatMenu";
+  import { viewGet, viewSet } from "./viewState";
+  import { splitExt, whoFoldKey } from "./noteHead";
 
   /**
    * Which note the editor has loaded, as `scope:name`. A plain variable, not
@@ -54,7 +54,14 @@
    * name. Absent — every caller before tabs — the view follows
    * `app.openNote` as it always has.
    */
-  let { note = null }: { note?: { scope: NoteScope; name: string } | null } = $props();
+  /**
+   * `away` (item 487): the view is a kept tab behind another one in its
+   * pane — mounted, hidden, keeping its caret, selection and scroll. It
+   * then takes no keys (⌘S is the note in front's), and coming back to the
+   * front it takes up the mode last picked in another note (one setting for
+   * every note, 150's rule), the cursor carried over as a switch does.
+   */
+  let { note = null, away = false }: { note?: { scope: NoteScope; name: string } | null; away?: boolean } = $props();
 
   let loaded: string | null = null;
   let text = $state("");
@@ -63,18 +70,17 @@
   let error = $state<string | null>(null);
   /** A note that is not text (backlog 307): drawn, never edited. */
   let media = $state<api.FileTabData | null>(null);
-  let preview = $state(false);
   /**
-   * Plain (the textarea) or formatted (the CodeMirror editor that draws the
-   * Markdown and math in place) — nightshift backlog 150. One setting for
-   * every note, the last picked (`noteMode.ts`). Both sides bind `text`, so
-   * the draft, Revert and Save are the same whichever is showing.
+   * Item 498: one editor (the CodeMirror one, `noteEditor.ts`), opened
+   * formatted — the Plain textarea and the Preview are gone from the note.
+   * `markdown` is the toolbar's switch to the raw Markdown in the same
+   * editor: one setting for every note, the last picked (`noteMode.ts`),
+   * kept across a chat switch, a tab switch and a relaunch.
    */
-  let mode = $state<NoteMode>(loadNoteMode());
-  /** Where the cursor was, as an offset into `text`: carried across a
-   *  switch between the two sides and back from the preview. */
+  let markdown = $state(loadNoteMarkdown());
+  /** Where the cursor was, as an offset into `text`: where the editor
+   *  mounts it (a jump to a line, a reload). */
   let caret = $state(0);
-  let area = $state<HTMLTextAreaElement | null>(null);
   let formatted = $state<ReturnType<typeof NoteEditor> | null>(null);
 
   const dirty = $derived(text !== saved);
@@ -217,11 +223,9 @@
     marks = { lines, marked: new Set([at]) };
     jumped = true;
     caret = offset;
-    preview = false;
     marksTimer = setTimeout(() => {
       clearMarks();
       jump += 1;
-      if (mode === "plain") void focusArea();
     }, JUMP_MS);
   }
   $effect(() => {
@@ -298,9 +302,7 @@
     if (`${at.scope}:${at.name}` !== loaded || open.scope !== at.scope || open.name !== at.name) return;
     caret = lineOffset(text, at.line);
     app.noteAt = null;
-    preview = false;
     jump += 1;
-    if (mode === "plain") void focusArea();
   });
 
   async function load(target: { scope: NoteScope; name: string } | null) {
@@ -311,6 +313,7 @@
     error = null;
     media = null;
     backlinks = [];
+    images.clear();
     if (!target) return;
     loading = true;
     try {
@@ -335,8 +338,6 @@
       if (at && at.scope === target.scope && at.name === target.name) {
         caret = lineOffset(text, at.line);
         app.noteAt = null;
-        preview = false;
-        if (mode === "plain") void focusArea();
       }
       bufferKey = key;
     } catch (e) {
@@ -457,24 +458,13 @@
   }
 
   /**
-   * Follow a `[[link]]` from the preview.
-   *
-   * Delegated from the pane rather than bound per anchor, because the HTML is
-   * produced by the markdown renderer and there is nothing to bind to. A
-   * target that resolves to nothing *creates* the note — writing `[[thing]]`
-   * before it exists is how a note gets planned, so the click is the natural
-   * moment to start it. An *ambiguous* one does not: the note it names already
-   * exists more than once, and a third copy is the one outcome that makes the
-   * vault worse.
+   * Follow a `[[link]]` (⌘-click in the editor, a chip). A target that
+   * resolves to nothing *creates* the note — writing `[[thing]]` before it
+   * exists is how a note gets planned, so the click is the natural moment to
+   * start it. An *ambiguous* one does not: the note it names already exists
+   * more than once, and a third copy is the one outcome that makes the vault
+   * worse. (The Preview's anchor clicks came here too until item 498.)
    */
-  async function onPreviewClick(e: MouseEvent) {
-    const anchor = (e.target as HTMLElement | null)?.closest("a");
-    const target = hrefTarget(anchor?.getAttribute("href") ?? null);
-    if (target === null) return;
-    e.preventDefault();
-    await follow(target);
-  }
-
   async function follow(target: string) {
     const found = resolveLink(target, app.vault);
     if (found.kind === "note") {
@@ -502,46 +492,79 @@
       : linkTitle(target, found);
   }
 
-  /** Read the cursor off whichever side is showing. */
-  function readCaret() {
-    if (area) caret = area.selectionStart;
-    else if (formatted) caret = formatted.head();
+  /* Coming back to the front (487's kept tab), the Markdown switch is as
+     last picked in another note (one setting, 495's rule for the Preview). */
+  $effect(() => {
+    if (away) return;
+    untrack(() => {
+      const last = loadNoteMarkdown();
+      if (last !== markdown) markdown = last;
+    });
+  });
+
+  /** The toolbar's Markdown switch: the same editor, drawn or not. */
+  function setMarkdownView(on: boolean) {
+    markdown = on;
+    saveNoteMarkdown(on);
   }
 
   /**
-   * Switch plain ↔ formatted. The text is one buffer, so nothing is copied
-   * and nothing can be lost; the cursor is read off the side going away and
-   * put back on the side arriving. From the preview, either choice also
-   * leaves the preview.
+   * Images (item 498, blocker 1652). The toolbar's Image copies the file
+   * picked into `attachments/` beside the note (`keep_note_file`, the notes
+   * panel's keep with Keep both) and inserts `![name](attachments/…)` at
+   * the caret, as one undo step. Only the two stores of notes have a folder
+   * beside the note; the fixed files (AGENTS.md, memory, a model's file)
+   * do not take images.
    */
-  async function setMode(next: NoteMode) {
-    readCaret();
-    const was = mode;
-    preview = false;
-    mode = next;
-    if (next !== was) saveNoteMode(next);
-    if (next === "plain") await focusArea();
+  const canImage = $derived(open?.scope === "project" || open?.scope === "knowledge");
+  async function addImage(file: File) {
+    const target = open;
+    const key = bufferKey;
+    if (!target || !key || !canImage) return;
+    try {
+      const data = await readBase64(file);
+      const landing = await api.keepNoteFile(
+        target.scope,
+        attachmentsFolder(target.name),
+        file.name,
+        file.type || "application/octet-stream",
+        data,
+      );
+      if (landing.kind !== "kept") throw new Error(`${landing.rel} is taken`);
+      // The round trip is long enough to switch notes: the link goes only
+      // into the note it was picked for.
+      if (bufferKey !== key || !formatted) return;
+      formatted.run(insertImage(imageAlt(file.name), linkPath(relativeToNote(target.name, landing.rel))));
+    } catch (e) {
+      addToast(`Could not add the image: ${String(e)}`);
+    }
   }
 
-  function togglePreview() {
-    readCaret();
-    preview = !preview;
-    if (!preview && mode === "plain") void focusArea();
-  }
-
-  /** The textarea, focused with the cursor where it was and its line in view. */
-  async function focusArea() {
-    await tick();
-    const el = area;
-    if (!el) return;
-    const at = clampCaret(caret, el.value);
-    el.focus({ preventScroll: true });
-    el.setSelectionRange(at, at);
-    const lh = parseFloat(getComputedStyle(el).lineHeight) || 20;
-    if (el.scrollHeight > el.clientHeight) el.scrollTop = fieldScrollTop(el.value, at, lh, el.clientHeight);
+  /** A relative image link drawn from the file beside the note: its bytes
+   *  as a `data:` URL (the way an image tab draws one), kept per note. */
+  const images = new Map<string, Promise<string | null>>();
+  function imageSource(src: string): Promise<string | null> {
+    const target = open;
+    if (!target) return Promise.resolve(null);
+    const name = imageNoteName(target.name, src);
+    if (!name) return Promise.resolve(null);
+    const k = `${target.scope}:${name}`;
+    const have = images.get(k);
+    if (have) return have;
+    const p = api
+      .readNoteMedia(target.scope, name)
+      .then((m) => (m?.kind === "image" && m.data ? `data:${m.media_type};base64,${m.data}` : null))
+      .catch(() => null);
+    // A miss is not kept: the file may land a moment later.
+    void p.then((u) => {
+      if (!u) images.delete(k);
+    });
+    images.set(k, p);
+    return p;
   }
 
   function onkeydown(e: KeyboardEvent) {
+    if (away) return;
     // A key ends the marks of a landed rewrite, back to the editor — unless
     // it is typed into the prompt panel, which sits beside the marks.
     if (marks && !(e.target instanceof HTMLElement && e.target.closest(".panel"))) clearMarks();
@@ -554,77 +577,301 @@
   const folder = $derived(
     isVault ? app.knowledge?.dir : app.project?.notes_dir,
   );
+
+  /**
+   * Item 460 (his bug: "i dont see a way for me to rename the file"): the
+   * title is the name, and clicking it edits it in place — Enter renames,
+   * Escape leaves it as it was. Only the two folders of notes can be
+   * renamed; the fixed files (`AGENTS.md`, a model's file) cannot. Tabs
+   * and the draft follow the file (`moveNoteTo`).
+   */
+  const canRename = $derived(!!open && (open.scope === "project" || open.scope === "knowledge") && !reviewing);
+  let renaming = $state(false);
+  let renameValue = $state("");
+  function startRename() {
+    if (!canRename || !open) return;
+    renameValue = baseOf(open.name);
+    renaming = true;
+  }
+  async function commitRename() {
+    if (!renaming) return;
+    renaming = false;
+    const o = open;
+    if (!o || (o.scope !== "project" && o.scope !== "knowledge")) return;
+    const to = renamedTo(o.name, renameValue);
+    if (!to) return;
+    await moveNoteTo(o.scope, o.name, to, (k) => runningTurn(k) !== null);
+  }
+  function renameKeys(e: KeyboardEvent) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void commitRename();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      renaming = false;
+    }
+  }
+  function focusRename(el: HTMLInputElement) {
+    el.focus();
+    const dot = el.value.lastIndexOf(".");
+    el.setSelectionRange(0, dot > 0 ? dot : el.value.length);
+  }
+
+  /*
+   * Item 496, his pick option 2 ("Document head"): no bar. A back link and a
+   * small tool cluster on a thin row; then the scope chip and folder, the
+   * name as a large serif heading and one "who reads this" line, which
+   * scroll away with the text; Save / Revert in a pill only while there is
+   * a draft.
+   *
+   * The head scrolls with the text without moving the text's scroller: the
+   * editor, the textarea, the preview and the stream pane each keep their
+   * own scroll (the find bar, the caret centring, CodeMirror's viewport and
+   * 487's kept tabs all rely on it). The head is laid over the top of the
+   * pane, the pane leaves `--head-h` of room above its first line, and the
+   * head moves up by the pane's `scrollTop` — so it reads as the page's top
+   * and goes with it. A wheel over the head is handed to the pane. A PDF or
+   * an image, the proposal review, a read error and "Reading…" keep the head
+   * in the flow above them instead (`overlay` false).
+   */
+  const overlay = $derived(!media && !reviewing && !error && !loading);
+  /** The editor is what shows (item 498: the toolbar is only over it). */
+  const editorShown = $derived(overlay && !streamed && !marks && !!open);
+  /* Blocker 1649 (answered by his pick): the large name always shows, and
+     a note's own first heading stays in its text as it is. */
+  const nameParts = $derived(splitExt(baseOf(open?.name ?? "")));
+  let mainEl = $state<HTMLDivElement | null>(null);
+  let headEl = $state<HTMLDivElement | null>(null);
+  let headH = $state(0);
+  let shift = $state(0);
+  $effect(() => {
+    const el = headEl;
+    if (!el) return;
+    const ro = new ResizeObserver(() => (headH = el.offsetHeight));
+    ro.observe(el);
+    headH = el.offsetHeight;
+    return () => ro.disconnect();
+  });
+  /** The pane that scrolls the note's text now, if any. */
+  function activePane(): HTMLElement | null {
+    return mainEl?.querySelector<HTMLElement>(".scrolls > .pane, .scrolls .cm-scroller") ?? null;
+  }
+  function onPaneScroll(e: Event) {
+    const t = e.target;
+    if (!(t instanceof HTMLElement) || t !== activePane()) return;
+    shift = t.scrollTop;
+  }
+  /** A different pane came in (a mode switch, the stream, a reload): the
+   *  head follows that pane's own scroll. */
+  $effect(() => {
+    void markdown;
+    void streamed;
+    void marks;
+    void bufferKey;
+    void overlay;
+    void jump;
+    void tick().then(() => (shift = activePane()?.scrollTop ?? 0));
+  });
+  function onHeadWheel(e: WheelEvent) {
+    if (!overlay) return;
+    activePane()?.scrollBy({ top: e.deltaY, left: e.deltaX });
+  }
+
+  /** The ⋯ menu: Show the folder, and Rename for the notes that can be. */
+  let moreOpen = $state(false);
+  let moreBtn = $state<HTMLButtonElement | null>(null);
+  let moreEl = $state<HTMLDivElement | null>(null);
+  function onDocDown(e: MouseEvent) {
+    const t = e.target as Node;
+    if (moreBtn?.contains(t) || moreEl?.contains(t)) return;
+    moreOpen = false;
+  }
+  $effect(() => {
+    if (!moreOpen) return;
+    document.addEventListener("mousedown", onDocDown, true);
+    return () => document.removeEventListener("mousedown", onDocDown, true);
+  });
+  $effect(() => {
+    if (away) moreOpen = false;
+  });
+  function moreKeys(e: KeyboardEvent) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      moreOpen = false;
+      moreBtn?.focus();
+    }
+  }
+  function pickMore(act: () => void) {
+    moreOpen = false;
+    act();
+  }
+
+  /** The "who reads this" line's More (drawback 3): the long per-scope
+   *  texts are cut to one line, the whole a click away, the fold kept per
+   *  scope past the view (495's viewState). */
+  let whoFolds = $state<Record<string, boolean>>({});
+  const whoScope = $derived(media ? "media" : (open?.scope ?? "project"));
+  const whoLong = $derived(whoScope === "instructions" || whoScope === "memory" || whoScope === "models" || whoScope === "media");
+  const whoOpen = $derived(whoLong && (whoFolds[whoScope] ?? viewGet(whoFoldKey(whoScope), false)));
+  function toggleWho() {
+    const next = !whoOpen;
+    whoFolds[whoScope] = next;
+    viewSet(whoFoldKey(whoScope), next, false);
+  }
+  const backLabel = $derived(app.noteFrom === "rail" ? "Model" : app.noteFrom === "settings" ? "Settings" : "Chat");
 </script>
 
 <svelte:window {onkeydown} />
 
-<div class="note">
-  <header>
-    <button class="back" onclick={closeNote}>
-      {app.noteFrom === "rail" ? "← Model" : app.noteFrom === "settings" ? "← Settings" : "← Chat"}
+<div class="note" class:with-draft={dirty && !media}>
+  <!-- Item 496 (option 2): no bar — the way back at the left, the tools at
+       the right, on the page's own background. -->
+  <div class="toprow">
+    <button class="back" use:tip={`Back to the ${backLabel.toLowerCase()} (Esc)`} onclick={closeNote}>
+      <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3 5 8l5 5" /></svg>{backLabel}
     </button>
-    <span class="scope" class:vault={isVault}>
-      {open?.scope ?? "project"}
-    </span>
-    <span class="title">{open?.name ?? "no note"}</span>
-    {#if reviewing}<span class="proposed" use:tip={"The dream proposed a replacement; nothing is applied until you Accept it (or open it in the editor and save)"}>proposed change</span>{/if}
-    {#if dirty}<span class="dirty" use:tip={"Unsaved changes — kept as a draft until you save or revert"}>● draft</span>{/if}
     <span class="spacer"></span>
-    {#if dirty}
+    <div class="tools">
+      {#if !media}
+        <!-- Item 498: no Plain / Formatted / Preview — the note opens
+             formatted, and the toolbar below carries the Markdown switch. -->
+        <button
+          class="seg ask"
+          class:on={noteEditUi.open}
+          aria-pressed={noteEditUi.open}
+          aria-label="Edit with a prompt"
+          use:tip={"Tell a model what changed and it edits this note to fit, in a small chat on the right. Direct editing stays as it is."}
+          onclick={() => (noteEditUi.open = !noteEditUi.open)}
+          disabled={!open}
+          ><svg class="ico spark" viewBox="0 0 16 16" aria-hidden="true"
+            ><path d="M8 2v3M8 11v3M2 8h3M11 8h3M4 4l1.6 1.6M10.4 10.4 12 12M12 4l-1.6 1.6M5.6 10.4 4 12" /></svg
+          ><span class="ask-label">Edit with a prompt</span></button
+        >
+        <span class="vr"></span>
+      {/if}
       <button
-        class="ghost revert"
-        use:tip={"Discard the draft and go back to the last saved version"}
-        onclick={revert}>Revert</button
+        class="seg more"
+        class:on={moreOpen}
+        bind:this={moreBtn}
+        aria-label="More"
+        aria-haspopup="menu"
+        aria-expanded={moreOpen}
+        use:tip={moreOpen ? null : "More: show the folder, rename"}
+        onclick={() => (moreOpen = !moreOpen)}
+        ><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"
+          ><circle cx="3.5" cy="8" r="1" /><circle cx="8" cy="8" r="1" /><circle cx="12.5" cy="8" r="1" /></svg
+        ></button
       >
-    {/if}
-    {#if !media}
-    <!-- Plain or formatted (backlog 150): two halves of one chip, the
-         lit half the side that shows when not previewing. -->
-    <span class="modes" role="group" aria-label="Editor">
-      <button
-        class="ghost mode"
-        class:on={!preview && mode === "plain"}
-        use:tip={"Plain: the Markdown source as typed"}
-        onclick={() => void setMode("plain")}
-        disabled={!open || !!reviewing}>Plain</button
-      ><button
-        class="ghost mode"
-        class:on={!preview && mode === "formatted"}
-        use:tip={"Formatted: headings, emphasis, code and math drawn in place, still editable — the cursor's line shows its source"}
-        onclick={() => void setMode("formatted")}
-        disabled={!open || !!reviewing}>Formatted</button
-      >
-    </span>
-    <button
-      class="ghost"
-      class:on={preview}
-      onclick={togglePreview}
-      disabled={!open || !!reviewing}
+    </div>
+  </div>
+  {#if moreOpen}
+    <div
+      class="more-menu"
+      role="menu"
+      tabindex="-1"
+      aria-label="More"
+      bind:this={moreEl}
+      use:floatMenu={{ anchor: moreBtn, align: "right" }}
+      onkeydown={moreKeys}
     >
-      {preview ? "Edit" : "Preview"}
-    </button>
-    <button
-      class="ghost"
-      class:on={noteEditUi.open}
-      use:tip={"Tell a model what changed and it edits this note to fit, in a small chat on the right. Direct editing stays as it is."}
-      onclick={() => (noteEditUi.open = !noteEditUi.open)}
-      disabled={!open}>Edit with a prompt</button
-    >
-    {/if}
-    <button
-      class="ghost"
-      use:tip={"Show the folder"}
-      onclick={() => void showFolder()}>Folder</button
-    >
-    {#if !media}
-    <button class="save" onclick={() => void commit()} disabled={!dirty}>
-      Save
-    </button>
-    {/if}
-  </header>
+      <button type="button" class="it" role="menuitem" onclick={() => pickMore(() => void showFolder())}>Show the folder</button>
+      {#if canRename}
+        <button type="button" class="it" role="menuitem" onclick={() => pickMore(startRename)}
+          >Rename… <span class="hint">or click the name</span></button
+        >
+      {/if}
+    </div>
+  {/if}
 
   <div class="body" class:editing={noteEditUi.open && !!open && !media}>
-  <div class="main">
+  <div class="main" bind:this={mainEl} onscrollcapture={onPaneScroll}>
+  {#if editorShown}
+    <NoteToolbar
+      run={(cmd) => formatted?.run(cmd)}
+      current={() => formatted?.editorState() ?? null}
+      {markdown}
+      onmarkdown={setMarkdownView}
+      {canImage}
+      imageWhy="Images go beside a note in the project's notes or the vault; this file takes text only"
+      onimage={(f) => void addImage(f)}
+    />
+  {/if}
+  <div class="scrolls" class:overlay style:--head-h="{overlay ? headH : 0}px">
+  <!-- The document head (item 496): where the note lives, its name, who
+       reads it. Over the pane's top and moved with its scroll (see the
+       script), or in the flow above a PDF, an image or the review. -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="head"
+    bind:this={headEl}
+    style:transform={overlay && shift > 0 ? `translateY(${-Math.min(shift, headH + 8)}px)` : undefined}
+    onwheel={onHeadWheel}
+  >
+    <div class="folder">
+      <span class="scope" class:vault={isVault}>{open?.scope === "knowledge" ? "knowledge" : (open?.scope ?? "project")}</span>
+      {#if reviewing}<span class="proposed" use:tip={"The dream proposed a replacement; nothing is applied until you Accept it (or open it in the editor and save)"}>proposed change</span>{/if}
+      {#if open && parentOf(open.name)}<span class="folder-part">{parentOf(open.name)} /</span>{/if}
+    </div>
+    {#if renaming && open}
+        <input
+          class="rename big"
+          autocorrect="off"
+          autocapitalize="off"
+          spellcheck="false"
+          aria-label="Rename {open.name}"
+          bind:value={renameValue}
+          use:focusRename
+          onkeydown={renameKeys}
+          onblur={() => void commitRename()}
+        />
+      {:else if canRename && open}
+        <h1 class="name">
+          <button class="rename-btn" use:tip={"Click to rename"} aria-label="Rename {open.name}" onclick={startRename}
+            >{nameParts.stem}<span class="ext">{nameParts.ext}</span></button
+          >
+        </h1>
+      {:else}
+        <h1 class="name"><span class="fixed">{open ? nameParts.stem : "no note"}<span class="ext">{nameParts.ext}</span></span></h1>
+      {/if}
+    <!-- Who reads this (the old footer). One line; the long texts for the
+         instructions, memory, a model's file and a file that is not text
+         keep their whole a click away (drawback 3). -->
+    <div class="who" class:open={whoOpen}>
+      <span class="who-text">
+        {#if whoScope === "instructions"}
+          Standing instructions for <strong>{app.project?.name ?? "this project"}</strong> — read <em>whole</em> into every chat's system prompt.
+          {#if whoOpen}
+            Keep it short and specific; anything that is only sometimes relevant belongs in a note, which the model reads on demand. Saving re-connects the open chat.
+          {/if}
+        {:else if whoScope === "memory"}
+          How you want the model to behave, in every project and in chats with no project — read <em>whole</em> into every chat's system prompt.
+          {#if whoOpen}
+            Keep it short; facts and decisions worth keeping belong in the knowledge base, which the model reads on demand. Saving re-connects the open chat.
+          {/if}
+        {:else if whoScope === "models"}
+          Instructions for <strong>{modelId}</strong> and no other model, in every project — read <em>whole</em> into that model's chats.
+          {#if whoOpen}
+            It goes into the system prompt after your memory and before the project's instructions — for what you want of this model in particular; what applies to every model belongs in Memory. An empty file is the same as none. Saving re-connects the open chat.
+          {/if}
+        {:else if whoScope === "media"}
+          {isVault ? "Yours, across every project" : `Shared with every chat in ${app.project?.name ?? "this project"}`} — this file isn't text: the model sees its name, kind and size.
+          {#if whoOpen}
+            Never its contents in the system prompt; it reads the file with a tool that takes its kind (a PDF by page range).
+          {/if}
+        {:else if isVault}
+          Yours, across every project — the model sees the name and first line, and reads the rest at <code>@kb/{open?.name ?? ""}</code>.
+        {:else}
+          Shared with every chat in <strong>{app.project?.name ?? "this project"}</strong> — the model sees the name and first line, and reads the rest when it needs to.
+        {/if}
+      </span>
+      {#if whoLong}
+        <button class="who-more" aria-expanded={whoOpen} onclick={toggleWho}>{whoOpen ? "Less" : "More"}</button>
+      {/if}
+    </div>
+    <hr />
+  </div>
   {#if error}
     <p class="err">{error}</p>
   {:else if loading}
@@ -696,22 +943,14 @@
         >
       </div>
     </div>
-  {:else if preview}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="pane preview markdown" onclick={onPreviewClick}>
-      {#if isVault}
-        {@html renderNote(text, app.vault)}
-      {:else}
-        {@html renderMarkdown(text)}
-      {/if}
-    </div>
-  {:else if mode === "formatted"}
+  {:else}
     {#key `${bufferKey}#${jump}`}
       <NoteEditor
         bind:this={formatted}
         bind:value={text}
         {caret}
+        {markdown}
+        {imageSource}
         placeholder={isVault
           ? "Yours, and readable from every project. Link another note with [[name]]."
           : isModel
@@ -721,26 +960,9 @@
         onfollow={(t) => void follow(t)}
       />
     {/key}
-  {:else}
-    <!-- Named, so the field has an accessible name when it is empty (an
-         unnamed empty textarea is invisible to assistive tech and to the
-         driving tools alike — the prompt library's fields had the same fix). -->
-    <textarea
-      class="pane"
-      aria-label="Note text"
-      bind:this={area}
-      bind:value={text}
-      onblur={() => {
-        if (area) caret = area.selectionStart;
-      }}
-      spellcheck="false"
-      placeholder={isVault
-        ? "Yours, and readable from every project. Link another note with [[name]]."
-        : isModel
-          ? `How you want ${modelId} in particular to behave. Empty means no file.`
-          : "Anything here is read by every chat in this project."}
-    ></textarea>
   {/if}
+
+  </div>
 
   <!-- Links, both directions. Only for the vault: the docspace has no link
        convention, and an empty strip on every project note would be chrome
@@ -773,6 +995,19 @@
       {/if}
     </div>
   {/if}
+  <!-- Save / Revert while there is a draft (item 496); ⌘S unchanged. The
+       panes pad under it, so it never covers the last lines. -->
+  {#if dirty && !media}
+    <div class="draftpill" class:above-actions={!!reviewing && !streamed && !marks} role="group" aria-label="Unsaved draft">
+      <span class="d" use:tip={"Unsaved changes — kept as a draft until you save or revert"}>Unsaved draft</span>
+      <button
+        class="revert"
+        use:tip={"Discard the draft and go back to the last saved version"}
+        onclick={revert}>Revert</button
+      >
+      <button class="save" use:tip={{ text: "Save the note", keys: "⌘S" }} onclick={() => void commit()}>Save <span class="kbd">⌘S</span></button>
+    </div>
+  {/if}
   </div>
   {#if noteEditUi.open && open && !media}
     <NoteEditPanel
@@ -786,39 +1021,6 @@
     />
   {/if}
   </div>
-
-  <footer>
-    {#if open?.scope === "instructions"}
-      Standing instructions for <strong>{app.project?.name ?? "this project"}</strong
-      >. Read <em>whole</em> into every chat's system prompt — keep it short and
-      specific; anything that is only sometimes relevant belongs in a note
-      below, which the model reads on demand. Saving re-connects the open chat.
-    {:else if open?.scope === "memory"}
-      How you want the model to behave, in every project and in chats with no
-      project. Read <em>whole</em> into every chat's system prompt — keep it
-      short; facts and decisions worth keeping belong in the knowledge base,
-      which the model reads on demand. Saving re-connects the open chat.
-    {:else if isModel}
-      Instructions for <strong>{modelId}</strong> and no other model, in every
-      project. Read <em>whole</em> into the system prompt of a chat on that
-      model, after your memory and before the project's instructions — for
-      what you want of this model in particular; what applies to every model
-      belongs in Memory. An empty file is the same as none. Saving re-connects
-      the open chat.
-    {:else if media}
-      {isVault ? "Yours, across every project" : `Shared with every chat in ${app.project?.name ?? "this project"}`}.
-      This file isn't text: the model sees its name, kind and size in its system prompt —
-      never its contents — and reads it with a tool that takes its kind (a PDF by page range).
-    {:else if isVault}
-      Yours, across every project — the model sees this file's name and first
-      line in its system prompt and reads the rest with the file tools, at
-      <code>@kb/{open?.name ?? ""}</code>.
-    {:else}
-      Shared with every chat in <strong>{app.project?.name ?? "this project"}</strong
-      >. The model sees this file's name and first line in its system prompt, and
-      reads the rest with the file tools when it needs to.
-    {/if}
-  </footer>
 </div>
 
 {#if confirmDismiss && reviewing}
@@ -899,67 +1101,400 @@
       opacity: 0;
     }
   }
-  header {
+  /* Item 496 (option 2): the row over the page — back at the left, the
+     tool cluster at the right, no bar under them. */
+  .toprow {
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.55rem 0.9rem;
-    border-bottom: 1px solid var(--border);
-    background: var(--panel);
+    padding: 0.6rem 0.9rem 0.2rem 1rem;
+    background: var(--bg);
+    flex-shrink: 0;
+    min-width: 0;
+  }
+  .ico {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
     flex-shrink: 0;
   }
+  .more .ico circle {
+    fill: currentColor;
+    stroke: none;
+  }
   .back {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
     background: transparent;
     border: none;
     color: var(--dim);
     font-family: inherit;
-    font-size: 0.8rem;
-    padding: 0.2rem 0.3rem;
+    font-size: 0.78rem;
+    padding: 0.25rem 0.4rem;
     cursor: pointer;
-    border-radius: 5px;
+    border-radius: 6px;
+    flex-shrink: 0;
   }
   .back:hover {
     color: var(--text);
+    background: var(--well);
   }
-  /* Which store this note is in. Two of them can hold the same name, and the
-     header is the only place that says which one is open. */
-  .scope {
-    font-size: 0.62rem;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+  .tools {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    background: var(--sheet);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 3px;
+    min-width: 0;
+    flex-shrink: 1;
+  }
+  .seg {
+    border: 0;
+    background: none;
     color: var(--dim);
-    border: 1px solid var(--border);
-    border-radius: 5px;
-    padding: 0.1rem 0.35rem;
+    font-family: inherit;
+    font-size: 0.74rem;
+    padding: 0.3rem 0.62rem;
+    border-radius: 7px;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.38rem;
+    cursor: pointer;
+    white-space: nowrap;
     flex-shrink: 0;
   }
-  .scope.vault {
-    color: var(--accent);
-    border-color: var(--accent);
+  .seg:hover:not(:disabled) {
+    color: var(--text);
   }
-  .title {
+  .seg.on {
+    background: var(--well);
+    color: var(--ink);
+  }
+  .seg:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  .seg.ask {
+    color: var(--ink2);
+  }
+  .seg.ask .spark {
+    color: var(--accent);
+  }
+  .seg.ask.on {
+    color: var(--accent);
+  }
+  .seg.more {
+    padding: 0.3rem 0.45rem;
+  }
+  .vr {
+    width: 1px;
+    height: 18px;
+    background: var(--line);
+    margin: 0 3px;
+    flex-shrink: 0;
+  }
+  /* A narrow note column (a 700 px window with the prompt panel open):
+     Edit with a prompt keeps its spark and its name in the tooltip. */
+  @container note (max-width: 560px) {
+    .ask-label {
+      display: none;
+    }
+  }
+  .more-menu {
+    position: fixed;
+    z-index: 60;
+    min-width: 13rem;
+    background: var(--sheet);
+    border: 1px solid var(--line2);
+    border-radius: 10px;
+    padding: 5px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+    display: flex;
+    flex-direction: column;
+  }
+  .more-menu .it {
+    text-align: left;
+    background: none;
+    border: 0;
+    border-radius: 6px;
+    color: var(--ink2);
+    font-family: inherit;
+    font-size: 0.8rem;
+    padding: 0.45rem 0.6rem;
+    cursor: pointer;
+  }
+  .more-menu .it:hover,
+  .more-menu .it:focus-visible {
+    background: var(--well);
+    color: var(--ink);
+    outline: none;
+  }
+  .more-menu .hint {
+    color: var(--dim);
+    font-size: 0.72rem;
+    margin-left: 0.3rem;
+  }
+
+  /* The text's column: its side padding, shared by the head and every pane
+     so the name, the who line and the first line of text start together. */
+  .note {
+    container: note / inline-size;
+  }
+  .scrolls {
+    --pad: clamp(1.2rem, 4.5cqi, 2.6rem);
+    --pill-room: 4.75rem;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    overflow: hidden;
+    background: var(--bg);
+  }
+  .head {
+    flex-shrink: 0;
+    max-width: calc(48rem + 2 * var(--pad));
+    padding: 0.9rem var(--pad) 0;
+    box-sizing: border-box;
+    background: var(--bg);
+  }
+  /* Over the pane's top, moved with its scroll (the script). */
+  .overlay > .head {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 2;
+    background: transparent;
+    will-change: transform;
+  }
+  .head .folder {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
     font-family: var(--mono);
-    font-size: 0.85rem;
+    font-size: 0.74rem;
+    color: var(--dim);
+    min-width: 0;
+  }
+  .head hr {
+    border: 0;
+    border-top: 1px solid var(--line);
+    margin: 0.9rem 0 0;
+  }
+  .name {
+    font-family: var(--serif);
+    font-weight: 500;
+    font-size: clamp(1.55rem, 4.2cqi, 2.1rem);
+    line-height: 1.15;
+    margin: 0.35rem 0 0.4rem -0.4rem;
+    color: var(--ink);
+    overflow-wrap: anywhere;
+  }
+  .name .rename-btn,
+  .name .fixed {
+    font: inherit;
+    color: inherit;
+    padding: 0.05rem 0.4rem;
+    display: inline-block;
+    text-align: left;
+    max-width: 100%;
+  }
+  .name .ext {
+    color: var(--dim);
+    font-size: 0.62em;
+  }
+  .who {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    font-size: 0.76rem;
+    color: var(--dim);
+    line-height: 1.5;
+    min-width: 0;
+  }
+  .who-text {
+    min-width: 0;
+  }
+  /* The long texts, folded: one line, cut with an ellipsis; More opens it. */
+  .who:has(.who-more):not(.open) .who-text {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .dirty {
-    color: var(--accent);
-    font-size: 0.7rem;
-    letter-spacing: 0.02em;
+  .who strong {
+    color: var(--ink2);
+    font-weight: 500;
   }
-  /* The review's marker, in the scope chip's shape so the header reads
-     "instructions · AGENTS.md · proposed change". */
+  .who code {
+    font-family: var(--mono);
+  }
+  .who-more {
+    flex-shrink: 0;
+    background: none;
+    border: 0;
+    padding: 0;
+    font-family: inherit;
+    font-size: 0.74rem;
+    color: var(--ink2);
+    text-decoration: underline;
+    text-decoration-color: var(--line2);
+    text-underline-offset: 3px;
+    cursor: pointer;
+  }
+  .who-more:hover {
+    color: var(--text);
+  }
+  /* Which store this note is in. Two of them can hold the same name, and the
+     head is the only place that says which one is open. */
+  .scope {
+    font-family: var(--sans);
+    font-size: 0.6rem;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--ink2);
+    background: var(--well);
+    border-radius: 4px;
+    padding: 0.12rem 0.4rem;
+    flex-shrink: 0;
+  }
+  .scope.vault {
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+  }
+  /* Item 460: the name renames in place. */
+  .rename-btn {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    color: var(--text);
+    cursor: text;
+    min-width: 0;
+  }
+  .rename-btn:hover {
+    border-color: var(--border);
+  }
+  .folder-part {
+    color: var(--dim);
+  }
+  .rename {
+    min-width: 6rem;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    padding: 0.05rem 0.4rem;
+  }
+  .rename.big {
+    display: block;
+    box-sizing: border-box;
+    width: min(100%, 30rem);
+    font-family: var(--serif);
+    font-weight: 500;
+    font-size: clamp(1.55rem, 4.2cqi, 2.1rem);
+    line-height: 1.15;
+    margin: 0.35rem 0 0.4rem -0.4rem;
+  }
+  .rename:focus {
+    outline: none;
+  }
+  /* The review's marker, in the scope chip's shape. */
   .proposed {
-    font-size: 0.62rem;
-    letter-spacing: 0.08em;
+    font-family: var(--sans);
+    font-size: 0.6rem;
+    letter-spacing: 0.09em;
     text-transform: uppercase;
     color: var(--accent);
     border: 1px solid var(--accent);
-    border-radius: 5px;
-    padding: 0.1rem 0.35rem;
+    border-radius: 4px;
+    padding: 0.06rem 0.35rem;
     flex-shrink: 0;
+  }
+  /* Save and Revert, only while there is a draft (item 496). */
+  .main {
+    position: relative;
+  }
+  .draftpill {
+    position: absolute;
+    right: 1.3rem;
+    bottom: 1.2rem;
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    background: var(--sheet);
+    border: 1px solid var(--line2);
+    border-radius: 12px;
+    padding: 0.42rem 0.5rem 0.42rem 0.85rem;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+    font-size: 0.76rem;
+    color: var(--ink2);
+  }
+  /* In the review, above its row of actions. */
+  .draftpill.above-actions {
+    bottom: 3.6rem;
+  }
+  .draftpill .d {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.38rem;
+    color: var(--accent);
+    white-space: nowrap;
+  }
+  .draftpill .d::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  .draftpill .revert {
+    border: 0;
+    background: none;
+    color: var(--dim);
+    font-family: inherit;
+    font-size: 0.76rem;
+    padding: 0.3rem 0.4rem;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  /* Revert discards typing (his call, 2026-09-14: the draft is the safety
+     net, not a confirmation): red on hover says so. */
+  .draftpill .revert:hover {
+    color: var(--failed);
+    background: color-mix(in srgb, var(--failed) 12%, transparent);
+  }
+  .draftpill .save {
+    border: 0;
+    background: var(--accent);
+    color: var(--paper);
+    font-family: inherit;
+    font-weight: 600;
+    font-size: 0.76rem;
+    padding: 0.36rem 0.8rem;
+    border-radius: 8px;
+    display: inline-flex;
+    gap: 0.45rem;
+    align-items: center;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .draftpill .save:hover {
+    background: color-mix(in srgb, var(--accent) 85%, white);
+  }
+  .draftpill .kbd {
+    font-size: 0.66rem;
+    border: 1px solid color-mix(in srgb, var(--paper) 40%, transparent);
+    border-radius: 4px;
+    padding: 0 0.25rem;
   }
   .review {
     flex: 1;
@@ -1037,8 +1572,7 @@
   .spacer {
     flex: 1;
   }
-  .ghost,
-  .save {
+  .ghost {
     background: transparent;
     border: 1px solid var(--border);
     border-radius: 7px;
@@ -1049,33 +1583,11 @@
     cursor: pointer;
     flex-shrink: 0;
   }
-  .ghost:hover:not(:disabled),
-  .save:hover:not(:disabled) {
+  .ghost:hover:not(:disabled) {
     color: var(--text);
     border-color: var(--dim);
   }
-  .ghost.on {
-    color: var(--accent);
-    border-color: var(--accent);
-  }
-  .modes {
-    display: inline-flex;
-    flex-shrink: 0;
-  }
-  .ghost.mode:first-child {
-    border-top-right-radius: 0;
-    border-bottom-right-radius: 0;
-  }
-  .ghost.mode:last-child {
-    border-top-left-radius: 0;
-    border-bottom-left-radius: 0;
-    margin-left: -1px;
-  }
-  .ghost.mode.on {
-    position: relative;
-  }
-  /* Revert discards typing: a red outline says so without a dialog (his
-     call, 2026-09-14 — the draft is the safety net, not a confirmation). */
+  /* Dismiss in the review: a red outline, as Revert had. */
   .ghost.revert {
     color: var(--failed);
     border-color: #7a3d3f;
@@ -1084,33 +1596,25 @@
     color: var(--failed);
     border-color: var(--failed);
   }
-  .ghost:disabled,
-  .save:disabled {
+  .ghost:disabled {
     opacity: 0.4;
     cursor: default;
-  }
-  .save:not(:disabled) {
-    color: var(--accent);
-    border-color: var(--accent);
   }
   .pane {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
     margin: 0;
-    padding: 1rem 1.2rem;
+    position: relative;
+    box-sizing: border-box;
+    padding: calc(var(--head-h, 0px) + 1rem) var(--pad, 1.2rem) var(--pill-room, 1rem);
     background: var(--bg);
     color: var(--text);
   }
-  textarea.pane {
-    border: none;
-    resize: none;
-    font-family: var(--mono);
-    font-size: 0.84rem;
-    line-height: 1.6;
-  }
-  textarea.pane:focus {
-    outline: none;
+  /* The formatted editor: the same room above (the head) and below (the
+     pill) as the other panes, and the same side padding. */
+  .scrolls :global(.cm-content) {
+    padding: calc(var(--head-h, 0px) + 1rem) var(--pad, 1.2rem) var(--pill-room, 1rem) !important;
   }
   .err {
     margin: 1rem 1.2rem;
@@ -1163,23 +1667,6 @@
     border-style: dashed;
     color: var(--dim);
   }
-  footer {
-    flex-shrink: 0;
-    padding: 0.5rem 1.2rem;
-    border-top: 1px solid var(--border);
-    background: var(--panel);
-    color: var(--dim);
-    font-size: 0.7rem;
-    line-height: 1.45;
-  }
-  footer strong {
-    color: var(--text);
-    font-weight: 500;
-  }
-  footer code {
-    font-family: var(--mono);
-  }
-
   /* Emitted by the markdown renderer, so scoped styles cannot reach it. */
   :global(.note .preview a.wikilink) {
     color: var(--accent);

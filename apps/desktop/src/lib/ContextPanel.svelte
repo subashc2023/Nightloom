@@ -46,6 +46,7 @@
     WireSegment,
     WireView,
   } from "./types";
+  import { viewGet, viewSet } from "./viewState";
 
   // A memory or instructions file edited outside the app since the last
   // connect has no *newer version exists* mark until something reconnects
@@ -78,8 +79,17 @@
   // a single open card: comparing two layers side by side is the reason to
   // open one at all. The library prompt has no kind of its own in the
   // catalogue and is keyed by its name.
-  let open = $state<Set<string>>(new Set());
-  let mode = $state<"layers" | "sent" | "session">("layers");
+  // Item 495: the open layers and the tab (Layers · Sent · Session) are kept
+  // past the overlay closing — it is drawn afresh each time — and a relaunch.
+  // Only his clicks write them; a find's own unfolding is not kept.
+  let open = $state<Set<string>>(new Set(viewGet("ctx.open", "").split("\n").filter(Boolean)));
+  type CtxMode = "layers" | "sent" | "session";
+  const keptMode = viewGet("ctx.mode", "layers");
+  let mode = $state<CtxMode>(keptMode === "sent" || keptMode === "session" ? keptMode : "layers");
+  function setMode(next: CtxMode): void {
+    mode = next;
+    viewSet("ctx.mode", next, "layers");
+  }
   let copied = $state<string | null>(null);
 
   function toggle(key: string): void {
@@ -87,6 +97,7 @@
     if (next.has(key)) next.delete(key);
     else next.add(key);
     open = next;
+    viewSet("ctx.open", [...next].join("\n"), "");
   }
 
   async function copy(key: string, text: string | null | undefined): Promise<void> {
@@ -186,6 +197,10 @@
   // preamble alone and the conversation section says so instead of listing
   // nothing.
   const agentEngine = $derived(app.connection?.engine === "claude-code");
+  // A kept Session tab on an engine that has none shows Layers (and keeps the pick).
+  $effect(() => {
+    if (mode === "session" && app.connection && !agentEngine) mode = "layers";
+  });
 
   /**
    * The layers a chat can switch off, in ladder order, with the card each
@@ -635,7 +650,8 @@
   /** The slash-command chips past this count fold behind `+ n more`
    *  (the design's board 4); a click shows them all. */
   const SLASH_SHOWN = 12;
-  let allSlash = $state(false);
+  let allSlash = $state(viewGet("ctx.allSlash", false));
+  $effect(() => viewSet("ctx.allSlash", allSlash, false));
   const shownSlash = $derived(allSlash ? builtinSlash : builtinSlash.slice(0, SLASH_SHOWN));
   /** An MCP tool's short name, `search_works` → `search works`, for the
    *  server's row. */
@@ -816,7 +832,7 @@
           role="tab"
           class:on={mode === "layers"}
           aria-selected={mode === "layers"}
-          onclick={() => (mode = "layers")}
+          onclick={() => setMode("layers")}
         >
           Layers
         </button>
@@ -826,7 +842,7 @@
           aria-selected={mode === "sent"}
           disabled={!view.system_text}
           use:tip={"The whole system prompt as one string, exactly as the backend renders it for the request"}
-          onclick={() => (mode = "sent")}
+          onclick={() => setMode("sent")}
         >
           As sent
         </button>
@@ -836,7 +852,7 @@
             class:on={mode === "session"}
             aria-selected={mode === "session"}
             use:tip={"What the Claude Code session has, as the CLI reported it at the start of the latest turn: MCP servers, tools, skills, slash commands, agents"}
-            onclick={() => (mode = "session")}
+            onclick={() => setMode("session")}
           >
             This session
           </button>

@@ -27,7 +27,8 @@
   import { tick } from "svelte";
   import { layerLines } from "./codeDetect";
   import { LANGUAGES } from "./codeHighlight";
-  import { mirrorLines } from "./replyQuote.svelte";
+  import { mirrorLines, quoteNeedsRender, quoteRuns } from "./replyQuote.svelte";
+  import { renderReply } from "./markdown";
   import { tip } from "./tip";
 
   let {
@@ -49,6 +50,32 @@
   // Where the layer's box starts inside the owner's wrap: the textarea's
   // own border, so its text and the layer's line up (the edit box has one).
   let inset = $state({ top: 0, left: 0 });
+
+  /*
+   * Item 470: a quote with maths or Markdown in it (a reply's `$$…$$`) is
+   * drawn rendered over its own lines, as the transcript draws it, while
+   * the caret is outside it; the caret inside it — a click on it, the
+   * arrows — shows the source again for editing. The textarea under it is
+   * unchanged, so a click lands in the source where it was clicked, and the
+   * text sent is the source.
+   */
+  const runs = $derived(quoteRuns(text).filter((r) => quoteNeedsRender(r.src)));
+  let caret = $state<{ start: number; end: number } | null>(null);
+  function readCaret(): void {
+    if (!box || document.activeElement !== box) {
+      caret = null;
+      return;
+    }
+    const start = box.selectionStart;
+    const end = box.selectionEnd;
+    if (!caret || caret.start !== start || caret.end !== end) caret = { start, end };
+  }
+  /** Runs whose typeset form is taller than their source lines (by the
+   *  run's source and its lines' height): shown as source, never clipped. */
+  let tooTall = $state<Record<string, true>>({});
+  const fitKey = (src: string, height: number) => `${height}|${src}`;
+  /** Each shown run's place in the layer: the top and height of its lines. */
+  let runBoxes = $state<({ top: number; left: number; width: number; height: number } | null)[]>([]);
 
   function sync(): void {
     if (!mirror || !box) return;
@@ -76,6 +103,21 @@
       tops[Number(el.dataset.fence)] = t >= 0 && t < mirror.clientHeight - 4 ? t : null;
     }
     fenceTops = tops;
+    const boxes: ({ top: number; left: number; width: number; height: number } | null)[] = [];
+    for (const r of runs) {
+      const a = mirror.querySelector<HTMLElement>(`[data-line="${r.first}"]`);
+      const b = mirror.querySelector<HTMLElement>(`[data-line="${r.last}"]`);
+      boxes.push(a && b ? { top: a.offsetTop, left: a.offsetLeft, width: a.offsetWidth, height: b.offsetTop + b.offsetHeight - a.offsetTop } : null);
+    }
+    runBoxes = boxes;
+    // A typeset quote that does not fit its lines goes back to its source.
+    void tick().then(() => {
+      if (!mirror) return;
+      for (const el of mirror.querySelectorAll<HTMLElement>("[data-quote-render]")) {
+        const k = el.dataset.fit;
+        if (k && el.scrollHeight > el.clientHeight + 1 && !tooTall[k]) tooTall = { ...tooTall, [k]: true };
+      }
+    });
   }
 
   // The layer follows the box: its size (a drag, the 40% line, a resized
@@ -88,14 +130,21 @@
     ro.observe(b);
     b.addEventListener("scroll", sync, { passive: true });
     void tick().then(sync);
+    // Item 470: where the caret is decides which quotes show their source.
+    const caretEvents = ["focus", "blur", "select", "keyup", "mouseup", "input"] as const;
+    for (const ev of caretEvents) b.addEventListener(ev, readCaret);
+    document.addEventListener("selectionchange", readCaret);
+    readCaret();
     return () => {
       ro.disconnect();
       b.removeEventListener("scroll", sync);
+      for (const ev of caretEvents) b.removeEventListener(ev, readCaret);
+      document.removeEventListener("selectionchange", readCaret);
     };
   });
 </script>
 
-<div class="ta-mirror" aria-hidden="true" bind:this={mirror} style:top="{inset.top}px" style:left="{inset.left}px">{#each mirrorLines(text) as l, i (i)}{@const c = codeLayer[i]}{#if c && c.kind === "body"}<div class="ml code">{#each c.segs as sg, j (j)}<span class={sg.cls}>{sg.text}</span>{/each}{#if c.segs.length === 0}{"​"}{/if}</div>{:else if c}<div class="ml code fence" data-fence={c.kind === "open" ? c.fence : undefined}>{l.marker}{l.rest || "​"}</div>{:else}<div class="ml" class:q={l.quote}>{#if l.quote}<span class="qm">{l.marker}</span>{l.rest}{:else}{l.rest || "​"}{/if}</div>{/if}{/each}</div>
+<div class="ta-mirror" aria-hidden="true" bind:this={mirror} style:top="{inset.top}px" style:left="{inset.left}px">{#each mirrorLines(text) as l, i (i)}{@const c = codeLayer[i]}{#if c && c.kind === "body"}<div class="ml code">{#each c.segs as sg, j (j)}<span class={sg.cls}>{sg.text}</span>{/each}{#if c.segs.length === 0}{"​"}{/if}</div>{:else if c}<div class="ml code fence" data-fence={c.kind === "open" ? c.fence : undefined}>{l.marker}{l.rest || "​"}</div>{:else}<div class="ml" class:q={l.quote} data-line={i}>{#if l.quote}<span class="qm">{l.marker}</span>{l.rest}{:else}{l.rest || "​"}{/if}</div>{/if}{/each}{#each runs as r, k (r.start)}{@const at = runBoxes[k]}{#if at && !tooTall[fitKey(r.src, at.height)] && !(caret && caret.end >= r.start && caret.start <= r.end)}<div class="q-render markdown" data-quote-render data-fit={fitKey(r.src, at.height)} style:top="{at.top}px" style:left="{at.left}px" style:width="{at.width}px" style:height="{at.height}px">{@html renderReply(r.src)}</div>{/if}{/each}</div>
 {#each fences as f, k (k)}
   {#if fenceTops[k] != null}
     <!-- Item 315: the block's language; a pick rewrites only the
@@ -138,6 +187,27 @@
   }
   .qm {
     opacity: 0.45;
+  }
+  /* Item 470: a quote drawn rendered over its source lines — the quote's
+     bar and muted ink, the transcript's typesetting, the box's ground so
+     the source under it does not show through. Typeset maths taller than
+     its source lines is not drawn: the source shows instead (`tooTall`). */
+  .q-render {
+    position: absolute;
+    box-sizing: border-box;
+    padding: 0 0 0 10px;
+    overflow: hidden;
+    white-space: normal;
+    background: var(--q-ground, var(--sheet));
+    box-shadow: inset 3px 0 0 var(--accent);
+    color: var(--dim);
+  }
+  .q-render :global(p) {
+    margin: 0;
+  }
+  .q-render :global(.katex-display) {
+    margin: 0;
+    padding: 0;
   }
   /* Item 315: a fenced block in the box — a code ground under its lines
      (out into the gutter, as a quote's bar), the fence lines dimmed. The

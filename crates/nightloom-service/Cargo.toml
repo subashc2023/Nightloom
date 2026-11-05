@@ -24,6 +24,9 @@ uuid.workspace = true
 base64.workspace = true
 reqwest.workspace = true
 zip = { version = "8", default-features = false, features = ["deflate"] }
+# Inflating a PDF's object streams to count its pages (item 491); already
+# compiled for `zip`'s deflate.
+flate2 = "1"
 # The Nightshift watcher: one OS subscription per open contract root, so the
 # GUI learns of a runner's status write without polling.
 notify = "8"

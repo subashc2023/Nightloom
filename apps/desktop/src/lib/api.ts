@@ -257,6 +257,27 @@ export function officeConverter(): Promise<boolean> {
   return invoke("office_converter");
 }
 
+/** A PDF's page count (item 491), or null when none is found. */
+export function pdfPages(data: string): Promise<number | null> {
+  return invoke("pdf_pages", { data });
+}
+
+/** A draft's long PDF kept on disk (item 491); its id. */
+export function stashDraftFile(data: string): Promise<string> {
+  return invoke("stash_draft_file", { data });
+}
+
+/** Item 491 follow-up: delete the draft copies over 30 days old that no
+ *  id in `keep` names; what was done. */
+export function pruneDraftFiles(keep: string[]): Promise<{ removed: number; kept: number; freed: number }> {
+  return invoke("prune_draft_files", { keep });
+}
+
+/** A kept draft file's bytes (base64) by its id. */
+export function readDraftFile(id: string): Promise<string> {
+  return invoke("read_draft_file", { id });
+}
+
 /** Where a kept attachment went (item 306): `rel` as the system prompt
  *  lists it (`files/deck.pdf`); `already` when those bytes were there. */
 export interface KeptFile {
@@ -294,8 +315,44 @@ export interface UnpackedZip {
   files: { path: string; data: string }[];
   skipped: { name: string; why: string }[];
 }
-export function unpackZip(name: string, data: string): Promise<UnpackedZip> {
-  return invoke("unpack_zip", { name, data });
+export function unpackZip(name: string, data: string, folder?: string): Promise<UnpackedZip> {
+  // Item 492: `folder`, the notes folder it was dropped on — its folder is
+  // named free there instead of in `files/`.
+  return invoke("unpack_zip", { name, data, ...(folder !== undefined ? { folder } : {}) });
+}
+
+/** Item 492: what came of a keep into a notes folder — kept (`replaced`:
+ *  where the old file went in the notes trash, for a Replace), or the name
+ *  is taken by other bytes and nothing was written (`both`: the name Keep
+ *  both would use). */
+export type Landing =
+  | { kind: "kept"; path: string; rel: string; already: boolean; replaced?: string }
+  | { kind: "taken"; rel: string; both: string };
+
+/** Item 492: keep bytes in the notes folder `folder` (docspace-relative:
+ *  `people`, `files/bundle`). `clash`: "ask" answers `taken` on a clash. */
+export function keepInFolder(
+  name: string,
+  mediaType: string,
+  data: string,
+  folder: string,
+  clash: "ask" | "both" | "replace",
+  source?: string,
+): Promise<Landing> {
+  return invoke("keep_in_folder", { name, mediaType, data, folder, clash, ...(source ? { source } : {}) });
+}
+
+/** Item 498: an image the note toolbar inserts, kept in `folder` (the
+ *  `attachments/` beside the note) of the note's own store, project notes
+ *  or the vault; a name taken by other bytes is numbered. */
+export function keepNoteFile(
+  scope: NoteScope,
+  folder: string,
+  name: string,
+  mediaType: string,
+  data: string,
+): Promise<Landing> {
+  return invoke("keep_note_file", { scope, folder, name, mediaType, data });
 }
 
 /**
@@ -359,6 +416,9 @@ export interface NoteEditResult {
   was_on_disk: string | null;
   cost_usd: number | null;
   notices: string[];
+  /** The note's new name when the model renamed it with `rename_note`
+   *  (item 460), same folder; null or absent when it did not. */
+  renamed_to?: string | null;
 }
 
 /**
@@ -778,6 +838,18 @@ export function appendThreadLog(slug: string, entry: string): Promise<number> {
   return invoke("append_thread_log", { slug, entry });
 }
 
+/** Keep a thread chat's `<handoff>` prompt on its thread (item 464),
+ *  replacing any earlier one. */
+export function saveThreadHandoff(slug: string, text: string, fromChat: string): Promise<null> {
+  return invoke("save_thread_handoff", { slug, text, fromChat });
+}
+
+/** The thread's + (item 464): the saved hand-off's text if no child chat
+ *  has started from it yet (`chat` is then the one that did), else null. */
+export function takeThreadHandoff(slug: string, chat: string): Promise<string | null> {
+  return invoke("take_thread_handoff", { slug, chat });
+}
+
 /** One thread's upkeep: a dry run for the wrap-up's flags, or (apply) the
  *  mechanical moves and the index rewritten. */
 export function threadUpkeep(slug: string, apply: boolean): Promise<ThreadUpkeep> {
@@ -1193,8 +1265,41 @@ export function saveNote(scope: NoteScope, name: string, content: string): Promi
   return invoke("save_note", { scope, name, content });
 }
 
-export function deleteNote(scope: NoteScope, name: string): Promise<null> {
+/** To the docspace's trash (item 457). Item 471: the answer is where it
+ *  went inside the trash (`people 2` for `.trash/notes/people 2`). */
+export function deleteNote(scope: NoteScope, name: string): Promise<string> {
   return invoke("delete_note", { scope, name });
+}
+
+/** Item 471: unsaved drafts into the notes trash, each `[name inside the
+ *  trash, text]`, beside its deleted note as `<stem> (unsaved draft).md`;
+ *  the names written. */
+export function trashNoteDrafts(scope: NoteScope, drafts: [string, string][]): Promise<string[]> {
+  return invoke("trash_note_drafts", { scope, drafts });
+}
+
+/** The docspace as the Notes panel draws it (item 457): every note, every
+ *  folder (`a/b`, no trailing slash; empty ones too), and whether the walk
+ *  saw everything (false: a bound left something out, and the panel says so). */
+export interface NoteTree {
+  notes: Note[];
+  folders: string[];
+  complete: boolean;
+}
+
+export function listNoteTree(scope: NoteScope): Promise<NoteTree> {
+  return invoke("list_note_tree", { scope });
+}
+
+/** Move or rename a note or a folder of notes (item 457); the new name.
+ *  Refused when `to` is taken — a move never writes over a note. */
+export function moveNote(scope: NoteScope, from: string, to: string): Promise<string> {
+  return invoke("move_note", { scope, from, to });
+}
+
+/** Make a folder among the notes (item 457); its name as listed. */
+export function newNoteFolder(scope: NoteScope, name: string): Promise<string> {
+  return invoke("new_note_folder", { scope, name });
 }
 
 // ---- proposals: the dream's suggested edits to the two fixed files ----
@@ -1387,6 +1492,10 @@ export interface ShellInfo {
 }
 export function terminalOpen(cwd: string, cols: number, rows: number): Promise<ShellInfo> {
   return invoke("terminal_open", { cwd, cols, rows });
+}
+/** A block of a reply's, run under his login shell in its own pty (item 503). */
+export function terminalRun(cwd: string, cols: number, rows: number, command: string): Promise<ShellInfo> {
+  return invoke("terminal_run", { cwd, cols, rows, command });
 }
 export function terminalWrite(id: number, data: string): Promise<null> {
   return invoke("terminal_write", { id, data });

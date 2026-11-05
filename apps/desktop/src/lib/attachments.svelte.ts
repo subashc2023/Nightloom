@@ -11,6 +11,7 @@
 import { app } from "./state.svelte";
 import * as tabs from "./tabs";
 import type { Rect } from "./attachmentView";
+import { findChip } from "./drafts.svelte";
 
 export type AttachmentContent = Extract<tabs.TabContent, { kind: "attachment" }>;
 
@@ -30,6 +31,12 @@ export function openAttachment(content: AttachmentContent, from: Rect | null, na
   tabs.openFloating(app.tabs, content);
 }
 
+/** The address of image chip `chip` in the box whose draft is `key`
+ *  (item 467). */
+export function draftImageContent(key: string, chip: number, name: string): AttachmentContent {
+  return { kind: "attachment", session: "", turn: -1, index: -1, media: "image", name, draft: { key, chip } };
+}
+
 export function closeAttachment(): void {
   tabs.closeFloating(app.tabs);
   opening.from = null;
@@ -38,10 +45,18 @@ export function closeAttachment(): void {
 
 /** The attachment's bytes from the open chat's log, or null when the tab
  *  is another chat's, the turn is not a user message, or the index is
- *  past its attachments (a rewound log, say). */
+ *  past its attachments (a rewound log, say). A draft chip's address
+ *  (item 467) reads the box's draft instead. */
 export function attachmentBytes(
   content: AttachmentContent,
 ): { media_type: string; data: string; name: string } | null {
+  // Item 467: a chip in a message box, read from its draft — whichever
+  // chat is open; null once the chip is removed or sent.
+  if (content.draft) {
+    const c = findChip(content.draft.key, content.draft.chip);
+    if (!c || c.kind !== "image" || c.pending || !c.data) return null;
+    return { media_type: c.media_type, data: c.data, name: c.name };
+  }
   if (content.session !== app.activeSessionId) return null;
   const e = app.events[content.turn];
   if (!e || e.event !== "user_message") return null;

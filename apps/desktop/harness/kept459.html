@@ -1,0 +1,27 @@
+<!doctype html>
+<!-- Item 459: a kept file's chip in the real Composer, clicked, opens the real NotesPanel at that file and flashes
+     its row (kept459.ts). App state stubbed; the caption logs each click. #seq, then @A..@D for the palette.
+     For nightshift-code bin/snap (WebKit). -->
+<html lang="en" data-palette="A">
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      body { margin: 0; background: var(--paper, #111); display: grid; grid-template-columns: 260px 1fr; grid-template-rows: 400px auto; }
+      #notes { grid-row: 1; grid-column: 1; height: 400px; overflow: hidden; display: flex; flex-direction: column; border-right: 1px solid var(--line, #333); background: var(--panel); }
+      #root { grid-row: 1; grid-column: 2; position: relative; display: flex; flex-direction: column; justify-content: flex-end; height: 400px; padding: 0 20px; }
+      #cap { grid-row: 2; grid-column: 1 / 3; font: 12px/1.5 ui-monospace, monospace; color: #ddd; background: #000; padding: 6px 8px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <div id="notes"></div>
+    <div id="root"></div>
+    <div id="cap"></div>
+    <script>
+      try { localStorage.clear(); } catch {}
+      window.__NIGHTLOOM_PLATFORM__ = "macos";
+      window.addEventListener("error", (e) => (document.getElementById("cap").textContent += "\nerror: " + e.message));
+      window.addEventListener("unhandledrejection", (e) => (document.getElementById("cap").textContent += "\nrejection: " + e.reason));
+    </script>
+    <script type="module" src="./kept459.ts"></script>
+  </body>
+</html>

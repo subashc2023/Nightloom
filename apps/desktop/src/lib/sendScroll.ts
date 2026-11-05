@@ -54,3 +54,24 @@ export function followStep(pinned: boolean, away: boolean, atBottom: boolean): "
   if (away) return atBottom ? "stay" : "release";
   return "follow";
 }
+
+/**
+ * An aside's follow-up Send (item 468): the card's body takes the same
+ * rule as the transcript — a follow-up asked from within one body height
+ * of the foot lands at the bottom and follows the answer; from further up
+ * the place is kept. `before`/`after`: the thread's turn count either side
+ * of the change; only one new turn that is still being asked is a Send (a
+ * rewind's undo puts several back). `distance`/`viewport`: the body's
+ * distance above its foot and its height, read before the turn was drawn.
+ */
+export function asideSendJumps(
+  pinned: boolean,
+  before: number,
+  after: number,
+  asking: boolean,
+  distance: number,
+  viewport: number,
+): boolean {
+  if (pinned || after !== before + 1 || !asking) return false;
+  return sendJumps(distance, viewport);
+}

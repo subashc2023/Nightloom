@@ -18,6 +18,7 @@ import {
   parseVersions,
   replacedBy,
   versionsAt,
+  versionStarts,
   type ForkInfo,
   type VersionMap,
 } from "./versions";
@@ -82,9 +83,20 @@ export function ensureForkInfo(id: string, events: SessionEvent[] | null = null)
 
 /** The versions of chat `id`'s message at event `index`, in order, or null. */
 export function versionsOf(id: string, index: number): string[] | null {
-  const info = new Map(Object.entries(versions.info));
-  return versionsAt(app.sessions, info, id, index);
+  const sessions = app.sessions;
+  const entries = Object.entries(versions.info);
+  // Item 454: the messages with versions, worked out once per chat list and
+  // fork reading rather than once per message drawn; any other message
+  // answers null without walking the list.
+  const sig = entries.map(([k, v]) => `${k}\u0000${v.cut}\u0000${v.created}`).join("\u0001");
+  if (!startsMemo || startsMemo.sessions !== sessions || startsMemo.sig !== sig) {
+    const info = new Map<string, ForkInfo>(entries);
+    startsMemo = { sessions, sig, info, starts: versionStarts(sessions, info) };
+  }
+  if (!startsMemo.starts.has(`${id}\u0000${index}`)) return null;
+  return versionsAt(sessions, startsMemo.info, id, index);
 }
+let startsMemo: { sessions: unknown; sig: string; info: Map<string, ForkInfo>; starts: Set<string> } | null = null;
 
 /** Open a version in the tab in front, as a sidebar click would. */
 export function openVersion(id: string): void {

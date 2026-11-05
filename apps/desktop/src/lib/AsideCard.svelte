@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { chatLabel } from "./chatLabel";
   import { tip } from "./tip";
   import { renderReply } from "./markdown";
   // Every Copy button goes through the in-app clipboard ring (backlog 173).
@@ -16,7 +17,9 @@
   import type { TabContent } from "./tabs";
   import { outcome, startMove } from "./floatingMove";
   import type { Zone } from "./floatingMove";
-  import { tick } from "svelte";
+  import { tick, untrack } from "svelte";
+  import { asideSendJumps } from "./sendScroll";
+  import { asideCardScrollKey, putBack, recallScroll, rememberScroll, returnEntry } from "./scroll.svelte";
   import type { Aside } from "./state.svelte";
   import type { Placement } from "./asideCard";
   import MoveZone from "./MoveZone.svelte";
@@ -123,7 +126,7 @@
   const chatName = $derived.by(() => {
     if (!owner) return "this chat";
     const s = app.sessions.find((x) => x.id === owner);
-    return s?.title ?? s?.first_user ?? "this chat";
+    return chatLabel(s, "this chat");
   });
   // A draft drags too (backlog 148, his ask on 5847cca): the card sits
   // under the passage and can cover what he is reading before a word is
@@ -207,10 +210,31 @@
   // streaming answer, then the follow-up box — is what he is reading.
   // Released the moment he scrolls up in it, held again at the foot.
   let bodyPinned = true;
+  // Item 502: the card keeps his place in its thread across a remount (a
+  // chat switch, the card folded and opened): held at the foot as before
+  // when it was, else the line he left, put back while the thread draws.
+  const placeKey = $derived(owner ? asideCardScrollKey(owner, aside.id) : null);
+  let putting: ReturnType<typeof putBack> | null = null;
   function bodyScrolled(): void {
     if (!body) return;
     bodyPinned = body.scrollHeight - body.scrollTop - body.clientHeight < 4;
+    if (placeKey && !putting?.busy()) rememberScroll(placeKey, body.scrollTop, bodyPinned);
   }
+  $effect(() => {
+    const key = placeKey;
+    const el = body;
+    if (!key || !el) return;
+    return untrack(() => {
+      const entry = returnEntry(recallScroll(key), el.scrollHeight, el.clientHeight);
+      if (entry) bodyPinned = entry.pinned;
+      const p = putBack(el, entry);
+      putting = p;
+      return () => {
+        p.cancel();
+        if (putting === p) putting = null;
+      };
+    });
+  });
   // A card whose room shrinks — a shorter window, more cards stacked
   // above the composer — keeps its foot where it was: held at the bottom
   // before the change, held there after, so the buttons stay (backlog
@@ -233,6 +257,32 @@
       ro.disconnect();
       el.removeEventListener("scroll", keep);
     };
+  });
+  // Item 468: a follow-up Send from near the foot lands at the bottom, as
+  // the transcript's does (item 313's `sendJumps`, the body's height for
+  // the screen). The distance is read before the new turn is drawn, so it
+  // is the reader's, not the reader's plus the new question's height. Run
+  // before the follow effect below, which then sees the body pinned.
+  /** The thread's turn count at the last look; -1 before the first. */
+  let preTurns = -1;
+  let preDistance = 0;
+  let preHeight = 0;
+  $effect.pre(() => {
+    void aside.turns.length;
+    untrack(() => {
+      if (!body) return;
+      preDistance = body.scrollHeight - body.scrollTop - body.clientHeight;
+      preHeight = body.clientHeight;
+    });
+  });
+  $effect(() => {
+    const n = aside.turns.length;
+    untrack(() => {
+      const t = aside.turns[n - 1];
+      const asking = !!t && t.answer === null && !t.error && !t.cancelled;
+      if (preTurns >= 0 && asideSendJumps(bodyPinned, preTurns, n, asking, preDistance, preHeight)) bodyPinned = true;
+      preTurns = n;
+    });
   });
   $effect(() => {
     void last?.partial;
@@ -435,7 +485,7 @@
         <blockquote class="aside-card-quote">{@html renderReply(aside.quote.text)}</blockquote>
       {/if}
       {#if !aside.draft}
-        <AsideThread {aside} open={!readOnly} />
+        <AsideThread {aside} open={!readOnly} {owner} />
         <AsideFoldPanel {aside} part="panel" open={!readOnly} />
       {/if}
     </div>

@@ -5,10 +5,11 @@
  * it answers "Kept" with the file already there (the backend finds the
  * same bytes and writes nothing).
  */
-import { keepAttachment } from "./api";
-import { addToast as toastNow, projectFilesChanged, refreshNotes } from "./state.svelte";
+import { keepAttachment, keepInFolder } from "./api";
+import { addToast as toastNow, app, projectFilesChanged, refreshNotes, toggleSidebar } from "./state.svelte";
 import type { KeepState } from "./keep";
 import type { KeptNotice } from "./notesDrop";
+import type { ClashAnswer } from "./notesTarget";
 
 export const keeps = $state<Record<string, KeepState>>({});
 
@@ -35,6 +36,22 @@ export function takeKeptNotices(): KeptNotice[] {
 export function noticeKept(rel: string): void {
   keptNotices.list.push({ rel, at: performance.now() });
   if (holding === 0) keptNotices.seq++;
+}
+
+/**
+ * Item 459: a kept file's chip, clicked — the Notes panel opens (the
+ * sidebar too, if it was folded away) and the kept file's row scrolls into
+ * view and flashes, by item 416's own path: the panel watches
+ * `keptNotices`, and reads a notice as it mounts. False when the chip's
+ * file was not kept here, so the click does nothing new.
+ */
+export function revealKept(key: string): boolean {
+  const k = keepStateOf(key);
+  if (k.phase !== "kept" || !k.rel) return false;
+  if (app.layout.sidebarCollapsed) toggleSidebar();
+  app.leftTab = "notes";
+  noticeKept(k.rel);
+  return true;
 }
 
 export function keepStateOf(key: string): KeepState {
@@ -74,5 +91,50 @@ export async function keepNow(
   } catch (e) {
     delete keeps[key];
     addToast(`Could not keep ${name}: ${String(e)}`);
+  }
+}
+
+/**
+ * Item 492: keep a file in the notes folder he pointed at (`folder`,
+ * docspace-relative; `files` for the root). A name taken by other bytes is
+ * put to him (`ask`: Keep both / Replace / Cancel); Cancel writes nothing.
+ * The words go to `toast`, as `keepNow`'s do. True when a file was kept.
+ */
+export async function keepInto(
+  folder: string,
+  name: string,
+  mediaType: string,
+  data: string,
+  opts: { source?: string; toast: (text: string) => void; ask: (rel: string, both: string) => Promise<ClashAnswer> },
+): Promise<boolean> {
+  try {
+    let l = await keepInFolder(name, mediaType, data, folder, "ask", opts.source);
+    if (l.kind === "taken") {
+      const answer = await opts.ask(l.rel, l.both);
+      if (answer === "cancel") {
+        opts.toast(`Did not keep ${name} — ${l.rel} is there already and was left as it is`);
+        return false;
+      }
+      l = await keepInFolder(name, mediaType, data, folder, answer, opts.source);
+      if (l.kind === "taken") {
+        opts.toast(`Did not keep ${name} — ${l.rel} is there already`);
+        return false;
+      }
+    }
+    if (!l.already) projectFilesChanged();
+    const refreshed = refreshNotes().catch(() => {});
+    opts.toast(
+      l.already
+        ? `${name} was already in this project's notes, as ${l.rel}`
+        : l.replaced
+          ? `Replaced ${l.rel} with ${name} — the old one is in the notes trash`
+          : `Kept ${name} as ${l.rel} — new chats here can read it`,
+    );
+    await refreshed;
+    noticeKept(l.rel);
+    return true;
+  } catch (e) {
+    opts.toast(`Could not keep ${name}: ${String(e)}`);
+    return false;
   }
 }

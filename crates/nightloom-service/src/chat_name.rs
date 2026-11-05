@@ -20,7 +20,7 @@
 //! prompt is written.
 
 use crate::agent::{AgentSpec, PassSpec};
-use nightloom_core::{ChatMode, ContentBlock, Session, SessionEvent};
+use nightloom_core::{ChatMode, ContentBlock, Session, SessionEvent, TitleBy};
 use std::path::Path;
 
 /// The model a naming turn runs on, whatever the chat's own model is.
@@ -61,13 +61,60 @@ pub enum TitleState {
 }
 
 pub fn title_state(session: &Session) -> TitleState {
-    if session.title().is_none() {
+    if session.title().is_none() || carried_title(session) {
         TitleState::Default
     } else if session.named_by_user() {
         TitleState::His
     } else {
         TitleState::Model
     }
+}
+
+/// A title that stands in for the first line rather than naming the chat
+/// (item 462): one recorded before the chat's first message, which only a
+/// fork carries (`chat_ops::keep_the_name`, item 363). Since 462 that
+/// carry is written `by: model` and is renamed by the first naming like
+/// any first-line default. Forks made before 462 wrote it `by: user` as the
+/// parent's whole first message — his first message, never a name he
+/// typed; such a title (not [`is_name_like`]: a second line, or longer than
+/// a name) is read as the default too, so those chats are named at their
+/// next reply. A short one-line carry is the name he sent (363) and stays.
+pub fn carried_title(session: &Session) -> bool {
+    let live = session.live_events();
+    let first_user = live
+        .iter()
+        .position(|(_, e)| matches!(e, SessionEvent::UserMessage { .. }));
+    let Some(at) = live
+        .iter()
+        .rposition(|(_, e)| matches!(e, SessionEvent::Title { .. }))
+    else {
+        return false;
+    };
+    if first_user.is_some_and(|u| u < at) {
+        return false;
+    }
+    match live[at].1 {
+        SessionEvent::Title { text, by, .. } => *by == Some(TitleBy::Model) || !is_name_like(text),
+        _ => false,
+    }
+}
+
+/// Whether a first message reads as a name he sent (item 363's "send a
+/// first chat just to name it"): one line, no longer than a name.
+pub fn is_name_like(text: &str) -> bool {
+    let t = text.trim();
+    !t.contains('\n') && t.chars().count() <= MAX_CHARS
+}
+
+/// A message's first line as a stand-in title (item 462): one line, at most
+/// [`MAX_CHARS`] characters, an ellipsis where it was cut.
+pub fn first_line_title(text: &str) -> String {
+    let line = text.trim().lines().next().unwrap_or("").trim();
+    if line.chars().count() <= MAX_CHARS {
+        return line.to_string();
+    }
+    let cut: String = line.chars().take(MAX_CHARS - 1).collect();
+    format!("{}…", cut.trim_end())
 }
 
 /// The when-to-name rule, pure. `replies` is the number of answered
@@ -156,7 +203,11 @@ pub fn plan(session: &Session) -> Option<NamingJob> {
 /// typed while it ran is never overwritten, nor a newer model title by an
 /// older one.
 pub fn may_record(session: &Session, expected: Option<&str>) -> bool {
-    session.mode() != ChatMode::Ephemeral && !session.named_by_user() && session.title() == expected
+    // `title_state`, not `named_by_user`: a carried title (item 462) may be
+    // written `by: user` and is still the default.
+    session.mode() != ChatMode::Ephemeral
+        && title_state(session) != TitleState::His
+        && session.title() == expected
 }
 
 /// The message for one naming.
@@ -278,6 +329,61 @@ mod tests {
             Some("end_turn".into()),
             Usage::default(),
         );
+    }
+
+    /// Item 462, his chat: an edit of the first message forked an untitled
+    /// chat, and the fork carried his whole first message as a title "by
+    /// user" — so no naming ever ran, after several replies.
+    #[test]
+    fn a_fork_carrying_his_whole_first_message_is_still_named() {
+        let long = "Alright so I've got a midterm for this class on Friday. This is midterm 2.\n\
+                    Funny story, I didn't even go to class for midterm 1.";
+        let mut old = Session::new();
+        old.record_title_by(long, TitleBy::User); // what forks wrote before 462
+        reply(&mut old, long, "Let's plan the week.");
+        assert_eq!(title_state(&old), TitleState::Default);
+        let job = plan(&old).expect("a naming is due after the first reply");
+        assert_eq!(job.pass, NamingPass::First);
+        assert!(may_record(&old, job.expected.as_deref()));
+        reply(&mut old, "and the practice exam?", "Here is a schedule.");
+        assert!(
+            plan(&old).is_some(),
+            "still due at the second reply if the first failed"
+        );
+
+        // Since 462 the carry is the model's, one line, cut to a name.
+        let mut new = Session::new();
+        new.record_title_by(first_line_title(long), TitleBy::Model);
+        assert!(new.title().unwrap().chars().count() <= MAX_CHARS);
+        assert!(!new.title().unwrap().contains('\n'));
+        reply(&mut new, long, "Let's plan the week.");
+        assert_eq!(title_state(&new), TitleState::Default);
+        assert_eq!(plan(&new).map(|j| j.pass), Some(NamingPass::First));
+    }
+
+    #[test]
+    fn a_short_carried_name_stays_his_and_a_later_rename_is_never_touched() {
+        // Item 363: a short first message sent to name the chat, then edited.
+        let mut sent = Session::new();
+        sent.record_title_by("Lecture 4 & 5", TitleBy::User);
+        reply(&mut sent, "Lecture 4 & 5 — notes attached", "Got them.");
+        assert_eq!(title_state(&sent), TitleState::His);
+        assert!(plan(&sent).is_none());
+        // A rename after the chat began is his whatever its length.
+        let mut renamed = Session::new();
+        reply(&mut renamed, "hi", "hello");
+        renamed.record_title_by("x".repeat(200), TitleBy::User);
+        assert_eq!(title_state(&renamed), TitleState::His);
+    }
+
+    #[test]
+    fn first_line_title_is_one_line_cut_with_an_ellipsis() {
+        assert_eq!(first_line_title("  Short one  \nsecond"), "Short one");
+        let cut = first_line_title(&"word ".repeat(40));
+        assert_eq!(cut.chars().count(), MAX_CHARS);
+        assert!(cut.ends_with('…'));
+        assert!(is_name_like("Lecture 4 & 5"));
+        assert!(!is_name_like("two\nlines"));
     }
 
     #[test]

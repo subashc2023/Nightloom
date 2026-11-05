@@ -56,12 +56,17 @@ describe("nextStage", () => {
 });
 
 describe("the wrap-up text", () => {
-  it("names the file, its contents, the start-prompt fence and the stop", () => {
+  it("names the file, its contents, the <handoff> tags and the stop", () => {
     expect(WRAP_UP).toContain("HANDOFF.md");
     for (const part of ["what we were doing", "what is done", "what is next", "files that matter"]) {
       expect(WRAP_UP).toContain(part);
     }
-    expect(WRAP_UP).toContain("start-prompt");
+    // ~~`toContain("start-prompt")`~~ — item 464: the tagged hand-off.
+    expect(WRAP_UP).toContain("<handoff>");
+    expect(WRAP_UP).toContain("</handoff>");
+    expect(WRAP_UP).toContain("no code fence");
+    expect(WRAP_UP).toContain("do not tell me to copy it");
+    expect(WRAP_UP).not.toContain("start-prompt");
     expect(WRAP_UP).toMatch(/Then stop/);
   });
 
@@ -598,7 +603,7 @@ describe("the code chat's close", () => {
   it("keeps the order: STATE section, close, start prompt, stop", () => {
     const i = (t: string) => WRAP_UP.indexOf(t);
     expect(i("## STATE AS OF")).toBeLessThan(i(CODE_CLOSE));
-    expect(i(CODE_CLOSE)).toBeLessThan(i("start-prompt"));
-    expect(i("start-prompt")).toBeLessThan(i("Then stop"));
+    expect(i(CODE_CLOSE)).toBeLessThan(i("<handoff>"));
+    expect(i("<handoff>")).toBeLessThan(i("Then stop"));
   });
 });

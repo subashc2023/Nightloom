@@ -1,4 +1,6 @@
+import { viewRenameKeys } from "./viewState";
 import { tick } from "svelte";
+import { noteThreadHandoff, takeThreadHandoff } from "./threadHandoff.svelte";
 import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
 import {
@@ -11,9 +13,7 @@ import {
   noteThreadFlags,
   readOrder,
   resetHandoff,
-  THEN_HIS_ASK,
   threadFor,
-  threadReadOrder,
 } from "./handoff.svelte";
 import { replaceStartHere, threadOfEvents } from "./thread";
 import type { AsideFold, FoldRecord } from "./asideFold";
@@ -81,6 +81,7 @@ import {
   type ChatChoices,
 } from "./chatChoice";
 import { madeChatRow, refreshWithin, withNote, withoutNote } from "./afterWrite";
+import { isMoveNotesTool, movesInAnswer } from "./notesMoved";
 import {
   adoptNewChat,
   emptyRules,
@@ -124,10 +125,12 @@ import {
 import { SEARCH_COLUMN_MAX, searchGrowth } from "./search.svelte";
 import * as tabs from "./tabs";
 import { midTurnWire, chipsFromInputs, sendNowToast, deliveredNotice, type SendNowResult } from "./midTurn";
+import { pdfFileName, pdfRoute } from "./attachKinds";
 import { recordRelay } from "./relay.svelte";
 import { adoptPending, closeRunningRows, latestAgents, mergeRows, rowsFromLog, rowsOf } from "./subagentRows";
 import { lineText, lineView, matchTasks, type StillRunningSegment } from "./stillRunning";
 import { applyRetry, clearRetry, markRetryStopping, turnNotices, type RetrySegment } from "./retryLine";
+import { pressStop, releaseStop, type StopClock } from "./stopState";
 import { cli, startCliClock } from "./cliUpdate.svelte";
 import { probeAuth } from "./claudeAuth.svelte";
 import { chatIsCold, loadLayerPrefs, reconnectBeforeTurn, saveLayerPrefs } from "./promptVersions";
@@ -588,7 +591,10 @@ export type Segment =
    *  click away and Restore beside it. Never in a live message. */
   | { kind: "removed_text"; block: number; text: string }
   | { kind: "removed_tool"; block: number; call: ToolCallView }
-  | { kind: "notice"; text: string }
+  /** `delivered` (item 465): his mid-turn message the turn took, drawn as
+   *  his bubble in place (`MidTurnBubble`); `text` keeps the old line for
+   *  anything that reads notices as text. */
+  | { kind: "notice"; text: string; delivered?: { text: string; after: string } }
   /** The reply ended with subagents still running (backlog 357): a status
    *  line with Stop and the agents' names, read live (`stillRunning.ts`). */
   | StillRunningSegment
@@ -774,6 +780,13 @@ export const app = $state({
    * is the point of it — an unfiled chat has a vault.
    */
   vault: [] as Note[],
+  /**
+   * Item 457: each section's folders (empty ones too, so a New folder
+   * shows), and whether its listing is whole — false when a bound (depth
+   * 12, 20,000 files) left something out and the panel says so.
+   */
+  noteFolders: { project: [] as string[], knowledge: [] as string[] },
+  notesComplete: { project: true, knowledge: true },
   /** Where the vault is; null on a machine with no user config directory. */
   knowledge: null as KnowledgeInfo | null,
   /**
@@ -1599,6 +1612,8 @@ export async function init(): Promise<void> {
   await listen<{ seq: number; event: TurnEvent }>("aside-turn-event", (e) => {
     const t = findAsideTurn(e.payload.seq);
     if (t) asideTurnEvent(t, e.payload.event);
+    // Item 483: an aside's moves are followed too, card or no card.
+    followToolMoves(e.payload.event);
   });
   // Queued behind the chat's own turn, or running (item 404).
   await listen<{ seq: number; phase: "queued" | "running" }>("aside-phase", (e) => {
@@ -1831,21 +1846,35 @@ export async function refreshProjects(): Promise<void> {
  * refreshed together because the model can write to either.
  */
 export async function refreshNotes(): Promise<void> {
+  // As a tree since item 457: the same notes, plus the folders (an empty
+  // one is still a place to drop a note) and whether the list is whole.
   if (app.project) {
     try {
-      app.notes = await api.listNotes("project");
+      const t = await api.listNoteTree("project");
+      app.notes = t.notes;
+      app.noteFolders.project = t.folders;
+      app.notesComplete.project = t.complete;
     } catch {
       // A store that cannot be listed shows as empty; the failure surfaces
       // when something is actually read or written.
       app.notes = [];
+      app.noteFolders.project = [];
+      app.notesComplete.project = true;
     }
   } else {
     app.notes = [];
+    app.noteFolders.project = [];
+    app.notesComplete.project = true;
   }
   try {
-    app.vault = await api.listNotes("knowledge");
+    const t = await api.listNoteTree("knowledge");
+    app.vault = t.notes;
+    app.noteFolders.knowledge = t.folders;
+    app.notesComplete.knowledge = t.complete;
   } catch {
     app.vault = [];
+    app.noteFolders.knowledge = [];
+    app.notesComplete.knowledge = true;
   }
   await refreshProposals();
 }
@@ -3221,19 +3250,273 @@ export async function saveNote(
   return true;
 }
 
-export async function deleteNote(scope: NoteScope, name: string): Promise<void> {
+export async function deleteNote(
+  scope: NoteScope,
+  name: string,
+  /** As `moveNoteTo`'s (item 471): a running edit-by-prompt turn on the
+   *  note refuses the delete — its writes would bring the file back. */
+  busy: (key: string) => boolean = () => false,
+): Promise<void> {
+  if (busy(noteDraftKey(scope, name))) {
+    addToast(`${name} is being edited by a prompt right now — delete it when that turn ends`);
+    return;
+  }
+  let trashed: string;
   try {
-    await api.deleteNote(scope, name);
+    trashed = await api.deleteNote(scope, name);
   } catch (e) {
     addToast(String(e));
     return;
   }
+  // Item 471: its unsaved draft goes to the trash beside it, not left
+  // under a name no note has.
+  draftsToTrash(scope, [name], name, trashed);
   if (app.openNote?.scope === scope && app.openNote.name === name) leaveNote();
   dropNoteTabs(scope, name);
   // As `saveNote` (backlog 211): off the list now, re-read in the background.
   if (scope === "project") app.notes = withoutNote(app.notes, name);
   else if (scope === "knowledge") app.vault = withoutNote(app.vault, name);
   void refreshWithin("deleting " + name, [refreshNotes, refreshProjects]);
+}
+
+/**
+ * Move or rename a note, or a folder of notes (item 457), and carry
+ * everything that names it along: its tabs, the open note, and — the
+ * never-lose-work rule — an unsaved draft, which moves to the new name's
+ * key so the editor reopens on it. Refused while an edit-by-prompt turn is
+ * running on a note it would move (that turn writes to the old path).
+ * The new name, or null when nothing moved.
+ */
+export async function moveNoteTo(
+  scope: "project" | "knowledge",
+  from: string,
+  to: string,
+  /** Whether a draft key has an edit-by-prompt turn running (the caller
+   *  passes `noteEdit.svelte`'s `runningTurn`; that module imports this one). */
+  busy: (key: string) => boolean = () => false,
+): Promise<string | null> {
+  const list = scope === "project" ? app.notes : app.vault;
+  const touched = list.filter((n) => movedNameOf(n.name, from, to) !== null);
+  if (touched.some((n) => busy(noteDraftKey(scope, n.name)))) {
+    addToast(`${from} is being edited by a prompt right now — move it when that turn ends`);
+    return null;
+  }
+  let landed: string;
+  try {
+    landed = await api.moveNote(scope, from, to);
+  } catch (e) {
+    addToast(String(e));
+    return null;
+  }
+  if (landed === from) return landed;
+  followNoteMove(scope, from, landed);
+  return landed;
+}
+
+/**
+ * Everything that names `from` follows it to `landed`, after the file has
+ * moved on disk — by `moveNoteTo`, or by the note editor's `rename_note`
+ * tool (item 460), which renames in the backend and reports it here.
+ */
+export function followNoteMove(
+  scope: "project" | "knowledge",
+  from: string,
+  landed: string,
+  /** False for all but the last of a batch (item 483): one re-read. */
+  refresh = true,
+): void {
+  const list = scope === "project" ? app.notes : app.vault;
+  const touched = list.filter((n) => movedNameOf(n.name, from, landed) !== null);
+  // The open note may not be in the list yet (a note just made).
+  if (!touched.some((n) => n.name === from)) touched.push({ name: from, bytes: 0, modified: "", summary: null });
+  // Drafts first, then the names that point at them: the editor reloads
+  // when its tab's name changes, and must find the draft already there.
+  for (const n of touched) {
+    const next = movedNameOf(n.name, from, landed);
+    if (next === null) continue;
+    const oldKey = noteDraftKey(scope, n.name);
+    const draft = app.noteDrafts[oldKey];
+    if (draft !== undefined) {
+      const newKey = noteDraftKey(scope, next);
+      // Item 471: a draft already under the new name (a note of that name
+      // is gone — the backend refuses a taken target) is never written
+      // over: it is kept aside and sent to the trash.
+      const older = app.noteDrafts[newKey];
+      if (older !== undefined && older !== draft) parkOlderDraft(scope, next, older);
+      app.noteDrafts[newKey] = draft;
+      delete app.noteDrafts[oldKey];
+    }
+  }
+  // Item 483: stores this module cannot import (it is imported by them —
+  // the note editor's threads, with his half-typed request) follow too.
+  for (const fn of noteMoveListeners) fn(scope, from, landed);
+  for (const t of tabs.allTabs(app.tabs)) {
+    if (t.content.kind !== "note" || t.content.scope !== scope) continue;
+    const next = movedNameOf(t.content.name, from, landed);
+    if (next !== null) t.content = { ...t.content, name: next };
+  }
+  if (app.openNote?.scope === scope) {
+    const next = movedNameOf(app.openNote.name, from, landed);
+    if (next !== null) app.openNote = { scope, name: next };
+  }
+  // The list now, from the move's own answer; re-read in the background.
+  const renamed = list.map((n) => {
+    const next = movedNameOf(n.name, from, landed);
+    return next === null ? n : { ...n, name: next };
+  });
+  if (scope === "project") app.notes = renamed;
+  else app.vault = renamed;
+  app.noteFolders[scope] = app.noteFolders[scope].map((f) => movedNameOf(f, from, landed) ?? f);
+  if (refresh) void refreshWithin("moving " + from, [refreshNotes, refreshProjects]);
+}
+
+type NoteMoveListener = (scope: "project" | "knowledge", from: string, landed: string) => void;
+const noteMoveListeners: NoteMoveListener[] = [];
+
+/** Item 483: be told of every followed move (`followNoteMove`), after the
+ *  drafts moved and before the tabs do; the unsubscribe. */
+export function onNoteMove(fn: NoteMoveListener): () => void {
+  noteMoveListeners.push(fn);
+  return () => {
+    const i = noteMoveListeners.indexOf(fn);
+    if (i >= 0) noteMoveListeners.splice(i, 1);
+  };
+}
+
+/** `name` once `from` moved to `landed`, or null — for the listeners. */
+export function movedNoteName(name: string, from: string, landed: string): string | null {
+  return movedNameOf(name, from, landed);
+}
+// Item 495: a note's kept view switches follow it when it moves (483's listener).
+onNoteMove((_scope, from, landed) => viewRenameKeys("noteMedia.full:", (name) => movedNoteName(name, from, landed)));
+
+/**
+ * Item 483: a chat's `move_notes` (item 472) moved notes in the vault on
+ * the backend; its answer names each move that landed — a part-way
+ * failure's too — and each is followed as the panel's own move is, in
+ * order, so a tab, the open note and an unsaved draft go to the new name.
+ * Any chat's result (on screen, in the background, a subagent's or an
+ * aside's), the live event only — a transcript re-read never replays it.
+ */
+export function followToolMoves(ev: TurnEvent): void {
+  const r = ev.type === "subagent" ? ev.event : ev;
+  if (r.type !== "tool_result" || !isMoveNotesTool(r.name)) return;
+  const moves = movesInAnswer(r.content);
+  moves.forEach(([from, landed], i) => followNoteMove("knowledge", from, landed, i === moves.length - 1));
+}
+
+/**
+ * Item 471 (practices §7, no UI mechanic loses his work): the unsaved
+ * drafts of deleted notes go to the notes trash beside them, as
+ * `<stem> (unsaved draft).md`, and a toast says where. `names` are the
+ * deleted notes, `from` what was deleted (a note or a folder) and
+ * `trashed` where it went inside the trash. A draft stays in app state
+ * until the write lands, and stays there if it fails.
+ */
+function draftsToTrash(scope: NoteScope, names: string[], from: string, trashed: string): void {
+  const entries: { key: string; at: string; text: string }[] = [];
+  for (const n of new Set(names)) {
+    const key = noteDraftKey(scope, n);
+    const text = app.noteDrafts[key];
+    if (text === undefined) continue;
+    entries.push({ key, at: (trashed && movedNameOf(n, from, trashed)) || n, text });
+  }
+  void sendDraftsToTrash(scope, entries);
+}
+
+/** A draft that would have been written over (item 471): parked under a
+ *  key no note has, so it survives a failed write, then sent to the trash. */
+function parkOlderDraft(scope: NoteScope, name: string, text: string): void {
+  let i = 1;
+  let key = noteDraftKey(scope, `${name} (older draft)`);
+  while (app.noteDrafts[key] !== undefined) key = noteDraftKey(scope, `${name} (older draft ${++i})`);
+  app.noteDrafts[key] = text;
+  void sendDraftsToTrash(scope, [{ key, at: name, text }]);
+}
+
+async function sendDraftsToTrash(scope: NoteScope, entries: { key: string; at: string; text: string }[]): Promise<void> {
+  if (entries.length === 0) return;
+  let written: string[];
+  try {
+    written = await api.trashNoteDrafts(
+      scope,
+      entries.map((e) => [e.at, e.text]),
+    );
+  } catch (e) {
+    addToast(`Kept ${entries.length === 1 ? "an unsaved draft" : `${entries.length} unsaved drafts`} in the app — could not write to the trash: ${String(e)}`);
+    return;
+  }
+  for (const e of entries) if (app.noteDrafts[e.key] === e.text) delete app.noteDrafts[e.key];
+  addToast(
+    written.length === 1
+      ? `Its unsaved draft is in the notes trash: .trash/notes/${written[0]}`
+      : `${written.length} unsaved drafts are in the notes trash, beside their notes (.trash/notes/)`,
+  );
+}
+
+/** `name` once `from` moved to `to`, or null (`notesTree.movedName`). */
+function movedNameOf(name: string, from: string, to: string): string | null {
+  if (name === from) return to;
+  if (name.startsWith(`${from}/`)) return to + name.slice(from.length);
+  return null;
+}
+
+/** Make a folder among the notes (item 457); its name, or null. */
+export async function newNoteFolder(scope: "project" | "knowledge", name: string): Promise<string | null> {
+  let made: string;
+  try {
+    made = await api.newNoteFolder(scope, name);
+  } catch (e) {
+    addToast(String(e));
+    return null;
+  }
+  if (!app.noteFolders[scope].includes(made)) app.noteFolders[scope] = [...app.noteFolders[scope], made];
+  void refreshWithin("making " + made, [refreshNotes]);
+  return made;
+}
+
+/**
+ * Delete a folder of notes (item 457): to the docspace's trash, whole, as
+ * a note's Delete is. Its notes' tabs close, as a deleted note's do.
+ */
+export async function deleteNoteFolder(
+  scope: "project" | "knowledge",
+  folder: string,
+  /** As `moveNoteTo`'s (item 471): refused while an edit-by-prompt turn
+   *  runs on a note inside — its writes would recreate the old path. */
+  busy: (key: string) => boolean = () => false,
+): Promise<void> {
+  const inside = (n: string) => n.startsWith(`${folder}/`);
+  const listed = scope === "project" ? app.notes : app.vault;
+  // The open note may not be in the list yet (a note just made).
+  const names = listed.filter((n) => inside(n.name)).map((n) => n.name);
+  if (app.openNote?.scope === scope && inside(app.openNote.name)) names.push(app.openNote.name);
+  for (const k of Object.keys(app.noteDrafts)) {
+    const prefix = noteDraftKey(scope, `${folder}/`);
+    if (k.startsWith(prefix)) names.push(`${folder}/${k.slice(prefix.length)}`);
+  }
+  if (names.some((n) => busy(noteDraftKey(scope, n)))) {
+    addToast(`A note in ${folder} is being edited by a prompt right now — delete the folder when that turn ends`);
+    return;
+  }
+  let trashed: string;
+  try {
+    trashed = await api.deleteNote(scope, folder);
+  } catch (e) {
+    addToast(String(e));
+    return;
+  }
+  // Item 471: the folder's unsaved drafts go to the trash beside its notes.
+  draftsToTrash(scope, names, folder, trashed);
+  const list = scope === "project" ? app.notes : app.vault;
+  for (const n of list.filter((n) => inside(n.name))) {
+    if (app.openNote?.scope === scope && app.openNote.name === n.name) leaveNote();
+    dropNoteTabs(scope, n.name);
+  }
+  if (scope === "project") app.notes = list.filter((n) => !inside(n.name));
+  else app.vault = list.filter((n) => !inside(n.name));
+  app.noteFolders[scope] = app.noteFolders[scope].filter((f) => f !== folder && !inside(f));
+  void refreshWithin("deleting " + folder, [refreshNotes, refreshProjects]);
 }
 
 // ---- proposals: the dream's suggested edits to the fixed files ----
@@ -3942,6 +4225,17 @@ function frontOpenChat(): void {
  * toast says why. The tab is made active first, so the reflection finds
  * it in front and has nothing to change.
  */
+/**
+ * The chat a tab click is opening (item 454). The tab comes forward before
+ * the chat's log arrives, so for that moment the pane draws it as a chat
+ * that is not the open one — and that transcript read the same log a second
+ * time (`loadPaneLog`), a whole extra read of the file and trip over IPC on
+ * every switch, for a view replaced the moment `openSession` returns. While
+ * this names the chat the pane waits; cleared when the open settles, so a
+ * failed open still reads it.
+ */
+export const tabOpening = $state<{ chat: string | null }>({ chat: null });
+
 export async function activateTab(tabId: string): Promise<void> {
   const tab = tabs.tabById(app.tabs, tabId);
   if (!tab) return;
@@ -3958,10 +4252,13 @@ export async function activateTab(tabId: string): Promise<void> {
   }
   tabs.activate(app.tabs, tabId);
   activating += 1;
+  const opening = c.kind === "chat" && c.session !== null && c.session !== app.activeSessionId ? c.session : null;
+  if (opening) tabOpening.chat = opening;
   try {
     await showContentOf(c);
   } finally {
     activating -= 1;
+    if (opening && tabOpening.chat === opening) tabOpening.chat = null;
   }
 }
 
@@ -5779,7 +6076,13 @@ export async function newChatInThread(slug: string): Promise<boolean> {
   if (!(await applyThread(slug, false))) return false;
   const id = app.activeSessionId;
   if (!id) return false;
-  setDraftText(id, threadReadOrder(slug, THEN_HIS_ASK));
+  // Item 464 (his report, 2026-10-28): the box holds the thread's saved
+  // hand-off — the last `<handoff>` prompt a reply in it wrote — when no
+  // child chat has started from it yet, else nothing. ~~`setDraftText(id,
+  // threadReadOrder(slug, THEN_HIS_ASK))`~~: a canned "start this new chat"
+  // text beside the model's own prompt was two sources of truth.
+  const handed = await takeThreadHandoff(slug, id);
+  if (handed && app.activeSessionId === id) setDraftText(id, handed);
   requestComposerFocus();
   return true;
 }
@@ -5991,6 +6294,9 @@ export async function continueChat(): Promise<void> {
     // is writing it: the wrapped one has stopped, the new one has not begun.
     noteThread(res.session, thread);
     if (thread) void applyThreadUpkeep(thread);
+    // Item 464: this chat started from the thread's saved hand-off, so the
+    // thread's + does not hand it out again.
+    if (thread && start) void takeThreadHandoff(thread, res.session);
     const first = firstMessage(lead, start);
     if (first) setDraftText(res.session, first);
     // The chat just left is finished as far as memory is concerned (item 278).
@@ -5999,8 +6305,8 @@ export async function continueChat(): Promise<void> {
       handoff.noStartPromptChat = res.session;
       addToast(
         first
-          ? "The wrap-up reply had no start-prompt block — the new chat's box holds only the read order; say what to do first."
-          : "The wrap-up reply had no start-prompt block — the new chat's box is empty; say what to read first.",
+          ? "The wrap-up reply had no <handoff> prompt — the new chat's box holds only the read order; say what to do first."
+          : "The wrap-up reply had no <handoff> prompt — the new chat's box is empty; say what to read first.",
       );
     }
     leaveNote();
@@ -6692,6 +6998,28 @@ export function registerProviderDrain(fn: () => Promise<void>): () => void {
   };
 }
 
+/** The same composers' explicit drain (item 503): a block he ran has ended
+ *  and the chat on screen is idle, so its output goes now. Explicit: a Stop's
+ *  hold on the queue is about what he had queued, not what he just ran. */
+const runDrains: Array<() => Promise<void>> = [];
+export function registerRunDrain(fn: () => Promise<void>): () => void {
+  runDrains.push(fn);
+  return () => {
+    const i = runDrains.lastIndexOf(fn);
+    if (i >= 0) runDrains.splice(i, 1);
+  };
+}
+export async function runDrainNow(): Promise<void> {
+  await runDrains.at(-1)?.();
+}
+
+/** The chat of the turn on screen, read later (item 503): a New chat's first
+ *  reply has a Run before the chat has an id, and the turn learns it. */
+export function turnChatRef(): () => string | null {
+  const t = fg;
+  return () => t?.chat ?? null;
+}
+
 /** Whether the turn on screen can go to the background right now (A2):
  *  what lifts the New-chat refusals during a New chat's first turn. */
 export function canLeaveRunning(): boolean {
@@ -6866,6 +7194,9 @@ function endBackground(t: TurnCtx, failed: string | null, res: AgentTurnResult |
   if (!b || !inOtherProject(b, app.project?.id ?? null)) {
     void refreshSessions();
     void refreshNotes();
+    // Item 464: a thread chat's `<handoff>` prompt is kept on its thread
+    // (the open project's threads only).
+    if (b) noteThreadHandoff(id, b.events);
   }
   if (t.provider) {
     // A provider turn's end (A4 review, 2026-09-29) does what the
@@ -7190,6 +7521,7 @@ export async function openSession(id: string): Promise<void> {
 /** Compact the active session: earlier turns collapse into a summary. */
 export async function compactSession(): Promise<void> {
   if (!app.connection || app.busy) return;
+  releaseStop(stopClock);
   app.busy = true;
   app.error = null;
   try {
@@ -7490,6 +7822,7 @@ export async function send(
   turnClock.sent();
   const spoken = turnSpoken;
   stopped = false;
+  releaseStop(stopClock);
   // A turn the model answers is not undoable, and nothing under it is:
   // a rewind lifted from under a reply would put the model in a
   // conversation it never had (nightshift backlog 064).
@@ -7571,6 +7904,8 @@ export async function send(
   app.busy = false;
   // Sessions are created lazily on first send; the id is picked up here.
   await settleTurnView(pendingKey, turn.chat, choice);
+  // Item 464: a thread chat's `<handoff>` prompt is kept on its thread.
+  if (!app.parked) noteThreadHandoff(app.activeSessionId, app.events);
   void refreshSessions();
   // The turn may have written to the docspace, and the sidebar showing a
   // note the model just left is the visible half of "shared knowledge".
@@ -7774,6 +8109,8 @@ async function sendAgent(
       app.connection?.contextLimit ?? null,
       browsed ? null : app.events,
     );
+    // Item 464: a thread chat's `<handoff>` prompt is kept on its thread.
+    if (!browsed) noteThreadHandoff(app.activeSessionId, app.events);
     // A turn that wrote HANDOFF.md is a hand-off (item 278).
     if (!browsed && turnWroteHandoff(app.events)) maybeHandoffPass();
     // Last, once the turn is fully over: was it sleep that ended it
@@ -7945,8 +8282,15 @@ export function asideWire(thread: Pick<Aside, "model" | "effort"> | null, chips:
   const out: AsideSendOptions = {};
   const live = chips.filter((c) => c.data && !c.pending);
   const images = live.filter((c) => c.kind === "image").map(({ media_type, data }) => ({ media_type, data }));
-  const documents = live.filter((c) => c.kind === "document").map(({ media_type, name, data }) => ({ media_type, name, data }));
-  const files = live.filter((c) => c.kind === "file").map(({ name, data }) => ({ name, data }));
+  // A long PDF goes by path (item 491): an aside always runs on Claude Code.
+  const byPath = (c: Attachment) => pdfRoute(c, "claude-code") === "path";
+  const documents = live
+    .filter((c) => c.kind === "document" && !byPath(c))
+    .map(({ media_type, name, data }) => ({ media_type, name, data }));
+  const files = [
+    ...live.filter((c) => c.kind === "file").map(({ name, data }) => ({ name, data })),
+    ...live.filter(byPath).map(({ name, data, pages }) => ({ name: pdfFileName(name), data, pages })),
+  ];
   if (images.length) out.images = images;
   if (documents.length) out.documents = documents;
   if (files.length) out.files = files;
@@ -8358,6 +8702,14 @@ export function turnWasStopped(): boolean {
   return stopped;
 }
 
+/**
+ * When the Stop for the turn on screen was pressed (item 466): the
+ * composer's button is a pressed "Stopping…" from here until the turn has
+ * ended, whichever way it was pressed (the button, ⌘., the phone). The
+ * composer releases it when `busy` clears; a send releases it too.
+ */
+export const stopClock = $state<StopClock>({ since: null });
+
 export async function cancelTurn(chat?: string | null): Promise<void> {
   // A named chat that is not the one on screen (backlog 159, A3: the
   // phone's Stop for the chat it shows): stop that chat's turn only; the
@@ -8388,6 +8740,8 @@ export async function cancelTurn(chat?: string | null): Promise<void> {
   // Before the call, not after: the stopped turn can return before the
   // cancel's own reply does, and the queue reads the flag at that return.
   stopped = true;
+  // The button shows it pressed from this frame (item 466).
+  pressStop(stopClock, performance.now());
   // A retry line says "stopping" from here, and later tries leave it
   // (item 441: the count kept climbing after Stop).
   if (markRetryStopping(liveHost(app).live?.segments)) app.liveVersion++;
@@ -8404,6 +8758,7 @@ export async function cancelTurn(chat?: string | null): Promise<void> {
     app.pendingApprovals = [];
   } catch (e) {
     stopped = false;
+    releaseStop(stopClock);
     addToast(String(e));
   }
 }
@@ -8588,6 +8943,8 @@ export function applyTurnEventTo(host: TurnHost, ev: TurnEvent & { chat?: string
     const i = host.approvals.findIndex((r) => r.id === ev.tool_use_id);
     if (i >= 0) host.approvals.splice(i, 1);
   }
+  // Item 483: notes a chat moved take their tabs and drafts along.
+  followToolMoves(ev);
   // The Running-tasks rows outlive the live message (backlog 160): a
   // status or a child's event that lands after it ended still reaches its
   // row, which is the chat's and not the message's.
@@ -8738,7 +9095,7 @@ export function applyTurnEventTo(host: TurnHost, ev: TurnEvent & { chat?: string
       // message.
       markDelivered(ev.id);
       closeThinking(segments);
-      segments.push({ kind: "notice", text: deliveredNotice(ev.after, ev.text) });
+      segments.push({ kind: "notice", text: deliveredNotice(ev.after, ev.text), delivered: { text: ev.text, after: ev.after } });
       break;
     }
     default:

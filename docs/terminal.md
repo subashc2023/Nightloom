@@ -25,6 +25,9 @@ typed here runs like anything else, in the same folder.
 - **⌃`** on every platform: no pane → opens one with a shell; a pane not
   focused → focuses it; focused → hides it, the shells kept running.
 - **⌘K → New terminal**, the same as the button.
+- **Run on a reply's shell block** (item 503): a tab of its own, below.
+- **Agent commands**: the person icon on the strip, the terminal icon on a
+  Bash row in the transcript, or ⌘K → Agent commands.
 
 ## The strip
 
@@ -181,6 +184,123 @@ and `restartShell` dispose it with the shell. The exit line is written once
 per shell (`exitWritten`), not once per mount. The same mechanism carries
 the dock's hide and show (backlog 137 FE6), which already kept the
 component; a move now costs the grid one refit and no output.
+
+## Agent commands: the chat's commands, view only (item 503, 2026-11-04)
+
+A tab in the strip, one per chat: `AgentTerminal.svelte`, an xterm with
+`disableStdin` and no pty, so not a shell and never takes typing. Its id is
+negative, which keeps it from ever meeting a pty's. `agentCommands.ts` builds
+its text from the chat's record: `Bash` and the API engine's `bash` (and
+`PowerShell`), `$ command` then the output, in call order. A subagent's are
+labelled; live they are whole, and from the log they are the recorder's
+one-line narrative (`agent/record.rs`), so the view says "first line only".
+Errors are red with `✗ failed`. `BashOutput` / `TaskOutput` / `KillShell` go
+under their command when the id in the call's result links them, otherwise
+they are a row of their own. Escape sequences are stripped: a recorded
+`clear` must not clear the record.
+
+**A command shows as running, and its output lands whole.** Neither engine
+gives Nightloom a command's output before it ends: the translator's
+`ToolResult` is the first it sees (the CLI's `task_progress` lines carry
+usage, no output), and `tools/shell.rs` returns its buffers at the end. So a
+running command is named on a row over the grid, and its lines enter the
+grid when it and every command before it have ended. That makes the text
+append-only: while the new text extends what is written, only the difference
+is written, and his scroll and selection stay. A change further back (a
+rewind, a subagent's live rows replaced by its record at the turn's end, a
+later foreground subagent's row arriving before an earlier one's) rewrites
+the grid and puts the scroll back; a selection does not survive that one.
+
+Read from `paneChat` for a chat the window holds, else from `transcript`.
+The tabs come back after a relaunch: the workspace counts them with the
+shells, and `nightloom.term.agentTabs` names their chats by project and pane
+place, since a rebuilt workspace numbers its panes afresh. Restored, they sit
+before the shells in the strip, whatever the order was. The dock has no find
+bar, so neither has this.
+
+When a chat leaves the window, what is drawn stays until its log has been read;
+the log then extends it, so his place and selection stay. Every recorded string
+goes through `stripAnsi`, C1 controls included, so nothing recorded can move the
+cursor. ⌃` focuses this tab as it does a shell.
+
+## Run on a reply's command (item 503, 2026-11-04)
+
+Blocks fenced `bash`, `sh`, `shell` or `zsh` get **Run** beside Copy, in
+replies, asides and threads (`codeCopy.ts`; `AssistantMessage`'s `runFrom`
+says whose reply it is). No language, no Run. The phone has no terminal and
+no Run; a run's message there is a short card with the output folded. Only the last `pre` of a reply can be a fence still open, so while
+the reply streams that one has no Run at all, however closed it looks: it
+gets it when the next block arrives or the turn ends. After the turn
+`endsInOpenFence`, which reads the source, withholds it from a reply cut off
+inside a fence. Never half a command.
+
+**What shows is what runs.** A reply's raw HTML passes DOMPurify with `class`,
+`style`, `hidden` and `data-` attributes, so a `pre` that looks like a block
+can hold words he cannot see. Run therefore goes only on what marked itself
+drew as a shell fence: the reply renderer puts `data-run-fence` on that `<pre>`
+with a value made new each launch (`RUN_MARK`), which raw HTML cannot carry. A
+block also gets no Run, and keeps Copy, if its text holds a Unicode control or
+format character other than a newline or tab (a zero-width character, a
+right-to-left override), if it sits in anything but a bare list or quote, or if
+the reply has a `<style>`. The button comes off when a block stops qualifying,
+since `liveHtml` re-uses a `pre` for whatever comes next at its place; a click
+reads the block, `onRun` and `runFrom` as they are then. **Not covered:** a long
+line of spaces pushing a second command past the block's sideways scroll
+(visible on scroll), and raw HTML laid over a block from outside it.
+
+The click (`runBlock`, `shellRun.svelte.ts`) asks nothing. The dock opens
+under the pane showing the chat, a tab named for the command, in the chat's
+folder, or the home folder for a chat with none, as Sign in does.
+`terminal_run` is `terminal_open` with a block: the same pty, threads and
+backpressure, running `$SHELL -lic <block>` (`cmd /C` on Windows), so his
+PATH and aliases apply, he can type into it, and his zsh files are not
+touched. `cd` and `export` do not outlive the block.
+
+On exit the chat gets a message (`ranMessage`): `Ran in terminal — exit 0`,
+`$ command`, the output between `<terminal-output>` tags, ANSI stripped, a
+carriage return overwriting its line. Over `RUN_OUTPUT_CAP`, 30,000
+characters (Claude Code's own default for a Bash result, about 7,500
+tokens), a third from the head and the rest from the tail stay, with a line
+saying how much went. A printer that never stops holds a bounded amount
+(`RunCapture`). `UserBubble` draws that shape as `RanCard.svelte`, output
+folded.
+
+| The source chat | What happens |
+| --- | --- |
+| Rows already in its queue, anywhere | Behind them. They may be held, after a Stop or a hand-off, and a run ending sends nothing of his. |
+| On screen, idle | Queued and sent at once (`registerRunDrain`, an explicit drain). If nothing could start a turn (no connection, a provider turn off screen, no composer mounted), it stays queued and the tab says waiting, not sent. |
+| On screen, a turn running | Queued, offered to the turn at its next step as his own queued message is. |
+| Off screen, idle, Claude Code | Queued in it and sent there by id, in the background (`sendQueuedInBackground`); a refusal leaves it in that queue, and a toast says so. |
+| Off screen, a turn running | Its queue; the turn's end sends it (blocker 1467). |
+| Off screen, API engine | Its queue, until he is there: one provider turn at a time. |
+| Its aside still there | That aside, the chat that owns it being read from the view it was drawn in: asked, or held in its queue. |
+| Its aside gone | Nowhere, never the chat's main line. The tab says so and a toast too. |
+| In another project now | It counts as there: he switched, he did not delete. Sent by id or queued as off screen. |
+| Deleted (not in the open project's list) | Nowhere. The tab says so and a toast too; the output stays in the tab. |
+
+**Send output so far** sends what has come since the last send, marked
+`still running`; the block's end then sends only what came after. With nothing
+new it sends nothing and the tab says so, which also makes a double click one
+send. **Stop**
+writes ⌃C, and past 1.5 s kills the process; what ran goes with `stopped by
+you`, and the tab stays. The × on a running tab ends it and sends nothing, and
+a toast says that. A running block's tab outlives its pane: `dockPaneCheck`
+moves it to a pane still there rather than end it with the chat's tab.
+
+A background job in a block (measured 2026-11-04, `zsh -f -ic` and `bash -ic`
+under a pty): the pty closes when the shell exits, job or not, so a run never
+hangs on `server &`. But zsh sends the job SIGHUP as it exits, so `npm run dev &`
+dies at once and the chat is told `exit 0`, with `zsh:1: warning: 1 jobs
+SIGHUPed` in the output. A `nohup`ed or disowned job survives, and neither Stop
+nor × can reach it. Under `bash -ic`, ⌃C on `sleep 30; echo AFTER` runs `AFTER`
+with code 0 while the message says "stopped by you"; zsh stops with 130.
+
+Quitting the app while a block runs: the pty dies with the app (the rule
+above), nothing is sent, and no tab comes back; a Run tab is not counted into
+the workspace, since a bare shell in its place would be a tab he never opened.
+
+Both engines' prompts carry one line asking that a command for him go in its
+own `bash` block: `DEFAULT_IDENTITY`, and `RUN_BLOCK_NOTE` in the engine notes.
 
 ## Not yet
 

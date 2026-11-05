@@ -138,19 +138,31 @@ function decorate(el: HTMLElement, live: Arrival[], t: number): void {
     if (!p || p === el || p.classList.contains(WRAP) || p.closest(".katex")) continue;
     const parts = pieces(a, n.data, live, t);
     if (!parts) continue;
-    const frag = document.createDocumentFragment();
+    // Item 452: split the node in place rather than replace it, so the words
+    // already there stay the same node and a selection in them survives;
+    // only each animating stretch moves into its span.
+    let cur: Text | null = n;
     for (const part of parts) {
-      if (typeof part === "string") frag.append(part);
-      else {
+      if (!cur) break;
+      const len = typeof part === "string" ? part.length : part.text.length;
+      const rest: Text | null = cur.data.length > len ? cur.splitText(len) : null;
+      if (typeof part !== "string") {
         const span = document.createElement("span");
         span.className = WRAP;
         span.style.animationDelay = `${part.delay}ms`;
-        span.textContent = part.text;
-        frag.append(span);
+        cur.parentNode!.insertBefore(span, cur);
+        span.appendChild(cur);
       }
+      cur = rest;
     }
-    n.replaceWith(frag);
   }
+}
+
+/** Whether the document's selection has an end inside `el` (item 452). */
+function selectionIn(el: HTMLElement): boolean {
+  const sel = typeof document !== "undefined" ? document.getSelection() : null;
+  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return false;
+  return el.contains(sel.anchorNode) || el.contains(sel.focusNode);
 }
 
 /** Put the block's DOM back as the component rendered it. */
@@ -199,6 +211,9 @@ export function replyMotion(root: HTMLElement, streaming: boolean) {
   let sx = 0;
   let sy = 0;
   let settleTimer: ReturnType<typeof setTimeout> | null = null;
+  /** A block's unwrapping waits on his selection (item 452); look again this often. */
+  let held = false;
+  const HOLD_MS = 500;
 
   const now = () => performance.now();
 
@@ -231,15 +246,19 @@ export function replyMotion(root: HTMLElement, streaming: boolean) {
       const at = s ? settlesAt(s.live) : null;
       if (at != null && (latest == null || at > latest)) latest = at;
     }
-    const wait = latest == null ? 0 : Math.max(0, latest - now()) + 30;
+    const wait = held ? HOLD_MS : latest == null ? 0 : Math.max(0, latest - now()) + 30;
     settleTimer = setTimeout(() => {
       settleTimer = null;
       const t = now();
       let pending = false;
+      held = false;
       for (const el of blocks) {
         const s = tracks.get(el);
         if (s) s.live = s.live.filter((r) => r.start + WORD_MS > t);
         if (s?.live.length) pending = true;
+        // Item 452: unwrapping replaces the spans' text, which would drop a
+        // selection in them; a block he is selecting in waits until he is done.
+        else if (el.isConnected && el.querySelector(`span.${WRAP}`) && selectionIn(el)) pending = held = true;
         else if (el.isConnected) unwrap(el);
       }
       obs?.takeRecords(); // the unwrapping is not a delta

@@ -44,8 +44,12 @@
 //! capped at [`HISTORY_BUDGET`] characters.
 
 use crate::agent::{AgentSpec, PassSpec};
+use nightloom_core::ToolDef;
+use nightloom_core::tool::{CancellationToken, Effect, Tool};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 /// The two tools the turn has. Read is needed only because Edit refuses a
 /// file the session has not read.
@@ -95,6 +99,175 @@ const IDENTITY: &str = "You are Nightloom's note editor. The user keeps Markdown
      file only. This is a conversation about that note: earlier exchanges may be given to you. \
      When the user asks a question or for something that is not a change to the note, answer \
      it in words and edit nothing.";
+
+// ---- item 460: rename the note, and nothing else -------------------------
+//
+// His bug (2026-10-28): "the little claude cant do it either" — asked to
+// rename the note, the editor said it could not, since its tools are Read
+// and Edit. A third tool, `rename_note`, is served by Nightloom's own MCP
+// server in a mode of its own (`--rename-note <json>`) that serves it
+// alone: it takes a new *file name*, never a path, and renames this one
+// note inside its own folder. The fence stays three layers: the tool is
+// pre-approved by its MCP name and nothing else is added, the server can
+// only rename the note it was started for, and the tripwire allows the
+// tool by name ([`check_call`]).
+
+/// The rename tool's name on the server; the CLI calls it
+/// `mcp__nightloom__rename_note`.
+pub const RENAME_TOOL: &str = "rename_note";
+
+/// What the rename server is told on its command line (`--rename-note
+/// <json>`): the notes folder and the note's name in it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenameServe {
+    pub dir: PathBuf,
+    pub name: String,
+}
+
+impl RenameServe {
+    pub fn to_arg(&self) -> String {
+        serde_json::to_string(self).expect("two plain fields serialize")
+    }
+
+    pub fn parse(json: &str) -> Result<Self, String> {
+        serde_json::from_str(json).map_err(|e| format!("--rename-note is not a note: {e}"))
+    }
+}
+
+/// The note's new name when `name` is renamed to `new_name`: same folder,
+/// `new_name` a bare file name — no `/` or `\\`, no `..`, not hidden, not
+/// empty — keeping the old extension when `new_name` has none
+/// (`files/Pasted text (2).md` + `module_2_overview` →
+/// `files/module_2_overview.md`).
+pub fn rename_target(name: &str, new_name: &str) -> Result<String, String> {
+    let new = new_name.trim();
+    if new.is_empty() {
+        return Err("give the note a new name".to_string());
+    }
+    if new.contains('/') || new.contains('\\') {
+        return Err(format!(
+            "{new} is a path; rename_note takes a file name only and keeps the note in its folder"
+        ));
+    }
+    if new == "." || new == ".." || new.starts_with('.') {
+        return Err(format!("{new} is not a name a note can have here"));
+    }
+    if new.chars().any(char::is_control) {
+        return Err("a note's name cannot hold control characters".to_string());
+    }
+    let (folder, base) = match name.rfind('/') {
+        Some(cut) => (&name[..=cut], &name[cut + 1..]),
+        None => ("", name),
+    };
+    let ext = Path::new(base)
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    let has_ext = Path::new(new).extension().is_some();
+    let file = if ext.is_empty() || has_ext {
+        new.to_string()
+    } else {
+        format!("{new}{ext}")
+    };
+    Ok(format!("{folder}{file}"))
+}
+
+/// The rename tool, bound to one note. Renaming twice in one turn renames
+/// the note it has become.
+pub struct RenameNote {
+    dir: PathBuf,
+    current: Mutex<String>,
+}
+
+impl RenameNote {
+    pub fn new(serve: &RenameServe) -> Self {
+        Self {
+            dir: serve.dir.clone(),
+            current: Mutex::new(serve.name.clone()),
+        }
+    }
+
+    fn rename(&self, new_name: &str) -> Result<String, String> {
+        let mut current = self.current.lock().map_err(|_| "poisoned".to_string())?;
+        let to = rename_target(&current, new_name)?;
+        if to == *current {
+            return Ok(format!("The note is already called «{to}»."));
+        }
+        let landed = crate::project::move_note(&self.dir, &current, &to)?;
+        *current = landed.clone();
+        Ok(format!("Renamed the note to «{landed}»."))
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for RenameNote {
+    fn def(&self) -> ToolDef {
+        ToolDef {
+            name: RENAME_TOOL.into(),
+            description:
+                "Rename the note you are editing. Give only the new file name — no folder, \
+                 no path; the note stays in its folder. A name without an extension keeps the \
+                 note's extension. Fails if a note of that name is already there."
+                    .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "new_name": {
+                        "type": "string",
+                        "description": "The new file name, e.g. module_2_overview or module_2_overview.md."
+                    }
+                },
+                "required": ["new_name"]
+            }),
+        }
+    }
+
+    fn effect(&self) -> Effect {
+        Effect::Mutating
+    }
+
+    async fn call(&self, input: Value, _cancel: &CancellationToken) -> Result<String, String> {
+        let new_name = input["new_name"]
+            .as_str()
+            .ok_or_else(|| "rename_note needs new_name".to_string())?;
+        self.rename(new_name)
+    }
+}
+
+/// What the model is told about the third tool.
+const RENAME_PROMPT: &str = "You also have rename_note, which renames this note inside its \
+     folder: pass only the new file name. Use it only when the user asks to rename the note \
+     (or to change its name or title of the file), and call it last, after any edits — your \
+     Read and Edit work on the old path only. Then say the new name in your reply.";
+
+/// Give the turn `rename_note` (item 460): Nightloom's server in its
+/// rename mode for this one note, pre-approved by its MCP name. `pass`'s
+/// `server` is the command that runs Nightloom's MCP server.
+pub fn with_rename(spec: &mut AgentSpec, pass: &PassSpec, serve: &RenameServe) {
+    let (command, leading) = pass
+        .server
+        .split_first()
+        .map(|(c, rest)| (c.clone(), rest.to_vec()))
+        .unwrap_or_default();
+    if command.is_empty() {
+        return;
+    }
+    let mut args = leading;
+    args.push("--rename-note".into());
+    args.push(serve.to_arg());
+    spec.mcp_config = Some(
+        json!({
+            "mcpServers": {
+                crate::mcp_server::SERVER_NAME: { "command": command, "args": args }
+            }
+        })
+        .to_string(),
+    );
+    spec.allowed_tools
+        .push(crate::mcp_server::mcp_name(RENAME_TOOL));
+    let prompt = spec.append_system_prompt.take().unwrap_or_default();
+    spec.append_system_prompt = Some(format!("{prompt} {RENAME_PROMPT}").trim().to_string());
+}
 
 /// One earlier exchange in the thread, as the window sends it: his
 /// request, the model's reply, and the edit's changed lines (`- `/`+ `).
@@ -267,6 +440,10 @@ pub fn compose_instruction_of(
 /// `Err` with what it tried otherwise. `input` is the call's input as the
 /// stream shows it.
 pub fn check_call(note: &Path, tool: &str, input: &serde_json::Value) -> Result<(), String> {
+    // Item 460: the rename tool names no path; its server confines it.
+    if tool == crate::mcp_server::mcp_name(RENAME_TOOL) {
+        return Ok(());
+    }
     if !TOOLS.contains(&tool) {
         return Err(format!(
             "the model called {tool}, which the note editor does not allow"
@@ -291,6 +468,95 @@ pub fn check_call(note: &Path, tool: &str, input: &serde_json::Value) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Item 460: a new name only, in the note's own folder, extension kept.
+    #[test]
+    fn a_rename_is_a_name_in_the_same_folder() {
+        assert_eq!(
+            rename_target("files/Pasted text (2).md", "module_2_overview").unwrap(),
+            "files/module_2_overview.md"
+        );
+        assert_eq!(
+            rename_target("plan.md", "roadmap.txt").unwrap(),
+            "roadmap.txt"
+        );
+        assert_eq!(rename_target("Pasted text", "notes").unwrap(), "notes");
+        for bad in ["", "  ", "../x", "a/b", "a\\b", ".hidden", "..", "x\u{0}y"] {
+            assert!(rename_target("files/n.md", bad).is_err(), "{bad:?} refused");
+        }
+    }
+
+    #[test]
+    fn the_rename_tool_renames_its_note_and_only_it() {
+        let dir = std::env::temp_dir().join(format!("nl-rename-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        crate::project::write_note(&dir, "files/Pasted text (2).md", "x").unwrap();
+        crate::project::write_note(&dir, "files/taken.md", "keep").unwrap();
+        let tool = RenameNote::new(&RenameServe {
+            dir: dir.clone(),
+            name: "files/Pasted text (2).md".into(),
+        });
+        assert_eq!(tool.def().name, RENAME_TOOL);
+        assert!(tool.rename("taken").is_err(), "never over another note");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("files/taken.md")).unwrap(),
+            "keep"
+        );
+        assert!(tool.rename("../escape").is_err());
+        let said = tool.rename("module_2_overview").unwrap();
+        assert!(said.contains("files/module_2_overview.md"), "{said}");
+        assert!(dir.join("files/module_2_overview.md").is_file());
+        // A second rename in the turn renames what it became.
+        tool.rename("module_2").unwrap();
+        assert!(dir.join("files/module_2.md").is_file());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_turn_gets_the_rename_server_and_only_its_tool_more() {
+        let note = Path::new("/Users/x/notes/plan.md");
+        let p = pass();
+        let mut spec = spec_for(&p, Path::new("/tmp/scratch"), note);
+        let before = spec.allowed_tools.clone();
+        let serve = RenameServe {
+            dir: "/Users/x/notes".into(),
+            name: "plan.md".into(),
+        };
+        with_rename(&mut spec, &p, &serve);
+        let added: Vec<&String> = spec
+            .allowed_tools
+            .iter()
+            .filter(|t| !before.contains(t))
+            .collect();
+        assert_eq!(added, vec!["mcp__nightloom__rename_note"]);
+        let cfg: Value = serde_json::from_str(spec.mcp_config.as_deref().unwrap()).unwrap();
+        let args = cfg["mcpServers"]["nightloom"]["args"].as_array().unwrap();
+        assert_eq!(args[args.len() - 2], "--rename-note");
+        assert_eq!(
+            RenameServe::parse(args[args.len() - 1].as_str().unwrap()).unwrap(),
+            serve
+        );
+        assert!(spec.append_system_prompt.unwrap().contains("rename_note"));
+        assert!(
+            check_call(
+                note,
+                "mcp__nightloom__rename_note",
+                &json!({"new_name": "x"})
+            )
+            .is_ok()
+        );
+        assert!(check_call(note, "mcp__nightloom__search_chats", &json!({})).is_err());
+        // The server's own command line reads it back, and serves it alone.
+        let parsed =
+            crate::mcp_server::parse_args(&["--rename-note".to_string(), serve.to_arg()]).unwrap();
+        assert_eq!(parsed.rename, Some(serve.clone()));
+        assert!(!parsed.remember);
+        // The tools the CLI has are still Read and Edit; the server adds one.
+        assert_eq!(
+            spec.tools.unwrap(),
+            vec!["Read".to_string(), "Edit".to_string()]
+        );
+    }
 
     fn pass() -> PassSpec {
         let mut p = PassSpec::new("claude", vec!["nightloom".into(), "mcp-serve".into()]);

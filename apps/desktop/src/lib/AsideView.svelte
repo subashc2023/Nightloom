@@ -1,14 +1,15 @@
 <script lang="ts">
+  import { chatLabel } from "./chatLabel";
   import { tip } from "./tip";
   import { renderReply } from "./markdown";
   import { app, asideAsking, asideOf, asideTabThread } from "./state.svelte";
   import { quoteLabel } from "./asideQuote";
   import Icon from "./Icon.svelte";
-  import { tick, untrack } from "svelte";
+  import { untrack } from "svelte";
   // Backlog 283: the chat's composer and message pieces.
   import Composer from "./Composer.svelte";
   import AsideThread from "./AsideThread.svelte";
-  import { asideScrollKey, recallScroll, rememberScroll, restoreTop } from "./scroll.svelte";
+  import { asideScrollKey, putBack, recallScroll, rememberScroll, returnEntry } from "./scroll.svelte";
   import { asideLabel } from "./asides";
   import { renameAside } from "./asides.svelte";
   import { closeAsideToChat } from "./asideSidebar.svelte";
@@ -16,6 +17,7 @@
   import AsideFoldPanel from "./AsideFoldPanel.svelte";
   import * as tabs from "./tabs";
   import { fmtTokens } from "./tokens";
+  import { followThread } from "./asideFollow.svelte";
 
   /**
    * An aside thread as a tab of its own (nightshift backlog 130 part 2,
@@ -58,7 +60,7 @@
   let naming = $state(false);
   const chatName = $derived.by(() => {
     const s = app.sessions.find((x) => x.id === session);
-    return s?.title ?? s?.first_user ?? session.slice(0, 8);
+    return chatLabel(s, session.slice(0, 8));
   });
 
   // Where he was in the thread (nightshift backlog 237, 2026-09-26): the
@@ -67,19 +69,32 @@
   // scrolls and put back when the view mounts or shows another thread.
   let view = $state<HTMLDivElement | null>(null);
   const viewKey = $derived(aside ? asideScrollKey(session, aside.id) : null);
+  // Item 485: a follow-up sent near the foot lands at the bottom and
+  // follows the answer (468's rule, the card's; the tab had none).
+  const follow = followThread(
+    () => view,
+    () => aside ?? null,
+  );
+  // Item 502: put back while the thread draws (`putBack`), not once a
+  // tick after mount — the thread was still short then, the place was cut
+  // to near the top, and that cut's own scroll event wrote it over his.
+  let putting: ReturnType<typeof putBack> | null = null;
   function scrolled() {
-    if (!view || !viewKey) return;
+    follow.scrolled();
+    if (!view || !viewKey || putting?.busy()) return;
     rememberScroll(viewKey, view.scrollTop, view.scrollHeight - view.scrollTop - view.clientHeight < 4);
   }
   $effect(() => {
     const key = viewKey;
     const el = view;
     if (!key || !el) return;
-    untrack(() => {
-      void tick().then(() => {
-        const top = restoreTop(recallScroll(key), el.scrollHeight, el.clientHeight);
-        if (top !== null) el.scrollTop = top;
-      });
+    return untrack(() => {
+      const p = putBack(el, returnEntry(recallScroll(key), el.scrollHeight, el.clientHeight));
+      putting = p;
+      return () => {
+        p.cancel();
+        if (putting === p) putting = null;
+      };
     });
   });
 
@@ -161,7 +176,7 @@
       {/if}
       {#if !aside.draft}
         <div class="aside-view-turns">
-          <AsideThread {aside} {open} />
+          <AsideThread {aside} {open} owner={session} />
           <AsideFoldPanel {aside} part="panel" {open} />
         </div>
       {/if}

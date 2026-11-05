@@ -391,8 +391,21 @@ fn keep_the_name(parent: &Session, fork: &mut Session, first: Option<&str>) {
             fork.record_title_by(title.to_string(), by);
         }
         None => {
+            // A short one-line first message is the name he sent (363)
+            // and stays his. Item 462: a longer one is a message, not a
+            // name — written `by: user`, his whole first message became a
+            // name nothing would ever replace — so its first line, cut to
+            // a name's length, stands in as the model's, and the chat is
+            // named after its first reply (`chat_name::carried_title`).
             if let Some(words) = first.map(str::trim).filter(|w| !w.is_empty()) {
-                fork.record_title_by(words.to_string(), nightloom_core::TitleBy::User);
+                if crate::chat_name::is_name_like(words) {
+                    fork.record_title_by(words.to_string(), nightloom_core::TitleBy::User);
+                } else {
+                    fork.record_title_by(
+                        crate::chat_name::first_line_title(words),
+                        nightloom_core::TitleBy::Model,
+                    );
+                }
             }
         }
     }

@@ -11,6 +11,7 @@
   import { app, toggleSidebar } from "./state.svelte";
   import { isMac } from "./platform";
   import { registerFindBar } from "./search";
+  import { windowWants } from "./transcriptWindow.svelte";
   import {
     collectSegments,
     countLabel,
@@ -96,6 +97,15 @@
   let frame = 0;
   /** The turn `openWith` asked for and the page has not yet shown. */
   let pendingTurn: number | null = null;
+
+  // Item 482: the transcript draws only its last messages until scrolled
+  // up; while the app's bar is open it draws the whole chat, so every
+  // message's text is there to search.
+  $effect(() => {
+    if (scoped) return;
+    windowWants.all = open;
+    return () => (windowWants.all = false);
+  });
 
   onMount(() => {
     if (scoped) return;

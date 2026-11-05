@@ -34,6 +34,7 @@
   } from "./subagentAsk.svelte";
   import { clock12 } from "./awaySettings";
   import { relayArrived, relays } from "./relay.svelte";
+  import { keptOpen } from "./keptFolds.svelte";
 
   let { content }: { content: Extract<TabContent, { kind: "subagent" }> } = $props();
 
@@ -50,6 +51,9 @@
   // while it runs, and the chat it was adopted into, whose exchanges are
   // drawn here too — read from that chat's log whenever a turn ends.
   const key = $derived(keyOf({ tool_use_id: content.toolUseId }));
+  // Item 495 part 2: the view's folds kept past a project switch (which
+  // draws every tab afresh) — by the chat and the spawning call.
+  const foldBase = $derived(`fold:${content.session}|agent:${content.toolUseId}`);
   const live = $derived(row ? agentLive(row) : false);
   const held = $derived(agentAsk.notes[key] ?? []);
   // Notes sent into it while it ran (backlog 295): those still on their
@@ -143,7 +147,7 @@
       </div>
     </header>
     {#if row.prompt}
-      <details class="task">
+      <details class="task" use:keptOpen={{ key: `${foldBase}|task` }}>
         <summary>The task it was given{row.prompt.startsWith("<nightloom-subagent-brief>") ? " — the brief in front" : ""}</summary>
         <pre class="text">{row.prompt}</pre>
       </details>
@@ -151,7 +155,7 @@
     {#if row.segments.length === 0}
       <p class="note">{subagentRunning(row) ? "Nothing from it yet." : "It sent nothing back."}</p>
     {:else}
-      {@render list(row.segments, 0)}
+      {@render list(row.segments, 0, "")}
       <p class="note small">{callsOf(row.segments)} call{callsOf(row.segments) === 1 ? "" : "s"} in all.</p>
     {/if}
     <section class="talk" aria-label="Talk to this agent">
@@ -226,11 +230,15 @@
   {/if}
 </div>
 
-{#snippet list(segs: Segment[], depth: number)}
+{#snippet list(segs: Segment[], depth: number, path: string)}
   <div class="segs" style:margin-left="{depth * 14}px">
     {#each segs as s, k (k)}
       {#if s.kind === "tool"}
-        <details class="call" class:error={!!s.call.result?.is_error} open={depth === 0 && !!s.call.result?.is_error}>
+        <details
+          class="call"
+          class:error={!!s.call.result?.is_error}
+          use:keptOpen={{ key: `${foldBase}|call:${s.call.id}`, fallback: depth === 0 && !!s.call.result?.is_error }}
+        >
           <summary>
             <span class="name" use:tip={s.call.name}>{shortToolName(s.call.name)}</span>
             <span class="arg">{toolInputSummary(s.call.input)}</span>
@@ -248,7 +256,7 @@
           </div>
         </details>
         {#if s.call.children?.length}
-          {@render list(s.call.children, depth + 1)}
+          {@render list(s.call.children, depth + 1, s.call.id)}
         {/if}
         {#if depth === 0}
           {#each arrivedWith(s.call.id) as n (n.id)}
@@ -259,7 +267,7 @@
           {/each}
         {/if}
       {:else if s.kind === "thinking"}
-        <details class="thought">
+        <details class="thought" use:keptOpen={{ key: `${foldBase}|thought:${path}:${k}` }}>
           <summary>thought{s.ms != null ? ` · ${Math.round(s.ms / 1000)} s` : ""}</summary>
           <pre class="text">{s.text}</pre>
         </details>

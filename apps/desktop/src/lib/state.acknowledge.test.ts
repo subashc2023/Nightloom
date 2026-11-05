@@ -28,6 +28,8 @@ vi.mock("./api", async (importOriginal) => ({
   })),
   // The listings hang, as an iCloud folder's did after sleep.
   listNotes: vi.fn(() => never()),
+  // The panel lists by tree since item 457; hung the same way.
+  listNoteTree: vi.fn(() => never()),
   listProjects: vi.fn(() => never()),
   listProposals: vi.fn(async () => []),
   contextLimits: vi.fn(async (_p: string, models: string[]) =>

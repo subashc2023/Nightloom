@@ -52,6 +52,7 @@
   import type { RunEntry } from "./running";
   import { tasksFocus } from "./tasksFocus.svelte";
   import { onDestroy } from "svelte";
+  import { viewGet, viewSet } from "./viewState";
 
   // Opened on one agent (backlog 357: a name on the still-running line):
   // its row is marked and scrolled into view; the mark goes with the panel.
@@ -93,7 +94,9 @@
   /** Running · finished in the latest send · earlier sends (267). */
   const groups = $derived(groupAgents(mine));
   /** Earlier sends fold by default: history, a click away. */
-  let earlierOpen = $state(false);
+  // Item 495: past the overlay closing and opening again.
+  let earlierOpen = $state(viewGet("tasks.earlier", false));
+  $effect(() => viewSet("tasks.earlier", earlierOpen, false));
 
   /** The caps in force (backlog 165): this send's spawns of the per-send
    *  cap — lowered past `slow_at` of the window — the window itself, and

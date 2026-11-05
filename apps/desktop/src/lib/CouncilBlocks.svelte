@@ -10,13 +10,18 @@
   import { renderMarkdown } from "./markdown";
   import { pct, type CouncilRecord, type CouncilSeatBlock } from "./council";
   import { fmtTokens } from "./tokens";
+  import { keptOpen } from "./keptFolds.svelte";
 
   let {
     seat = null,
     record = null,
+    keep = null,
   }: {
     seat?: CouncilSeatBlock | null;
     record?: CouncilRecord | null;
+    /** Where the fold's open state is kept past a chat switch (item 495
+     *  part 2: the reply's chat + turn + block); null, its own. */
+    keep?: string | null;
   } = $props();
 
   /** Every source any seat cited, with the letters that cited it. */
@@ -32,7 +37,7 @@
 </script>
 
 {#if seat}
-  <details class="council-seat" class:failed={!!seat.error}>
+  <details class="council-seat" class:failed={!!seat.error} use:keptOpen={{ key: keep }}>
     <summary class="council-seat-line">
       <span class="ico">▸</span>
       <span class="name">Member {seat.label}</span>
@@ -46,7 +51,7 @@
     <div class="council-seat-body markdown">{@html renderMarkdown(seat.body)}</div>
   </details>
 {:else if record}
-  <details class="council-record">
+  <details class="council-record" use:keptOpen={{ key: keep }}>
     <summary class="council-seat-line">
       <span class="ico">▾</span>
       <span class="name">Sources ({sources.length})</span>

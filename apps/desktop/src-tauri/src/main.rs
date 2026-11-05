@@ -55,10 +55,15 @@ mod chats;
 mod connect_deadline;
 /// The composer's exact token count on the provider engine (backlog 155).
 mod draft_count;
+/// An AppKit exception in event dispatch is logged, not fatal (item 486).
+#[cfg(target_os = "macos")]
+mod event_guard;
 /// A file card's Open as a tab: which paths may be read, and reading them
 /// (nightshift backlog 161).
 mod filetab;
 mod for_you;
+/// The notes Inbox's Sort inbox (nightshift backlog 488).
+mod inbox_sort;
 /// A `.tex` tab's rendered PDF (nightshift backlog 381).
 mod latex;
 mod model_list;
@@ -72,6 +77,8 @@ mod note_edit;
 mod offscreen;
 /// Finder's Open With → Nightloom (nightshift backlog 378).
 mod opened_files;
+/// Panics written to `~/.nightloom/logs/panic.log` (nightshift item 486).
+mod panic_log;
 /// A paste's web images, fetched (nightshift backlog 382).
 mod paste_images;
 #[cfg(not(debug_assertions))]
@@ -1266,6 +1273,16 @@ fn build_chat(
                     spec.project_id.clone(),
                 )));
         }
+        // The note organisers (item 472): list, make a folder, move — over
+        // the vault, on the knowledge switch, for a chat that writes. The
+        // writers are `Mutating`, so they pass the approval gate as a file
+        // write does.
+        if let Some(vault) = spec.knowledge.clone()
+            && !spec.mode.writes_nothing()
+        {
+            chat.tools
+                .extend(nightloom_service::tools::notes::note_tools(vault));
+        }
         if let Some(chats) = &spec.chats {
             chat.tools
                 .push(Box::new(nightloom_service::tools::SearchChats::new(
@@ -2115,6 +2132,9 @@ async fn connect_agent_body(
     // headless, can only decline (nightshift blocker 050; `AgentSpec::add_dirs`
     // says what the grant covers).
     spec.add_dirs = knowledge.iter().cloned().collect();
+    // The same grant names the folder the note organisers work in (item
+    // 472, `--notes` below).
+    let notes_root = knowledge.clone();
     // The extra folders (nightshift backlog 143): the project's and the
     // chat's own, each granted the same way — readable without a prompt,
     // edits under the permission mode (`external`, the CLI's permissions
@@ -2397,6 +2417,12 @@ async fn connect_agent_body(
             // chats, memory or Notion either; the fetch stays.
             if incognito {
                 args.push("--incognito".into());
+            }
+            // The vault this chat was granted, for the note organisers
+            // (item 472); none for an incognito chat, which has no vault.
+            if let Some(dir) = &notes_root {
+                args.push("--notes".into());
+                args.push(dir.to_string_lossy().into_owned());
             }
             // The chat's folder, for `send_file` (nightshift backlog 343).
             args.push("--root".into());
@@ -3380,6 +3406,52 @@ async fn prepare_office_attachment(
     .await
 }
 
+/// A PDF's page count (nightshift item 491): what routes one over 10 pages
+/// by path on the Claude Code engine. `None` when none is found.
+#[tauri::command]
+fn pdf_pages(data: String) -> Option<usize> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data.trim())
+        .ok()?;
+    nightloom_service::attach::pdf_pages(&bytes)
+}
+
+/// An unsent draft's long PDF kept on disk across a relaunch (item 491);
+/// its id. `read_draft_file` gives it back.
+#[tauri::command]
+fn stash_draft_file(data: String) -> Result<String, String> {
+    let config = project::config_dir().ok_or("no config folder")?;
+    nightloom_service::attach::stash_draft_file(&config, &data)
+}
+
+#[tauri::command]
+fn read_draft_file(id: String) -> Result<String, String> {
+    let config = project::config_dir().ok_or("no config folder")?;
+    nightloom_service::attach::read_draft_file(&config, &id)
+}
+
+/// Item 491 follow-up: at start, delete the draft copies no saved draft
+/// names (`keep`) that are over 30 days old; off the main thread. A named
+/// copy is never deleted.
+#[tauri::command]
+async fn prune_draft_files(
+    keep: Vec<String>,
+) -> Result<nightloom_service::attach::DraftPrune, String> {
+    let config = project::config_dir().ok_or("no config folder")?;
+    let keep = keep.into_iter().map(|k| k.to_ascii_lowercase()).collect();
+    tokio::task::spawn_blocking(move || {
+        nightloom_service::attach::prune_draft_files(
+            &config,
+            &keep,
+            nightloom_service::attach::DRAFT_FILE_MAX_AGE,
+            std::time::SystemTime::now(),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 /// Whether an office file will become a PDF (LibreOffice is installed) or
 /// text — what the composer's chip says before the conversion starts.
 #[tauri::command]
@@ -3439,6 +3511,84 @@ async fn keep_attachment(
     .map_err(|e| e.to_string())?
 }
 
+/// Item 492: a file kept in the notes folder he points at (`folder`,
+/// docspace-relative: `people`, `files/bundle`) — a folder row he dropped
+/// on, or the + on it. `clash`: `"ask"` answers `Taken` with nothing
+/// written when the name holds other bytes; `"both"` numbers it;
+/// `"replace"` moves the old file to the notes trash first
+/// (`keep::keep_in_folder`).
+#[tauri::command]
+async fn keep_in_folder(
+    state: State<'_, AppState>,
+    name: String,
+    media_type: String,
+    data: String,
+    folder: String,
+    clash: Option<String>,
+    source: Option<String>,
+) -> Result<nightloom_service::keep::Landing, String> {
+    use base64::Engine as _;
+    let project = state
+        .active()
+        .await
+        .filter(|p| !p.is_unfiled_holder())
+        .ok_or("this chat is not in a project, so there is no project to keep the file in")?;
+    let docspace = project.notes_dir();
+    tokio::task::spawn_blocking(move || {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data.trim())
+            .map_err(|e| format!("{name}: {e}"))?;
+        nightloom_service::keep::keep_in_folder(
+            &docspace,
+            &folder,
+            &name,
+            &media_type,
+            &bytes,
+            source.as_deref(),
+            nightloom_service::keep::OnClash::parse(clash.as_deref()),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Item 498: an image the note toolbar inserts, kept in `folder` (the
+/// `attachments/` folder beside the note, store-relative) of the note's own
+/// store — the project's notes or the vault. The same keep as
+/// [`keep_in_folder`] (`keep::keep_in_folder`), with Keep both on a clash:
+/// a name taken by other bytes is numbered, the same bytes are reused.
+#[tauri::command]
+async fn keep_note_file(
+    state: State<'_, AppState>,
+    scope: NoteScope,
+    folder: String,
+    name: String,
+    media_type: String,
+    data: String,
+) -> Result<nightloom_service::keep::Landing, String> {
+    use base64::Engine as _;
+    if !matches!(scope, NoteScope::Project | NoteScope::Knowledge) {
+        return Err("images are kept beside notes in the project's notes or the vault only".into());
+    }
+    let docspace = scope_dir(&state, scope).await?;
+    tokio::task::spawn_blocking(move || {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data.trim())
+            .map_err(|e| format!("{name}: {e}"))?;
+        nightloom_service::keep::keep_in_folder(
+            &docspace,
+            &folder,
+            &name,
+            &media_type,
+            &bytes,
+            None,
+            nightloom_service::keep::OnClash::Both,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// One file out of a dropped zip, for the window (item 414).
 #[derive(serde::Serialize)]
 struct ZipFileWire {
@@ -3462,6 +3612,9 @@ async fn unpack_zip(
     state: State<'_, AppState>,
     name: String,
     data: String,
+    // Item 492: the notes folder the zip was dropped on; its folder is
+    // named free there rather than in `files/`.
+    folder: Option<String>,
 ) -> Result<UnpackedWire, String> {
     use base64::Engine as _;
     let project = state
@@ -3476,8 +3629,15 @@ async fn unpack_zip(
             .decode(data.trim())
             .map_err(|e| format!("{name}: {e}"))?;
         let u = nightloom_service::keep::unpack_zip(&docspace, &name, &bytes)?;
+        let in_folder = match folder.as_deref() {
+            Some(f) => {
+                let (dir, _) = nightloom_service::keep::note_folder(&docspace, f)?;
+                nightloom_service::keep::zip_folder_in(&dir, &name)
+            }
+            None => u.folder,
+        };
         Ok(UnpackedWire {
-            folder: u.folder,
+            folder: in_folder,
             files: u
                 .files
                 .into_iter()
@@ -3642,7 +3802,7 @@ async fn send_agent(
     if !files.is_empty() {
         let paths =
             nightloom_service::attach::save_chat_files(&agent.spec().workspace, &chat_id, &files)?;
-        let note = nightloom_service::attach::files_note(&paths);
+        let note = nightloom_service::attach::files_note_for(&paths, &files);
         text = if text.trim().is_empty() {
             note
         } else {
@@ -4550,7 +4710,7 @@ async fn ask_aside(
     if !files.is_empty() {
         let paths =
             nightloom_service::attach::save_chat_files(&agent.spec().workspace, "asides", &files)?;
-        let note = nightloom_service::attach::files_note(&paths);
+        let note = nightloom_service::attach::files_note_for(&paths, &files);
         text = if text.trim().is_empty() {
             note
         } else {
@@ -4997,6 +5157,44 @@ async fn reveal_thread(state: State<'_, AppState>, slug: String) -> Result<(), S
     project::reveal_file(&dir).map_err(|e| e.to_string())
 }
 
+/// Keep a thread chat's `<handoff>` prompt on its thread in the open project
+/// (nightshift item 464): `handoff.json` beside `thread.md`, replacing any
+/// earlier one (`thread_handoff::save_handoff`).
+#[tauri::command]
+async fn save_thread_handoff(
+    state: State<'_, AppState>,
+    slug: String,
+    text: String,
+    from_chat: String,
+) -> Result<(), String> {
+    let notes = thread_notes(&state).await?;
+    let now = chrono::Local::now().to_rfc3339();
+    blocking(move || {
+        nightloom_service::thread_handoff::save_handoff(
+            &notes,
+            slug.trim(),
+            &text,
+            &from_chat,
+            &now,
+        )
+        .map(|_| ())
+    })
+    .await
+}
+
+/// The thread's + (item 464): the saved hand-off's text when no child chat
+/// has started from it yet, `chat` then named as the one that did; else null.
+#[tauri::command]
+async fn take_thread_handoff(
+    state: State<'_, AppState>,
+    slug: String,
+    chat: String,
+) -> Result<Option<String>, String> {
+    let notes = thread_notes(&state).await?;
+    blocking(move || nightloom_service::thread_handoff::take_handoff(&notes, slug.trim(), &chat))
+        .await
+}
+
 /// Append an aside's fold entry to a thread's `log.md` in the open project
 /// (backlog 282). The shell builds the entry (dated, the aside and chat
 /// named, the model's summary as he approved or edited it); this only
@@ -5346,8 +5544,8 @@ async fn tool_result_images(
         let Ok(path) = cli_session::find(&projects, &cwd, &session) else {
             return Ok(Default::default());
         };
-        let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        Ok(cli_session::tool_result_images(&text, &ids))
+        // Its subagents' files too (item 476): their calls' screenshots.
+        cli_session::tool_result_images_in(&path, &ids).map_err(|e| e.to_string())
     })
     .await
 }
@@ -6708,9 +6906,65 @@ async fn list_notes(
     if scope.is_fixed_file() {
         return Err(format!("{scope:?} is one file, not a folder to list"));
     }
-    Ok(project::list_notes(
+    // The panel's listing, not the system prompt's (item 457): every note
+    // is reachable from the Notes panel and the phone's Notes, where the
+    // index's 200 used to cut the list mid-walk with nothing said.
+    Ok(project::list_note_tree(&scope_dir_in(&state, scope, project.as_deref()).await?).notes)
+}
+
+/// The docspace as a tree for the Notes panel (item 457): every note, every
+/// folder (empty ones too), and whether the walk saw everything.
+#[tauri::command]
+async fn list_note_tree(
+    state: State<'_, AppState>,
+    scope: Option<NoteScope>,
+    project: Option<String>,
+) -> Result<project::NoteTree, String> {
+    let scope = scope.unwrap_or_default();
+    if scope.is_fixed_file() {
+        return Err(format!("{scope:?} is one file, not a folder to list"));
+    }
+    Ok(project::list_note_tree(
         &scope_dir_in(&state, scope, project.as_deref()).await?,
     ))
+}
+
+/// Move or rename a note or a folder of notes (item 457); the new name.
+#[tauri::command]
+async fn move_note(
+    state: State<'_, AppState>,
+    scope: Option<NoteScope>,
+    from: String,
+    to: String,
+    project: Option<String>,
+) -> Result<String, String> {
+    let scope = scope.unwrap_or_default();
+    if scope.is_fixed_file() {
+        return Err(format!("{scope:?} is one file; it is not moved from here"));
+    }
+    project::move_note(
+        &scope_dir_in(&state, scope, project.as_deref()).await?,
+        &from,
+        &to,
+    )
+}
+
+/// Make a folder among the notes (item 457's New folder).
+#[tauri::command]
+async fn new_note_folder(
+    state: State<'_, AppState>,
+    scope: Option<NoteScope>,
+    name: String,
+    project: Option<String>,
+) -> Result<String, String> {
+    let scope = scope.unwrap_or_default();
+    if scope.is_fixed_file() {
+        return Err(format!("{scope:?} is one file, not a folder"));
+    }
+    project::make_note_folder(
+        &scope_dir_in(&state, scope, project.as_deref()).await?,
+        &name,
+    )
 }
 
 #[tauri::command]
@@ -6843,16 +7097,35 @@ async fn delete_note(
     scope: Option<NoteScope>,
     name: String,
     project: Option<String>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let scope = scope.unwrap_or_default();
     if let Some(fixed) = scope.fixed_name() {
         return Err(format!(
             "{fixed} is not deleted from here — empty it instead"
         ));
     }
-    project::delete_note(
+    // To the docspace's trash since item 457, not unlinked. Item 471: the
+    // answer is where it went inside the trash, so its drafts can follow.
+    let dir = scope_dir_in(&state, scope, project.as_deref()).await?;
+    project::delete_note(&dir, &name).map(|to| project::trash_name(&dir, &to))
+}
+
+/// Item 471: unsaved drafts into the notes trash, beside their deleted
+/// notes (or alone, for a draft with no note left); the names written.
+#[tauri::command]
+async fn trash_note_drafts(
+    state: State<'_, AppState>,
+    scope: Option<NoteScope>,
+    drafts: Vec<(String, String)>,
+    project: Option<String>,
+) -> Result<Vec<String>, String> {
+    let scope = scope.unwrap_or_default();
+    if scope.is_fixed_file() {
+        return Err(format!("{scope:?} is one file; it has no trash"));
+    }
+    project::trash_note_drafts(
         &scope_dir_in(&state, scope, project.as_deref()).await?,
-        &name,
+        &drafts,
     )
 }
 
@@ -7688,7 +7961,11 @@ async fn read_file_tab(
         );
         if let Some(config) = project::config_dir() {
             trees.push(nightloom_service::knowledge::vault_dir_in(&config));
+            // Item 499: the copies `send_file` keeps of what a chat sent
+            // him are Nightloom's own store; its chip opens them here.
+            trees.push(nightloom_service::tools::send_file::store_in(&config));
         }
+        trees.push(nightloom_service::tools::send_file::scratch_store());
         let written = session
             .map(|s| filetab::written_paths(s.events(), trees.first().map(PathBuf::as_path)))
             .unwrap_or_default();
@@ -8518,6 +8795,9 @@ fn refuse_to_open(why: &str) {
 fn main() {
     // The startup log's clock (item 220): every line's `+N ms` counts from here.
     startup_log::mark_launch();
+    // Item 486: every panic is written to `~/.nightloom/logs/panic.log`;
+    // a Finder-launched app's stderr goes nowhere.
+    panic_log::install();
     // `nightloom-desktop --mcp-serve [--project <id>]`: this binary as an
     // MCP server on stdio, for the Claude Code engine. The app's `connect_agent`
     // hands `claude -p` a `--mcp-config` naming `current_exe()` with these
@@ -8594,6 +8874,14 @@ fn main() {
 
     builder
         .setup(|app| {
+            // Item 486: an exception AppKit raises while dispatching an event
+            // is logged instead of aborting the app through tao's `extern "C"`
+            // `sendEvent:` (the 11:27 AM 2026-10-30 crash).
+            #[cfg(target_os = "macos")]
+            {
+                let what = event_guard::install();
+                eprintln!("event guard: {what}");
+            }
             // A chat's preview (nightshift item 430): served from the start.
             preview::setup(app.handle());
             // The Mac's activity, watched while the app runs: ends a chat's
@@ -8730,8 +9018,14 @@ fn main() {
             send_agent,
             prepare_office_attachment,
             keep_attachment,
+            keep_in_folder,
+            keep_note_file,
             unpack_zip,
             office_converter,
+            pdf_pages,
+            stash_draft_file,
+            prune_draft_files,
+            read_draft_file,
             turn_timing_window,
             prewarm_agent,
             council_turns,
@@ -8740,6 +9034,10 @@ fn main() {
             cancel_aside,
             note_edit::edit_note_by_prompt,
             note_edit::cancel_note_edit,
+            inbox_sort::inbox_sort_list,
+            inbox_sort::inbox_sort_plan,
+            inbox_sort::inbox_sort_cancel,
+            inbox_sort::inbox_sort_apply,
             cancel,
             compact,
             rewind,
@@ -8765,6 +9063,8 @@ fn main() {
             delete_thread,
             reveal_thread,
             append_thread_log,
+            save_thread_handoff,
+            take_thread_handoff,
             thread_upkeep,
             tidy_threads,
             set_project_folders,
@@ -8825,12 +9125,16 @@ fn main() {
             rename_project,
             forget_project,
             list_notes,
+            list_note_tree,
+            move_note,
+            new_note_folder,
             read_note,
             read_note_media,
             memory_note_for,
             memory_strike,
             save_note,
             delete_note,
+            trash_note_drafts,
             list_proposals,
             read_proposal,
             dismiss_proposal,
@@ -8888,6 +9192,7 @@ fn main() {
             model_list::model_list_get,
             model_list::model_list_set,
             terminal::terminal_open,
+            terminal::terminal_run,
             terminal::terminal_write,
             terminal::terminal_resize,
             terminal::terminal_close,
