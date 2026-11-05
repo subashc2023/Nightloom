@@ -1,6 +1,7 @@
 import { Marked } from "marked";
 import type { MarkedExtension, TokenizerAndRendererExtension } from "marked";
 import DOMPurify from "dompurify";
+import { SANITIZE } from "./markdown";
 import { math } from "./math";
 import { tilde } from "./tilde";
 import type { Note } from "./types";
@@ -240,7 +241,7 @@ noteMarked.use(wikilinks);
 export function renderNote(src: string, notes: Note[]): string {
   vault = notes;
   const html = noteMarked.parse(src, { async: false, gfm: true }) as string;
-  return DOMPurify.sanitize(html, { ADD_TAGS: ["semantics", "annotation"] });
+  return DOMPurify.sanitize(html, SANITIZE);
 }
 
 /** Every distinct link target in `src`, in order — used for the outbound list. */

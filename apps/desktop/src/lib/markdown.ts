@@ -25,6 +25,16 @@ marked.use(tilde);
  */
 const ALLOW_MATHML = { ADD_TAGS: ["semantics", "annotation"] };
 
+/**
+ * What every reply and note is sanitised with. A `<style>` element is on
+ * DOMPurify's default list, and its CSS applies to the whole window, not to
+ * the reply it came in: a reply could restyle the app, cover an approval
+ * card, or (the app sets no CSP) fetch a `url()` from any server (item 505,
+ * found by the 503 review; his yes, blocker 1657). KaTeX styles through
+ * `style` attributes, which stay.
+ */
+export const SANITIZE = { ...ALLOW_MATHML, FORBID_TAGS: ["style"] };
+
 /** marked's options for `renderMarkdown` (pure, for the tests). */
 export function markdownOptions(opts: { breaks?: boolean } = {}): { async: false; gfm: true; breaks: boolean } {
   return { async: false, gfm: true, breaks: opts.breaks === true };
@@ -36,7 +46,7 @@ export function markdownOptions(opts: { breaks?: boolean } = {}): { async: false
  *  desktop's callers leave it off and render exactly as before. */
 export function renderMarkdown(src: string, opts: { breaks?: boolean } = {}): string {
   const html = marked.parse(src, markdownOptions(opts));
-  return DOMPurify.sanitize(html, ALLOW_MATHML);
+  return DOMPurify.sanitize(html, SANITIZE);
 }
 
 /**
@@ -75,7 +85,7 @@ export function renderReply(src: string): string {
     replyCache.set(src, hit);
     return hit;
   }
-  const html = DOMPurify.sanitize(replyMarked.parse(src, { async: false, gfm: true }), ALLOW_MATHML);
+  const html = DOMPurify.sanitize(replyMarked.parse(src, { async: false, gfm: true }), SANITIZE);
   keepReply(src, html);
   return html;
 }
@@ -113,5 +123,5 @@ export function replyCacheStats(): { entries: number; chars: number } {
  * sanitizer as a formula inside `renderMarkdown`.
  */
 export function renderMathHtml(tex: string, display: boolean): string {
-  return DOMPurify.sanitize(renderMath(tex, display), ALLOW_MATHML);
+  return DOMPurify.sanitize(renderMath(tex, display), SANITIZE);
 }
