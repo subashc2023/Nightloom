@@ -624,7 +624,7 @@ export function threadWrapUp(slug: string, flags: readonly string[] = [], code =
     // ~~"…ready to paste as is — no [brackets] or placeholders — in a fenced
     // code block tagged start-prompt…"~~ — item 464 (2026-10-28): the tagged
     // hand-off, which the thread's + opens the next chat with, alone.
-    `6. End your reply with a short prompt for the next chat in this thread. It is all that chat's first message will say (the thread's Start here is already in its context), so name what to read and what to do first. ${HANDOFF_ASK}`,
+    `6. End your reply with a short prompt for the next chat in this thread. With the read order Nightloom puts above it, it is all that chat's first message will say (the thread's Start here is already in its context), so name what to read and what to do first. ${HANDOFF_ASK}`,
   ];
   if (flags.length > 0) {
     lines.push("Upkeep Nightloom found in the thread files (fix these in the same small edits):");

@@ -82,7 +82,7 @@
       {#if !p.readOnly && p.canAct}
         <button onclick={p.oncontinue} disabled={!!p.blocked}>
           {@render p.icon("play")}
-          <span class="cm-grow">Continue<small>Have the model carry on where its last reply stopped</small></span>
+          <span class="cm-grow">Continue<small>Open a new linked chat to carry on from here</small></span>
         </button>
         <button onclick={p.onkind} disabled={!!p.blocked}>
           {@render p.icon("swap")}
