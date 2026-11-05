@@ -23,7 +23,7 @@ import {
 } from "./handoffButton";
 import { app, continuedThisRun, continueWithPrompt, send } from "./state.svelte";
 import { takeThreadHandoff } from "./threadHandoff.svelte";
-import type { Connection, SessionEvent } from "./types";
+import type { SessionEvent } from "./types";
 
 vi.mock("./api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./api")>()),
@@ -100,7 +100,7 @@ describe("506: the click", () => {
     clearDefaultReadOrder();
     app.busy = false;
     app.error = null;
-    app.connection = { engine: "anthropic", model: "m" } as unknown as Connection;
+    app.connection = { engine: "anthropic", model: "m" } as unknown as typeof app.connection;
   });
 
   it("sends read order then prompt, exactly, as the new chat's first message", async () => {
@@ -168,7 +168,7 @@ describe("506: staying is sending here", () => {
     resetHandoff();
     app.busy = false;
     app.activeSessionId = "chat-q";
-    app.connection = { engine: "anthropic", model: "m" } as unknown as Connection;
+    app.connection = { engine: "anthropic", model: "m" } as unknown as typeof app.connection;
     vi.mocked(api.send).mockResolvedValue({} as never);
     noteFill("chat-q", 150_000, 200_000, false);
     beginWrapUp("chat-q");
