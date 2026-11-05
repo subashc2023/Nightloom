@@ -1117,7 +1117,9 @@ What happens instead lives in the desktop (`handoff.svelte.ts`,
 "The context-full hand-off"): at each turn's end the gauge's fill is
 compared to the chat's threshold (70% by default); past it the next message
 carries a wrap-up asking the model to write `HANDOFF.md` in the project and
-stop; when that turn ends the composer offers *Continue in a new chat* —
+stop; when that turn ends ~~the composer offers *Continue in a new chat*~~
+(item 506: the reply's next-chat card offers *Continue with this prompt*,
+which also sends; `docs/desktop-ui.md`, "One hand-off surface") —
 asked, not automatic (nightshift blocker 092's default) — which opens a
 fresh chat in the same folder, linked to this one (`ForkedFrom` with
 `reason: "handoff"`, `Session::continued_from`), no CLI conversation to

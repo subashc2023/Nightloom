@@ -23,16 +23,13 @@ describe("383: the hand-off card's Minimize", () => {
 });
 
 import { handoff, reopenHandoff } from "./handoff.svelte";
-import { noteStay, stayedFromWrapped } from "./handoffFold.svelte";
+import { noteStay } from "./handoffFold.svelte";
 
 describe("383: Hand off after Stay here", () => {
-  it("reopens the card Stay here closed", () => {
-    noteStay("e", "wrapped");
-    expect(stayedFromWrapped("e")).toBe(true);
-    reopenHandoff(stayedFromWrapped("e"));
-    expect(handoff.stage).toBe("wrapped");
-    noteStay("f", "due");
-    reopenHandoff(stayedFromWrapped("f"));
+  it("reopens the notice; item 506: the wrapped card is gone, whatever was stayed past", () => {
+    noteStay("e");
+    handoff.stage = "wrapped";
+    reopenHandoff();
     expect(handoff.stage).toBe("due");
   });
 });
@@ -40,7 +37,7 @@ describe("383: Hand off after Stay here", () => {
 describe("383 review: Stay here ends a fold", () => {
   it("a notice folded, then wrapped up and stayed past, re-asks in full", () => {
     fold("g", "due");
-    noteStay("g", "wrapped");
+    noteStay("g");
     expect(isFolded("g", "due")).toBe(false);
   });
 });

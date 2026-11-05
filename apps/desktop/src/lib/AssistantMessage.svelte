@@ -7,6 +7,7 @@
   import { renderReply } from "./markdown";
   import { liveHtml } from "./liveHtml";
   import { codeCopy, type RunBlocks } from "./codeCopy";
+  import { handoffGo, type NextChat } from "./handoffButton";
   import { runBlock, type RunFrom } from "./shellRun.svelte";
   import { openAgentTab } from "./terminal.svelte";
   import { isShellCall } from "./agentCommands";
@@ -206,6 +207,7 @@
     cliSession = null,
     folds = null,
     runFrom = null,
+    nextChat = null,
   }: {
     segs: Segment[];
     footer?: Footer | null;
@@ -266,6 +268,9 @@
      *  block's Run and a shell call's way to Agent commands go by it. Null: a
      *  surface with no terminal to send to. */
     runFrom?: RunFrom | null;
+    /** Item 506: this is the chat's latest reply and it holds a next-chat
+     *  prompt; only the main transcript passes it. */
+    nextChat?: NextChat | null;
   } = $props();
 
   function runBlocks(text: string): RunBlocks | null {
@@ -920,7 +925,7 @@
       {:else}
         <!-- Item 452: patched in place (liveHtml), not replaced whole per
              streamed delta, so a selection in its written part survives. -->
-        <div class="markdown" use:liveHtml={renderReply(g.seg.text)} use:memoryRefs={{ hits: memHits, text: g.seg.text }} use:codeCopy={runBlocks(g.seg.text)}></div>
+        <div class="markdown" use:liveHtml={renderReply(g.seg.text)} use:memoryRefs={{ hits: memHits, text: g.seg.text }} use:codeCopy={runBlocks(g.seg.text)} use:handoffGo={nextChat}></div>
       {/if}
     {:else if g.seg.kind === "removed_tool" || g.seg.kind === "removed_text"}
       {@const seg = g.seg}

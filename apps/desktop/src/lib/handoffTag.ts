@@ -8,7 +8,8 @@ import { Marked, type MarkedExtension, type Tokens } from "marked";
  * Copy button) instead of the raw tags; and at the turn's end Nightloom keeps
  * it — on the thread for a thread chat (`threadHandoff.svelte.ts`), so the
  * thread's + opens the next chat with it in the box, and as the wrap-up's
- * start prompt for *Continue in a new chat* (`extractStartPrompt`).
+ * start prompt (`extractStartPrompt`). Since item 506 the card in the chat's
+ * latest reply carries *Continue with this prompt* (`handoffButton.ts`).
  *
  * The card and the extraction read the reply through the same tokenizer, so
  * what he sees as a card is exactly what is kept: a tag inside a code fence
@@ -24,8 +25,8 @@ export const HANDOFF_LABEL = "Next chat's prompt";
 /** The sentence the wrap-ups end with: where the prompt goes, and how. */
 export const HANDOFF_ASK =
   "Put the prompt between a line holding only <handoff> and a line holding only </handoff> — plain prose, " +
-  "no code fence, no [brackets] or placeholders. Nightloom keeps it and opens the next chat with it in the " +
-  "box, so do not tell me to copy it.";
+  "no code fence, no [brackets] or placeholders. Nightloom shows it as a card with a button that starts the " +
+  "next chat with it, so do not tell me to copy it.";
 
 interface HandoffToken extends Tokens.Generic {
   type: "handoff";

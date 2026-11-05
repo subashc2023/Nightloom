@@ -1908,7 +1908,7 @@ filled window (~~the handoff of backlog 086 does not exist yet~~ — corrected
 2026-09-16: the hand-off landed later the same night, "The context-full
 hand-off" below; ~~`notify.ts` still posts no banner for it~~ — built
 2026-09-25 with backlog 193: the wrap-up's own turn ends as `<chat> —
-handoff written` / `72% · Continue in a new chat, or stay` in place of
+handoff written` / ~~`72% · Continue in a new chat, or stay`~~ `72% · Continue with the next chat's prompt, or stay` (item 506) in place of
 *turn finished*, on the turn-end switch; a failed wrap-up reads as any
 failed turn; `turnEndBanner` in `notify.ts`). Clicking a
 banner activates Nightloom; it does not open the chat the banner names,
@@ -2133,6 +2133,44 @@ The done card (*HANDOFF.md written*) carries the branch mark in the accent.
 A notice row in the transcript (today the compaction notice; the board's
 `context 72% — wrapping up` row is the same kind) is the board's ruled
 amber mono: a rule either side, the words between.
+
+**One hand-off surface (nightshift item 506, 2026-11-05).** His words: "why
+are there both?" The reply's *Next chat's prompt* card and the composer's
+wrapped card held two different texts, and what landed was neither alone. The
+wrapped card and its folded form are gone; everything above that describes
+them is superseded by this paragraph.
+
+- **The button.** The card in the chat's latest reply standing (not rewound,
+  not removed) carries **Continue with this prompt** (`handoffButton.ts`), and
+  so does a legacy `start-prompt` block. An older reply's card keeps Copy
+  alone. It depends on no stage: a model that hands off by itself gets it, on
+  the API engine too, since `continue_session` needs no agent. The text comes
+  from the reply's source through `extractStartPrompt`, and a card is matched
+  to it, so a look-alike in a reply's raw HTML gets nothing; a prompt with
+  characters that do not show keeps Copy alone.
+- **What it sends.** `continueWithPrompt` opens the linked chat as
+  `continueChat` does (`openContinuation`, shared) and **sends**
+  `firstMessage(readOrder(chat), prompt)` as its first message, superseding
+  "in its box, never sent" (blockers 092, 120) for this button only. The card
+  has one folded line, *Nightloom adds its read order above this*, opening to
+  that text read-only, so all that is sent is on the card (blocker 1659). A
+  failed send, or no engine connected, leaves the text in the new chat's box.
+- **Used.** *Continued*, disabled, when a listed chat has `forked_from` naming
+  this chat with `reason: "handoff"` and an `index` past the reply: it holds
+  across a relaunch, and a later card after he stayed is live again. A set kept
+  for the app's run covers the moment before the listing is read again and an
+  ephemeral chat, which the listing does not hold. Deleting the child brings
+  the button back.
+- **Staying.** *Stay here* went with the card, so any send in a wrapped chat
+  is staying (`sentHere`, in `send`): the queue's hold ends and the re-ask is
+  armed as the button armed it. *Hand off* reopens the notice.
+- **No prompt.** With no card to carry the button, the composer shows one line,
+  *The wrap-up wrote no next-chat prompt*, with **Continue in a new chat** (the
+  unsent read-order box) and **Dismiss** (blocker 1660).
+- **Where it does not appear.** Asides, panes and agent tabs show Copy alone;
+  the phone too (blocker 1661): its card has Copy, and its menu's Continue is
+  the unsent path. A chat's own read order can no longer be edited, only kept
+  (blocker 1662).
 
 **The read order (nightshift backlog 193, 2026-09-25).** *Continue in a new
 chat* now fills the new chat's box with a fixed prompt — the read order —

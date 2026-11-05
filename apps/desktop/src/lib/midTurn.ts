@@ -131,6 +131,6 @@ export function queueHeadLabel(s: QueueHeadState): string {
     return "queued · sent when this turn ends";
   }
   if (s.hold === "stopped") return "waiting — the turn was stopped";
-  if (s.hold === "wrapped") return "waiting — HANDOFF.md is written; continue in a new chat, or Send next here";
+  if (s.hold === "wrapped") return "waiting — HANDOFF.md is written; continue from the prompt in the reply, or Send next here";
   return "waiting";
 }

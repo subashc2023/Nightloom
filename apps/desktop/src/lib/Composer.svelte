@@ -56,19 +56,15 @@
     awayNow,
     beginWrapUp,
     clearMessage,
-    clearReadOrder,
     handoff,
     hasOwnMessage,
-    hasOwnReadOrder,
     hasOwnThreshold,
     message,
     noteActivity,
     noteFill,
     queueHold,
-    readOrder,
     reconsider,
     setMessage,
-    setReadOrder,
     setThreshold,
     stayHere,
     reopenHandoff,
@@ -81,7 +77,7 @@
     codeProjectFor,
     noteCodeProject,
   } from "./handoff.svelte";
-  import { fold, isFolded, noteStay, stayedFromWrapped, unfold } from "./handoffFold.svelte";
+  import { fold, isFolded, noteStay, unfold } from "./handoffFold.svelte";
   import ThreadPicker from "./ThreadPicker.svelte";
   import { chatThread, refreshThreadFlags, injectIntoTurn, sendNowRow, openChatKey, takeQueued } from "./state.svelte";
   import { injectChip, queueHeadLabel } from "./midTurn";
@@ -725,8 +721,9 @@
    * notice shows the fill, a field that raises the mark for this chat, the
    * wrap-up message editable for this chat, **Wrap up now** and **Stay
    * here**; ~~the wrap-up rides the next message~~ — it is its own message
-   * now. Once its turn ends the bar offers *Continue in a new chat · Stay
-   * here* (asked, not automatic — blocker 092, answered by 120). Only for
+   * now. ~~Once its turn ends the bar offers *Continue in a new chat · Stay
+   * here*~~ — item 506: the reply's next-chat card carries the way on; the
+   * composer speaks only when the reply wrote no prompt. Only for
    * the chat the state is about, and only on the Claude Code engine, which
    * is the one that fills.
    */
@@ -804,7 +801,6 @@
   /** The wrap-up this chat would send: its own edit, else its thread's, else the Settings default. */
   const wrapUpText = $derived(message(app.activeSessionId));
   /** The read order this chat's continuation opens with (backlog 193). */
-  const readOrderText = $derived(readOrder(app.activeSessionId));
   /** The wrap-up Nightloom queued while he was away is still in the queue. */
   const wrapUpQueued = $derived(handoff.queuedId !== 0 && queue.some((q) => q.id === handoff.queuedId));
 
@@ -2948,7 +2944,7 @@
         {#if !wrapUpQueued}
           <button class="ns-btn accent small" disabled={app.busy || !wrapUpText.trim()} onclick={() => void sendWrapUpNow()}>Wrap up now</button>
         {/if}
-        <button class="ns-btn ghost small" use:tip={`No wrap-up; asked again past ${reAskPct}%`} onclick={() => { noteStay(app.activeSessionId, "due"); stayHere(); }}>Stay here</button>
+        <button class="ns-btn ghost small" use:tip={`No wrap-up; asked again past ${reAskPct}%`} onclick={() => { noteStay(app.activeSessionId); stayHere(); }}>Stay here</button>
         <button class="ns-btn ghost small" use:tip={"Fold this card to one line above the box"} onclick={() => fold(app.activeSessionId, "due")}>Minimize</button>
         {#if hasOwnMessage(app.activeSessionId)}
           <button class="ns-btn ghost small" use:tip={"Back to the Settings default for this chat"} onclick={() => clearMessage(app.activeSessionId)}>Reset the message</button>
@@ -2960,59 +2956,17 @@
     <div class="handoff" role="status">
       <div class="handoff-head"><span>Wrapping up — the model is finishing what is half-done, {#if threadAndHandoff}updating the thread's files and <code>HANDOFF.md</code>, committing{:else if threadHandoff}updating the thread's files{:else}writing <code>HANDOFF.md</code>, committing{/if}, and ending with the start prompt for the new chat.</span></div>
     </div>
-  {:else if handoffHere && handoff.stage === "wrapped" && isFolded(app.activeSessionId, "wrapped")}
-    <div class="handoff handoff-min" role="status" aria-label="Hand-off notice, minimized">
+  {:else if handoffHere && handoff.stage === "wrapped" && !handoff.startPrompt}
+    <!-- Item 506 (blocker 1660): the reply's next-chat card is the hand-off;
+         a wrap-up that wrote no prompt has no card to carry the button, so
+         this one line is the way on. ~~The wrapped card and its folded form:
+         a second text and a second Continue beside the reply's.~~ -->
+    <div class="handoff handoff-min" role="status" aria-label="The wrap-up wrote no next-chat prompt">
       <span class="handoff-mark" aria-hidden="true"><Icon name="branch" size={13} /></span>
-      <strong class="handoff-min-title">{threadAndHandoff ? "Thread and HANDOFF.md updated" : threadHandoff ? "Thread updated" : "HANDOFF.md written"}</strong>
-      <span class="mono handoff-fill">{fmtTokens(handoff.used)} of {fmtTokens(handoff.limit)} · {handoffPct}%</span>
+      <strong class="handoff-min-title">The wrap-up wrote no next-chat prompt</strong>
       <span class="spacer"></span>
-      <button class="ns-btn accent small" disabled={app.busy} onclick={() => void continueChat()}>Continue in a new chat</button>
-      <button class="ns-btn ghost small" use:tip={"Show the whole card again"} onclick={() => unfold(app.activeSessionId)}>Expand</button>
-    </div>
-  {:else if handoffHere && handoff.stage === "wrapped"}
-    <div class="handoff" role="status" aria-label="Hand-off done">
-      <div class="handoff-head">
-        <span class="handoff-mark" aria-hidden="true"><Icon name="branch" size={15} /></span>
-        <strong>{threadAndHandoff ? "Thread and HANDOFF.md updated" : threadHandoff ? "Thread updated" : "HANDOFF.md written"}</strong>
-        <span class="spacer"></span>
-        <span class="mono handoff-fill">{fmtTokens(handoff.used)} of {fmtTokens(handoff.limit)} · {handoffPct}%</span>
-      </div>
-      <p class="handoff-d">
-        Check the reply above. <strong>Continue in a new chat</strong> opens a linked chat in the same folder with
-        {#if handoff.startPrompt}{readOrderText.trim() ? "the read order below and then " : ""}the model's start prompt
-          in the box, not sent{:else if readOrderText.trim()}the read order below in the box, not sent — the reply had no
-          <code>&lt;handoff&gt;</code> prompt, so add what to do first{:else}an empty box — the reply had no
-          <code>&lt;handoff&gt;</code> prompt, so say what to read first{/if}. This chat stays readable.
-        {#if threadHandoff}The new chat opens on the same thread.{/if}
-      </p>
-      <ThreadPicker compact />
-      <!-- The read order (backlog 193): the fixed text above the model's
-           start prompt in the new chat's box; this chat's own copy, the
-           default in Settings → Subscription. -->
-      <textarea
-        class="handoff-msg"
-        rows="4"
-        autocorrect="off"
-        autocapitalize="off"
-        spellcheck="false"
-        aria-label="The read order the new chat opens with, for this chat"
-        placeholder="No read order — the new chat opens with the model's start prompt alone"
-        use:tip={"Put above the model's start prompt in the new chat's box. Edits are kept for this chat and the chats that continue it; the default is in Settings → Subscription."}
-        value={readOrderText}
-        oninput={(e) => {
-          noteActivity();
-          setReadOrder(app.activeSessionId, (e.currentTarget as HTMLTextAreaElement).value);
-        }}
-      ></textarea>
-      <div class="handoff-acts">
-        <button class="ns-btn accent small" disabled={app.busy} onclick={() => void continueChat()}>Continue in a new chat</button>
-        {#if hasOwnReadOrder(app.activeSessionId)}
-          <button class="ns-btn ghost small" use:tip={"Back to the Settings default for this chat"} onclick={() => clearReadOrder(app.activeSessionId)}>Reset the read order</button>
-        {/if}
-        <button class="ns-btn ghost small" use:tip={`Keep going here; asked again past ${reAskPct}%`} onclick={() => { noteStay(app.activeSessionId, "wrapped"); stayHere(); }}>Stay here</button>
-        <button class="ns-btn ghost small" use:tip={"Fold this card to one line above the box"} onclick={() => fold(app.activeSessionId, "wrapped")}>Minimize</button>
-        <span class="handoff-keys mono">stay past {reAskPct}% and the wrap-up is asked again</span>
-      </div>
+      <button class="ns-btn accent small" disabled={app.busy} use:tip={app.busy ? "A turn is running — continue when it ends" : "Open a linked chat with the read order in its box, not sent"} onclick={() => void continueChat()}>Continue in a new chat</button>
+      <button class="ns-btn ghost small" use:tip={`Keep going here; asked again past ${reAskPct}%`} onclick={() => { noteStay(app.activeSessionId); stayHere(); }}>Dismiss</button>
     </div>
   {/if}
   {#if clipOpen}
@@ -3248,8 +3202,8 @@
       {#if handoffStayed}
         <button
           class="ns-btn ghost small act"
-          use:tip={`Bring back the hand-off card now; it asks by itself again past ${reAskPct}%`}
-          onclick={() => reopenHandoff(stayedFromWrapped(app.activeSessionId))}
+          use:tip={`Bring back the hand-off notice now; it asks by itself again past ${reAskPct}%`}
+          onclick={() => reopenHandoff()}
         ><Icon name="branch" size={12} /> Hand off</button>
       {/if}
       {#if shown}
