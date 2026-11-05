@@ -71,7 +71,7 @@
   import { replyUsageView } from "./replyUsage";
   import { loadReplyUsage, replyUsageOf } from "./replyUsage.svelte";
   import { cacheState } from "./cache";
-  import { moveScroll, recallScroll, rememberScroll, scrollKey, NEW_SCROLL_KEY } from "./scroll.svelte";
+  import { leaveScroll, moveScroll, recallScroll, rememberScroll, scrollKey, NEW_SCROLL_KEY } from "./scroll.svelte";
   import {
     BUFFER_SCREENS,
     FILL_SCREENS,
@@ -1503,12 +1503,17 @@
     }
     const entry = recallScroll(key);
     pinned = entry?.pinned ?? true;
+    const place = entry?.holds?.length ? { holds: entry.holds, scrollTop: entry.top } : null;
     void tick().then(() => {
       if (!viewport) return;
       if (entry && !entry.pinned) {
         scrollingSelf = true;
         viewport.scrollTop = entry.top;
         requestAnimationFrame(() => (scrollingSelf = false));
+        if (place) holdPlace(place);
+        // Item 504: the place left may still be the foot; then a reply
+        // running here is followed, as when he never left.
+        pinned = atBottom();
       } else if (pinned) {
         // Item 482: at the foot before the window is filled, so the fill
         // measures from where the view lands (the follow effect's scroll
@@ -1517,9 +1522,40 @@
         viewport.scrollTop = viewport.scrollHeight;
         requestAnimationFrame(() => (scrollingSelf = false));
       }
-      void openWindow().then(() => measureNav());
+      void openWindow().then(() => {
+        if (entry && !entry.pinned && place) {
+          holdPlace(place);
+          pinned = atBottom();
+        }
+        measureNav();
+      });
       measureNav();
     });
+  });
+
+  // Item 504: the lines he leaves, read before the DOM takes the next chat
+  // (`$effect.pre`, the old chat still drawn). On unmount the view may be
+  // gone already; then the last entry, no longer held at the foot.
+  let drawnKey: string | null = null;
+  let drawnFrom: number | undefined;
+  $effect(() => {
+    drawnFrom = drawFrom;
+  });
+  function noteLeft(key: string): void {
+    const place = viewport?.isConnected && viewport.clientHeight > 0 ? readingPlace() : null;
+    const last = recallScroll(key);
+    if (place) leaveScroll(key, place.scrollTop, drawnFrom ?? last?.from, place.holds);
+    else if (last) leaveScroll(key, last.top, last.from, last.holds);
+  }
+  $effect.pre(() => {
+    const key = sessionKey;
+    untrack(() => {
+      if (drawnKey !== null && drawnKey !== key && drawnKey !== NEW_SCROLL_KEY) noteLeft(drawnKey);
+      drawnKey = key;
+    });
+  });
+  onDestroy(() => {
+    if (drawnKey !== null && drawnKey !== NEW_SCROLL_KEY) noteLeft(drawnKey);
   });
 
   // Unmounted with an editor open — the pane's active tab became a note,

@@ -9,7 +9,7 @@
   // Backlog 283: the chat's composer and message pieces.
   import Composer from "./Composer.svelte";
   import AsideThread from "./AsideThread.svelte";
-  import { asideScrollKey, putBack, recallScroll, rememberScroll } from "./scroll.svelte";
+  import { asideScrollKey, putBack, recallScroll, rememberScroll, returnEntry } from "./scroll.svelte";
   import { asideLabel } from "./asides";
   import { renameAside } from "./asides.svelte";
   import { closeAsideToChat } from "./asideSidebar.svelte";
@@ -89,7 +89,7 @@
     const el = view;
     if (!key || !el) return;
     return untrack(() => {
-      const p = putBack(el, recallScroll(key));
+      const p = putBack(el, returnEntry(recallScroll(key), el.scrollHeight, el.clientHeight));
       putting = p;
       return () => {
         p.cancel();

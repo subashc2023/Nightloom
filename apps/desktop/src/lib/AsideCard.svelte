@@ -19,7 +19,7 @@
   import type { Zone } from "./floatingMove";
   import { tick, untrack } from "svelte";
   import { asideSendJumps } from "./sendScroll";
-  import { asideCardScrollKey, putBack, recallScroll, rememberScroll } from "./scroll.svelte";
+  import { asideCardScrollKey, putBack, recallScroll, rememberScroll, returnEntry } from "./scroll.svelte";
   import type { Aside } from "./state.svelte";
   import type { Placement } from "./asideCard";
   import MoveZone from "./MoveZone.svelte";
@@ -225,7 +225,7 @@
     const el = body;
     if (!key || !el) return;
     return untrack(() => {
-      const entry = recallScroll(key);
+      const entry = returnEntry(recallScroll(key), el.scrollHeight, el.clientHeight);
       if (entry) bodyPinned = entry.pinned;
       const p = putBack(el, entry);
       putting = p;
