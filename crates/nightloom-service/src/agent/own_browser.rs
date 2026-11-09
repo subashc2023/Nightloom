@@ -69,6 +69,10 @@ pub const SIDE_REFUSED: &str = "Playwright needs the user's approval first, whic
 /// An ephemeral chat's call: nowhere to pause, nothing to resume.
 pub const NO_CARD_REFUSED: &str = "Playwright needs the user's approval, which this ephemeral chat cannot ask for — answer without the browser";
 
+/// What the model reads while the user has taken the browser over in its
+/// tab (nightshift item 508; the words are the 508 contract's, exactly).
+pub const HELD_BY_USER: &str = "The user has taken over the browser. Wait for them to give it back; do not retry until they say so.";
+
 /// Whether `tool` is one of Playwright's.
 pub fn is_playwright(tool: &str) -> bool {
     tool.starts_with(TOOL_PREFIX)
@@ -172,6 +176,89 @@ pub fn server_entry(install: &Install, output_dir: &Path) -> Value {
             "--output-dir", output_dir.to_string_lossy(),
         ]
     })
+}
+
+/// The same server pointed at a browser the app owns (nightshift item
+/// 508): `--endpoint <socket>` in place of `--headless --isolated`, so the
+/// server attaches to the chat's browser instead of launching one that
+/// dies with the message. Nothing else differs — the tool list the model
+/// sees is byte-identical (measured, `508a-report-2026-11-09.md`; pinned by
+/// `the_tool_list_is_the_same_with_an_endpoint`).
+pub fn server_entry_at(install: &Install, output_dir: &Path, endpoint: &Path) -> Value {
+    serde_json::json!({
+        "command": install.node.to_string_lossy(),
+        "args": [
+            install.cli.to_string_lossy(),
+            "--browser", "webkit",
+            "--endpoint", endpoint.to_string_lossy(),
+            "--output-dir", output_dir.to_string_lossy(),
+        ]
+    })
+}
+
+/// A chat's `--mcp-config` with its Playwright server attached to the
+/// app's browser at `endpoint`, or launching its own again (`None`) — a
+/// side process's, which must not act on the page the chat is on. `None`
+/// back when the config has no Playwright server or already says so.
+pub fn with_endpoint(mcp_config: &str, endpoint: Option<&Path>) -> Option<String> {
+    let mut cfg: Value = serde_json::from_str(mcp_config).ok()?;
+    let args = cfg
+        .get_mut("mcpServers")?
+        .get_mut(SERVER_NAME)?
+        .get_mut("args")?
+        .as_array_mut()?;
+    let before = args.clone();
+    let mut kept: Vec<Value> = Vec::with_capacity(args.len() + 2);
+    let mut it = args.drain(..);
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            Some("--endpoint") => {
+                it.next();
+            }
+            Some("--headless" | "--isolated") => {}
+            // The launch flags and the endpoint sit where they always
+            // have: before the output folder.
+            Some("--output-dir") => {
+                match endpoint {
+                    Some(e) => {
+                        kept.push("--endpoint".into());
+                        kept.push(e.to_string_lossy().into_owned().into());
+                    }
+                    None => {
+                        kept.push("--headless".into());
+                        kept.push("--isolated".into());
+                    }
+                }
+                kept.push(a);
+            }
+            _ => kept.push(a),
+        }
+    }
+    drop(it);
+    *args = kept;
+    (*args != before).then(|| cfg.to_string())
+}
+
+/// The helper that owns a chat's browser (item 508): Node, public
+/// Playwright calls, WebKit only. Kept in the binary and written beside
+/// the pinned install it runs from.
+pub const HELPER_JS: &str = include_str!("../../assets/claude-browser-helper.js");
+
+/// The helper's file name in the install folder.
+pub const HELPER_FILE: &str = "nightloom-claude-browser-helper.js";
+
+/// Write the helper into `dir` (the install folder) unless the file there
+/// already is this build's, and say where it is.
+pub fn ensure_helper(dir: &Path) -> std::io::Result<PathBuf> {
+    let path = dir.join(HELPER_FILE);
+    if std::fs::read(&path).is_ok_and(|b| b == HELPER_JS.as_bytes()) {
+        return Ok(path);
+    }
+    std::fs::create_dir_all(dir)?;
+    let tmp = dir.join(format!("{HELPER_FILE}.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, HELPER_JS)?;
+    std::fs::rename(&tmp, &path)?;
+    Ok(path)
 }
 
 /// Give a chat Playwright (backlog 367): its server into `servers` (the
@@ -349,6 +436,179 @@ mod tests {
         assert!(args.contains(&"--isolated".to_string()));
         assert!(!args.iter().any(|a| a.contains("chrom")));
         assert_eq!(e["command"], "/n/node");
+    }
+
+    fn args_of(e: &Value) -> Vec<String> {
+        e["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a.as_str().unwrap().to_string())
+            .collect()
+    }
+
+    /// Never Chrome (practices §8; the 508 research's "two traps"): neither
+    /// shape of the server names a Chrome or Chromium browser or channel,
+    /// a CDP endpoint, the extension, or any capability (`devtools` is the
+    /// one that opens Playwright's viewer through Chrome); and the helper
+    /// launches WebKit and nothing else, with no channel, no viewer app
+    /// and no profile on disk. A change that configures any of them fails
+    /// here.
+    #[test]
+    fn nothing_ever_configures_chrome_or_the_devtools_capability() {
+        let install = Install {
+            node: "/n/node".into(),
+            cli: "/p/cli.js".into(),
+        };
+        let own = server_entry(&install, Path::new("/out"));
+        let attached = server_entry_at(&install, Path::new("/out"), Path::new("/tmp/s.sock"));
+        for e in [&own, &attached] {
+            let args = args_of(e);
+            let i = args.iter().position(|a| a == "--browser").unwrap();
+            assert_eq!(args[i + 1], "webkit");
+            assert_eq!(args.iter().filter(|a| *a == "--browser").count(), 1);
+            for a in &args[1..] {
+                let low = a.to_lowercase();
+                for bad in [
+                    "chrom",
+                    "msedge",
+                    "devtools",
+                    "--caps",
+                    "--cdp",
+                    "--extension",
+                    "--channel",
+                    "--executable-path",
+                    "--user-data-dir",
+                    "--config",
+                ] {
+                    assert!(!low.contains(bad), "{a} configures {bad}");
+                }
+            }
+        }
+        let js = HELPER_JS.to_lowercase();
+        assert!(js.contains("pw.webkit.launch({ headless: true })"));
+        assert_eq!(js.matches(".launch(").count(), 1, "one launch, WebKit's");
+        for bad in [
+            "chromium",
+            "chrome",
+            "msedge",
+            "firefox",
+            "channel",
+            "devtools",
+            "dashboard",
+            "launchapp",
+            "launchpersistentcontext",
+            "userdatadir",
+            "connectovercdp",
+            "executablepath",
+        ] {
+            assert!(!js.contains(bad), "the helper mentions {bad}");
+        }
+    }
+
+    /// The attached shape differs from today's only in how the browser is
+    /// reached, and switching a config back and forth is lossless.
+    #[test]
+    fn an_endpoint_replaces_only_the_launch_flags() {
+        let install = Install {
+            node: "/n/node".into(),
+            cli: "/p/cli.js".into(),
+        };
+        let own = server_entry(&install, Path::new("/out"));
+        let at = server_entry_at(&install, Path::new("/out"), Path::new("/tmp/s.sock"));
+        let strip = |e: &Value| -> Vec<String> {
+            let mut out = Vec::new();
+            let mut it = args_of(e).into_iter();
+            while let Some(a) = it.next() {
+                match a.as_str() {
+                    "--headless" | "--isolated" => {}
+                    "--endpoint" => {
+                        it.next();
+                    }
+                    _ => out.push(a),
+                }
+            }
+            out
+        };
+        assert_eq!(strip(&own), strip(&at));
+        let cfg = |e: &Value| {
+            serde_json::json!({"mcpServers": {"nightloom": {"command": "x", "args": ["--mcp-serve"]}, SERVER_NAME: e}}).to_string()
+        };
+        let pointed = with_endpoint(&cfg(&own), Some(Path::new("/tmp/s.sock"))).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&pointed).unwrap(),
+            serde_json::from_str::<Value>(&cfg(&at)).unwrap()
+        );
+        assert_eq!(
+            with_endpoint(&pointed, Some(Path::new("/tmp/s.sock"))),
+            None
+        );
+        let back = with_endpoint(&pointed, None).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&back).unwrap(),
+            serde_json::from_str::<Value>(&cfg(&own)).unwrap()
+        );
+        assert_eq!(with_endpoint(r#"{"mcpServers":{}}"#, None), None);
+    }
+
+    /// One `tools/list` from the pinned server under `args`.
+    fn tool_list(install: &Install, args: &[String]) -> Option<String> {
+        use std::io::{BufRead, Write};
+        let mut child = std::process::Command::new(&install.node)
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()?;
+        let mut stdin = child.stdin.take()?;
+        let stdout = std::io::BufReader::new(child.stdout.take()?);
+        for line in [
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"nightloom-test","version":"1"}}}"#,
+            r#"{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#,
+        ] {
+            writeln!(stdin, "{line}").ok()?;
+        }
+        let mut found = None;
+        for line in stdout.lines().map_while(Result::ok) {
+            if let Ok(v) = serde_json::from_str::<Value>(&line)
+                && v["id"] == 2
+            {
+                found = Some(v["result"]["tools"].to_string());
+                break;
+            }
+        }
+        drop(stdin);
+        let _ = child.wait();
+        found
+    }
+
+    /// The tool list the model sees is byte-identical whether the server
+    /// launches its own browser or attaches to the app's (item 508), so the
+    /// chat's cached prefix does not move. Asks the real pinned server,
+    /// which launches no browser for a `tools/list`; where Playwright is not
+    /// installed (CI) there is no server to ask and the test says so.
+    #[test]
+    fn the_tool_list_is_the_same_with_an_endpoint() {
+        let Some(install) = locate() else {
+            eprintln!("skipped: Playwright is not installed here");
+            return;
+        };
+        let out = std::env::temp_dir().join(format!("nl-pw-tools-{}", std::process::id()));
+        let nowhere = out.join("no-such.sock");
+        let own = tool_list(&install, &args_of(&server_entry(&install, &out))).unwrap();
+        let at = tool_list(
+            &install,
+            &args_of(&server_entry_at(&install, &out, &nowhere)),
+        )
+        .unwrap();
+        assert!(
+            own.len() > 1000 && own.contains("browser_navigate"),
+            "{own}"
+        );
+        assert_eq!(own, at);
+        let _ = std::fs::remove_dir_all(&out);
     }
 
     #[test]

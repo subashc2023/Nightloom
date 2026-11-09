@@ -51,6 +51,7 @@ mod away;
 mod chat_name;
 /// The chats the backend holds, one lock per chat (backlog 159, A1).
 mod chats;
+mod claude_browser;
 /// A connect under a deadline that names its wait (item 220).
 mod connect_deadline;
 /// The composer's exact token count on the provider engine (backlog 155).
@@ -3852,6 +3853,13 @@ async fn send_agent(
         .map(|stem| log_dir.join("ask").join(stem));
     if let Some(dir) = &ask_dir {
         agent.set_ask_dir(dir.clone());
+        // Claude's browser (nightshift item 508): the chat's Playwright
+        // server attaches to the browser the app keeps for the chat.
+        claude_browser::point(
+            app.try_state::<claude_browser::Host>().as_deref(),
+            agent,
+            dir,
+        );
         // The chat's id for the window's budget meter and stop card on a
         // chat's first turn, which it otherwise learns only at the end
         // (nightshift backlog 192; review 2026-09-23 finding 4).
@@ -4007,7 +4015,10 @@ fn turn_timing_window(key: String, sent: u64, invoked: Option<u64>, painted: Opt
 /// The ask folder is pointed as `send_agent` points it, so the chat's
 /// first message after opening it is the same command too.
 #[tauri::command]
-async fn prewarm_agent(state: State<'_, AppState>) -> Result<bool, String> {
+async fn prewarm_agent(
+    state: State<'_, AppState>,
+    browsers: State<'_, claude_browser::Host>,
+) -> Result<bool, String> {
     let target = state.chats.target();
     let slot = match state.agents.slot(target.id()) {
         agents::Found::Off => return Ok(false),
@@ -4043,8 +4054,11 @@ async fn prewarm_agent(state: State<'_, AppState>) -> Result<bool, String> {
             && spec.brief.as_ref().is_none_or(|b| b.dir == dir)
             && spec.playwright.as_ref().is_none_or(|p| p.dir == dir);
         if !pointed {
-            agent.set_ask_dir(dir);
+            agent.set_ask_dir(dir.clone());
         }
+        // As `send_agent` points it (item 508), so the warm process is
+        // the same command the turn would spawn.
+        claude_browser::point(Some(&*browsers), &mut *agent, &dir);
     }
     agent.prewarm().map_err(|e| e.to_string())
 }
@@ -5579,6 +5593,7 @@ async fn tool_result_images(
 async fn delete_session(
     state: State<'_, AppState>,
     previews: State<'_, preview::Host>,
+    browsers: State<'_, claude_browser::Host>,
     id: String,
     active: Option<String>,
 ) -> Result<String, String> {
@@ -5604,6 +5619,9 @@ async fn delete_session(
     // The chat's preview goes with it (item 430): nothing could show it.
     let gone = std::sync::Arc::clone(&previews.previews);
     gone.stop(&full_id).await;
+    // And Claude's browser for it (item 508), its logins with it.
+    let gone = std::sync::Arc::clone(&browsers.browsers);
+    gone.close(&full_id).await;
     if was_active {
         adopt_agent_session(&state, None).await;
     }
@@ -8902,6 +8920,9 @@ fn main() {
             }
             // A chat's preview (nightshift item 430): served from the start.
             preview::setup(app.handle());
+            // Claude's browser (nightshift item 508): nothing starts until
+            // a chat's Playwright call runs.
+            claude_browser::setup(app.handle());
             // The Mac's activity, watched while the app runs: ends a chat's
             // Continue anyway at the 85 % line after 10 minutes away
             // (nightshift backlog 192).
@@ -9274,6 +9295,11 @@ fn main() {
             preview::preview_stop,
             preview::preview_restart,
             preview::preview_unavailable,
+            claude_browser::claude_browser_status,
+            claude_browser::claude_browser_watch,
+            claude_browser::claude_browser_input,
+            claude_browser::claude_browser_nav,
+            claude_browser::claude_browser_hold,
         ]))
         .build(tauri::generate_context!())
         .expect("error while building Nightloom")
@@ -9282,6 +9308,8 @@ fn main() {
             tauri::RunEvent::Exit => {
                 // Every chat's preview ends with the app (item 430).
                 preview::on_exit(app);
+                // And every chat's browser (item 508).
+                claude_browser::on_exit(app);
                 away::on_exit(app);
             }
             // Finder's Open With → Nightloom (nightshift backlog 378): the

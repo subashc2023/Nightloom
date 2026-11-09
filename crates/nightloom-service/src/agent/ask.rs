@@ -541,6 +541,27 @@ impl AskDir {
         write_atomic(&self.dir.join(RULES_FILE), &serde_json::to_vec(&rules)?)
     }
 
+    /// Who holds Claude's browser (nightshift item 508): `true` once the
+    /// user took it over in the tab, `false` when he gives it back or the
+    /// browser ends. Its own file ([`HOLD_FILE`]) beside the rules, written
+    /// by the app alone, so it never races the rules' writers.
+    pub fn set_held_by_user(&self, held: bool) -> std::io::Result<()> {
+        let path = self.dir.join(HOLD_FILE);
+        if !held {
+            return match std::fs::remove_file(&path) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+                _ => Ok(()),
+            };
+        }
+        std::fs::create_dir_all(&self.dir)?;
+        write_atomic(&path, br#"{"held_by":"user"}"#)
+    }
+
+    /// Whether the user holds Claude's browser (item 508).
+    pub fn held_by_user(&self) -> bool {
+        held_by_user(&self.dir)
+    }
+
     /// The reply ended: *Allow once* and *Deny* stop applying (backlog
     /// 367). Called as a turn starts and as it ends, on every way out.
     pub fn end_reply(&self) {
@@ -591,6 +612,18 @@ impl AskDir {
     pub fn clear_decision(&self) {
         let _ = std::fs::remove_file(self.dir.join(DECISION_FILE));
     }
+}
+
+/// Who holds Claude's browser, in the chat's ask directory (nightshift
+/// item 508): `{"held_by":"user"}` while he has taken it over; absent, the
+/// model holds it.
+pub const HOLD_FILE: &str = "browser-hold.json";
+
+fn held_by_user(dir: &Path) -> bool {
+    std::fs::read(dir.join(HOLD_FILE))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .is_some_and(|v| v["held_by"] == "user")
 }
 
 fn read_rules(dir: &Path) -> Rules {
@@ -851,7 +884,11 @@ pub fn decide_in(dir: &Path, stdin_json: &str, side: bool) -> HookReply {
     }
 }
 
-/// A Playwright call (backlog 367). Order: this very call's answer
+/// A Playwright call (backlog 367). First of all the hold (nightshift item
+/// 508): while the user has taken Claude's browser over, every call is
+/// refused in the contract's words, whoever makes it and whatever the chat
+/// allows — a call already running is past this hook and finishes. Then,
+/// in order: this very call's answer
 /// (consumed — first, so a refusal written by a Stop is delivered even to
 /// a chat allowed since), the chat's switch, the reply's answer, then a
 /// side process's call is refused in words, a subagent's follows *Subagents
@@ -859,8 +896,20 @@ pub fn decide_in(dir: &Path, stdin_json: &str, side: bool) -> HookReply {
 /// parent's, and no card can wait on one), and anything else defers for the
 /// card. A *Deny* for this reply stops a subagent too.
 fn decide_playwright(dir: &Path, input: &HookInput, side: bool) -> HookReply {
-    use super::own_browser::{DECLINED, SIDE_REFUSED, SUBAGENT_REFUSED};
+    use super::own_browser::{DECLINED, HELD_BY_USER, SIDE_REFUSED, SUBAGENT_REFUSED};
     let path = dir.join(DECISION_FILE);
+    if held_by_user(dir) {
+        // This call's own answer, if a card left one, is spent: the model
+        // is told to wait, and a later call asks or runs by the rules.
+        if std::fs::read(&path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Decision>(&b).ok())
+            .is_some_and(|d| d.tool_use_id == input.tool_use_id)
+        {
+            let _ = std::fs::remove_file(&path);
+        }
+        return HookReply::deny(HELD_BY_USER.into());
+    }
     let decision: Option<Decision> = std::fs::read(&path)
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok());
@@ -1237,6 +1286,55 @@ mod tests {
         );
         assert_eq!(
             decide(&dir, &pw_stdin("t2", "auto", None)).decision(),
+            "allow"
+        );
+    }
+
+    /// The hold (nightshift item 508): while the user has taken the browser
+    /// over, every Playwright call is refused in the contract's exact
+    /// words — the main conversation's, a subagent's, a side process's, in
+    /// a chat that allows Playwright and in one that never did — and the
+    /// rules are untouched, so giving it back restores what was.
+    #[test]
+    fn a_held_browser_refuses_every_playwright_call_in_the_contracts_words() {
+        const WORDS: &str = "The user has taken over the browser. Wait for them to give it back; do not retry until they say so.";
+        assert_eq!(crate::agent::own_browser::HELD_BY_USER, WORDS);
+        let dir = scratch();
+        let ask = AskDir::new(&dir);
+        assert!(!ask.held_by_user());
+        ask.set_playwright_chat(true).unwrap();
+        assert_eq!(
+            decide(&dir, &pw_stdin("h0", "auto", None)).decision(),
+            "allow"
+        );
+        ask.set_held_by_user(true).unwrap();
+        assert!(ask.held_by_user());
+        for (stdin, side) in [
+            (pw_stdin("h1", "auto", None), false),
+            (pw_stdin("h2", "bypassPermissions", None), false),
+            (pw_stdin("h3", "default", Some("agent-1")), false),
+            (pw_stdin("h4", "auto", None), true),
+        ] {
+            let r = decide_in(&dir, &stdin, side);
+            assert_eq!(r.decision(), "deny");
+            assert_eq!(r.reason(), Some(WORDS));
+        }
+        // A card's allow for this very call does not beat the hold either.
+        ask.write(&pw_call("h5"), &allow_once()).unwrap();
+        let r = decide(&dir, &pw_stdin("h5", "default", None));
+        assert_eq!((r.decision(), r.reason()), ("deny", Some(WORDS)));
+        // Only Playwright is held: another tool is judged as before.
+        let other = json!({"hook_event_name": "PreToolUse", "tool_name": "Bash",
+            "tool_input": {"command": "ls"}, "tool_use_id": "b1", "permission_mode": "default"})
+        .to_string();
+        assert_ne!(decide(&dir, &other).reason(), Some(WORDS));
+        // Given back: the chat's switch applies again, and it is still on.
+        ask.set_held_by_user(false).unwrap();
+        ask.set_held_by_user(false).unwrap();
+        assert!(!ask.held_by_user());
+        assert!(ask.playwright_chat());
+        assert_eq!(
+            decide(&dir, &pw_stdin("h6", "auto", None)).decision(),
             "allow"
         );
     }

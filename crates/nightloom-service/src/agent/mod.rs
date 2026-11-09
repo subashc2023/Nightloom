@@ -938,6 +938,17 @@ impl AgentSpec {
         self.argv(Shape::Resume)
     }
 
+    /// A side process — an aside, a checkpoint fork — launches a browser
+    /// of its own, as before item 508: it must not act on the page the
+    /// chat's browser is on while the chat, or the user, is using it.
+    fn own_browser_for_side(&mut self) {
+        if let Some(cfg) = &self.mcp_config
+            && let Some(cfg) = own_browser::with_endpoint(cfg, None)
+        {
+            self.mcp_config = Some(cfg);
+        }
+    }
+
     /// The spec for an **aside** (2026-09-16, nightshift backlog 081): a
     /// side question answered from the chat's context, off the chat's
     /// warm cache, kept out of its history — what the CLI's interactive
@@ -979,6 +990,7 @@ impl AgentSpec {
         if let Some(pw) = &mut spec.playwright {
             pw.side = true;
         }
+        spec.own_browser_for_side();
         Some(spec)
     }
 
@@ -1031,6 +1043,7 @@ impl AgentSpec {
         if let Some(pw) = &mut spec.playwright {
             pw.side = true;
         }
+        spec.own_browser_for_side();
         if let Some(ask) = &mut spec.ask {
             if ask.mode.is_auto() {
                 // An Auto chat's fork stays on `auto`, as it ran before
@@ -1758,6 +1771,22 @@ impl ClaudeCodeAgent {
             let _ = brief::write_limits(&brief.dir, &self.spec.subagent_limits.unwrap_or_default());
             // And the chat's model, for "always the chat's model" (257).
             brief::write_chat_model(&brief.dir, self.spec.model.as_deref());
+        }
+    }
+
+    /// Attach the chat's Playwright server to the browser the app owns for
+    /// it (nightshift item 508): `endpoint` is the app's socket for this
+    /// chat ([`crate::claude_browser::Browsers::endpoint`]), `None` a
+    /// browser of the server's own, as before. Called before each turn,
+    /// after [`Self::set_ask_dir`]; a no-op on a chat with no Playwright.
+    pub fn set_browser_endpoint(&mut self, endpoint: Option<&std::path::Path>) {
+        if self.spec.playwright.is_none() {
+            return;
+        }
+        if let Some(cfg) = &self.spec.mcp_config
+            && let Some(cfg) = own_browser::with_endpoint(cfg, endpoint)
+        {
+            self.spec.mcp_config = Some(cfg);
         }
     }
 
