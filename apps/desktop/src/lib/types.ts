@@ -1171,6 +1171,10 @@ export type SessionEvent =
       images?: ImageInput[];
       documents?: DocumentInput[];
       at: string;
+      /** Item 515: only on the window's optimistic copy, never logged: the
+       *  names of the files for Claude Code being saved with it, drawn as
+       *  cards until the log's message (with its note) replaces it. */
+      sending_files?: string[];
     }
   | {
       event: "assistant_message";

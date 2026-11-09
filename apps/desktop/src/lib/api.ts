@@ -86,6 +86,7 @@ import type { CouncilRequest } from "./council";
 import type { ForYouRow } from "./forYou";
 import type { PriorExchange } from "./noteEdit";
 import type { TurnUsageLine } from "./replyUsage";
+import { cleanPassage, shownText } from "./keep";
 
 // All backend errors reject with a plain string.
 
@@ -504,11 +505,24 @@ export function playwrightForChat(chat: string, on?: boolean): Promise<{ install
 }
 
 export function listSessions(): Promise<SessionMeta[]> {
-  return invoke("list_sessions");
+  return invoke<SessionMeta[]>("list_sessions").then((l) => (Array.isArray(l) ? l.map(shownFirst) : l));
+}
+
+/** Item 515: a chat named by its first message never shows the note for
+ *  the CLI (`[Attached a file — saved for you …]`): his words, else the
+ *  file names. In memory only; the log and the CLI keep the note. */
+function shownFirst<T extends { first_user?: string | null }>(s: T): T {
+  return s && typeof s.first_user === "string" && s.first_user.includes("[Attached ")
+    ? { ...s, first_user: shownText(s.first_user) }
+    : s;
 }
 
 export function searchSessions(query: string): Promise<SessionHit[]> {
-  return invoke("search_sessions", { query });
+  return invoke<SessionHit[]>("search_sessions", { query }).then((l) =>
+    Array.isArray(l)
+      ? l.map((h) => ({ ...shownFirst(h), excerpt: typeof h.excerpt === "string" ? cleanPassage({ before: h.excerpt, matched: "", after: "" }).before : h.excerpt }))
+      : l,
+  );
 }
 
 /** The search-everywhere panel's query (nightshift backlog 117): results
@@ -517,7 +531,11 @@ export function searchEverywhere(
   query: string,
   scope: SearchScope,
 ): Promise<SearchResult> {
-  return invoke("search_everywhere", { query, scope });
+  return invoke<SearchResult>("search_everywhere", { query, scope }).then((r) =>
+    r && Array.isArray(r.groups)
+      ? { ...r, groups: r.groups.map((g) => ({ ...shownFirst(g), rows: g.rows.map((row) => (row.who === "you" ? { ...row, ...cleanPassage(row) } : row)) })) }
+      : r,
+  );
 }
 
 /** `active` is the open chat's id (backlog 136): with a turn running, the

@@ -40,6 +40,8 @@
     (row?.attachments ?? []).filter((a: Attachment) => a.kind === "document" && a.data).map((a) => ({ media_type: a.media_type, name: a.name, data: a.data! })),
   );
 
+  /** Item 515: a file for Claude Code it carries, as a card by name. */
+  const sending = $derived((row?.attachments ?? []).filter((a: Attachment) => a.kind === "file").map((a) => a.name));
   async function run(f: () => Promise<unknown>): Promise<void> {
     if (working) return;
     working = true;
@@ -62,7 +64,7 @@
     <span class="ns-k">You</span>
   </div>
   <div class="mt-bubble">
-    <UserBubble text={row?.text ?? delivered?.text ?? ""} {images} {documents} />
+    <UserBubble text={row?.text ?? delivered?.text ?? ""} {images} {documents} {sending} />
   </div>
   {#if pending && row && st}
     <div class="mt-actions" role="group" aria-label="this message is not sent yet">

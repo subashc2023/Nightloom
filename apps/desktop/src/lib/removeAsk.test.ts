@@ -77,7 +77,7 @@ describe("the Remove buttons", () => {
     const src = here("Transcript.svelte");
     expect(src).toContain("if (removing && removing.key !== k) removing = null;");
     expect(src).toContain("if (asked && asked.key === sessionKey) void removeHere(asked.index);");
-    expect(src).toContain('kind: "message", text: item.text, key: sessionKey }');
+    expect(src).toContain('kind: "message", text: shownText(item.text), key: sessionKey }');
     expect(src).toContain('kind: "reply", text: textOf(item.segs), key: sessionKey }');
   });
 });

@@ -89,6 +89,8 @@
   import { aimAction, liveSegments, retryStopping, sentOf } from "./client";
   import { retryText } from "../lib/retryLine";
   import { parseRan } from "../lib/shellRun";
+  /** Item 515: a file card's badge on the phone, as the Mac's. */
+  const fileBadgeOf = (name: string) => extOf(name).slice(0, 5).toUpperCase() || "FILE";
   import { sentExt, type SentFile } from "../lib/sentFiles";
   import { codeBlocks } from "./codeBlocks";
   import { trackViewport } from "./viewport";
@@ -2861,10 +2863,10 @@
       {#each rows as r, i (i)}
         {#if r.kind === "user"}
           <!-- Item 503: a block he ran at the Mac, its output folded as there. -->
-          {@const ran = parseRan(r.text)}
+          {@const ran = parseRan(r.said)}
           <div class="turn user" data-row={i} class:enter={i >= enterFrom && !still} class:removed={r.removed} use:arrive={{ channel: "phone" }}>
             <div class="bubble" use:press={() => openMenu(r)}>
-              {#if r.images > 0}<span class="pics">{r.images} photo{r.images === 1 ? "" : "s"}</span>{/if}{#if ran}<div class="ran-card"><div class="ran-head">Ran in terminal · {ran.status}</div><div class="ran-cmd">{ran.command}</div>{#if ran.output}<details><summary>Output</summary><pre>{ran.output}</pre></details>{/if}</div>{:else}{r.text}{/if}
+              {#if r.images > 0}<span class="pics">{r.images} photo{r.images === 1 ? "" : "s"}</span>{/if}{#each r.files as f, fi (fi)}<span class="file-card"><span class="file-badge">{fileBadgeOf(f)}</span><span class="file-name">{f}</span></span>{/each}{#if ran}<div class="ran-card"><div class="ran-head">Ran in terminal · {ran.status}</div><div class="ran-cmd">{ran.command}</div>{#if ran.output}<details><summary>Output</summary><pre>{ran.output}</pre></details>{/if}</div>{:else}{r.said}{/if}
             </div>
             <div class="stamp">
               {#if r.removed}{"removed from the context · "}{:else if r.edited}{"edited · "}{/if}{shortWhen(r.at)}
@@ -4893,6 +4895,36 @@
     display: block;
     font-size: 12px;
     color: var(--dim);
+  }
+  /* Item 515: a file he sent, as the Mac's card — the accent edge on the
+     well — not the note for the CLI as his words. */
+  .file-card {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin: 0 0 6px;
+    padding: 6px 10px;
+    border: 1px solid var(--accent-soft);
+    border-left: 3px solid var(--accent);
+    border-radius: 8px;
+    background: var(--well);
+    font-size: 14px;
+    white-space: normal;
+  }
+  .file-card:last-child {
+    margin-bottom: 0;
+  }
+  .file-badge {
+    flex: none;
+    font-family: var(--mono, monospace);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    color: var(--accent-ink);
+  }
+  .file-name {
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
   .new-row.quiet {
     color: var(--ink2);

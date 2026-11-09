@@ -39,6 +39,7 @@
  *   SOFTWARE.
  */
 import type { SessionEvent } from "./types";
+import { shownText } from "./keep";
 
 export interface Tick {
   /** The event's index in the log — what the turn's anchor carries. */
@@ -105,11 +106,14 @@ export function ticks(
     if (!live[index]) return;
     const edited = texts?.[index] ?? null;
     if (e.event === "user_message") {
-      const text = edited ?? e.text;
+      // Item 515: the tick quotes his words, else the files he sent — never
+      // the note for the CLI. Its weight is still the whole message.
+      const raw = edited ?? e.text;
+      const text = shownText(raw);
       out.push({
         index,
         role: "user",
-        weight: weightOf(text.length),
+        weight: weightOf(raw.length),
         first_line: firstLine(text),
         preview: previewOf(text),
       });

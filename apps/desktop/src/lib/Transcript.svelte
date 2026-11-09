@@ -127,6 +127,7 @@
   import EditAttachments from "./EditAttachments.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import { removeAsk, removeTip, type RemoveKind } from "./removeAsk";
+  import { joinAttachNote, shownText, splitAttachNote } from "./keep";
   // For its effect: the aside threads' keeper (backlog 137).
   import "./asides.svelte";
   import {
@@ -196,6 +197,9 @@
         images: ImageInput[];
         documents: DocumentInput[];
         at: string;
+        /** Item 515: files for Claude Code still being saved (the
+         *  optimistic message's names; the log has the note instead). */
+        sending?: string[];
       }
     | { kind: "assistant"; segs: Segment[]; footer: AssistantFooter }
     | { kind: "compaction"; summary: string };
@@ -322,6 +326,7 @@
             images: removed[index] ? [] : (editedSets[index]?.images ?? e.images ?? []),
             documents: removed[index] ? [] : (editedSets[index]?.documents ?? e.documents ?? []),
             at: e.at,
+            ...(e.sending_files && !removed[index] ? { sending: e.sending_files } : {}),
           },
           removed[index] ? (text ?? e.text) : text != null ? e.text : null,
         );
@@ -698,7 +703,8 @@
   }
   function openEditor(item: Item) {
     editPlaces = [];
-    const text = item.kind === "user" ? item.text : item.kind === "assistant" ? textOf(item.segs) : "";
+    // Item 515: his words only; the note for the CLI goes back on at Save.
+    const text = item.kind === "user" ? splitAttachNote(item.text).said : item.kind === "assistant" ? textOf(item.segs) : "";
     const parts =
       item.kind === "assistant"
         ? editParts(evs, item.index, (b) => `${b.name} ${toolInputSummary(b.input)}`.trim())
@@ -1122,6 +1128,13 @@
     await Promise.all(jobs);
     return editing?.index === index;
   }
+  /** Item 515: an edit of his words keeps the turn's note for the CLI —
+   *  its saved files stay named, byte for byte — though the box never
+   *  showed it. */
+  function withNote(index: number, draft: string): string {
+    const it = items.find((x) => x.index === index);
+    return it && it.kind === "user" ? joinAttachNote(draft, splitAttachNote(it.text).note) : draft;
+  }
   async function commitSave() {
     if (!editing || !editButtons(editing, editChipsFor(editing)).save) return;
     if (!editing.parts) {
@@ -1144,7 +1157,7 @@
       const set = !parts && chipsChanged(editing, editChips) ? splitChips($state.snapshot(editChips)) : null;
       const ok = parts
         ? await saveReplyEdit(index, changes)
-        : await saveEdit(index, draft, set ? { images: set.images, documents: set.documents } : null);
+        : await saveEdit(index, withNote(index, draft), set ? { images: set.images, documents: set.documents } : null);
       if (ok) {
         editing = editReduce(editing, { type: "done" });
         stashEdit(sessionKey, null);
@@ -1172,7 +1185,7 @@
       stashEdit(sessionKey, null);
       setDraftAttachments(editKey, []);
     });
-    const ok = await sendEdit(index, draft, wire.images, wire.documents, null, wire.files);
+    const ok = await sendEdit(index, withNote(index, draft), wire.images, wire.documents, null, wire.files);
     // The fork refused (an error toast, or a turn started meanwhile): the
     // edit comes back — words and chips — rather than vanish on one Enter
     // (practices §7; w6-review 2026-10-11).
@@ -2420,6 +2433,7 @@
               images={item.images}
               documents={item.documents}
               text={item.text}
+              sending={item.sending ?? []}
               keep={turnFold(item.index, "bubble")}
               custom={diffShown || !!adoptedMsg.carried}
               onopenimage={(j, rect, size) => {
@@ -2445,7 +2459,7 @@
                   <!-- The edit as a diff over the current text (backlog 105):
                        the bubble's own face, the code diff view's colours. -->
                   <div class="user-text textdiff">
-                    {#each wordDiff(item.original, item.text) as op, k (k)}
+                    {#each wordDiff(splitAttachNote(item.original).said, splitAttachNote(item.text).said) as op, k (k)}
                       {#if op.kind === "del"}<del>{op.text}</del>{:else if op.kind === "add"}<ins>{op.text}</ins>{:else}{op.text}{/if}
                     {/each}
                   </div>
@@ -2511,7 +2525,7 @@
                 </span>
               {/if}
             {/if}
-            {#if item.text && editing?.index !== item.index}
+            {#if splitAttachNote(item.text).said && editing?.index !== item.index}
               <!-- Copy his own message (nightshift backlog 181, 2026-09-22):
                    the text exactly as he typed it, never the rendered or
                    diffed face. Shown during a turn and on a superseded or
@@ -2522,7 +2536,7 @@
                   class:copied={copiedTurn === item.index}
                   use:tip={copiedTurn === item.index ? "Copied" : "Copy this message"}
                   aria-label={copiedTurn === item.index ? "Copied" : "Copy this message"}
-                  onclick={() => void copyUserText(item.index, item.text)}
+                  onclick={() => void copyUserText(item.index, splitAttachNote(item.text).said)}
                 >
                   <Icon name={copiedTurn === item.index ? "check" : "copy"} size={14} />
                 </button>
@@ -2583,7 +2597,7 @@
                     class="tool-btn danger"
                     use:tip={removeTip("message")}
                     aria-label="Remove this message from the chat history"
-                    onclick={() => (removing = { index: item.index, kind: "message", text: item.text, key: sessionKey })}
+                    onclick={() => (removing = { index: item.index, kind: "message", text: shownText(item.text), key: sessionKey })}
                   >
                     <Icon name="trash" size={14} />
                   </button>

@@ -62,18 +62,175 @@ export function imageName(j: number, mediaType: string): string {
  * you to open with your tools:" — one `- <path>` line each, up to the `]`.
  */
 export function savedFilePaths(text: string): string[] {
-  const at = text.lastIndexOf("[Attached ");
-  if (at < 0) return [];
-  const block = text.slice(at);
-  if (!/^\[Attached (a file|files) — saved for you to open with your tools:\n/.test(block)) return [];
-  const out: string[] = [];
-  for (const line of block.split("\n").slice(1)) {
-    const m = /^- (.+?)(\])?$/.exec(line);
-    if (!m) break;
-    out.push(m[1]);
-    if (m[2]) break;
+  // Item 515: one parser for the note, `splitAttachNote`; a long PDF sent
+  // by path (item 491) is a saved file too.
+  return splitAttachNote(text).files.map((f) => f.path);
+}
+
+// ---- Item 515: the note the CLI reads, out of what he sees --------------
+
+/** One file the backend's note names (`attach::files_note_with`). */
+export interface NotedFile {
+  path: string;
+  /** Its last part, as drawn. */
+  name: string;
+  /** A long PDF sent by path (item 491): its page count. */
+  pages?: number;
+}
+
+/** A user turn's text, split: his words, the files the note names, and
+ *  the note itself, byte for byte as the CLI got it ("" when none). */
+export interface SplitNote {
+  said: string;
+  files: NotedFile[];
+  note: string;
+}
+
+const FILES_HEAD = /^\[Attached (?:a file|files) — saved for you to open with your tools:\n/;
+const PDF_BLOCK =
+  /^\[Attached a PDF of (\d+) pages, saved for you to read with your tools rather than sent whole:\n- ([^\n]+)\n[^\n]*\]$/;
+
+/** One block of the note (no blank line inside any), or null. */
+function noteBlock(block: string): NotedFile[] | null {
+  const pdf = PDF_BLOCK.exec(block);
+  if (pdf) return [{ path: pdf[2], name: leafOf(pdf[2]), pages: Number(pdf[1]) }];
+  const head = FILES_HEAD.exec(block);
+  if (!head || !block.endsWith("]")) return null;
+  const out: NotedFile[] = [];
+  for (const line of block.slice(head[0].length, -1).split("\n")) {
+    if (!line.startsWith("- ") || line.length < 3) return null;
+    const path = line.slice(2);
+    out.push({ path, name: leafOf(path) });
   }
   return out;
+}
+
+/**
+ * Item 515 (his report, 2026-11-09): the note the backend appends to a
+ * message for the files it saved — `{text}\n\n{note}`, or the note alone
+ * (`main.rs`, `attach::files_note_for`) — is for the CLI, not for him. It
+ * is the message's tail: one or more blocks, each starting `[Attached `,
+ * joined by a blank line (the files note first, then each long PDF's).
+ * The earliest place from which the whole rest reads as such blocks is
+ * where the note starts; text that only looks like one stays his words.
+ * The stored text is never changed: this is how it is drawn.
+ */
+export function splitAttachNote(text: string): SplitNote {
+  for (let p = text.indexOf("[Attached "); p >= 0; p = text.indexOf("[Attached ", p + 1)) {
+    if (p > 0 && text[p - 1] !== "\n") continue;
+    const files: NotedFile[] = [];
+    let ok = true;
+    for (const block of text.slice(p).split("\n\n")) {
+      const got = noteBlock(block);
+      if (!got) {
+        ok = false;
+        break;
+      }
+      files.push(...got);
+    }
+    if (!ok) continue;
+    const head = text.slice(0, p);
+    // The backend's separator is exactly one blank line; any newline of
+    // his own before it is his.
+    const said = head.endsWith("\n\n") ? head.slice(0, -2) : head;
+    return { said, files, note: text.slice(p) };
+  }
+  return { said: text, files: [], note: "" };
+}
+
+/** His words with the note put back after an edit, as the backend joins
+ *  them (`main.rs`: the note alone when his words are blank). */
+export function joinAttachNote(said: string, note: string): string {
+  if (!note) return said;
+  return said.trim() === "" ? note : `${said}\n\n${note}`;
+}
+
+/** What a one-line view of a user turn shows (a title, the navigator's
+ *  tick, a phone row): his words, else the names of the files he sent. */
+export function shownText(text: string): string {
+  const s = splitAttachNote(text);
+  if (s.said.trim() !== "" || s.files.length === 0) return s.said;
+  return s.files.map((f) => f.name).join(", ");
+}
+
+/** The names a flattened piece of a note names, cut or whole. */
+function passageNames(piece: string): string[] {
+  const paths = [...piece.matchAll(/(?:^|[ :…])(?:- )?(\/[^\]]*?)(?= - \/| Pull its| Read only|\]|$)/g)].map((x) => x[1]);
+  if (paths.length === 0) {
+    // A cut tail (`…ments/c1/data.parquet]`): its last path, from the cut.
+    const last = piece.replace(/^…/, "").replace(/\]$/, "").split(" - ").pop() ?? "";
+    if (last.includes("/") && !/ /.test(last.slice(last.lastIndexOf("/")))) paths.push(last);
+  }
+  return [...new Set(paths.map((p) => leafOf(p.trim())).filter(Boolean))];
+}
+
+/**
+ * A search hit's passage (`store/search.rs`): one line, cut 60 characters
+ * before the match and 110 after, so a note may be in it whole or in part.
+ * Each piece of a note is drawn as `[attached <names>]`; a match inside a
+ * note marks the part of a file's name it hit, else that whole label.
+ */
+export function cleanPassage(r: { before: string; matched: string; after: string }): {
+  before: string;
+  matched: string;
+  after: string;
+} {
+  const s = r.before + r.matched + r.after;
+  if (!/\[Attached |with your tools|rather than sent whole|\.nightloom\/attachments\/|^…[^ \]]*\/[^ \]]*\]/.test(s)) return r;
+  const m0 = r.before.length;
+  const m1 = m0 + r.matched.length;
+  const spans: [number, number][] = [];
+  const whole =
+    /\[Attached (?:a file|files) — saved for you to open with your tools: [^\]]*\]|\[Attached a PDF of \d+ pages, saved for you to read with your tools rather than sent whole: [^\]]*\]/g;
+  for (let w = whole.exec(s); w; w = whole.exec(s)) spans.push([w.index, w.index + w[0].length]);
+  // The window began inside a note: up to its first `]`.
+  const firstClose = s.indexOf("]");
+  const firstOpen = s.indexOf("[");
+  if (s.startsWith("…") && firstClose >= 0 && (firstOpen < 0 || firstClose < firstOpen)) {
+    const lead = s.slice(0, firstClose + 1);
+    if (/with your tools|rather than sent whole|Read tool's|^…[^ ]*\/[^ ]*\]$|^…[^\]]* - \//.test(lead)) spans.unshift([0, firstClose + 1]);
+  }
+  // The window ended inside one: from its `[Attached ` on.
+  const lastOpen = s.lastIndexOf("[Attached ");
+  if (lastOpen >= 0 && !spans.some(([a, b]) => a <= lastOpen && lastOpen < b)) spans.push([lastOpen, s.length]);
+  if (spans.length === 0) return r;
+  let out = "";
+  let o0 = -1;
+  let o1 = -1;
+  let at = 0;
+  const copy = (a: number, b: number) => {
+    for (let i = a; i < b; i++) {
+      if (i === m0 && o0 < 0) o0 = out.length;
+      if (i === m1 && o1 < 0) o1 = out.length;
+      out += s[i];
+    }
+  };
+  for (const [a, b] of spans) {
+    copy(at, a);
+    const names = passageNames(s.slice(a, b));
+    const label = names.length > 0 ? `[attached ${names.join(", ")}]` : "[attached file]";
+    if (out.length > 0 && !out.endsWith(" ")) out += " ";
+    const start = out.length;
+    out += label;
+    if (m0 < b && m1 > a) {
+      const q = r.matched.toLowerCase();
+      const name = q ? names.find((n) => n.toLowerCase().includes(q)) : undefined;
+      if (name && m0 >= a) {
+        const k = label.indexOf(name) + name.toLowerCase().indexOf(q);
+        o0 = start + k;
+        o1 = start + k + r.matched.length;
+      } else {
+        if (o0 < 0) o0 = start;
+        if (m1 <= b) o1 = start + label.length;
+      }
+    }
+    at = b;
+  }
+  copy(at, s.length);
+  if (o0 < 0) o0 = out.length;
+  if (o1 < 0) o1 = out.length;
+  if (o1 < o0) o1 = o0;
+  return { before: out.slice(0, o0), matched: out.slice(o0, o1), after: out.slice(o1) };
 }
 
 /** A path's last part. */

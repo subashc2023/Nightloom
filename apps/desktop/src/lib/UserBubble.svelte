@@ -8,8 +8,8 @@
   import { splitFences } from "./codeDetect";
   import { languageOf, segments } from "./codeHighlight";
   import KeepButton from "./KeepButton.svelte";
-  import { canKeep, imageName, keepKey, leafOf, savedFilePaths } from "./keep";
-  import { app } from "./state.svelte";
+  import { imageName, keepKey, splitAttachNote } from "./keep";
+  import { extOf } from "./attachKinds";
   import { keptGet, keptSet } from "./keptFolds.svelte";
   import RanCard from "./RanCard.svelte";
   import { parseRan } from "./shellRun";
@@ -47,6 +47,7 @@
     onopenimage = null,
     onopendoc = null,
     keep = null,
+    sending = [],
   }: {
     images?: readonly Img[];
     documents?: readonly Doc[];
@@ -63,8 +64,16 @@
     /** Where a text attachment's fold is kept past a chat switch (item 495
      *  part 2: the chat + turn); null, the bubble's own. */
     keep?: string | null;
+    /** Item 515: the names of files for Claude Code this message carries
+     *  while the backend saves them — the optimistic message has no note
+     *  yet, and without these a file-only send drew an empty pill. */
+    sending?: readonly string[];
   } = $props();
-  const ran = $derived(parseRan(text));
+  /** Item 515: the note the CLI reads (`[Attached a file — saved for you
+   *  …]`) is drawn as cards, never as his words; the text stays as sent. */
+  const split = $derived(splitAttachNote(text));
+  const said = $derived(split.said);
+  const ran = $derived(parseRan(said));
 
   let localOpen = $state<Record<number, boolean>>({});
   /** A text attachment unfolded (284), kept under `keep` when there is one. */
@@ -83,8 +92,20 @@
   /** A document with bytes to show: a text one unfolds (284). */
   const isText = (d: Doc) => d.media_type.startsWith("text/") && d.data !== "";
   /** Files the Claude Code engine saved for this message (item 277), by
-   *  the paths his text names: each can be kept too (item 306). */
-  const saved = $derived(canKeep(app.project) ? savedFilePaths(text) : []);
+   *  the paths the note names: each a card (515), with Keep (306) where
+   *  the chat can keep. */
+  const saved = $derived(split.files);
+  /** A sending file the note does not name yet. */
+  const pendingNames = $derived(sending.filter((n) => !saved.some((f) => f.name === n)));
+  /** A file's kind in words: `HTML file`, `PDF`. */
+  function kindOf(name: string, mediaType = ""): string {
+    if (mediaType === "application/pdf" || extOf(name) === "pdf") return "PDF";
+    if (mediaType.startsWith("text/")) return "Text";
+    const ext = extOf(name).slice(0, 8).toUpperCase();
+    return ext && ext !== name.toUpperCase() ? `${ext} file` : "File";
+  }
+  /** A card's badge: the chip's own (`badgeOf`). */
+  const fileBadge = (name: string) => extOf(name).slice(0, 5).toUpperCase() || "FILE";
 </script>
 
 <div class="user-bubble">
@@ -125,52 +146,70 @@
       {/each}
     </div>
   {/if}
-  {#if documents.length > 0}
-    <div class="user-files">
+  {#if documents.length > 0 || saved.length > 0 || pendingNames.length > 0}
+    <!-- Item 515: each file he sent is a card in the hand-off card's
+         language (the accent edge on the well): its kind, its name, Keep,
+         and a quiet line saying what became of it. -->
+    <div class="attach-cards">
       {#each documents as doc, j (j)}
-        {#if onopendoc}
-          <button
-            class="user-file"
-            use:tip={`${doc.media_type} — open in front`}
-            onclick={(e) => onopendoc?.(j, e.currentTarget.getBoundingClientRect())}
-          >
-            <span class="user-file-ext">{badgeOf({ kind: "document", ...doc })}</span>
-            {doc.name}
-          </button>
-        {:else}
-          <span class="user-file" use:tip={doc.media_type || doc.name}>
-            <span class="user-file-ext">{badgeOf({ kind: "document", ...doc })}</span>
-            {doc.name}
-          </span>
-        {/if}
-        {#if doc.data}
-          <KeepButton keyStr={keepKey(doc.name, doc.data)} name={doc.name} mediaType={doc.media_type} from={{ data: doc.data }} />
-        {/if}
-        {#if isText(doc)}
-          <button
-            class="user-file-toggle"
-            aria-expanded={!!textOpen[j]}
-            use:tip={textOpen[j] ? "Fold the text away" : "Show the text here"}
-            onclick={() => flipText(j)}
-            >{textOpen[j] ? "▾ hide" : `▸ ${pastedLabel(decodeText(doc.data))}`}</button
-          >
-        {/if}
+        <div class="attach-card" data-attach="document">
+          <div class="attach-head">
+            <span class="attach-badge mono">{badgeOf({ kind: "document", ...doc })}</span>
+            {#if onopendoc}
+              <button
+                class="attach-name"
+                use:tip={`${doc.name} — open in front`}
+                onclick={(e) => onopendoc?.(j, e.currentTarget.getBoundingClientRect())}>{doc.name}</button
+              >
+            {:else}
+              <span class="attach-name" use:tip={doc.media_type || doc.name}>{doc.name}</span>
+            {/if}
+            {#if doc.data}
+              <KeepButton keyStr={keepKey(doc.name, doc.data)} name={doc.name} mediaType={doc.media_type} from={{ data: doc.data }} />
+            {/if}
+          </div>
+          <div class="attach-line">
+            {kindOf(doc.name, doc.media_type)} · {doc.data ? (isText(doc) ? "sent with this message as text" : "sent with this message") : "attached"}
+            {#if isText(doc)}
+              <button
+                class="user-file-toggle"
+                aria-expanded={!!textOpen[j]}
+                use:tip={textOpen[j] ? "Fold the text away" : "Show the text here"}
+                onclick={() => flipText(j)}
+                >{textOpen[j] ? "▾ hide" : `▸ ${pastedLabel(decodeText(doc.data))}`}</button
+              >
+            {/if}
+          </div>
+          {#if textOpen[j] && isText(doc)}
+            <pre class="user-file-text">{decodeText(doc.data)}</pre>
+          {/if}
+        </div>
       {/each}
-    </div>
-    {#each documents as doc, j (j)}
-      {#if textOpen[j] && isText(doc)}
-        <pre class="user-file-text">{decodeText(doc.data)}</pre>
-      {/if}
-    {/each}
-  {/if}
-  {#if saved.length > 0}
-    <div class="user-files">
-      {#each saved as path (path)}
-        <span class="user-file" use:tip={path}>
-          <span class="user-file-ext">FILE</span>
-          {leafOf(path)}
-        </span>
-        <KeepButton keyStr={`path|${path}`} name={leafOf(path)} mediaType="application/octet-stream" from={{ path }} />
+      {#each saved as f (f.path)}
+        <div class="attach-card" data-attach="saved" use:tip={f.path}>
+          <div class="attach-head">
+            <span class="attach-badge mono">{fileBadge(f.name)}</span>
+            <span class="attach-name">{f.name}</span>
+            <KeepButton
+              keyStr={`path|${f.path}`}
+              name={f.name}
+              mediaType={f.pages ? "application/pdf" : "application/octet-stream"}
+              from={{ path: f.path }}
+            />
+          </div>
+          <div class="attach-line">
+            {#if f.pages}PDF · {f.pages} pages · saved for Claude to read the pages it needs with its tools{:else}{kindOf(f.name)} · saved for Claude to open with its tools{/if}
+          </div>
+        </div>
+      {/each}
+      {#each pendingNames as name (name)}
+        <div class="attach-card sending" data-attach="sending">
+          <div class="attach-head">
+            <span class="attach-badge mono">{fileBadge(name)}</span>
+            <span class="attach-name">{name}</span>
+          </div>
+          <div class="attach-line">{kindOf(name)} · saving for Claude to open with its tools…</div>
+        </div>
       {/each}
     </div>
   {/if}
@@ -179,12 +218,12 @@
   {:else if ran}
     <!-- Item 503: the output of a block he ran, folded; not a wall of his. -->
     <RanCard {ran} {keep} />
-  {:else if text}
+  {:else if said}
     <!-- `> ` lines are quotes he placed with Reply (backlog 215), drawn as
          quotes where they sit in his words. -->
     <!-- Item 315: a ``` fenced block is drawn as code, coloured, its
          language on a label; the rest of his words stay plain text. -->
-    <div class="user-text">{#each splitFences(text) as part, p (p)}{#if part.kind === "code"}<div class="user-code"><span class="user-code-lang mono">{languageOf(part.info)?.label ?? (part.info || "code")}</span><pre><code>{#each segments(part.code, part.info) as sg, j (j)}<span class={sg.cls}>{sg.text}</span>{/each}</code></pre></div>{:else}{#each splitQuotes(part.text) as seg, k (k)}{#if seg.kind === "quote" && quoteNeedsRender(seg.text)}<blockquote class="user-quote markdown rendered">{@html renderReply(seg.text)}</blockquote>{:else if seg.kind === "quote"}<blockquote class="user-quote">{seg.text}</blockquote>{:else}{seg.text}{/if}{/each}{/if}{/each}</div>
+    <div class="user-text">{#each splitFences(said) as part, p (p)}{#if part.kind === "code"}<div class="user-code"><span class="user-code-lang mono">{languageOf(part.info)?.label ?? (part.info || "code")}</span><pre><code>{#each segments(part.code, part.info) as sg, j (j)}<span class={sg.cls}>{sg.text}</span>{/each}</code></pre></div>{:else}{#each splitQuotes(part.text) as seg, k (k)}{#if seg.kind === "quote" && quoteNeedsRender(seg.text)}<blockquote class="user-quote markdown rendered">{@html renderReply(seg.text)}</blockquote>{:else if seg.kind === "quote"}<blockquote class="user-quote">{seg.text}</blockquote>{:else}{seg.text}{/if}{/each}{/if}{/each}</div>
   {/if}
   {@render extra?.()}
 </div>
@@ -289,37 +328,80 @@
   }
   /* Nothing to render of a PDF, so the turn shows what was attached rather
      than nothing at all — a caption asking about a file the transcript does
-     not mention reads as a question about nothing. */
-  .user-files {
+     not mention reads as a question about nothing. Since item 515 each file
+     is a card in the hand-off card's language (app.css `.handoff-card`):
+     the accent's soft border with its full edge on the left, on the well. */
+  .attach-cards {
     display: flex;
-    flex-wrap: wrap;
+    flex-direction: column;
+    align-items: flex-start;
     gap: 0.4rem;
-    margin-bottom: 0.4rem;
+    margin-bottom: 0.5rem;
   }
-  .user-files:last-child {
+  .attach-cards:last-child {
     margin-bottom: 0;
   }
-  .user-file {
-    display: inline-flex;
-    align-items: baseline;
-    gap: 0.35rem;
-    padding: 0.2rem 0.5rem;
-    border: 1px solid var(--border);
+  .attach-card {
+    box-sizing: border-box;
+    min-width: 14rem;
+    max-width: 100%;
+    padding: 0.4rem 0.6rem 0.42rem;
+    border: 1px solid var(--accent-soft);
+    border-left: 3px solid var(--accent);
     border-radius: 8px;
-    font-size: 0.8rem;
-    word-break: break-all;
-    /* A button since backlog 145 (a click opens the PDF in front), in
-       the chip's own face. */
-    background: none;
-    color: inherit;
-    font-family: inherit;
-    text-align: left;
+    background: var(--well);
+    font-family: var(--sans);
   }
-  button.user-file {
+  .attach-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+  }
+  .attach-badge {
+    flex: none;
+    font-family: var(--mono);
+    font-size: 0.62rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    color: var(--accent-ink);
+  }
+  .attach-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--ink);
+    font-family: inherit;
+    font-size: 0.85rem;
+    font-weight: 500;
+    text-align: left;
+    overflow-wrap: anywhere;
+  }
+  button.attach-name {
     cursor: pointer;
   }
-  button.user-file:hover {
-    border-color: var(--line2);
+  button.attach-name:hover {
+    text-decoration: underline;
+    text-decoration-color: var(--accent-soft);
+    text-underline-offset: 2px;
+  }
+  .attach-head :global(.keep) {
+    flex: none;
+    margin-left: auto;
+  }
+  .attach-line {
+    margin-top: 0.12rem;
+    font-size: 0.72rem;
+    line-height: 1.4;
+    color: var(--dim);
+  }
+  .attach-card.sending .attach-line {
+    font-style: italic;
+  }
+  .attach-card .user-file-text {
+    margin: 0.4rem 0 0.1rem;
   }
   /* Item 284: a text attachment's fold — its word count, a click opens it. */
   .user-file-toggle {
@@ -353,10 +435,5 @@
     flex-direction: column;
     align-items: flex-start;
     gap: 0.2rem;
-  }
-  .user-file-ext {
-    font-size: 0.62rem;
-    letter-spacing: 0.05em;
-    color: var(--dim);
   }
 </style>

@@ -7508,6 +7508,8 @@ export async function sendQueuedInBackground(
     ...(images.length > 0 ? { images } : {}),
     ...(documents.length > 0 ? { documents } : {}),
     at: new Date().toISOString(),
+    // Item 515: the files' names, so a file-only send is not an empty pill.
+    ...(files.length > 0 ? { sending_files: files.map((f) => f.name) } : {}),
   };
   app.background[id] = {
     session: id,
@@ -8221,6 +8223,8 @@ async function sendAgent(
     ...(images.length > 0 ? { images } : {}),
     ...(documents.length > 0 ? { documents } : {}),
     at: new Date().toISOString(),
+    // Item 515: the files' names, so a file-only send is not an empty pill.
+    ...(files.length > 0 ? { sending_files: files.map((f) => f.name) } : {}),
   });
   // A council turn (nightshift backlog 149): the seats run first, each a
   // row in Running tasks (their `subagent_status` rows arrive on the
