@@ -52,6 +52,9 @@
   import Hint from "./Hint.svelte";
   import Icon from "./Icon.svelte";
   import Kbd from "./Kbd.svelte";
+  import { cli } from "./cliUpdate.svelte";
+  import { modelSeen } from "./modelSeen.svelte";
+  import { aliasView, currentCliVersion, displayName } from "./modelSeen";
   import { isMac } from "./platform";
   import { viewGet, viewSet } from "./viewState";
 
@@ -254,6 +257,14 @@
    */
   // Item 272: the list Settings edits (`model-list.json`), not a constant.
   const AGENT_PILLS = $derived(modelList.models);
+  // Item 511 (nightshift): each pill's number, learned from turns, as the
+  // composer's menu shows it; known only once a turn on this CLI ran on it.
+  const cliNow = $derived(currentCliVersion(cli.status?.installed, app.connection?.agent?.version));
+  const pillSeen = (a: string) => aliasView(modelSeen.byAlias, a, cliNow);
+  const pillNumber = (a: string) => {
+    const id = pillSeen(a).current?.id;
+    return id ? displayName(id).split(" ").slice(1).join(" ") : "";
+  };
   let agentOther = $state(false);
   // Item 513: the composer's *other…* asks for the Id field, shown and focused.
   let agentIdEl = $state<HTMLInputElement | null>(null);
@@ -683,7 +694,7 @@
           role="radio"
           aria-checked={app.draft.agentModel.trim() === "" && !agentOther}
           disabled={locked}
-          use:tip={"Whatever the CLI defaults to"}
+          use:tip={`Whatever the CLI defaults to — ${pillSeen("").title}`}
           onclick={() => pickAgentModel("")}
         >
           default
@@ -696,10 +707,10 @@
             role="radio"
             aria-checked={app.draft.agentModel.trim() === a && !agentOther}
             disabled={locked}
-            use:tip={cap ? `${a} — ${cap}` : a}
+            use:tip={cap ? `${pillSeen(a).title} — ${cap}` : pillSeen(a).title}
             onclick={() => pickAgentModel(a)}
           >
-            {a}
+            {a}{#if pillNumber(a)}&nbsp;<span class="num">{pillNumber(a)}</span>{/if}
             {#if cap}<Kbd keys={cap} />{/if}
           </button>
         {/each}
@@ -1173,7 +1184,7 @@
               role="radio"
               aria-checked={app.draft.agentFallback.trim() === a}
               disabled={locked}
-              use:tip={`--fallback-model ${a}`}
+              use:tip={`--fallback-model ${a} — ${pillSeen(a).title}`}
               onclick={() => pickFallback(a)}
             >
               {a}
@@ -2559,5 +2570,10 @@
   }
   .manage:hover {
     border-color: var(--dim);
+  }
+  /* A pill's model number (item 511), dim beside its alias. */
+  .p .num {
+    color: var(--dim);
+    font-size: 0.9em;
   }
 </style>
