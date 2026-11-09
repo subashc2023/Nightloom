@@ -441,7 +441,12 @@ impl Browsers {
                     continue;
                 };
                 let Some(this) = me.upgrade() else { break };
-                this.from_helper(&reading, &v);
+                // A helper being stopped still talks as its pages close;
+                // only the running one is heard.
+                let current = reading.shared.lock().unwrap().live;
+                if current.is_some_and(|(g, _)| g == generation) {
+                    this.from_helper(&reading, &v);
+                }
             }
             let _ = child.wait().await;
             if let Some(this) = me.upgrade() {
@@ -501,6 +506,7 @@ impl Browsers {
             }
             s.live = None;
             s.conns = 0;
+            (s.url, s.title, s.pages) = (String::new(), String::new(), 0);
         }
         let _ = entry.ask().set_held_by_user(false);
         self.emit_status(entry);
@@ -616,9 +622,15 @@ impl Browsers {
         let live = {
             let mut s = entry.shared.lock().unwrap();
             s.conns = 0;
-            s.live.take()
+            let live = s.live.take();
+            if live.is_some() {
+                (s.url, s.title, s.pages) = (String::new(), String::new(), 0);
+            }
+            live
         };
         let Some((_, pgid)) = live else { return };
+        // First, so the model is never refused for a browser that is gone.
+        let _ = entry.ask().set_held_by_user(false);
         // Closing its stdin is the helper's cue to close the browser
         // itself; the signals are for one that does not.
         *entry.proc_.lock().await = None;
