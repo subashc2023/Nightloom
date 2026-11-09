@@ -424,6 +424,16 @@
     el.style.top = `${p.top}px`;
     el.style.maxHeight = p.maxHeight === undefined ? "" : `${p.maxHeight}px`;
   }
+  /** The New chat menu stops 12 px above the window's bottom and scrolls inside (nightshift backlog 512):
+   *  uncapped, it ran past the window and the sidebar's overflow cut it off. */
+  function fitBelow(el: HTMLElement) {
+    const cap = () => {
+      el.style.maxHeight = `${Math.max(160, viewSize().h - el.getBoundingClientRect().top - 12)}px`;
+    };
+    cap();
+    window.addEventListener("resize", cap);
+    return { destroy: () => window.removeEventListener("resize", cap) };
+  }
   /** Places the menu from its drawn size, and again whenever that size changes (the asides load late). */
   type MenuAnchor = { x: number; below: number; above: number; alignRight?: boolean };
   function placeRowMenu(el: HTMLElement, at: MenuAnchor) {
@@ -1072,7 +1082,7 @@
       </button>
       {#if kinds}
         <button class="scrim" aria-label="Close" onclick={() => (kinds = false)}></button>
-        <div class="kinds" role="menu">
+        <div class="kinds" role="menu" use:fitBelow>
           <div class="kinds-head">New chat · kind</div>
           {#each KIND_ROWS as k (k.kind)}
             <button class="kind" role="menuitem" onclick={() => startOfKind(k.kind)}>
@@ -1107,7 +1117,7 @@
                   class="kind"
                   role="menuitem"
                   disabled={app.busy || app.connecting}
-                  use:tip={newInThreadTip(t.slug)}
+                  use:tip={t.status ? `${t.status} — ${newInThreadTip(t.slug)}` : newInThreadTip(t.slug)}
                   onclick={() => startInThread(t.slug)}
                 >
                   <span class="kind-glyph" aria-hidden="true">◇</span>
@@ -1953,6 +1963,13 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
+    /* One scroller for the whole menu (backlog 512); fitBelow sets max-height. */
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .kinds > *,
+  .kind-threads > .kind {
+    flex: none;
   }
   .kinds-head {
     font-size: 11px;
@@ -2518,12 +2535,26 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  /* ~~max-height: 220px; overflow-y: auto~~ — a second scroller, clipped
+     with the menu at the window's bottom (backlog 512, 2026-11-09); the
+     whole menu scrolls now. A row is its title on one line and at most two
+     of status; the full status leads its tooltip. */
   .kind-threads {
     display: flex;
     flex-direction: column;
     gap: 2px;
-    max-height: 220px;
-    overflow-y: auto;
+  }
+  .kind-threads .kind-name {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .kind-threads .kind-line {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
   }
   .kind:disabled {
     opacity: 0.5;
