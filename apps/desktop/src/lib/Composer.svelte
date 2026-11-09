@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
+  import { MODEL_OTHER } from "./railEvents";
   import Icon from "./Icon.svelte";
   import { isImeKey } from "./imeKey";
   import Kbd from "./Kbd.svelte";
@@ -2339,6 +2340,12 @@
     app.railScrollTo = "model";
     app.showRail = true;
   }
+  /** *other…* (item 513, his report): the rail opens with its Id field
+   *  shown and focused, not only the Model section. */
+  function openRailOther() {
+    openRail();
+    window.dispatchEvent(new CustomEvent(MODEL_OTHER));
+  }
 
   interface MenuRow {
     id: string;
@@ -2367,7 +2374,7 @@
       }
       // A full id typed into the rail's field: named here, changed there.
       const other = cur !== "" && !AGENT_PILLS.includes(cur);
-      rows.push({ id: "other", label: other ? cur : "other…", detail: other ? "a full id — the rail's field" : "a full id, typed in the rail", on: other, run: openRail });
+      rows.push({ id: "other", label: other ? cur : "other…", detail: other ? "a full id — the rail's field" : "a full id, typed in the rail", on: other, run: openRailOther });
     } else {
       models.forEach((m, i) =>
         rows.push({

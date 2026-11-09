@@ -1,5 +1,7 @@
 <script lang="ts">
   import { tip } from "./tip";
+  import { tick } from "svelte";
+  import { MODEL_OTHER } from "./railEvents";
   import {
     app,
     bornKind,
@@ -252,6 +254,16 @@
   // Item 272: the list Settings edits (`model-list.json`), not a constant.
   const AGENT_PILLS = $derived(modelList.models);
   let agentOther = $state(false);
+  // Item 513: the composer's *other…* asks for the Id field, shown and focused.
+  let agentIdEl = $state<HTMLInputElement | null>(null);
+  $effect(() => {
+    const show = () => {
+      agentOther = true;
+      void tick().then(() => agentIdEl?.focus());
+    };
+    window.addEventListener(MODEL_OTHER, show);
+    return () => window.removeEventListener(MODEL_OTHER, show);
+  });
   const agentIsAlias = $derived(AGENT_PILLS.includes(app.draft.agentModel.trim()));
   const showAgentField = $derived(agentOther || (!agentIsAlias && app.draft.agentModel.trim() !== ""));
   function pickAgentModel(alias: string) {
@@ -707,6 +719,7 @@
           <span class="lbl">Id</span>
           <input autocorrect="off" autocapitalize="off" spellcheck="false"
             type="text"
+            bind:this={agentIdEl}
             bind:value={app.draft.agentModel}
             onchange={apply}
             placeholder="claude-opus-5"
