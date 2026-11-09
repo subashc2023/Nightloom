@@ -146,6 +146,7 @@
   import ScheduleMenu from "./ScheduleMenu.svelte";
   import ScheduledChip from "./ScheduledChip.svelte";
   import PreviewChip from "./PreviewChip.svelte";
+  import ClaudeBrowserChip from "./ClaudeBrowserChip.svelte";
   import { registerScheduleDrain } from "./scheduleRuntime";
   import CouncilPopover from "./CouncilPopover.svelte";
   import ClipPanel from "./ClipPanel.svelte";
@@ -2779,6 +2780,8 @@
   {#if !aside && app.activeSessionId}
     <!-- The chat's preview (item 430): its dev server, up between messages. -->
     <PreviewChip chat={app.activeSessionId} />
+    <!-- Claude's browser (item 508): offered once it is live; opens only on his click. -->
+    <ClaudeBrowserChip chat={app.activeSessionId} />
   {/if}
   {#if composerShows("schedule", !!aside)}
     <ScheduledChip {key} onedit={scheduleEdited} />

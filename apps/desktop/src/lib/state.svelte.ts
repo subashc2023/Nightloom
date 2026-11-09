@@ -4312,6 +4312,7 @@ async function showContentOf(c: TabContent): Promise<void> {
     case "subagent":
     case "file":
     case "thread":
+    case "browser":
       return;
   }
 }
@@ -4332,7 +4333,8 @@ export async function openContent(content: TabContent, how: tabs.LandHow = "new"
     content.kind === "attachment" ||
     content.kind === "subagent" ||
     content.kind === "file" ||
-    content.kind === "thread"
+    content.kind === "thread" ||
+    content.kind === "browser"
   ) {
     const t = tabs.land(app.tabs, tabs.focusedPane(app.tabs), content, how);
     await activateTab(t.id);
@@ -4676,6 +4678,9 @@ function resolveTabContent(c: TabContent): TabContent | null {
     }
     case "attachment":
     case "subagent":
+    // Claude's browser (item 508) comes back with its chat; the browser
+    // itself ended with the app, and the tab says so.
+    case "browser":
       return chat(c.session) ? c : null;
     case "web":
     case "nightshift":

@@ -13,6 +13,8 @@ export const ICONS = {
   chevl: '<path d="m12 6-4 4 4 4"/>',
   chevr: '<path d="m8 6 4 4-4 4"/>',
   ext: '<path d="M8 4H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1v-3M12 4h4v4M16 4l-7 7"/>',
+  /* Claude's browser (item 508): a globe, its meridian and equator. */
+  globe: '<circle cx="10" cy="10" r="6.5"/><path d="M3.5 10h13M10 3.5c-1.9 1.9-2.8 4.1-2.8 6.5s.9 4.6 2.8 6.5c1.9-1.9 2.8-4.1 2.8-6.5s-.9-4.6-2.8-6.5z"/>',
   gear: '<circle cx="10" cy="10" r="2.5"/><path d="M10 3v2M10 15v2M3 10h2M15 10h2M5 5l1.4 1.4M13.6 13.6 15 15M5 15l1.4-1.4M13.6 6.4 15 5"/>',
   play: '<path d="M6 4.5v11l9-5.5z"/>',
   /* Stop a turn (item 398): a filled rounded square, the media-stop shape,

@@ -55,6 +55,7 @@
   import { agentAsk, deliverDue } from "./lib/subagentAsk.svelte";
   import FileView from "./lib/FileView.svelte";
   import ThreadView from "./lib/ThreadView.svelte";
+  import ClaudeBrowserView from "./lib/ClaudeBrowserView.svelte";
   import WebView from "./lib/WebView.svelte";
   import { closeOrphans, initWebTabs, routeLink } from "./lib/webtabs.svelte";
   import RunningTasks from "./lib/RunningTasks.svelte";
@@ -721,6 +722,10 @@
                   <!-- What a research thread stores (backlog 292): its name
                        clicked in the sidebar, read-only. -->
                   <ThreadView content={k.content} />
+                {:else if k.content.kind === "browser"}
+                  <!-- Claude's browser (item 508): the live picture of the
+                       chat's Playwright browser; hidden, it stops watching. -->
+                  <ClaudeBrowserView session={k.content.session} {away} />
                 {/if}
                 {#if focused && !away}<FindBar bind:this={findBar} />{/if}
               </div>

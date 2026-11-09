@@ -1437,6 +1437,62 @@ export function previewRestart(chat: string): Promise<PreviewSnapshot> {
 export function previewUnavailable(): Promise<string | null> {
   return invoke("preview_unavailable");
 }
+
+/** Claude's browser (nightshift item 508): the chat's Playwright browser the
+ *  app keeps between messages, as `notes/runner-design/508-interface-2026-11-09.md`
+ *  names it. The viewport is fixed; the tab letterboxes its picture. */
+export interface BrowserStatus {
+  /** The browser process is up. */
+  live: boolean;
+  url: string;
+  title: string;
+  held_by: "model" | "user";
+  width: number;
+  height: number;
+  /** Open pages (target=_blank adds one); the active one is shown. */
+  pages: number;
+}
+/** x, y in page CSS pixels of the 1280×800 viewport. */
+export type BrowserInput =
+  | { kind: "click"; x: number; y: number; button: "left" | "right" | "middle"; clicks: 1 | 2; modifiers: string[] }
+  | { kind: "move"; x: number; y: number }
+  | { kind: "wheel"; x: number; y: number; dx: number; dy: number }
+  | { kind: "key"; key: string; modifiers: string[] }
+  | { kind: "text"; text: string };
+export type BrowserNav = "back" | "forward" | "reload" | "goto";
+export interface BrowserFrameEvent {
+  session: string;
+  seq: number;
+  /** base64 */
+  jpeg: string;
+  w: number;
+  h: number;
+}
+export type BrowserStatusEvent = { session: string } & BrowserStatus;
+export interface BrowserDialogEvent {
+  session: string;
+  kind: "alert" | "confirm" | "prompt" | "file";
+  message: string;
+}
+/** Null: this chat has no app-owned browser. */
+export function claudeBrowserStatus(session: string): Promise<BrowserStatus | null> {
+  return invoke("claude_browser_status", { session });
+}
+/** Frames flow only while some tab watches. */
+export function claudeBrowserWatch(session: string, on: boolean): Promise<null> {
+  return invoke("claude_browser_watch", { session, on });
+}
+/** The first input while the model holds the browser takes it for him. */
+export function claudeBrowserInput(session: string, input: BrowserInput): Promise<null> {
+  return invoke("claude_browser_input", { session, input });
+}
+export function claudeBrowserNav(session: string, action: BrowserNav, url?: string): Promise<null> {
+  return invoke("claude_browser_nav", url === undefined ? { session, action } : { session, action, url });
+}
+/** `true` Take over, `false` Give back. */
+export function claudeBrowserHold(session: string, held: boolean): Promise<BrowserStatus> {
+  return invoke("claude_browser_hold", { session, held });
+}
 export function forYouFiles(): Promise<ForYouRow[]> {
   return invoke("for_you_files");
 }

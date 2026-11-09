@@ -39,7 +39,10 @@ export function isKeptKind(c: TabContent): boolean {
     c.kind === "note" ||
     c.kind === "file" ||
     c.kind === "thread" ||
-    c.kind === "subagent"
+    c.kind === "subagent" ||
+    // Claude's browser (item 508): kept so its address draft, picture and
+    // notice survive a switch away; hidden, it stops watching.
+    c.kind === "browser"
   );
 }
 
