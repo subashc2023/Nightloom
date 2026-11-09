@@ -29,6 +29,9 @@
   } from "./state.svelte";
   import { MODEL_KEYS, modelChipLabel, thinkingSupport } from "./catalog";
   import { modelList } from "./modelList.svelte";
+  import { modelSeen } from "./modelSeen.svelte";
+  import { aliasView, currentCliVersion, displayName, fullIdRows, newestModels, otherOn } from "./modelSeen";
+  import { cli } from "./cliUpdate.svelte";
   import { effortDefaultLabel } from "./effortDefaults";
   import {
     cacheBuiltWith,
@@ -2356,25 +2359,52 @@
     /** The chord that does the same from anywhere, as a key cap. */
     cap?: string | null;
     on?: boolean;
+    /** The hover's text. */
+    title?: string;
+    /** A thin rule above the row. */
+    sep?: boolean;
     run: () => void;
+  }
+  /*
+   * The numbers behind the aliases (item 511): what each one resolved to on
+   * the CLI now, learned from turns (`modelSeen`), and each family's newest
+   * model by full id — the API's list when Settings already fetched it on a
+   * key, else the table shipped here; no call is made for the menu.
+   */
+  const cliNow = $derived(currentCliVersion(cli.status?.installed, app.connection?.agent?.version));
+  const newestIds = $derived(newestModels(app.modelLists["anthropic"]));
+  function aliasRow(a: string, cur: string): { detail: string; title: string } {
+    const v = aliasView(modelSeen.byAlias, a, cliNow);
+    const newest = v.current && newestIds.includes(v.current.id) ? ` — the newest ${displayName(v.current.id).split(" ")[0]}, so it has no row of its own below` : "";
+    const current = a === cur ? " · current" : "";
+    return { detail: `${v.detail}${current}`, title: `${v.title}${newest}` };
   }
   const modelRows = $derived.by((): MenuRow[] => {
     const rows: MenuRow[] = [];
     if (agentMode) {
       const cur = app.draft.agentModel.trim();
-      rows.push({ id: "default", label: "default", detail: "whatever the CLI defaults to", on: cur === "", run: () => void switchModel("") });
+      // ~~"whatever the CLI defaults to" / "current · the CLI resolves it"~~
+      // — item 511: the model each resolved to on this CLI, or not yet.
+      const dv = aliasRow("", cur);
+      rows.push({ id: "default", label: "default", detail: dv.detail, title: dv.title, on: cur === "", run: () => void switchModel("") });
       for (const a of AGENT_PILLS) {
+        const v = aliasRow(a, cur);
         rows.push({
           id: a,
           label: a,
-          detail: a === cur ? "current · the CLI resolves it" : undefined,
+          detail: v.detail,
+          title: v.title,
           cap: agentKey(a),
           on: cur === a,
           run: () => void switchModel(a),
         });
       }
+      // Each family's newest by full id, unless an alias already shows it.
+      const full = fullIdRows(newestIds, AGENT_PILLS, modelSeen.byAlias, cliNow, cur);
+      full.forEach((f, i) => rows.push({ ...f, id: `full:${f.pick}`, sep: i === 0, run: () => void switchModel(f.pick) }));
       // A full id typed into the rail's field: named here, changed there.
-      const other = cur !== "" && !AGENT_PILLS.includes(cur);
+      // ~~`!AGENT_PILLS.includes(cur)`~~ — and no newest row names it (511).
+      const other = otherOn(cur, AGENT_PILLS, full);
       rows.push({ id: "other", label: other ? cur : "other…", detail: other ? "a full id — the rail's field" : "a full id, typed in the rail", on: other, run: openRailOther });
     } else {
       models.forEach((m, i) =>
@@ -2444,10 +2474,13 @@
       { id: "chat", label: "the chat's", detail: `${chatModelName} · reads the chat's cache`, on: cur === null, run: () => pickAside("model", null) },
     ];
     for (const m of AGENT_PILLS) {
+      // Item 511: its number too, as the chat's own menu shows it.
+      const v = aliasView(modelSeen.byAlias, m, cliNow);
       rows.push({
         id: m,
         label: m,
-        detail: m === chatModelName ? "the chat's model, picked for this aside" : "its own model — no cache from the chat",
+        title: v.title,
+        detail: `${v.detail} · ${m === chatModelName ? "the chat's model, picked for this aside" : "its own model — no cache from the chat"}`,
         on: cur === m,
         run: () => pickAside("model", m),
       });
@@ -3461,10 +3494,11 @@
   >
     <div class="pick-head"><span>{head}</span><span class="pick-sub">{sub}</span></div>
     {#each menuRows as r (r.id)}
-      {#if r.id === "rail"}<div class="pick-sep"></div>{/if}
+      {#if r.id === "rail" || r.sep}<div class="pick-sep"></div>{/if}
       <button
         type="button"
         class="pick-row"
+        use:tip={r.title}
         class:on={r.on}
         role="menuitemradio"
         aria-checked={r.on ?? false}

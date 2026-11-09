@@ -135,6 +135,8 @@ import { lineText, lineView, matchTasks, type StillRunningSegment } from "./stil
 import { applyRetry, clearRetry, markRetryStopping, turnNotices, type RetrySegment } from "./retryLine";
 import { pressStop, releaseStop, type StopClock } from "./stopState";
 import { cli, startCliClock } from "./cliUpdate.svelte";
+import { noteResolved } from "./modelSeen.svelte";
+import { currentCliVersion } from "./modelSeen";
 import { probeAuth } from "./claudeAuth.svelte";
 import { chatIsCold, loadLayerPrefs, reconnectBeforeTurn, saveLayerPrefs } from "./promptVersions";
 import { CONNECT_DEADLINE_MS, withDeadline } from "./deadline";
@@ -7397,7 +7399,15 @@ async function attach(id: string): Promise<void> {
 /** A background turn's end (A2): nothing on screen changes; the chat's
  *  record is on disk (or held, for an ephemeral chat), its row refreshes,
  *  and a light toast says where the reply is. */
+/** What the turn's alias resolved to (item 511), for the model menu's
+ *  numbers: a Claude Code turn on an alias, with the CLI version now. */
+function learnModel(t: TurnCtx, res: AgentTurnResult | null): void {
+  if (!res?.model || t.choice?.engine !== "claude-code") return;
+  noteResolved(t.choice.agentModel, res.model, currentCliVersion(cli.status?.installed, app.connection?.agent?.version));
+}
+
 function endBackground(t: TurnCtx, failed: string | null, res: AgentTurnResult | null): void {
+  learnModel(t, res);
   const id = t.chat as string;
   const b = app.background[id];
   // Named before its record goes: an ephemeral chat is named from it (A4).
@@ -7472,7 +7482,7 @@ function endBackground(t: TurnCtx, failed: string | null, res: AgentTurnResult |
  * the chat is on screen again (the composer drains it). `true` when sent.
  */
 export async function sendQueuedInBackground(
-  ended: Pick<TurnCtx, "chat" | "pendingKey" | "stopped" | "provider" | "contextLimit">,
+  ended: Pick<TurnCtx, "chat" | "pendingKey" | "stopped" | "provider" | "contextLimit"> & Pick<Partial<TurnCtx>, "choice">,
   was: Pick<Background<Segment, ApprovalRequest>, "pendingMode" | "pendingKind" | "project" | "projectName" | "name"> | undefined,
   ok: boolean,
 ): Promise<boolean> {
@@ -7491,7 +7501,7 @@ export async function sendQueuedInBackground(
     .map(({ media_type, name, data }) => ({ media_type, name, data }));
   const files = q.attachments.filter((a) => a.kind === "file").map(({ name, data }) => ({ name, data }));
   const project = was?.project ?? null;
-  const turn: TurnCtx = { chat: id, detached: true, key: newTurnKey(), contextLimit: ended.contextLimit, pendingKey: null };
+  const turn: TurnCtx = { chat: id, detached: true, key: newTurnKey(), contextLimit: ended.contextLimit, pendingKey: null, choice: ended.choice };
   const mine: SessionEvent = {
     event: "user_message",
     text: q.text,
@@ -8266,6 +8276,7 @@ async function sendAgent(
       return;
     }
     app.agentTurn = res;
+    learnModel(turn, res);
     // The turn stopped by the usage limit (backlog 164): marked paused,
     // not failed, with its Resume; any other end clears an old mark.
     app.limitPause = limitPauseFrom(res, app.activeSessionId);

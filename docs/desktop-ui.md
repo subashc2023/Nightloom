@@ -182,7 +182,16 @@ is the check to repeat when touching it.
   since 2026-09-14, with an engine-aware hint: on Claude Code it gates what
   `connect_agent` appends to the CLI's own prompt.
   On Claude Code the model is a row of alias pills (default · fable · opus ·
-  sonnet · haiku, each with its key) plus *other…* for a typed id, and the
+  sonnet · haiku, each with its key) plus *other…* for a typed id. **Since
+  nightshift item 511 (2026-11-09)** the composer's model menu (and the
+  palette's and an aside's model rows) say what each alias resolves to —
+  `fable · Fable 5.1` — learned from each Claude Code turn's resolved id
+  (`AgentTurnResult.model`) with the CLI version it ran on, kept in
+  localStorage `nightloom.model-seen` (`modelSeen.ts`). A record from another
+  CLI version reads `not seen on 2.1.321 yet`. Below the aliases, each
+  family's newest model by full id (a table in `modelSeen.ts`, or the
+  Anthropic API's list when Settings already fetched it) picks that id as
+  *other…* would; a row an alias already shows is left out. In the rail the
   Binary field sits at the foot under **CLI** — set once, read never. The
   *Providers, keys & models…* button closes the popover as Settings opens, and
   the system-prompt pencil closes it, opens the library, and reopens it
