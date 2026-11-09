@@ -32,6 +32,7 @@
   import { hasOwnRules, limitsSummary, rulesFor } from "./subagentRules";
   import * as api from "./api";
   import { PLAYWRIGHT_CHANGED } from "./playwright";
+  import { openBrowserTab, phase as browserPhase } from "./claudeBrowser.svelte";
   import { launch } from "./launch.svelte";
   import { fmtTokens } from "./tokens";
   import { connectorLabel, connectorNames, setConnectorAllowed } from "./connectors";
@@ -1303,6 +1304,17 @@
           aria-label="Playwright for this chat"
         />
       </label>
+      {#if app.activeSessionId && browserPhase(app.activeSessionId) !== "none"}
+        <!-- Claude's browser (item 508): the same tab the chip above the
+             composer opens, reachable here beside the Playwright switch. -->
+        {@const cbChat = app.activeSessionId}
+        <div class="swq">
+          <span class="t">Claude's browser</span>
+          <button class="ns-btn ghost small" onclick={() => void openBrowserTab(cbChat)}
+            >{browserPhase(cbChat) === "live" ? "Show live" : "Show"}</button
+          >
+        </div>
+      {/if}
     {/if}
 
     <!-- Shown on both engines (2026-09-14): the preamble crosses to Claude
