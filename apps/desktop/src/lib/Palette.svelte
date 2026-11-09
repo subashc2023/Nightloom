@@ -7,6 +7,7 @@
     redoLabel,
     reviewProposal,
     runMenuCommand,
+    switchModel,
     switchModelAt,
     toggleSidebar,
     undoLabel,
@@ -16,6 +17,10 @@
   import { toggleTranscriptPref, transcript } from "./transcriptPrefs.svelte";
   import { thinkingToggleDead } from "./activity";
   import { MODEL_KEYS, providerLabel } from "./catalog";
+  import { cli } from "./cliUpdate.svelte";
+  import { modelList } from "./modelList.svelte";
+  import { modelSeen } from "./modelSeen.svelte";
+  import { aliasView, currentCliVersion, fullIdRows, newestModels } from "./modelSeen";
   import type { IconName } from "./icons";
   import Icon from "./Icon.svelte";
   import Kbd from "./Kbd.svelte";
@@ -128,13 +133,17 @@
     const agent = app.draft.engine === "claude-code";
     // Claude Code: the CLI's aliases on their letters. The API engine: the
     // picker's models on ⌘⇧1…9, every provider alike (2026-09-14).
+    // Item 511: each alias's number on the CLI now, as the composer's menu.
+    const cliNow = currentCliVersion(cli.status?.installed, app.connection?.agent?.version);
     const rows: Row[] = agent
       ? MODEL_KEYS.map((k) => {
           const current = app.draft.agentModel === k.alias;
+          const v = aliasView(modelSeen.byAlias, k.alias, cliNow).detail.replace(/^· /, "");
           return {
             id: `model:${k.alias}`,
             label: `Switch to ${k.alias}`,
-            meta: current ? "current" : "the CLI resolves it",
+            // ~~current ? "current" : "the CLI resolves it"~~ (item 511)
+            meta: current ? `current · ${v}` : v,
             icon: current ? "check" : "chevr",
             key: `${mod}${shift}${k.key}`,
             group: "Model",
@@ -156,6 +165,22 @@
             current,
           };
         });
+    // Each family's newest by full id (item 511), unless an alias shows it.
+    if (agent) {
+      const aliases = [...new Set([...MODEL_KEYS.map((k) => k.alias), ...modelList.models])];
+      for (const f of fullIdRows(newestModels(app.modelLists["anthropic"]), aliases, modelSeen.byAlias, cliNow, app.draft.agentModel)) {
+        rows.push({
+          id: `model:${f.pick}`,
+          label: `Switch to ${f.label}`,
+          meta: f.detail,
+          icon: f.on ? "check" : "chevr",
+          key: "",
+          group: "Model",
+          run: () => go(() => void switchModel(f.pick)),
+          current: f.on,
+        });
+      }
+    }
     rows.push({
       id: "engine",
       label: "Engine: Provider ⇄ Subscription",
