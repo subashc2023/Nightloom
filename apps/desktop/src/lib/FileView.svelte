@@ -62,6 +62,9 @@
     };
   });
 
+  // Item 567: the path as folder (dim under Filament IV) + name; drawn as
+  // one run of text, so Classic, which styles neither part, is unchanged.
+  const pathCut = $derived(content.path.lastIndexOf("/") + 1);
   const src = $derived(file?.data ? `data:${file.media_type};base64,${file.data}` : null);
   // Item 380: text drawn in the chat's code colours, by the file's extension
   // (plain past the highlighter's cap).
@@ -120,7 +123,9 @@
 
 <div class="file-view">
   <header class="head">
-    <span class="path mono" use:tip={content.path}>{content.path}</span>
+    <span class="path mono" use:tip={content.path}
+      ><span class="path-dir">{content.path.slice(0, pathCut)}</span><span class="path-name">{content.path.slice(pathCut)}</span></span
+    >
     {#if file}
       <span class="meta mono">
         {fmtSize(file.size)} · read-only{file.via === "written" ? " · written by this chat's tools, outside its folders" : ""}
@@ -364,5 +369,43 @@
     color: var(--dim);
     font-size: 13px;
     line-height: 1.5;
+  }
+
+  /* Item 567 (Filament IV stage 10): the head as the browser's bar — a
+     panel band, the folder dim and the name in the text colour, the meta
+     in mono; the source on the code ground; images and PDFs on it too.
+     Filament IV only (item 542's gate); Classic keeps the rules above. */
+  :global(:where(:root:not([data-layout="classic"]))) .head {
+    padding: 8px 14px 8px 16px;
+    min-height: 46px;
+    box-sizing: border-box;
+    background: var(--sheet);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .path {
+    font-size: 12.5px;
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .path-dir {
+    color: var(--dim);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .meta {
+    font-size: 11px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .body.text {
+    background: var(--term);
+    line-height: 1.6;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .media,
+  :global(:where(:root:not([data-layout="classic"]))) .tex-out {
+    background: var(--term);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .note-card {
+    border: 1px solid var(--line2);
+    border-radius: var(--r2);
+    background: var(--raised);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tex-error {
+    border-radius: var(--r1);
+    background: var(--raised);
   }
 </style>

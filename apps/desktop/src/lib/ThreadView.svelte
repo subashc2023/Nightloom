@@ -303,4 +303,88 @@
       padding: 12px 16px 32px;
     }
   }
+
+  /* Item 567 (Filament IV stage 10): the thread as Filament IV's other
+     pages — the title in Plex Sans light (no serif), the file switch as
+     boxed controls, the section list as the sidebar's rows (square left
+     edge, the 2 px amber bar), the section's heading as the ruled mono
+     capital (.ns-cap's rule). Filament IV only (item 542's gate);
+     Classic keeps the rules above. */
+  :global(:where(:root:not([data-layout="classic"]))) h2 {
+    font-family: var(--sans);
+    font-weight: 300;
+    font-size: 22px;
+    letter-spacing: -0.005em;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tv-mark {
+    font-size: 15px;
+    vertical-align: 2px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tv-files {
+    border-radius: var(--r1);
+    background: var(--term);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tv-file {
+    padding: 5px 12px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tv-file.on {
+    background: var(--well);
+    box-shadow: inset 0 -2px 0 var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tv-sections {
+    padding: 10px 0;
+    background: var(--sheet);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tv-sec {
+    position: relative;
+    padding: 6px 14px;
+    border-radius: 0 var(--r1) var(--r1) 0;
+    margin-right: 8px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tv-sec.on {
+    box-shadow: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tv-sec.on::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tv-empty-mark {
+    font-family: var(--mono);
+    font-size: 10.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tv-sec-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 14px;
+    font: 500 10px var(--mono);
+    letter-spacing: 0.14em;
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tv-sec-title::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--line2);
+  }
+  @container (max-width: 620px) {
+    :global(:where(:root:not([data-layout="classic"]))) .tv-sections {
+      padding: 8px 12px;
+    }
+    :global(:where(:root:not([data-layout="classic"]))) .tv-sec {
+      margin-right: 0;
+      border-radius: var(--r1) var(--r1) 0 0;
+    }
+    :global(:where(:root:not([data-layout="classic"]))) .tv-sec.on::before {
+      top: auto;
+      right: 0;
+      width: auto;
+      height: 2px;
+    }
+  }
 </style>

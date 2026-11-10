@@ -722,4 +722,31 @@
   .aside-card-quote :global(p) {
     margin: 0;
   }
+
+  /* Item 567 (Filament IV stage 10): the aside keeps its own face (283:
+     the tint and the dashed accent edge, so it never reads as the chat),
+     in Filament IV's measures — the card's 8 px corner, a lighter shadow,
+     the head on a panel band. ("Aside of" as a mono capital label was
+     tried and dropped: its width cut the chat's name to four letters.)
+     Filament IV only (item 542's
+     gate); Classic keeps the rules above. */
+  :global(:where(:root:not([data-layout="classic"]))) .aside-card {
+    border-radius: var(--r2);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.32);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aside-card.panel {
+    border-radius: 0;
+    box-shadow: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aside-card-head {
+    background: color-mix(in srgb, var(--aside-tint) 70%, var(--paper));
+    border-radius: var(--r2) var(--r2) 0 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aside-card.panel .aside-card-head {
+    border-radius: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aside-card.folded .aside-card-head {
+    border-radius: var(--r2);
+    border-bottom: none;
+  }
 </style>
