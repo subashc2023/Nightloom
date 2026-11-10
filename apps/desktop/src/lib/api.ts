@@ -1659,6 +1659,10 @@ export function terminalOpen(cwd: string, cols: number, rows: number): Promise<S
 export function terminalRun(cwd: string, cols: number, rows: number, command: string): Promise<ShellInfo> {
   return invoke("terminal_run", { cwd, cols, rows, command });
 }
+/** The folder an ended block's shell was in, once; null when none was left (backlog 529). */
+export function terminalRunCwd(id: number): Promise<string | null> {
+  return invoke("terminal_run_cwd", { id });
+}
 export function terminalWrite(id: number, data: string): Promise<null> {
   return invoke("terminal_write", { id, data });
 }
