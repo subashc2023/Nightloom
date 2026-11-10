@@ -121,7 +121,7 @@
   <aside class="col" aria-label="Context, plan use, this turn and tasks">
     <section>
       <h4>Context <span>{modelShort(app.connection?.model)}</span></h4>
-      <div class="dial-at">
+      <div class="dial-at" data-dial-dock>
         <ContextDial
           size={104}
           {share}
