@@ -61,6 +61,7 @@ import {
   restoreTurn,
   resumeAfterLimit,
   rewindTo,
+  adoptOpen,
   runCapture,
   runDream,
   saveEdit,
@@ -364,7 +365,8 @@ export async function runAct(chat: string, project: string | null, action: ChatA
       await attempt("rewind", () => rewindTo(action.to, action.at ?? false));
       return reply();
     case "unrewind":
-      app.events = await api.unrewind(action.of);
+      // Adopted only while that chat is still on screen (535f, 534-1).
+      await adoptOpen(() => api.unrewind(action.of));
       return reply();
     case "fork":
       await mustClaim(id);

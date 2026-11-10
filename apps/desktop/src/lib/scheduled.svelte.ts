@@ -45,7 +45,7 @@ import {
   settleStashed,
   stashedChips,
 } from "./drafts.svelte";
-import { readDraftFile, stashDraftFile } from "./api";
+import { readDraftFile, reserveChatAgent, stashDraftFile } from "./api";
 import type { Attachment } from "./types";
 import {
   TICK_MS,
@@ -273,6 +273,26 @@ export function restoreScheduled(s: Scheduled, why: string, nowMs: number = Date
  * in `pending`, and `track` (the composer's `trackPending`) is given the
  * read, so Send waits for it as for a conversion.
  */
+/** Whether chat `key`'s kept agent spec is still wanted by something other
+ *  than a scheduled message — the limit card's resume waiting on it
+ *  (`state.svelte` says, `wantSpec`). 535f, the review's 535-4. */
+let specWanted: (key: string) => boolean = () => false;
+export function wantSpec(fn: (key: string) => boolean): void {
+  specWanted = fn;
+}
+
+/**
+ * Let chat `key`'s kept agent spec go (535f, the review's 535-4): its
+ * scheduled message was sent or cancelled, or its resume went. ~~Kept for
+ * good~~ — a stale spec (the model, the tools, safe mode of the day it was
+ * scheduled) ran a later off-screen send of the chat's queue. Kept while
+ * another message is scheduled in the chat or its resume waits.
+ */
+export function releaseSpec(key: string): void {
+  if (scheduled[key] || specWanted(key)) return;
+  void reserveChatAgent(key, false).catch(() => {});
+}
+
 export function cancelScheduled(key: string, track?: (id: number, job: Promise<void>) => void): string | null {
   const s = scheduled[key];
   if (!s) return null;
@@ -287,6 +307,7 @@ export function cancelScheduled(key: string, track?: (id: number, job: Promise<v
   delete scheduled[key];
   save();
   rearm();
+  releaseSpec(key);
   return s.text;
 }
 

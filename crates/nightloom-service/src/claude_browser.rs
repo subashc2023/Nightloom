@@ -73,6 +73,11 @@ pub struct BrowserStatus {
     pub height: u32,
     /// Open pages; the newest is the one shown.
     pub pages: u32,
+    /// A message is using the browser now (a chat turn's MCP server is
+    /// attached; its subagents share that one). False between messages,
+    /// while the browser is only kept for its logins (item 557): the
+    /// chat's offer then goes and the tab says it is idle.
+    pub in_use: bool,
 }
 
 /// What a browser tells the window.
@@ -171,6 +176,7 @@ impl Entry {
             width: WIDTH,
             height: HEIGHT,
             pages: s.pages,
+            in_use: s.live.is_some() && s.conns > 0,
         }
     }
 
@@ -339,21 +345,31 @@ impl Browsers {
             eprintln!("nightloom: Claude's browser is not answering at its socket");
             return;
         };
-        {
+        let first = {
             let mut s = entry.shared.lock().unwrap();
             s.conns += 1;
             s.last_active = Some(Instant::now());
-        }
+            s.conns == 1
+        };
         this.sync_dialogs(&entry).await;
+        // In use from the first attached message (item 557).
+        if first {
+            this.emit_status(&entry);
+        }
         drop(this);
         let _ = tokio::io::copy_bidirectional(&mut stream, &mut upstream).await;
-        {
+        let last = {
             let mut s = entry.shared.lock().unwrap();
             s.conns = s.conns.saturating_sub(1);
             s.last_active = Some(Instant::now());
-        }
+            s.conns == 0
+        };
         if let Some(this) = me.upgrade() {
             this.sync_dialogs(&entry).await;
+            // The message that used it is over: idle, said at once.
+            if last {
+                this.emit_status(&entry);
+            }
         }
     }
 
@@ -541,6 +557,11 @@ impl Browsers {
     }
 
     /// A tab started or stopped watching: frames flow only while one does.
+    ///
+    /// The last tab gone (item 552) also hands the browser back if he held
+    /// it: he closed the tab, sent it to the back, switched chats, or the
+    /// window hid or closed — every one a way out of a takeover, and none
+    /// may leave the model refused. His next click takes it again.
     pub async fn watch(&self, chat: &str, on: bool) {
         let Some(e) = self.get(chat) else { return };
         {
@@ -549,6 +570,9 @@ impl Browsers {
             s.last_active = Some(Instant::now());
         }
         self.send(&e, json!({"op": "watch", "on": on})).await;
+        if !on && e.held() {
+            let _ = self.set_hold(&e, false).await;
+        }
     }
 
     fn live_entry(&self, chat: &str) -> Result<Arc<Entry>, String> {
@@ -1022,6 +1046,121 @@ cat >> "$0/received""#;
         b.close("chat-1").await;
         assert!(!ask.held_by_user());
         assert_eq!(crate::agent::ask::decide(&r.ask, &call).decision(), "allow");
+        let _ = std::fs::remove_dir_all(&r.dir);
+    }
+
+    /// Item 550: the helper draws the page at 2 device pixels per CSS
+    /// pixel and casts frames at that size (sharp on a Retina display),
+    /// with the viewport still 1280×800 CSS px.
+    #[test]
+    fn the_helper_casts_retina_frames_of_the_same_page() {
+        let js = own_browser::HELPER_JS;
+        assert!(js.contains("const SCALE = 2;"));
+        assert!(
+            js.contains("viewport: { width: WIDTH, height: HEIGHT }, deviceScaleFactor: SCALE")
+        );
+        assert!(js.contains("size: { width: WIDTH * SCALE, height: HEIGHT * SCALE }"));
+        // WebKit's screencast stops at the CSS size, so a still page gets a
+        // full-resolution screenshot once it settles.
+        assert!(js.contains("settle = setTimeout(sharp, SETTLE_MS);"));
+        assert!(
+            js.contains("const data = await want.screenshot({ type: 'jpeg', quality: QUALITY });")
+        );
+        assert!(js.contains(&format!("const WIDTH = {WIDTH};")));
+        assert!(js.contains(&format!("const HEIGHT = {HEIGHT};")));
+    }
+
+    /// Item 557 (a bug he reported): the browser is kept between messages
+    /// for its logins, but it is in use only while a message's MCP server
+    /// is attached. The window hears both edges at once, so the chat's
+    /// offer ("Claude's browser · open") goes when the turn ends instead of
+    /// staying for the 30-minute idle end.
+    #[tokio::test]
+    async fn the_browser_reads_idle_the_moment_the_message_using_it_ends() {
+        let r = rig("in-use", IDLE);
+        let b = &r.browsers;
+        let socket = b.endpoint("chat-1", &r.ask).unwrap();
+        // A message's MCP server, attached and talking.
+        let mut conn = tokio::net::UnixStream::connect(&socket).await.unwrap();
+        conn.write_all(b"hi").await.unwrap();
+        let mut buf = [0u8; 2];
+        tokio::time::timeout(Duration::from_secs(10), conn.read_exact(&mut buf))
+            .await
+            .expect("the browser answered")
+            .unwrap();
+        assert!(until(|| b.status("chat-1").is_some_and(|s| s.live && s.in_use)).await);
+        let said_in_use = || {
+            r.events.lock().unwrap().iter().rev().find_map(|e| match e {
+                Event::Status(s) => Some(s.in_use),
+                _ => None,
+            })
+        };
+        assert!(until(|| said_in_use() == Some(true)).await);
+        // A second message attached at once (a subagent's call in the same
+        // process shares the connection; another turn would add one).
+        assert_eq!(one_turn(&socket, "two").await, "two");
+        assert!(
+            b.status("chat-1").unwrap().in_use,
+            "the first is still attached"
+        );
+
+        // The message ends: its server hangs up.
+        drop(conn);
+        assert!(until(|| said_in_use() == Some(false)).await);
+        let st = b.status("chat-1").unwrap();
+        assert!(st.live, "kept for its logins");
+        assert!(!st.in_use);
+        b.close("chat-1").await;
+        assert!(!b.status("chat-1").is_some_and(|s| s.in_use));
+        let _ = std::fs::remove_dir_all(&r.dir);
+    }
+
+    /// Item 552: a takeover ends with the tab. He takes the browser, then
+    /// the last tab watching it goes (closed, to the back, a chat switch,
+    /// the window hidden): the browser is the model's again, the window is
+    /// told, and the model's next call is allowed. A tab still watching
+    /// keeps his hold.
+    #[tokio::test]
+    async fn closing_the_tab_while_he_holds_the_browser_gives_it_back() {
+        let r = rig("handback", IDLE);
+        let b = &r.browsers;
+        let socket = b.endpoint("chat-1", &r.ask).unwrap();
+        assert_eq!(one_turn(&socket, "go").await, "go");
+        let call =
+            json!({"hook_event_name": "PreToolUse", "tool_name": "mcp__playwright__browser_click",
+            "tool_input": {}, "tool_use_id": "c1", "permission_mode": "auto"})
+            .to_string();
+        let ask = AskDir::new(&r.ask);
+        ask.set_playwright_chat(true).unwrap();
+
+        b.watch("chat-1", true).await;
+        b.hold("chat-1", true).await.unwrap();
+        assert!(ask.held_by_user());
+        assert_eq!(crate::agent::ask::decide(&r.ask, &call).decision(), "deny");
+
+        // The tab closes.
+        b.watch("chat-1", false).await;
+        assert!(!ask.held_by_user());
+        assert_eq!(b.status("chat-1").unwrap().held_by, "model");
+        assert_eq!(crate::agent::ask::decide(&r.ask, &call).decision(), "allow");
+        let last = r.events.lock().unwrap().iter().rev().find_map(|e| match e {
+            Event::Status(s) => Some(s.held_by),
+            _ => None,
+        });
+        assert_eq!(last, Some("model"));
+
+        // Reopened, his click takes it again; the browser still runs.
+        b.watch("chat-1", true).await;
+        let click = json!({"kind": "click", "x": 1, "y": 1, "button": "left", "clicks": 1, "modifiers": []});
+        b.input("chat-1", click).await.unwrap();
+        assert!(ask.held_by_user());
+        // Watching on (a second view coming) never gives it back.
+        b.watch("chat-1", true).await;
+        assert!(ask.held_by_user());
+        // A watch-off with the model holding changes nothing.
+        b.hold("chat-1", false).await.unwrap();
+        b.watch("chat-1", false).await;
+        assert!(!ask.held_by_user());
         let _ = std::fs::remove_dir_all(&r.dir);
     }
 

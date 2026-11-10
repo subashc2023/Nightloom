@@ -13,6 +13,7 @@ import "@fontsource/ibm-plex-mono/latin-400.css";
 import "@fontsource/ibm-plex-mono/latin-500.css";
 import "./app.css";
 import { app as state, applyPalette } from "./lib/state.svelte";
+import { applyLayout } from "./lib/layout.svelte";
 import { installMathCopy } from "./lib/mathCopy";
 import { installFieldUndo } from "./lib/fieldUndo";
 
@@ -24,6 +25,10 @@ installFieldUndo();
 
 // The saved palette, before the first paint.
 applyPalette(state.palette);
+
+// The saved layout (item 542): Filament IV, or Classic — the look before
+// item 525 — which stamps `data-layout` and re-stamps the palette.
+applyLayout();
 
 // Filament IV's strength, before the first paint (item 525): lit (IV+) is the
 // default and needs no attribute; "calm" turns the light, the brackets and

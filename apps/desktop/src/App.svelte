@@ -93,10 +93,20 @@
   import { isKeptKind, keptBox, keptIn } from "./lib/keptTabs.svelte";
   import { placeKey, tabPlace } from "./lib/tabPlace";
   import TerminalDock from "./lib/TerminalDock.svelte";
+  // Item 542: the Classic layout — 1d4ca17's files, kept verbatim, mounted
+  // in place of the Filament IV ones while Settings → Appearance → Layout
+  // is Classic (`layout.svelte.ts`).
+  import { classic } from "./lib/layout.svelte";
+  import SidebarClassic from "./lib/SidebarClassic.svelte";
+  import TitleBarClassic from "./lib/TitleBarClassic.svelte";
+  import TopBarClassic from "./lib/TopBarClassic.svelte";
+  import TabStripClassic from "./lib/TabStripClassic.svelte";
+  import TranscriptClassic from "./lib/TranscriptClassic.svelte";
   import Icon from "./lib/Icon.svelte";
   import { externalHref } from "./lib/extlink";
   import LaunchScreen from "./lib/LaunchScreen.svelte";
   import { launch } from "./lib/launch.svelte";
+  import { startScheduleRuntime } from "./lib/scheduleRuntime";
 
   onMount(() => {
     // The pickers' models from `model-list.json` (item 272); the built-in
@@ -109,11 +119,15 @@
     void pruneDraftCopies();
     // A launch that fails outright must not leave the launch screen up
     // over the reason (item 220).
-    void init().catch((e: unknown) => {
-      launch.opening = false;
-      launch.connectSettled = true;
-      app.error = String(e);
-    });
+    void init()
+      .catch((e: unknown) => {
+        launch.opening = false;
+        launch.connectSettled = true;
+        app.error = String(e);
+      })
+      // The schedule's clock and the backend's wakes (535f, 535-3): from
+      // app start, whatever tab is in front — not from a composer's mount.
+      .finally(() => startScheduleRuntime());
     // The stored zoom back on the window, and the View menu's zoom items
     // (nightshift backlog 108).
     void initZoom();
@@ -259,6 +273,8 @@
   const RAIL_MIN_SPLIT = 900;
   const railColumn = $derived.by(
     () =>
+      // Not under the Classic layout (item 542): 1d4ca17 had no column.
+      !classic() &&
       !app.asidePanel &&
       !blank &&
       splitWidth >= RAIL_MIN_SPLIT &&
@@ -648,14 +664,14 @@
 />
 
 <div class="shell">
-  <TitleBar />
+  {#if classic()}<TitleBarClassic />{:else}<TitleBar />{/if}
   <div
     class="app"
     class:nightshift={app.view === "nightshift"}
     class:collapsed={app.layout.sidebarCollapsed}
     style:grid-template-columns="{app.layout.sidebarCollapsed ? 0 : sidebarColumn()}px minmax(0, 1fr)"
   >
-    <Sidebar />
+    {#if classic()}<SidebarClassic />{:else}<Sidebar />{/if}
     <!-- The launch screen (item 220): over the app until the project list
          is read and the last project has reopened. -->
     {#if launch.opening}<LaunchScreen />{/if}
@@ -725,9 +741,9 @@
                 />
               </div>
             {/if}
-            <TabStrip {pane} />
+            {#if classic()}<TabStripClassic {pane} />{:else}<TabStrip {pane} />{/if}
             {#if barPane === pane.id}
-              <TopBar />
+              {#if classic()}<TopBarClassic />{:else}<TopBar />{/if}
             {/if}
             <!-- Item 487: the note and the read-only views stay mounted
                  once shown, hidden while another tab is in front, so a
@@ -833,6 +849,8 @@
                   <WaitingChat key={app.activeSessionId} />
                 {:else if blank}
                   <Welcome />
+                {:else if classic()}
+                  <TranscriptClassic />
                 {:else}
                   <Transcript />
                 {/if}
@@ -857,7 +875,7 @@
               {@const v = paneChat(session)}
               <div class="content">
                 {#key session}
-                  <Transcript chat={session} />
+                  {#if classic()}<TranscriptClassic chat={session} />{:else}<Transcript chat={session} />{/if}
                 {/key}
                 {#if focused}<FindBar bind:this={findBar} />{/if}
               </div>

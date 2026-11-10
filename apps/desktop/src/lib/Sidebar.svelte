@@ -34,6 +34,7 @@
     showNightshift,
     toggleSidebar,
     contextUsed,
+    connectionWindowFor,
     liveChats,
   } from "./state.svelte";
   // Item 534 (Filament IV stage 3): the dated sections, the two-line row's
@@ -199,7 +200,8 @@
   $effect(() => {
     const id = app.activeSessionId;
     const used = contextUsed();
-    const limit = app.connection?.contextLimit ?? null;
+    // Only a window known to be this chat's (559, 534-2): else the stored one stays.
+    const limit = connectionWindowFor(id);
     untrack(() => noteChatContext(id, used, limit));
   });
   $effect(() => {

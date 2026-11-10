@@ -151,6 +151,10 @@
   import { hasNoTurns } from "./waitingChat";
   import PreviewChip from "./PreviewChip.svelte";
   import ClaudeBrowserChip from "./ClaudeBrowserChip.svelte";
+  // Item 542: under the Classic layout, 1d4ca17's browser strip.
+  import ClaudeBrowserChipClassic from "./ClaudeBrowserChipClassic.svelte";
+  import { classic } from "./layout.svelte";
+  const BrowserChip = $derived(classic() ? ClaudeBrowserChipClassic : ClaudeBrowserChip);
   import { registerScheduleDrain } from "./scheduleRuntime";
   import CouncilPopover from "./CouncilPopover.svelte";
   import ClipPanel from "./ClipPanel.svelte";
@@ -2857,7 +2861,7 @@
     <!-- The chat's preview (item 430): its dev server, up between messages. -->
     <PreviewChip chat={app.activeSessionId} />
     <!-- Claude's browser (item 508): offered once it is live; opens only on his click. -->
-    <ClaudeBrowserChip chat={app.activeSessionId} />
+    <BrowserChip chat={app.activeSessionId} />
   {/if}
   {#if composerShows("schedule", !!aside) && !onWaitingPage}
     <ScheduledChip {key} onedit={scheduleEdited} />
@@ -3557,6 +3561,12 @@
 {/snippet}
 
 <style>
+  /* The Classic layout (item 542): every rule item 525 changed is written
+     twice, in place — the Filament IV rule behind
+     `:global(:where(:root:not([data-layout="classic"])))`, then 1d4ca17's,
+     verbatim, behind `:global(:where([data-layout="classic"]))`. `:where()`
+     weighs nothing, so neither changes the other's cascade (app.css has the
+     same gate). */
   /* The council button's frame (backlog 149): the popover hangs off it. */
   .council-wrap {
     position: relative;
@@ -3577,7 +3587,7 @@
        instead, below. */
     flex: none;
   }
-  .pick-btn {
+  :global(:where(:root:not([data-layout="classic"]))) .pick-btn {
     display: inline-flex;
     align-items: center;
     gap: 7px;
@@ -3601,13 +3611,35 @@
       background-color 120ms,
       border-color 120ms;
   }
-  .pick-btn:hover:not(:disabled),
-  .pick-btn.open {
+  :global(:where([data-layout="classic"])) .pick-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 8px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    background: transparent;
+    font-family: var(--sans);
+    font-size: 12px;
+    color: var(--ink2);
+    white-space: nowrap;
+    cursor: pointer;
+    max-width: 240px;
+    min-width: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pick-btn:hover:not(:disabled),
+:global(:where(:root:not([data-layout="classic"]))) .pick-btn.open {
     background: var(--well2);
     color: var(--ink);
     border-color: var(--dim);
   }
-  .pick-btn:focus-visible {
+  :global(:where([data-layout="classic"])) .pick-btn:hover:not(:disabled),
+:global(:where([data-layout="classic"])) .pick-btn.open {
+    background: var(--well);
+    color: var(--ink);
+    border-color: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pick-btn:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 1px;
   }
@@ -3625,18 +3657,26 @@
   .pick-dot.unknown {
     background: var(--dim);
   }
-  .pick-k {
+  :global(:where(:root:not([data-layout="classic"]))) .pick-k {
     color: var(--dim);
     font-weight: 400;
+  }
+  :global(:where([data-layout="classic"])) .pick-k {
+    color: var(--dim);
   }
   .pick-name {
     overflow: hidden;
     text-overflow: ellipsis;
     min-width: 0;
   }
-  .pick-chev {
+  :global(:where(:root:not([data-layout="classic"]))) .pick-chev {
     display: inline-flex;
     color: var(--ink2);
+    flex: none;
+  }
+  :global(:where([data-layout="classic"])) .pick-chev {
+    display: inline-flex;
+    color: var(--dim);
     flex: none;
   }
   .pick-chev :global(svg) {
@@ -3646,7 +3686,7 @@
   /* Placed by `use:floatMenu` (backlog 210): portalled to `body` and fixed
      by the button's rectangle, so the Welcome page's scrolling column can
      no longer cut it off; its top, left and max-height are set inline. */
-  .pick-menu {
+  :global(:where(:root:not([data-layout="classic"]))) .pick-menu {
     position: fixed;
     z-index: 80;
     min-width: 230px;
@@ -3664,7 +3704,24 @@
     gap: 1px;
     font-family: var(--sans);
   }
-  .pick-head {
+  :global(:where([data-layout="classic"])) .pick-menu {
+    position: fixed;
+    z-index: 80;
+    min-width: 230px;
+    max-width: 360px;
+    max-height: 60vh;
+    overflow-y: auto;
+    background: var(--sheet);
+    border: 1px solid var(--line2);
+    border-radius: 10px;
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    font-family: var(--sans);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pick-head {
     font-family: var(--mono);
     font-weight: 500;
     font-size: 10px;
@@ -3677,14 +3734,30 @@
     align-items: baseline;
     white-space: nowrap;
   }
-  .pick-sub {
+  :global(:where([data-layout="classic"])) .pick-head {
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--dim);
+    padding: 5px 8px 3px;
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    white-space: nowrap;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pick-sub {
     text-transform: none;
     letter-spacing: 0;
     font-weight: 400;
     font-size: 10.5px;
     color: var(--dim);
   }
-  .pick-row {
+  :global(:where([data-layout="classic"])) .pick-sub {
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: 11px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pick-row {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -3700,18 +3773,43 @@
     cursor: pointer;
     min-width: 0;
   }
-  .pick-row:hover,
-  .pick-row:focus-visible {
+  :global(:where([data-layout="classic"])) .pick-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    border: none;
+    background: transparent;
+    font-family: var(--sans);
+    font-size: 12.5px;
+    color: var(--ink);
+    text-align: left;
+    white-space: nowrap;
+    cursor: pointer;
+    min-width: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pick-row:hover,
+:global(:where(:root:not([data-layout="classic"]))) .pick-row:focus-visible {
     background: var(--well);
     color: var(--ink);
     outline: none;
   }
+  :global(:where([data-layout="classic"])) .pick-row:hover,
+:global(:where([data-layout="classic"])) .pick-row:focus-visible {
+    background: var(--well);
+    outline: none;
+  }
   /* The chosen row is the control fill, never the accent block (the accent
      block means "the main action"). */
-  .pick-row.on {
+  :global(:where(:root:not([data-layout="classic"]))) .pick-row.on {
     background: var(--well2);
     color: var(--ink);
     font-weight: 500;
+  }
+  :global(:where([data-layout="classic"])) .pick-row.on {
+    background: var(--accent-soft);
+    color: var(--accent-ink);
   }
   /* The name never shrinks; the grey detail ellipsizes first (backlog 530). */
   .pick-row-label {
@@ -3752,7 +3850,7 @@
   /* A switch (Filament IV, item 525; `.ns-switch` in app.css): a pill with
      a sliding dot, accent when on. The mark's glyph is the track: its
      letter is hidden and the dot is drawn on it. */
-  .bottom-toggle {
+  :global(:where(:root:not([data-layout="classic"]))) .bottom-toggle {
     cursor: pointer;
     font: 500 11.5px var(--sans);
     color: var(--ink2);
@@ -3763,7 +3861,13 @@
     background: var(--raised);
     text-transform: capitalize;
   }
-  .bottom-mark {
+  :global(:where([data-layout="classic"])) .bottom-toggle {
+    cursor: pointer;
+    font-family: var(--sans);
+    color: var(--dim);
+    gap: 5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .bottom-mark {
     position: relative;
     flex: none;
     width: 20px;
@@ -3775,7 +3879,11 @@
     overflow: hidden;
     transition: background-color 120ms;
   }
-  .bottom-mark::after {
+  :global(:where([data-layout="classic"])) .bottom-mark {
+    font-size: 11px;
+    opacity: 0.55;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .bottom-mark::after {
     content: "";
     position: absolute;
     top: 2px;
@@ -3791,29 +3899,44 @@
   .bottom-toggle.on {
     color: var(--ink);
   }
-  .bottom-toggle.on .bottom-mark {
+  :global(:where(:root:not([data-layout="classic"]))) .bottom-toggle.on .bottom-mark {
     background: var(--accent);
   }
-  .bottom-toggle.on .bottom-mark::after {
+  :global(:where([data-layout="classic"])) .bottom-toggle.on .bottom-mark {
+    color: var(--accent);
+    opacity: 1;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .bottom-toggle.on .bottom-mark::after {
     left: 10px;
     background: var(--on-accent);
   }
-  .bottom-toggle:hover {
+  :global(:where(:root:not([data-layout="classic"]))) .bottom-toggle:hover {
     border-color: var(--dim);
     color: var(--ink);
   }
+  :global(:where([data-layout="classic"])) .bottom-toggle:hover {
+    border-color: var(--accent);
+    color: var(--ink);
+  }
   @media (prefers-reduced-motion: reduce) {
-    .bottom-mark,
-    .bottom-mark::after,
-    .pick-btn {
+    :global(:where(:root:not([data-layout="classic"]))) .bottom-mark,
+:global(:where(:root:not([data-layout="classic"]))) .bottom-mark::after,
+:global(:where(:root:not([data-layout="classic"]))) .pick-btn {
       transition: none;
     }
   }
-  .bottom-toggle:disabled,
-  .bottom-toggle:disabled:hover {
+  :global(:where(:root:not([data-layout="classic"]))) .bottom-toggle:disabled,
+:global(:where(:root:not([data-layout="classic"]))) .bottom-toggle:disabled:hover {
     cursor: default;
     opacity: 0.5;
     border-color: var(--line2);
+    color: var(--dim);
+  }
+  :global(:where([data-layout="classic"])) .bottom-toggle:disabled,
+:global(:where([data-layout="classic"])) .bottom-toggle:disabled:hover {
+    cursor: default;
+    opacity: 0.5;
+    border-color: transparent;
     color: var(--dim);
   }
   .bottom-cache {
@@ -3848,11 +3971,16 @@
     color: var(--dim);
   }
 
-  .composer {
+  :global(:where(:root:not([data-layout="classic"]))) .composer {
     position: relative;
     /* The lit level's dot ground goes on under the box (item 525), from
        the top so it meets the transcript's, which is anchored to its foot. */
     background: var(--ground-dots, none) left top / 24px 24px var(--paper);
+    padding: 12px 20px 22px;
+  }
+  :global(:where([data-layout="classic"])) .composer {
+    position: relative;
+    background: var(--paper);
     padding: 12px 20px 22px;
   }
   /* The drag handle sits on the top edge, over the border: `ResizeHandle`
@@ -3878,10 +4006,10 @@
   }
   /* An aside's box is the aside's, not the object in front: no shadow, no
      brackets. */
-  .composer.aside .card {
+  :global(:where(:root:not([data-layout="classic"]))) .composer.aside .card {
     box-shadow: none;
   }
-  .composer.aside .card::before {
+  :global(:where(:root:not([data-layout="classic"]))) .composer.aside .card::before {
     display: none;
   }
   .composer.aside .card,
@@ -3933,12 +4061,23 @@
   /* The queue tray: joined to the top of the card, dashed so it reads as
      "not sent yet" (backlog 089). Plain rows; the real design is the
      Fable board's. */
-  .queue {
+  :global(:where(:root:not([data-layout="classic"]))) .queue {
     max-width: 760px;
     margin: 0 auto 0.5rem;
     border: 1px dashed var(--line2);
     border-radius: var(--r2);
     background: var(--sheet);
+    padding: 0.4rem 0.6rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    font-size: 13px;
+  }
+  :global(:where([data-layout="classic"])) .queue {
+    max-width: 760px;
+    margin: 0 auto 0.5rem;
+    border: 1px dashed var(--line2);
+    border-radius: 8px;
     padding: 0.4rem 0.6rem;
     display: flex;
     flex-direction: column;
@@ -4016,7 +4155,7 @@
   }
   /* A document has no thumbnail to show, so the chip carries its name — the
      one thing that tells three attachments apart. */
-  .file {
+  :global(:where(:root:not([data-layout="classic"]))) .file {
     display: flex;
     flex-direction: column;
     justify-content: center;
@@ -4027,6 +4166,19 @@
     border: 1px solid var(--line2);
     border-radius: var(--r1);
     background: var(--raised);
+    line-height: 1.2;
+  }
+  :global(:where([data-layout="classic"])) .file {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 0.2rem;
+    width: 7rem;
+    height: 4rem;
+    padding: 0 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
     line-height: 1.2;
   }
   /* Item 491: a long PDF's chip carries its route and the switch. */
@@ -4096,7 +4248,7 @@
     border-color: var(--failed);
   }
   /* The mock-up's composer card: the text on top, the toolbar under it. */
-  .card {
+  :global(:where(:root:not([data-layout="classic"]))) .card {
     max-width: 760px;
     margin: 0 auto;
     display: flex;
@@ -4111,6 +4263,18 @@
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
     transition: border-color 0.12s;
   }
+  :global(:where([data-layout="classic"])) .card {
+    max-width: 760px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px 14px;
+    background: var(--sheet);
+    border: 1px solid var(--line2);
+    border-radius: 10px;
+    transition: border-color 0.12s;
+  }
   .card:focus-within {
     border-color: var(--accent);
   }
@@ -4118,7 +4282,7 @@
      accent (`--bracket`; transparent in calm and the classic palettes).
      Eight 12 × 1.5px strokes drawn as backgrounds: nothing to lay out,
      nothing that takes the pointer. */
-  .card::before {
+  :global(:where(:root:not([data-layout="classic"]))) .card::before {
     content: "";
     position: absolute;
     inset: -7px;
@@ -4137,7 +4301,7 @@
   /* The row's buttons are real buttons (Attach, Ask aside, Council, Queue):
      the markup's `ghost` is the quiet button of other screens; here each has
      the control fill and edge, 28px tall. */
-  .row .ns-btn.ghost {
+  :global(:where(:root:not([data-layout="classic"]))) .row .ns-btn.ghost {
     min-height: 28px;
     padding: 0 11px;
     font-size: 12.5px;
@@ -4146,7 +4310,7 @@
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
     color: var(--ink);
   }
-  .row .ns-btn.ghost:hover:not(:disabled) {
+  :global(:where(:root:not([data-layout="classic"]))) .row .ns-btn.ghost:hover:not(:disabled) {
     background: var(--well2);
     border-color: var(--dim);
   }
@@ -4224,11 +4388,27 @@
   /* ~~The key hint (↵ to send · ⇧↵ newline)~~ — deleted 2026-09-22 on his
      word (nightshift backlog 177): it pushed Council and Send onto a second
      line; the Queue button says Enter queues during a turn. */
-  textarea {
+  :global(:where(:root:not([data-layout="classic"]))) textarea {
     width: 100%;
     background: transparent;
     color: var(--ink);
     caret-color: var(--accent);
+    border: none;
+    padding: 2px 0;
+    font-size: 15px;
+    font-family: inherit;
+    line-height: 1.5;
+    resize: none;
+    overflow-y: auto;
+    /* A message wraps; a sliver of horizontal overflow was drawing a full
+       10px scrollbar thumb across the box (his screenshot, 2026-09-16). */
+    overflow-x: hidden;
+    box-sizing: border-box;
+  }
+  :global(:where([data-layout="classic"])) textarea {
+    width: 100%;
+    background: transparent;
+    color: var(--ink);
     border: none;
     padding: 2px 0;
     font-size: 15px;
@@ -4274,20 +4454,27 @@
     opacity: 0.5;
   }
   /* The main action: the one solid accent block in view, 32px tall. */
-  .send {
+  :global(:where(:root:not([data-layout="classic"]))) .send {
     min-height: 32px;
     padding: 0 16px;
     font-size: 13px;
   }
+  :global(:where([data-layout="classic"])) .send {
+    padding: 6px 16px;
+  }
   /* Item 398: the Stop in Send's place. "Send" in Send's weight, hidden,
      gives it Send's width and height; the square sits centred over it. */
   /* Filament IV's Stop: a button with a brighter edge and a red square. */
-  .stop {
+  :global(:where(:root:not([data-layout="classic"]))) .stop {
     position: relative;
     font-weight: 600;
     border-color: var(--ink2);
   }
-  .stop:hover:not(:disabled) {
+  :global(:where([data-layout="classic"])) .stop {
+    position: relative;
+    font-weight: 500;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .stop:hover:not(:disabled) {
     border-color: var(--ink);
   }
   .stop .stop-size {
@@ -4313,10 +4500,15 @@
     overflow: hidden;
   }
   /* ~~31 px~~ 32 px: Send's height since item 525 (the main action's). */
-  .stop.shape-square,
-  .stop.shape-round {
+  :global(:where(:root:not([data-layout="classic"]))) .stop.shape-square,
+:global(:where(:root:not([data-layout="classic"]))) .stop.shape-round {
     width: 32px;
     background: color-mix(in srgb, var(--failed) 16%, var(--well));
+  }
+  :global(:where([data-layout="classic"])) .stop.shape-square,
+:global(:where([data-layout="classic"])) .stop.shape-round {
+    width: 31px;
+    background: color-mix(in srgb, var(--failed) 16%, var(--sheet));
   }
   .stop.shape-round {
     border-radius: 50%;
@@ -4329,9 +4521,12 @@
     position: static;
     gap: 6px;
   }
-  .stop-word {
+  :global(:where(:root:not([data-layout="classic"]))) .stop-word {
     font-size: 13px;
     color: var(--ink);
+  }
+  :global(:where([data-layout="classic"])) .stop-word {
+    font-size: 12.5px;
   }
   /* Item 466: the Stop pressed — sunk, dimmed, its square a spinner — held
      until the turn has ended. */
@@ -4435,7 +4630,7 @@
      accent rule, a heading with the fill at the right, one line, the
      fields, the actions with the key strip). ~~one ruled row above the
      box~~ — the row is now the heading. */
-  .handoff {
+  :global(:where(:root:not([data-layout="classic"]))) .handoff {
     max-width: 760px;
     margin: 0 auto 6px;
     display: flex;
@@ -4445,6 +4640,19 @@
     border: 1px solid var(--accent);
     border-radius: var(--r2);
     background: var(--raised);
+    font-size: 13px;
+    color: var(--ink2);
+  }
+  :global(:where([data-layout="classic"])) .handoff {
+    max-width: 760px;
+    margin: 0 auto 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px 14px;
+    border: 1px solid var(--accent);
+    border-radius: 10px;
+    background: var(--sheet);
     font-size: 13px;
     color: var(--ink2);
   }
@@ -4521,7 +4729,7 @@
     flex-wrap: wrap;
     font-size: 12.5px;
   }
-  .handoff-row input {
+  :global(:where(:root:not([data-layout="classic"]))) .handoff-row input {
     width: 4rem;
     font-family: var(--mono);
     font-size: 12px;
@@ -4531,18 +4739,40 @@
     border-radius: var(--r1);
     padding: 3px 6px;
   }
+  :global(:where([data-layout="classic"])) .handoff-row input {
+    width: 4rem;
+    font-family: var(--mono);
+    font-size: 12px;
+    background: var(--paper);
+    color: var(--ink);
+    border: 1px solid var(--line2);
+    border-radius: 6px;
+    padding: 3px 6px;
+  }
   .handoff-row input:focus {
     outline: none;
     border-color: var(--accent);
   }
   /* The message: the composer's own field face, so it reads as the one
      thing here that is typed into. */
-  .handoff-msg {
+  :global(:where(:root:not([data-layout="classic"]))) .handoff-msg {
     width: 100%;
     background: var(--term);
     color: var(--ink);
     border: 1px solid var(--line2);
     border-radius: var(--r1);
+    padding: 6px 8px;
+    font-size: 13px;
+    font-family: inherit;
+    line-height: 1.45;
+    resize: vertical;
+  }
+  :global(:where([data-layout="classic"])) .handoff-msg {
+    width: 100%;
+    background: var(--paper);
+    color: var(--ink);
+    border: 1px solid var(--line2);
+    border-radius: 6px;
     padding: 6px 8px;
     font-size: 13px;
     font-family: inherit;
@@ -4566,13 +4796,23 @@
   }
 
   /* The `/` picker (backlog 077): a plain list joined to the card's top. */
-  .slash {
+  :global(:where(:root:not([data-layout="classic"]))) .slash {
     display: flex;
     flex-direction: column;
     border: 1px solid var(--line2);
     border-bottom: none;
     border-radius: var(--r2) var(--r2) 0 0;
     background: var(--raised);
+    max-height: 16rem;
+    overflow-y: auto;
+  }
+  :global(:where([data-layout="classic"])) .slash {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--line);
+    border-bottom: none;
+    border-radius: 8px 8px 0 0;
+    background: var(--sheet);
     max-height: 16rem;
     overflow-y: auto;
   }

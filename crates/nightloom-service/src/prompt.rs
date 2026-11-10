@@ -515,10 +515,17 @@ fn subagents_segment(reusable: bool, model: crate::agent::brief::SubagentModel) 
     // blocker 584).
     use crate::agent::brief::SubagentModel;
     let model = match model {
+        // ~~"this chat's for all work; fable only after a pass on it
+        // visibly failed, said so; sonnet or haiku only for mechanical
+        // work"~~ — 2026-11-10 (nightshift 540, blocker 1732, his answer:
+        // "Fable for the very hardest task, there should be a reason for
+        // why Fable is being used"). Opus is the floor; the hook enforces it.
         SubagentModel::Choose => {
-            "Model: this chat's for all work; fable only after a pass on it visibly failed, \
-             said so; sonnet or haiku only for mechanical work. Name it on each launch, one \
-             line: which and why. Forks always run it."
+            "Model, named on each launch: opus (Opus 5.5) by default; a launch naming none \
+             runs on it. fable (Fable 5.2) only for the very hardest tasks (a multi-file systems \
+             build, hard research), with a line \"Why Fable: <reason>\", or it is refused. \
+             sonnet or haiku only if the user asked (a line \"User asked for sonnet\"), else it \
+             runs on opus. Forks run this chat's model."
         }
         SubagentModel::Same => {
             "Every subagent runs this chat's model: Nightloom sets it on each launch, \
@@ -536,10 +543,14 @@ fn subagents_segment(reusable: bool, model: crate::agent::brief::SubagentModel) 
          tokens before it does any work, all of it from this message's budget. It is worth it \
          for work across many files, broad searches or long research, or to keep your own \
          context clean; a bounded task smaller than that, do yourself.\n\
-         - Reuse a finished subagent for a follow-up on the same topic — in this message or a \
-         later one — with SendMessage by its id or name: it keeps its context and its cache. \
-         Retire one past about 300k tokens of context, and have a fresh subagent review its \
-         work before you rely on it.\n\
+         - Size each helper before launching it, by context (the most it will hold at its \
+         peak, not the tokens billed over its run), on a line of the prompt: \"Estimated \
+         context: ~150k\". Keep each under 250k; split bigger work into pieces, each its own \
+         helper. Nightloom refuses a launch with no estimate or one past 250k.\n\
+         - Reuse a finished subagent under 300k of context for a follow-up on the same topic, \
+         in this message or a later one, with SendMessage by its id or name: it keeps its \
+         context and its cache. Retire one past 300k (each launch lists your helpers' sizes), \
+         and have a fresh subagent review its work before you rely on it.\n\
          - {cache}\n\
          - {model}\n\
          - Brief it with a short written spec: what to read, by path; the task; how to check \
@@ -684,8 +695,18 @@ pub fn subagent_rules_body(rules: &SubagentRules<'_>) -> String {
          many still run and what each is doing, and ask the user whether to wait for them or \
          stop them.\n",
     );
+    // Backlog 553: the size rule the hook enforces whatever the settings.
+    out.push_str(
+        "- Each launch states its helper's estimated context on a line (\"Estimated context: \
+         ~150k\"); one with none, or past 250k, is refused: split it into helpers of under \
+         250k each.\n",
+    );
     out.push_str(match l.model {
-        SubagentModel::Choose => "- Subagents' model: yours to choose on each launch.\n",
+        SubagentModel::Choose => {
+            "- Subagents' model: yours to choose on each launch, within the user's rule: opus by \
+             default; fable only with a \"Why Fable:\" line (refused without); sonnet or haiku \
+             only if the user asked (otherwise run on opus).\n"
+        }
         SubagentModel::Same => "- Subagents' model: always this chat's; Nightloom sets it.\n",
         SubagentModel::Sonnet => {
             "- Subagents' model: sonnet (haiku if you name it); Nightloom sets it.\n"
@@ -2810,8 +2831,11 @@ As of now — the front.
             "{}",
             words(SegmentKind::Pacing)
         );
+        // ~~250~~ — 350 since 2026-11-10 (nightshift 553 + 540): the size
+        // rule and his Fable rule had to be in it; 338 measured with
+        // `reusable` on.
         assert!(
-            words(SegmentKind::Subagents) <= 250,
+            words(SegmentKind::Subagents) <= 350,
             "{}",
             words(SegmentKind::Subagents)
         );
@@ -2873,15 +2897,18 @@ As of now — the front.
                 .unwrap()
             };
             let choose = say(SubagentModel::Choose);
-            assert!(choose.contains("fable only after"), "{choose}");
-            assert!(choose.contains("only for mechanical work"), "{choose}");
-            assert!(choose.contains("which and why"), "{choose}");
+            // ~~"fable only after", "only for mechanical work", "which and
+            // why"~~ — 2026-11-10 (540, blocker 1732): Opus the default,
+            // Fable with a written reason, nothing below Opus unasked.
+            assert!(choose.contains("opus (Opus 5.5) by default"), "{choose}");
+            assert!(choose.contains("Why Fable: <reason>"), "{choose}");
+            assert!(choose.contains("only if the user asked"), "{choose}");
             let same = say(SubagentModel::Same);
             assert!(
                 same.contains("Every subagent runs this chat's model"),
                 "{same}"
             );
-            assert!(!same.contains("which and why"), "{same}");
+            assert!(!same.contains("Why Fable"), "{same}");
             let sonnet = say(SubagentModel::Sonnet);
             assert!(sonnet.contains("Subagents run on sonnet"), "{sonnet}");
             for text in [&choose, &same, &sonnet] {
@@ -3375,6 +3402,68 @@ As of now — the front.
         assert!(model < note, "{text}");
         assert!(text.ends_with("\n\nBe terse."), "{text}");
         std::fs::remove_file(path).ok();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Backlog 553: the size, reuse and model rules reach a chat in a
+    /// project with no CLAUDE.md or AGENTS.md at all (the College project
+    /// has only a 3-line AGENTS.md, and practices.md never reached it) —
+    /// the subagents layer and the rules layer are Nightloom's own, built
+    /// from the settings, not from a file in the project.
+    #[test]
+    fn the_size_and_model_rules_reach_a_chat_in_a_project_without_a_practices_file() {
+        let dir = temp_dir("agent-553");
+        let notes = dir.join("notes");
+        std::fs::create_dir_all(&notes).unwrap();
+        assert!(!dir.join("CLAUDE.md").exists() && !dir.join("AGENTS.md").exists());
+        let config = PromptConfig {
+            project_instructions: true,
+            project: Some(ProjectContext {
+                name: "College".into(),
+                notes_dir: notes,
+            }),
+            ..bare(dir.clone())
+        };
+        let limits = crate::agent::brief::SubagentLimits::default();
+        let prompt = agent_prompt_with(
+            &config,
+            None,
+            EngineLayers {
+                engine_note: true,
+                pacing: true,
+                subagents: true,
+                reusable: false,
+                subagent_model: crate::agent::brief::SubagentModel::Choose,
+                subagent_rules: Some(SubagentRules {
+                    words: "",
+                    limits,
+                    fork_mode: true,
+                }),
+                incognito: false,
+            },
+        );
+        assert!(
+            !prompt
+                .segments()
+                .iter()
+                .any(|s| s.kind == SegmentKind::ProjectInstructions),
+            "no project file was there to send"
+        );
+        let text = prompt.render_flat().unwrap();
+        assert!(
+            text.contains("<subagents>") && text.contains("<subagent-rules>"),
+            "{text}"
+        );
+        assert!(text.contains("Estimated context: ~150k"), "{text}");
+        assert!(
+            text.contains("under 250k") && text.contains("Retire one past 300k"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Why Fable:") && text.contains("opus (Opus 5.5)"),
+            "{text}"
+        );
+        assert!(text.contains("refused: split it"), "{text}");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

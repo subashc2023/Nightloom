@@ -1535,6 +1535,10 @@ export interface BrowserStatus {
   height: number;
   /** Open pages (target=_blank adds one); the active one is shown. */
   pages: number;
+  /** A message is using it now (item 557); false between messages, while
+   *  it is only kept for its logins. Absent from an older backend: read as
+   *  in use. */
+  in_use?: boolean;
 }
 /** x, y in page CSS pixels of the 1280×800 viewport. */
 export type BrowserInput =

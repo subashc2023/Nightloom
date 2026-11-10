@@ -59,14 +59,28 @@ export function applyStatus(session: string, s: BrowserStatus | null): void {
   const was = browsers.byChat[session];
   browsers.byChat = { ...browsers.byChat, [session]: s };
   if (s.live && !browsers.seenLive[session]) browsers.seenLive = { ...browsers.seenLive, [session]: true };
-  if (s.live && !was?.live) browsers.episode = { ...browsers.episode, [session]: (browsers.episode[session] ?? 0) + 1 };
+  // A new browser, or the browser taken up again by a new message after
+  // an idle spell (item 557), is a new offer.
+  const wasInUse = !!was?.live && inUse(was);
+  if (s.live && (!was?.live || (!wasInUse && inUse(s))))
+    browsers.episode = { ...browsers.episode, [session]: (browsers.episode[session] ?? 0) + 1 };
 }
 
-/** Whether the chip offers `session`'s browser: from the first time its
- *  status reports live (then live, or ended this run), until he dismisses
- *  this browser's offer. */
+/** Whether a message is using the browser (an older backend: always). */
+export function inUse(s: BrowserStatus | null | undefined): boolean {
+  return !!s?.live && s.in_use !== false;
+}
+
+/** Whether the chip offers `session`'s browser: while a message is using
+ *  it (or he holds it), until he dismisses this offer. Item 557 (a bug he
+ *  reported): a chat whose work is done shows no chip — the browser kept
+ *  between messages for its logins, or closed after its idle time, is no
+ *  news; its tab, if open, still says which. */
 export function chipShown(session: string): boolean {
   if (!browsers.seenLive[session]) return false;
+  const s = browsers.byChat[session];
+  if (!inUse(s) && s?.held_by !== "user") return false;
+  if (!s?.live) return false;
   return browsers.chipDismissed[session] !== (browsers.episode[session] ?? 0);
 }
 
