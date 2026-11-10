@@ -8482,6 +8482,7 @@ function clearLimitWait(): void {
  *  the scheduled resume if its time has come. */
 export function limitWakeDue(): void {
   const at = app.limitResumeAt;
+  void api.scheduleLog(`limit wake-due armed=${at !== null}`).catch(() => {});
   if (!limitGo || at === null || Date.now() < at - 1000) return;
   const go = limitGo;
   clearLimitWait();
@@ -8502,6 +8503,8 @@ export function resumeAfterLimit(): void {
       : { id: known.project, name: known.name };
   const go = () => {
     if (app.limitPause !== p) return;
+    // The resume's own moment, whichever clock ran it (item 535m).
+    void api.scheduleLog(`limit go connected=${!!app.connection}`).catch(() => {});
     const id = p.session;
     if (id && chatRuns(id)) {
       addToast("The paused chat is running another turn — press Resume again when it ends.");
@@ -8543,6 +8546,7 @@ export function resumeAfterLimit(): void {
   limitGo = go;
   const fire = () => {
     if (limitGo !== go) return;
+    void api.scheduleLog("limit timer").catch(() => {});
     clearLimitWait();
     go();
   };
