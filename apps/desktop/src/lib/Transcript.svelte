@@ -2325,8 +2325,9 @@
               >
             {/if}
             <!-- The time moved to the foot (backlog 123): one place is
-                 enough, and his ask was the foot. -->
-            <span class="ns-k">You</span>
+                 enough, and his ask was the foot. ~~`You` here~~: in the
+                 foot too since item 525 (Filament IV: "You · time · size"
+                 under the block's corner). -->
             <!-- The turn's own size (backlog 090) moved to the foot on
                  2026-09-27 (backlog 245): under his message, as a reply's
                  figure is under the reply. -->
@@ -2626,6 +2627,7 @@
                 {checkpointLine(app.checkpoint, false)}
               </span>
             {/if}
+            <span class="you-k">You</span>
             {#if editing?.index !== item.index && !item.superseded && !item.removed}
               <!-- His message's figure (backlog 245), in the reply footer's
                    mono 11px beside the time: the log's exact figure with
@@ -2806,6 +2808,7 @@
           segs={shown.segments}
           streaming
           since={shown.since}
+          model={chat !== undefined ? null : (app.connection?.model ?? null)}
           approvals={approvalsNow}
           {cliSession}
           folds={turnFolds(`live:${shown.since ?? ""}`)}
@@ -3016,7 +3019,7 @@
     padding: 0;
     border-radius: 50%;
     border: 1px solid var(--line2);
-    background: var(--sheet);
+    background: var(--well);
     color: var(--ink2);
     box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
     display: flex;
@@ -3037,7 +3040,7 @@
   }
   .jump-down:hover {
     color: var(--ink);
-    background: var(--well);
+    background: var(--well2);
   }
   /* Item 304: the speaking dots and the ⌄ share the button; one gives way
      to the other. On hover or focus the outer dots slide in and shrink
@@ -3146,6 +3149,12 @@
     /* A message the keys or the strip jump to is not the one that stole
        the outline; the viewport is focused only so ⌥↑ / ⌥↓ reach it. */
     outline: none;
+    /* The lit level's dot ground (Filament IV+, item 525): one dot per
+       24px at 5% of the ink, on the scroller itself so it stays put while
+       the words move (nothing repaints on scroll). Anchored to the foot so
+       it meets the composer's own, which starts at its top. Calm and the
+       classic palettes set the token to none. */
+    background: var(--ground-dots, none) left bottom / 24px 24px;
   }
   .inner {
     max-width: 760px;
@@ -3168,10 +3177,10 @@
     gap: 10px;
     padding: 10px 14px;
     border: 1px dashed var(--line2);
-    border-radius: 10px;
+    border-radius: var(--r2);
     font-size: 13px;
     color: var(--ink2);
-    background: color-mix(in srgb, var(--sheet) 50%, transparent);
+    background: var(--sheet);
   }
   .continued-ic {
     color: var(--dim);
@@ -3209,6 +3218,15 @@
     display: flex;
     align-items: center;
     gap: 10px;
+  }
+  .user-key:empty {
+    display: none;
+  }
+  /* Who said it, in the foot (item 525): the reading face, the foot's size. */
+  .you-k {
+    font-family: var(--sans);
+    font-size: 11.5px;
+    color: var(--dim);
   }
   /* Dropped by a rewind: still shown, because the log still holds it and a
      hidden turn would make a rewind look like a delete. */
@@ -3327,7 +3345,7 @@
     height: 22px;
     background: none;
     border: 1px solid transparent;
-    border-radius: 6px;
+    border-radius: var(--r1);
     color: var(--dim);
     padding: 0;
     cursor: pointer;
@@ -3460,15 +3478,15 @@
     gap: 6px;
   }
   .assistant-turn .editor {
-    max-width: 640px;
+    max-width: 760px;
   }
   /* Item 399: the box's face is its wrap's, so the layer behind the
      textarea (BoxLayer) shows through it; the textarea's glyphs go
      transparent over the layer while it is drawn, its caret kept. */
   .edit-wrap {
     position: relative;
-    background: var(--sheet);
-    border-radius: 10px;
+    background: var(--raised);
+    border-radius: var(--r2);
   }
   .edit-wrap textarea {
     position: relative;
@@ -3482,9 +3500,9 @@
     caret-color: var(--ink);
   }
   .edit-live {
-    background: var(--sheet);
+    background: var(--raised);
     border: 1px solid var(--accent);
-    border-radius: 10px;
+    border-radius: var(--r2);
     padding: 8px 14px 6px 4px;
   }
   .edit-live :global(.cm-editor) {
@@ -3497,7 +3515,7 @@
     background: transparent;
     color: var(--ink);
     border: 1px solid var(--accent);
-    border-radius: 10px;
+    border-radius: var(--r2);
     padding: 10px 14px;
     font-family: var(--transcript-font, var(--sans));
     font-size: calc(var(--transcript-size, 16px) - 1px);
@@ -3613,9 +3631,9 @@
     gap: 0;
     white-space: nowrap;
     border: 1px solid var(--line2);
-    border-radius: 999px;
-    background: var(--sheet);
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+    border-radius: var(--r1);
+    background: var(--well);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
     overflow: hidden;
   }
   .pill-btn {
