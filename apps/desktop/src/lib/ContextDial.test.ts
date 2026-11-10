@@ -175,12 +175,19 @@ describe("this turn", () => {
 });
 
 describe("the dial's motion rules (521 report §7)", () => {
-  it("eases only under prefers-reduced-motion: no-preference, and never loops", () => {
+  it("eases only under prefers-reduced-motion: no-preference, and loops only in the new-chat pulse", () => {
     const style = dialSrc.slice(dialSrc.indexOf("<style>"));
     const media = style.indexOf("@media (prefers-reduced-motion: no-preference)");
     expect(media).toBeGreaterThan(0);
     expect(style.slice(0, media)).not.toMatch(/transition|animation/);
-    expect(dialSrc).not.toMatch(/animation|@keyframes|infinite/);
+    // Item 574 (his approved plan, 2026-11-10): the one loop is the slow
+    // breath on the ticks and notch, only with `pulse` (the new-chat page
+    // before its first message), only without reduced motion.
+    const loops = dialSrc.match(/animation:[^;]+;/g) ?? [];
+    expect(loops).toEqual(["animation: dial-breathe 5.6s ease-in-out infinite;"]);
+    const block = style.slice(media);
+    expect(block.indexOf(".pulse .tick")).toBeGreaterThan(0);
+    expect(block.indexOf(loops[0] ?? "")).toBeGreaterThan(block.indexOf(".pulse .tick"));
     expect(railSrc).not.toMatch(/@keyframes|infinite/);
   });
   it("glows only through the lit token, so calm draws no filter", () => {
