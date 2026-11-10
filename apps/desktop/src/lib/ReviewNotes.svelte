@@ -325,4 +325,10 @@
     padding-left: 14px;
     color: var(--dim);
   }
+
+  /* Filament IV (item 566): the reading column aligns with the header's
+     48 px margin. Gated. */
+  :global(:where(:root:not([data-layout="classic"]))) .main {
+    padding: 26px 36px 26px 48px;
+  }
 </style>

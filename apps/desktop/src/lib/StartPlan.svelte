@@ -30,6 +30,9 @@
   import BacklogList from "./BacklogList.svelte";
   import Grip from "./Grip.svelte";
   import Icon from "./Icon.svelte";
+  import ContextDial from "./ContextDial.svelte";
+  import { classic } from "./layout.svelte";
+  import { clock12, passTrace, planRun } from "./nightshiftFace";
 
   let listWidth = $state(paneWidth("plan.list", 420));
 
@@ -202,6 +205,23 @@
     if (mode === "reset") void loadUsage();
   }
 
+  // Filament IV (item 566): the plan as a strip, the last shift as a trace,
+  // the plan's usage as two dials. Read-only views of data already here.
+  const run = $derived(planRun(plan?.items ?? [], items));
+  const passCap = $derived.by(() => {
+    const sum = run.reduce((n, r) => n + (r.passes || 0), 0);
+    return plan?.max_units != null ? Math.min(sum, plan.max_units) : sum;
+  });
+  const stops = $derived.by(() => {
+    const out: string[] = [];
+    if (plan?.budget_usd != null) out.push(`$${plan.budget_usd}`);
+    if (plan?.until) out.push(clock12(Date.parse(plan.until), new Date(nowMs)));
+    return out.length ? `stops at ${out.join(" or ")}` : "no stop but the backlog";
+  });
+  const lastShift = $derived(app.nightshift.shifts.find((x) => !x.live) ?? null);
+  const trace = $derived(passTrace(lastShift?.status?.units ?? [], nowMs));
+  const usage = $derived(app.nightshift.usage);
+
   function numOrNull(v: string | number | null | undefined): number | null {
     if (v == null || String(v).trim() === "") return null;
     const n = Number(v);
@@ -218,6 +238,23 @@
 </script>
 
 <div class="plan" style:grid-template-columns="minmax(0,1fr) 7px {listWidth}px">
+  {#if !classic() && plan}
+    <section class="strip" aria-label="Tonight's plan">
+      <div class="strip-head">
+        <b>{startMode === "now" ? "Tonight's plan" : "The plan"}</b>
+        <span>· {run.length} item{run.length === 1 ? "" : "s"} · up to {passCap} pass{passCap === 1 ? "" : "es"} · {stops}</span>
+      </div>
+      {#if run.length > 0}
+        <ol class="runrow">
+          {#each run as r (r.id)}
+            <li class="runitem" style:flex-grow={Math.max(1, r.passes)} use:tip={r.title}><span class="ns-mono">{r.id}</span> · {r.kind} · {r.passes} pass{r.passes === 1 ? "" : "es"}</li>
+          {/each}
+        </ol>
+      {:else}
+        <div class="hint-sm">Tick items in the backlog to plan a shift.</div>
+      {/if}
+    </section>
+  {/if}
   <div class="list-col">
     {#if locked}
       <div class="lock">
@@ -247,6 +284,26 @@
         <p class="hint err">{e}</p>
       {/each}
     </div>
+    {#if !classic() && lastShift && trace.rows.length > 0}
+      <section class="trace" aria-label="The last shift, pass by pass">
+        <div class="ns-cap trace-cap">
+          <span>Last shift, pass by pass</span>
+          {#if trace.start != null && trace.end != null}<span class="span-when">{clock12(trace.start, new Date(nowMs))} → {clock12(trace.end, new Date(nowMs))}</span>{/if}
+        </div>
+        <div class="trace-rows">
+          {#each trace.rows as r (r.n)}
+            <div class="trow {r.outcome}">
+              <span class="tn">{r.n}</span>
+              <span class="tmark" aria-hidden="true">{r.outcome === "done" ? "✓" : r.outcome === "partial" ? "◐" : r.outcome === "failed" ? "✕" : "•"}</span>
+              <span class="tid">{r.item}</span>
+              <span class="twhat">pass {r.pass ?? "?"} · {r.outcome}</span>
+              <span class="tbar"><i style:left="{r.left}%" style:width="{r.width}%"></i></span>
+              <span class="tlen">{r.length}</span>
+            </div>
+          {/each}
+        </div>
+      </section>
+    {/if}
   </div>
   <Grip width={listWidth} min={300} max={520} edge="right" onchange={(w) => { listWidth = w; setPaneWidth("plan.list", w); }} />
 
@@ -254,7 +311,8 @@
     {#if !info || !plan}
       <p class="hint">Loading the plan…</p>
     {:else}
-      <div>
+      {#if !classic()}<div class="ns-cap plan-cap">Plan <span class="ns-mono sid">{plan.shift_id}</span></div>{/if}
+      <div class="shift-block">
         <div class="ns-k mb">Shift</div>
         <div class="ns-mono">{plan.shift_id}</div>
       </div>
@@ -336,7 +394,21 @@
         {/if}
       </div>
 
-      <div class="usage-note">usage: see the Runs page</div>
+      {#if classic()}
+        <div class="usage-note">usage: see the Runs page</div>
+      {:else if usage && (usage.five_hour != null || usage.seven_day != null)}
+        <div class="dials" use:tip={`plan use as the runner's usage probe last read it${usage.age_seconds != null ? `, ${Math.round(usage.age_seconds / 60)} min ago` : ""}${usage.stale ? " (stale)" : ""}`}>
+          {#if usage.five_hour != null}
+            <ContextDial size={96} share={usage.five_hour / 100} value="{Math.round(usage.five_hour)}%" unit="5 h" label="5-hour window {Math.round(usage.five_hour)}% used" />
+          {/if}
+          {#if usage.seven_day != null}
+            <ContextDial size={96} share={usage.seven_day / 100} value="{Math.round(usage.seven_day)}%" unit="week" label="Week {Math.round(usage.seven_day)}% used" />
+          {/if}
+        </div>
+        {#if usage.stale}<div class="hint-sm center">from a stale usage sample</div>{/if}
+      {:else}
+        <div class="usage-note">plan use not read yet</div>
+      {/if}
 
       <div class="launch-col">
         {#if app.nightshift.pending}
@@ -346,6 +418,7 @@
             <button type="button" class="ns-btn small ghost" onclick={() => void cancelLaunch()}>Cancel</button>
           </div>
         {/if}
+        {#if !classic()}<span class="count">{selectedCount} item{selectedCount === 1 ? "" : "s"} selected</span>{/if}
         <button class="ns-btn accent launch" disabled={!canLaunch} onclick={launch}>
           <Icon name="play" />{app.nightshift.launching ? "Launching…" : startLabel}
         </button>
@@ -497,5 +570,255 @@
   .preset:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+
+  /* Filament IV (item 566; f4-night.png): a page with margins — the plan
+     strip across the top, the backlog and the last shift's trace on the
+     left, the plan's fields, dials and Launch in a card on the right.
+     Gated: Classic draws fe79d50's rules above, untouched. */
+  :global(:where(:root:not([data-layout="classic"]))) .plan {
+    grid-template-rows: auto minmax(0, 1fr);
+    padding: 16px 48px 24px;
+    row-gap: 16px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .strip {
+    grid-column: 1 / -1;
+    border: 1px solid var(--line2);
+    border-radius: var(--r2);
+    background: var(--sheet);
+    padding: 14px 18px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
+  }
+  .strip-head {
+    font-size: 14px;
+    color: var(--ink2);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .strip-head b {
+    color: var(--ink);
+    font-weight: 600;
+  }
+  .runrow {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    gap: 8px;
+    min-width: 0;
+  }
+  .runitem {
+    flex-basis: 0;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 13px;
+    color: var(--ink);
+    background: var(--well);
+    border: 1px solid var(--line2);
+    border-left: 3px solid var(--accent);
+    border-radius: var(--r1);
+    padding: 3px 10px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .list-col {
+    gap: 10px;
+    overflow: hidden;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .lock {
+    padding: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .summary-line {
+    padding: 0 2px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .scroll {
+    flex: 1 1 auto;
+    border: 1px solid var(--line2);
+    border-radius: var(--r2);
+    background: var(--sheet);
+  }
+  .trace {
+    flex: none;
+    max-height: 42%;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 8px;
+  }
+  .trace-cap .span-when {
+    order: 2;
+    letter-spacing: 0.04em;
+    text-transform: none;
+    color: var(--ink2);
+    font-variant-numeric: tabular-nums;
+  }
+  .trace-rows {
+    overflow-y: auto;
+    min-height: 0;
+    border: 1px solid var(--line2);
+    border-radius: var(--r2);
+    background: var(--sheet);
+  }
+  .trow {
+    display: grid;
+    grid-template-columns: 28px 20px 48px minmax(0, 1fr) minmax(80px, 30%) 56px;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 16px;
+    font: 13px var(--mono);
+    color: var(--ink2);
+    font-variant-numeric: tabular-nums;
+  }
+  .trow + .trow {
+    border-top: 1px solid var(--line);
+  }
+  .tn {
+    color: var(--dim);
+  }
+  .tid {
+    color: var(--ink);
+  }
+  .twhat {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .tmark {
+    color: var(--done);
+    text-align: center;
+  }
+  .trow.partial .tmark {
+    color: var(--partial);
+  }
+  .trow.failed .tmark {
+    color: var(--failed);
+  }
+  .trow.running .tmark,
+  .trow.wip .tmark {
+    color: var(--signal);
+  }
+  .tbar {
+    position: relative;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--well);
+  }
+  .tbar i {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    border-radius: 2px;
+    background: var(--done);
+  }
+  .trow.partial .tbar i {
+    background: var(--partial);
+  }
+  .trow.failed .tbar i {
+    background: var(--failed);
+  }
+  .trow.running .tbar i,
+  .trow.wip .tbar i {
+    background: var(--signal);
+  }
+  .tlen {
+    text-align: right;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aside {
+    border: 1px solid var(--line2);
+    border-radius: var(--r2);
+    background: var(--sheet);
+    padding: 18px 22px;
+    gap: 16px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .fields {
+    gap: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .field {
+    display: grid;
+    grid-template-columns: 96px minmax(0, 1fr);
+    column-gap: 12px;
+    row-gap: 6px;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .field > :not(.ns-k) {
+    grid-column: 2;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .field > .ns-k {
+    grid-row: 1;
+    font-size: 13.5px;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--ink2);
+    font-family: var(--sans);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .summary {
+    background: var(--raised);
+  }
+  .dials {
+    display: flex;
+    justify-content: space-around;
+    gap: 12px;
+    padding: 4px 0;
+  }
+  .count {
+    font-size: 14px;
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .launch-col {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .launch-col > .held,
+  :global(:where(:root:not([data-layout="classic"]))) .launch-col > .hint-sm {
+    flex-basis: 100%;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .launch-col > .held {
+    order: -1;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .launch {
+    padding: 8px 18px;
+    font-size: 14px;
+    font-weight: 600;
+  }
+  /* The shift id rides in the Plan heading; the summary card shows only
+     when it carries the dirty-tree warning (the strip says the rest); the
+     Launch row stays in view at the card's foot while the fields scroll. */
+  :global(:where(:root:not([data-layout="classic"]))) .shift-block {
+    display: none;
+  }
+  .plan-cap .sid {
+    order: 2;
+    font-size: 10.5px;
+    letter-spacing: 0.02em;
+    text-transform: none;
+    color: var(--dim);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .summary:not(:has(.dirty)) {
+    display: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .summary > .ns-k,
+  :global(:where(:root:not([data-layout="classic"]))) .summary > .line:not(.dirty) {
+    display: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .field {
+    padding: 8px 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .launch-col {
+    position: sticky;
+    bottom: -18px;
+    margin-bottom: -18px;
+    padding: 12px 0 18px;
+    background: var(--sheet);
+    border-top: 1px solid var(--line);
+    z-index: 1;
   }
 </style>

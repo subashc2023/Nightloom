@@ -639,4 +639,37 @@
     flex-direction: column;
     gap: 3px;
   }
+
+  /* Filament IV (item 566): the list on the panel colour with a ruled top,
+     the item's facts and banners as cards in front. Gated: Classic draws
+     fe79d50's rules above. Markup and state are untouched, so an edit in
+     progress and the interview drawer survive a layout switch. */
+  :global(:where(:root:not([data-layout="classic"]))) .backlog {
+    margin-top: 16px;
+    border-top: 1px solid var(--line);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .list-col {
+    background: var(--sheet);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .facts,
+  :global(:where(:root:not([data-layout="classic"]))) .draft-banner,
+  :global(:where(:root:not([data-layout="classic"]))) .new-item {
+    background: var(--raised);
+    border-color: var(--line2);
+    border-radius: var(--r2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .main {
+    padding: 26px 36px 26px 40px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .main.docked {
+    padding: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .turn {
+    background: var(--raised);
+    border-radius: var(--r2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .turn.user {
+    background: var(--sheet);
+    border-right: 3px solid var(--accent);
+  }
 </style>

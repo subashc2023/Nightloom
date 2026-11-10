@@ -7,6 +7,8 @@
    */
   import { app } from "./state.svelte";
   import NightshiftHeader from "./NightshiftHeader.svelte";
+  import NightshiftHeaderClassic from "./NightshiftHeaderClassic.svelte";
+  import { classic } from "./layout.svelte";
   import ReviewMorning from "./ReviewMorning.svelte";
   import ReviewRuns from "./ReviewRuns.svelte";
   import ReviewBlockers from "./ReviewBlockers.svelte";
@@ -22,7 +24,8 @@
 </script>
 
 <div class="nightshift">
-  <NightshiftHeader />
+  <!-- Item 566: Filament IV's header; Classic keeps fe79d50's (no state in it). -->
+  {#if classic()}<NightshiftHeaderClassic />{:else}<NightshiftHeader />{/if}
   {#if app.nightshift.loading && app.nightshift.rows.length === 0}
     <p class="hint">Reading projects…</p>
   {:else if app.nightshift.error}
@@ -63,9 +66,12 @@
           Plan a shift
         </button>
         <span class="spacer"></span>
-        <span class="state">
-          <NightshiftStateChip />
-        </span>
+        <!-- Filament IV says the state in the header's status line. -->
+        {#if classic()}
+          <span class="state">
+            <NightshiftStateChip />
+          </span>
+        {/if}
       </div>
       {#if app.nightshift.startTab === "backlog"}
         <StartBacklog />
@@ -139,5 +145,45 @@
     padding-bottom: 8px;
     min-width: 0;
     display: flex;
+  }
+
+  /* Filament IV (item 566): the Start row is a small two-way switch inside
+     the page's margins, under the header's tab row. Gated so Classic draws
+     fe79d50's rules above, untouched. */
+  :global(:where(:root:not([data-layout="classic"]))) .hint {
+    padding: 26px 48px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .subbar {
+    height: auto;
+    align-items: center;
+    gap: 0;
+    padding: 18px 48px 0;
+    border-bottom: none;
+    background: transparent;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tab {
+    padding: 5px 14px;
+    margin: 0;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--ink2);
+    border: 1px solid var(--line2);
+    background: var(--well);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tab:first-child {
+    border-radius: var(--r1) 0 0 var(--r1);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tab:nth-child(2) {
+    border-left: none;
+    border-radius: 0 var(--r1) var(--r1) 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tab:hover {
+    color: var(--ink);
+    background: var(--well2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tab.on {
+    color: var(--on-accent);
+    background: var(--accent);
+    border-color: var(--accent);
   }
 </style>
