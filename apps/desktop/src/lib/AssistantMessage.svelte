@@ -190,7 +190,6 @@
     footer = null,
     streaming = false,
     since = null,
-    model = null,
     size = null,
     limit = null,
     approvals = [],
@@ -216,9 +215,6 @@
     /** When the live turn was sent (ms since epoch), for the `working · 41 s`
      *  row (backlog 096); absent, the count starts when this mounts. */
     since?: number | null;
-    /** The model answering a live turn (item 525), for the header while no
-     *  footer says; null draws the header without one. */
-    model?: string | null;
     /** What this reply added to the context (backlog 090), null when the
      *  log cannot say; `limit` is the model's window for the share. */
     size?: TurnSize | null;
@@ -406,21 +402,6 @@
     return () => clearInterval(t);
   });
   const working = $derived(workingLabel(now - (since ?? startedAt)));
-  // The header (item 525, Filament IV): who is answering, and while the turn
-  // is live "Replying m:ss" in the signal colour. A Claude model reads
-  // "Claude" and its family and version ("Opus 5.5"); any other model reads
-  // as its own id.
-  const who = $derived.by(() => {
-    if (standIn) return { name: "Nightloom", model: "" };
-    const m = footer?.model ?? model ?? "";
-    const x = /^claude-([a-z]+)-(\d+)-(\d+)/.exec(m);
-    if (x) return { name: "Claude", model: `${x[1][0].toUpperCase()}${x[1].slice(1)} ${x[2]}.${x[3]}` };
-    return m.startsWith("claude") || !m ? { name: "Claude", model: m.replace(/^claude-?/, "") } : { name: m, model: "" };
-  });
-  const replyClock = $derived.by(() => {
-    const t = Math.max(0, Math.floor((now - (since ?? startedAt)) / 1000));
-    return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`;
-  });
   // Rows born live (first seen after this message's first render, mid-turn)
   // get the needle and the weft (backlog 342); a reply drawn again keeps its
   // finished rows still.
@@ -668,13 +649,8 @@
 
 
 <div class="assistant" use:replyMotion={streaming}>
-  {#if headed && (footer || streaming)}
-    <div class="who" class:live={streaming} use:tip={footer && !standIn ? footer.model : undefined}>
-      <span class="who-ring" aria-hidden="true"></span>
-      <b>{who.name}</b>
-      {#if who.model}<span class="who-model">{who.model}</span>{/if}
-      {#if streaming}<span aria-hidden="true">·</span><span class="who-live">Replying <span class="who-clock">{replyClock}</span></span>{/if}
-    </div>
+  {#if footer && headed}
+    <span class="ns-k">{standIn ? "Nightloom" : footer.model}</span>
   {/if}
   {#each groups as g (g.kind === "activity" ? g.key : `one:${g.i}`)}
     {#if g.kind === "activity"}
@@ -763,7 +739,7 @@
               {@const running = streaming && !seg.call.result && !seg.call.denied}
               {@const bornW = births.of(ids[i] || `tool:${i}`, streaming, !running)}
               {@const editDiff = editDiffOf(seg.call.name, seg.call.input)}
-              <div class="row-wrap tool" class:running class:rm-born={bornW} class:rm-finished={bornW && !running}>
+              <div class="row-wrap tool" class:rm-born={bornW} class:rm-finished={bornW && !running}>
                 <!-- An Agent call's row is a drag source (backlog 160): its
                      subagent's transcript as a tab, dropped on a strip or a
                      pane's half — live while it runs (guess pass 2026-09-25,
@@ -1179,46 +1155,9 @@
     flex-direction: column;
     gap: 0.5rem;
     width: 100%;
-    /* ~~640px~~ The column's 760 (Filament IV, item 525): the reply, its
-       trace and the composer share one measure. */
-    max-width: 760px;
+    max-width: 640px;
     /* The streaming shuttle (backlog 342) is placed against the reply. */
     position: relative;
-  }
-  /* The reply header (item 525): a ring, who answers, the model; while the
-     turn is live the ring and "Replying m:ss" are the signal colour. Still:
-     the motion that says "live" is the reply's own (the weft, the shuttle). */
-  .who {
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    margin-bottom: 2px;
-    font-size: 12.5px;
-    color: var(--dim);
-    align-self: flex-start;
-  }
-  .who b {
-    color: var(--ink);
-    font-weight: 600;
-  }
-  .who-ring {
-    flex: none;
-    width: 13px;
-    height: 13px;
-    border-radius: 50%;
-    border: 1.5px solid var(--line2);
-  }
-  .who.live .who-ring {
-    border-color: var(--signal);
-    border-right-color: transparent;
-  }
-  .who-live {
-    color: var(--signal);
-  }
-  .who-clock {
-    font-family: var(--mono);
-    font-size: 11.5px;
-    font-variant-numeric: tabular-nums;
   }
   .assistant :global(.markdown) {
     /* Plex Sans, the interface face, since 2026-09-14: the editorial serif
@@ -1229,7 +1168,7 @@
        defaults. */
     font-family: var(--transcript-font, var(--sans));
     font-size: var(--transcript-size, 16px);
-    line-height: 1.62;
+    line-height: 1.55;
     color: var(--ink);
   }
   /* The edit as a diff (backlog 105): the source pre-wrapped in the same
@@ -1257,30 +1196,16 @@
   .activity {
     display: flex;
     flex-direction: column;
-    /* A card in front (Filament IV, item 525): the raised fill, the control
-       edge all round. ~~A left rule, accent while live~~: live is the
-       signal colour on the edge, and on the running row. */
-    border: 1px solid var(--line2);
-    border-radius: var(--r2);
-    background: var(--raised);
+    border: 1px solid var(--line);
+    border-left: 2px solid var(--line2);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--sheet) 60%, transparent);
     min-width: 0;
     /* Not `overflow: hidden`: the call's hover Remove (backlog 066) sits
        past the right edge. */
   }
   .activity.live {
-    border-color: color-mix(in srgb, var(--signal) 40%, var(--line2));
-  }
-  /* The running call (blue is Claude working): its result column in the
-     signal colour and, in the lit level, a soft wash across the row. */
-  .row-wrap.tool.running {
-    background: var(--wash-live, none);
-  }
-  .row-wrap.tool.running > .arow .size {
-    color: var(--signal);
-    opacity: 1;
-  }
-  .row-wrap.tool.running > .arow .ico {
-    color: var(--signal);
+    border-left-color: var(--accent);
   }
   /* "Updated course-progress.md" (backlog 305): a compact link under the
      block whose edit wrote a memory note, AGENTS.md or a thread file. */
@@ -1319,15 +1244,15 @@
      28px tall on one grid — icon 18 · name 118 · argument · size — a
      hairline between neighbours, 12px in from either edge. */
   .activity > * + * {
-    border-top: 1px solid var(--line);
+    border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
   }
   /* The subagent row under an Agent call (backlog 075): the disclosure's
      summary drawn like a row, indented one column in on the paper, its
      body one rule in. */
   .sub {
     margin: 0;
-    border-top: 1px solid var(--line);
-    background: var(--sheet);
+    border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+    background: color-mix(in srgb, var(--paper) 50%, transparent);
   }
   .sub-line {
     display: grid;
@@ -1416,8 +1341,7 @@
   }
   .name {
     font-family: var(--sans);
-    font-weight: 600;
-    color: var(--ink);
+    color: var(--ink2);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1426,7 +1350,6 @@
      hidden one (backlog 097) is dimmer still and no pointer. */
   .arow.thinking .name {
     font-style: italic;
-    font-weight: 400;
     color: var(--dim);
   }
   .arow.thinking .ico {
@@ -1524,7 +1447,7 @@
     height: 1.5px;
     transform-origin: left center;
     pointer-events: none;
-    background: color-mix(in srgb, var(--signal) 22%, transparent);
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
     overflow: hidden;
   }
   .rm-weft::after {
@@ -1534,12 +1457,10 @@
     bottom: 0;
     width: 28%;
     border-radius: 2px;
-    background: linear-gradient(90deg, transparent, var(--signal-ink, var(--signal)), transparent);
-    box-shadow: var(--glow-signal, none);
+    background: linear-gradient(90deg, transparent, var(--accent-ink, var(--accent)), transparent);
   }
-  /* Done is green (Filament IV: "green is finished"), then gone. */
   .rm-weft.rm-done {
-    background: var(--done);
+    background: var(--accent);
     opacity: 0;
   }
   .rm-weft.rm-done::after {
@@ -1771,7 +1692,7 @@
     height: 20px;
     background: var(--panel);
     border: 1px solid transparent;
-    border-radius: var(--r1);
+    border-radius: 6px;
     color: var(--dim);
     padding: 0;
     cursor: pointer;
@@ -1844,9 +1765,9 @@
     font-family: var(--mono);
     font-size: 0.75rem;
     color: var(--dim);
-    background: var(--term);
+    background: var(--bg);
     border: 1px solid var(--border);
-    border-radius: var(--r1);
+    border-radius: 8px;
     padding: 0.5rem 0.65rem;
     max-height: 14rem;
     overflow: auto;
@@ -1909,8 +1830,8 @@
     min-width: 0;
     padding: 8px 12px;
     border: 1px solid var(--line2);
-    border-radius: var(--r2);
-    background: var(--raised);
+    border-radius: 8px;
+    background: var(--sheet);
     font-size: 13.5px;
     color: var(--ink);
   }

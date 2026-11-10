@@ -230,16 +230,14 @@
 
 <style>
   .user-bubble {
-    /* His message block (Filament IV, item 525): a card in front — the
-       raised fill with the control edge — and his colour down its right
-       side, the corners squared there. ~~A rounded, borderless tint, the way
-       claude.ai draws the user's turn (backlog 126)~~. An aside sets its own
-       fill through `--user-bubble-bg`. */
-    background: var(--user-bubble-bg, var(--raised));
-    border: 1px solid var(--line2);
-    border-right: 2px solid var(--accent);
-    border-radius: var(--r2) 2px 2px var(--r2);
-    padding: 11px 16px;
+    /* A rounded, borderless tint, the way claude.ai draws the user's turn
+       (nightshift backlog 126): the old 1px line and near-square corner
+       read as a box. The tint is the sheet lifted a step toward the ink so
+       it holds on every palette without a token of its own. */
+    background: var(--user-bubble-bg, color-mix(in srgb, var(--sheet) 88%, var(--ink)));
+    border: 1px solid transparent;
+    border-radius: 18px;
+    padding: 12px 18px;
     max-width: var(--user-bubble-max, 560px);
     box-sizing: border-box;
     /* The reply's face, one size down: the two sides of a conversation in
@@ -259,8 +257,8 @@
     position: relative;
     margin: 0.35rem 0;
     border: 1px solid var(--line);
-    border-radius: var(--r1);
-    background: var(--term);
+    border-radius: 8px;
+    background: var(--well);
   }
   .user-code pre {
     margin: 0;
@@ -348,9 +346,9 @@
     min-width: 14rem;
     max-width: 100%;
     padding: 0.4rem 0.6rem 0.42rem;
-    border: 1px solid var(--line2);
+    border: 1px solid var(--accent-soft);
     border-left: 3px solid var(--accent);
-    border-radius: var(--r1);
+    border-radius: 8px;
     background: var(--well);
     font-family: var(--sans);
   }

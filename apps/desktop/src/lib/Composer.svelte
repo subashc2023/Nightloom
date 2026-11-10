@@ -3547,36 +3547,24 @@
   .pick-btn {
     display: inline-flex;
     align-items: center;
-    gap: 7px;
-    /* A drop-down is a button with a small arrow (Filament IV, item 525):
-       the control fill and edge, 28px, as `.ns-btn` in app.css. */
-    min-height: 28px;
-    padding: 0 10px;
-    border-radius: var(--r1);
-    border: 1px solid var(--line2);
-    background: var(--well);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    gap: 5px;
+    padding: 3px 8px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    background: transparent;
     font-family: var(--sans);
-    font-size: 12.5px;
-    font-weight: 500;
-    color: var(--ink);
+    font-size: 12px;
+    color: var(--ink2);
     white-space: nowrap;
     cursor: pointer;
     max-width: 240px;
     min-width: 0;
-    transition:
-      background-color 120ms,
-      border-color 120ms;
   }
   .pick-btn:hover:not(:disabled),
   .pick-btn.open {
-    background: var(--well2);
+    background: var(--well);
     color: var(--ink);
-    border-color: var(--dim);
-  }
-  .pick-btn:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
+    border-color: var(--line2);
   }
   .pick-btn:disabled {
     opacity: 0.5;
@@ -3594,7 +3582,6 @@
   }
   .pick-k {
     color: var(--dim);
-    font-weight: 400;
   }
   .pick-name {
     overflow: hidden;
@@ -3603,7 +3590,7 @@
   }
   .pick-chev {
     display: inline-flex;
-    color: var(--ink2);
+    color: var(--dim);
     flex: none;
   }
   .pick-chev :global(svg) {
@@ -3620,11 +3607,10 @@
     max-width: 360px;
     max-height: 60vh;
     overflow-y: auto;
-    /* A menu is a card in front, with a real shadow under it. */
-    background: var(--raised);
+    background: var(--sheet);
     border: 1px solid var(--line2);
-    border-radius: var(--r2);
-    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.6);
+    border-radius: 10px;
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
     padding: 6px;
     display: flex;
     flex-direction: column;
@@ -3632,12 +3618,10 @@
     font-family: var(--sans);
   }
   .pick-head {
-    font-family: var(--mono);
-    font-weight: 500;
-    font-size: 10px;
-    letter-spacing: 0.14em;
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: var(--ink2);
+    color: var(--dim);
     padding: 5px 8px 3px;
     display: flex;
     gap: 8px;
@@ -3647,21 +3631,19 @@
   .pick-sub {
     text-transform: none;
     letter-spacing: 0;
-    font-weight: 400;
-    font-size: 10.5px;
-    color: var(--dim);
+    font-size: 11px;
   }
   .pick-row {
     display: flex;
     align-items: center;
     gap: 8px;
     padding: 6px 8px;
-    border-radius: var(--r1);
+    border-radius: 6px;
     border: none;
     background: transparent;
     font-family: var(--sans);
     font-size: 12.5px;
-    color: var(--ink2);
+    color: var(--ink);
     text-align: left;
     white-space: nowrap;
     cursor: pointer;
@@ -3670,15 +3652,11 @@
   .pick-row:hover,
   .pick-row:focus-visible {
     background: var(--well);
-    color: var(--ink);
     outline: none;
   }
-  /* The chosen row is the control fill, never the accent block (the accent
-     block means "the main action"). */
   .pick-row.on {
-    background: var(--well2);
-    color: var(--ink);
-    font-weight: 500;
+    background: var(--accent-soft);
+    color: var(--accent-ink);
   }
   /* The name never shrinks; the grey detail ellipsizes first (backlog 530). */
   .pick-row-label {
@@ -3716,71 +3694,32 @@
     flex-wrap: wrap;
     gap: 6px;
   }
-  /* A switch (Filament IV, item 525; `.ns-switch` in app.css): a pill with
-     a sliding dot, accent when on. The mark's glyph is the track: its
-     letter is hidden and the dot is drawn on it. */
   .bottom-toggle {
     cursor: pointer;
-    font: 500 11.5px var(--sans);
-    color: var(--ink2);
-    gap: 7px;
-    min-height: 24px;
-    padding: 0 9px 0 8px;
-    border-radius: 12px;
-    background: var(--raised);
-    text-transform: capitalize;
+    font-family: var(--sans);
+    color: var(--dim);
+    gap: 5px;
   }
   .bottom-mark {
-    position: relative;
-    flex: none;
-    width: 20px;
-    height: 12px;
-    border-radius: 6px;
-    background: var(--well2);
-    font-size: 0;
-    color: transparent;
-    overflow: hidden;
-    transition: background-color 120ms;
-  }
-  .bottom-mark::after {
-    content: "";
-    position: absolute;
-    top: 2px;
-    left: 2px;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--dim);
-    transition:
-      left 120ms,
-      background-color 120ms;
+    font-size: 11px;
+    opacity: 0.55;
   }
   .bottom-toggle.on {
     color: var(--ink);
   }
   .bottom-toggle.on .bottom-mark {
-    background: var(--accent);
-  }
-  .bottom-toggle.on .bottom-mark::after {
-    left: 10px;
-    background: var(--on-accent);
+    color: var(--accent);
+    opacity: 1;
   }
   .bottom-toggle:hover {
-    border-color: var(--dim);
+    border-color: var(--accent);
     color: var(--ink);
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .bottom-mark,
-    .bottom-mark::after,
-    .pick-btn {
-      transition: none;
-    }
   }
   .bottom-toggle:disabled,
   .bottom-toggle:disabled:hover {
     cursor: default;
     opacity: 0.5;
-    border-color: var(--line2);
+    border-color: transparent;
     color: var(--dim);
   }
   .bottom-cache {
@@ -3817,9 +3756,7 @@
 
   .composer {
     position: relative;
-    /* The lit level's dot ground goes on under the box (item 525), from
-       the top so it meets the transcript's, which is anchored to its foot. */
-    background: var(--ground-dots, none) left top / 24px 24px var(--paper);
+    background: var(--paper);
     padding: 12px 20px 22px;
   }
   /* The drag handle sits on the top edge, over the border: `ResizeHandle`
@@ -3842,14 +3779,6 @@
   .composer.aside {
     background: transparent;
     padding: 8px 0 0;
-  }
-  /* An aside's box is the aside's, not the object in front: no shadow, no
-     brackets. */
-  .composer.aside .card {
-    box-shadow: none;
-  }
-  .composer.aside .card::before {
-    display: none;
   }
   .composer.aside .card,
   .composer.aside .attachments,
@@ -3904,8 +3833,7 @@
     max-width: 760px;
     margin: 0 auto 0.5rem;
     border: 1px dashed var(--line2);
-    border-radius: var(--r2);
-    background: var(--sheet);
+    border-radius: 8px;
     padding: 0.4rem 0.6rem;
     display: flex;
     flex-direction: column;
@@ -3991,9 +3919,9 @@
     width: 7rem;
     height: 4rem;
     padding: 0 0.5rem;
-    border: 1px solid var(--line2);
-    border-radius: var(--r1);
-    background: var(--raised);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
     line-height: 1.2;
   }
   /* Item 491: a long PDF's chip carries its route and the switch. */
@@ -4069,53 +3997,14 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-    /* The one object in front of the transcript (Filament IV, item 525):
-       the raised fill, the control edge, one plain dark shadow under it. */
-    padding: 13px 14px 12px;
-    background: var(--raised);
+    padding: 12px 14px;
+    background: var(--sheet);
     border: 1px solid var(--line2);
-    border-radius: var(--r2);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    border-radius: 10px;
     transition: border-color 0.12s;
   }
   .card:focus-within {
     border-color: var(--accent);
-  }
-  /* The lit level's brackets: four corner marks 6px outside the box, in the
-     accent (`--bracket`; transparent in calm and the classic palettes).
-     Eight 12 × 1.5px strokes drawn as backgrounds: nothing to lay out,
-     nothing that takes the pointer. */
-  .card::before {
-    content: "";
-    position: absolute;
-    inset: -7px;
-    pointer-events: none;
-    --tk: var(--bracket, transparent);
-    background:
-      linear-gradient(var(--tk), var(--tk)) 0 0 / 12px 1.5px no-repeat,
-      linear-gradient(var(--tk), var(--tk)) 0 0 / 1.5px 12px no-repeat,
-      linear-gradient(var(--tk), var(--tk)) 100% 0 / 12px 1.5px no-repeat,
-      linear-gradient(var(--tk), var(--tk)) 100% 0 / 1.5px 12px no-repeat,
-      linear-gradient(var(--tk), var(--tk)) 0 100% / 12px 1.5px no-repeat,
-      linear-gradient(var(--tk), var(--tk)) 0 100% / 1.5px 12px no-repeat,
-      linear-gradient(var(--tk), var(--tk)) 100% 100% / 12px 1.5px no-repeat,
-      linear-gradient(var(--tk), var(--tk)) 100% 100% / 1.5px 12px no-repeat;
-  }
-  /* The row's buttons are real buttons (Attach, Ask aside, Council, Queue):
-     the markup's `ghost` is the quiet button of other screens; here each has
-     the control fill and edge, 28px tall. */
-  .row .ns-btn.ghost {
-    min-height: 28px;
-    padding: 0 11px;
-    font-size: 12.5px;
-    background: var(--well);
-    border-color: var(--line2);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
-    color: var(--ink);
-  }
-  .row .ns-btn.ghost:hover:not(:disabled) {
-    background: var(--well2);
-    border-color: var(--dim);
   }
   .row {
     display: flex;
@@ -4195,7 +4084,6 @@
     width: 100%;
     background: transparent;
     color: var(--ink);
-    caret-color: var(--accent);
     border: none;
     padding: 2px 0;
     font-size: 15px;
@@ -4240,22 +4128,14 @@
   textarea:disabled {
     opacity: 0.5;
   }
-  /* The main action: the one solid accent block in view, 32px tall. */
   .send {
-    min-height: 32px;
-    padding: 0 16px;
-    font-size: 13px;
+    padding: 6px 16px;
   }
   /* Item 398: the Stop in Send's place. "Send" in Send's weight, hidden,
      gives it Send's width and height; the square sits centred over it. */
-  /* Filament IV's Stop: a button with a brighter edge and a red square. */
   .stop {
     position: relative;
-    font-weight: 600;
-    border-color: var(--ink2);
-  }
-  .stop:hover:not(:disabled) {
-    border-color: var(--ink);
+    font-weight: 500;
   }
   .stop .stop-size {
     visibility: hidden;
@@ -4279,11 +4159,11 @@
     width: 0;
     overflow: hidden;
   }
-  /* ~~31 px~~ 32 px: Send's height since item 525 (the main action's). */
+  /* 31 px: Send's height, measured in the 411 harness (30.9). */
   .stop.shape-square,
   .stop.shape-round {
-    width: 32px;
-    background: color-mix(in srgb, var(--failed) 16%, var(--well));
+    width: 31px;
+    background: color-mix(in srgb, var(--failed) 16%, var(--sheet));
   }
   .stop.shape-round {
     border-radius: 50%;
@@ -4297,8 +4177,7 @@
     gap: 6px;
   }
   .stop-word {
-    font-size: 13px;
-    color: var(--ink);
+    font-size: 12.5px;
   }
   /* Item 466: the Stop pressed — sunk, dimmed, its square a spinner — held
      until the turn has ended. */
@@ -4410,8 +4289,8 @@
     gap: 8px;
     padding: 12px 14px;
     border: 1px solid var(--accent);
-    border-radius: var(--r2);
-    background: var(--raised);
+    border-radius: 10px;
+    background: var(--sheet);
     font-size: 13px;
     color: var(--ink2);
   }
@@ -4492,10 +4371,10 @@
     width: 4rem;
     font-family: var(--mono);
     font-size: 12px;
-    background: var(--term);
+    background: var(--paper);
     color: var(--ink);
     border: 1px solid var(--line2);
-    border-radius: var(--r1);
+    border-radius: 6px;
     padding: 3px 6px;
   }
   .handoff-row input:focus {
@@ -4506,10 +4385,10 @@
      thing here that is typed into. */
   .handoff-msg {
     width: 100%;
-    background: var(--term);
+    background: var(--paper);
     color: var(--ink);
     border: 1px solid var(--line2);
-    border-radius: var(--r1);
+    border-radius: 6px;
     padding: 6px 8px;
     font-size: 13px;
     font-family: inherit;
@@ -4536,10 +4415,10 @@
   .slash {
     display: flex;
     flex-direction: column;
-    border: 1px solid var(--line2);
+    border: 1px solid var(--line);
     border-bottom: none;
-    border-radius: var(--r2) var(--r2) 0 0;
-    background: var(--raised);
+    border-radius: 8px 8px 0 0;
+    background: var(--sheet);
     max-height: 16rem;
     overflow-y: auto;
   }

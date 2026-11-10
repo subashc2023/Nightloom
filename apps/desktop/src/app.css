@@ -1,100 +1,44 @@
 /* ---- tokens ----------------------------------------------------------------
 
-   Filament IV (nightshift items 517, 521, 525; chosen by Swaraag on
-   2026-11-09) is the default: Filament III's four surface steps and one
-   accent, plus the signal colour for live state and `--hot` for "past the
-   hand-off line". The rule for colour: amber is his (what he presses, what
-   he said), blue is Claude working, green is finished, orange is "hand
-   off", red is an error or Stop.
+   Four dark palettes, drawn in notes/runner-design/redesign-mockup-2026-09-11
+   (nightshift repo, item 036) and chosen by Swaraag on 2026-09-11: A is the
+   default, the others are picked in Settings → Appearance and applied as
+   `data-palette` on <html>. Surfaces and the accent change between them;
+   status and diff colours are shared.
 
-   Two strengths. Lit (IV+) is the default (blocker 1689): a soft light on
-   live things, brackets on the message box, a dot ground. Calm (IV) is the
-   same without them: `data-light="calm"` on <html> (set before first paint
-   by main.ts from localStorage `nightloom.light`; its Settings switch is a
-   later stage). The lit additions are tokens (`--glow-*`, `--ground-dots`,
-   `--bracket`), so a component reads one value and calm is one block.
-
-   The four palettes of 2026-09-11 (item 036) stay for one release as
-   Classic (blocker 1687): B, C and D are picked in Settings → Appearance
-   and applied as `data-palette` on <html>; A's old values are kept under
-   `classic-A` for the Appearance stage to offer. A classic palette has
-   three close surface steps, so the new controls read flatter on it, and
-   it wears no light.
-
-   The older names (--bg, --panel, --border, --text, --error) are kept as
-   aliases onto the tokens so every screen follows the palette without
-   touching its CSS. New work uses the new names. */
+   The older names (--bg, --panel, --border, --text, --accent, --error) are
+   kept as aliases onto the new tokens so every existing screen follows the
+   palette without touching its CSS. New work uses the new names. */
 
 :root,
 [data-palette="A"] {
-  /* Filament IV — dark */
-  --paper: #0b0d10; /* the ground: transcript, pages */
-  --sheet: #14181e; /* panels: sidebar, tab bar, right column */
-  --raised: #1c212a; /* things in front: composer, cards, menus, his message */
-  --well: #2a313d; /* a control's fill; a selected row */
-  --well2: #343c4a; /* a control, hovered or pressed */
-  --term: #07090c; /* code; the inside of a text field */
-  --ink: #e9edf2;
-  --ink2: #b9c2cd;
-  --dim: #939eae;
-  --line: #242b35; /* separators between regions */
-  --line2: #414c5d; /* the edge of a control or a card in front */
-  --accent: #ffb454;
-  --accent-ink: #ffd08a;
-  --accent-soft: #2e2414;
-  --on-accent: #1a1206; /* text on an accent block */
-  --add-bg: #14301f;
-  --add-fg: #b9ecc8;
-  --del-bg: #3a1c1f;
-  --del-fg: #f6c0c0;
+  /* A — charcoal & amber */
+  --paper: #1b1916;
+  --sheet: #232019;
+  --well: #2c2822;
+  --ink: #ece7dc;
+  --ink2: #c9c2b3;
+  --dim: #8d8676;
+  --line: #332e27;
+  --line2: #4a443a;
+  --accent: #e0a458;
+  --accent-ink: #f0c27a;
+  --accent-soft: #3a2d1c;
+  --term: #131110;
+  --add-bg: #1f3324;
+  --add-fg: #bfe6c4;
+  --del-bg: #3c2222;
+  --del-fg: #f2bcbc;
 
-  /* live state only (Filament I's cyan, back in IV) */
-  --signal: #86d8f7;
-  --signal-ink: #b8e9fb;
-  --signal-soft: #10222c;
-  /* context past the hand-off line */
-  --hot: #ff7d4f;
-
-  --done: #7cd69a;
-  --done-soft: #14301f;
-  --partial: #e8c063;
-  --partial-soft: #332a12;
-  --failed: #f07f7f;
-  --failed-soft: #3a1c1f;
-  --live: var(--signal);
-  --live-soft: var(--signal-soft);
-}
-
-/* Accent variants swap only the amber (517 report §2); their picker is the
-   Appearance stage's. */
-[data-accent="weld"] {
-  --accent: #dcef4e;
-  --accent-ink: #e9f58e;
-  --accent-soft: #25280f;
-  --on-accent: #11120a;
-}
-[data-accent="madder"] {
-  --accent: #ff6a3d;
-  --accent-ink: #ff9a7a;
-  --accent-soft: #30180f;
-  --on-accent: #1a0b05;
-}
-
-:root {
-  /* Corners: 5px on controls, 8px on cards, menus and the composer. */
-  --r1: 5px;
-  --r2: 8px;
-
-  /* The lit level (IV+), as values a component reads; calm and the classic
-     palettes set them to nothing below. Static shadows on a few small
-     things: no blur behind content, nothing that animates while idle. */
-  --glow-live: 0 0 0 3px color-mix(in srgb, var(--signal) 18%, transparent), 0 0 9px var(--signal);
-  --glow-signal: 0 0 8px var(--signal);
-  --glow-accent: 0 0 7px var(--accent);
-  --glow-main: 0 0 16px color-mix(in srgb, var(--accent) 30%, transparent);
-  --wash-live: linear-gradient(90deg, transparent, color-mix(in srgb, var(--signal) 9%, transparent) 55%, transparent 80%);
-  --ground-dots: radial-gradient(circle, color-mix(in srgb, var(--ink) 5%, transparent) 1px, transparent 1.2px);
-  --bracket: var(--accent);
+  /* shared across palettes */
+  --done: #7cc48a;
+  --done-soft: #1f3324;
+  --partial: #e0b35b;
+  --partial-soft: #3a2f17;
+  --failed: #e57373;
+  --failed-soft: #3c2222;
+  --live: #7fb3f0;
+  --live-soft: #1d2c40;
 
   --serif: "Newsreader Variable", Georgia, "Times New Roman", serif;
   --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -117,66 +61,6 @@
 
   color-scheme: dark;
   font-family: var(--sans);
-}
-
-
-/* Calm (IV), and every classic palette: no light, no brackets, no dots. */
-[data-light="calm"],
-[data-palette="classic-A"],
-[data-palette="B"],
-[data-palette="C"],
-[data-palette="D"] {
-  --glow-live: none;
-  --glow-signal: none;
-  --glow-accent: none;
-  --glow-main: none;
-  --wash-live: none;
-  --ground-dots: none;
-  --bracket: transparent;
-}
-
-/* What the classic palettes share: the status colours they were drawn with,
-   and the Filament names mapped onto their three surface steps. */
-[data-palette="classic-A"],
-[data-palette="B"],
-[data-palette="C"],
-[data-palette="D"] {
-  --raised: var(--sheet);
-  --well2: color-mix(in srgb, var(--well) 88%, var(--ink));
-  --on-accent: var(--paper);
-  --signal: #7fb3f0;
-  --signal-ink: #a9cdf5;
-  --signal-soft: #1d2c40;
-  --hot: #ff7d4f;
-  --done: #7cc48a;
-  --done-soft: #1f3324;
-  --partial: #e0b35b;
-  --partial-soft: #3a2f17;
-  --failed: #e57373;
-  --failed-soft: #3c2222;
-  --live: #7fb3f0;
-  --live-soft: #1d2c40;
-}
-
-[data-palette="classic-A"] {
-  /* Classic A — charcoal & amber (the default until item 525) */
-  --paper: #1b1916;
-  --sheet: #232019;
-  --well: #2c2822;
-  --ink: #ece7dc;
-  --ink2: #c9c2b3;
-  --dim: #8d8676;
-  --line: #332e27;
-  --line2: #4a443a;
-  --accent: #e0a458;
-  --accent-ink: #f0c27a;
-  --accent-soft: #3a2d1c;
-  --term: #131110;
-  --add-bg: #1f3324;
-  --add-fg: #bfe6c4;
-  --del-bg: #3c2222;
-  --del-fg: #f2bcbc;
-
 }
 
 [data-palette="B"] {
@@ -339,16 +223,16 @@ button {
 .markdown code {
   font-family: var(--mono);
   font-size: 0.82em;
-  background: var(--raised);
+  background: var(--well);
   border: 1px solid var(--border);
-  border-radius: 3px;
+  border-radius: 4px;
   padding: 0.1em 0.35em;
 }
 
 .markdown pre {
   background: var(--term);
   border: 1px solid var(--border);
-  border-radius: var(--r1);
+  border-radius: 8px;
   padding: 0.7em 0.9em;
   overflow-x: auto;
   margin: 0.7em 0;
@@ -452,10 +336,10 @@ button {
    blocks' frame, with their Copy button (codeCopy.ts). */
 .markdown .handoff-card {
   margin: 0.8em 0;
-  border: 1px solid var(--line2);
+  border: 1px solid var(--accent-soft);
   border-left: 3px solid var(--accent);
-  border-radius: var(--r2);
-  background: var(--raised);
+  border-radius: 8px;
+  background: var(--well);
   padding: 0.5em 0.6em 0.1em;
 }
 .markdown .handoff-label {
@@ -611,170 +495,59 @@ button {
    style cannot reach. Prefixed `ns-` so nothing here collides with the chat
    screens' classes. */
 
-/* The control grammar (Filament III/IV, item 525): anything you can press
-   has a fill, an edge and a shape. A button is the control fill with the
-   control edge, 28px tall; the main action (`.accent`) is the one solid
-   accent block in view; `.ghost` is the quiet button of a dense row (no
-   fill until hovered) that unconverted screens still use. */
 .ns-btn {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  min-height: 28px;
-  padding: 3px 11px;
-  border-radius: var(--r1);
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 6px;
   border: 1px solid var(--line2);
-  background: var(--well);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  background: var(--sheet);
   color: var(--ink);
-  font-size: 12.5px;
-  font-weight: 500;
+  font-size: 13px;
   font-family: var(--sans);
   line-height: 1.3;
   cursor: pointer;
   white-space: nowrap;
   flex: none;
-  transition:
-    background-color 120ms,
-    border-color 120ms;
 }
 .ns-btn:hover:not(:disabled) {
-  background: var(--well2);
   border-color: var(--dim);
-}
-.ns-btn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
 }
 .ns-btn.accent {
   background: var(--accent);
-  color: var(--on-accent);
+  color: var(--paper);
   border-color: var(--accent);
-  font-weight: 600;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.25),
-    var(--glow-main);
+  font-weight: 500;
 }
 .ns-btn.accent:hover:not(:disabled) {
   background: var(--accent-ink);
   border-color: var(--accent-ink);
 }
-.ns-btn.accent:disabled {
-  box-shadow: none;
-}
 .ns-btn.danger {
   color: var(--failed);
-  border-color: color-mix(in srgb, var(--failed) 50%, var(--line2));
-  background: var(--well);
+  border-color: #7a3d3f;
+  background: var(--sheet);
 }
 .ns-btn.danger:hover:not(:disabled) {
   border-color: var(--failed);
-  background: var(--well2);
 }
 .ns-btn.ghost {
   border-color: transparent;
   background: transparent;
-  box-shadow: none;
   color: var(--ink2);
 }
 .ns-btn.ghost:hover:not(:disabled) {
   background: var(--well);
   border-color: transparent;
-  color: var(--ink);
 }
 .ns-btn.small {
-  min-height: 24px;
-  padding: 2px 9px;
-  font-size: 12px;
+  padding: 3px 8px;
+  font-size: 11.5px;
 }
 .ns-btn:disabled {
   opacity: 0.5;
   cursor: default;
-}
-/* A drop-down is a button with a small arrow after its value. */
-.ns-btn.drop::after {
-  content: "";
-  width: 0;
-  height: 0;
-  margin-left: 1px;
-  border: 3.5px solid transparent;
-  border-top: 4.5px solid var(--ink2);
-  border-bottom: 0;
-}
-/* A switch: a pill with a sliding dot, accent when on (`.on` or
-   aria-pressed / aria-checked). The track is the `<i>` inside. */
-.ns-switch {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  min-height: 24px;
-  padding: 0 9px 0 8px;
-  border-radius: 12px;
-  background: var(--raised);
-  border: 1px solid var(--line2);
-  font: 500 11.5px var(--sans);
-  color: var(--ink2);
-  cursor: pointer;
-  white-space: nowrap;
-}
-.ns-switch > i {
-  position: relative;
-  flex: none;
-  width: 20px;
-  height: 12px;
-  border-radius: 6px;
-  background: var(--well2);
-  transition: background-color 120ms;
-}
-.ns-switch > i::after {
-  content: "";
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--dim);
-  transition:
-    left 120ms,
-    background-color 120ms;
-}
-.ns-switch:is(.on, [aria-pressed="true"], [aria-checked="true"]) {
-  color: var(--ink);
-}
-.ns-switch:is(.on, [aria-pressed="true"], [aria-checked="true"]) > i {
-  background: var(--accent);
-}
-.ns-switch:is(.on, [aria-pressed="true"], [aria-checked="true"]) > i::after {
-  left: 10px;
-  background: var(--on-accent);
-}
-.ns-switch:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-/* A group heading (Filament IV): mono capitals, spaced, then a rule. */
-.ns-cap {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font: 500 10px var(--mono);
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--ink2);
-}
-.ns-cap::after {
-  content: "";
-  flex: 1;
-  height: 1px;
-  background: var(--line2);
-}
-@media (prefers-reduced-motion: reduce) {
-  .ns-btn,
-  .ns-switch > i,
-  .ns-switch > i::after {
-    transition: none;
-  }
 }
 /* An icon button (item 402: every Copy, `CopyButton.svelte`): the box,
    colours and hover of the transcript's `.tool-btn` beside his messages,
@@ -786,7 +559,7 @@ button {
   height: 22px;
   background: none;
   border: 1px solid transparent;
-  border-radius: var(--r1);
+  border-radius: 6px;
   color: var(--dim);
   padding: 0;
   cursor: pointer;
@@ -917,7 +690,7 @@ button {
 .ns-card {
   background: var(--sheet);
   border: 1px solid var(--line);
-  border-radius: var(--r2);
+  border-radius: 8px;
 }
 
 /* A section label with a rule running to the right edge. */
@@ -1035,9 +808,9 @@ select.ns-fld {
   font-family: var(--sans);
   font-size: 13.5px;
   color: var(--ink);
-  background: var(--term);
+  background: var(--paper);
   border: 1px solid var(--line2);
-  border-radius: var(--r1);
+  border-radius: 6px;
   padding: 7px 10px;
   width: 100%;
 }
@@ -1197,7 +970,7 @@ textarea.ns-fld {
 }
 ::highlight(find-current) {
   background-color: var(--accent);
-  color: var(--on-accent);
+  color: var(--paper);
 }
 mark.find-hit {
   background: var(--accent-soft);
@@ -1206,7 +979,7 @@ mark.find-hit {
 }
 mark.find-hit.find-current {
   background: var(--accent);
-  color: var(--on-accent);
+  color: var(--paper);
 }
 /* The field holding the current hit (nightshift backlog 162): a textarea
    cannot hold a mark, so the hit is its selection — painted even while
@@ -1217,7 +990,7 @@ mark.find-hit.find-current {
 }
 textarea.find-current-field::selection {
   background: var(--accent);
-  color: var(--on-accent);
+  color: var(--paper);
 }
 
 /* Nightloom's own tooltip (nightshift backlog 171, `lib/tip.ts`): one pill
@@ -1235,10 +1008,10 @@ textarea.find-current-field::selection {
   gap: 10px;
   max-width: 320px;
   padding: 6px 10px;
-  background: var(--raised);
+  background: var(--well);
   color: var(--ink);
   border: 1px solid var(--line2);
-  border-radius: var(--r1);
+  border-radius: 8px;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
   font-family: var(--sans);
   font-size: 13px;
