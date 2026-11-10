@@ -275,6 +275,15 @@ pub fn resolve(fresh: &SystemPrompt, hold: Option<&Hold>, has_cli: bool, ask: &A
             prompt: fresh.clone(),
             hold: Hold {
                 segments: layers,
+                // A conversation with no hold on file (a chat begun before
+                // item 174, or one whose hold was lost): what its CLI
+                // recorded on its first turn is unknown, so the snapshot
+                // goes off and the CLI renders the prompt from the flag —
+                // with it on, the fresh text never reached the resumed
+                // chat (measured, nightshift `535m-report-2026-11-10.md`:
+                // a thread bound to such a chat never reached it). A chat
+                // with no conversation yet records this prompt itself.
+                snapshot_off: hold.is_none() && has_cli,
                 ..Hold::default()
             },
             pending: Vec::new(),
@@ -417,8 +426,37 @@ mod tests {
         p
     }
 
+    /// The hold a chat's first turn wrote: connected on New chat, no
+    /// conversation yet (~~`has_cli: true`~~ — since 543's check 6 that
+    /// case turns the snapshot off, and is tested on its own below).
     fn held(memory: &str) -> Hold {
-        resolve(&prompt(memory), None, true, &Ask::default()).hold
+        resolve(&prompt(memory), None, false, &Ask::default()).hold
+    }
+
+    /// 543's check 6, the case measured in `535m-report-2026-11-10.md`: a
+    /// chat with a CLI conversation and no hold on file takes the fresh
+    /// prompt whole — and now with the snapshot off, so it reaches the CLI.
+    #[test]
+    fn a_conversation_with_no_hold_takes_the_fresh_prompt_with_the_snapshot_off() {
+        let mut fresh = prompt("m");
+        fresh.push(Segment::new(
+            SegmentKind::Thread,
+            "alpha",
+            "THREAD alpha: start here",
+        ));
+        let r = resolve(&fresh, None, true, &Ask::default());
+        assert!(flat(&r).contains("THREAD alpha: start here"));
+        assert!(r.hold.snapshot_off);
+        assert!(r.pending.is_empty());
+        // It stays off on the next connect, when the hold is on file.
+        let again = resolve(&fresh, Some(&r.hold), true, &Ask::default());
+        assert!(again.hold.snapshot_off);
+        // A New chat (no conversation yet) records the prompt itself.
+        assert!(
+            !resolve(&fresh, None, false, &Ask::default())
+                .hold
+                .snapshot_off
+        );
     }
 
     fn json(h: &Hold) -> serde_json::Value {
