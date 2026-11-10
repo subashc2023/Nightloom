@@ -1049,6 +1049,21 @@ cat >> "$0/received""#;
         let _ = std::fs::remove_dir_all(&r.dir);
     }
 
+    /// Item 550: the helper draws the page at 2 device pixels per CSS
+    /// pixel and casts frames at that size (sharp on a Retina display),
+    /// with the viewport still 1280×800 CSS px.
+    #[test]
+    fn the_helper_casts_retina_frames_of_the_same_page() {
+        let js = own_browser::HELPER_JS;
+        assert!(js.contains("const SCALE = 2;"));
+        assert!(
+            js.contains("viewport: { width: WIDTH, height: HEIGHT }, deviceScaleFactor: SCALE")
+        );
+        assert!(js.contains("size: { width: WIDTH * SCALE, height: HEIGHT * SCALE }"));
+        assert!(js.contains(&format!("const WIDTH = {WIDTH};")));
+        assert!(js.contains(&format!("const HEIGHT = {HEIGHT};")));
+    }
+
     /// Item 557 (a bug he reported): the browser is kept between messages
     /// for its logins, but it is in use only while a message's MCP server
     /// is attached. The window hears both edges at once, so the chat's

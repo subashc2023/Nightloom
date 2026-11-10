@@ -10,7 +10,9 @@ import {
   addressToUrl,
   buttonName,
   dialogLine,
+  addressParts,
   holdLine,
+  holdStrip,
   letterbox,
   phaseOf,
   routeKey,
@@ -360,5 +362,29 @@ describe("the tab kind", () => {
     expect(tabs.findAnywhere(ws, a)).toBeTruthy();
     tabs.dropChat(ws, "s1");
     expect(tabs.findAnywhere(ws, a)).toBeUndefined();
+  });
+});
+
+describe("the bar and hold strip (550)", () => {
+  const S = { live: true, url: "https://staging.example.com/signup", title: "t", held_by: "model" as const, width: 1280, height: 800, pages: 1 };
+  it("says who has the browser in three tones", () => {
+    expect(holdStrip(S, "live")).toMatchObject({ tone: "claude", who: "Claude has it" });
+    expect(holdStrip({ ...S, in_use: true }, "live")?.tone).toBe("claude");
+    expect(holdStrip({ ...S, held_by: "user" }, "live")).toMatchObject({ tone: "you", who: "You have it" });
+    expect(holdStrip({ ...S, in_use: false }, "live")).toMatchObject({ tone: "idle", who: "Idle" });
+    expect(holdStrip({ ...S, in_use: false, held_by: "user" }, "live")?.tone).toBe("you");
+    expect(holdStrip(S, "ended")).toBeNull();
+    expect(holdStrip(null, "live")).toBeNull();
+  });
+  it("splits the address into a dim scheme and the rest", () => {
+    expect(addressParts(null, "https://staging.example.com/signup")).toEqual({ scheme: "https://", rest: "staging.example.com/signup" });
+    expect(addressParts(null, "http://localhost:5173/")).toEqual({ scheme: "http://", rest: "localhost:5173/" });
+    expect(addressParts(null, "about:blank")).toEqual({ scheme: "", rest: "about:blank" });
+    expect(addressParts("exam", "https://a.b/")).toEqual({ scheme: "", rest: "exam" });
+    expect(addressParts(null, undefined)).toEqual({ scheme: "", rest: "" });
+  });
+  it("the tab has no stray name pill; Take over sits in the strip", () => {
+    expect(viewSrc).not.toContain('class="who');
+    expect(viewSrc).toMatch(/<div class="cb-hold"[\s\S]*Take over<\/button>/);
   });
 });

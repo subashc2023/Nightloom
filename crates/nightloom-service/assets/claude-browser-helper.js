@@ -21,7 +21,15 @@ const readline = require('readline');
 
 const WIDTH = 1280;
 const HEIGHT = 800;
-const QUALITY = 60;
+// Item 550: the page draws at 2 device pixels per CSS pixel and frames are
+// cast at that size, so the tab is sharp on a Retina display (it showed a
+// 1280-px frame stretched over ~3000 device pixels). The page and what the
+// model reads are unchanged: the viewport is still 1280×800 CSS px, and the
+// MCP server's screenshots default to CSS scale. The MCP server attaches
+// with --endpoint and no --isolated, so it uses this context
+// (`browser.contexts()[0]`).
+const SCALE = 2;
+const QUALITY = 80;
 
 const out = (o) => {
   try {
@@ -78,7 +86,7 @@ async function recast() {
     out({ ev: 'frame', seq: ++seq, jpeg: data.toString('base64'), w: WIDTH, h: HEIGHT });
   };
   try {
-    await want.screencast.start({ size: { width: WIDTH, height: HEIGHT }, quality: QUALITY, onFrame });
+    await want.screencast.start({ size: { width: WIDTH * SCALE, height: HEIGHT * SCALE }, quality: QUALITY, onFrame });
   } catch (e) {
     casting = null;
     return fail('screencast', e);
@@ -246,7 +254,7 @@ function handle(line) {
   const pw = require(path.join(process.argv[2], 'node_modules', 'playwright-core'));
   browser = await pw.webkit.launch({ headless: true });
   browser.on('disconnected', () => process.exit(0));
-  const context = await browser.newContext({ viewport: { width: WIDTH, height: HEIGHT } });
+  const context = await browser.newContext({ viewport: { width: WIDTH, height: HEIGHT }, deviceScaleFactor: SCALE });
   await context.newPage();
   sweep();
   const { endpoint } = await browser.bind('nightloom-claude-browser-' + process.pid, {

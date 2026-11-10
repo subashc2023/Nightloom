@@ -171,6 +171,35 @@ export function holdLine(status: BrowserStatus | null | undefined, phase: Browse
     : "Claude has the browser. Click the page to use it; your next click, scroll or key there takes it over.";
 }
 
+/**
+ * The strip under the bar that says who has the browser (item 550,
+ * Filament IV's look): a coloured name and a plain line. `claude` while a
+ * message is using it (the signal colour), `you` while he holds it (the
+ * accent), `idle` between messages (item 557: kept for its logins only).
+ */
+export function holdStrip(
+  status: BrowserStatus | null | undefined,
+  phase: BrowserPhase,
+): { tone: "claude" | "you" | "idle"; who: string; detail: string } | null {
+  if (phase !== "live" || !status) return null;
+  if (status.held_by === "user")
+    return { tone: "you", who: "You have it", detail: "Claude is paused: its browser calls wait until you give it back." };
+  if (status.in_use === false)
+    return { tone: "idle", who: "Idle", detail: "No message is using it; kept for its logins until it has sat unused for 30 minutes." };
+  return { tone: "claude", who: "Claude has it", detail: "You can watch. Click the page to use it; your next click, scroll or key there takes it over." };
+}
+
+/**
+ * The address split for the bar (item 550): the scheme drawn dim, the rest
+ * in the text colour. A draft or a non-web address is shown whole.
+ */
+export function addressParts(draft: string | null, url: string | undefined): { scheme: string; rest: string } {
+  if (draft !== null) return { scheme: "", rest: draft };
+  const u = url ?? "";
+  const m = /^(https?:\/\/)(.*)$/.exec(u);
+  return m ? { scheme: m[1], rest: m[2] } : { scheme: "", rest: u };
+}
+
 /** What each phase says in the tab when there is no picture to show. */
 export function phaseText(phase: BrowserPhase): { title: string; body: string } {
   switch (phase) {
