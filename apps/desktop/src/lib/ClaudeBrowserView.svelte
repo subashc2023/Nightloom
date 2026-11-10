@@ -42,7 +42,7 @@
   import { viewGet, viewSet } from "./viewState";
   import { app, cancelTurn, runningWork } from "./state.svelte";
   import { liveHost } from "./browse";
-  import { browserSteps, sameChat } from "./browserSteps";
+  import { browserSteps, sameChat, stopHolds } from "./browserSteps";
   import {
     browsers,
     dismissDialog,
@@ -315,16 +315,18 @@
     const bg = Object.values(app.background).find((b) => b.session === turnRow.session);
     return browserSteps(bg ? bg.live?.segments : liveHost(app).live?.segments);
   });
-  let stopping = $state(false);
-  $effect(() => {
-    // A new turn (or none) clears the pressed look.
-    void turnRow?.startedAt;
-    if (!turnRow) stopping = false;
-  });
+  // The turn Stop was pressed on, by its start: a new turn (a queued
+  // message sent the moment the stopped one ended) or none clears the
+  // pressed look — the old effect cleared it only on none (w4 review).
+  let pressedOn = $state<{ at: number | null } | null>(null);
+  const stopping = $derived(stopHolds(pressedOn, turnRow));
   function stopClaude(): void {
     if (stopping) return;
-    stopping = true;
-    void cancelTurn(session).catch(() => (stopping = false));
+    const mine = { at: turnRow?.startedAt ?? null };
+    pressedOn = mine;
+    void cancelTurn(session).catch(() => {
+      if (pressedOn === mine) pressedOn = null;
+    });
   }
   function openOutside(): void {
     const u = status?.url;

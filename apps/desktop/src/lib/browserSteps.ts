@@ -48,3 +48,16 @@ export function sameChat(turnKey: string | null | undefined, chat: string | null
   if (!turnKey || !chat) return false;
   return turnKey === chat || turnKey.startsWith(chat);
 }
+
+/**
+ * Whether Stop Claude still reads pressed (w4 review): only while the turn
+ * it was pressed on runs — the same start. A new turn of the chat (a queued
+ * message sent as the stopped one ended) or no turn clears it, so the next
+ * turn's Stop is never left disabled.
+ */
+export function stopHolds(
+  pressedOn: { at: number | null } | null,
+  turn: { startedAt: number | null } | null | undefined,
+): boolean {
+  return !!pressedOn && !!turn && turn.startedAt === pressedOn.at;
+}
