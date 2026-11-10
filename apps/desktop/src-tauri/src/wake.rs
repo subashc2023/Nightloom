@@ -212,6 +212,31 @@ pub fn watch(app: tauri::AppHandle) {
     });
 }
 
+/// Seconds since the last keyboard, mouse or trackpad input on this Mac
+/// (nightshift backlog 544): how the window tells "he is away" when it is
+/// itself in front — a Mac left overnight with Nightloom frontmost never
+/// lost focus, so the hand-off's away rule never held. `None` off macOS.
+/// Reads a counter the window server keeps; needs no permission.
+pub fn idle_seconds() -> Option<f64> {
+    #[cfg(target_os = "macos")]
+    {
+        #[link(name = "CoreGraphics", kind = "framework")]
+        unsafe extern "C" {
+            fn CGEventSourceSecondsSinceLastEventType(state: i32, event_type: u32) -> f64;
+        }
+        // kCGEventSourceStateHIDSystemState, kCGAnyInputEventType.
+        const HID_SYSTEM_STATE: i32 = 1;
+        const ANY_INPUT: u32 = u32::MAX;
+        // SAFETY: a plain C function of two integers, no pointers.
+        let secs = unsafe { CGEventSourceSecondsSinceLastEventType(HID_SYSTEM_STATE, ANY_INPUT) };
+        (secs.is_finite() && secs >= 0.0).then_some(secs)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
 /// The App Nap hold: an `NSProcessInfo` activity while a wake is armed.
 mod nap {
     #[derive(Default)]

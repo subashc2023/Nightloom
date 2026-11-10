@@ -570,6 +570,51 @@ mod tests {
         assert!(r.hold.kept.is_empty());
     }
 
+    /// Item 543's check 6 (his question, 2026-11-10 ~1:15 AM: does a chat
+    /// added to a thread mid-chat know it?). The chat ran unbound, so its
+    /// hold names no thread; `set_chat_thread` writes the binding and the
+    /// reconnect builds a prompt with the thread's layer. `main.rs`
+    /// `thread_rebound` sees the names differ and asks for the Thread layer
+    /// now — warm cache or not — and taking it turns the CLI's prompt
+    /// snapshot off, without which a resumed chat keeps the prompt it
+    /// recorded on its first turn (item 174). The args half is
+    /// `a_thread_bound_mid_chat_reaches_the_resumed_cli` in the service.
+    #[test]
+    fn a_thread_bound_mid_chat_is_taken_now_and_turns_the_snapshot_off() {
+        let hold = held("m");
+        assert!(!hold.snapshot_off);
+        let mut fresh = prompt("m");
+        fresh.push(Segment::new(
+            SegmentKind::Thread,
+            "alpha",
+            "THREAD alpha: start here",
+        ));
+        let name = |segs: &[Segment]| {
+            segs.iter()
+                .find(|s| s.kind == SegmentKind::Thread)
+                .map(|s| s.name.clone())
+        };
+        // `thread_rebound`'s rule, on the same inputs.
+        assert_ne!(name(&hold.segments), name(fresh.segments()));
+        let warm = Ask {
+            cold: false,
+            auto: true,
+            now: vec![SegmentKind::Thread],
+        };
+        let r = resolve(&fresh, Some(&hold), true, &warm);
+        assert!(flat(&r).contains("THREAD alpha: start here"));
+        assert!(r.hold.snapshot_off);
+        assert!(r.pending.is_empty());
+        // Without the ask (the rebound not noticed) a warm chat would hold it back.
+        let quiet = Ask {
+            cold: false,
+            auto: true,
+            now: Vec::new(),
+        };
+        let r = resolve(&fresh, Some(&hold), true, &quiet);
+        assert!(!flat(&r).contains("THREAD alpha: start here"));
+    }
+
     #[test]
     fn the_hold_round_trips_through_its_file() {
         let dir = std::env::temp_dir().join(format!("nightloom-hold-{}", std::process::id()));
