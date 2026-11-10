@@ -259,6 +259,72 @@ describe("543a — every paused chat resumes, at every reset", () => {
   });
 });
 
+describe("543a — his report of 6:30 AM: helpers hit the limit, the chat went silent, then a Resume button he had to click", () => {
+  // The backend now ends such a turn by itself (`LIMIT_GRACE`, agent/mod.rs) with the
+  // limit on its result and this notice; here: what the window does with that result.
+  const helpers = (resetsAtMs: number) => ({
+    ...ok,
+    notices: ["paused — the plan's usage limit stopped the helpers this turn was waiting on"],
+    limit: {
+      resets_at: resetsAtMs / 1000,
+      window: "five_hour",
+      text: "You've hit your usage limit",
+      subagents: [],
+      agents: [{ tool_use_id: "toolu_HELPER", agent_id: "a8bb", description: "funding scan", status: "running" }],
+    },
+  });
+
+  it("on screen: the card shows at once with its time already set — no button to press — and it resumes at the reset, naming the helper", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      const reset = Date.now() + 4 * 3600_000;
+      look(A, COLLEGE); // the College chat, on screen, as his was
+      sendInChat(A, COLLEGE, "run the seven research slices", [], () => {});
+      await settle();
+      expect(send).toHaveBeenCalledTimes(1);
+      turns.get(A)!(helpers(reset));
+      await settle();
+      // Paused, shown, and scheduled — all at the turn's end.
+      expect(app.busy).toBe(false);
+      expect(app.limitPause?.session).toBe(A);
+      expect(app.limitPause?.agents.map((a) => a.agent_id)).toEqual(["a8bb"]);
+      expect(app.limitResumeAt).toBe(reset + RESUME_MARGIN_MS); // the card reads "will resume at …", not a Resume button
+      expect(api.armWake).toHaveBeenLastCalledWith("limit", reset + RESUME_MARGIN_MS);
+
+      vi.setSystemTime(reset + RESUME_MARGIN_MS + 5);
+      limitWakeDue(); // nobody clicked anything
+      await settle();
+      expect(send).toHaveBeenCalledTimes(2);
+      expect(send.mock.calls[1]![0]).toMatch(/^The last turn was paused by the plan's usage limit/);
+      expect(send.mock.calls[1]![0]).toContain("`a8bb` (funding scan");
+      expect(send.mock.calls[1]![7]).toEqual({ chat: A, project: "p-college" });
+      expect(app.limitPause).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("off screen: the same, with no card to click at all", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      const reset = Date.now() + 4 * 3600_000;
+      look(OTHER, VALUE);
+      sendInChat(A, COLLEGE, "run the seven research slices", [], () => {});
+      await settle();
+      turns.get(A)!(helpers(reset));
+      await settle();
+      expect(resumes[A]?.at).toBe(reset + RESUME_MARGIN_MS);
+      vi.setSystemTime(reset + RESUME_MARGIN_MS + 5);
+      limitWakeDue();
+      await settle();
+      expect(send).toHaveBeenCalledTimes(2);
+      expect(send.mock.calls[1]![0]).toContain("`a8bb` (funding scan");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("543b — a chat that stops short of the limit and asks is continued after the reset", () => {
   /** The reply of the turn running off screen in `chat`. */
   function says(chat: string, text: string) {

@@ -209,6 +209,15 @@ struct State {
     /// main `result` while one runs, and its end wakes the main agent as a
     /// second command — so the stdin stays open for him meanwhile.
     agents: Vec<(String, String)>,
+    /// Background commands running now (backlog 543c): `task_id` and
+    /// description, from the CLI's `background_tasks_changed` line, which
+    /// lists every one (`task_type: "local_bash"`). Measured on 2.1.322
+    /// (nightshift `543-report-2026-11-10.md`): the process outlives the
+    /// main `result` while one runs — EOF or not — and its end wakes the
+    /// main agent as a second command. So the stdin stays open for him
+    /// meanwhile, as for a subagent: before, it was closed at the `result`
+    /// and a message he sent while a build ran waited for the build.
+    commands: Vec<(String, String)>,
     /// The main thread's SendMessage calls awaiting their result (339):
     /// call id → (`to`, `message`).
     relays: HashMap<String, (String, String)>,
@@ -429,7 +438,12 @@ impl Inbox {
                 // An idle process kept open only for this message ends now
                 // — not while subagents run: their stdin carries Stop them
                 // and the nested-spawn notes (329).
-                if s.idle && s.waiting.is_empty() && s.agents.is_empty() && s.wakes.is_empty() {
+                if s.idle
+                    && s.waiting.is_empty()
+                    && s.agents.is_empty()
+                    && s.commands.is_empty()
+                    && s.wakes.is_empty()
+                {
                     s.tx = None;
                 }
                 TakeBack::Cancelled
@@ -449,6 +463,10 @@ impl Inbox {
     /// [`on_line`](Self::on_line) at `now` (the wake's clock, 406).
     pub fn on_line_at(&self, line: &str, now: std::time::Instant) -> Option<Effect> {
         self.track_wake(line, now);
+        if line.contains(r#""subtype":"background_tasks_changed""#) {
+            self.track_commands(line);
+            return None;
+        }
         // Cheap tests first: most lines are none of these.
         let kind = if line.contains(r#""type":"command_lifecycle""#) {
             0
@@ -539,6 +557,7 @@ impl Inbox {
                         // Not while a completion waits for its wake (406).
                         if s.idle
                             && s.agents.is_empty()
+                            && s.commands.is_empty()
                             && s.waiting.is_empty()
                             && s.wakes.is_empty()
                         {
@@ -635,7 +654,10 @@ impl Inbox {
                     });
                 }
                 let running: Vec<String> = s.agents.iter().map(|(_, d)| d.clone()).collect();
-                let closed = s.waiting.is_empty() && running.is_empty() && s.wakes.is_empty();
+                let closed = s.waiting.is_empty()
+                    && running.is_empty()
+                    && s.commands.is_empty()
+                    && s.wakes.is_empty();
                 if closed {
                     s.tx = None;
                 }
@@ -729,6 +751,52 @@ impl Inbox {
     pub fn idle_with_agents(&self) -> bool {
         let s = self.lock();
         s.idle && !s.agents.is_empty() && s.tx.is_some()
+    }
+
+    /// The background commands running now, by description (543c).
+    pub fn commands_running(&self) -> Vec<String> {
+        self.lock()
+            .commands
+            .iter()
+            .map(|(_, d)| d.clone())
+            .collect()
+    }
+
+    /// The CLI's list of background tasks changed (543c): the commands
+    /// among them are what holds the stdin open past the main `result`.
+    /// The last one gone with the main thread idle and nothing else
+    /// holding the process: the EOF now — the CLI still wakes the main
+    /// agent for it (measured with an early EOF), as for a subagent.
+    fn track_commands(&self, line: &str) {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            return;
+        };
+        if v.get("subtype").and_then(|t| t.as_str()) != Some("background_tasks_changed") {
+            return;
+        }
+        let Some(tasks) = v.get("tasks").and_then(|t| t.as_array()) else {
+            return;
+        };
+        let text = |t: &serde_json::Value, k: &str| {
+            t.get(k)
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string()
+        };
+        let mut s = self.lock();
+        s.commands = tasks
+            .iter()
+            .filter(|t| text(t, "task_type") == "local_bash")
+            .map(|t| (text(t, "task_id"), text(t, "description")))
+            .collect();
+        if s.idle
+            && s.commands.is_empty()
+            && s.agents.is_empty()
+            && s.waiting.is_empty()
+            && s.wakes.is_empty()
+        {
+            s.tx = None;
+        }
     }
 
     /// Whether a message he sent is written to the feed and not yet taken.
@@ -1124,6 +1192,74 @@ mod tests {
         // Not his: nothing waits, nothing is taken.
         assert!(inbox.taken().is_empty());
         assert!(!inbox.idle_with_agents(), "the note starts a command");
+    }
+
+    /// Item 543c, lines as measured on 2.1.322 (run A of the report): a
+    /// command started with `run_in_background` keeps the stdin open past
+    /// the main `result`, a message he sends meanwhile goes in, and the
+    /// command's end closes it.
+    #[test]
+    fn a_background_command_keeps_the_stdin_open_and_its_end_closes_it() {
+        const CHANGED: &str = r#"{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"bkw3wquhz","run_id":"r","task_type":"local_bash","description":"Sleep 12 seconds, then write date to done.txt"}],"uuid":"u","session_id":"s"}"#;
+        const GONE: &str = r#"{"type":"system","subtype":"background_tasks_changed","tasks":[],"uuid":"u2","session_id":"s"}"#;
+        let inbox = Inbox::default();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        inbox.open(tx);
+        inbox.on_line(CHANGED);
+        inbox.on_line(r#"{"type":"system","subtype":"task_started","task_id":"bkw3wquhz","tool_use_id":"toolu_B","description":"Sleep 12 seconds, then write date to done.txt","is_backgrounded":true,"task_type":"local_bash"}"#);
+        assert_eq!(
+            inbox.commands_running(),
+            vec!["Sleep 12 seconds, then write date to done.txt".to_string()]
+        );
+        // The reply ends: no subagent is named, and the stdin stays open.
+        assert_eq!(
+            inbox.on_line(RESULT),
+            Some(Effect::Result {
+                closed: false,
+                running: vec![]
+            })
+        );
+        assert!(inbox.is_open());
+        // What he sends while the command runs is written at once.
+        assert_eq!(inbox.send(ID, "how is the build going?"), Ok(()));
+        assert!(rx.try_recv().unwrap().contains("how is the build going?"));
+        assert!(matches!(
+            inbox.on_line(&lifecycle("started")),
+            Some(Effect::Taken(_))
+        ));
+        // That command's result: still held, the build still runs.
+        assert_eq!(
+            inbox.on_line(RESULT),
+            Some(Effect::Result {
+                closed: false,
+                running: vec![]
+            })
+        );
+        assert!(inbox.is_open());
+        // The command ends with the main thread idle: the EOF.
+        inbox.on_line(r#"{"type":"system","subtype":"task_notification","task_id":"bkw3wquhz","status":"completed","tool_use_id":"toolu_B"}"#);
+        inbox.on_line(GONE);
+        assert!(inbox.commands_running().is_empty());
+        assert!(!inbox.is_open());
+    }
+
+    /// 543c: a foreground Bash call is no background task — the CLI lists
+    /// none — and the `result` closes the stdin as before.
+    #[test]
+    fn a_foreground_command_holds_nothing() {
+        let inbox = Inbox::default();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        inbox.open(tx);
+        inbox.on_line(r#"{"type":"system","subtype":"task_started","task_id":"b1","tool_use_id":"t","description":"sleep","is_backgrounded":false,"task_type":"local_bash"}"#);
+        inbox.on_line(r#"{"type":"system","subtype":"task_notification","task_id":"b1","status":"completed","tool_use_id":"t"}"#);
+        assert_eq!(
+            inbox.on_line(RESULT),
+            Some(Effect::Result {
+                closed: true,
+                running: vec![]
+            })
+        );
+        assert!(!inbox.is_open());
     }
 
     #[test]

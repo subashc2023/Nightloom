@@ -422,6 +422,13 @@ impl Translator {
     }
 
     /// The accumulated outcome. Call after the stream ends.
+    /// Whether the plan's usage limit has been seen on this turn's stream
+    /// (543a): a rejected `rate_limit_event`, a 429, the CLI's sentence —
+    /// on the main thread or a helper's.
+    pub fn limited(&self) -> bool {
+        self.outcome.limit.is_some()
+    }
+
     pub fn finish(mut self) -> AgentOutcome {
         if let Some(hit) = self.outcome.limit.as_mut() {
             hit.agents = stopped_agents(&hit.subagents, &self.subagent_order, &self.subagents);
