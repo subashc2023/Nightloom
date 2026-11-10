@@ -85,3 +85,12 @@ describe("the gate wired in the tab (551)", () => {
     expect(viewSrc).toContain('tabindex="-1"');
   });
 });
+
+describe("every way out of his takeover hands the browser back (552)", () => {
+  it("the tab re-reads who holds the browser at each edge of a turn", () => {
+    expect(viewSrc).toMatch(/void app\.busy;\s*void startBrowsers\(\);\s*void readStatus\(session\);/);
+  });
+  it("the last tab gone stops watching (the backend then hands the browser back)", () => {
+    expect(viewSrc).toMatch(/if \(away \|\| !docVisible\) return;\s*watch\(s, true\);\s*return \(\) => watch\(s, false\);/);
+  });
+});

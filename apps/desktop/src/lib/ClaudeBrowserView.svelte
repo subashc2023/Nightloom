@@ -17,6 +17,11 @@
    * holds it, the model's browser calls wait. Pointer moves are sent only
    * while he holds it, so a hover never takes the browser from Claude.
    *
+   * Every way out of his takeover hands the browser back (item 552): the
+   * last tab watching it going (closed, sent to the back, a chat switch,
+   * the window hidden — the backend's `watch(false)`), a turn starting or
+   * ending, the browser ending (idle, chat closed, app quit).
+   *
    * Frames are asked for only while this tab is in front (or in the other
    * pane) and the window is not hidden; a kept tab sent to the back stops
    * watching and keeps its last picture. The address line's half-typed
@@ -29,6 +34,7 @@
   import * as api from "./api";
   import { isMac } from "./platform";
   import { viewGet, viewSet } from "./viewState";
+  import { app } from "./state.svelte";
   import {
     browsers,
     dismissDialog,
@@ -71,8 +77,10 @@
   const empty = $derived(phaseText(ph));
 
   // The chat's status, read once per chat this view is drawn for (events
-  // keep it after that).
+  // keep it after that) — and again at each edge of a turn, which hands
+  // his takeover back to Claude with no event of its own (item 552).
   $effect(() => {
+    void app.busy;
     void startBrowsers();
     void readStatus(session);
   });

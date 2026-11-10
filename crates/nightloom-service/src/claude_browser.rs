@@ -541,6 +541,11 @@ impl Browsers {
     }
 
     /// A tab started or stopped watching: frames flow only while one does.
+    ///
+    /// The last tab gone (item 552) also hands the browser back if he held
+    /// it: he closed the tab, sent it to the back, switched chats, or the
+    /// window hid or closed — every one a way out of a takeover, and none
+    /// may leave the model refused. His next click takes it again.
     pub async fn watch(&self, chat: &str, on: bool) {
         let Some(e) = self.get(chat) else { return };
         {
@@ -549,6 +554,9 @@ impl Browsers {
             s.last_active = Some(Instant::now());
         }
         self.send(&e, json!({"op": "watch", "on": on})).await;
+        if !on && e.held() {
+            let _ = self.set_hold(&e, false).await;
+        }
     }
 
     fn live_entry(&self, chat: &str) -> Result<Arc<Entry>, String> {
@@ -1022,6 +1030,55 @@ cat >> "$0/received""#;
         b.close("chat-1").await;
         assert!(!ask.held_by_user());
         assert_eq!(crate::agent::ask::decide(&r.ask, &call).decision(), "allow");
+        let _ = std::fs::remove_dir_all(&r.dir);
+    }
+
+    /// Item 552: a takeover ends with the tab. He takes the browser, then
+    /// the last tab watching it goes (closed, to the back, a chat switch,
+    /// the window hidden): the browser is the model's again, the window is
+    /// told, and the model's next call is allowed. A tab still watching
+    /// keeps his hold.
+    #[tokio::test]
+    async fn closing_the_tab_while_he_holds_the_browser_gives_it_back() {
+        let r = rig("handback", IDLE);
+        let b = &r.browsers;
+        let socket = b.endpoint("chat-1", &r.ask).unwrap();
+        assert_eq!(one_turn(&socket, "go").await, "go");
+        let call =
+            json!({"hook_event_name": "PreToolUse", "tool_name": "mcp__playwright__browser_click",
+            "tool_input": {}, "tool_use_id": "c1", "permission_mode": "auto"})
+            .to_string();
+        let ask = AskDir::new(&r.ask);
+        ask.set_playwright_chat(true).unwrap();
+
+        b.watch("chat-1", true).await;
+        b.hold("chat-1", true).await.unwrap();
+        assert!(ask.held_by_user());
+        assert_eq!(crate::agent::ask::decide(&r.ask, &call).decision(), "deny");
+
+        // The tab closes.
+        b.watch("chat-1", false).await;
+        assert!(!ask.held_by_user());
+        assert_eq!(b.status("chat-1").unwrap().held_by, "model");
+        assert_eq!(crate::agent::ask::decide(&r.ask, &call).decision(), "allow");
+        let last = r.events.lock().unwrap().iter().rev().find_map(|e| match e {
+            Event::Status(s) => Some(s.held_by),
+            _ => None,
+        });
+        assert_eq!(last, Some("model"));
+
+        // Reopened, his click takes it again; the browser still runs.
+        b.watch("chat-1", true).await;
+        let click = json!({"kind": "click", "x": 1, "y": 1, "button": "left", "clicks": 1, "modifiers": []});
+        b.input("chat-1", click).await.unwrap();
+        assert!(ask.held_by_user());
+        // Watching on (a second view coming) never gives it back.
+        b.watch("chat-1", true).await;
+        assert!(ask.held_by_user());
+        // A watch-off with the model holding changes nothing.
+        b.hold("chat-1", false).await.unwrap();
+        b.watch("chat-1", false).await;
+        assert!(!ask.held_by_user());
         let _ = std::fs::remove_dir_all(&r.dir);
     }
 
