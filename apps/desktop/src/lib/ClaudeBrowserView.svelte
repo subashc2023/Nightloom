@@ -8,10 +8,19 @@
    * changes with his layout.
    *
    * His clicks, double-clicks, right-clicks, wheel and keys go to the page,
-   * mapped from the picture to page pixels (`claudeBrowser.ts`). The
+   * mapped from the picture to page pixels (`claudeBrowser.ts`) — but only
+   * once he has clicked into the picture (item 551: a scroll or a trackpad
+   * swipe over it must never reach the page). That click arms the tab and
+   * is not passed on; a click outside, Escape, the window losing focus, the
+   * tab going to the back or a chat switch disarm it (`InputGate`). The
    * backend hands him the browser on his first click or key; while he
    * holds it, the model's browser calls wait. Pointer moves are sent only
    * while he holds it, so a hover never takes the browser from Claude.
+   *
+   * Every way out of his takeover hands the browser back (item 552): the
+   * last tab watching it going (closed, sent to the back, a chat switch,
+   * the window hidden — the backend's `watch(false)`), a turn starting or
+   * ending, the browser ending (idle, chat closed, app quit).
    *
    * Frames are asked for only while this tab is in front (or in the other
    * pane) and the window is not hidden; a kept tab sent to the back stops
@@ -25,6 +34,7 @@
   import * as api from "./api";
   import { isMac } from "./platform";
   import { viewGet, viewSet } from "./viewState";
+  import { app } from "./state.svelte";
   import {
     browsers,
     dismissDialog,
@@ -40,17 +50,20 @@
     PAGE_H,
     PAGE_W,
     addressKey,
+    addressParts,
     addressShown,
     addressToUrl,
     buttonName,
     dialogLine,
-    holdLine,
+    holdStrip,
+    InputGate,
     letterbox,
     modifiersOf,
     phaseText,
     routeKey,
     throttle,
     toPage,
+    wheelKind,
     wheelPixels,
   } from "./claudeBrowser";
 
@@ -65,8 +78,10 @@
   const empty = $derived(phaseText(ph));
 
   // The chat's status, read once per chat this view is drawn for (events
-  // keep it after that).
+  // keep it after that) — and again at each edge of a turn, which hands
+  // his takeover back to Claude with no event of its own (item 552).
   $effect(() => {
+    void app.busy;
     void startBrowsers();
     void readStatus(session);
   });
@@ -155,7 +170,28 @@
   let sink: HTMLTextAreaElement | undefined = $state();
   let bw = $state(0);
   let bh = $state(0);
-  let focused = $state(false);
+  // Item 551: armed only by a click into the picture.
+  let armed = $state(false);
+  const gate = new InputGate((a) => (armed = a));
+  $effect(() => {
+    void session;
+    if (away) gate.disarm("tab-away");
+    if (!live) gate.disarm("not-live");
+    return () => gate.disarm("chat-switch");
+  });
+  $effect(() => {
+    const onBlur = () => gate.disarm("window-blur");
+    const onDownAnywhere = (e: PointerEvent) => {
+      if (box && e.target instanceof Node && box.contains(e.target)) return;
+      gate.disarm("outside-click");
+    };
+    window.addEventListener("blur", onBlur);
+    window.addEventListener("pointerdown", onDownAnywhere, true);
+    return () => {
+      window.removeEventListener("blur", onBlur);
+      window.removeEventListener("pointerdown", onDownAnywhere, true);
+    };
+  });
   const pic = $derived(letterbox(bw, bh, status?.width || PAGE_W, status?.height || PAGE_H));
   const pw = $derived(status?.width || PAGE_W);
   const phh = $derived(status?.height || PAGE_H);
@@ -173,18 +209,21 @@
 
   function onDown(e: MouseEvent): void {
     if (!live || !pointAt(e)) return;
-    // Keep the keyboard here (the sink), and no text selection drag.
+    // Keep the keyboard here (the sink), and no text selection drag. The
+    // first press only arms the tab; its release is not passed on.
     e.preventDefault();
+    gate.press();
     sink?.focus();
   }
   function onUp(e: MouseEvent): void {
     const p = pointAt(e);
-    if (!p || e.detail > 2) return;
+    if (!p) return;
+    if (!gate.release() || e.detail > 2) return;
     send({ kind: "click", x: p.x, y: p.y, button: buttonName(e.button), clicks: e.detail === 2 ? 2 : 1, modifiers: modifiersOf(e) });
   }
   const mover = throttle((x: number, y: number) => send({ kind: "move", x, y }), MOVE_MS);
   function onMove(e: MouseEvent): void {
-    if (!heldByMe) return;
+    if (!gate.allows("move", heldByMe)) return;
     const p = pointAt(e);
     if (p) mover.call(p.x, p.y);
   }
@@ -197,6 +236,9 @@
   function onWheel(e: WheelEvent): void {
     const p = pointAt(e);
     if (!p || !live) return;
+    // Not armed: the scroll or swipe is his, not the page's — let it be.
+    if (!gate.allows(wheelKind(e), heldByMe)) return;
+    e.preventDefault();
     wheelAcc = {
       x: p.x,
       y: p.y,
@@ -211,6 +253,14 @@
   });
 
   function onKey(e: KeyboardEvent): void {
+    if (e.key === "Escape" && armed && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault();
+      e.stopPropagation();
+      gate.disarm("escape");
+      sink?.blur();
+      return;
+    }
+    if (!gate.allows("key", heldByMe)) return;
     const r = routeKey(e, isMac);
     if (r.route !== "page") return;
     e.preventDefault();
@@ -220,10 +270,11 @@
   function onPaste(e: ClipboardEvent): void {
     const text = e.clipboardData?.getData("text/plain") ?? "";
     e.preventDefault();
+    if (!gate.allows("text", heldByMe)) return;
     if (text) send({ kind: "text", text });
   }
   function onCompositionEnd(e: CompositionEvent): void {
-    if (e.data) send({ kind: "text", text: e.data });
+    if (e.data && gate.allows("text", heldByMe)) send({ kind: "text", text: e.data });
     void tick().then(() => {
       if (sink) sink.value = "";
     });
@@ -232,49 +283,72 @@
     const ie = e as InputEvent;
     if (ie.isComposing) return;
     // Text that came by no key we sent (dictation, the character viewer).
-    if (ie.data && ie.inputType === "insertText") send({ kind: "text", text: ie.data });
+    if (ie.data && ie.inputType === "insertText" && gate.allows("text", heldByMe)) send({ kind: "text", text: ie.data });
     if (sink) sink.value = "";
   }
 
   const shownAddr = $derived(addressShown(draft, status?.url));
+  // Item 550: at rest the address reads as scheme (dim) + the rest; while
+  // he edits it, the input shows it whole.
+  let addrFocused = $state(false);
+  const parts = $derived(addressParts(draft, status?.url));
+  const strip = $derived(holdStrip(status, ph));
+  function openOutside(): void {
+    const u = status?.url;
+    if (u && /^https?:/.test(u)) void api.openUrl(u).catch(() => {});
+  }
 </script>
 
 <div class="cb" data-phase={ph} data-held={status?.held_by ?? ""}>
   <div class="cb-bar">
-    <button class="wb" use:tip={"Back"} aria-label="Back" disabled={!live} onclick={() => void nav("back")}><Icon name="chevl" size={13} /></button>
-    <button class="wb" use:tip={"Forward"} aria-label="Forward" disabled={!live} onclick={() => void nav("forward")}><Icon name="chevr" size={13} /></button>
-    <button class="wb" use:tip={"Reload"} aria-label="Reload" disabled={!live} onclick={() => void nav("reload")}><Icon name="refresh" size={12} /></button>
-    <input
-      autocorrect="off"
-      autocapitalize="off"
-      spellcheck="false"
-      class="addr"
-      class:draft={draft !== null}
-      class:bad={addrError !== null}
-      bind:this={addrEl}
-      value={shownAddr}
-      disabled={!live}
-      placeholder={live ? "Type an address, Enter to go" : ""}
-      aria-label="Address"
-      use:tip={draft !== null ? `Your unsent address — Enter goes there, Esc puts back ${status?.url ?? "the page's"}` : "The page's address — type one and press Enter to go there"}
-      oninput={onAddrInput}
-      onkeydown={onAddrKey}
-      onfocus={(e) => e.currentTarget.select()}
-    />
+    <button class="nb" use:tip={"Back"} aria-label="Back" disabled={!live} onclick={() => void nav("back")}><Icon name="chevl" size={13} /></button>
+    <button class="nb" use:tip={"Forward"} aria-label="Forward" disabled={!live} onclick={() => void nav("forward")}><Icon name="chevr" size={13} /></button>
+    <button class="nb" use:tip={"Reload"} aria-label="Reload" disabled={!live} onclick={() => void nav("reload")}><Icon name="refresh" size={12} /></button>
+    <div class="addr-wrap" class:draft={draft !== null} class:bad={addrError !== null} class:editing={addrFocused}>
+      {#if !addrFocused && parts.scheme}
+        <span class="scheme mono" aria-hidden="true">{parts.scheme}</span>
+      {/if}
+      <input
+        autocorrect="off"
+        autocapitalize="off"
+        spellcheck="false"
+        class="addr mono"
+        bind:this={addrEl}
+        value={addrFocused ? shownAddr : parts.rest}
+        disabled={!live}
+        placeholder={live ? "Type an address, Enter to go" : ""}
+        aria-label="Address"
+        use:tip={draft !== null ? `Your unsent address — Enter goes there, Esc puts back ${status?.url ?? "the page's"}` : "The page's address — type one and press Enter to go there"}
+        oninput={onAddrInput}
+        onkeydown={onAddrKey}
+        onfocus={(e) => {
+          addrFocused = true;
+          const el = e.currentTarget;
+          void tick().then(() => el.select());
+        }}
+        onblur={() => (addrFocused = false)}
+      />
+    </div>
     {#if live && (status?.pages ?? 1) > 1}
       <span class="pages mono" use:tip={"The page opened others (a link in a new window); the newest is shown"}>{status?.pages} pages</span>
     {/if}
-    {#if live}
-      <span class="who mono" data-who={status?.held_by}>{heldByMe ? "you" : "Claude"}</span>
-      {#if heldByMe}
-        <button class="wb hold" disabled={holding} use:tip={"Hand the browser back to Claude; its waiting calls go on"} onclick={() => void hold(false)}>Give back</button>
-      {:else}
-        <button class="wb hold" disabled={holding} use:tip={"Take the browser from Claude; its browser calls wait until you give it back"} onclick={() => void hold(true)}>Take over</button>
-      {/if}
+    {#if live && status?.url && /^https?:/.test(status.url)}
+      <button class="ns-btn small" use:tip={"Open this address in Chrome. Logins made in Claude's browser stay there; they do not carry over."} onclick={openOutside}
+        >Open in Chrome</button
+      >
     {/if}
   </div>
-  {#if live}
-    <div class="cb-line" role="status" class:mine={heldByMe}>{holdLine(status, ph)}</div>
+  {#if strip}
+    <div class="cb-hold" role="status" data-tone={strip.tone}>
+      <span class="hold-dot" aria-hidden="true"></span>
+      <b class="hold-who">{strip.who}</b>
+      <span class="hold-detail">{strip.detail}</span>
+      {#if heldByMe}
+        <button class="ns-btn small" disabled={holding} use:tip={"Hand the browser back to Claude; its waiting calls go on"} onclick={() => void hold(false)}>Give back</button>
+      {:else}
+        <button class="ns-btn small" disabled={holding} use:tip={"Take the browser from Claude; its browser calls wait until you give it back"} onclick={() => void hold(true)}>Take over</button>
+      {/if}
+    </div>
   {/if}
   {#if addrError || navError}
     <div class="cb-line err" role="alert">{addrError ?? navError}</div>
@@ -285,10 +359,11 @@
       <button class="wb x" aria-label="Dismiss" onclick={() => dismissDialog(session)}>×</button>
     </div>
   {/if}
+  <div class="cb-stage">
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="cb-pic"
-    class:focused
+    class:armed
     bind:this={box}
     bind:clientWidth={bw}
     bind:clientHeight={bh}
@@ -328,19 +403,22 @@
         autocorrect="off"
         autocapitalize="off"
         spellcheck="false"
-        tabindex="0"
+        tabindex="-1"
         style:left="{pic.x}px"
         style:top="{pic.y}px"
         style:width="{pic.w}px"
         style:height="{pic.h}px"
-        onfocus={() => (focused = true)}
-        onblur={() => (focused = false)}
+        onblur={() => gate.disarm("focus-left")}
         onkeydown={onKey}
         onpaste={onPaste}
         oncompositionend={onCompositionEnd}
         oninput={onSinkInput}
       ></textarea>
+      {#if !armed && frame}
+        <div class="arm-hint mono" aria-hidden="true">Click the page to use it</div>
+      {/if}
     {/if}
+  </div>
   </div>
 </div>
 
@@ -351,23 +429,53 @@
     height: 100%;
     min-height: 0;
   }
+  /* Item 550 — Filament IV's browser bar (521 report, f4-browser.png):
+     boxed controls, the address in mono on the field colour with its
+     scheme dim, the hold strip under it in the signal colour. */
   .cb-bar {
     display: flex;
     align-items: center;
-    gap: 4px;
-    padding: 5px 8px;
+    gap: 8px;
+    padding: 8px 14px;
     border-bottom: 1px solid var(--line);
     background: var(--sheet);
     flex: none;
     min-width: 0;
   }
+  .nb {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: 1px solid var(--line2);
+    border-radius: var(--r1);
+    background: var(--well);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    color: var(--ink2);
+    cursor: pointer;
+  }
+  .nb:hover:not(:disabled) {
+    background: var(--well2);
+    border-color: var(--dim);
+    color: var(--ink);
+  }
+  .nb:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  .nb:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
   .wb {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
+    justify-content: center;
     height: 24px;
     min-width: 24px;
-    justify-content: center;
     padding: 0 6px;
     border: 1px solid transparent;
     border-radius: 5px;
@@ -378,56 +486,105 @@
     cursor: pointer;
     flex: none;
   }
-  .wb:hover:not(:disabled) {
-    background: var(--hover, rgba(255, 255, 255, 0.06));
+  .wb:hover {
+    background: var(--well);
     color: var(--ink);
   }
-  .wb:disabled {
-    opacity: 0.45;
-    cursor: default;
+  .addr-wrap {
+    flex: 1;
+    min-width: 80px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    padding: 0 10px;
+    border: 1px solid var(--line2);
+    border-radius: var(--r1);
+    background: var(--term);
   }
-  .wb.hold {
-    border-color: var(--line2);
-    color: var(--ink);
+  .addr-wrap.editing,
+  .addr-wrap.draft {
+    border-color: var(--dim);
+  }
+  .addr-wrap.bad {
+    border-color: var(--failed);
+  }
+  .scheme {
+    flex: none;
+    color: var(--dim);
+    font-size: 12.5px;
+    margin-right: 1px;
+    white-space: pre;
   }
   .addr {
     flex: 1;
-    min-width: 60px;
-    height: 24px;
-    padding: 0 8px;
-    border: 1px solid var(--line);
-    border-radius: 5px;
-    background: var(--paper);
-    color: var(--dim);
-    font: inherit;
-    font-size: 12px;
-    text-overflow: ellipsis;
-  }
-  .addr:focus,
-  .addr.draft {
-    outline: none;
-    border-color: var(--line2);
+    min-width: 0;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    background: transparent;
     color: var(--ink);
+    font-family: var(--mono);
+    font-size: 12.5px;
+    text-overflow: ellipsis;
+    outline: none;
   }
-  .addr.bad {
-    border-color: var(--failed);
+  .addr:disabled {
+    color: var(--dim);
   }
   .pages {
     flex: none;
     font-size: 11px;
     color: var(--dim);
   }
-  .who {
+  .cb-hold {
     flex: none;
-    font-size: 11px;
-    padding: 1px 6px;
-    border-radius: 999px;
-    border: 1px solid var(--line2);
-    color: var(--dim);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    padding: 6px 14px;
+    border-bottom: 1px solid var(--line);
+    background: var(--signal-soft);
+    font-size: 12.5px;
+    color: var(--ink2);
   }
-  .who[data-who="user"] {
+  .cb-hold[data-tone="you"] {
+    background: var(--accent-soft);
+  }
+  .cb-hold[data-tone="idle"] {
+    background: var(--sheet);
+  }
+  .hold-dot {
+    flex: none;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--signal);
+  }
+  .cb-hold[data-tone="you"] .hold-dot {
+    background: var(--accent);
+  }
+  .cb-hold[data-tone="idle"] .hold-dot {
+    background: transparent;
+    border: 1px solid var(--dim);
+  }
+  .hold-who {
+    flex: none;
+    font-weight: 600;
+    color: var(--signal-ink);
+  }
+  .cb-hold[data-tone="you"] .hold-who {
     color: var(--accent-ink);
-    border-color: var(--accent-ink);
+  }
+  .cb-hold[data-tone="idle"] .hold-who {
+    color: var(--ink2);
+  }
+  .hold-detail {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .cb-line {
     flex: none;
@@ -440,9 +597,6 @@
     align-items: center;
     gap: 6px;
     min-width: 0;
-  }
-  .cb-line.mine {
-    color: var(--accent-ink);
   }
   .cb-line.err {
     color: var(--failed);
@@ -458,12 +612,21 @@
     height: 18px;
     min-width: 18px;
   }
+  .cb-stage {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    padding: 14px 16px 16px;
+    background: var(--paper);
+  }
   .cb-pic {
     position: relative;
     flex: 1;
+    min-width: 0;
     min-height: 0;
     overflow: hidden;
-    background: var(--well, #111);
+    border-radius: var(--r1);
+    background: var(--term);
   }
   .frame {
     position: absolute;
@@ -476,9 +639,28 @@
   .frame.stale {
     opacity: 0.35;
   }
-  .cb-pic.focused .frame {
-    outline: 2px solid var(--accent-ink);
-    outline-offset: -2px;
+  .frame {
+    border-radius: var(--r1);
+    box-shadow: 0 0 0 1px var(--line2);
+  }
+  .cb-pic.armed .frame {
+    box-shadow: 0 0 0 2px var(--signal);
+  }
+  .arm-hint {
+    position: absolute;
+    right: 10px;
+    bottom: 10px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.62);
+    color: #e6e9ee;
+    font-size: 11px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 120ms;
+  }
+  .cb-pic:hover .arm-hint {
+    opacity: 1;
   }
   .sink {
     position: absolute;

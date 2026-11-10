@@ -21,7 +21,19 @@ const readline = require('readline');
 
 const WIDTH = 1280;
 const HEIGHT = 800;
-const QUALITY = 60;
+// Item 550: the page draws at 2 device pixels per CSS pixel, so the tab can
+// be sharp on a Retina display (it showed a 1280-px frame stretched over
+// ~3000 device pixels). WebKit's screencast never sends frames larger than
+// the CSS viewport (measured: 1280×800 at any size asked, any scale), so
+// while the page moves the tab shows those, and once it has been still for
+// SETTLE_MS a full-resolution screenshot (2560×1600, ~60–90 ms, ~110 KB)
+// replaces the last one. The page and what the model reads are unchanged:
+// the viewport is still 1280×800 CSS px, and the MCP server's screenshots
+// default to CSS scale. The MCP server attaches with --endpoint and no
+// --isolated, so it uses this context (`browser.contexts()[0]`).
+const SCALE = 2;
+const QUALITY = 80;
+const SETTLE_MS = 250;
 
 const out = (o) => {
   try {
@@ -72,13 +84,30 @@ async function recast() {
   if (old && !old.isClosed()) await old.screencast.stop().catch(() => {});
   if (!want) return;
   let got = false;
+  let settle = null;
+  let shooting = false;
+  // The sharp still: taken once the page has stopped changing. A frame the
+  // shot itself causes (WebKit repaints for it) does not start another.
+  const sharp = async () => {
+    settle = null;
+    if (casting !== want || want.isClosed()) return;
+    shooting = true;
+    try {
+      const data = await want.screenshot({ type: 'jpeg', quality: QUALITY });
+      if (casting === want) out({ ev: 'frame', seq: ++seq, jpeg: data.toString('base64'), w: WIDTH, h: HEIGHT });
+    } catch {}
+    setTimeout(() => (shooting = false), 60);
+  };
   const onFrame = ({ data }) => {
     if (casting !== want) return;
     got = true;
+    if (shooting) return;
     out({ ev: 'frame', seq: ++seq, jpeg: data.toString('base64'), w: WIDTH, h: HEIGHT });
+    if (settle) clearTimeout(settle);
+    settle = setTimeout(sharp, SETTLE_MS);
   };
   try {
-    await want.screencast.start({ size: { width: WIDTH, height: HEIGHT }, quality: QUALITY, onFrame });
+    await want.screencast.start({ size: { width: WIDTH * SCALE, height: HEIGHT * SCALE }, quality: QUALITY, onFrame });
   } catch (e) {
     casting = null;
     return fail('screencast', e);
@@ -246,7 +275,7 @@ function handle(line) {
   const pw = require(path.join(process.argv[2], 'node_modules', 'playwright-core'));
   browser = await pw.webkit.launch({ headless: true });
   browser.on('disconnected', () => process.exit(0));
-  const context = await browser.newContext({ viewport: { width: WIDTH, height: HEIGHT } });
+  const context = await browser.newContext({ viewport: { width: WIDTH, height: HEIGHT }, deviceScaleFactor: SCALE });
   await context.newPage();
   sweep();
   const { endpoint } = await browser.bind('nightloom-claude-browser-' + process.pid, {

@@ -86,13 +86,19 @@ pub struct ApprovalPrompt<'a> {
 
 /// Playwright's *Allow once* and *Deny* last for one reply (nightshift
 /// backlog 367): cleared as the turn starts — a crash may have left one —
-/// and when it ends, whichever way it ends.
+/// and when it ends, whichever way it ends. His takeover of Claude's
+/// browser ends at both edges too (item 552): a new message of his hands
+/// the browser back, and so does the turn ending, so the model is never
+/// left refused; his next click in the tab takes it again.
 struct ReplyEnd(AskDir);
 
 impl ReplyEnd {
     fn begin(dir: &Path) -> Self {
         let d = AskDir::new(dir);
         d.end_reply();
+        if d.held_by_user() {
+            let _ = d.set_held_by_user(false);
+        }
         Self(d)
     }
 }
@@ -100,6 +106,9 @@ impl ReplyEnd {
 impl Drop for ReplyEnd {
     fn drop(&mut self) {
         self.0.end_reply();
+        if self.0.held_by_user() {
+            let _ = self.0.set_held_by_user(false);
+        }
     }
 }
 
@@ -1456,5 +1465,31 @@ printf '%s\n' '{{"type":"result","subtype":"success","stop_reason":"tool_deferre
             "no card was shown"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod reply_end_tests {
+    use super::*;
+
+    /// Item 552: his takeover of Claude's browser does not outlive a turn
+    /// edge — a new turn starts with the browser the model's, and a turn
+    /// that ends (any way: done, stopped, failed — the guard's drop) hands
+    /// it back.
+    #[test]
+    fn a_turn_edge_hands_claudes_browser_back() {
+        let dir = std::env::temp_dir().join(format!("nl-552-reply-end-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let ask = AskDir::new(&dir);
+        ask.set_held_by_user(true).unwrap();
+        let guard = ReplyEnd::begin(&dir);
+        assert!(
+            !ask.held_by_user(),
+            "a new turn starts with the model holding"
+        );
+        ask.set_held_by_user(true).unwrap();
+        drop(guard);
+        assert!(!ask.held_by_user(), "the turn's end hands it back");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
