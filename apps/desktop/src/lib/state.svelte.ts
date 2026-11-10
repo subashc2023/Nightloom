@@ -8472,7 +8472,9 @@ export function sendInChat(
 
 // A chat whose resume waits keeps its spec when its scheduled message
 // leaves (535f, 535-4): the resume may go off screen on it.
-wantSpec((key) => app.limitResumeAt !== null && app.limitPause?.session === key);
+// ~~`app.limitResumeAt !== null && app.limitPause?.session === key`~~ — one
+// slot; since 543 any chat with an entry that has a time.
+wantSpec((key) => resumes[key] !== undefined && resumes[key].at !== null);
 
 /**
  * Resume a turn the usage limit paused (nightshift backlog 164): sends the
