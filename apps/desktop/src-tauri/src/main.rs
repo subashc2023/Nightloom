@@ -106,6 +106,8 @@ mod set_aside;
 mod startup_log;
 /// The terminal pane's shells (nightshift backlog 113).
 mod terminal;
+// The clock behind Send later and the limit resume (backlog 535).
+mod wake;
 /// Web tabs: a clicked link as a child webview in a pane (backlog 172).
 mod webtab;
 /// The page fills the window again after a wake (nightshift backlog 324).
@@ -3711,9 +3713,9 @@ async fn send_agent(
     // however fast he switches chats meanwhile. ~~`lock_agent` and then
     // `lock_or_start`, each reading the focus afresh~~.
     let target = match &chat {
-        Some(id) => state.chats.target_at(id).ok_or_else(|| {
-            "that chat is not loaded now — its message stays queued there".to_string()
-        })?,
+        // Held, or read now from its own project's folder (backlog 535: a
+        // scheduled message goes into its chat whatever is open).
+        Some(id) => chat_target(&state, id, project.as_deref()).await?,
         None => state.chats.target(),
     };
     let active_project = state
@@ -3728,6 +3730,15 @@ async fn send_agent(
         // the rail's spec only when that spec is its project's.
         Some(id) => match state.agents.existing(id) {
             Some(slot) => agents::Guard::new(slot.lock_owned().await),
+            // The spec kept for it when something was scheduled in it
+            // (backlog 535): its own project's, whatever is open now.
+            None if state.agents.reserved(id) => {
+                let resume = target.lock().await.as_ref().and_then(resume_of);
+                match state.agents.make_reserved(id, resume) {
+                    Some(slot) => agents::Guard::new(slot.lock_owned().await),
+                    None => agents::Guard::none(),
+                }
+            }
             None if project == active_project => lock_agent_at(&state, &target).await,
             None => {
                 return Err("that chat's project is not open and it has no agent now — its message stays queued there".to_string());
@@ -4933,6 +4944,147 @@ async fn set_prompt_layers(
     let session: &mut Session = &mut held;
     context_ops::set_layers_off(session, off);
     Ok(session.events().to_vec())
+}
+
+/// The chat `id` as a [`chats::Target`] for a send that names its chat
+/// (nightshift blocker 1467; backlog 535): the held one, or — when it is
+/// not held — its log read from its own project's folder (`project`, the
+/// app-data folder for none) and held without taking the focus. A chat
+/// with no log there (an ephemeral one, a deleted one) is refused in
+/// 1467's words, which the window reads as "nothing was sent".
+async fn chat_target(
+    state: &AppState,
+    id: &str,
+    project: Option<&str>,
+) -> Result<chats::Target, String> {
+    if let Some(t) = state.chats.target_at(id) {
+        return Ok(t);
+    }
+    let refused = || "that chat is not loaded now — its message stays queued there".to_string();
+    let dir = match project {
+        Some(p) => state
+            .workspaces
+            .lock()
+            .await
+            .registry
+            .find(p)
+            .map(Project::session_dir)
+            .ok_or_else(refused)?,
+        None => state.default_log_dir.clone(),
+    };
+    let full = id.to_string();
+    let session = blocking(move || -> Result<Session, String> {
+        let path = dir.join(format!("{full}.jsonl"));
+        if !path.is_file() {
+            return Err("no log".into());
+        }
+        Session::load(path).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|_| refused())?;
+    if session.id != id {
+        return Err(refused());
+    }
+    state.chats.hold(session);
+    state.chats.target_at(id).ok_or_else(refused)
+}
+
+/// Whether a message could be sent into chat `chat` of `project` now,
+/// off screen, without sending anything (backlog 535): the same two
+/// lookups [`send_agent`] makes for a send that names its chat — the
+/// chat's log, and an agent for it (its own, the spec kept for it, or the
+/// rail's when its project is the open one). The window asks before it
+/// takes a scheduled message out of its store; the refusal says which.
+#[tauri::command]
+async fn can_send_in_chat(
+    state: State<'_, AppState>,
+    chat: String,
+    project: Option<String>,
+) -> Result<(), String> {
+    chat_target(&state, &chat, project.as_deref())
+        .await
+        .map_err(|_| "its chat's log could not be read".to_string())?;
+    if state.agents.existing(&chat).is_some() || state.agents.reserved(&chat) {
+        return Ok(());
+    }
+    let active = state.active().await.map(|p| p.id);
+    if project != active {
+        return Err("its project is not open".to_string());
+    }
+    if !state.agents.connected() {
+        return Err("Claude Code is not connected".to_string());
+    }
+    Ok(())
+}
+
+/// Keep the agent spec of chat `chat` for a later send into it off screen
+/// (backlog 535), or with `keep: false` let it go. Called when something
+/// is scheduled in the chat on screen, and again whenever that chat is on
+/// screen and connected, so the spec is the one it would run on now.
+/// `true` when a spec is kept.
+#[tauri::command]
+fn reserve_chat_agent(state: State<'_, AppState>, chat: String, keep: bool) -> bool {
+    if !keep {
+        state.agents.release(&chat);
+        return false;
+    }
+    let focused = state.chats.focus().as_deref() == Some(chat.as_str());
+    state.agents.reserve(&chat, focused)
+}
+
+/// Where chat `chat` lives (backlog 535): the project whose chats folder
+/// holds its log, `project: null` for the app-data folder, `found: false`
+/// when no folder has it. A scheduled message made before 535 carries no
+/// project; this is how it learns its own.
+#[derive(Serialize)]
+struct ChatHome {
+    found: bool,
+    project: Option<String>,
+    name: Option<String>,
+}
+
+#[tauri::command]
+async fn chat_home(state: State<'_, AppState>, chat: String) -> Result<ChatHome, String> {
+    if chat.is_empty() || !chat.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Err("not a chat id".into());
+    }
+    let projects = state.workspaces.lock().await.registry.projects();
+    let default_dir = state.default_log_dir.clone();
+    blocking(move || -> Result<ChatHome, String> {
+        let file = format!("{chat}.jsonl");
+        for p in &projects {
+            if p.session_dir().join(&file).is_file() {
+                let unfiled = p.is_unfiled_holder();
+                return Ok(ChatHome {
+                    found: true,
+                    project: Some(p.id.clone()),
+                    name: (!unfiled).then(|| p.name.clone()),
+                });
+            }
+        }
+        Ok(ChatHome {
+            found: default_dir.join(&file).is_file(),
+            project: None,
+            name: None,
+        })
+    })
+    .await
+}
+
+/// Arm (or with `at_ms: null` clear) a named wake of the schedule clock
+/// (backlog 535, `wake.rs`): the window is sent `wake-due` at that
+/// wall-clock moment whatever its own timers are doing.
+#[tauri::command]
+fn arm_wake(wakes: State<'_, wake::Wakes>, name: String, at_ms: Option<u64>) {
+    wakes.arm(&name, at_ms);
+}
+
+/// A line from the window for `<config dir>/logs/schedule.log` (backlog
+/// 535): each tick that did something, each delivery and each refusal.
+#[tauri::command]
+fn schedule_log(text: String) {
+    let text: String = text.chars().take(600).collect();
+    wake::log("page", &text);
 }
 
 /// Make the open New chat a chat now, without sending, returning the
@@ -8455,6 +8607,18 @@ fn adopt_unfiled(from: &Path, to: &Path) {
 /// runtime setter for the macOS title-bar style, so that platform would get a
 /// full system caption bar *above* ours, and the platform this exists for
 /// would show a system frame for however many frames the setup hook takes.
+/// The main window's timer policy (backlog 535): never throttled. A debug
+/// build with `NIGHTLOOM_THROTTLE=default` keeps WebKit's own policy, for
+/// measuring what the page's timers do without it.
+fn throttling_policy() -> tauri::utils::config::BackgroundThrottlingPolicy {
+    use tauri::utils::config::BackgroundThrottlingPolicy as P;
+    if cfg!(debug_assertions) && std::env::var("NIGHTLOOM_THROTTLE").as_deref() == Ok("default") {
+        P::Suspend
+    } else {
+        P::Disabled
+    }
+}
+
 fn build_window(app: &tauri::App) -> tauri::Result<()> {
     #[allow(unused_mut)]
     let mut win = tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::default())
@@ -8467,6 +8631,12 @@ fn build_window(app: &tauri::App) -> tauri::Result<()> {
         // requirement; paste works either way, which is what makes the
         // omission easy to miss.
         .disable_drag_drop_handler()
+        // Backlog 535: the page's timers keep their pace while the window
+        // is hidden, covered or minimized (WKWebView's
+        // `inactiveSchedulingPolicy = none`, macOS 14+) — a scheduled send
+        // and a turn's bookkeeping must not wait for him to look. The
+        // clock itself is `wake.rs`; this is the second line.
+        .background_throttling(throttling_policy())
         // Exact, synchronous, and available before the first paint — which a
         // command could not be. The title bar reads it to decide whether it
         // draws window buttons or leaves room for the traffic lights, and a
@@ -9040,6 +9210,10 @@ fn main() {
             // the app.
             app.manage(power::Holder::default());
             power::watch_wake(app.handle().clone());
+            // The schedule clock (backlog 535): Send later's and the limit
+            // resume's times are kept here, not by the page's timers.
+            app.manage(wake::Wakes::default());
+            wake::watch(app.handle().clone());
             // A debug build's measurement of item 324's refit, only with
             // NIGHTLOOM_DEBUG_WEBVIEW_FIT=1; a release build never runs it.
             webview_fit::maybe_self_test(app.handle());
@@ -9130,6 +9304,11 @@ fn main() {
             prompt_layers,
             set_prompt_layers,
             start_chat,
+            can_send_in_chat,
+            reserve_chat_agent,
+            chat_home,
+            arm_wake,
+            schedule_log,
             set_chat_kind,
             set_chat_folders,
             set_chat_thread,

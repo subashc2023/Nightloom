@@ -2696,6 +2696,11 @@ let budgetTyped = true;
  *  wave 3): read once, synchronously, at the top of `send`/`sendAgent`,
  *  and passed to the backend, which answers it "for the ear". */
 let turnSpoken = false;
+/** The chat this turn must run in, by id and project (backlog 535): set
+ *  by `sendInChat` for a scheduled message whose chat is on screen, read
+ *  once, synchronously, at the top of `send`, and passed to the backend —
+ *  which runs it in that chat or refuses, never in "the open chat". */
+let turnTarget: { chat: string; project: string | null } | null = null;
 /** `send` for a message he did not type here (the phone, a resume) —
  *  with the phone's photos, documents or council when it sent them
  *  (item 246, 1B's patch note 1), so such a turn is not his typed input. */
@@ -7611,6 +7616,25 @@ export async function sendQueuedInBackground(
     requeueFront(id, q);
     return false;
   }
+  return runInChat(id, q, was, ended);
+}
+
+/**
+ * One message sent in chat `id` off screen, the chat on screen untouched:
+ * `sendQueuedInBackground`'s send (blocker 1467), which a scheduled
+ * message uses too (backlog 535). The backend is told the chat and its
+ * project by id and runs it there or refuses. A refusal before anything
+ * was sent puts the row back at the head of the chat's own queue — or,
+ * with `refusedTo`, hands the reason to the caller, who keeps the words
+ * (a scheduled message goes back to waiting). `true` when sent.
+ */
+async function runInChat(
+  id: string,
+  q: QueuedMessage,
+  was: Pick<Background<Segment, ApprovalRequest>, "pendingMode" | "pendingKind" | "project" | "projectName" | "name"> | undefined,
+  ended: Pick<TurnCtx, "contextLimit"> & Pick<Partial<TurnCtx>, "choice">,
+  refusedTo?: (why: string) => void,
+): Promise<boolean> {
   const images = q.attachments.filter((a) => a.kind === "image").map(({ media_type, data }) => ({ media_type, data }));
   const documents = q.attachments
     .filter((a) => a.kind === "document")
@@ -7671,7 +7695,7 @@ export async function sendQueuedInBackground(
   // Refused before anything was sent (the chat not loaded, or its project
   // closed with no agent of its own): back at the head of its own queue.
   const refused = failed !== null && /stays queued there|nothing was sent/.test(failed);
-  if (refused) requeueFront(id, q);
+  if (refused && !refusedTo) requeueFront(id, q);
   settleInjected(turn.key, delivered);
   injectLater.delete(turn.key);
   closeRunningRows(app.subagents, id);
@@ -7679,7 +7703,8 @@ export async function sendQueuedInBackground(
     if (refused) {
       delete app.background[id];
       bgTurns.delete(id);
-      addToast(`${was?.name ?? "A chat"}: its queued message is waiting there — ${failed}`);
+      if (refusedTo) refusedTo(failed ?? "");
+      else addToast(`${was?.name ?? "A chat"}: its queued message is waiting there — ${failed}`);
     } else endBackground(turn, failed, res);
     return !refused;
   }
@@ -7693,6 +7718,7 @@ export async function sendQueuedInBackground(
   clearHandBack();
   app.busy = false;
   if (failed !== null && !refused) app.error = failed;
+  if (refused && refusedTo) refusedTo(failed ?? "");
   await settleTurnView(null, id, null);
   void refreshSessions();
   void readPlanAtReplyEnd();
@@ -8073,43 +8099,164 @@ export async function remoteNewChat(project: string | null, text: string): Promi
 }
 
 /**
+ * Send a message into chat `id` of `project` now — that chat, whatever is
+ * on screen (nightshift backlog 535: a scheduled message, the limit card's
+ * resume). The caller has checked that no turn runs in it (`chatRuns`).
+ * When it is the chat on screen the turn runs there, as a typed one would,
+ * with the backend told the chat by id (`turnTarget`) so it can never land
+ * in another; otherwise it runs off screen in its own chat and project
+ * (`runInChat`) and the view does not change. A refusal before anything
+ * was sent goes to `refused` with the reason — the caller still has the
+ * words.
+ */
+export function sendInChat(
+  id: string,
+  project: { id: string | null; name: string | null },
+  text: string,
+  attachments: Attachment[],
+  refused: (why: string) => void,
+): void {
+  const here = id === app.activeSessionId && (app.project?.id ?? null) === project.id;
+  if (here) {
+    if (!app.connection || app.busy) {
+      refused(app.connection ? "its chat is busy" : "no engine is connected");
+      return;
+    }
+    const images = attachments.filter((a) => a.kind === "image").map(({ media_type, data }) => ({ media_type, data }));
+    const documents = attachments
+      .filter((a) => a.kind === "document")
+      .map(({ media_type, name, data }) => ({ media_type, name, data }));
+    const files = attachments.filter((a) => a.kind === "file").map(({ name, data }) => ({ name, data }));
+    turnTyped = false;
+    turnSpoken = false;
+    turnTarget = { chat: id, project: project.id };
+    void send(text, images, documents, null, files).then(() => {
+      // Refused before anything was sent (the backend's two wordings):
+      // the caller keeps the words; the error is not this chat's to show.
+      const e = app.error;
+      if (e && app.activeSessionId === id && /stays queued there|nothing was sent/.test(e)) {
+        app.error = null;
+        refused(e);
+      }
+    });
+    return;
+  }
+  const row = app.sessions.find((x) => x.id === id);
+  void runInChat(
+    id,
+    { id: nextQueueId(), text, attachments: attachments.map((a) => ({ ...a })) },
+    {
+      pendingMode: "normal",
+      pendingKind: app.pendingKind,
+      project: project.id,
+      projectName: project.name,
+      name: row && (app.project?.id ?? null) === project.id ? chatName(row.title, row.first_user) : null,
+    },
+    { contextLimit: app.connection?.contextLimit ?? null },
+    refused,
+  );
+}
+
+/**
  * Resume a turn the usage limit paused (nightshift backlog 164): sends the
  * continue that names the subagents that died. Before the window has
  * reset it is scheduled for the reset plus a margin — never into a window
  * that is still exhausted — and `app.limitResumeAt` says so on the card;
- * a second click while it waits cancels. A chat switch under a scheduled
- * resume leaves it: it sends into the chat that was paused only if that
- * chat is still the open one when the time comes, else it is dropped
- * with a toast, since a turn cannot start in a chat that is not open.
+ * a second click while it waits cancels.
+ *
+ * The time is kept by the backend's clock (backlog 535, `wake.rs`: the
+ * `limit` wake), not only by a timer in the page — a hidden window's
+ * timer stopped, and his resume went an hour late. And it goes into the
+ * chat that was paused, whatever is on screen by then: there when that
+ * chat is open, off screen in its own chat and project otherwise
+ * (`sendInChat`; its agent spec is kept at the click). ~~else it is
+ * dropped with a toast, since a turn cannot start in a chat that is not
+ * open~~ — only a chat that is running another turn by then is left, with
+ * a toast.
  */
 let limitTimer: ReturnType<typeof setTimeout> | null = null;
+/** The scheduled resume, until it fires or is cancelled: whichever of the
+ *  page's timer and the backend's wake comes first runs it, once. */
+let limitGo: (() => void) | null = null;
+function clearLimitWait(): void {
+  if (limitTimer !== null) clearTimeout(limitTimer);
+  limitTimer = null;
+  limitGo = null;
+  app.limitResumeAt = null;
+  void api.armWake("limit", null).catch(() => {});
+}
+/** The backend's `limit` wake fired (`scheduleRuntime.ts` listens): run
+ *  the scheduled resume if its time has come. */
+export function limitWakeDue(): void {
+  const at = app.limitResumeAt;
+  if (!limitGo || at === null || Date.now() < at - 1000) return;
+  const go = limitGo;
+  clearLimitWait();
+  go();
+}
 export function resumeAfterLimit(): void {
   const p = app.limitPause;
   if (!p) return;
-  if (limitTimer !== null) {
-    clearTimeout(limitTimer);
-    limitTimer = null;
-    app.limitResumeAt = null;
+  if (limitGo !== null || limitTimer !== null) {
+    clearLimitWait();
     return;
   }
+  // Where the paused chat lives, read now while it is the one on screen.
+  const known = p.session ? chatHome.get(p.session) : undefined;
+  const home =
+    p.session === app.activeSessionId || !known
+      ? { id: app.project?.id ?? null, name: app.project?.name ?? null }
+      : { id: known.project, name: known.name };
   const go = () => {
-    limitTimer = null;
-    app.limitResumeAt = null;
     if (app.limitPause !== p) return;
-    if (app.busy || !app.connection || app.activeSessionId !== p.session) {
+    const id = p.session;
+    if (id && chatRuns(id)) {
+      addToast("The paused chat is running another turn — press Resume again when it ends.");
+      return;
+    }
+    if (!app.connection) {
+      addToast("No engine is connected — connect one and press Resume again.");
+      return;
+    }
+    if (!app.busy && app.activeSessionId === id) {
+      app.limitPause = null;
+      void sendUntyped(resumeMessage(p));
+      return;
+    }
+    if (!id || app.connection.engine !== "claude-code") {
       addToast("The paused chat is not open or is busy — open it and press Resume again.");
       return;
     }
-    app.limitPause = null;
-    void sendUntyped(resumeMessage(p));
+    // Not the chat on screen: in its own chat, off screen.
+    api
+      .canSendInChat(id, home.id)
+      .then(() => {
+        if (app.limitPause !== p || chatRuns(id)) return;
+        app.limitPause = null;
+        sendInChat(id, home, resumeMessage(p), [], (why) => {
+          app.limitPause = p;
+          addToast(`The paused chat could not be resumed (${why}) — open it and press Resume.`);
+        });
+      })
+      .catch((e) => addToast(`The paused chat could not be resumed (${String(e)}) — open it and press Resume.`));
   };
   const delay = resumeDelayMs(p);
   if (delay === 0) {
     go();
     return;
   }
-  app.limitResumeAt = Date.now() + delay;
-  limitTimer = setTimeout(go, delay);
+  const at = Date.now() + delay;
+  app.limitResumeAt = at;
+  limitGo = go;
+  const fire = () => {
+    if (limitGo !== go) return;
+    clearLimitWait();
+    go();
+  };
+  limitTimer = setTimeout(fire, delay);
+  void api.armWake("limit", at).catch(() => {});
+  // Its agent spec is kept for the time (it is the chat on screen now).
+  if (p.session && p.session === app.activeSessionId) void api.reserveChatAgent(p.session, true).catch(() => {});
 }
 
 /** The chat as a banner names it (nightshift backlog 079): the open
@@ -8186,6 +8333,8 @@ export async function send(
   council: CouncilRequest | null = null,
   files: FileInput[] = [],
 ): Promise<void> {
+  const target = turnTarget;
+  turnTarget = null;
   if (!app.connection || app.busy) return;
   // Item 506: a message sent in a wrapped chat is staying in it.
   sentHere(app.activeSessionId);
@@ -8208,7 +8357,7 @@ export async function send(
     showBoundChat(inThread, text);
   }
   if (app.connection.engine === "claude-code") {
-    return sendAgent(text, images, documents, council, spoken, files);
+    return sendAgent(text, images, documents, council, spoken, files, target);
   }
   // A file for Claude Code cannot go on this engine (item 277); the
   // composer refuses before here, so this is a caller that did not ask.
@@ -8320,6 +8469,8 @@ async function sendAgent(
   council: CouncilRequest | null = null,
   spoken = false,
   files: FileInput[] = [],
+  // Backlog 535: the chat it must run in (a scheduled message's own).
+  target: { chat: string; project: string | null } | null = null,
 ): Promise<void> {
   // ~~The hand-off's wrap-up rides this message when the window has crossed
   // the chat's threshold (nightshift backlog 086); `withWrapUp` also moves
@@ -8389,6 +8540,7 @@ async function sendAgent(
       turn.key,
       spoken || undefined,
       files.length > 0 ? files : undefined,
+      target ?? undefined,
     );
     delivered = res.delivered ?? [];
     // Off screen at its end (A2): the chat on screen is another's, and

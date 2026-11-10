@@ -74,8 +74,12 @@
         </div>
       {/if}
       <div class="waiting-acts">
-        <button class="ns-btn accent small" use:tip={"Send it now, without waiting"} onclick={() => void sendScheduledNow(key)}
-          >Send now</button
+        <!-- Greyed while a delivery of it is in flight (backlog 535): one message, one send. -->
+        <button
+          class="ns-btn accent small"
+          use:tip={"Send it now, without waiting"}
+          disabled={!!s.claimed}
+          onclick={() => void sendScheduledNow(key)}>Send now</button
         >
         {#if s.state === "missed"}
           <button class="ns-btn ghost small" use:tip={"Keep it here, unscheduled"} onclick={() => keepScheduled(key)}>Keep</button>

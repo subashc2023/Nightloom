@@ -229,6 +229,20 @@ impl Chats {
         log
     }
 
+    /// Hold a chat just loaded from disk without focusing it (backlog 535:
+    /// a scheduled message sent into a chat that is not open). A copy
+    /// already held wins, as in [`open`](Self::open). Nothing is pruned
+    /// here; the next focus change drops it again once nothing uses it.
+    pub fn hold(&self, session: Session) -> Log {
+        let mut inner = self.inner();
+        let id = session.id.clone();
+        inner
+            .held
+            .entry(id)
+            .or_insert_with(|| Arc::new(AsyncMutex::new(session)))
+            .clone()
+    }
+
     /// New chat: nothing open, the next chat made at its first message.
     pub fn focus_new(&self) {
         let mut inner = self.inner();
@@ -407,6 +421,25 @@ mod tests {
 
     fn chat() -> Session {
         Session::new()
+    }
+
+    /// Backlog 535: a chat loaded for a send off screen is held without
+    /// taking the focus, is reachable by id, and a copy already held wins.
+    #[test]
+    fn hold_keeps_a_chat_by_id_without_focusing_it() {
+        let chats = Chats::default();
+        chats.open(chat());
+        let on_screen = chats.focus().unwrap();
+        let other = chat();
+        let id = other.id.clone();
+        assert!(chats.target_at(&id).is_none());
+        let log = chats.hold(other);
+        assert_eq!(chats.focus().as_deref(), Some(on_screen.as_str()));
+        let t = chats.target_at(&id).expect("held by id");
+        assert_eq!(t.id(), Some(id.as_str()));
+        let mut again = chat();
+        again.id = id.clone();
+        assert!(Arc::ptr_eq(&log, &chats.hold(again)), "one writer per log");
     }
 
     /// Blocker 358's default (A2): an ephemeral chat's log lives only

@@ -3,6 +3,7 @@ import {
   RESET_MARGIN_MS,
   RETRY_EVERY_MS,
   RETRY_FOR_MS,
+  TICK_MS,
   atTime,
   deliverTo,
   dueAt,
@@ -132,13 +133,15 @@ describe("scheduled send — the clock (backlog 224)", () => {
     expect(await tickOne(s, deps)).toBe("sent");
   });
 
-  it("a delivery that must wait says why and tries again a minute later", async () => {
+  // ~~"tries again a minute later"~~ — 2026-11-09, item 535: at every tick.
+  it("a delivery that must wait says why and tries again at the next tick", async () => {
     const { f, deps } = fake(RESET + RESET_MARGIN_MS);
     f.deliverAnswer = { ok: false, why: "waiting — another chat is running a turn" };
     const s = entry();
     expect(await tickOne(s, deps)).toBe("kept");
     expect(s.note).toBe("waiting — another chat is running a turn");
-    expect(s.nextTryAt).toBe(f.t + RETRY_EVERY_MS);
+    expect(s.nextTryAt).toBe(f.t + TICK_MS);
+    expect(s.tried).toBe(true);
     f.deliverAnswer = { ok: true };
     f.t += RETRY_EVERY_MS;
     expect(await tickOne(s, deps)).toBe("sent");
@@ -178,50 +181,44 @@ describe("scheduled send — the typed time", () => {
   });
 });
 
+// ~~open its chat, queue, drain through the newest composer~~ — 2026-11-09,
+// item 535: delivery names the entry's own chat at every step and opens
+// nothing; the class is covered in schedule535.test.ts.
 describe("scheduled send — delivery into the chat", () => {
-  function env(over: Partial<{ connected: boolean; active: string | null; busy: boolean; opens: boolean }> = {}) {
-    const st = { connected: true, active: "chat-1" as string | null, busy: false, opens: true, ...over };
+  function env(over: Partial<{ running: boolean; ready: Delivery }> = {}) {
+    const st = { running: false, ready: { ok: true } as Delivery, ...over };
     const log: string[] = [];
     const e: DeliverEnv = {
-      connected: () => st.connected,
-      activeKey: () => st.active,
-      busy: () => st.busy,
-      open: async (k) => {
-        log.push(`open ${k}`);
-        if (st.opens) st.active = k;
+      running: (k) => {
+        log.push(`running? ${k}`);
+        return st.running;
       },
       enqueue: (k, t) => void log.push(`queue ${k}: ${t}`),
-      drain: async () => void log.push("drain"),
+      ready: async (s) => {
+        log.push(`ready? ${s.key}`);
+        return st.ready;
+      },
+      start: (s) => void log.push(`start ${s.key}: ${s.text}`),
     };
     return { st, log, e };
   }
 
-  it("a busy chat queues it behind the running turn and does not drain", async () => {
-    const { log, e } = env({ busy: true });
+  it("a chat running a turn queues it behind that turn, in its own queue", async () => {
+    const { log, e } = env({ running: true });
     expect(await deliverTo(entry(), e)).toEqual({ ok: true });
-    expect(log).toEqual(["queue chat-1: write the summary"]);
+    expect(log).toEqual(["running? chat-1", "queue chat-1: write the summary"]);
   });
 
-  it("an idle open chat queues and drains at once", async () => {
+  it("an idle chat that can take it is started, by its own key", async () => {
     const { log, e } = env();
     expect(await deliverTo(entry(), e)).toEqual({ ok: true });
-    expect(log).toEqual(["queue chat-1: write the summary", "drain"]);
+    expect(log).toEqual(["running? chat-1", "ready? chat-1", "running? chat-1", "start chat-1: write the summary"]);
   });
 
-  it("opens its chat when nothing runs; waits when another chat's turn runs", async () => {
-    const idle = env({ active: "chat-2" });
-    expect(await deliverTo(entry(), idle.e)).toEqual({ ok: true });
-    expect(idle.log[0]).toBe("open chat-1");
-    const busy = env({ active: "chat-2", busy: true });
-    const r = await deliverTo(entry(), busy.e);
-    expect(r.ok).toBe(false);
-    expect(busy.log).toEqual([]);
-  });
-
-  it("waits with no engine connected", async () => {
-    const { log, e } = env({ connected: false });
-    expect((await deliverTo(entry(), e)).ok).toBe(false);
-    expect(log).toEqual([]);
+  it("waits with the real reason when its chat cannot take it", async () => {
+    const { log, e } = env({ ready: { ok: false, why: "waiting — no engine is connected" } });
+    expect(await deliverTo(entry(), e)).toEqual({ ok: false, why: "waiting — no engine is connected" });
+    expect(log.some((l) => l.startsWith("start") || l.startsWith("queue"))).toBe(false);
   });
 });
 

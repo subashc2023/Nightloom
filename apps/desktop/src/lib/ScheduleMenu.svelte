@@ -7,7 +7,8 @@
    * reason when it cannot be used; the whole menu when `blocked` says so.
    * From a New chat a pick makes the chat first (backlog 527), so the
    * message has an id to wait under. The box's files and images go with
-   * it (backlog 531), copied to disk first (`stashChips`).
+   * it (backlog 531), copied to disk first (`stashChips`). The chat's
+   * project is stored with the message (backlog 535).
    */
   import { app, chatMode, refreshSessions, startPendingChat } from "./state.svelte";
   import type { Attachment } from "./types";
@@ -16,6 +17,7 @@
   import { tip } from "./tip";
   import { atTime, clockText, dayClockText, resetTime, type ScheduleKind } from "./schedule";
   import { scheduleSend, scheduledFor, stashChips } from "./scheduled.svelte";
+  import { scheduledHere } from "./scheduleRuntime";
 
   let {
     key,
@@ -89,7 +91,15 @@
       starting = false;
     }
     const persist = chatMode(app.events) === "normal";
-    if (scheduleSend(to, words, kind, at, persist, kept)) {
+    // Its own project goes with it (backlog 535): it is delivered into
+    // this project's chat whatever is open at its time. Only when that
+    // chat is the one on screen is the open project surely its own; else
+    // the first tick finds it from the chat's log.
+    const here = app.activeSessionId === to;
+    const project = here ? { id: app.project?.id ?? null, name: app.project?.name ?? null } : undefined;
+    if (scheduleSend(to, words, kind, at, persist, kept, project)) {
+      // The backend keeps this chat's agent spec for that send.
+      if (here) scheduledHere(to);
       open = false;
       onscheduled(to);
       // The row is named by the scheduled message now (backlog 532).
