@@ -83,6 +83,7 @@ import {
   noteConnected,
   noteMade,
   saveChoices,
+  sameChoice,
   wantedChoice,
   type ChatChoice,
   type ChatChoices,
@@ -855,6 +856,11 @@ export const app = $state({
   draft: defaultDraft(),
   connection: null as Connection | null,
   connecting: false,
+  /** The chat the connection was built for, and the model and engine it
+   *  sent (559, the review's 534-2): a chat switch moves the screen at
+   *  once and the connection only after its reconnect, so a window read
+   *  meanwhile is the previous chat's (`connectionWindowFor`). */
+  connectedFor: null as { chat: string | null; choice: ChatChoice } | null,
   /**
    * A rail change waits to be connected (item 222): its debounce is
    * running, or it came during a connect and goes out when that settles.
@@ -3967,6 +3973,7 @@ export async function applyDraft(): Promise<void> {
     // opened meanwhile has its own choice on it now (backlog 205).
     if (!d.model.trim() && app.activeSessionId === chat) d.model = res.model;
     saveLastConnection({ ...d });
+    app.connectedFor = { chat, choice: { ...sent, model: sent.model.trim() || res.model } };
     chatConnected(chat, { ...sent, model: sent.model.trim() || res.model });
   } catch (e) {
     // The backend keeps the previous Chat on failure, so app.connection
@@ -4062,6 +4069,7 @@ async function applyAgentDraft(updateNow: PromptLayer[] = [], take = true): Prom
     // answer is newer than this connect's.
     if ((app.project?.id ?? null) === projectAtStart) app.project = res.project ?? null;
     saveLastConnection({ ...d });
+    app.connectedFor = { chat, choice: sent };
     chatConnected(chat, sent);
     void refreshPlanUsage();
   } catch (e) {
@@ -7220,6 +7228,22 @@ export function liveChats(): LiveChat[] {
     });
   }
   return out;
+}
+
+/**
+ * The connection's context window, when it is known to be chat `id`'s
+ * (559, the review's 534-2): built for that chat, or for a choice of model
+ * and engine that chat's own recorded choice equals — and no connect is
+ * running. Otherwise null, so a reading keeps the window stored for the
+ * chat rather than taking the previous chat's.
+ */
+export function connectionWindowFor(id: string | null): number | null {
+  const limit = app.connection?.contextLimit ?? null;
+  const built = app.connectedFor;
+  if (limit === null || !built || app.connecting) return null;
+  if (built.chat === id) return limit;
+  const wanted = wantedChoice(chatChoice.choices, id);
+  return wanted && sameChoice(wanted, built.choice) ? limit : null;
 }
 
 /** Whether a turn runs in any chat — on screen, parked or off screen
