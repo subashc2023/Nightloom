@@ -80,4 +80,18 @@
       display: inline-flex;
     }
   }
+
+  /* Filament IV (item 563): the line in the machine type the new-chat page's
+     clock uses, on the ground's dots in lit (none in calm). Gated: Classic
+     (item 542) is the rules above. */
+  :where(:root:not([data-layout="classic"])) .launch {
+    background-color: var(--paper);
+    background-image: var(--ground-dots);
+    background-size: 22px 22px;
+  }
+  :where(:root:not([data-layout="classic"])) .line {
+    font: 12px var(--mono);
+    letter-spacing: 0.02em;
+    color: var(--ink2);
+  }
 </style>
