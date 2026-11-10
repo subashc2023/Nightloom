@@ -5724,6 +5724,78 @@ async fn cli_memory_file(state: State<'_, AppState>) -> Result<CliMemoryFile, St
     })
 }
 
+/// What the open New chat already holds before its first message
+/// (nightshift item 574): the new-chat dial's parts — Claude Code's own
+/// prompt and tools (measured from the newest chat in the same folder, else
+/// in any project's), Nightloom's built layers, the instruction files and
+/// the auto memory the CLI loads itself. `None` on the provider engine and
+/// before a connect. `safe_mode` is the connection's (the window has it);
+/// with it, or in an incognito chat, the CLI reads no user `CLAUDE.md`.
+/// Reads a few small files and the head of one session file (cached by
+/// mtime), off the async runtime.
+#[tauri::command]
+async fn start_context(
+    state: State<'_, AppState>,
+    safe_mode: bool,
+) -> Result<Option<nightloom_service::start_context::StartContext>, String> {
+    use nightloom_service::agent::cli_session;
+    use nightloom_service::start_context as sc;
+    let (layers, cwd, off, mode) = {
+        let built = state.prompt.lock().await;
+        let Some(agent) = built.agent.clone() else {
+            return Ok(None);
+        };
+        let Some(cwd) = built.cwd.clone() else {
+            return Ok(None);
+        };
+        (agent, cwd, built.off.clone(), built.mode)
+    };
+    // The fallback folders: every project's, after the open folder's own.
+    let others: Vec<PathBuf> = state
+        .workspaces
+        .lock()
+        .await
+        .registry
+        .projects()
+        .iter()
+        .map(|p| p.workspace_dir())
+        .collect();
+    blocking(move || {
+        let projects = cli_session::projects_dir();
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        if let Some(p) = &projects {
+            dirs.push(p.join(cli_session::project_folder(&cwd)));
+            for o in &others {
+                let d = p.join(cli_session::project_folder(o));
+                if !dirs.contains(&d) {
+                    dirs.push(d);
+                }
+            }
+        }
+        let measured = sc::newest_baseline(&dirs);
+        let claude_dir = projects
+            .as_ref()
+            .and_then(|p| p.parent().map(Path::to_path_buf));
+        let user_level = !safe_mode && mode != ChatMode::Incognito;
+        let files = sc::instruction_files(&cwd, claude_dir.as_deref(), user_level);
+        let memory = if off.contains(&SegmentKind::CliMemory) {
+            None
+        } else {
+            cli_session::project_dir(&cwd)
+                .and_then(|d| std::fs::read_to_string(d.join("memory").join("MEMORY.md")).ok())
+        };
+        let mut out = sc::compose(&sc::StartInputs {
+            baseline: measured.as_ref().map(|(_, b)| b),
+            layers: Some(&layers),
+            instructions: &files,
+            memory: memory.as_deref(),
+        });
+        out.measured_from = measured.map(|(p, _)| p.to_string_lossy().into_owned());
+        Ok::<_, String>(Some(out))
+    })
+    .await
+}
+
 /// Claude Code's own system prompt for the open chat, read-only
 /// (nightshift backlog 077, 2026-09-16; his ask of 00:55). Not in the init
 /// event and no flag prints it: the one place it exists is the
@@ -9418,6 +9490,7 @@ fn main() {
             set_voice_note,
             cli_memory_file,
             cli_prompt_snapshot,
+            start_context,
             tool_result_images,
             prompt_pending,
             set_prompt_layer_choice,

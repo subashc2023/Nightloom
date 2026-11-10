@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { tip as tipAction } from "./tip";
   import {
     app,
@@ -27,6 +28,20 @@
   import { shortTokens, tickCounts } from "./contextDial";
   import { threadList } from "./threadPanel.svelte";
   import { departs } from "./sendMotion";
+  import { startContext, type StartContext } from "./api";
+  import {
+    REFLOW_MS,
+    SWEEP_MS,
+    approxTokens,
+    blendSizes,
+    drawnGroups,
+    easeOut,
+    startArcs,
+    startGroups,
+    startSummary,
+    type StartGroup,
+    type StartTone,
+  } from "./startDial";
   import {
     aroundAt,
     clockLine,
@@ -83,6 +98,76 @@
     const p = aroundAt(markShare, size / 2 + 16, mid);
     return { ...p, left: markShare > 0.5, text: `hand-off ${shortTokens(markShare * limit)}` };
   });
+  // ---- what the new chat already holds (item 574): Claude Code's own
+  // prompt and tools, Nightloom's layers, the instruction files and the
+  // memory the CLI loads — fetched on every reconnect (a layer switched or
+  // edited in the prompt menu reconnects), drawn as the arc's parts. The
+  // arc sweeps up from 0 on open and re-flows when the parts change; the
+  // number counts with it. Nothing here touches the message box.
+  let start = $state<StartContext | null>(null);
+  let startSeq = 0;
+  $effect(() => {
+    const conn = app.connection;
+    // Read so a switch of kind, mode, project or layers refetches.
+    void app.pendingKind;
+    void app.pendingMode;
+    void app.project?.id;
+    void app.events.length;
+    // While a reconnect runs the old parts stay up, so a layer switch
+    // re-flows from them instead of emptying and sweeping again.
+    if (app.connecting) return;
+    if (!conn || conn.engine !== "claude-code") {
+      start = null;
+      return;
+    }
+    const seq = ++startSeq;
+    startContext(conn.agent?.safe_mode ?? false).then(
+      (c) => {
+        if (seq === startSeq) start = c;
+      },
+      () => {
+        if (seq === startSeq) start = null;
+      },
+    );
+  });
+  const groups = $derived(startGroups(start));
+  /** Shown sizes by group, tweened toward `groups`. */
+  let shown = $state(new Map<StartTone, number>());
+  let leaving: StartGroup[] = [];
+  let lastGroups: StartGroup[] = [];
+  let frame = 0;
+  const reduce =
+    typeof window !== "undefined" && typeof window.matchMedia === "function"
+      ? window.matchMedia("(prefers-reduced-motion: reduce)")
+      : null;
+  $effect(() => {
+    const to = groups;
+    const from = untrack(() => new Map(shown));
+    const first = [...from.values()].every((v) => v === 0);
+    leaving = lastGroups.filter((g) => !to.some((x) => x.tone === g.tone));
+    lastGroups = to;
+    cancelAnimationFrame(frame);
+    if (reduce?.matches) {
+      shown = blendSizes(new Map(), to, 1);
+      return;
+    }
+    const ms = first ? SWEEP_MS : REFLOW_MS;
+    const t0 = performance.now();
+    const step = (now: number) => {
+      const t = Math.min(1, (now - t0) / ms);
+      shown = blendSizes(from, to, easeOut(t));
+      if (t < 1) frame = requestAnimationFrame(step);
+    };
+    frame = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(frame);
+  });
+  const drawn = $derived(drawnGroups(shown, groups, leaving));
+  const startTotal = $derived(drawn.sizes.reduce((a, b) => a + b, 0));
+  const arcs = $derived(startArcs(drawn.groups, drawn.sizes, limit));
+  /** Before the first message the dial is the starting context. */
+  const fresh = $derived(used === 0 && groups.length > 0);
+  const dialShare = $derived(fresh && limit ? Math.min(startTotal / limit, 1) : share);
+
   // The centre's type follows the dial's size (the mockup's 33 px at 330).
   const titlePx = $derived(Math.max(18, Math.round((33 * size) / 330)));
 
@@ -291,16 +376,20 @@
         <div class="dial-wrap" use:departs>
           <ContextDial
             {size}
-            {share}
+            share={dialShare}
+            parts={fresh ? arcs : null}
+            pulse={fresh}
             mark={markShare}
             inner={null}
             stroke={3}
             pad={PAD}
             minor={ticks.minor}
             major={ticks.major}
-            label={limit
-              ? `Context ${used.toLocaleString()} of ${limit.toLocaleString()} tokens`
-              : "Context: window unknown until connected"}
+            label={fresh && limit && start
+              ? `A new chat starts with about ${start.total.toLocaleString()} of ${limit.toLocaleString()} tokens`
+              : limit
+                ? `Context ${used.toLocaleString()} of ${limit.toLocaleString()} tokens`
+                : "Context: window unknown until connected"}
           />
         </div>
         {#if quarters.length === 4}
@@ -321,13 +410,25 @@
           <div class="clock">{clockLine(now)}</div>
           <h1 class="name">{app.project?.name ?? "New chat"}</h1>
           <div class="hello"><span class="dot" class:off={!ready}></span>{hello}</div>
-          <div class="zero"><b>{shortTokens(used)}</b> of {limit ? shortTokens(limit) : "—"} in context</div>
+          {#if fresh}
+            <div class="zero start" use:tipAction={startSummary(groups)}>
+              <b>{approxTokens(startTotal)}</b> already in context
+            </div>
+          {:else}
+            <div class="zero"><b>{shortTokens(used)}</b> of {limit ? shortTokens(limit) : "—"} in context</div>
+          {/if}
         </div>
       </div>
     {:else}
       <!-- A pane too short for the dial: the name and the greeting alone. -->
       <h1 class="name flat">{app.project?.name ?? "New chat"}</h1>
       <div class="hello flat"><span class="dot" class:off={!ready}></span>{hello}</div>
+      {#if fresh}
+        <!-- Item 574: the starting context keeps its line when the dial does not fit. -->
+        <div class="zero start flat" use:tipAction={startSummary(groups)}>
+          <b>{approxTokens(startTotal)}</b> already in context
+        </div>
+      {/if}
     {/if}
 
     <div class="colw" style:max-width="{colMax}px" bind:clientHeight={colH}>
@@ -530,6 +631,9 @@
   .hello.flat {
     margin-bottom: 12px;
   }
+  .zero.flat {
+    margin: -6px 0 12px;
+  }
   .dot {
     width: 7px;
     height: 7px;
@@ -544,6 +648,10 @@
     margin-top: 16px;
     font: 11px var(--mono);
     color: var(--dim);
+  }
+  .zero.start {
+    pointer-events: auto;
+    cursor: default;
   }
   .zero b {
     font-weight: 500;

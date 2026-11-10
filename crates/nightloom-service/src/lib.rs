@@ -48,6 +48,7 @@ pub mod remote;
 pub mod serve;
 pub mod serve_reads;
 pub mod sidecar;
+pub mod start_context;
 pub mod store;
 pub mod sync;
 pub mod thread;

@@ -1017,6 +1017,32 @@ export function cliMemoryFile(): Promise<CliMemoryFile> {
   return invoke("cli_memory_file");
 }
 
+/** One part of what a new chat starts with (item 574). */
+export interface StartPart {
+  name: string;
+  /** The dial's shade: Claude Code's own, a Nightloom layer, an
+   *  instruction file the CLI loads, or its auto memory. */
+  kind: "claude_code" | "layer" | "instructions" | "memory";
+  layer?: PromptLayer;
+  tokens: number;
+  approx: boolean;
+}
+
+/** What the open New chat already holds before its first message: the
+ *  parts in the dial's order and their sum. */
+export interface StartContext {
+  parts: StartPart[];
+  total: number;
+  /** The Claude Code session file its own part was measured from. */
+  measured_from?: string;
+}
+
+/** The new-chat dial's parts (item 574). Null on the provider engine and
+ *  before a connect. */
+export function startContext(safeMode: boolean): Promise<StartContext | null> {
+  return invoke("start_context", { safeMode });
+}
+
 /** Claude Code's own system prompt for the open chat, from the CLI's
  *  session file (nightshift backlog 077). Read-only; null before the first
  *  turn, for an ephemeral chat, and on the other engine. */
