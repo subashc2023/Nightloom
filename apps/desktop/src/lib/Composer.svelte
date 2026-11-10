@@ -93,7 +93,8 @@
   import { keepKey } from "./keep";
   import { keepStateOf, revealKept } from "./keep.svelte";
   import { menuInterceptors } from "./state.svelte";
-  import { pendingRows } from "./pendingBubble.svelte";
+  import { bubbledRows, registerSendHeld } from "./pendingBubble.svelte";
+  import WaitAct from "./WaitAct.svelte";
   import {
     canUndo,
     followOffer,
@@ -419,8 +420,12 @@
   const queue = $derived(draft.queue);
   /* Item 465 (merge patch note from agent E): the rows the transcript
    * already draws as pending bubbles (`PendingBubbles`, main chat only)
-   * are left out of the queue box, so each mid-turn row shows in one place. */
-  const bubbledIds = $derived(new Set(aside ? [] : pendingRows(queue, app.busy && !app.parked).map((q) => q.id)));
+   * are left out of the queue box, so each mid-turn row shows in one place.
+   * Item 548: under Filament IV the transcript draws the held ones too
+   * (`bubbledRows`), so the main chat's box keeps no rows of its own. */
+  const bubbledIds = $derived(new Set(aside ? [] : bubbledRows(queue, app.busy && !app.parked, !classic(), app.busy && !!app.parked).map((q) => q.id)));
+  /** Item 548: which tray rows he opened past their first line (this launch). */
+  let rowOpen = $state<Record<number, true>>({});
   const boxQueue = $derived(queue.filter((q) => !bubbledIds.has(q.id)));
   /*
    * The box he types in: the textarea, or — with the format toggle on
@@ -2033,7 +2038,13 @@
     if (forced !== null) forcing = true;
     // The held row is where this message leaves from (backlog 194); its
     // element is still in the DOM until the next flush.
-    launch("chat", document.querySelector(`.queue-row[data-queue-id="${q.id}"] .queue-text`));
+    // Item 547: under Filament IV a held row is his bubble in the transcript,
+    // and it flies from there.
+    launch(
+      "chat",
+      document.querySelector(`.queue-row[data-queue-id="${q.id}"] .queue-text`) ??
+        (classic() ? null : document.querySelector(`.midturn[data-queue-id="${q.id}"] .user-bubble`)),
+    );
     // The row Nightloom queued while he was away is the wrap-up going.
     const wrapUp = handoffHere && q.id === handoff.queuedId;
     if (wrapUp) beginWrapUp(app.activeSessionId);
@@ -2068,6 +2079,17 @@
   $effect(() => untrack(() => (aside ? undefined : registerProviderDrain(() => drain()))));
   // And a block he ran has ended (item 503): its output goes as the next turn.
   $effect(() => untrack(() => (aside ? undefined : registerRunDrain(() => drain(true)))));
+  // Item 548: *Send now* on a held bubble in the transcript is *Send next*
+  // for that row — to the head of the queue, then the same drain.
+  $effect(() =>
+    untrack(() =>
+      aside
+        ? undefined
+        : registerSendHeld(async (qid) => {
+            if (frontQueued(liveKey(), qid)) await drain(true);
+          }),
+    ),
+  );
   /** Why nothing can be scheduled from this box, if nothing can. */
   // A New chat is made at the pick (backlog 527), and the box's files and
   // images go with the message (backlog 531): only a chip still converting
@@ -2863,7 +2885,9 @@
     <!-- Claude's browser (item 508): offered once it is live; opens only on his click. -->
     <BrowserChip chat={app.activeSessionId} />
   {/if}
-  {#if composerShows("schedule", !!aside) && !onWaitingPage}
+  <!-- Item 548: under Filament IV the scheduled message is drawn in the
+       transcript as his message (ScheduledBubble); Classic keeps the row. -->
+  {#if composerShows("schedule", !!aside) && !onWaitingPage && classic()}
     <ScheduledChip {key} onedit={scheduleEdited} />
   {/if}
   {#if boxQueue.length > 0}
@@ -2875,6 +2899,7 @@
         {/if}
       </div>
       {#each boxQueue as q, i (q.id)}
+        {#if classic()}
         <div class="queue-row" role="listitem" data-queue-id={q.id}>
           <span class="queue-n mono">{i + 1}</span>
           <span class="queue-text" use:tip={q.text} data-find-text={q.text}>{#if handoffHere && q.id === handoff.queuedId}<span class="ns-chip mono" use:tip={"Put here by Nightloom: the window crossed this chat's hand-off mark while you were away. × takes it back."}>wrap-up · queued while you were away</span> {/if}{firstLine(q.text) || "(no text)"}{#if q.attachments.length > 0} <span class="ns-chip mono">{q.attachments.length} {q.attachments.length === 1 ? "file" : "files"}</span>{/if}</span>
@@ -2887,6 +2912,35 @@
             <button class="remove" use:tip={"drop this message"} aria-label="drop queued message {i + 1}" onclick={() => void dropRow(q.id)}>×</button>
           {/if}
         </div>
+        {:else}
+          <!-- Items 548 + 549 (Filament IV): the whole text opens in the row
+               ("more"), never as a hover tip across the window; the actions
+               are icons with their names as tips. -->
+          {@const long = q.text.trim().includes("\n") || q.text.trim().length > 120}
+          <div class="queue-row fil" class:open={rowOpen[q.id]} role="listitem" data-queue-id={q.id}>
+            <span class="queue-n mono">{i + 1}</span>
+            <span class="queue-text" data-find-text={q.text}
+              >{#if handoffHere && q.id === handoff.queuedId}<span class="ns-chip mono" use:tip={"Put here by Nightloom: the window crossed this chat's hand-off mark while you were away. × takes it back."}>wrap-up · queued while you were away</span>
+              {/if}{#if rowOpen[q.id]}<span class="queue-whole">{q.text}</span>{:else}{firstLine(q.text) || "(no text)"}{/if}{#if q.attachments.length > 0}
+                <span class="ns-chip mono">{q.attachments.length} {q.attachments.length === 1 ? "file" : "files"}</span>{/if}</span
+            >
+            {#if long}
+              <button class="ns-link queue-more" type="button" aria-expanded={!!rowOpen[q.id]} onclick={() => (rowOpen[q.id] ? delete rowOpen[q.id] : (rowOpen[q.id] = true))}
+                >{rowOpen[q.id] ? "less" : "more"}</button
+              >
+            {/if}
+            {#if q.inject}{@const chip = injectChip(q.inject)}<span class="ns-chip mono" data-inject={chip.state} use:tip={chip.tip}>{chip.label}</span>{/if}
+            <span class="queue-acts">
+              {#if q.inject && q.inject.after === undefined && !q.inject.now}
+                <WaitAct icon="send" accent label="Send now" hint="stop the step Claude is in (a long command, say) and give it this message at once — as Claude Code's own send now does; the turn goes on" data-send-now="" onclick={() => void sendNowRow(key, q.id)} />
+              {/if}
+              {#if q.inject?.after === undefined}
+                <WaitAct icon="pencil" label="Take back" hint="back into the message box" onclick={() => void takeBack(q.id)} />
+                <WaitAct icon="x" label="Drop queued message {i + 1}" hint="do not send it" onclick={() => void dropRow(q.id)} />
+              {/if}
+            </span>
+          </div>
+        {/if}
       {/each}
     </div>
   {/if}
@@ -4109,6 +4163,27 @@
   }
   .queue-row .remove {
     position: static;
+    flex: none;
+  }
+  /* Item 548: a tray row opened by "more" shows its whole text, wrapped. */
+  .queue-row.fil.open {
+    align-items: flex-start;
+  }
+  .queue-row.fil.open .queue-text {
+    white-space: normal;
+  }
+  .queue-whole {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .queue-more {
+    flex: none;
+    font-size: 12px;
+    color: var(--dim);
+  }
+  .queue-acts {
+    display: flex;
+    gap: 2px;
     flex: none;
   }
   .attachments {
