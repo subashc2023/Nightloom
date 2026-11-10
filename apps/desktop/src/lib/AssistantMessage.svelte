@@ -86,6 +86,8 @@
   // The thinking block's arrival (backlog 389): a live thinking row's first
   // appearance is thrown in along the send flight's path, not spawned.
   import { thinkingArrival, type ArrivalParams } from "./thinkingArrival";
+  // Item 564 (Filament IV stage 5): the turn trace's clock and the stream speed.
+  import { SpeedMeter, barOf, fmtSecs, sparkPoints, stepKeys, traceBook, type TraceRecord } from "./turnTiming";
   // Item 495 part 2: the folds kept past a chat switch.
   import { decodeOverride, encodeOverride, foldKey, keptGet, keptOpen, keptSet, type FoldScope } from "./keptFolds.svelte";
 
@@ -179,6 +181,13 @@
     if (seg.ms == null) return "thought";
     const sec = Math.max(1, Math.round(seg.ms / 1000));
     return sec < 60 ? `thought for ${sec} s` : `thought for ${Math.floor(sec / 60)} min ${sec % 60} s`;
+  }
+  /** A thinking row's size column (item 564): how long it took — the
+   *  window's own clock, else the stream's `ms` — or `…` while it runs. */
+  function thinkSize(i: number, seg: Segment): string {
+    const ms = stepMs(i) ?? (seg.kind === "thinking" ? (seg.ms ?? null) : null);
+    if (seg.kind === "thinking" && !seg.done) return ms !== null ? fmtSecs(ms) : "…";
+    return ms !== null ? fmtSecs(ms) : "";
   }
   /** The summary's first line, for the row's argument column. */
   function firstLine(text: string): string {
@@ -406,6 +415,131 @@
     return () => clearInterval(t);
   });
   const working = $derived(workingLabel(now - (since ?? startedAt)));
+
+  // ---- The turn trace (item 564, Filament IV stage 5) ----------------------
+  // Each step (a thinking block, a call) is a numbered row with a status mark
+  // and a bar: where in the turn it started and how long it ran. The times
+  // are the window's own (`traceBook`, turnTiming.ts): stamped while the turn
+  // streams and kept for the session, so the recorded reply that replaces the
+  // live one keeps its bars; a reply read back after a relaunch has none.
+  const stepKey = $derived(stepKeys(segs));
+  // Each step's number in the reply, 1-based, in the order it happened.
+  const stepNo = $derived.by(() => {
+    const out: number[] = [];
+    let n = 0;
+    stepKey.forEach((k, i) => (out[i] = k === null ? 0 : ++n));
+    return out;
+  });
+  let traceRev = $state(0);
+  let liveRec: TraceRecord | null = null;
+  let firstLook = true;
+  // What the effect reads so it runs again on every change that matters: a
+  // step's arrival, its end, a delta of words or thinking.
+  function shape(): string {
+    return segs
+      .map((s) =>
+        s.kind === "tool"
+          ? `t${s.call.result || s.call.denied ? 1 : 0}`
+          : s.kind === "thinking"
+            ? `k${s.done ? 1 : 0}${s.text.length}`
+            : s.kind === "text"
+              ? `x${s.text.length}`
+              : s.kind[0],
+      )
+      .join(",");
+  }
+  $effect(() => {
+    if (!streaming) return;
+    void shape();
+    const at = Date.now();
+    liveRec ??= traceBook.find(segs) ?? { t0: since ?? at, t1: null, steps: {}, tps: null };
+    // A reply first seen well into its turn (a chat opened mid-turn): steps
+    // already done then have no honest start and draw no bar.
+    const fresh = firstLook && segs.length > 0 && at - (since ?? at) > 2000;
+    firstLook = false;
+    traceBook.observe(liveRec, segs, at, fresh);
+    traceRev++;
+  });
+  // The turn ended under this reply: steps still open end with it.
+  $effect(() => {
+    if (streaming || !liveRec) return;
+    traceBook.close(liveRec);
+    traceRev++;
+  });
+  const traceRec = $derived.by<TraceRecord | null>(() => {
+    void traceRev;
+    if (streaming) return liveRec;
+    const r = liveRec ?? traceBook.find(segs);
+    return r;
+  });
+  /** The turn's span so far: to now while live, to its end once done. */
+  function traceEnd(r: TraceRecord): number {
+    return streaming ? now : (r.t1 ?? r.seen ?? now);
+  }
+  function barFor(i: number): { left: number; width: number } | null {
+    void traceRev;
+    const r = traceRec;
+    const k = stepKey[i];
+    if (!r || !k) return null;
+    return barOf(r.steps[k], r.t0, traceEnd(r));
+  }
+  /** A step's own time, for its title and a thinking row's size column. */
+  function stepMs(i: number): number | null {
+    void traceRev;
+    const r = traceRec;
+    const k = stepKey[i];
+    const st = r && k ? r.steps[k] : undefined;
+    if (!st) return null;
+    return (st.end ?? now) - st.start;
+  }
+  function barTitle(i: number): string {
+    const r = traceRec;
+    const k = stepKey[i];
+    const st = r && k ? r.steps[k] : undefined;
+    if (!r || !st) return "";
+    const ran = fmtSecs((st.end ?? now) - st.start);
+    return `Started ${fmtSecs(st.start - r.t0)} into the turn; ${st.end === null ? "running for" : "took"} ${ran}`;
+  }
+  /** Any step in this block has a time: else its bar column is left out. */
+  function timed(rows: readonly { i: number }[]): boolean {
+    void traceRev;
+    const r = traceRec;
+    return !!r && rows.some(({ i }) => !!stepKey[i] && !!r.steps[stepKey[i]!]);
+  }
+  /** The trace's foot: how many steps, how long the turn has run. */
+  function traceFoot(rows: readonly { i: number }[]): { steps: string; elapsed: string | null } {
+    const n = rows.length;
+    const r = traceRec;
+    return {
+      steps: `${n} step${n === 1 ? "" : "s"}`,
+      elapsed: r ? fmtSecs(traceEnd(r) - r.t0) : null,
+    };
+  }
+
+  // ---- Stream speed (item 564): "~38 tok/s" in the header while live -------
+  // Estimated from the characters streamed (turnTiming.ts says why), sampled
+  // once a second; the sparkline is the last 24 seconds.
+  const meter = new SpeedMeter();
+  let speed = $state<number | null>(null);
+  let spark = $state("");
+  function streamedChars(): number {
+    let n = 0;
+    for (const s of segs) if (s.kind === "text" || s.kind === "thinking") n += s.text.length;
+    return n;
+  }
+  $effect(() => {
+    if (!streaming) return;
+    meter.sample(streamedChars());
+    const t = setInterval(() => {
+      meter.sample(streamedChars());
+      speed = meter.rate();
+      spark = sparkPoints(meter.samples, 64, 14);
+      if (liveRec && speed !== null) liveRec.tps = speed;
+    }, 1000);
+    return () => clearInterval(t);
+  });
+  const SPEED_TITLE =
+    "Stream speed, estimated: the characters the reply has streamed, at about four to a token, over the seconds it was streaming. Thinking the model keeps to itself is not counted.";
   // The header (item 525, Filament IV): who is answering, and while the turn
   // is live "Replying m:ss" in the signal colour. A Claude model reads
   // "Claude" and its family and version ("Opus 5.5"); any other model reads
@@ -601,6 +735,20 @@
   }
 </script>
 
+<!-- Item 564: a trace row's number and status mark (done ✓, running ■,
+     error ✕, denied ⊘), as in the mockup: no tool icon, the name says it. -->
+{#snippet stepHead(i: number, st: "done" | "running" | "error" | "denied")}
+  <span class="no" aria-hidden="true">{String(stepNo[i]).padStart(2, "0")}</span>
+  <span class="st st-{st}" aria-label={st}>{#if st === "done"}✓{:else if st === "running"}■{:else if st === "error"}✕{:else}⊘{/if}</span>
+{/snippet}
+<!-- Item 564: the step's bar — its place in the turn — on a hairline track. -->
+{#snippet stepBar(i: number, st: "done" | "running" | "error")}
+  {@const b = barFor(i)}
+  <span class="tbar" use:tip={barTitle(i)}>
+    {#if b}<i class="tbar-{st}" style:left="{b.left * 100}%" style:width="{b.width * 100}%"></i>{/if}
+  </span>
+{/snippet}
+
 {#snippet subagent(children: Segment[], parent: string)}
   {@const calls = children.filter((c) => c.kind === "tool").length}
   {@const names = children
@@ -674,6 +822,13 @@
       <b>{who.name}</b>
       {#if who.model}<span class="who-model">{who.model}</span>{/if}
       {#if streaming}<span aria-hidden="true">·</span><span class="who-live">Replying <span class="who-clock">{replyClock}</span></span>{/if}
+      {#if streaming && speed !== null}
+        <!-- Item 564: the stream speed, redrawn once a second. -->
+        <span class="who-speed" use:tip={SPEED_TITLE}>
+          {#if spark}<svg class="who-spark" width="64" height="14" viewBox="0 0 64 14" aria-hidden="true"><polyline points={spark} /></svg>{/if}
+          <span class="who-tps">~{Math.round(speed)} tok/s</span>
+        </span>
+      {/if}
     </div>
   {/if}
   {#each groups as g (g.kind === "activity" ? g.key : `one:${g.i}`)}
@@ -683,17 +838,13 @@
       <!-- One block for the run: a left rule, accent while the turn is
            live; a summary line that folds and unfolds the rows; the rows
            on one grid — icon · name · argument · size (backlog 096). -->
-      <div class="activity" class:live={streaming} use:thinkingArrival={blockArrival(g.rows)}>
-        <button
-          class="fold"
-          aria-expanded={!folded}
-          use:tip={folded ? "Show the calls" : "Fold to one line"}
-          onpointerdown={(e) => pressFold(e, g.key)}
-          onclick={(e) => keyFold(e, g.key)}
-        >
-          <span class="caret">{folded ? "▸" : "▾"}</span>
-          <span class="fold-text">{activitySummary(g.rows, streaming)}</span>
-        </button>
+      {@const isTimed = timed(g.rows)}
+      {@const foot = traceFoot(g.rows)}
+      <!-- Item 564 (Filament IV stage 5): the block is the turn's trace —
+           numbered steps, a status mark, a bar for each step's place in the
+           turn, and a foot that says how many steps and how long, with the
+           fold. Bars only where the window timed the steps (this session). -->
+      <div class="activity trace" class:live={streaming} class:timed={isTimed} use:thinkingArrival={blockArrival(g.rows)}>
         {#if !folded}
           {#each g.rows as { seg, i } (ids[i] || i)}
             {#if seg.kind === "thinking"}
@@ -702,21 +853,25 @@
                      097): a fact in the dim style, no pointer, nothing to
                      open — a button here did nothing, which is what he
                      saw. -->
-                <div class="arow static thinking hidden wide" use:tip={HIDDEN_THINKING_TITLE}>
-                  <span class="ico"><Icon name="think" size={13} /></span>
-                  <span class="name">thought · hidden by the model</span>
-                  <span class="size"></span>
+                <div class="arow static thinking hidden" use:tip={HIDDEN_THINKING_TITLE}>
+                  {@render stepHead(i, "done")}
+                  <span class="name">Thought</span>
+                  <span class="arg">hidden by the model</span>
+                  {@render stepBar(i, "done")}
+                  <span class="size">{thinkSize(i, seg)}</span>
                 </div>
               {:else if !seg.done && seg.text.trim() === ""}
                 <!-- Begun, nothing arrived yet: under way, not yet a button.
                      A thinking later in a block arrives on its own row (389). -->
                 <div
-                  class="arow static thinking wide"
+                  class="arow static thinking"
                   use:thinkingArrival={{ at: seg.at, live: streaming && g.rows[0].i !== i }}
                 >
-                  <span class="ico"><Icon name="think" size={13} /></span>
-                  <span class="name">thinking</span>
-                  <span class="size">…</span>
+                  {@render stepHead(i, "running")}
+                  <span class="name">Thinking</span>
+                  <span class="arg"></span>
+                  {@render stepBar(i, "running")}
+                  <span class="size">{thinkSize(i, seg)}</span>
                 </div>
               {:else}
                 {@const summary = summarised && seg.done}
@@ -728,16 +883,16 @@
                   use:thinkingArrival={{ at: seg.at, live: streaming && !seg.done && g.rows[0].i !== i }}>
                   <button
                     class="arow thinking"
-                    class:wide={!summary}
                     aria-expanded={isOpen(i, seg)}
                     use:tip={isOpen(i, seg) ? "Hide the thinking" : "Show the thinking"}
                     onpointerdown={(e) => press(e, i, seg)}
                     onclick={(e) => keyClick(e, i, seg)}
                   >
-                    <span class="ico"><Icon name="think" size={13} /></span>
-                    <span class="name">{thoughtLabel(seg)}</span>
-                    {#if summary}<span class="arg summary">{firstLine(seg.text)}</span>{/if}
-                    <span class="size">{seg.done ? (isOpen(i, seg) ? "▾" : "▸") : "…"}</span>
+                    {@render stepHead(i, seg.done ? "done" : "running")}
+                    <span class="name" use:tip={thoughtLabel(seg)}>{seg.done ? "Thought" : "Thinking"}</span>
+                    <span class="arg" class:summary>{firstLine(seg.text)}</span>
+                    {@render stepBar(i, seg.done ? "done" : "running")}
+                    <span class="size">{thinkSize(i, seg)} <span class="open-mark">{isOpen(i, seg) ? "▾" : "▸"}</span></span>
                   </button>
                   {#if isOpen(i, seg)}
                     <div
@@ -749,15 +904,16 @@
                 </div>
               {/if}
             {:else if seg.kind === "redacted"}
-              <div class="arow static thinking wide">
-                <span class="ico"><Icon name="think" size={13} /></span>
-                <span class="name">redacted thinking</span>
-                <span class="size"></span>
+              <div class="arow static thinking">
+                {@render stepHead(i, "done")}
+                <span class="name">Thought</span>
+                <span class="arg">redacted</span>
+                {@render stepBar(i, "done")}
+                <span class="size">{thinkSize(i, seg)}</span>
               </div>
             {:else if seg.kind === "tool"}
               {@const open = isOpen(i, seg)}
               {@const bad = !!seg.call.result?.is_error || !!seg.call.denied}
-              {@const icon = toolIcon(seg.call.name)}
               {@const agentTab = agentTabOf(seg.call)}
               {@const agentRow = agentTab ? rowOf(seg.call.id) : null}
               {@const running = streaming && !seg.call.result && !seg.call.denied}
@@ -784,11 +940,12 @@
                   onpointerdown={(e) => press(e, i, seg)}
                   onclick={(e) => keyClick(e, i, seg)}
                 >
-                  <span class="ico">{#if icon}<Icon name={icon} size={13} />{:else}⚒{/if}</span>
+                  {@render stepHead(i, running ? "running" : seg.call.denied ? "denied" : bad ? "error" : "done")}
                   <span class="name" use:tip={seg.call.name}>{shortToolName(seg.call.name)}</span>
                   <span class="arg">{toolInputSummary(seg.call.input)}</span>
+                  {@render stepBar(i, running ? "running" : bad ? "error" : "done")}
                   <span class="size" use:tip={agentRow ? `${seg.call.name} call · ${toolResultSummary(seg.call, streaming)}` : undefined}
-                    >{agentRow ? agentRowLine(agentRow) : toolResultSummary(seg.call, streaming)}</span
+                    >{agentRow ? agentRowLine(agentRow) : running && stepMs(i) !== null ? `running ${fmtSecs(stepMs(i)!)}` : toolResultSummary(seg.call, streaming)}</span
                   >
                 </button>
                 {#if bornW && streaming}
@@ -911,6 +1068,18 @@
             <span class="working-text">{working}</span>
           </div>
         {/if}
+        <button
+          class="fold trace-foot"
+          aria-expanded={!folded}
+          use:tip={folded ? "Show the steps" : "Fold to one line"}
+          onpointerdown={(e) => pressFold(e, g.key)}
+          onclick={(e) => keyFold(e, g.key)}
+        >
+          <span class="fold-text">
+            <span class="foot-k">Trace</span> {foot.steps}{#if foot.elapsed}<span class="foot-gap"></span><span class="foot-k">elapsed</span> {foot.elapsed}{/if}{#if folded}<span class="foot-gap"></span>{activitySummary(g.rows, streaming)}{:else if isTimed}<span class="foot-gap"></span><span class="foot-note">the bar is each step's place in the turn</span>{/if}{#if !streaming && traceRec?.tps}<span class="foot-gap"></span><span use:tip={SPEED_TITLE}>~{Math.round(traceRec.tps)} tok/s</span>{/if}
+          </span>
+          <span class="foot-fold">{folded ? "Expand" : "Collapse"} <span class="caret">{folded ? "▾" : "▴"}</span></span>
+        </button>
       </div>
       <!-- What the block changed in memory (backlog 305): one line per
            memory note, AGENTS.md or thread file an edit in it wrote, outside
@@ -1220,6 +1389,27 @@
     font-size: 11.5px;
     font-variant-numeric: tabular-nums;
   }
+  /* The stream speed (item 564): at the header's right end while live, a
+     blue sparkline of the last 24 seconds and the figure in mono. */
+  .who:has(.who-speed) {
+    align-self: stretch;
+  }
+  .who-speed {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    font-variant-numeric: tabular-nums;
+    color: var(--ink2, var(--text));
+  }
+  .who-spark polyline {
+    fill: none;
+    stroke: var(--signal);
+    stroke-width: 1.2;
+    stroke-linejoin: round;
+  }
   .assistant :global(.markdown) {
     /* Plex Sans, the interface face, since 2026-09-14: the editorial serif
        read as academic to him ("looks like Times New Roman almost"), and of
@@ -1389,6 +1579,127 @@
   /* The one-line summary that folds the block: the board's mono, dim. */
   .fold {
     grid-template-columns: 18px minmax(0, 1fr);
+  }
+  /* ---- The trace (item 564, Filament IV stage 5; mockup f4-chat.png) ----
+     A step row: number · status · name · argument · bar · size. The bar
+     column is there only when the window timed the block's steps. The
+     subagent's rows inside keep their own grid (below). */
+  .trace > .row-wrap > .arow,
+  .trace > .arow {
+    grid-template-columns: 22px 14px 96px minmax(0, 1fr) auto;
+    column-gap: 10px;
+    min-height: 34px;
+    padding: 6px 16px 6px 14px;
+  }
+  .trace.timed > .row-wrap > .arow,
+  .trace.timed > .arow {
+    grid-template-columns: 22px 14px 96px minmax(0, 1fr) 120px auto;
+  }
+  .trace:not(.timed) .tbar {
+    display: none;
+  }
+  .no {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    color: var(--dim);
+  }
+  .st {
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1;
+    text-align: center;
+  }
+  .st-done {
+    color: var(--done);
+  }
+  .st-running {
+    color: var(--signal);
+    font-size: 10px;
+  }
+  .st-error,
+  .st-denied {
+    color: var(--failed);
+  }
+  .trace .name {
+    font-size: 13px;
+  }
+  /* The thinking row reads as a step like the rest (the mockup's "Thought"),
+     its first line dim in the argument column. */
+  .trace > .row-wrap > .arow.thinking .name,
+  .trace > .arow.thinking .name {
+    font-style: normal;
+    font-weight: 600;
+    color: var(--ink);
+  }
+  .trace > .row-wrap > .arow.thinking .arg,
+  .trace > .arow.thinking .arg {
+    color: var(--dim);
+  }
+  .trace > .arow.thinking.hidden .arg {
+    font-style: italic;
+  }
+  .open-mark {
+    color: var(--dim);
+    margin-left: 4px;
+  }
+  /* The bar: a hairline track, the step's span on it — green once done,
+     blue while running, red on an error. */
+  .tbar {
+    position: relative;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--line2);
+    align-self: center;
+  }
+  .tbar > i {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    border-radius: 2px;
+    background: var(--done);
+  }
+  .tbar > i.tbar-running {
+    background: var(--signal);
+    box-shadow: var(--glow-signal, none);
+  }
+  .tbar > i.tbar-error {
+    background: var(--failed);
+  }
+  .trace .size {
+    font-size: 11.5px;
+    min-width: 72px;
+  }
+  /* The foot: Trace · steps · elapsed · the legend, and the fold at its
+     right end. Mono, dim; the labels dimmer. */
+  .trace-foot {
+    grid-template-columns: minmax(0, 1fr) auto;
+    min-height: 30px;
+    padding: 5px 16px 5px 14px;
+    background: color-mix(in srgb, var(--ground, var(--bg)) 35%, transparent);
+  }
+  .trace-foot .fold-text {
+    color: var(--ink2, var(--text));
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .foot-k,
+  .foot-note {
+    color: var(--dim);
+  }
+  .foot-gap {
+    display: inline-block;
+    width: 14px;
+  }
+  .foot-fold {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--dim);
+  }
+  .trace-foot:hover .foot-fold {
+    color: var(--text);
   }
   /* A row with nothing in the argument column lets its name run across. */
   .arow.wide {
