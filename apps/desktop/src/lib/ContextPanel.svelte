@@ -25,7 +25,22 @@
     subagentsOfTurn,
   } from "./state.svelte";
   import { EDITABLE_LAYERS } from "./types";
-  import { cap as handoffCap, hasOwnThreshold, threshold } from "./handoff.svelte";
+  import {
+    cap as handoffCap,
+    mark as handoffMark,
+    markAt,
+    markText,
+    NEVER,
+    ownMark,
+    parseMark,
+    reconsiderShown,
+    setMarkAt,
+    threadFor,
+    threadKey,
+    threshold,
+    UNFILED,
+    type MarkScope,
+  } from "./handoff.svelte";
   import { setPromptSuggestions, suggestions } from "./suggestions.svelte";
   import { applyDraft, refreshLayerVersions } from "./state.svelte";
   import { onMount, untrack } from "svelte";
@@ -672,6 +687,48 @@
     void thresholdTick;
     return Math.round(threshold(app.activeSessionId) * 100);
   });
+  /*
+   * Item 545: the mark of each thing this chat belongs to — the chat, its
+   * research thread, its project — set here at any time, before the chat
+   * reaches it. The first that has one wins (chat, thread, project), else
+   * the Settings default. A field takes a percent, a token count (300k) or
+   * "never"; blank goes back to the layer below.
+   */
+  const markRows = $derived.by(() => {
+    const chat = app.activeSessionId;
+    const project = app.project?.id ?? null;
+    const slug = threadFor(chat);
+    const rows: { scope: MarkScope; key: string; label: string }[] = [];
+    if (chat) rows.push({ scope: "chat", key: chat, label: "This chat" });
+    if (chat && slug) rows.push({ scope: "thread", key: threadKey(project, slug), label: `Thread ${slug}` });
+    rows.push({ scope: "project", key: project ?? UNFILED, label: app.project?.name ? `Project ${app.project.name}` : "Unfiled chats" });
+    return rows.map((r) => ({ ...r, value: markAt(r.scope, r.key) }));
+  });
+  const markOwner = $derived(ownMark(app.activeSessionId));
+  const markLine = $derived.by(() => {
+    const own = markOwner;
+    const limit = app.connection?.contextLimit ?? null;
+    if (own?.value === NEVER) return "Never handed off by Nightloom";
+    if (own) return `Hand off at ${own.value <= 1 ? `${Math.round(own.value * 100)}% of the window` : `${fmtTokens(own.value)} tokens`}`;
+    const pct = Math.round(handoffMark(app.activeSessionId, limit) * 100);
+    return `Hand off at ${handoffPct}% of the window${handoffCap() > 0 ? ` or ${fmtTokens(handoffCap())} tokens, whichever comes first${limit ? ` (${pct}% here)` : ""}` : ""}`;
+  });
+  const markFrom = $derived(
+    markOwner === null ? "the Settings default" : markOwner.scope === "chat" ? "this chat's own mark" : markOwner.scope === "thread" ? "its thread's mark" : "its project's mark",
+  );
+  let markBad = $state<string | null>(null);
+  function setMark(scope: MarkScope, key: string, text: string): void {
+    const v = parseMark(text);
+    if (v === undefined) {
+      markBad = `${scope}:${key}`;
+      return;
+    }
+    markBad = null;
+    setMarkAt(scope, key, v);
+    // A mark raised above the fill puts an open notice away (and takes back a queued wrap-up).
+    reconsiderShown();
+    thresholdTick++;
+  }
   /** The mark is set in Settings → Subscription since backlog 258. */
   function openHandoffSettings(): void {
     app.settingsOpenOn = "claude-code";
@@ -1546,11 +1603,37 @@
                where he looks for it; said here beside the number it is
                compared to. -->
           <p class="note small threshold">
-            Hand off at {handoffPct}% of the window{!hasOwnThreshold(app.activeSessionId) && handoffCap() > 0 ? ` or ${fmtTokens(handoffCap())} tokens, whichever comes first` : ""}{app.activeSessionId ? (hasOwnThreshold(app.activeSessionId) ? ", this chat's own mark" : ", the default") : " (the default)"}
-            — past it the composer's notice asks for the wrap-up (the model writes HANDOFF.md, stops, and
-            gives a start prompt for a linked new chat).
-            <button class="ns-btn ghost small" onclick={openHandoffSettings}>Change in Settings → Subscription</button>
+            {markLine} — {markFrom}.
+            {#if markOwner?.value === NEVER}
+              No notice, and nothing is queued or continued while you are away.
+            {:else}
+              Past it the composer's notice asks for the wrap-up (the model writes HANDOFF.md, stops, and
+              gives a start prompt for a linked new chat).
+            {/if}
           </p>
+          <!-- Item 545: each layer's own mark, editable here at any time. -->
+          <div class="marks" role="group" aria-label="Hand-off mark">
+            {#each markRows as r (r.scope)}
+              <label class="mark-row">
+                <span class="mark-label" use:tip={r.label}>{r.label}</span>
+                <input
+                  class="mark-input mono"
+                  class:bad={markBad === `${r.scope}:${r.key}`}
+                  type="text"
+                  spellcheck="false"
+                  aria-label={`${r.label}: hand-off mark`}
+                  placeholder={r.scope === "chat" ? "as below" : r.scope === "thread" ? "as its project" : "Settings default"}
+                  value={r.value === null ? "" : markText(r.value)}
+                  onchange={(e) => setMark(r.scope, r.key, e.currentTarget.value)}
+                />
+                {#if markOwner?.scope === r.scope}<span class="ns-chip mono">in use</span>{/if}
+              </label>
+            {/each}
+            <p class="note small mark-hint">
+              A percent (60%), a token count (300k) or <span class="mono">never</span>; blank uses the next one down.
+              <button class="ns-btn ghost small" onclick={openHandoffSettings}>Default in Settings → Subscription</button>
+            </p>
+          </div>
         {:else if items.length === 0}
           <p class="note small">Nothing yet.</p>
         {:else}
@@ -1739,6 +1822,44 @@
     align-items: baseline;
     gap: 6px;
     flex-wrap: wrap;
+  }
+  /* Item 545: the three marks, one row each. */
+  .marks {
+    display: grid;
+    gap: 4px;
+    margin-top: 2px;
+  }
+  .mark-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 9em auto;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--dim);
+  }
+  .mark-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mark-input {
+    font-size: 12px;
+    padding: 2px 6px;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    background: var(--paper);
+    color: var(--ink);
+    min-width: 0;
+  }
+  .mark-input.bad {
+    border-color: var(--error);
+  }
+  .mark-hint {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin: 0;
   }
   /* This session (backlog 077): plain rows and chips, nothing new in
      colour beyond the status dot. */

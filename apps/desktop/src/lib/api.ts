@@ -833,6 +833,18 @@ export function armWake(name: string, atMs: number | null): Promise<null> {
   return invoke("arm_wake", { name, atMs: atMs === null ? null : Math.max(0, Math.round(atMs)) });
 }
 
+/** Continue chat `chat` of `project` in a fresh linked chat without opening
+ *  either (backlog 544): the new chat's id. */
+export function continueChat(chat: string, project: string | null): Promise<string> {
+  return invoke("continue_chat", { chat, project });
+}
+
+/** Seconds since the last keyboard or mouse input on this Mac (backlog
+ *  544); null where it cannot be read. */
+export function idleSeconds(): Promise<number | null> {
+  return invoke("idle_seconds");
+}
+
 /** A line for `<config dir>/logs/schedule.log` (backlog 535). */
 export function scheduleLog(text: string): Promise<null> {
   return invoke("schedule_log", { text });
