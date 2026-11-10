@@ -317,13 +317,28 @@ impl Terminals {
             })
             .map_err(|e| format!("could not open a pty: {e}"))?;
         let mut cmd = CommandBuilder::new_default_prog();
+        let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
         if let Some(block) = command {
             // Login and interactive, as a tab he opened himself: `-l` for
             // the PATH a Finder-launched app does not have, `-i` for his
             // aliases and a job-control terminal, so ⌃C reaches the block.
-            cmd = CommandBuilder::new(cmd.get_shell());
+            let shell = cmd.get_shell();
+            cmd = CommandBuilder::new(&shell);
             cmd.arg(if cfg!(windows) { "/C" } else { "-lic" });
-            cmd.arg(block);
+            // The folder the block ends in (backlog 529): typing into the
+            // ended tab opens a shell there (`terminal_run_cwd`). A POSIX
+            // shell only — fish spells `$?` differently; a block that
+            // `exit`s itself leaves no record, and the block's own folder
+            // is used then. The exit code is the block's, unchanged.
+            if cfg!(unix) && posix_shell(&shell) {
+                cmd.env("NIGHTLOOM_RUN_CWD", run_cwd_file(id));
+                cmd.arg(format!(
+                    "{}\n__nl_rc=$?; pwd >\"$NIGHTLOOM_RUN_CWD\" 2>/dev/null; exit $__nl_rc",
+                    block.trim_end()
+                ));
+            } else {
+                cmd.arg(block);
+            }
         }
         cmd.cwd(&dir);
         // xterm.js speaks xterm; without this a login shell inherits
@@ -351,7 +366,6 @@ impl Terminals {
             .master
             .take_writer()
             .map_err(|e| format!("could not write the pty: {e}"))?;
-        let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
         let child = Arc::new(Mutex::new(child));
         let closed = Arc::new(AtomicBool::new(false));
         let flow = Arc::new(Flow::default());
@@ -780,6 +794,28 @@ pub async fn terminal_run(
         return Err("the block is empty".to_string());
     }
     terminals.open(Arc::new(WindowSink(app)), &cwd, cols, rows, Some(&command))
+}
+
+/// Where a block's shell writes the folder it ended in (backlog 529).
+fn run_cwd_file(id: u32) -> PathBuf {
+    std::env::temp_dir().join(format!("nightloom-run-{}-{id}.cwd", std::process::id()))
+}
+
+/// sh, bash, zsh, dash, ksh: the shells the folder record is written in.
+fn posix_shell(shell: &str) -> bool {
+    let name = shell.rsplit('/').next().unwrap_or(shell);
+    matches!(name, "sh" | "bash" | "zsh" | "dash" | "ksh" | "mksh")
+}
+
+/// The folder an ended block's shell was in, once (the record is removed
+/// on read); `None` when it left none or the folder is gone (backlog 529).
+#[tauri::command]
+pub async fn terminal_run_cwd(id: u32) -> Option<String> {
+    let path = run_cwd_file(id);
+    let text = std::fs::read_to_string(&path).ok();
+    let _ = std::fs::remove_file(&path);
+    let dir = text?.trim_end_matches('\n').to_string();
+    PathBuf::from(&dir).is_dir().then_some(dir)
 }
 
 /// Keystrokes (and pastes) to the shell, as the text xterm.js produced.

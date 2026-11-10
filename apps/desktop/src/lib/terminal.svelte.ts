@@ -629,14 +629,14 @@ export function dropLabel(pane: string): string {
 }
 
 /** A click on an exited tab restarts the shell in the same folder (12c),
- *  in the same slot of the same strip. */
-export async function restartShell(id: number): Promise<void> {
+ *  in the same slot of the same strip. Resolves with the new shell's id. */
+export async function restartShell(id: number): Promise<number | null> {
   const i = term.shells.findIndex((s) => s.id === id);
-  if (i < 0) return;
+  if (i < 0) return null;
   const old = term.shells[i];
   if (!old.exit) {
     selectShell(id);
-    return;
+    return null;
   }
   const pane = old.pane ?? "";
   try {
@@ -654,8 +654,58 @@ export async function restartShell(id: number): Promise<void> {
     const dock = term.docks[pane];
     if (dock) dock.active = row.id;
     requestFocus(pane);
+    return row.id;
   } catch (e) {
     addToast(`Could not restart the shell: ${String(e)}`);
+    return null;
+  }
+}
+
+/** Keys typed into an ended tab while its new shell opens, by the ended id. */
+const continuing = new Map<number, string[]>();
+
+/**
+ * Keys typed into a tab whose shell has ended (backlog 529: he typed after
+ * a `cd` block and got "the shell's terminal is gone"). A plain shell's tab
+ * restarts in place, as its click does; a block's tab keeps its output and
+ * a new shell opens beside it, in the folder the block ended in (the
+ * block's own when it left no record). The keys go to the new shell, in
+ * order, once it is up.
+ */
+export async function continueEnded(id: number, data: string): Promise<void> {
+  const held = continuing.get(id);
+  if (held) {
+    held.push(data);
+    return;
+  }
+  const keys = [data];
+  continuing.set(id, keys);
+  try {
+    const old = term.shells.find((s) => s.id === id);
+    if (!old?.exit || old.agentChat) return;
+    let to: number | null;
+    if (!old.run) to = await restartShell(id);
+    else {
+      const pane = old.pane ?? "";
+      const cwd = (await api.terminalRunCwd(id).catch(() => null)) ?? old.cwd;
+      try {
+        const grid = firstGrid(pane);
+        const info = await api.terminalOpen(cwd, grid.cols, grid.rows);
+        const row: ShellRow = { ...info, title: info.shell, exit: null, pane };
+        const i = term.shells.findIndex((s) => s.id === id);
+        term.shells.splice(i < 0 ? term.shells.length : i + 1, 0, row);
+        const dock = term.docks[pane];
+        if (dock) dock.active = row.id;
+        requestFocus(pane);
+        to = row.id;
+      } catch (e) {
+        addToast(`Could not open a shell: ${String(e)}`);
+        to = null;
+      }
+    }
+    if (to !== null) for (const k of keys) await api.terminalWrite(to, k).catch(() => {});
+  } finally {
+    continuing.delete(id);
   }
 }
 

@@ -9271,6 +9271,7 @@ fn main() {
             model_list::model_list_set,
             terminal::terminal_open,
             terminal::terminal_run,
+            terminal::terminal_run_cwd,
             terminal::terminal_write,
             terminal::terminal_resize,
             terminal::terminal_close,

@@ -23,7 +23,7 @@
   import * as api from "./api";
   import { addToast } from "./state.svelte";
   import { isMac } from "./platform";
-  import { keepLive, liveShell, registerSink, term } from "./terminal.svelte";
+  import { continueEnded, keepLive, liveShell, registerSink, term } from "./terminal.svelte";
   import { stripAnsi } from "./shellRun";
   import { terminalChord, type LiveShell, type ShellRow } from "./terminal";
   import { termTheme } from "./termTheme";
@@ -91,6 +91,11 @@
     // full — is said once, until a write goes through again.
     let refused = false;
     const unData = t.onData((data) => {
+      // An ended shell has nothing to write to: the keys open one (529).
+      if (shell.exit) {
+        void continueEnded(shell.id, data);
+        return;
+      }
       void api.terminalWrite(shell.id, data).then(
         () => (refused = false),
         (e: unknown) => {
@@ -182,8 +187,8 @@
     const how = exit.code !== null ? `exit ${exit.code}` : exit.signal ? `ended by ${exit.signal}` : "ended";
     xterm.write(
       shell.run
-        ? `\r\n\x1b[2m[${shell.run.stopped ? "stopped by you" : how}]\x1b[0m\r\n`
-        : `\r\n\x1b[2m[${shell.shell} ${how} — click the tab for a new shell here]\x1b[0m\r\n`,
+        ? `\r\n\x1b[2m[${shell.run.stopped ? "stopped by you" : how} — type to go on in a new shell beside this]\x1b[0m\r\n`
+        : `\r\n\x1b[2m[${shell.shell} ${how} — type or click the tab for a new shell here]\x1b[0m\r\n`,
     );
   });
 
