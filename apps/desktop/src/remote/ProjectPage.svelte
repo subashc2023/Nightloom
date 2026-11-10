@@ -30,8 +30,10 @@
     onchat: (id: string) => void;
     onnew: () => void;
     onback: () => void;
+    /** Item 556: the chats whose turns run on the host now. */
+    runningIds?: ReadonlySet<string>;
   }
-  let { id, name, chats, here, instructions, onrename, onforget, onchat, onnew, onback }: Props = $props();
+  let { id, name, chats, here, instructions, onrename, onforget, onchat, onnew, onback, runningIds = new Set() }: Props = $props();
 
   const renameKey = $derived(`projectrename:${id}`);
   let menu = $state(false);
@@ -152,7 +154,7 @@
       {#each sorted as c (c.id)}
         <button class="pp-row" class:here={c.id === here} onclick={() => onchat(c.id)}>
           <span class="pp-row-label">{c.label}</span>
-          <span class="pp-row-meta">{shortWhen(lastActive(c))}{c.mode !== "normal" ? ` · ${c.mode}` : ""}</span>
+          <span class="pp-row-meta">{#if runningIds.has(c.id)}<span class="pp-run"><span class="pp-run-dot"></span>running</span> · {/if}{shortWhen(lastActive(c))}{c.mode !== "normal" ? ` · ${c.mode}` : ""}</span>
         </button>
       {:else}
         <p class="pp-empty">No chats yet — start one above.</p>
@@ -369,6 +371,25 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  /* Item 556: a running chat says so, in the live blue. */
+  .pp-run {
+    color: var(--live);
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .pp-run-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--live);
+    animation: pp-pulse 1.2s infinite;
+  }
+  @keyframes pp-pulse {
+    50% {
+      opacity: 0.3;
+    }
   }
   .pp-row-meta {
     font-size: 12px;
