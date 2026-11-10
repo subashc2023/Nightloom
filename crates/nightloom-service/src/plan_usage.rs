@@ -486,6 +486,15 @@ pub fn read_fresh_shared(max_age: std::time::Duration) -> PlanUsage {
     with_sample(sample, read(), now_ms)
 }
 
+/// The best reading there is without running `/usage`: the files, or the
+/// last refresh's stamp however old, whichever is newer (item 526). For a
+/// hook that must not wait the ~12 s — the re-run of a call a card was up
+/// for, whose resume would otherwise sit on it before the model continues.
+pub fn read_without_refresh() -> PlanUsage {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    with_sample(read_stamp(&stamp_path()), read(), now_ms)
+}
+
 fn home() -> Option<PathBuf> {
     std::env::var("HOME")
         .ok()

@@ -1987,13 +1987,35 @@ pub fn decide(dir: &Path, stdin_json: &str) -> HookReply {
     // own process, so the one-a-minute rule lives in a stamp and a lock
     // in the temp directory (`plan_usage::read_fresh_shared`), and a hook
     // that finds the lock held reads the stamp rather than waiting ~12 s.
+    // Item 526: the re-run of a call a card was up for comes before the
+    // resume's first API reply, so the wire reading is as old as the wait
+    // and the refresh below would always run — 15 s of his Skip, measured.
+    // That call takes the reading there is instead; the resume's next call
+    // has the reply's fresh wire reading.
     let usage = if wire_fresh {
         crate::plan_usage::read()
+    } else if is_resumed_call(dir, stdin_json) {
+        crate::plan_usage::read_without_refresh()
     } else {
         crate::plan_usage::read_fresh_shared(std::time::Duration::from_secs(120))
     };
     let week = week_of(&usage, now_ms);
     decide_with_week(dir, stdin_json, reading_of(usage), week)
+}
+
+/// Whether this call is the one a card is waiting on in `dir` (item 522's
+/// `waiting.json`, on disk until its resume has run): the resume re-running
+/// a deferred call — a question, a plan, an approval, a browser card.
+fn is_resumed_call(dir: &Path, stdin_json: &str) -> bool {
+    let Some(id) = serde_json::from_str::<Value>(stdin_json)
+        .ok()
+        .and_then(|v| v.get("tool_use_id")?.as_str().map(String::from))
+    else {
+        return false;
+    };
+    super::ask::AskDir::new(dir)
+        .waiting()
+        .is_some_and(|w| w.call.id == id)
 }
 
 /// [`decide_with`] with the weekly figure too (backlog 249).
@@ -2271,6 +2293,34 @@ mod tests {
         assert!(r.reason().is_some_and(|s| s.contains("do it yourself")));
         super::reset_spawns(&dir);
         assert_eq!(super::decide_with(&dir, call, None).decision(), "allow");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Item 526: the call a card is waiting on is known as the resume's
+    /// re-run (so its hook skips the blocking `/usage` refresh); any other
+    /// call, torn input, or a directory with no wait is not.
+    #[test]
+    fn the_call_a_card_waits_on_is_the_resumed_one() {
+        let dir = std::env::temp_dir().join(format!("nightloom-526-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let call = |id: &str| format!(r#"{{"tool_name":"AskUserQuestion","tool_use_id":"{id}"}}"#);
+        assert!(!super::is_resumed_call(&dir, &call("t1")), "no wait");
+        let files = super::super::ask::AskDir::new(&dir);
+        files
+            .set_waiting(
+                Some("s-1"),
+                &super::super::ask::DeferredCall {
+                    id: "t1".into(),
+                    name: "AskUserQuestion".into(),
+                    input: serde_json::json!({}),
+                },
+            )
+            .unwrap();
+        assert!(super::is_resumed_call(&dir, &call("t1")));
+        assert!(!super::is_resumed_call(&dir, &call("t2")), "another call");
+        assert!(!super::is_resumed_call(&dir, "{not json"), "torn input");
+        files.clear_waiting();
+        assert!(!super::is_resumed_call(&dir, &call("t1")), "wait over");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
