@@ -112,6 +112,7 @@ describe("375: a queued message never reaches another chat (the drain, driven)",
   it("the composer and the turn use these rules", () => {
     expect(composerSrc).toContain("const q = takeQueued(key, aside !== null, from);");
     expect(composerSrc.match(/sendKey !== key \|\| sendKey !== liveKey\(\)/g)?.length).toBe(2);
-    expect(stateSrc).toMatch(/const turn = fg;\s*if \(!turn \|\| !app\.busy \|\| app\.parked\) return;[^]*?if \(!turnOwnsKey\(turn, key\)\) return;/);
+    // Item 536: each return now records why (`noteHand`); the guard is the same.
+    expect(stateSrc).toMatch(/const turn = fg;\s*if \(!turn\) return noteHand[^]*?if \(app\.parked\) return noteHand[^]*?if \(!turnOwnsKey\(turn, key\)\) return noteHand\(key, q\.id, "other-chat"\);/);
   });
 });

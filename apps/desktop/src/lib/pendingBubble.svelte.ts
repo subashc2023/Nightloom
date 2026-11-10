@@ -18,14 +18,21 @@
  * *Send now* is the Claude Code CLI's own `priority: "now"` (backlog 339,
  * `sendNowRow`): it stops the step Claude is in — a long command, say — and
  * gives it the message at once; the turn and its reply so far go on. A full
- * Stop and resend was not chosen: it would end the reply mid-way. The
+ * Stop and resend was not chosen: it would end the reply mid-way. ~~The
  * provider engine has no way into a running turn (no inbox), so there a
- * message waits for the turn's end and offers no Send now.
+ * message waits for the turn's end and offers no Send now.~~ Item 536
+ * (2026-11-09, his "there's literally no option to send now, especially on
+ * urgent things"): every pending row offers *Send now* while the turn runs
+ * (`sendNowPlan` in state.svelte.ts). A row the turn cannot take — the
+ * provider engine, a `/` command turn, a file chip, no inbox — is sent by
+ * **Stop + send**: the turn stops (the reply so far stays) and the row goes
+ * at once as the next message, exactly once, into its own chat. *Let it
+ * arrive* no longer hides *Send now*.
  */
 import { takeBackInjected } from "./api";
 import { clearInjected, dropQueued, readDraft, recordDraft, takeBackQueued, type QueuedMessage } from "./drafts.svelte";
 import { requestComposerFocus } from "./rewindDraft.svelte";
-import { addToast, replyToPending, sendNowRow } from "./state.svelte";
+import { addToast, handReason, replyToPending, sendNowAny, sendNowPlan, type HandReason, type SendNowPlan } from "./state.svelte";
 
 export type PendingState = "next-step" | "now" | "turn-end" | "waiting" | "replying";
 
@@ -48,7 +55,7 @@ export function pendingLabel(s: PendingState, letArrive = false): string {
     case "now":
       return "sending now — Claude was asked to stop the step it is in";
     case "turn-end":
-      return "not sent yet — goes when this turn ends";
+      return "not sent yet — goes when this turn ends, or send it now";
     case "waiting":
       return "not sent yet — Claude is waiting on your answer above; send this instead, or answer and it goes after";
     case "replying":
@@ -58,9 +65,47 @@ export function pendingLabel(s: PendingState, letArrive = false): string {
   }
 }
 
-/** Whether the bubble offers *Send now* and *Let it arrive*. */
+/** Whether the bubble offers *Let it arrive* (it is what happens anyway
+ *  to a row handed in; item 536 split it from *Send now*). */
 export function offersChoice(s: PendingState, letArrive: boolean): boolean {
   return s === "next-step" && !letArrive;
+}
+
+/** Whether the bubble offers *Send now* (item 536): every state but one
+ *  already going (`now`, `replying`) or waiting on a prompt (its own
+ *  *Send now*, `offersReply`), whenever the plan can do something. */
+export function offersSendNow(s: PendingState, plan: SendNowPlan): boolean {
+  return (s === "next-step" || s === "turn-end") && (plan === "now" || plan === "hand" || plan === "stop");
+}
+
+/** Why a row is not handed in, in his words (item 536). */
+export function handNote(r: HandReason | null): string | null {
+  switch (r) {
+    case "provider":
+      return "this engine cannot take a message while it replies";
+    case "files":
+      return "a file it carries can only go with a new message";
+    case "no-inbox":
+      return "the running step is not taking messages yet";
+    case "error":
+      return "handing it to the turn failed";
+    default:
+      return null;
+  }
+}
+
+/** The *Send now* tooltip: which of the two it will do (item 536). */
+export function sendNowTip(plan: SendNowPlan, why: HandReason | null = null): string {
+  if (plan === "now") return "Stop the step Claude is in (a long command, say) and give it this message at once — Claude Code's own send now. The reply so far stays and the turn goes on.";
+  const note = handNote(why);
+  const stop = "Stop this turn and send this at once as the next message. The reply so far stays.";
+  if (plan === "stop") return note ? `${stop} (It cannot go into the running turn: ${note}.)` : stop;
+  return `Give it to Claude at once (Claude Code's own send now: the step it is in stops, the turn goes on). If the running turn cannot take messages, Nightloom stops the turn instead — the reply so far stays — and sends this as the next message.${note ? ` Not handed in yet: ${note}.` : ""}`;
+}
+
+/** The plan and the reason for the bubble (item 536). */
+export function bubblePlan(key: string, qid: number): { plan: SendNowPlan; why: HandReason | null } {
+  return { plan: sendNowPlan(key, qid), why: handReason(key, qid) };
 }
 
 /** The rows drawn as pending bubbles: the open chat's queue while its turn runs. */
@@ -95,7 +140,8 @@ async function unsend(key: string, qid: number): Promise<boolean> {
 }
 
 export async function sendNow(key: string, qid: number): Promise<void> {
-  await sendNowRow(key, qid);
+  const r = await sendNowAny(key, qid);
+  if (r === "stopping") addToast("Stopping the turn — the reply so far stays, and your message goes the moment it has stopped.");
 }
 
 /** Whether the bubble offers *Send now* as a reply to the prompt that waits (item 522). */

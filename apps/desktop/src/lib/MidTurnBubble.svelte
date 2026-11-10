@@ -3,15 +3,18 @@
   import { tip } from "./tip";
   import type { Attachment } from "./types";
   import {
+    bubblePlan,
     cancelPending,
     editPending,
     letArrive,
     offersChoice,
     offersReply,
+    offersSendNow,
     pendingLabel,
     pendingState,
     sendAsReply,
     sendNow,
+    sendNowTip,
   } from "./pendingBubble.svelte";
   import type { QueuedMessage } from "./drafts.svelte";
 
@@ -37,6 +40,8 @@
   const pending = $derived(row !== null);
   const st = $derived(row ? pendingState(row, waiting) : null);
   const arrive = $derived(row ? letArrive[row.id] === true : false);
+  /** Item 536: what *Send now* does for this row, and why it is not handed in. */
+  const plan = $derived(row && st ? bubblePlan(chatKey, row.id) : null);
   let confirming = $state(false);
   let working = $state(false);
 
@@ -58,7 +63,7 @@
   }
 </script>
 
-<div class="midturn" class:pending data-midturn={pending ? "pending" : "delivered"} data-queue-id={row?.id}>
+<div class="midturn" class:pending data-midturn={pending ? "pending" : "delivered"} data-queue-id={row?.id} data-hand={plan?.why ?? undefined}>
   <div class="mt-key">
     {#if pending && st}
       <span class="mt-mark" aria-hidden="true"></span>
@@ -87,14 +92,17 @@
             onclick={() => void run(() => sendAsReply(chatKey, row!.id))}>Send now</button
           >
         {/if}
-        {#if offersChoice(st, arrive)}
+        {#if plan && offersSendNow(st, plan.plan)}
           <button
             class="ns-btn small"
             data-mt="send-now"
+            data-plan={plan.plan}
             disabled={working}
-            use:tip={"Stop the step Claude is in (a long command, say) and give it this message at once — Claude Code's own send now. The reply so far stays and the turn goes on."}
+            use:tip={sendNowTip(plan.plan, plan.why)}
             onclick={() => void run(() => sendNow(chatKey, row!.id))}>Send now</button
           >
+        {/if}
+        {#if offersChoice(st, arrive)}
           <button
             class="ns-btn ghost small"
             data-mt="arrive"
