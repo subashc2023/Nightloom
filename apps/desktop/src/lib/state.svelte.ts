@@ -8613,7 +8613,12 @@ function noteTurnLimit(
       armResumes();
       return;
     }
-    if (resumes[key]?.why === "limit") {
+    // ~~`resumes[key]?.why === "limit"`~~ (543m review): an ask is ended by
+    // a turn that ran in the chat too — a message he sent there before its
+    // time continued it, and the ask's stale "you asked to be continued"
+    // must not follow hours later. The resumed turn's own entry was taken
+    // at its send (`goResume`), so this never drops the entry it made.
+    if (resumes[key]) {
       delete resumes[key];
       armResumes();
     }

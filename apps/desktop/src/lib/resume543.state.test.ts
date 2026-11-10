@@ -384,6 +384,36 @@ describe("543b — a chat that stops short of the limit and asks is continued af
     }
   });
 
+  it("543m review: a turn that runs in the chat before the ask's time ends the ask — no stale continue hours later", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      look(OTHER, VALUE);
+      sendInChat(A, COLLEGE, "the whole queue", [], () => {});
+      await settle();
+      says(A, '<continue-later at="+2h">wave B</continue-later>');
+      turns.get(A)!(ok);
+      await settle();
+      expect(resumes[A]?.why).toBe("asked");
+      const at = resumes[A]!.at as number;
+      // He sends there himself an hour later; that turn ends asking nothing.
+      vi.setSystemTime(Date.now() + 3600_000);
+      sendInChat(A, COLLEGE, "do wave B now", [], () => {});
+      await settle();
+      says(A, "Wave B is done.");
+      turns.get(A)!(ok);
+      await settle();
+      expect(resumes[A]).toBeUndefined();
+      expect(api.armWake).toHaveBeenLastCalledWith("limit", null);
+      // The ask's time passes: nothing is sent.
+      vi.setSystemTime(at + 5);
+      limitWakeDue();
+      await settle();
+      expect(send).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("a failed turn's reply asks nothing; a limit pause wins over an ask in the same reply", async () => {
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     try {
