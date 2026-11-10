@@ -296,4 +296,63 @@
     color: #333;
     font-size: 13px;
   }
+
+  /* Item 567 (Filament IV stage 10): the web tab's bar as Claude's
+     browser's (`f4-browser.png`) — boxed 30 px controls, the address in
+     mono on the field colour, the find field likewise. Filament IV only:
+     Classic keeps the rules above (item 542's gate; `:where()` adds no
+     specificity, so these win by coming later). */
+  :global(:where(:root:not([data-layout="classic"]))) .web-bar {
+    gap: 8px;
+    padding: 8px 14px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .wb {
+    height: 30px;
+    min-width: 30px;
+    border: 1px solid var(--line2);
+    border-radius: var(--r1);
+    background: var(--well);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .wb:hover {
+    background: var(--well2);
+    border-color: var(--dim);
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .wb:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .wb.open {
+    padding: 0 11px;
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .addr,
+  :global(:where(:root:not([data-layout="classic"]))) .find {
+    height: 32px;
+    padding: 0 10px;
+    border: 1px solid var(--line2);
+    border-radius: var(--r1);
+    background: var(--term);
+    font-family: var(--mono);
+    font-size: 12.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .addr {
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .addr:focus,
+  :global(:where(:root:not([data-layout="classic"]))) .find:focus {
+    border-color: var(--dim);
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .find.miss {
+    border-color: var(--failed);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .spin {
+    font-family: var(--mono);
+    color: var(--signal, var(--live));
+  }
 </style>

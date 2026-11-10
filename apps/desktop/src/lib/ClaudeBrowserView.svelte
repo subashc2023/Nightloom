@@ -27,6 +27,12 @@
    * watching and keeps its last picture. The address line's half-typed
    * text is kept per chat in view state, so it survives a switch away, a
    * chat switch, the tab falling off its pane's kept list, and a relaunch.
+   *
+   * Item 567 (Filament IV stage 10, `f4-browser.png`): while the chat's
+   * turn runs, the hold strip carries *Stop Claude* (that chat's turn only,
+   * `cancelTurn(session)`), and a step log under the picture lists the
+   * turn's last browser calls (`browserSteps.ts`), the running one in the
+   * signal colour. Both layouts: they are behaviour, not look.
    */
   import { tick } from "svelte";
   import Icon from "./Icon.svelte";
@@ -34,7 +40,9 @@
   import * as api from "./api";
   import { isMac } from "./platform";
   import { viewGet, viewSet } from "./viewState";
-  import { app } from "./state.svelte";
+  import { app, cancelTurn, runningWork } from "./state.svelte";
+  import { liveHost } from "./browse";
+  import { browserSteps, sameChat } from "./browserSteps";
   import {
     browsers,
     dismissDialog,
@@ -293,6 +301,31 @@
   let addrFocused = $state(false);
   const parts = $derived(addressParts(draft, status?.url));
   const strip = $derived(holdStrip(status, ph));
+
+  // Item 567: the chat's running turn, if any, and its browser calls —
+  // read from the state that says what runs (`runningWork`), so the log
+  // and Stop are there exactly while the sidebar says the chat runs.
+  const turnRow = $derived(
+    runningWork().find((r) => (r.kind === "turn" || r.kind === "council") && sameChat(r.session, session)) ?? null,
+  );
+  const steps = $derived.by(() => {
+    void app.liveVersion;
+    void app.paneVersion;
+    if (!turnRow) return { steps: [], total: 0 };
+    const bg = Object.values(app.background).find((b) => b.session === turnRow.session);
+    return browserSteps(bg ? bg.live?.segments : liveHost(app).live?.segments);
+  });
+  let stopping = $state(false);
+  $effect(() => {
+    // A new turn (or none) clears the pressed look.
+    void turnRow?.startedAt;
+    if (!turnRow) stopping = false;
+  });
+  function stopClaude(): void {
+    if (stopping) return;
+    stopping = true;
+    void cancelTurn(session).catch(() => (stopping = false));
+  }
   function openOutside(): void {
     const u = status?.url;
     if (u && /^https?:/.test(u)) void api.openUrl(u).catch(() => {});
@@ -347,6 +380,14 @@
         <button class="ns-btn small" disabled={holding} use:tip={"Hand the browser back to Claude; its waiting calls go on"} onclick={() => void hold(false)}>Give back</button>
       {:else}
         <button class="ns-btn small" disabled={holding} use:tip={"Take the browser from Claude; its browser calls wait until you give it back"} onclick={() => void hold(true)}>Take over</button>
+      {/if}
+      {#if turnRow}
+        <button
+          class="ns-btn small danger cb-stop"
+          disabled={stopping}
+          use:tip={stopping ? "Stopping… — the reply so far stays" : "Stop this chat's turn; the reply so far and the browser stay"}
+          onclick={stopClaude}><i class="stop-sq" aria-hidden="true"></i>{stopping ? "Stopping…" : "Stop Claude"}</button
+        >
       {/if}
     </div>
   {/if}
@@ -420,6 +461,20 @@
     {/if}
   </div>
   </div>
+  {#if turnRow && steps.total > 0}
+    <ol class="cb-log" aria-label="Claude's last browser steps" start={steps.steps[0]?.n ?? 1}>
+      {#each steps.steps as st (st.id)}
+        <li class="cb-step" data-state={st.state}>
+          <span class="st-n">step {st.n}</span>
+          <b class="st-tool">{st.tool}</b>
+          <span class="st-target"
+            >{st.target ?? ""}{#if st.state === "running"}<span class="st-state">{st.target ? " · " : ""}running</span
+              >{:else if st.state === "failed"}<span class="st-state">{st.target ? " · " : ""}failed</span>{/if}</span
+          >
+        </li>
+      {/each}
+    </ol>
+  {/if}
 </div>
 
 <style>
@@ -699,5 +754,46 @@
     max-width: 460px;
     margin: 0;
     line-height: 1.45;
+  }
+  /* Item 567: Stop Claude and the step log (both layouts). */
+  .stop-sq {
+    width: 8px;
+    height: 8px;
+    border-radius: 1.5px;
+    background: currentColor;
+    flex: none;
+  }
+  .cb-log {
+    flex: none;
+    margin: 0;
+    padding: 6px 14px;
+    list-style: none;
+    border-top: 1px solid var(--line);
+    background: var(--sheet);
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--dim);
+  }
+  .cb-step {
+    display: grid;
+    grid-template-columns: 64px 80px minmax(0, 1fr);
+    gap: 10px;
+    padding: 2px 0;
+  }
+  .st-tool {
+    font-weight: 400;
+    color: var(--ink2);
+  }
+  .st-target {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .cb-step[data-state="running"] .st-tool,
+  .cb-step[data-state="running"] .st-target {
+    color: var(--signal, var(--live));
+  }
+  .cb-step[data-state="failed"] .st-state {
+    color: var(--failed);
   }
 </style>
