@@ -199,7 +199,7 @@ describe("states and the hold", () => {
   });
 
   it("says who holds the browser, and that Claude is paused while he does", () => {
-    expect(holdLine(LIVE, "live")).toMatch(/^Claude has the browser\. Your first click or key here takes it over\./);
+    expect(holdLine(LIVE, "live")).toMatch(/^Claude has the browser\. Click the page to use it; your next click, scroll or key there takes it over\./);
     expect(holdLine({ ...LIVE, held_by: "user" }, "live")).toMatch(/^You have the browser\. Claude is paused/);
     expect(holdLine(LIVE, "ended")).toBe("");
   });

@@ -168,7 +168,7 @@ export function holdLine(status: BrowserStatus | null | undefined, phase: Browse
   if (phase !== "live" || !status) return "";
   return status.held_by === "user"
     ? "You have the browser. Claude is paused: its browser calls wait until you give it back."
-    : "Claude has the browser. Your first click or key here takes it over.";
+    : "Claude has the browser. Click the page to use it; your next click, scroll or key there takes it over.";
 }
 
 /** What each phase says in the tab when there is no picture to show. */
@@ -289,4 +289,70 @@ export function throttle<A extends unknown[]>(
       pending = null;
     },
   };
+}
+
+/**
+ * Every kind of his input the tab could pass to the page (item 551): a
+ * click, the wheel (a scroll), a pinch (a wheel with Control, as WebKit
+ * sends a trackpad pinch), a swipe (a mostly sideways wheel — a two- or
+ * three-finger swipe on a Mac trackpad), a key, typed text (paste, an input
+ * method, dictation) and a bare pointer move (hover).
+ */
+export type InputKind = "click" | "wheel" | "pinch" | "swipe" | "key" | "text" | "move";
+export const INPUT_KINDS: readonly InputKind[] = ["click", "wheel", "pinch", "swipe", "key", "text", "move"];
+
+/** What a wheel event is, for the gate and the suite. */
+export function wheelKind(e: { deltaX: number; deltaY: number; ctrlKey: boolean }): "wheel" | "pinch" | "swipe" {
+  if (e.ctrlKey) return "pinch";
+  return Math.abs(e.deltaX) > Math.abs(e.deltaY) ? "swipe" : "wheel";
+}
+
+/** Why the tab stops taking his input. */
+export type DisarmCause = "outside-click" | "escape" | "window-blur" | "focus-left" | "tab-away" | "chat-switch" | "not-live";
+
+/**
+ * The tab's input gate (item 551, a bug he reported): nothing he does over
+ * the picture reaches the page until he clicks into it. That click arms the
+ * tab and is itself not passed on (it is "click to use", like focusing a
+ * window), so a stray click cannot press a button on the page either. A
+ * click outside the picture, Escape, the window losing focus, the keys
+ * leaving the tab, the tab going to the back and a chat switch disarm it.
+ * Armed, every kind passes, except a bare move, which passes only while he
+ * holds the browser (a hover must never take it from Claude).
+ */
+export class InputGate {
+  armed = false;
+  private swallowUp = false;
+  constructor(private onChange: (armed: boolean) => void = () => {}) {}
+
+  /** A press on the picture. Returns true when it is the arming press. */
+  press(): boolean {
+    if (this.armed) return false;
+    this.armed = true;
+    this.swallowUp = true;
+    this.onChange(true);
+    return true;
+  }
+
+  /** The release that ends a press: false for the arming press's release. */
+  release(): boolean {
+    if (this.swallowUp) {
+      this.swallowUp = false;
+      return false;
+    }
+    return this.armed;
+  }
+
+  disarm(_cause: DisarmCause): void {
+    this.swallowUp = false;
+    if (!this.armed) return;
+    this.armed = false;
+    this.onChange(false);
+  }
+
+  /** Whether input of `kind` goes to the page now. */
+  allows(kind: InputKind, heldByMe: boolean): boolean {
+    if (!this.armed) return false;
+    return kind === "move" ? heldByMe : true;
+  }
 }

@@ -8,7 +8,11 @@
    * changes with his layout.
    *
    * His clicks, double-clicks, right-clicks, wheel and keys go to the page,
-   * mapped from the picture to page pixels (`claudeBrowser.ts`). The
+   * mapped from the picture to page pixels (`claudeBrowser.ts`) — but only
+   * once he has clicked into the picture (item 551: a scroll or a trackpad
+   * swipe over it must never reach the page). That click arms the tab and
+   * is not passed on; a click outside, Escape, the window losing focus, the
+   * tab going to the back or a chat switch disarm it (`InputGate`). The
    * backend hands him the browser on his first click or key; while he
    * holds it, the model's browser calls wait. Pointer moves are sent only
    * while he holds it, so a hover never takes the browser from Claude.
@@ -45,12 +49,14 @@
     buttonName,
     dialogLine,
     holdLine,
+    InputGate,
     letterbox,
     modifiersOf,
     phaseText,
     routeKey,
     throttle,
     toPage,
+    wheelKind,
     wheelPixels,
   } from "./claudeBrowser";
 
@@ -155,7 +161,28 @@
   let sink: HTMLTextAreaElement | undefined = $state();
   let bw = $state(0);
   let bh = $state(0);
-  let focused = $state(false);
+  // Item 551: armed only by a click into the picture.
+  let armed = $state(false);
+  const gate = new InputGate((a) => (armed = a));
+  $effect(() => {
+    void session;
+    if (away) gate.disarm("tab-away");
+    if (!live) gate.disarm("not-live");
+    return () => gate.disarm("chat-switch");
+  });
+  $effect(() => {
+    const onBlur = () => gate.disarm("window-blur");
+    const onDownAnywhere = (e: PointerEvent) => {
+      if (box && e.target instanceof Node && box.contains(e.target)) return;
+      gate.disarm("outside-click");
+    };
+    window.addEventListener("blur", onBlur);
+    window.addEventListener("pointerdown", onDownAnywhere, true);
+    return () => {
+      window.removeEventListener("blur", onBlur);
+      window.removeEventListener("pointerdown", onDownAnywhere, true);
+    };
+  });
   const pic = $derived(letterbox(bw, bh, status?.width || PAGE_W, status?.height || PAGE_H));
   const pw = $derived(status?.width || PAGE_W);
   const phh = $derived(status?.height || PAGE_H);
@@ -173,18 +200,21 @@
 
   function onDown(e: MouseEvent): void {
     if (!live || !pointAt(e)) return;
-    // Keep the keyboard here (the sink), and no text selection drag.
+    // Keep the keyboard here (the sink), and no text selection drag. The
+    // first press only arms the tab; its release is not passed on.
     e.preventDefault();
+    gate.press();
     sink?.focus();
   }
   function onUp(e: MouseEvent): void {
     const p = pointAt(e);
-    if (!p || e.detail > 2) return;
+    if (!p) return;
+    if (!gate.release() || e.detail > 2) return;
     send({ kind: "click", x: p.x, y: p.y, button: buttonName(e.button), clicks: e.detail === 2 ? 2 : 1, modifiers: modifiersOf(e) });
   }
   const mover = throttle((x: number, y: number) => send({ kind: "move", x, y }), MOVE_MS);
   function onMove(e: MouseEvent): void {
-    if (!heldByMe) return;
+    if (!gate.allows("move", heldByMe)) return;
     const p = pointAt(e);
     if (p) mover.call(p.x, p.y);
   }
@@ -197,6 +227,9 @@
   function onWheel(e: WheelEvent): void {
     const p = pointAt(e);
     if (!p || !live) return;
+    // Not armed: the scroll or swipe is his, not the page's — let it be.
+    if (!gate.allows(wheelKind(e), heldByMe)) return;
+    e.preventDefault();
     wheelAcc = {
       x: p.x,
       y: p.y,
@@ -211,6 +244,14 @@
   });
 
   function onKey(e: KeyboardEvent): void {
+    if (e.key === "Escape" && armed && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault();
+      e.stopPropagation();
+      gate.disarm("escape");
+      sink?.blur();
+      return;
+    }
+    if (!gate.allows("key", heldByMe)) return;
     const r = routeKey(e, isMac);
     if (r.route !== "page") return;
     e.preventDefault();
@@ -220,10 +261,11 @@
   function onPaste(e: ClipboardEvent): void {
     const text = e.clipboardData?.getData("text/plain") ?? "";
     e.preventDefault();
+    if (!gate.allows("text", heldByMe)) return;
     if (text) send({ kind: "text", text });
   }
   function onCompositionEnd(e: CompositionEvent): void {
-    if (e.data) send({ kind: "text", text: e.data });
+    if (e.data && gate.allows("text", heldByMe)) send({ kind: "text", text: e.data });
     void tick().then(() => {
       if (sink) sink.value = "";
     });
@@ -232,7 +274,7 @@
     const ie = e as InputEvent;
     if (ie.isComposing) return;
     // Text that came by no key we sent (dictation, the character viewer).
-    if (ie.data && ie.inputType === "insertText") send({ kind: "text", text: ie.data });
+    if (ie.data && ie.inputType === "insertText" && gate.allows("text", heldByMe)) send({ kind: "text", text: ie.data });
     if (sink) sink.value = "";
   }
 
@@ -288,7 +330,7 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="cb-pic"
-    class:focused
+    class:armed
     bind:this={box}
     bind:clientWidth={bw}
     bind:clientHeight={bh}
@@ -328,18 +370,20 @@
         autocorrect="off"
         autocapitalize="off"
         spellcheck="false"
-        tabindex="0"
+        tabindex="-1"
         style:left="{pic.x}px"
         style:top="{pic.y}px"
         style:width="{pic.w}px"
         style:height="{pic.h}px"
-        onfocus={() => (focused = true)}
-        onblur={() => (focused = false)}
+        onblur={() => gate.disarm("focus-left")}
         onkeydown={onKey}
         onpaste={onPaste}
         oncompositionend={onCompositionEnd}
         oninput={onSinkInput}
       ></textarea>
+      {#if !armed && frame}
+        <div class="arm-hint mono" aria-hidden="true">Click the page to use it</div>
+      {/if}
     {/if}
   </div>
 </div>
@@ -476,9 +520,25 @@
   .frame.stale {
     opacity: 0.35;
   }
-  .cb-pic.focused .frame {
+  .cb-pic.armed .frame {
     outline: 2px solid var(--accent-ink);
     outline-offset: -2px;
+  }
+  .arm-hint {
+    position: absolute;
+    right: 10px;
+    bottom: 10px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.62);
+    color: #e6e9ee;
+    font-size: 11px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 120ms;
+  }
+  .cb-pic:hover .arm-hint {
+    opacity: 1;
   }
   .sink {
     position: absolute;
