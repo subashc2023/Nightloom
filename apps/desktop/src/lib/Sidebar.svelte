@@ -33,7 +33,14 @@
     renameSession,
     showNightshift,
     toggleSidebar,
+    contextUsed,
+    liveChats,
   } from "./state.svelte";
+  // Item 534 (Filament IV stage 3): the dated sections, the two-line row's
+  // clock and context reading, the live row's line.
+  import { ctxLook, ctxText, daySections, liveClock, rowClock, toolCount } from "./chatList";
+  import { contextOf, noteChatContext } from "./chatContext.svelte";
+  import { mark as handoffMark } from "./handoff.svelte";
   import * as api from "./api";
   import { hasBoxDraft, hasThreadDraft, newDraftKey, readDraft } from "./drafts.svelte";
   import { scheduledFor } from "./scheduled.svelte";
@@ -85,7 +92,7 @@
   import { carriesFiles } from "./dropLook";
   import { DragToNotes } from "./dragToNotes";
   import type { ChatKind, ChatMode, NightshiftInfo, NightshiftRow, SessionMeta } from "./types";
-  import { relativeTime } from "./time";
+  import { exactTime, relativeTime } from "./time";
   import { sameMorning } from "./nightshift";
   import NotesPanel from "./NotesPanel.svelte";
   import SearchPanel from "./SearchPanel.svelte";
@@ -160,6 +167,66 @@
     saveForksOpen(forksOpen);
   }
 
+  // ---- item 534: the ruled, dated list; two-line rows; the live row ----
+  // Two clocks: the day's (a minute's step) for the headings and each row's
+  // time, so the 1,800-row list is cut again once a minute at most; and the
+  // live rows' (a second's step, only while a chat runs) for their timers.
+  let dayNow = $state(Date.now());
+  let liveNow = $state(Date.now());
+  $effect(() => {
+    const t = setInterval(() => (dayNow = Date.now()), 60_000);
+    return () => clearInterval(t);
+  });
+  /** Every chat whose turn runs now: on screen, parked or off screen. */
+  const lives = $derived(liveChats());
+  const liveBy = $derived(new Map(lives.flatMap((l) => (l.session ? [[l.session, l] as const] : []))));
+  $effect(() => {
+    if (lives.length === 0) return;
+    liveNow = Date.now();
+    const t = setInterval(() => (liveNow = Date.now()), 1000);
+    return () => clearInterval(t);
+  });
+  /** The live reply's segments of a running chat, for its tool count. */
+  function liveSegments(id: string): readonly { kind: string }[] | null {
+    const b = app.background[id];
+    if (b) return b.live?.segments ?? null;
+    if (app.parked?.session === id) return app.parked.live?.segments ?? null;
+    if (app.busy && !app.parked && app.activeSessionId === id) return app.live?.segments ?? null;
+    return null;
+  }
+  // The rows' context readings (`chatContext.svelte.ts`): the open chat's
+  // gauge, and each chat running off screen, kept under the chat's id.
+  $effect(() => {
+    const id = app.activeSessionId;
+    const used = contextUsed();
+    const limit = app.connection?.contextLimit ?? null;
+    untrack(() => noteChatContext(id, used, limit));
+  });
+  $effect(() => {
+    for (const l of lives) {
+      if (!l.session || l.onScreen || !l.usage) continue;
+      const used = l.usage.input_tokens + l.usage.output_tokens;
+      const id = l.session;
+      untrack(() => noteChatContext(id, used, 0));
+    }
+  });
+  /** `· 3 tools` for a running chat's row; empty before its first call. */
+  function toolsText(id: string): string {
+    const n = toolCount(liveSegments(id));
+    return n > 0 ? `· ${n} tool${n === 1 ? "" : "s"}` : "";
+  }
+  /** A row's size and bar: the last reading, its share of the window, and
+   *  whether that is past the chat's hand-off mark. */
+  function rowCtx(id: string) {
+    const r = contextOf(id);
+    if (!r) return null;
+    return { used: r.used, look: ctxLook(r.used, r.limit, handoffMark(id, r.limit || null)) };
+  }
+  /** The row's hover: its short id (it left the visible line) and the exact time. */
+  function rowTip(s: SessionMeta): string {
+    return `${s.id.slice(0, 8)} · last used ${exactTime(s.modified)} (${relativeTime(s.modified, dayNow)})`;
+  }
+
   // Threads in the sidebar (nightshift backlog 288): under the project, a
   // group per research thread — its name and Start-here status line, its
   // bound chats inside, newest first — then the chats in no thread, as
@@ -192,6 +259,8 @@
   });
   const groups = $derived(split.groups);
   const loose = $derived(split.loose);
+  /** Item 534: the chats in no thread, cut by day under ruled headings. */
+  const sections = $derived(daySections(loose, dayNow));
   // Re-read the project's threads when the project changes and whenever
   // the listing does (a binding, a new thread from the picker, a wrap-up).
   $effect(() => {
@@ -848,7 +917,14 @@
     <!-- A message scheduled here (backlog 532): ◷ before the name, and a
          chat with nothing sent yet is named by it and says when. -->
     {@const waitsFor = scheduledFor(s.id)}
-    <div class="session-item" class:active={rowLit(s.id)} class:fork={r.depth > 0} style:--depth={r.depth > 0 ? r.depth : undefined}>
+    <!-- Item 534: the two-line row — the name (marks first) with the
+         chat's context bar at the right; under it, in mono, the time, the
+         size and "past hand-off", or, while a turn runs, "replying 0:41 ·
+         3 tools" in the signal colour ("waiting on you" in the accent when
+         a prompt waits). -->
+    {@const live = liveBy.get(s.id)}
+    {@const ctx = rowCtx(s.id)}
+    <div class="session-item" class:active={rowLit(s.id)} class:live={!!live} class:waiting={!!live && live.waiting > 0} class:fork={r.depth > 0} style:--depth={r.depth > 0 ? r.depth : undefined}>
       {#if renaming === s.id}
         <!-- Opens with the whole title selected (backlog 376): typing
              replaces it, Esc leaves the name as it was. -->
@@ -885,15 +961,23 @@
           draggable="true"
           ondragstart={(e) => startContentDrag(e, { kind: "chat", session: s.id })}
           ondragend={endContentDrag}
+          use:tip={rowTip(s)}
         >
-          <span class="snippet"
+          <span class="snippet" class:barred={!!ctx?.look}
             >{#if s.mode === "incognito"}<span class="mark" use:tip={"Incognito: knows nothing about you, writes nothing, unread by other chats"}>{MODE_GLYPH.incognito}</span> {/if}{#if hasBoxDraft(s.id)}<span class="mark draft" role="img" aria-label="has a draft" use:tip={"has a draft"}></span> {/if}{#if fork}<span class="mark fork" role="img" aria-label={fork.tip} use:tip={fork.tip}>{FORK_GLYPH}</span> {/if}{#if waitsFor}<span class="mark sched" role="img" aria-label="scheduled message" data-sched-mark use:tip={`A message is scheduled here: it sends at ${scheduleWhen(dueAt(waitsFor))}`}>◷</span> {/if}{rowName(s, waitsFor?.text ?? null, readDraft(s.id).text)}</span
           >
+          {#if ctx?.look}
+            <span class="cg" class:hot={ctx.look.past} aria-hidden="true"
+              ><i style:width="{Math.max(ctx.look.fill * 100, 4)}%"></i></span
+            >
+          {/if}
           <!-- A fork says where it came from (backlog 062): the
                parent's name as its own row shows it, or that the
-               parent is gone. -->
+               parent is gone. ~~The short id and "5m ago"~~ — the clock
+               and the size since item 534; the id and the exact time are
+               the row's hover. -->
           <span class="meta"
-            >{#if waitsFor && s.user_turns === 0}scheduled · {scheduleWhen(dueAt(waitsFor))}{" · "}{/if}{s.id.slice(0, 8)}{#if s.kind === "chat"}{" · "}chat{/if}{#if s.mode === "incognito"}{" · "}incognito{/if} · {relativeTime(s.modified)}{#if s.thread && s.thread !== group}{" · "}<span class="thread" use:tip={`Works from the research thread ${s.thread}`}>◇ {s.thread}</span>{/if}{#if r.depth === 0 && forkLine(s, app.sessions)}{" · "}<span class="from" use:tip={"Forked from that chat; the parent is unchanged"}>{forkLine(s, app.sessions)}</span>{/if}</span
+            >{#if live}{#if live.waiting > 0}<span class="wait">waiting on you</span>{:else}<span class="live-dot" aria-hidden="true"></span><span class="sig">replying</span>{/if}{#if live.startedAt !== null}<span class="num">{liveClock(liveNow - live.startedAt)}</span>{/if}{#if toolsText(s.id)}<span>{toolsText(s.id)}</span>{/if}{:else}{#if waitsFor && s.user_turns === 0}<span class="sched-line">scheduled · {scheduleWhen(dueAt(waitsFor))}</span>{:else}<span class="num">{rowClock(s.modified, dayNow)}</span>{/if}{#if ctx}<span class="num">{ctxText(ctx.used)}</span>{/if}{#if ctx?.look?.past}<span class="hot" use:tip={"This chat's context is past its hand-off line (Settings → hand-off)"}>past hand-off</span>{/if}{/if}{#if s.kind === "chat"}<span>chat</span>{/if}{#if s.mode === "incognito"}<span>incognito</span>{/if}{#if s.thread && s.thread !== group}<span class="thread" use:tip={`Works from the research thread ${s.thread}`}>◇ {s.thread}</span>{/if}{#if r.depth === 0 && forkLine(s, app.sessions)}<span class="from" use:tip={"Forked from that chat; the parent is unchanged"}>{forkLine(s, app.sessions)}</span>{/if}</span
           >
         </button>
         <!-- The origin's forks (backlog 207): a chevron and the count,
@@ -1074,7 +1158,9 @@
           kinds = !kinds;
         }}
       >
-        {newChatLabel()}{#if hasBoxDraft(newDraftKey(app.project?.id, app.pendingMode))} <span class="mark draft" role="img" aria-label="has a draft" use:tip={"has a draft"}></span>{/if}
+        <span class="nc-label">+ {newChatLabel()}{#if hasBoxDraft(newDraftKey(app.project?.id, app.pendingMode))} <span class="mark draft" role="img" aria-label="has a draft" use:tip={"has a draft"}></span>{/if}</span>
+        <!-- The chord of the kind this button starts (the kinds menu's keys). -->
+        <span class="kbd">{KIND_ROWS.find((k) => k.kind === defaultKind())?.key ?? ""}</span>
       </button>
       <button
         class="new-chat more"
@@ -1149,6 +1235,10 @@
           bind:value={app.search.query}
           onfocus={openSearch}
         />
+        {#if !(app.search.result && !app.search.open) && !app.search.query}
+          <!-- Item 534: the panel's chord, inside the field's right edge. -->
+          <span class="kbd search-key" aria-hidden="true">{isMac ? "⌥⌘F" : "Ctrl+Alt+F"}</span>
+        {/if}
         {#if app.search.result && !app.search.open}
           <button class="search-cnt" use:tip={"Reopen the results"} onclick={openSearch}>{app.search.result.matches} ▸</button>
         {/if}
@@ -1169,7 +1259,8 @@
       <!-- Item 495: the chat list's scroll survives Notes and back, per project. -->
       <div class="session-list" use:tabPlace={`chat-list:${app.project?.id ?? "unfiled"}`}>
         {#if groups.length > 0}
-          <div class="section-head threads-head" role="heading" aria-level="3">Threads</div>
+          <!-- Item 534: a ruled capital heading with its count (Filament IV). -->
+          <div class="ns-cap section-cap" role="heading" aria-level="3">Threads<b class="cap-n">{groups.length}</b></div>
         {/if}
         {#each groups as g (g.slug)}
           <div
@@ -1254,9 +1345,13 @@
             {/if}
           </div>
         {/each}
-        {#if groups.length > 0}
+        <!-- ~~"Not in a thread" over the rest~~ — item 534: the dated
+             headings below say where the chats in no thread begin; this
+             strip stays only while there are none, as the drop target that
+             takes a chat out of its thread. -->
+        {#if groups.length > 0 && loose.length === 0}
           <div
-            class="loose-head section-head"
+            class="loose-head"
             class:drop={dropOn === ""}
             role="group"
             aria-label="Chats in no thread"
@@ -1264,21 +1359,25 @@
             ondragleave={leaveDrop}
             ondrop={(e) => dropThread(e) || onDropChat(e, null)}
           >
-            <span role="heading" aria-level="3">Not in a thread</span>
-            {#if loose.length === 0}
-              <span class="loose-hint">Drop a chat here to take it out of its thread</span>
-            {/if}
+            <span class="ns-cap section-cap loose-cap" role="heading" aria-level="3">Not in a thread</span>
+            <span class="loose-hint">Drop a chat here to take it out of its thread</span>
           </div>
         {/if}
         <div
           class="loose"
+          class:drop={dropOn === "" && loose.length > 0}
           role="group"
-          aria-label="Chats"
-          ondragover={(e) => groups.length > 0 && overDrop(e, null)}
+          aria-label={groups.length > 0 ? "Chats in no thread" : "Chats"}
+          ondragover={(e) => overThreadsEnd(e) || (groups.length > 0 && overDrop(e, null))}
           ondragleave={leaveDrop}
-          ondrop={(e) => groups.length > 0 && onDropChat(e, null)}
+          ondrop={(e) => dropThread(e) || (groups.length > 0 && onDropChat(e, null))}
         >
-          {#each loose as r (r.meta.id)}{@render chatRow(r)}{/each}
+          <!-- Item 534: Today · Yesterday · Previous 7 days · Earlier, each a
+               ruled heading with its count; a fork stays under its origin. -->
+          {#each sections as sec (sec.key)}
+            <div class="ns-cap section-cap" role="heading" aria-level="3">{sec.label}<b class="cap-n">{sec.count}</b></div>
+            {#each sec.rows as r (r.meta.id)}{@render chatRow(r)}{/each}
+          {/each}
         </div>
       </div>
       {#if threadMenu}
@@ -1555,7 +1654,8 @@
 <style>
   .sidebar {
     position: relative;
-    background: var(--paper);
+    /* Item 534: a panel, one step over the ground (Filament IV). */
+    background: var(--sheet);
     border-right: 1px solid var(--line);
     display: flex;
     flex-direction: column;
@@ -1576,7 +1676,7 @@
     border-bottom: 1px solid var(--line);
     display: flex;
     flex-direction: column;
-    padding: 12px 0 10px;
+    padding: 14px 0 12px;
   }
   .chip {
     width: 100%;
@@ -1586,7 +1686,7 @@
     gap: 2px;
     background: transparent;
     border: none;
-    padding: 0 18px;
+    padding: 0 16px;
     cursor: pointer;
     color: var(--ink);
     text-align: left;
@@ -1595,7 +1695,7 @@
   .project-actions {
     display: flex;
     gap: 6px;
-    padding: 6px 18px 0;
+    padding: 8px 16px 0;
   }
   .chip:hover .chip-name {
     color: var(--accent-ink);
@@ -1609,10 +1709,12 @@
     justify-content: space-between;
     gap: 0.4rem;
   }
+  /* ~~The serif at 22px~~ — item 534: Plex Sans light, as the mockup's
+     project name (521 report §2, Type). */
   .chip-name {
-    font-family: var(--serif);
-    font-size: 22px;
-    font-weight: 500;
+    font-family: var(--sans);
+    font-size: 21px;
+    font-weight: 300;
     letter-spacing: -0.01em;
     flex: 1;
     min-width: 0;
@@ -1626,10 +1728,10 @@
     display: inline-flex;
   }
   .chip-path {
-    font-size: 11px;
-    letter-spacing: 0.06em;
+    font-family: var(--mono);
+    font-size: 10.5px;
     color: var(--dim);
-    margin-top: 4px;
+    margin-top: 3px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1709,40 +1811,56 @@
     margin: 4px 6px;
     background: var(--line);
   }
-  /* The three modes, as rows. */
+  /* The three modes, as rows. Item 534: the selected one on a control
+     fill with an accent tick at the column's edge and its icon in the
+     accent; counts in mono. */
   .nav {
-    padding: 10px 10px;
+    padding: 2px 8px 10px;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 1px;
     flex: none;
+    border-bottom: 1px solid var(--line);
   }
   .nav button {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 8px 10px;
-    border-radius: 6px;
+    padding: 6px 8px;
+    border-radius: var(--r1);
     border: none;
     background: transparent;
     color: var(--ink2);
-    font-size: 14px;
-    font-family: inherit;
+    font: 500 13px var(--sans);
     text-align: left;
     cursor: pointer;
   }
   .nav button:hover {
-    background: var(--well);
+    background: var(--raised);
+    color: var(--ink);
   }
   .nav button.on {
-    background: var(--sheet);
+    background: var(--well);
     color: var(--ink);
-    box-shadow: 0 0 0 1px var(--line2);
+  }
+  .nav button.on::before {
+    content: "";
+    position: absolute;
+    left: -8px;
+    top: 6px;
+    bottom: 6px;
+    width: 2px;
+    background: var(--accent);
+  }
+  .nav button.on :global(.ns-ico) {
+    color: var(--accent);
   }
   .count {
     margin-left: auto;
     font-family: var(--mono);
     font-size: 11px;
+    font-weight: 400;
     color: var(--dim);
     font-variant-numeric: tabular-nums;
   }
@@ -1751,19 +1869,21 @@
     display: flex;
     gap: 4px;
   }
+  /* ~~Pills~~ — item 534: mono read-outs on a soft fill, amber for open
+     blockers (his to answer), the signal for an unread morning page. */
   .badge {
     font-family: var(--mono);
-    font-size: 11px;
-    color: var(--paper);
-    background: var(--accent);
-    border-radius: 999px;
-    padding: 1px 7px;
-    font-weight: 500;
+    font-size: 10.5px;
+    color: var(--accent-ink);
+    background: var(--accent-soft);
+    border-radius: 3px;
+    padding: 1px 6px;
+    font-weight: 400;
     white-space: nowrap;
   }
   .badge.page {
-    color: var(--paper);
-    background: var(--live);
+    color: var(--signal-ink);
+    background: var(--signal-soft);
   }
 
   /* Nightshift mode: the project list. */
@@ -1877,11 +1997,11 @@
     width: 100%;
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 12px 18px;
+    gap: 10px;
+    padding: 10px 16px;
     background: transparent;
     border: none;
-    color: var(--dim);
+    color: var(--ink2);
     font-size: 12.5px;
     font-family: inherit;
     cursor: pointer;
@@ -1895,27 +2015,42 @@
   }
   .kbd {
     font-family: var(--mono);
-    font-size: 11px;
+    font-size: 10.5px;
+    color: var(--dim);
   }
   .new-chat-wrap {
     position: relative;
     display: flex;
-    margin: 0 0.75rem 0.6rem;
+    margin: 12px 12px 8px;
   }
+  /* Item 534: a real control (the shared `.ns-btn` grammar, drawn here so
+     the split keeps its own corners) — fill, edge, shape — with the
+     chord at its right. */
   .new-chat {
     /* Positioned so a hovered half can sit over its neighbour (below). */
     position: relative;
     flex: 1;
     min-width: 0;
-    padding: 0.45rem 0.75rem;
-    background: transparent;
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 8px 0 0 8px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 0 11px;
+    background: var(--well);
+    color: var(--ink);
+    border: 1px solid var(--line2);
+    border-radius: var(--r1) 0 0 var(--r1);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
     cursor: pointer;
-    font-size: 0.85rem;
-    font-family: inherit;
+    font: 500 13px var(--sans);
     text-align: left;
+  }
+  .nc-label {
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   /* ~~`border-left: none`~~ — the ▾ half borrowed New chat's right edge,
      so its hover lit three sides (nightshift backlog 225, his screenshot
@@ -1926,9 +2061,10 @@
   .new-chat.more {
     flex: none;
     margin-left: -1px;
-    padding: 0.45rem 0.5rem;
-    border-radius: 0 8px 8px 0;
-    color: var(--dim);
+    padding: 0 9px;
+    border-radius: 0 var(--r1) var(--r1) 0;
+    color: var(--ink2);
+    font-size: 11px;
   }
   .mark {
     color: var(--dim);
@@ -2046,8 +2182,9 @@
      so "no chat open" and "this chat open" read as the same kind of
      highlight. */
   .new-chat.active {
-    background: var(--sheet);
+    background: var(--well2);
     border-color: var(--line2);
+    box-shadow: inset 2px 0 0 var(--accent);
     z-index: 1;
   }
   .new-chat:disabled {
@@ -2056,7 +2193,7 @@
   }
   .hint {
     margin: 0;
-    padding: 0 0.75rem;
+    padding: 0 12px;
     font-size: 0.74rem;
     line-height: 1.5;
     color: var(--dim);
@@ -2073,22 +2210,61 @@
   .session-list {
     flex: 1;
     overflow-y: auto;
-    padding: 0 0.5rem 0.75rem;
+    padding: 0 6px 12px;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 1px;
   }
+  /* Item 534: the ruled heading (`.ns-cap`, app.css) with its count after
+     the rule. */
+  .section-cap {
+    flex: none;
+    padding: 15px 10px 6px;
+  }
+  .session-list > .section-cap:first-child,
+  .loose:first-child > .section-cap:first-child {
+    padding-top: 6px;
+  }
+  .cap-n {
+    order: 2;
+    font-weight: 400;
+    letter-spacing: 0;
+    color: var(--dim);
+    font-variant-numeric: tabular-nums;
+  }
+  /* The row (item 534): square at the column's edge, the selected one on a
+     control fill with the accent tick (an inset shadow — a fork row's
+     ::before is its lineage rule). */
   .session-item {
+    position: relative;
     display: flex;
     align-items: stretch;
-    border-radius: 8px;
+    border-radius: 0 var(--r1) var(--r1) 0;
   }
   .session-item:hover {
-    background: var(--well);
+    background: var(--raised);
   }
   .session-item.active {
-    background: var(--sheet);
-    box-shadow: 0 0 0 1px var(--line2);
+    background: var(--well);
+    box-shadow: inset 2px 0 0 var(--accent);
+  }
+  /* The live row: the lit level's wash (none in calm) and the weft — a
+     thin signal thread along its foot, as the mockup draws it. */
+  .session-item.live {
+    background-image: var(--wash-live);
+  }
+  .session-item.live::after {
+    content: "";
+    position: absolute;
+    left: 10px;
+    right: 10px;
+    bottom: 1px;
+    height: 1px;
+    background: linear-gradient(90deg, transparent 28%, var(--signal) 52%, transparent 72%);
+    pointer-events: none;
+  }
+  .session-item.waiting::after {
+    background: linear-gradient(90deg, transparent 28%, var(--accent) 52%, transparent 72%);
   }
   /* Item 423 (his ask 2026-10-27): a right-click opens the row's menu
      without first selecting the word under the pointer, as WebKit does
@@ -2101,14 +2277,16 @@
     display: flex;
     flex-direction: column;
     align-items: stretch;
-    gap: 2px;
+    gap: 3px;
+    position: relative;
     text-align: left;
     background: transparent;
     border: none;
-    border-radius: 8px;
-    padding: 0.45rem 0.6rem;
+    border-radius: 0 var(--r1) var(--r1) 0;
+    padding: 7px 10px 8px;
     cursor: pointer;
     color: var(--text);
+    font-family: var(--sans);
   }
   .session-row:disabled {
     opacity: 0.6;
@@ -2159,15 +2337,96 @@
     background: var(--well);
   }
   .snippet {
-    font-size: 0.85rem;
+    font-size: 13.5px;
+    line-height: 1.3;
+    color: var(--ink);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  /* Room for the context bar at the title's right. */
+  .snippet.barred {
+    padding-right: 36px;
+  }
+  /* The chat's context bar (item 534): 28 × 3 px, its share of the window;
+     the selected row's in the accent, past the hand-off line in orange. */
+  .cg {
+    position: absolute;
+    right: 10px;
+    top: 14px;
+    width: 28px;
+    height: 3px;
+    border-radius: 1px;
+    background: var(--well2);
+    overflow: hidden;
+  }
+  .cg > i {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    border-radius: 1px;
+    background: var(--ink2);
+  }
+  .session-item.active .cg > i {
+    background: var(--accent);
+  }
+  .cg.hot > i,
+  .session-item.active .cg.hot > i {
+    background: var(--hot);
+  }
+  /* The second line: machine data in mono, spaced, never wrapping. */
   .meta {
-    font-size: 0.72rem;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    font: 10.5px var(--mono);
     color: var(--dim);
-    font-family: var(--mono);
+  }
+  .meta > span {
+    flex: none;
+  }
+  .meta .num {
+    font-variant-numeric: tabular-nums;
+  }
+  .meta .sig {
+    color: var(--signal);
+  }
+  .meta .wait {
+    color: var(--accent);
+  }
+  .meta .hot {
+    color: var(--hot);
+  }
+  .meta > .from,
+  .meta > .thread {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  /* The live dot: the signal, lit in IV+ (`--glow-live`), a slow pulse
+     only while it is live and only with motion allowed. */
+  .live-dot {
+    flex: none;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--signal);
+    box-shadow: var(--glow-live);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .live-dot {
+      animation: side-live 1.6s ease-in-out infinite;
+    }
+  }
+  @keyframes side-live {
+    50% {
+      opacity: 0.45;
+    }
   }
   /* The fork's lineage, in the interface face so the parent's name reads
      as a name and not as an id. */
@@ -2181,17 +2440,26 @@
     font-family: var(--sans);
   }
 
+  /* Item 534: the field as the mockup draws it — 30 px, the code well's
+     fill, a control's edge, the panel's chord inside its right end. */
   .search {
     width: 100%;
     box-sizing: border-box;
-    margin-bottom: 0.4rem;
-    padding: 0.3rem 0.45rem;
-    font: inherit;
-    font-size: 0.78rem;
+    height: 30px;
+    margin: 0;
+    padding: 0 10px;
+    font: 12.5px var(--sans);
     color: var(--text);
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 4px;
+    background: var(--term);
+    border: 1px solid var(--line2);
+    border-radius: var(--r1);
+  }
+  .search-key {
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    pointer-events: none;
   }
 
   .search:focus {
@@ -2204,7 +2472,7 @@
      right edge ran under the sidebar's border at every zoom. */
   .search-wrap {
     position: relative;
-    margin: 0 0.75rem;
+    margin: 0 12px 6px;
   }
   .search-wrap:has(.search-cnt) .search {
     padding-right: 2.8rem;
@@ -2213,7 +2481,7 @@
     position: absolute;
     right: 0.45rem;
     top: 0;
-    height: calc(100% - 0.4rem);
+    height: 100%;
     background: transparent;
     border: none;
     padding: 0;
@@ -2345,7 +2613,13 @@
   .tg-rename {
     margin: 3px 4px 3px 0;
   }
+  .loose {
+    border-radius: var(--r1);
+    outline: 1px dashed transparent;
+    outline-offset: -1px;
+  }
   .thread-group.drop,
+  .loose.drop,
   .loose-head.drop {
     outline-color: var(--accent);
     background: color-mix(in srgb, var(--accent) 8%, transparent);
@@ -2353,15 +2627,16 @@
   .tg-head {
     display: flex;
     align-items: stretch;
-    border-radius: 8px;
+    border-radius: 0 var(--r1) var(--r1) 0;
   }
   .tg-head:hover {
-    background: var(--well);
+    background: var(--raised);
   }
-  /* Backlog 297: the thread's tab in front — the chat rows' selected look. */
+  /* Backlog 297: the thread's tab in front — the chat rows' selected look
+     (item 534: the control fill and the accent tick). */
   .tg-head.active {
-    background: var(--sheet);
-    box-shadow: 0 0 0 1px var(--line2);
+    background: var(--well);
+    box-shadow: inset 2px 0 0 var(--accent);
   }
   /* Backlog 292: two buttons where 288 had one — the chevron folds, the
      name opens the thread view. */
@@ -2419,17 +2694,18 @@
     gap: 1px;
   }
   .tg-name {
-    font-size: 0.82rem;
+    font-size: 13.5px;
     color: var(--ink);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
   .tg-mark {
-    color: var(--accent);
+    color: var(--dim);
+    font-size: 11px;
   }
   .tg-status {
-    font-size: 0.7rem;
+    font-size: 11.5px;
     line-height: 1.35;
     color: var(--dim);
     display: -webkit-box;
@@ -2441,7 +2717,7 @@
   .tg-count {
     flex: none;
     font-family: var(--mono);
-    font-size: 0.7rem;
+    font-size: 10.5px;
     color: var(--dim);
     padding-top: 2px;
   }
@@ -2491,18 +2767,8 @@
     font-size: 0.7rem;
     color: var(--dim);
   }
-  /* Backlog 292: "Threads" over the groups and "Not in a thread" over the
-     rest, the same small uppercase label. */
-  .section-head {
-    padding: 6px 8px 2px;
-    font-size: 11px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--dim);
-  }
-  .threads-head {
-    margin-top: 2px;
-  }
+  /* ~~Backlog 292: "Threads" and "Not in a thread", a small uppercase
+     label (`.section-head`)~~ — item 534: `.section-cap` above. */
   .loose-hint {
     display: block;
     margin-top: 2px;
@@ -2510,15 +2776,15 @@
     letter-spacing: 0;
     text-transform: none;
   }
+  .loose-cap {
+    padding: 0 0 4px;
+  }
   .loose-head {
     margin-top: 6px;
-    padding: 6px 8px 2px;
-    border-radius: 8px;
-    outline: 1px dashed transparent;
+    padding: 8px 10px;
+    border-radius: var(--r1);
+    outline: 1px dashed var(--line2);
     outline-offset: -1px;
-    font-size: 11px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
     color: var(--dim);
   }
   .loose {
