@@ -19,11 +19,21 @@
  * with the words. A copy gone from disk is never silently skipped: the
  * entry is held, with a note naming the file, for his Send now or Cancel.
  *
- * The clock (`startScheduleClock`) ticks every `TICK_MS` and again when the
- * window becomes visible, so a Mac that slept past the time sends on wake.
- * What a tick needs from the app — the plan reading, opening a chat, the
- * composer's queue — comes in as `TickDeps` (see `scheduleRuntime.ts`), so
- * this file stays testable without the backend.
+ * The clock (backlog 535): the page's own timers stop while its window is
+ * hidden or covered (a 5-hour-reset message went an hour late, when he
+ * touched the Mac), so the time is kept by the backend (`wake.rs`). After
+ * every change this file says when it next has something to do
+ * (`TickDeps.arm`), and the backend's `wake-due` event runs a tick at that
+ * moment (`scheduleRuntime.ts`). `startScheduleClock` still ticks every
+ * `TICK_MS` and when the window becomes visible, as a second line. What a
+ * tick needs from the app — the plan reading, the chat's project, the send
+ * itself — comes in as `TickDeps`, so this file stays testable without the
+ * backend.
+ *
+ * Exactly once (backlog 535): a tick and Send now both claim an entry
+ * (`claimed`) before their first await; whoever comes second leaves it
+ * alone. The entry is dropped, and the store written at once, the moment
+ * the message is handed to its chat.
  */
 import {
   draftFileIdsIn,
@@ -38,11 +48,13 @@ import {
 import { readDraftFile, stashDraftFile } from "./api";
 import type { Attachment } from "./types";
 import {
-  RETRY_EVERY_MS,
   TICK_MS,
+  deliverSafely,
+  nextCheckAt,
   readScheduled,
   tickOne,
   writeScheduled,
+  type ChatProject,
   type Delivery,
   type ScheduleKind,
   type Scheduled,
@@ -202,6 +214,8 @@ export function scheduleSend(
   at: number,
   persist: boolean,
   attachments: Attachment[] = [],
+  /** The project the chat lives in (backlog 535): where it is delivered. */
+  project?: ChatProject,
 ): boolean {
   if (scheduled[key] || (!text.trim() && attachments.length === 0)) return false;
   scheduled[key] = {
@@ -215,8 +229,38 @@ export function scheduleSend(
     note: null,
     persist,
     attachments: attachments.slice(),
+    ...(project ? { project: { id: project.id, name: project.name } } : {}),
   };
   save();
+  rearm();
+  return true;
+}
+
+/**
+ * A message the scheduler handed to its chat that the chat then refused
+ * before anything was sent (backlog 535; rare — the chat was asked first):
+ * back as it was, waiting, with the reason, to be tried again. False when
+ * the chat has another scheduled message by now; the caller keeps the
+ * words some other way (the chat's queue).
+ */
+export function restoreScheduled(s: Scheduled, why: string, nowMs: number = Date.now()): boolean {
+  // The entry still there and claimed is this very message, its delivery
+  // not yet returned (the refusal came first): the restored one takes its
+  // place, and the delivery's own drop finds another object and leaves it.
+  const cur = scheduled[s.key];
+  if (cur && !cur.claimed) return false;
+  scheduled[s.key] = {
+    ...s,
+    state: "waiting",
+    firstTryAt: null,
+    nextTryAt: nowMs + TICK_MS,
+    note: why,
+    tried: true,
+    claimed: false,
+    attachments: (s.attachments ?? []).slice(),
+  };
+  flushScheduled();
+  rearm();
   return true;
 }
 
@@ -239,8 +283,10 @@ export function cancelScheduled(key: string, track?: (id: number, job: Promise<v
     setDraftAttachments(key, [...back, ...draftFor(key).attachments]);
     if (track && restoring) for (const a of back) if (a.pending) track(a.id, restoring);
   }
+  s.gone = true;
   delete scheduled[key];
   save();
+  rearm();
   return s.text;
 }
 
@@ -251,53 +297,133 @@ export function keepScheduled(key: string): void {
   s.state = "held";
   s.note = null;
   save();
+  rearm();
 }
 
 let deps: TickDeps | null = null;
-let ticking = false;
+/** When the tick in flight began; null when none is. */
+let tickingSince: number | null = null;
+/** A tick still "in flight" after this long is taken for hung, and the
+ *  next one runs beside it (the entry it holds stays claimed, so it is
+ *  not sent twice; the others go). */
+const TICK_HUNG_MS = 120_000;
+
+/** Tell the backend's clock when the next check is (backlog 535). */
+function rearm(d: TickDeps | null = deps): void {
+  try {
+    d?.arm?.(nextCheckAt(scheduled));
+  } catch {
+    // the page's own interval still ticks
+  }
+}
+
+function short(key: string): string {
+  return key.slice(0, 8);
+}
+
+/**
+ * Find the project of every entry that carries none (backlog 535: one
+ * made before it, or by a build that lost it) from its chat's log, and
+ * keep it. An entry whose chat no project has says so in its row.
+ */
+async function findHomes(d: TickDeps): Promise<void> {
+  if (!d.home) return;
+  for (const k of Object.keys(scheduled)) {
+    const s = scheduled[k];
+    if (!s || s.project) continue;
+    let home: ChatProject | null = null;
+    try {
+      home = await d.home(k);
+    } catch {
+      continue; // asked again at the next tick
+    }
+    if (scheduled[k] !== s) continue;
+    if (home) {
+      s.project = home;
+      d.log?.(`home ${short(k)} project=${home.id ?? "unfiled"}`);
+      save();
+    }
+  }
+}
 
 /** One pass over every waiting entry. Overlapping calls are one call. */
 export async function runScheduleTick(d: TickDeps | null = deps): Promise<void> {
-  if (!d || ticking) return;
-  ticking = true;
+  if (!d) return;
+  const began = d.now();
+  if (tickingSince !== null && began - tickingSince < TICK_HUNG_MS) return;
+  tickingSince = began;
   try {
     await (restoring ?? Promise.resolve());
+    await findHomes(d);
     for (const k of Object.keys(scheduled)) {
       const s = scheduled[k];
       if (!s) continue;
+      try {
+        d.keep?.(s);
+      } catch {
+        // best-effort
+      }
       const before = `${s.state}|${s.note}`;
       const r = await tickOne(s, d);
       if (r === "sent") {
         if (scheduled[k] === s) delete scheduled[k];
-        save();
+        // At once, not on the debounce: a message that has left must not
+        // come back from the store after a crash.
+        flushScheduled();
+        d.log?.(`sent ${short(k)} due=${new Date(s.kind === "time" ? s.at : s.at + 60_000).toISOString()}`);
       } else if (`${s.state}|${s.note}` !== before) {
         save();
+        d.log?.(`kept ${short(k)} ${s.state} ${s.note ?? ""}`);
       }
     }
   } finally {
-    ticking = false;
+    if (tickingSince === began) tickingSince = null;
+    rearm(d);
   }
 }
 
 /**
  * *Send now*: his explicit choice, so no limit check — straight to
- * delivery; when delivery must wait, the entry waits and retries.
+ * delivery; when delivery must wait, the entry waits and retries. An
+ * entry a tick (or an earlier Send now) is delivering this moment is left
+ * to it: `null`, nothing sent a second time (backlog 535).
  */
 export async function sendScheduledNow(key: string, d: TickDeps | null = deps): Promise<Delivery | null> {
-  if (!scheduled[key] || !d) return null;
-  await (restoring ?? Promise.resolve());
   const s = scheduled[key];
-  if (!s) return null;
-  const r = await d.deliver(s);
+  if (!s || !d || s.claimed) return null;
+  // Claimed before the first await: a tick that starts now skips it.
+  s.claimed = true;
+  let r: Delivery;
+  try {
+    await (restoring ?? Promise.resolve());
+    if (!s.project && d.home) {
+      try {
+        const home = await d.home(key);
+        if (home) s.project = home;
+      } catch {
+        // delivery says what is missing
+      }
+    }
+    if (s.gone || scheduled[key] !== s) return null;
+    r = await deliverSafely(s, d);
+  } finally {
+    s.claimed = false;
+  }
+  if (s.gone) return null;
   if (r.ok) {
     if (scheduled[key] === s) delete scheduled[key];
+    flushScheduled();
+    d.log?.(`sent-now ${short(key)}`);
   } else {
     s.state = "waiting";
     s.firstTryAt = null;
-    s.nextTryAt = d.now() + RETRY_EVERY_MS;
+    s.tried = true;
+    s.nextTryAt = d.now() + TICK_MS;
     s.note = r.why;
+    save();
+    d.log?.(`kept-now ${short(key)} ${r.why}`);
   }
-  save();
+  rearm(d);
   return r;
 }
 
@@ -309,6 +435,7 @@ export function startScheduleClock(d: TickDeps): void {
   if (clock !== null) return;
   // A relaunch's scheduled files come back from disk first (backlog 531).
   void restoreScheduledFiles();
+  rearm();
   clock = setInterval(() => void runScheduleTick(), TICK_MS);
   if (typeof document !== "undefined") {
     document.addEventListener("visibilitychange", () => {
