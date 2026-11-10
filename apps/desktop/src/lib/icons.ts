@@ -17,6 +17,8 @@ export const ICONS = {
   globe: '<circle cx="10" cy="10" r="6.5"/><path d="M3.5 10h13M10 3.5c-1.9 1.9-2.8 4.1-2.8 6.5s.9 4.6 2.8 6.5c1.9-1.9 2.8-4.1 2.8-6.5s-.9-4.6-2.8-6.5z"/>',
   gear: '<circle cx="10" cy="10" r="2.5"/><path d="M10 3v2M10 15v2M3 10h2M15 10h2M5 5l1.4 1.4M13.6 13.6 15 15M5 15l1.4-1.4M13.6 6.4 15 5"/>',
   play: '<path d="M6 4.5v11l9-5.5z"/>',
+  /* Send a waiting message now (item 549): an arrow up, the send of a chat box. */
+  send: '<path d="M10 16V4.5M5 9.5l5-5 5 5"/>',
   /* Stop a turn (item 398): a filled rounded square, the media-stop shape,
      filled where the set is otherwise line — the one solid glyph, so it reads
      as an action at the size of the Send it replaces. */

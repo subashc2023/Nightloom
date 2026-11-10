@@ -18,6 +18,10 @@
   import { summonComposer } from "./composerSummon.svelte";
   import { refreshSessions } from "./state.svelte";
   import { scheduleWhen } from "./waitingChat";
+  import { classic } from "./layout.svelte";
+  import WaitAct from "./WaitAct.svelte";
+  import FoldText from "./FoldText.svelte";
+  import { launch, reducedMotion } from "./sendMotion";
 
   let { key }: { key: string } = $props();
 
@@ -32,6 +36,15 @@
     void refreshSessions();
     await tick();
     summonComposer();
+  }
+
+  /** Items 548/549/547 (Filament IV): the words fold past ten lines, the
+   *  actions are icons, and Send now flies the words into the first turn. */
+  const filament = $derived(!classic());
+  let textEl = $state<HTMLElement | null>(null);
+  function sendNow(): void {
+    if (filament && !reducedMotion()) launch("chat", textEl);
+    void sendScheduledNow(key);
   }
 
   function thumb(a: { kind: string; media_type: string; data: string }): string | null {
@@ -59,7 +72,11 @@
           >
         {/if}
       </div>
-      {#if s.text}
+      {#if s.text && filament}
+        <FoldText lines={10} foldKey={`w:${key}`}>
+          <div class="waiting-text fil" data-find-text={s.text} bind:this={textEl}>{s.text}</div>
+        </FoldText>
+      {:else if s.text}
         <div class="waiting-text" data-find-text={s.text}>{s.text}</div>
       {/if}
       {#if (s.attachments ?? []).length > 0}
@@ -73,25 +90,38 @@
           {/each}
         </div>
       {/if}
-      <div class="waiting-acts">
-        <!-- Greyed while a delivery of it is in flight (backlog 535): one message, one send. -->
-        <button
-          class="ns-btn accent small"
-          use:tip={"Send it now, without waiting"}
-          disabled={!!s.claimed}
-          onclick={() => void sendScheduledNow(key)}>Send now</button
-        >
-        {#if s.state === "missed"}
-          <button class="ns-btn ghost small" use:tip={"Keep it here, unscheduled"} onclick={() => keepScheduled(key)}>Keep</button>
-        {:else}
-          <button class="ns-btn ghost small" use:tip={"Unschedule and put the words and files back in the box"} onclick={() => void giveBack()}
-            >Edit</button
+      {#if filament}
+        <div class="waiting-acts fil" role="group" aria-label="this message is scheduled, not sent">
+          <!-- Greyed while a delivery of it is in flight (backlog 535): one message, one send. -->
+          <WaitAct icon="send" accent label="Send now" hint="send it now, without waiting" data-wc="send-now" disabled={!!s.claimed} onclick={sendNow} />
+          {#if s.state === "missed"}
+            <WaitAct icon="check" label="Keep" hint="keep it here, unscheduled" data-wc="keep" onclick={() => keepScheduled(key)} />
+          {:else}
+            <WaitAct icon="pencil" label="Edit" hint="unschedule it and put the words and files back in the box" data-wc="edit" onclick={() => void giveBack()} />
+          {/if}
+          <WaitAct icon="x" label="Cancel" hint="unschedule it; the words and files go back in the box" data-wc="cancel" onclick={() => void giveBack()} />
+        </div>
+      {:else}
+        <div class="waiting-acts">
+          <!-- Greyed while a delivery of it is in flight (backlog 535): one message, one send. -->
+          <button
+            class="ns-btn accent small"
+            use:tip={"Send it now, without waiting"}
+            disabled={!!s.claimed}
+            onclick={() => void sendScheduledNow(key)}>Send now</button
           >
-        {/if}
-        <button class="ns-btn ghost small" use:tip={"Unschedule; the words and files go back in the box"} onclick={() => void giveBack()}
-          >Cancel</button
-        >
-      </div>
+          {#if s.state === "missed"}
+            <button class="ns-btn ghost small" use:tip={"Keep it here, unscheduled"} onclick={() => keepScheduled(key)}>Keep</button>
+          {:else}
+            <button class="ns-btn ghost small" use:tip={"Unschedule and put the words and files back in the box"} onclick={() => void giveBack()}
+              >Edit</button
+            >
+          {/if}
+          <button class="ns-btn ghost small" use:tip={"Unschedule; the words and files go back in the box"} onclick={() => void giveBack()}
+            >Cancel</button
+          >
+        </div>
+      {/if}
     </div>
   </div>
 {/if}
@@ -176,5 +206,19 @@
     display: flex;
     gap: 6px;
     justify-content: flex-end;
+  }
+  .waiting-acts.fil {
+    gap: 2px;
+  }
+  /* The fold measures and clips (FoldText); the text does not scroll inside it. */
+  .waiting-text.fil {
+    max-height: none;
+    overflow: visible;
+  }
+  .waiting-card :global(.fold) {
+    align-items: stretch;
+  }
+  .waiting-card :global(.fold-more) {
+    align-self: flex-start;
   }
 </style>

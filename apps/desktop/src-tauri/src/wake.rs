@@ -176,6 +176,46 @@ fn spawn_awake() -> Option<Child> {
         .ok()
 }
 
+/// A debug build's timing probe (nightshift item 535m, 2026-11-10): with
+/// `NIGHTLOOM_PROBE_DUE_S=<n>[,<n>…]` the page schedules a message for a
+/// chat that does not exist, due `n` seconds after launch (one chat per
+/// time), and logs every tick
+/// of its own interval; with `NIGHTLOOM_PROBE_LIMIT_S=<n>` it also arms a
+/// limit resume for that moment. Its `kept … waiting` line in the schedule
+/// log is the delivery attempt's time. Always `None` in a release build.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Probe {
+    pub due_ms: Vec<u64>,
+    pub limit_ms: Option<u64>,
+}
+
+static LAUNCH_MS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+
+/// Note the launch moment the probe counts from (called at setup).
+pub fn mark_launch() {
+    let _ = LAUNCH_MS.set(wall_ms());
+}
+
+/// The probe this run asked for, from the environment.
+pub fn probe() -> Probe {
+    if !cfg!(debug_assertions) {
+        return Probe::default();
+    }
+    let launch = *LAUNCH_MS.get_or_init(wall_ms);
+    let at = |var: &str| -> Vec<u64> {
+        std::env::var(var)
+            .unwrap_or_default()
+            .split(',')
+            .filter_map(|v| v.trim().parse::<u64>().ok())
+            .map(|s| launch + s * 1000)
+            .collect()
+    };
+    Probe {
+        due_ms: at("NIGHTLOOM_PROBE_DUE_S"),
+        limit_ms: at("NIGHTLOOM_PROBE_LIMIT_S").first().copied(),
+    }
+}
+
 /// Run the clock for the life of the app.
 pub fn watch(app: tauri::AppHandle) {
     use tauri::{Emitter, Manager};

@@ -8554,7 +8554,14 @@ function armResumes(): void {
     // A time already past is an entry waiting on something (no engine, its
     // project closed): looked at again, not spun on.
     const wait = at - Date.now();
-    limitTimer = setTimeout(() => void runResumes(), Math.min(wait > 0 ? wait : 15_000, 0x7fffffff));
+    limitTimer = setTimeout(
+      () => {
+        // The page's own clock ran it (item 535m's log line).
+        void api.scheduleLog("limit timer").catch(() => {});
+        void runResumes();
+      },
+      Math.min(wait > 0 ? wait : 15_000, 0x7fffffff),
+    );
   }
   showResume();
   saveResumes();
@@ -8697,6 +8704,8 @@ async function handOffUnattended(chat: string, prompt: string, home: { id: strin
 /** The backend's `limit` wake fired (`scheduleRuntime.ts` listens), or the
  *  Mac woke: every entry whose time has come goes. */
 export function limitWakeDue(): void {
+  // Item 535m's diagnosis line, read against the per-chat entries (543).
+  void api.scheduleLog(`limit wake-due armed=${nextResumeAt(resumes) !== null}`).catch(() => {});
   void runResumes();
 }
 
@@ -8716,6 +8725,8 @@ async function runResumes(): Promise<void> {
 async function goResume(key: string, clicked: boolean): Promise<void> {
   const r = resumes[key];
   if (!r || resuming.has(key)) return;
+  // The resume's own moment, whichever clock ran it (item 535m).
+  void api.scheduleLog(`limit go connected=${!!app.connection}`).catch(() => {});
   const id = key === NO_CHAT ? null : key;
   const { text, at } = r;
   const project = { id: r.project.id, name: r.project.name };
