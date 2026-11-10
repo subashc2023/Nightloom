@@ -6,25 +6,30 @@
    * its left corners, this carries the right ones. A row is greyed with its
    * reason when it cannot be used; the whole menu when `blocked` says so.
    * From a New chat a pick makes the chat first (backlog 527), so the
-   * message has an id to wait under.
+   * message has an id to wait under. The box's files and images go with
+   * it (backlog 531), copied to disk first (`stashChips`).
    */
-  import { app, chatMode, startPendingChat } from "./state.svelte";
+  import { app, chatMode, refreshSessions, startPendingChat } from "./state.svelte";
+  import type { Attachment } from "./types";
   import { NEW_DRAFT_PREFIX } from "./drafts.svelte";
   import { floatMenu } from "./floatMenu";
   import { tip } from "./tip";
   import { atTime, clockText, dayClockText, resetTime, type ScheduleKind } from "./schedule";
-  import { scheduleSend, scheduledFor } from "./scheduled.svelte";
+  import { scheduleSend, scheduledFor, stashChips } from "./scheduled.svelte";
 
   let {
     key,
     text,
+    attachments = [],
     blocked = null,
     disabled = false,
     onscheduled,
   }: {
     key: string;
     text: string;
-    /** Why nothing can be scheduled here (attachments). */
+    /** The box's chips, which go with the message (backlog 531). */
+    attachments?: Attachment[];
+    /** Why nothing can be scheduled here (a chip still converting). */
     blocked?: string | null;
     disabled?: boolean;
     /** With the key it was held under: a New chat's is its new id. */
@@ -40,7 +45,7 @@
   const five = $derived(resetTime(app.planUsage?.five_hour_resets_at, now));
   const week = $derived(resetTime(app.planUsage?.seven_day_resets_at, now));
   const typed = $derived(atTime(when, now));
-  const empty = $derived(!text.trim());
+  const empty = $derived(!text.trim() && attachments.length === 0);
   const already = $derived(scheduledFor(key) !== null);
   /** Why every row is greyed, if one reason covers them all. */
   const allOff = $derived(
@@ -68,21 +73,27 @@
   async function pick(kind: ScheduleKind, at: number | null): Promise<void> {
     if (at === null || allOff || starting) return;
     const words = text;
+    const chips = $state.snapshot(attachments) as Attachment[];
     let to = key;
-    if (key.startsWith(NEW_DRAFT_PREFIX)) {
-      starting = true;
-      try {
+    starting = true;
+    let kept: Attachment[];
+    try {
+      // Copies first: nothing is made or cleared until the files are safe.
+      kept = await stashChips(chips);
+      if (key.startsWith(NEW_DRAFT_PREFIX)) {
         const id = await startPendingChat();
         if (id === null) return; // refused, toasted; the words stay in the box
         to = id;
-      } finally {
-        starting = false;
       }
+    } finally {
+      starting = false;
     }
     const persist = chatMode(app.events) === "normal";
-    if (scheduleSend(to, words, kind, at, persist)) {
+    if (scheduleSend(to, words, kind, at, persist, kept)) {
       open = false;
       onscheduled(to);
+      // The row is named by the scheduled message now (backlog 532).
+      void refreshSessions();
     }
   }
 

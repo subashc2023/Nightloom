@@ -83,6 +83,9 @@
   import NoteView from "./lib/NoteView.svelte";
   import GraphView from "./lib/GraphView.svelte";
   import Welcome from "./lib/Welcome.svelte";
+  import WaitingChat from "./lib/WaitingChat.svelte";
+  import { scheduledFor } from "./lib/scheduled.svelte";
+  import { chatPage } from "./lib/waitingChat";
   import NewProject from "./lib/NewProject.svelte";
   import Palette from "./lib/Palette.svelte";
   import NightshiftSurface from "./lib/NightshiftSurface.svelte";
@@ -410,6 +413,18 @@
           e.event === "assistant_message" ||
           e.event === "compaction",
       ),
+  );
+
+  /**
+   * A blank chat holding a scheduled message (backlog 532) — one made by
+   * Send later from a New chat — is a chat page whose only content is the
+   * waiting message, with the docked composer under it, not the Welcome
+   * page. The first message landing makes it the normal chat.
+   */
+  const waiting = $derived(
+    blank &&
+      chatPage(app.events, !!app.live, app.activeSessionId, !!app.activeSessionId && scheduledFor(app.activeSessionId) !== null) ===
+        "waiting",
   );
 
   /** The find bar (nightshift backlog 106), for ⌘F below. */
@@ -795,7 +810,9 @@
               </div>
             {:else if liveTab?.id === t.id}
               <div class="content">
-                {#if blank}
+                {#if waiting && app.activeSessionId}
+                  <WaitingChat key={app.activeSessionId} />
+                {:else if blank}
                   <Welcome />
                 {:else}
                   <Transcript />
@@ -806,7 +823,7 @@
                      rather than in any of them. -->
                 {#if focused}<FindBar bind:this={findBar} />{/if}
               </div>
-              {#if !blank}
+              {#if !blank || waiting}
                 <Composer />
               {/if}
             {:else if t.content.kind === "chat" && t.content.session !== null}

@@ -147,6 +147,8 @@
   // Scheduled send (backlog 224): the ▾ beside Send and the chip above.
   import ScheduleMenu from "./ScheduleMenu.svelte";
   import ScheduledChip from "./ScheduledChip.svelte";
+  import { scheduledFor } from "./scheduled.svelte";
+  import { hasNoTurns } from "./waitingChat";
   import PreviewChip from "./PreviewChip.svelte";
   import ClaudeBrowserChip from "./ClaudeBrowserChip.svelte";
   import { registerScheduleDrain } from "./scheduleRuntime";
@@ -2030,8 +2032,22 @@
   // And a block he ran has ended (item 503): its output goes as the next turn.
   $effect(() => untrack(() => (aside ? undefined : registerRunDrain(() => drain(true)))));
   /** Why nothing can be scheduled from this box, if nothing can. */
-  // A New chat is made at the pick (backlog 527), so only attachments block.
-  const scheduleBlocked = $derived(attachments.length > 0 ? "attachments cannot be scheduled yet; text only" : null);
+  // A New chat is made at the pick (backlog 527), and the box's files and
+  // images go with the message (backlog 531): only a chip still converting
+  // (no bytes yet) blocks.
+  const scheduleBlocked = $derived(
+    attachments.some((a) => a.pending) ? "a file is still being prepared — Send later opens when it is ready" : null,
+  );
+  /** The waiting page above holds the scheduled message as its card
+   *  (backlog 532), so the row over the box would say it twice. */
+  const onWaitingPage = $derived(
+    !aside &&
+      !floating &&
+      app.activeSessionId !== null &&
+      key === app.activeSessionId &&
+      scheduledFor(key) !== null &&
+      hasNoTurns(app.events, !!app.live),
+  );
   function scheduled(to: string): void {
     clearDraft(to);
     requestAnimationFrame(autogrow);
@@ -2810,7 +2826,7 @@
     <!-- Claude's browser (item 508): offered once it is live; opens only on his click. -->
     <ClaudeBrowserChip chat={app.activeSessionId} />
   {/if}
-  {#if composerShows("schedule", !!aside)}
+  {#if composerShows("schedule", !!aside) && !onWaitingPage}
     <ScheduledChip {key} onedit={scheduleEdited} />
   {/if}
   {#if boxQueue.length > 0}
@@ -3341,7 +3357,7 @@
             disabled={!app.connection || sendHeld() || (!text.trim() && attachments.length === 0)}
           >
             Send
-          </button><ScheduleMenu {key} {text} blocked={scheduleBlocked} onscheduled={scheduled} />
+          </button><ScheduleMenu {key} {text} {attachments} blocked={scheduleBlocked} onscheduled={scheduled} />
         </span>
       {/if}
     </div>

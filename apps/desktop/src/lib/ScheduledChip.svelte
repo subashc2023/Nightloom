@@ -5,44 +5,27 @@
    * tray. It says when it goes and what it waits for; Edit and Cancel put
    * the words back in the box, so nothing is lost. A message missed while
    * the app was closed asks — *Send now*, *Keep*, *Cancel* — and is never
-   * sent by itself.
+   * sent by itself. Its files and images are named beside the words, and
+   * Edit and Cancel put them back in the box too (backlog 531).
    */
   import { tip } from "./tip";
-  import { clockText, dueAt, kindText } from "./schedule";
+  import { scheduleHead } from "./schedule";
   import { cancelScheduled, keepScheduled, scheduledFor, sendScheduledNow } from "./scheduled.svelte";
+  import { trackPending } from "./attachFiles.svelte";
+  import { refreshSessions } from "./state.svelte";
+  import { scheduleWhen, chipNames } from "./waitingChat";
 
   let { key, onedit }: { key: string; onedit: () => void } = $props();
 
   const s = $derived(scheduledFor(key));
-
-  function when(ms: number): string {
-    const d = new Date(ms);
-    const today = new Date();
-    const sameDay = d.toDateString() === today.toDateString();
-    return sameDay ? clockText(ms) : `${d.toLocaleDateString([], { weekday: "short" })} ${clockText(ms)}`;
-  }
 
   function firstLine(t: string): string {
     const l = t.trim().split("\n")[0] ?? "";
     return l.length > 90 ? `${l.slice(0, 90)}…` : l;
   }
 
-  const head = $derived.by(() => {
-    if (!s) return "";
-    const at = when(dueAt(s));
-    switch (s.state) {
-      case "missed":
-        return `was due ${at} — the app was closed`;
-      case "held":
-        return "held — not scheduled";
-      case "limited":
-        return "not sent — still limited";
-      case "retrying":
-        return s.note ?? "still limited";
-      default:
-        return s.note ? `scheduled · ${at} · ${s.note}` : `scheduled · ${at} · ${kindText(s.kind)}`;
-    }
-  });
+  const head = $derived(s ? scheduleHead(s, scheduleWhen) : "");
+  const files = $derived(s ? chipNames(s.attachments ?? []) : null);
 </script>
 
 {#if s}
@@ -56,6 +39,7 @@
       >
     {/if}
     <span class="sched-text" use:tip={s.text}>{firstLine(s.text)}</span>
+    {#if files}<span class="ns-chip mono sched-files" data-sched-files use:tip={files.all}>{files.short}</span>{/if}
     <span class="sched-acts">
       {#if s.state !== "waiting" || s.note}
         <button class="ns-btn ghost small" onclick={() => void sendScheduledNow(key)}>Send now</button>
@@ -69,8 +53,9 @@
           class="ns-btn ghost small"
           use:tip={"Unschedule and put the words back in the box"}
           onclick={() => {
-            cancelScheduled(key);
+            cancelScheduled(key, trackPending);
             onedit();
+            void refreshSessions();
           }}>Edit</button
         >
       {/if}
@@ -78,8 +63,9 @@
         class="ns-btn ghost small"
         use:tip={"Unschedule; the words go back in the box"}
         onclick={() => {
-          cancelScheduled(key);
+          cancelScheduled(key, trackPending);
           onedit();
+          void refreshSessions();
         }}>Cancel</button
       >
     </span>
@@ -110,6 +96,13 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--dim);
+  }
+  .sched-files {
+    flex: none;
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .sched-acts {
     display: flex;
