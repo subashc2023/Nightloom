@@ -1374,6 +1374,16 @@ impl AgentSpec {
                 if let serde_json::Value::Array(pre) = pre {
                     pre.push(brief::hook_entry(&brief.hook, &brief.dir));
                 }
+                // The same hook on each user message (nightshift 561): a
+                // fresh usage line before the model answers, so a reply
+                // written before any tool call does not quote an older
+                // message's figure.
+                let prompt = hooks
+                    .entry(brief::PROMPT_EVENT)
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+                if let serde_json::Value::Array(prompt) = prompt {
+                    prompt.push(brief::prompt_hook_entry(&brief.hook, &brief.dir));
+                }
             }
         }
         if !self.auto_memory {
@@ -4217,6 +4227,13 @@ mod tests {
         assert_eq!(entries(&a).len(), 1, "no Ask hook in Auto");
         let cmd = entries(&a)[0]["hooks"][0]["command"].clone();
         assert_eq!(cmd, format!("'hook' '--subagent-hook' '{}'", dir.display()));
+        // Nightshift 561: the same command on each user message, no matcher.
+        let i = a.iter().position(|x| x == "--settings").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
+        let prompt = v["hooks"][brief::PROMPT_EVENT].as_array().unwrap();
+        assert_eq!(prompt.len(), 1, "{prompt:?}");
+        assert!(prompt[0].get("matcher").is_none(), "{prompt:?}");
+        assert_eq!(prompt[0]["hooks"][0]["command"], cmd);
         // Ask position: beside the Ask hook's entry, the Ask one first.
         let mut s = asking(AskMode::Ask);
         s.brief = Some(brief.clone());

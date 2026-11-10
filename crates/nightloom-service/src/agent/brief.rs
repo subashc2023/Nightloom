@@ -1898,6 +1898,60 @@ fn await_answer(
 /// since 192 it returns the held call's deadline (0 otherwise), a *Wrap
 /// up* is delivered here, and the Mac is looked at only past the line.
 #[allow(clippy::too_many_arguments)]
+/// The ledger takes a reading: it pins the start when none was on hand,
+/// and the latest is the newest reading seen, never an older one a slower
+/// hook brings in after a faster one.
+fn take_reading(b: &mut TurnBudget, reading: Option<WindowReading>) {
+    if let Some(r) = reading {
+        if b.start_pct.is_none() {
+            b.start_pct = Some(r.five_hour_pct);
+        }
+        if b.latest_at_ms.is_none_or(|t| r.sampled_at_ms >= t) {
+            b.latest_pct = Some(r.five_hour_pct);
+            b.latest_at_ms = Some(r.sampled_at_ms);
+            b.resets_at = r.resets_at.or(b.resets_at);
+        }
+    }
+}
+
+/// A user message arrived (nightshift 561): the ledger takes the reading,
+/// and the line shown with the message counts as `who`'s first showing —
+/// its band and its context band recorded, so the message's first tool
+/// call does not repeat it unless a band is crossed. No call is counted;
+/// no ledger, nothing recorded.
+fn note_prompt(dir: &Path, reading: Option<WindowReading>, who: &str, context: Option<u64>) {
+    use std::io::{Read as _, Seek as _, Write as _};
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(dir.join(TURN_BUDGET_FILE))
+    else {
+        return;
+    };
+    if file.lock().is_err() {
+        return;
+    }
+    let mut have = String::new();
+    let _ = file.read_to_string(&mut have);
+    let Ok(mut b) = serde_json::from_str::<TurnBudget>(&have) else {
+        return;
+    };
+    take_reading(&mut b, reading);
+    let band = b.spent_pct().map_or(0, |s| s / USAGE_BAND);
+    let last = b.usage_shown.get(who).copied().unwrap_or(0);
+    b.usage_shown.insert(who.to_string(), band.max(last));
+    if let Some(band) = context_due(b.context_shown.get(who).copied(), context, false) {
+        b.context_shown.insert(who.to_string(), band);
+    }
+    let _ = file.set_len(0);
+    let _ = file.seek(std::io::SeekFrom::Start(0));
+    let _ = file.write_all(
+        serde_json::to_string_pretty(&b)
+            .unwrap_or_default()
+            .as_bytes(),
+    );
+}
+
 fn note_reading(
     dir: &Path,
     reading: Option<WindowReading>,
@@ -1927,18 +1981,7 @@ fn note_reading(
         return allowed;
     };
     b.calls += 1;
-    if let Some(r) = reading {
-        if b.start_pct.is_none() {
-            b.start_pct = Some(r.five_hour_pct);
-        }
-        // The latest is the newest reading seen, never an older one a
-        // slower hook brings in after a faster one.
-        if b.latest_at_ms.is_none_or(|t| r.sampled_at_ms >= t) {
-            b.latest_pct = Some(r.five_hour_pct);
-            b.latest_at_ms = Some(r.sampled_at_ms);
-            b.resets_at = r.resets_at.or(b.resets_at);
-        }
-    }
+    take_reading(&mut b, reading);
     let past = reading.is_some_and(|r| r.five_hour_pct >= b.stop_at);
     let ans = answer_now(dir, &b, past, senses, now_ms);
     // His presence only matters for a call that would otherwise be held.
@@ -2165,6 +2208,22 @@ pub fn hook_entry(hook: &[String], dir: &Path) -> Value {
     })
 }
 
+/// The CLI's hook event for a user message, before the model answers it.
+pub const PROMPT_EVENT: &str = "UserPromptSubmit";
+
+/// The `UserPromptSubmit` entry (nightshift 561): the same command as
+/// [`hook_entry`]'s — the hook tells the two events apart by its input's
+/// `hook_event_name` — so each new message brings a fresh usage line
+/// before the model answers, not only with its first tool call. No
+/// matcher: the event has none.
+pub fn prompt_hook_entry(hook: &[String], dir: &Path) -> Value {
+    let mut entry = hook_entry(hook, dir);
+    if let Value::Object(o) = &mut entry {
+        o.remove("matcher");
+    }
+    entry
+}
+
 /// Write the brief into `dir`, only when it differs from what is there —
 /// the hook may be reading at the same moment, and an unchanged file is
 /// not rewritten under it.
@@ -2182,6 +2241,9 @@ pub fn write(dir: &Path, text: &str) -> std::io::Result<()> {
 /// The fields of the hook's stdin line read here.
 #[derive(Debug, Deserialize)]
 struct HookInput {
+    /// `PreToolUse`, or [`PROMPT_EVENT`] for a user message (561).
+    #[serde(default)]
+    hook_event_name: String,
     #[serde(default)]
     tool_name: String,
     #[serde(default)]
@@ -2325,6 +2387,18 @@ fn decide_holding(
         .transcript_path
         .as_deref()
         .and_then(|t| context_tokens(t, subagent.then_some(who)));
+    // A user message (561): the line before the model answers, from this
+    // message's reading — never only an older message's — recorded as its
+    // first showing. Nothing is refused here; the calls are judged as ever.
+    if input.hook_event_name == PROMPT_EVENT {
+        note_prompt(dir, reading, who, context);
+        let line = usage_line(read_turn_budget(dir).as_ref(), reading, week, context);
+        let mut reply = HookReply::pass().with_context(line);
+        if let Some(o) = &mut reply.hook_specific_output {
+            o.hook_event_name = PROMPT_EVENT.into();
+        }
+        return reply;
+    }
     let (mut verdict, turn, deadline, show) = note_reading(
         dir, reading, subagent, who, spawn, context, now_ms, hold_ms, senses,
     );
@@ -4361,6 +4435,80 @@ mod tests {
             r.reason()
                 .is_some_and(|s| s.contains("spent 35%") && s.contains("weekly figure is 74%"))
         );
+        assert_eq!(r.additional_context(), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Nightshift 561: a user message brings its own usage line before the
+    /// model answers (the `UserPromptSubmit` hook's `additionalContext`), and
+    /// that showing is the message's first, so its first tool call does not
+    /// repeat it; a band crossed later still shows. The next message's line
+    /// carries the new figure, not the old one.
+    #[test]
+    fn a_new_message_brings_a_fresh_usage_line_before_any_tool_call() {
+        let dir = limits_dir("usage-prompt");
+        let now = chrono::Utc::now().timestamp_millis();
+        let l = super::SubagentLimits::default();
+        super::write_limits(&dir, &l).unwrap();
+        super::write_usage(&dir, 40, Some(now / 1000 + 3600), now);
+        super::begin_turn(&dir, &l, super::TurnPhase::Turn);
+        let t = dir.join("sess.jsonl");
+        std::fs::write(
+            &t,
+            serde_json::json!({"type":"assistant","message":{"usage":{
+                "input_tokens":5,"cache_read_input_tokens":90_000,"cache_creation_input_tokens":5_000}}})
+            .to_string(),
+        )
+        .unwrap();
+        let prompt = serde_json::json!({"session_id":"s1","hook_event_name":"UserPromptSubmit",
+            "prompt":"how is the window?","transcript_path": t})
+        .to_string();
+        let r = super::decide_with_week(&dir, &prompt, reading(42, now + 1), Some(74));
+        assert_eq!(
+            r.additional_context(),
+            Some(
+                "Usage: this message 2% of its 35% budget · 5-hour 42% (stop line 85%) · week 74% · context 95k"
+            )
+        );
+        let wire = serde_json::to_value(&r).unwrap();
+        assert_eq!(
+            wire["hookSpecificOutput"]["hookEventName"],
+            "UserPromptSubmit"
+        );
+        assert!(
+            wire["hookSpecificOutput"]
+                .get("permissionDecision")
+                .is_none(),
+            "{wire}"
+        );
+        let b = super::read_turn_budget(&dir).unwrap();
+        assert_eq!(b.calls, 0, "a message is not a call");
+        assert_eq!(b.usage_shown.get("s1"), Some(&0));
+        // The message's first tool call, same band: no repeat.
+        let read = serde_json::json!({"session_id":"s1","hook_event_name":"PreToolUse",
+            "tool_name":"Read","tool_input":{"file_path":"/x"},"transcript_path": t})
+        .to_string();
+        let r = super::decide_with_week(&dir, &read, reading(43, now + 2), Some(74));
+        assert_eq!(r.decision(), "pass");
+        assert_eq!(r.additional_context(), None);
+        // A band crossed: the line again, on the call.
+        let r = super::decide_with_week(&dir, &read, reading(47, now + 3), Some(74));
+        assert!(
+            r.additional_context()
+                .is_some_and(|c| c.starts_with("Usage: this message 7%")),
+            "{:?}",
+            r.additional_context()
+        );
+        // The next message, hours on: its own figure before any call.
+        super::write_usage(&dir, 78, Some(now / 1000 + 3600), now + 4);
+        super::begin_turn(&dir, &l, super::TurnPhase::Turn);
+        let r = super::decide_with_week(&dir, &prompt, reading(78, now + 5), Some(74));
+        let c = r.additional_context().unwrap_or_default();
+        assert!(
+            c.starts_with("Usage: this message 0% of its 35% budget · 5-hour 78%"),
+            "{c}"
+        );
+        let r = super::decide_with_week(&dir, &read, reading(78, now + 6), Some(74));
         assert_eq!(r.additional_context(), None);
         let _ = std::fs::remove_dir_all(&dir);
     }

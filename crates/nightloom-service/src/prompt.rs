@@ -479,10 +479,11 @@ pub fn agent_prompt_with(
 /// (blocker 583).
 pub const PACING_NOTE: &str = "<pacing>\n\
      Each message has a usage budget, a share of the plan's five-hour window set per chat; \
-     past the plan's stop line Nightloom refuses every tool call. The usage line beside your \
-     tool calls ('Usage: this message …') says where you stand: it comes with your first \
-     call, each subagent launch, every 5 points spent, and every call past half the budget. \
-     Size the plan to the budget from the start: a small budget means fewer subagents and \
+     past the plan's stop line Nightloom refuses every tool call. The usage line ('Usage: this \
+     message …') says where you stand: it comes with each user message, your first call, each \
+     subagent launch, every 5 points spent, and every call past half the budget. An earlier \
+     message's line is stale: quote only this message's, and say how old any other figure \
+     is. Size the plan to the budget from the start: a small budget means fewer subagents and \
      narrower searches. Past about 70% of it, start no new work: finish what is half-done and \
      write up what you have and what is left. The weekly figure is information, not a limit; \
      the user's instructions in this chat say how much it matters.\n\
@@ -2782,6 +2783,12 @@ As of now — the front.
             "{text}"
         );
         assert!(text.contains("usage line"), "{text}");
+        // Nightshift 561: an earlier message's line is stale.
+        assert!(
+            text.contains("comes with each user message")
+                && text.contains("An earlier message's line is stale"),
+            "{text}"
+        );
         assert!(text.contains("weekly figure is information"), "{text}");
         assert!(
             text.contains("SendMessage") && text.contains("subagent_type reusable"),
@@ -2795,8 +2802,10 @@ As of now — the front.
                 .map(|s| s.text.split_whitespace().count())
                 .unwrap()
         };
+        // ~~125~~ — 145 since 2026-11-10 (nightshift 561): the line now
+        // comes with each user message, and an earlier message's is stale.
         assert!(
-            words(SegmentKind::Pacing) <= 125,
+            words(SegmentKind::Pacing) <= 145,
             "{}",
             words(SegmentKind::Pacing)
         );
