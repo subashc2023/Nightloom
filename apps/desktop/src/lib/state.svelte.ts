@@ -10905,6 +10905,10 @@ export async function sendEdit(
   files: FileInput[] = [],
 ): Promise<boolean> {
   if (app.busy) return false;
+  // 559 (blocker 1750, default applied): the chat he edited, before the
+  // fork call — he may open another chat or project in its round trip.
+  const mark = viewMark();
+  let fork: string;
   try {
     const parent = app.activeSessionId;
     // The message's send time rides with its place (backlog 361): the
@@ -10912,6 +10916,14 @@ export async function sendEdit(
     const meant = app.events[index];
     const at = meant?.event === "user_message" ? meant.at : null;
     const res = await api.editMessage(index, text, "send", null, at);
+    fork = res.session;
+    if (!sameView(mark)) {
+      // He left: his edited words go into the fork of the chat he edited,
+      // off screen — never into the chat now open, never lost.
+      void refreshSessions();
+      sendInFork(fork, mark.project, text, images, documents, files);
+      return true;
+    }
     app.events = res.events;
     // The fork starts with no asides; the parent keeps its own (backlog 203).
     switchAside(res.session);
@@ -10924,8 +10936,53 @@ export async function sendEdit(
     return false;
   }
   void refreshSessions();
+  // Told the fork by id (535's `turnTarget`), so a switch during the
+  // send's own reconnect sends it off screen into the fork (535f).
+  if (app.connection?.engine === "claude-code") {
+    turnTarget = { chat: fork, project: mark.project };
+    turnElsewhere = async (busyHere) => {
+      if (busyHere) enqueueMessage(fork, text, editAttachments(images, documents, files));
+      else sendInFork(fork, mark.project, text, images, documents, files);
+    };
+  }
   await send(text, images, documents, null, files);
   return true;
+}
+
+/** An edit's images, documents and files as a queued message's attachments. */
+function editAttachments(images: ImageInput[], documents: DocumentInput[], files: FileInput[]): Attachment[] {
+  return [
+    ...chipsFromInputs(images, documents, nextAttachmentId),
+    // `runInChat` sends a `file` chip's name and data back as a file (277).
+    ...files.map((f) => ({ id: nextAttachmentId(), kind: "file" as const, media_type: "application/octet-stream", name: f.name, data: f.data })),
+  ];
+}
+
+/** The edited message sent in its fork off screen (559): on Claude Code as
+ *  that chat's own background turn (`runInChat`; a refusal puts it at the
+ *  head of the fork's queue); on the API engine, which runs one chat at a
+ *  time, queued in the fork, sent when he opens it. */
+function sendInFork(
+  fork: string,
+  project: string | null,
+  text: string,
+  images: ImageInput[],
+  documents: DocumentInput[],
+  files: FileInput[],
+): void {
+  const attachments = editAttachments(images, documents, files);
+  if (app.connection?.engine !== "claude-code") {
+    enqueueMessage(fork, text, attachments);
+    addToast("Your edit is queued in its new branch — open it from the sidebar to send it");
+    return;
+  }
+  void runInChat(
+    fork,
+    { id: nextQueueId(), text, attachments },
+    { pendingMode: "normal", pendingKind: app.pendingKind, project, projectName: null, name: null },
+    { contextLimit: contextOf(fork)?.limit || null },
+  );
+  addToast("Your edit was sent in its new branch, off screen — it is in the sidebar");
 }
 
 /**
