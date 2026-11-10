@@ -87,6 +87,9 @@
     when: string;
     weight: number;
     kind: "unit" | "runner" | "now";
+    /** A unit's outcome (done | partial | failed | wip | running); Filament
+     *  IV colours its bar by it (item 566). */
+    outcome?: string;
   }
 
   /**
@@ -103,13 +106,14 @@
     const units = status.units.filter((u) => u.started);
     const out: Seg[] = [];
     let cursor = start;
-    const push = (label: string, a: number, b: number, kind: Seg["kind"]) => {
+    const push = (label: string, a: number, b: number, kind: Seg["kind"], outcome?: string) => {
       const w = Number.isFinite(a) && Number.isFinite(b) && b > a ? b - a : 0;
       out.push({
         label,
         when: b > a && Number.isFinite(b) ? `${hhmmss(new Date(a).toISOString())} – ${hhmmss(new Date(b).toISOString())}` : hhmmss(Number.isFinite(a) ? new Date(a).toISOString() : null),
         weight: w,
         kind,
+        outcome,
       });
     };
     units.forEach((u, i) => {
@@ -118,7 +122,7 @@
       if (Number.isFinite(cursor) && Number.isFinite(a) && a > cursor) {
         push(i === 0 ? "preflight · gate" : "between units", cursor, a, "runner");
       }
-      push(`unit ${u.n} · ${u.item_id ?? "?"} p${u.pass ?? "?"}`, a, b, "unit");
+      push(`unit ${u.n} · ${u.item_id ?? "?"} p${u.pass ?? "?"}`, a, b, "unit", u.outcome ?? "running");
       cursor = b;
     });
     if (Number.isFinite(cursor) && Number.isFinite(end) && end > cursor) {
@@ -298,7 +302,7 @@
           {:else}
             {#each segments as s, i (i)}
               <div class="seg" style:flex={s.weight}>
-                <div class="bar {s.kind}"></div>
+                <div class="bar {s.kind} {s.outcome ?? ''}"></div>
                 <div class="label">{s.label}</div>
                 <div class="when ns-mono">{s.when}</div>
               </div>
@@ -698,5 +702,35 @@
     height: 13px;
     background: var(--done);
     vertical-align: -2px;
+  }
+
+  /* Filament IV (item 566): green is finished, blue is running, the
+     partial and failed colours as the pills use them; the bar is a thin
+     trace line. Gated: Classic keeps fe79d50's amber bars above. */
+  :global(:where(:root:not([data-layout="classic"]))) .bar {
+    height: 4px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .bar.unit.done {
+    background: var(--done);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .bar.unit.partial {
+    background: var(--partial);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .bar.unit.failed {
+    background: var(--failed);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .bar.unit.running,
+  :global(:where(:root:not([data-layout="classic"]))) .bar.unit.wip,
+  :global(:where(:root:not([data-layout="classic"]))) .bar.now {
+    background: var(--signal);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .timeline,
+  :global(:where(:root:not([data-layout="classic"]))) .changes-card {
+    background: var(--sheet);
+    border-color: var(--line2);
+    border-radius: var(--r2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pane {
+    padding: 22px 32px 18px 48px;
   }
 </style>

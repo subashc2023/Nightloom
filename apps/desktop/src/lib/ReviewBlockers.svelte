@@ -462,4 +462,15 @@
     white-space: pre-wrap;
     overflow-wrap: anywhere;
   }
+
+  /* Filament IV (item 566): the selected blocker carries the amber edge
+     (yours to answer); cards sit in front of the panel. Gated. */
+  :global(:where(:root:not([data-layout="classic"]))) .blk {
+    border-radius: var(--r2);
+    border-left: 3px solid transparent;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .blk.on {
+    border-left-color: var(--accent);
+    background: var(--raised);
+  }
 </style>
