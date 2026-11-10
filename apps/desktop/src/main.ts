@@ -25,6 +25,16 @@ installFieldUndo();
 // The saved palette, before the first paint.
 applyPalette(state.palette);
 
+// Filament IV's strength, before the first paint (item 525): lit (IV+) is the
+// default and needs no attribute; "calm" turns the light, the brackets and
+// the dot ground off (`[data-light="calm"]` in app.css). Read from
+// localStorage until the Appearance stage gives it a switch.
+try {
+  if (localStorage.getItem("nightloom.light") === "calm") document.documentElement.dataset.light = "calm";
+} catch {
+  // No storage (a harness, a private window): the default stands.
+}
+
 const app = mount(App, {
   target: document.getElementById("app")!,
 });
