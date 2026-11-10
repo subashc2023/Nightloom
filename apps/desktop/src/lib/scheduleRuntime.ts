@@ -187,11 +187,21 @@ function listenForWakes(): void {
   }).catch(() => {});
 }
 
-/** A composer's drain, newest first; starts the clock. Returns the undo. */
-export function registerScheduleDrain(fn: () => Promise<void>): () => void {
-  drains.push(fn);
+/** The clock and the backend's wakes, from app start (535f, the review's
+ *  535-3): ~~started only when a chat composer mounted~~ — a relaunch onto
+ *  a note, the Nightshift page or a web tab ticked nothing and armed no
+ *  wake until he opened a chat, so a scheduled message (and the limit
+ *  resume) went late again. Idempotent. */
+export function startScheduleRuntime(): void {
   listenForWakes();
   startScheduleClock(scheduleDeps);
+}
+
+/** A composer's drain, newest first (the API-key engine's send); also
+ *  starts the clock if app start has not yet. Returns the undo. */
+export function registerScheduleDrain(fn: () => Promise<void>): () => void {
+  drains.push(fn);
+  startScheduleRuntime();
   return () => {
     const i = drains.lastIndexOf(fn);
     if (i >= 0) drains.splice(i, 1);
