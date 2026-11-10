@@ -755,6 +755,15 @@
     gap: 2px;
   }
 
+  /* Item 558: at 50rem the agent's name needs the room; its type is in
+     the name's hover. Classic (68rem) keeps it on the line. */
+  .type {
+    display: none;
+  }
+  :global([data-layout="classic"]) .type {
+    display: inline;
+  }
+
   /* ---- item 558: by project (Filament IV) ---- */
   .proj {
     border: 1px solid var(--line);
