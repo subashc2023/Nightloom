@@ -7960,6 +7960,10 @@ async function runInChat(
   // composer's drain takes the next row of the chat open — this one.
   if (fg === turn) fg = null;
   notifyTurnEnded(failed);
+  // Its reply, for the hand-off and the continue-later ask (543m review: an
+  // end on screen here read none, so a turn he opened mid-way never
+  // handed off or asked) — the live words, before they are cleared.
+  const liveReply = app.live ? liveText(app.live.segments) : "";
   app.live = null;
   app.liveUsage = null;
   app.pendingApprovals = [];
@@ -7968,7 +7972,8 @@ async function runInChat(
   if (failed !== null && !refused) app.error = failed;
   if (refused && refusedTo) refusedTo(failed ?? "");
   await settleTurnView(null, id, null);
-  if (res) noteTurnLimit(id, res, { id: project, name: was?.projectName ?? null });
+  const reply = liveReply || (app.activeSessionId === id ? lastReplyText(app.events) : "");
+  if (res) noteTurnLimit(id, res, { id: project, name: was?.projectName ?? null }, reply || null);
   void refreshSessions();
   void readPlanAtReplyEnd();
   if (failed === null) void providerDrains.at(-1)?.();

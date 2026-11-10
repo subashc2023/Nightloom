@@ -414,6 +414,29 @@ describe("543b — a chat that stops short of the limit and asks is continued af
     }
   });
 
+  it("543m review: a turn begun off screen that he opens mid-way still reads its reply's ask at its end", async () => {
+    const { openSession } = await import("./state.svelte");
+    vi.mocked(api.openSession).mockImplementation(async () => []);
+    try {
+      look(OTHER, COLLEGE);
+      sendInChat(A, COLLEGE, "the whole queue", [], () => {});
+      await settle();
+      says(A, '<continue-later at="+2h">wave B</continue-later>');
+      // He opens it while it runs: its end comes on screen (`attach`).
+      await openSession(A);
+      expect(app.activeSessionId).toBe(A);
+      expect(app.background[A]).toBeUndefined();
+      turns.get(A)!(ok);
+      await settle();
+      expect(resumes[A]?.why).toBe("asked");
+      expect(app.limitPause?.window).toBe("asked");
+    } finally {
+      vi.mocked(api.openSession).mockImplementation(async () => {
+        throw new Error("a resume must not open a chat");
+      });
+    }
+  });
+
   it("a failed turn's reply asks nothing; a limit pause wins over an ask in the same reply", async () => {
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     try {
