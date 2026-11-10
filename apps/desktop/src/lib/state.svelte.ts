@@ -50,7 +50,8 @@ import {
   discardDraft,
   dropQueued,
 } from "./drafts.svelte";
-import { scheduled } from "./scheduled.svelte";
+import { releaseSpec, scheduled, wantSpec } from "./scheduled.svelte";
+import { contextOf } from "./chatContext.svelte";
 import { nameScheduledRows } from "./schedule";
 import { aimOf, indexOfAim, type Aim } from "./aim";
 import { requestComposerFocus, rewoundMessage, swapIn, untouched, type BoxSwap } from "./rewindDraft.svelte";
@@ -2702,6 +2703,19 @@ let turnSpoken = false;
  *  once, synchronously, at the top of `send`, and passed to the backend —
  *  which runs it in that chat or refuses, never in "the open chat". */
 let turnTarget: { chat: string; project: string | null } | null = null;
+/** Where that message goes instead when its chat is no longer on screen,
+ *  or no longer idle, once `sendAgent`'s reconnect returns (535f, the
+ *  review's 535-1): set and read with `turnTarget`. `busyHere` true: the
+ *  chat is still on screen but a turn started in it meanwhile. */
+let turnElsewhere: ((busyHere: boolean) => Promise<unknown>) | null = null;
+/** The chats a turn is starting in on screen (535f, 535-1): from the top
+ *  of `sendAgent` — which `sendInChat`'s on-screen path reaches with no
+ *  await between — until the turn is the window's (`app.busy`) or has
+ *  gone elsewhere. `chatRuns` counts them, so a second sender (the limit
+ *  resume and a tick at the same reset) waits instead of starting a turn
+ *  beside it during the first one's reconnect. Keyed by a token per send,
+ *  so a late end never clears a newer send's mark. */
+const startingIn = new Map<string, symbol>();
 /** `send` for a message he did not type here (the phone, a resume) —
  *  with the phone's photos, documents or council when it sent them
  *  (item 246, 1B's patch note 1), so such a turn is not his typed input. */
@@ -3976,6 +3990,10 @@ async function applyAgentDraft(updateNow: PromptLayer[] = [], take = true): Prom
   const d = app.draft;
   // As `applyDraft` (backlog 205).
   const chat = app.activeSessionId;
+  // 535f (535-1): the project open when it started — the backend reads
+  // its project at the connect's start, so its answer is stale if he
+  // switched projects during these seconds.
+  const projectAtStart = app.project?.id ?? null;
   const sent = choiceOf(d);
   // Item 306 review: the Keeps this connect's listing can include are the
   // ones made before it started; one landing while it runs stays owed.
@@ -4040,7 +4058,9 @@ async function applyAgentDraft(updateNow: PromptLayer[] = [], take = true): Prom
     // Whether Claude Code is signed in (backlog 409), for the engine chip:
     // a local `claude auth status`, zero tokens, not awaited.
     void probeAuth(res.agent?.binary ?? null);
-    app.project = res.project ?? null;
+    // A switch made during the connect wins (535f): its own `openProject`
+    // answer is newer than this connect's.
+    if ((app.project?.id ?? null) === projectAtStart) app.project = res.project ?? null;
     saveLastConnection({ ...d });
     chatConnected(chat, sent);
     void refreshPlanUsage();
@@ -7213,7 +7233,7 @@ export function turnsRunning(): boolean {
 /** Whether chat `id`'s own turn runs (A4): its sidebar row cannot be
  *  deleted while it does (the backend refuses it too). */
 export function chatRuns(id: string): boolean {
-  if (app.background[id]) return true;
+  if (app.background[id] || startingIn.has(id)) return true;
   if (!app.busy) return false;
   const running = app.parked ? app.parked.session : (fg?.chat ?? app.activeSessionId);
   return running === id;
@@ -7987,6 +8007,30 @@ async function peekNew(mode?: ChatMode, kind?: ChatKind): Promise<void> {
   }
 }
 
+/** The chat and project on screen (535f, the review's 534-1), taken
+ *  before an await whose answer is "the open chat's events". */
+function viewMark(): { chat: string | null; project: string | null } {
+  return { chat: app.activeSessionId, project: app.project?.id ?? null };
+}
+
+/** Whether the screen still shows the chat `mark` was taken on. */
+function sameView(mark: { chat: string | null; project: string | null }): boolean {
+  return app.activeSessionId === mark.chat && (app.project?.id ?? null) === mark.project;
+}
+
+/** `call`'s events adopted as the view only while the chat it was made on
+ *  is still on screen (534-1's class: rewind, edit, restore, remove and
+ *  their undo/redo; the phone's unrewind): he may open another chat in
+ *  the round trip, and that chat's view and size are its own. The change
+ *  itself is on disk either way. `true` when adopted. */
+export async function adoptOpen(call: () => Promise<SessionEvent[]>): Promise<boolean> {
+  const mark = viewMark();
+  const events = await call();
+  if (!sameView(mark)) return false;
+  app.events = events;
+  return true;
+}
+
 /**
  * The turn's end, for the view (backlog 065, 159): the log re-synced and
  * the pending chat's draft moved to the chat it made — or, when he
@@ -8003,6 +8047,9 @@ async function settleTurnView(
   // A pane showing the parked chat reads its reply from its log (piece 5).
   if (parked?.session) refreshPaneLog(parked.session, parked.events);
   app.parked = null;
+  // 535f (the review's 534-1): the chat on screen before the read — he
+  // may click another in the round trip (busy is already false).
+  const mark = viewMark();
   try {
     // The chat the turn ran in, whichever is open now (backlog 159, A1:
     // the backend's open chat follows the screen during the turn) — by
@@ -8011,7 +8058,18 @@ async function settleTurnView(
     const events = chat ? await api.transcript(false, chat) : await api.transcript(true);
     const first = events[0];
     const made = first && first.event === "session_created" ? first.id : null;
-    const plan = settlePlan({ parked, viewed: app.activeSessionId, made, pendingKey });
+    // Left during the read: treated as browsed — its log stays on disk
+    // and the chat he opened keeps its own (`openSession` aligned the
+    // backend), but a New chat's draft still follows the chat it made.
+    const left = !parked && !sameView(mark);
+    const plan = left
+      ? {
+          adopt: false,
+          activeSessionId: undefined,
+          moveDraft: made !== null && pendingKey !== null && mark.chat === null ? ([pendingKey, made] as [string, string]) : null,
+          realign: null,
+        }
+      : settlePlan({ parked, viewed: app.activeSessionId, made, pendingKey });
     // A New chat's agents, made before its id was known (backlog 160).
     if (made) adoptPending(app.subagents, made);
     // And the model and engine its first turn ran on (backlog 205), before
@@ -8286,8 +8344,39 @@ export function sendInChat(
   project: { id: string | null; name: string | null },
   text: string,
   attachments: Attachment[],
-  refused: (why: string) => void,
+  refusedTo: (why: string) => void,
 ): void {
+  // Sent, the chat's kept spec goes (535f, 535-4); refused, it stays for
+  // the retry.
+  let wasRefused = false;
+  const refused = (why: string) => {
+    wasRefused = true;
+    refusedTo(why);
+  };
+  const sent = () => {
+    if (!wasRefused) releaseSpec(id);
+  };
+  // Off screen in its own chat and project, keyed (`runInChat`): also
+  // where an on-screen send goes when he leaves the chat during its
+  // reconnect (535f, 535-1).
+  const away = () => {
+    const row = app.sessions.find((x) => x.id === id);
+    return runInChat(
+      id,
+      { id: nextQueueId(), text, attachments: attachments.map((a) => ({ ...a })) },
+      {
+        pendingMode: "normal",
+        pendingKind: app.pendingKind,
+        project: project.id,
+        projectName: project.name,
+        name: row && (app.project?.id ?? null) === project.id ? chatName(row.title, row.first_user) : null,
+      },
+      // Its own window as last read (535f, the review's 535-5), not the
+      // chat on screen's connection; unknown is null, never a guess.
+      { contextLimit: contextOf(id)?.limit || null },
+      refused,
+    );
+  };
   const here = id === app.activeSessionId && (app.project?.id ?? null) === project.id;
   if (here) {
     if (!app.connection || app.busy) {
@@ -8302,6 +8391,13 @@ export function sendInChat(
     turnTyped = false;
     turnSpoken = false;
     turnTarget = { chat: id, project: project.id };
+    // 535f (535-1): the chat counts as running from this moment, and if
+    // he leaves it (or a turn starts in it) during the reconnect, the
+    // message goes off screen into it, or back to its caller.
+    turnElsewhere = async (busyHere) => {
+      if (busyHere) refused("its chat is busy");
+      else await away();
+    };
     void send(text, images, documents, null, files).then(() => {
       // Refused before anything was sent (the backend's two wordings):
       // the caller keeps the words; the error is not this chat's to show.
@@ -8310,24 +8406,16 @@ export function sendInChat(
         app.error = null;
         refused(e);
       }
+      sent();
     });
     return;
   }
-  const row = app.sessions.find((x) => x.id === id);
-  void runInChat(
-    id,
-    { id: nextQueueId(), text, attachments: attachments.map((a) => ({ ...a })) },
-    {
-      pendingMode: "normal",
-      pendingKind: app.pendingKind,
-      project: project.id,
-      projectName: project.name,
-      name: row && (app.project?.id ?? null) === project.id ? chatName(row.title, row.first_user) : null,
-    },
-    { contextLimit: app.connection?.contextLimit ?? null },
-    refused,
-  );
+  void away().then(sent);
 }
+
+// A chat whose resume waits keeps its spec when its scheduled message
+// leaves (535f, 535-4): the resume may go off screen on it.
+wantSpec((key) => app.limitResumeAt !== null && app.limitPause?.session === key);
 
 /**
  * Resume a turn the usage limit paused (nightshift backlog 164): sends the
@@ -8507,6 +8595,8 @@ export async function send(
 ): Promise<void> {
   const target = turnTarget;
   turnTarget = null;
+  const goElsewhere = turnElsewhere;
+  turnElsewhere = null;
   if (!app.connection || app.busy) return;
   // Item 506: a message sent in a wrapped chat is staying in it.
   sentHere(app.activeSessionId);
@@ -8529,7 +8619,7 @@ export async function send(
     showBoundChat(inThread, text);
   }
   if (app.connection.engine === "claude-code") {
-    return sendAgent(text, images, documents, council, spoken, files, target);
+    return sendAgent(text, images, documents, council, spoken, files, target, goElsewhere);
   }
   // A file for Claude Code cannot go on this engine (item 277); the
   // composer refuses before here, so this is a caller that did not ask.
@@ -8643,6 +8733,8 @@ async function sendAgent(
   files: FileInput[] = [],
   // Backlog 535: the chat it must run in (a scheduled message's own).
   target: { chat: string; project: string | null } | null = null,
+  // 535f (535-1): where it goes when that chat has left the screen.
+  elsewhere: ((busyHere: boolean) => Promise<unknown>) | null = null,
 ): Promise<void> {
   // ~~The hand-off's wrap-up rides this message when the window has crossed
   // the chat's threshold (nightshift backlog 086); `withWrapUp` also moves
@@ -8650,8 +8742,33 @@ async function sendAgent(
   // blocker 120): the wrap-up is a message of its own, sent from the
   // composer's notice or by the queue; nothing is appended here.
   app.suggestion = null;
+  // 535f (535-1): this chat counts as running from here (`startingIn`).
+  const startChat = target?.chat ?? app.activeSessionId;
+  const mine = Symbol("starting");
+  if (startChat) startingIn.set(startChat, mine);
+  const started = () => {
+    if (startChat && startingIn.get(startChat) === mine) startingIn.delete(startChat);
+  };
   // A changed layer is taken at the first cold turn (backlog 174).
-  await layersBeforeTurn();
+  try {
+    await layersBeforeTurn();
+  } catch (e) {
+    started();
+    throw e;
+  }
+  // 535f (535-1): the reconnect takes seconds on a cold chat, and he may
+  // have opened another chat or project meanwhile, or a turn started:
+  // a message for a named chat is drawn here only if that chat is still
+  // the one on screen and idle — else it runs off screen in its own chat
+  // (or goes back to its caller), and nothing here is touched.
+  if (target) {
+    const onScreen = app.activeSessionId === target.chat && (app.project?.id ?? null) === target.project;
+    if (!onScreen || app.busy || !app.connection) {
+      started();
+      await elsewhere?.(onScreen);
+      return;
+    }
+  }
   // Same as `send`: the pending chat's key at the moment of the send
   // (nightshift backlog 094).
   const pendingKey = pendingChatKey();
@@ -8684,6 +8801,8 @@ async function sendAgent(
   app.liveUsage = null;
   app.turnSeq += 1;
   app.busy = true;
+  // Now the window's turn; `chatRuns` reads it from `fg` (535f).
+  started();
   // This turn, for the background (backlog 159, A2): he may open another
   // chat while it runs, and send there.
   const turn: TurnCtx = {
@@ -10396,8 +10515,17 @@ export async function rewindTo(to: number, aim: boolean | string = false): Promi
   // What the removed turns wrote, read before the rewind supersedes them
   // (item 259): offered to be set aside, since the next run reads them.
   const written = here === null ? [] : rewoundWrites(app.events, liveFlags(app.events), here);
+  // 535f (534-1): the chat's box and stack, named before the round trip.
+  const key = openChatKey();
+  const scope = chatScope();
   try {
-    app.events = await call();
+    if (!(await adoptOpen(call))) {
+      // He opened another chat meanwhile: the rewind is on disk in this
+      // one; its message goes back in its own box, and nothing here (the
+      // view, the size, the files card, the undo) is the chat now open.
+      if (back) fillBox(key, back);
+      return;
+    }
     app.error = null;
   } catch (e) {
     app.error = String(e);
@@ -10415,15 +10543,14 @@ export async function rewindTo(to: number, aim: boolean | string = false): Promi
           done: null,
         }
       : null;
-  const key = openChatKey();
   let swap = back ? fillBox(key, back) : null;
   // The inverse lifts the marker this call landed — and, after a redo,
   // the marker *that* call lands, which is why the index is a variable.
   let marker = lastMarker("rewind");
-  const handle = pushUndo(chatScope(), {
+  const handle = pushUndo(scope, {
     label: "rewind",
     undo: async () => {
-      app.events = await api.unrewind(marker);
+      if (!(await adoptOpen(() => api.unrewind(marker)))) return;
       refill();
       // The turn is back; its files were left alone unless he set them
       // aside, and then the card says where they went.
@@ -10436,7 +10563,7 @@ export async function rewindTo(to: number, aim: boolean | string = false): Promi
       }
     },
     redo: async () => {
-      app.events = await call();
+      if (!(await adoptOpen(call))) return;
       refill();
       marker = lastMarker("rewind");
       if (back) swap = fillBox(key, back);
@@ -10676,8 +10803,9 @@ export async function saveEdit(
   const previous = here === null ? null : currentText(here);
   const previousSet = attachments && here !== null ? currentAttachments(here) : null;
   try {
-    const res = await editSaved(index, text, attachments, meant);
-    app.events = res.events;
+    // Another chat opened in the round trip (535f, 534-1): saved on disk,
+    // no undo on the chat now open.
+    if (!(await adoptOpen(async () => (await editSaved(index, text, attachments, meant)).events))) return true;
     app.error = null;
   } catch (e) {
     addToast(String(e));
@@ -10690,8 +10818,7 @@ export async function saveEdit(
   // same marker, the same CLI copy on Claude Code, the original kept — and,
   // when the attachments changed, back to the set it carried (item 336).
   const editTo = async (t: string, set: EditedAttachments | null) => {
-    const res = await editSaved(index, t, set, meant);
-    app.events = res.events;
+    await adoptOpen(async () => (await editSaved(index, t, set, meant)).events);
   };
   pushUndo(chatScope(), {
     label: "edit",
@@ -10811,8 +10938,8 @@ export async function removeTurn(index: number, aim?: Aim | null): Promise<void>
   if (app.busy) return;
   const meant = aimFor(index, aim);
   try {
-    const res = await removeCall(index, meant);
-    app.events = res.events;
+    // Another chat opened in the round trip (535f): done on disk, no undo here.
+    if (!(await adoptOpen(async () => (await removeCall(index, meant)).events))) return;
     app.error = null;
   } catch (e) {
     addToast(String(e));
@@ -10821,10 +10948,10 @@ export async function removeTurn(index: number, aim?: Aim | null): Promise<void>
   const handle = pushUndo(chatScope(), {
     label: "remove",
     undo: async () => {
-      app.events = (await restoreCall(index, meant)).events;
+      await adoptOpen(async () => (await restoreCall(index, meant)).events);
     },
     redo: async () => {
-      app.events = (await removeCall(index, meant)).events;
+      await adoptOpen(async () => (await removeCall(index, meant)).events);
     },
   });
   undoToast("Removed from context", handle);
@@ -10840,7 +10967,8 @@ export async function restoreTurn(index: number, aim?: Aim | null): Promise<void
   if (app.busy) return;
   const meant = aimFor(index, aim);
   try {
-    app.events = (await restoreCall(index, meant)).events;
+    // Another chat opened in the round trip (535f): done on disk, no undo here.
+    if (!(await adoptOpen(async () => (await restoreCall(index, meant)).events))) return;
     app.error = null;
   } catch (e) {
     addToast(String(e));
@@ -10849,10 +10977,10 @@ export async function restoreTurn(index: number, aim?: Aim | null): Promise<void
   pushUndo(chatScope(), {
     label: "restore",
     undo: async () => {
-      app.events = (await removeCall(index, meant)).events;
+      await adoptOpen(async () => (await removeCall(index, meant)).events);
     },
     redo: async () => {
-      app.events = (await restoreCall(index, meant)).events;
+      await adoptOpen(async () => (await restoreCall(index, meant)).events);
     },
   });
 }
@@ -10867,7 +10995,8 @@ export async function removeBlock(index: number, block: number, toast = true, ai
   if (app.busy) return false;
   const meant = aimFor(index, aim);
   try {
-    app.events = (await removeBlockCall(index, block, meant)).events;
+    // Another chat opened in the round trip (535f): done on disk, no undo here.
+    if (!(await adoptOpen(async () => (await removeBlockCall(index, block, meant)).events))) return true;
     app.error = null;
   } catch (e) {
     addToast(String(e));
@@ -10876,10 +11005,10 @@ export async function removeBlock(index: number, block: number, toast = true, ai
   const handle = pushUndo(chatScope(), {
     label: "remove",
     undo: async () => {
-      app.events = (await restoreBlockCall(index, block, meant)).events;
+      await adoptOpen(async () => (await restoreBlockCall(index, block, meant)).events);
     },
     redo: async () => {
-      app.events = (await removeBlockCall(index, block, meant)).events;
+      await adoptOpen(async () => (await removeBlockCall(index, block, meant)).events);
     },
   });
   if (toast) undoToast("Removed from context", handle);
@@ -10891,7 +11020,8 @@ export async function restoreBlock(index: number, block: number, aim?: Aim | nul
   if (app.busy) return;
   const meant = aimFor(index, aim);
   try {
-    app.events = (await restoreBlockCall(index, block, meant)).events;
+    // Another chat opened in the round trip (535f): done on disk, no undo here.
+    if (!(await adoptOpen(async () => (await restoreBlockCall(index, block, meant)).events))) return;
     app.error = null;
   } catch (e) {
     addToast(String(e));
@@ -10900,10 +11030,10 @@ export async function restoreBlock(index: number, block: number, aim?: Aim | nul
   pushUndo(chatScope(), {
     label: "restore",
     undo: async () => {
-      app.events = (await removeBlockCall(index, block, meant)).events;
+      await adoptOpen(async () => (await removeBlockCall(index, block, meant)).events);
     },
     redo: async () => {
-      app.events = (await restoreBlockCall(index, block, meant)).events;
+      await adoptOpen(async () => (await restoreBlockCall(index, block, meant)).events);
     },
   });
 }
@@ -10932,16 +11062,23 @@ export async function saveReplyEdit(
   const meant = aimFor(index, aim);
   const edits = blockEditsOf(here);
   const done: { block: number; text: string; previous: string }[] = [];
+  // 535f (534-1): each step acts on the backend's open chat, so the
+  // sequence stops when he opens another chat between two steps; what
+  // landed stays on disk, and the stack is this chat's.
+  const mark = viewMark();
+  const scope = chatScope();
   for (const c of changes) {
+    if (!sameView(mark)) break;
     const b = e.blocks[c.block];
     const previous = edits.get(c.block) ?? (b?.type === "text" ? b.text : "");
     try {
-      app.events = (
-        c.text.length === 0
+      const adopted = await adoptOpen(async () =>
+        (c.text.length === 0
           ? await removeBlockCall(index, c.block, meant)
           : await editBlockCall(index, c.block, c.text, meant)
-      ).events;
-      app.error = null;
+        ).events,
+      );
+      if (adopted) app.error = null;
     } catch (err) {
       addToast(String(err));
       break;
@@ -10949,19 +11086,22 @@ export async function saveReplyEdit(
     done.push({ block: c.block, text: c.text, previous });
   }
   if (done.length === 0) return false;
+  if (!sameView(mark)) return done.length === changes.length;
   const apply = async (forward: boolean) => {
     for (const d of forward ? done : [...done].reverse()) {
       const text = forward ? d.text : d.previous;
-      app.events = (
-        forward && d.text.length === 0
+      const adopted = await adoptOpen(async () =>
+        (forward && d.text.length === 0
           ? await removeBlockCall(index, d.block, meant)
           : !forward && d.text.length === 0
             ? await restoreBlockCall(index, d.block, meant)
             : await editBlockCall(index, d.block, text, meant)
-      ).events;
+        ).events,
+      );
+      if (!adopted) return;
     }
   };
-  pushUndo(chatScope(), {
+  pushUndo(scope, {
     label: "edit",
     undo: () => apply(false),
     redo: () => apply(true),

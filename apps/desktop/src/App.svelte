@@ -97,6 +97,7 @@
   import { externalHref } from "./lib/extlink";
   import LaunchScreen from "./lib/LaunchScreen.svelte";
   import { launch } from "./lib/launch.svelte";
+  import { startScheduleRuntime } from "./lib/scheduleRuntime";
 
   onMount(() => {
     // The pickers' models from `model-list.json` (item 272); the built-in
@@ -109,11 +110,15 @@
     void pruneDraftCopies();
     // A launch that fails outright must not leave the launch screen up
     // over the reason (item 220).
-    void init().catch((e: unknown) => {
-      launch.opening = false;
-      launch.connectSettled = true;
-      app.error = String(e);
-    });
+    void init()
+      .catch((e: unknown) => {
+        launch.opening = false;
+        launch.connectSettled = true;
+        app.error = String(e);
+      })
+      // The schedule's clock and the backend's wakes (535f, 535-3): from
+      // app start, whatever tab is in front — not from a composer's mount.
+      .finally(() => startScheduleRuntime());
     // The stored zoom back on the window, and the View menu's zoom items
     // (nightshift backlog 108).
     void initZoom();
