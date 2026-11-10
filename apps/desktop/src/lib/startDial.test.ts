@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { approxTokens, blendSizes, drawnGroups, easeOut, startArcs, startGroups, startSummary } from "./startDial";
+import { approxTokens, blendSizes, drawnGroups, easeOut, ringArcs, startArcs, startGroups, startScale, startSummary, SWEEP_MS } from "./startDial";
 import type { StartContext } from "./api";
 
 const ctx: StartContext = {
@@ -52,5 +52,26 @@ describe("the new-chat dial's starting context (item 574)", () => {
     expect(easeOut(1)).toBe(1);
     expect(easeOut(0.5)).toBeGreaterThan(0.5);
     expect(approxTokens(34_200)).toBe("≈ 34k");
+  });
+  it("574b: draws the start on an inner ring of 100k, or of a hand-off mark under 200k", () => {
+    expect(startScale(1_000_000)).toEqual({ tokens: 100_000, label: "of 100k" });
+    expect(startScale(null)).toEqual({ tokens: 100_000, label: "of 100k" });
+    expect(startScale(200_000).tokens).toBe(100_000);
+    expect(startScale(150_000)).toEqual({ tokens: 150_000, label: "of your 150k hand-off" });
+    const g = startGroups(ctx);
+    const sizes = g.map((x) => x.tokens);
+    const total = sizes.reduce((a, b) => a + b, 0);
+    const r = ringArcs(g, sizes, startScale(1_000_000));
+    const end = r[r.length - 1].from + r[r.length - 1].share;
+    expect(end).toBeCloseTo(total / 100_000);
+    expect(r[0].tip).toContain("of 100k");
+    // More than the ring holds: clipped to one turn, never drawn past it.
+    const big = ringArcs(g, sizes.map((n) => n * 10), startScale(1_000_000));
+    const last = big[big.length - 1];
+    expect(last.from + last.share).toBeLessThanOrEqual(1);
+  });
+
+  it("574b: the sweep takes 900 ms", () => {
+    expect(SWEEP_MS).toBe(900);
   });
 });

@@ -86,8 +86,9 @@ export function easeOut(t: number): number {
   return 1 - (1 - x) ** 3;
 }
 
-/** The sweep on open and the re-flow on a layer change, in ms (spec 574). */
-export const SWEEP_MS = 700;
+/** The sweep on open and the re-flow on a layer change, in ms (spec 574;
+ *  574b: 900, so the bolder inner ring is seen filling). */
+export const SWEEP_MS = 900;
 export const REFLOW_MS = 400;
 
 /**
@@ -122,4 +123,31 @@ export function drawnGroups(
     if (g && (sizes.get(tone) ?? 0) > 0) groups.push(g);
   }
   return { groups, sizes: groups.map((g) => sizes.get(g.tone) ?? 0) };
+}
+
+/**
+ * The inner ring's scale (574b): a new chat's ~38k is a 14° sliver of a 1M
+ * ring, so the starting context also fills an inner ring of its own scale —
+ * the hand-off mark when that is under 200k (where it makes a real ring),
+ * else a fixed 100k (his cap is 1000k, which would be a sliver again).
+ */
+export const RING_FIXED = 100_000;
+export function startScale(markTokens: number | null): { tokens: number; label: string } {
+  if (markTokens != null && markTokens > 0 && markTokens < 200_000) {
+    return { tokens: markTokens, label: `of your ${shortTokens(markTokens)} hand-off` };
+  }
+  return { tokens: RING_FIXED, label: `of ${shortTokens(RING_FIXED)}` };
+}
+
+/** Arcs laid on the inner ring: shares of `scale`, clipped to one turn; each
+ *  hover names the ring's scale. */
+export function ringArcs(groups: readonly StartGroup[], sizes: readonly number[], scale: { tokens: number; label: string }): StartArc[] {
+  const total = sizes.reduce((a, b) => a + Math.max(0, b), 0);
+  const note = `Inner ring: ${approxTokens(total)} ${scale.label} (the outer ring is the whole window)`;
+  const out: StartArc[] = [];
+  for (const a of startArcs(groups, sizes, scale.tokens)) {
+    if (a.from >= 1) break;
+    out.push({ ...a, share: Math.min(a.share, 1 - a.from), tip: `${a.tip}\n${note}` });
+  }
+  return out;
 }
