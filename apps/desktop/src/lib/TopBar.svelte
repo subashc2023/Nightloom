@@ -536,7 +536,7 @@
           use:tip={"This chat is a version of another: Make main puts it in that chat's row, name and place, and keeps the other as a version (‹ › under the edited message)"}
           onclick={() => void makeMainChat(sid)}
         >
-          <span aria-hidden="true">⑂</span><span class="fold1"> Make main</span>
+          <span class="mm-icon" aria-hidden="true">⑂</span><span class="fold3">Make main</span>
         </button>
       {/if}
     </div>
@@ -858,6 +858,30 @@
   }
   .continued:hover {
     color: var(--ink);
+  }
+  /* Make main (item 555, his report 2026-11-10: the folded ⑂ alone was
+     tiny and sank into the background): an accent pill that keeps its
+     words until the last fold level and never shrinks away. */
+  .continued.make-main {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex-shrink: 0;
+    padding: 3px 10px;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    color: var(--accent);
+    font-weight: 600;
+    overflow: visible;
+  }
+  .continued.make-main:hover {
+    background: color-mix(in srgb, var(--accent) 24%, transparent);
+    color: var(--ink);
+  }
+  .make-main .mm-icon {
+    font-size: 14px;
+    line-height: 1;
   }
   .right {
     display: flex;
