@@ -21,7 +21,7 @@
   // Item 542: the layout, Filament IV or Classic (the look before item 525).
   import { LAYOUTS, classic, layout, setLayout } from "./layout.svelte";
   // Filament IV's accent and instrument light (item 571, stage 7).
-  import { ACCENTS, LIGHTS, look, setAccent, setLight, applyLook, handoffChoices } from "./settings/look.svelte";
+  import { ACCENTS, LIGHTS, look, setAccent, setLight, applyLook } from "./settings/look.svelte";
   import ContextDial from "./ContextDial.svelte";
   import { planDials, surfaceShares, paceLine, weekGone, resetsWhen } from "./settingsUsage";
   /** The Layout choice: the layout, then the accent again (no accent is stamped under Classic). */
@@ -1512,9 +1512,9 @@
         </div>
       </section>
       <!-- Filament IV's own choices (item 571; f4-settings-appearance.png):
-           the accent, the instrument light, the hand-off line. Not drawn
+           the accent and the instrument light. Not drawn
            under Classic, whose palettes carry their own accent and no
-           light; the hand-off line is also in Subscription → Hand-off. -->
+           light. The hand-off line lives only in Subscription → Hand-off (his ask 2026-11-10: one place for one setting). -->
       <section class="card f4-only" aria-label="Accent">
         <div class="ch"><span class="t">Accent</span></div>
         <div class="pick3" role="radiogroup" aria-label="Accent">
@@ -1536,21 +1536,6 @@
               <span class="pick-n">{l.note}</span>
             </button>
           {/each}
-        </div>
-      </section>
-      <section class="card f4-only" aria-label="Details">
-        <div class="ch"><span class="t">Details</span></div>
-        <div class="d4-row">
-          <span class="d4-l">Hand-off line<small>Where the context dial puts its notch, for every chat without a mark of its own — the same setting as Subscription → Hand-off's token cap</small></span>
-          <select
-            aria-label="Hand-off line, thousands of tokens"
-            value={String(handoffCapK)}
-            onchange={(e) => setHandoffCapK(e.currentTarget.value)}
-          >
-            {#each handoffChoices(handoffCapK) as k (k)}
-              <option value={String(k)}>{k === 0 ? `Percent only (${handoffDefaultPct}%)` : `${k}k`}</option>
-            {/each}
-          </select>
         </div>
       </section>
       <p class="note">
@@ -5371,10 +5356,6 @@
     font-size: 13px;
     line-height: 1.45;
     color: var(--ink2);
-  }
-  .d4-row select {
-    flex: none;
-    min-width: 7rem;
   }
 
   /* Usage (f4-settings-usage.png): the two windows as dials, their rows beside. */
