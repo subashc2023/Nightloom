@@ -1008,12 +1008,6 @@
   .gauge.stale .plan-age {
     font-style: italic;
   }
-  .gauge.warm .gbar.ctx .fill {
-    background: var(--partial);
-  }
-  .gauge.hot .gbar.ctx .fill {
-    background: var(--failed);
-  }
   /* The gauge card: the rail card's frame, a label column and a value
      column; portalled, so fixed to the viewport. */
   .gauge-card {
