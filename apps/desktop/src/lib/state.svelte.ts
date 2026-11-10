@@ -51,6 +51,7 @@ import {
   dropQueued,
 } from "./drafts.svelte";
 import { releaseSpec, scheduled, wantSpec } from "./scheduled.svelte";
+import { contextOf } from "./chatContext.svelte";
 import { nameScheduledRows } from "./schedule";
 import { aimOf, indexOfAim, type Aim } from "./aim";
 import { requestComposerFocus, rewoundMessage, swapIn, untouched, type BoxSwap } from "./rewindDraft.svelte";
@@ -8370,7 +8371,9 @@ export function sendInChat(
         projectName: project.name,
         name: row && (app.project?.id ?? null) === project.id ? chatName(row.title, row.first_user) : null,
       },
-      { contextLimit: app.connection?.contextLimit ?? null },
+      // Its own window as last read (535f, the review's 535-5), not the
+      // chat on screen's connection; unknown is null, never a guess.
+      { contextLimit: contextOf(id)?.limit || null },
       refused,
     );
   };

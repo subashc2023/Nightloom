@@ -218,3 +218,12 @@ describe("535f — 535-4: a chat's kept agent spec goes when its message leaves"
     resumeAfterLimit(); // its second click cancels the wait
   });
 });
+
+describe("535f — 535-5: an off-screen delivery is judged against its own chat's window", () => {
+  it("passes the chat's last read window (or unknown), not the connection on screen", async () => {
+    const stateSrc = (await import("./state.svelte.ts?raw")).default;
+    const away = stateSrc.slice(stateSrc.indexOf("export function sendInChat("), stateSrc.indexOf("const here = id === app.activeSessionId"));
+    expect(away).toMatch(/\{ contextLimit: contextOf\(id\)\?\.limit \|\| null \}/);
+    expect(away).not.toMatch(/contextLimit: app\.connection/);
+  });
+});
