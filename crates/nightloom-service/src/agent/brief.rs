@@ -397,6 +397,67 @@ pub fn write_limits(dir: &Path, limits: &SubagentLimits) -> std::io::Result<()> 
     )
 }
 
+/// The one-time switch of blocker 1757 (his answer, 2026-11-10: "Yes,
+/// switch them"): every chat's [`LIMITS_FILE`] under `log_dir/ask/` whose
+/// `model` is `same` is rewritten to `choose`, the bytes of every other
+/// field left exactly as they were. A file that is not a JSON object, has
+/// another model, or cannot be read is left alone. Returns how many were
+/// switched. The window runs it once (its marker); it never runs again,
+/// so a chat he sets back to Same stays Same.
+pub fn switch_same_to_choose(log_dir: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(log_dir.join("ask")) else {
+        return 0;
+    };
+    let mut switched = 0;
+    for entry in entries.flatten() {
+        let path = entry.path().join(LIMITS_FILE);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if let Some(next) = same_to_choose(&text)
+            && std::fs::write(&path, next).is_ok()
+        {
+            switched += 1;
+        }
+    }
+    switched
+}
+
+/// The text of a limits file with its top-level `"model": "same"` made
+/// `"choose"`, or `None` when its model is not `same`. Only that value's
+/// bytes change (pure; [`switch_same_to_choose`]).
+fn same_to_choose(text: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    if v.get("model").and_then(|m| m.as_str()) != Some("same") {
+        return None;
+    }
+    // The key is a top-level one and the files hold no nested `model`
+    // (the struct has none), so the single `"model"` key is it.
+    const KEY: &str = "\"model\"";
+    const SAME: &str = "\"same\"";
+    let key = text.find(KEY)?;
+    if text[key + 1..].contains(KEY) {
+        return None;
+    }
+    let after = &text[key + KEY.len()..];
+    let colon = after.find(':')?;
+    if !after[..colon].trim().is_empty() {
+        return None;
+    }
+    let rest = &after[colon + 1..];
+    let value = rest.len() - rest.trim_start().len();
+    if !rest[value..].starts_with(SAME) {
+        return None;
+    }
+    let at = key + KEY.len() + colon + 1 + value;
+    let out = format!("{}\"choose\"{}", &text[..at], &text[at + SAME.len()..]);
+    // What is written reads back as the same limits with Choose.
+    let check: serde_json::Value = serde_json::from_str(&out).ok()?;
+    let mut want = v;
+    want["model"] = serde_json::Value::from("choose");
+    (check == want).then_some(out)
+}
+
 /// The chat's model, beside the limits, for `SubagentModel::Same` (257).
 pub const CHAT_MODEL_FILE: &str = "subagent-chat-model.txt";
 
@@ -2575,6 +2636,46 @@ pub fn run_hook(args: &[String]) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// Blocker 1757: each chat on Same is switched to Choose, the bytes of
+    /// every other field untouched; Choose, Sonnet, an old `chat`, a broken
+    /// file and a chat with no file are left as they were.
+    #[test]
+    fn the_1757_switch_makes_same_choose_and_touches_nothing_else() {
+        let log = std::env::temp_dir().join(format!("nightloom-1757-{}", uuid::Uuid::new_v4()));
+        let ask = log.join("ask");
+        // As the real files are written: pretty, with u64::MAX for an off cap.
+        let same = "{\n  \"per_turn\": 18446744073709551615,\n  \"depth\": 2,\n  \"model\": \"same\",\n  \"off\": {\n    \"per_turn\": true\n  },\n  \"nested\": 2\n}";
+        let files = [
+            ("a", same.to_string()),
+            ("b", same.replace("\"same\"", "\"sonnet\"")),
+            ("c", same.replace("\"same\"", "\"choose\"")),
+            ("d", same.replace("\"same\"", "\"chat\"")),
+            ("e", "{ not json \"model\": \"same\"".to_string()),
+        ];
+        for (chat, text) in &files {
+            std::fs::create_dir_all(ask.join(chat)).unwrap();
+            std::fs::write(ask.join(chat).join(super::LIMITS_FILE), text).unwrap();
+        }
+        std::fs::create_dir_all(ask.join("f")).unwrap();
+        assert_eq!(super::switch_same_to_choose(&log), 1);
+        let read = |c: &str| std::fs::read_to_string(ask.join(c).join(super::LIMITS_FILE)).unwrap();
+        assert_eq!(read("a"), same.replace("\"same\"", "\"choose\""));
+        assert_eq!(
+            super::read_limits(&ask.join("a")).model,
+            super::SubagentModel::Choose
+        );
+        assert_eq!(super::read_limits(&ask.join("a")).depth, 2);
+        for (chat, text) in &files[1..] {
+            assert_eq!(&read(chat), text, "chat {chat} changed");
+        }
+        assert!(!ask.join("f").join(super::LIMITS_FILE).exists());
+        // Run again (it never is — the window's marker — but harmless): nothing.
+        assert_eq!(super::switch_same_to_choose(&log), 0);
+        // A log folder with no `ask` at all.
+        assert_eq!(super::switch_same_to_choose(&log.join("nowhere")), 0);
+        std::fs::remove_dir_all(&log).ok();
+    }
+
     #[test]
     fn the_seventh_spawn_of_a_turn_is_refused_and_a_new_turn_starts_over() {
         let dir = std::env::temp_dir().join(format!("nightloom-spawn-cap-{}", std::process::id()));

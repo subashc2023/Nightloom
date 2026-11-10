@@ -4587,6 +4587,34 @@ fn idle_seconds() -> Option<f64> {
     wake::idle_seconds()
 }
 
+/// Blocker 1757's one-time switch (his answer, 2026-11-10: "Yes, switch
+/// them"): every chat's `subagent-limits.json` on Same, in the unfiled
+/// chats and in every project, made Choose — no other field touched
+/// (`brief::switch_same_to_choose`). The window calls it once, behind its
+/// own marker, so it never overrides a chat he sets back to Same. Returns
+/// how many chats were switched.
+#[tauri::command]
+async fn switch_subagents_same_to_choose(state: State<'_, AppState>) -> Result<usize, String> {
+    let mut dirs = vec![state.default_log_dir.clone()];
+    dirs.extend(
+        state
+            .workspaces
+            .lock()
+            .await
+            .registry
+            .projects()
+            .iter()
+            .map(|p| p.session_dir()),
+    );
+    tokio::task::spawn_blocking(move || {
+        dirs.iter()
+            .map(|d| nightloom_service::agent::brief::switch_same_to_choose(d))
+            .sum()
+    })
+    .await
+    .map_err(|e| format!("switching the subagent model: {e}"))
+}
+
 /// An aside's answer (nightshift backlog 081): the model's text, what the
 /// CLI estimated it would have cost, and nothing that touches the chat.
 #[derive(Serialize)]
@@ -9396,6 +9424,7 @@ fn main() {
             continue_session,
             continue_chat,
             idle_seconds,
+            switch_subagents_same_to_choose,
             delete_session,
             move_session,
             restore_session,

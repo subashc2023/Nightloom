@@ -2,6 +2,7 @@ import { viewRenameKeys } from "./viewState";
 import { tick, untrack } from "svelte";
 import { noteThreadHandoff, peekThreadHandoff, takeThreadHandoff } from "./threadHandoff.svelte";
 import { hasHiddenChars } from "./shellRun";
+import { switchSameToChoose } from "./subagentSwitch";
 import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
 import {
@@ -1794,6 +1795,13 @@ export async function init(): Promise<void> {
   if (last) {
     app.draft = last;
     sanitizeThinking(app.draft);
+  }
+  // Blocker 1757, once ever: every chat's helpers on "Same" go to "Choose"
+  // (item 540's model rule is enforced there) — the setting and the files.
+  try {
+    switchSameToChoose(app.draft, localStorage, () => saveLastConnection({ ...app.draft }), api.switchSubagentsSameToChoose);
+  } catch {
+    // Never blocks the launch.
   }
   try {
     app.providers = await api.providers();

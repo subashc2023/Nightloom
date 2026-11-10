@@ -845,6 +845,12 @@ export function idleSeconds(): Promise<number | null> {
   return invoke("idle_seconds");
 }
 
+/** Blocker 1757's one-time switch of every chat's subagent model from Same
+ *  to Choose (`subagentSwitch.ts` calls it once); how many were switched. */
+export function switchSubagentsSameToChoose(): Promise<number> {
+  return invoke("switch_subagents_same_to_choose");
+}
+
 /** A line for `<config dir>/logs/schedule.log` (backlog 535). */
 export function scheduleLog(text: string): Promise<null> {
   return invoke("schedule_log", { text });
