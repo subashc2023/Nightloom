@@ -120,6 +120,12 @@
   function callsOf(segs: Segment[]): number {
     return segs.reduce((n, s) => n + (s.kind === "tool" ? 1 + callsOf(s.call.children ?? []) : 0), 0);
   }
+  /** Item 564: a step's number in its list — calls and thinking, 1-based. */
+  function stepNo(segs: Segment[], k: number): number {
+    let n = 0;
+    for (let j = 0; j <= k; j++) if (segs[j].kind === "tool" || segs[j].kind === "thinking") n++;
+    return n;
+  }
 </script>
 
 <div class="sub-view">
@@ -240,6 +246,10 @@
           use:keptOpen={{ key: `${foldBase}|call:${s.call.id}`, fallback: depth === 0 && !!s.call.result?.is_error }}
         >
           <summary>
+            <!-- Item 564: the trace's number and status mark; Filament IV only (hidden under Classic). -->
+            <span class="t-no" aria-hidden="true">{String(stepNo(segs, k)).padStart(2, "0")}</span>
+            <span class="t-st" class:t-done={!!s.call.result && !s.call.result.is_error && !s.call.denied} class:t-bad={!!s.call.result?.is_error || !!s.call.denied}
+              aria-hidden="true">{s.call.denied ? "⊘" : s.call.result ? (s.call.result.is_error ? "✕" : "✓") : "■"}</span>
             <span class="name" use:tip={s.call.name}>{shortToolName(s.call.name)}</span>
             <span class="arg">{toolInputSummary(s.call.input)}</span>
             <span class="size">
@@ -268,7 +278,7 @@
         {/if}
       {:else if s.kind === "thinking"}
         <details class="thought" use:keptOpen={{ key: `${foldBase}|thought:${path}:${k}` }}>
-          <summary>thought{s.ms != null ? ` · ${Math.round(s.ms / 1000)} s` : ""}</summary>
+          <summary><span class="t-no" aria-hidden="true">{String(stepNo(segs, k)).padStart(2, "0")}</span><span class="t-st t-done" aria-hidden="true">✓</span>thought{s.ms != null ? ` · ${Math.round(s.ms / 1000)} s` : ""}</summary>
           <pre class="text">{s.text}</pre>
         </details>
       {:else if s.kind === "redacted"}
@@ -358,6 +368,34 @@
   }
   .call.error .size {
     color: var(--error);
+  }
+  /* Item 564 (Filament IV stage 5): each step numbered with its status mark,
+     as the transcript's trace. Classic draws neither (its look, unchanged). */
+  .t-no {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    color: var(--dim);
+    flex: none;
+    margin-right: 8px;
+  }
+  .t-st {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--signal);
+    flex: none;
+    width: 12px;
+    margin-right: 6px;
+  }
+  .t-st.t-done {
+    color: var(--done);
+  }
+  .t-st.t-bad {
+    color: var(--failed);
+  }
+  :global([data-layout="classic"]) .t-no,
+  :global([data-layout="classic"]) .t-st {
+    display: none;
   }
   .body {
     margin: 6px 0 4px 12px;

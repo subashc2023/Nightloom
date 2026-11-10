@@ -87,6 +87,7 @@
   // appearance is thrown in along the send flight's path, not spawned.
   import { thinkingArrival, type ArrivalParams } from "./thinkingArrival";
   // Item 564 (Filament IV stage 5): the turn trace's clock and the stream speed.
+  import { untrack } from "svelte";
   import { SpeedMeter, barOf, fmtSecs, sparkPoints, stepKeys, traceBook, type TraceRecord } from "./turnTiming";
   // Item 495 part 2: the folds kept past a chat switch.
   import { decodeOverride, encodeOverride, foldKey, keptGet, keptOpen, keptSet, type FoldScope } from "./keptFolds.svelte";
@@ -458,13 +459,14 @@
     const fresh = firstLook && segs.length > 0 && at - (since ?? at) > 2000;
     firstLook = false;
     traceBook.observe(liveRec, segs, at, fresh);
-    traceRev++;
+    // Untracked: the effect must not depend on the counter it bumps.
+    untrack(() => traceRev++);
   });
   // The turn ended under this reply: steps still open end with it.
   $effect(() => {
     if (streaming || !liveRec) return;
     traceBook.close(liveRec);
-    traceRev++;
+    untrack(() => traceRev++);
   });
   const traceRec = $derived.by<TraceRecord | null>(() => {
     void traceRev;
@@ -490,7 +492,8 @@
     const k = stepKey[i];
     const st = r && k ? r.steps[k] : undefined;
     if (!st) return null;
-    return (st.end ?? now) - st.start;
+    // A step stamped since the last tick reads from the clock, not below zero.
+    return (st.end ?? Math.max(now, Date.now())) - st.start;
   }
   function barTitle(i: number): string {
     const r = traceRec;
@@ -529,7 +532,8 @@
   }
   $effect(() => {
     if (!streaming) return;
-    meter.sample(streamedChars());
+    // Untracked: a delta must not restart the once-a-second clock.
+    untrack(() => meter.sample(streamedChars()));
     const t = setInterval(() => {
       meter.sample(streamedChars());
       speed = meter.rate();
