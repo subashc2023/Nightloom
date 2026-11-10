@@ -20,7 +20,7 @@
   import { cli } from "./cliUpdate.svelte";
   import { modelList } from "./modelList.svelte";
   import { modelSeen } from "./modelSeen.svelte";
-  import { aliasView, currentCliVersion, fullIdRows, newestModels } from "./modelSeen";
+  import { currentCliVersion, familyRows, newestModels } from "./modelSeen";
   import type { IconName } from "./icons";
   import Icon from "./Icon.svelte";
   import Kbd from "./Kbd.svelte";
@@ -135,22 +135,27 @@
     // picker's models on ⌘⇧1…9, every provider alike (2026-09-14).
     // Item 511: each alias's number on the CLI now, as the composer's menu.
     const cliNow = currentCliVersion(cli.status?.installed, app.connection?.agent?.version);
+    // ~~One row per alias on its letter, then each family's newest by full
+    // id unless an alias shows it (511)~~ — item 518: one row per family,
+    // as the composer's menu (`familyRows`): `Switch to Fable 5.2`, the
+    // alias noted when it lags, its own row only while the chat is on it.
+    const aliases = [...new Set([...MODEL_KEYS.map((k) => k.alias), ...modelList.models])];
+    const keyOf = (a: string | null) => {
+      const k = a ? MODEL_KEYS.find((m) => m.alias === a) : undefined;
+      return k ? `${mod}${shift}${k.key}` : "";
+    };
     const rows: Row[] = agent
-      ? MODEL_KEYS.map((k) => {
-          const current = app.draft.agentModel === k.alias;
-          const v = aliasView(modelSeen.byAlias, k.alias, cliNow).detail.replace(/^· /, "");
-          return {
-            id: `model:${k.alias}`,
-            label: `Switch to ${k.alias}`,
-            // ~~current ? "current" : "the CLI resolves it"~~ (item 511)
-            meta: current ? `current · ${v}` : v,
-            icon: current ? "check" : "chevr",
-            key: `${mod}${shift}${k.key}`,
-            group: "Model",
-            run: () => go(() => runMenuCommand(`model_${k.alias}`)),
-            current,
-          };
-        })
+      ? familyRows(aliases, newestModels(app.modelLists["anthropic"]), modelSeen.byAlias, cliNow, app.draft.agentModel).map((f) => ({
+          id: `model:${f.key}`,
+          label: `Switch to ${f.label}`,
+          // ~~current ? "current" : "the CLI resolves it"~~ (item 511)
+          meta: f.detail.replace(/^· /, ""),
+          icon: f.on ? "check" : "chevr",
+          key: keyOf(f.capAlias),
+          group: "Model",
+          run: () => go(() => void switchModel(f.pick)),
+          current: f.on,
+        }))
       : pickerModels().map((m, i) => {
           const current = app.draft.model === m;
           return {
@@ -165,22 +170,6 @@
             current,
           };
         });
-    // Each family's newest by full id (item 511), unless an alias shows it.
-    if (agent) {
-      const aliases = [...new Set([...MODEL_KEYS.map((k) => k.alias), ...modelList.models])];
-      for (const f of fullIdRows(newestModels(app.modelLists["anthropic"]), aliases, modelSeen.byAlias, cliNow, app.draft.agentModel)) {
-        rows.push({
-          id: `model:${f.pick}`,
-          label: `Switch to ${f.label}`,
-          meta: f.detail,
-          icon: f.on ? "check" : "chevr",
-          key: "",
-          group: "Model",
-          run: () => go(() => void switchModel(f.pick)),
-          current: f.on,
-        });
-      }
-    }
     rows.push({
       id: "engine",
       label: "Engine: Provider ⇄ Subscription",
