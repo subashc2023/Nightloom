@@ -108,6 +108,22 @@
   import { checkCli, cli, curatedAnthropic, setAutoUpdate } from "./cliUpdate.svelte";
   import { cliNoticeDetail } from "./cliUpdate";
   import CliUpdateActions from "./CliUpdateActions.svelte";
+  import SettingsGroup from "./settings/SettingsGroup.svelte";
+  import SettingRow from "./settings/SettingRow.svelte";
+  import {
+    CONTROLS as SUB_CONTROLS,
+    GROUPS as SUB_GROUPS,
+    controlMatches,
+    filterWords,
+    handoffSummary,
+    matchCount,
+    matchingControls,
+    modelsSummary,
+    subagentsSummary,
+    updatesSummary,
+    type GroupId as SubGroupId,
+  } from "./settings/subscriptionPane";
+  import { paneFilter, setPaneFilter } from "./settings/paneState.svelte";
   import {
     WRAP_UP,
     clearDefaultReadOrder,
@@ -923,6 +939,47 @@
     setHandoffThreshold(handoffChat, 0);
     reconsiderHandoff(handoffChat);
   }
+
+  // The Subscription pane, grouped and searchable (nightshift backlog 546):
+  // the filter's text, which controls it keeps, and each folded group's
+  // one-line summary. The inventory is `settings/subscriptionPane.ts`.
+  const subFilter = $derived(paneFilter("subscription"));
+  const subFiltering = $derived(filterWords(subFilter).length > 0);
+  function subShown(id: string): boolean {
+    const c = SUB_CONTROLS.find((x) => x.id === id);
+    return !c || controlMatches(c, subFilter);
+  }
+  function subMatches(g: SubGroupId): number {
+    return matchingControls(g, subFilter).length;
+  }
+  function subTitle(g: SubGroupId): string {
+    return SUB_GROUPS.find((x) => x.id === g)?.title ?? g;
+  }
+  function onSubFilterKey(e: KeyboardEvent): void {
+    if (e.key === "Escape" && subFilter) {
+      e.stopPropagation();
+      setPaneFilter("subscription", "");
+    }
+  }
+  const subSummaries = $derived({
+    handoff: handoffSummary({
+      pct: handoffDefaultPct,
+      capK: handoffCapK,
+      chatPct: handoffChat ? handoffChatPct : null,
+      chatOwn: handoffChatOwn,
+      messageEdited: hasOwnDefaultMessage(),
+      readOrderEdited: hasOwnDefaultReadOrder(),
+    }),
+    models: modelsSummary(modelList.models, modelList.awayDefault),
+    subagents: subagentsSummary(subagentRules.store.default),
+    updates: updatesSummary({
+      installed: cli.status?.installed ?? null,
+      latest: cli.status?.latest ?? null,
+      behind: !!cli.status?.behind,
+      auto: cli.prefs.auto,
+      layersAtCold: app.layerPrefs.autoAtCold,
+    }),
+  });
 
   /** Turn a whole family on or off in one write rather than one per chip. */
   function setSection(kind: string, s: ModelSection, on: boolean) {
@@ -1905,214 +1962,294 @@
     </div>
   {:else if selected === "claude-code"}
     <!-- The Claude Code engine's pane (nightshift backlog 086 pass 2,
-         blocker 120): the hand-off's defaults. A chat overrides both on
-         the composer's notice; this is what every chat starts from. -->
-    <div class="pane">
+         blocker 120; grouped and searchable since backlog 546, 2026-11-10:
+         "i always get lost in all of the diff settings in there"). Four
+         folded groups, each header saying what it is set to; the filter
+         narrows to matching controls; each long explanation is behind the
+         "?" beside its control. Every control and binding is as it was. -->
+    <div class="pane sub-pane">
       <div class="pane-head">
         <h2 class="pane-title">Subscription</h2>
         <span class="slug">the engine on your Claude plan — its defaults</span>
         <span class="spacer"></span>
         <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
       </div>
-      <p class="note">
-        What a chat on this engine does when its context window fills. The CLI's
-        own auto-compact is off on this engine; instead, past the mark below,
-        the composer shows a notice with <em>Wrap up now</em>, which sends the
-        message below as a turn of its own — the model finishes what is
-        half-done, writes <code>HANDOFF.md</code>, and ends with a start prompt
-        that a linked new chat opens with, never sent by itself.
-      </p>
 
-      <section class="card">
-        <div class="ch"><span class="t">Models</span>
-          <span class="spacer"></span>
-          <button
-            class="ns-btn ghost small"
-            use:tip={"Back to the built-in aliases: fable, opus, sonnet, haiku"}
-            onclick={() => setModelList([])}>Reset to built-in</button
-          >
-        </div>
-        <p class="note small">
-          What every model picker on this engine offers — the rail, the
-          composer's chip, the council, and the phone — in this order. An
-          alias (<code>sonnet</code>) follows the CLI to the newest model of
-          its family; a full id (<code>claude-sonnet-5-5</code>) stays put.
-          A model released after this build: add its id here.
-        </p>
-        <ul class="model-list">
-          {#each modelList.models as m, i (m)}
-            <li class="model-row">
-              <code>{m}</code>
-              <span class="spacer"></span>
-              <button class="ns-btn ghost small" aria-label="Move {m} up" disabled={i === 0} onclick={() => setModelList(moveModel(modelList.models, m, -1))}>↑</button>
-              <button class="ns-btn ghost small" aria-label="Move {m} down" disabled={i === modelList.models.length - 1} onclick={() => setModelList(moveModel(modelList.models, m, 1))}>↓</button>
-              <button class="ns-btn ghost small" aria-label="Remove {m}" disabled={modelList.models.length === 1} onclick={() => setModelList(removeModel(modelList.models, m))}><Icon name="trash" size={12} /></button>
-            </li>
-          {/each}
-        </ul>
-        <div class="model-row">
-          <input
-            class="model-add"
-            type="text"
-            autocorrect="off"
-            autocapitalize="off"
-            spellcheck="false"
-            placeholder="an alias or a full id, e.g. claude-sonnet-5-5"
-            aria-label="A model to add"
-            bind:value={newModelId}
-            onkeydown={(e) => e.key === "Enter" && addModelId()}
-          />
-          <button class="ns-btn ghost small" disabled={!newModelId.trim()} onclick={addModelId}><Icon name="plus" size={12} /> Add</button>
-        </div>
-        <label class="handoff-row">
-          <span>Away server's default</span>
-          <select
-            value={modelList.awayDefault ?? ""}
-            aria-label="The away server's default model"
-            onchange={(e) => setModelList(modelList.models, e.currentTarget.value || null)}
-          >
-            <option value="">the server's own (its --model)</option>
-            {#each modelList.models as m (m)}
-              <option value={m}>{m}</option>
-            {/each}
-            {#if modelList.awayDefault && !modelList.models.includes(modelList.awayDefault)}
-              <option value={modelList.awayDefault}>{modelList.awayDefault}</option>
+      <div class="sub-filter">
+        <Icon name="search" size={13} />
+        <input
+          type="text"
+          autocorrect="off"
+          autocapitalize="off"
+          spellcheck="false"
+          placeholder="Find a setting — hand-off, model, update…"
+          aria-label="Find a Subscription setting"
+          value={subFilter}
+          oninput={(e) => setPaneFilter("subscription", e.currentTarget.value)}
+          onkeydown={onSubFilterKey}
+        />
+        {#if subFiltering}
+          <span class="sub-count">{matchCount(subFilter)} of {SUB_CONTROLS.length}</span>
+          <button class="sub-clear" aria-label="Clear the filter" use:tip={"Clear (esc)"} onclick={() => setPaneFilter("subscription", "")}><Icon name="x" size={12} /></button>
+        {/if}
+      </div>
+      {#if subFiltering && matchCount(subFilter) === 0}
+        <p class="note small">No setting here matches “{subFilter}”.</p>
+      {/if}
+
+      <SettingsGroup fold="subscription/handoff" title={subTitle("handoff")} summary={subSummaries.handoff} filtering={subFiltering} matches={subMatches("handoff")}>
+        <SettingRow fold="subscription/handoff-default" shown={subShown("handoff-default")}>
+          {#snippet label()}<span>Hand off every chat at</span>{/snippet}
+          {#snippet control()}
+            <label class="sub-num">
+              <input
+                type="number"
+                min="1"
+                max="100"
+                step="1"
+                value={handoffDefaultPct}
+                aria-label="Hand-off threshold, percent of the context window, for every chat"
+                onchange={(e) => setHandoffDefaultPct((e.currentTarget as HTMLInputElement).value)}
+              />
+              <span>% of the window</span>
+            </label>
+          {/snippet}
+          {#snippet help()}
+            For every chat without a mark of its own (70% to begin with). What a
+            chat on this engine does when its context window fills: the CLI's
+            own auto-compact is off on this engine; instead, past the mark, the
+            composer shows a notice with <em>Wrap up now</em>, which sends the
+            wrap-up message as a turn of its own — the model finishes what is
+            half-done, writes <code>HANDOFF.md</code>, and ends with a start prompt
+            that a linked new chat opens with, never sent by itself.
+          {/snippet}
+        </SettingRow>
+        <SettingRow fold="subscription/handoff-cap" shown={subShown("handoff-cap")}>
+          {#snippet label()}<span>or at</span>{/snippet}
+          {#snippet control()}
+            <label class="sub-num">
+              <input
+                type="number"
+                min="0"
+                step="10"
+                value={handoffCapK}
+                aria-label="Hand-off token cap, thousands of tokens, for every chat without a mark of its own"
+                onchange={(e) => setHandoffCapK((e.currentTarget as HTMLInputElement).value)}
+              />
+              <span>k tokens, whichever first</span>
+            </label>
+          {/snippet}
+          {#snippet help()}
+            300k to begin with, the practices' stop point: 140k on a 200k
+            window, 300k on a 1M one; 0 for no cap. A chat's own mark is not
+            capped.
+          {/snippet}
+        </SettingRow>
+        <SettingRow fold="subscription/handoff-chat" shown={subShown("handoff-chat")}>
+          {#snippet label()}
+            {#if handoffChat}
+              <span>This chat, <em>{handoffChatName}</em>, at</span>
+            {:else}
+              <span class="dim">This chat — open a chat to give it a mark of its own</span>
             {/if}
-          </select>
-        </label>
-        <p class="note small">
-          What a turn on the away server runs on when the phone's rail names
-          no model. The server reads this file from the copy the Mac's sync
-          sends; until one arrives it uses the model it was deployed with.
-        </p>
-        {#if modelList.error}<p class="note small">{modelList.error}</p>{/if}
-      </section>
+          {/snippet}
+          {#snippet control()}
+            {#if handoffChat}
+              <label class="sub-num">
+                <input
+                  type="number"
+                  min="1"
+                  max="100"
+                  step="1"
+                  value={handoffChatPct}
+                  aria-label="Hand-off threshold, percent of the context window, for the open chat"
+                  onchange={(e) => setHandoffChatPct((e.currentTarget as HTMLInputElement).value)}
+                />
+                <span>%{handoffChatOwn ? " — its own" : " — the default"}</span>
+              </label>
+              {#if handoffChatOwn}
+                <button class="ns-btn ghost small" onclick={clearHandoffChatPct}>Use the default</button>
+              {/if}
+            {/if}
+          {/snippet}
+          {#snippet help()}
+            The open chat's own mark, set here any time. At 100 it asks only
+            when the window is full. <em>Use the default</em> drops the
+            chat's own mark.
+          {/snippet}
+        </SettingRow>
+        <SettingRow fold="subscription/handoff-away" shown={subShown("handoff-away")}>
+          {#snippet label()}<span>When you are away</span>{/snippet}
+          {#snippet control()}<span class="sub-val">queued by itself</span>{/snippet}
+          {#snippet help()}
+            Away from the chat — nothing sent or typed for a minute and the
+            window not in front — when the mark is crossed, the wrap-up is put
+            in the composer's queue and goes when the turn ends; the queue's ×
+            takes it back. With you present, only the notice shows.
+          {/snippet}
+        </SettingRow>
+        <SettingRow fold="subscription/handoff-message" shown={subShown("handoff-message")} stack>
+          {#snippet label()}
+            <span>The wrap-up message</span>
+            <span class="sub-tag">{hasOwnDefaultMessage() ? "edited" : "built-in"}</span>
+          {/snippet}
+          {#snippet control()}
+            <textarea
+              class="handoff-msg"
+              rows="9"
+              autocorrect="off"
+              autocapitalize="off"
+              spellcheck="false"
+              aria-label="The default wrap-up message"
+              value={handoffDefaultMessage()}
+              oninput={(e) => setHandoffDefaultMessage((e.currentTarget as HTMLTextAreaElement).value)}
+            ></textarea>
+            {#if hasOwnDefaultMessage()}
+              <div class="sub-actions"><button class="ns-btn ghost small" onclick={() => setHandoffDefaultMessage("")}>Reset to default</button></div>
+            {/if}
+          {/snippet}
+          {#snippet help()}
+            What <em>Wrap up now</em> sends, as typed. Keep the ask for a prompt between
+            <code>&lt;handoff&gt;</code> and <code>&lt;/handoff&gt;</code>: that is what the new chat's first message
+            is read out of, shown as a card with <em>Continue with this prompt</em> (a fenced <code>start-prompt</code> block still works); without one the chat box offers an unsent new chat with the read order alone. A chat can edit its
+            own copy on the notice without changing this.
+            {#if hasOwnDefaultMessage()}<em>Edited; Reset to default restores the built-in text (a box left empty reads as the built-in after a relaunch).</em>{:else}<em>The built-in text ({WRAP_UP.length} characters).</em>{/if}
+          {/snippet}
+        </SettingRow>
+        <!-- The read order (nightshift backlog 193; item 520): the new chat's
+             box text when the wrap-up reply wrote no prompt. -->
+        <SettingRow fold="subscription/handoff-readorder" shown={subShown("handoff-readorder")} stack>
+          {#snippet label()}
+            <span>The read order</span>
+            <span class="sub-tag">{hasOwnDefaultReadOrder() ? "edited" : "built-in"}</span>
+          {/snippet}
+          {#snippet control()}
+            <textarea
+              class="handoff-msg"
+              rows="6"
+              autocorrect="off"
+              autocapitalize="off"
+              spellcheck="false"
+              aria-label="The default read order a continued chat opens with"
+              placeholder="No read order — a continued chat opens with the model's start prompt alone"
+              value={defaultReadOrder()}
+              oninput={(e) => setDefaultReadOrder((e.currentTarget as HTMLTextAreaElement).value)}
+            ></textarea>
+            {#if hasOwnDefaultReadOrder()}
+              <div class="sub-actions"><button class="ns-btn ghost small" onclick={clearDefaultReadOrder}>Reset to default</button></div>
+            {/if}
+          {/snippet}
+          {#snippet help()}
+            Used only when a wrap-up reply wrote no prompt: the new chat's box
+            opens with this text, unsent. When there is a prompt, <em>Continue
+            with this prompt</em> sends the prompt alone — the wrap-up asks the
+            model to open it with what to read. A copy a chat already has of its
+            own stays with it and the chats that continue it.
+            {#if hasOwnDefaultReadOrder()}<em>Edited; Reset to default restores the built-in read order.</em>{:else}<em>The built-in read order: the newest HANDOFF.md section, then the two indexes.</em>{/if}
+          {/snippet}
+        </SettingRow>
+      </SettingsGroup>
+
+      <SettingsGroup fold="subscription/models" title={subTitle("models")} summary={subSummaries.models} filtering={subFiltering} matches={subMatches("models")}>
+        <SettingRow fold="subscription/models-list" shown={subShown("models-list")} stack>
+          {#snippet label()}<span>Model list</span>{/snippet}
+          {#snippet control()}
+            <ul class="model-list">
+              {#each modelList.models as m, i (m)}
+                <li class="model-row">
+                  <code>{m}</code>
+                  <span class="spacer"></span>
+                  <button class="ns-btn ghost small" aria-label="Move {m} up" disabled={i === 0} onclick={() => setModelList(moveModel(modelList.models, m, -1))}>↑</button>
+                  <button class="ns-btn ghost small" aria-label="Move {m} down" disabled={i === modelList.models.length - 1} onclick={() => setModelList(moveModel(modelList.models, m, 1))}>↓</button>
+                  <button class="ns-btn ghost small" aria-label="Remove {m}" disabled={modelList.models.length === 1} onclick={() => setModelList(removeModel(modelList.models, m))}><Icon name="trash" size={12} /></button>
+                </li>
+              {/each}
+            </ul>
+            <div class="sub-actions">
+              <button
+                class="ns-btn ghost small"
+                use:tip={"Back to the built-in aliases: fable, opus, sonnet, haiku"}
+                onclick={() => setModelList([])}>Reset to built-in</button
+              >
+            </div>
+          {/snippet}
+          {#snippet help()}
+            What every model picker on this engine offers — the rail, the
+            composer's chip, the council, and the phone — in this order. An
+            alias (<code>sonnet</code>) follows the CLI to the newest model of
+            its family; a full id (<code>claude-sonnet-5-5</code>) stays put.
+            A model released after this build: add its id below.
+          {/snippet}
+        </SettingRow>
+        <SettingRow fold="subscription/models-add" shown={subShown("models-add")} stack>
+          {#snippet label()}<span>Add a model</span>{/snippet}
+          {#snippet control()}
+            <div class="model-row">
+              <input
+                class="model-add"
+                type="text"
+                autocorrect="off"
+                autocapitalize="off"
+                spellcheck="false"
+                placeholder="an alias or a full id, e.g. claude-sonnet-5-5"
+                aria-label="A model to add"
+                bind:value={newModelId}
+                onkeydown={(e) => e.key === "Enter" && addModelId()}
+              />
+              <button class="ns-btn ghost small" disabled={!newModelId.trim()} onclick={addModelId}><Icon name="plus" size={12} /> Add</button>
+            </div>
+          {/snippet}
+        </SettingRow>
+        <SettingRow fold="subscription/models-away" shown={subShown("models-away")}>
+          {#snippet label()}<span>Away server's default</span>{/snippet}
+          {#snippet control()}
+            <select
+              value={modelList.awayDefault ?? ""}
+              aria-label="The away server's default model"
+              onchange={(e) => setModelList(modelList.models, e.currentTarget.value || null)}
+            >
+              <option value="">the server's own (its --model)</option>
+              {#each modelList.models as m (m)}
+                <option value={m}>{m}</option>
+              {/each}
+              {#if modelList.awayDefault && !modelList.models.includes(modelList.awayDefault)}
+                <option value={modelList.awayDefault}>{modelList.awayDefault}</option>
+              {/if}
+            </select>
+          {/snippet}
+          {#snippet help()}
+            What a turn on the away server runs on when the phone's rail names
+            no model. The server reads this file from the copy the Mac's sync
+            sends; until one arrives it uses the model it was deployed with.
+          {/snippet}
+          {#if modelList.error}<p class="note small">{modelList.error}</p>{/if}
+        </SettingRow>
+      </SettingsGroup>
 
       <!-- His subagent rules in words, the default (nightshift backlog
            291): what a chat with no rules of its own states in its
            subagent rules layer. Saved as he types. -->
-      <section class="card">
-        <div class="ch"><span class="t">Subagent rules</span></div>
-        <p class="note small">
-          Your rules for subagents in plain words, for every chat that has
-          none of its own (a chat's own are in the rail, under Subagent rules).
-          They reach the model beside the exact limits, which Nightloom enforces
-          whatever the words say.
-        </p>
-        <textarea
-          class="rules-default"
-          rows="5"
-          placeholder="e.g. At most two subagents at once. Only for broad searches or long research; do bounded tasks yourself."
-          aria-label="Default subagent rules"
-          value={subagentRules.store.default}
-          oninput={(e) => setDefaultRules((e.currentTarget as HTMLTextAreaElement).value)}
-        ></textarea>
-      </section>
-
-      <section class="card">
-        <div class="ch"><span class="t">Hand-off</span></div>
-        <label class="handoff-row">
-          <span>Hand off at</span>
-          <input
-            type="number"
-            min="1"
-            max="100"
-            step="1"
-            value={handoffDefaultPct}
-            aria-label="Hand-off threshold, percent of the context window, for every chat"
-            onchange={(e) => setHandoffDefaultPct((e.currentTarget as HTMLInputElement).value)}
-          />
-          <span>% of the window, for every chat without a mark of its own (70% to begin with)</span>
-        </label>
-        <label class="handoff-row">
-          <span>or at</span>
-          <input
-            type="number"
-            min="0"
-            step="10"
-            value={handoffCapK}
-            aria-label="Hand-off token cap, thousands of tokens, for every chat without a mark of its own"
-            onchange={(e) => setHandoffCapK((e.currentTarget as HTMLInputElement).value)}
-          />
-          <span>k tokens, whichever comes first (300k to begin with, the practices' stop point: 140k on a 200k window, 300k on a 1M one; 0 for no cap). A chat's own mark is not capped.</span>
-        </label>
-        {#if handoffChat}
-          <label class="handoff-row">
-            <span>This chat, <em>{handoffChatName}</em>, at</span>
-            <input
-              type="number"
-              min="1"
-              max="100"
-              step="1"
-              value={handoffChatPct}
-              aria-label="Hand-off threshold, percent of the context window, for the open chat"
-              onchange={(e) => setHandoffChatPct((e.currentTarget as HTMLInputElement).value)}
-            />
-            <span>%{handoffChatOwn ? " — its own mark" : " — the default"}; at 100 it asks only when the window is full</span>
-            {#if handoffChatOwn}
-              <button class="ns-btn ghost small" onclick={clearHandoffChatPct}>Use the default</button>
-            {/if}
-          </label>
-        {:else}
-          <p class="note small">Open a chat to give it a mark of its own.</p>
-        {/if}
-        <p class="note small">
-          Away from the chat — nothing sent or typed for a minute and the
-          window not in front — when the mark is crossed, the wrap-up is put
-          in the composer's queue and goes when the turn ends; the queue's ×
-          takes it back. With you present, only the notice shows.
-        </p>
-        <div class="ch"><span class="t">The wrap-up message</span>
-          <span class="spacer"></span>
-          {#if hasOwnDefaultMessage()}
-            <button class="ns-btn ghost small" onclick={() => setHandoffDefaultMessage("")}>Reset to default</button>
-          {/if}
-        </div>
-        <textarea
-          class="handoff-msg"
-          rows="9"
-          autocorrect="off"
-          autocapitalize="off"
-          spellcheck="false"
-          aria-label="The default wrap-up message"
-          value={handoffDefaultMessage()}
-          oninput={(e) => setHandoffDefaultMessage((e.currentTarget as HTMLTextAreaElement).value)}
-        ></textarea>
-        <p class="note small">
-          Sent as typed. Keep the ask for a prompt between
-          <code>&lt;handoff&gt;</code> and <code>&lt;/handoff&gt;</code>: that is what the new chat's first message
-          is read out of, shown as a card with <em>Continue with this prompt</em> (a fenced <code>start-prompt</code> block still works); without one the chat box offers an unsent new chat with the read order alone. A chat can edit its
-          own copy on the notice without changing this.
-          {#if hasOwnDefaultMessage()}<em>Edited; Reset to default restores the built-in text (a box left empty reads as the built-in after a relaunch).</em>{:else}<em>The built-in text ({WRAP_UP.length} characters).</em>{/if}
-        </p>
-        <!-- The read order (nightshift backlog 193; item 520): the new chat's
-             box text when the wrap-up reply wrote no prompt. -->
-        <div class="ch"><span class="t">The read order</span>
-          <span class="spacer"></span>
-          {#if hasOwnDefaultReadOrder()}
-            <button class="ns-btn ghost small" onclick={clearDefaultReadOrder}>Reset to default</button>
-          {/if}
-        </div>
-        <textarea
-          class="handoff-msg"
-          rows="6"
-          autocorrect="off"
-          autocapitalize="off"
-          spellcheck="false"
-          aria-label="The default read order a continued chat opens with"
-          placeholder="No read order — a continued chat opens with the model's start prompt alone"
-          value={defaultReadOrder()}
-          oninput={(e) => setDefaultReadOrder((e.currentTarget as HTMLTextAreaElement).value)}
-        ></textarea>
-        <p class="note small">
-          Used only when a wrap-up reply wrote no prompt: the new chat's box
-          opens with this text, unsent. When there is a prompt, <em>Continue
-          with this prompt</em> sends the prompt alone — the wrap-up asks the
-          model to open it with what to read. A copy a chat already has of its
-          own stays with it and the chats that continue it.
-          {#if hasOwnDefaultReadOrder()}<em>Edited; Reset to default restores the built-in read order.</em>{:else}<em>The built-in read order: the newest HANDOFF.md section, then the two indexes.</em>{/if}
-        </p>
-      </section>
+      <SettingsGroup fold="subscription/subagents" title={subTitle("subagents")} summary={subSummaries.subagents} filtering={subFiltering} matches={subMatches("subagents")}>
+        <SettingRow fold="subscription/subagents-default" shown={subShown("subagents-default")} stack>
+          {#snippet label()}<span>For every chat with none of its own</span>{/snippet}
+          {#snippet control()}
+            <textarea
+              class="rules-default"
+              rows="5"
+              placeholder="e.g. At most two subagents at once. Only for broad searches or long research; do bounded tasks yourself."
+              aria-label="Default subagent rules"
+              value={subagentRules.store.default}
+              oninput={(e) => setDefaultRules((e.currentTarget as HTMLTextAreaElement).value)}
+            ></textarea>
+          {/snippet}
+          {#snippet help()}
+            Your rules for subagents in plain words, for every chat that has
+            none of its own (a chat's own are in the rail, under Subagent rules).
+            They reach the model beside the exact limits, which Nightloom enforces
+            whatever the words say. Saved as you type.
+          {/snippet}
+        </SettingRow>
+      </SettingsGroup>
 
       <!-- (The Sleep card of backlog 101 stood here from 086 pass 2 until
            2026-09-25; it moved to Appearance → Palette, under
@@ -2121,67 +2258,80 @@
       <!-- Claude Code's version (nightshift backlog 182): the check the
            bell's notice comes from, the same Update / Now… buttons, and
            the switch that updates by itself at a cold moment. -->
-      <section class="card">
-        <div class="ch">
-          <span class="t">Claude Code version</span>
-          <span class="spacer"></span>
-          <button
-            class="ns-btn ghost small"
-            disabled={cli.checking || cli.updating}
-            use:tip={"claude --version against the release feed — no tokens"}
-            onclick={() => void checkCli(true)}>{cli.checking ? "Checking…" : "Check now"}</button
-          >
-        </div>
-        {#if cli.status}
-          <p class="note small">
-            Installed <strong>{cli.status.installed ?? "unknown"}</strong>{" "}
-            {#if cli.status.latest}· newest on the {cli.status.channel} channel <strong>{cli.status.latest}</strong>{" "}{/if}
-            · checked {relativeTime(cli.status.checked_at)}{cli.status.latest && !cli.status.behind ? " — up to date" : ""}.
-          </p>
-          <p class="note small remote-mono">{cli.status.binary}</p>
-          {#if cli.status.error}<p class="note small">{cli.status.error}</p>{/if}
-          {#if cli.status.updates_disabled}
-            <p class="note small">Updates are switched off for the CLI ({cli.status.updates_disabled}), so Nightloom offers none.</p>
-          {:else if cli.status.behind}
-            <p class="note small">{cliNoticeDetail(cli.status, curatedAnthropic())}</p>
+      <SettingsGroup fold="subscription/updates" title={subTitle("updates")} summary={subSummaries.updates} filtering={subFiltering} matches={subMatches("updates")}>
+        <SettingRow fold="subscription/updates-cli" shown={subShown("updates-cli")}>
+          {#snippet label()}
+            <span>Claude Code
+              {#if cli.status}<strong class="sub-mono">{cli.status.installed ?? "unknown"}</strong>{/if}
+            </span>
+          {/snippet}
+          {#snippet control()}
+            <button
+              class="ns-btn ghost small"
+              disabled={cli.checking || cli.updating}
+              use:tip={"claude --version against the release feed — no tokens"}
+              onclick={() => void checkCli(true)}>{cli.checking ? "Checking…" : "Check now"}</button
+            >
+          {/snippet}
+          {#if cli.status}
+            <p class="note small">
+              Installed <strong>{cli.status.installed ?? "unknown"}</strong>{" "}
+              {#if cli.status.latest}· newest on the {cli.status.channel} channel <strong>{cli.status.latest}</strong>{" "}{/if}
+              · checked {relativeTime(cli.status.checked_at)}{cli.status.latest && !cli.status.behind ? " — up to date" : ""}.
+            </p>
+            <p class="note small remote-mono">{cli.status.binary}</p>
+            {#if cli.status.error}<p class="note small">{cli.status.error}</p>{/if}
+            {#if cli.status.updates_disabled}
+              <p class="note small">Updates are switched off for the CLI ({cli.status.updates_disabled}), so Nightloom offers none.</p>
+            {:else if cli.status.behind}
+              <p class="note small">{cliNoticeDetail(cli.status, curatedAnthropic())}</p>
+            {/if}
+          {:else}
+            <p class="note small">{cli.error ?? "Not checked yet — the first check runs shortly after launch, then every six hours."}</p>
           {/if}
-        {:else}
-          <p class="note small">{cli.error ?? "Not checked yet — the first check runs shortly after launch, then every six hours."}</p>
-        {/if}
-        <CliUpdateActions />
-        <label class="dream-auto cli-auto">
-          <input type="checkbox" checked={cli.prefs.auto} onchange={(e) => setAutoUpdate(e.currentTarget.checked)} />
-          <span>Keep Claude Code up to date</span>
-        </label>
-        <p class="note small">
-          Off (the default): a newer release shows in the bell and here, and
-          waits for your Update. On: Nightloom runs <code>claude update</code>
-          by itself at the first cold moment after a release — no turn
-          running and every open chat's cache expired, so no chat pays a
-          cache rewrite for it. Never during a turn or a Nightshift run. The
-          CLI's own background updater (<code>autoUpdates</code> in
-          <code>~/.claude.json</code>) is left as you set it.
-        </p>
+          <CliUpdateActions />
+          {#if cli.result}
+            <details class="cli-out">
+              <summary>The last update's output</summary>
+              <pre>{cli.result.output || "(none)"}</pre>
+            </details>
+          {/if}
+        </SettingRow>
+        <SettingRow fold="subscription/updates-auto" shown={subShown("updates-auto")}>
+          {#snippet label()}
+            <label class="dream-auto cli-auto">
+              <input type="checkbox" checked={cli.prefs.auto} onchange={(e) => setAutoUpdate(e.currentTarget.checked)} />
+              <span>Keep Claude Code up to date</span>
+            </label>
+          {/snippet}
+          {#snippet help()}
+            Off (the default): a newer release shows in the bell and here, and
+            waits for your Update. On: Nightloom runs <code>claude update</code>
+            by itself at the first cold moment after a release — no turn
+            running and every open chat's cache expired, so no chat pays a
+            cache rewrite for it. Never during a turn or a Nightshift run. The
+            CLI's own background updater (<code>autoUpdates</code> in
+            <code>~/.claude.json</code>) is left as you set it.
+          {/snippet}
+        </SettingRow>
         <!-- Nightshift backlog 174: a changed memory or instructions file. -->
-        <label class="dream-auto cli-auto">
-          <input type="checkbox" checked={app.layerPrefs.autoAtCold} onchange={(e) => setAutoLayers(e.currentTarget.checked)} />
-          <span>Give running chats a changed memory or instructions file at their next cold moment</span>
-        </label>
-        <p class="note small">
-          On (the default): a chat keeps the text it started with while its
-          cache is warm, and takes the new file with its first message after
-          the cache timer reads cold — the moment the prefix is rewritten
-          anyway. Off: the Context page marks the layer <em>newer version
-          exists</em> and waits for your Update. Either way <em>Update now</em>
-          and <em>Keep this version</em> are on the mark.
-        </p>
-        {#if cli.result}
-          <details class="cli-out">
-            <summary>The last update's output</summary>
-            <pre>{cli.result.output || "(none)"}</pre>
-          </details>
-        {/if}
-      </section>
+        <SettingRow fold="subscription/updates-layers" shown={subShown("updates-layers")}>
+          {#snippet label()}
+            <label class="dream-auto cli-auto">
+              <input type="checkbox" checked={app.layerPrefs.autoAtCold} onchange={(e) => setAutoLayers(e.currentTarget.checked)} />
+              <span>Give running chats a changed memory or instructions file at their next cold moment</span>
+            </label>
+          {/snippet}
+          {#snippet help()}
+            On (the default): a chat keeps the text it started with while its
+            cache is warm, and takes the new file with its first message after
+            the cache timer reads cold — the moment the prefix is rewritten
+            anyway. Off: the Context page marks the layer <em>newer version
+            exists</em> and waits for your Update. Either way <em>Update now</em>
+            and <em>Keep this version</em> are on the mark.
+          {/snippet}
+        </SettingRow>
+      </SettingsGroup>
     </div>
   {:else if selected === USAGE_PANE || selected === COST_PANE}
     <!-- Usage & Cost (nightshift backlog 206, 2026-09-25): two tabs under
@@ -4485,5 +4635,101 @@
     font-size: 12.5px;
     line-height: 1.4;
     font-family: inherit;
+  }
+
+  /* Settings → Subscription, grouped (nightshift backlog 546): the filter,
+     the number fields beside their labels, the edited/built-in tags. */
+  .sub-pane {
+    gap: 10px;
+  }
+  .sub-filter {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 10px;
+    height: 34px;
+    border: 1px solid var(--line2);
+    border-radius: var(--r2, 8px);
+    background: var(--term);
+    color: var(--dim);
+    flex: none;
+    margin: 2px 0 6px;
+  }
+  .sub-filter:focus-within {
+    border-color: var(--accent);
+  }
+  .sub-filter input {
+    all: unset;
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+    color: var(--ink);
+  }
+  .sub-filter input::placeholder {
+    color: var(--dim);
+  }
+  .sub-count {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+  .sub-clear {
+    all: unset;
+    display: inline-flex;
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 4px;
+  }
+  .sub-clear:hover {
+    color: var(--ink);
+    background: var(--well);
+  }
+  .sub-num {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 6px;
+    font-size: 12.5px;
+    color: var(--ink2);
+  }
+  .sub-num input {
+    width: 4.2rem;
+    font-family: var(--mono);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    background: var(--term);
+    color: var(--ink);
+    border: 1px solid var(--line2);
+    border-radius: 6px;
+    padding: 4px 6px;
+    text-align: right;
+  }
+  .sub-num input:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  .sub-tag {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--dim);
+    border: 1px solid var(--line2);
+    border-radius: 4px;
+    padding: 1px 5px;
+  }
+  .sub-val {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--ink2);
+  }
+  .sub-mono {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 500;
+    margin-left: 4px;
+  }
+  .sub-actions {
+    display: flex;
+    justify-content: flex-end;
   }
 </style>
