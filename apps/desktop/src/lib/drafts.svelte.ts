@@ -134,7 +134,7 @@ export interface QueuedMessage {
    *  turn's key, and — once the turn took it — where (`after`). A row with
    *  no `after` when the turn ends goes back to being an ordinary held
    *  message, sent as the next turn; nothing is lost. */
-  inject?: { id: string; turn: string; after?: string; now?: boolean };
+  inject?: { id: string; turn: string; after?: string; now?: boolean; reply?: boolean };
 }
 
 /**
@@ -768,7 +768,7 @@ export function takeBackQueued(key: string, id?: number): QueuedMessage | null {
 }
 
 /** The row went into the running turn (backlog 328). */
-export function markInjected(key: string, qid: number, inject: { id: string; turn: string }): void {
+export function markInjected(key: string, qid: number, inject: { id: string; turn: string; reply?: boolean }): void {
   const q = drafts[key]?.queue.find((r) => r.id === qid);
   if (!q) return;
   q.inject = { ...inject };

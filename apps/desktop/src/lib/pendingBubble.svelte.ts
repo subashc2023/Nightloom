@@ -25,13 +25,20 @@
 import { takeBackInjected } from "./api";
 import { clearInjected, dropQueued, readDraft, recordDraft, takeBackQueued, type QueuedMessage } from "./drafts.svelte";
 import { requestComposerFocus } from "./rewindDraft.svelte";
-import { addToast, sendNowRow } from "./state.svelte";
+import { addToast, replyToPending, sendNowRow } from "./state.svelte";
 
-export type PendingState = "next-step" | "now" | "turn-end";
+export type PendingState = "next-step" | "now" | "turn-end" | "waiting" | "replying";
 
-/** Where a queued row stands while the turn runs. */
-export function pendingState(q: Pick<QueuedMessage, "inject">): PendingState {
-  if (!q.inject) return "turn-end";
+/**
+ * Where a queued row stands while the turn runs. `waiting` (item 522,
+ * 2026-11-09): the turn is not running at all — a prompt waits on him —
+ * so a row no process holds is `waiting`, with a Send now that sends it
+ * in place of an answer, never "goes when this turn ends" (the turn
+ * cannot end until he answers). `replying`: that send is on its way.
+ */
+export function pendingState(q: Pick<QueuedMessage, "inject">, waiting = false): PendingState {
+  if (q.inject?.reply) return "replying";
+  if (!q.inject) return waiting ? "waiting" : "turn-end";
   return q.inject.now ? "now" : "next-step";
 }
 
@@ -42,6 +49,10 @@ export function pendingLabel(s: PendingState, letArrive = false): string {
       return "sending now — Claude was asked to stop the step it is in";
     case "turn-end":
       return "not sent yet — goes when this turn ends";
+    case "waiting":
+      return "not sent yet — Claude is waiting on your answer above; send this instead, or answer and it goes after";
+    case "replying":
+      return "sending — in place of an answer";
     default:
       return letArrive ? "not sent yet — Claude reads it at its next step" : "not sent yet — Claude reads it at its next step, or send it now";
   }
@@ -85,6 +96,20 @@ async function unsend(key: string, qid: number): Promise<boolean> {
 
 export async function sendNow(key: string, qid: number): Promise<void> {
   await sendNowRow(key, qid);
+}
+
+/** Whether the bubble offers *Send now* as a reply to the prompt that waits (item 522). */
+export function offersReply(s: PendingState): boolean {
+  return s === "waiting";
+}
+
+/** *Send now* while a prompt waits on him (item 522): the row goes in
+ *  place of an answer. Says so if it could not; the row is never dropped. */
+export async function sendAsReply(key: string, qid: number): Promise<void> {
+  const q = readDraft(key).queue.find((r) => r.id === qid);
+  if (!q) return;
+  const r = await replyToPending(key, q);
+  if (r === "none") addToast("Nothing is waiting on you now — the message goes at the turn's next step or its end.");
 }
 
 /** *Edit*: the row back into the message box, in front of anything typed there. */

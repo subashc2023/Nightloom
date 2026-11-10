@@ -482,6 +482,9 @@ export function approveCall(
   answer?: unknown,
   then?: "ask" | "auto",
   grant?: FolderGrant,
+  /** His message in place of an answer (nightshift item 522): with "deny", the refusal's reason is his
+   *  words and the turn reports the message delivered under `id` (the queued row's wire id). */
+  reply?: { text: string; id: string },
 ): Promise<null> {
   return invoke("approve_call", {
     id,
@@ -492,6 +495,8 @@ export function approveCall(
     then,
     grantDir: grant?.dir,
     grantScope: grant?.scope,
+    reply: reply?.text,
+    replyId: reply?.id,
   });
 }
 

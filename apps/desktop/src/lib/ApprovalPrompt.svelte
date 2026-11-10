@@ -15,6 +15,7 @@
   import { recordAnswers } from "./askAnswers.svelte";
   import PlaywrightCard from "./PlaywrightCard.svelte";
   import { isPlaywright } from "./playwright";
+  import { trackCard } from "./waitingNotice.svelte";
 
   let { req }: { req: ApprovalRequest } = $props();
 
@@ -385,6 +386,7 @@
     class="ask qcard"
     class:folded
     bind:this={box}
+    use:trackCard={req.id}
     tabindex="-1"
     role="group"
     aria-label="the model asks {questions.length} question{questions.length === 1 ? '' : 's'}"
@@ -424,6 +426,7 @@
     class="ask"
     class:folded
     bind:this={box}
+    use:trackCard={req.id}
     tabindex="-1"
     role="group"
     aria-label="plan approval"
@@ -510,6 +513,7 @@
     class="ask"
     class:folded
     bind:this={box}
+    use:trackCard={req.id}
     tabindex="-1"
     role="group"
     aria-label="permission required to run {req.name}"
@@ -582,6 +586,7 @@
 <div
   class="approval"
   bind:this={box}
+  use:trackCard={req.id}
   tabindex="-1"
   role="group"
   aria-label="permission required to run {req.name}"

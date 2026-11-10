@@ -310,6 +310,40 @@ pub enum Answer {
     AllowForChat { updated_input: Option<Value> },
     /// Refuse it; the reason is what the model reads.
     Deny { reason: String },
+    /// He sent a message instead of answering (nightshift item 522,
+    /// 2026-11-09): the call is refused with his words as the reason
+    /// ([`reply_reason`]), so the model reads them in the call's result and
+    /// goes on — what Claude's own desktop app does. `id` is the window's
+    /// id for the queued row, when it has one: the turn reports the message
+    /// as delivered under it once the refusal has landed, and the log keeps
+    /// it as his message.
+    Reply { id: Option<String>, text: String },
+}
+
+/// What the model reads when he replied instead of answering (item 522).
+pub fn reply_reason(text: &str) -> String {
+    format!(
+        "The user did not answer this; they replied with a message instead. Read it, then carry on from it — do not ask the same thing again unless it still matters. Their message: {}",
+        text.trim()
+    )
+}
+
+/// The refusal a call left waiting by a closed app gets at the chat's next
+/// message (item 522): nobody can answer a card that is gone.
+pub const CLOSED_WHILE_WAITING: &str = "Nightloom was closed before the user answered this, so it was not run. Their next message follows; go by it, and ask again only if it still matters.";
+
+/// The file that names the call a card is waiting on ([`AskDir::set_waiting`]).
+pub const WAITING_FILE: &str = "waiting.json";
+
+/// The deferred call a card is up for, with the session it is pending in
+/// (item 522): on disk for as long as the card waits and its resume runs,
+/// so a launch after a quit mid-wait can refuse it instead of meeting it
+/// again with nobody's answer.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Waiting {
+    #[serde(default)]
+    pub session: Option<String>,
+    pub call: DeferredCall,
 }
 
 /// A folder granted from the approval card (backlog 143, pass 2): the
@@ -456,6 +490,12 @@ impl AskDir {
                 updated_input: None,
                 reason: Some(reason.clone()),
             },
+            Answer::Reply { text, .. } => Decision {
+                tool_use_id: call.id.clone(),
+                decision: "deny".into(),
+                updated_input: None,
+                reason: Some(reply_reason(text)),
+            },
         };
         write_atomic(
             &self.dir.join(DECISION_FILE),
@@ -504,6 +544,17 @@ impl AskDir {
                     decision: "deny".into(),
                     updated_input: None,
                     reason: Some(reason),
+                }
+            }
+            // His message instead of an answer (item 522): refused for the
+            // reply, as a Deny is, in his words.
+            Answer::Reply { text, .. } => {
+                self.set_playwright_reply(Some("deny"))?;
+                Decision {
+                    tool_use_id: call.id.clone(),
+                    decision: "deny".into(),
+                    updated_input: None,
+                    reason: Some(reply_reason(text)),
                 }
             }
         };
@@ -603,6 +654,61 @@ impl AskDir {
         read_rules(&self.dir)
             .subagents_auto
             .unwrap_or(SUBAGENTS_AUTO_DEFAULT)
+    }
+
+    /// A card is up for `call` (item 522): remembered on disk until its
+    /// resume has run ([`Self::clear_waiting`]).
+    pub fn set_waiting(&self, session: Option<&str>, call: &DeferredCall) -> std::io::Result<()> {
+        std::fs::create_dir_all(&self.dir)?;
+        let w = Waiting {
+            session: session.map(String::from),
+            call: call.clone(),
+        };
+        write_atomic(&self.dir.join(WAITING_FILE), &serde_json::to_vec(&w)?)
+    }
+
+    /// The call a card was last waiting on, if its turn never finished
+    /// with it — the app was closed, or crashed, while it waited.
+    pub fn waiting(&self) -> Option<Waiting> {
+        let bytes = std::fs::read(self.dir.join(WAITING_FILE)).ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+
+    /// The wait is over: answered and resumed, or let go by a Stop.
+    pub fn clear_waiting(&self) {
+        let _ = std::fs::remove_file(self.dir.join(WAITING_FILE));
+    }
+
+    /// Whether an answer is on disk for the call `id`, unread.
+    pub fn has_decision_for(&self, id: &str) -> bool {
+        std::fs::read(self.dir.join(DECISION_FILE))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Decision>(&b).ok())
+            .is_some_and(|d| d.tool_use_id == id)
+    }
+
+    /// A card left waiting by a closed app (item 522), settled before the
+    /// chat's next message runs: the call is refused on disk — unless his
+    /// answer already is — for that turn's hook to deliver, and returned
+    /// so the turn can open with its result. `resume` is the session the
+    /// next process will resume; a call pending in any other session will
+    /// never be asked about again and is only forgotten.
+    pub fn settle_waiting(&self, resume: Option<&str>) -> Option<DeferredCall> {
+        let w = self.waiting()?;
+        self.clear_waiting();
+        if w.session.is_none() || w.session.as_deref() != resume {
+            return None;
+        }
+        if !self.has_decision_for(&w.call.id) {
+            self.write(
+                &w.call,
+                &Answer::Deny {
+                    reason: CLOSED_WHILE_WAITING.into(),
+                },
+            )
+            .ok()?;
+        }
+        Some(w.call)
     }
 
     /// Drop a decision nobody resumed with — a Stop while the prompt was
@@ -1861,5 +1967,97 @@ mod tests {
         assert_eq!(outside_folder(&json!({"command": "ls /"}), &trees), None);
         std::fs::remove_dir_all(&outside).unwrap();
         std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    /// Item 522: his message in place of an answer is a refusal whose
+    /// reason is his words — for a question and for a Playwright card.
+    #[test]
+    fn a_reply_is_written_as_a_refusal_in_his_words() {
+        let dir = scratch();
+        let files = AskDir::new(&dir);
+        files
+            .write(
+                &call(),
+                &Answer::Reply {
+                    id: Some("row-1".into()),
+                    text: "  wait — nothing is decided yet  ".into(),
+                },
+            )
+            .unwrap();
+        let text = std::fs::read_to_string(dir.join(DECISION_FILE)).unwrap();
+        assert!(text.contains(r#""decision":"deny""#), "{text}");
+        assert!(text.contains("replied with a message instead"), "{text}");
+        assert!(
+            text.contains("Their message: wait — nothing is decided yet\""),
+            "{text}"
+        );
+        assert!(
+            !text.contains("row-1"),
+            "the window's id is not the hook's business: {text}"
+        );
+
+        let pw = pw_call("toolu_pw");
+        files
+            .write(
+                &pw,
+                &Answer::Reply {
+                    id: None,
+                    text: "use the other tab".into(),
+                },
+            )
+            .unwrap();
+        let text = std::fs::read_to_string(dir.join(DECISION_FILE)).unwrap();
+        assert!(
+            text.contains("toolu_pw") && text.contains("use the other tab"),
+            "{text}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Item 522: the wait on disk, and what a launch after a quit does
+    /// with it — refuse the call for the session the chat resumes, keep an
+    /// answer already written, forget a call pending in another session.
+    #[test]
+    fn a_wait_left_on_disk_is_refused_once_for_the_session_it_is_pending_in() {
+        let dir = scratch();
+        let files = AskDir::new(&dir);
+        assert!(
+            files.settle_waiting(Some("s-1")).is_none(),
+            "nothing waiting"
+        );
+
+        files.set_waiting(Some("s-1"), &call()).unwrap();
+        assert_eq!(files.waiting().map(|w| w.call), Some(call()));
+        assert_eq!(files.settle_waiting(Some("s-1")), Some(call()));
+        assert!(files.waiting().is_none(), "settled once");
+        let text = std::fs::read_to_string(dir.join(DECISION_FILE)).unwrap();
+        assert!(
+            text.contains(r#""decision":"deny""#) && text.contains("was closed before"),
+            "{text}"
+        );
+        assert!(files.settle_waiting(Some("s-1")).is_none());
+
+        // His answer was already written when the app closed: it stands.
+        files.clear_decision();
+        files.set_waiting(Some("s-1"), &call()).unwrap();
+        files
+            .write(
+                &call(),
+                &Answer::Deny {
+                    reason: "his own words".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(files.settle_waiting(Some("s-1")), Some(call()));
+        let text = std::fs::read_to_string(dir.join(DECISION_FILE)).unwrap();
+        assert!(text.contains("his own words"), "{text}");
+
+        // Pending in a session the chat no longer resumes: forgotten, nothing written.
+        files.clear_decision();
+        files.set_waiting(Some("s-old"), &call()).unwrap();
+        assert!(files.settle_waiting(Some("s-new")).is_none());
+        assert!(files.waiting().is_none());
+        assert!(!dir.join(DECISION_FILE).exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
