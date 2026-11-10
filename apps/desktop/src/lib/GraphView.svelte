@@ -3,6 +3,7 @@
   import * as api from "./api";
   import { app, closeNote, showNote } from "./state.svelte";
   import type { LinkGraph } from "./types";
+  import { classic } from "./layout.svelte";
 
   /**
    * The vault as a picture: one node per note, one edge per link.
@@ -207,9 +208,53 @@
     return 4 + Math.min(9, Math.sqrt(n.degree) * 2.4);
   }
 
+  /**
+   * Item 565: the canvas's colours. Classic keeps its violet; Filament IV
+   * draws the notes in the secondary ink and the hovered one, with its
+   * links, in the accent (f4-notes.png's graph), read from the tokens so
+   * an accent variant follows.
+   */
+  function inks(c: HTMLCanvasElement) {
+    if (classic())
+      return {
+        edgeLit: "rgba(150,130,255,0.75)",
+        edgeDim: "rgba(120,110,170,0.10)",
+        edge: "rgba(120,110,170,0.28)",
+        nodeLit: "#b3a5ff",
+        node: "rgba(160,150,220,0.9)",
+        nodeDim: "rgba(160,150,220,0.25)",
+        labelLit: "#e8e4ff",
+        label: "rgba(200,195,225,0.75)",
+        font: "11px ui-sans-serif, system-ui, sans-serif",
+      };
+    const cs = getComputedStyle(c);
+    const v = (name: string, fallback: string) => cs.getPropertyValue(name).trim() || fallback;
+    const accent = v("--accent", "#ffb454");
+    const ink2 = v("--ink2", "#b9c2cd");
+    // A canvas may not parse color-mix(), so a token's hex becomes rgba().
+    const mix = (col: string, pct: number) => {
+      const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(col);
+      if (!m) return col;
+      const [r, g, b] = m.slice(1).map((h) => parseInt(h, 16));
+      return `rgba(${r},${g},${b},${pct / 100})`;
+    };
+    return {
+      edgeLit: mix(accent, 75),
+      edgeDim: mix(ink2, 8),
+      edge: mix(ink2, 26),
+      nodeLit: accent,
+      node: mix(ink2, 85),
+      nodeDim: mix(ink2, 22),
+      labelLit: v("--ink", "#e9edf2"),
+      label: mix(ink2, 80),
+      font: `11px ${v("--sans", "system-ui, sans-serif")}`,
+    };
+  }
+
   function paint(c: HTMLCanvasElement) {
     const ctx = c.getContext("2d");
     if (!ctx) return;
+    const k = inks(c);
     const dpr = window.devicePixelRatio || 1;
     ctx.setTransform(dpr, 0, 0, dpr, c.width / 2, c.height / 2);
     ctx.clearRect(
@@ -234,11 +279,7 @@
       const b = nodes[e.b];
       if (!a || !b) continue;
       const touching = lit !== undefined && (e.a === lit || e.b === lit);
-      ctx.strokeStyle = touching
-        ? "rgba(150,130,255,0.75)"
-        : lit !== undefined
-          ? "rgba(120,110,170,0.10)"
-          : "rgba(120,110,170,0.28)";
+      ctx.strokeStyle = touching ? k.edgeLit : lit !== undefined ? k.edgeDim : k.edge;
       ctx.beginPath();
       ctx.moveTo(a.x, a.y);
       ctx.lineTo(b.x, b.y);
@@ -248,12 +289,7 @@
     for (let i = 0; i < nodes.length; i++) {
       const n = nodes[i];
       const near = lit === undefined || i === lit || neighbours.has(i);
-      ctx.fillStyle =
-        i === lit
-          ? "#b3a5ff"
-          : near
-            ? "rgba(160,150,220,0.9)"
-            : "rgba(160,150,220,0.25)";
+      ctx.fillStyle = i === lit ? k.nodeLit : near ? k.node : k.nodeDim;
       ctx.beginPath();
       ctx.arc(n.x, n.y, radius(n), 0, Math.PI * 2);
       ctx.fill();
@@ -262,8 +298,8 @@
       // vault, and only the hovered neighbourhood in a crowded one.
       const label = nodes.length <= 60 || near;
       if (label && (lit === undefined ? nodes.length <= 60 : true)) {
-        ctx.fillStyle = i === lit ? "#e8e4ff" : "rgba(200,195,225,0.75)";
-        ctx.font = "11px ui-sans-serif, system-ui, sans-serif";
+        ctx.fillStyle = i === lit ? k.labelLit : k.label;
+        ctx.font = k.font;
         ctx.textAlign = "center";
         ctx.fillText(short(n.name), n.x, n.y - radius(n) - 5);
       }
@@ -521,5 +557,61 @@
     color: var(--dim);
     font-size: 0.7rem;
     line-height: 1.45;
+  }
+
+  /* ---- Filament IV (item 565, stage 8) ---- behind the layout gate. */
+  :global(:where(:root:not([data-layout="classic"]))) header {
+    background: var(--sheet);
+    border-bottom-color: var(--line);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .title {
+    font-size: 13.5px;
+    font-weight: 500;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .meta {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .back {
+    font-size: 12.5px;
+    border-radius: var(--r1);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ghost {
+    min-height: 28px;
+    padding: 3px 10px;
+    border: 1px solid var(--line2);
+    border-radius: var(--r1);
+    background: var(--well);
+    color: var(--ink);
+    font-size: 12.5px;
+    font-weight: 500;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ghost:hover:not(:disabled) {
+    background: var(--well2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .wrap {
+    background: var(--paper);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tip {
+    background: var(--raised);
+    border-color: var(--line2);
+    border-radius: var(--r1);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .broken,
+  :global(:where(:root:not([data-layout="classic"]))) footer {
+    background: var(--sheet);
+    border-top-color: var(--line);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .label {
+    font: 500 10px var(--mono);
+    letter-spacing: 0.14em;
+    color: var(--ink2);
+    opacity: 1;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .chip {
+    border-radius: var(--r1);
+    font-family: var(--sans);
+    font-size: 12px;
   }
 </style>
