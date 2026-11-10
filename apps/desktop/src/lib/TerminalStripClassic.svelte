@@ -34,7 +34,7 @@
     d: Dock;
     shells: ShellRow[];
     key: string;
-    home: string;
+    home: string | null;
     paneChatId: string | null;
     front: ShellRow | null;
   }

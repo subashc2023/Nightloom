@@ -25,8 +25,6 @@
   import AssistantMessageClassic from "./AssistantMessageClassic.svelte";
   import UserBubbleClassic from "./UserBubbleClassic.svelte";
   import { classic } from "./layout.svelte";
-  const Reply = $derived(classic() ? AssistantMessageClassic : AssistantMessage);
-  const Bubble = $derived(classic() ? UserBubbleClassic : UserBubble);
   import Icon from "./Icon.svelte";
   import { scheduleAsideSave } from "./asides.svelte";
   import WaitingMoon from "./WaitingMoon.svelte";
@@ -343,7 +341,7 @@
           </div>
         </div>
       {:else}
-        <Bubble images={imagesOf(turn)} documents={docsOf(turn)} text={turn.question} keep={`fold:${foldChat}|${turn.seq}|bubble`} />
+        {#if classic()}<UserBubbleClassic images={imagesOf(turn)} documents={docsOf(turn)} text={turn.question} keep={`fold:${foldChat}|${turn.seq}|bubble`} />{:else}<UserBubble images={imagesOf(turn)} documents={docsOf(turn)} text={turn.question} keep={`fold:${foldChat}|${turn.seq}|bubble`} />{/if}
       {/if}
       {#if editing?.index !== i}
         <div class="aside-q-foot">
@@ -384,7 +382,8 @@
         <!-- Item 403: the chat's live reply, from the same segments: the
              thinking block's arrival, the activity rows, the working moon
              counting from the send. -->
-        <Reply
+        {#if classic()}
+        <AssistantMessageClassic
           {segs}
           streaming={turn === asking}
           since={turn === asking ? (turn.startedAt ?? null) : null}
@@ -392,6 +391,16 @@
           folds={foldsOf(turn.seq)}
           runFrom={{ chat: owner, aside: aside.id }}
         />
+        {:else}
+        <AssistantMessage
+          {segs}
+          streaming={turn === asking}
+          since={turn === asking ? (turn.startedAt ?? null) : null}
+          footer={footerOf(turn)}
+          folds={foldsOf(turn.seq)}
+          runFrom={{ chat: owner, aside: aside.id }}
+        />
+        {/if}
       </div>
     {:else if turn === asking}
       <!-- The chat's own wait (backlog 049), the one piece since 403. -->
