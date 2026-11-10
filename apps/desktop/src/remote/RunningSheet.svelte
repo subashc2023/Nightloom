@@ -4,8 +4,14 @@
    * turn running on the Mac, the asides, the dream and a capture — the
    * desktop's Running-tasks panel, read-only but for opening a chat.
    * Rendered inside the page's sheet; `onopen` shows the chat.
+   *
+   * By project (item 558, 2026-11-10): ~~one "Chats" list~~ — the chats
+   * under their projects (`runGroups.ts`, the desktop panel's grouping),
+   * the project he is in first and open, the others folded to a count.
    */
   import { sinceText, type Running } from "./client";
+  import { groupRuns, projectSummary } from "../lib/runGroups";
+  import type { RunEntry } from "../lib/running";
 
   interface Props {
     running: Running | null;
@@ -14,8 +20,38 @@
     onrefresh: () => void;
     /** The host's name — "the Mac" or "Away" (300 B5). */
     where?: string;
+    /** Item 558: the host's projects, to name each group. */
+    projects?: readonly { id: string; name: string }[];
+    /** The project he is in on the phone; null for unfiled chats. */
+    here?: string | null;
   }
-  let { running, problem, onopen, onrefresh, where = "the Mac" }: Props = $props();
+  let { running, problem, onopen, onrefresh, where = "the Mac", projects = [], here = null }: Props = $props();
+
+  /** The chats as the desktop's running rows, grouped by project. */
+  const groups = $derived(
+    groupRuns(
+      (running?.chats ?? []).map(
+        (c, i): RunEntry => ({
+          id: `turn:${c.chat ?? `new-${i}`}`,
+          kind: "turn",
+          project: c.project ?? null,
+          where: c.project ? (projects.find((p) => p.id === c.project)?.name ?? "another project") : "unfiled chats",
+          session: c.chat,
+          chat: c.title,
+          doing: "",
+          startedAt: c.since,
+          onScreen: !!c.on_screen,
+          waiting: (c.waiting ?? 0) > 0,
+          survivesQuit: false,
+        }),
+      ),
+      here,
+    ),
+  );
+  /** Folds he changed on this page; the rest follow "his project open". */
+  let folds = $state<Record<string, boolean>>({});
+  const isOpen = (key: string, here: boolean) => folds[key] ?? here;
+  const byId = $derived(new Map((running?.chats ?? []).map((c, i) => [`turn:${c.chat ?? `new-${i}`}`, c])));
 
   /** Asides (2A: `{chat, thread, seq, question}`, labelled by the question), dream and capture: each
    *  section shows only when a host reports something. */
@@ -43,24 +79,35 @@
 {:else if empty}
   <p class="rn-note">Nothing is running.</p>
 {:else}
-  {#if running.chats.length > 0}
-    <div class="rn-label">Chats</div>
-    <div class="rn-list">
-      {#each running.chats as c, i (c.chat ?? `new-${i}`)}
-        <button disabled={!c.chat} onclick={() => c.chat && onopen(c.chat, c.project ?? null)}>
-          <span class="rn-dot"></span>
-          <span class="rn-grow">
-            <span class="rn-name">{c.title}</span>
-            <small>
-              {[c.on_screen ? `on ${where}’s screen` : null, sinceText(c.since) || null, c.waiting ? `${c.waiting} waiting for you` : null]
-                .filter(Boolean)
-                .join(" · ") || "running"}
-            </small>
-          </span>
-        </button>
-      {/each}
-    </div>
-  {/if}
+  {#each groups as g (g.key)}
+    {@const open = isOpen(g.key, g.here)}
+    <button class="rn-label rn-fold" aria-expanded={open} onclick={() => (folds = { ...folds, [g.key]: !open })}>
+      <span class="rn-chev" class:open>›</span>
+      <span class="rn-proj">{g.where}</span>
+      {#if g.here}<span class="rn-here">this project</span>{/if}
+      <span class="rn-count">{open ? g.count : projectSummary(g)}</span>
+    </button>
+    {#if open}
+      <div class="rn-list">
+        {#each g.chats as gc (gc.key)}
+          {@const c = gc.turn ? byId.get(gc.turn.id) : undefined}
+          {#if c}
+            <button disabled={!c.chat} onclick={() => c.chat && onopen(c.chat, c.project ?? null)}>
+              <span class="rn-dot"></span>
+              <span class="rn-grow">
+                <span class="rn-name">{c.title}</span>
+                <small>
+                  {[c.on_screen ? `on ${where}’s screen` : null, sinceText(c.since) || null, c.waiting ? `${c.waiting} waiting for you` : null]
+                    .filter(Boolean)
+                    .join(" · ") || "running"}
+                </small>
+              </span>
+            </button>
+          {/if}
+        {/each}
+      </div>
+    {/if}
+  {/each}
   {#if asides.length > 0}
     <div class="rn-label">Asides</div>
     <div class="rn-list">
@@ -120,6 +167,46 @@
     font-size: 13px;
     color: var(--dim);
     margin: 4px 0 -4px;
+  }
+  /* Item 558: a project's head folds its chats. */
+  .rn-fold {
+    all: unset;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    padding: 6px 2px 2px;
+    margin: 4px 0 -2px;
+  }
+  .rn-chev {
+    display: inline-block;
+    color: var(--dim);
+    transition: transform 0.15s;
+  }
+  .rn-chev.open {
+    transform: rotate(90deg);
+  }
+  .rn-proj {
+    color: var(--ink);
+    font-weight: 600;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .rn-here {
+    font-size: 11px;
+    color: var(--live);
+    background: var(--live-soft);
+    border-radius: 999px;
+    padding: 1px 8px;
+    flex: none;
+  }
+  .rn-count {
+    margin-left: auto;
+    flex: none;
+    font-size: 12px;
+    color: var(--dim);
   }
   .rn-list {
     display: flex;

@@ -921,7 +921,7 @@
     {@const waitsFor = scheduledFor(s.id)}
     <!-- Item 534: the two-line row — the name (marks first) with the
          chat's context bar at the right; under it, in mono, the time, the
-         size and "past hand-off", or, while a turn runs, "replying 0:41 ·
+         size and "past hand-off", or, while a turn runs, ~~"replying~~ "running (item 556) 0:41 ·
          3 tools" in the signal colour ("waiting on you" in the accent when
          a prompt waits). -->
     {@const live = liveBy.get(s.id)}
@@ -979,7 +979,7 @@
                and the size since item 534; the id and the exact time are
                the row's hover. -->
           <span class="meta"
-            >{#if live}{#if live.waiting > 0}<span class="wait">waiting on you</span>{:else}<span class="live-dot" aria-hidden="true"></span><span class="sig">replying</span>{/if}{#if live.startedAt !== null}<span class="num">{liveClock(liveNow - live.startedAt)}</span>{/if}{#if toolsText(s.id)}<span>{toolsText(s.id)}</span>{/if}{:else}{#if waitsFor && s.user_turns === 0}<span class="sched-line">scheduled · {scheduleWhen(dueAt(waitsFor))}</span>{:else}<span class="num">{rowClock(s.modified, dayNow)}</span>{/if}{#if ctx}<span class="num">{ctxText(ctx.used)}</span>{/if}{#if ctx?.look?.past}<span class="hot" use:tip={"This chat's context is past its hand-off line (Settings → hand-off)"}>past hand-off</span>{/if}{/if}{#if s.kind === "chat"}<span>chat</span>{/if}{#if s.mode === "incognito"}<span>incognito</span>{/if}{#if s.thread && s.thread !== group}<span class="thread" use:tip={`Works from the research thread ${s.thread}`}>◇ {s.thread}</span>{/if}{#if r.depth === 0 && forkLine(s, app.sessions)}<span class="from" use:tip={"Forked from that chat; the parent is unchanged"}>{forkLine(s, app.sessions)}</span>{/if}</span
+            >{#if live}{#if live.waiting > 0}<span class="wait">waiting on you</span>{:else}<span class="live-dot" aria-hidden="true"></span><span class="sig">running</span>{/if}{#if live.startedAt !== null}<span class="num">{liveClock(liveNow - live.startedAt)}</span>{/if}{#if toolsText(s.id)}<span>{toolsText(s.id)}</span>{/if}{:else}{#if waitsFor && s.user_turns === 0}<span class="sched-line">scheduled · {scheduleWhen(dueAt(waitsFor))}</span>{:else}<span class="num">{rowClock(s.modified, dayNow)}</span>{/if}{#if ctx}<span class="num">{ctxText(ctx.used)}</span>{/if}{#if ctx?.look?.past}<span class="hot" use:tip={"This chat's context is past its hand-off line (Settings → hand-off)"}>past hand-off</span>{/if}{/if}{#if s.kind === "chat"}<span>chat</span>{/if}{#if s.mode === "incognito"}<span>incognito</span>{/if}{#if s.thread && s.thread !== group}<span class="thread" use:tip={`Works from the research thread ${s.thread}`}>◇ {s.thread}</span>{/if}{#if r.depth === 0 && forkLine(s, app.sessions)}<span class="from" use:tip={"Forked from that chat; the parent is unchanged"}>{forkLine(s, app.sessions)}</span>{/if}</span
           >
         </button>
         <!-- The origin's forks (backlog 207): a chevron and the count,

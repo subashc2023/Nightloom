@@ -33,7 +33,10 @@
     renameSession,
     showNightshift,
     toggleSidebar,
+    liveChats,
   } from "./state.svelte";
+  // Item 556: a running chat's row says so (the Classic twin of 534's live row).
+  import { liveClock } from "./chatList";
   import * as api from "./api";
   import { hasBoxDraft, hasThreadDraft, newDraftKey, readDraft } from "./drafts.svelte";
   import { scheduledFor } from "./scheduled.svelte";
@@ -86,6 +89,17 @@
   import { DragToNotes } from "./dragToNotes";
   import type { ChatKind, ChatMode, NightshiftInfo, NightshiftRow, SessionMeta } from "./types";
   import { relativeTime } from "./time";
+  /** Item 556: every chat whose turn runs now — on screen, parked or off
+   *  screen — and a second's clock for their timers while any does. */
+  const lives = $derived(liveChats());
+  const liveBy = $derived(new Map(lives.flatMap((l) => (l.session ? [[l.session, l] as const] : []))));
+  let liveNow = $state(Date.now());
+  $effect(() => {
+    if (lives.length === 0) return;
+    liveNow = Date.now();
+    const t = setInterval(() => (liveNow = Date.now()), 1000);
+    return () => clearInterval(t);
+  });
   import { sameMorning } from "./nightshift";
   import NotesPanel from "./NotesPanel.svelte";
   import SearchPanel from "./SearchPanel.svelte";
@@ -848,7 +862,8 @@
     <!-- A message scheduled here (backlog 532): ◷ before the name, and a
          chat with nothing sent yet is named by it and says when. -->
     {@const waitsFor = scheduledFor(s.id)}
-    <div class="session-item" class:active={rowLit(s.id)} class:fork={r.depth > 0} style:--depth={r.depth > 0 ? r.depth : undefined}>
+    {@const live = liveBy.get(s.id)}
+    <div class="session-item" class:active={rowLit(s.id)} class:live={!!live} class:waiting={!!live && live.waiting > 0} class:fork={r.depth > 0} style:--depth={r.depth > 0 ? r.depth : undefined}>
       {#if renaming === s.id}
         <!-- Opens with the whole title selected (backlog 376): typing
              replaces it, Esc leaves the name as it was. -->
@@ -893,7 +908,7 @@
                parent's name as its own row shows it, or that the
                parent is gone. -->
           <span class="meta"
-            >{#if waitsFor && s.user_turns === 0}scheduled · {scheduleWhen(dueAt(waitsFor))}{" · "}{/if}{s.id.slice(0, 8)}{#if s.kind === "chat"}{" · "}chat{/if}{#if s.mode === "incognito"}{" · "}incognito{/if} · {relativeTime(s.modified)}{#if s.thread && s.thread !== group}{" · "}<span class="thread" use:tip={`Works from the research thread ${s.thread}`}>◇ {s.thread}</span>{/if}{#if r.depth === 0 && forkLine(s, app.sessions)}{" · "}<span class="from" use:tip={"Forked from that chat; the parent is unchanged"}>{forkLine(s, app.sessions)}</span>{/if}</span
+            >{#if live}<span class="live-mark" class:wait={live.waiting > 0}><span class="live-dot" aria-hidden="true"></span>{live.waiting > 0 ? "waiting on you" : "running"}{#if live.startedAt !== null}{" "}{liveClock(liveNow - live.startedAt)}{/if}</span>{" · "}{/if}{#if waitsFor && s.user_turns === 0}scheduled · {scheduleWhen(dueAt(waitsFor))}{" · "}{/if}{s.id.slice(0, 8)}{#if s.kind === "chat"}{" · "}chat{/if}{#if s.mode === "incognito"}{" · "}incognito{/if} · {relativeTime(s.modified)}{#if s.thread && s.thread !== group}{" · "}<span class="thread" use:tip={`Works from the research thread ${s.thread}`}>◇ {s.thread}</span>{/if}{#if r.depth === 0 && forkLine(s, app.sessions)}{" · "}<span class="from" use:tip={"Forked from that chat; the parent is unchanged"}>{forkLine(s, app.sessions)}</span>{/if}</span
           >
         </button>
         <!-- The origin's forks (backlog 207): a chevron and the count,
@@ -2171,6 +2186,35 @@
   }
   /* The fork's lineage, in the interface face so the parent's name reads
      as a name and not as an id. */
+  /* Item 556: a running row — the live blue's dot and word before the id,
+     flat (Classic has no glow); waiting on him in the accent. */
+  .meta .live-mark {
+    color: var(--live);
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .meta .live-mark.wait {
+    color: var(--accent);
+  }
+  .live-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+  .session-item.live {
+    box-shadow: inset 2px 0 0 var(--live);
+  }
+  .session-item.live.waiting {
+    box-shadow: inset 2px 0 0 var(--accent);
+  }
+  .session-item.active.live {
+    box-shadow: inset 2px 0 0 var(--live), 0 0 0 1px var(--line2);
+  }
+  .session-item.active.live.waiting {
+    box-shadow: inset 2px 0 0 var(--accent), 0 0 0 1px var(--line2);
+  }
   .meta .from {
     font-family: var(--sans);
     font-style: italic;

@@ -28,6 +28,11 @@
   import { canMakeMain } from "./versions";
   import { makeMainChat, versions } from "./versions.svelte";
   import ThreadChip from "./ThreadChip.svelte";
+  // Item 556: the open chat's own running sign, at the bar's left.
+  import ChatRunSign from "./ChatRunSign.svelte";
+  import { allRunning } from "./running.svelte";
+  import { chatRun } from "./runGroups";
+  const runSign = $derived(chatRun(allRunning(), app.activeSessionId).state);
   import { threadChip } from "./thread";
   import { chatThread } from "./state.svelte";
   import { auth } from "./claudeAuth.svelte";
@@ -489,6 +494,7 @@
       canCompact,
       modeText,
       continuedFrom,
+      runSign,
       app.connection,
       gauge == null,
       plan == null,
@@ -507,11 +513,13 @@
   <!-- ~~The title and the short id~~ — board d (backlog 175): the tab is
        the title, its hover the id. The mode mark and "continued from"
        stay, at the bar's left, when a chat has one. -->
-  {#if modeText || continuedFrom || threadChipShown || mainable}
+  {#if runSign !== "idle" || modeText || continuedFrom || threadChipShown || mainable}
     <div class="left">
       <!-- The chat's research thread (nightshift backlog 281): first on
            the left, where the title row's name used to be — the tab names
            the chat, this says what it works from. -->
+      <!-- Item 556: whether this chat runs — first, so it is seen. -->
+      <ChatRunSign />
       <ThreadChip />
       {#if modeText}
         <span class="mode {mode}" use:tip={modeTitle}

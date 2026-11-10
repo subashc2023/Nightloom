@@ -14,7 +14,7 @@
    * chat list): the chat the Mac has open — what the Mac is on — with the
    * list one tap away in the drawer; with no chat open, a new chat.
    */
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import { fade, fly } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
   import {
@@ -349,6 +349,23 @@
   let openSteps = $state<Record<string, boolean>>({});
 
   const activePid = $derived(projects.find((p) => p.active)?.id ?? "");
+  /** Item 556: the chats whose turns run on the host, from `/api/running`
+   *  (read again each time the drawer or the Projects page opens); the
+   *  desktop's open chat by the live `busy` flag, which is never stale. */
+  const runningIds = $derived.by(() => {
+    const ids = new Set((running?.chats ?? []).flatMap((c) => (c.chat ? [c.chat] : [])));
+    if (remote.active_chat) {
+      if (remote.busy) ids.add(remote.active_chat);
+      else ids.delete(remote.active_chat);
+    }
+    return ids;
+  });
+  $effect(() => {
+    if (!(drawer || projectsView) || link !== "online") return;
+    untrack(() => {
+      if (client && hasFeature(remote, "running")) void refreshBudget();
+    });
+  });
   /** The host lists No project as a project (serve, Away); the Mac's own
    *  listener does not, and refuses `unfiled` on its chat routes. */
   const listsUnfiled = $derived(projects.some((p) => p.id === NO_PROJECT));
@@ -3228,7 +3245,8 @@
             <button class="chat-row" class:here onclick={() => openChat(r.chat.id, r.pid || null)}>
               <span class="chat-label">{r.chat.label}</span>
               <span class="chat-meta">
-                {#if r.pid === activePid && r.chat.id === remote.active_chat}<span class="live-dot" class:run={remote.busy}></span>{/if}
+                <!-- Item 556: ~~only the desktop's open chat~~ — every chat whose turn runs. -->
+                {#if r.pid === activePid && r.chat.id === remote.active_chat}<span class="live-dot" class:run={remote.busy}></span>{:else if runningIds.has(r.chat.id)}<span class="live-dot run"></span>{/if}
                 <span>{shortWhen(chatWhen(r.chat))}{r.chat.mode !== "normal" ? ` · ${r.chat.mode}` : ""}</span>
                 {#if r.project}<span class="tag">{r.project}</span>{/if}
               </span>
@@ -3262,6 +3280,7 @@
             id={pid}
             name={p?.name ?? "Project"}
             chats={chatsBy[pid] ?? null}
+            {runningIds}
             here={chatProject === pid || (chatProject === null && activePid === pid) ? chatId : null}
             instructions={hasFeature(remote, "notes") && (pid === activePid || hasFeature(remote, "notes_project")) ? () => {
                     // Read before the page closes: `pid` is derived from `projectsView`.
@@ -3457,6 +3476,8 @@
         {:else if sheet === "running"}
           <RunningSheet
             {running}
+            {projects}
+            here={(chatProject ?? activePid) || null}
             problem={runningProblem}
             onrefresh={refreshRunning}
             where={hostName(active ?? "mac")}
