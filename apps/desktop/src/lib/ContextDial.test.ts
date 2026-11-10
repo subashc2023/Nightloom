@@ -183,12 +183,31 @@ describe("the dial's motion rules (521 report §7)", () => {
     // Item 574 (his approved plan, 2026-11-10): the one loop is the slow
     // breath on the ticks and notch, only with `pulse` (the new-chat page
     // before its first message), only without reduced motion.
+    // 574b ("is there no movement on this dial"): two more, the same gate —
+    // one faint light round the track every 8 s, a breathing glow on the
+    // inner ring's leading end.
     const loops = dialSrc.match(/animation:[^;]+;/g) ?? [];
-    expect(loops).toEqual(["animation: dial-breathe 5.6s ease-in-out infinite;"]);
+    expect(loops).toEqual([
+      "animation: dial-breathe 5.6s ease-in-out infinite;",
+      "animation: dial-travel 8s linear infinite;",
+      "animation: dial-glow 2.8s ease-in-out infinite;",
+    ]);
     const block = style.slice(media);
     expect(block.indexOf(".pulse .tick")).toBeGreaterThan(0);
     expect(block.indexOf(loops[0] ?? "")).toBeGreaterThan(block.indexOf(".pulse .tick"));
+    expect(block.indexOf(loops[1] ?? "")).toBeGreaterThan(block.indexOf(".pulse .light"));
+    expect(block.indexOf(loops[2] ?? "")).toBeGreaterThan(block.indexOf(".ring-end.pulse"));
+    // The light is hidden outside the gate, so reduced motion shows no light at all.
+    expect(style.slice(0, media)).toMatch(/\.light \{\s*display: none;/);
     expect(railSrc).not.toMatch(/@keyframes|infinite/);
+  });
+  it("578: under 40 px it is a clean thin ring — no ticks, notch or head; the arc still turns hot", () => {
+    expect(dialSrc).toContain("const SMALL = 40;");
+    expect(dialSrc).toContain("minor: small ? 0 : minor, major: small ? 0 : major");
+    expect(dialSrc).toContain("{#if g.notch && !small}");
+    expect(dialSrc).toMatch(/\{#if !small\}\s*<g class="turn"/);
+    // The mark still reaches the geometry, so a small dial past the hand-off is drawn hot.
+    expect(dialSrc).toContain("dialGeometry({ size, share, mark, inner,");
   });
   it("glows only through the lit token, so calm draws no filter", () => {
     const filters = dialSrc.match(/filter:[^;]+;/g) ?? [];

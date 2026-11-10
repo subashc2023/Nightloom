@@ -36,8 +36,10 @@
     blendSizes,
     drawnGroups,
     easeOut,
+    ringArcs,
     startArcs,
     startGroups,
+    startScale,
     startSummary,
     type StartGroup,
     type StartTone,
@@ -136,13 +138,21 @@
   let leaving: StartGroup[] = [];
   let lastGroups: StartGroup[] = [];
   let frame = 0;
+  /** The project the shown sizes belong to (574b): a switch sweeps from 0 again. */
+  let sweptFor: string | null | undefined = undefined;
   const reduce =
     typeof window !== "undefined" && typeof window.matchMedia === "function"
       ? window.matchMedia("(prefers-reduced-motion: reduce)")
       : null;
   $effect(() => {
     const to = groups;
-    const from = untrack(() => new Map(shown));
+    // 574b: a project switch on this page sweeps again from 0 (it re-flowed
+    // between near-equal sizes before — no visible motion).
+    const pid = untrack(() => app.project?.id ?? null);
+    const switched = sweptFor !== undefined && pid !== sweptFor && to.length > 0;
+    if (to.length > 0) sweptFor = pid;
+    const from = switched ? new Map<StartTone, number>() : untrack(() => new Map(shown));
+    if (switched) leaving = [];
     const first = [...from.values()].every((v) => v === 0);
     leaving = lastGroups.filter((g) => !to.some((x) => x.tone === g.tone));
     lastGroups = to;
@@ -164,6 +174,13 @@
   const drawn = $derived(drawnGroups(shown, groups, leaving));
   const startTotal = $derived(drawn.sizes.reduce((a, b) => a + b, 0));
   const arcs = $derived(startArcs(drawn.groups, drawn.sizes, limit));
+  // 574b: the same parts on an inner ring of their own scale — the hand-off
+  // mark when under 200k, else 100k — so 38k fills ~38% of a ring, not 14°.
+  const scale = $derived(startScale(markShare != null && limit ? markShare * limit : null));
+  const ring = $derived(ringArcs(drawn.groups, drawn.sizes, scale));
+  const startTip = $derived(
+    `${startSummary(groups)}\nThe inner ring is drawn ${scale.label}; the outer ring is the whole ${limit ? shortTokens(limit) : ""} window.`,
+  );
   /** Before the first message the dial is the starting context. */
   const fresh = $derived(used === 0 && groups.length > 0);
   const dialShare = $derived(fresh && limit ? Math.min(startTotal / limit, 1) : share);
@@ -378,6 +395,7 @@
             {size}
             share={dialShare}
             parts={fresh ? arcs : null}
+            ring={fresh ? ring : null}
             pulse={fresh}
             mark={markShare}
             inner={null}
@@ -411,7 +429,7 @@
           <h1 class="name">{app.project?.name ?? "New chat"}</h1>
           <div class="hello"><span class="dot" class:off={!ready}></span>{hello}</div>
           {#if fresh}
-            <div class="zero start" use:tipAction={startSummary(groups)}>
+            <div class="zero start" use:tipAction={startTip}>
               <b>{approxTokens(startTotal)}</b> already in context
             </div>
           {:else}
@@ -421,14 +439,38 @@
       </div>
     {:else}
       <!-- A pane too short for the dial: the name and the greeting alone. -->
-      <h1 class="name flat">{app.project?.name ?? "New chat"}</h1>
-      <div class="hello flat"><span class="dot" class:off={!ready}></span>{hello}</div>
-      {#if fresh}
-        <!-- Item 574: the starting context keeps its line when the dial does not fit. -->
-        <div class="zero start flat" use:tipAction={startSummary(groups)}>
-          <b>{approxTokens(startTotal)}</b> already in context
+      <!-- 574b: at his size (1440 × 900 at 150 %) the big dial does not fit, so a
+           small one stands beside the name — the same parts, inner ring, sweep and light. -->
+      <div class="flatrow" class:withdial={fresh && !!limit}>
+        {#if fresh && limit}
+          <div class="mini">
+            <ContextDial
+              size={84}
+              share={dialShare}
+              parts={arcs}
+              {ring}
+              pulse
+              mark={markShare}
+              inner={null}
+              stroke={3}
+              pad={8}
+              minor={0}
+              major={0}
+              label={start ? `A new chat starts with about ${start.total.toLocaleString()} of ${limit.toLocaleString()} tokens` : "Starting context"}
+            />
+          </div>
+        {/if}
+        <div class="flattext">
+          <h1 class="name flat">{app.project?.name ?? "New chat"}</h1>
+          <div class="hello flat"><span class="dot" class:off={!ready}></span>{hello}</div>
+          {#if fresh}
+            <!-- Item 574: the starting context keeps its line when the dial does not fit. -->
+            <div class="zero start flat" use:tipAction={startTip}>
+              <b>{approxTokens(startTotal)}</b> already in context
+            </div>
+          {/if}
         </div>
-      {/if}
+      </div>
     {/if}
 
     <div class="colw" style:max-width="{colMax}px" bind:clientHeight={colH}>
@@ -633,6 +675,29 @@
   }
   .zero.flat {
     margin: -6px 0 12px;
+  }
+  /* 574b: the flat page's small dial, left of the name. */
+  .flatrow {
+    display: contents;
+  }
+  .flatrow.withdial {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    max-width: 100%;
+    margin-top: 10px;
+  }
+  .flatrow.withdial .flattext {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .flatrow.withdial .name.flat {
+    margin-top: 0;
+  }
+  .flattext {
+    display: contents;
   }
   .dot {
     width: 7px;

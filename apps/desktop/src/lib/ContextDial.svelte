@@ -21,6 +21,17 @@
    * transitions stand down); `pulse` breathes the ticks and the notch
    * slowly while the page is at rest. Neither moves under reduced motion.
    * Every other use passes neither and draws as before.
+   *
+   * Item 574b ("is there no movement on this dial"): `ring` draws the same
+   * parts again on an inner ring of their own scale (100k, or a hand-off
+   * mark under 200k), so 38k fills ~38% of it instead of 14° of the 1M
+   * ring; and `pulse` now also sends one faint light round the track every
+   * 8 s and breathes a glow on the inner arc's leading end.
+   *
+   * Item 578 ("doesnt really look so good especially when its small"):
+   * under 40 px (the top bar's 13 px, the phone's 30 px) the ticks, the
+   * notch and the head are dropped — at that size they read as a stray dot
+   * and a dash — and the dial is a clean thin ring with a round-capped arc.
    */
   import { dialGeometry } from "./contextDial";
   import { tip } from "./tip";
@@ -48,6 +59,8 @@
     parts?: StartArc[] | null;
     /** A slow, faint breath on the ticks and the notch (item 574). */
     pulse?: boolean;
+    /** The parts again on an inner ring of their own scale (574b); shares of that scale. */
+    ring?: StartArc[] | null;
   }
 
   let {
@@ -64,9 +77,15 @@
     label,
     parts = null,
     pulse = false,
+    ring = null,
   }: Props = $props();
 
-  const g = $derived(dialGeometry({ size, share, mark, inner, stroke, pad, minor, major }));
+  /** Item 578: the small form, below this size. */
+  const SMALL = 40;
+  const small = $derived(size < SMALL);
+  const g = $derived(
+    dialGeometry({ size, share, mark, inner, stroke, pad, minor: small ? 0 : minor, major: small ? 0 : major }),
+  );
   const driven = $derived(!!parts && parts.length > 0);
   /** A hair of ground between two parts, so each reads as its own. */
   const GAP = 1.2;
@@ -86,6 +105,25 @@
     }),
   );
   let hover = $state<number | null>(null);
+  /** The inner ring (574b): inside the track by the ticks' depth, bolder than it. */
+  const ringR = $derived(Math.max(8, g.track.r - Math.max(10, g.stroke * 4)));
+  const ringW = $derived(Math.max(3, Math.round(g.stroke * 1.8)));
+  const ringC = $derived(2 * Math.PI * ringR);
+  const ringDrawn = $derived(
+    (ring ?? []).map((p, i, all) => {
+      const len = Math.max(0, p.share * ringC - (i < all.length - 1 ? GAP : 0));
+      const need = 12;
+      const hitLen = Math.max(len, need);
+      return { ...p, len, off: -p.from * ringC, hitLen, hitOff: -p.from * ringC + (hitLen - len) / 2 };
+    }),
+  );
+  /** The inner arc's leading end, where its glow breathes. */
+  const ringEnd = $derived.by(() => {
+    if (!ring || ring.length === 0) return null;
+    const last = ring[ring.length - 1];
+    const t = (last.from + last.share) * 2 * Math.PI;
+    return { x: g.mid + ringR * Math.sin(t), y: g.mid - ringR * Math.cos(t) };
+  });
 </script>
 
 <div
@@ -93,6 +131,7 @@
   class:driven
   class:pulse
   class:pointing={hover != null}
+  class:small
   style:width="{g.box}px"
   style:height="{g.box}px"
   role={driven ? "group" : "img"}
@@ -120,6 +159,21 @@
             stroke-dashoffset={p.off}
           />
         {/each}
+        {#if ring && ring.length > 0}
+          <circle class="ring-track" cx={g.mid} cy={g.mid} r={ringR} stroke-width={ringW} />
+          {#each ringDrawn as p (p.tone)}
+            <circle
+              class="part {p.tone}"
+              class:lit={hover === drawn.findIndex((d) => d.tone === p.tone)}
+              cx={g.mid}
+              cy={g.mid}
+              r={ringR}
+              stroke-width={ringW + (hover === drawn.findIndex((d) => d.tone === p.tone) ? 2 : 0)}
+              stroke-dasharray="{p.len} {ringC}"
+              stroke-dashoffset={p.off}
+            />
+          {/each}
+        {/if}
       {:else}
       <circle
         class="arc cool"
@@ -148,12 +202,32 @@
         {/if}
       {/if}
     </g>
-    {#if g.notch}
+    {#if pulse && driven}
+      <!-- 574b: one faint light round the track every 8 s, at rest. -->
+      <g class="light" style:transform-origin="{g.mid}px {g.mid}px">
+        <circle
+          cx={g.mid}
+          cy={g.mid}
+          r={g.track.r}
+          stroke-width={g.stroke + 1}
+          fill="none"
+          stroke-linecap="round"
+          stroke-dasharray="{g.track.c * 0.06} {g.track.c}"
+          transform="rotate(-90 {g.mid} {g.mid})"
+        />
+      </g>
+    {/if}
+    {#if ringEnd}
+      <circle class="ring-end" class:pulse cx={ringEnd.x} cy={ringEnd.y} r={ringW * 0.9} />
+    {/if}
+    {#if g.notch && !small}
       <line class="notch" x1={g.notch.x1} y1={g.notch.y1} x2={g.notch.x2} y2={g.notch.y2} stroke-width="1.5" />
     {/if}
+    {#if !small}
     <g class="turn" style:transform="rotate({g.headDeg}deg)" style:transform-origin="{g.mid}px {g.mid}px">
       <circle class="head" class:past={g.past} cx={g.mid} cy={g.mid - g.track.r} r={g.headR} />
     </g>
+    {/if}
     {#if driven}
       <!-- Hit bands for the parts: wide, clear strokes over the track. -->
       <g transform="rotate(-90 {g.mid} {g.mid})" fill="none">
@@ -173,6 +247,25 @@
             onpointerenter={() => (hover = i)}
             onpointerleave={() => (hover = null)}
             onfocus={() => (hover = i)}
+            onblur={() => (hover = null)}
+          />
+        {/each}
+        {#each ringDrawn as p (p.tone)}
+          <circle
+            class="hit"
+            role="button"
+            tabindex="0"
+            aria-label={p.tip}
+            cx={g.mid}
+            cy={g.mid}
+            r={ringR}
+            stroke-width={Math.max(12, ringW * 3)}
+            stroke-dasharray="{p.hitLen} {ringC}"
+            stroke-dashoffset={p.hitOff}
+            use:tip={p.tip}
+            onpointerenter={() => (hover = drawn.findIndex((d) => d.tone === p.tone))}
+            onpointerleave={() => (hover = null)}
+            onfocus={() => (hover = drawn.findIndex((d) => d.tone === p.tone))}
             onblur={() => (hover = null)}
           />
         {/each}
@@ -230,6 +323,28 @@
   }
   .part.memory {
     stroke: color-mix(in srgb, var(--accent) 40%, var(--ink));
+  }
+  .ring-track {
+    stroke: color-mix(in srgb, var(--well) 70%, transparent);
+  }
+  .ring-end {
+    fill: var(--accent-ink);
+    filter: drop-shadow(var(--glow-accent));
+  }
+  /* The travelling light shows only where motion is allowed (below). */
+  .light {
+    display: none;
+  }
+  .light circle {
+    stroke: var(--accent);
+    opacity: 0.3;
+  }
+  /* 578: the small form — a thin quiet track and a round-capped arc. */
+  .small .track {
+    stroke: color-mix(in srgb, var(--dim) 45%, transparent);
+  }
+  .small .arc {
+    stroke-linecap: round;
   }
   .pointing .part:not(.lit) {
     opacity: 0.45;
@@ -289,6 +404,15 @@
     .pulse .tick.major {
       animation-delay: -2.8s;
     }
+    /* 574b: a faint light travels the ring once every 8 s, and the inner
+       arc's leading end breathes its glow — at rest, never busy. */
+    .pulse .light {
+      display: inline;
+      animation: dial-travel 8s linear infinite;
+    }
+    .ring-end.pulse {
+      animation: dial-glow 2.8s ease-in-out infinite;
+    }
     .arc {
       transition:
         stroke-dasharray 300ms ease,
@@ -304,6 +428,23 @@
     }
     .part {
       transition: stroke-width 120ms ease;
+    }
+  }
+  @keyframes dial-travel {
+    from {
+      transform: rotate(0deg);
+    }
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @keyframes dial-glow {
+    0%,
+    100% {
+      opacity: 0.55;
+    }
+    50% {
+      opacity: 1;
     }
   }
   @keyframes dial-breathe {
