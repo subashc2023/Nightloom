@@ -319,7 +319,7 @@ impl<'a> Recorder<'a> {
                 self.wrote = true;
                 self.sent_at = Utc::now();
             }
-            TurnEvent::Usage { usage } => self.usage.add(*usage),
+            TurnEvent::Usage { usage } => self.usage = fold_round(self.usage, *usage),
             TurnEvent::Subagent {
                 parent_tool_use_id,
                 event,
@@ -471,6 +471,28 @@ impl<'a> Recorder<'a> {
             self.cache_key.clone(),
         );
         self.wrote = true;
+    }
+}
+
+/// Folds a call's usage into the round not yet flushed. Usually there is one
+/// call per record, but a round whose results never reach this recorder
+/// leaves two or three calls to one record — and each call's input is the
+/// whole context, the older call's included, so adding them read 577k on a
+/// chat holding 196k (item 562, measured). The input side is the newest
+/// call's; what was produced or written adds up.
+fn fold_round(acc: Usage, next: Usage) -> Usage {
+    let sum = |a: Option<u64>, b: Option<u64>| match (a, b) {
+        (None, None) => None,
+        (a, b) => Some(a.unwrap_or(0) + b.unwrap_or(0)),
+    };
+    Usage {
+        input_tokens: next.input_tokens,
+        cache_read_tokens: next.cache_read_tokens,
+        output_tokens: acc.output_tokens + next.output_tokens,
+        reasoning_tokens: sum(acc.reasoning_tokens, next.reasoning_tokens),
+        cache_write_tokens: sum(acc.cache_write_tokens, next.cache_write_tokens),
+        cache_write_5m_tokens: sum(acc.cache_write_5m_tokens, next.cache_write_5m_tokens),
+        cache_write_1h_tokens: sum(acc.cache_write_1h_tokens, next.cache_write_1h_tokens),
     }
 }
 
@@ -830,6 +852,40 @@ mod tests {
         // reported by then; the closing one carries the rest — which is what
         // makes the trailing message the live reading a gauge wants.
         assert_eq!(totals, [10, 20]);
+    }
+
+    /// Item 562: three calls before one flush read 3x the context.
+    #[test]
+    fn calls_folded_into_one_record_keep_the_newest_context() {
+        let mut s = Session::new();
+        let mut r = Recorder::new(&mut s, "m");
+        for (input, out) in [(190_000u64, 5u64), (192_000, 6), (196_000, 7)] {
+            r.push(&TurnEvent::Usage {
+                usage: Usage {
+                    input_tokens: input,
+                    output_tokens: out,
+                    cache_read_tokens: Some(input - 1_000),
+                    cache_write_tokens: Some(1_000),
+                    ..Usage::default()
+                },
+            });
+        }
+        r.push(&TurnEvent::TextDelta {
+            text: "done".into(),
+        });
+        r.finish(Some("end_turn"));
+        let u = s
+            .events()
+            .iter()
+            .find_map(|e| match e {
+                SessionEvent::AssistantMessage { usage, .. } => Some(*usage),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(u.input_tokens, 196_000);
+        assert_eq!(u.cache_read_tokens, Some(195_000));
+        assert_eq!(u.output_tokens, 18);
+        assert_eq!(u.cache_write_tokens, Some(3_000));
     }
 
     /// Each round's message carries when its request went out and the
