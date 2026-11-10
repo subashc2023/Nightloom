@@ -20,11 +20,22 @@ export const LAYOUTS: { id: Layout; name: string; note: string }[] = [
   { id: "filament", name: "Filament IV", note: "The new look: lit controls, the right column, the dated chat list." },
   { id: "classic", name: "Classic", note: "The look before Filament IV, every screen as it was, with its palettes." },
 ];
-const LAYOUT_KEY = "nightloom.layout";
+// Its own key: `nightloom.layout` is the window's sizes (`state.svelte.ts`),
+// and sharing it meant picking Classic wiped his sidebar and pane sizes and
+// the next divider drag turned Classic off again (item 568). The old key's
+// bare "classic" is read once and moved here.
+const LAYOUT_KEY = "nightloom.look";
+const SHARED_KEY = "nightloom.layout";
 
 function loadLayout(): Layout {
   try {
-    if (localStorage.getItem(LAYOUT_KEY) === "classic") return "classic";
+    const mine = localStorage.getItem(LAYOUT_KEY);
+    if (mine !== null) return mine === "classic" ? "classic" : "filament";
+    if (localStorage.getItem(SHARED_KEY) === "classic") {
+      localStorage.setItem(LAYOUT_KEY, "classic");
+      localStorage.removeItem(SHARED_KEY);
+      return "classic";
+    }
   } catch {
     // No storage (a harness, a private window): the default stands.
   }
