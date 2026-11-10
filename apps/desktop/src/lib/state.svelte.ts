@@ -49,6 +49,8 @@ import {
   hasDraft,
   discardDraft,
 } from "./drafts.svelte";
+import { scheduled } from "./scheduled.svelte";
+import { nameScheduledRows } from "./schedule";
 import { aimOf, indexOfAim, type Aim } from "./aim";
 import { requestComposerFocus, rewoundMessage, swapIn, untouched, type BoxSwap } from "./rewindDraft.svelte";
 import {
@@ -5720,7 +5722,9 @@ export function setPrefs(mutate: (p: CatalogPrefs) => void): void {
 
 export async function refreshSessions(): Promise<void> {
   try {
-    app.sessions = await api.listSessions();
+    // A chat made by Send later is named by its scheduled message until
+    // that message goes (backlog 532): tabs, title bar and list alike.
+    app.sessions = nameScheduledRows(await api.listSessions(), scheduled);
   } catch {
     // sidebar refresh is best-effort
   }

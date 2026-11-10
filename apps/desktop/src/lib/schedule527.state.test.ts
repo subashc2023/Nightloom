@@ -88,9 +88,11 @@ describe("Send later from a New chat (527)", () => {
     expect(readDraft(NEW).text).toBe("keep me");
   });
 
-  it("the composer no longer greys the menu for a New chat; attachments still do", () => {
+  // ~~"attachments still do"~~ — 2026-11-09, item 531: attachments go with
+  // the message now (schedule531.state.test.ts); only a converting chip waits.
+  it("the composer no longer greys the menu for a New chat", () => {
     expect(composerSrc).not.toMatch(/no id to wait under/);
-    expect(composerSrc).toMatch(/attachments cannot be scheduled yet/);
+    expect(composerSrc).not.toMatch(/attachments cannot be scheduled yet/);
     expect(menuSrc).toMatch(/startPendingChat\(\)/);
   });
 });

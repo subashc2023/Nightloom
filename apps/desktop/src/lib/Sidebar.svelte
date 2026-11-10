@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { chatLabel } from "./chatLabel";
   import { canLeaveProject, canDeleteChat } from "./state.svelte";
   import { saveMemoryFromChat } from "./state.svelte";
   import { tip } from "./tip";
@@ -36,7 +35,10 @@
     toggleSidebar,
   } from "./state.svelte";
   import * as api from "./api";
-  import { hasBoxDraft, hasThreadDraft, newDraftKey } from "./drafts.svelte";
+  import { hasBoxDraft, hasThreadDraft, newDraftKey, readDraft } from "./drafts.svelte";
+  import { scheduledFor } from "./scheduled.svelte";
+  import { dueAt } from "./schedule";
+  import { rowName, scheduleWhen } from "./waitingChat";
   import TerminalButton from "./TerminalButton.svelte";
   import { forkLine } from "./edit";
   import { FORK_GLYPH, forkMark } from "./forkMark";
@@ -843,6 +845,9 @@
          on hover; `r.meta` is the row as drawn, so a version made main
          over a top-level original has no mark. -->
     {@const fork = forkMark(s, app.sessions)}
+    <!-- A message scheduled here (backlog 532): ◷ before the name, and a
+         chat with nothing sent yet is named by it and says when. -->
+    {@const waitsFor = scheduledFor(s.id)}
     <div class="session-item" class:active={rowLit(s.id)} class:fork={r.depth > 0} style:--depth={r.depth > 0 ? r.depth : undefined}>
       {#if renaming === s.id}
         <!-- Opens with the whole title selected (backlog 376): typing
@@ -882,13 +887,13 @@
           ondragend={endContentDrag}
         >
           <span class="snippet"
-            >{#if s.mode === "incognito"}<span class="mark" use:tip={"Incognito: knows nothing about you, writes nothing, unread by other chats"}>{MODE_GLYPH.incognito}</span> {/if}{#if hasBoxDraft(s.id)}<span class="mark draft" role="img" aria-label="has a draft" use:tip={"has a draft"}></span> {/if}{#if fork}<span class="mark fork" role="img" aria-label={fork.tip} use:tip={fork.tip}>{FORK_GLYPH}</span> {/if}{chatLabel(s, "empty session")}</span
+            >{#if s.mode === "incognito"}<span class="mark" use:tip={"Incognito: knows nothing about you, writes nothing, unread by other chats"}>{MODE_GLYPH.incognito}</span> {/if}{#if hasBoxDraft(s.id)}<span class="mark draft" role="img" aria-label="has a draft" use:tip={"has a draft"}></span> {/if}{#if fork}<span class="mark fork" role="img" aria-label={fork.tip} use:tip={fork.tip}>{FORK_GLYPH}</span> {/if}{#if waitsFor}<span class="mark sched" role="img" aria-label="scheduled message" data-sched-mark use:tip={`A message is scheduled here: it sends at ${scheduleWhen(dueAt(waitsFor))}`}>◷</span> {/if}{rowName(s, waitsFor?.text ?? null, readDraft(s.id).text)}</span
           >
           <!-- A fork says where it came from (backlog 062): the
                parent's name as its own row shows it, or that the
                parent is gone. -->
           <span class="meta"
-            >{s.id.slice(0, 8)}{#if s.kind === "chat"}{" · "}chat{/if}{#if s.mode === "incognito"}{" · "}incognito{/if} · {relativeTime(s.modified)}{#if s.thread && s.thread !== group}{" · "}<span class="thread" use:tip={`Works from the research thread ${s.thread}`}>◇ {s.thread}</span>{/if}{#if r.depth === 0 && forkLine(s, app.sessions)}{" · "}<span class="from" use:tip={"Forked from that chat; the parent is unchanged"}>{forkLine(s, app.sessions)}</span>{/if}</span
+            >{#if waitsFor && s.user_turns === 0}scheduled · {scheduleWhen(dueAt(waitsFor))}{" · "}{/if}{s.id.slice(0, 8)}{#if s.kind === "chat"}{" · "}chat{/if}{#if s.mode === "incognito"}{" · "}incognito{/if} · {relativeTime(s.modified)}{#if s.thread && s.thread !== group}{" · "}<span class="thread" use:tip={`Works from the research thread ${s.thread}`}>◇ {s.thread}</span>{/if}{#if r.depth === 0 && forkLine(s, app.sessions)}{" · "}<span class="from" use:tip={"Forked from that chat; the parent is unchanged"}>{forkLine(s, app.sessions)}</span>{/if}</span
           >
         </button>
         <!-- The origin's forks (backlog 207): a chevron and the count,
@@ -1508,7 +1513,7 @@
       title="Delete this chat?"
       lead="It moves to the trash folder beside the other logs, out of the list but still on disk."
       facts={[
-        ["chat", deleting.title ?? deleting.first_user ?? "empty session"],
+        ["chat", deleting.title ?? deleting.first_user ?? (scheduledFor(deleting.id)?.text || null) ?? "a chat with nothing sent yet"],
         ["id", deleting.id.slice(0, 8)],
         ["last used", relativeTime(deleting.modified)],
       ]}

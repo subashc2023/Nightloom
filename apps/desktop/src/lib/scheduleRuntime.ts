@@ -36,7 +36,9 @@ export const scheduleDeps: TickDeps = {
       activeKey: () => app.activeSessionId,
       busy: () => app.busy,
       open: (key) => openSession(key),
-      enqueue: (key, text) => void enqueueMessage(key, text, []),
+      // With its files and images (backlog 531): the queue persists them
+      // as it does a held message's, and the drain sends them.
+      enqueue: (key, text, attachments) => void enqueueMessage(key, text, attachments.map((a) => ({ ...a }))),
       drain,
     }),
 };

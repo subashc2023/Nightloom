@@ -37,6 +37,7 @@ import {
   updateAttachment,
 } from "./drafts.svelte";
 import type { Attachment } from "./types";
+import { scheduledFileIds } from "./scheduled.svelte";
 
 // Anthropic rejects a base64 image over ~10 MB and a PDF over ~32 MB, and
 // nothing checks either before the wire, so the refusal has to happen here.
@@ -143,6 +144,8 @@ export async function pruneDraftCopies(): Promise<void> {
   await (restoring ?? Promise.resolve()).catch(() => {});
   const keep = draftFileIds();
   if (keep === null) return;
+  // A scheduled message's files live in the same folder (backlog 531).
+  keep.push(...scheduledFileIds());
   await pruneDraftFiles(keep).catch(() => {});
 }
 

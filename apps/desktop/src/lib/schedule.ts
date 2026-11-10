@@ -13,6 +13,8 @@
  * queues it; incognito and ephemeral keep it in memory only).
  */
 
+import type { Attachment } from "./types";
+
 export type ScheduleKind = "five_hour" | "seven_day" | "time";
 
 /**
@@ -40,6 +42,15 @@ export interface Scheduled {
   note: string | null;
   /** False in an incognito or ephemeral chat: nothing on disk (blocker 217). */
   persist: boolean;
+  /**
+   * The box's files and images at the pick (backlog 531). Each one's bytes
+   * are kept on disk by `stash` (the drafts' `stash_draft_file` copy, item
+   * 491) and the store holds the chip without them; read back after a
+   * relaunch (`pending` until then). A chip whose copy could not be made
+   * keeps its bytes in the store instead. Absent on an entry made before
+   * 531 — read as none.
+   */
+  attachments?: Attachment[];
 }
 
 /** After a reset, the margin before sending (item 164's resume margin). */
@@ -166,7 +177,7 @@ export interface DeliverEnv {
   activeKey: () => string | null;
   busy: () => boolean;
   open: (key: string) => Promise<void>;
-  enqueue: (key: string, text: string) => void;
+  enqueue: (key: string, text: string, attachments: Attachment[]) => void;
   /** Send the open chat's queue now (the composer's drain). */
   drain: () => Promise<void>;
 }
@@ -180,12 +191,16 @@ export interface DeliverEnv {
  */
 export async function deliverTo(s: Scheduled, env: DeliverEnv): Promise<Delivery> {
   if (!env.connected()) return { ok: false, why: "waiting — no engine is connected" };
+  // A chip still being read back from its copy on disk (backlog 531) goes
+  // with its bytes or not at all.
+  if ((s.attachments ?? []).some((a) => a.pending || !a.data))
+    return { ok: false, why: "waiting — its files are being read back" };
   if (env.activeKey() !== s.key) {
     if (env.busy()) return { ok: false, why: "waiting — another chat is running a turn" };
     await env.open(s.key);
     if (env.activeKey() !== s.key) return { ok: false, why: "waiting — this chat could not be opened" };
   }
-  env.enqueue(s.key, s.text);
+  env.enqueue(s.key, s.text, s.attachments ?? []);
   if (!env.busy()) await env.drain();
   return { ok: true };
 }
@@ -208,8 +223,10 @@ export function readScheduled(raw: string | null, nowMs: number): Record<string,
   for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
     if (v === null || typeof v !== "object") continue;
     const m = v as Record<string, unknown>;
-    if (typeof m.text !== "string" || !m.text) continue;
+    if (typeof m.text !== "string") continue;
     if (typeof m.at !== "number") continue;
+    const attachments = readChips(m.attachments);
+    if (!m.text && attachments.length === 0) continue;
     const kind: ScheduleKind =
       m.kind === "five_hour" || m.kind === "seven_day" || m.kind === "time" ? m.kind : "time";
     const states: ScheduleState[] = ["waiting", "retrying", "limited", "missed", "held"];
@@ -219,17 +236,118 @@ export function readScheduled(raw: string | null, nowMs: number): Record<string,
       state = "missed";
       note = null;
     }
-    out[k] = { key: k, text: m.text, kind, at: m.at, state, firstTryAt: null, nextTryAt: null, note, persist: true };
+    out[k] = {
+      key: k,
+      text: m.text,
+      kind,
+      at: m.at,
+      state,
+      firstTryAt: null,
+      nextTryAt: null,
+      note,
+      persist: true,
+      attachments,
+    };
   }
   return out;
 }
 
+/** The chips of a stored entry: a malformed one costs that chip; one kept
+ *  by its copy on disk comes back `pending`, to be read back. */
+function readChips(v: unknown): Attachment[] {
+  if (!Array.isArray(v)) return [];
+  const out: Attachment[] = [];
+  for (const c of v) {
+    if (c === null || typeof c !== "object") continue;
+    const a = c as Record<string, unknown>;
+    if (typeof a.id !== "number" || typeof a.media_type !== "string" || typeof a.name !== "string") continue;
+    if (a.kind !== "image" && a.kind !== "document" && a.kind !== "file") continue;
+    const data = typeof a.data === "string" ? a.data : "";
+    const stash = typeof a.stash === "string" && /^[0-9a-f]{64}$/i.test(a.stash) ? a.stash : undefined;
+    if (!data && !stash) continue;
+    out.push({
+      id: a.id,
+      kind: a.kind,
+      media_type: a.media_type,
+      name: a.name,
+      data,
+      ...(typeof a.label === "string" ? { label: a.label } : {}),
+      ...(a.pasted === true ? { pasted: true } : {}),
+      ...(typeof a.pages === "number" ? { pages: a.pages } : {}),
+      ...(a.whole === true ? { whole: true } : {}),
+      ...(typeof a.source_sha256 === "string" ? { source_sha256: a.source_sha256 } : {}),
+      ...(stash ? { stash } : {}),
+      ...(!data ? { pending: true } : {}),
+    });
+  }
+  return out;
+}
+
+/** A chip as the store keeps it: without its bytes when a copy is on disk
+ *  (or, with `bare`, always — the over-quota retry), never `pending`. */
+function writeChip(a: Attachment, bare: boolean): Attachment | null {
+  const data = a.stash || bare ? "" : a.data;
+  if (!data && !a.stash) return null;
+  return {
+    id: a.id,
+    kind: a.kind,
+    media_type: a.media_type,
+    name: a.name,
+    data,
+    ...(a.label ? { label: a.label } : {}),
+    ...(a.pasted ? { pasted: true } : {}),
+    ...(a.pages ? { pages: a.pages } : {}),
+    ...(a.whole ? { whole: true } : {}),
+    ...(a.source_sha256 ? { source_sha256: a.source_sha256 } : {}),
+    ...(a.stash ? { stash: a.stash } : {}),
+  };
+}
+
 /** The store as written: only the entries that may touch the disk. */
-export function writeScheduled(map: Record<string, Scheduled>): string {
-  const out: Record<string, Pick<Scheduled, "text" | "kind" | "at" | "state" | "note">> = {};
+export function writeScheduled(map: Record<string, Scheduled>, bare = false): string {
+  const out: Record<string, Pick<Scheduled, "text" | "kind" | "at" | "state" | "note" | "attachments">> = {};
   for (const [k, s] of Object.entries(map)) {
     if (!s.persist) continue;
-    out[k] = { text: s.text, kind: s.kind, at: s.at, state: s.state, note: s.note };
+    const attachments = (s.attachments ?? []).map((a) => writeChip(a, bare)).filter((a): a is Attachment => a !== null);
+    out[k] = { text: s.text, kind: s.kind, at: s.at, state: s.state, note: s.note, attachments };
   }
   return JSON.stringify(out);
+}
+
+/** The chip's first line (ScheduledChip, the waiting page): what it is
+ *  waiting for, or why it has not gone. */
+export function scheduleHead(s: Scheduled, when: (ms: number) => string): string {
+  const at = when(dueAt(s));
+  switch (s.state) {
+    case "missed":
+      return `was due ${at} — the app was closed`;
+    case "held":
+      return s.note ? `held — ${s.note}` : "held — not scheduled";
+    case "limited":
+      return "not sent — still limited";
+    case "retrying":
+      return s.note ?? "still limited";
+    default:
+      return s.note ? `scheduled · ${at} · ${s.note}` : `scheduled · ${at} · ${kindText(s.kind)}`;
+  }
+}
+
+/**
+ * A chat made by Send later has no message yet, so the list would call it
+ * by the untitled fallback (backlog 532). Until it is sent, its row's
+ * first message is the scheduled one — what the list will read once it
+ * goes (a first send's title is its first message). Rows with a title or a
+ * first message, and rows with nothing scheduled, come back unchanged.
+ */
+export function nameScheduledRows<T extends { id: string; title?: string | null; first_user?: string | null }>(
+  rows: T[],
+  map: Record<string, Pick<Scheduled, "text" | "attachments">>,
+): T[] {
+  return rows.map((r) => {
+    if (r.title || r.first_user) return r;
+    const s = map[r.id];
+    if (!s) return r;
+    const name = s.text.trim() || (s.attachments ?? []).map((a) => a.name).join(", ");
+    return name ? { ...r, first_user: name } : r;
+  });
 }
