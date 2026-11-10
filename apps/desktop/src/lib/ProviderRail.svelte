@@ -54,7 +54,7 @@
   import Kbd from "./Kbd.svelte";
   import { cli } from "./cliUpdate.svelte";
   import { modelSeen } from "./modelSeen.svelte";
-  import { aliasView, currentCliVersion, displayName } from "./modelSeen";
+  import { aliasView, currentCliVersion, displayName, familyRows, newestModels, otherOnRows } from "./modelSeen";
   import { isMac } from "./platform";
   import { viewGet, viewSet } from "./viewState";
 
@@ -276,7 +276,21 @@
     window.addEventListener(MODEL_OTHER, show);
     return () => window.removeEventListener(MODEL_OTHER, show);
   });
-  const agentIsAlias = $derived(AGENT_PILLS.includes(app.draft.agentModel.trim()));
+  /*
+   * Item 518: ~~one pill per alias (`fable 5.1`)~~ — one per family, as the
+   * composer's menu (`familyRows`): `Fable 5.2`, picking the full id; the
+   * alias's own pill only while the chat is on an alias older than the
+   * newest. The list's entries only — the menu's extra newest rows for a
+   * family the list leaves out are not pills here, as before.
+   */
+  const newestIds = $derived(newestModels(app.modelLists["anthropic"]));
+  const railRows = $derived(
+    familyRows(AGENT_PILLS, newestIds, modelSeen.byAlias, cliNow, app.draft.agentModel).filter((r) => r.kind !== "newest"),
+  );
+  /** The family pills whose alias resolves to an older model, said under them. */
+  const laggingNotes = $derived(railRows.filter((r) => r.kind === "family" && r.capAlias === null && !railRows.some((x) => x.key === `lagging:${r.key.slice(7)}`)));
+  // ~~`AGENT_PILLS.includes(cur)`~~ — a pill is on (518: a full id can be).
+  const agentIsAlias = $derived(!otherOnRows(app.draft.agentModel, railRows));
   const showAgentField = $derived(agentOther || (!agentIsAlias && app.draft.agentModel.trim() !== ""));
   function pickAgentModel(alias: string) {
     agentOther = false;
@@ -685,7 +699,7 @@
     <section class="sect" bind:this={modelSect}>
       <div class="sect-h">
         <span class="ns-k">Model</span>
-        <span class="sub">the CLI resolves the alias</span>
+        <span class="sub">one pill per family, its newest</span>
       </div>
       <div class="pv" role="radiogroup" aria-label="Model">
         <button
@@ -699,18 +713,18 @@
         >
           default
         </button>
-        {#each AGENT_PILLS as a (a)}
-          {@const cap = agentKey(a)}
+        {#each railRows as r (r.key)}
+          {@const cap = r.capAlias ? agentKey(r.capAlias) : null}
           <button
             class="p"
-            class:on={app.draft.agentModel.trim() === a && !agentOther}
+            class:on={r.on && !agentOther}
             role="radio"
-            aria-checked={app.draft.agentModel.trim() === a && !agentOther}
+            aria-checked={r.on && !agentOther}
             disabled={locked}
-            use:tip={cap ? `${pillSeen(a).title} — ${cap}` : pillSeen(a).title}
-            onclick={() => pickAgentModel(a)}
+            use:tip={cap ? `${r.title} — ${cap}` : r.title}
+            onclick={() => pickAgentModel(r.pick)}
           >
-            {a}{#if pillNumber(a)}&nbsp;<span class="num">{pillNumber(a)}</span>{/if}
+            {r.name}{#if r.version}&nbsp;<span class="num">{r.version}</span>{/if}
             {#if cap}<Kbd keys={cap} />{/if}
           </button>
         {/each}
@@ -726,6 +740,10 @@
           other…
         </button>
       </div>
+      {#each laggingNotes as r (r.key)}
+        {@const k = agentKey(r.key.slice(7))}
+        <p class="note">{r.name} {r.version} — the {r.note}{k ? `, which ${k} picks` : ""}</p>
+      {/each}
       {#if showAgentField}
         <div class="row">
           <span class="lbl">Id</span>
@@ -1187,7 +1205,8 @@
               use:tip={`--fallback-model ${a} — ${pillSeen(a).title}`}
               onclick={() => pickFallback(a)}
             >
-              {a}
+              <!-- Item 518: the alias it sends, and the model it is now. -->
+              {a}{#if pillNumber(a)}&nbsp;<span class="num">{pillNumber(a)}</span>{/if}
             </button>
           {/each}
         </div>

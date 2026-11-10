@@ -238,3 +238,166 @@ export function otherOn(cur: string, aliases: readonly string[], rows: readonly 
   const c = cur.trim();
   return c !== "" && !aliases.includes(c) && !rows.some((r) => r.pick === c);
 }
+
+/** `a` is a newer version of the same family as `b` (both full ids). */
+export function newerId(a: string, b: string): boolean {
+  const x = parse(a);
+  const y = parse(b);
+  return !!x && !!y && x.family === y.family && newer(x.version, y.version);
+}
+
+/** One row of a model list, one per family (nightshift item 518). */
+export interface FamilyRow {
+  /** Stable key for the row. */
+  key: string;
+  /** What choosing it sends as `--model`. */
+  pick: string;
+  /** `Fable 5.2`; an alias outside the families, as it is. */
+  label: string;
+  /** The label split for a pill: `Fable` and `5.2`. */
+  name: string;
+  version: string;
+  /** The alias whose ⌘⇧ chord picks this same model, or null. */
+  capAlias: string | null;
+  /** The alias's note on a family row (`fable alias = 5.1`), or "". */
+  note: string;
+  /** The dim clause after the label. */
+  detail: string;
+  title: string;
+  on: boolean;
+  /**
+   * `family`: the family's newest, merged with its alias; `lagging`: the
+   * alias's own row, shown only while the chat is on it and it resolves to
+   * an older model than the newest; `alias`: a list entry that is no
+   * family's alias (`opusplan`); `full`: a full id the list holds;
+   * `newest`: a family's newest that no list entry covers (511's rows).
+   */
+  kind: "family" | "lagging" | "alias" | "full" | "newest";
+}
+
+function split(label: string): { name: string; version: string } {
+  const i = label.indexOf(" ");
+  return i < 0 ? { name: label, version: "" } : { name: label.slice(0, i), version: label.slice(i + 1) };
+}
+
+/** `Fable 5.1` → `5.1` when `id` is of `family`, else the whole name. */
+function numberIn(id: string, family: string): string {
+  return familyOf(id) === family ? split(displayName(id)).version : displayName(id);
+}
+
+/**
+ * The model list as one row per family (nightshift item 518, blocker 1684:
+ * "sure yeah" to merging): each list entry that is a family's alias
+ * (`fable`) becomes that family's newest model by full id, labelled
+ * `Fable 5.2`, picking the full id, with the alias noted when it resolves
+ * elsewhere on the CLI now (`fable alias = 5.1`). The alias gets a second
+ * row only when it lags the newest *and* the chat is on it (`cur`), so a
+ * chat set to an alias is shown on the right row (blocker 1692's default).
+ * A full id the list holds that a family row already picks is not listed
+ * twice; other entries keep their rows; each family's newest that no
+ * entry covers follows (item 511's rows), unless an alias row (the CLI's
+ * default "" included) already resolves to it.
+ */
+export function familyRows(entries: readonly string[], newest: readonly string[], seen: SeenModels, cliNow: string | null, cur: string): FamilyRow[] {
+  const c = cur.trim();
+  const byFamily = new Map<string, string>();
+  for (const id of newest) {
+    const f = familyOf(id);
+    if (f && !byFamily.has(f)) byFamily.set(f, id);
+  }
+  const familyAliases = new Set(entries.map((e) => e.trim().toLowerCase()).filter((e) => byFamily.has(e)));
+  const rows: FamilyRow[] = [];
+  const covered = new Set<string>();
+  const curSuffix = (on: boolean) => (on ? " · current" : "");
+  for (const raw of entries) {
+    const e = raw.trim();
+    if (!e) continue;
+    const fam = e.toLowerCase();
+    if (!isFullId(e) && byFamily.has(fam)) {
+      if (covered.has(`alias:${fam}`)) continue;
+      covered.add(`alias:${fam}`);
+      const v = aliasView(seen, e, cliNow);
+      const resolved = v.current?.id ?? null;
+      // The CLI's alias may already be newer than the table shipped here.
+      const top = resolved && newerId(resolved, byFamily.get(fam)!) ? resolved : byFamily.get(fam)!;
+      covered.add(top);
+      const lags = !!resolved && resolved !== top;
+      const label = displayName(top);
+      const note = resolved
+        ? lags
+          ? `${e} alias = ${numberIn(resolved, fam)}`
+          : `the ${e} alias too`
+        : `${e} alias not seen yet`; // the CLI's version is in the hover (`v.title`)
+      const onAlias = c === e;
+      const on = c === top || (onAlias && !lags);
+      rows.push({
+        key: `family:${fam}`,
+        pick: top,
+        label,
+        ...split(label),
+        capAlias: lags ? null : e,
+        note,
+        detail: `${top} · ${note}${on ? (onAlias ? ` · current, as ${e}` : " · current") : ""}`,
+        title: `${top} by its full id — the newest ${split(label).name}. ${v.title}${lags ? `, an older model than ${label}` : ""}`,
+        on,
+        kind: "family",
+      });
+      if (lags && onAlias) {
+        const old = displayName(resolved!);
+        rows.push({
+          key: `lagging:${fam}`,
+          pick: e,
+          label: e,
+          name: e,
+          version: numberIn(resolved!, fam),
+          capAlias: e,
+          note: "",
+          detail: `· ${old}, older than ${label}${curSuffix(true)}`,
+          title: `The ${e} alias, which the chat is set to — ${v.title}. ${label} is the row above.`,
+          on: true,
+          kind: "lagging",
+        });
+      }
+      continue;
+    }
+    if (isFullId(e)) {
+      const f = familyOf(e);
+      // The family row above (or below) already picks it.
+      if (covered.has(e) || (f && familyAliases.has(f) && byFamily.get(f) === e)) continue;
+      covered.add(e);
+      const label = displayName(e);
+      rows.push({ key: `full:${e}`, pick: e, label, ...split(label), capAlias: null, note: "", detail: `${e}${curSuffix(c === e)}`, title: `${e} — a full id, which the CLI takes as it is`, on: c === e, kind: "full" });
+      continue;
+    }
+    if (covered.has(`alias:${e}`)) continue;
+    covered.add(`alias:${e}`);
+    const v = aliasView(seen, e, cliNow);
+    const num = v.current ? displayName(v.current.id) : "";
+    rows.push({ key: `alias:${e}`, pick: e, label: e, name: e, version: num, capAlias: e, note: "", detail: `${v.detail}${curSuffix(c === e)}`, title: v.title, on: c === e, kind: "alias" });
+  }
+  const all = ["", ...entries];
+  for (const id of newest) {
+    const f = familyOf(id);
+    if (covered.has(id) || (f && familyAliases.has(f)) || entries.includes(id) || shownByAlias(seen, all, cliNow, id)) continue;
+    covered.add(id);
+    const label = displayName(id);
+    rows.push({
+      key: `newest:${id}`,
+      pick: id,
+      label,
+      ...split(label),
+      capAlias: null,
+      note: "",
+      detail: `${id}${curSuffix(id === c)}`,
+      title: `${id} by its full id — picked as other… would take it`,
+      on: id === c,
+      kind: "newest",
+    });
+  }
+  return rows;
+}
+
+/** No row is on and the chat names a model: the *other…* row is. */
+export function otherOnRows(cur: string, rows: readonly FamilyRow[]): boolean {
+  return cur.trim() !== "" && !rows.some((r) => r.on);
+}

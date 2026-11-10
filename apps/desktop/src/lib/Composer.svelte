@@ -30,7 +30,7 @@
   import { MODEL_KEYS, modelChipLabel, thinkingSupport } from "./catalog";
   import { modelList } from "./modelList.svelte";
   import { modelSeen } from "./modelSeen.svelte";
-  import { aliasView, currentCliVersion, displayName, fullIdRows, newestModels, otherOn } from "./modelSeen";
+  import { aliasView, currentCliVersion, displayName, familyRows, newestModels, otherOnRows } from "./modelSeen";
   import { cli } from "./cliUpdate.svelte";
   import { effortDefaultLabel } from "./effortDefaults";
   import {
@@ -2375,7 +2375,7 @@
   const newestIds = $derived(newestModels(app.modelLists["anthropic"]));
   function aliasRow(a: string, cur: string): { detail: string; title: string } {
     const v = aliasView(modelSeen.byAlias, a, cliNow);
-    const newest = v.current && newestIds.includes(v.current.id) ? ` — the newest ${displayName(v.current.id).split(" ")[0]}, so it has no row of its own below` : "";
+    const newest = v.current && newestIds.includes(v.current.id) ? ` — the newest ${displayName(v.current.id).split(" ")[0]}` : "";
     const current = a === cur ? " · current" : "";
     return { detail: `${v.detail}${current}`, title: `${v.title}${newest}` };
   }
@@ -2387,24 +2387,21 @@
       // — item 511: the model each resolved to on this CLI, or not yet.
       const dv = aliasRow("", cur);
       rows.push({ id: "default", label: "default", detail: dv.detail, title: dv.title, on: cur === "", run: () => void switchModel("") });
-      for (const a of AGENT_PILLS) {
-        const v = aliasRow(a, cur);
-        rows.push({
-          id: a,
-          label: a,
-          detail: v.detail,
-          title: v.title,
-          cap: agentKey(a),
-          on: cur === a,
-          run: () => void switchModel(a),
-        });
+      // ~~One row per alias (`fable · Fable 5.1`), then each family's newest
+      // by full id unless an alias already shows it (511)~~ — item 518: one
+      // row per family, `Fable 5.2`, picking the full id, the alias noted
+      // when it lags; the alias's own row only while the chat is on it.
+      const full = familyRows(AGENT_PILLS, newestIds, modelSeen.byAlias, cliNow, cur);
+      let firstNewest = true;
+      for (const f of full) {
+        const sep = f.kind === "newest" && firstNewest;
+        if (f.kind === "newest") firstNewest = false;
+        rows.push({ id: f.key, label: f.label, detail: f.detail, title: f.title, cap: f.capAlias ? agentKey(f.capAlias) : null, on: f.on, sep, run: () => void switchModel(f.pick) });
       }
-      // Each family's newest by full id, unless an alias already shows it.
-      const full = fullIdRows(newestIds, AGENT_PILLS, modelSeen.byAlias, cliNow, cur);
-      full.forEach((f, i) => rows.push({ ...f, id: `full:${f.pick}`, sep: i === 0, run: () => void switchModel(f.pick) }));
       // A full id typed into the rail's field: named here, changed there.
-      // ~~`!AGENT_PILLS.includes(cur)`~~ — and no newest row names it (511).
-      const other = otherOn(cur, AGENT_PILLS, full);
+      // ~~`!AGENT_PILLS.includes(cur)`~~ — and no newest row names it (511);
+      // no row at all is on (518).
+      const other = otherOnRows(cur, full);
       rows.push({ id: "other", label: other ? cur : "other…", detail: other ? "a full id — the rail's field" : "a full id, typed in the rail", on: other, run: openRailOther });
     } else {
       models.forEach((m, i) =>
@@ -2473,19 +2470,22 @@
     const rows: MenuRow[] = [
       { id: "chat", label: "the chat's", detail: `${chatModelName} · reads the chat's cache`, on: cur === null, run: () => pickAside("model", null) },
     ];
-    for (const m of AGENT_PILLS) {
-      // Item 511: its number too, as the chat's own menu shows it.
-      const v = aliasView(modelSeen.byAlias, m, cliNow);
+    // ~~One row per alias, its number after it (511)~~ — item 518: one row
+    // per family, as the chat's own menu; the row the chat's model is on
+    // says so.
+    const chatRow = familyRows(AGENT_PILLS, newestIds, modelSeen.byAlias, cliNow, app.draft.agentModel).find((f) => f.on)?.key;
+    const fams = familyRows(AGENT_PILLS, newestIds, modelSeen.byAlias, cliNow, cur ?? "");
+    for (const f of fams) {
       rows.push({
-        id: m,
-        label: m,
-        title: v.title,
-        detail: `${v.detail} · ${m === chatModelName ? "the chat's model, picked for this aside" : "its own model — no cache from the chat"}`,
-        on: cur === m,
-        run: () => pickAside("model", m),
+        id: f.key,
+        label: f.label,
+        title: f.title,
+        detail: `${f.detail.replace(/ · current.*$/, "")} · ${f.key === chatRow ? "the chat's model, picked for this aside" : "its own model — no cache from the chat"}`,
+        on: cur !== null && f.on,
+        run: () => pickAside("model", f.pick),
       });
     }
-    if (cur !== null && !AGENT_PILLS.includes(cur)) rows.push({ id: cur, label: cur, on: true, run: () => {} });
+    if (cur !== null && otherOnRows(cur, fams)) rows.push({ id: cur, label: cur, on: true, run: () => {} });
     return rows;
   });
   const asideEffortRows = $derived.by((): MenuRow[] => {
@@ -3185,7 +3185,7 @@
           <span class="pick-chev" aria-hidden="true"><Icon name="chev" size={11} /></span>
         </button>
         {#if menu === "model"}
-          {@render pickMenu(aside ? "This aside's model" : "Model", aside ? "the chat's unless picked here" : agentMode ? "an alias the CLI resolves" : `${models.length} in the picker · Settings picks which`)}
+          {@render pickMenu(aside ? "This aside's model" : "Model", aside ? "the chat's unless picked here" : agentMode ? "one row per family, its newest" : `${models.length} in the picker · Settings picks which`)}
         {/if}
       </span>
       <span class="pick-wrap">

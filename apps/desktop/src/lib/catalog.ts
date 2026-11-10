@@ -2,6 +2,7 @@
 // dropdowns offer. Preferences persist in localStorage; the catalog itself
 // is a starting point — the settings modal can hide entries or add custom
 // model ids per provider.
+import { displayName } from "./modelSeen";
 
 /** Human-facing provider names ("openai-chat" is a wire format, not a brand). */
 export const PROVIDER_LABELS: Record<string, string> = {
@@ -124,7 +125,9 @@ export function modelChipLabel(a: {
   model: string;
   connected: string | null | undefined;
 }): string {
-  if (a.agentMode) return a.agentModel.trim() || "default";
+  // Item 518: a full id (the merged family rows pick one) by its model,
+  // `Fable 5.2`, not `claude-fable-5-2`; an alias as it is.
+  if (a.agentMode) return a.agentModel.trim() ? displayName(a.agentModel) : "default";
   return a.connected || a.model.trim() || "model";
 }
 
