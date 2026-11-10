@@ -25,6 +25,9 @@
   import { isMac } from "./platform";
   import Icon from "./Icon.svelte";
   import TerminalShell from "./TerminalShell.svelte";
+  // Item 542: the Classic layout's strip and run row (1d4ca17's).
+  import TerminalStripClassic from "./TerminalStripClassic.svelte";
+  import { classic } from "./layout.svelte";
   import AgentTerminal from "./AgentTerminal.svelte";
   import { sendSoFar, stopRun } from "./shellRun.svelte";
   import {
@@ -225,6 +228,10 @@
          ending as a small mark, the whole command and folder in its
          tooltip); every control has a word beside its icon, and its key in
          the tooltip. The words go at narrow docks; the tooltips stay. -->
+    {#if classic()}
+      <!-- Item 542: the Classic layout's strip, 1d4ca17's (TerminalStripClassic). -->
+      <TerminalStripClassic part="strip" {d} {shells} {key} {home} {paneChatId} {front} />
+    {:else}
     <div class="term-strip" class:no-cwd={stripW > 0 && stripW < cwdAt} class:no-words={stripW > 0 && stripW < wordsAt} role="toolbar" aria-label="Terminal" bind:clientWidth={stripW}>
       <div class="term-tabs" role="tablist" aria-label="Shells">
         {#each shells as s, i (s.id)}
@@ -338,6 +345,7 @@
         <Icon name="x" size={13} /><span class="term-word">Close</span>
       </button>
     </div>
+    {/if}
     {#if notice && !d.collapsed}
       <div class="term-notice" role="status">
         <Icon name="moon" size={12} />
@@ -348,7 +356,9 @@
         {#if notice.clock}<span class="term-notice-sep">·</span><span class="mono">{notice.clock}</span>{/if}
       </div>
     {/if}
-    {#if front?.run && !d.collapsed}
+    {#if front?.run && !d.collapsed && classic()}
+      <TerminalStripClassic part="run" {d} {shells} {key} {home} {paneChatId} {front} />
+    {:else if front?.run && !d.collapsed}
       <!-- A block run from a reply (item 503): what became of its output, and
            the two ways out of a command that never ends. -->
       <div class="term-run" role="status">
@@ -639,6 +649,13 @@
   .term-notice :global(svg) {
     color: var(--signal);
     flex: none;
+  }
+  /* Item 542: the Classic layout's notice, 1d4ca17's colours. */
+  :global([data-layout="classic"]) .term-notice {
+    background: var(--accent-soft);
+  }
+  :global([data-layout="classic"]) .term-notice :global(svg) {
+    color: var(--accent);
   }
   .term-notice-name {
     color: var(--ink);
