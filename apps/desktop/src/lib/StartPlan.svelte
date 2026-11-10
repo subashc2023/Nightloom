@@ -414,7 +414,7 @@
         {#if app.nightshift.pending}
           <div class="ns-card held">
             <span class="ns-pill open"><span class="dot"></span>held</span>
-            <span class="held-text">launches {clockOf(app.nightshift.pending.fire_at_ms)} · {app.nightshift.pending.items} item{app.nightshift.pending.items === 1 ? "" : "s"}</span>
+            <span class="held-text">launches {classic() ? clockOf(app.nightshift.pending.fire_at_ms) : clock12(app.nightshift.pending.fire_at_ms, new Date(nowMs))} · {app.nightshift.pending.items} item{app.nightshift.pending.items === 1 ? "" : "s"}</span>
             <button type="button" class="ns-btn small ghost" onclick={() => void cancelLaunch()}>Cancel</button>
           </div>
         {/if}

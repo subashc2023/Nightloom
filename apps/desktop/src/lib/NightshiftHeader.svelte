@@ -159,21 +159,31 @@
     color: var(--ink);
     white-space: nowrap;
   }
+  /* The status takes the room between the title and the right-hand
+     controls, so its two readings wrap whole rather than squeezing. */
   .status {
+    flex: 1 1 0;
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 10px;
+    gap: 4px 10px;
     min-width: 0;
-    overflow: hidden;
     white-space: nowrap;
     font-size: 14px;
     color: var(--ink2);
   }
+  /* In a narrow window or at a large zoom the readings wrap word-group by
+     word-group rather than overlap or clip (both happened at 150%). */
   .st {
+    flex: 0 1 auto;
     display: inline-flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 7px;
+    gap: 2px 7px;
     min-width: 0;
+  }
+  .st > * {
+    white-space: nowrap;
   }
   .st b {
     font-weight: 600;
@@ -228,7 +238,7 @@
     text-decoration: underline;
   }
   .spacer {
-    flex: 1;
+    flex: none;
   }
   .wait {
     flex: none;
