@@ -6043,6 +6043,33 @@ export async function setChatThread(slug: string | null): Promise<boolean> {
   return true;
 }
 
+/**
+ * Make the New chat on screen a chat now, without sending, and return its
+ * id (nightshift backlog 527: Send later from a New chat needs an id to
+ * wait under). The shape of `applyThread`: a waiting thread is bound
+ * first, the box's words follow the chat (`adoptCreatedChat`), and the
+ * sidebar shows the row. An open chat's id comes back unchanged; null on
+ * a refusal, toasted.
+ */
+export async function startPendingChat(): Promise<string | null> {
+  if (app.activeSessionId !== null) return app.activeSessionId;
+  const pending = pendingChatKey();
+  try {
+    await writePendingThread();
+    if (app.activeSessionId === null) {
+      app.events = await api.startChat();
+      adoptCreatedChat(pending);
+    }
+    app.error = null;
+  } catch (e) {
+    addToast(String(e));
+    return null;
+  }
+  await applyDraft();
+  void refreshSessions();
+  return app.activeSessionId;
+}
+
 async function applyThread(slug: string | null): Promise<boolean> {
   const pending = pendingChatKey();
   try {

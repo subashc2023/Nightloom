@@ -790,6 +790,15 @@ export function setPromptLayers(off: PromptLayer[]): Promise<SessionEvent[]> {
 }
 
 /**
+ * Make the open New chat a chat now, without sending (nightshift backlog
+ * 527): resolves with its transcript, `session_created` first. An open
+ * chat comes back as it is.
+ */
+export function startChat(): Promise<SessionEvent[]> {
+  return invoke("start_chat");
+}
+
+/**
  * Make the open chat the other kind from the next turn on (nightshift
  * backlog 144). Resolves with the new transcript — a `kind` event lands in
  * the log — and changes nothing on the wire until the caller reconnects,

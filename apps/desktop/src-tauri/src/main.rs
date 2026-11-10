@@ -4935,6 +4935,24 @@ async fn set_prompt_layers(
     Ok(session.events().to_vec())
 }
 
+/// Make the open New chat a chat now, without sending, returning the
+/// transcript (nightshift backlog 527): Send later from a New chat stores
+/// the message under the chat's id, and a New chat has none until this.
+/// The same `lock_or_start` as [`set_prompt_layers`], in the pending mode
+/// and kind, so the chat is the one a first send would have made; nothing
+/// but its creation is written. An open chat is returned as it is.
+#[tauri::command]
+async fn start_chat(state: State<'_, AppState>) -> Result<Vec<SessionEvent>, String> {
+    let log_dir = state.log_dir().await;
+    let pending = *state.pending_mode.lock().await;
+    let pending_kind = *state.pending_kind.lock().await;
+    let (held, _) = state
+        .chats
+        .lock_or_start(pending, pending_kind, &log_dir)
+        .await?;
+    Ok(held.events().to_vec())
+}
+
 /// Make the open chat the other kind from the next turn on, returning the
 /// transcript (nightshift backlog 144, 2026-09-17; blocker 143 answered
 /// *switchable*).
@@ -9111,6 +9129,7 @@ fn main() {
             edit_context,
             prompt_layers,
             set_prompt_layers,
+            start_chat,
             set_chat_kind,
             set_chat_folders,
             set_chat_thread,

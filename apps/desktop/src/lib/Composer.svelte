@@ -141,7 +141,6 @@
     ranKey,
     takeBackQueued,
     updateAttachment,
-    NEW_DRAFT_PREFIX,
   } from "./drafts.svelte";
   import type { Attachment } from "./types";
   import { chipStep, isChipTag } from "./chipSteps";
@@ -2031,15 +2030,10 @@
   // And a block he ran has ended (item 503): its output goes as the next turn.
   $effect(() => untrack(() => (aside ? undefined : registerRunDrain(() => drain(true)))));
   /** Why nothing can be scheduled from this box, if nothing can. */
-  const scheduleBlocked = $derived(
-    key.startsWith(NEW_DRAFT_PREFIX)
-      ? "send a first message first — a new chat has no id to wait under"
-      : attachments.length > 0
-        ? "attachments cannot be scheduled yet; text only"
-        : null,
-  );
-  function scheduled(): void {
-    clearDraft(key);
+  // A New chat is made at the pick (backlog 527), so only attachments block.
+  const scheduleBlocked = $derived(attachments.length > 0 ? "attachments cannot be scheduled yet; text only" : null);
+  function scheduled(to: string): void {
+    clearDraft(to);
     requestAnimationFrame(autogrow);
   }
   function scheduleEdited(): void {

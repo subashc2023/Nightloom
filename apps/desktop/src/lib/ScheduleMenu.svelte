@@ -5,8 +5,11 @@
    * types. The sidebar's *New chat ▾* split button is the look: Send keeps
    * its left corners, this carries the right ones. A row is greyed with its
    * reason when it cannot be used; the whole menu when `blocked` says so.
+   * From a New chat a pick makes the chat first (backlog 527), so the
+   * message has an id to wait under.
    */
-  import { app, chatMode } from "./state.svelte";
+  import { app, chatMode, startPendingChat } from "./state.svelte";
+  import { NEW_DRAFT_PREFIX } from "./drafts.svelte";
   import { floatMenu } from "./floatMenu";
   import { tip } from "./tip";
   import { atTime, clockText, dayClockText, resetTime, type ScheduleKind } from "./schedule";
@@ -21,10 +24,11 @@
   }: {
     key: string;
     text: string;
-    /** Why nothing can be scheduled here (a new chat, attachments). */
+    /** Why nothing can be scheduled here (attachments). */
     blocked?: string | null;
     disabled?: boolean;
-    onscheduled: () => void;
+    /** With the key it was held under: a New chat's is its new id. */
+    onscheduled: (key: string) => void;
   } = $props();
 
   let open = $state(false);
@@ -59,12 +63,26 @@
     open = !open;
   }
 
-  function pick(kind: ScheduleKind, at: number | null): void {
-    if (at === null || allOff) return;
+  let starting = $state(false);
+
+  async function pick(kind: ScheduleKind, at: number | null): Promise<void> {
+    if (at === null || allOff || starting) return;
+    const words = text;
+    let to = key;
+    if (key.startsWith(NEW_DRAFT_PREFIX)) {
+      starting = true;
+      try {
+        const id = await startPendingChat();
+        if (id === null) return; // refused, toasted; the words stay in the box
+        to = id;
+      } finally {
+        starting = false;
+      }
+    }
     const persist = chatMode(app.events) === "normal";
-    if (scheduleSend(key, text, kind, at, persist)) {
+    if (scheduleSend(to, words, kind, at, persist)) {
       open = false;
-      onscheduled();
+      onscheduled(to);
     }
   }
 
@@ -114,7 +132,7 @@
       class="sched-row"
       role="menuitem"
       disabled={!!allOff || five === null}
-      onclick={() => pick("five_hour", five)}
+      onclick={() => void pick("five_hour", five)}
     >
       <span class="sched-label">At the 5-hour reset{five !== null ? ` (${clockText(five)})` : ""}</span>
       <span class="sched-line"
@@ -126,7 +144,7 @@
       class="sched-row"
       role="menuitem"
       disabled={!!allOff || week === null}
-      onclick={() => pick("seven_day", week)}
+      onclick={() => void pick("seven_day", week)}
     >
       <span class="sched-label">At the weekly reset{week !== null ? ` (${dayClockText(week)})` : ""}</span>
       <span class="sched-line"
@@ -144,14 +162,14 @@
           bind:value={when}
           disabled={!!allOff}
           onkeydown={(e) => {
-            if (e.key === "Enter") pick("time", typed?.at ?? null);
+            if (e.key === "Enter") void pick("time", typed?.at ?? null);
           }}
         />
         <button
           type="button"
           class="ns-btn accent small"
           disabled={!!allOff || typed === null}
-          onclick={() => pick("time", typed?.at ?? null)}>Schedule</button
+          onclick={() => void pick("time", typed?.at ?? null)}>Schedule</button
         >
       </span>
       <span class="sched-line">{typed === null ? "type a time" : `${typed.tomorrow ? "tomorrow" : "today"} ${clockText(typed.at)}`}</span>
