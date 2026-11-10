@@ -129,4 +129,30 @@
     flex: 1;
     min-height: 0;
   }
+
+  /* ---- Filament IV (item 565, stage 8; f4-notes.png) ----
+     Behind the layout gate. A to-do line shows its box alone (no bullet
+     before it); the reading face at the transcript's size; headings in
+     the ink colour, the text column held to the transcript's measure. */
+  :global(:where(:root:not([data-layout="classic"]))) .editor {
+    background: var(--paper);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .editor :global(.cm-line:has(.cm-ntask) .cm-nbullet) {
+    display: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .editor :global(.cm-editor) {
+    font-size: 15.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .editor :global(.cm-editor:not(.cm-nsource) .cm-content) {
+    max-width: calc(760px + 2 * var(--pad, 1.2rem));
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .editor :global(.cm-nh) {
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .editor :global(.cm-nh2) {
+    font-size: 1.2em;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .editor :global(.cm-nh3) {
+    font-size: 1.08em;
+  }
 </style>
