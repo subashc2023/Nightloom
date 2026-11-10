@@ -73,6 +73,11 @@ pub struct BrowserStatus {
     pub height: u32,
     /// Open pages; the newest is the one shown.
     pub pages: u32,
+    /// A message is using the browser now (a chat turn's MCP server is
+    /// attached; its subagents share that one). False between messages,
+    /// while the browser is only kept for its logins (item 557): the
+    /// chat's offer then goes and the tab says it is idle.
+    pub in_use: bool,
 }
 
 /// What a browser tells the window.
@@ -171,6 +176,7 @@ impl Entry {
             width: WIDTH,
             height: HEIGHT,
             pages: s.pages,
+            in_use: s.live.is_some() && s.conns > 0,
         }
     }
 
@@ -339,21 +345,31 @@ impl Browsers {
             eprintln!("nightloom: Claude's browser is not answering at its socket");
             return;
         };
-        {
+        let first = {
             let mut s = entry.shared.lock().unwrap();
             s.conns += 1;
             s.last_active = Some(Instant::now());
-        }
+            s.conns == 1
+        };
         this.sync_dialogs(&entry).await;
+        // In use from the first attached message (item 557).
+        if first {
+            this.emit_status(&entry);
+        }
         drop(this);
         let _ = tokio::io::copy_bidirectional(&mut stream, &mut upstream).await;
-        {
+        let last = {
             let mut s = entry.shared.lock().unwrap();
             s.conns = s.conns.saturating_sub(1);
             s.last_active = Some(Instant::now());
-        }
+            s.conns == 0
+        };
         if let Some(this) = me.upgrade() {
             this.sync_dialogs(&entry).await;
+            // The message that used it is over: idle, said at once.
+            if last {
+                this.emit_status(&entry);
+            }
         }
     }
 
@@ -1030,6 +1046,51 @@ cat >> "$0/received""#;
         b.close("chat-1").await;
         assert!(!ask.held_by_user());
         assert_eq!(crate::agent::ask::decide(&r.ask, &call).decision(), "allow");
+        let _ = std::fs::remove_dir_all(&r.dir);
+    }
+
+    /// Item 557 (a bug he reported): the browser is kept between messages
+    /// for its logins, but it is in use only while a message's MCP server
+    /// is attached. The window hears both edges at once, so the chat's
+    /// offer ("Claude's browser · open") goes when the turn ends instead of
+    /// staying for the 30-minute idle end.
+    #[tokio::test]
+    async fn the_browser_reads_idle_the_moment_the_message_using_it_ends() {
+        let r = rig("in-use", IDLE);
+        let b = &r.browsers;
+        let socket = b.endpoint("chat-1", &r.ask).unwrap();
+        // A message's MCP server, attached and talking.
+        let mut conn = tokio::net::UnixStream::connect(&socket).await.unwrap();
+        conn.write_all(b"hi").await.unwrap();
+        let mut buf = [0u8; 2];
+        tokio::time::timeout(Duration::from_secs(10), conn.read_exact(&mut buf))
+            .await
+            .expect("the browser answered")
+            .unwrap();
+        assert!(until(|| b.status("chat-1").is_some_and(|s| s.live && s.in_use)).await);
+        let said_in_use = || {
+            r.events.lock().unwrap().iter().rev().find_map(|e| match e {
+                Event::Status(s) => Some(s.in_use),
+                _ => None,
+            })
+        };
+        assert!(until(|| said_in_use() == Some(true)).await);
+        // A second message attached at once (a subagent's call in the same
+        // process shares the connection; another turn would add one).
+        assert_eq!(one_turn(&socket, "two").await, "two");
+        assert!(
+            b.status("chat-1").unwrap().in_use,
+            "the first is still attached"
+        );
+
+        // The message ends: its server hangs up.
+        drop(conn);
+        assert!(until(|| said_in_use() == Some(false)).await);
+        let st = b.status("chat-1").unwrap();
+        assert!(st.live, "kept for its logins");
+        assert!(!st.in_use);
+        b.close("chat-1").await;
+        assert!(!b.status("chat-1").is_some_and(|s| s.in_use));
         let _ = std::fs::remove_dir_all(&r.dir);
     }
 

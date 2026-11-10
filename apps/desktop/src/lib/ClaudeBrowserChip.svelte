@@ -4,8 +4,9 @@
    * composer beside the preview chip (item 430), from the first time the
    * chat's browser reports live. It offers — Open (or Show, when the tab is
    * already open) brings the tab up beside the chat on his click; nothing
-   * opens by itself. It says where the page is and who holds it; once the
-   * browser has closed it says so and offers only Dismiss.
+   * opens by itself. It says where the page is and who holds it. It shows
+   * only while a message is using the browser or he holds it (item 557,
+   * `chipShown`): a chat whose work is done shows none.
    */
   import { tip } from "./tip";
   import { app } from "./state.svelte";

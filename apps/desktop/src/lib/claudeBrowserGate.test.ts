@@ -4,6 +4,7 @@
 import { describe, expect, it } from "vitest";
 import viewSrc from "./ClaudeBrowserView.svelte?raw";
 import { INPUT_KINDS, InputGate, wheelKind, type DisarmCause } from "./claudeBrowser";
+import { applyStatus, chipShown, dismissChip, inUse, resetBrowsers } from "./claudeBrowser.svelte";
 
 describe("the input gate (551)", () => {
   for (const kind of INPUT_KINDS) {
@@ -92,5 +93,50 @@ describe("every way out of his takeover hands the browser back (552)", () => {
   });
   it("the last tab gone stops watching (the backend then hands the browser back)", () => {
     expect(viewSrc).toMatch(/if \(away \|\| !docVisible\) return;\s*watch\(s, true\);\s*return \(\) => watch\(s, false\);/);
+  });
+});
+
+describe("the chat's browser offer goes when its work ends (557)", () => {
+  const LIVE = { live: true, url: "https://review.net/", title: "Review", held_by: "model" as const, width: 1280, height: 800, pages: 1 };
+
+  it("shows while a message uses the browser and goes the moment it ends", () => {
+    resetBrowsers();
+    applyStatus("a", { ...LIVE, in_use: true });
+    expect(chipShown("a")).toBe(true);
+    applyStatus("a", { ...LIVE, in_use: false });
+    expect(inUse({ ...LIVE, in_use: false })).toBe(false);
+    expect(chipShown("a")).toBe(false);
+  });
+
+  it("stays while he holds the browser, even between messages", () => {
+    resetBrowsers();
+    applyStatus("a", { ...LIVE, in_use: true });
+    applyStatus("a", { ...LIVE, in_use: false, held_by: "user" });
+    expect(chipShown("a")).toBe(true);
+  });
+
+  it("shows nothing once the browser has closed", () => {
+    resetBrowsers();
+    applyStatus("a", { ...LIVE, in_use: true });
+    applyStatus("a", { ...LIVE, live: false, in_use: false });
+    expect(chipShown("a")).toBe(false);
+  });
+
+  it("offers again when a new message takes the idle browser up, even after a dismiss", () => {
+    resetBrowsers();
+    applyStatus("a", { ...LIVE, in_use: true });
+    dismissChip("a");
+    expect(chipShown("a")).toBe(false);
+    applyStatus("a", { ...LIVE, in_use: false });
+    applyStatus("a", { ...LIVE, in_use: true });
+    expect(chipShown("a")).toBe(true);
+    // A navigation inside the same message is the same offer.
+    dismissChip("a");
+    applyStatus("a", { ...LIVE, in_use: true, url: "https://review.net/2" });
+    expect(chipShown("a")).toBe(false);
+  });
+
+  it("an older backend (no in_use) reads as in use", () => {
+    expect(inUse(LIVE)).toBe(true);
   });
 });
