@@ -832,6 +832,238 @@ pub fn earlier_agents_lines(agents: &[EarlierAgent], now_ms: i64) -> Option<Stri
     Some(out)
 }
 
+// ---- a helper's size and model (nightshift backlog 553 + 540, 2026-11-10) ----
+//
+// 553, his words: a chat "said it was estimating 500 to 700,000 tokens being
+// taken from one sub-agent ... I've never seen you do that because you
+// would instead budget differently". The orchestrator sizes each helper's
+// task by its context before launching it and splits one that would pass
+// the retire mark (practices §3). So every launch from a chat's main thread
+// states its estimated context on a line of the call, and the hook refuses
+// one with none or one past [`SPLIT_TOKENS`], telling the model to split.
+// 540 (blocker 1732, his answer): "Fable for the very hardest task, there
+// should be a reason for why Fable is being used" — under `Choose` the
+// hook makes Opus the floor and asks Fable for a written reason.
+
+/// The most context one helper's task may be planned at: under the retire
+/// mark ([`RETIRE_TOKENS`]) with room for the report (item 554: ~300k
+/// stands for Opus 5.5 and Fable 5.2 alike; "past ~250k, finish the step
+/// you are on and report").
+pub const SPLIT_TOKENS: u64 = 250_000;
+
+/// The line a launch states its size on, as the layers and refusals name it.
+pub const ESTIMATE_LABEL: &str = "Estimated context:";
+
+/// The line a Fable launch gives its reason on.
+pub const FABLE_LABEL: &str = "Why Fable:";
+
+/// The task text the model wrote, without the brief Nightloom prepends.
+fn own_text<'a>(input: &'a Value, field: &str) -> Option<&'a str> {
+    let t = input.get(field).and_then(Value::as_str)?;
+    Some(match t.find(BRIEF_CLOSE) {
+        Some(i) => &t[i + BRIEF_CLOSE.len()..],
+        None => t,
+    })
+}
+
+/// The token count a launch states for its helper's context, from a line
+/// of its `description` or `prompt` that names an estimate ("Estimated
+/// context: ~150k", "estimate 120–180k tokens", "500,000 to 700,000"):
+/// the largest figure on the first such line, so a range is judged by its
+/// top. `None` when no line names an estimate with a figure.
+pub fn stated_estimate(input: &Value) -> Option<u64> {
+    use std::sync::LazyLock;
+    static FIGURE: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"(?i)(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s*(k|m|thousand|million)?\b")
+            .expect("figure regex")
+    });
+    for f in ["description", "prompt"] {
+        let Some(text) = own_text(input, f) else {
+            continue;
+        };
+        for line in text.lines() {
+            if !line.to_ascii_lowercase().contains("estimat") {
+                continue;
+            }
+            let mut top: Option<u64> = None;
+            for c in FIGURE.captures_iter(line) {
+                let Ok(n) = c[1].replace(',', "").parse::<f64>() else {
+                    continue;
+                };
+                let unit = c.get(2).map(|m| m.as_str().to_ascii_lowercase());
+                let tokens = match unit.as_deref() {
+                    Some("k" | "thousand") => n * 1_000.0,
+                    Some("m" | "million") => n * 1_000_000.0,
+                    // A bare figure counts only as a whole token count
+                    // ("500,000"), never a percent or a step number.
+                    _ if n >= 1_000.0 => n,
+                    _ => continue,
+                } as u64;
+                top = Some(top.map_or(tokens, |t| t.max(tokens)));
+            }
+            if top.is_some() {
+                return top;
+            }
+        }
+    }
+    None
+}
+
+/// The refusal for a launch that states no size.
+pub fn estimate_missing_reason() -> String {
+    format!(
+        "Not launched: state this helper's estimated context first — a line in the prompt such \
+         as \"{ESTIMATE_LABEL} ~150k\" (the most context it will hold at its peak: its reads, \
+         searches and own output, not the tokens billed over the run; a fresh helper starts \
+         near 60–100k). Keep each helper's task under {}k; split a bigger one into pieces, each \
+         its own helper, launched in turn. Then launch again.",
+        SPLIT_TOKENS / 1000
+    )
+}
+
+/// The refusal for a launch planned past [`SPLIT_TOKENS`].
+pub fn estimate_split_reason(estimate: u64) -> String {
+    format!(
+        "Not launched: this helper is planned at ~{}k of context, past the {}k one helper may \
+         be planned at (helpers retire at {}k, where their judgement over a long transcript \
+         gets worse). Split the task into pieces of under {}k each — by sub-question, source \
+         or file set — and launch each as its own helper, a few at a time, with its own \
+         \"{ESTIMATE_LABEL}\" line. If a finished helper under {}k covers part of it, continue \
+         that one with SendMessage instead.",
+        (estimate + 500) / 1000,
+        SPLIT_TOKENS / 1000,
+        RETIRE_TOKENS / 1000,
+        SPLIT_TOKENS / 1000,
+        RETIRE_TOKENS / 1000
+    )
+}
+
+/// The size check on one launch, pure: `nested` is a subagent's own
+/// launch, whose brief does not carry the rule, so only a stated size past
+/// the mark refuses it.
+pub fn estimate_verdict(estimate: Option<u64>, nested: bool) -> Result<(), String> {
+    match estimate {
+        Some(e) if e > SPLIT_TOKENS => Err(estimate_split_reason(e)),
+        Some(_) => Ok(()),
+        None if nested => Ok(()),
+        None => Err(estimate_missing_reason()),
+    }
+}
+
+/// Whether the call's own text has a line carrying `label` (case aside)
+/// with something after it, or any of `also`.
+fn has_reason(input: &Value, label: &str, also: &[&str]) -> bool {
+    let label = label.to_ascii_lowercase();
+    ["description", "prompt"]
+        .iter()
+        .filter_map(|f| own_text(input, f))
+        .flat_map(str::lines)
+        .map(str::to_ascii_lowercase)
+        .any(|l| {
+            l.find(&label).is_some_and(|i| {
+                !l[i + label.len()..]
+                    .trim_matches(|c: char| c.is_whitespace() || c == '-' || c == '.' || c == ':')
+                    .is_empty()
+            }) || also.iter().any(|a| l.contains(a))
+        })
+}
+
+/// What `Choose` does with a launch's model (540): Opus is the floor, so a
+/// launch naming no model, or sonnet or haiku without "the user asked for"
+/// it, runs on opus (with `Some(note)` telling the model why); Fable needs
+/// a reason line or the launch is refused. A fork and a checkpoint run the
+/// chat's own model, as before.
+pub fn choose_model(input: &Value) -> Result<(SpawnModel, Option<String>), String> {
+    let kind = input.get("subagent_type").and_then(Value::as_str);
+    if matches!(kind, Some("fork")) || kind == Some(super::fork::CHECKPOINT_AGENT) {
+        return Ok((SpawnModel::Leave, None));
+    }
+    let asked = input
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::to_ascii_lowercase);
+    match asked.as_deref() {
+        None | Some("") | Some("inherit") => Ok((SpawnModel::Set("opus"), None)),
+        Some(m) if m.contains("opus") => Ok((SpawnModel::Leave, None)),
+        Some(m) if m.contains("fable") => {
+            if has_reason(input, FABLE_LABEL, &["fable because"]) {
+                Ok((SpawnModel::Leave, None))
+            } else {
+                Err(format!(
+                    "Not launched: Fable 5.2 is for the very hardest tasks only (a multi-file \
+                     systems build, hard research), and a Fable launch says why on a line of its \
+                     prompt: \"{FABLE_LABEL} <the reason this task needs it>\". Add the line and \
+                     launch again, or launch it on opus (Opus 5.5), the default for everything \
+                     else."
+                ))
+            }
+        }
+        Some(m) if m.contains("sonnet") || m.contains("haiku") => {
+            if has_reason(input, "user asked for", &[]) {
+                Ok((SpawnModel::Leave, None))
+            } else {
+                Ok((
+                    SpawnModel::Set("opus"),
+                    Some(format!(
+                        "Nightloom ran this helper on opus, not {m}: no helper runs below Opus \
+                         5.5 unless the user asked for it in this chat (then say so on a line: \
+                         \"User asked for {m}\")."
+                    )),
+                ))
+            }
+        }
+        Some(_) => Ok((SpawnModel::Leave, None)),
+    }
+}
+
+/// How often a process sees its own context size: each time it crosses into
+/// another band of this width (553; item 554: neither Opus 5.5 nor Fable 5.2
+/// is told its context size, and Fable did far better when shown it).
+pub const CONTEXT_BAND: u64 = 50_000;
+
+/// Whether a process's context earns the usage line on this call, pure:
+/// `Some(band)` to show it and record `band` for the process. Due on
+/// crossing into a higher [`CONTEXT_BAND`], and on every call of a helper
+/// past [`SPLIT_TOKENS`] (the wrap-up note rides on it).
+pub fn context_due(last: Option<u64>, context: Option<u64>, subagent: bool) -> Option<u64> {
+    let c = context?;
+    let band = c / CONTEXT_BAND;
+    let crossed = band > last.unwrap_or(0);
+    (crossed || (subagent && c > SPLIT_TOKENS)).then_some(band.max(last.unwrap_or(0)))
+}
+
+/// What a helper past the split mark is told on every call (554's "past
+/// ~250k, finish the step you are on and report").
+pub fn context_wrap_note(context: u64) -> String {
+    let k = (context + 500) / 1000;
+    if context > RETIRE_TOKENS {
+        format!(
+            "Your context is {k}k, past the {}k retire mark: start nothing new. Finish the step \
+             you are on, make your written report current (what is done, what is left, \
+             precisely), and hand back now; a fresh helper takes what is left.",
+            RETIRE_TOKENS / 1000
+        )
+    } else {
+        format!(
+            "Your context is {k}k, past {}k: finish the step you are on, write up what you have \
+             and what is left, and report. Start no new line of work.",
+            SPLIT_TOKENS / 1000
+        )
+    }
+}
+
+/// The note on a SendMessage to a helper past the retire mark (553): its
+/// work stands, but new work goes to a fresh helper.
+pub fn retired_recipient_note(id: &str, context: u64) -> String {
+    format!(
+        "{id} is past retirement ({}k of context, over {}k): ask it only to finish the step it is \
+         on and report. Give new work to a fresh helper, briefed with its report's list of what \
+         is left, and have a fresh helper review its work before you rely on it.",
+        (context + 500) / 1000,
+        RETIRE_TOKENS / 1000
+    )
+}
+
 // ---- the per-message budget (nightshift backlog 165, pass 2, 2026-09-22) ----
 
 /// The turn's budget ledger, beside the brief: written when a turn
@@ -900,6 +1132,10 @@ pub struct TurnBudget {
     /// spend crosses into a higher band.
     #[serde(default)]
     pub usage_shown: std::collections::BTreeMap<String, u8>,
+    /// The last [`CONTEXT_BAND`] of its own context each process was shown
+    /// (553), keyed as `usage_shown` is.
+    #[serde(default)]
+    pub context_shown: std::collections::BTreeMap<String, u64>,
 }
 
 impl TurnBudget {
@@ -994,6 +1230,7 @@ pub fn start_turn_budget(
         holds: Vec::new(),
         wrap_at_ms: None,
         usage_shown: Default::default(),
+        context_shown: Default::default(),
     }
 }
 
@@ -1667,6 +1904,7 @@ fn note_reading(
     subagent: bool,
     who: &str,
     spawn: bool,
+    context: Option<u64>,
     now_ms: i64,
     hold_ms: i64,
     senses: &Senses,
@@ -1735,6 +1973,14 @@ fn note_reading(
         && let Some(band) = usage_due(&b, who, spawn)
     {
         b.usage_shown.insert(who.to_string(), band);
+        show = true;
+    }
+    // Its own context (553): each 50k band, and every call of a helper
+    // past the split mark.
+    if matches!(verdict, CallVerdict::Allow { .. })
+        && let Some(band) = context_due(b.context_shown.get(who).copied(), context, subagent)
+    {
+        b.context_shown.insert(who.to_string(), band);
         show = true;
     }
     let _ = file.set_len(0);
@@ -2073,8 +2319,15 @@ fn decide_holding(
         input.session_id.as_deref().unwrap_or_default()
     };
     let spawn = is_spawn(&input.tool_name);
-    let (mut verdict, turn, deadline, show) =
-        note_reading(dir, reading, subagent, who, spawn, now_ms, hold_ms, senses);
+    // The calling process's own context (553): read on every call now, so
+    // a helper sees its size as it grows, not only at its first call.
+    let context = input
+        .transcript_path
+        .as_deref()
+        .and_then(|t| context_tokens(t, subagent.then_some(who)));
+    let (mut verdict, turn, deadline, show) = note_reading(
+        dir, reading, subagent, who, spawn, context, now_ms, hold_ms, senses,
+    );
     if verdict == CallVerdict::Hold
         && let Some(r) = reading
     {
@@ -2090,11 +2343,14 @@ fn decide_holding(
     // The usage line for this call, when due (backlog 249): read after the
     // verdict, so the ledger it quotes is the one this call just updated.
     let line = if show {
-        let context = input
-            .transcript_path
-            .as_deref()
-            .and_then(|t| context_tokens(t, subagent.then_some(who)));
         let usage = usage_line(read_turn_budget(dir).as_ref(), reading, week, context);
+        // A helper past the split mark is told to wrap up (553, 554).
+        let usage = match (usage, context) {
+            (Some(u), Some(c)) if subagent && c > SPLIT_TOKENS => {
+                Some(format!("{u}\n{}", context_wrap_note(c)))
+            }
+            (u, _) => u,
+        };
         // At a launch, the chat's earlier subagents (backlog 293 addition).
         let earlier = spawn
             .then_some(input.transcript_path.as_deref())
@@ -2123,6 +2379,25 @@ fn decide_holding(
         }
     };
     if !spawn {
+        // A message to a helper past retirement (553): let through, with
+        // the rule beside it — the message may be the one telling it to
+        // hand back.
+        let line = match (input.tool_name.as_str(), input.transcript_path.as_deref()) {
+            ("SendMessage", Some(t)) => {
+                let to = ["to", "recipient"]
+                    .iter()
+                    .find_map(|k| input.tool_input.get(*k).and_then(Value::as_str))
+                    .filter(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric()));
+                match to.and_then(|id| Some((id, context_tokens(t, Some(id))?))) {
+                    Some((id, c)) if c > RETIRE_TOKENS => {
+                        let note = retired_recipient_note(id, c);
+                        Some(line.map_or(note.clone(), |l| format!("{l}\n{note}")))
+                    }
+                    _ => line,
+                }
+            }
+            _ => line,
+        };
         return HookReply::pass().with_context(steered(line));
     }
     // A chat wrapping up starts nothing new (backlog 192).
@@ -2185,6 +2460,24 @@ fn decide_holding(
             Err(reason) => return HookReply::deny(with_week(reason, week)),
         }
     };
+    // The helper's size (553), after the window (a stop says more) and
+    // before the turn's and the day's counts, so a refused launch uses
+    // neither up (a subagent's own launch was counted against its parent
+    // above; only one stated past the mark is refused here).
+    // A call with no string task is no launch the hook has an opinion on.
+    let task = input.tool_input.get("prompt").is_some_and(Value::is_string);
+    if task && let Err(reason) = estimate_verdict(stated_estimate(&input.tool_input), subagent) {
+        return HookReply::deny(reason);
+    }
+    // Its model under Choose (540): a Fable launch with no reason is
+    // refused before it counts, too.
+    let chosen = match limits.model {
+        SubagentModel::Choose if task => match choose_model(&input.tool_input) {
+            Ok(c) => Some(c),
+            Err(reason) => return HookReply::deny(reason),
+        },
+        _ => None,
+    };
     if claim_spawn(dir, cap).is_err() {
         return HookReply::deny(match reading {
             Some(r) if cap < limits.per_turn => with_week(
@@ -2236,7 +2529,15 @@ fn decide_holding(
     // switch on the rail sets the spawn's `model` input, which the Agent
     // tool takes.
     let asked = fields.get("model").and_then(Value::as_str);
-    match limits.model.for_spawn(asked, read_chat_alias(dir)) {
+    let (pick, note) = match chosen {
+        Some((pick, note)) => (pick, note),
+        None => (limits.model.for_spawn(asked, read_chat_alias(dir)), None),
+    };
+    let line = match note {
+        Some(n) => Some(line.map_or(n.clone(), |l| format!("{l}\n{n}"))),
+        None => line,
+    };
+    match pick {
         SpawnModel::Leave => {}
         SpawnModel::Set(model) => {
             fields.insert("model".into(), Value::String(model.into()));
@@ -2284,7 +2585,7 @@ mod tests {
             "<nightloom-subagent-brief>x</nightloom-subagent-brief>",
         )
         .unwrap();
-        let call = r#"{"tool_name":"Agent","tool_input":{"prompt":"go"}}"#;
+        let call = r#"{"tool_name":"Agent","tool_input":{"prompt":"Estimated context: 100k\ngo"}}"#;
         for _ in 0..super::SPAWN_CAP {
             assert_eq!(super::decide_with(&dir, call, None).decision(), "allow");
         }
@@ -2386,7 +2687,7 @@ mod tests {
             "<nightloom-subagent-brief>x</nightloom-subagent-brief>",
         )
         .unwrap();
-        let call = r#"{"tool_name":"Agent","tool_input":{"prompt":"go"}}"#;
+        let call = r#"{"tool_name":"Agent","tool_input":{"prompt":"Estimated context: 100k\ngo"}}"#;
         let gate = std::sync::Arc::new(std::sync::Barrier::new(14));
         let handles: Vec<_> = (0..14)
             .map(|_| {
@@ -2426,7 +2727,7 @@ mod tests {
     /// The parent's `Agent` call as the CLI handed it to the hook on
     /// 2026-09-17 (`152-evidence-2026-09-17/mb-hook.log`), the fields
     /// nothing here reads trimmed.
-    const STDIN: &str = r#"{"session_id":"0ec12560","cwd":"/tmp","hook_event_name":"PreToolUse","tool_name":"Agent","tool_input":{"description":"Check for code word in task","prompt":"Reply with the code word if your task text states one.","subagent_type":"general-purpose","model":"haiku","run_in_background":false},"tool_use_id":"toolu_01Bs4UKADSZoWWJ73dAkY3aG","permission_mode":"default"}"#;
+    const STDIN: &str = r#"{"session_id":"0ec12560","cwd":"/tmp","hook_event_name":"PreToolUse","tool_name":"Agent","tool_input":{"description":"Check for code word in task","prompt":"Estimated context: 20k; user asked for haiku. Reply with the code word if your task text states one.","subagent_type":"general-purpose","model":"haiku","run_in_background":false},"tool_use_id":"toolu_01Bs4UKADSZoWWJ73dAkY3aG","permission_mode":"default"}"#;
 
     fn preamble() -> SystemPrompt {
         let mut p = SystemPrompt::new();
@@ -2531,7 +2832,7 @@ mod tests {
         let prompt = updated["prompt"].as_str().unwrap();
         assert!(prompt.starts_with(BRIEF_OPEN), "{prompt}");
         assert!(
-            prompt.ends_with("\n\nReply with the code word if your task text states one."),
+            prompt.ends_with("\n\nEstimated context: 20k; user asked for haiku. Reply with the code word if your task text states one."),
             "{prompt}"
         );
         // The rest of the input rides along untouched.
@@ -2540,13 +2841,13 @@ mod tests {
         assert_eq!(updated["run_in_background"], false);
         // A second pass over the briefed task adds nothing.
         let again = STDIN.replace(
-            r#""prompt":"Reply with the code word if your task text states one.""#,
+            r#""prompt":"Estimated context: 20k; user asked for haiku. Reply with the code word if your task text states one.""#,
             &format!(r#""prompt":{}"#, Value::String(prompt.to_string())),
         );
         assert_eq!(decide(&dir, &again), HookReply::pass());
         // Torn input and a call with no string prompt: no opinion.
         assert_eq!(decide(&dir, "{not json"), HookReply::pass());
-        let no_prompt = STDIN.replace(r#""prompt":"Reply"#, r#""task":"Reply"#);
+        let no_prompt = STDIN.replace(r#""prompt":"Estimated"#, r#""task":"Estimated"#);
         assert_eq!(decide(&dir, &no_prompt), HookReply::pass());
         // The documented reply shape, key for key.
         let json = serde_json::to_string(&reply).unwrap();
@@ -2650,7 +2951,7 @@ mod tests {
             args.lines().collect::<Vec<_>>(),
             [
                 "-p",
-                "Reply with the code word if your task text states one.",
+                "Estimated context: 20k; user asked for haiku. Reply with the code word if your task text states one.",
                 "--resume",
                 "sess-1",
                 "--fork-session",
@@ -3405,7 +3706,7 @@ mod tests {
         .unwrap();
         let r = super::decide_with(
             &dir,
-            r#"{"tool_name":"Agent","tool_input":{"prompt":"go","model":"opus"}}"#,
+            r#"{"tool_name":"Agent","tool_input":{"prompt":"Estimated context: 100k\ngo","model":"opus"}}"#,
             None,
         );
         assert_eq!(r.decision(), "allow");
@@ -3419,7 +3720,7 @@ mod tests {
         // With the brief already on the prompt, the model alone changes the input.
         let r = super::decide_with(
             &dir,
-            r#"{"tool_name":"Agent","tool_input":{"prompt":"<nightloom-subagent-brief>x</nightloom-subagent-brief>\n\ngo"}}"#,
+            r#"{"tool_name":"Agent","tool_input":{"prompt":"<nightloom-subagent-brief>x</nightloom-subagent-brief>\n\nEstimated context: 100k\ngo"}}"#,
             None,
         );
         assert_eq!(r.decision(), "allow");
@@ -3479,7 +3780,7 @@ mod tests {
         };
         super::write_limits(&dir, &same).unwrap();
         super::write_chat_model(&dir, Some("claude-opus-5-5"));
-        let call = r#"{"tool_name":"Agent","tool_input":{"prompt":"<nightloom-subagent-brief>x</nightloom-subagent-brief>\n\ngo","model":"sonnet"}}"#;
+        let call = r#"{"tool_name":"Agent","tool_input":{"prompt":"<nightloom-subagent-brief>x</nightloom-subagent-brief>\n\nEstimated context: 100k\ngo","model":"sonnet"}}"#;
         let r = super::decide_with(&dir, call, None);
         assert_eq!(r.decision(), "allow");
         let out = r
@@ -3512,7 +3813,8 @@ mod tests {
         .unwrap();
         dir
     }
-    const CALL: &str = r#"{"tool_name":"Agent","tool_input":{"prompt":"go"}}"#;
+    const CALL: &str =
+        r#"{"tool_name":"Agent","tool_input":{"prompt":"Estimated context: 100k\ngo"}}"#;
 
     #[test]
     fn limits_round_trip_and_a_partial_file_keeps_the_defaults() {
@@ -4119,6 +4421,287 @@ mod tests {
                 .unwrap_or_default()
                 .contains("skip e2e")
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- 553 + 540: a helper's size and model ----
+
+    fn sized_dir(tag: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("nightloom-553-{tag}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn agent_call(input: serde_json::Value) -> String {
+        serde_json::json!({"tool_name": "Agent", "tool_input": input}).to_string()
+    }
+
+    /// The figures a launch can state its size in: the top of a range, a
+    /// thousands-separated count, millions; a line that names no estimate,
+    /// or figures too small to be token counts, is no estimate.
+    #[test]
+    fn a_stated_estimate_reads_the_top_of_its_line() {
+        use serde_json::json;
+        let est = |p: &str| super::stated_estimate(&json!({"prompt": p}));
+        assert_eq!(est("Estimated context: ~150k\nGo."), Some(150_000));
+        assert_eq!(est("go\nestimate 120–180k tokens"), Some(180_000));
+        assert_eq!(est("Estimated at 500k to 700k tokens"), Some(700_000));
+        assert_eq!(est("estimated 500,000 to 700,000 tokens"), Some(700_000));
+        assert_eq!(est("Estimate: 1.2M"), Some(1_200_000));
+        assert_eq!(est("Estimated context: 90 thousand"), Some(90_000));
+        assert_eq!(
+            est("Read 300k of logs, then report."),
+            None,
+            "no estimate named"
+        );
+        assert_eq!(
+            est("Estimate the 3 options in step 2"),
+            None,
+            "no token figure"
+        );
+        // The description counts too, and Nightloom's own brief never does.
+        assert_eq!(
+            super::stated_estimate(
+                &json!({"description": "Survey (estimate 80k)", "prompt": "go"})
+            ),
+            Some(80_000)
+        );
+        assert_eq!(
+            super::stated_estimate(&json!({
+                "prompt": "<nightloom-subagent-brief>Estimated context: 999k</nightloom-subagent-brief>\n\ngo"
+            })),
+            None
+        );
+    }
+
+    /// 553's definition of done, scripted: a helper estimated at 600k is
+    /// refused with an instruction to split it; the same work split into
+    /// pieces of ~150k launches; a launch with no estimate is refused and
+    /// told the line's form; a subagent's own launch, whose brief does not
+    /// carry the rule, is refused only past the mark.
+    #[test]
+    fn a_launch_past_the_split_mark_or_unsized_is_refused_and_told_to_split() {
+        use serde_json::json;
+        let dir = sized_dir("split");
+        let big = agent_call(json!({
+            "description": "School-year opportunities",
+            "prompt": "Estimated context: 500k to 600k tokens.\nSurvey everything."
+        }));
+        let r = super::decide_with(&dir, &big, None);
+        assert_eq!(r.decision(), "deny");
+        let why = r.reason().unwrap();
+        assert!(
+            why.contains("~600k") && why.contains("Split the task"),
+            "{why}"
+        );
+        assert!(why.contains("250k"), "{why}");
+        // Nothing was counted for the refused launch.
+        assert!(!dir.join(super::SPAWNS_FILE).exists());
+        for part in [
+            "clubs",
+            "campus jobs",
+            "fellowships",
+            "research assistant posts",
+        ] {
+            let piece = agent_call(json!({
+                "description": part,
+                "prompt": format!("Estimated context: ~150k\nSurvey {part}.")
+            }));
+            assert_eq!(
+                super::decide_with(&dir, &piece, None).decision(),
+                "allow",
+                "{part}"
+            );
+        }
+        let bare = agent_call(json!({"prompt": "Survey everything."}));
+        let r = super::decide_with(&dir, &bare, None);
+        assert_eq!(r.decision(), "deny");
+        assert!(
+            r.reason().unwrap().contains("Estimated context:"),
+            "{:?}",
+            r.reason()
+        );
+        // A subagent's own launch: unsized goes; past the mark does not.
+        let nested = |p: &str| {
+            json!({"tool_name": "Agent", "tool_input": {"prompt": p, "model": "opus"},
+                   "agent_id": "a1", "tool_use_id": "t1"})
+            .to_string()
+        };
+        assert_ne!(
+            super::decide_with(&dir, &nested("go"), None).decision(),
+            "deny"
+        );
+        assert_eq!(
+            super::decide_with(&dir, &nested("Estimated context: 400k\ngo"), None).decision(),
+            "deny"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 540 under Choose: no model named runs on opus; opus is left; fable
+    /// without a "Why Fable:" line is refused and with one is left; sonnet
+    /// is raised to opus with a note unless the user asked for it; a fork
+    /// keeps the chat's model. `Same` still pins the chat's.
+    #[test]
+    fn choose_makes_opus_the_floor_and_asks_fable_for_a_reason() {
+        use super::SpawnModel::*;
+        use serde_json::json;
+        let pick = |v: serde_json::Value| super::choose_model(&v);
+        assert_eq!(pick(json!({"prompt": "go"})), Ok((Set("opus"), None)));
+        assert_eq!(
+            pick(json!({"prompt": "go", "model": "opus"})),
+            Ok((Leave, None))
+        );
+        let refused = pick(json!({"prompt": "go", "model": "fable"})).unwrap_err();
+        assert!(refused.contains("Why Fable:"), "{refused}");
+        assert!(
+            pick(json!({"prompt": "Why Fable:", "model": "fable"})).is_err(),
+            "an empty reason"
+        );
+        assert_eq!(
+            pick(json!({"prompt": "Why Fable: a twelve-file systems build\ngo", "model": "fable"})),
+            Ok((Leave, None))
+        );
+        let (m, note) = pick(json!({"prompt": "go", "model": "sonnet"})).unwrap();
+        assert_eq!(m, Set("opus"));
+        assert!(note.unwrap().contains("unless the user asked"));
+        assert_eq!(
+            pick(json!({"prompt": "User asked for haiku\ngo", "model": "haiku"})),
+            Ok((Leave, None))
+        );
+        assert_eq!(
+            pick(json!({"prompt": "go", "subagent_type": "fork"})),
+            Ok((Leave, None))
+        );
+
+        // Through the hook: the rewrite and the refusal.
+        let dir = sized_dir("model");
+        let r = super::decide_with(
+            &dir,
+            &agent_call(json!({"prompt": "Estimated context: 100k\ngo"})),
+            None,
+        );
+        assert_eq!(r.decision(), "allow");
+        assert_eq!(r.updated_input().unwrap()["model"], "opus");
+        let r = super::decide_with(
+            &dir,
+            &agent_call(json!({"prompt": "Estimated context: 100k\ngo", "model": "fable"})),
+            None,
+        );
+        assert_eq!(r.decision(), "deny");
+        // The refused Fable launch took no count: only the first one did.
+        let spawns = std::fs::read_to_string(dir.join(super::SPAWNS_FILE)).unwrap_or_default();
+        assert_eq!(spawns.trim(), "1");
+        // Same pins the chat's model whatever was asked, as before.
+        let limits = super::SubagentLimits {
+            model: super::SubagentModel::Same,
+            ..Default::default()
+        };
+        super::write_limits(&dir, &limits).unwrap();
+        std::fs::write(dir.join(super::CHAT_MODEL_FILE), "claude-fable-5-2").unwrap();
+        let r = super::decide_with(
+            &dir,
+            &agent_call(json!({"prompt": "Estimated context: 100k\ngo", "model": "opus"})),
+            None,
+        );
+        assert_eq!(r.decision(), "allow");
+        assert_eq!(r.updated_input().unwrap()["model"], "fable");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 553: a process sees its own context each 50k band, and a helper past
+    /// 250k on every call; the main thread is not told to wrap up.
+    #[test]
+    fn a_helper_sees_its_context_grow_and_is_told_to_wrap_past_the_mark() {
+        use super::context_due as due;
+        assert_eq!(due(None, None, true), None);
+        assert_eq!(
+            due(None, Some(30_000), true),
+            None,
+            "band 0, first shown by usage_due"
+        );
+        assert_eq!(due(None, Some(60_000), true), Some(1));
+        assert_eq!(due(Some(1), Some(90_000), true), None);
+        assert_eq!(due(Some(1), Some(110_000), true), Some(2));
+        assert_eq!(
+            due(Some(5), Some(260_000), true),
+            Some(5),
+            "every call past 250k"
+        );
+        assert_eq!(
+            due(Some(5), Some(260_000), false),
+            None,
+            "the main thread: bands only"
+        );
+        assert!(super::context_wrap_note(260_000).contains("finish the step"));
+        assert!(super::context_wrap_note(320_000).contains("retire mark"));
+        assert!(super::retired_recipient_note("a1", 340_000).contains("fresh helper"));
+    }
+
+    /// 553 through the hook: a helper's transcript at 270k gets the usage
+    /// line with its context and the wrap-up note on an ordinary call; a
+    /// SendMessage to a helper past 300k carries the retirement note.
+    #[test]
+    fn the_hook_shows_a_helper_its_context_and_flags_a_retired_recipient() {
+        use serde_json::json;
+        let dir = sized_dir("ctx");
+        let t = dir.join("session.jsonl");
+        std::fs::write(&t, "").unwrap();
+        let subs = dir.join("session").join("subagents");
+        std::fs::create_dir_all(&subs).unwrap();
+        let usage = |n: u64| {
+            json!({"type": "assistant", "message": {"usage": {"input_tokens": 1,
+                "cache_read_input_tokens": n - 1, "cache_creation_input_tokens": 0}}})
+            .to_string()
+        };
+        std::fs::write(subs.join("agent-a1.jsonl"), usage(270_000)).unwrap();
+        std::fs::write(subs.join("agent-a2.jsonl"), usage(340_000)).unwrap();
+        // A turn's ledger, so the line has somewhere to be judged.
+        super::write_turn_budget(
+            &dir,
+            &super::TurnBudget {
+                started_at_ms: 1,
+                ..Default::default()
+            },
+        );
+        let call = |tool: &str, input: serde_json::Value, agent: Option<&str>| {
+            let mut v = json!({"tool_name": tool, "tool_input": input,
+                "transcript_path": t.to_string_lossy(), "tool_use_id": "t1", "session_id": "s"});
+            if let Some(a) = agent {
+                v["agent_id"] = json!(a);
+            }
+            v.to_string()
+        };
+        let read = call("Read", json!({"file_path": "/x"}), Some("a1"));
+        for _ in 0..2 {
+            let r = super::decide_with(&dir, &read, None);
+            let ctx = r.additional_context().unwrap_or_default().to_string();
+            assert!(
+                ctx.contains("context 270k") && ctx.contains("finish the step"),
+                "{ctx}"
+            );
+        }
+        let send = call(
+            "SendMessage",
+            json!({"to": "a2", "message": "one more"}),
+            None,
+        );
+        let ctx = super::decide_with(&dir, &send, None)
+            .additional_context()
+            .unwrap_or_default()
+            .to_string();
+        assert!(ctx.contains("a2 is past retirement (340k"), "{ctx}");
+        let send = call(
+            "SendMessage",
+            json!({"to": "a1", "message": "one more"}),
+            None,
+        );
+        let ctx = super::decide_with(&dir, &send, None)
+            .additional_context()
+            .unwrap_or_default()
+            .to_string();
+        assert!(!ctx.contains("past retirement"), "{ctx}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
