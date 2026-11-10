@@ -2702,6 +2702,19 @@ let turnSpoken = false;
  *  once, synchronously, at the top of `send`, and passed to the backend —
  *  which runs it in that chat or refuses, never in "the open chat". */
 let turnTarget: { chat: string; project: string | null } | null = null;
+/** Where that message goes instead when its chat is no longer on screen,
+ *  or no longer idle, once `sendAgent`'s reconnect returns (535f, the
+ *  review's 535-1): set and read with `turnTarget`. `busyHere` true: the
+ *  chat is still on screen but a turn started in it meanwhile. */
+let turnElsewhere: ((busyHere: boolean) => Promise<unknown>) | null = null;
+/** The chats a turn is starting in on screen (535f, 535-1): from the top
+ *  of `sendAgent` — which `sendInChat`'s on-screen path reaches with no
+ *  await between — until the turn is the window's (`app.busy`) or has
+ *  gone elsewhere. `chatRuns` counts them, so a second sender (the limit
+ *  resume and a tick at the same reset) waits instead of starting a turn
+ *  beside it during the first one's reconnect. Keyed by a token per send,
+ *  so a late end never clears a newer send's mark. */
+const startingIn = new Map<string, symbol>();
 /** `send` for a message he did not type here (the phone, a resume) —
  *  with the phone's photos, documents or council when it sent them
  *  (item 246, 1B's patch note 1), so such a turn is not his typed input. */
@@ -3976,6 +3989,10 @@ async function applyAgentDraft(updateNow: PromptLayer[] = [], take = true): Prom
   const d = app.draft;
   // As `applyDraft` (backlog 205).
   const chat = app.activeSessionId;
+  // 535f (535-1): the project open when it started — the backend reads
+  // its project at the connect's start, so its answer is stale if he
+  // switched projects during these seconds.
+  const projectAtStart = app.project?.id ?? null;
   const sent = choiceOf(d);
   // Item 306 review: the Keeps this connect's listing can include are the
   // ones made before it started; one landing while it runs stays owed.
@@ -4040,7 +4057,9 @@ async function applyAgentDraft(updateNow: PromptLayer[] = [], take = true): Prom
     // Whether Claude Code is signed in (backlog 409), for the engine chip:
     // a local `claude auth status`, zero tokens, not awaited.
     void probeAuth(res.agent?.binary ?? null);
-    app.project = res.project ?? null;
+    // A switch made during the connect wins (535f): its own `openProject`
+    // answer is newer than this connect's.
+    if ((app.project?.id ?? null) === projectAtStart) app.project = res.project ?? null;
     saveLastConnection({ ...d });
     chatConnected(chat, sent);
     void refreshPlanUsage();
@@ -7213,7 +7232,7 @@ export function turnsRunning(): boolean {
 /** Whether chat `id`'s own turn runs (A4): its sidebar row cannot be
  *  deleted while it does (the backend refuses it too). */
 export function chatRuns(id: string): boolean {
-  if (app.background[id]) return true;
+  if (app.background[id] || startingIn.has(id)) return true;
   if (!app.busy) return false;
   const running = app.parked ? app.parked.session : (fg?.chat ?? app.activeSessionId);
   return running === id;
@@ -8288,6 +8307,25 @@ export function sendInChat(
   attachments: Attachment[],
   refused: (why: string) => void,
 ): void {
+  // Off screen in its own chat and project, keyed (`runInChat`): also
+  // where an on-screen send goes when he leaves the chat during its
+  // reconnect (535f, 535-1).
+  const away = () => {
+    const row = app.sessions.find((x) => x.id === id);
+    return runInChat(
+      id,
+      { id: nextQueueId(), text, attachments: attachments.map((a) => ({ ...a })) },
+      {
+        pendingMode: "normal",
+        pendingKind: app.pendingKind,
+        project: project.id,
+        projectName: project.name,
+        name: row && (app.project?.id ?? null) === project.id ? chatName(row.title, row.first_user) : null,
+      },
+      { contextLimit: app.connection?.contextLimit ?? null },
+      refused,
+    );
+  };
   const here = id === app.activeSessionId && (app.project?.id ?? null) === project.id;
   if (here) {
     if (!app.connection || app.busy) {
@@ -8302,6 +8340,13 @@ export function sendInChat(
     turnTyped = false;
     turnSpoken = false;
     turnTarget = { chat: id, project: project.id };
+    // 535f (535-1): the chat counts as running from this moment, and if
+    // he leaves it (or a turn starts in it) during the reconnect, the
+    // message goes off screen into it, or back to its caller.
+    turnElsewhere = async (busyHere) => {
+      if (busyHere) refused("its chat is busy");
+      else await away();
+    };
     void send(text, images, documents, null, files).then(() => {
       // Refused before anything was sent (the backend's two wordings):
       // the caller keeps the words; the error is not this chat's to show.
@@ -8313,20 +8358,7 @@ export function sendInChat(
     });
     return;
   }
-  const row = app.sessions.find((x) => x.id === id);
-  void runInChat(
-    id,
-    { id: nextQueueId(), text, attachments: attachments.map((a) => ({ ...a })) },
-    {
-      pendingMode: "normal",
-      pendingKind: app.pendingKind,
-      project: project.id,
-      projectName: project.name,
-      name: row && (app.project?.id ?? null) === project.id ? chatName(row.title, row.first_user) : null,
-    },
-    { contextLimit: app.connection?.contextLimit ?? null },
-    refused,
-  );
+  void away();
 }
 
 /**
@@ -8507,6 +8539,8 @@ export async function send(
 ): Promise<void> {
   const target = turnTarget;
   turnTarget = null;
+  const goElsewhere = turnElsewhere;
+  turnElsewhere = null;
   if (!app.connection || app.busy) return;
   // Item 506: a message sent in a wrapped chat is staying in it.
   sentHere(app.activeSessionId);
@@ -8529,7 +8563,7 @@ export async function send(
     showBoundChat(inThread, text);
   }
   if (app.connection.engine === "claude-code") {
-    return sendAgent(text, images, documents, council, spoken, files, target);
+    return sendAgent(text, images, documents, council, spoken, files, target, goElsewhere);
   }
   // A file for Claude Code cannot go on this engine (item 277); the
   // composer refuses before here, so this is a caller that did not ask.
@@ -8643,6 +8677,8 @@ async function sendAgent(
   files: FileInput[] = [],
   // Backlog 535: the chat it must run in (a scheduled message's own).
   target: { chat: string; project: string | null } | null = null,
+  // 535f (535-1): where it goes when that chat has left the screen.
+  elsewhere: ((busyHere: boolean) => Promise<unknown>) | null = null,
 ): Promise<void> {
   // ~~The hand-off's wrap-up rides this message when the window has crossed
   // the chat's threshold (nightshift backlog 086); `withWrapUp` also moves
@@ -8650,8 +8686,33 @@ async function sendAgent(
   // blocker 120): the wrap-up is a message of its own, sent from the
   // composer's notice or by the queue; nothing is appended here.
   app.suggestion = null;
+  // 535f (535-1): this chat counts as running from here (`startingIn`).
+  const startChat = target?.chat ?? app.activeSessionId;
+  const mine = Symbol("starting");
+  if (startChat) startingIn.set(startChat, mine);
+  const started = () => {
+    if (startChat && startingIn.get(startChat) === mine) startingIn.delete(startChat);
+  };
   // A changed layer is taken at the first cold turn (backlog 174).
-  await layersBeforeTurn();
+  try {
+    await layersBeforeTurn();
+  } catch (e) {
+    started();
+    throw e;
+  }
+  // 535f (535-1): the reconnect takes seconds on a cold chat, and he may
+  // have opened another chat or project meanwhile, or a turn started:
+  // a message for a named chat is drawn here only if that chat is still
+  // the one on screen and idle — else it runs off screen in its own chat
+  // (or goes back to its caller), and nothing here is touched.
+  if (target) {
+    const onScreen = app.activeSessionId === target.chat && (app.project?.id ?? null) === target.project;
+    if (!onScreen || app.busy || !app.connection) {
+      started();
+      await elsewhere?.(onScreen);
+      return;
+    }
+  }
   // Same as `send`: the pending chat's key at the moment of the send
   // (nightshift backlog 094).
   const pendingKey = pendingChatKey();
@@ -8684,6 +8745,8 @@ async function sendAgent(
   app.liveUsage = null;
   app.turnSeq += 1;
   app.busy = true;
+  // Now the window's turn; `chatRuns` reads it from `fg` (535f).
+  started();
   // This turn, for the background (backlog 159, A2): he may open another
   // chat while it runs, and send there.
   const turn: TurnCtx = {
