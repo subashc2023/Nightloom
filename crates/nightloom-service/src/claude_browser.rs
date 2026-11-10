@@ -1060,6 +1060,12 @@ cat >> "$0/received""#;
             js.contains("viewport: { width: WIDTH, height: HEIGHT }, deviceScaleFactor: SCALE")
         );
         assert!(js.contains("size: { width: WIDTH * SCALE, height: HEIGHT * SCALE }"));
+        // WebKit's screencast stops at the CSS size, so a still page gets a
+        // full-resolution screenshot once it settles.
+        assert!(js.contains("settle = setTimeout(sharp, SETTLE_MS);"));
+        assert!(
+            js.contains("const data = await want.screenshot({ type: 'jpeg', quality: QUALITY });")
+        );
         assert!(js.contains(&format!("const WIDTH = {WIDTH};")));
         assert!(js.contains(&format!("const HEIGHT = {HEIGHT};")));
     }
