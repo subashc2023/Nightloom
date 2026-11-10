@@ -175,3 +175,46 @@ describe("535f — the limit resume and a reset-timed message in one chat at the
   });
 });
 
+describe("535f — 535-4: a chat's kept agent spec goes when its message leaves", () => {
+  const reserve = vi.mocked(api.reserveChatAgent);
+
+  it("sent off screen: released once the backend has run it", async () => {
+    look("chat-value", VALUE);
+    app.promptPending = null;
+    scheduleSend(CHAT, "x", "time", Date.now() - 1000, true, [], COLLEGE);
+    await runScheduleTick(deps);
+    await settle();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(reserve).not.toHaveBeenCalledWith(CHAT, false); // not before the backend used it
+    finish(DONE);
+    await settle();
+    expect(reserve).toHaveBeenCalledWith(CHAT, false);
+  });
+
+  it("refused before anything was sent: kept for the retry", async () => {
+    look("chat-value", VALUE);
+    app.promptPending = null;
+    send.mockImplementation(async () => {
+      throw new Error("that chat is not loaded now — its message stays queued there");
+    });
+    scheduleSend(CHAT, "x", "time", Date.now() - 1000, true, [], COLLEGE);
+    await runScheduleTick(deps);
+    await settle();
+    expect(scheduledFor(CHAT)?.state).toBe("waiting");
+    expect(reserve).not.toHaveBeenCalledWith(CHAT, false);
+  });
+
+  it("cancelled: released — unless the chat's limit resume waits on it", () => {
+    look(CHAT, COLLEGE);
+    scheduleSend(CHAT, "x", "time", Date.now() + 3600_000, true, [], COLLEGE);
+    cancelScheduled(CHAT);
+    expect(reserve).toHaveBeenCalledWith(CHAT, false);
+    reserve.mockClear();
+    app.limitPause = { session: CHAT, resetsAtMs: Date.now() + 3600_000, window: "five_hour", subagents: [] } as never;
+    resumeAfterLimit();
+    scheduleSend(CHAT, "y", "time", Date.now() + 3600_000, true, [], COLLEGE);
+    cancelScheduled(CHAT);
+    expect(reserve).not.toHaveBeenCalledWith(CHAT, false);
+    resumeAfterLimit(); // its second click cancels the wait
+  });
+});

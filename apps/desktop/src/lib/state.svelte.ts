@@ -50,7 +50,7 @@ import {
   discardDraft,
   dropQueued,
 } from "./drafts.svelte";
-import { scheduled } from "./scheduled.svelte";
+import { releaseSpec, scheduled, wantSpec } from "./scheduled.svelte";
 import { nameScheduledRows } from "./schedule";
 import { aimOf, indexOfAim, type Aim } from "./aim";
 import { requestComposerFocus, rewoundMessage, swapIn, untouched, type BoxSwap } from "./rewindDraft.svelte";
@@ -8343,8 +8343,18 @@ export function sendInChat(
   project: { id: string | null; name: string | null },
   text: string,
   attachments: Attachment[],
-  refused: (why: string) => void,
+  refusedTo: (why: string) => void,
 ): void {
+  // Sent, the chat's kept spec goes (535f, 535-4); refused, it stays for
+  // the retry.
+  let wasRefused = false;
+  const refused = (why: string) => {
+    wasRefused = true;
+    refusedTo(why);
+  };
+  const sent = () => {
+    if (!wasRefused) releaseSpec(id);
+  };
   // Off screen in its own chat and project, keyed (`runInChat`): also
   // where an on-screen send goes when he leaves the chat during its
   // reconnect (535f, 535-1).
@@ -8393,11 +8403,16 @@ export function sendInChat(
         app.error = null;
         refused(e);
       }
+      sent();
     });
     return;
   }
-  void away();
+  void away().then(sent);
 }
+
+// A chat whose resume waits keeps its spec when its scheduled message
+// leaves (535f, 535-4): the resume may go off screen on it.
+wantSpec((key) => app.limitResumeAt !== null && app.limitPause?.session === key);
 
 /**
  * Resume a turn the usage limit paused (nightshift backlog 164): sends the
