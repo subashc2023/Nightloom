@@ -15,6 +15,7 @@
    */
   import { SUBAGENT_MODELS, SUBAGENT_MODEL_LABELS, thinkingSupport, type SubagentLimits, type SubagentModel } from "../lib/catalog";
   import { modelsOr } from "../lib/modelList";
+  import type { Look } from "./look";
   import { MAX_SEATS, councilProblem, type CouncilSeat, type Rail, type RailPatch } from "./client";
 
   interface Props {
@@ -24,8 +25,12 @@
     /** A turn is running: the Mac applies a change from the next turn. */
     busy: boolean;
     onpatch: (patch: RailPatch) => Promise<boolean>;
+    /** Item 572: this phone's own look (`look.ts`), and its setter; the
+     *  row is drawn only when both are given. */
+    look?: Look;
+    onlook?: (l: Look) => void;
   }
-  let { rail, problem, busy, onpatch }: Props = $props();
+  let { rail, problem, busy, onpatch, look, onlook }: Props = $props();
 
   const EFFORTS = ["", "low", "medium", "high", "xhigh", "max"];
   // Item 272: the host's list (`model-list.json`, sent on the rail);
@@ -245,6 +250,17 @@
       {/if}
     {/if}
   {/if}
+{/if}
+
+{#if look && onlook}
+  <!-- Item 572: the phone's own Classic switch — the Mac's Layout setting
+       does not reach the phone, so the page keeps its own (look.ts). -->
+  <div class="rs-label">Look on this phone</div>
+  <div class="rs-seg" role="radiogroup" aria-label="Look on this phone" data-act="look">
+    <button class:on={look === "filament"} role="radio" aria-checked={look === "filament"} onclick={() => onlook("filament")}>Filament IV</button>
+    <button class:on={look === "classic"} role="radio" aria-checked={look === "classic"} onclick={() => onlook("classic")}>Classic</button>
+  </div>
+  <small class="rs-small">Classic is the page as it was before Filament IV. Kept on this phone only.</small>
 {/if}
 
 <style>

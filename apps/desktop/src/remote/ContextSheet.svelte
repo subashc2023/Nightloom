@@ -236,8 +236,10 @@
     /** `/api/state`'s `host`, for the sentence when a feature is missing. */
     host?: string | null;
     onclose: () => void;
+    /** Item 572: the window size once read, for the page's header dial. */
+    onlimit?: (limit: number) => void;
   }
-  let { api, chat, project, title, engine, busy, canLayers, host = undefined, onclose }: Props = $props();
+  let { api, chat, project, title, engine, busy, canLayers, host = undefined, onclose, onlimit }: Props = $props();
 
   let reply = $state<ContextReply | null>(null);
   let loading = $state(true);
@@ -252,6 +254,10 @@
   let held = $state<string[]>([]);
 
   const view = $derived(reply?.view ?? null);
+  $effect(() => {
+    const n = view?.context_limit;
+    if (n && onlimit) untrack(() => onlimit(n));
+  });
   const layers = $derived(reply?.layers ?? null);
   const off = $derived(layers?.off ?? []);
   const agent = $derived(engine === "claude-code");
