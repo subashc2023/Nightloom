@@ -13,6 +13,8 @@
     subagentsOfTurn,
   } from "./state.svelte";
   import { cacheState } from "./cache";
+  import ContextDial from "./ContextDial.svelte";
+  import { mark as handoffMark } from "./handoff.svelte";
   import { connectionWord, launch } from "./launch.svelte";
   import { budgetChip, budgetTitle } from "./budget";
   import RightRail from "./RightRail.svelte";
@@ -603,7 +605,16 @@
         {#if gauge || plan}
           <span class="bars">
             {#if gauge?.ratio != null}
-              <span class="gbar ctx"><span class="fill" style:width="{gauge.ratio * 100}%"></span></span>
+              <ContextDial
+                size={13}
+                stroke={2.5}
+                pad={2}
+                minor={0}
+                major={0}
+                share={gauge.ratio}
+                mark={handoffMark(app.activeSessionId, gauge.limit)}
+                label={`Context ${Math.round(gauge.ratio * 100)}%`}
+              />
             {/if}
             {#if plan}
               <span class="gbar"><span class="fill plan-fill" style:width="{Math.min(plan.five_hour ?? 0, 100)}%"></span></span>
