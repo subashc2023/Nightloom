@@ -159,6 +159,7 @@
   import AsideLayer from "./AsideLayer.svelte";
   import { openAttachment } from "./attachments.svelte";
   import ApprovalPrompt from "./ApprovalPrompt.svelte";
+  import AskHandBack from "./AskHandBack.svelte";
   import BudgetStopCard from "./BudgetStopCard.svelte";
   import { afterWrapTurn, wrapAsk } from "./budgetWrap.svelte";
   import { PROSE_BLOCKS, nearestDelta, proseHolds, settledTop, type BlockEl, type Hold } from "./readingPlace";
@@ -2813,6 +2814,9 @@
       {/if}
       </div>
     {/if}
+    <!-- Item 522: between his answer to a prompt and the turn showing
+         it, a line says the answer was taken (and, past 20 s, how long). -->
+    {#if !inPane}<AskHandBack />{/if}
     <!-- Item 465: messages he sent while this turn runs, not yet taken —
          greyed bubbles with Send now / Let it arrive / Edit / Cancel. -->
     {#if !inPane}<PendingBubbles />{/if}

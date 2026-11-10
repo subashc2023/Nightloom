@@ -50,6 +50,7 @@
   import ConfirmDialog from "./lib/ConfirmDialog.svelte";
   import { quoteLabel } from "./lib/asideQuote";
   import AttachmentLayer from "./lib/AttachmentLayer.svelte";
+  import WaitingNotices from "./lib/WaitingNotices.svelte";
   import AttachmentView from "./lib/AttachmentView.svelte";
   import SubagentView from "./lib/SubagentView.svelte";
   import { agentAsk, deliverDue } from "./lib/subagentAsk.svelte";
@@ -905,7 +906,10 @@
       <!-- The floating attachment tab (backlog 145): over the panes,
            under the dialogs. -->
       <AttachmentLayer />
-      {#if app.toasts.length > 0}
+      <!-- The waiting notices (nightshift item 523) share the toasts'
+           corner and stack: under the passing toasts, staying until closed
+           or answered. -->
+      {#if app.toasts.length > 0 || app.pendingApprovals.length > 0 || Object.keys(app.background).length > 0}
         <div class="toasts">
           {#each app.toasts as t (t.id)}
             <!-- A toast with an action (backlog 066: "Removed from
@@ -920,6 +924,7 @@
               </button>
             </div>
           {/each}
+          <WaitingNotices />
         </div>
       {/if}
     </div>

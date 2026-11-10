@@ -7,8 +7,10 @@
     editPending,
     letArrive,
     offersChoice,
+    offersReply,
     pendingLabel,
     pendingState,
+    sendAsReply,
     sendNow,
   } from "./pendingBubble.svelte";
   import type { QueuedMessage } from "./drafts.svelte";
@@ -23,14 +25,17 @@
     row = null,
     chatKey = "",
     delivered = null,
+    waiting = false,
   }: {
     row?: QueuedMessage | null;
     chatKey?: string;
     delivered?: { text: string; after: string } | null;
+    /** Item 522: a prompt waits on him in this chat — no process runs. */
+    waiting?: boolean;
   } = $props();
 
   const pending = $derived(row !== null);
-  const st = $derived(row ? pendingState(row) : null);
+  const st = $derived(row ? pendingState(row, waiting) : null);
   const arrive = $derived(row ? letArrive[row.id] === true : false);
   let confirming = $state(false);
   let working = $state(false);
@@ -73,6 +78,15 @@
         <button class="ns-btn small danger" disabled={working} onclick={() => void run(() => cancelPending(chatKey, row!.id))}>Cancel message</button>
         <button class="ns-btn ghost small" onclick={() => (confirming = false)}>Keep it</button>
       {:else}
+        {#if offersReply(st)}
+          <button
+            class="ns-btn small"
+            data-mt="send-reply"
+            disabled={working}
+            use:tip={"Send this now, in place of an answer: Claude reads your message instead of waiting on the card above, and carries on from it."}
+            onclick={() => void run(() => sendAsReply(chatKey, row!.id))}>Send now</button
+          >
+        {/if}
         {#if offersChoice(st, arrive)}
           <button
             class="ns-btn small"
@@ -88,8 +102,10 @@
             onclick={() => (letArrive[row!.id] = true)}>Let it arrive</button
           >
         {/if}
+        {#if st !== "replying"}
         <button class="ns-btn ghost small" data-mt="edit" disabled={working} use:tip={"Take it back into the message box to change it"} onclick={() => void run(() => editPending(chatKey, row!.id))}>Edit</button>
         <button class="ns-btn ghost small" data-mt="cancel" disabled={working} use:tip={"Do not send it"} onclick={() => (confirming = true)}>Cancel</button>
+        {/if}
       {/if}
     </div>
   {/if}

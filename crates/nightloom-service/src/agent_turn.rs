@@ -377,6 +377,15 @@ async fn turn_body(
     // The chat's own processes mark the spawn, `init` and the first text;
     // a council's seats above ran without it.
     agent.set_timing(Some(timing.clone()));
+    // A card the app was closed on (item 522): nobody can answer it now, so
+    // the call is refused on disk for this turn's hook to deliver, and the
+    // turn opens with that result instead of parking on the same question.
+    if let Some(dir) = ask_dir.as_deref() {
+        let resume = agent.spec().resume.clone();
+        if let Some(call) = AskDir::new(dir).settle_waiting(resume.as_deref()) {
+            agent.note_refused(resume.as_deref(), call);
+        }
+    }
     let mut result = agent.run_turn(input, cancel, &mut on_event).await;
 
     // The Ask position's round trip (backlog 084): one Nightloom turn spans
@@ -392,6 +401,10 @@ async fn turn_body(
             break;
         };
         let session_id = outcome.session_id.clone();
+        let ask_files = AskDir::new(dir);
+        // On disk while the card waits (item 522): a launch after a quit
+        // mid-wait refuses the call rather than meeting it again.
+        let _ = ask_files.set_waiting(session_id.as_deref(), &call);
         let rx = ask.wait(&call.id);
         let outside = outside_folder(&call.input, &agent_trees(agent));
         env.approval(&ApprovalPrompt {
@@ -411,7 +424,6 @@ async fn turn_body(
             _ = cancel.cancelled() => None,
             a = rx => a.ok(),
         };
-        let ask_files = AskDir::new(dir);
         let Some(answer) = answer else {
             // Stopped, or the prompt let go: refused on disk now, for the
             // next turn's hook to deliver (`m084-9-deny-stale.jsonl`).
@@ -422,6 +434,7 @@ async fn turn_body(
                 },
             );
             agent.note_refused(session_id.as_deref(), call.clone());
+            ask_files.clear_waiting();
             ask.abandon(&call.id);
             if let Ok(o) = &mut result {
                 o.notices
@@ -431,6 +444,7 @@ async fn turn_body(
             break;
         };
         if let Err(e) = ask_files.write(&call, &answer) {
+            ask_files.clear_waiting();
             if let Ok(o) = &mut result {
                 o.notices.push(format!("could not record the answer: {e}"));
                 o.deferred = None;
@@ -465,7 +479,40 @@ async fn turn_body(
         if let Some(then) = plan_then {
             agent.plan_approved(then);
         }
-        result = agent.resume_deferred(&call, cancel, &mut on_event).await;
+        // His message in place of an answer (item 522): the refusal carries
+        // his words, and once it has landed as the call's result the turn
+        // reports the message delivered — after the result, the order the
+        // model read them in — so the window's row leaves its queue and the
+        // log keeps it as his message. A resume that never delivers the
+        // result reports nothing: the row stays queued, unsent.
+        let mut reply = match &answer {
+            Answer::Reply { id: Some(id), text } => Some((id.clone(), text.clone())),
+            _ => None,
+        };
+        if reply.is_some() {
+            let mut relay = |e: TurnEvent| {
+                let landed = matches!(
+                    &e,
+                    TurnEvent::ToolResult { tool_use_id, .. } if *tool_use_id == call.id
+                );
+                on_event(e);
+                if landed && let Some((id, text)) = reply.take() {
+                    on_event(TurnEvent::MessageDelivered {
+                        id,
+                        text,
+                        after: format!("in place of an answer to {}", call.name),
+                        images: Vec::new(),
+                        documents: Vec::new(),
+                    });
+                }
+            };
+            result = agent.resume_deferred(&call, cancel, &mut relay).await;
+        } else {
+            result = agent.resume_deferred(&call, cancel, &mut on_event).await;
+        }
+        // The resume's process asked the hook and the answer was read (or
+        // the turn was stopped and refuses it itself): the wait is over.
+        ask_files.clear_waiting();
         if plan_then.is_some() {
             agent.plan_exited();
         }
@@ -1072,6 +1119,342 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns"
         assert_eq!(l.five_hour.map(|s| (s.start, s.end)), Some((41.0, 43.0)));
         assert_eq!(l.seven_day.map(|s| s.delta()), Some(0.0));
         assert_eq!(l.cost_usd, Some(0.25));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ---- item 522: the model's question must never trap him ----------------
+
+    /// A stand-in `claude` that defers an `AskUserQuestion` on its first
+    /// run and, on the resume, does what `<root>/resume` says: `refuse`
+    /// prints the call's refusal (the decision file's reason, as the CLI's
+    /// hook error) and a reply; `die` prints nothing and exits 1.
+    fn asking_stand_in(root: &Path, ask_dir: &Path) -> String {
+        let body = format!(
+            r##"#!/bin/sh
+D="{d}"
+A="{a}"
+if [ -f "$D/deferred" ]; then
+  rm "$D/deferred"
+  if [ "$(cat "$D/resume")" = die ]; then exit 1; fi
+  printf '%s\n' '{{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"claude-haiku-4-5","permissionMode":"default","session_id":"s-1"}}'
+  cp "$A/decision.json" "$D/decision-seen.json" 2>/dev/null
+  printf '%s\n' '{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"toolu_q","content":"PreToolUse:AskUserQuestion hook error: refused","is_error":true}}]}},"parent_tool_use_id":null}}'
+  printf '%s\n' '{{"type":"stream_event","event":{{"type":"content_block_delta","index":0,"delta":{{"type":"text_delta","text":"carrying on"}}}},"parent_tool_use_id":null,"session_id":"s-1"}}'
+  printf '%s\n' '{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"carrying on"}}]}},"parent_tool_use_id":null}}'
+  printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"carrying on","session_id":"s-1","stop_reason":"end_turn","usage":{{"input_tokens":3,"output_tokens":2}}}}'
+  exit 0
+fi
+printf '%s\n' '{{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"claude-haiku-4-5","permissionMode":"default","session_id":"s-1"}}'
+if [ -f "$D/plain" ]; then
+  cp "$A/decision.json" "$D/decision-seen.json" 2>/dev/null
+  printf '%s\n' '{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"hello again"}}]}},"parent_tool_use_id":null}}'
+  printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"hello again","session_id":"s-1","stop_reason":"end_turn","usage":{{"input_tokens":3,"output_tokens":2}}}}'
+  exit 0
+fi
+printf '%s\n' '{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"toolu_q","name":"AskUserQuestion","input":{{"questions":[]}}}}]}},"parent_tool_use_id":null}}'
+touch "$D/deferred"
+printf '%s\n' '{{"type":"result","subtype":"success","stop_reason":"tool_deferred","terminal_reason":"tool_deferred","is_error":false,"num_turns":1,"result":"","permission_denials":[],"session_id":"s-1","deferred_tool_use":{{"id":"toolu_q","name":"AskUserQuestion","input":{{"questions":[]}}}}}}'
+"##,
+            d = root.display(),
+            a = ask_dir.display(),
+        );
+        let path = root.join("claude-asking");
+        std::fs::write(&path, body).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    /// Answers the card the moment it is shown, and keeps the turn's events.
+    struct AskEnv {
+        timing: Arc<TurnTiming>,
+        ask: Arc<AskGate>,
+        answer: std::sync::Mutex<Option<Answer>>,
+        events: std::sync::Mutex<Vec<String>>,
+        waiting_at_card: std::sync::Mutex<Option<bool>>,
+        ask_dir: PathBuf,
+    }
+
+    #[async_trait::async_trait]
+    impl TurnEnv for AskEnv {
+        fn event(&self, _chat: &str, event: &TurnEvent) {
+            let line = match event {
+                TurnEvent::ToolResult { tool_use_id, .. } => format!("result {tool_use_id}"),
+                TurnEvent::MessageDelivered {
+                    id, text, after, ..
+                } => format!("delivered {id} [{text}] {after}"),
+                _ => return,
+            };
+            self.events.lock().unwrap().push(line);
+        }
+        fn notice(&self, _text: String) {}
+        fn approval(&self, prompt: &ApprovalPrompt<'_>) {
+            *self.waiting_at_card.lock().unwrap() =
+                Some(AskDir::new(&self.ask_dir).waiting().is_some());
+            if let Some(a) = self.answer.lock().unwrap().take() {
+                self.ask.answer(prompt.id, a);
+            }
+        }
+        async fn grant_to_project(&self, _dir: &Path) -> ProjectGrant {
+            ProjectGrant::NoProject
+        }
+        fn timing(&self) -> Option<Arc<TurnTiming>> {
+            Some(self.timing.clone())
+        }
+    }
+
+    struct Asked {
+        end: Result<AgentTurnEnd, String>,
+        events: Vec<String>,
+        log: Vec<SessionEvent>,
+        root: PathBuf,
+        ask_dir: PathBuf,
+        waiting_at_card: Option<bool>,
+    }
+
+    /// One turn that asks a question, answered with `answer`; the resume
+    /// behaves as `resume` says.
+    async fn asked(answer: Answer, resume: &str) -> Asked {
+        let root = std::env::temp_dir().join(format!("nightloom-522-{}", uuid::Uuid::new_v4()));
+        let logs = root.join("sessions");
+        std::fs::create_dir_all(&logs).unwrap();
+        std::fs::write(root.join("resume"), resume).unwrap();
+        let mut session = Session::start(&logs, ChatMode::Normal, ChatKind::Build).unwrap();
+        let ask_dir = root.join("ask").join(&session.id);
+        let mut spec = AgentSpec::new(&root);
+        spec.binary = asking_stand_in(&root, &ask_dir);
+        let mut agent = ClaudeCodeAgent::new(spec);
+        agent.set_ask_dir(ask_dir.clone());
+        let ask = Arc::new(AskGate::new());
+        let env = AskEnv {
+            timing: TurnTiming::begin(turn_timing::DESKTOP, None, None),
+            ask: ask.clone(),
+            answer: std::sync::Mutex::new(Some(answer)),
+            events: Default::default(),
+            waiting_at_card: Default::default(),
+            ask_dir: ask_dir.clone(),
+        };
+        let chat = session.id.clone();
+        let cancel = CancellationToken::new();
+        let end = run_agent_turn(
+            AgentTurnRun {
+                agent: &mut agent,
+                session: &mut session,
+                chat_id: &chat,
+                input: TurnInput::from("hello"),
+                spoken: false,
+                wire_note: None,
+                council: None,
+                cancel: &cancel,
+                ask_dir: Some(ask_dir.clone()),
+                ask: &ask,
+            },
+            &env,
+        )
+        .await
+        .map_err(|e| e.to_string());
+        Asked {
+            end,
+            events: env.events.lock().unwrap().clone(),
+            log: session.events().to_vec(),
+            waiting_at_card: *env.waiting_at_card.lock().unwrap(),
+            root,
+            ask_dir,
+        }
+    }
+
+    fn users(log: &[SessionEvent]) -> Vec<String> {
+        log.iter()
+            .filter_map(|e| match e {
+                SessionEvent::UserMessage { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Item 522: Skip resumes the turn and it ends idle — the refusal is
+    /// the call's result, the reply follows, and nothing is left waiting.
+    #[tokio::test]
+    async fn a_skipped_question_resumes_and_the_turn_ends() {
+        let a = asked(
+            Answer::Deny {
+                reason: "the user skipped the question; decide yourself".into(),
+            },
+            "refuse",
+        )
+        .await;
+        assert!(
+            matches!(a.end, Ok(AgentTurnEnd::Done { .. })),
+            "{:?}",
+            a.end.as_ref().err()
+        );
+        assert_eq!(a.events, vec!["result toolu_q"]);
+        assert_eq!(
+            a.waiting_at_card,
+            Some(true),
+            "the wait is on disk while the card is up"
+        );
+        assert!(
+            AskDir::new(&a.ask_dir).waiting().is_none(),
+            "and gone once resumed"
+        );
+        let seen = std::fs::read_to_string(a.root.join("decision-seen.json")).unwrap();
+        assert!(
+            seen.contains(r#""decision":"deny""#) && seen.contains("skipped the question"),
+            "{seen}"
+        );
+        assert_eq!(users(&a.log), vec!["hello"]);
+        let _ = std::fs::remove_dir_all(&a.root);
+    }
+
+    /// Item 522: a message sent while the question waits refuses the call
+    /// with his words as the reason, and — once that result has landed —
+    /// is reported delivered under the window's id and kept on the log as
+    /// his message, after the call's result.
+    #[tokio::test]
+    async fn a_message_sent_instead_of_an_answer_is_the_refusal_and_his_message() {
+        let a = asked(
+            Answer::Reply {
+                id: Some("row-7".into()),
+                text: "you are missing context: nothing is decided yet".into(),
+            },
+            "refuse",
+        )
+        .await;
+        assert!(
+            matches!(a.end, Ok(AgentTurnEnd::Done { .. })),
+            "{:?}",
+            a.end.as_ref().err()
+        );
+        let seen = std::fs::read_to_string(a.root.join("decision-seen.json")).unwrap();
+        assert!(seen.contains(r#""decision":"deny""#), "{seen}");
+        assert!(seen.contains("replied with a message instead"), "{seen}");
+        assert!(seen.contains("nothing is decided yet"), "{seen}");
+        assert_eq!(
+            a.events,
+            vec![
+                "result toolu_q".to_string(),
+                "delivered row-7 [you are missing context: nothing is decided yet] in place of an answer to AskUserQuestion".to_string(),
+            ]
+        );
+        assert_eq!(
+            users(&a.log),
+            vec!["hello", "you are missing context: nothing is decided yet"]
+        );
+        // The order the model read them in: the call, its result, his words, the reply.
+        let kinds: Vec<&str> = a
+            .log
+            .iter()
+            .filter_map(|e| match e {
+                SessionEvent::UserMessage { .. } => Some("user"),
+                SessionEvent::AssistantMessage { .. } => Some("assistant"),
+                SessionEvent::ToolResult { .. } => Some("result"),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec!["user", "assistant", "result", "user", "assistant"]
+        );
+        let _ = std::fs::remove_dir_all(&a.root);
+    }
+
+    /// Item 522: a resume that fails ends the turn with an error rather
+    /// than waiting for ever, and reports no delivery — his message is
+    /// still the window's to send.
+    #[tokio::test]
+    async fn a_failed_resume_ends_the_turn_with_an_error_and_delivers_nothing() {
+        let a = asked(
+            Answer::Reply {
+                id: Some("row-8".into()),
+                text: "more context".into(),
+            },
+            "die",
+        )
+        .await;
+        let failed = match &a.end {
+            Err(_) => true,
+            Ok(AgentTurnEnd::Done { outcome, .. }) => outcome.is_error,
+            Ok(_) => false,
+        };
+        assert!(failed, "{:?}", a.end.as_ref().err());
+        assert!(a.events.is_empty(), "{:?}", a.events);
+        assert_eq!(users(&a.log), vec!["hello"]);
+        assert!(AskDir::new(&a.ask_dir).waiting().is_none());
+        let _ = std::fs::remove_dir_all(&a.root);
+    }
+
+    /// Item 522: a card the app was closed on. The chat's next message
+    /// refuses the call on disk before its process starts, so the turn
+    /// runs instead of parking on a question nobody can see.
+    #[tokio::test]
+    async fn a_card_left_by_a_closed_app_is_refused_at_the_next_message() {
+        let root = std::env::temp_dir().join(format!("nightloom-522-{}", uuid::Uuid::new_v4()));
+        let logs = root.join("sessions");
+        std::fs::create_dir_all(&logs).unwrap();
+        std::fs::write(root.join("plain"), "").unwrap();
+        let mut session = Session::start(&logs, ChatMode::Normal, ChatKind::Build).unwrap();
+        let ask_dir = root.join("ask").join(&session.id);
+        let call = crate::agent::DeferredCall {
+            id: "toolu_q".into(),
+            name: "AskUserQuestion".into(),
+            input: serde_json::json!({ "questions": [] }),
+        };
+        AskDir::new(&ask_dir)
+            .set_waiting(Some("s-1"), &call)
+            .unwrap();
+        let mut spec = AgentSpec::new(&root);
+        spec.binary = asking_stand_in(&root, &ask_dir);
+        spec.resume = Some("s-1".into());
+        let mut agent = ClaudeCodeAgent::new(spec);
+        agent.set_ask_dir(ask_dir.clone());
+        let ask = Arc::new(AskGate::new());
+        let env = AskEnv {
+            timing: TurnTiming::begin(turn_timing::DESKTOP, None, None),
+            ask: ask.clone(),
+            answer: Default::default(),
+            events: Default::default(),
+            waiting_at_card: Default::default(),
+            ask_dir: ask_dir.clone(),
+        };
+        let chat = session.id.clone();
+        let cancel = CancellationToken::new();
+        let end = run_agent_turn(
+            AgentTurnRun {
+                agent: &mut agent,
+                session: &mut session,
+                chat_id: &chat,
+                input: TurnInput::from("my next message"),
+                spoken: false,
+                wire_note: None,
+                council: None,
+                cancel: &cancel,
+                ask_dir: Some(ask_dir.clone()),
+                ask: &ask,
+            },
+            &env,
+        )
+        .await;
+        assert!(
+            matches!(end, Ok(AgentTurnEnd::Done { .. })),
+            "{:?}",
+            end.as_ref().err()
+        );
+        let seen = std::fs::read_to_string(root.join("decision-seen.json")).unwrap();
+        assert!(
+            seen.contains("toolu_q") && seen.contains(r#""decision":"deny""#),
+            "{seen}"
+        );
+        assert!(
+            seen.contains("Nightloom was closed before the user answered"),
+            "{seen}"
+        );
+        assert!(AskDir::new(&ask_dir).waiting().is_none());
+        assert_eq!(
+            *env.waiting_at_card.lock().unwrap(),
+            None,
+            "no card was shown"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

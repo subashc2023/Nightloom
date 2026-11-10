@@ -8248,6 +8248,8 @@ fn approve_call(
     then: Option<String>,
     grant_dir: Option<String>,
     grant_scope: Option<String>,
+    reply: Option<String>,
+    reply_id: Option<String>,
 ) -> Result<(), String> {
     // A call the CLI deferred (nightshift backlog 084) is answered on its
     // own gate, and "always" there is a rule for this chat, not the
@@ -8278,6 +8280,13 @@ fn approve_call(
             "always" => Answer::AllowForChat {
                 updated_input: answer,
             },
+            // His message in place of an answer (nightshift item 522): the
+            // refusal carries his words, and the turn reports the message
+            // delivered under `reply_id`, the window's id for its queued row.
+            "deny" if reply.as_deref().is_some_and(|t| !t.trim().is_empty()) => Answer::Reply {
+                id: reply_id.filter(|i| !i.trim().is_empty()),
+                text: reply.unwrap_or_default(),
+            },
             "deny" => Answer::Deny {
                 reason: reason
                     .filter(|r| !r.trim().is_empty())
@@ -8285,8 +8294,18 @@ fn approve_call(
             },
             other => return Err(format!("unknown decision: {other}")),
         };
-        state.ask.answer(&id, answer);
+        // Nothing took it (item 522): the turn let go of the call between
+        // the check above and here. Said, so the window can put the card
+        // back or say the turn is over — never a card that silently left.
+        if !state.ask.answer(&id, answer) {
+            return Err("that prompt is no longer waiting: its turn has ended".into());
+        }
         return Ok(());
+    }
+    // A reply to a prompt nothing is waiting on must not be dropped as a
+    // refusal of some other engine's call: the window keeps the message.
+    if reply.is_some() {
+        return Err("that prompt is no longer waiting: its turn has ended".into());
     }
     let decision = match decision.as_str() {
         "allow" => Decision::Allow,

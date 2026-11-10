@@ -110,7 +110,6 @@ import { MAX_OPEN_ASIDES, foldTheOldest } from "./asideCard";
 import { loadCouncilPrefs, type CouncilPrefs, type CouncilRequest } from "./council";
 import { limitPauseFrom, resumeDelayMs, resumeMessage, type LimitPause } from "./limit";
 import {
-  backgroundAskToast,
   backgroundEndToast,
   canDetach,
   eventHost,
@@ -128,6 +127,8 @@ import {
 import { SEARCH_COLUMN_MAX, searchGrowth } from "./search.svelte";
 import * as tabs from "./tabs";
 import { midTurnWire, chipsFromInputs, sendNowToast, deliveredNotice, type SendNowResult } from "./midTurn";
+import { carriesAlone, FOLLOWS, pendingFor, type ReplyResult } from "./askReply";
+import { answerLanded, clearHandBack, handedHow, noteAnswered } from "./handBack.svelte";
 import { pdfFileName, pdfRoute } from "./attachKinds";
 import { recordRelay } from "./relay.svelte";
 import { adoptPending, closeRunningRows, latestAgents, mergeRows, rowsFromLog, rowsOf } from "./subagentRows";
@@ -1674,11 +1675,14 @@ export async function init(): Promise<void> {
     if (bg) {
       bg.approvals.push(e.payload);
       const name = backgroundName(bg.session);
-      addToast(backgroundAskToast(name));
+      // ~~A five-second toast~~ (item 523, 2026-11-09): the waiting
+      // notice in the same corner says it, and stays until he closes it.
       void notifyNeedsYou(name, e.payload);
       return;
     }
     app.pendingApprovals.push(e.payload);
+    // A new card: whatever was being handed back has been (item 522).
+    clearHandBack();
     // The needs-you banner (backlog 079): the turn waits on him, and if the
     // window is behind something else nothing on screen says so.
     void notifyNeedsYou(bannerChat(), e.payload);
@@ -6690,6 +6694,12 @@ export async function injectIntoTurn(key: string, q: { id: number; text: string;
   // stale key (a composer torn down by a chat or project switch) must not
   // hand another chat's row to the turn on screen.
   if (!turnOwnsKey(turn, key)) return;
+  // A prompt waits on him (item 522): no process runs to take a message,
+  // and the turn only goes on by an answer — so the message is the answer.
+  if (pendingFor(app.pendingApprovals, app.connection?.engine)) {
+    await replyToPending(key, q);
+    return;
+  }
   const wire = midTurnWire(q.attachments);
   if (!wire || (!q.text.trim() && wire.images.length + wire.documents.length === 0)) return;
   const id = crypto.randomUUID();
@@ -6709,6 +6719,45 @@ export async function injectIntoTurn(key: string, q: { id: number; text: string;
     if (!later.some((r) => r.key === key && r.qid === q.id)) later.push({ key, qid: q.id });
     injectLater.set(turn.key, later);
   }
+}
+
+/**
+ * His message in place of an answer (nightshift item 522, 2026-11-09): the
+ * prompt waiting in the chat on screen — the model's question, a plan, a
+ * permission or browser prompt — is refused with the queued row's words as
+ * the reason, so the model reads them in the call's result and the turn
+ * goes on (`askReply.ts`). The row stays in the queue, marked, until the
+ * turn reports it delivered; a resume that fails leaves it an ordinary
+ * held message, and an answer that cannot be given puts the card back.
+ * A row with files cannot ride in a reason: the call is refused saying a
+ * message follows, and the row is handed to the resumed process whole.
+ */
+export async function replyToPending(key: string, q: { id: number; text: string; attachments: Attachment[] }): Promise<ReplyResult> {
+  const turn = fg;
+  if (!turn || !app.busy || app.parked || !turnOwnsKey(turn, key)) return "none";
+  const req = pendingFor(app.pendingApprovals, app.connection?.engine);
+  if (!req) return "none";
+  if (carriesAlone(q)) {
+    const id = crypto.randomUUID();
+    markInjected(key, q.id, { id, turn: turn.key, reply: true });
+    const ok = await resolveApproval(req.id, req.name, "deny", undefined, undefined, undefined, undefined, { text: q.text.trim(), id });
+    if (!ok) {
+      clearInjected(key, q.id);
+      return "failed";
+    }
+    return "sent";
+  }
+  // With files: handed in at the resumed process's `init` (as 374's
+  // rows). A chip no running turn can take (a file by path, one still
+  // converting) leaves the row for the turn's end, which the refusal
+  // brings on — the model is told a message follows and to wait for it.
+  if (midTurnWire(q.attachments)) {
+    const later = injectLater.get(turn.key) ?? [];
+    if (!later.some((r) => r.key === key && r.qid === q.id)) later.push({ key, qid: q.id });
+    injectLater.set(turn.key, later);
+  }
+  const ok = await resolveApproval(req.id, req.name, "deny", FOLLOWS, undefined, undefined, undefined, undefined, "replied");
+  return ok ? "follows" : "failed";
 }
 
 /**
@@ -6858,6 +6907,38 @@ export async function openRunningChat(id: string): Promise<void> {
   }
   // Its restored tab may have brought it back already.
   if (app.background[id] || app.activeSessionId !== id) await openSession(id);
+}
+
+/**
+ * Open the chat a waiting notice names, at its card (nightshift item 523):
+ * a chat off screen comes back on screen (in its own project), a parked
+ * turn's chat is returned to, the chat on screen leaves a note or page for
+ * its transcript — then the card is scrolled into view and focused.
+ */
+export async function openWaiting(chat: string | null, id: string): Promise<void> {
+  if (chat !== null && app.background[chat]) await openRunningChat(chat);
+  // While its turn runs `openSession` only brings it forward: back from a
+  // parked look-away, out of a note, or its tab to the front.
+  else if (chat !== null) await openSession(chat);
+  else if (app.view !== "chat") leaveNote();
+  // The card is drawn once the chat's transcript is; give it a moment.
+  for (let i = 0; i < 40; i++) {
+    await tick();
+    const card = typeof document === "undefined" ? null : document.querySelector<HTMLElement>(`[data-ask-id="${CSS.escape(id)}"]`);
+    if (card) {
+      card.scrollIntoView({ block: "center" });
+      card.focus({ preventScroll: true });
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
+/** A chat's name for a waiting notice (item 523). */
+export function waitingChatName(chat: string | null, where: "screen" | "background" | "parked"): string {
+  if (where === "background" && chat !== null) return backgroundName(chat);
+  if (where === "parked") return runningChatName();
+  return bannerChat();
 }
 
 /** Every chat whose turn runs now (A4), for the Running-tasks panel and
@@ -7420,6 +7501,7 @@ function endBackground(t: TurnCtx, failed: string | null, res: AgentTurnResult |
   if (b) refreshPaneLog(id, b.events);
   delete app.background[id];
   bgTurns.delete(id);
+  clearHandBack(id);
   const used = b?.liveUsage ? b.liveUsage.input_tokens + b.liveUsage.output_tokens : null;
   const errored = failed !== null || res?.is_error === true;
   // The turn-end banner for an unfocused window (backlog 079), as the
@@ -7577,6 +7659,7 @@ export async function sendQueuedInBackground(
   app.live = null;
   app.liveUsage = null;
   app.pendingApprovals = [];
+  clearHandBack();
   app.busy = false;
   if (failed !== null && !refused) app.error = failed;
   await settleTurnView(null, id, null);
@@ -8166,6 +8249,7 @@ export async function send(
   // The turn is over: anything still parked was answered by the backend
   // (or died with the turn), so the prompts can no longer decide anything.
   app.pendingApprovals = [];
+  clearHandBack();
   app.busy = false;
   // Sessions are created lazily on first send; the id is picked up here.
   await settleTurnView(pendingKey, turn.chat, choice);
@@ -8343,6 +8427,7 @@ async function sendAgent(
     // abandoned by the time the turn returns, and one left on screen would
     // answer nothing.
     app.pendingApprovals = [];
+    clearHandBack();
     app.busy = false;
     // The chat the turn ran in, and its context reading, taken before the
     // view settles: he may be looking at another chat (backlog 159), and
@@ -9043,10 +9128,14 @@ export async function resolveApproval(
   answer?: unknown,
   then?: "ask" | "auto",
   grant?: FolderGrant,
-): Promise<void> {
+  /** His message in place of an answer (item 522, `replyToPending`). */
+  reply?: { text: string; id: string },
+  /** What the hand-back line says, when the decision alone does not. */
+  said?: "replied",
+): Promise<boolean> {
   const i = app.pendingApprovals.findIndex((r) => r.id === id);
-  if (i < 0) return;
-  app.pendingApprovals.splice(i, 1);
+  if (i < 0) return false;
+  const [req] = app.pendingApprovals.splice(i, 1);
   // An approved plan moves the chat off the Plan position (backlog 085):
   // the backend's agent takes the pick as it resumes, and the rail's
   // switch follows here so the two never disagree about what the next
@@ -9060,10 +9149,24 @@ export async function resolveApproval(
     }
     saveLastConnection({ ...app.draft });
   }
+  // The card is gone and the call's row still reads "running" until the
+  // resumed process reports (item 522: ~25 s on 2026-11-09, read as a
+  // freeze): a line in its place says the answer was taken.
+  const deferredCall = app.connection?.engine === "claude-code";
+  if (deferredCall) noteAnswered(id, req.chat ?? app.activeSessionId, said ?? handedHow(name, decision, reply !== undefined));
   try {
-    await api.approveCall(id, name, decision, reason, answer, then, grant);
+    await api.approveCall(id, name, decision, reason, answer, then, grant, reply);
+    return true;
   } catch (e) {
-    addToast(String(e));
+    // The answer went nowhere (item 522): never a card that silently
+    // left. While its turn still runs here the card comes back, to be
+    // answered again; either way he is told.
+    answerLanded(id);
+    if (deferredCall && app.busy && !app.pendingApprovals.some((r) => r.id === id)) {
+      app.pendingApprovals.splice(Math.min(i, app.pendingApprovals.length), 0, req);
+    }
+    addToast(`Your answer was not taken: ${String(e)}`);
+    return false;
   }
 }
 
@@ -9234,6 +9337,8 @@ export function applyTurnEventTo(host: TurnHost, ev: TurnEvent & { chat?: string
     case "tool_call":
     case "tool_result":
     case "tool_denied":
+      // His answer reached the turn (item 522): the hand-back line goes.
+      if (ev.type === "tool_result" || ev.type === "tool_denied") answerLanded(ev.tool_use_id);
       // The reply is coming (items 440 + 441): the retry line goes.
       clearRetry(segments);
       applyToSegments(segments, ev);
