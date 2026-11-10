@@ -28,7 +28,7 @@
  */
 import { tick } from "svelte";
 import { listen } from "@tauri-apps/api/event";
-import { app, chatRuns, limitWakeDue, refreshPlanUsage, resumeAfterLimit, sendInChat } from "./state.svelte";
+import { app, chatRuns, limitWakeDue, refreshPlanUsage, resumeAfterLimit, resumes, sendInChat } from "./state.svelte";
 import { enqueueMessage } from "./drafts.svelte";
 import * as api from "./api";
 import { deliverTo, isLimited, type ChatProject, type Delivery, type Scheduled, type TickDeps } from "./schedule";
@@ -230,8 +230,11 @@ async function startProbe(): Promise<void> {
       agents: [],
       hitAtMs: Date.now(),
     };
+    const session = app.limitPause.session ?? "";
     resumeAfterLimit();
-    log(`probe limit due=${new Date(p.limit_ms).toISOString()} armed=${app.limitResumeAt !== null}`);
+    // Since 543 the probe's chat (never the open one) keeps its time in its
+    // own entry; `app.limitResumeAt` is the open chat's.
+    log(`probe limit due=${new Date(p.limit_ms).toISOString()} armed=${(resumes[session]?.at ?? null) !== null}`);
   }
 }
 

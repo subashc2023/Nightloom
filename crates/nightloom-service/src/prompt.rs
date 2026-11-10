@@ -831,6 +831,15 @@ fn engine_note_segment(knowledge: Option<&KnowledgeContext>) -> Segment {
          .meta.json beside it naming the call that spawned it) and take up from its last \
          result rather than repeating the search.",
     );
+    // Continue later (nightshift backlog 543, 2026-11-10; his words: "these
+    // models are gonna run to like 95% and then stop working then because
+    // they don't want to hit the limit"): a turn that ends on its own with
+    // work left had no way to come back — a timer tool needs an approval
+    // nobody is there to give and dies with the turn's process. The desktop
+    // reads this line off the reply at the turn's end and sends the chat a
+    // message at the time (`chatResume.ts`).
+    text.push(' ');
+    text.push_str(CONTINUE_LATER_NOTE);
     // Sources inline (nightshift backlog 213, 2026-09-25): the CLI's
     // WebSearch result ends by telling the model to include its sources as
     // Markdown links, which it did as one list at the foot of every reply.
@@ -848,6 +857,18 @@ fn engine_note_segment(knowledge: Option<&KnowledgeContext>) -> Segment {
     text.push_str("\n</engine-note>");
     Segment::new(SegmentKind::EngineNote, "engine-note", text)
 }
+
+/// How a chat asks Nightloom to continue it later (nightshift backlog 543b):
+/// a line in its reply, no tool and no permission prompt. The desktop's
+/// `extractContinue` reads exactly this shape.
+pub const CONTINUE_LATER_NOTE: &str = "To be continued later without the user — you are stopping with \
+     work left because the plan's usage window is nearly spent, or the work has to wait for a time — end \
+     your reply with a line of its own: <continue-later at=\"reset\">what to do next, in a sentence</continue-later>. \
+     Nightloom then sends this chat a message at that time, unattended, and you carry on; `at` is `reset` \
+     (just after the 5-hour usage window resets), `weekly` (the weekly reset), a delay such as `+45m` or \
+     `+2h`, or a clock time `HH:MM`. Use it instead of CronCreate or ScheduleWakeup, which end with the turn \
+     here. A turn the usage limit cuts off itself is resumed by Nightloom at the reset without it. Do not \
+     write the line when the work is finished or is waiting on the user.";
 
 /// Where a command for him goes (nightshift item 503): a `bash` block gets
 /// a Run button whose output comes back as a message. The API engine reads
@@ -2425,6 +2446,16 @@ the body text",
 
     /// The account-details rule (backlog 446) is in the engine note of a
     /// normal chat, and the incognito note keeps its own stricter one.
+    /// Item 543b: every Claude Code chat is told the line that asks for a
+    /// continuation, in the exact shape the desktop reads.
+    #[test]
+    fn the_engine_note_says_how_to_ask_to_be_continued_later() {
+        let note = engine_note_segment(None).text;
+        assert!(note.contains(r#"<continue-later at="reset">"#));
+        assert!(note.contains("</continue-later>"));
+        assert!(note.contains("instead of CronCreate or ScheduleWakeup"));
+    }
+
     #[test]
     fn the_engine_note_says_not_to_publish_his_account_details() {
         let dir = temp_dir("agent-bridge-personal");

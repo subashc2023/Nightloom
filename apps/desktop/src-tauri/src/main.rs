@@ -4537,6 +4537,84 @@ async fn continue_session(state: State<'_, AppState>) -> Result<MessageEdit, Str
     })
 }
 
+/// Continue chat `chat` of `project` in a fresh linked chat **without
+/// opening either** (nightshift backlog 544): an unattended chat that
+/// wrote its hand-off off screen — he is away, another chat or project is
+/// on screen — is continued where it lives, and the window then sends the
+/// next chat's prompt into it by id ([`send_agent`]'s `chat`). The new
+/// chat is held, not focused; its log is beside its parent's; it runs on
+/// its parent's agent spec (same project, same thread). Returns its id.
+/// Refused while the parent's turn runs, or when it has no spec to pass on
+/// and its project is not the open one.
+#[tauri::command]
+async fn continue_chat(
+    state: State<'_, AppState>,
+    chat: String,
+    project: Option<String>,
+) -> Result<String, String> {
+    let target = chat_target(&state, &chat, project.as_deref())
+        .await
+        .map_err(|_| "its chat's log could not be read".to_string())?;
+    let active = state.active().await.map(|p| p.id);
+    let guard = target
+        .try_lock()
+        .map_err(|_| "that chat is running a turn".to_string())?;
+    let parent = guard
+        .as_ref()
+        .ok_or_else(|| "its chat's log could not be read".to_string())?;
+    let dir = match parent.log_path().and_then(|p| p.parent()) {
+        Some(dir) => dir.to_path_buf(),
+        None => state.log_dir().await,
+    };
+    let next = chat_ops::continue_from(parent, &dir, None)?;
+    let id = next.id.clone();
+    drop(guard);
+    if !state.agents.reserve_like(&chat, &id) && project != active {
+        // Nothing to run it on off screen; the log just made is empty and
+        // goes to the trash, so no orphan chat is left in the list.
+        if let Some(path) = next.log_path() {
+            let _ = chat_ops::move_to_trash(&dir, path, &id);
+        }
+        return Err("its project is not open".to_string());
+    }
+    state.chats.hold(next);
+    Ok(id)
+}
+
+/// Seconds since the last input on this Mac (backlog 544, `wake.rs`).
+#[tauri::command]
+fn idle_seconds() -> Option<f64> {
+    wake::idle_seconds()
+}
+
+/// Blocker 1757's one-time switch (his answer, 2026-11-10: "Yes, switch
+/// them"): every chat's `subagent-limits.json` on Same, in the unfiled
+/// chats and in every project, made Choose — no other field touched
+/// (`brief::switch_same_to_choose`). The window calls it once, behind its
+/// own marker, so it never overrides a chat he sets back to Same. Returns
+/// how many chats were switched.
+#[tauri::command]
+async fn switch_subagents_same_to_choose(state: State<'_, AppState>) -> Result<usize, String> {
+    let mut dirs = vec![state.default_log_dir.clone()];
+    dirs.extend(
+        state
+            .workspaces
+            .lock()
+            .await
+            .registry
+            .projects()
+            .iter()
+            .map(|p| p.session_dir()),
+    );
+    tokio::task::spawn_blocking(move || {
+        dirs.iter()
+            .map(|d| nightloom_service::agent::brief::switch_same_to_choose(d))
+            .sum()
+    })
+    .await
+    .map_err(|e| format!("switching the subagent model: {e}"))
+}
+
 /// An aside's answer (nightshift backlog 081): the model's text, what the
 /// CLI estimated it would have cost, and nothing that touches the chat.
 #[derive(Serialize)]
@@ -9344,6 +9422,9 @@ fn main() {
             prompt_pending,
             set_prompt_layer_choice,
             continue_session,
+            continue_chat,
+            idle_seconds,
+            switch_subagents_same_to_choose,
             delete_session,
             move_session,
             restore_session,

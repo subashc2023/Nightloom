@@ -1565,6 +1565,20 @@ impl PassSpec {
 /// A real resume prints its first line within a second or two (M2: 0.7 s).
 pub const SILENT_RESUME: Duration = Duration::from_secs(30);
 
+/// How long a turn whose main thread is idle may stay open after the plan's
+/// usage limit was seen on its stream (nightshift backlog 543a, his report
+/// of 2026-11-10 ~6:30 AM: "Three helpers are running … and then silence").
+/// The reply had ended with helpers running in the background, so the
+/// process — and the turn — were held open for them (329); the limit then
+/// stopped the helpers, nothing more came, and the turn sat there, neither
+/// running nor paused, until he sent a message that drew the 429 itself.
+/// The grace is for what the CLI still does on its own — a helper's
+/// notification, the main thread's wake and its own 429 `result`, which
+/// end the turn the ordinary way; past it Nightloom closes the turn, and
+/// the outcome carries the limit, so the window marks the chat paused at
+/// once and resumes it at the reset.
+pub const LIMIT_GRACE: Duration = Duration::from_secs(20);
+
 pub struct ClaudeCodeAgent {
     spec: AgentSpec,
     /// The model id the CLI last resolved [`AgentSpec::model`] to.
@@ -1600,6 +1614,8 @@ pub struct ClaudeCodeAgent {
     /// its feed is closed ([`SILENT_RESUME`]); a field so a test can
     /// shorten it.
     silent_resume: Duration,
+    /// [`LIMIT_GRACE`]; a field so a test can shorten it.
+    limit_grace: Duration,
     /// The next message's process, started while he types (item 256,
     /// [`warm`]); taken by [`Self::run_turn`] when it is the same command.
     warm: warm::WarmSlot,
@@ -1616,6 +1632,7 @@ impl ClaudeCodeAgent {
             chair: std::sync::Mutex::new(None),
             timing: None,
             silent_resume: SILENT_RESUME,
+            limit_grace: LIMIT_GRACE,
             warm: warm::WarmSlot::default(),
             inbox: inbox::Inbox::default(),
         }
@@ -2166,6 +2183,11 @@ impl ClaudeCodeAgent {
         let silent = tokio::time::sleep(self.silent_resume);
         tokio::pin!(silent);
         let mut watch_silence = piped && input.is_none();
+        // The usage limit seen on the stream (543a): when, and whether the
+        // main thread is idle (its `result` read, no command begun since).
+        let mut limit_at: Option<tokio::time::Instant> = None;
+        let mut main_idle = false;
+        let mut limit_ended = false;
 
         loop {
             // A subagent's end the main thread was not told of (406): the
@@ -2187,6 +2209,28 @@ impl ClaudeCodeAgent {
                         on_event(TurnEvent::Woke { text: w.text, agents: w.agents });
                     }
                     continue;
+                }
+                _ = tokio::time::sleep_until(
+                    limit_at.unwrap_or_else(tokio::time::Instant::now) + self.limit_grace,
+                ), if limit_at.is_some() => {
+                    // Still working (a command of the main thread's runs):
+                    // it meets the limit itself and says so; look again.
+                    // Or a background command of its own runs (543c): a
+                    // build is not killed for the limit — its end wakes the
+                    // main thread, whose 429 ends the turn.
+                    let commands = inbox
+                        .as_ref()
+                        .is_some_and(|i| !i.commands_running().is_empty());
+                    if !main_idle || commands {
+                        limit_at = Some(tokio::time::Instant::now());
+                        continue;
+                    }
+                    // Idle, held open for helpers the limit has stopped:
+                    // nothing more will come. Closed as a Stop closes it,
+                    // so the CLI ends the turn in its session file.
+                    limit_ended = true;
+                    interrupted = true;
+                    break;
                 }
                 _ = &mut silent, if watch_silence && !any_line => {
                     watch_silence = false;
@@ -2299,7 +2343,19 @@ impl ClaudeCodeAgent {
                     if held_stdin.is_some() && line.starts_with(r#"{"type":"result""#) {
                         held_stdin = None;
                     }
-                    for event in translator.push(&line) {
+                    if line.starts_with(r#"{"type":"result""#) {
+                        main_idle = true;
+                    } else if main_idle
+                        && line.contains(r#""subtype":"init""#)
+                        && line.starts_with(r#"{"type":"system""#)
+                    {
+                        main_idle = false;
+                    }
+                    let events = translator.push(&line);
+                    if limit_at.is_none() && translator.limited() {
+                        limit_at = Some(tokio::time::Instant::now());
+                    }
+                    for event in events {
                         if let TurnEvent::ToolCall { name, .. } = &event {
                             last_call = Some(name.clone());
                             stopped = None;
@@ -2425,7 +2481,13 @@ impl ClaudeCodeAgent {
             outcome
                 .notices
                 .retain(|n| n != "ended: error_during_execution");
-            outcome.notices.push(stop.into());
+            // 543a: not his Stop — the limit left the turn nothing to wait for.
+            outcome.notices.push(if limit_ended {
+                "paused — the plan's usage limit stopped the helpers this turn was waiting on"
+                    .into()
+            } else {
+                stop.into()
+            });
             return Ok(outcome);
         }
         let status = child.wait().await?;
@@ -3189,6 +3251,28 @@ mod tests {
             .position(|x| x == "--system-prompt-snapshot")
             .expect("the flag");
         assert_eq!(a[i + 1], "off");
+    }
+
+    /// Item 543's check 6: a chat bound to a research thread mid-chat is
+    /// resumed with the thread's layer on the flag **and** the snapshot off
+    /// — the pair `connect_agent` sets after `prompt_hold::resolve` takes
+    /// the Thread layer (the desktop's
+    /// `a_thread_bound_mid_chat_is_taken_now_and_turns_the_snapshot_off`).
+    /// With the snapshot on, the CLI would reuse the prompt recorded on the
+    /// conversation's first turn and the layer would never reach it (174).
+    #[test]
+    fn a_thread_bound_mid_chat_reaches_the_resumed_cli() {
+        let mut s = spec();
+        s.resume = Some("cli-session-1".into());
+        s.append_system_prompt = Some("preamble\n\nTHREAD alpha: start here".into());
+        s.system_prompt_snapshot_off = true;
+        let a = s.args("next message");
+        let at = |flag: &str| a.iter().position(|x| x == flag).map(|i| a[i + 1].clone());
+        assert_eq!(at("--resume").as_deref(), Some("cli-session-1"));
+        assert!(
+            at("--append-system-prompt").is_some_and(|p| p.contains("THREAD alpha: start here"))
+        );
+        assert_eq!(at("--system-prompt-snapshot").as_deref(), Some("off"));
     }
 
     #[test]
@@ -5264,6 +5348,78 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"num_turns":
             .await
             .unwrap();
         (at.expect("stopped at init").elapsed(), outcome.notices)
+    }
+
+    /// Item 543a (his report, 2026-11-10 ~6:30 AM): the reply ended with a
+    /// helper running in the background, the limit then rejected the
+    /// helper's request, and nothing more came — the turn sat open, neither
+    /// running nor paused. The stand-in is that stream: `init`, a helper's
+    /// `task_started`, the main `result`, a rejected `rate_limit_event`,
+    /// then silence with the process up. The turn now ends by itself after
+    /// the grace, carrying the limit and its reset, with the helper named.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_turn_idle_on_helpers_the_limit_stopped_ends_paused_by_itself() {
+        let dir = std::env::temp_dir().join(format!("nightloom-543-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let body = r#"res() { printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_streaming","num_turns":1,"session_id":"lim-543","stop_reason":null,"usage":{"input_tokens":0,"output_tokens":0}}'; }
+printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"m","permissionMode":"auto","session_id":"lim-543"}'
+printf '%s\n' '{"type":"system","subtype":"task_started","task_id":"a8bb","tool_use_id":"toolu_HELPER","description":"funding scan","task_type":"local_agent"}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"Three helpers are running.","session_id":"lim-543","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}'
+printf '%s\n' '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1794321000,"rateLimitType":"five_hour","overageStatus":"rejected","isUsingOverage":false}}'
+trap 'res; exit 0' INT
+sleep 30 >/dev/null 2>&1 & wait
+wait
+"#;
+        let mut s = AgentSpec::new(&dir);
+        s.binary = stand_in(&dir, body);
+        let mut agent = ClaudeCodeAgent::new(s);
+        agent.limit_grace = Duration::from_millis(300);
+        let cancel = CancellationToken::new();
+        let began = std::time::Instant::now();
+        let outcome = agent.run_turn("go", &cancel, &mut |_| {}).await.unwrap();
+        let took = began.elapsed();
+        assert!(took < Duration::from_secs(5), "the turn hung: {took:?}");
+        let hit = outcome.limit.expect("the limit is on the outcome");
+        assert_eq!(hit.resets_at, Some(1794321000));
+        assert_eq!(hit.window.as_deref(), Some("five_hour"));
+        assert!(!outcome.is_error);
+        assert_eq!(
+            outcome.notices,
+            vec![
+                "paused — the plan's usage limit stopped the helpers this turn was waiting on"
+                    .to_string()
+            ]
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 543a: a turn that is still working when the limit is seen is not cut
+    /// short — the main thread's own 429 ends it the ordinary way.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_working_turn_is_not_closed_by_the_limit_grace() {
+        let dir = std::env::temp_dir().join(format!("nightloom-543b-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let body = r#"printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"m","permissionMode":"auto","session_id":"lim-543b"}'
+printf '%s\n' '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1794321000,"rateLimitType":"five_hour","overageStatus":"rejected","isUsingOverage":false}}'
+sleep 1
+printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"num_turns":1,"result":"limit","session_id":"lim-543b","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}'
+"#;
+        let mut s = AgentSpec::new(&dir);
+        s.binary = stand_in(&dir, body);
+        let mut agent = ClaudeCodeAgent::new(s);
+        agent.limit_grace = Duration::from_millis(200);
+        let cancel = CancellationToken::new();
+        let outcome = agent.run_turn("go", &cancel, &mut |_| {}).await.unwrap();
+        assert!(outcome.limit.is_some());
+        assert!(outcome.result_seen);
+        assert!(
+            !outcome.notices.iter().any(|n| n.starts_with("paused —")),
+            "{:?}",
+            outcome.notices
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Item 466: a CLI that closes the turn on the interrupt but is slow to

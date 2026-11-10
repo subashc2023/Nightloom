@@ -100,6 +100,11 @@ export const DEFAULT_CAP_TOKENS = 300_000;
 export const RE_ASK = 0.85;
 /** No send and no keystroke for this long, and he counts as away (blocker 120). */
 export const AWAY_MS = 60_000;
+/** No keyboard or mouse input on the Mac for this long, and he counts as
+ *  away even with the window in front on this chat (backlog 544, blocker
+ *  1740): a Mac left overnight with Nightloom frontmost never lost focus,
+ *  so nothing was ever queued or continued for it. */
+export const IDLE_AWAY_MS = 10 * 60_000;
 /** The info string of the fenced block the wrap-up asks for. */
 export const START_PROMPT_TAG = "start-prompt";
 
@@ -242,8 +247,35 @@ export function nextStage(
  * halves, so reading a long reply with the window in front is present,
  * and so is typing in a background window.
  */
-export function isAway(now: number, lastActivity: number, focused: boolean, chatActive: boolean): boolean {
+export function isAway(
+  now: number,
+  lastActivity: number,
+  focused: boolean,
+  chatActive: boolean,
+  /** How long the Mac has had no input, when known (544). */
+  idleMs = 0,
+): boolean {
+  if (idleMs >= IDLE_AWAY_MS && now - lastActivity >= AWAY_MS) return true;
   return now - lastActivity >= AWAY_MS && (!focused || !chatActive);
+}
+
+/**
+ * 544: whether a turn's end queues the wrap-up of a chat that is already
+ * past its mark — `autoQueues` covers only the crossing itself, so a chat
+ * he was watching at the crossing and then left never wrapped up. Only for
+ * a chat that is running unattended (Nightloom sent its last message: a
+ * limit resume, a continuation it asked for, a hand-off made while he was
+ * away), only when he is away, never after a *Stay here*, never twice.
+ * A notice he has seen in a chat he is driving still queues nothing.
+ */
+export function queuesAtTurnEnd(
+  stage: HandoffStage,
+  away: boolean,
+  dismissedAt: number,
+  queuedId: number,
+  unattended: boolean,
+): boolean {
+  return stage === "due" && away && unattended && dismissedAt === 0 && queuedId === 0;
 }
 
 /**
@@ -297,9 +329,58 @@ export function noteActivity(now = Date.now()): void {
   lastActivity = now;
 }
 
+/** The Mac's last idle reading (544): how long without input, and when
+ *  it was read. Trusted for a minute; the shell reads it while turns run. */
+let systemIdle: { ms: number; at: number } | null = null;
+
+/** The backend's reading of the Mac's idle time, in seconds (null: unknown). */
+export function noteSystemIdle(secs: number | null, now = Date.now()): void {
+  systemIdle = secs === null || !Number.isFinite(secs) ? null : { ms: Math.max(0, secs * 1000), at: now };
+}
+
 /** Away right now, for the open chat (`chatActive` false when the reading is for another). */
 export function awayNow(chatActive = true, now = Date.now()): boolean {
-  return isAway(now, lastActivity, windowFocused(), chatActive);
+  const idle = systemIdle && now - systemIdle.at <= 60_000 ? systemIdle.ms : 0;
+  return isAway(now, lastActivity, windowFocused(), chatActive, idle);
+}
+
+// ---- unattended chats (544) ----
+
+const UNATTENDED_KEY = "nightloom.unattended";
+function loadUnattended(): Record<string, true> {
+  try {
+    const v = JSON.parse(localStorage.getItem(UNATTENDED_KEY) ?? "{}") as unknown;
+    const out: Record<string, true> = {};
+    if (v && typeof v === "object" && !Array.isArray(v)) for (const k of Object.keys(v)) out[k] = true;
+    return out;
+  } catch {
+    return {};
+  }
+}
+/** The chats running unattended: Nightloom sent their last message, not he. */
+const unattended = $state<Record<string, true>>(loadUnattended());
+function saveUnattended(): void {
+  try {
+    localStorage.setItem(UNATTENDED_KEY, JSON.stringify(unattended));
+  } catch {
+    // This launch only.
+  }
+}
+/** Nightloom sent `chat` a message by itself: it runs unattended until he
+ *  sends one there. */
+export function markUnattended(chat: string | null): void {
+  if (!chat || unattended[chat]) return;
+  unattended[chat] = true;
+  saveUnattended();
+}
+/** He sent a message in `chat`: he is driving it again. */
+export function markAttended(chat: string | null): void {
+  if (!chat || !unattended[chat]) return;
+  delete unattended[chat];
+  saveUnattended();
+}
+export function isUnattended(chat: string | null): boolean {
+  return !!chat && unattended[chat] === true;
 }
 
 // ---- readings ----
@@ -319,6 +400,8 @@ export function noteFill(
   limit: number | null,
   away: boolean,
   events: SessionEvent[] | null = null,
+  /** This reading is a turn's end (544); a log is given only at one. */
+  atEnd: boolean = events !== null,
 ): void {
   if (handoff.chat !== chat) {
     // Another chat's reading: this one's stage goes under its id and the
@@ -349,7 +432,7 @@ export function noteFill(
   if (before === "wrapping" && !events) return;
   // Item 390: under the mark, a *Stay here* is forgotten, so the next
   // crossing asks afresh; a wrap-up queued for the crossing goes.
-  const at = mark(chat, limit);
+  const at = markDue(chat, limit);
   if (fill < at) {
     handoff.dismissedAt = 0;
     if (before === "due") dropAutoQueued();
@@ -359,9 +442,19 @@ export function noteFill(
   if (before === "wrapping" && after === "wrapped") {
     handoff.startPrompt = events ? extractStartPrompt(lastReplyText(events)) : null;
   }
-  if (chat && autoQueues(before, after, away, handoff.dismissedAt)) {
+  // 545: a chat whose mark is "never" is not wrapped up by Nightloom.
+  if (!chat || neverHandsOff(chat)) return;
+  const crossing = autoQueues(before, after, away, handoff.dismissedAt);
+  if (
+    crossing ||
+    (atEnd && before === "due" && queuesAtTurnEnd(after, away, handoff.dismissedAt, handoff.queuedId, isUnattended(chat)))
+  ) {
     const text = message(chat);
-    if (text.trim()) handoff.queuedId = enqueueMessage(chat, text, []).id;
+    if (text.trim()) {
+      handoff.queuedId = enqueueMessage(chat, text, []).id;
+      // What follows — the wrap-up, the next chat — runs without him (544).
+      markUnattended(chat);
+    }
   }
 }
 
@@ -379,8 +472,11 @@ export function noteAgentTurnEnd(
   used: number | null,
   limit: number | null,
   events: SessionEvent[] | null = null,
+  onScreen = true,
 ): void {
-  noteFill(chat, used, limit, awayNow(), events);
+  // ~~`awayNow()`~~ — 544: the chat may not be the open one (a turn that
+  // ended off screen), and this is always a turn's end.
+  noteFill(chat, used, limit, awayNow(onScreen), events, true);
 }
 
 /** ~~The text a message goes out with: the wrap-up appended when it is due.~~
@@ -465,7 +561,7 @@ export function reopenHandoff(): void {
  *  without counting as a *Stay here*, so the new mark asks afresh. */
 export function reconsider(chat: string | null): void {
   if (handoff.chat !== chat || handoff.stage !== "due") return;
-  if (handoff.fill < mark(chat, handoff.limit)) {
+  if (handoff.fill < markDue(chat, handoff.limit)) {
     dropAutoQueued();
     handoff.stage = "idle";
   }
@@ -518,6 +614,80 @@ export interface Stored {
   readOrders: Record<string, string>;
   /** The token cap on the default mark (backlog 436); 0 means none. */
   cap: number;
+  /** A research thread's own mark (backlog 545), by `threadKey`. */
+  perThread: Record<string, number>;
+  /** A project's own mark (545), by project id (`UNFILED` for none). */
+  perProject: Record<string, number>;
+}
+
+/**
+ * A mark of a chat's, a thread's or a project's own (backlog 545), one
+ * number: a share of the window in (0, 1]; `NEVER` — Nightloom never asks
+ * for, queues or sends the hand-off there; or a token count (above
+ * `MIN_TOKENS`), turned into a share of the window it is read against.
+ * Precedence: the chat's, else its thread's, else its project's, else the
+ * Settings default with its token cap. A layer's own mark is his explicit
+ * choice and is not capped (436's rule for the chat's).
+ */
+export const NEVER = 2;
+export const MIN_TOKENS = 1000;
+export const UNFILED = "unfiled";
+export type MarkScope = "chat" | "thread" | "project";
+
+export function isMark(v: unknown): v is number {
+  return isRatio(v) || v === NEVER || (typeof v === "number" && Number.isFinite(v) && v >= MIN_TOKENS);
+}
+
+/** The key a thread's mark is kept under: threads are per project. */
+export function threadKey(project: string | null, slug: string): string {
+  return `${project ?? UNFILED}/${slug}`;
+}
+
+/**
+ * What he typed for a mark: `never` / `off`; a percent (`60`, `60%`,
+ * `0.6`); or tokens (`300k`, `250000`, `1.2m`). Blank clears the layer
+ * (`null`); anything else is `undefined` — not a mark, nothing changes.
+ */
+export function parseMark(text: string): number | null | undefined {
+  const t = text.trim().toLowerCase().replace(/,/g, "");
+  if (!t) return null;
+  if (t === "never" || t === "off" || t === "none") return NEVER;
+  const m = /^(\d+(?:\.\d+)?)\s*(%|k|m|tokens?)?$/.exec(t);
+  if (!m) return undefined;
+  const n = Number(m[1]);
+  const unit = m[2] ?? "";
+  if (unit === "k") return n * 1000 >= MIN_TOKENS ? Math.round(n * 1000) : undefined;
+  if (unit === "m") return Math.round(n * 1_000_000);
+  if (unit.startsWith("token")) return n >= MIN_TOKENS ? Math.round(n) : undefined;
+  if (unit === "%") return n > 0 && n <= 100 ? n / 100 : undefined;
+  if (n > 0 && n <= 1) return n;
+  if (n > 1 && n <= 100) return n / 100;
+  return n >= MIN_TOKENS ? Math.round(n) : undefined;
+}
+
+/** A mark as the field shows it: `never`, `60%`, `300k`. */
+export function markText(v: number): string {
+  if (v === NEVER) return "never";
+  if (v <= 1) return `${Math.round(v * 100)}%`;
+  return v % 1000 === 0 ? `${v / 1000}k` : `${v} tokens`;
+}
+
+/** The share of a `limit`-token window a layer's mark stands for. */
+export function markShare(v: number, limit: number | null): number {
+  if (v === NEVER || v <= 1) return v;
+  return limit && limit > 0 ? Math.min(1, v / limit) : 1;
+}
+
+/** The pure precedence: the first layer that has a mark. */
+export function pickMark(
+  chat: number | undefined,
+  thread: number | undefined,
+  project: number | undefined,
+): { scope: MarkScope; value: number } | null {
+  if (isMark(chat)) return { scope: "chat", value: chat };
+  if (isMark(thread)) return { scope: "thread", value: thread };
+  if (isMark(project)) return { scope: "project", value: project };
+  return null;
 }
 
 function isRatio(v: unknown): v is number {
@@ -547,7 +717,9 @@ export function parseStored(raw: string | null): Stored {
       const p = JSON.parse(raw) as Partial<Stored>;
       return {
         default: isRatio(p.default) ? p.default : DEFAULT_THRESHOLD,
-        perChat: readMap(p.perChat, isRatio),
+        perChat: readMap(p.perChat, isMark),
+        perThread: readMap(p.perThread, isMark),
+        perProject: readMap(p.perProject, isMark),
         message: isText(p.message) ? p.message : null,
         messages: readMap(p.messages, isText),
         readOrder: isString(p.readOrder) ? p.readOrder : null,
@@ -561,6 +733,8 @@ export function parseStored(raw: string | null): Stored {
   return {
     default: DEFAULT_THRESHOLD,
     perChat: {},
+    perThread: {},
+    perProject: {},
     message: null,
     messages: {},
     readOrder: null,
@@ -734,6 +908,13 @@ export function threshold(chat: string | null): number {
   return stored.default;
 }
 
+/** `reconsider` for any layer's change (545): the chat `handoff` shows goes
+ *  quiet when its fill is now under its mark, and a wrap-up queued for it
+ *  is taken back. */
+export function reconsiderShown(): void {
+  reconsider(handoff.chat);
+}
+
 /**
  * The fill at which the chat's hand-off is asked, 0..1 (backlog 436): its
  * own percent when it has one — his explicit choice, uncapped — else the
@@ -741,8 +922,62 @@ export function threshold(chat: string | null): number {
  * With no window known the percent alone.
  */
 export function mark(chat: string | null, limit: number | null): number {
-  if (hasOwnThreshold(chat)) return threshold(chat);
+  // 545: what a gauge draws — a "never" sits at the end of the window
+  // (the rail and the top bar's dial place a line at this share).
+  return Math.min(1, markDue(chat, limit));
+}
+
+/** The fill past which the hand-off is due (545): as `mark`, but `NEVER`
+ *  (2) for a chat that is never handed off — past any fill. */
+export function markDue(chat: string | null, limit: number | null): number {
+  // ~~`hasOwnThreshold(chat)`~~ — 545: the chat's, its thread's or its
+  // project's own mark, in that order.
+  const own = ownMark(chat);
+  if (own) return markShare(own.value, limit);
   return cappedMark(stored.default, cap(), limit);
+}
+
+/** Where each chat lives, told by the shell (545): its project's id, null
+ *  for an unfiled chat. A chat never told reads no project layer. */
+const projectOf = $state<Record<string, string | null>>({});
+export function noteChatProject(chat: string | null, project: string | null): void {
+  if (chat && projectOf[chat] !== project) projectOf[chat] = project;
+}
+export function projectFor(chat: string | null): string | null | undefined {
+  return chat && chat in projectOf ? projectOf[chat] : undefined;
+}
+
+/** The layer whose mark `chat` hands off at (545), or null: the Settings default. */
+export function ownMark(chat: string | null): { scope: MarkScope; value: number } | null {
+  if (!chat) return null;
+  const project = projectFor(chat);
+  const slug = threadFor(chat);
+  return pickMark(
+    stored.perChat[chat],
+    slug && project !== undefined ? stored.perThread[threadKey(project, slug)] : undefined,
+    project !== undefined ? stored.perProject[project ?? UNFILED] : undefined,
+  );
+}
+
+/** Whether Nightloom never hands this chat off by itself (545). */
+export function neverHandsOff(chat: string | null): boolean {
+  return ownMark(chat)?.value === NEVER;
+}
+
+/** One layer's own mark, or null. `key`: the chat id, `threadKey`, or the
+ *  project id (`UNFILED`). */
+export function markAt(scope: MarkScope, key: string): number | null {
+  const v = (scope === "chat" ? stored.perChat : scope === "thread" ? stored.perThread : stored.perProject)[key];
+  return isMark(v) ? v : null;
+}
+
+/** Set one layer's own mark; `null` clears it. Anything not a mark is ignored. */
+export function setMarkAt(scope: MarkScope, key: string, value: number | null): void {
+  const map = scope === "chat" ? stored.perChat : scope === "thread" ? stored.perThread : stored.perProject;
+  if (value === null) delete map[key];
+  else if (isMark(value)) map[key] = value;
+  else return;
+  save();
 }
 
 /** The pure rule: the percent, or `capTokens` over `limit` when lower. */

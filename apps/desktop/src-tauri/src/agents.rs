@@ -216,6 +216,26 @@ impl Agents {
         }
     }
 
+    /// Keep for chat `to` the spec chat `from` runs on (backlog 544): a
+    /// hand-off made off screen starts the next linked chat in the same
+    /// project and thread, on its parent's spec — its own idle agent's, or
+    /// the one kept for it. `false` when the parent has neither.
+    pub fn reserve_like(&self, from: &str, to: &str) -> bool {
+        let mut inner = self.inner();
+        let spec = inner
+            .per_chat
+            .get(from)
+            .and_then(|e| e.slot.try_lock().ok().map(|a| a.spec().clone()))
+            .or_else(|| inner.reserved.get(from).cloned());
+        match spec {
+            Some(spec) => {
+                inner.reserved.insert(to.to_string(), spec);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Let `chat`'s kept spec go (its scheduled message left or was
     /// cancelled).
     pub fn release(&self, chat: &str) {

@@ -80,6 +80,13 @@ export function resumeDelayMs(p: Pick<LimitPause, "resetsAtMs">, nowMs: number =
 
 /** The line the transcript's card shows. */
 export function pauseLabel(p: Pick<LimitPause, "resetsAtMs" | "window">, nowMs: number = Date.now()): string {
+  // The chat asked to be continued later (backlog 543b, `chatResume.ts`):
+  // not a limit pause, the same card.
+  if (p.window === "asked") {
+    return resumeDelayMs(p, nowMs) === 0
+      ? "asked to be continued · its time has come"
+      : `asked to be continued · at ${resetLabel({ resetsAtMs: (p.resetsAtMs ?? nowMs) + RESUME_MARGIN_MS }, nowMs)}`;
+  }
   const which = p.window === "seven_day" ? "weekly" : p.window === "five_hour" ? "5-hour" : "usage";
   const when = resetLabel(p, nowMs);
   return resumeDelayMs(p, nowMs) === 0 && p.resetsAtMs != null
