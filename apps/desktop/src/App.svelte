@@ -77,6 +77,7 @@
   import SettingsModal from "./lib/SettingsModal.svelte";
   import WrapAsidesDialog from "./lib/WrapAsidesDialog.svelte";
   import ContextPanel from "./lib/ContextPanel.svelte";
+  import RightRail from "./lib/RightRail.svelte";
   import PromptLibrary from "./lib/PromptLibrary.svelte";
   import Transcript from "./lib/Transcript.svelte";
   import Composer from "./lib/Composer.svelte";
@@ -246,7 +247,25 @@
    * or when the chat is deleted; *back* puts the card under the passage.
    */
   const PANEL_W = 360;
-  const panelPx = $derived(app.asidePanel ? PANEL_W : 0);
+  /**
+   * The right column (item 533, Filament IV stage 2; blocker 1710): the
+   * context dial, plan use, this turn and tasks beside the open chat, as
+   * the approved mockup draws it. Shown while the open chat is in front in
+   * a pane and has a message (the new-chat page has none, blocker 1690),
+   * never with the aside panel (one column at the edge), and only while
+   * the split is wide enough to leave the chat its measure.
+   */
+  const RAIL_W = 224;
+  const RAIL_MIN_SPLIT = 900;
+  const railColumn = $derived.by(
+    () =>
+      !app.asidePanel &&
+      !blank &&
+      splitWidth >= RAIL_MIN_SPLIT &&
+      !!liveTab &&
+      app.tabs.panes.some((p) => p.active === liveTab?.id),
+  );
+  const panelPx = $derived(app.asidePanel ? PANEL_W : railColumn ? RAIL_W : 0);
   const leftPx = $derived(
     Math.max(
       SPLIT_MIN,
@@ -680,7 +699,7 @@
         class:two={app.tabs.panes.length > 1}
         bind:clientWidth={splitWidth}
         style:grid-template-columns={(app.tabs.panes.length > 1 ? `${leftPx}px minmax(0, 1fr)` : "minmax(0, 1fr)") +
-          (app.asidePanel ? ` ${PANEL_W}px` : "")}
+          (app.asidePanel ? ` ${PANEL_W}px` : railColumn ? ` ${RAIL_W}px` : "")}
       >
         {#each app.tabs.panes as pane, i (pane.id)}
           {@const t = tabs.activeTab(pane)}
@@ -906,6 +925,8 @@
             </div>
             <AsideCard aside={panelAside} placement={null} panel session={app.asidePanel} />
           </aside>
+        {:else if railColumn}
+          <RightRail column />
         {/if}
         {#if asideDragging}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
