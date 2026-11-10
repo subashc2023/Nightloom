@@ -30,6 +30,7 @@
   import {
     aroundAt,
     clockLine,
+    columnWithoutRow,
     dialSize,
     greeting,
     quarterLabels,
@@ -144,7 +145,12 @@
     { key: "plan", side: "r", deg: -10 },
     { key: "nightshift", side: "r", deg: 42 },
   ];
-  const wide = $derived(size > 0 && readoutsFit(w, size));
+  // Decided on the dial the page would draw without the calm row, which lit
+  // hides while the read-outs show — else the choice flips every frame in a
+  // band of widths (w4 review; `columnWithoutRow`).
+  let rowH = $state(0);
+  const bareSize = $derived(dialSize(h, columnWithoutRow(colH, row.length > 0 ? rowH : 0) + 58 + PAD * 2));
+  const wide = $derived(size > 0 && bareSize > 0 && readoutsFit(w, bareSize));
   const readouts = $derived.by(() => {
     const R = size / 2 + 20;
     const reach = size / 2 + 79;
@@ -326,7 +332,7 @@
 
     <div class="colw" style:max-width="{colMax}px" bind:clientHeight={colH}>
       {#if row.length > 0}
-        <div class="ready" aria-label="What is ready">
+        <div class="ready" aria-label="What is ready" bind:clientHeight={rowH}>
           {#each row as r (r.key)}
             <button class="rd" class:warn={r.warn} use:tipAction={`${r.value} — ${r.sub}`} onclick={() => act(r)}>
               <span class="rd-k">{r.label}</span>

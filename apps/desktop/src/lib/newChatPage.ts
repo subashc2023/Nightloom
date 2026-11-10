@@ -227,6 +227,19 @@ export function readoutsFit(paneW: number, size: number): boolean {
   return size >= 260 && paneW >= size + 2 * 270;
 }
 
+/**
+ * The column under the dial without the calm row of readings (w4 review).
+ * Lit hides that row while the read-outs show, so deciding the read-outs on
+ * the measured column flipped the choice every frame in a band of widths a
+ * row tall: row shown → a smaller dial → the read-outs fit → row hidden →
+ * a larger dial → they no longer fit → row shown. Deciding on the column
+ * without the row gives the same answer either way. `rowH` 0 is a hidden
+ * or absent row; `gap` is `.colw`'s gap, which a hidden row does not take.
+ */
+export function columnWithoutRow(colH: number, rowH: number, gap = 10): number {
+  return rowH > 0 ? Math.max(0, colH - rowH - gap) : colH;
+}
+
 /** A thread's `touched` (YYYY-MM-DD) as the list's right-hand date: "today", "Nov 8". */
 export function threadWhen(touched: string | null, now: Date = new Date()): string {
   if (!touched) return "";
