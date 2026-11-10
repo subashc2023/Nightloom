@@ -97,7 +97,7 @@
   <div class="tab-chooser-sect">New chat <span class="tab-chooser-key">{isMac ? "⌘T" : "Ctrl+T"} is the default kind</span></div>
   {#each KINDS as k (k)}
     <button class="tab-chooser-row" role="menuitem" onclick={() => void newChat(k)} disabled={app.busy && !browseFree()}>
-      <span class="tab-chooser-glyph" aria-hidden="true">{defaultKind() === k ? "●" : "○"}</span>
+      <span class="tab-chooser-glyph tab-chooser-radio" class:on={defaultKind() === k} aria-hidden="true">{defaultKind() === k ? "●" : "○"}</span>
       <span class="tab-chooser-text">
         <span class="tab-chooser-name">{kindLabel(k, engine)}{#if defaultKind() === k} <span class="tab-chooser-tag">default here</span>{/if}</span>
         <span class="tab-chooser-line">{KIND_LINES[k]}</span>
@@ -312,5 +312,100 @@
     color: var(--ink);
     font: inherit;
     font-size: 12.5px;
+  }
+
+  /* Filament IV stage 6 (item 570, f4-menus2.png's New tab menu): a card
+     in front; the title and each section a ruled mono heading with its
+     note after the rule; the kinds as radio rows, the default's ring in
+     the accent; names in the ink, lines grey. Behind
+     `:where(:root:not([data-layout="classic"]))`; Classic's rules above. */
+  :global(:where(:root:not([data-layout="classic"]))) .tab-chooser {
+    background: var(--raised);
+    border-radius: var(--r2);
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.6);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tab-chooser-head,
+  :global(:where(:root:not([data-layout="classic"]))) .tab-chooser-sect {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font: 500 10px var(--mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink2);
+    border-top: none;
+    padding: 10px 8px 5px;
+    margin-top: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tab-chooser-head {
+    padding-top: 6px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tab-chooser-head::after,
+  :global(:where(:root:not([data-layout="classic"]))) .tab-chooser-sect::after {
+    content: "";
+    order: 1;
+    flex: 1 1 12px;
+    min-width: 12px;
+    height: 1px;
+    background: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tab-chooser-key {
+    order: 2;
+    letter-spacing: 0;
+    text-transform: none;
+    font-size: 10.5px;
+    max-width: 55%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tab-chooser-row {
+    border-radius: var(--r1);
+    padding: 6px 8px;
+    font-size: 13px;
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tab-chooser-line {
+    font-size: 11.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tab-chooser-tag {
+    color: var(--dim);
+    font-size: 11px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tab-chooser-radio {
+    font-size: 0;
+    align-items: center;
+    height: 17px;
+    margin-top: 1px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tab-chooser-radio::before {
+    content: "";
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    border: 1.5px solid var(--dim);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tab-chooser-radio.on::before {
+    border-color: var(--accent);
+    background: radial-gradient(circle, var(--accent) 0 2.5px, transparent 3px);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tab-chooser-name-field {
+    background: var(--term);
+    border-radius: var(--r1);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tab-chooser-name-field:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    :global(:where(:root:not([data-layout="classic"]))) .tab-chooser {
+      animation: menu-rise 90ms ease-out;
+    }
+  }
+  @keyframes menu-rise {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
   }
 </style>

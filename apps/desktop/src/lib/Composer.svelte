@@ -2572,7 +2572,12 @@
   });
   const boxPlaceholder = $derived(
     !aside
-      ? "Message…"
+      ? // The new-chat page's box (`floating`, Welcome) under Filament IV
+        // asks the mockup's question (f4-new.png, item 570); Classic keeps
+        // its words.
+        floating && !classic()
+        ? "What are we making?"
+        : "Message…"
       : aside.draft
         ? aside.quote
           ? "Ask about the passage… (↵ asks)"
@@ -3607,7 +3612,7 @@
         onclick={() => runRow(r)}
       >
         <span class="pick-row-label">{r.label}</span>
-        {#if r.detail}<span class="pick-row-detail">{r.detail}</span>{/if}
+        {#if r.detail}<span class="pick-row-detail">{classic() ? r.detail : r.detail.replace(/^·\s*/, "")}</span>{/if}
         {#if r.cap}<span class="pick-row-cap"><Kbd keys={r.cap} /></span>{/if}
       </button>
     {/each}
@@ -3886,6 +3891,94 @@
     height: 1px;
     background: var(--line);
     margin: 4px 2px;
+  }
+  /* Filament IV stage 6 (item 570, f4-menus.png): the head is a ruled
+     group title (the sub after the rule), a row with a detail is two
+     lines — the name, the grey detail under it — with its key cap at the
+     right, and the chosen row carries the accent tick. Menus rise in. */
+  :global(:where(:root:not([data-layout="classic"]))) .pick-head {
+    align-items: center;
+    padding: 6px 8px 6px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pick-head::after {
+    content: "";
+    order: 1;
+    flex: 1 1 12px;
+    min-width: 12px;
+    height: 1px;
+    background: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pick-sub {
+    order: 2;
+    font-family: var(--mono);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pick-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    column-gap: 10px;
+    row-gap: 1px;
+    padding: 6px 10px;
+    font-size: 13px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pick-row-label {
+    grid-column: 1;
+    grid-row: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pick-row-detail {
+    grid-column: 1;
+    grid-row: 2;
+    font-size: 11.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pick-row-cap {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    align-self: center;
+    margin: 0;
+    padding-left: 12px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pick-row::after {
+    content: "";
+    grid-column: 3;
+    grid-row: 1 / span 2;
+    align-self: center;
+    width: 12px;
+    font-size: 12px;
+    color: var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pick-row.on {
+    background: var(--well);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pick-row.on::after {
+    content: "✓";
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pick-row-cap :global(.kbd) {
+    border: none;
+    background: transparent;
+    padding: 0;
+    min-width: 0;
+    height: auto;
+    color: var(--dim);
+    font-size: 10.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pick-sep {
+    background: var(--line2);
+    margin: 4px 4px;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    :global(:where(:root:not([data-layout="classic"]))) .pick-menu {
+      animation: menu-rise 90ms ease-out;
+    }
+  }
+  @keyframes menu-rise {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
   }
 
   /* The bottom row (backlog 112, board 10's C): the card's width, the
@@ -4916,5 +5009,32 @@
     color: var(--dim);
     cursor: default;
     font-size: 11.5px;
+  }
+  /* Filament IV stage 6 (item 570): the picked row on the control fill
+     with the accent rule at its left; the key line under a rule, in mono. */
+  :global(:where(:root:not([data-layout="classic"]))) .slash {
+    padding: 4px;
+    gap: 1px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .slash-row {
+    border-radius: var(--r1);
+    padding: 6px 10px;
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .slash-row:hover:not(.dim) {
+    background: var(--well);
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .slash-row.on {
+    background: var(--well);
+    color: var(--ink);
+    box-shadow: inset 2px 0 0 var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .slash-row.dim:last-child:not(:first-child) {
+    border-top: 1px solid var(--line);
+    border-radius: 0;
+    margin-top: 3px;
+    font-family: var(--mono);
+    font-size: 10.5px;
   }
 </style>

@@ -114,4 +114,37 @@
     text-transform: none;
     letter-spacing: 0;
   }
+
+  /* Filament IV stage 6 (item 570): the sidebar row menu's look (its
+     rows are restated here, as above) — ruled mono headings with the
+     count after the rule, names in the ink. Behind
+     `:where(:root:not([data-layout="classic"]))`; Classic's rules above. */
+  :global(:where(:root:not([data-layout="classic"]))) button {
+    border-radius: var(--r1);
+    font-size: 13px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .sec {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px 4px;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .sec::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .row-sep {
+    background: var(--line2);
+    margin: 4px 6px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .row-key {
+    font-family: var(--mono);
+    font-size: 10.5px;
+  }
 </style>

@@ -1179,7 +1179,7 @@
           <div class="kinds-head">New chat · kind</div>
           {#each KIND_ROWS as k (k.kind)}
             <button class="kind" role="menuitem" onclick={() => startOfKind(k.kind)}>
-              <span class="kind-glyph" aria-hidden="true">{defaultKind() === k.kind ? "●" : "○"}</span>
+              <span class="kind-glyph kind-radio" class:on={defaultKind() === k.kind} aria-hidden="true">{defaultKind() === k.kind ? "●" : "○"}</span>
               <span class="kind-text">
                 <span class="kind-name">{kindLabel(k.kind, engine)}{#if defaultKind() === k.kind} <span class="kind-tag">default here</span>{/if}</span>
                 <span class="kind-line">{KIND_LINES[k.kind]}</span>
@@ -1409,7 +1409,7 @@
             <button role="menuitem" use:tip={"The thread's name only; its folder and slug stay, so its chats still find it"} onclick={() => threadPick(startThreadRename)}>Rename</button>
             <button role="menuitem" onclick={() => threadPick((g) => void revealThread(g.slug))}>Reveal in Finder</button>
             <div class="row-sep"></div>
-            <button role="menuitem" onclick={() => threadPick((g) => (deletingThread = g))}>Delete thread…</button>
+            <button role="menuitem" class="danger" onclick={() => threadPick((g) => (deletingThread = g))}>Delete thread… <span class="row-key del-note">to the trash</span></button>
           {/if}
         </div>
       {/if}
@@ -1474,7 +1474,7 @@
               onclick={rowSaveMemory}>Save memory from this chat</button
             >
           {/if}
-          <button role="menuitem" disabled={!!rowMenu?.s && !canDeleteChat(rowMenu.s.id)} onclick={rowDelete}>Delete…</button>
+          <button role="menuitem" class="danger" disabled={!!rowMenu?.s && !canDeleteChat(rowMenu.s.id)} onclick={rowDelete}>Delete… <span class="row-key del-note">to the trash</span></button>
           <AsideMenuItems session={rowMenu.s.id} onpick={() => (rowMenu = null)} />
         </div>
         {#if rowSub}
@@ -1492,6 +1492,8 @@
               onpointermove={rowSubMove}
               onkeydown={(e) => menuKeys(e, true)}
             >
+              <!-- Item 570: a ruled title over the flyout, Filament IV's alone. -->
+              <div class="sub-head">{rowSub === "thread" ? "Threads" : "Projects"}<b>{rowSub === "thread" ? rowOthers.length : moveTargets.length + (app.project ? 1 : 0)}</b></div>
               {#if rowSub === "thread"}
                 {#each rowOthers as t (t.slug)}
                   <button role="menuitem" class="row-thread" use:tip={t.status || t.slug} onclick={() => rowMove(t.slug)}>◇ {t.title}</button>
@@ -2832,5 +2834,127 @@
   .kind:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+  /* Filament IV stage 6 (item 570, f4-menus2.png): the chat row's menu,
+     its flyout, the thread menu and the New chat ▾ kinds — cards in
+     front, ruled mono titles, names in the ink and keys in mono at the
+     right, the open flyout's row on the control fill, Delete… in red with
+     "to the trash" after it, the kinds as radio rows. Behind
+     `:where(:root:not([data-layout="classic"]))`; the rules above are
+     Classic's (SidebarClassic.svelte keeps its own copy too). */
+  .sub-head,
+  .del-note {
+    display: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .row-menu,
+  :global(:where(:root:not([data-layout="classic"]))) .kinds {
+    background: var(--raised);
+    border-radius: var(--r2);
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.6);
+    padding: 6px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .row-menu {
+    min-width: 220px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .row-menu button {
+    align-items: center;
+    border-radius: var(--r1);
+    font-size: 13px;
+    padding: 6px 10px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .row-menu button.on {
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .row-key {
+    font-family: var(--mono);
+    font-size: 10.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .row-sep,
+  :global(:where(:root:not([data-layout="classic"]))) .kind-sep {
+    background: var(--line2);
+    margin: 4px 4px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .row-menu button.danger:not(:disabled) {
+    color: var(--failed);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .row-menu button.danger:hover:not(:disabled) {
+    background: var(--failed-soft);
+    color: var(--failed);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .del-note {
+    display: inline;
+    font-family: var(--sans);
+    font-size: 11.5px;
+    color: var(--dim);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .sub-head,
+  :global(:where(:root:not([data-layout="classic"]))) .kinds-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font: 500 10px var(--mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink2);
+    padding: 6px 8px 6px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .sub-head::after,
+  :global(:where(:root:not([data-layout="classic"]))) .kinds-head::after {
+    content: "";
+    order: 1;
+    flex: 1;
+    height: 1px;
+    background: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .sub-head b {
+    order: 2;
+    font-weight: 400;
+    letter-spacing: 0;
+    color: var(--dim);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .kind {
+    border-radius: var(--r1);
+    padding: 6px 8px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .kind-name {
+    font-size: 13px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .kind-line {
+    font-size: 11.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .kind-key {
+    font-size: 10.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .kind-radio {
+    font-size: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 17px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .kind-radio::before {
+    content: "";
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    border: 1.5px solid var(--dim);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .kind-radio.on::before {
+    border-color: var(--accent);
+    background: radial-gradient(circle, var(--accent) 0 2.5px, transparent 3px);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    :global(:where(:root:not([data-layout="classic"]))) .row-menu,
+    :global(:where(:root:not([data-layout="classic"]))) .kinds {
+      animation: menu-fade 90ms ease-out;
+    }
+  }
+  /* Opacity only: `placeRowMenu`, `placeRowSub` and `fitBelow` read
+     these boxes' rectangles as they open, which a rise would shift. */
+  @keyframes menu-fade {
+    from {
+      opacity: 0;
+    }
   }
 </style>

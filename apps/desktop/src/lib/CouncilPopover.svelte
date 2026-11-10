@@ -256,4 +256,72 @@
     text-transform: none;
     letter-spacing: 0;
   }
+
+  /* Filament IV stage 6 (item 570): the composer's menu card — raised,
+     the ruled mono title with the sub after the rule, the seat's select a
+     well, the rules between parts in the edge colour. Behind
+     `:where(:root:not([data-layout="classic"]))`; Classic's rules above. */
+  :global(:where(:root:not([data-layout="classic"]))) .pick-menu {
+    background: var(--raised);
+    border-radius: var(--r2);
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.6);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pick-head {
+    justify-content: flex-start;
+    align-items: center;
+    gap: 8px;
+    font: 500 10px var(--mono);
+    letter-spacing: 0.14em;
+    color: var(--ink2);
+    padding: 4px 6px 6px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pick-head::after {
+    content: "";
+    order: 1;
+    flex: 1 1 12px;
+    min-width: 12px;
+    height: 1px;
+    background: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pick-sub {
+    order: 2;
+    font-weight: 400;
+    font-size: 10.5px;
+    color: var(--dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .council-n {
+    font-family: var(--mono);
+    font-size: 10.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .council-select {
+    background: var(--term);
+    border-radius: var(--r1);
+    padding: 3px 6px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .council-select:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .council-engine {
+    font-family: var(--mono);
+    font-size: 10.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .council-hint {
+    font-size: 11.5px;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    :global(:where(:root:not([data-layout="classic"]))) .pick-menu {
+      animation: menu-rise 90ms ease-out;
+    }
+  }
+  @keyframes menu-rise {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+  }
 </style>
