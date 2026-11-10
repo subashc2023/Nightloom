@@ -383,7 +383,10 @@ function loadPalette(): Palette {
 /** Stamp the palette on the document. Safe where there is no document. */
 export function applyPalette(p: Palette): void {
   if (typeof document === "undefined") return;
-  if (p === "A") delete document.documentElement.dataset.palette;
+  // Under the Classic layout (item 542, `layout.svelte.ts`) "A" is the old
+  // charcoal & amber, kept in app.css as `classic-A`.
+  if (p === "A" && document.documentElement.dataset.layout === "classic") document.documentElement.dataset.palette = "classic-A";
+  else if (p === "A") delete document.documentElement.dataset.palette;
   else document.documentElement.dataset.palette = p;
 }
 

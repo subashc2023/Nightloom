@@ -1,5 +1,9 @@
 <script lang="ts">
   import UserBubble from "./UserBubble.svelte";
+  // Item 542: under the Classic layout, 1d4ca17's bubble.
+  import UserBubbleClassic from "./UserBubbleClassic.svelte";
+  import { classic } from "./layout.svelte";
+  const Bubble = $derived(classic() ? UserBubbleClassic : UserBubble);
   import { tip } from "./tip";
   import type { Attachment } from "./types";
   import {
@@ -74,7 +78,7 @@
     <span class="ns-k">You</span>
   </div>
   <div class="mt-bubble">
-    <UserBubble text={row?.text ?? delivered?.text ?? ""} {images} {documents} {sending} />
+    <Bubble text={row?.text ?? delivered?.text ?? ""} {images} {documents} {sending} />
   </div>
   {#if pending && row && st}
     <div class="mt-actions" role="group" aria-label="this message is not sent yet">

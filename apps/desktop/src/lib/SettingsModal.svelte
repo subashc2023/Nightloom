@@ -18,6 +18,8 @@
   import { setLinkPref, web as webTabs } from "./webtabs.svelte";
   import { STOP_SHAPES } from "./stopButton";
   import { setStopShape, stopPref } from "./stopShape.svelte";
+  // Item 542: the layout, Filament IV or Classic (the look before item 525).
+  import { LAYOUTS, classic, layout, setLayout } from "./layout.svelte";
   import {
     app,
     applyDraft,
@@ -42,6 +44,12 @@
     setDefaultRules,
   } from "./state.svelte";
   import * as api from "./api";
+  /** A palette's name: "A" is Filament IV under that layout, and 1d4ca17's
+   *  charcoal & amber under Classic (item 542; blocker 1700). */
+  function paletteName(id: string): string {
+    if (id === "A" && !classic()) return "Filament IV";
+    return PALETTES.find((p) => p.id === id)?.name ?? id;
+  }
   import { DEFAULT_USAGE_LIMITS, parseLimit } from "./autoPass";
   import {
     TRANSCRIPT_FONTS,
@@ -1414,7 +1422,7 @@
     >
       <span class="nav-label">Palette</span>
       <!-- The palette's name, not its letter: "B" read as a key (backlog 109). -->
-      <span class="st">{PALETTES.find((p) => p.id === app.palette)?.name ?? app.palette}</span>
+      <span class="st">{paletteName(app.palette)}</span>
     </button>
     <button
       class="nav-item"
@@ -1460,6 +1468,34 @@
         <span class="spacer"></span>
         <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
       </div>
+      <!-- The layout (item 542): Filament IV, or Classic — every screen as
+           it was before item 525, kept so a Filament IV bug never blocks
+           his work. One switch; applies at once; remembered. -->
+      <section class="card" data-layout-pick>
+        <div class="ch"><span class="t">Layout</span></div>
+        <p class="note small">
+          Classic puts every screen back the way it was before Filament IV —
+          the chat, the composer, the sidebar, the tabs, the top bar, the
+          terminal strip — with its four palettes (A is charcoal &amp; amber
+          again). Applies at once and is remembered; switch back any time.
+        </p>
+        <div class="type-rows">
+          <div class="type-row">
+            <span class="type-label">Layout</span>
+            <div class="seg" role="radiogroup" aria-label="Layout">
+              {#each LAYOUTS as l (l.id)}
+                <button
+                  class:on={layout.value === l.id}
+                  role="radio"
+                  aria-checked={layout.value === l.id}
+                  use:tip={l.note}
+                  onclick={() => setLayout(l.id)}
+                >{l.name}</button>
+              {/each}
+            </div>
+          </div>
+        </div>
+      </section>
       <p class="note">
         Four dark palettes. Surfaces and the accent change; the colours that
         mean something — done, partial, failed, live, added, removed — are the
@@ -1472,7 +1508,7 @@
             class:on={app.palette === p.id}
             role="radio"
             aria-checked={app.palette === p.id}
-            data-palette={p.id}
+            data-palette={p.id === "A" && classic() ? "classic-A" : p.id}
             onclick={() => setPalette(p.id)}
           >
             <span class="swatch-paper">
@@ -1481,7 +1517,7 @@
                 <span class="swatch-accent"></span>
               </span>
             </span>
-            <span class="swatch-name"><b>{p.id}</b> {p.name}</span>
+            <span class="swatch-name"><b>{p.id}</b> {paletteName(p.id)}</span>
           </button>
         {/each}
       </div>
