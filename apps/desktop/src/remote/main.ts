@@ -4,6 +4,7 @@
 import { mount } from "svelte";
 import Remote from "./Remote.svelte";
 import { installMathCopy } from "../lib/mathCopy";
+import { applyLook, loadLook } from "./look";
 // The desktop's type (item 246): IBM Plex Sans and Mono, bundled so the
 // phone draws them without a font request off the tailnet.
 import "@fontsource/ibm-plex-sans/latin-400.css";
@@ -13,5 +14,8 @@ import "@fontsource/ibm-plex-mono/latin-400.css";
 
 // Item 352: copying a rendered formula gives its TeX, as on the desktop.
 installMathCopy();
+
+// Item 572: the phone's own look on <html> before the first paint.
+applyLook(loadLook());
 
 mount(Remote, { target: document.getElementById("app")! });
