@@ -108,12 +108,18 @@ describe("531 — Send later carries files and images", () => {
       limited: async () => false,
       deliver: (s) =>
         deliverTo(s, {
-          connected: () => true,
-          activeKey: () => "chat-1",
-          busy: () => false,
-          open: async () => {},
-          enqueue: (_k, text, atts) => void sent.push({ text, names: atts.map((a) => a.name), data: atts.map((a) => a.data) }),
-          drain: async () => {},
+          // Item 535: started in its own chat, by its key.
+          running: () => false,
+          enqueue: () => {
+            throw new Error("must not queue an idle chat");
+          },
+          ready: async () => ({ ok: true }),
+          start: (e) =>
+            void sent.push({
+              text: e.text,
+              names: (e.attachments ?? []).map((a) => a.name),
+              data: (e.attachments ?? []).map((a) => a.data),
+            }),
         }),
     });
     expect(sent).toEqual([{ text: "look at these", names: ["shot.png", "deck.pdf"], data: [PNG, PDF] }]);
@@ -123,14 +129,14 @@ describe("531 — Send later carries files and images", () => {
   it("delivery waits while a file is still being read back", async () => {
     scheduleSend("chat-1", "x", "time", AT, true, [{ ...chip(1, "shot.png", ""), stash: SHA_A, pending: true }]);
     const r = await deliverTo(scheduledFor("chat-1")!, {
-      connected: () => true,
-      activeKey: () => "chat-1",
-      busy: () => false,
-      open: async () => {},
+      running: () => false,
       enqueue: () => {
         throw new Error("must not enqueue");
       },
-      drain: async () => {},
+      ready: async () => ({ ok: true }),
+      start: () => {
+        throw new Error("must not start");
+      },
     });
     expect(r).toEqual({ ok: false, why: "waiting — its files are being read back" });
   });

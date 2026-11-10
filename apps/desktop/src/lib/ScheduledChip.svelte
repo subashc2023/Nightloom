@@ -42,7 +42,8 @@
     {#if files}<span class="ns-chip mono sched-files" data-sched-files use:tip={files.all}>{files.short}</span>{/if}
     <span class="sched-acts">
       {#if s.state !== "waiting" || s.note}
-        <button class="ns-btn ghost small" onclick={() => void sendScheduledNow(key)}>Send now</button>
+        <!-- Greyed while a delivery of it is in flight (backlog 535): one message, one send. -->
+        <button class="ns-btn ghost small" disabled={!!s.claimed} onclick={() => void sendScheduledNow(key)}>Send now</button>
       {/if}
       {#if s.state === "missed"}
         <button class="ns-btn ghost small" use:tip={"Keep it here, unscheduled"} onclick={() => keepScheduled(key)}

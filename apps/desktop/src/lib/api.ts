@@ -799,6 +799,46 @@ export function startChat(): Promise<SessionEvent[]> {
 }
 
 /**
+ * Whether a message could be sent into chat `chat` of `project` now, off
+ * screen (nightshift backlog 535): resolves when it could; rejects with
+ * the cause ("its project is not open", "its chat's log could not be
+ * read", "Claude Code is not connected"). Sends nothing.
+ */
+export function canSendInChat(chat: string, project: string | null): Promise<null> {
+  return invoke("can_send_in_chat", { chat, project });
+}
+
+/**
+ * Keep (or with `keep: false` let go) the agent spec of chat `chat` for a
+ * later send into it off screen (backlog 535): a scheduled message runs
+ * in its own chat, in its own project, whatever is open at its time.
+ * Resolves true when a spec is kept.
+ */
+export function reserveChatAgent(chat: string, keep: boolean): Promise<boolean> {
+  return invoke("reserve_chat_agent", { chat, keep });
+}
+
+/** Where a chat lives (backlog 535): the project whose folder holds its
+ *  log (`project: null` — the unfiled chats), or `found: false`. */
+export function chatHome(chat: string): Promise<{ found: boolean; project: string | null; name: string | null }> {
+  return invoke("chat_home", { chat });
+}
+
+/**
+ * Arm (or with `null` clear) a named wake of the backend's schedule clock
+ * (backlog 535, `wake.rs`): the window gets a `wake-due` event carrying
+ * the name at that wall-clock moment, whatever its own timers are doing.
+ */
+export function armWake(name: string, atMs: number | null): Promise<null> {
+  return invoke("arm_wake", { name, atMs: atMs === null ? null : Math.max(0, Math.round(atMs)) });
+}
+
+/** A line for `<config dir>/logs/schedule.log` (backlog 535). */
+export function scheduleLog(text: string): Promise<null> {
+  return invoke("schedule_log", { text });
+}
+
+/**
  * Make the open chat the other kind from the next turn on (nightshift
  * backlog 144). Resolves with the new transcript — a `kind` event lands in
  * the log — and changes nothing on the wire until the caller reconnects,

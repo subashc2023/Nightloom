@@ -50,6 +50,10 @@ struct Inner {
     /// New chat's agent, until its first turn names the chat.
     pending: Option<Entry>,
     per_chat: HashMap<String, Entry>,
+    /// The spec kept for a chat that has a scheduled message (backlog
+    /// 535), by chat: what a send into it off screen runs on when the
+    /// chat has no agent left — its own project's, whatever is open.
+    reserved: HashMap<String, AgentSpec>,
 }
 
 /// See the module docs.
@@ -185,6 +189,65 @@ impl Agents {
         self.inner().per_chat.get(chat).map(|e| e.slot.clone())
     }
 
+    /// Keep a spec for `chat` (backlog 535): its own agent's when it has an
+    /// idle one of the newest connection, else — when it is the chat on
+    /// screen (`focused`), which the newest connection was built for — the
+    /// newest spec. `false` when there is none to keep; one kept before
+    /// then stays.
+    pub fn reserve(&self, chat: &str, focused: bool) -> bool {
+        let mut inner = self.inner();
+        let generation = inner.generation;
+        let own = inner
+            .per_chat
+            .get(chat)
+            .filter(|e| e.generation == generation)
+            .and_then(|e| e.slot.try_lock().ok().map(|a| a.spec().clone()));
+        let spec = match own {
+            Some(spec) => Some(spec),
+            None if focused => inner.spec.clone(),
+            None => None,
+        };
+        match spec {
+            Some(spec) => {
+                inner.reserved.insert(chat.to_string(), spec);
+                true
+            }
+            None => inner.reserved.contains_key(chat),
+        }
+    }
+
+    /// Let `chat`'s kept spec go (its scheduled message left or was
+    /// cancelled).
+    pub fn release(&self, chat: &str) {
+        self.inner().reserved.remove(chat);
+    }
+
+    /// Whether a spec is kept for `chat`.
+    pub fn reserved(&self, chat: &str) -> bool {
+        self.inner().reserved.contains_key(chat)
+    }
+
+    /// Make `chat`'s agent from the spec kept for it, pointed at `resume`;
+    /// an agent it already has wins. `None` with no spec kept.
+    pub fn make_reserved(&self, chat: &str, resume: Option<String>) -> Option<Slot> {
+        let mut inner = self.inner();
+        if let Some(e) = inner.per_chat.get(chat) {
+            return Some(e.slot.clone());
+        }
+        let mut agent = ClaudeCodeAgent::new(inner.reserved.get(chat)?.clone());
+        agent.set_resume(resume);
+        let slot: Slot = Arc::new(AsyncMutex::new(agent));
+        let generation = inner.generation;
+        inner.per_chat.insert(
+            chat.to_string(),
+            Entry {
+                generation,
+                slot: slot.clone(),
+            },
+        );
+        Some(slot)
+    }
+
     /// Make `chat`'s agent from the newest spec, pointed at `resume`. If
     /// another command made one meanwhile, that one wins. `None` when the
     /// engine went away meanwhile.
@@ -308,6 +371,54 @@ mod tests {
             Found::Ready(s) => s,
             _ => panic!("expected an agent"),
         }
+    }
+
+    /// Backlog 535: a chat with a scheduled message keeps its spec through
+    /// later connects (a project switch reconnects, and prunes every idle
+    /// agent), and a send into it off screen runs on that spec.
+    #[tokio::test]
+    async fn a_reserved_spec_outlives_later_connects_and_makes_the_chats_agent() {
+        let agents = Agents::default();
+        agents.connect(agent("college-opus"), Some("college"));
+        assert!(agents.reserve("college", true), "the chat on screen");
+        // He opens another project: a new connection, the old agent pruned.
+        agents.connect(agent("value-haiku"), Some("value"));
+        assert!(agents.existing("college").is_none());
+        assert!(agents.reserved("college"));
+        let slot = agents
+            .make_reserved("college", Some("resume-c".into()))
+            .expect("made from the kept spec");
+        let a = slot.try_lock().unwrap();
+        assert_eq!(a.spec().model.as_deref(), Some("college-opus"));
+        assert_eq!(a.spec().resume.as_deref(), Some("resume-c"));
+        drop(a);
+        // The one made is the chat's now: asked again, the same agent.
+        let again = agents.make_reserved("college", None).unwrap();
+        assert!(Arc::ptr_eq(&slot, &again));
+        agents.release("college");
+        assert!(!agents.reserved("college"));
+    }
+
+    #[tokio::test]
+    async fn reserve_takes_the_chats_own_idle_agent_else_the_newest_spec_only_for_the_focus() {
+        let agents = Agents::default();
+        assert!(
+            !agents.reserve("a", true),
+            "off the agent engine: nothing to keep"
+        );
+        agents.connect(agent("first"), Some("a"));
+        agents.connect(agent("second"), Some("b"));
+        // Chat a is not on screen and has no agent of this connection: the
+        // newest spec is chat b's, not a's to keep.
+        assert!(!agents.reserve("a", false));
+        assert!(agents.make_reserved("a", None).is_none());
+        // On screen, with its turn holding its agent: the newest spec.
+        let b = ready(agents.slot(Some("b")));
+        let _turn = b.lock_owned().await;
+        assert!(agents.reserve("b", true));
+        // One kept before stays when there is nothing newer to take.
+        agents.connect(agent("third"), Some("c"));
+        assert!(agents.reserve("b", false), "the earlier one stays");
     }
 
     #[tokio::test]
