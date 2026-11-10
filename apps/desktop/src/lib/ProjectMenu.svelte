@@ -376,4 +376,75 @@
     font-size: 0.94em;
     color: var(--ink2);
   }
+
+  /* Filament IV stage 6 (item 570, f4-menus2.png): a card in front, the
+     ruled mono title, the open project on the control fill with the
+     accent tick (no accent wash), New project the one accent row. Behind
+     `:where(:root:not([data-layout="classic"]))`; the rules above are
+     Classic's, untouched. */
+  :global(:where(:root:not([data-layout="classic"]))) .menu {
+    background: var(--raised);
+    border-radius: var(--r2);
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.6);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font: 500 10px var(--mono);
+    letter-spacing: 0.14em;
+    color: var(--ink2);
+    padding: 6px 8px 6px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .head::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .row {
+    border-radius: var(--r1);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .row.active {
+    background: var(--well);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .row.active .name-text {
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .open {
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .row:hover .open,
+  :global(:where(:root:not([data-layout="classic"]))) .row.active .open {
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .name {
+    font-size: 13.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .rule {
+    background: var(--line2);
+    margin: 4px 4px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .wide {
+    border-radius: var(--r1);
+    font-size: 13px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .wide.quiet {
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .rename {
+    background: var(--term);
+    border-radius: var(--r1);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    :global(:where(:root:not([data-layout="classic"]))) .menu {
+      animation: menu-rise 90ms ease-out;
+    }
+  }
+  @keyframes menu-rise {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+  }
 </style>

@@ -474,4 +474,33 @@
     margin-right: 6px;
     color: var(--accent);
   }
+
+  /* Filament IV stage 6 (item 570, the thread rows of f4-menus2.png): the
+     rows' names in the ink, the bound one on the control fill with the
+     accent tick (no left bar), New thread under a rule; the fields wells
+     with corners from the tokens. Behind
+     `:where(:root:not([data-layout="classic"]))`; Classic's rules above. */
+  :global(:where(:root:not([data-layout="classic"]))) .tp-opt {
+    border-radius: var(--r1);
+    font-size: 13px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tp-opt.on {
+    box-shadow: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tp-add {
+    border-top: 1px solid var(--line2);
+    border-radius: 0 0 var(--r1) var(--r1);
+    margin-top: 4px;
+    padding-top: 8px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tp-select,
+  :global(:where(:root:not([data-layout="classic"]))) .tp-new input {
+    background: var(--term);
+    border-radius: var(--r1);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tp-label {
+    font: 500 10px var(--mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
 </style>

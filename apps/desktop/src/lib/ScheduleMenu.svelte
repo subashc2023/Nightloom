@@ -286,4 +286,65 @@
     border-radius: 6px;
     padding: 3px 6px;
   }
+
+  /* Filament IV stage 6 (item 570, f4-menus.png's Send menu): a card in
+     front, the ruled mono title, two-line rows whose name reads in the
+     ink and whose line is grey, the time field a well. Behind
+     `:where(:root:not([data-layout="classic"]))`; Classic's rules above. */
+  :global(:where(:root:not([data-layout="classic"]))) .sched-menu {
+    background: var(--raised);
+    border-radius: var(--r2);
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.6);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .sched-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font: 500 10px var(--mono);
+    letter-spacing: 0.14em;
+    color: var(--ink2);
+    padding: 6px 8px 6px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .sched-head::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .sched-row {
+    border-radius: var(--r1);
+    padding: 7px 10px;
+    font-size: 13px;
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) button.sched-row:hover:not(:disabled),
+  :global(:where(:root:not([data-layout="classic"]))) button.sched-row:focus-visible {
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .sched-line {
+    font-size: 11.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .sched-sep {
+    margin: 4px 4px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .sched-time {
+    background: var(--term);
+    border-radius: var(--r1);
+    font-family: var(--mono);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .sched-time:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    :global(:where(:root:not([data-layout="classic"]))) .sched-menu {
+      animation: menu-rise 90ms ease-out;
+    }
+  }
+  @keyframes menu-rise {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+  }
 </style>
