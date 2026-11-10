@@ -3642,10 +3642,9 @@
     background: var(--accent-soft);
     color: var(--accent-ink);
   }
+  /* The name never shrinks; the grey detail ellipsizes first (backlog 530). */
   .pick-row-label {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    min-width: 0;
+    flex: none;
   }
   .pick-row-detail {
     font-size: 11px;

@@ -651,10 +651,10 @@
     width: 20px;
     flex: none;
   }
+  /* The name never shrinks; the grey meta ellipsizes first (backlog 530). */
   .lbl {
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    flex: none;
   }
   .chk {
     display: inline-flex;
@@ -666,7 +666,9 @@
     font-size: 11px;
     color: var(--dim);
     white-space: nowrap;
-    flex: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
   }
   .empty {
     padding: 14px;
