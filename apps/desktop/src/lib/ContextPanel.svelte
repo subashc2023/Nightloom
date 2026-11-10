@@ -1831,7 +1831,7 @@
   }
   .mark-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 9em auto;
+    grid-template-columns: minmax(0, 1fr) 9em 4.6em;
     align-items: center;
     gap: 8px;
     font-size: 12px;

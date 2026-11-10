@@ -432,7 +432,7 @@ export function noteFill(
   if (before === "wrapping" && !events) return;
   // Item 390: under the mark, a *Stay here* is forgotten, so the next
   // crossing asks afresh; a wrap-up queued for the crossing goes.
-  const at = mark(chat, limit);
+  const at = markDue(chat, limit);
   if (fill < at) {
     handoff.dismissedAt = 0;
     if (before === "due") dropAutoQueued();
@@ -561,7 +561,7 @@ export function reopenHandoff(): void {
  *  without counting as a *Stay here*, so the new mark asks afresh. */
 export function reconsider(chat: string | null): void {
   if (handoff.chat !== chat || handoff.stage !== "due") return;
-  if (handoff.fill < mark(chat, handoff.limit)) {
+  if (handoff.fill < markDue(chat, handoff.limit)) {
     dropAutoQueued();
     handoff.stage = "idle";
   }
@@ -922,8 +922,16 @@ export function reconsiderShown(): void {
  * With no window known the percent alone.
  */
 export function mark(chat: string | null, limit: number | null): number {
+  // 545: what a gauge draws — a "never" sits at the end of the window
+  // (the rail and the top bar's dial place a line at this share).
+  return Math.min(1, markDue(chat, limit));
+}
+
+/** The fill past which the hand-off is due (545): as `mark`, but `NEVER`
+ *  (2) for a chat that is never handed off — past any fill. */
+export function markDue(chat: string | null, limit: number | null): number {
   // ~~`hasOwnThreshold(chat)`~~ — 545: the chat's, its thread's or its
-  // project's own mark, in that order; `NEVER` (2) is past any fill.
+  // project's own mark, in that order.
   const own = ownMark(chat);
   if (own) return markShare(own.value, limit);
   return cappedMark(stored.default, cap(), limit);

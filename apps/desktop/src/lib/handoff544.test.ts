@@ -7,6 +7,7 @@ import {
   isUnattended,
   mark,
   markAt,
+  markDue,
   markAttended,
   markShare,
   markText,
@@ -143,7 +144,8 @@ describe("545 — the mark of a chat, its thread and its project", () => {
     expect(mark("c1", 1_000_000)).toBe(0.5); // tokens over the window
     expect(ownMark("c1")?.scope).toBe("thread");
     setMarkAt("chat", "c1", NEVER);
-    expect(mark("c1", 1_000_000)).toBe(NEVER);
+    expect(markDue("c1", 1_000_000)).toBe(NEVER);
+    expect(mark("c1", 1_000_000)).toBe(1); // what a gauge draws
     expect(neverHandsOff("c1")).toBe(true);
     setMarkAt("chat", "c1", null);
     setMarkAt("thread", threadKey("p1", "alpha"), null);
