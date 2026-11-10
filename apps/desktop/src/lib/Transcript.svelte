@@ -36,7 +36,6 @@
   } from "./state.svelte";
   import type { Segment } from "./state.svelte";
   import { continuableReply, continuedFromReply, type NextChat } from "./handoffButton";
-  import { readOrder } from "./handoff.svelte";
   import { checkpointLine, checkpointOwner } from "./checkpoint";
   import { pauseLabel, resetLabel, resumeDelayMs } from "./limit";
   import {
@@ -502,7 +501,8 @@
       chat: from,
       index: reply.index,
       prompt: reply.prompt,
-      readOrder: readOrder(from),
+      // Item 520: nothing goes above the prompt, so the card shows no read order.
+      readOrder: "",
       used: continuedThisRun(from, reply.index) || continuedFromReply(app.sessions, from, reply.index),
       blocked: app.busy ? "A turn is running — continue when it ends" : null,
       onContinue: () => void continueWithPrompt(from, reply.index, reply.prompt),

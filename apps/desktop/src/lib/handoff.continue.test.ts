@@ -78,25 +78,25 @@ describe("the automated hand-off against a scripted engine", () => {
     clearDefaultReadOrder();
   });
 
-  it("opens the linked chat with the read order above the model's start prompt, unsent", async () => {
+  it("opens the linked chat with the model's start prompt alone, unsent (item 520)", async () => {
     runScript("chat-full", REPLY);
     await continueChat();
     expect(vi.mocked(api.continueSession)).toHaveBeenCalledTimes(1);
     expect(app.activeSessionId).toBe("chat-next");
     const box = readDraft("chat-next").text;
-    expect(box).toBe(`${READ_ORDER}\n\nChanged since: the parser test is red. First fix src/parse.ts.`);
+    expect(box).toBe("Changed since: the parser test is red. First fix src/parse.ts.");
     // Nothing sent: the new chat's log is what the backend returned.
     expect(app.events).toEqual([]);
     expect(readDraft("chat-next").queue).toHaveLength(0);
     expect(handoff.stage).toBe("idle");
   });
 
-  it("uses the Settings default, and a chat's own read order over it, which the new chat keeps", async () => {
+  it("a chat's own read order does not go above a prompt (item 520), but the new chat keeps it", async () => {
     setDefaultReadOrder("Read PLAN.md first.");
     runScript("chat-own", REPLY);
     setReadOrder("chat-own", "Read NOTES.md, then PLAN.md.");
     await continueChat();
-    expect(readDraft("chat-next").text.startsWith("Read NOTES.md, then PLAN.md.\n\nChanged since:")).toBe(true);
+    expect(readDraft("chat-next").text.startsWith("Changed since:")).toBe(true);
     expect(readOrder("chat-next")).toBe("Read NOTES.md, then PLAN.md.");
   });
 

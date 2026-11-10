@@ -135,9 +135,13 @@ export const WRAP_UP =
   "exists, run it in the project folder first and put each FLAG it prints at the top of that queue as " +
   "\"trim <file>\"; do not trim now.\n" +
   `3. ${CODE_CLOSE}\n` +
-  "4. End your reply with a short start prompt for the new chat. The new chat is already told to " +
-  "read the newest HANDOFF.md section, then backlog/INDEX.md, then blockers/INDEX.md, so say only " +
-  "what that does not: what changed since the section was written, any other file to read, and " +
+  // ~~"The new chat is already told to read the newest HANDOFF.md section, then backlog/INDEX.md,
+  // then blockers/INDEX.md, so say only what that does not: …"~~ — item 520 (2026-11-09): the
+  // prompt is sent alone, so it carries the read order itself.
+  "4. End your reply with a short start prompt for the new chat. It is that chat's whole first message — " +
+  "nothing is added above it — so open it with what to read, one file per command: the newest HANDOFF.md " +
+  "section by its line range, then backlog/INDEX.md, then blockers/INDEX.md; then what changed since the " +
+  "section was written, any other file to read, and " +
   // ~~"Put it in a fenced code block tagged `start-prompt` (a line of three
   // backticks followed by start-prompt, the prompt, then a line of three
   // backticks)."~~ — item 464 (2026-10-28): the tagged hand-off.
@@ -145,8 +149,10 @@ export const WRAP_UP =
   "Then stop; do not start the next step.";
 
 /**
- * The fixed prompt above the model's start prompt in the continued chat's
- * box (backlog 193): practices §5's session-start read order, blocker 366's
+ * ~~The fixed prompt above the model's start prompt~~ — item 520
+ * (2026-11-09): the box's text when the wrap-up reply wrote no prompt; with
+ * a prompt the prompt goes alone. Was: the fixed prompt above it
+ * (backlog 193): practices §5's session-start read order, blocker 366's
  * answer to question 11 (default A). Editable in Settings → Subscription,
  * and per chat on the hand-off card.
  */
@@ -624,7 +630,9 @@ export function threadWrapUp(slug: string, flags: readonly string[] = [], code =
     // ~~"…ready to paste as is — no [brackets] or placeholders — in a fenced
     // code block tagged start-prompt…"~~ — item 464 (2026-10-28): the tagged
     // hand-off, which the thread's + opens the next chat with, alone.
-    `6. End your reply with a short prompt for the next chat in this thread. With the read order Nightloom puts above it, it is all that chat's first message will say (the thread's Start here is already in its context), so name what to read and what to do first. ${HANDOFF_ASK}`,
+    // ~~"With the read order Nightloom puts above it, it is all that chat's first message will say"~~ —
+    // item 520 (2026-11-09): the prompt is sent alone, so it names the reads itself.
+    `6. End your reply with a short prompt for the next chat in this thread. It is that chat's whole first message — nothing is added above it; the thread's Start here is already in its context — so open it with what to read, one file per command and by line range rather than whole (the ${dir}/thread.md Queue rows it needs, the newest ${dir}/log.md entry, any note), then what to do first. ${HANDOFF_ASK}`,
   ];
   if (flags.length > 0) {
     lines.push("Upkeep Nightloom found in the thread files (fix these in the same small edits):");

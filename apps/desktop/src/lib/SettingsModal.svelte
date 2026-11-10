@@ -2085,8 +2085,8 @@
           own copy on the notice without changing this.
           {#if hasOwnDefaultMessage()}<em>Edited; Reset to default restores the built-in text (a box left empty reads as the built-in after a relaunch).</em>{:else}<em>The built-in text ({WRAP_UP.length} characters).</em>{/if}
         </p>
-        <!-- The read order (nightshift backlog 193): the fixed prompt above
-             the model's prompt in the continued chat's first message. -->
+        <!-- The read order (nightshift backlog 193; item 520): the new chat's
+             box text when the wrap-up reply wrote no prompt. -->
         <div class="ch"><span class="t">The read order</span>
           <span class="spacer"></span>
           {#if hasOwnDefaultReadOrder()}
@@ -2105,11 +2105,11 @@
           oninput={(e) => setDefaultReadOrder((e.currentTarget as HTMLTextAreaElement).value)}
         ></textarea>
         <p class="note small">
-          Goes above the model's prompt when a chat continues: <em>Continue
-          with this prompt</em> on the reply's card sends both as the new
-          chat's first message, and the card shows this text on a folded line
-          first. Left empty, it stays empty, and only the prompt goes. A copy a
-          chat already has of its own stays with it and the chats that continue it.
+          Used only when a wrap-up reply wrote no prompt: the new chat's box
+          opens with this text, unsent. When there is a prompt, <em>Continue
+          with this prompt</em> sends the prompt alone — the wrap-up asks the
+          model to open it with what to read. A copy a chat already has of its
+          own stays with it and the chats that continue it.
           {#if hasOwnDefaultReadOrder()}<em>Edited; Reset to default restores the built-in read order.</em>{:else}<em>The built-in read order: the newest HANDOFF.md section, then the two indexes.</em>{/if}
         </p>
       </section>

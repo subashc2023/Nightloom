@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "./api";
 import { readDraft } from "./drafts.svelte";
 import {
-  READ_ORDER,
   beginWrapUp,
   clearDefaultReadOrder,
   handoff,
@@ -12,7 +11,6 @@ import {
   queueHold,
   resetHandoff,
   setDefaultReadOrder,
-  threadReadOrder,
 } from "./handoff.svelte";
 import {
   CONTINUE_LABEL,
@@ -103,12 +101,12 @@ describe("506: the click", () => {
     app.connection = { engine: "anthropic", model: "m" } as unknown as typeof app.connection;
   });
 
-  it("sends read order then prompt, exactly, as the new chat's first message", async () => {
+  it("sends the prompt alone, exactly, as the new chat's first message (item 520)", async () => {
     app.activeSessionId = "chat-a";
     await continueWithPrompt("chat-a", 3, card);
     expect(api.continueSession).toHaveBeenCalledTimes(1);
     expect(app.activeSessionId).toBe("chat-next");
-    expect(vi.mocked(api.send).mock.calls[0][0]).toBe(`${READ_ORDER}\n\n${card}`);
+    expect(vi.mocked(api.send).mock.calls[0][0]).toBe(card);
     expect(readDraft("chat-next").text).toBe("");
     expect(continuedThisRun("chat-a", 3)).toBe(true);
   });
@@ -120,11 +118,11 @@ describe("506: the click", () => {
     expect(vi.mocked(api.send).mock.calls[0][0]).toBe(card);
   });
 
-  it("a thread chat stays in the thread, with the thread's read order, and the + is consumed", async () => {
+  it("a thread chat stays in the thread, sends the prompt alone, and the + is consumed", async () => {
     noteThread("chat-t", "club");
     app.activeSessionId = "chat-t";
     await continueWithPrompt("chat-t", 3, card);
-    expect(vi.mocked(api.send).mock.calls[0][0]).toBe(`${threadReadOrder("club")}\n\n${card}`);
+    expect(vi.mocked(api.send).mock.calls[0][0]).toBe(card);
     expect(vi.mocked(takeThreadHandoff)).toHaveBeenCalledWith("club", "chat-next");
     noteThread("chat-t", null);
   });
@@ -133,7 +131,7 @@ describe("506: the click", () => {
     vi.mocked(api.send).mockRejectedValue("the engine fell over");
     app.activeSessionId = "chat-c";
     await continueWithPrompt("chat-c", 3, card);
-    expect(readDraft("chat-next").text).toBe(`${READ_ORDER}\n\n${card}`);
+    expect(readDraft("chat-next").text).toBe(card);
   });
 
   it("no engine connected: nothing is sent, the text is in the box", async () => {
@@ -141,7 +139,7 @@ describe("506: the click", () => {
     app.activeSessionId = "chat-d";
     await continueWithPrompt("chat-d", 3, card);
     expect(api.send).not.toHaveBeenCalled();
-    expect(readDraft("chat-next").text).toBe(`${READ_ORDER}\n\n${card}`);
+    expect(readDraft("chat-next").text).toBe(card);
   });
 
   it("does nothing during a turn, and a second click while the first runs starts no second chat", async () => {

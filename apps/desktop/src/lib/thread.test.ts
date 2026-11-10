@@ -267,7 +267,7 @@ function turn(user: string, reply: string): SessionEvent[] {
 }
 
 describe("Continue on a bound chat", () => {
-  it("opens the next chat on the thread's read order, notes its thread, and runs the upkeep", async () => {
+  it("opens the next chat on the model's prompt alone (item 520), notes its thread, and runs the upkeep", async () => {
     vi.mocked(api.threadUpkeep).mockClear();
     resetHandoff();
     const chat = "chat-stuart-10";
@@ -283,7 +283,7 @@ describe("Continue on a bound chat", () => {
     expect(handoff.stage).toBe("wrapped");
     await continueChat();
     expect(app.activeSessionId).toBe("chat-next");
-    expect(readDraft("chat-next").text).toBe(`${threadReadOrder("stuart-brainstorm")}\n\nStart with T-04.`);
+    expect(readDraft("chat-next").text).toBe("Start with T-04.");
     expect(threadFor("chat-next")).toBe("stuart-brainstorm");
     expect(api.threadUpkeep).toHaveBeenCalledWith("stuart-brainstorm", true);
   });

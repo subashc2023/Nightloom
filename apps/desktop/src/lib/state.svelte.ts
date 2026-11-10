@@ -6447,9 +6447,10 @@ export async function continueChat(): Promise<void> {
   try {
     const start = handoff.startPrompt;
     const from = handoff.chat ?? app.activeSessionId;
-    const lead = readOrder(from);
+    // Item 520: the model's prompt alone when there is one (it names its own
+    // reads); the read order only stands in for a missing prompt.
     const opened = await openContinuation(from, !!start);
-    const first = firstMessage(lead, start);
+    const first = start ? firstMessage("", start) : firstMessage(readOrder(from), null);
     if (first) setDraftText(opened, first);
     if (!start) {
       handoff.noStartPromptChat = opened;
@@ -6524,7 +6525,9 @@ export async function continueWithPrompt(from: string, index: number, prompt: st
   }
   continuing = true;
   try {
-    const text = firstMessage(readOrder(from), prompt);
+    // ~~`firstMessage(readOrder(from), prompt)`~~ — item 520 (2026-11-09): two
+    // prompts that repeated each other; the card's prompt is sent alone.
+    const text = firstMessage("", prompt);
     let opened: string;
     try {
       opened = await openContinuation(from, true);

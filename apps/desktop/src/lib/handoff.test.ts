@@ -423,11 +423,12 @@ describe("the read order", () => {
     expect(READ_ORDER.indexOf("backlog/INDEX.md")).toBeLessThan(READ_ORDER.indexOf("blockers/INDEX.md"));
   });
 
-  it("the wrap-up asks for a new STATE section, never an overwrite, and a start prompt that does not repeat the read order", () => {
+  it("the wrap-up asks for a new STATE section, never an overwrite, and a start prompt that carries the read order itself (item 520)", () => {
     expect(WRAP_UP).toContain("## STATE AS OF");
     expect(WRAP_UP).toMatch(/never delete or rewrite/);
     expect(WRAP_UP).not.toMatch(/overwrite it/);
-    expect(WRAP_UP).toMatch(/say only\s+what that does not/);
+    expect(WRAP_UP).toMatch(/nothing is added above it/);
+    expect(WRAP_UP.indexOf("HANDOFF.md section")).toBeLessThan(WRAP_UP.indexOf("blockers/INDEX.md"));
   });
 
   it("puts the read order above the start prompt, each only when there is one", () => {
