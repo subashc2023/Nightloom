@@ -193,17 +193,23 @@ describe("the thread view's store", () => {
 
 describe("the sidebar's sections (server-rendered)", () => {
   const text = (html: string) => html.replace(/<!--[^>]*-->/g, "");
-  it("a 'Threads' heading over the groups and a 'Not in a thread' heading over the rest", () => {
+  // ~~A 'Not in a thread' heading over the rest~~ — item 534 (Filament IV
+  // stage 3): the chats in no thread sit under dated ruled headings
+  // (Today · Yesterday · Previous 7 days · Earlier), the first of which
+  // now marks where they begin; 'Not in a thread' stays only as the drop
+  // strip while no chat is outside a thread (next test).
+  it("a 'Threads' heading over the groups and a dated heading over the rest", () => {
     const html = text(render(Sidebar).body);
     const threads = html.indexOf(">Threads<");
     const firstGroup = html.indexOf('aria-label="Thread Stuart brainstorm"');
-    const notIn = html.indexOf(">Not in a thread<");
+    const notIn = html.search(/>(Today|Yesterday|Previous 7 days|Earlier)</);
     const loose = html.indexOf("chat l1");
     expect(threads).toBeGreaterThan(-1);
     expect(threads).toBeLessThan(firstGroup);
     expect(firstGroup).toBeLessThan(notIn);
     expect(notIn).toBeLessThan(loose);
     expect(html).toMatch(/role="heading" aria-level="3"[^>]*>Threads</);
+    expect(html).not.toContain(">Not in a thread<");
     // Every thread chat is under its group, before the heading.
     expect(html.indexOf("chat s1")).toBeLessThan(notIn);
     expect(html.indexOf("chat a1")).toBeLessThan(notIn);

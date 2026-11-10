@@ -198,11 +198,14 @@
     user-select: none;
     -webkit-user-select: none;
   }
+  /* Item 534: the instrument label of Filament IV (mono, 10 px, capitals
+     spaced 0.14 em), in the accent. Windows and Linux only. */
   .wordmark {
     padding-left: 0.9rem;
     color: var(--accent);
-    font-size: 0.74rem;
-    letter-spacing: 0.24em;
+    font: 500 10px var(--mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
     white-space: nowrap;
   }
   /* Centred on the window rather than on the space left over, so it does not
@@ -214,7 +217,7 @@
     transform: translateX(-50%);
     max-width: 36%;
     color: var(--dim);
-    font-size: 0.75rem;
+    font-size: 12px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;

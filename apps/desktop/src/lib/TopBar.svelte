@@ -800,9 +800,10 @@
     gap: 12px;
     background: var(--paper);
     border-bottom: 1px solid var(--line);
-    padding: 0 20px;
-    /* ~~52px~~ — 44 px with the title row gone (board d, backlog 175). */
-    min-height: 44px;
+    padding: 0 16px;
+    /* ~~52px~~ — 44 px with the title row gone (board d, backlog 175);
+       ~~44~~ 40 since item 534, the tab strip's 38 and a hair. */
+    min-height: 40px;
     /* Past the three folds the bar wraps to a second line rather than
        clipping its last chip (his screenshot at ⌘+ zoom, 2026-09-18:
        "≥$0.0" cut at the edge — the gauge grew a week bar after 129
@@ -1119,5 +1120,36 @@
     background: transparent;
     flex: 1;
     min-height: 0;
+  }
+
+  /* Item 534 (Filament IV stage 3): ~~pills~~ — the bar's chips take the
+     control grammar (a fill, an edge, the small corner, 28 px), and the
+     kind chip reads as the mockup's plain line, "Claude Code ·
+     subscription", until hovered or open. The gauge chip's insides are
+     stage 2's (item 533). */
+  .right > .ns-chip {
+    height: 28px;
+    box-sizing: border-box;
+    padding: 0 10px;
+    border-radius: var(--r1);
+    background: var(--well);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  }
+  .right > .ns-chip.model {
+    background: transparent;
+    border-color: transparent;
+    box-shadow: none;
+    color: var(--dim);
+    font-size: 12px;
+  }
+  .right > .ns-chip.model:hover,
+  .right > .ns-chip.model.open {
+    background: var(--raised);
+    border-color: var(--line2);
+    color: var(--ink);
+  }
+  .badge {
+    border-radius: 3px;
+    font-family: var(--mono);
   }
 </style>

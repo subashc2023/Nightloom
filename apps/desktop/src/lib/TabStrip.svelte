@@ -440,13 +440,16 @@
         />
       {:else}
         {@const f = fork(t)}
+        <!-- Item 534: the state dot before the title, as the mockup's live
+             tab — the signal while a turn runs, the accent while it waits
+             on him. -->
+        {#if needsYou(t)}
+          <span class="dot needs" use:tip={"Waiting on you"}></span>
+        {:else if running(t)}
+          <span class="dot run" use:tip={"A turn is running"}></span>
+        {/if}
         {#if f}<span class="fork" role="img" aria-label={f.tip} use:tip={f.tip}>{FORK_GLYPH}</span>{/if}
         <span class="name">{title(t)}</span>
-      {/if}
-      {#if needsYou(t)}
-        <span class="dot needs" use:tip={"Waiting on you"}></span>
-      {:else if running(t)}
-        <span class="dot run" use:tip={"A turn is running"}></span>
       {/if}
       {#if draft(t)}<span class="mark" role="img" aria-label="has a draft" use:tip={"has a draft"}></span>{/if}
       <button
@@ -524,14 +527,19 @@
 {/if}
 
 <style>
+  /* Item 534 (Filament IV): the strip is a panel; tabs are flat cells
+     ruled at their right, the active one cut into the ground below with
+     the accent along its top. */
   .tab-strip {
     display: flex;
     align-items: stretch;
-    gap: 2px;
-    height: 36px;
-    padding: 4px 8px 0;
-    background: var(--paper);
-    border-bottom: 1px solid var(--line);
+    gap: 0;
+    height: 38px;
+    padding: 0;
+    background: var(--sheet);
+    /* The strip's foot rule as an inset shadow, under its children: the
+       active tab's ground paints over it, so the tab opens into the page. */
+    box-shadow: inset 0 -1px 0 var(--line);
     overflow-x: auto;
     overflow-y: hidden;
     scrollbar-width: none;
@@ -545,30 +553,35 @@
     position: relative;
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 0 8px 0 10px;
-    max-width: 200px;
+    gap: 8px;
+    padding: 0 10px 0 14px;
+    max-width: 240px;
     min-width: 0;
     flex: 0 1 auto;
-    border-radius: 6px 6px 0 0;
+    border-right: 1px solid var(--line);
     color: var(--dim);
     font-size: 12.5px;
     cursor: default;
     user-select: none;
-    border-top: 2px solid transparent;
   }
   .tab:hover {
-    background: var(--well);
+    background: var(--raised);
     color: var(--ink2);
   }
   .tab.active {
-    background: var(--sheet);
+    background: var(--paper);
     color: var(--ink);
-    box-shadow: 0 0 0 1px var(--line);
   }
   /* The accent rule on the focused pane's active tab (board 9d). */
-  .tab-strip.focused .tab.active {
-    border-top-color: var(--accent);
+  .tab-strip.focused .tab.active::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    height: 2px;
+    background: var(--accent);
+    pointer-events: none;
   }
   .tab.dragging {
     opacity: 0.4;
@@ -611,26 +624,31 @@
     border-radius: 3px;
     outline: none;
   }
+  /* ~~Running in the accent, pulsing; waiting in the live blue~~ — item
+     534, the colour rule of Filament IV: blue is Claude working, amber is
+     his. The running dot is lit in IV+ (`--glow-live`) and pulses only
+     with motion allowed. */
   .dot {
-    width: 6px;
-    height: 6px;
+    width: 7px;
+    height: 7px;
     border-radius: 50%;
     flex-shrink: 0;
   }
   .dot.run {
-    background: var(--accent);
-    animation: tab-pulse 1.2s ease-in-out infinite;
+    background: var(--signal);
+    box-shadow: var(--glow-live);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .dot.run {
+      animation: tab-pulse 1.6s ease-in-out infinite;
+    }
   }
   .dot.needs {
-    background: var(--live);
+    background: var(--accent);
   }
   @keyframes tab-pulse {
-    0%,
-    100% {
-      opacity: 1;
-    }
     50% {
-      opacity: 0.3;
+      opacity: 0.45;
     }
   }
   /* The draft mark (backlog 221, blocker 480 answered "hollow ring sounds
@@ -672,11 +690,11 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 26px;
-    height: 26px;
-    margin: 3px 0 0 2px;
+    width: 28px;
+    height: 28px;
+    margin: 5px 0 0 6px;
     border: none;
-    border-radius: 6px;
+    border-radius: var(--r1);
     background: transparent;
     color: var(--dim);
     padding: 0;
@@ -697,9 +715,9 @@
     height: 32px;
     padding: 0 10px;
     box-sizing: border-box;
-    border-radius: 6px 6px 0 0;
+    border-radius: 0;
     border-top: 2px solid var(--accent);
-    background: var(--sheet);
+    background: var(--paper);
     color: var(--ink);
     font-size: 12.5px;
     box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
