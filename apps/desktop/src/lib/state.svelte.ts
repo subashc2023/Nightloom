@@ -7626,6 +7626,7 @@ function detach(): boolean {
     session: id,
     pendingMode: app.pendingMode,
     pendingKind: app.pendingKind,
+    pendingFromScreen: true,
     events: app.events,
     live: app.live,
     liveUsage: app.liveUsage,
@@ -7663,6 +7664,8 @@ function promoteParked(): void {
   app.background[id] = {
     ...p,
     session: id,
+    // `park` took them off the screen as the chat left it (559).
+    pendingFromScreen: true,
     approvals: app.pendingApprovals.filter((r) => !r.chat || r.chat === id),
     budget: app.budgetSession === id ? app.turnBudget : null,
     ...whereItRuns(id),
@@ -7713,8 +7716,11 @@ async function attach(id: string): Promise<void> {
   fg = t;
   switchAside(id);
   app.activeSessionId = id;
-  app.pendingMode = b.pendingMode;
-  app.pendingKind = b.pendingKind;
+  // Only what this chat's own screen held when it left (559, 535-5).
+  if (b.pendingFromScreen) {
+    app.pendingMode = b.pendingMode;
+    app.pendingKind = b.pendingKind;
+  }
   app.events = b.events;
   app.live = b.live;
   app.liveUsage = b.liveUsage;

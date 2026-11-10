@@ -143,6 +143,13 @@ export interface Background<Segment = unknown, Approval = unknown> extends Parke
   /** Its name as its project's list gave it when it left the screen — the
    *  list on screen may be another project's by the time it ends. */
   name?: string | null;
+  /** Its `pendingMode`/`pendingKind` are the screen's as it left it
+   *  (`detach`), and go back on screen with it (559, the review's 535-5).
+   *  A record made off screen (a scheduled message, a queued send, an
+   *  edit's fork) carries only placeholders, which `attach` leaves alone:
+   *  the New-chat mode and kind on screen are the project's, not another
+   *  page's from the moment it was sent. */
+  pendingFromScreen?: boolean;
 }
 
 /** Whether a background record runs in a project other than `open`. */
