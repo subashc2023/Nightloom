@@ -838,6 +838,14 @@ export function scheduleLog(text: string): Promise<null> {
   return invoke("schedule_log", { text });
 }
 
+/** A debug build's schedule timing probe (item 535m): when to schedule a
+ *  message for a chat that does not exist (one chat per time), and a limit
+ *  resume; empty / null unless the run set `NIGHTLOOM_PROBE_DUE_S` / `_LIMIT_S`, and always in
+ *  a release build. */
+export function scheduleProbe(): Promise<{ due_ms: number[]; limit_ms: number | null }> {
+  return invoke("schedule_probe");
+}
+
 /**
  * Make the open chat the other kind from the next turn on (nightshift
  * backlog 144). Resolves with the new transcript — a `kind` event lands in

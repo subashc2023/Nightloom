@@ -428,6 +428,12 @@ export async function sendScheduledNow(key: string, d: TickDeps | null = deps): 
 }
 
 let clock: ReturnType<typeof setInterval> | null = null;
+/** The debug timing probe (item 535m) logs every tick of the page's own
+ *  interval, to tell it from the backend's `wake-due`. */
+let logIntervalTicks = false;
+export function logEveryIntervalTick(on: boolean): void {
+  logIntervalTicks = on;
+}
 
 /** Start the clock once; later calls only swap the app's hooks in. */
 export function startScheduleClock(d: TickDeps): void {
@@ -436,7 +442,10 @@ export function startScheduleClock(d: TickDeps): void {
   // A relaunch's scheduled files come back from disk first (backlog 531).
   void restoreScheduledFiles();
   rearm();
-  clock = setInterval(() => void runScheduleTick(), TICK_MS);
+  clock = setInterval(() => {
+    if (logIntervalTicks) deps?.log?.("tick interval");
+    void runScheduleTick();
+  }, TICK_MS);
   if (typeof document !== "undefined") {
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") void runScheduleTick();

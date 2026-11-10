@@ -25,9 +25,23 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// Whether this run asked for it.
+/// Whether this run asked for it: `1` (off screen, page kept awake) or
+/// `hidden` (below).
 pub fn on() -> bool {
-    cfg!(debug_assertions) && std::env::var("NIGHTLOOM_OFFSCREEN").as_deref() == Ok("1")
+    cfg!(debug_assertions)
+        && matches!(
+            std::env::var("NIGHTLOOM_OFFSCREEN").as_deref(),
+            Ok("1") | Ok("hidden")
+        )
+}
+
+/// `NIGHTLOOM_OFFSCREEN=hidden` (item 535m, 2026-11-10): the window is
+/// built hidden and never ordered in, and WebKit's occlusion detection is
+/// left **on** — the page is treated as a window no one can see, as when he
+/// covers, minimizes or leaves it on another Space — to measure what its
+/// timers and the backend's `wake-due` events do then.
+pub fn hidden() -> bool {
+    cfg!(debug_assertions) && std::env::var("NIGHTLOOM_OFFSCREEN").as_deref() == Ok("hidden")
 }
 
 /// The file a harness writes to ask for a shot of the page: its one line
@@ -94,6 +108,10 @@ fn spawn_capture_watch<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
 pub fn apply<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     use tauri::Manager;
     if !on() {
+        return;
+    }
+    if hidden() {
+        eprintln!("[offscreen] hidden: never ordered in; occlusion detection left on");
         return;
     }
     let Some(view) = app.get_webview("main") else {

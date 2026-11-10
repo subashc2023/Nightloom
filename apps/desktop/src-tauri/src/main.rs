@@ -5087,6 +5087,13 @@ fn schedule_log(text: String) {
     wake::log("page", &text);
 }
 
+/// A debug build's schedule timing probe (item 535m, `wake::probe`): what
+/// the page should schedule; nothing in a release build.
+#[tauri::command]
+fn schedule_probe() -> wake::Probe {
+    wake::probe()
+}
+
 /// Make the open New chat a chat now, without sending, returning the
 /// transcript (nightshift backlog 527): Send later from a New chat stores
 /// the message under the chat's id, and a New chat has none until this.
@@ -9213,6 +9220,7 @@ fn main() {
             // The schedule clock (backlog 535): Send later's and the limit
             // resume's times are kept here, not by the page's timers.
             app.manage(wake::Wakes::default());
+            wake::mark_launch();
             wake::watch(app.handle().clone());
             // A debug build's measurement of item 324's refit, only with
             // NIGHTLOOM_DEBUG_WEBVIEW_FIT=1; a release build never runs it.
@@ -9309,6 +9317,7 @@ fn main() {
             chat_home,
             arm_wake,
             schedule_log,
+            schedule_probe,
             set_chat_kind,
             set_chat_folders,
             set_chat_thread,

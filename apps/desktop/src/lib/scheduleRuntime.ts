@@ -28,11 +28,19 @@
  */
 import { tick } from "svelte";
 import { listen } from "@tauri-apps/api/event";
-import { app, chatRuns, limitWakeDue, refreshPlanUsage, sendInChat } from "./state.svelte";
+import { app, chatRuns, limitWakeDue, refreshPlanUsage, resumeAfterLimit, sendInChat } from "./state.svelte";
 import { enqueueMessage } from "./drafts.svelte";
 import * as api from "./api";
 import { deliverTo, isLimited, type ChatProject, type Delivery, type Scheduled, type TickDeps } from "./schedule";
-import { restoreScheduled, runScheduleTick, scheduled, startScheduleClock } from "./scheduled.svelte";
+import {
+  logEveryIntervalTick,
+  restoreScheduled,
+  runScheduleTick,
+  scheduleSend,
+  scheduled,
+  startScheduleClock,
+} from "./scheduled.svelte";
+import { RESUME_MARGIN_MS } from "./limit";
 
 const drains: Array<() => Promise<void>> = [];
 
@@ -187,11 +195,52 @@ function listenForWakes(): void {
   }).catch(() => {});
 }
 
+let probed = false;
+/**
+ * A debug build's timing probe (item 535m, `wake::probe`): a message for a
+ * chat that does not exist, due at the launch-relative time the run asked
+ * for — its first `kept … waiting` line is the delivery attempt — and a
+ * limit resume for a chat that does not exist. A release build is never
+ * given a time, so this does nothing there.
+ */
+async function startProbe(): Promise<void> {
+  if (probed) return;
+  probed = true;
+  let p: { due_ms: number[]; limit_ms: number | null };
+  try {
+    p = await api.scheduleProbe();
+  } catch {
+    return;
+  }
+  for (const due of p.due_ms) {
+    logEveryIntervalTick(true);
+    // The key's first 8 characters are what the log prints: the due time's
+    // last digits, so two probes tell apart.
+    const key = `p${String(due).slice(-7)}-probe`;
+    const ok = scheduleSend(key, "timing probe", "time", due, false, [], { id: null, name: null });
+    log(`probe scheduled ${key.slice(0, 8)} due=${new Date(due).toISOString()} ok=${ok}`);
+  }
+  if (p.limit_ms !== null && !app.limitPause) {
+    app.limitPause = {
+      session: `probe-limit-${p.limit_ms}`,
+      resetsAtMs: p.limit_ms - RESUME_MARGIN_MS,
+      window: "five_hour",
+      text: "timing probe",
+      subagents: [],
+      agents: [],
+      hitAtMs: Date.now(),
+    };
+    resumeAfterLimit();
+    log(`probe limit due=${new Date(p.limit_ms).toISOString()} armed=${app.limitResumeAt !== null}`);
+  }
+}
+
 /** A composer's drain, newest first; starts the clock. Returns the undo. */
 export function registerScheduleDrain(fn: () => Promise<void>): () => void {
   drains.push(fn);
   listenForWakes();
   startScheduleClock(scheduleDeps);
+  void startProbe();
   return () => {
     const i = drains.lastIndexOf(fn);
     if (i >= 0) drains.splice(i, 1);
