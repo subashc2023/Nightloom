@@ -83,6 +83,7 @@ import {
   noteConnected,
   noteMade,
   saveChoices,
+  sameChoice,
   wantedChoice,
   type ChatChoice,
   type ChatChoices,
@@ -858,6 +859,11 @@ export const app = $state({
   draft: defaultDraft(),
   connection: null as Connection | null,
   connecting: false,
+  /** The chat the connection was built for, and the model and engine it
+   *  sent (559, the review's 534-2): a chat switch moves the screen at
+   *  once and the connection only after its reconnect, so a window read
+   *  meanwhile is the previous chat's (`connectionWindowFor`). */
+  connectedFor: null as { chat: string | null; choice: ChatChoice } | null,
   /**
    * A rail change waits to be connected (item 222): its debounce is
    * running, or it came during a connect and goes out when that settles.
@@ -3970,6 +3976,7 @@ export async function applyDraft(): Promise<void> {
     // opened meanwhile has its own choice on it now (backlog 205).
     if (!d.model.trim() && app.activeSessionId === chat) d.model = res.model;
     saveLastConnection({ ...d });
+    app.connectedFor = { chat, choice: { ...sent, model: sent.model.trim() || res.model } };
     chatConnected(chat, { ...sent, model: sent.model.trim() || res.model });
   } catch (e) {
     // The backend keeps the previous Chat on failure, so app.connection
@@ -4065,6 +4072,7 @@ async function applyAgentDraft(updateNow: PromptLayer[] = [], take = true): Prom
     // answer is newer than this connect's.
     if ((app.project?.id ?? null) === projectAtStart) app.project = res.project ?? null;
     saveLastConnection({ ...d });
+    app.connectedFor = { chat, choice: sent };
     chatConnected(chat, sent);
     void refreshPlanUsage();
   } catch (e) {
@@ -7225,6 +7233,22 @@ export function liveChats(): LiveChat[] {
   return out;
 }
 
+/**
+ * The connection's context window, when it is known to be chat `id`'s
+ * (559, the review's 534-2): built for that chat, or for a choice of model
+ * and engine that chat's own recorded choice equals — and no connect is
+ * running. Otherwise null, so a reading keeps the window stored for the
+ * chat rather than taking the previous chat's.
+ */
+export function connectionWindowFor(id: string | null): number | null {
+  const limit = app.connection?.contextLimit ?? null;
+  const built = app.connectedFor;
+  if (limit === null || !built || app.connecting) return null;
+  if (built.chat === id) return limit;
+  const wanted = wantedChoice(chatChoice.choices, id);
+  return wanted && sameChoice(wanted, built.choice) ? limit : null;
+}
+
 /** Whether a turn runs in any chat — on screen, parked or off screen
  *  (A4's gates audit): what a CLI update waits on, where `app.busy` is
  *  "the chat on screen runs". ~~Leaving the project too~~ — blocker 630
@@ -7605,6 +7629,7 @@ function detach(): boolean {
     session: id,
     pendingMode: app.pendingMode,
     pendingKind: app.pendingKind,
+    pendingFromScreen: true,
     events: app.events,
     live: app.live,
     liveUsage: app.liveUsage,
@@ -7642,6 +7667,8 @@ function promoteParked(): void {
   app.background[id] = {
     ...p,
     session: id,
+    // `park` took them off the screen as the chat left it (559).
+    pendingFromScreen: true,
     approvals: app.pendingApprovals.filter((r) => !r.chat || r.chat === id),
     budget: app.budgetSession === id ? app.turnBudget : null,
     ...whereItRuns(id),
@@ -7692,8 +7719,11 @@ async function attach(id: string): Promise<void> {
   fg = t;
   switchAside(id);
   app.activeSessionId = id;
-  app.pendingMode = b.pendingMode;
-  app.pendingKind = b.pendingKind;
+  // Only what this chat's own screen held when it left (559, 535-5).
+  if (b.pendingFromScreen) {
+    app.pendingMode = b.pendingMode;
+    app.pendingKind = b.pendingKind;
+  }
   app.events = b.events;
   app.live = b.live;
   app.liveUsage = b.liveUsage;
@@ -10908,6 +10938,10 @@ export async function sendEdit(
   files: FileInput[] = [],
 ): Promise<boolean> {
   if (app.busy) return false;
+  // 559 (blocker 1750, default applied): the chat he edited, before the
+  // fork call — he may open another chat or project in its round trip.
+  const mark = viewMark();
+  let fork: string;
   try {
     const parent = app.activeSessionId;
     // The message's send time rides with its place (backlog 361): the
@@ -10915,6 +10949,14 @@ export async function sendEdit(
     const meant = app.events[index];
     const at = meant?.event === "user_message" ? meant.at : null;
     const res = await api.editMessage(index, text, "send", null, at);
+    fork = res.session;
+    if (!sameView(mark)) {
+      // He left: his edited words go into the fork of the chat he edited,
+      // off screen — never into the chat now open, never lost.
+      void refreshSessions();
+      sendInFork(fork, mark.project, text, images, documents, files);
+      return true;
+    }
     app.events = res.events;
     // The fork starts with no asides; the parent keeps its own (backlog 203).
     switchAside(res.session);
@@ -10927,8 +10969,53 @@ export async function sendEdit(
     return false;
   }
   void refreshSessions();
+  // Told the fork by id (535's `turnTarget`), so a switch during the
+  // send's own reconnect sends it off screen into the fork (535f).
+  if (app.connection?.engine === "claude-code") {
+    turnTarget = { chat: fork, project: mark.project };
+    turnElsewhere = async (busyHere) => {
+      if (busyHere) enqueueMessage(fork, text, editAttachments(images, documents, files));
+      else sendInFork(fork, mark.project, text, images, documents, files);
+    };
+  }
   await send(text, images, documents, null, files);
   return true;
+}
+
+/** An edit's images, documents and files as a queued message's attachments. */
+function editAttachments(images: ImageInput[], documents: DocumentInput[], files: FileInput[]): Attachment[] {
+  return [
+    ...chipsFromInputs(images, documents, nextAttachmentId),
+    // `runInChat` sends a `file` chip's name and data back as a file (277).
+    ...files.map((f) => ({ id: nextAttachmentId(), kind: "file" as const, media_type: "application/octet-stream", name: f.name, data: f.data })),
+  ];
+}
+
+/** The edited message sent in its fork off screen (559): on Claude Code as
+ *  that chat's own background turn (`runInChat`; a refusal puts it at the
+ *  head of the fork's queue); on the API engine, which runs one chat at a
+ *  time, queued in the fork, sent when he opens it. */
+function sendInFork(
+  fork: string,
+  project: string | null,
+  text: string,
+  images: ImageInput[],
+  documents: DocumentInput[],
+  files: FileInput[],
+): void {
+  const attachments = editAttachments(images, documents, files);
+  if (app.connection?.engine !== "claude-code") {
+    enqueueMessage(fork, text, attachments);
+    addToast("Your edit is queued in its new branch — open it from the sidebar to send it");
+    return;
+  }
+  void runInChat(
+    fork,
+    { id: nextQueueId(), text, attachments },
+    { pendingMode: "normal", pendingKind: app.pendingKind, project, projectName: null, name: null },
+    { contextLimit: contextOf(fork)?.limit || null },
+  );
+  addToast("Your edit was sent in its new branch, off screen — it is in the sidebar");
 }
 
 /**
