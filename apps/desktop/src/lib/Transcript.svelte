@@ -33,7 +33,9 @@
     chatAgentSession,
     continuedThisRun,
     continueWithPrompt,
+    openChatKey,
   } from "./state.svelte";
+  import { scheduledFor } from "./scheduled.svelte";
   import type { Segment } from "./state.svelte";
   import { continuableReply, continuedFromReply, type NextChat } from "./handoffButton";
   import { checkpointLine, checkpointOwner } from "./checkpoint";
@@ -1349,6 +1351,13 @@
     void approvalsNow.length;
     // A pane follows its chat's stream off screen too (piece 5).
     if (inPane) void app.paneVersion;
+    // A message he queues or schedules mid-turn is drawn below the reply
+    // (PendingBubbles) and follows the foot like any other (item 560).
+    if (!inPane) {
+      const key = openChatKey();
+      void readDraft(key).queue.length;
+      void scheduledFor(key);
+    }
     void tick().then(() => {
       // The live reply's first words are in the DOM now; the frame that
       // draws them is its first paint (item 256's timing line) — the open
