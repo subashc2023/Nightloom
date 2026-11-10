@@ -121,3 +121,83 @@ export function readStamp(at: Date | null): string {
   if (!at) return "not read yet";
   return "read " + at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
+
+// ---- Filament IV's Usage pane (item 571, stage 7; `f4-settings-usage.png`).
+// Pure, from the readings the pane already holds (the plan's two windows and
+// the ledger's surfaces snapshot); nothing here is estimated.
+
+/** The fraction of a seven-day window gone, from when it resets; null when unknown. */
+export function weekGone(resetsAt: string | null, now: number = Date.now()): number | null {
+  if (!resetsAt) return null;
+  const t = Date.parse(resetsAt);
+  if (!Number.isFinite(t)) return null;
+  const left = t - now;
+  const week = 7 * 86_400_000;
+  return Math.max(0, Math.min(1, (week - left) / week));
+}
+
+/** One dial on the Usage pane: a plan window's share used. */
+export interface PlanDial {
+  key: "five" | "week";
+  /** Share used, 0..1, for the dial. */
+  share: number;
+  /** The figure in the middle, "26%". */
+  value: string;
+  /** The line under it, "5 hours". */
+  unit: string;
+  label: string;
+}
+
+/** The plan's two windows as dials; a window with no reading draws no dial. */
+export function planDials(plan: { five_hour: number | null; seven_day: number | null } | null): PlanDial[] {
+  if (!plan) return [];
+  const out: PlanDial[] = [];
+  const one = (key: PlanDial["key"], v: number | null, unit: string, label: string) => {
+    if (v == null || !Number.isFinite(v)) return;
+    out.push({ key, share: Math.max(0, Math.min(1, v / 100)), value: `${Math.round(v)}%`, unit, label });
+  };
+  one("five", plan.five_hour, "5 hours", "5-hour window");
+  one("week", plan.seven_day, "this week", "This week");
+  return out;
+}
+
+/** "62% used with 43% of the week gone", or null when either is unknown. */
+export function paceLine(used: number | null, gone: number | null): string | null {
+  if (used == null || gone == null) return null;
+  return `${Math.round(used)}% used with ${Math.round(gone * 100)}% of the week gone`;
+}
+
+/** One surface's piece of the week, as a share of the weekly limit. */
+export interface SurfaceShare {
+  key: "claude_code" | "chat" | "cowork" | "other";
+  label: string;
+  pct: number;
+}
+
+/** The surfaces snapshot as pieces of one bar, in the ledger's order; blank cells are left out. */
+export function surfaceShares(
+  s: { claude_code_pct: number | null; chat_pct: number | null; cowork_pct: number | null; other_pct: number | null } | null,
+): SurfaceShare[] {
+  if (!s) return [];
+  const rows: SurfaceShare[] = [];
+  const add = (key: SurfaceShare["key"], label: string, v: number | null) => {
+    if (v != null && Number.isFinite(v) && v >= 0) rows.push({ key, label, pct: v });
+  };
+  add("claude_code", "Claude Code", s.claude_code_pct);
+  add("chat", "Chat", s.chat_pct);
+  add("cowork", "Cowork", s.cowork_pct);
+  add("other", "Other", s.other_pct);
+  return rows;
+}
+
+/** "Resets at 9:40 PM" today, "Resets Thursday 12:00 AM" on another day; null when unknown. 12-hour, his rule. */
+export function resetsWhen(iso: string | null, now: Date = new Date()): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const time = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+  const sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  if (sameDay) return `Resets at ${time}`;
+  const day = d.toLocaleDateString("en-US", { weekday: "long" });
+  return `Resets ${day} ${time}`;
+}

@@ -20,6 +20,15 @@
   import { setStopShape, stopPref } from "./stopShape.svelte";
   // Item 542: the layout, Filament IV or Classic (the look before item 525).
   import { LAYOUTS, classic, layout, setLayout } from "./layout.svelte";
+  // Filament IV's accent and instrument light (item 571, stage 7).
+  import { ACCENTS, LIGHTS, look, setAccent, setLight, applyLook, handoffChoices } from "./settings/look.svelte";
+  import ContextDial from "./ContextDial.svelte";
+  import { planDials, surfaceShares, paceLine, weekGone, resetsWhen } from "./settingsUsage";
+  /** The Layout choice: the layout, then the accent again (no accent is stamped under Classic). */
+  function pickLayout(l: (typeof LAYOUTS)[number]["id"]): void {
+    setLayout(l);
+    applyLook();
+  }
   import {
     app,
     applyDraft,
@@ -551,8 +560,14 @@
   // figure from each, so both are read whichever tab is open.
   $effect(() => {
     if (selected === USAGE_PANE || selected === COST_PANE) {
-      void refreshUsage();
-      void refreshPlanUsage().then(() => (planReadAt = new Date()));
+      // Untracked (item 571): `refreshPlanUsage` reads `app.planUsage`
+      // before its first await and then writes it, so a tracked call made
+      // this effect its own trigger — the plan was re-read without end
+      // while either tab was open (the 571 harness froze on it).
+      untrack(() => {
+        void refreshUsage();
+        void refreshPlanUsage().then(() => (planReadAt = new Date()));
+      });
     }
   });
   // The button: run the collector now rather than wait for its six-hourly
@@ -1466,7 +1481,7 @@
         <h2 class="pane-title">Palette</h2>
         <span class="slug">{app.palette}</span>
         <span class="spacer"></span>
-        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
       </div>
       <!-- The layout (item 542): Filament IV, or Classic — every screen as
            it was before item 525, kept so a Filament IV bug never blocks
@@ -1489,11 +1504,53 @@
                   role="radio"
                   aria-checked={layout.value === l.id}
                   use:tip={l.note}
-                  onclick={() => setLayout(l.id)}
+                  onclick={() => pickLayout(l.id)}
                 >{l.name}</button>
               {/each}
             </div>
           </div>
+        </div>
+      </section>
+      <!-- Filament IV's own choices (item 571; f4-settings-appearance.png):
+           the accent, the instrument light, the hand-off line. Not drawn
+           under Classic, whose palettes carry their own accent and no
+           light; the hand-off line is also in Subscription → Hand-off. -->
+      <section class="card f4-only" aria-label="Accent">
+        <div class="ch"><span class="t">Accent</span></div>
+        <div class="pick3" role="radiogroup" aria-label="Accent">
+          {#each ACCENTS as a (a.id)}
+            <button class="pick" class:on={look.accent === a.id} role="radio" aria-checked={look.accent === a.id} onclick={() => setAccent(a.id)}>
+              <span class="pick-h"><i class="radio" aria-hidden="true"></i>{a.name}</span>
+              <span class="pick-n">{a.note}</span>
+              <span class="pick-sw" aria-hidden="true"><i style:background={a.swatch}></i><i class="sig"></i><i class="ctl"></i></span>
+            </button>
+          {/each}
+        </div>
+      </section>
+      <section class="card f4-only" aria-label="Instrument light">
+        <div class="ch"><span class="t">Instrument light</span></div>
+        <div class="pick2" role="radiogroup" aria-label="Instrument light">
+          {#each LIGHTS as l (l.id)}
+            <button class="pick" class:on={look.light === l.id} role="radio" aria-checked={look.light === l.id} onclick={() => setLight(l.id)}>
+              <span class="pick-h"><i class="radio" aria-hidden="true"></i>{l.name}</span>
+              <span class="pick-n">{l.note}</span>
+            </button>
+          {/each}
+        </div>
+      </section>
+      <section class="card f4-only" aria-label="Details">
+        <div class="ch"><span class="t">Details</span></div>
+        <div class="d4-row">
+          <span class="d4-l">Hand-off line<small>Where the context dial puts its notch, for every chat without a mark of its own — the same setting as Subscription → Hand-off's token cap</small></span>
+          <select
+            aria-label="Hand-off line, thousands of tokens"
+            value={String(handoffCapK)}
+            onchange={(e) => setHandoffCapK(e.currentTarget.value)}
+          >
+            {#each handoffChoices(handoffCapK) as k (k)}
+              <option value={String(k)}>{k === 0 ? `Percent only (${handoffDefaultPct}%)` : `${k}k`}</option>
+            {/each}
+          </select>
         </div>
       </section>
       <p class="note">
@@ -1737,7 +1794,7 @@
       <div class="pane-head">
         <h2 class="pane-title">Animations</h2>
         <span class="spacer"></span>
-        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
       </div>
       <p class="note">
         How things arrive and leave in the transcript. Each choice applies to
@@ -1833,7 +1890,7 @@
         <h2 class="pane-title">Phone</h2>
         <span class="slug">{remote?.on ? `on · ${remote.address}:${remote.port}` : "off"}</span>
         <span class="spacer"></span>
-        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
       </div>
       <p class="note">
         Nightloom on your phone, over Tailscale: the open project's chats, a
@@ -1929,7 +1986,7 @@
         <h2 class="pane-title">Away server</h2>
         <span class="slug">{awayHeadline(away)}</span>
         <span class="spacer"></span>
-        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
       </div>
       <p class="note">
         A copy of Nightloom on a server, for when the Mac is asleep. While
@@ -2008,7 +2065,7 @@
         <h2 class="pane-title">Subscription</h2>
         <span class="slug">the engine on your Claude plan — its defaults</span>
         <span class="spacer"></span>
-        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
       </div>
 
       <div class="sub-filter">
@@ -2390,7 +2447,7 @@
           use:tip={"Run the collector now (python3 ~/.claude/usage-ledger.py update), reread the ledger, the plan's two windows and the provider credits"}
           onclick={() => void refreshUsageNow()}
         >{usageRefreshing ? "Refreshing…" : "Refresh now"}</button>
-        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
       </div>
       {#if usageRefreshNote}
         <p class="note small">{usageRefreshNote}</p>
@@ -2404,6 +2461,7 @@
         the Cost tab.
       </p>
 
+      {#if classic()}
       <section class="card">
         <div class="ch"><span class="t">Plan</span><span class="dim small">account-wide · every surface · {readStamp(planReadAt)}</span></div>
         {#if plan && plan.five_hour != null}
@@ -2491,6 +2549,89 @@
             <div class="key-status">No surfaces snapshot yet — the collector records one when the desktop app has fetched its usage page.</div>
           {/if}
         </section>
+      {/if}
+      {:else}
+        <!-- Filament IV (item 571; f4-settings-usage.png): the plan's two
+             windows as dials beside their rows, the weekly cap of one model,
+             then the week by where it went. The same readings as Classic's
+             Plan and Surfaces cards; the ledger holds no per-day series, so
+             the week is one bar, not seven (blocker 1778). -->
+        {@const dials = planDials(plan)}
+        {@const sf = usage?.available ? usage.surfaces : null}
+        <section class="u4" aria-label="Plan">
+          {#if dials.length}
+            <div class="u4-dials">
+              {#each dials as d (d.key)}
+                <ContextDial size={128} stroke={6} pad={16} minor={40} major={4} share={d.share} value={d.value} unit={d.unit} label="{d.label}: {d.value} used" />
+              {/each}
+            </div>
+          {/if}
+          <div class="u4-rows">
+            {#if plan && plan.five_hour != null}
+              <div class="u4-row">
+                <span class="u4-l">5-hour window<small>{resetsWhen(plan.five_hour_resets_at) ?? "Reset time unknown"}</small></span>
+                <b>{pct(plan.five_hour)}</b>
+              </div>
+              <div class="u4-row">
+                <span class="u4-l">This week<small>{resetsWhen(plan.seven_day_resets_at) ?? "Reset time unknown"}{#if paceLine(plan.seven_day, weekGone(plan.seven_day_resets_at))}{" · " + paceLine(plan.seven_day, weekGone(plan.seven_day_resets_at))}{/if}</small></span>
+                <b>{pct(plan.seven_day)}</b>
+              </div>
+            {:else}
+              <div class="u4-row">
+                <span class="u4-l">No plan sample yet<small>The Claude app's usage page, the CLI's <code>/usage</code>, or a Claude Code turn's rate-limit event fills this.</small></span>
+              </div>
+            {/if}
+            {#if sf?.weekly_scoped_model}
+              <div class="u4-row">
+                <span class="u4-l">{sf.weekly_scoped_model} cap<small>Its own weekly limit</small></span>
+                <b>{pct(sf.weekly_scoped_pct)}</b>
+              </div>
+            {/if}
+          </div>
+        </section>
+        {#if plan && plan.five_hour != null}
+          <p class="note small">From {planWhere}, {planAge}{plan.stale ? " — stale: past 20 minutes, may be behind" : ""}; refreshed at each turn end. Account-wide, every surface · {readStamp(planReadAt)}.</p>
+        {/if}
+        {#if !usage}
+          <p class="note small">Reading the ledger…</p>
+        {:else if !usage.available}
+          <section class="card">
+            <div class="ch"><span class="t">No ledger yet</span></div>
+            <div class="key-status">{usage.reason}</div>
+            <p class="note small">
+              The collector is <code>{usage.collector}</code>, run every six hours by
+              a LaunchAgent; nothing in Nightloom writes these files. Run
+              <code>python3 {usage.collector} update --all</code> once and this
+              tab fills.
+            </p>
+          </section>
+        {:else}
+          <section class="card">
+            <div class="ch"><span class="t">The last 7 days, by where it was spent</span></div>
+            {#if sf}
+              {@const parts = surfaceShares(sf)}
+              <div class="u4-week" role="img" aria-label="Share of the weekly limit by surface: {parts.map((p) => `${p.label} ${p.pct}%`).join(', ')}">
+                {#each parts as p (p.key)}
+                  <span class="u4-seg {p.key}" style:width="{Math.min(100, p.pct)}%"></span>
+                {/each}
+              </div>
+              <div class="u4-scale" aria-hidden="true"><span>0</span><span>25%</span><span>50%</span><span>75%</span><span>100%</span></div>
+              <div class="u4-legend">
+                {#each parts as p (p.key)}
+                  <span><i class="u4-seg {p.key}"></i>{p.label} {p.pct}%</span>
+                {/each}
+                <span class="u4-all">All models {pct(sf.weekly_all_pct)} of the weekly cap</span>
+              </div>
+              <p class="note small">
+                Shares of the weekly rate limit — cost-weighted, rounded to whole
+                numbers, not dollars — from the desktop app's own usage response.
+                Window from {sf.window_started_at.replace("T", " ")} UTC · snapshot {sf.as_of.replace("T", " ")} UTC.
+              </p>
+            {:else}
+              <div class="key-status">No surfaces snapshot yet — the collector records one when the desktop app has fetched its usage page.</div>
+            {/if}
+          </section>
+        {/if}
       {/if}
       {:else}
       <p class="note">
@@ -2624,7 +2765,7 @@
         <h2 class="pane-title">Council</h2>
         <span class="slug">several models answer one message; this chat's model chairs</span>
         <span class="spacer"></span>
-        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
       </div>
       <p class="note">
         The <em>Council</em> button beside Send (Claude Code engine) sends one
@@ -2726,7 +2867,7 @@
         <h2 class="pane-title">Projects folder</h2>
         <span class="slug">new projects go in</span>
         <span class="spacer"></span>
-        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
       </div>
       <p class="note">
         Where <em>New project…</em> makes a folder: <code>&lt;this folder&gt;/&lt;name&gt;</code>,
@@ -2778,7 +2919,7 @@
         <h2 class="pane-title">Knowledge base</h2>
         <span class="slug">{app.knowledge?.alias ?? "@kb"}</span>
         <span class="spacer"></span>
-        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
       </div>
       <p class="note">
         Your own notes, kept across every project and available in every
@@ -3006,7 +3147,7 @@
         <h2 class="pane-title">Model instructions</h2>
         <span class="slug">~/.nightloom/models</span>
         <span class="spacer"></span>
-        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
       </div>
       <p class="note">
         A file per model, read whole into the system prompt of a chat on that
@@ -3158,7 +3299,7 @@
         <h2 class="pane-title">{searchSel.label}</h2>
         <span class="slug">{searchSel.env_key}</span>
         <span class="spacer"></span>
-        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
       </div>
       <p class="note">
         A key here turns on <code>web_search</code>. Every backend with a key is
@@ -3195,7 +3336,7 @@
           />
           Show in the model picker
         </label>
-        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
       </div>
       {#if PROVIDER_NOTES[provider.kind]}
         <p class="note">{PROVIDER_NOTES[provider.kind]}</p>
@@ -4767,5 +4908,572 @@
   .sub-actions {
     display: flex;
     justify-content: flex-end;
+  }
+
+  /* ---- Filament IV, stage 7 (item 571; 521 report §2 and §5,
+     f4-settings-*.png). Every rule below is behind the layout gate
+     (`:where()`, zero specificity), so Classic draws exactly as before;
+     the two base rules hide what only Filament IV shows. Ruled mono
+     capitals for group and section titles, the selected row's accent bar,
+     light page titles, sections without boxes, choices as cards, the
+     Usage dials. ---- */
+  .f4-only,
+  .done4 {
+    display: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .f4-only {
+    display: flex;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .modal {
+    background: var(--raised);
+    border-color: var(--line2);
+    border-radius: 10px;
+    grid-template-columns: 15rem 1fr;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .nav {
+    background: color-mix(in srgb, var(--sheet) 55%, var(--raised));
+    padding: 22px 12px 14px;
+    gap: 1px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .nav-h {
+    font-family: var(--sans);
+    font-weight: 300;
+    font-size: 24px;
+    letter-spacing: 0;
+    padding: 0 10px 12px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .nav-title {
+    justify-content: flex-start;
+    gap: 8px;
+    padding: 16px 10px 6px;
+    font: 500 10px var(--mono);
+    letter-spacing: 0.14em;
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .nav-title::after {
+    content: "";
+    order: 1;
+    flex: 1;
+    height: 1px;
+    background: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .nav-title :global(.kbd) {
+    order: 2;
+    letter-spacing: 0;
+    font-family: var(--mono);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .nav-item {
+    position: relative;
+    font-size: 14px;
+    padding: 7px 10px 7px 12px;
+    border-radius: var(--r1);
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .nav-item:hover {
+    background: color-mix(in srgb, var(--well) 60%, transparent);
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .nav-item.active {
+    background: var(--well);
+    box-shadow: none;
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .nav-item.active::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 6px;
+    bottom: 6px;
+    width: 3px;
+    border-radius: 2px;
+    background: var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .st {
+    font-size: 10.5px;
+    font-variant-numeric: tabular-nums;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .dot {
+    opacity: 0.45;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .dot.ok,
+  :global(:where(:root:not([data-layout="classic"]))) .dot.env {
+    opacity: 1;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .nav-foot {
+    padding: 8px 10px 0;
+    font-family: var(--mono);
+    font-size: 10.5px;
+  }
+
+  :global(:where(:root:not([data-layout="classic"]))) .pane {
+    padding: 26px 34px 30px;
+    gap: 16px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pane-head {
+    align-items: center;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pane-title {
+    font-family: var(--sans);
+    font-weight: 300;
+    font-size: 30px;
+    line-height: 1.15;
+    letter-spacing: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .slug {
+    align-self: center;
+    font-size: 11.5px;
+    font-variant-numeric: tabular-nums;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .close {
+    width: auto;
+    height: 28px;
+    padding: 0 10px;
+    gap: 8px;
+    border: 1px solid var(--line2);
+    border-radius: var(--r1);
+    background: var(--well);
+    color: var(--ink);
+    font: 500 13px var(--sans);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .close:hover {
+    background: var(--well2);
+    border-color: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .close > :global(svg) {
+    display: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .done4 {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .done4 kbd {
+    font: 400 11px var(--mono);
+    color: var(--dim);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .note {
+    color: var(--ink2);
+    font-size: 13.5px;
+    line-height: 1.5;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .note.small {
+    color: var(--dim);
+    font-size: 12.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pane-head + .note {
+    font-size: 14.5px;
+    margin-top: -4px;
+  }
+
+  /* Sections: no box; the title is a ruled mono capital (`.ns-cap`'s grammar). */
+  :global(:where(:root:not([data-layout="classic"]))) .card {
+    background: none;
+    border: none;
+    border-radius: 0;
+    padding: 0;
+    margin-top: 8px;
+    gap: 12px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .card .ch .t {
+    flex: 1 1 auto;
+    gap: 8px;
+    font: 500 10.5px var(--mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .card .ch .t::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    min-width: 24px;
+    background: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .key-status {
+    color: var(--ink);
+    font-size: 13.5px;
+    line-height: 1.5;
+  }
+
+  /* Controls: wells with a line2 edge, r1 corners; the on choice amber. */
+  :global(:where(:root:not([data-layout="classic"]))) input[type="text"],
+  :global(:where(:root:not([data-layout="classic"]))) .kf input[type="password"],
+  :global(:where(:root:not([data-layout="classic"]))) select,
+  :global(:where(:root:not([data-layout="classic"]))) textarea {
+    background: var(--term);
+    border: 1px solid var(--line2);
+    border-radius: var(--r1);
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .sub-filter input {
+    background: none;
+    border: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) select {
+    background: var(--well);
+    height: 30px;
+    padding: 0 8px;
+    font-size: 13px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) input:focus,
+  :global(:where(:root:not([data-layout="classic"]))) select:focus,
+  :global(:where(:root:not([data-layout="classic"]))) textarea:focus {
+    border-color: var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .seg {
+    gap: 4px;
+    padding: 0;
+    border: none;
+    background: none;
+    border-radius: 0;
+    flex-wrap: wrap;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .seg button {
+    height: 30px;
+    padding: 0 13px;
+    border: 1px solid var(--line2);
+    border-radius: var(--r1);
+    background: var(--well);
+    color: var(--ink2);
+    font-size: 13px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .seg button:hover {
+    background: var(--well2);
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .seg button.on {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--ink);
+    box-shadow: inset 0 0 0 1px var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .type-rows {
+    gap: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .type-row {
+    padding: 10px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .type-row:last-child {
+    border-bottom: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .type-label {
+    color: var(--ink);
+    font-size: 14px;
+  }
+  /* A plain checkbox row reads as a switch, as in the mockup's Details rows:
+     the same input (keyboard, label click, disabled) drawn as a track and knob. */
+  :global(:where(:root:not([data-layout="classic"]))) .dream-auto {
+    justify-content: space-between;
+    flex-direction: row-reverse;
+    gap: 16px;
+    padding: 9px 0;
+    border-bottom: 1px solid var(--line);
+    font-size: 14px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .dream-auto > span {
+    flex: 1;
+    min-width: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .dream-auto > input[type="checkbox"] {
+    appearance: none;
+    -webkit-appearance: none;
+    flex: none;
+    margin: 0;
+    width: 34px;
+    height: 20px;
+    border-radius: 10px;
+    background: var(--well2);
+    border: 1px solid var(--line2);
+    position: relative;
+    cursor: pointer;
+    transition: background-color 120ms;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .dream-auto > input[type="checkbox"]::after {
+    content: "";
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--dim);
+    transition: left 120ms, background-color 120ms;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .dream-auto > input[type="checkbox"]:checked {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .dream-auto > input[type="checkbox"]:checked::after {
+    left: 17px;
+    background: var(--on-accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .dream-auto > input[type="checkbox"]:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .dream-auto > input[type="checkbox"]:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .sw:checked::after {
+    background: var(--on-accent);
+    box-shadow: none;
+  }
+
+  /* Tables and lists: one bordered box (r2), a header row, ruled rows. */
+  :global(:where(:root:not([data-layout="classic"]))) .usage-table {
+    border: 1px solid var(--line2);
+    border-radius: var(--r2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .usage-table th,
+  :global(:where(:root:not([data-layout="classic"]))) .usage-table td {
+    padding: 9px 12px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .usage-table th {
+    background: color-mix(in srgb, var(--well) 50%, transparent);
+    color: var(--ink2);
+    font-family: var(--sans);
+    font-size: 12.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .usage-table tbody tr:last-child td {
+    border-bottom: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .usage-bar {
+    background: var(--well);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .mrows,
+  :global(:where(:root:not([data-layout="classic"]))) .mfiles {
+    border: 1px solid var(--line2);
+    border-radius: var(--r2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .mr {
+    border-radius: 0;
+    padding: 9px 12px;
+    font-size: 13.5px;
+    border-bottom: 1px solid var(--line);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .mr:nth-child(even) {
+    background: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .cb {
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    background: var(--term);
+  }
+
+  /* Palette swatches (the four classic palettes, A = Filament IV). */
+  :global(:where(:root:not([data-layout="classic"]))) .swatch {
+    border-color: var(--line2);
+    border-radius: var(--r2);
+    background: var(--raised);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .swatch.on {
+    box-shadow: inset 0 0 0 1px var(--accent);
+  }
+
+  /* Appearance: the accent and light choices as cards (f4-settings-appearance.png). */
+  .pick3,
+  .pick2 {
+    display: grid;
+    gap: 12px;
+  }
+  .pick3 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .pick2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .pick {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 14px 16px 16px;
+    border: 1px solid var(--line2);
+    border-radius: var(--r2);
+    background: transparent;
+    color: var(--ink);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .pick:hover {
+    background: color-mix(in srgb, var(--well) 40%, transparent);
+  }
+  .pick.on {
+    border-color: var(--accent);
+    box-shadow: inset 0 0 0 1px var(--accent);
+  }
+  .pick:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .pick-h {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 15px;
+    font-weight: 500;
+  }
+  .radio {
+    flex: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 1.5px solid var(--dim);
+    box-sizing: border-box;
+  }
+  .pick.on .radio {
+    border: 4px solid var(--accent);
+    background: var(--on-accent);
+  }
+  .pick-n {
+    font-size: 13.5px;
+    line-height: 1.45;
+    color: var(--ink2);
+  }
+  .pick-sw {
+    display: grid;
+    grid-template-columns: 3fr 1fr 1fr;
+    gap: 6px;
+    margin-top: auto;
+    padding-top: 4px;
+  }
+  .pick-sw i {
+    height: 30px;
+    border-radius: 3px;
+  }
+  .pick-sw i.sig {
+    background: var(--signal);
+  }
+  .pick-sw i.ctl {
+    background: var(--well);
+  }
+  .d4-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 4px 0 8px;
+  }
+  .d4-l,
+  .u4-l {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 15px;
+    color: var(--ink);
+  }
+  .d4-l small,
+  .u4-l small {
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--ink2);
+  }
+  .d4-row select {
+    flex: none;
+    min-width: 7rem;
+  }
+
+  /* Usage (f4-settings-usage.png): the two windows as dials, their rows beside. */
+  .u4 {
+    display: flex;
+    align-items: center;
+    gap: 28px;
+    flex-wrap: wrap;
+    flex: none;
+  }
+  .u4-dials {
+    display: flex;
+    gap: 18px;
+    flex: none;
+  }
+  .u4-dials :global(.dial .n) {
+    font-size: 30px;
+    font-weight: 400;
+  }
+  .u4-dials :global(.dial .u) {
+    font-size: 11.5px;
+  }
+  .u4-rows {
+    flex: 1 1 16rem;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .u4-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 11px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .u4-row:last-child {
+    border-bottom: none;
+  }
+  .u4-row > b {
+    flex: none;
+    font: 600 16px var(--sans);
+    font-variant-numeric: tabular-nums;
+    color: var(--ink);
+  }
+  .u4-week {
+    display: flex;
+    height: 28px;
+    border-radius: 3px;
+    background: var(--well);
+    overflow: hidden;
+  }
+  .u4-seg {
+    display: block;
+    height: 100%;
+  }
+  .u4-seg.claude_code {
+    background: var(--accent);
+  }
+  .u4-seg.chat {
+    background: var(--signal);
+  }
+  .u4-seg.cowork {
+    background: var(--done);
+  }
+  .u4-seg.other {
+    background: var(--dim);
+  }
+  .u4-scale {
+    display: flex;
+    justify-content: space-between;
+    margin-top: -6px;
+    font: 400 10.5px var(--mono);
+    color: var(--dim);
+  }
+  .u4-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 18px;
+    font-size: 13.5px;
+    color: var(--ink);
+  }
+  .u4-legend > span {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .u4-legend i.u4-seg {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+  }
+  .u4-legend .u4-all {
+    color: var(--ink2);
+    margin-left: auto;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    :global(:where(:root:not([data-layout="classic"]))) .dream-auto > input[type="checkbox"],
+    :global(:where(:root:not([data-layout="classic"]))) .dream-auto > input[type="checkbox"]::after {
+      transition: none;
+    }
   }
 </style>
