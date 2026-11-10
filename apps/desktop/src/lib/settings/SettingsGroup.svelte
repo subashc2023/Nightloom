@@ -63,10 +63,11 @@
     all: unset;
     box-sizing: border-box;
     width: 100%;
-    display: grid;
-    grid-template-columns: 14px auto 1fr;
+    display: flex;
+    flex-wrap: wrap;
     align-items: baseline;
     column-gap: 10px;
+    row-gap: 4px;
     padding: 12px 14px;
     cursor: pointer;
     border-radius: var(--r2, 8px);
@@ -83,6 +84,8 @@
   }
   .chev {
     display: inline-flex;
+    flex: none;
+    width: 14px;
     color: var(--dim);
     transition: transform 0.12s ease;
     align-self: center;
@@ -101,10 +104,9 @@
     font-variant-numeric: tabular-nums;
     color: var(--ink2);
     text-align: right;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    margin-left: auto;
     min-width: 0;
+    overflow-wrap: anywhere;
   }
   .gb {
     border-top: 1px solid var(--line);
