@@ -48,6 +48,7 @@ import {
   setDraftText,
   hasDraft,
   discardDraft,
+  dropQueued,
 } from "./drafts.svelte";
 import { scheduled } from "./scheduled.svelte";
 import { nameScheduledRows } from "./schedule";
@@ -6724,12 +6725,19 @@ const stillRunningAsked = new Set<string>();
  * sent as the next message (`settleInjected`).
  */
 export async function injectIntoTurn(key: string, q: { id: number; text: string; attachments: Attachment[] }): Promise<void> {
+  // Item 536: every return that leaves the row un-handed says why
+  // (`handWhy`), so its bubble and its Send now know — before, each was
+  // silent and the row just read "goes when this turn ends".
   const turn = fg;
-  if (!turn || !app.busy || app.parked) return;
+  if (!turn) return noteHand(key, q.id, "no-turn");
+  if (!app.busy) return noteHand(key, q.id, "not-busy");
+  if (app.parked) return noteHand(key, q.id, "parked");
   // Only into the row's own chat's turn (375 review): a caller holding a
   // stale key (a composer torn down by a chat or project switch) must not
   // hand another chat's row to the turn on screen.
-  if (!turnOwnsKey(turn, key)) return;
+  if (!turnOwnsKey(turn, key)) return noteHand(key, q.id, "other-chat");
+  // The provider engine has no inbox (item 536): nothing to hand in to.
+  if (turn.provider) return noteHand(key, q.id, "provider");
   // A prompt waits on him (item 522): no process runs to take a message,
   // and the turn only goes on by an answer — so the message is the answer.
   if (pendingFor(app.pendingApprovals, app.connection?.engine)) {
@@ -6737,24 +6745,73 @@ export async function injectIntoTurn(key: string, q: { id: number; text: string;
     return;
   }
   const wire = midTurnWire(q.attachments);
-  if (!wire || (!q.text.trim() && wire.images.length + wire.documents.length === 0)) return;
+  if (!wire) return noteHand(key, q.id, "files");
+  if (!q.text.trim() && wire.images.length + wire.documents.length === 0) return noteHand(key, q.id, "empty");
   const id = crypto.randomUUID();
   // Marked first: a delivery event can come back before the call does.
   markInjected(key, q.id, { id, turn: turn.key });
   let sent = false;
+  let threw = false;
   try {
     sent = await api.injectMessage(turn.key, id, q.text, wire.images, wire.documents);
   } catch {
     sent = false;
+    threw = true;
   }
+  if (sent) noteHand(key, q.id, null);
   if (!sent && readDraft(key).queue.find((r) => r.id === q.id)?.inject?.id === id) {
     clearInjected(key, q.id);
+    noteHand(key, q.id, threw ? "error" : "no-inbox");
     // No process with a stdin runs now — a question waiting on his answer,
-    // say (backlog 374): tried again when the turn's next process starts.
+    // say (backlog 374): tried again when the turn's next process starts,
+    // ~~and only then~~ — item 536: and on the turn's next event and every
+    // `RETRY_HAND_MS` while it runs, not at its end.
     const later = injectLater.get(turn.key) ?? [];
     if (!later.some((r) => r.key === key && r.qid === q.id)) later.push({ key, qid: q.id });
     injectLater.set(turn.key, later);
+    retryHandSoon(turn.key);
   }
+}
+
+/**
+ * Why a row sent while a turn runs is not handed to it (item 536), by
+ * `handKey(key, qid)`: which return of `injectIntoTurn` fired. `no-inbox`
+ * and `error` are retried while the turn runs; the rest cannot be handed
+ * in, and their Send now is Stop + send.
+ */
+export type HandReason = "no-turn" | "not-busy" | "parked" | "other-chat" | "provider" | "files" | "empty" | "no-inbox" | "error";
+export const handWhy = $state<Record<string, HandReason>>({});
+export function handKey(key: string, qid: number): string {
+  return `${key}#${qid}`;
+}
+function noteHand(key: string, qid: number, r: HandReason | null): void {
+  const k = handKey(key, qid);
+  if (r === null) delete handWhy[k];
+  else if (handWhy[k] !== r) handWhy[k] = r;
+}
+/** The reason the row is not handed in, if one was recorded (item 536). */
+export function handReason(key: string, qid: number): HandReason | null {
+  return handWhy[handKey(key, qid)] ?? null;
+}
+
+/** How often an un-handed row is tried again while its turn runs (536). */
+export const RETRY_HAND_MS = 1500;
+const handTimers = new Map<string, ReturnType<typeof setTimeout>>();
+/** Try the turn's held-back rows again shortly — once per turn at a time. */
+function retryHandSoon(turnKey: string): void {
+  if (handTimers.has(turnKey)) return;
+  handTimers.set(
+    turnKey,
+    setTimeout(() => {
+      handTimers.delete(turnKey);
+      if (fg?.key === turnKey && app.busy && !app.parked) retryInjects(turnKey);
+    }, RETRY_HAND_MS),
+  );
+}
+/** A turn event on screen (item 536): rows it could not take yet are
+ *  tried again soon, rather than at the turn's end. */
+export function nudgeInjects(turnKey: string): void {
+  if (injectLater.has(turnKey)) retryHandSoon(turnKey);
 }
 
 /**
@@ -6867,7 +6924,7 @@ export function retryInjects(turnKey: string): void {
  * on (measured on CLI 2.1.296). Without it the row goes at the next step,
  * as before. Returns what he is told.
  */
-export async function sendNowRow(key: string, qid: number): Promise<SendNowResult> {
+export async function sendNowRow(key: string, qid: number, sayNotRunning = true): Promise<SendNowResult> {
   const inj = readDraft(key).queue.find((r) => r.id === qid)?.inject;
   if (!inj) return "not_running";
   if (inj.after !== undefined) return "delivered";
@@ -6879,9 +6936,124 @@ export async function sendNowRow(key: string, qid: number): Promise<SendNowResul
     r = "not_running";
   }
   if (r === "sent") markSendNow(key, qid);
-  const toast = sendNowToast(r);
+  // Item 536: a caller that falls back to Stop + send says so itself.
+  const toast = r === "not_running" && !sayNotRunning ? null : sendNowToast(r);
   if (toast) addToast(toast);
   return r;
+}
+
+/**
+ * What *Send now* on a pending row does (item 536 — his "there's
+ * literally no option to send now"): `now`, Claude Code's own send now on
+ * a row already handed in; `hand`, hand it in first and then that — and
+ * Stop + send if the turn cannot take it; `stop`, Stop the turn (the
+ * reply so far stays) and send the row at once as the next message — the
+ * provider engine, a row with a file chip, any turn with no inbox;
+ * `reply`, in place of the answer a prompt waits on (522); `none`, nothing
+ * to do (already going, or this row is not the running turn's chat's).
+ */
+export type SendNowPlan = "now" | "hand" | "stop" | "reply" | "none";
+export function sendNowPlan(key: string, qid: number): SendNowPlan {
+  const q = readDraft(key).queue.find((r) => r.id === qid);
+  if (!q || !app.busy || app.parked) return "none";
+  const inj = q.inject;
+  if (inj && (inj.reply || inj.now || inj.after !== undefined)) return "none";
+  const turn = fg;
+  // Never another chat's turn: a Stop here would end a turn that is not
+  // this row's, and the row would go nowhere sooner.
+  if (!turn || !turnOwnsKey(turn, key)) return "none";
+  if (pendingFor(app.pendingApprovals, app.connection?.engine)) return "reply";
+  if (inj) return "now";
+  if (turn.provider || !midTurnWire(q.attachments)) return "stop";
+  const why = handReason(key, qid);
+  return why === "provider" || why === "files" || why === "empty" ? "stop" : "hand";
+}
+
+/**
+ * A Stop pressed for *Send now* (item 536): the row the stopped turn's end
+ * sends at once, into its own chat (`key`), whatever the queue's hold
+ * after a Stop says. Taken once, by the composer's drain
+ * (`takeStopSend`); a row gone by then (taken by the turn, cancelled)
+ * sends nothing — never twice.
+ */
+export const stopSend = $state<{ key: string | null; qid: number | null; at: number }>({ key: null, qid: null, at: 0 });
+/** A forced send older than this is stale (he moved on): dropped. */
+const STOP_SEND_TTL_MS = 10 * 60 * 1000;
+export function stopSendFor(key: string): number | null {
+  return stopSend.key === key && stopSend.qid !== null ? stopSend.qid : null;
+}
+/** The row to send at once in chat `key`, once the turn is over; taken
+ *  (cleared) by this call. `null` while a turn runs or for another chat. */
+export function takeStopSend(key: string, now = Date.now()): number | null {
+  if (app.busy || stopSend.key === null || stopSend.qid === null) return null;
+  if (now - stopSend.at > STOP_SEND_TTL_MS) {
+    stopSend.key = null;
+    stopSend.qid = null;
+    return null;
+  }
+  if (stopSend.key !== key) return null;
+  const qid = stopSend.qid;
+  stopSend.key = null;
+  stopSend.qid = null;
+  return qid;
+}
+/** Row `qid` to the head of chat `key`'s queue, unsent (536); false when
+ *  it is not there any more. */
+export function frontQueued(key: string, qid: number): boolean {
+  const q = readDraft(key).queue.find((r) => r.id === qid);
+  if (!q) return false;
+  if (q.inject?.after !== undefined) return false;
+  dropQueued(key, qid);
+  requeueFront(key, { id: q.id, text: q.text, attachments: q.attachments });
+  return true;
+}
+
+/** Stop the running turn and send row `qid` at once as the next message
+ *  (item 536). `stopping` when the Stop went out. */
+export async function stopAndSendRow(key: string, qid: number): Promise<"stopping" | "none"> {
+  const turn = fg;
+  if (!turn || !app.busy || app.parked || !turnOwnsKey(turn, key)) return "none";
+  const q = readDraft(key).queue.find((r) => r.id === qid);
+  if (!q || q.inject?.after !== undefined || q.inject?.reply) return "none";
+  // First in its queue, so whatever sends next sends it; no longer tried
+  // into the turn being stopped.
+  if (!frontQueued(key, qid)) return "none";
+  const later = injectLater.get(turn.key);
+  if (later) injectLater.set(turn.key, later.filter((r) => !(r.key === key && r.qid === qid)));
+  stopSend.key = key;
+  stopSend.qid = qid;
+  stopSend.at = Date.now();
+  await cancelTurn();
+  // The Stop did not go out (its toast says why): nothing is forced.
+  if (!turnWasStopped() && app.busy && stopSend.qid === qid) {
+    stopSend.key = null;
+    stopSend.qid = null;
+    return "none";
+  }
+  return "stopping";
+}
+
+/** *Send now* on a pending row, whichever way it can go (item 536). */
+export async function sendNowAny(key: string, qid: number): Promise<SendNowResult | "stopping" | "none"> {
+  const plan = sendNowPlan(key, qid);
+  if (plan === "none" || plan === "reply") return "none";
+  if (plan === "now") {
+    const r = await sendNowRow(key, qid, false);
+    return r === "not_running" ? stopAndSendRow(key, qid) : r;
+  }
+  if (plan === "hand") {
+    const q = readDraft(key).queue.find((r) => r.id === qid);
+    if (!q) return "delivered";
+    await injectIntoTurn(key, q);
+    const after = readDraft(key).queue.find((r) => r.id === qid);
+    if (!after) return "delivered";
+    if (after.inject?.reply) return "sent";
+    if (after.inject) {
+      const r = await sendNowRow(key, qid, false);
+      return r === "not_running" ? stopAndSendRow(key, qid) : r;
+    }
+  }
+  return stopAndSendRow(key, qid);
 }
 /** The turns in `app.background`, by chat. */
 const bgTurns = new Map<string, TurnCtx>();
@@ -9451,6 +9623,8 @@ export function applyTurnEvent(ev: TurnEvent & { chat?: string }): void {
       return;
     }
   }
+  // Item 536: a row the turn could not take yet is tried again now-ish.
+  if (fg) nudgeInjects(fg.key);
   applyTurnEventTo(screenHost(), ev);
 }
 

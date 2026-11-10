@@ -83,7 +83,7 @@
   } from "./handoff.svelte";
   import { fold, isFolded, noteStay, unfold } from "./handoffFold.svelte";
   import ThreadPicker from "./ThreadPicker.svelte";
-  import { chatThread, refreshThreadFlags, injectIntoTurn, sendNowRow, openChatKey, takeQueued } from "./state.svelte";
+  import { chatThread, refreshThreadFlags, injectIntoTurn, sendNowRow, openChatKey, takeQueued, takeStopSend, frontQueued, stopSendFor } from "./state.svelte";
   import { injectChip, queueHeadLabel } from "./midTurn";
   import { rowsOf } from "./subagentRows";
   import { draftEstimate, draftEstimateTitle, draftExact, draftExactTitle, EXACT_TOKENS_FROM, fmtTokens } from "./tokens";
@@ -2005,6 +2005,18 @@
     if (aside) return asideDrain();
     // A provider turn off screen holds the engine (backlog 159, A4).
     if (app.busy || !app.connection || providerElsewhereName()) return;
+    // A forced send is on its way and its turn has not started yet (item
+    // 536): no second drain sends the next row beside it.
+    if (forcing) return;
+    // His *Send now* stopped the turn (item 536): that row goes now, at
+    // the head of this chat's own queue, whatever the hold after a Stop
+    // says — taken once, so it goes once.
+    const forced = takeStopSend(liveKey());
+    if (forced !== null) {
+      if (!frontQueued(liveKey(), forced)) return;
+      explicit = true;
+      from = undefined;
+    }
     if (!explicit && hold) return;
     // Only the open chat's own queue, and after a turn only when that turn
     // was this chat's (backlog 375): a message never leaves for a chat it
@@ -2012,14 +2024,35 @@
     // `takeQueued` (state.svelte.ts) is where that rule lives and is tested.
     const q = takeQueued(key, aside !== null, from);
     if (!q) return;
+    // Free again once its turn has started (the effect below) or the
+    // send has come back without one.
+    if (forced !== null) forcing = true;
     // The held row is where this message leaves from (backlog 194); its
     // element is still in the DOM until the next flush.
     launch("chat", document.querySelector(`.queue-row[data-queue-id="${q.id}"] .queue-text`));
     // The row Nightloom queued while he was away is the wrap-up going.
     const wrapUp = handoffHere && q.id === handoff.queuedId;
     if (wrapUp) beginWrapUp(app.activeSessionId);
-    await dispatch(q.text, q.attachments, wrapUp);
+    try {
+      await dispatch(q.text, q.attachments, wrapUp);
+    } finally {
+      if (forced !== null) forcing = false;
+    }
   }
+
+  /** A forced send (536) taken and not yet started as a turn. */
+  let forcing = false;
+  $effect(() => {
+    if (app.busy) forcing = false;
+  });
+  // The stopped turn is over and his *Send now* row waits (item 536): send
+  // it — the turn's own end usually drains first; this covers a turn this
+  // composer did not start (a background chat brought back, the phone).
+  $effect(() => {
+    if (aside || app.busy) return;
+    if (stopSendFor(key) === null) return;
+    untrack(() => void drain());
+  });
 
   // Scheduled send (backlog 224): a due message joins this chat's queue
   // and goes through `drain`, which gives the words back on a failure.
