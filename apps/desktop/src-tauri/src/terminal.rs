@@ -525,8 +525,10 @@ impl Terminals {
         }
     }
 
-    /// The open shells' ids, for a window that reloads (dev) and for the
-    /// tests.
+    /// The open shells' ids, for the tests. (~~and for a window that
+    /// reloads (dev)~~ — 2026-11-11, item 622b: the `terminal_list` command
+    /// that served the window was removed; no window called it.)
+    #[cfg(test)]
     fn ids(&self) -> Vec<u32> {
         let mut ids: Vec<u32> = self
             .shells
@@ -931,12 +933,6 @@ pub fn terminal_resize(
 pub async fn terminal_close(terminals: State<'_, Terminals>, id: u32) -> Result<(), String> {
     terminals.close(id);
     Ok(())
-}
-
-/// The ids still open, for the tests and for a window that reloads.
-#[tauri::command]
-pub fn terminal_list(terminals: State<'_, Terminals>) -> Vec<u32> {
-    terminals.ids()
 }
 
 #[cfg(all(test, unix))]

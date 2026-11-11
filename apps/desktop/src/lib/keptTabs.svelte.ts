@@ -108,12 +108,6 @@ export function keptIn(pane: Pane, active: Tab): Tab[] {
   return next.map((e) => byId.get(e.id)!);
 }
 
-/** For the suite. */
-export function resetKept(): void {
-  kept.clear();
-  clock = 0;
-}
-
 /**
  * The action on a kept tab's content box: while it is hidden (`away`), it
  * keeps the box it had in front — taken out of the pane's flow, at the same

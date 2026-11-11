@@ -126,10 +126,6 @@ export function leafOf(path: string): string {
   return i < 0 ? path : path.slice(i + 1);
 }
 
-export function destLabel(to: string): string {
-  return to === "" ? "top of the notes" : to + "/";
-}
-
 /** "Haiku · 2,140 in, 380 out · about $0.004". The figure is the CLI's
  *  estimate of the API price — not a bill on a subscription. */
 export function costWords(plan: Pick<SortPlan, "model" | "usage" | "cost_usd">): string {

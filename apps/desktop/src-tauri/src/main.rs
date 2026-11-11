@@ -8961,7 +8961,12 @@ fn build_window(app: &tauri::App) -> tauri::Result<()> {
         win = win.visible(false).focused(false);
     }
 
+    // Item 622b: the web view's creation in the startup log — stamped when the
+    // build began, its time how long the build took — so the ~2 s before the
+    // window's first script line (`bootMark.ts`) can be split.
+    let started = std::time::Instant::now();
     win.build()?;
+    startup_log::mark("webview_created", started);
     Ok(())
 }
 
@@ -9772,7 +9777,6 @@ fn main() {
             terminal::terminal_write,
             terminal::terminal_resize,
             terminal::terminal_close,
-            terminal::terminal_list,
             terminal::terminal_ack,
             nightshift::nightshift_projects,
             nightshift::nightshift_project,

@@ -22,20 +22,6 @@ export function askKind(name: string): AskKind {
   return "call";
 }
 
-/** The card in words, for a label: "Claude's question", "the plan", "the permission prompt". */
-export function askNoun(kind: AskKind): string {
-  switch (kind) {
-    case "question":
-      return "Claude's question";
-    case "plan":
-      return "the plan";
-    case "browser":
-      return "the browser prompt";
-    default:
-      return "the permission prompt";
-  }
-}
-
 /**
  * The prompt a message would answer: the oldest one waiting in the chat on screen, on the Claude Code engine
  * only. `null` — nothing waits, or the engine has no deferred calls.

@@ -177,11 +177,6 @@ export function firstMessage(readOrderText: string, startPrompt: string | null):
   return [readOrderText.trim(), (startPrompt ?? "").trim()].filter((t) => t).join("\n\n");
 }
 
-/** ~~The first message of the continued chat, ready in its box.~~ Superseded
- *  2026-09-16 (pass 2): the box holds the model's own start prompt, or
- *  nothing. Kept for anything that still names it. */
-export const CONTINUE_MESSAGE = "Read HANDOFF.md and continue.";
-
 export interface HandoffState {
   /** The chat the state is about; a different open chat reads as idle. */
   chat: string | null;

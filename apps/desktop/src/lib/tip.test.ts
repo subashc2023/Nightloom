@@ -222,7 +222,8 @@ describe("no native title= anywhere (171 pass 2)", () => {
     expect(mathSrc).not.toMatch(/\stitle="/);
     expect(mathSrc).toContain('data-tip="');
     expect(linksSrc).not.toMatch(/\stitle="/);
-    expect(linksSrc).toContain('data-tip="');
+    // ~~expect(linksSrc).toContain('data-tip="')~~ — 2026-11-11, item 622b: links.ts
+    // no longer builds HTML (its unused `renderNote` renderer was removed).
     expect(noteEditorSrc).not.toMatch(/\.title = /);
     expect(noteEditorSrc).toContain("el.dataset.tip = ");
   });

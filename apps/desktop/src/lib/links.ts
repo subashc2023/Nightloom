@@ -1,14 +1,12 @@
-import { Marked } from "marked";
-import type { MarkedExtension, TokenizerAndRendererExtension } from "marked";
-import DOMPurify from "dompurify";
-import { SANITIZE } from "./markdown";
-import { math } from "./math";
-import { tilde } from "./tilde";
 import type { Note } from "./types";
 
 /**
  * `[[wikilinks]]` in a knowledge note.
  *
+ * (Item 622b, 2026-11-11: the marked renderer this paragraph describes —
+ * `renderNote` and its wikilink extension — was removed; nothing called it
+ * after item 498 retired the note Preview. The editor draws links itself in
+ * `noteEditor.ts`. The paragraph is kept for the reasoning.)
  * Recognition happens in marked's *tokenizer* rather than as a pass over the
  * rendered HTML, for the reason `math.ts` gives at length: by the time
  * markdown has been parsed the delimiters may have survived but the thing
@@ -142,106 +140,6 @@ function stem(name: string): string {
   const base = name.split("/").pop() ?? name;
   const cut = base.lastIndexOf(".");
   return cut > 0 ? base.slice(0, cut) : base;
-}
-
-/**
- * The href a rendered wikilink carries.
- *
- * A fragment rather than a custom scheme, because DOMPurify strips every
- * scheme outside its allow-list and a `nlnote:` href would arrive as a dead
- * anchor with no way to tell it apart from a real one. A fragment is allowed
- * as-is, and the click handler reads the target back out of it.
- */
-const HREF_PREFIX = "#kb:";
-
-export function linkHref(target: string): string {
-  return HREF_PREFIX + encodeURIComponent(target);
-}
-
-/** The target inside a wikilink href, or null for any other anchor. */
-export function hrefTarget(href: string | null): string | null {
-  if (!href) return null;
-  const at = href.indexOf(HREF_PREFIX);
-  if (at < 0) return null;
-  try {
-    return decodeURIComponent(href.slice(at + HREF_PREFIX.length));
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Which notes the renderer resolves against.
- *
- * Module state because a marked extension is registered once and rendering
- * takes only a string. Set immediately before each render; presentation-only,
- * so a stale value costs a link the wrong colour and nothing else.
- */
-let vault: Note[] = [];
-
-const wikilink: TokenizerAndRendererExtension = {
-  name: "wikilink",
-  level: "inline",
-  start(src: string) {
-    return src.indexOf("[[");
-  },
-  tokenizer(src: string) {
-    // One line, no nested bracket, and a cap: every one of those is what an
-    // unterminated `[[` looks like, and leaving it as literal text is the
-    // right answer for a note being typed.
-    const match = /^\[\[([^\[\]\n]{1,200})\]\]/.exec(src);
-    if (!match) return undefined;
-    const inner = match[1];
-    const bar = inner.indexOf("|");
-    const target = (bar < 0 ? inner : inner.slice(0, bar)).trim();
-    if (!target) return undefined;
-    const alias = bar < 0 ? null : inner.slice(bar + 1).trim() || null;
-    return {
-      type: "wikilink",
-      raw: match[0],
-      text: alias ?? target,
-      target,
-    } as never;
-  },
-  renderer(token) {
-    const target = (token as unknown as { target: string }).target;
-    const found = resolveLink(target, vault);
-    const label = escapeHtml(token.text);
-    // A broken link is styled, not hidden or dropped: writing `[[thing]]`
-    // before the note exists is how a note gets planned, so this is a state
-    // to show rather than an error.
-    const cls = found.kind === "note" ? "wikilink" : "wikilink broken";
-    const title = linkTitle(target, found);
-    return `<a class="${cls}" href="${linkHref(target)}" data-tip="${escapeHtml(title)}">${label}</a>`;
-  },
-};
-
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-const wikilinks: MarkedExtension = { extensions: [wikilink] };
-
-/**
- * Its own `Marked` instance rather than `marked.use(wikilinks)`, so the
- * transcript keeps rendering assistant text exactly as it did. A model that
- * happens to write `[[x]]` in a reply should not have it turn into a link to
- * a file the reader has no way to click.
- */
-const noteMarked = new Marked();
-noteMarked.use(math);
-noteMarked.use(tilde);
-noteMarked.use(wikilinks);
-
-/** Render a note to sanitized HTML, with wikilinks resolved against `notes`. */
-export function renderNote(src: string, notes: Note[]): string {
-  vault = notes;
-  const html = noteMarked.parse(src, { async: false, gfm: true }) as string;
-  return DOMPurify.sanitize(html, SANITIZE);
 }
 
 /** Every distinct link target in `src`, in order — used for the outbound list. */

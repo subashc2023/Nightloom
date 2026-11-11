@@ -3153,11 +3153,6 @@
   :global(:where(:root:not([data-layout="classic"]))) .ws-row .ws-path.dim {
     color: var(--dim);
   }
-  :global(:where(:root:not([data-layout="classic"]))) .ws-src {
-    flex: none;
-    font-size: 11px;
-    color: var(--dim);
-  }
   :global(:where(:root:not([data-layout="classic"]))) .subs.folders .fold-row .lbl {
     display: none;
   }

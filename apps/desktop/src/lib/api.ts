@@ -25,7 +25,6 @@ import type {
   FolderGrant,
   ImageInput,
   ImportSummary,
-  Item,
   ItemList,
   KnowledgeInfo,
   LinkGraph,
@@ -55,7 +54,6 @@ import type {
   EditableLayer,
   PromptLayer,
   PromptLayersInfo,
-  Proposal,
   ProposalEntry,
   ProposalNotice,
   ProposalScope,
@@ -68,7 +66,6 @@ import type {
   ThreadTidy,
   ThreadUpkeep,
   RevertPreview,
-  Schedules,
   SearchBackendInfo,
   ShiftSummary,
   ContextEdit,
@@ -76,7 +73,6 @@ import type {
   RemoteStatus,
   SessionEvent,
   SessionMeta,
-  SessionHit,
   SearchResult,
   SearchScope,
   TurnResult,
@@ -521,14 +517,6 @@ function shownFirst<T extends { first_user?: string | null }>(s: T): T {
   return s && typeof s.first_user === "string" && s.first_user.includes("[Attached ")
     ? { ...s, first_user: shownText(s.first_user) }
     : s;
-}
-
-export function searchSessions(query: string): Promise<SessionHit[]> {
-  return invoke<SessionHit[]>("search_sessions", { query }).then((l) =>
-    Array.isArray(l)
-      ? l.map((h) => ({ ...shownFirst(h), excerpt: typeof h.excerpt === "string" ? cleanPassage({ before: h.excerpt, matched: "", after: "" }).before : h.excerpt }))
-      : l,
-  );
 }
 
 /** The search-everywhere panel's query (nightshift backlog 117): results
@@ -1134,10 +1122,6 @@ export function listProjects(): Promise<ProjectInfo[]> {
   return invoke("list_projects");
 }
 
-export function activeProject(): Promise<ProjectInfo | null> {
-  return invoke("active_project");
-}
-
 /** Register a folder. Idempotent — the same folder is the same project. */
 export function createProject(
   path: string,
@@ -1483,10 +1467,6 @@ export function newNoteFolder(scope: NoteScope, name: string): Promise<string> {
 /** Pending proposals for a fixed file, newest first. */
 export function listProposals(scope: ProposalScope): Promise<ProposalEntry[]> {
   return invoke("list_proposals", { scope });
-}
-
-export function readProposal(scope: ProposalScope, id: string): Promise<Proposal> {
-  return invoke("read_proposal", { scope, id });
 }
 
 /** Move a proposal aside as turned down; it is kept under `dismissed/`. */
@@ -1959,10 +1939,6 @@ export function nightshiftItems(projectId: string): Promise<ItemList> {
   return invoke("nightshift_items", { projectId });
 }
 
-export function nightshiftItem(projectId: string, id: string): Promise<Item> {
-  return invoke("nightshift_item", { projectId, id });
-}
-
 /** Rewrite `backlog/order.json`. Refused while a shift is live. */
 export function nightshiftSetOrder(
   projectId: string,
@@ -2004,13 +1980,6 @@ export function nightshiftAnswerBlocker(
 
 export function nightshiftShifts(projectId: string): Promise<ShiftSummary[]> {
   return invoke("nightshift_shifts", { projectId });
-}
-
-export function nightshiftShift(
-  projectId: string,
-  shiftId: string,
-): Promise<ShiftSummary> {
-  return invoke("nightshift_shift", { projectId, shiftId });
 }
 
 /** The last `maxBytes` of a shift's `run.log` (default 64 KiB). */
@@ -2134,29 +2103,6 @@ export function nightshiftReadFile(
   path: string,
 ): Promise<string> {
   return invoke("nightshift_read_file", { projectId, path });
-}
-
-/**
- * The last `limit` rows (default 200) of a jsonl stream, by `stream` =
- * `spend` | `adherence` | `limits`.
- */
-export function nightshiftStream(
-  projectId: string,
-  stream: string,
-  limit?: number,
-): Promise<unknown[]> {
-  return invoke("nightshift_stream", { projectId, stream, limit });
-}
-
-export function nightshiftSchedule(projectId: string): Promise<Schedules> {
-  return invoke("nightshift_schedule", { projectId });
-}
-
-export function nightshiftSetSchedule(
-  projectId: string,
-  schedules: Schedules,
-): Promise<Schedules> {
-  return invoke("nightshift_set_schedule", { projectId, schedules });
 }
 
 /** What one unit changed: the diff of its commit. */
