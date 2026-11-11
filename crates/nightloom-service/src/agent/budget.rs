@@ -131,7 +131,16 @@ pub struct Reservation {
     /// The window when it launched; `None` when no reading was on hand.
     #[serde(default)]
     pub at_pct: Option<u8>,
+    /// When it was taken (wall clock, ms): the drive loop keeps a fresh one
+    /// while the helper's `task_started` is still on its way (review
+    /// 2026-11-10), so a burst of launches each sees the ones before it.
+    #[serde(default)]
+    pub at_ms: i64,
 }
+
+/// How long a reservation is kept with no helper seen running: the gap
+/// between the hook passing a launch and the CLI reporting it started.
+pub const RESERVE_GRACE_MS: i64 = 20_000;
 
 /// Which threshold a wake is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -254,6 +263,7 @@ pub fn claim_reservation(
     b.reserved.push(Reservation {
         points,
         at_pct: pct,
+        at_ms: chrono::Utc::now().timestamp_millis(),
     });
     Ok(())
 }
@@ -455,8 +465,13 @@ pub fn take_wakes(dir: &Path, now_ms: i64, running: bool, deliver: bool) -> Vec<
     }
     let reading = brief::reading_on_hand(dir, now_ms);
     brief::with_ledger(dir, |b| {
+        // With no helper running the holds go — but not one just taken,
+        // whose helper the CLI has not reported started yet (review
+        // 2026-11-10: a 2 s look between two launches of one burst dropped
+        // the first's hold, so the second was judged without it).
         if !running {
-            b.reserved.clear();
+            b.reserved
+                .retain(|r| now_ms.saturating_sub(r.at_ms) < RESERVE_GRACE_MS);
         }
         if let Some(r) = reading
             && b.latest_at_ms.is_none_or(|t| r.sampled_at_ms >= t)
@@ -775,7 +790,86 @@ pub fn cap_from_message(text: &str) -> Option<(u8, BudgetMode)> {
         own.push_str(line);
         own.push('\n');
     }
-    let c = re.captures(&own)?;
+    // A percent of something other than the plan's usage is not a cap
+    // ("within 2% of the baseline", "up to 30% faster", "at most 5% error";
+    // review 2026-11-10): "of …" must name the usage, and a measure word
+    // right after the figure rules it out.
+    let about_usage = |after: &str| {
+        let after = after.trim_start().to_ascii_lowercase();
+        let first = after
+            .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-')
+            .find(|w| !w.is_empty())
+            .unwrap_or("");
+        const MEASURES: &[&str] = &[
+            "faster",
+            "slower",
+            "more",
+            "less",
+            "fewer",
+            "off",
+            "error",
+            "errors",
+            "accuracy",
+            "better",
+            "worse",
+            "bigger",
+            "smaller",
+            "larger",
+            "longer",
+            "shorter",
+            "cheaper",
+            "zoom",
+            "opacity",
+            "width",
+            "height",
+            "coverage",
+            "loss",
+            "increase",
+            "decrease",
+            "growth",
+            "margin",
+            "discount",
+            "chance",
+            "probability",
+        ];
+        if MEASURES.contains(&first) {
+            return false;
+        }
+        if first != "of" {
+            return true;
+        }
+        // The words "of" governs: up to the clause's end, a few words long.
+        let rest: String = after
+            .chars()
+            .take_while(|ch| !matches!(ch, '.' | ';' | ',' | '!' | '?' | '\n' | '%'))
+            .take(32)
+            .collect();
+        [
+            "5h",
+            "5-h",
+            "5 h",
+            "five",
+            "hour",
+            "limit",
+            "usage",
+            "window",
+            "plan",
+            "budget",
+            "quota",
+            "token",
+            "week",
+            "my max",
+            "the max",
+            "max plan",
+            "allowance",
+            "session",
+        ]
+        .iter()
+        .any(|w| rest.contains(w))
+    };
+    let c = re
+        .captures_iter(&own)
+        .find(|c| c.get(0).is_some_and(|m| about_usage(&own[m.end()..])))?;
     let percent: u8 = c
         .get(2)?
         .as_str()
@@ -1118,6 +1212,16 @@ mod tests {
             ("```\nuse up to 50%\n```\nwhat does this mean?", None),
             ("> use up to 50%\nthat was yesterday's ask", None),
             ("up to 250% zoom", None),
+            // Review 2026-11-10: a percent of something else is no cap.
+            ("keep the error within 2% of the baseline", None),
+            ("it should load up to 30% faster", None),
+            ("at most 5% error on the eval", None),
+            ("up to 30% of the users see it", None),
+            (
+                "up to 30% of the users; use up to 60% of the window",
+                Some((60, B)),
+            ),
+            ("you can use up to 40% of my 5-hour limit", Some((40, B))),
         ] {
             assert_eq!(cap_from_message(text), want, "{text}");
         }
@@ -1523,6 +1627,11 @@ mod tests {
         });
         at(&dir3, 96);
         assert!(take_wakes(&dir3, now, false, true).is_empty());
+        // A hold just taken outlives the look (its helper may not be
+        // reported started yet); past the grace it goes.
+        assert_eq!(read_turn_budget(&dir3).unwrap().reserved.len(), 1);
+        let later = chrono::Utc::now().timestamp_millis() + RESERVE_GRACE_MS + 1;
+        assert!(take_wakes(&dir3, later, false, true).is_empty());
         assert!(read_turn_budget(&dir3).unwrap().reserved.is_empty());
         for d in [dir, dir2, dir3] {
             let _ = std::fs::remove_dir_all(&d);

@@ -5512,7 +5512,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns"
             None,
             chrono::Utc::now().timestamp_millis() + 60_000,
         );
-        let mut agent = ClaudeCodeAgent::new(s);
+        let agent = ClaudeCodeAgent::new(s);
         let cancel = CancellationToken::new();
         let mut woke = Vec::new();
         let began = std::time::Instant::now();
