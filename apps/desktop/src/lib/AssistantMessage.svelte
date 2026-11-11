@@ -1481,9 +1481,15 @@
     /* A card in front (Filament IV, item 525): the raised fill, the control
        edge all round. ~~A left rule, accent while live~~: live is the
        signal colour on the edge, and on the running row. */
-    border: 1px solid var(--line2);
+    /* ~~The raised fill and the control edge~~ (item 594, his words
+       2026-11-10: the same shade as the message box "almost makes me think
+       that the thinking section is like a textbox"): an instrument panel a
+       step darker than the composer, between it and the ground, with a
+       faint cool tint and a quieter edge. A mix, not `--sheet`, so it stays
+       apart where a palette's raised fill is the sheet (B–D). */
+    border: 1px solid color-mix(in srgb, var(--line2) 70%, var(--paper, var(--bg)));
     border-radius: var(--r2);
-    background: var(--raised);
+    background: color-mix(in srgb, color-mix(in srgb, var(--raised) 55%, var(--paper, var(--bg))) 96%, var(--signal));
     min-width: 0;
     /* Not `overflow: hidden`: the call's hover Remove (backlog 066) sits
        past the right edge. */
