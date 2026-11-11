@@ -32,13 +32,16 @@ describe("577 the engine popover", () => {
     const sels = selectors(providerRail, "Filament IV, item 577");
     expect(sels.length).toBeGreaterThan(20);
     for (const s of sels) {
-      if (s === ".eng-h") continue;
+      // Defaults hidden everywhere and shown by a gated rule: 577's Engine title, and item 612's
+      // quiet status line (its class is set only under Filament), sub-titles and "Nightloom handles" list.
+      if ([".eng-h", ".status.quiet", ".grp-h", ".managed-list"].includes(s)) continue;
       expect(s.startsWith(GATE), s).toBe(true);
     }
     expect(providerRail).toMatch(/\.eng-h \{\s*display: none;/);
   });
   it("the Engine title is hidden from screen readers (the radiogroup keeps its label)", () => {
-    expect(providerRail).toMatch(/class="sect-h eng-h" aria-hidden="true"/);
+    // Item 612 put a focusable `?` in the title, so it can no longer be aria-hidden; the radiogroup keeps its label.
+    expect(providerRail).toMatch(/class="sect-h eng-h"/);
     expect(providerRail).toMatch(/class="eng" role="radiogroup" aria-label="Engine"/);
   });
   it("TopBar carries the popover's look; Classic's files do not", () => {
