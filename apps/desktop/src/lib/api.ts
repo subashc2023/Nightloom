@@ -833,6 +833,15 @@ export function keepWarmStop(chat: string): Promise<boolean> {
   return invoke("keep_warm_stop", { chat });
 }
 
+/** Item 608: his Settings default for every chat without its own switch. */
+export function keepWarmDefault(): Promise<boolean> {
+  return invoke("keep_warm_default");
+}
+
+export function keepWarmSetDefault(on: boolean): Promise<boolean> {
+  return invoke("keep_warm_set_default", { on });
+}
+
 /** Where a chat lives (backlog 535): the project whose folder holds its
  *  log (`project: null` — the unfiled chats), or `found: false`. */
 export function chatHome(chat: string): Promise<{ found: boolean; project: string | null; name: string | null }> {

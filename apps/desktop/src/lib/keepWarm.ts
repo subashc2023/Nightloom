@@ -10,7 +10,12 @@ export type KeepWarmWhy = "off" | "noreply" | "small" | "notonehour" | "cap" | "
 
 export interface KeepWarmStatus {
   chat: string;
+  /** The switch as it acts: his choice for the chat, else the default. */
   mode: KeepWarmMode;
+  /** The chat has his own choice (item 608); else `mode` is the default's. */
+  chosen?: boolean;
+  /** His Settings default, "Keep chats' caches warm automatically". */
+  default_on?: boolean;
   /** A ping is scheduled or running. */
   scheduled: boolean;
   /** When the cache goes cold if the schedule runs, ms epoch. */
@@ -94,12 +99,28 @@ export function switchTitle(s: KeepWarmStatus | null | undefined, now: number): 
     `Keep this chat's prompt cache warm: a small hidden request every ${every} after the last reply, for up to ${cap}, ` +
     `so your next message reads the context from the cache instead of paying to rebuild it. Only for contexts of ${floor} tokens or more. ` +
     `It stops when you send, close the tab or delete the chat. The requests never appear in the chat or the chat list.`;
-  if (!s || s.mode === "off") return `${what} Off — click to switch on for this chat.`;
+  if (!s || s.mode === "off") return `${what} ${offWhy(s)} — click to switch on for this chat.`;
   const state = isKeeping(s, now)
     ? `On${s.mode === "once" ? " until your next message" : ""}: warm until about ${clockTime(s.warm_until_ms as number)}` +
       (s.next_ping_ms != null ? `, next request ${clockTime(s.next_ping_ms)}.` : ".")
     : `On${s.mode === "once" ? " until your next message" : ""}, not running: ${idleWords(s) ?? "waiting"}.`;
-  return `${what} ${state}${spentWords(s)} Click to switch off.`;
+  return `${what} ${state}${onWhy(s)}${spentWords(s)} Click to switch off for this chat.`;
+}
+
+const SETTING = "Settings → Subscription → Keeping caches warm";
+
+/** Item 608: whose off it is — his for this chat, or the default's. */
+function offWhy(s: KeepWarmStatus | null | undefined): string {
+  if (!s || s.default_on === undefined) return "Off";
+  if (s.chosen && s.default_on) return `Off for this chat — you switched it off; every other chat is kept warm by default (${SETTING})`;
+  if (!s.chosen && !s.default_on) return `Off — the default is off (${SETTING})`;
+  return "Off";
+}
+
+/** Item 608: on by the default, or by his click. */
+function onWhy(s: KeepWarmStatus): string {
+  if (s.default_on === undefined || s.mode === "once") return "";
+  return s.chosen ? " (switched on for this chat.)" : ` (on by default for every chat — ${SETTING}.)`;
 }
 
 /** The notice under his latest message; null when nothing is being kept. */

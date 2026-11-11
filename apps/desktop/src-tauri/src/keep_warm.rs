@@ -30,7 +30,18 @@ const TICK: Duration = Duration::from_secs(10);
 pub struct Holder(pub Arc<Registry>);
 
 impl Holder {
-    /// The chat was deleted or moved: its keep-warm ends, switch off.
+    /// The registry with his Settings default read from the config
+    /// directory (item 608: on with no file).
+    pub fn load() -> Self {
+        let h = Self::default();
+        h.0.set_default(keep_warm::load_default(
+            nightloom_service::project::config_dir().as_deref(),
+        ));
+        h
+    }
+
+    /// The chat was deleted or moved: its keep-warm run ends (the switch
+    /// stays as he set it; item 608).
     pub fn stop(&self, chat: &str) -> bool {
         self.0.stop(chat, now_ms())
     }
@@ -215,9 +226,26 @@ pub async fn keep_warm_status(
     }
     let dir = match state.chats.find(&chat) {
         Some((full, log)) => log.try_lock().ok().and_then(|s| {
-            s.log_path()
+            let dir = s
+                .log_path()
                 .and_then(|p| p.parent())
-                .map(|d| d.join("ask").join(&full))
+                .map(|d| d.join("ask").join(&full))?;
+            // Item 608: a chat on by default (or by him) that this run
+            // holds no reply for — shown after a restart, or its tab
+            // reopened — starts from its last reply now, as a switch-on
+            // would; `step`'s guards (1-hour, 50k, cap, cold) still decide.
+            if !state.agents.busy(&full) && holder.0.wants_facts(&full, &dir) {
+                let focused = state.chats.focus().as_deref() == Some(full.as_str());
+                if let (Some(mut spec), Some(reply), Some(resume)) = (
+                    state.agents.spec_of(&full, focused),
+                    keep_warm::reply_of(&s),
+                    crate::resume_of(&s),
+                ) {
+                    spec.resume = Some(resume);
+                    holder.0.offer(&full, &dir, &spec, reply);
+                }
+            }
+            Some(dir)
         }),
         None => None,
     };
@@ -228,7 +256,33 @@ pub async fn keep_warm_status(
     Ok(holder.0.status(&chat, Some(&dir), &policy(), now_ms()))
 }
 
-/// The chat's tab was closed: its keep-warm ends and the switch goes off.
+/// His Settings default, "Keep chats' caches warm automatically" (item
+/// 608): on with no file.
+#[tauri::command]
+pub fn keep_warm_default(holder: State<'_, Holder>) -> bool {
+    holder.0.default_on()
+}
+
+/// Set his Settings default; every held chat's status is sent again, so
+/// a switch that follows the default reads right at once.
+#[tauri::command]
+pub fn keep_warm_set_default(
+    app: AppHandle,
+    holder: State<'_, Holder>,
+    on: bool,
+) -> Result<bool, String> {
+    let dir = nightloom_service::project::config_dir()
+        .ok_or_else(|| "no config directory to keep the setting in".to_string())?;
+    keep_warm::save_default(&dir, on)?;
+    holder.0.set_default(on);
+    for chat in holder.0.known() {
+        tell(&app, &holder, &chat);
+    }
+    Ok(on)
+}
+
+/// The chat's tab was closed: its keep-warm run ends; the switch stays as
+/// he set it (item 608), "until I'm back" excepted.
 #[tauri::command]
 pub fn keep_warm_stop(app: AppHandle, holder: State<'_, Holder>, chat: String) -> bool {
     let was_on = holder.stop(&chat);

@@ -15,6 +15,7 @@ import {
   modelsSummary,
   subagentsSummary,
   updatesSummary,
+  cacheSummary,
 } from "./subscriptionPane";
 
 const pane = (() => {
@@ -82,6 +83,14 @@ const BINDINGS: { group: string; marks: string[] }[] = [
       "checked={app.layerPrefs.autoAtCold}",
       "setAutoLayers(e.currentTarget.checked)",
       "The last update's output",
+    ],
+  },
+  {
+    group: "cache",
+    marks: [
+      'aria-label="Keep chats\' caches warm automatically"',
+      "checked={keepWarm.defaultOn ?? true}",
+      "flipKeepWarmDefault(e.currentTarget.checked)",
     ],
   },
 ];
@@ -175,5 +184,19 @@ describe("the folded headers' summaries", () => {
     expect(updatesSummary({ installed: "2.1.0", latest: "2.2.0", behind: true, auto: true, layersAtCold: false })).toBe(
       "2.1.0 → 2.2.0 · auto-update on · files at cold off",
     );
+  });
+});
+
+describe("the keep-warm default (item 608)", () => {
+  it("has its own group and row, found by the words he would type", () => {
+    expect(GROUPS.map((g) => g.id)).toContain("cache");
+    expect(matchingControls("cache", "keep warm").map((c) => c.id)).toEqual(["cache-keepwarm"]);
+    expect(matchingControls("cache", "automatic").map((c) => c.id)).toEqual(["cache-keepwarm"]);
+  });
+
+  it("summarises the default on the folded header", () => {
+    expect(cacheSummary(true)).toBe("every chat kept warm, up to the cap");
+    expect(cacheSummary(false)).toBe("off unless a chat's switch is on");
+    expect(cacheSummary(null)).toBe("not read yet");
   });
 });
