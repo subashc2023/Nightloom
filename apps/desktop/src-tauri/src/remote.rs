@@ -1677,7 +1677,10 @@ fn status_of(
     };
     let (phone_url, phone_kind) = match phone_link(away.as_ref(), mac_half.as_ref()) {
         Some((u, k)) => (Some(u), Some(k.to_string())),
-        None if on => (setup_url.clone(), setup_url.as_ref().map(|_| "mac".to_string())),
+        None if on => (
+            setup_url.clone(),
+            setup_url.as_ref().map(|_| "mac".to_string()),
+        ),
         None => (None, None),
     };
     let phone_qr_svg = phone_url.as_deref().and_then(|u| token::qr_svg(u).ok());
@@ -1699,7 +1702,11 @@ fn status_of(
 
 /// `https://name:port/#token=…` → `https://name:port`.
 fn base_of_setup_url(u: &str) -> String {
-    u.split('#').next().unwrap_or(u).trim_end_matches('/').to_string()
+    u.split('#')
+        .next()
+        .unwrap_or(u)
+        .trim_end_matches('/')
+        .to_string()
 }
 
 /// The fragment's percent-encoding: everything but unreserved characters.
@@ -1764,13 +1771,7 @@ async fn status(
     let st = crate::blocking(move || {
         let away = crate::away::phone_host();
         Ok::<_, String>(status_of(
-            port,
-            keep_awake,
-            bound,
-            https_name,
-            wanted,
-            mac_base,
-            away,
+            port, keep_awake, bound, https_name, wanted, mac_base, away,
         ))
     })
     .await?;
@@ -2130,8 +2131,7 @@ mod tests {
         };
         let (p, changed) = settle_persisted(Some(off));
         assert!(!p.on && !changed);
-        let round: Persisted =
-            serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        let round: Persisted = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
         assert_eq!(round.v, PERSISTED_V);
     }
 
