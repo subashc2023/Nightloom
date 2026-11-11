@@ -131,3 +131,71 @@ export function liveClock(ms: number): string {
 export function toolCount(segments: readonly { kind: string }[] | null | undefined): number {
   return segments ? segments.filter((s) => s.kind === "tool").length : 0;
 }
+
+/**
+ * The row's hand-off cue (item 597, his words: "a visual cue on the left
+ * side of the chat bar list when a chat has been 'handed off', versus
+ * 'needs handoff'"): `handed` once a next chat continues it — a chat in the
+ * listing forked from it with `reason: "handoff"`, the link the Continue
+ * button writes (`continuedFromReply`) — else `needs` while it is past its
+ * hand-off mark and its mark is not "never"; null otherwise. Handed off
+ * wins: a chat continued from is done whatever its fill.
+ */
+export type HandoffCue = { kind: "handed"; next: SessionMetaLike } | { kind: "needs" } | null;
+
+/** As much of a listing row as the cue reads. */
+export interface SessionMetaLike {
+  id: string;
+  title: string | null;
+  first_user: string | null;
+  forked_from?: { session: string; index: number; reason?: string };
+  context_used?: number;
+}
+
+/** Each chat's newest continuation (the furthest cut), by the parent's id:
+ *  built once per listing, so a row's cue is a lookup. */
+export function handoffChildren(sessions: readonly SessionMetaLike[]): Map<string, SessionMetaLike> {
+  const out = new Map<string, SessionMetaLike>();
+  for (const s of sessions) {
+    const f = s.forked_from;
+    if (!f || f.reason !== "handoff") continue;
+    const had = out.get(f.session);
+    if (!had || f.index > (had.forked_from?.index ?? 0)) out.set(f.session, s);
+  }
+  return out;
+}
+
+export function handoffCue(
+  id: string,
+  children: ReadonlyMap<string, SessionMetaLike>,
+  past: boolean,
+  never: boolean,
+): HandoffCue {
+  const next = children.get(id);
+  if (next) return { kind: "handed", next };
+  return past && !never ? { kind: "needs" } : null;
+}
+
+/**
+ * Past the mark from the listing alone (item 597), for a row with no
+ * reading of its own (`contextOf`): the newest reply's `context_used`
+ * against a mark that needs no window — the chat's own mark when it is a
+ * token count (`own` > 1), else the Settings cap (`cap`, tokens; 0 is off).
+ * Sound without the window: the default mark is `min(share, cap / window)`,
+ * so a fill at or over the cap is past it on any window. A share-only mark
+ * with no window is not guessed: false.
+ */
+export function pastByTokens(used: number | null | undefined, own: number | null, cap: number, never: number): boolean {
+  if (used == null || !Number.isFinite(used)) return false;
+  if (own !== null) return own !== never && own > 1 && used >= own;
+  return cap > 0 && used >= cap;
+}
+
+/** The cue's hover, in full sentences. */
+export function handoffCueTip(cue: Exclude<HandoffCue, null>): string {
+  if (cue.kind === "needs") {
+    return "Needs a hand-off: this chat is past its hand-off mark (Settings → hand-off) and no next chat has started from it yet.";
+  }
+  const name = cue.next.title ?? cue.next.first_user ?? "the next chat";
+  return `Handed off: its next chat, “${name.length > 60 ? `${name.slice(0, 59)}…` : name}”, has started from it.`;
+}
