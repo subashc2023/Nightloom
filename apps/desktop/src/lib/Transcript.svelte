@@ -1956,6 +1956,32 @@
     return () => ro.disconnect();
   });
 
+  /**
+   * Item 592: a call's hover controls sit in the gutter right of the turns'
+   * column, up to 52 px out (`.block-tools.two`). At his zoom the gutter is
+   * the scroller's 20-px padding, so they ran past the edge — and, with
+   * overflow-x then auto, drew a full-width scrollbar over the message box.
+   * The scroller now clips sideways; where the gutter is narrower than the
+   * pair, `narrowGutter` brings them inside the row. Measured, not a
+   * container query: under page zoom WebKit compares a container's size
+   * zoomed (650 px read as over 840 at 1.5, 592 harness).
+   */
+  const GUTTER_FOR_TOOLS = 56;
+  let narrowGutter = $state(false);
+  function measureGutter(): void {
+    if (!viewport || !inner) return;
+    const right = inner.getBoundingClientRect().right - viewport.getBoundingClientRect().left - viewport.clientLeft;
+    narrowGutter = viewport.clientWidth - right < GUTTER_FOR_TOOLS;
+  }
+  $effect(() => {
+    if (!viewport || !inner || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => measureGutter());
+    ro.observe(viewport);
+    ro.observe(inner);
+    measureGutter();
+    return () => ro.disconnect();
+  });
+
   /** Scroll so the message sits just under the top edge; the view is no
    *  longer following the reply. Item 359: LibreChat's 400 ms ease-out
    *  cubic, re-aimed every frame, rather than the browser's smooth scroll;
@@ -2295,6 +2321,7 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="transcript"
+  class:narrow-gutter={narrowGutter}
   bind:this={viewport}
   data-drop-chat={inPane ? undefined : ""}
   {onscroll}
@@ -3168,6 +3195,14 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
+    /* Item 592 (his "why is there a horizontal scrollbar here"): with only
+       overflow-y set, overflow-x computed to auto, so anything a few px past
+       the edge — a call's hover controls, drawn in the gutter, at his zoom —
+       drew a full-width scrollbar above the message box. A chat never
+       scrolls sideways; wide code and tables scroll in their own boxes.
+       Where the gutter is too narrow for those controls, `narrow-gutter`
+       brings them inside the row (AssistantMessage). */
+    overflow-x: hidden;
     padding: 28px 20px 20px;
     /* A message the keys or the strip jump to is not the one that stole
        the outline; the viewport is focused only so ⌥↑ / ⌥↓ reach it. */

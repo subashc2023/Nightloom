@@ -2543,6 +2543,15 @@
     display: flex;
     gap: 2px;
   }
+  /* Item 592: where the transcript's gutter is too narrow for them
+     (`narrow-gutter`, measured in Transcript.svelte) — his zoom — they come
+     inside the row's top right corner, on their panel fill, instead of
+     past the edge. */
+  :global(.transcript.narrow-gutter) .block-tools,
+  :global(.transcript.narrow-gutter) .block-tools.two {
+    right: 6px;
+    top: 6px;
+  }
   .arow.agent-drag {
     cursor: grab;
   }
