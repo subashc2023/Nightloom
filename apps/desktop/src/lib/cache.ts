@@ -1,5 +1,5 @@
-import type { CacheKey, CacheTtl, SessionEvent } from "./types";
-import { liveFlags } from "./state.svelte";
+import type { CacheKey, CacheTtl, ChatKind, SessionEvent } from "./types";
+import { declaredKind, liveFlags } from "./state.svelte";
 
 /**
  * The prompt-cache timer (nightshift backlog 063, 2026-09-15): when the
@@ -146,6 +146,8 @@ export function cacheBuiltWith(events: SessionEvent[]): CacheBuilt | null {
 export interface PendingSettings {
   engine: string;
   agentModel: string;
+  /** The API engine's model pick (item 601); "" is the provider's default. */
+  model?: string;
   tools: boolean;
   agentSafeMode: boolean;
   approval: boolean;
@@ -153,13 +155,50 @@ export interface PendingSettings {
   agentPlan: boolean;
 }
 
+/**
+ * What else the next turn goes out with that is not a draft field (item
+ * 601): the chat's declared kind now (`declaredKind`, which a kind switch
+ * moves) and when the cache was built (`kindAtCache`), and, on the API engine, the model the connection resolved — the
+ * draft's may be empty for "the provider's default", which is not what
+ * the reply recorded.
+ */
+export interface PendingContext {
+  kind?: ChatKind;
+  builtKind?: ChatKind | null;
+  apiModel?: string;
+}
+
 /** One setting that differs from what built the cache. `whole` is false
  *  where the measured change re-sent only the conversation after the
  *  system head, so the tooltip says "up to". */
 export interface CacheChange {
-  what: "model" | "tools" | "safe mode" | "plan";
+  what: "model" | "tools" | "safe mode" | "plan" | "engine" | "kind";
   text: string;
   whole: boolean;
+  /** False where a click cannot put it back (item 601: a Chat switched to
+   *  Claude Code has declared its tools for good — `declaredKind`). */
+  restorable?: boolean;
+}
+
+/** The engine a recorded key names, as the draft's `engine` spells it. */
+const draftEngine = (keyEngine: string): string => (keyEngine === "claude-code" ? "claude-code" : "provider");
+const engineName = (draft: string): string => (draft === "claude-code" ? "Claude Code" : "API");
+
+/**
+ * The declared kind (`declaredKind`) the cache's reply was built under:
+ * the creation line and the kind switches logged before that reply (item
+ * 601). Null when no live reply recorded settings, as `cacheBuiltWith`.
+ */
+export function kindAtCache(events: SessionEvent[]): ChatKind | null {
+  const live = liveFlags(events);
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (!live[i]) continue;
+    const e = events[i];
+    if (e.event !== "assistant_message") continue;
+    if (!e.cache_key) return null;
+    return declaredKind(events.slice(0, i + 1));
+  }
+  return null;
 }
 
 const isHaiku = (m: string): boolean => /haiku/i.test(m);
@@ -176,9 +215,35 @@ const isHaiku = (m: string): boolean => /haiku/i.test(m);
  * Effort, Chrome, connectors and fork mode were measured to keep it. The
  * API engine and a switch between engines were not measured (blocker
  * 1517), so either side off Claude Code warns of nothing.
+ * ~~(that last sentence)~~ — superseded by item 601, 2026-11-10 (his "the
+ * second something is changed to not aligned w it then that cache
+ * restoration situation should show up"). Now also:
+ * - an engine switch, either way (Claude Code ↔ API): the two send
+ *   different system prompts and tool lists under different accounts'
+ *   caches, so nothing can be read back (inferred from code; the API
+ *   engine's replies carry a key since 601, engine `"api"`). Alone, since
+ *   nothing else compares across engines;
+ * - the kind, a Chat born as a Chat switched to Claude Code — the one
+ *   switch that changes the declared tools (`kindSwitchCost`, backlog
+ *   144); not restorable, the declaration stands once made;
+ * - on the API engine, the model: a cache entry is per model (`external`:
+ *   Anthropic's prompt-caching docs claim so). Not measured here.
+ * Still not warned, each checked: effort, Chrome (the browser), claude.ai
+ * connectors and fork mode were measured to keep it (408's table); a
+ * changed prompt layer is held for the cold moment (backlog 174), so it
+ * never reaches a warm cache unless he picks "update now".
  */
-export function cacheLoss(key: CacheKey, p: PendingSettings): CacheChange[] {
-  if (key.engine !== "claude-code" || p.engine !== "claude-code") return [];
+export function cacheLoss(key: CacheKey, p: PendingSettings, ctx: PendingContext = {}): CacheChange[] {
+  const builtOn = draftEngine(key.engine);
+  if (builtOn !== p.engine) {
+    return [{ what: "engine", text: `engine ${engineName(builtOn)} → ${engineName(p.engine)}`, whole: true }];
+  }
+  if (key.engine !== "claude-code") {
+    const was = key.model ?? "";
+    const now = ctx.apiModel?.trim();
+    if (now && was && was !== now) return [{ what: "model", text: `model ${was} → ${now}`, whole: true }];
+    return [];
+  }
   const out: CacheChange[] = [];
   const was = key.model ?? "";
   const now = p.agentModel.trim();
@@ -190,6 +255,9 @@ export function cacheLoss(key: CacheKey, p: PendingSettings): CacheChange[] {
   const planNow = p.approval && p.agentPlan;
   if (key.plan !== planNow && (isHaiku(was) || isHaiku(now))) {
     out.push({ what: "plan", text: planNow ? "plan mode on" : "plan mode off", whole: true });
+  }
+  if (ctx.builtKind === "chat" && ctx.kind === "build") {
+    out.push({ what: "kind", text: "Chat → Claude Code", whole: true, restorable: false });
   }
   return out;
 }
@@ -211,8 +279,29 @@ export function cacheLossTitle(changes: CacheChange[], cachedTokens: number, rem
     : `the next turn re-sends up to ${n} of the tokens this chat's cache holds (the conversation after the system prompt) at full price`;
   return (
     `Changed since this chat's cache was built: ${changes.map((c) => c.text).join(", ")} — ${resend}. ` +
-    `Click to put ${changes.length === 1 ? "it" : "them"} back${left ? ` (the cache is warm for ${left})` : ""}.`
+    clickClause(changes, left)
   );
+}
+
+/** Whether a click on the chip puts anything back (item 601). */
+export function canRestore(changes: CacheChange[]): boolean {
+  return changes.some((c) => c.restorable !== false);
+}
+
+/** The engine a click switches back to, when an engine change is named. */
+export function restoreEngine(key: CacheKey, changes: CacheChange[]): string | null {
+  return changes.some((c) => c.what === "engine") ? draftEngine(key.engine) : null;
+}
+
+function clickClause(changes: CacheChange[], left: string | null): string {
+  const warm = left ? ` (the cache is warm for ${left})` : "";
+  const fixed = changes.filter((c) => c.restorable === false);
+  const back = changes.length - fixed.length;
+  const cannot = fixed.length
+    ? ` ${fixed.map((c) => c.text).join(", ")} cannot be put back: a chat switched to Claude Code keeps its tools declared from then on.`
+    : "";
+  if (back === 0) return `Nothing to click${warm}.${cannot}`;
+  return `Click to put ${back === 1 ? "it" : "them"} back${warm}.${cannot}`;
 }
 
 /**
@@ -223,8 +312,13 @@ export function cacheLossTitle(changes: CacheChange[], cachedTokens: number, rem
  */
 export function restoreCacheSettings(key: CacheKey, changes: CacheChange[], d: PendingSettings): void {
   for (const c of changes) {
-    if (c.what === "model") d.agentModel = key.model ?? "";
-    else if (c.what === "tools") d.tools = key.tools;
+    // Item 601: the engine is put back by the caller (`useEngine`, which
+    // drops the other engine's connection), and the kind cannot be.
+    if (c.what === "engine" || c.what === "kind") continue;
+    if (c.what === "model") {
+      if (key.engine === "claude-code") d.agentModel = key.model ?? "";
+      else d.model = key.model ?? "";
+    } else if (c.what === "tools") d.tools = key.tools;
     else if (c.what === "safe mode") d.agentSafeMode = key.safe_mode;
     else if (key.plan) {
       d.approval = true;

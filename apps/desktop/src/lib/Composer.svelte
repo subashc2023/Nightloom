@@ -36,6 +36,9 @@
   import {
     cacheBuiltWith,
     cacheLine,
+    canRestore,
+    kindAtCache,
+    restoreEngine,
     cacheLoss,
     cacheLossLine,
     cacheLossTitle,
@@ -95,6 +98,7 @@
   import { keepKey } from "./keep";
   import { keepStateOf, revealKept } from "./keep.svelte";
   import { menuInterceptors } from "./state.svelte";
+  import { declaredKind, useEngine } from "./state.svelte";
   import { bubbledRows, registerSendHeld } from "./pendingBubble.svelte";
   import WaitAct from "./WaitAct.svelte";
   import {
@@ -2854,11 +2858,25 @@
    * has nothing left to lose.
    */
   const cacheBuilt = $derived(floating ? null : cacheBuiltWith(app.events));
-  const cacheChanges = $derived(cacheBuilt && cache?.warm ? cacheLoss(cacheBuilt.key, app.draft) : []);
+  // Item 601: and what the next turn carries beside the draft — the
+  // chat's declared kind then and now, and the API engine's resolved model.
+  const cacheChanges = $derived(
+    cacheBuilt && cache?.warm
+      ? cacheLoss(cacheBuilt.key, app.draft, {
+          kind: declaredKind(app.events),
+          builtKind: kindAtCache(app.events),
+          apiModel: app.connection && app.connection.engine !== "claude-code" ? app.connection.model : undefined,
+        })
+      : [],
+  );
   function restoreCache() {
-    if (!cacheBuilt || cacheChanges.length === 0) return;
+    if (!cacheBuilt || cacheChanges.length === 0 || !canRestore(cacheChanges)) return;
+    const engine = restoreEngine(cacheBuilt.key, cacheChanges);
     restoreCacheSettings(cacheBuilt.key, cacheChanges, app.draft);
-    void applyDraft();
+    // An engine switch back reconnects through `useEngine` (it drops the
+    // other engine's connection first); everything else through the draft.
+    if (engine === "claude-code" || engine === "provider") void useEngine(engine);
+    else void applyDraft();
   }
   const cacheShareTitle = "Share of the last request's prompt served from cache.";
   const cacheTitle = $derived.by(() => {
@@ -3593,7 +3611,7 @@
           use:tip={cacheLossTitle(cacheChanges, cacheBuilt.cachedTokens, cache.remainingMs)}
           onclick={restoreCache}
         >
-          <span class="losing-what">{cacheLossLine(cacheChanges)}</span><span class="bottom-cache-when">&nbsp;· <span class="restore-word">restore</span></span>
+          <span class="losing-what">{cacheLossLine(cacheChanges)}</span>{#if canRestore(cacheChanges)}<span class="bottom-cache-when">&nbsp;· <span class="restore-word">restore</span></span>{/if}
         </button>
       {:else if cached != null || cache}
         <div
