@@ -191,12 +191,16 @@ describe("the dial's motion rules (521 report §7)", () => {
       "animation: dial-breathe 5.6s ease-in-out infinite;",
       "animation: dial-travel 8s linear infinite;",
       "animation: dial-glow 2.8s ease-in-out infinite;",
+      // Item 590: the estimated tail breathes, drawn only while a reply
+      // streams an estimate — the same gate.
+      "animation: dial-est 1.6s ease-in-out infinite;",
     ]);
     const block = style.slice(media);
     expect(block.indexOf(".pulse .tick")).toBeGreaterThan(0);
     expect(block.indexOf(loops[0] ?? "")).toBeGreaterThan(block.indexOf(".pulse .tick"));
     expect(block.indexOf(loops[1] ?? "")).toBeGreaterThan(block.indexOf(".pulse .light"));
     expect(block.indexOf(loops[2] ?? "")).toBeGreaterThan(block.indexOf(".ring-end.pulse"));
+    expect(block.indexOf(loops[3] ?? "")).toBeGreaterThan(block.indexOf(".arc.est"));
     // The light is hidden outside the gate, so reduced motion shows no light at all.
     expect(style.slice(0, media)).toMatch(/\.light \{\s*display: none;/);
     expect(railSrc).not.toMatch(/@keyframes|infinite/);

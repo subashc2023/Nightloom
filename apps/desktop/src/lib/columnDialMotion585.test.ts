@@ -9,7 +9,7 @@ describe("the column dial's motion (585)", () => {
   // Item 587 (2026-11-10) widened 585's subset: the gears join, in the column form, and his keys surge it too.
   it("mounts DialMotion behind the column dial, quiet, every layer in its column form, surging while a turn streams or he types", () => {
     expect(railSrc).toContain("const COLUMN_LAYERS = null;");
-    expect(railSrc).toMatch(/<DialMotion size=\{104\} pad=\{14\} quiet column layers=\{COLUMN_LAYERS\} plan=\{motionPlan\} streaming=\{live\} typed=\{marks\.length \+ keys\} \/>/);
+    expect(railSrc).toMatch(/<DialMotion size=\{104\} pad=\{14\} quiet column layers=\{COLUMN_LAYERS\} plan=\{motionPlan\} streaming=\{live\} typed=\{marks\.length \+ keys\} flowKey=\{stepKey\} \/>/);
     // No project spin-up in the column: a chat switch must not whirl the gears.
     expect(railSrc).not.toMatch(/<DialMotion[^>]*spinKey/);
   });

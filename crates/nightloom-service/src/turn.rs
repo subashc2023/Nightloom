@@ -73,6 +73,22 @@ pub enum TurnEvent {
     Usage {
         usage: Usage,
     },
+    /// The context a reply has built so far, live (nightshift backlog 590;
+    /// Claude Code engine only). `exact_tokens` is the last exact figure —
+    /// a round's `message_start` prompt, or its `message_delta` prompt plus
+    /// output — and `estimate_tokens` what has streamed since, counted by
+    /// characters (text, tool arguments, tool results). `rough` when
+    /// thinking is part of the estimate: Claude Code streams a summary of
+    /// it, so its length says little about the tokens it cost. Sent at
+    /// each exact figure and as the estimate grows; the turn's trailing
+    /// `AssistantMessage` is still the final word.
+    ContextLive {
+        exact_tokens: u64,
+        estimate_tokens: u64,
+        rough: bool,
+        /// Exact figures seen this turn (1 at the first round's start).
+        steps: u32,
+    },
     /// What the Claude Code session has, from the CLI's `system/init` line
     /// — the first line of every turn on that engine (nightshift backlog
     /// 077, 2026-09-16). The provider engine never emits it. Carried as an

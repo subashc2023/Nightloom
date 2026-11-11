@@ -61,6 +61,12 @@
     pulse?: boolean;
     /** The parts again on an inner ring of their own scale (574b); shares of that scale. */
     ring?: StartArc[] | null;
+    /**
+     * Item 590: the used arc's estimated tail, as a share of the limit (the
+     * last `estimate` of `share`), drawn in a lighter tone that breathes
+     * while a reply streams; null (the default) draws none.
+     */
+    estimate?: number | null;
   }
 
   let {
@@ -78,6 +84,7 @@
     parts = null,
     pulse = false,
     ring = null,
+    estimate = null,
   }: Props = $props();
 
   /** Item 578: the small form, below this size. */
@@ -105,6 +112,13 @@
     }),
   );
   let hover = $state<number | null>(null);
+  /** Item 590: the estimated tail's length and where it starts along the track. */
+  const est = $derived.by(() => {
+    if (estimate == null || estimate <= 0 || driven) return null;
+    const s = Math.max(0, Math.min(1, share));
+    const e = Math.min(estimate, s);
+    return { len: e * g.track.c, off: -(s - e) * g.track.c };
+  });
   /** The inner ring (574b): inside the track by the ticks' depth, bolder than it. */
   const ringR = $derived(Math.max(8, g.track.r - Math.max(10, g.stroke * 4)));
   const ringW = $derived(Math.max(3, Math.round(g.stroke * 1.8)));
@@ -195,6 +209,17 @@
         stroke-dashoffset={g.hotOffset}
         style:opacity={g.hot > 0 ? 1 : 0}
       />
+      {#if est}
+        <circle
+          class="arc est"
+          cx={g.mid}
+          cy={g.mid}
+          r={g.track.r}
+          stroke-width={g.stroke}
+          style:stroke-dasharray="{est.len} {g.track.c}"
+          style:stroke-dashoffset={est.off}
+        />
+      {/if}
       {#if g.inner != null}
         <circle class="inner-track" cx={g.mid} cy={g.mid} r={g.innerRing.r} stroke-width="2" />
         {#if g.inner > 0}
@@ -304,6 +329,10 @@
   }
   .arc.hot {
     stroke: var(--hot);
+  }
+  /* Item 590: the estimate since the last exact step — the accent, lighter. */
+  .arc.est {
+    stroke: color-mix(in srgb, var(--accent) 45%, var(--well));
   }
   .inner-track {
     stroke: var(--line);
@@ -421,6 +450,13 @@
     .turn {
       transition: transform 300ms ease;
     }
+    /* Item 590: the estimated tail breathes while it is an estimate. */
+    .arc.est {
+      transition:
+        stroke-dasharray 300ms ease,
+        stroke-dashoffset 300ms ease;
+      animation: dial-est 1.6s ease-in-out infinite;
+    }
     /* The caller tweens a driven dial frame by frame; easing again here
        would drag the head behind the arc. */
     .driven .turn {
@@ -436,6 +472,15 @@
     }
     to {
       transform: rotate(360deg);
+    }
+  }
+  @keyframes dial-est {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.5;
     }
   }
   @keyframes dial-glow {

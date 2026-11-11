@@ -321,6 +321,14 @@ pub(super) enum Block {
 pub(super) enum StreamEv {
     #[serde(rename = "content_block_delta")]
     ContentBlockDelta { delta: Delta },
+    /// A round opens (nightshift backlog 590). Read for its usage alone:
+    /// the prompt side is final here — the whole request this round sent —
+    /// which is the exact anchor of the live context reading.
+    #[serde(rename = "message_start")]
+    MessageStart {
+        #[serde(default)]
+        message: StartHead,
+    },
     /// A block opens. Read only for its type: a text block that follows
     /// text with nothing between (two rounds' replies, as a background
     /// subagent's report makes) is a new paragraph, not a continuation —
@@ -342,6 +350,13 @@ pub(super) enum StreamEv {
     Other,
 }
 
+/// The head of a `message_start`: its usage alone (backlog 590).
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct StartHead {
+    #[serde(default)]
+    pub usage: Option<RawUsage>,
+}
+
 /// The head of a `content_block_start`: its type alone (`text`,
 /// `thinking`, `tool_use`, …).
 #[derive(Debug, Default, Deserialize)]
@@ -357,9 +372,17 @@ pub(super) enum Delta {
     Text { text: String },
     #[serde(rename = "thinking_delta")]
     Thinking { thinking: String },
-    /// `signature_delta` and `input_json_delta` land here. Neither is
-    /// needed: signatures are Claude Code's to replay into its own session,
-    /// and tool arguments arrive already assembled on the `assistant` line.
+    /// A tool call's arguments as they stream. Read only for their length
+    /// (backlog 590: the live context estimate) — the arguments themselves
+    /// arrive already assembled on the `assistant` line.
+    #[serde(rename = "input_json_delta")]
+    InputJson {
+        #[serde(default)]
+        partial_json: String,
+    },
+    /// `signature_delta` lands here: signatures are Claude Code's to replay
+    /// into its own session. ~~And `input_json_delta`~~ (read for its length
+    /// since 2026-11-10, backlog 590).
     #[serde(other)]
     Other,
 }
