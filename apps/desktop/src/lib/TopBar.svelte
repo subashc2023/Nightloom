@@ -1070,6 +1070,19 @@
   .gauge .reading .figure {
     color: var(--ink);
   }
+  /* Item 614 ("why tf is it still off centered"): app.css's `.ns-chip svg
+     { 14px }` drew each dial's 18 px SVG at 14 px in the top-left of its
+     18 px box, so the ring sat 2 px above the figures' midline and 4 px
+     too far from its figure. The box now shrinks to the SVG (same 14 px
+     ring as before), centred on the line; the left padding gives back the
+     ring's stroke inset (0.6 px) so the ink is equally padded each side. */
+  .gauge .reading :global(.dial) {
+    width: auto !important;
+    height: auto !important;
+  }
+  .right > .ns-chip.gauge {
+    padding-left: 9.5px;
+  }
   .gauge.hot .reading[data-reading="context"] .figure {
     color: var(--failed);
   }
