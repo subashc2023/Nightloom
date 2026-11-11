@@ -14,7 +14,7 @@
  * - web: a quick scanning band, then a rest; the mark sends out a ping.
  * - other: one slow soft comet; the mark breathes.
  *
- * The setting ("Thinking motion", Settings → Appearance) applies to the
+ * The setting ("Thinking motion", Settings → Animations) applies to the
  * whole family: Sweep (the default, above), Weave (Sweep plus faint threads
  * drifting behind the running row) or Quiet (the mark and the bar's head
  * only; tool rows keep today's shuttle). Stamped on <html> as

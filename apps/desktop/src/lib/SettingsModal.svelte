@@ -1548,17 +1548,6 @@
           {/each}
         </div>
       </section>
-      <section class="card f4-only" aria-label="Thinking motion">
-        <div class="ch"><span class="t">Thinking motion</span></div>
-        <div class="pick3" role="radiogroup" aria-label="Thinking motion">
-          {#each STEP_MOTIONS as m (m.id)}
-            <button class="pick" class:on={stepMotion.value === m.id} role="radio" aria-checked={stepMotion.value === m.id} onclick={() => setStepMotion(m.id)}>
-              <span class="pick-h"><i class="radio" aria-hidden="true"></i>{m.name}</span>
-              <span class="pick-n">{m.note}</span>
-            </button>
-          {/each}
-        </div>
-      </section>
       <p class="note">
         Four dark palettes. Surfaces and the accent change; the colours that
         mean something — done, partial, failed, live, added, removed — are the
@@ -1808,6 +1797,17 @@
         the next time it happens and is remembered. With Reduce motion on in
         macOS, every one of them is a plain fade.
       </p>
+      <section class="card f4-only" aria-label="Thinking motion">
+        <div class="ch"><span class="t">Thinking motion</span></div>
+        <div class="pick3" role="radiogroup" aria-label="Thinking motion">
+          {#each STEP_MOTIONS as m (m.id)}
+            <button class="pick" class:on={stepMotion.value === m.id} role="radio" aria-checked={stepMotion.value === m.id} onclick={() => setStepMotion(m.id)}>
+              <span class="pick-h"><i class="radio" aria-hidden="true"></i>{m.name}</span>
+              <span class="pick-n">{m.note}</span>
+            </button>
+          {/each}
+        </div>
+      </section>
       <section class="card">
         <div class="ch"><span class="t">Thinking block</span></div>
         <p class="note small">How a reply's thinking block comes in when the model starts thinking.</p>
