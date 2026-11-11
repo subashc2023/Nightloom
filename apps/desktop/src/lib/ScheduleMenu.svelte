@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hudIn, hudOut } from "./hudMenu";
   /**
    * The ▾ half of Send (nightshift backlog 224, blocker 465): send this
    * message at the five-hour reset, at the weekly reset, or at a time he
@@ -138,15 +139,17 @@
 >
 {#if open}
   <div
-    class="sched-menu"
+    class="sched-menu hud-m"
     role="menu"
     tabindex="-1"
     aria-label="Schedule send"
     bind:this={menuEl}
     use:floatMenu={{ anchor: btn, align: "right" }}
+    in:hudIn|global={{ anchor: btn }}
+    out:hudOut|global
     onkeydown={onKey}
   >
-    <div class="sched-head">Send later</div>
+    <div class="sched-head hud-head">Send later</div>
     {#if allOff}<div class="sched-why">{allOff}</div>{/if}
     <button
       type="button"
@@ -172,7 +175,7 @@
         >{week === null ? "reset time unknown — no usage reading with one yet" : "sends a minute after the reset"}</span
       >
     </button>
-    <div class="sched-sep"></div>
+    <div class="sched-sep hud-rule"></div>
     <div class="sched-row at" role="group" aria-label="At a time">
       <span class="sched-label">At a time…</span>
       <span class="sched-at">

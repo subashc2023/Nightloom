@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hudIn, hudOut } from "./hudMenu";
   import { tip } from "./tip";
   /**
    * The bell and its panel (nightshift backlog 069): what waits on him,
@@ -166,9 +167,11 @@
 
   {#if app.centre.open}
     <div
-      class="centre-panel"
+      class="centre-panel hud-m"
       bind:this={panelEl}
       use:portal
+      in:hudIn|global
+      out:hudOut|global
       style="top: {panelPos.top}px; left: {panelPos.left}px; width: {panelPos.width}px"
     >
       <div class="centre-head">

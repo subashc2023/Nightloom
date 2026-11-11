@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hudIn, hudOut } from "./hudMenu";
   import { canLeaveProject, canDeleteChat } from "./state.svelte";
   import { saveMemoryFromChat } from "./state.svelte";
   import { tip } from "./tip";
@@ -1193,25 +1194,24 @@
       </button>
       {#if kinds}
         <button class="scrim" aria-label="Close" onclick={() => (kinds = false)}></button>
-        <div class="kinds" role="menu" use:fitBelow>
+        <div class="kinds hud-m" role="menu" use:fitBelow in:hudIn|global out:hudOut|global>
           <div class="kinds-head">New chat · kind</div>
           {#each KIND_ROWS as k (k.kind)}
-            <button class="kind" role="menuitem" onclick={() => startOfKind(k.kind)}>
-              <span class="kind-glyph kind-radio" class:on={defaultKind() === k.kind} aria-hidden="true">{defaultKind() === k.kind ? "●" : "○"}</span>
+            <!-- Item 634: no line under a kind; what it is shows on hover. -->
+            <button class="kind" role="menuitem" use:tip={KIND_LINES[k.kind]} onclick={() => startOfKind(k.kind)}>
+              <span class="kind-glyph kind-ico" class:on={defaultKind() === k.kind} aria-hidden="true">{@render kindIcon(k.kind)}</span>
               <span class="kind-text">
                 <span class="kind-name">{kindLabel(k.kind, engine)}{#if defaultKind() === k.kind} <span class="kind-tag">default here</span>{/if}</span>
-                <span class="kind-line">{KIND_LINES[k.kind]}</span>
               </span>
               <span class="kind-key">{k.key}</span>
             </button>
           {/each}
           <div class="kind-sep"></div>
           {#each KINDS as k (k.mode)}
-            <button class="kind" role="menuitem" onclick={() => startKind(k.mode)}>
-              <span class="kind-glyph" aria-hidden="true">{MODE_GLYPH[k.mode] || "▢"}</span>
+            <button class="kind" role="menuitem" use:tip={MODE_LINES[k.mode]} onclick={() => startKind(k.mode)}>
+              <span class="kind-glyph kind-ico" aria-hidden="true">{@render kindIcon(k.mode)}</span>
               <span class="kind-text">
                 <span class="kind-name">{k.label}</span>
-                <span class="kind-line">{MODE_LINES[k.mode]}</span>
               </span>
               {#if k.key}<span class="kind-key">{k.key}</span>{/if}
             </button>
@@ -1231,7 +1231,7 @@
                   use:tip={t.status ? `${t.status} — ${newInThreadTip(t.slug)}` : newInThreadTip(t.slug)}
                   onclick={() => startInThread(t.slug)}
                 >
-                  <span class="kind-glyph" aria-hidden="true">◇</span>
+                  <span class="kind-glyph kind-ico" aria-hidden="true">{@render kindIcon("thread")}</span>
                   <span class="kind-text">
                     <span class="kind-name">{t.title}</span>
                     <span class="kind-line">{t.status || t.slug}</span>
@@ -1405,8 +1405,10 @@
         <button class="scrim" aria-label="Close" onclick={() => (threadMenu = null)} oncontextmenu={(e) => { e.preventDefault(); threadMenu = null; }}></button>
         <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
         <div
-          class="row-menu thread-menu"
+          class="row-menu thread-menu hud-m"
           role="menu"
+          in:hudIn|global
+          out:hudOut|global
           tabindex="-1"
           aria-label={`Thread ${tg.title}`}
           use:placeRowMenu={threadMenu}
@@ -1435,10 +1437,12 @@
         <button class="scrim" aria-label="Close" onclick={() => (rowMenu = null)} oncontextmenu={(e) => { e.preventDefault(); rowMenu = null; }}></button>
         <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
         <div
-          class="row-menu"
+          class="row-menu hud-m"
           role="menu"
           tabindex="-1"
           bind:this={rowMenuEl}
+          in:hudIn|global
+          out:hudOut|global
           use:placeRowMenu={rowMenu}
           onpointermove={rowMenuMove}
           onkeydown={(e) => menuKeys(e, false)}
@@ -1501,8 +1505,10 @@
                  the menu never grows and neither box clips the other. -->
             <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
             <div
-              class="row-menu row-sub"
+              class="row-menu row-sub hud-m"
               role="menu"
+              in:hudIn|global
+              out:hudOut|global
               tabindex="-1"
               aria-label={rowSub === "thread" ? "Move to thread" : "Move to project"}
               bind:this={rowSubEl}
@@ -1672,6 +1678,31 @@
   {/if}
 
 </aside>
+
+<!-- The New chat menu's icons (item 634): drawn for the theme, 1.3 px strokes on a 16 px grid, in the row's own colour. -->
+{#snippet kindIcon(name: string)}
+  <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+    {#if name === "build"}
+      <!-- Claude Code: a terminal with its prompt. -->
+      <rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2" />
+      <path d="M4.75 6.25 7 8 4.75 9.75" />
+      <path d="M8.75 10.25h2.5" />
+    {:else if name === "chat"}
+      <!-- Chat: a speech bubble. -->
+      <path d="M2.75 4.5a1.75 1.75 0 0 1 1.75-1.75h7a1.75 1.75 0 0 1 1.75 1.75v4.75A1.75 1.75 0 0 1 11.5 11H7.75L4.75 13.5V11H4.5a1.75 1.75 0 0 1-1.75-1.75z" />
+    {:else if name === "incognito"}
+      <!-- Incognito: half in shade (the row mark's ◐, drawn). -->
+      <circle cx="8" cy="8" r="5.25" />
+      <path d="M8 2.75a5.25 5.25 0 0 0 0 10.5z" fill="currentColor" stroke="none" />
+    {:else if name === "ephemeral"}
+      <!-- Ephemeral: a ring that is barely there (the row mark's ◌, drawn). -->
+      <circle cx="8" cy="8" r="5.25" stroke-dasharray="1.6 2.52" />
+    {:else}
+      <!-- A thread. -->
+      <path d="M8 2.5 13.5 8 8 13.5 2.5 8z" />
+    {/if}
+  </svg>
+{/snippet}
 
 <style>
   .sidebar {
@@ -2962,6 +2993,22 @@
   }
   :global(:where(:root:not([data-layout="classic"]))) .kind-key {
     font-size: 10.5px;
+  }
+  /* Item 634: the menu's drawn icons — centred on the name's line, lit for the default kind. */
+  :global(:where(:root:not([data-layout="classic"]))) .kind-ico {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 15px;
+    height: 18px;
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .kind:hover .kind-ico {
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .kind-ico.on {
+    color: var(--accent);
+    filter: drop-shadow(0 0 3px color-mix(in srgb, var(--accent) 45%, transparent));
   }
   :global(:where(:root:not([data-layout="classic"]))) .kind-radio {
     font-size: 0;

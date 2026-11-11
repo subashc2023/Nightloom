@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hudIn, hudOut } from "./hudMenu";
   import { tip } from "./tip";
   import { floatMenu } from "./floatMenu";
   /**
@@ -72,11 +73,13 @@
 </script>
 
 <div
-  class="pick-menu council-menu"
+  class="pick-menu council-menu hud-m"
   role="dialog"
   aria-label="Council"
   tabindex="-1"
   use:floatMenu={{ anchor, align: "right", maxVh: 0.8 }}
+  in:hudIn|global={{ anchor }}
+  out:hudOut|global
   {onkeydown}
 >
   <div class="pick-head"><span>Council</span><span class="pick-sub">this turn · remembered on this chat</span></div>

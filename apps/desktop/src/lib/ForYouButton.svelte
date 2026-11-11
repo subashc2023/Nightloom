@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hudIn, hudOut } from "./hudMenu";
   /**
    * Files for you (nightshift backlog 377): a folder button in the top bar,
    * beside the bell, with a dot when the model has marked something for him
@@ -83,7 +84,7 @@
   </button>
 
   {#if open}
-    <div class="fy-panel" bind:this={panelEl} use:portal style="top: {pos.top}px; left: {pos.left}px; width: {pos.width}px">
+    <div class="fy-panel hud-m" bind:this={panelEl} use:portal in:hudIn|global out:hudOut|global style="top: {pos.top}px; left: {pos.left}px; width: {pos.width}px">
       <div class="fy-head">
         <span class="fy-title">Files for you</span>
         <span class="fy-where">{app.project ? `in ${app.project.name}` : "unfiled chats"}</span>

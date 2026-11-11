@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hudIn, hudOut } from "./hudMenu";
   import { tip } from "./tip";
   import {
     activateTab,
@@ -527,7 +528,7 @@
 {#if menuFor}
   {@const t = pane.tabs.find((x) => x.id === menuFor)}
   <button class="tab-scrim" aria-label="Close" onclick={() => (menuFor = null)} oncontextmenu={(e) => { e.preventDefault(); menuFor = null; }}></button>
-  <div class="tab-menu" role="menu" use:placeTabMenu={menuAt}>
+  <div class="tab-menu hud-m" role="menu" use:placeTabMenu={menuAt} in:hudIn|global out:hudOut|global>
     <button role="menuitem" onclick={() => menuAct((x) => void closeTab(x.id))}>Close</button>
     <button role="menuitem" disabled={pane.tabs.length < 2} onclick={() => menuAct((x) => closeOthers(x.id))}>Close others</button>
     {#if other}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hudIn, hudOut } from "./hudMenu";
   import { onDestroy, onMount } from "svelte";
   import { app, asideInTab } from "./state.svelte";
   import type { Aside } from "./state.svelte";
@@ -175,8 +176,10 @@
   </button>
   {#if listOpen}
     <div
-      class="asides-list ns-card"
+      class="asides-list ns-card hud-m"
       bind:this={pop}
+      in:hudIn|global
+      out:hudOut|global
       role="dialog"
       aria-label="This chat's asides"
       style:top="{pos.top + 34}px"

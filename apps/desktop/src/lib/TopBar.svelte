@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hudIn, hudOut } from "./hudMenu";
   import {
     addToast,
     app,
@@ -747,9 +748,11 @@
          inside the bar's stacking context it painted under the Welcome
          page's floating composer and off its chip. -->
     <div
-      class="popover"
+      class="popover hud-m"
       bind:this={popEl}
       use:portal
+      in:hudIn|global
+      out:hudOut|global
       style="top: {popPos.top}px; left: {popPos.left}px"
     >
       <RightRail />
@@ -760,11 +763,13 @@
          context gauge, the plan chip and the spend chip carried, portalled
          and placed under the gauge chip as the rail's card is (163). -->
     <div
-      class="gauge-card"
+      class="gauge-card hud-m"
       role="dialog"
       aria-label="Context and plan"
       bind:this={gaugePopEl}
       use:portal
+      in:hudIn|global
+      out:hudOut|global
       style="top: {gaugePos.top}px; left: {gaugePos.left}px; width: {GAUGE_WIDTH}px"
     >
       <div class="gc-head">Context and plan</div>

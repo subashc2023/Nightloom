@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hudIn, hudOut } from "./hudMenu";
   /**
    * The cap chip (nightshift item 538, part 2): above the message box while
    * the chat's message runs under a declared usage cap — its percent, its
@@ -108,7 +109,7 @@
       {/if}
     </button>
     {#if open}
-      <div class="cap-pop" role="dialog" aria-label="Change this message's usage cap">
+      <div class="cap-pop hud-m" role="dialog" aria-label="Change this message's usage cap" in:hudIn|global out:hudOut|global>
         <div class="pop-head">This message's cap</div>
         <div class="pop-sub">
           {#if view.latest !== null}{`5-hour window now ${view.latest}%${view.spent !== null ? ` · ${view.spent} pts spent` : ""}`}{:else}No usage reading yet{/if}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hudIn, hudOut } from "./hudMenu";
   import { tick, untrack } from "svelte";
   import { MODEL_OTHER } from "./railEvents";
   import { clockText } from "./schedule";
@@ -3188,7 +3189,7 @@
     <ClipPanel entries={clips.ring} index={clipIndex} onpick={pickClip} />
   {/if}
   {#if slashOpen}
-    <div class="slash" role="listbox" aria-label="Skills and slash commands">
+    <div class="slash hud-m" role="listbox" aria-label="Skills and slash commands" in:hudIn|global out:hudOut|global>
       {#if slashMatches.length === 0}
         <div class="slash-row dim">No skill or command starts with “{text.slice(1)}” — ↵ sends the text as typed</div>
       {:else}
@@ -3685,12 +3686,14 @@
      of markup and one set of keys. -->
 {#snippet pickMenu(head: string, sub: string)}
   <div
-    class="pick-menu"
+    class="pick-menu hud-m"
     role="menu"
     tabindex="-1"
     aria-label={head}
     bind:this={menuEl}
     use:floatMenu={{ anchor: menuButton() }}
+    in:hudIn|global={{ anchor: menuButton() }}
+    out:hudOut|global
     onkeydown={onMenuKey}
   >
     <div class="pick-head"><span>{head}</span><span class="pick-sub">{sub}</span></div>
