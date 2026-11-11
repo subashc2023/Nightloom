@@ -27,6 +27,11 @@
   // Item 589: the running step's motion in the turn trace.
   import { STEP_MOTIONS, stepMotion, setStepMotion, type StepMotion } from "./stepMotion.svelte";
   import StepMotionPreview from "./StepMotionPreview.svelte";
+  // Item 632 (agent E, wave 5): the new-chat page's background.
+  import { GROUND_STYLES } from "./newChatGround";
+  import { groundPick, setGroundPick } from "./newChatGroundPick.svelte";
+  import GroundPreview from "./GroundPreview.svelte";
+  // End item 632.
   import ContextDial from "./ContextDial.svelte";
   import { planDials, surfaceShares, paceLine, weekGone, resetsWhen } from "./settingsUsage";
   /** The Layout choice: the layout, then the accent again (no accent is stamped under Classic). */
@@ -1958,6 +1963,34 @@
           </div>
         </section>
       {/each}
+      <!-- Item 632 (agent E, wave 5; his ask 2026-11-11: "something more
+           interesting in the background"): the new-chat page's ground, each
+           look looping on its card. Filament only — Classic's new-chat page
+           has its own. Under Reduce motion the page keeps the still dots. -->
+      {#if !classic()}
+        <section class="card">
+          <div class="ch"><span class="t">New-chat background</span></div>
+          <p class="note small">
+            What moves behind the wheel on the new-chat page.
+            {#if motionStill}Reduce motion is on in macOS, so the page keeps the still dots.{/if}
+          </p>
+          <div class="anims three" role="radiogroup" aria-label="New-chat background">
+            {#each GROUND_STYLES as g (g.id)}
+              <div class="anim" class:on={groundPick.value === g.id}>
+                <button class="anim-pick" role="radio" aria-checked={groundPick.value === g.id} onclick={() => setGroundPick(g.id)}>
+                  <span class="anim-name">{g.name}</span>
+                  <span class="anim-blurb">{g.note}</span>
+                </button>
+                <GroundPreview look={g.id} />
+                <div class="anim-foot">
+                  {#if groundPick.value === g.id}<span class="anim-on">In use</span>{/if}
+                </div>
+              </div>
+            {/each}
+          </div>
+        </section>
+      {/if}
+      <!-- End item 632. -->
     </div>
   {:else if selected === "remote"}
     <!-- The phone page over the tailnet (nightshift backlog 091, Shape B):
