@@ -6775,15 +6775,57 @@ async fn send_now_injected(
 /// Stop the subagents still running in a turn whose reply has ended
 /// (nightshift backlog 329, his "wait or stop them?"): the CLI's
 /// `stop_task` for each. How many were asked to stop.
+///
+/// Item 593 (his "sends a notice to the main agent so that it can … figure
+/// out what to do next"): with `note`, Nightloom's words on what he stopped
+/// go to the main agent too — as the next command when it sits idle (the
+/// CLI's own `stopped` notification says only that it stopped), else queued
+/// for its next tool call in the chat's steering file, as 329's nested-spawn
+/// note is. Best-effort: the stop stands whether or not the note lands.
 #[tauri::command]
-async fn stop_subagents(state: State<'_, AppState>, turn: String) -> Result<usize, String> {
+async fn stop_subagents(
+    state: State<'_, AppState>,
+    turn: String,
+    session: Option<String>,
+    note: Option<String>,
+) -> Result<usize, String> {
+    use nightloom_service::agent::steer;
     let inbox = state
         .inboxes
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .get(&turn)
         .cloned();
-    Ok(inbox.map_or(0, |i| i.stop_agents()))
+    let Some(inbox) = inbox else {
+        return Ok(0);
+    };
+    let stopped = inbox.stop_agents();
+    let note = note.filter(|t| !t.trim().is_empty());
+    if let (true, Some(note)) = (stopped > 0, note) {
+        if !inbox.note_if_idle(&note) {
+            if let Some(dir) = match session.as_deref() {
+                Some(s) => budget_dir(&state, s).await,
+                None => None,
+            } {
+                let at_ms = chrono::Utc::now().timestamp_millis();
+                let _ = tokio::task::spawn_blocking(move || {
+                    steer::queue(
+                        &dir,
+                        steer::MAIN,
+                        steer::Queued {
+                            id: format!("stopped-{turn}-{at_ms}"),
+                            text: note,
+                            at_ms,
+                            about: None,
+                            raw: true,
+                        },
+                    )
+                })
+                .await;
+            }
+        }
+    }
+    Ok(stopped)
 }
 
 /// The chat's steering notes, queued and delivered (backlog 295), for
