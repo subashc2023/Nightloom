@@ -37,7 +37,7 @@
   import { floatMenu } from "./floatMenu";
   import { viewGet, viewSet } from "./viewState";
   import { splitExt, whoFoldKey } from "./noteHead";
-  import { relativeTime } from "./time";
+  import { exactTime, relativeTime } from "./time";
 
   /**
    * Which note the editor has loaded, as `scope:name`. A plain variable, not
@@ -928,7 +928,7 @@
         <span class="label">why</span>
         <p>{reviewing.entry.proposal.why}</p>
         <span class="when">
-          proposed by the dream · {new Date(reviewing.entry.proposal.at).toLocaleString()}
+          proposed by the dream · {exactTime(reviewing.entry.proposal.at)}
           {#if app.proposals[reviewing.scope].length > 1}
             · {app.proposals[reviewing.scope].length - 1} older pending
           {/if}

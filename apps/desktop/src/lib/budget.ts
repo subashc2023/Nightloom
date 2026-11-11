@@ -7,6 +7,7 @@
  * the words.
  */
 import type { TurnBudget } from "./types";
+import { clockText } from "./schedule";
 
 /** Window percent this message has spent: latest minus start, never
  *  negative; null until both readings exist. */
@@ -69,7 +70,7 @@ export function stopCard(b: TurnBudget | null, now = Date.now()): { title: strin
   const at = b.latest_pct == null ? "" : `the window is at ${b.latest_pct}%`;
   const share = spent == null ? "" : `this message has spent ${spent}% of its ${b.budget_pct}%`;
   const resets = b.resets_at
-    ? `it resets at ${new Date(b.resets_at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+    ? `it resets at ${clockText(b.resets_at * 1000)}`
     : "";
   return {
     title: `Stopped at ${b.stop_at}% of the 5-hour window`,

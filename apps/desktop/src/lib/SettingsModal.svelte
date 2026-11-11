@@ -112,7 +112,7 @@
     type CouncilMode,
     type CouncilPrefs,
   } from "./council";
-  import { relativeTime } from "./time";
+  import { exactTime, relativeTime } from "./time";
   import { dreamEngineRows, dreamModelPills, dreamSentence } from "./dreamRows";
   import { chatName, loadNotifyPrefs, notifyUsageRefreshed, saveNotifyPrefs, type NotifyPrefs } from "./notify";
   import {
@@ -658,7 +658,7 @@
   function resetsAt(iso: string | null): string {
     if (!iso) return "reset time unknown";
     const d = new Date(iso);
-    return Number.isNaN(d.getTime()) ? "reset time unknown" : `resets ${d.toLocaleString()}`;
+    return Number.isNaN(d.getTime()) ? "reset time unknown" : `resets ${exactTime(d)}`;
   }
 
   function size(bytes: number): string {
@@ -2803,7 +2803,7 @@
             <code class="path">{usage.dir}</code>
             <br />
             {usage.first_date} → {usage.last_date}{usage.updated_at
-              ? `, last updated ${relativeTime(usage.updated_at)} (${new Date(usage.updated_at).toLocaleString()})`
+              ? `, last updated ${relativeTime(usage.updated_at)} (${exactTime(usage.updated_at)})`
               : ""}.
           </div>
           <p class="note small">
@@ -3195,7 +3195,7 @@
             {app.centre.dailyRunning ? "Running…" : "Run the daily pass now"}
           </button>
           <span class="dim small">
-            {#if app.centre.dailyLast}last: {app.centre.dailyLast}{:else if app.centre.lastDaily}last ran {new Date(app.centre.lastDaily).toLocaleString()}{:else}never run{/if}
+            {#if app.centre.dailyLast}last: {app.centre.dailyLast}{:else if app.centre.lastDaily}last ran {exactTime(app.centre.lastDaily)}{:else}never run{/if}
           </span>
         </div>
       </section>

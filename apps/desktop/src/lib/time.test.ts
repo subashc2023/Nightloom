@@ -45,14 +45,17 @@ describe("relativeTimeLong", () => {
 });
 
 describe("exactTime", () => {
-  it("is the locale's medium date and short time", () => {
+  // Item 611b: 12-hour AM/PM whatever the locale (was the locale's own).
+  const plain = (s: string) => s.replace(/\s/g, " ");
+  it("is the medium date and a 12-hour short time", () => {
     const at = new Date(2026, 8, 16, 15, 40).toISOString();
-    expect(exactTime(at)).toBe(
-      new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }),
-    );
-    // Whatever the locale, the year and the minute are in it.
-    expect(exactTime(at)).toContain("2026");
-    expect(exactTime(at)).toContain("40");
+    expect(plain(exactTime(at))).toBe("Sep 16, 2026, 3:40 PM");
+    expect(plain(exactTime(new Date(2026, 8, 16, 0, 5).toISOString()))).toBe("Sep 16, 2026, 12:05 AM");
+  });
+  it("takes epoch ms and a Date as well as an ISO string", () => {
+    const d = new Date(2026, 10, 11, 12, 51);
+    expect(plain(exactTime(d))).toBe("Nov 11, 2026, 12:51 PM");
+    expect(plain(exactTime(d.getTime()))).toBe("Nov 11, 2026, 12:51 PM");
   });
   it("is empty for a time it cannot parse", () => {
     expect(exactTime("")).toBe("");

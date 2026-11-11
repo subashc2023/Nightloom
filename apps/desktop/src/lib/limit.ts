@@ -17,6 +17,7 @@
  * Pure over its inputs, so the suite pins the message and the timing.
  */
 import type { AgentTurnResult, StoppedAgent } from "./types";
+import { clockText } from "./schedule";
 
 export interface LimitPause {
   /** The chat the turn ran in; null for the pending chat. */
@@ -60,11 +61,13 @@ export function limitPauseFrom(
   };
 }
 
-/** `HH:MM` in the local zone, or "later" when the CLI gave no time. */
+/** `2:05 PM` (or `Nov 12 2:05 PM` on another day) in the local zone, 12-hour
+ *  whatever the locale (item 611b; was the locale's `02:05 PM` / `14:05`), or
+ *  "later" when the CLI gave no time. */
 export function resetLabel(p: Pick<LimitPause, "resetsAtMs">, nowMs: number = Date.now()): string {
   if (p.resetsAtMs == null) return "later";
   const d = new Date(p.resetsAtMs);
-  const hm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const hm = clockText(p.resetsAtMs);
   return d.toDateString() === new Date(nowMs).toDateString()
     ? hm
     : `${d.toLocaleDateString([], { month: "short", day: "numeric" })} ${hm}`;

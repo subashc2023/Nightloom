@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tip } from "./tip";
   import { isImeKey } from "./imeKey";
+  import { clockText } from "./schedule";
   /**
    * The small chat on the right of a note (nightshift backlog 151): he says
    * what changed, a model edits the note's file to fit (the Edit tool, on
@@ -147,10 +148,10 @@
     return `${n} ${word}${n === 1 ? "" : "s"}`;
   }
 
-  /** "2:41 PM" — 12-hour. */
+  /** "2:41 PM" — 12-hour whatever the locale (item 611b; was the locale's own). */
   function clock(iso: string): string {
     const d = new Date(iso);
-    return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    return Number.isNaN(d.getTime()) ? "" : clockText(d.getTime());
   }
 
   /** The reply so far, for `{@html}`: escaped, in a paragraph, so the chat's
