@@ -205,6 +205,8 @@ const OWN_EFFECTS: &[(&str, Effect)] = &[
     ("notion_list_children", Effect::ReadOnly),
     ("send_file", Effect::Session),
     ("mark_file", Effect::Session),
+    // The message's usage cap (item 538): written to the chat's own ledger.
+    (crate::agent::budget::TOOL_NAME, Effect::Session),
     // Runs a command of the model's (nightshift item 430): what Bash is.
     ("preview", Effect::Mutating),
     // The note organisers (item 472), served with `--notes`.
@@ -1077,6 +1079,11 @@ pub async fn serve(
     if let (Some(dir), None, true) = (&args.notes, &args.dream, args.remember) {
         tools.extend(crate::tools::notes::note_tools(dir.clone()));
     }
+    // `set_budget` (item 538): served when the desktop named the chat's
+    // directory, where the turn's budget ledger is — never to a dream.
+    if let (Some(dir), None) = (&args.budget_dir, &args.dream) {
+        tools.push(Box::new(crate::agent::budget::SetBudget::new(dir.clone())));
+    }
     // `preview` (nightshift item 430): the desktop's socket, the chat and
     // its folder all named — never for a dream.
     if let (Some(sock), Some(chat), Some(root), None) =
@@ -1131,6 +1138,10 @@ pub struct ServeArgs {
     /// with it, and for a chat that writes, `list_notes`,
     /// `make_note_folder` and `move_notes` are served over that folder.
     pub notes: Option<PathBuf>,
+    /// The chat's directory (`--budget-dir <dir>`, item 538), where its
+    /// turn's budget ledger is: with it, `set_budget` is served. Rewritten
+    /// into the arguments before each turn (`agent::budget::with_budget_dir`).
+    pub budget_dir: Option<PathBuf>,
 }
 
 impl ServeArgs {
@@ -1146,6 +1157,7 @@ impl ServeArgs {
             preview_chat: None,
             rename: None,
             notes: None,
+            budget_dir: None,
         }
     }
 
@@ -1161,6 +1173,7 @@ impl ServeArgs {
             preview_chat: None,
             rename: None,
             notes: None,
+            budget_dir: None,
         }
     }
 }
@@ -1400,6 +1413,11 @@ pub fn parse_args(args: &[String]) -> Result<ServeArgs, String> {
                 .next()
                 .ok_or_else(|| "--notes needs the knowledge folder".to_string())?;
             out.notes = Some(PathBuf::from(dir));
+        } else if arg == "--budget-dir" {
+            let dir = it
+                .next()
+                .ok_or_else(|| "--budget-dir needs the chat's directory".to_string())?;
+            out.budget_dir = Some(PathBuf::from(dir));
         } else if arg == "--rename-note" {
             let json = it
                 .next()
@@ -1417,7 +1435,7 @@ pub fn parse_args(args: &[String]) -> Result<ServeArgs, String> {
             out.remember = false;
         } else {
             return Err(format!(
-                "unknown argument {arg:?}; the flags are --project <id>, --no-remember, --incognito, --ask, --root <dir>, --preview <socket>, --preview-chat <id>, --notes <dir> and --dream <json>"
+                "unknown argument {arg:?}; the flags are --project <id>, --no-remember, --incognito, --ask, --root <dir>, --preview <socket>, --preview-chat <id>, --notes <dir>, --budget-dir <dir> and --dream <json>"
             ));
         }
     }
@@ -2636,6 +2654,9 @@ mod tests {
             },
         )));
         served.extend(crate::tools::notes::note_tools(config.clone()));
+        served.push(Box::new(crate::agent::budget::SetBudget::new(
+            config.clone(),
+        )));
         for tool in &served {
             let name = tool.def().name;
             assert_eq!(

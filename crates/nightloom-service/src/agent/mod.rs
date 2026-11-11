@@ -30,6 +30,7 @@
 
 pub mod ask;
 pub mod brief;
+pub mod budget;
 pub mod cli_session;
 pub mod connectors;
 pub mod fork;
@@ -78,6 +79,10 @@ use tokio_util::sync::CancellationToken;
 /// as a new one. The grace is ten times the measured time to exit, for a
 /// slower machine; past it the kill below is the backstop it always was.
 const INTERRUPT_GRACE: Duration = Duration::from_secs(5);
+
+/// How often a running chat turn looks at its budget ledger for a wake
+/// (item 538): a file read under its lock, nothing when no wake waits.
+const BUDGET_TICK: Duration = Duration::from_secs(2);
 
 /// How long to keep reading after a kill (item 466, 2026-10-29): what the
 /// CLI wrote before it is already in the pipe; this is only the backstop
@@ -1802,6 +1807,14 @@ impl ClaudeCodeAgent {
         {
             self.spec.mcp_config = Some(cfg);
         }
+        // The chat's budget ledger (item 538): Nightloom's own server is
+        // told the directory, so its `set_budget` writes this chat's ledger.
+        if self.spec.brief.is_some()
+            && let Some(cfg) = &self.spec.mcp_config
+            && let Some(cfg) = budget::with_budget_dir(cfg, &dir)
+        {
+            self.spec.mcp_config = Some(cfg);
+        }
         if let Some(brief) = &mut self.spec.brief {
             brief.dir = dir;
             let _ = brief::write(&brief.dir, &brief.text);
@@ -1918,6 +1931,13 @@ impl ClaudeCodeAgent {
                 &brief.dir,
                 &self.spec.subagent_limits.unwrap_or_default(),
                 chair.map_or(brief::TurnPhase::Turn, brief::TurnPhase::Chair),
+            );
+            // A cap his message states (item 538): the backstop, in the
+            // fresh ledger until the model's own `set_budget` replaces it.
+            budget::declare_from_message(
+                &brief.dir,
+                &input.text,
+                chrono::Utc::now().timestamp_millis(),
             );
         }
         let mut translator = match &self.refused {
@@ -2199,6 +2219,16 @@ impl ClaudeCodeAgent {
         let mut limit_at: Option<tokio::time::Instant> = None;
         let mut main_idle = false;
         let mut limit_ended = false;
+        // The budget's wakes (item 538): the chat's ledger is looked at on
+        // a slow tick while the turn's stdin is open, and a wake a helper's
+        // call left there is written to a main thread that sits idle.
+        let budget_dir = inbox
+            .as_ref()
+            .and(spec.brief.as_ref())
+            .map(|b| b.dir.clone())
+            .filter(|d| !d.as_os_str().is_empty());
+        let mut budget_tick = tokio::time::interval(BUDGET_TICK);
+        budget_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
             // A subagent's end the main thread was not told of (406): the
@@ -2242,6 +2272,40 @@ impl ClaudeCodeAgent {
                     limit_ended = true;
                     interrupted = true;
                     break;
+                }
+                _ = budget_tick.tick(), if budget_dir.is_some() => {
+                    if let (Some(dir), Some(inbox)) = (&budget_dir, &inbox) {
+                        let helpers = inbox.agents();
+                        let idle = inbox.idle_with_agents();
+                        let dir = dir.clone();
+                        let now_ms = chrono::Utc::now().timestamp_millis();
+                        let running = !helpers.is_empty();
+                        let d = dir.clone();
+                        let wakes = tokio::task::spawn_blocking(move || {
+                            budget::take_wakes(&d, now_ms, running, idle)
+                        })
+                        .await
+                        .unwrap_or_default();
+                        if let Some(text) = budget::wake_text(&wakes, Some(&helpers)) {
+                            if inbox.note_if_idle(&text) {
+                                let top = wakes.iter().max_by_key(|w| w.at_ms);
+                                on_event(TurnEvent::BudgetWake {
+                                    text,
+                                    kind: wakes
+                                        .iter()
+                                        .map(|w| w.kind.as_str().to_string())
+                                        .collect(),
+                                    pct: top.map(|w| w.pct),
+                                    cap: top.and_then(|w| w.cap),
+                                });
+                            } else {
+                                // Not idle after all: back for the main
+                                // thread's next call, or the next look.
+                                budget::put_back(&dir, wakes);
+                            }
+                        }
+                    }
+                    continue;
                 }
                 _ = &mut silent, if watch_silence && !any_line => {
                     watch_silence = false;
@@ -5402,6 +5466,100 @@ wait
                     .to_string()
             ]
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Item 538 (539's missing piece): a main thread that sits idle while
+    /// its helper runs is woken when usage nears the message's cap. The
+    /// stand-in is that stream — `init`, a helper's `task_started`, the main
+    /// `result` — and then it reads one more line from stdin and ends. His
+    /// message states the cap (the backstop writes it), the chat's wire
+    /// reading is within five points of it, and the drive loop's look
+    /// writes Nightloom's line, once, naming the helper.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_idle_main_thread_is_woken_near_the_cap_while_helpers_run() {
+        let dir = std::env::temp_dir().join(format!("nightloom-538-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let got = dir.join("woke.txt");
+        let body = r#"read -r first
+printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"m","permissionMode":"auto","session_id":"cap-538"}'
+printf '%s\n' '{"type":"system","subtype":"task_started","task_id":"a8bb","tool_use_id":"toolu_HELPER","description":"funding scan","task_type":"local_agent"}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"A helper is running.","session_id":"cap-538","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}'
+read -r wake
+printf '%s\n' "$wake" > 'GOT'
+printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"m","permissionMode":"auto","session_id":"cap-538"}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"Told it to wrap up.","session_id":"cap-538","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}'
+"#
+        .replace("GOT", &got.to_string_lossy());
+        let mut s = AgentSpec::new(&dir);
+        s.binary = stand_in(&dir, &body);
+        s.brief = Some(BriefSpec {
+            hook: vec!["x".into()],
+            dir: dir.clone(),
+            text: "<nightloom-subagent-brief>b</nightloom-subagent-brief>".into(),
+        });
+        // Every limit off, as he runs: only the cap his message states binds.
+        let mut limits = brief::SubagentLimits::default();
+        limits.off.stop_at = true;
+        limits.off.budget_pct = true;
+        s.subagent_limits = Some(limits);
+        // The chat's own reading, stamped ahead so this machine's gauge
+        // never outranks it.
+        brief::write_usage(
+            &dir,
+            46,
+            None,
+            chrono::Utc::now().timestamp_millis() + 60_000,
+        );
+        let agent = ClaudeCodeAgent::new(s);
+        let cancel = CancellationToken::new();
+        let mut woke = Vec::new();
+        let began = std::time::Instant::now();
+        agent
+            .run_turn("use up to 50% of the 5h limit", &cancel, &mut |e| {
+                if let TurnEvent::BudgetWake {
+                    text,
+                    kind,
+                    pct,
+                    cap,
+                } = e
+                {
+                    woke.push((text, kind, pct, cap));
+                }
+            })
+            .await
+            .unwrap();
+        assert!(
+            began.elapsed() < Duration::from_secs(20),
+            "the turn hung: {:?}",
+            began.elapsed()
+        );
+        assert_eq!(woke.len(), 1, "{woke:?}");
+        let (text, kind, pct, cap) = &woke[0];
+        assert_eq!(
+            (kind.as_slice(), *pct, *cap),
+            (&["near".to_string()][..], Some(46), Some(50))
+        );
+        assert!(
+            text.starts_with("[Nightloom, not from Swaraag: usage is at 46%")
+                && text.contains("`a8bb` (\"funding scan\")")
+                && text.contains("SendMessage"),
+            "{text}"
+        );
+        // The line reached the process's stdin, as a user line.
+        let line = std::fs::read_to_string(&got).unwrap();
+        assert!(
+            line.contains(r#""type":"user""#) && line.contains("Nightloom, not from Swaraag"),
+            "{line}"
+        );
+        // Once: the ledger has it as fired, and nothing waits.
+        let b = brief::read_turn_budget(&dir).unwrap();
+        assert_eq!(
+            b.cap.as_ref().map(|c| (c.percent, c.source.as_str())),
+            Some((50, "message"))
+        );
+        assert!(b.wakes_fired.iter().any(|k| k == "near") && b.wakes_pending.is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
 

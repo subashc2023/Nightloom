@@ -6614,6 +6614,40 @@ async fn budget_override(
     .map_err(|e| format!("writing the override failed: {e}"))?
 }
 
+/// His correction of the message's usage cap from the window (item 538,
+/// the cap chip): a new cap (`cap_percent`, 1–100, of the 5-hour window),
+/// a new mode (`finish_within` or `work_to_cap_then_continue`), both, or —
+/// neither given — no cap at all for this message. It holds for the rest
+/// of the message against the model's own `set_budget` calls. Returns the
+/// ledger as it now stands (the same value `turn_budget` returns); an
+/// error when the chat has no ledger yet or the mode is not one of the two.
+#[tauri::command]
+async fn set_turn_cap(
+    state: State<'_, AppState>,
+    session: String,
+    cap_percent: Option<u8>,
+    mode: Option<String>,
+) -> Result<nightloom_service::agent::brief::TurnBudget, String> {
+    use nightloom_service::agent::budget;
+    let mode = match mode.as_deref() {
+        None => None,
+        Some(m) => Some(budget::BudgetMode::parse(m).ok_or_else(|| format!("unknown mode: {m}"))?),
+    };
+    if cap_percent.is_some_and(|p| !(1..=100).contains(&p)) {
+        return Err("the cap is a percent from 1 to 100".into());
+    }
+    let dir = budget_dir(&state, &session)
+        .await
+        .ok_or_else(|| "no chat to set a cap for".to_string())?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    tokio::task::spawn_blocking(move || budget::correct(&dir, cap_percent, mode, now))
+        .await
+        .map_err(|e| format!("setting the cap failed: {e}"))?
+}
+
 /// A note he typed under a running subagent (nightshift backlog 295),
 /// queued in the chat's directory for the brief hook, which hands it to
 /// that subagent on its next call (`agent::steer`). `tell_main` queues a
@@ -9598,6 +9632,7 @@ fn main() {
             claude_auth_status,
             cli_update,
             turn_budget,
+            set_turn_cap,
             turn_usage,
             note_presence,
             budget_override,

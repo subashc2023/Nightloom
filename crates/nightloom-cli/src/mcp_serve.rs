@@ -63,6 +63,7 @@ pub async fn run(args: McpServeArgs) -> Result<()> {
             preview_chat: None,
             rename: None,
             notes: None,
+            budget_dir: None,
         },
     };
     mcp_server::serve_stdio(config, serve_args)

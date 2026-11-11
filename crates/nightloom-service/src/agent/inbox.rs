@@ -747,6 +747,12 @@ impl Inbox {
         true
     }
 
+    /// The subagents running now, by agent id and description (item 538:
+    /// the budget's wake names them for the main model's SendMessage).
+    pub fn agents(&self) -> Vec<(String, String)> {
+        self.lock().agents.clone()
+    }
+
     /// Whether the main thread is idle while subagents still run.
     pub fn idle_with_agents(&self) -> bool {
         let s = self.lock();
