@@ -1158,6 +1158,54 @@
     flex: 1;
     min-height: 0;
   }
+  /* Item 577 (Filament IV, stage 6's menus grammar, item 570): the chip's
+     popover is a card in front — raised, token corners, the deep shadow,
+     rising in over 90 ms — and its Model | Tasks strip a quiet control
+     with the open tab on the control fill. The strip's markup is
+     RightRail's (shared with the column); it is styled from here, inside
+     `.popover`, so the column and Classic (TopBarClassic) are untouched. */
+  .popover {
+    background: var(--raised);
+    border-radius: var(--r2);
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.6);
+  }
+  .popover :global(.rail .tabs) {
+    margin: 10px 12px 2px;
+    background: var(--well);
+    border: 1px solid var(--line2);
+    border-radius: var(--r1);
+  }
+  .popover :global(.rail .tabs button) {
+    border-radius: calc(var(--r1) - 2px);
+    font: 500 10px var(--mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink2);
+    padding: 5px 4px;
+  }
+  .popover :global(.rail .tabs button:hover) {
+    color: var(--ink);
+  }
+  .popover :global(.rail .tabs button.active) {
+    background: var(--well2);
+    color: var(--ink);
+    box-shadow: none;
+  }
+  .popover :global(.rail .tabs .badge) {
+    font-family: var(--mono);
+    letter-spacing: 0;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .popover {
+      animation: rail-rise 90ms ease-out;
+    }
+  }
+  @keyframes rail-rise {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+  }
 
   /* Item 534 (Filament IV stage 3): ~~pills~~ — the bar's chips take the
      control grammar (a fill, an edge, the small corner, 28 px), and the
