@@ -60,6 +60,8 @@
     threadWhen,
     type Reading,
   } from "./newChatPage";
+  import { newChatGround } from "./newChatGround";
+  import { groundPick } from "./newChatGroundPick.svelte";
 
   /**
    * The new-chat page. Filament IV (item 563, stage 4; 521 report §2 "The
@@ -87,6 +89,35 @@
   // Stage geometry, read off the element.
   let w = $state(0);
   let h = $state(0);
+
+  // ---- the ground (item 632): a moving background behind the page, the
+  // look picked in Settings → Animations (`newChatGround.ts` draws it; off
+  // under Reduce motion and Calm, where the CSS dot tile stays).
+  let groundEl = $state<HTMLElement | null>(null);
+  let groundCanvas = $state<HTMLCanvasElement | null>(null);
+  let groundCtl: { set(style: typeof groundPick.value): void; destroy(): void } | null = null;
+  $effect(() => {
+    const host = groundEl;
+    const canvas = groundCanvas;
+    if (!host || !canvas) return;
+    const ctl = newChatGround(canvas, host, () => {
+      const core = host.querySelector(".core");
+      if (!core) return null;
+      const hr = host.getBoundingClientRect();
+      const cr = core.getBoundingClientRect();
+      return { x: cr.left + cr.width / 2 - hr.left, y: cr.top + cr.height / 2 - hr.top };
+    });
+    groundCtl = ctl;
+    ctl.set(untrack(() => groundPick.value));
+    return () => {
+      ctl.destroy();
+      groundCtl = null;
+    };
+  });
+  $effect(() => {
+    const g = groundPick.value;
+    groundCtl?.set(g);
+  });
   const colMax = $derived(Math.max(320, Math.min(700, w - 40)));
 
   // ---- the dial
@@ -407,7 +438,8 @@
 {:else}
 <!-- Item 362: the empty chat takes a dropped file for its box, as the
      transcript does. -->
-<div class="welcome" data-drop-chat bind:clientWidth={w} bind:clientHeight={h} class:wide>
+<div class="welcome" data-drop-chat bind:clientWidth={w} bind:clientHeight={h} class:wide bind:this={groundEl}>
+  <canvas class="ground-canvas" bind:this={groundCanvas} aria-hidden="true"></canvas>
   <div class="page">
     {#if size > 0}
       <div class="core" style:width="{box}px" style:height="{box}px" use:pointsAt>
@@ -659,7 +691,20 @@
     background-image: var(--ground-dots);
     background-size: 22px 22px;
   }
+  /* Item 632: the moving ground. The canvas draws the same dots, so the
+     tile goes while it runs; the page is positioned so it paints over it. */
+  .welcome:global(.ground-live) {
+    background-image: none;
+  }
+  .ground-canvas {
+    position: absolute;
+    left: 0;
+    top: 0;
+    display: none;
+    pointer-events: none;
+  }
   .page {
+    position: relative;
     flex: 1;
     min-height: 0;
     overflow-y: auto;
