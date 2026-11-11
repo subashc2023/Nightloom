@@ -217,7 +217,9 @@ pub fn outstanding(b: &TurnBudget, pct: u8) -> u8 {
     let Some(first) = b.reserved.iter().filter_map(|r| r.at_pct).min() else {
         return total.min(100) as u8;
     };
-    total.saturating_sub(pct.saturating_sub(first) as u32).min(100) as u8
+    total
+        .saturating_sub(pct.saturating_sub(first) as u32)
+        .min(100) as u8
 }
 
 /// The refusal of a launch that does not fit under a mode-A cap.
@@ -545,7 +547,9 @@ pub fn main_at_cap_note(b: &TurnBudget, pct: u8, left: u8) -> String {
             "save your state to a file and end your reply with a <continue-later at=\"reset\"> \
              line naming it"
         }
-        BudgetMode::FinishWithin => "write up the result from what you have and say what was skipped",
+        BudgetMode::FinishWithin => {
+            "write up the result from what you have and say what was skipped"
+        }
     };
     format!(
         "[Nightloom, not from Swaraag: usage is at {pct}% of the 5-hour window, past this \
@@ -609,8 +613,7 @@ pub fn set_cap(
     if moved {
         b.wakes_fired
             .retain(|k| !matches!(k.as_str(), "cap" | "near" | "reserved" | "hard"));
-        b.wakes_pending
-            .retain(|w| matches!(w.kind, WakeKind::Pace));
+        b.wakes_pending.retain(|w| matches!(w.kind, WakeKind::Pace));
         b.wrap_calls.clear();
         b.stopped = None;
     }
@@ -773,7 +776,12 @@ pub fn cap_from_message(text: &str) -> Option<(u8, BudgetMode)> {
         own.push('\n');
     }
     let c = re.captures(&own)?;
-    let percent: u8 = c.get(2)?.as_str().parse().ok().filter(|p| (1..=100).contains(p))?;
+    let percent: u8 = c
+        .get(2)?
+        .as_str()
+        .parse()
+        .ok()
+        .filter(|p| (1..=100).contains(p))?;
     let phrase = c.get(1)?.as_str().to_ascii_lowercase();
     let lower = own.to_ascii_lowercase();
     let urgent = lower.contains("urgent") || lower.contains("just get it working");
@@ -933,7 +941,8 @@ mod tests {
     }
 
     fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("nightloom-538-{name}-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("nightloom-538-{name}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -1012,17 +1021,29 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(said.contains("cap 50%") && said.contains("work_to_cap_then_continue"), "{said}");
+        assert!(
+            said.contains("cap 50%") && said.contains("work_to_cap_then_continue"),
+            "{said}"
+        );
         let b = read_turn_budget(&dir).unwrap();
         let cap = b.cap.clone().unwrap();
         assert_eq!((b.stop_at, cap.percent, cap.mode), (50, 50, B));
-        assert_eq!((cap.source.as_str(), cap.reason.as_str()), ("model", "he said up to 50%"));
+        assert_eq!(
+            (cap.source.as_str(), cap.reason.as_str()),
+            ("model", "he said up to 50%")
+        );
         // Again, to change it: the ledger follows.
         let said = tool
-            .call(json!({"cap_percent": 40.0, "mode": "finish_within", "reason": "urgent"}), &cancel)
+            .call(
+                json!({"cap_percent": 40.0, "mode": "finish_within", "reason": "urgent"}),
+                &cancel,
+            )
             .await
             .unwrap();
-        assert!(said.contains("cap 40%") && said.contains("finish_within"), "{said}");
+        assert!(
+            said.contains("cap 40%") && said.contains("finish_within"),
+            "{said}"
+        );
         let b = read_turn_budget(&dir).unwrap();
         assert_eq!((b.stop_at, b.cap.unwrap().mode), (40, A));
         // Bad input is an error the model reads, and changes nothing.
@@ -1038,7 +1059,10 @@ mod tests {
         let none = temp("tool-none");
         assert!(
             SetBudget::new(&none)
-                .call(json!({"cap_percent": 50, "mode": "finish_within", "reason": ""}), &cancel)
+                .call(
+                    json!({"cap_percent": 50, "mode": "finish_within", "reason": ""}),
+                    &cancel
+                )
                 .await
                 .is_err()
         );
@@ -1064,15 +1088,14 @@ mod tests {
             json!(["--mcp-serve", "--root", "/w", "--budget-dir", "/ask/c2"])
         );
         assert_eq!(v["mcpServers"]["playwright"]["args"], json!([]));
-        let parsed = crate::mcp_server::parse_args(&[
-            "--budget-dir".to_string(),
-            "/ask/c2".to_string(),
-        ])
-        .unwrap();
+        let parsed =
+            crate::mcp_server::parse_args(&["--budget-dir".to_string(), "/ask/c2".to_string()])
+                .unwrap();
         assert_eq!(parsed.budget_dir.as_deref(), Some(Path::new("/ask/c2")));
         // A dream's server has no turn's ledger: left alone.
-        let dream = json!({"mcpServers": {"nightloom": {"args": ["--mcp-serve", "--dream", "{}"]}}})
-            .to_string();
+        let dream =
+            json!({"mcpServers": {"nightloom": {"args": ["--mcp-serve", "--dream", "{}"]}}})
+                .to_string();
         assert!(with_budget_dir(&dream, Path::new("/ask/c1")).is_none());
     }
 
@@ -1082,7 +1105,10 @@ mod tests {
     #[test]
     fn the_message_pattern_is_a_backstop_the_models_call_replaces() {
         for (text, want) in [
-            ("use up to 50% of the 5h limit and mainly spin up subagents", Some((50, B))),
+            (
+                "use up to 50% of the 5h limit and mainly spin up subagents",
+                Some((50, B)),
+            ),
             ("stop at 60% please", Some((60, B))),
             ("do it all, no more than 70 percent", Some((70, B))),
             ("get this done within 40%", Some((40, A))),
@@ -1099,12 +1125,20 @@ mod tests {
         start(&dir, 26);
         declare_from_message(&dir, "use up to 50% of the 5h limit", 5);
         let b = read_turn_budget(&dir).unwrap();
-        assert_eq!(b.cap.as_ref().map(|c| (c.percent, c.source.as_str())), Some((50, "message")));
+        assert_eq!(
+            b.cap.as_ref().map(|c| (c.percent, c.source.as_str())),
+            Some((50, "message"))
+        );
         assert_eq!(b.stop_at, 50);
         // The model's own call replaces it.
         declare(&dir, 55, A, "he said within", 6).unwrap();
         let b = read_turn_budget(&dir).unwrap();
-        assert_eq!(b.cap.as_ref().map(|c| (c.percent, c.mode, c.source.as_str())), Some((55, A, "model")));
+        assert_eq!(
+            b.cap
+                .as_ref()
+                .map(|c| (c.percent, c.mode, c.source.as_str())),
+            Some((55, A, "model"))
+        );
         // A message with no cap leaves a ledger with none.
         start(&dir, 26);
         declare_from_message(&dir, "fix the tab-drag bug", 7);
@@ -1115,7 +1149,12 @@ mod tests {
         // call changes nothing; no cap at all puts the chat's own line back.
         declare(&dir, 50, B, "x", 8).unwrap();
         let b = correct(&dir, None, Some(A), 9).unwrap();
-        assert_eq!(b.cap.as_ref().map(|c| (c.percent, c.mode, c.source.as_str())), Some((50, A, "user")));
+        assert_eq!(
+            b.cap
+                .as_ref()
+                .map(|c| (c.percent, c.mode, c.source.as_str())),
+            Some((50, A, "user"))
+        );
         let said = declare(&dir, 90, B, "more", 10).unwrap();
         assert!(said.contains("Kept as Swaraag set it"), "{said}");
         assert_eq!(read_turn_budget(&dir).unwrap().stop_at, 50);
@@ -1124,7 +1163,10 @@ mod tests {
         let b = correct(&dir, None, None, 12).unwrap();
         assert!(b.cap.is_none() && b.cap_locked);
         assert_eq!(b.stop_at, brief::NEVER_PCT);
-        assert!(correct(&dir, None, Some(A), 13).is_err(), "a mode with no cap");
+        assert!(
+            correct(&dir, None, Some(A), 13).is_err(),
+            "a mode with no cap"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1152,10 +1194,17 @@ mod tests {
         // A reading that jumps straight past the cap wakes for the cap alone.
         let mut b = ledger(26, Some((50, B)));
         assert_eq!(kinds(&mut b, 52), [WakeKind::AtCap]);
-        assert!(kinds(&mut b, 47).is_empty(), "the lower thresholds went with it");
+        assert!(
+            kinds(&mut b, 47).is_empty(),
+            "the lower thresholds went with it"
+        );
         // Raised, the cap's thresholds are armed again.
         set_cap(&mut b, 70, B, "model", "more", 2);
-        assert_eq!(kinds(&mut b, 60), [WakeKind::Pace], "one wake for the marks passed");
+        assert_eq!(
+            kinds(&mut b, 60),
+            [WakeKind::Pace],
+            "one wake for the marks passed"
+        );
         assert!(kinds(&mut b, 61).is_empty());
         assert_eq!(kinds(&mut b, 66), [WakeKind::Near]);
         // Mode A has no pace wakes; no cap has only the 96% one, once.
@@ -1166,7 +1215,10 @@ mod tests {
         assert!(kinds(&mut none, 95).is_empty());
         assert_eq!(kinds(&mut none, 96), [WakeKind::Hard]);
         assert!(kinds(&mut none, 99).is_empty());
-        assert!(due_wakes(&mut none, None, 1).is_empty(), "no reading, no wake");
+        assert!(
+            due_wakes(&mut none, None, 1).is_empty(),
+            "no reading, no wake"
+        );
     }
 
     /// The reservation (537's fix 1), replaying that night's turn: seven
@@ -1176,21 +1228,37 @@ mod tests {
     #[test]
     fn the_reservation_refuses_in_mode_a_and_only_wakes_in_mode_b() {
         let fable = points_for(Some("fable"));
-        assert_eq!((fable, points_for(Some("opus")), points_for(None)), (6, 3, 3));
+        assert_eq!(
+            (fable, points_for(Some("opus")), points_for(None)),
+            (6, 3, 3)
+        );
         let mut a = ledger(26, Some((50, A)));
         let let_through = (0..7)
             .filter(|_| claim_reservation(&mut a, reading(26, 1), fable).is_ok())
             .count();
         assert_eq!(let_through, 3);
         let no = claim_reservation(&mut a, reading(26, 1), fable).unwrap_err();
-        assert!(no.contains("cap of 50%") && no.contains("Launch fewer"), "{no}");
+        assert!(
+            no.contains("cap of 50%") && no.contains("Launch fewer"),
+            "{no}"
+        );
         // As the reading catches up, the hold is released: at 44% the three
         // helpers' 18 points are spent, and nothing is held.
-        assert_eq!((outstanding(&a, 26), outstanding(&a, 35), outstanding(&a, 44)), (18, 9, 0));
+        assert_eq!(
+            (
+                outstanding(&a, 26),
+                outstanding(&a, 35),
+                outstanding(&a, 44)
+            ),
+            (18, 9, 0)
+        );
         let mut b = ledger(26, Some((50, B)));
         let mut woke = Vec::new();
         for n in 1..=7 {
-            assert!(claim_reservation(&mut b, reading(26, 1), fable).is_ok(), "launch {n}");
+            assert!(
+                claim_reservation(&mut b, reading(26, 1), fable).is_ok(),
+                "launch {n}"
+            );
             for w in due_wakes(&mut b, reading(26, 1), 1) {
                 woke.push((n, w.kind, w.reserved));
             }
@@ -1215,26 +1283,48 @@ mod tests {
         let wakes = due_wakes(&mut b, reading(46, 1), 1);
         let helpers = vec![("a8bb".to_string(), "survey the hook".to_string())];
         let text = wake_text(&wakes, Some(&helpers)).unwrap();
-        assert!(text.starts_with("[Nightloom, not from Swaraag: usage is at 46%"), "{text}");
-        for part in ["cap is 50%", "`a8bb` (\"survey the hook\")", "SendMessage", WRAP_UP_HELPER, "<continue-later at=\"reset\">"] {
+        assert!(
+            text.starts_with("[Nightloom, not from Swaraag: usage is at 46%"),
+            "{text}"
+        );
+        for part in [
+            "cap is 50%",
+            "`a8bb` (\"survey the hook\")",
+            "SendMessage",
+            WRAP_UP_HELPER,
+            "<continue-later at=\"reset\">",
+        ] {
             assert!(text.contains(part), "{part}: {text}");
         }
         let mut a = ledger(26, Some((50, A)));
         let text = wake_text(&due_wakes(&mut a, reading(46, 1), 1), None).unwrap();
-        assert!(text.contains(FINISH_NOW_HELPER) && !text.contains("continue-later"), "{text}");
+        assert!(
+            text.contains(FINISH_NOW_HELPER) && !text.contains("continue-later"),
+            "{text}"
+        );
         assert!(wake_text(&[], None).is_none());
     }
 
-    const HELPER_READ: &str = r#"{"tool_name":"Read","tool_input":{"file_path":"/x"},"agent_id":"h1","tool_use_id":"t"}"#;
-    const MAIN_READ: &str = r#"{"tool_name":"Read","tool_input":{"file_path":"/x"},"tool_use_id":"m"}"#;
+    const HELPER_READ: &str =
+        r#"{"tool_name":"Read","tool_input":{"file_path":"/x"},"agent_id":"h1","tool_use_id":"t"}"#;
+    const MAIN_READ: &str =
+        r#"{"tool_name":"Read","tool_input":{"file_path":"/x"},"tool_use_id":"m"}"#;
 
     /// Whether text the hook hands a helper carries a usage figure.
     fn has_figure(text: &str) -> bool {
         let lower = text.to_ascii_lowercase();
         text.contains('%')
-            || ["5-hour", "five-hour", "window", "budget", "week", "cap ", "points"]
-                .iter()
-                .any(|w| lower.contains(w))
+            || [
+                "5-hour",
+                "five-hour",
+                "window",
+                "budget",
+                "week",
+                "cap ",
+                "points",
+            ]
+            .iter()
+            .any(|w| lower.contains(w))
     }
 
     /// Task 3, mode B: nothing the hook hands a helper carries a usage
@@ -1268,19 +1358,38 @@ mod tests {
             let said = out.replace("Estimated context: 100k", "");
             assert!(!has_figure(&said), "{out}");
         }
-        assert!(seen.iter().any(|o| o.contains("wrapping up")), "the wrap-up reached it");
-        assert!(seen.last().unwrap().contains("deny"), "{}", seen.last().unwrap());
+        assert!(
+            seen.iter().any(|o| o.contains("wrapping up")),
+            "the wrap-up reached it"
+        );
+        assert!(
+            seen.last().unwrap().contains("deny"),
+            "{}",
+            seen.last().unwrap()
+        );
         // The main thread, on the same ledger, is told the cap.
         let main = decide_with(&dir, MAIN_READ, at(&dir, 40));
         let line = main.additional_context().unwrap_or_default().to_string();
-        assert!(line.contains("cap 50%") && line.contains("from your set_budget call"), "{line}");
+        assert!(
+            line.contains("cap 50%") && line.contains("from your set_budget call"),
+            "{line}"
+        );
         // Mode A: the helper sees the usage line, and its launch its share.
         let dir_a = temp("show");
-        brief::write(&dir_a, "<nightloom-subagent-brief>\nlead\n</nightloom-subagent-brief>").unwrap();
+        brief::write(
+            &dir_a,
+            "<nightloom-subagent-brief>\nlead\n</nightloom-subagent-brief>",
+        )
+        .unwrap();
         start(&dir_a, 26);
         declare(&dir_a, 50, A, "within 50%", 1).unwrap();
         let reply = decide_with(&dir_a, HELPER_READ, at(&dir_a, 27));
-        assert!(reply.additional_context().is_some_and(|c| c.contains("5-hour 27%")), "{reply:?}");
+        assert!(
+            reply
+                .additional_context()
+                .is_some_and(|c| c.contains("5-hour 27%")),
+            "{reply:?}"
+        );
         let launch = r#"{"tool_name":"Agent","tool_input":{"prompt":"Estimated context: 100k\ngo","model":"opus"},"tool_use_id":"s"}"#;
         let out = serde_json::to_string(&decide_with(&dir_a, launch, at(&dir_a, 27))).unwrap();
         assert!(out.contains("Budget: about 3 points"), "{out}");
@@ -1302,8 +1411,14 @@ mod tests {
             let reply = decide_with(&dir, HELPER_READ, r);
             assert_ne!(reply.decision(), "deny", "call {n}");
             let note = reply.additional_context().unwrap_or_default();
-            assert!(note.contains("wrapping up") && note.contains(WRAP_UP_HELPER), "call {n}: {note}");
-            assert!(note.contains(&format!("About {} more", WRAP_CALLS - n)), "call {n}: {note}");
+            assert!(
+                note.contains("wrapping up") && note.contains(WRAP_UP_HELPER),
+                "call {n}: {note}"
+            );
+            assert!(
+                note.contains(&format!("About {} more", WRAP_CALLS - n)),
+                "call {n}: {note}"
+            );
         }
         let reply = decide_with(&dir, HELPER_READ, r);
         assert_eq!(reply.decision(), "deny");
@@ -1319,7 +1434,10 @@ mod tests {
             let reply = decide_with(&dir, MAIN_READ, r);
             assert_ne!(reply.decision(), "deny", "main call {n}");
             let note = reply.additional_context().unwrap_or_default();
-            assert!(note.contains("past this message's cap of 50%") && note.contains("continue-later"), "{note}");
+            assert!(
+                note.contains("past this message's cap of 50%") && note.contains("continue-later"),
+                "{note}"
+            );
         }
         let reply = decide_with(&dir, MAIN_READ, r);
         assert_eq!(reply.decision(), "deny");
@@ -1331,7 +1449,11 @@ mod tests {
         for _ in 0..WRAP_CALLS {
             let reply = decide_with(&dir2, HELPER_READ, r);
             assert_ne!(reply.decision(), "deny");
-            assert!(reply.additional_context().is_some_and(|c| c.contains("Swaraag pressed Wrap up")));
+            assert!(
+                reply
+                    .additional_context()
+                    .is_some_and(|c| c.contains("Swaraag pressed Wrap up"))
+            );
         }
         assert_eq!(decide_with(&dir2, HELPER_READ, r).decision(), "deny");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1351,21 +1473,35 @@ mod tests {
         let reply = decide_with(&dir, HELPER_READ, at(&dir, 46));
         assert!(reply.additional_context().is_none(), "{reply:?}");
         let b = read_turn_budget(&dir).unwrap();
-        assert_eq!(b.wakes_pending.iter().map(|w| w.kind).collect::<Vec<_>>(), [WakeKind::Near]);
+        assert_eq!(
+            b.wakes_pending.iter().map(|w| w.kind).collect::<Vec<_>>(),
+            [WakeKind::Near]
+        );
         // The main thread busy: the look leaves it.
         assert!(take_wakes(&dir, now, true, false).is_empty());
         // Idle with helpers: taken, once.
         let took = take_wakes(&dir, now, true, true);
-        assert_eq!(took.iter().map(|w| w.kind).collect::<Vec<_>>(), [WakeKind::Near]);
+        assert_eq!(
+            took.iter().map(|w| w.kind).collect::<Vec<_>>(),
+            [WakeKind::Near]
+        );
         assert!(take_wakes(&dir, now, true, true).is_empty());
         // Not written after all: back, and the main thread's next call has it.
         put_back(&dir, took);
         let reply = decide_with(&dir, MAIN_READ, at(&dir, 46));
         let line = reply.additional_context().unwrap_or_default();
-        assert!(line.starts_with("[Nightloom, not from Swaraag: usage is at 46%"), "{line}");
+        assert!(
+            line.starts_with("[Nightloom, not from Swaraag: usage is at 46%"),
+            "{line}"
+        );
         assert!(read_turn_budget(&dir).unwrap().wakes_pending.is_empty());
         let again = decide_with(&dir, MAIN_READ, at(&dir, 47));
-        assert!(!again.additional_context().unwrap_or_default().contains("Nightloom, not from"));
+        assert!(
+            !again
+                .additional_context()
+                .unwrap_or_default()
+                .contains("Nightloom, not from")
+        );
         // No cap, helpers running, 96%: the look's own reading wakes.
         let dir2 = temp("hard");
         start(&dir2, 60);
@@ -1375,7 +1511,10 @@ mod tests {
         at(&dir2, 96);
         let now = chrono::Utc::now().timestamp_millis();
         let took = take_wakes(&dir2, now, true, true);
-        assert_eq!(took.iter().map(|w| w.kind).collect::<Vec<_>>(), [WakeKind::Hard]);
+        assert_eq!(
+            took.iter().map(|w| w.kind).collect::<Vec<_>>(),
+            [WakeKind::Hard]
+        );
         // …and with none running it is not a wake at all, and the holds go.
         let dir3 = temp("hard-none");
         start(&dir3, 60);

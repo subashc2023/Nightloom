@@ -5469,6 +5469,100 @@ wait
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// Item 538 (539's missing piece): a main thread that sits idle while
+    /// its helper runs is woken when usage nears the message's cap. The
+    /// stand-in is that stream — `init`, a helper's `task_started`, the main
+    /// `result` — and then it reads one more line from stdin and ends. His
+    /// message states the cap (the backstop writes it), the chat's wire
+    /// reading is within five points of it, and the drive loop's look
+    /// writes Nightloom's line, once, naming the helper.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_idle_main_thread_is_woken_near_the_cap_while_helpers_run() {
+        let dir = std::env::temp_dir().join(format!("nightloom-538-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let got = dir.join("woke.txt");
+        let body = r#"read -r first
+printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"m","permissionMode":"auto","session_id":"cap-538"}'
+printf '%s\n' '{"type":"system","subtype":"task_started","task_id":"a8bb","tool_use_id":"toolu_HELPER","description":"funding scan","task_type":"local_agent"}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"A helper is running.","session_id":"cap-538","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}'
+read -r wake
+printf '%s\n' "$wake" > 'GOT'
+printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"m","permissionMode":"auto","session_id":"cap-538"}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"Told it to wrap up.","session_id":"cap-538","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}'
+"#
+        .replace("GOT", &got.to_string_lossy());
+        let mut s = AgentSpec::new(&dir);
+        s.binary = stand_in(&dir, &body);
+        s.brief = Some(BriefSpec {
+            hook: vec!["x".into()],
+            dir: dir.clone(),
+            text: "<nightloom-subagent-brief>b</nightloom-subagent-brief>".into(),
+        });
+        // Every limit off, as he runs: only the cap his message states binds.
+        let mut limits = brief::SubagentLimits::default();
+        limits.off.stop_at = true;
+        limits.off.budget_pct = true;
+        s.subagent_limits = Some(limits);
+        // The chat's own reading, stamped ahead so this machine's gauge
+        // never outranks it.
+        brief::write_usage(
+            &dir,
+            46,
+            None,
+            chrono::Utc::now().timestamp_millis() + 60_000,
+        );
+        let mut agent = ClaudeCodeAgent::new(s);
+        let cancel = CancellationToken::new();
+        let mut woke = Vec::new();
+        let began = std::time::Instant::now();
+        agent
+            .run_turn("use up to 50% of the 5h limit", &cancel, &mut |e| {
+                if let TurnEvent::BudgetWake {
+                    text,
+                    kind,
+                    pct,
+                    cap,
+                } = e
+                {
+                    woke.push((text, kind, pct, cap));
+                }
+            })
+            .await
+            .unwrap();
+        assert!(
+            began.elapsed() < Duration::from_secs(20),
+            "the turn hung: {:?}",
+            began.elapsed()
+        );
+        assert_eq!(woke.len(), 1, "{woke:?}");
+        let (text, kind, pct, cap) = &woke[0];
+        assert_eq!(
+            (kind.as_slice(), *pct, *cap),
+            (&["near".to_string()][..], Some(46), Some(50))
+        );
+        assert!(
+            text.starts_with("[Nightloom, not from Swaraag: usage is at 46%")
+                && text.contains("`a8bb` (\"funding scan\")")
+                && text.contains("SendMessage"),
+            "{text}"
+        );
+        // The line reached the process's stdin, as a user line.
+        let line = std::fs::read_to_string(&got).unwrap();
+        assert!(
+            line.contains(r#""type":"user""#) && line.contains("Nightloom, not from Swaraag"),
+            "{line}"
+        );
+        // Once: the ledger has it as fired, and nothing waits.
+        let b = brief::read_turn_budget(&dir).unwrap();
+        assert_eq!(
+            b.cap.as_ref().map(|c| (c.percent, c.source.as_str())),
+            Some((50, "message"))
+        );
+        assert!(b.wakes_fired.iter().any(|k| k == "near") && b.wakes_pending.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// 543a: a turn that is still working when the limit is seen is not cut
     /// short — the main thread's own 429 ends it the ordinary way.
     #[cfg(unix)]

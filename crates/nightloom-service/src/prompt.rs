@@ -3366,9 +3366,34 @@ As of now — the front.
                 SegmentKind::ProjectInstructions,
                 SegmentKind::Subagents,
                 SegmentKind::SubagentRules,
+                // The budget layer (item 538): the rules' kind, their switch.
+                SegmentKind::SubagentRules,
                 SegmentKind::Custom,
             ]
         );
+        let budget = &p.segments()[3];
+        assert_eq!(budget.name, "budget");
+        assert!(budget.text.starts_with("<budget>"), "{}", budget.text);
+        assert!(budget.text.ends_with("</budget>"), "{}", budget.text);
+        for want in [
+            "mcp__nightloom__set_budget",
+            "work_to_cap_then_continue",
+            "finish_within",
+            "[Nightloom, not from Swaraag:",
+        ] {
+            assert!(budget.text.contains(want), "{want} missing");
+        }
+        // Static: no figure of the window in it but the example's.
+        assert_eq!(budget.text.matches('%').count(), 1, "{}", budget.text);
+        // The warm note for the group (rules, then budget) keeps the budget's
+        // own tags and drops the rules'.
+        let grouped = format!("{}\n\n{}", p.segments()[2].text, budget.text);
+        let note = subagent_rules_update_note(&grouped);
+        assert!(
+            note.contains("<budget>") && note.contains("</budget>"),
+            "{note}"
+        );
+        assert!(!note.contains("</subagent-rules>"), "{note}");
         let text = &p.segments()[2].text;
         assert!(text.starts_with("<subagent-rules>"), "{text}");
         assert!(text.ends_with("</subagent-rules>"), "{text}");

@@ -2674,8 +2674,7 @@ pub(super) fn decide_holding(
     // be stopped as it started.
     if wrap_note.is_some() {
         return HookReply::deny(
-            "Not run: no new subagents while the chat wraps up. Save your own work instead."
-                .into(),
+            "Not run: no new subagents while the chat wraps up. Save your own work instead.".into(),
         );
     }
     // A chat wrapping up starts nothing new (backlog 192).
@@ -3956,8 +3955,9 @@ mod tests {
 
     /// *Wrap up* (backlog 192) on a held call: the call is refused with his
     /// instruction, the model's next calls run (past the line) so it can
-    /// write the hand-off, a spawn is refused, a subagent is told to stop;
-    /// from the meter with nothing held, the next call carries it.
+    /// write the hand-off, a spawn is refused, a subagent is told to wrap
+    /// up and then stopped (538); from the meter with nothing held, the
+    /// next call carries it.
     #[test]
     fn wrap_up_is_carried_once_then_the_hand_off_may_be_written() {
         let dir = limits_dir("wrap");
@@ -3987,7 +3987,21 @@ mod tests {
         assert!(b.wrap_at_ms.is_some() && b.pending_since_ms.is_none() && b.holds.is_empty());
         assert_eq!(go(write, now + 2).decision(), "pass");
         assert_eq!(go(CALL, now + 3).decision(), "deny");
-        assert_eq!(go(sub, now + 4).decision(), "deny");
+        // A subagent (item 538): its next calls run with the wrap-up beside
+        // them so it can save its work — it was refused at once — and past
+        // WRAP_CALLS of them it is refused as before.
+        for n in 0..super::super::budget::WRAP_CALLS {
+            let r = go(sub, now + 4);
+            assert_ne!(r.decision(), "deny", "call {n}");
+            assert!(
+                r.additional_context()
+                    .is_some_and(|c| c.contains("Swaraag pressed Wrap up")),
+                "{r:?}"
+            );
+        }
+        let r = go(sub, now + 4);
+        assert_eq!(r.decision(), "deny");
+        assert!(r.reason().is_some_and(|c| c.contains("wrapping up")));
         // The next message: the wrap named the last one; nothing carries.
         std::thread::sleep(std::time::Duration::from_millis(2));
         super::begin_turn(&dir, &l, super::TurnPhase::Turn);
