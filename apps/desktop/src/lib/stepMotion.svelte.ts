@@ -15,10 +15,16 @@
  * - other: one slow soft comet; the mark breathes.
  *
  * The setting ("Thinking motion", Settings → Animations) applies to the
- * whole family: Sweep (the default, above), Weave (Sweep plus faint threads
- * drifting behind the running row) or Quiet (the mark and the bar's head
- * only; tool rows keep today's shuttle). Stamped on <html> as
- * `data-step-motion` (none for Sweep); remembered in localStorage. Item 610:
+ * whole family. Item 616 (his pick, 2026-11-11): three choices —
+ * - Combo (the default): Sweep, plus Reticle's per-kind marks, its [ ]
+ *   brackets and faint tint on the running row, a faint light running round
+ *   the row's edge, and on a helper's row the bar filled to its context out
+ *   of 300k ("context 125k / 300k · 42%").
+ * - Sweep — today's: the family above, as 589 built it.
+ * - Reticle: a HUD lock-on — brackets, a per-kind instrument as the mark, a
+ *   data bus with packets for the thread (616-demo/combo.html, card A).
+ * Weave and Quiet left the picker; a saved one reads as Combo. Stamped on
+ * <html> as `data-step-motion` (none for Combo); remembered in localStorage. Item 610:
  * the trace's CSS reads its own `data-motion` (AssistantMessage stamps the
  * setting, or a preview's own choice), so Settings → Animations → Thinking
  * block can run all three side by side. While the
@@ -30,13 +36,16 @@ import { isShellCall } from "./agentCommands";
 import { isAgentCall } from "./subagentRows";
 
 export type StepKind = "think" | "shell" | "agent" | "file" | "web" | "other";
-export type StepMotion = "sweep" | "weave" | "quiet";
+export type StepMotion = "combo" | "sweep" | "reticle";
 
 export const STEP_MOTIONS: { id: StepMotion; name: string; note: string }[] = [
-  { id: "sweep", name: "Sweep", note: "The default. A light runs along the running step's thread, a little different for thinking, a command, a helper, a file and the web." },
-  { id: "weave", name: "Weave", note: "Sweep, plus faint threads drifting behind the running step." },
-  { id: "quiet", name: "Quiet", note: "Only the step's mark and the bar's head move; commands keep today's sweep." },
+  { id: "combo", name: "Combo", note: "The default. Sweep, plus a live mark for each kind, [ ] brackets and a faint light round the running step, and a helper's bar showing its context out of 300k." },
+  { id: "sweep", name: "Sweep — today's", note: "A light runs along the running step's thread, a little different for thinking, a command, a helper, a file and the web." },
+  { id: "reticle", name: "Reticle", note: "A lock-on: brackets close on the running step, its mark is a small live instrument, and packets run along its thread." },
 ];
+
+/** A helper's context window for its bar under Combo (his figure, 616). */
+export const HELPER_WINDOW = 300_000;
 
 const FILE_TOOLS = new Set(["Read", "Edit", "MultiEdit", "Write", "NotebookEdit", "NotebookRead", "Glob", "Grep", "LS"]);
 const WEB_TOOLS = new Set(["WebFetch", "WebSearch"]);
@@ -53,9 +62,10 @@ export function toolKind(name: string): StepKind {
 
 const KEY = "nightloom.stepMotion";
 
-/** A stored value read back; anything unknown is the default. */
+/** A stored value read back; anything unknown is the default (Combo) —
+ *  a saved Weave or Quiet (gone since 616) included. */
 export function parseStepMotion(v: string | null): StepMotion {
-  return v === "weave" || v === "quiet" ? v : "sweep";
+  return v === "sweep" || v === "reticle" ? v : "combo";
 }
 
 function read(): string | null {
@@ -72,14 +82,14 @@ export const stepMotion = $state<{ value: StepMotion }>({ value: parseStepMotion
 export function applyStepMotion(): void {
   if (typeof document === "undefined") return;
   const root = document.documentElement;
-  if (stepMotion.value === "sweep") delete root.dataset.stepMotion;
+  if (stepMotion.value === "combo") delete root.dataset.stepMotion;
   else root.dataset.stepMotion = stepMotion.value;
 }
 
 export function setStepMotion(m: StepMotion): void {
   stepMotion.value = m;
   try {
-    if (m === "sweep") localStorage.removeItem(KEY);
+    if (m === "combo") localStorage.removeItem(KEY);
     else localStorage.setItem(KEY, m);
   } catch {
     // No storage (a harness, a private window): the choice holds for this run.

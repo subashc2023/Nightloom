@@ -89,7 +89,7 @@
   // Item 564 (Filament IV stage 5): the turn trace's clock and the stream speed.
   import { untrack } from "svelte";
   // Item 589: the running step's motion, a variant per kind of step.
-  import { stepMotion, toolKind, type StepKind, type StepMotion } from "./stepMotion.svelte";
+  import { HELPER_WINDOW, stepMotion, toolKind, type StepKind, type StepMotion } from "./stepMotion.svelte";
   import { SpeedMeter, barOf, fmtSecs, sparkPoints, stepKeys, traceBook, type TraceRecord } from "./turnTiming";
   // Item 495 part 2: the folds kept past a chat switch.
   import { decodeOverride, encodeOverride, foldKey, keptGet, keptOpen, keptSet, type FoldScope } from "./keptFolds.svelte";
@@ -391,6 +391,14 @@
   }
   function rowOf(id: string): SubagentRow | null {
     return app.subagents.find((r) => r.tool_use_id === id) ?? null;
+  }
+  /** Item 616: a helper's context so far (its latest round's request and
+   *  response, the CLI's `total_tokens`), or null when it is not a helper
+   *  or nothing has been reported yet — then its bar stays today's. */
+  function helperContext(call: { id: string; name: string }): number | null {
+    if (!isAgentCall(call.name)) return null;
+    const r = rowOf(call.id);
+    return r && r.tokens > 0 ? r.tokens : null;
   }
   /** The press already flipped the row (the toggle is on pointerdown, for
    *  the streaming reason above); a press that turns into a drag was not a
@@ -750,15 +758,44 @@
 
 <!-- Item 564: a trace row's number and status mark (done ✓, running ■,
      error ✕, denied ⊘), as in the mockup: no tool icon, the name says it. -->
-{#snippet stepHead(i: number, st: "done" | "running" | "error" | "denied")}
+{#snippet stepHead(i: number, st: "done" | "running" | "error" | "denied", kind: StepKind | null = null)}
   <span class="no" aria-hidden="true">{String(stepNo[i]).padStart(2, "0")}</span>
-  <span class="st st-{st}" aria-label={st}>{#if st === "done"}✓{:else if st === "running"}■{:else if st === "error"}✕{:else}⊘{/if}</span>
+  <!-- Item 616: a running step's mark under Combo and Reticle is a small
+       live instrument per kind (.st-ico); Sweep keeps the ■ (.st-sq). -->
+  <span class="st st-{st}" aria-label={st}>{#if st === "done"}✓{:else if st === "running"}<span class="st-sq">■</span>{#if kind}<span class="st-ico k-{kind}" aria-hidden="true">{@render markIcon(kind)}</span>{/if}{:else if st === "error"}✕{:else}⊘{/if}</span>
+{/snippet}
+<!-- Item 616: Reticle's instruments (616-demo/combo.html, card A): two
+     counter-turning rings round a beating core (thinking), a page with a
+     scan line (a file), a prompt with a blinking cursor (a command), a radar
+     sweep with blips (the web), a hub with three satellites (a helper), one
+     turning ring (the rest). -->
+{#snippet markIcon(kind: StepKind)}
+  {#if kind === "think"}
+    <svg viewBox="0 0 18 18"><circle class="ring r1" cx="9" cy="9" r="7.5" /><circle class="ring r2" cx="9" cy="9" r="4.6" /><circle class="core" cx="9" cy="9" r="2" /></svg>
+  {:else if kind === "file"}
+    <svg viewBox="0 0 18 18"><path class="ring" d="M4 2 H11 L14 5 V16 H4 Z" /><line class="scanl" x1="5.5" x2="12.5" y1="9" y2="9" /></svg>
+  {:else if kind === "shell"}
+    <svg viewBox="0 0 18 18"><path class="ring" d="M2.5 4.5 L7 9 L2.5 13.5" /><rect class="cursor" x="9" y="11.5" width="6.5" height="2.5" /></svg>
+  {:else if kind === "web"}
+    <span class="radar"></span><span class="blip b1"></span><span class="blip b2"></span>
+  {:else if kind === "agent"}
+    <span class="hub"></span><span class="orbit o1"><b></b></span><span class="orbit o2"><b></b></span><span class="orbit o3"><b></b></span>
+  {:else}
+    <svg viewBox="0 0 18 18"><circle class="ring r1" cx="9" cy="9" r="7" /><circle class="core" cx="9" cy="9" r="2" /></svg>
+  {/if}
 {/snippet}
 <!-- Item 564: the step's bar — its place in the turn — on a hairline track. -->
-{#snippet stepBar(i: number, st: "done" | "running" | "error")}
+{#snippet stepBar(i: number, st: "done" | "running" | "error", ctx: number | null = null)}
   {@const b = barFor(i)}
-  <span class="tbar" use:tip={barTitle(i)}>
+  <span class="tbar" class:has-ctx={ctx !== null} use:tip={barTitle(i)}>
     {#if b}<i class="tbar-{st}" style:left="{b.left * 100}%" style:width="{b.width * 100}%"></i>{/if}
+    {#if ctx !== null}
+      <!-- Item 616 (Combo): a running helper's bar is its context out of
+           300k — the subagent's latest round, request and response, as the
+           CLI reports it (SubagentRow.tokens). Drawn by scale, not width. -->
+      <i class="tbar-ctx" style:transform="scaleX({Math.min(1, ctx / HELPER_WINDOW)})"></i>
+      <span class="ctx-lbl">context {fmtTokens(ctx)} / {fmtTokens(HELPER_WINDOW)} · {Math.round((ctx / HELPER_WINDOW) * 100)}%</span>
+    {/if}
   </span>
 {/snippet}
 
@@ -767,7 +804,14 @@
      runs a little differently per kind. The shell's thread is today's weft
      (its ::after shuttle), so it carries no children. -->
 {#snippet stepLive(kind: StepKind, threads: boolean)}
+  <!-- Item 616: Combo's and Reticle's parts, drawn only under their choice —
+       the faint tint, the [ ] brackets, the light round the edge (Combo),
+       the data bus with its packets (Reticle). -->
   <span class="mo-bg k-{kind}" aria-hidden="true"></span>
+  <span class="mo-tex k-{kind}" aria-hidden="true"></span>
+  <span class="mo-brk" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+  <svg class="mo-edge" aria-hidden="true"><rect class="e-tail" width="100%" height="100%" rx="6" pathLength="100" /><rect class="e-head" width="100%" height="100%" rx="6" pathLength="100" /></svg>
+  <span class="mo-bus k-{kind}" aria-hidden="true"><i></i><i></i><i></i></span>
   {#if threads}
     <span class="rm-weft mo-weft k-{kind}" aria-hidden="true">{#if kind !== "shell"}<i></i><i></i><i></i>{/if}</span>
   {/if}
@@ -894,7 +938,7 @@
                   use:thinkingArrival={{ at: seg.at, live: streaming && g.rows[0].i !== i }}
                 >
                   {#if streaming}{@render stepLive("think", true)}{/if}
-                  {@render stepHead(i, "running")}
+                  {@render stepHead(i, "running", "think")}
                   <span class="name">Thinking</span>
                   <span class="arg"></span>
                   {@render stepBar(i, "running")}
@@ -917,7 +961,7 @@
                     onpointerdown={(e) => press(e, i, seg)}
                     onclick={(e) => keyClick(e, i, seg)}
                   >
-                    {@render stepHead(i, seg.done ? "done" : "running")}
+                    {@render stepHead(i, seg.done ? "done" : "running", "think")}
                     <span class="name" use:tip={thoughtLabel(seg)}>{seg.done ? "Thought" : "Thinking"}</span>
                     <span class="arg" class:summary>{firstLine(seg.text)}</span>
                     {@render stepBar(i, seg.done ? "done" : "running")}
@@ -972,10 +1016,10 @@
                   onpointerdown={(e) => press(e, i, seg)}
                   onclick={(e) => keyClick(e, i, seg)}
                 >
-                  {@render stepHead(i, running ? "running" : seg.call.denied ? "denied" : bad ? "error" : "done")}
+                  {@render stepHead(i, running ? "running" : seg.call.denied ? "denied" : bad ? "error" : "done", kind)}
                   <span class="name" use:tip={seg.call.name}>{shortToolName(seg.call.name)}</span>
                   <span class="arg">{toolInputSummary(seg.call.input)}</span>
-                  {@render stepBar(i, running ? "running" : bad ? "error" : "done")}
+                  {@render stepBar(i, running ? "running" : bad ? "error" : "done", running ? helperContext(seg.call) : null)}
                   <span class="size" use:tip={agentRow ? `${seg.call.name} call · ${toolResultSummary(seg.call, streaming)}` : undefined}
                     >{agentRow ? agentRowLine(agentRow) : running && stepMs(i) !== null ? `running ${fmtSecs(stepMs(i)!)}` : toolResultSummary(seg.call, streaming)}</span
                   >
@@ -2035,8 +2079,8 @@
   }
   /* ---- Item 589: the running step comes alive (stepMotion.svelte.ts) ----
      One grammar — the thread under the row, the bar's head, the status mark —
-     with a variant per kind (data-kind). The setting (Sweep, "weave",
-     "quiet") is stamped on each trace as data-motion (item 610: the trace's
+     with a variant per kind (data-kind). The setting (item 616: "combo",
+     the default; "sweep", today's; "reticle") is stamped on each trace as data-motion (item 610: the trace's
      own, so Settings' three previews run side by side; the transcript's
      follow the setting) and applies to all of it.
      Transform and opacity only (the word's light is a background position on
@@ -2050,8 +2094,43 @@
   .trace .arow.mo-run {
     isolation: isolate;
   }
-  .mo-bg {
+  /* ---- Item 616: Combo and Reticle (616-demo/combo.html) ----
+     Their parts sit in the running row's top 34 px (the row itself; an
+     open thinking's text below is not framed). None is drawn under Sweep. */
+  .mo-bg,
+  .mo-tex,
+  .mo-brk,
+  .mo-edge,
+  .mo-bus,
+  .st-ico,
+  .tbar-ctx,
+  .ctx-lbl {
     display: none;
+  }
+  /* The demo's white-hot point: the theme's signal ink, nearly white. */
+  .trace {
+    --mo-hot: color-mix(in srgb, var(--signal-ink, var(--signal)) 45%, #fffaf0);
+  }
+  .mo-bg,
+  .mo-brk,
+  .mo-edge {
+    position: absolute;
+    left: 6px;
+    right: 6px;
+    top: 2px;
+    height: 30px;
+    pointer-events: none;
+    z-index: -1;
+  }
+  /* Reticle's faint tint (his 1:2x AM ask: Combo takes it too). */
+  .mo-bg {
+    border-radius: 3px;
+    background: linear-gradient(90deg, color-mix(in srgb, var(--signal) 9%, transparent), transparent 60%);
+  }
+  /* Combo (his later ask: the "slightly angled lines … slowly shifting
+     across"): 589's Weave texture, faint skewed threads drifting behind the
+     running row, on every kind. Transform only. */
+  .mo-tex {
     position: absolute;
     left: 0;
     right: 0;
@@ -2063,7 +2142,7 @@
     -webkit-mask-image: linear-gradient(90deg, transparent, #000 25%, #000 75%, transparent);
     mask-image: linear-gradient(90deg, transparent, #000 25%, #000 75%, transparent);
   }
-  .mo-bg::before {
+  .mo-tex::before {
     content: "";
     position: absolute;
     top: 0;
@@ -2073,8 +2152,287 @@
     background: repeating-linear-gradient(90deg, transparent 0 15px, color-mix(in srgb, var(--signal) 10%, transparent) 15px 16px);
     transform: skewX(-24deg);
   }
-  .trace[data-motion="weave"] .mo-bg {
+  .trace[data-motion="combo"] .mo-tex {
     display: block;
+  }
+  .mo-brk i {
+    position: absolute;
+    width: 9px;
+    height: 7px;
+    border: 0 solid var(--signal);
+    opacity: 0.85;
+  }
+  .mo-brk i:nth-child(1) {
+    left: 0;
+    top: 0;
+    border-left-width: 1.5px;
+    border-top-width: 1.5px;
+  }
+  .mo-brk i:nth-child(2) {
+    right: 0;
+    top: 0;
+    border-right-width: 1.5px;
+    border-top-width: 1.5px;
+  }
+  .mo-brk i:nth-child(3) {
+    left: 0;
+    bottom: 0;
+    border-left-width: 1.5px;
+    border-bottom-width: 1.5px;
+  }
+  .mo-brk i:nth-child(4) {
+    right: 0;
+    bottom: 0;
+    border-right-width: 1.5px;
+    border-bottom-width: 1.5px;
+  }
+  .trace:is([data-motion="combo"], [data-motion="reticle"]) .mo-bg,
+  .trace:is([data-motion="combo"], [data-motion="reticle"]) .mo-brk {
+    display: block;
+  }
+  /* Combo: a faint light running round the row's edge (Live wire's, at
+     45 %) — a dash along the outline, moved by its offset. Held still it
+     sits at the top right. */
+  .trace[data-motion="combo"] .mo-edge {
+    display: block;
+    overflow: visible;
+    width: calc(100% - 12px);
+    opacity: 0.45;
+  }
+  .mo-edge rect {
+    fill: none;
+    stroke-linecap: round;
+    stroke-dashoffset: 30;
+  }
+  .mo-edge .e-tail {
+    stroke: color-mix(in srgb, var(--signal) 70%, transparent);
+    stroke-width: 1;
+    stroke-dasharray: 22 78;
+  }
+  /* The head: the tail's leading 4 (a gap of 18 first), so one offset
+     moves both. */
+  .mo-edge .e-head {
+    stroke: var(--mo-hot);
+    stroke-width: 1.2;
+    stroke-dasharray: 0 18 4 78;
+  }
+  /* The mark: the instrument in place of the ■. */
+  .st-running {
+    position: relative;
+  }
+  .trace:is([data-motion="combo"], [data-motion="reticle"]) .st-sq {
+    display: none;
+  }
+  .trace:is([data-motion="combo"], [data-motion="reticle"]) .st-ico {
+    display: block;
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 16px;
+    height: 16px;
+    margin: -8px 0 0 -8px;
+  }
+  .st-ico svg {
+    width: 16px;
+    height: 16px;
+    overflow: visible;
+    display: block;
+  }
+  .st-ico .ring {
+    fill: none;
+    stroke: var(--signal);
+    stroke-width: 1.2;
+    transform-origin: 9px 9px;
+    transform-box: view-box;
+  }
+  .st-ico .core {
+    fill: var(--signal-ink, var(--signal));
+    transform-origin: 9px 9px;
+    transform-box: view-box;
+  }
+  .st-ico .r1 {
+    stroke-dasharray: 6 3.4;
+  }
+  .st-ico .r2 {
+    stroke-dasharray: 2 2.6;
+    opacity: 0.7;
+  }
+  .st-ico .scanl {
+    stroke: var(--mo-hot);
+    stroke-width: 1.2;
+    filter: drop-shadow(0 0 1.5px var(--signal));
+  }
+  .st-ico .cursor {
+    fill: var(--signal-ink, var(--signal));
+  }
+  .st-ico .radar {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    border: 1.2px solid color-mix(in srgb, var(--signal) 70%, transparent);
+    background: conic-gradient(from 0deg, transparent 0 270deg, color-mix(in srgb, var(--signal) 60%, transparent) 355deg, var(--mo-hot) 360deg);
+    -webkit-mask: radial-gradient(circle, #000 64%, transparent 66%);
+    mask: radial-gradient(circle, #000 64%, transparent 66%);
+  }
+  .st-ico .blip {
+    position: absolute;
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    background: var(--mo-hot);
+    box-shadow: 0 0 4px var(--signal);
+    opacity: 0;
+  }
+  .st-ico .b1 {
+    left: 10px;
+    top: 3.5px;
+  }
+  .st-ico .b2 {
+    left: 3.5px;
+    top: 10px;
+  }
+  .st-ico .orbit {
+    position: absolute;
+    inset: 0;
+  }
+  .st-ico .orbit > b {
+    position: absolute;
+    left: 50%;
+    top: 0;
+    width: 3.5px;
+    height: 3.5px;
+    margin-left: -1.75px;
+    border-radius: 50%;
+    background: var(--signal-ink, var(--signal));
+    box-shadow: 0 0 4px var(--signal);
+  }
+  .st-ico .o2 {
+    inset: 3px;
+  }
+  .st-ico .o3 {
+    inset: -2px;
+  }
+  .st-ico .o2 > b {
+    opacity: 0.8;
+  }
+  .st-ico .o3 > b {
+    opacity: 0.6;
+  }
+  .st-ico .hub {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 5px;
+    height: 5px;
+    margin: -2.5px;
+    border-radius: 50%;
+    background: var(--signal);
+    box-shadow: 0 0 6px var(--signal);
+  }
+  /* Combo: a running helper's bar is its context out of 300k, labelled
+     above it; today's span gives way to it. */
+  .trace[data-motion="combo"] .tbar.has-ctx > i.tbar-running {
+    opacity: 0;
+  }
+  .trace[data-motion="combo"] .tbar-ctx {
+    display: block;
+    left: 0;
+    right: 0;
+    transform-origin: left center;
+    background: var(--signal);
+    box-shadow: var(--glow-signal, none);
+    transition: transform 0.6s cubic-bezier(0.2, 0.7, 0.2, 1);
+  }
+  .trace[data-motion="combo"] .ctx-lbl {
+    display: block;
+    position: absolute;
+    right: 0;
+    bottom: 5px;
+    font: 9px var(--mono);
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+    color: color-mix(in srgb, var(--signal) 75%, transparent);
+    pointer-events: none;
+  }
+  /* Reticle: no Sweep thread — a data bus with packets runs under the
+     row instead; the bar is dashed with a blinking head. */
+  .trace[data-motion="reticle"] .mo-weft {
+    display: none;
+  }
+  .trace[data-motion="reticle"] .mo-bus {
+    display: block;
+    position: absolute;
+    left: 46px;
+    right: 16px;
+    top: 26px;
+    height: 3px;
+    overflow: hidden;
+    pointer-events: none;
+  }
+  .mo-bus::before {
+    content: "";
+    position: absolute;
+    top: 1px;
+    left: -12px;
+    right: 0;
+    height: 1px;
+    background: repeating-linear-gradient(90deg, color-mix(in srgb, var(--signal) 35%, transparent) 0 6px, transparent 6px 12px);
+  }
+  /* A packet: the bus's whole width, lit at its right end, carried across
+     by translate (its own width is the bus's, so -100% → 0 crosses it). */
+  .mo-bus > i {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 3px;
+    background: linear-gradient(90deg, transparent calc(100% - 16px), var(--signal-ink, var(--signal)) calc(100% - 5px), var(--mo-hot));
+    transform: translateX(-100%);
+  }
+  .mo-bus.k-shell > i {
+    background: linear-gradient(90deg, transparent calc(100% - 6px), var(--signal-ink, var(--signal)) calc(100% - 2px), var(--mo-hot));
+  }
+  .mo-bus.k-agent {
+    height: 7px;
+    top: 24px;
+  }
+  .mo-bus.k-agent::before {
+    box-shadow:
+      0 2px 0 color-mix(in srgb, var(--signal) 25%, transparent),
+      0 4px 0 color-mix(in srgb, var(--signal) 18%, transparent);
+  }
+  .mo-bus.k-agent > i {
+    height: 1.5px;
+    background: linear-gradient(90deg, transparent calc(100% - 12px), var(--signal-ink, var(--signal)) calc(100% - 4px), var(--mo-hot));
+  }
+  .mo-bus.k-agent > i:nth-child(1) {
+    top: 1px;
+  }
+  .mo-bus.k-agent > i:nth-child(2) {
+    top: 3px;
+  }
+  .mo-bus.k-agent > i:nth-child(3) {
+    top: 5px;
+  }
+  .trace[data-motion="reticle"] .tbar {
+    height: 4px;
+    background: repeating-linear-gradient(90deg, var(--line2) 0 3px, transparent 3px 5px);
+  }
+  .trace[data-motion="reticle"] .mo-run .tbar > i.tbar-running {
+    background: repeating-linear-gradient(90deg, var(--signal) 0 3px, transparent 3px 5px);
+    box-shadow: none;
+  }
+  .trace[data-motion="reticle"] .mo-run .tbar > i.tbar-running::after {
+    content: "";
+    position: absolute;
+    right: -2px;
+    top: -3px;
+    width: 2px;
+    height: 10px;
+    margin-top: 0;
+    border-radius: 0;
+    background: var(--mo-hot);
+    box-shadow: 0 0 6px var(--signal);
   }
   .mo-weft:not(.k-shell)::after {
     display: none;
@@ -2102,21 +2460,6 @@
     top: 25px;
     height: 5px;
     background: repeating-linear-gradient(180deg, color-mix(in srgb, var(--signal) 20%, transparent) 0 1px, transparent 1px 2px);
-  }
-  /* Quiet: the thinking thread is not drawn; tool rows keep today's shuttle. */
-  .trace[data-motion="quiet"] .mo-weft.k-think {
-    display: none;
-  }
-  .trace[data-motion="quiet"] .mo-weft > i {
-    display: none;
-  }
-  .trace[data-motion="quiet"] .mo-weft.k-agent {
-    top: 27px;
-    height: 1.5px;
-    background: color-mix(in srgb, var(--signal) 22%, transparent);
-  }
-  .trace[data-motion="quiet"] .mo-weft:not(.k-shell):not(.k-think)::after {
-    display: block;
   }
   .scan {
     display: none;
@@ -2243,19 +2586,19 @@
     .mo-run .st-running {
       position: relative;
     }
-    .mo-run[data-kind="think"] .st-running {
+    .trace[data-motion="sweep"] .mo-run[data-kind="think"] .st-running {
       animation: mo-heart 1.3s ease-out infinite;
     }
-    .mo-run[data-kind="shell"] .st-running {
+    .trace[data-motion="sweep"] .mo-run[data-kind="shell"] .st-running {
       animation: mo-blink 1s steps(1) infinite;
     }
-    .mo-run[data-kind="agent"] .st-running {
+    .trace[data-motion="sweep"] .mo-run[data-kind="agent"] .st-running {
       animation: mo-quarter 1.2s cubic-bezier(0.6, 0, 0.3, 1) infinite;
     }
-    .mo-run[data-kind="file"] .st-running {
+    .trace[data-motion="sweep"] .mo-run[data-kind="file"] .st-running {
       animation: mo-bob 0.8s ease-in-out infinite alternate;
     }
-    .mo-run[data-kind="web"] .st-running::after {
+    .trace[data-motion="sweep"] .mo-run[data-kind="web"] .st-running::after {
       content: "";
       position: absolute;
       left: 50%;
@@ -2267,11 +2610,11 @@
       border-radius: 2px;
       animation: mo-ping 1.5s ease-out infinite;
     }
-    .mo-run[data-kind="other"] .st-running {
+    .trace[data-motion="sweep"] .mo-run[data-kind="other"] .st-running {
       animation: mo-breathe 1.8s ease-in-out infinite alternate;
     }
-    /* A light passing through the word "Thinking" (not under Quiet). */
-    :global(:root) .trace:not([data-motion="quiet"]) .mo-run[data-kind="think"] .name {
+    /* A light passing through the word "Thinking". */
+    :global(:root) .trace .mo-run[data-kind="think"] .name {
       -webkit-text-fill-color: transparent;
       background-image: linear-gradient(100deg, var(--ink) 0 42%, var(--signal-ink, var(--signal)) 50%, var(--ink) 58% 100%);
       background-size: 300% 100%;
@@ -2280,18 +2623,145 @@
       color: transparent;
       animation: mo-shimmer 2.4s linear infinite;
     }
-    /* Weave: threads drifting behind the running row, faster for a helper. */
-    .mo-bg::before {
+    /* Item 616 — Combo and Reticle. The brackets lock on and settle;
+       Combo's edge light runs the outline at the kind's pace; the marks
+       turn, beat, scan and blink; Reticle's packets cross the bus. */
+    .trace:is([data-motion="combo"], [data-motion="reticle"]) .mo-run .mo-brk {
+      animation: mo-lock 2.4s cubic-bezier(0.2, 0.7, 0.2, 1) infinite;
+    }
+    .mo-edge rect {
+      animation: mo-edge var(--edge, 3s) linear infinite;
+    }
+    .mo-tex::before {
       animation: mo-drift var(--drift, 1.4s) linear infinite;
     }
-    .mo-bg.k-think {
+    .mo-tex.k-think {
       --drift: 1.8s;
     }
-    .mo-bg.k-agent {
+    .mo-tex.k-agent {
       --drift: 0.7s;
     }
-    .mo-bg.k-other {
+    .mo-tex.k-other {
       --drift: 2.4s;
+    }
+    [data-kind="think"] {
+      --edge: 3.2s;
+    }
+    [data-kind="shell"] {
+      --edge: 1.4s;
+    }
+    [data-kind="file"] {
+      --edge: 2.4s;
+    }
+    [data-kind="web"] {
+      --edge: 2s;
+    }
+    [data-kind="agent"] {
+      --edge: 2.6s;
+    }
+    .st-ico .r1 {
+      animation: mo-spin 2.4s linear infinite;
+    }
+    .st-ico .r2 {
+      animation: mo-spin 1.6s linear infinite reverse;
+    }
+    .st-ico.k-think .core {
+      animation: mo-core 1.3s ease-out infinite;
+    }
+    .st-ico .scanl {
+      animation: mo-scanl 1.1s ease-in-out infinite alternate;
+    }
+    .st-ico .cursor {
+      animation: mo-blink 0.9s steps(1) infinite;
+    }
+    .st-ico .radar {
+      animation: mo-spin 1.6s linear infinite;
+    }
+    .st-ico .blip {
+      animation: mo-blip 1.6s linear infinite;
+    }
+    .st-ico .b2 {
+      animation-delay: -0.5s;
+    }
+    .st-ico .orbit {
+      animation: mo-spin 1.4s linear infinite;
+    }
+    .st-ico .o2 {
+      animation-duration: 1s;
+    }
+    .st-ico .o3 {
+      animation-duration: 2s;
+    }
+    .mo-bus::before {
+      animation: mo-bus-drift 0.6s linear infinite;
+    }
+    .mo-bus > i {
+      animation: mo-pkt 1.4s cubic-bezier(0.5, 0, 0.5, 1) infinite;
+    }
+    .mo-bus > i:nth-child(2) {
+      animation-delay: -0.7s;
+      opacity: 0.6;
+    }
+    .mo-bus > i:nth-child(3) {
+      display: none;
+    }
+    .mo-bus.k-file > i,
+    .mo-bus.k-shell > i {
+      display: block;
+      opacity: 1;
+      animation: mo-pkt 0.9s linear infinite;
+    }
+    .mo-bus.k-file > i:nth-child(2) {
+      animation-delay: -0.3s;
+    }
+    .mo-bus.k-file > i:nth-child(3) {
+      animation-delay: -0.6s;
+    }
+    .mo-bus.k-shell > i {
+      animation-duration: 0.55s;
+    }
+    .mo-bus.k-shell > i:nth-child(2) {
+      animation-delay: -0.18s;
+    }
+    .mo-bus.k-shell > i:nth-child(3) {
+      animation-delay: -0.36s;
+    }
+    .mo-bus.k-web > i {
+      animation: mo-pkt-ping 1.6s cubic-bezier(0.3, 0, 0.3, 1) infinite;
+    }
+    .mo-bus.k-web > i:nth-child(2) {
+      animation-delay: 0.1s;
+      opacity: 0.4;
+    }
+    .mo-bus.k-agent > i {
+      display: block;
+      opacity: 1;
+    }
+    .mo-bus.k-agent > i:nth-child(1) {
+      animation: mo-pkt 1.1s linear infinite;
+    }
+    .mo-bus.k-agent > i:nth-child(2) {
+      animation: mo-pkt 1.6s linear -0.4s infinite;
+    }
+    .mo-bus.k-agent > i:nth-child(3) {
+      animation: mo-pkt 2.1s linear -1.1s infinite;
+    }
+    .trace[data-motion="reticle"] .mo-run .tbar > i.tbar-running::after {
+      animation: mo-blink 0.9s steps(1) infinite;
+    }
+    /* Reticle: a highlight band sweeps the search's words. */
+    .trace[data-motion="reticle"] .mo-run[data-kind="web"] .arg {
+      position: relative;
+    }
+    .trace[data-motion="reticle"] .mo-run[data-kind="web"] .arg::after {
+      content: "";
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: 40px;
+      background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--signal) 28%, transparent), transparent);
+      animation: mo-band 1.6s cubic-bezier(0.3, 0, 0.3, 1) infinite;
     }
     /* The working line's three points scan after its clock. */
     .activity .working .scan {
@@ -2455,6 +2925,111 @@
     }
     to {
       transform: skewX(-24deg) translateX(16px);
+    }
+  }
+  /* Item 616's keyframes (Combo, Reticle). */
+  @keyframes -global-mo-lock {
+    0% {
+      transform: scale(1.025, 1.25);
+      opacity: 0;
+    }
+    14% {
+      transform: none;
+      opacity: 1;
+    }
+    80% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0.55;
+    }
+  }
+  @keyframes -global-mo-edge {
+    from {
+      stroke-dashoffset: 100;
+    }
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+  @keyframes -global-mo-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @keyframes -global-mo-core {
+    0% {
+      transform: scale(0.6);
+      opacity: 0.7;
+    }
+    15% {
+      transform: scale(1.25);
+      opacity: 1;
+    }
+    30% {
+      transform: scale(0.8);
+    }
+    45% {
+      transform: scale(1.05);
+    }
+    100% {
+      transform: scale(0.6);
+      opacity: 0.7;
+    }
+  }
+  @keyframes -global-mo-scanl {
+    from {
+      transform: translateY(-4.5px);
+    }
+    to {
+      transform: translateY(4.5px);
+    }
+  }
+  @keyframes -global-mo-blip {
+    0%,
+    62% {
+      opacity: 0;
+    }
+    66% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0;
+    }
+  }
+  @keyframes -global-mo-bus-drift {
+    to {
+      transform: translateX(12px);
+    }
+  }
+  @keyframes -global-mo-pkt {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(0);
+    }
+  }
+  @keyframes -global-mo-pkt-ping {
+    0% {
+      transform: translateX(-100%);
+    }
+    45% {
+      transform: translateX(0);
+    }
+    46%,
+    100% {
+      transform: translateX(0);
+      opacity: 0;
+    }
+  }
+  @keyframes -global-mo-band {
+    0% {
+      transform: translateX(-40px);
+    }
+    45%,
+    100% {
+      transform: translateX(260px);
     }
   }
   @keyframes -global-mo-dot {

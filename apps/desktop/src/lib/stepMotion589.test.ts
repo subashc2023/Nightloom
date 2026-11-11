@@ -18,11 +18,17 @@ describe("toolKind", () => {
 });
 
 describe("the setting", () => {
-  it("offers Sweep first, and reads anything unknown as Sweep", () => {
-    expect(STEP_MOTIONS.map((m) => m.id)).toEqual(["sweep", "weave", "quiet"]);
-    expect(parseStepMotion(null)).toBe("sweep");
-    expect(parseStepMotion("bogus")).toBe("sweep");
-    expect(parseStepMotion("weave")).toBe("weave");
-    expect(parseStepMotion("quiet")).toBe("quiet");
+  it("offers Combo (the default), Sweep and Reticle, and reads anything unknown as Combo (item 616)", () => {
+    expect(STEP_MOTIONS.map((m) => m.id)).toEqual(["combo", "sweep", "reticle"]);
+    expect(STEP_MOTIONS.map((m) => m.name)).toEqual(["Combo", "Sweep — today's", "Reticle"]);
+    expect(parseStepMotion(null)).toBe("combo");
+    expect(parseStepMotion("bogus")).toBe("combo");
+    expect(parseStepMotion("sweep")).toBe("sweep");
+    expect(parseStepMotion("reticle")).toBe("reticle");
+  });
+
+  it("reads a saved Weave or Quiet (gone since 616) as Combo", () => {
+    expect(parseStepMotion("weave")).toBe("combo");
+    expect(parseStepMotion("quiet")).toBe("combo");
   });
 });

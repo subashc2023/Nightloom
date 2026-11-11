@@ -29,7 +29,7 @@ describe("the Thinking motion in Settings → Animations", () => {
   it("keys the trace's motion rules on the trace, not on <html>", () => {
     expect(messageSrc).not.toMatch(/:root\[data-step-motion/);
     expect(messageSrc).not.toMatch(/:root:not\(\[data-step-motion/);
-    expect(messageSrc).toMatch(/\.trace\[data-motion="weave"\] \.mo-bg/);
-    expect(messageSrc).toMatch(/\.trace\[data-motion="quiet"\] \.mo-weft\.k-think/);
+    expect(messageSrc).toMatch(/\.trace\[data-motion="combo"\] \.mo-edge/);
+    expect(messageSrc).toMatch(/\.trace\[data-motion="reticle"\] \.mo-bus/);
   });
 });
