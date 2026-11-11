@@ -78,6 +78,7 @@
   import WrapAsidesDialog from "./lib/WrapAsidesDialog.svelte";
   import ContextPanel from "./lib/ContextPanel.svelte";
   import RightRail from "./lib/RightRail.svelte";
+  import { railFold, RAIL_SLIDE_MS } from "./lib/railFold.svelte";
   import PromptLibrary from "./lib/PromptLibrary.svelte";
   import Transcript from "./lib/Transcript.svelte";
   import Composer from "./lib/Composer.svelte";
@@ -281,7 +282,10 @@
       !!liveTab &&
       app.tabs.panes.some((p) => p.active === liveTab?.id),
   );
-  const panelPx = $derived(app.asidePanel ? PANEL_W : railColumn ? RAIL_W : 0);
+  /** Item 599: folded by his button, the column is a strip with the button to open it again. */
+  const RAIL_FOLDED_W = 36;
+  const railPx = $derived(railFold.folded ? RAIL_FOLDED_W : RAIL_W);
+  const panelPx = $derived(app.asidePanel ? PANEL_W : railColumn ? railPx : 0);
   const leftPx = $derived(
     Math.max(
       SPLIT_MIN,
@@ -713,9 +717,11 @@
       <div
         class="split"
         class:two={app.tabs.panes.length > 1}
+        class:rail-sliding={railFold.sliding && railColumn}
+        style:--rail-slide="{RAIL_SLIDE_MS}ms"
         bind:clientWidth={splitWidth}
         style:grid-template-columns={(app.tabs.panes.length > 1 ? `${leftPx}px minmax(0, 1fr)` : "minmax(0, 1fr)") +
-          (app.asidePanel ? ` ${PANEL_W}px` : railColumn ? ` ${RAIL_W}px` : "")}
+          (app.asidePanel ? ` ${PANEL_W}px` : railColumn ? ` ${railPx}px` : "")}
       >
         {#each app.tabs.panes as pane, i (pane.id)}
           {@const t = tabs.activeTab(pane)}
@@ -1209,6 +1215,12 @@
     min-width: 0;
     min-height: 0;
     overflow: hidden;
+  }
+  /* Item 599: the column's fold slides, only on his press (instant under reduced motion). */
+  @media (prefers-reduced-motion: no-preference) {
+    .split.rail-sliding {
+      transition: grid-template-columns var(--rail-slide) ease;
+    }
   }
   .split.two .pane + .pane {
     border-left: 1px solid var(--line);

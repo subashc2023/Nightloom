@@ -35,6 +35,7 @@
     WEEK_HOT,
   } from "./contextDial";
   import { tip } from "./tip";
+  import { railFold, toggleRailFold } from "./railFold.svelte";
   import { liveContextOf } from "./liveContext.svelte";
   import { liveFor, liveLegend, liveTip, liveTokens, liveValue } from "./liveContext";
 
@@ -242,11 +243,32 @@
   </div>
 {/snippet}
 
-{#if column}
+{#snippet foldButton(folded: boolean)}
+  <!-- Item 599: fold the column to a strip and back; the choice is kept across chats and relaunches. -->
+  <button
+    type="button"
+    class="fold"
+    aria-expanded={!folded}
+    aria-label={folded ? "Show the right column" : "Hide the right column"}
+    use:tip={folded ? "Show the context dial and readings" : "Hide the context dial and readings; the chat widens"}
+    onclick={toggleRailFold}
+  >
+    <svg viewBox="0 0 12 12" aria-hidden="true"><path d={folded ? "M7.5 2.5 4 6l3.5 3.5" : "M4.5 2.5 8 6 4.5 9.5"} /></svg>
+  </button>
+{/snippet}
+
+{#if column && railFold.folded}
+  <aside class="col folded" aria-label="Context, plan use, this turn and tasks (folded)">
+    {@render foldButton(true)}
+    {#if used != null && limit}
+      <span class="fpct" use:tip={`Context ${used.toLocaleString()} of ${limit.toLocaleString()} tokens`}>{pct(share)}</span>
+    {/if}
+  </aside>
+{:else if column}
   <!-- Item 563: data-rail-col — the first send from the new-chat page slides this column in (sendMotion.ts departDial). -->
   <aside class="col" data-rail-col aria-label="Context, plan use, this turn and tasks">
     <section>
-      <h4>Context <span>{modelShort(app.connection?.model)}</span></h4>
+      <h4>Context <span class="hr"><span>{modelShort(app.connection?.model)}</span>{@render foldButton(false)}</span></h4>
       <div class="dial-at" data-dial-dock>
         <!-- Item 585: a few of 581's new-chat layers behind the dial, quieter (item 587: DialMotion's column form —
              all of the new-chat dial's layers, the gears, radar and 5-hour hand between the figure and the inner ring; his keys surge it too); the ring holds a gentle surge while a turn streams
@@ -529,6 +551,59 @@
     min-width: 0;
     overflow-y: auto;
     overflow-x: hidden;
+  }
+  /* ---- item 599: the fold button, and the folded strip */
+  .col h4 .hr {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .fold {
+    flex: none;
+    display: inline-grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    margin: -4px -4px -4px 0;
+    padding: 0;
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    color: var(--dim);
+    cursor: pointer;
+  }
+  .fold:hover {
+    color: var(--ink);
+    border-color: var(--line);
+  }
+  .fold:focus-visible {
+    outline: 2px solid var(--signal);
+    outline-offset: 1px;
+  }
+  .fold svg {
+    width: 12px;
+    height: 12px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .col.folded {
+    padding: 12px 0;
+    align-items: center;
+    gap: 10px;
+    overflow: hidden;
+  }
+  .col.folded .fold {
+    margin: 0;
+    width: 24px;
+    height: 24px;
+  }
+  .fpct {
+    font: 10px var(--mono);
+    color: var(--dim);
+    font-variant-numeric: tabular-nums;
   }
   .col section {
     padding: 0 0 14px;
