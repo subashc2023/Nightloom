@@ -226,8 +226,8 @@
     opacity: 0;
     transform: translate(-50%, -50%);
     border-radius: 50%;
-    border: 2px solid var(--accent);
-    background: radial-gradient(circle, color-mix(in srgb, var(--accent) 22%, transparent), transparent 70%);
+    border: 2px solid var(--motion-ink, var(--accent, #e0a458));
+    background: radial-gradient(circle, color-mix(in srgb, var(--motion-ink, var(--accent, #e0a458)) 22%, transparent), transparent 70%);
   }
   .ghost {
     position: absolute;

@@ -1430,3 +1430,22 @@ mark.find-hit {
     transition: none;
   }
 }
+
+/* ---- the motion ink (item 627) ---------------------------------------------
+
+   What flies takes the theme's colour: the send thread and ring, the rewind's
+   strike and thread, the thrown line, the notes card's weft and shuttle, the
+   drop ripple. His ask (2026-11-11): on Filament IV those "should match the
+   color and theme" — the signal blue, Claude-working's colour — not amber.
+   `--motion-ink` is the line, `--motion-ink-hi` its bright head (a shuttle's
+   tip, where amber used `--accent-ink`). Elsewhere — Classic, and palettes
+   B, C and D under either layout — both stay the accent, so nothing there
+   moves. Static accents (buttons, Send's edge, chips) never read these. */
+:root {
+  --motion-ink: var(--accent);
+  --motion-ink-hi: var(--accent-ink, var(--accent));
+}
+:root:not([data-layout="classic"]):is(:not([data-palette]), [data-palette="A"]) {
+  --motion-ink: var(--signal);
+  --motion-ink-hi: var(--signal-ink, var(--signal));
+}
