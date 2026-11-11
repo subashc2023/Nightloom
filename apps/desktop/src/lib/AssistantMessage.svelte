@@ -419,7 +419,9 @@
   $effect(() => {
     if (!streaming) return;
     now = Date.now();
-    const t = setInterval(() => (now = Date.now()), 1000);
+    // His ask 2026-11-11: a running step's time counts in tenths ("7.0 s"
+    // stood still for a second at a time), so the live clock ticks every 0.1 s.
+    const t = setInterval(() => (now = Date.now()), 100);
     return () => clearInterval(t);
   });
   const working = $derived(workingLabel(now - (since ?? startedAt)));
