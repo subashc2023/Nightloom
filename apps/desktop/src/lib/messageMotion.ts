@@ -327,7 +327,7 @@ function now(): number {
   return typeof performance !== "undefined" ? performance.now() : Date.now();
 }
 
-const ACCENT = "var(--accent, #e0a458)";
+const ACCENT = "var(--motion-ink, var(--accent, #e0a458))"; // item 627: the theme's motion ink
 
 /** The scroll box's visible rect, inside the window. */
 function viewOf(viewport: HTMLElement) {

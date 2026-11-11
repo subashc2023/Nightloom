@@ -704,7 +704,7 @@
     height: 1.5px;
     transform-origin: left center;
     pointer-events: none;
-    background: color-mix(in srgb, var(--accent) 22%, transparent);
+    background: color-mix(in srgb, var(--motion-ink, var(--accent, #e0a458)) 22%, transparent);
     overflow: hidden;
   }
   .weft::after {
@@ -714,7 +714,7 @@
     bottom: 0;
     width: 28%;
     border-radius: 2px;
-    background: linear-gradient(90deg, transparent, var(--accent-ink, var(--accent)), transparent);
+    background: linear-gradient(90deg, transparent, var(--motion-ink-hi, var(--accent-ink, var(--accent))), transparent);
   }
   .undo {
     background: var(--well);
@@ -887,8 +887,8 @@
     height: 5px;
     margin: -2.5px 0 0 0;
     border-radius: 50% / 100%;
-    background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 10%, transparent), var(--accent-ink, var(--accent)));
-    box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 70%, transparent);
+    background: linear-gradient(90deg, color-mix(in srgb, var(--motion-ink, var(--accent, #e0a458)) 10%, transparent), var(--motion-ink-hi, var(--accent-ink, var(--accent))));
+    box-shadow: 0 0 8px color-mix(in srgb, var(--motion-ink, var(--accent, #e0a458)) 70%, transparent);
     opacity: 0;
     pointer-events: none;
     transition: opacity 260ms ease-out;

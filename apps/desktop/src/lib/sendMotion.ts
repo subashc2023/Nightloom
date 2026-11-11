@@ -252,8 +252,8 @@ function threadOf(): { svg: SVGSVGElement; path: SVGPathElement; grad: SVGLinear
   ]) {
     const stop = document.createElementNS(SVG, "stop");
     stop.setAttribute("offset", off);
-    stop.setAttribute("stop-color", "var(--accent, #e0a458)");
-    stop.style.stopColor = "var(--accent, #e0a458)";
+    stop.setAttribute("stop-color", "var(--motion-ink, var(--accent, #e0a458))");
+    stop.style.stopColor = "var(--motion-ink, var(--accent, #e0a458))";
     stop.setAttribute("stop-opacity", op);
     grad.appendChild(stop);
   }
@@ -353,7 +353,7 @@ export function fly(node: HTMLElement, bubble: HTMLElement, l: Launch, hold: num
     bubble.style.boxShadow =
       f.ring === null
         ? ""
-        : `0 0 0 ${(1 + 9 * easeOutCubic(f.ring)).toFixed(2)}px color-mix(in srgb, var(--accent, #e0a458) ${Math.round(38 * (1 - f.ring))}%, transparent)`;
+        : `0 0 0 ${(1 + 9 * easeOutCubic(f.ring)).toFixed(2)}px color-mix(in srgb, var(--motion-ink, var(--accent, #e0a458)) ${Math.round(38 * (1 - f.ring))}%, transparent)`;
     return f.done;
   };
   if (hold !== null) {

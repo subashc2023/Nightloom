@@ -208,7 +208,7 @@ export function decide(
 // ---- the DOM side -----------------------------------------------------------
 
 const SVG = "http://www.w3.org/2000/svg";
-const ACCENT = "var(--accent, #e0a458)";
+const ACCENT = "var(--motion-ink, var(--accent, #e0a458))"; // item 627: the theme's motion ink
 let seq = 0;
 
 /**
