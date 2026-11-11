@@ -12,6 +12,8 @@
  * tab, refreshes both.
  */
 
+import { clockText } from "./schedule";
+
 /** A nav group: its title and its panes, in order (backlog 109's ⌘-digits count groups). */
 export interface NavGroup {
   title: string;
@@ -116,10 +118,11 @@ export async function refreshUsageAndCost<U>(deps: UsageCostRefresh<U>): Promise
   return { usage: null, error: String(ledger.reason), ledgerReadAt: null, readAt };
 }
 
-/** "read 14:05" — a last-read stamp in the machine's own clock. */
+/** "read 2:05 PM" — a last-read stamp, 12-hour whatever the locale (item 611b;
+ *  was the locale's "02:05 PM" / "14:05"). */
 export function readStamp(at: Date | null): string {
   if (!at) return "not read yet";
-  return "read " + at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  return "read " + clockText(at.getTime());
 }
 
 // ---- Filament IV's Usage pane (item 571, stage 7; `f4-settings-usage.png`).

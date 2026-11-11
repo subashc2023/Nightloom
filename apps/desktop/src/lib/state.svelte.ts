@@ -66,7 +66,7 @@ import {
 } from "./drafts.svelte";
 import { releaseSpec, scheduled, wantSpec } from "./scheduled.svelte";
 import { contextOf } from "./chatContext.svelte";
-import { nameScheduledRows } from "./schedule";
+import { clockText, nameScheduledRows } from "./schedule";
 import { aimOf, indexOfAim, type Aim } from "./aim";
 import { requestComposerFocus, rewoundMessage, swapIn, untouched, type BoxSwap } from "./rewindDraft.svelte";
 import {
@@ -2340,7 +2340,8 @@ let autoPassDeferred = false;
 let deferredSince: number | null = null;
 let recheckTimer: ReturnType<typeof setTimeout> | null = null;
 
-const clockTime = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+/** "2:05 PM" — 12-hour whatever the locale (item 611b; was the locale's own). */
+const clockTime = clockText;
 
 /**
  * May an automatic pass start? Reads the plan's figure the way the top
@@ -2637,7 +2638,8 @@ export async function runDailyPass(): Promise<void> {
     app.centre.dailyRunning = false;
   }
   const when = new Date(started);
-  app.centre.dailyLast = `${when.toLocaleDateString()} ${when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} — ${said.join(", ")}`;
+  // 12-hour whatever the locale (item 611b; was the locale's "02:05 PM" / "14:05").
+  app.centre.dailyLast = `${when.toLocaleDateString()} ${clockText(started)} — ${said.join(", ")}`;
   addToast(`daily pass: ${said.join(", ")}`);
   await refreshCentre();
 }

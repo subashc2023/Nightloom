@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
   import { MODEL_OTHER } from "./railEvents";
+  import { clockText } from "./schedule";
   import Icon from "./Icon.svelte";
   import { isImeKey } from "./imeKey";
   import Kbd from "./Kbd.svelte";
@@ -2655,7 +2656,7 @@
     if (Number.isNaN(t)) return "earlier";
     const d = new Date(t);
     const sameDay = d.toDateString() === new Date().toDateString();
-    const hm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const hm = clockText(t); // 12-hour whatever the locale (item 611b; was "02:05 PM" / "14:05")
     return sameDay ? hm : `${d.toLocaleDateString([], { month: "short", day: "numeric" })} ${hm}`;
   }
 
