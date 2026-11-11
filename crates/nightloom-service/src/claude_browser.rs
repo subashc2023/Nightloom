@@ -461,7 +461,7 @@ impl Browsers {
                 // only the running one is heard.
                 let current = reading.shared.lock().unwrap().live;
                 if current.is_some_and(|(g, _)| g == generation) {
-                    this.from_helper(&reading, &v);
+                    this.on_helper_line(&reading, &v);
                 }
             }
             let _ = child.wait().await;
@@ -473,7 +473,7 @@ impl Browsers {
     }
 
     /// One line from the helper.
-    fn from_helper(&self, entry: &Entry, v: &Value) {
+    fn on_helper_line(&self, entry: &Entry, v: &Value) {
         match v["ev"].as_str() {
             Some("status") => {
                 {
@@ -1183,13 +1183,13 @@ cat >> "$0/received""#;
                 .filter(|e| matches!(e, Event::Frame { .. }))
                 .count()
         };
-        b.from_helper(&e, &frame);
+        b.on_helper_line(&e, &frame);
         assert_eq!(frames(&r), 0, "nobody watches");
         b.watch("chat-1", true).await;
         assert!(received(&r.dir, r#"{"on":true,"op":"watch"}"#).await);
-        b.from_helper(&e, &frame);
+        b.on_helper_line(&e, &frame);
         assert_eq!(frames(&r), 1);
-        b.from_helper(
+        b.on_helper_line(
             &e,
             &json!({"ev": "dialog", "kind": "alert", "message": "hi"}),
         );

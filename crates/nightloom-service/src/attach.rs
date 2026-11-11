@@ -290,7 +290,7 @@ pub fn pdf_pages(pdf: &[u8]) -> Option<usize> {
             .filter_map(num)
             .take(2 * n)
             .collect();
-        for (i, pair) in nums.chunks_exact(2).enumerate() {
+        for (i, pair) in nums.as_chunks::<2>().0.iter().enumerate() {
             let from = first + pair[1];
             let to = nums
                 .get(2 * i + 3)

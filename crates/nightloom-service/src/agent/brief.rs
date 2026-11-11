@@ -2104,6 +2104,8 @@ fn note_prompt(dir: &Path, reading: Option<WindowReading>, who: &str, context: O
     );
 }
 
+// One call site; the nine are the hook's separate readings, kept flat rather than bundled for it.
+#[allow(clippy::too_many_arguments)]
 fn note_reading(
     dir: &Path,
     reading: Option<WindowReading>,

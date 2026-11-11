@@ -196,7 +196,7 @@ pub fn newest_baseline(dirs: &[PathBuf]) -> Option<(PathBuf, Baseline)> {
                 Some((m.modified().ok()?, m.len(), p))
             })
             .collect();
-        files.sort_by(|a, b| b.0.cmp(&a.0));
+        files.sort_by_key(|a| std::cmp::Reverse(a.0));
         for (mtime, len, path) in files.into_iter().take(NEWEST_TRIED) {
             if let Some(b) = cached(&path, mtime, len) {
                 return Some((path, b));

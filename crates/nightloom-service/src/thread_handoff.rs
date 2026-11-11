@@ -64,10 +64,11 @@ pub fn save_handoff(
     if text.is_empty() {
         return Err("a hand-off needs some text".into());
     }
-    if let Some(old) = read_handoff(notes_dir, slug) {
-        if old.text == text && old.from_chat == from_chat {
-            return Ok(old);
-        }
+    if let Some(old) = read_handoff(notes_dir, slug)
+        && old.text == text
+        && old.from_chat == from_chat
+    {
+        return Ok(old);
     }
     let h = ThreadHandoff {
         text: text.to_string(),

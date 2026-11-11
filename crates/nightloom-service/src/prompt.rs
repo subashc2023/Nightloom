@@ -3054,8 +3054,10 @@ As of now — the front.
         assert!(!stop.contains("budget"), "{stop}");
         assert!(!stop.contains("70%"), "{stop}");
         // A budget of 0 is no budget, as `usage_line` reads it.
-        let mut zero = SubagentLimits::default();
-        zero.budget_pct = 0;
+        let zero = SubagentLimits {
+            budget_pct: 0,
+            ..Default::default()
+        };
         assert_eq!(pacing(Some(zero)), Some(stop.clone()));
         // Both off: no layer, and nothing else moves.
         assert_eq!(with_off(true, true), None);

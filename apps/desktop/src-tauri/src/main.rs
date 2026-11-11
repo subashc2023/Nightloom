@@ -4105,7 +4105,7 @@ async fn prewarm_agent(
         }
         // As `send_agent` points it (item 508), so the warm process is
         // the same command the turn would spawn.
-        claude_browser::point(Some(&*browsers), &mut *agent, &dir);
+        claude_browser::point(Some(&*browsers), &mut agent, &dir);
     }
     agent.prewarm().map_err(|e| e.to_string())
 }
@@ -6804,29 +6804,28 @@ async fn stop_subagents(
     };
     let stopped = inbox.stop_agents();
     let note = note.filter(|t| !t.trim().is_empty());
-    if let (true, Some(note)) = (stopped > 0, note) {
-        if !inbox.note_if_idle(&note) {
-            if let Some(dir) = match session.as_deref() {
-                Some(s) => budget_dir(&state, s).await,
-                None => None,
-            } {
-                let at_ms = chrono::Utc::now().timestamp_millis();
-                let _ = tokio::task::spawn_blocking(move || {
-                    steer::queue(
-                        &dir,
-                        steer::MAIN,
-                        steer::Queued {
-                            id: format!("stopped-{turn}-{at_ms}"),
-                            text: note,
-                            at_ms,
-                            about: None,
-                            raw: true,
-                        },
-                    )
-                })
-                .await;
-            }
+    if let (true, Some(note)) = (stopped > 0, note)
+        && !inbox.note_if_idle(&note)
+        && let Some(dir) = match session.as_deref() {
+            Some(s) => budget_dir(&state, s).await,
+            None => None,
         }
+    {
+        let at_ms = chrono::Utc::now().timestamp_millis();
+        let _ = tokio::task::spawn_blocking(move || {
+            steer::queue(
+                &dir,
+                steer::MAIN,
+                steer::Queued {
+                    id: format!("stopped-{turn}-{at_ms}"),
+                    text: note,
+                    at_ms,
+                    about: None,
+                    raw: true,
+                },
+            )
+        })
+        .await;
     }
     Ok(stopped)
 }
