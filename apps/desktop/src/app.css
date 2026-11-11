@@ -107,7 +107,12 @@
   --glow-accent: 0 0 7px var(--accent);
   --glow-main: 0 0 16px color-mix(in srgb, var(--accent) 30%, transparent);
   --wash-live: linear-gradient(90deg, transparent, color-mix(in srgb, var(--signal) 9%, transparent) 55%, transparent 80%);
-  --ground-dots: radial-gradient(circle, color-mix(in srgb, var(--ink) 5%, transparent) 1px, transparent 1.2px);
+  /* Item 621 (his "maybe five percent brighter, like barely any
+     difference"): the dot's ink went 5% → 5.5%, so the dot itself reads
+     ~5% brighter. `--ground-dot-ink` is the one value; the chat's pointer
+     field (`lib/dotField.ts`) draws its dots in it too. */
+  --ground-dot-ink: color-mix(in srgb, var(--ink) 5.5%, transparent);
+  --ground-dots: radial-gradient(circle, var(--ground-dot-ink) 1px, transparent 1.2px);
   --bracket: var(--accent);
 
   --serif: "Newsreader Variable", Georgia, "Times New Roman", serif;
