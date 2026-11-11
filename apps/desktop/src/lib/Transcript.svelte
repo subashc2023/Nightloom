@@ -184,6 +184,8 @@
   import { followStep, restDistance, sendJumps } from "./sendScroll";
   // The first-paint mark of the message's timing line (item 256).
   import { hasText, turnClock } from "./turnTiming";
+  // The dot ground the pointer pushes (item 621).
+  import { dotField } from "./dotField";
 
   interface AssistantFooter {
     model: string;
@@ -1278,6 +1280,14 @@
   });
 
   let viewport = $state<HTMLDivElement | null>(null);
+  // Item 621: the canvas behind the scroller that draws its dot ground
+  // while the field runs (`dotField` decides; it drops the CSS tile then).
+  let dotCanvas = $state<HTMLCanvasElement | null>(null);
+  $effect(() => {
+    if (!dotCanvas || !viewport) return;
+    const f = dotField(dotCanvas, viewport);
+    return () => f.destroy();
+  });
   // Pin to bottom until the user scrolls up; re-pin when they reach the
   // bottom again. Deliberately not $state: changes to it should not
   // re-trigger the effect.
@@ -2318,6 +2328,9 @@
 
 <!-- The viewport takes ⌥↑ / ⌥↓ (backlog 065); it is a scroll region, not
      a control, and the lint has no role for that. -->
+<!-- Item 621: the dot ground's canvas, placed over the scroller's box by
+     `dotField` and painted under it (the scroller is positioned after it). -->
+<canvas class="dot-field" aria-hidden="true" bind:this={dotCanvas}></canvas>
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="transcript"
@@ -3213,6 +3226,23 @@
        it meets the composer's own, which starts at its top. Calm and the
        classic palettes set the token to none. */
     background: var(--ground-dots, none) left bottom / 24px 24px;
+    /* Item 621: positioned (no z-index) so it paints over the dot field's
+       canvas just before it; its only child, `.inner`, is positioned
+       itself, so nothing inside is placed differently. */
+    position: relative;
+  }
+  /* While the pointer field runs, the canvas draws the dots instead. */
+  .transcript:global(.dotfield) {
+    background: none;
+  }
+  .dot-field {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 0;
+    height: 0;
+    display: none;
+    pointer-events: none;
   }
   .inner {
     max-width: 760px;
