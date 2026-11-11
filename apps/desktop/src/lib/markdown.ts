@@ -159,10 +159,80 @@ export function streamingTail(src: string): string {
     if (!/\S/.test(ticks[ticks.length - 1])) line = line.replace(/`\s*$/, "");
     else line += "`";
   }
-  // Bold outside the code spans.
-  const outside = line.split("`").filter((_, i) => i % 2 === 0).join("");
-  const stars = outside.match(/\*\*/g)?.length ?? 0;
-  // Paired left to right, the last of an odd count is the open one: dropped when nothing follows it yet, else closed.
-  if (stars % 2 === 1) line = /\*\*\s*$/.test(line) ? line.replace(/\*\*\s*$/, "") : line + "**";
-  return src.slice(0, cut) + line;
+  // Bold and italics outside the code spans (item 636: `*`, `_` and `__` as well as `**`).
+  return src.slice(0, cut) + closeEmphasis(line);
+}
+
+const isSpace = (ch: string) => /\s/.test(ch);
+const isWordChar = (ch: string) => /[\p{L}\p{N}]/u.test(ch);
+
+/**
+ * Item 636: a streaming last line's emphasis, as it will render once finished. Before, only `**` was handled, so
+ * "night, and *" — the first star of `**the short version**` — drew a lone `*` for a delta. Runs of `*` or `_`
+ * outside code spans are paired left to right roughly as CommonMark does (a run opens when a non-space follows it,
+ * closes when a non-space precedes it; `_` never inside a word). A run with nothing but space after it that closed
+ * nothing is held back, as is half a closer (`**bold*`); an opener still open at the end is closed, before any
+ * trailing space so the closer still touches the word. An opener inside a word (`2*3`) is never closed: it may be
+ * arithmetic. A bullet (`* `), a rule (`***`, `_ _ _`) and an escaped `\*` are left alone.
+ */
+function closeEmphasis(line: string): string {
+  if (/^\s*([*_-])(\s*\1){2,}\s*$/.test(line)) return line;
+  const stack: { c: string; n: number; intra: boolean }[] = [];
+  let code = false;
+  let hold = -1;
+  for (let i = 0; i < line.length; ) {
+    const c = line[i];
+    if (c === "\\" && !code) {
+      i += 2;
+      continue;
+    }
+    if (c === "`") code = !code;
+    if (code || (c !== "*" && c !== "_")) {
+      i++;
+      continue;
+    }
+    let j = i;
+    while (line[j] === c) j++;
+    const prev = line[i - 1] ?? " ";
+    const next = line[j] ?? " ";
+    const atEnd = !/\S/.test(line.slice(j));
+    const canOpen = !isSpace(next) && (c === "*" || !isWordChar(prev));
+    const canClose = !isSpace(prev) && (c === "*" || !isWordChar(next));
+    let n = j - i;
+    let closed = false;
+    let partial = false;
+    if (canClose) {
+      while (n > 0) {
+        let k = stack.length - 1;
+        while (k >= 0 && stack[k].c !== c) k--;
+        if (k < 0) break;
+        if (stack[k].n > n) {
+          partial = atEnd;
+          break;
+        }
+        n -= stack[k].n;
+        stack.splice(k);
+        closed = true;
+      }
+    }
+    const bullet = c === "*" && n === 1 && /^[\s>]*$/.test(line.slice(0, i)) && isSpace(next) && j < line.length;
+    if (partial || (atEnd && !closed && !bullet)) {
+      hold = i;
+      break;
+    }
+    if (canOpen) {
+      for (; n >= 2; n -= 2) stack.push({ c, n: 2, intra: isWordChar(prev) });
+      if (n === 1) stack.push({ c, n: 1, intra: isWordChar(prev) });
+    }
+    i = j;
+  }
+  if (hold >= 0) line = line.slice(0, hold);
+  const closers = stack
+    .filter((o) => !o.intra)
+    .reverse()
+    .map((o) => o.c.repeat(o.n))
+    .join("");
+  if (!closers) return line;
+  const ws = /\s*$/.exec(line)!;
+  return line.slice(0, ws.index) + closers + ws[0];
 }
