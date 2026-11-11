@@ -2262,6 +2262,12 @@
   $effect(() => {
     if (busy) sending = false;
   });
+  /** Send's hover plus, at fold 2+, the token estimate. sendTip returns
+   *  { text, keys }; adding a string to it showed "[object Object]" (his
+   *  report, 2026-11-11). */
+  function withEstimate(t: { text: string; keys?: string }): { text: string; keys?: string } {
+    return shown && Number(rowFold) >= 2 ? { ...t, text: `${t.text} · ${shown.long}` } : t;
+  }
   async function submit() {
     if (aside) return asideSubmit();
     sending = true;
@@ -3507,8 +3513,7 @@
         <span class="send-split act">
           <button
             class="ns-btn accent send act fil-btn fil-send"
-            use:tip={sendTip(!!app.connection, !text.trim() && attachments.length === 0, sendHeld()) +
-              (shown && Number(rowFold) >= 2 ? ` · ${shown.long}` : "")}
+            use:tip={withEstimate(sendTip(!!app.connection, !text.trim() && attachments.length === 0, sendHeld()))}
             onclick={() => void submit()}
             class:sending
             disabled={!app.connection || sendHeld() || (!text.trim() && attachments.length === 0)}
@@ -4862,7 +4867,7 @@
   .fil-edge {
     display: none;
   }
-  :global(:where(:root:not([data-layout="classic"]))) .fil-send {
+  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send {
     position: relative;
     overflow: hidden;
     gap: 6px;
@@ -4896,7 +4901,7 @@
     border-color: var(--line2);
     color: var(--dim);
   }
-  :global(:where(:root:not([data-layout="classic"]))) .fil-send:hover:not(:disabled) {
+  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send:hover:not(:disabled) {
     background: color-mix(in srgb, var(--accent) 12%, var(--term));
     border-color: var(--accent);
     color: #fff4dc;
@@ -4904,7 +4909,7 @@
       inset 0 0 12px color-mix(in srgb, var(--accent) 26%, transparent),
       0 0 18px color-mix(in srgb, var(--accent) 45%, transparent);
   }
-  :global(:where(:root:not([data-layout="classic"]))) .fil-send:active:not(:disabled) {
+  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send:active:not(:disabled) {
     background: color-mix(in srgb, var(--accent) 22%, var(--term));
     border-color: var(--accent-ink);
     transform: translateY(1px);
@@ -4912,20 +4917,21 @@
       inset 0 0 14px color-mix(in srgb, var(--accent) 40%, transparent),
       0 0 22px color-mix(in srgb, var(--accent) 55%, transparent);
   }
-  :global(:where(:root:not([data-layout="classic"]))) .fil-send.sending {
+  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send.sending {
     border-color: var(--accent);
     box-shadow:
       inset 0 0 12px color-mix(in srgb, var(--accent) 30%, transparent),
       0 0 18px color-mix(in srgb, var(--accent) 45%, transparent);
   }
-  :global(:where(:root:not([data-layout="classic"]))) .fil-send:disabled {
+  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send:disabled {
     background: var(--term);
     box-shadow: none;
-    border-color: var(--line2);
-    color: var(--dim);
+    border-color: color-mix(in srgb, var(--accent) 30%, var(--line2));
+    color: color-mix(in srgb, var(--accent-ink) 55%, var(--dim));
+    opacity: 1; /* app.css's 0.5 made the unlit bulb unreadable (2026-11-11) */
   }
   /* Calm (IV): no light — the bulb keeps its edge, without the halo. */
-  :global(:where([data-light="calm"])) .fil-send,
+  :global(:where([data-light="calm"])) .ns-btn.fil-send,
   :global(:where([data-light="calm"])) .send-split :global(.sched-caret) {
     box-shadow: none !important;
   }
@@ -4975,23 +4981,23 @@
     mask-composite: exclude;
     opacity: 0;
   }
-  :global(:where(:root:not([data-layout="classic"]))) .fil-send.sending .fil-edge {
+  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send.sending .fil-edge {
     opacity: 1;
   }
   @media (prefers-reduced-motion: no-preference) {
-    :global(:where(:root:not([data-layout="classic"]))) .fil-send:hover:not(:disabled) .fil-scan {
+    :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send:hover:not(:disabled) .fil-scan {
       animation: fil-scan 0.6s ease-out 1 both;
     }
-    :global(:where(:root:not([data-layout="classic"]))) .fil-send:active:not(:disabled) {
+    :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send:active:not(:disabled) {
       animation: fil-charge 0.32s ease-out 1;
     }
-    :global(:where(:root:not([data-layout="classic"]))) .fil-send.sending .fil-edge {
+    :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send.sending .fil-edge {
       animation: fil-edge 1s linear infinite;
     }
   }
   /* Reduce motion: static glows only — sending is a full lit edge. */
   @media (prefers-reduced-motion: reduce) {
-    :global(:where(:root:not([data-layout="classic"]))) .fil-send.sending .fil-edge {
+    :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send.sending .fil-edge {
       background: color-mix(in srgb, var(--accent) 80%, transparent);
     }
   }
@@ -5042,10 +5048,10 @@
   }
   /* Ask aside and Council: the coil before the word; Council's coil
      replaces the agent icon (also its icon-only mark at fold 3+). */
-  :global(:where(:root:not([data-layout="classic"]))) .fil-ghost {
+  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-ghost {
     gap: 6px;
   }
-  :global(:where(:root:not([data-layout="classic"]))) .fil-ghost .council-ico {
+  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-ghost .council-ico {
     display: none !important;
   }
   .hint {
