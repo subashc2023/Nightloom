@@ -35,6 +35,8 @@
     WEEK_HOT,
   } from "./contextDial";
   import { tip } from "./tip";
+  import { liveContextOf } from "./liveContext.svelte";
+  import { liveFor, liveLegend, liveTip, liveTokens, liveValue } from "./liveContext";
 
   interface Props {
     /**
@@ -69,10 +71,24 @@
   // already holds; a reading it does not hold is left out, never drawn
   // from a guess.
 
+  /**
+   * Item 590: while a reply runs, the live reading — the last exact figure
+   * plus an estimate of what has streamed since — in place of the last
+   * round's. (Declared before `used`; `live` and `logged` are below.)
+   */
+  const liveCtx = $derived(
+    column && app.busy && app.live != null
+      ? liveFor(liveContextOf(app.activeSessionId), lastLoggedTurn(app.events)?.startedAt ?? null)
+      : null,
+  );
   /** Context: the next request's prefix over the window (the top bar's gauge's figures). */
-  const used = $derived(column ? contextUsed() : null);
+  const used = $derived(column ? (liveCtx ? liveTokens(liveCtx) : contextUsed()) : null);
   const limit = $derived(app.connection?.contextLimit ?? null);
   const share = $derived(used != null && limit ? Math.min(used / limit, 1) : 0);
+  /** Item 590: the estimated tail of the arc, as a share of the window. */
+  const estShare = $derived(liveCtx && liveCtx.estimate > 0 && limit ? Math.min(liveCtx.estimate / limit, share) : null);
+  /** Item 590: each exact step swells the column's motion (587's language). */
+  const stepKey = $derived(liveCtx ? `${app.activeSessionId ?? ""}:${liveCtx.steps}` : "");
   /** The hand-off line: the chat's own mark, else the Settings percent or token cap (backlog 436). */
   const markShare = $derived(limit ? handoffMark(app.activeSessionId, limit) : null);
   const markTokens = $derived(limit && markShare != null ? Math.round(markShare * limit) : null);
@@ -236,18 +252,19 @@
              all of the new-chat dial's layers, the gears, radar and 5-hour hand between the figure and the inner ring; his keys surge it too); the ring holds a gentle surge while a turn streams
              and each new tool call nudges it. Paused when hidden, still under reduced motion. -->
         <div class="dm-at">
-          <DialMotion size={104} pad={14} quiet column layers={COLUMN_LAYERS} plan={motionPlan} streaming={live} typed={marks.length + keys} />
+          <DialMotion size={104} pad={14} quiet column layers={COLUMN_LAYERS} plan={motionPlan} streaming={live} typed={marks.length + keys} flowKey={stepKey} />
         <ContextDial
           size={104}
           {share}
           mark={markShare}
           inner={cache ? cacheShare : null}
+          estimate={estShare}
           minor={ticks.minor}
           major={ticks.major}
-          value={used != null ? shortTokens(used) : "—"}
+          value={liveCtx ? liveValue(liveCtx, shortTokens) : used != null ? shortTokens(used) : "—"}
           unit={limit ? `of ${shortTokens(limit)}` : used != null ? "window unknown" : ""}
           label={used != null
-            ? `Context ${used.toLocaleString()} tokens${limit ? ` of ${limit.toLocaleString()}` : ""}`
+            ? `Context ${liveCtx && liveCtx.estimate > 0 ? "about " : ""}${used.toLocaleString()} tokens${limit ? ` of ${limit.toLocaleString()}` : ""}${liveCtx && liveCtx.estimate > 0 ? ", estimated since the last step" : ""}`
             : "Context: no reading yet"}
         />
         </div>
@@ -256,6 +273,12 @@
         {#if limit && used != null}
           <div class="dk" use:tip={"What the next request carries, over the model's window"}>
             <i class="u"></i><span>Used</span><b>{pct(share)}</b>
+          </div>
+        {/if}
+        {#if liveCtx}
+          <!-- Item 590: the live reading's line while a reply runs — exact at a step, else the estimate on top. -->
+          <div class="dk live" class:est={liveCtx.estimate > 0} use:tip={liveTip(liveCtx)}>
+            <i class="e"></i><span>Live</span><b>{liveLegend(liveCtx, shortTokens)}</b>
           </div>
         {/if}
         {#if handoffLine}
@@ -590,6 +613,10 @@
     width: 2px;
     height: 8px;
     justify-self: center;
+  }
+  /* Item 590: the live line's key — the estimate's lighter tone (the dial's tail breathes; the legend holds still). */
+  .dk i.e {
+    background: color-mix(in srgb, var(--accent) 45%, var(--well));
   }
   .kv {
     display: flex;

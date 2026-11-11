@@ -1335,6 +1335,10 @@ export type TurnEvent =
   /** The model compacted the context itself, mid-turn, via `compact_context`. */
   | { type: "compacted"; summary: string }
   | { type: "usage"; usage: Usage }
+  /** The context the reply has built so far (nightshift backlog 590; Claude
+   *  Code engine): the last exact figure plus an estimate of what has streamed
+   *  since, by characters; `rough` when thinking is in the estimate. */
+  | { type: "context_live"; exact_tokens: number; estimate_tokens: number; rough: boolean; steps: number }
   /** What the Claude Code session has, from the CLI's `system/init` line —
    *  the first event of every turn on that engine (nightshift backlog 077). */
   | ({ type: "agent_init" } & AgentInit)

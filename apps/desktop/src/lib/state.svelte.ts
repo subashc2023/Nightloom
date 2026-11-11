@@ -1,3 +1,4 @@
+import { noteContextLive } from "./liveContext.svelte";
 import { viewRenameKeys } from "./viewState";
 import { tick, untrack } from "svelte";
 import { noteThreadHandoff, peekThreadHandoff, takeThreadHandoff } from "./threadHandoff.svelte";
@@ -10127,6 +10128,11 @@ export function applyTurnEventTo(host: TurnHost, ev: TurnEvent & { chat?: string
   const s = host.state;
   if (ev.type === "usage") {
     s.liveUsage = ev.usage;
+    return;
+  }
+  // Item 590: the live context reading, per chat, for the column's dial.
+  if (ev.type === "context_live") {
+    noteContextLive(host.chat, ev);
     return;
   }
   if (ev.type === "compacted") {
