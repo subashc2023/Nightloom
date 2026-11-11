@@ -8,7 +8,11 @@ import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
 import type { KeepWarmMode, KeepWarmStatus } from "./keepWarm";
 
-export const keepWarm = $state<{ byChat: Record<string, KeepWarmStatus> }>({ byChat: {} });
+export const keepWarm = $state<{ byChat: Record<string, KeepWarmStatus>; defaultOn: boolean | null }>({
+  byChat: {},
+  // His Settings default (item 608); null until read.
+  defaultOn: null,
+});
 
 let listening = false;
 
@@ -47,10 +51,35 @@ export async function setKeepWarm(chat: string, mode: KeepWarmMode): Promise<str
   }
 }
 
-/** A chat's tab was closed: its keep-warm ends. */
+/** A chat's tab was closed: its keep-warm run ends. The switch stays as
+ *  he set it (item 608), but "until I'm back" ends, as at a send. */
 export function stopKeepWarm(chat: string): void {
   const s = keepWarm.byChat[chat];
   if (!s || s.mode === "off") return;
   void api.keepWarmStop(chat).catch(() => {});
-  keepWarm.byChat[chat] = { ...s, mode: "off", scheduled: false, why: "off", next_ping_ms: null };
+  const mode = s.mode === "once" ? "off" : s.mode;
+  keepWarm.byChat[chat] = { ...s, mode, scheduled: false, why: mode === "off" ? "off" : "noreply", next_ping_ms: null };
+}
+
+/** Read his Settings default, "Keep chats' caches warm automatically". */
+export async function loadKeepWarmDefault(): Promise<void> {
+  try {
+    keepWarm.defaultOn = await api.keepWarmDefault();
+  } catch {
+    // An older backend: the switch stays unknown and the field disabled.
+  }
+}
+
+/** Set the default; every chat shown re-reads its switch, since those
+ *  without a choice of their own follow it. Resolves to the error's
+ *  words when refused. */
+export async function setKeepWarmDefault(on: boolean): Promise<string | null> {
+  watchKeepWarm();
+  try {
+    keepWarm.defaultOn = await api.keepWarmSetDefault(on);
+  } catch (e) {
+    return String(e);
+  }
+  await Promise.all(Object.keys(keepWarm.byChat).map((c) => loadKeepWarm(c)));
+  return null;
 }

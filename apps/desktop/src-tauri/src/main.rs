@@ -9513,7 +9513,7 @@ fn main() {
             // resume's times are kept here, not by the page's timers.
             app.manage(wake::Wakes::default());
             // Keep-warm (backlog 582): each switched-on chat's pings.
-            app.manage(keep_warm::Holder::default());
+            app.manage(keep_warm::Holder::load());
             keep_warm::watch(app.handle().clone());
             wake::mark_launch();
             wake::watch(app.handle().clone());
@@ -9605,6 +9605,8 @@ fn main() {
             keep_warm::keep_warm_set,
             keep_warm::keep_warm_status,
             keep_warm::keep_warm_stop,
+            keep_warm::keep_warm_default,
+            keep_warm::keep_warm_set_default,
             context_view,
             edit_context,
             prompt_layers,

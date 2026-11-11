@@ -10,7 +10,7 @@
 // one-line summaries. `SettingsModal.svelte` renders it; the test checks
 // every control here is still rendered and still bound.
 
-export type GroupId = "handoff" | "models" | "subagents" | "updates";
+export type GroupId = "handoff" | "models" | "subagents" | "updates" | "cache";
 
 export interface Group {
   id: GroupId;
@@ -23,6 +23,8 @@ export const GROUPS: readonly Group[] = [
   { id: "models", title: "Models" },
   { id: "subagents", title: "Subagent rules" },
   { id: "updates", title: "Updates" },
+  // Item 608: keep-warm, on by default for every chat.
+  { id: "cache", title: "Keeping caches warm" },
 ];
 
 export interface Control {
@@ -47,6 +49,7 @@ export const CONTROLS: readonly Control[] = [
   { id: "updates-cli", group: "updates", label: "Claude Code version", terms: "claude code cli version check now update installed newest release" },
   { id: "updates-auto", group: "updates", label: "Keep Claude Code up to date", terms: "auto update automatic cold moment claude update" },
   { id: "updates-layers", group: "updates", label: "Changed memory or instructions files", terms: "memory instructions claude.md layer file cold running chats" },
+  { id: "cache-keepwarm", group: "cache", label: "Keep chats' caches warm automatically", terms: "keep warm cache ping 1-hour hour 6 h six automatic default every chat cold" },
 ];
 
 /** The filter's words, lower-cased; empty when the box is blank. */
@@ -110,4 +113,10 @@ export function updatesSummary(o: {
 }): string {
   const version = o.installed ? (o.behind && o.latest ? `${o.installed} → ${o.latest}` : o.installed) : "not checked";
   return `${version} · auto-update ${o.auto ? "on" : "off"} · files at cold ${o.layersAtCold ? "on" : "off"}`;
+}
+
+/** Item 608: the keep-warm group's header. */
+export function cacheSummary(on: boolean | null): string {
+  if (on === null) return "not read yet";
+  return on ? "every chat kept warm, up to the cap" : "off unless a chat's switch is on";
 }

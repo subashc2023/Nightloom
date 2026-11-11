@@ -67,6 +67,22 @@ describe("keep-warm words (backlog 582)", () => {
     expect(idleWords(status({ why: "cap", policy: { every_ms: 55 * MIN, cap_ms: 4 * HOUR, min_context: 50_000 } }))).toContain("4 h");
   });
 
+  it("says whether the switch is the default's or his (item 608)", () => {
+    const byDefault = switchTitle(status({ chosen: false, default_on: true }), T0);
+    expect(byDefault).toContain("on by default for every chat — Settings → Subscription → Keeping caches warm");
+    expect(byDefault).toContain("Click to switch off for this chat.");
+    expect(switchTitle(status({ chosen: true, default_on: true }), T0)).toContain("switched on for this chat");
+    const hisOff = switchTitle(status({ mode: "off", scheduled: false, why: "off", chosen: true, default_on: true }), T0);
+    expect(hisOff).toContain("Off for this chat — you switched it off");
+    expect(hisOff).toContain("click to switch on for this chat");
+    const defaultOff = switchTitle(status({ mode: "off", scheduled: false, why: "off", chosen: false, default_on: false }), T0);
+    expect(defaultOff).toContain("Off — the default is off");
+    // A new chat on by default reads on before its first reply.
+    const fresh = status({ scheduled: false, why: "noreply", next_ping_ms: null, warm_until_ms: null, chosen: false, default_on: true });
+    expect(isOn(fresh)).toBe(true);
+    expect(switchLabel(fresh, T0)).toBe("keep warm · starts after the next reply");
+  });
+
   it("moves the cache timer to the last ping's hour", () => {
     const events = [
       { event: "user_message", text: "q", at: new Date(T0).toISOString() },

@@ -13,15 +13,20 @@
 //! (blocker 1787: a fork ping at +50 min, the chat at +105 min read all
 //! 163,740 tokens and rebuilt nothing).
 //!
-//! **The policy** (item 541's replay of his real chats): off by default,
-//! per chat; on, a ping every [`PING_EVERY_MS`] (55 min) after the last
+//! **The policy** (item 541's replay of his real chats): **on by default
+//! for every chat** since item 608 (his "i dont have to like click it",
+//! 2026-11-10) — the default is his Settings switch, kept in
+//! [`DEFAULT_FILE`]; a chat's own switch, once he sets it, is kept in its
+//! folder and wins over the default. On, a ping every [`PING_EVERY_MS`] (55 min) after the last
 //! reply, none later than [`CAP_MS`] (6 h) after it — **the one cap, here
 //! and in `<config>/keep-warm-policy.json`; items 580 and 579 retune it
 //! there** — only on the 1-hour cache, only for contexts of
 //! [`MIN_CONTEXT`] tokens or more. It ends when he sends (the next reply
 //! starts it again), when the chat's tab is closed or the chat deleted,
 //! or when the app quits (the facts a ping needs are held in memory only;
-//! the switch itself is on disk and stays).
+//! the switch itself is on disk and stays). A close ends the run but
+//! leaves the switch as it was (item 608: written "off", every chat he
+//! ever closed would be off for good under an on default).
 //!
 //! **Never a second writer, never a surprise.** A ping does not run while
 //! the chat's own turn does ([`Registry::due`]'s `busy`), is cancelled
@@ -48,6 +53,7 @@ use nightloom_core::{CacheTtl, Session, SessionEvent};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use tokio_util::sync::CancellationToken;
 
@@ -67,6 +73,10 @@ pub const MODE_FILE: &str = "keep-warm.json";
 pub const PINGS_FILE: &str = "keep-warm.jsonl";
 /// The policy file in the config directory; every field optional.
 pub const POLICY_FILE: &str = "keep-warm-policy.json";
+/// His Settings switch "Keep chats' caches warm automatically", in the
+/// config directory: `{"on": bool}`; no file reads as on (item 608). Its
+/// own file, so a retune of the policy (580/579) never touches it.
+pub const DEFAULT_FILE: &str = "keep-warm-default.json";
 /// A test-only interval in seconds (a measurement, a dev run): read from
 /// the environment, never from the shipped defaults.
 pub const TEST_EVERY_ENV: &str = "NIGHTLOOM_KEEP_WARM_EVERY_S";
@@ -345,20 +355,49 @@ struct ModeFile {
     set_ms: i64,
 }
 
-/// The chat's switch as its folder holds it; off with no file.
-pub fn read_mode(dir: &Path) -> Mode {
+/// His own choice for the chat, as its folder holds it; `None` when he
+/// never set it (the default applies).
+pub fn read_choice(dir: &Path) -> Option<Mode> {
     std::fs::read_to_string(dir.join(MODE_FILE))
         .ok()
         .and_then(|t| serde_json::from_str::<ModeFile>(&t).ok())
         .map(|f| f.mode)
-        .unwrap_or_default()
+}
+
+/// The chat's own switch; off when he never set it.
+pub fn read_mode(dir: &Path) -> Mode {
+    read_choice(dir).unwrap_or_default()
+}
+
+fn clear_choice(dir: &Path) {
+    let _ = std::fs::remove_file(dir.join(MODE_FILE));
+}
+
+/// His Settings default from `<config dir>/keep-warm-default.json`; on
+/// with no file or an unreadable one.
+pub fn load_default(config_dir: Option<&Path>) -> bool {
+    #[derive(Deserialize)]
+    struct DefaultFile {
+        on: bool,
+    }
+    config_dir
+        .and_then(|d| std::fs::read_to_string(d.join(DEFAULT_FILE)).ok())
+        .and_then(|t| serde_json::from_str::<DefaultFile>(&t).ok())
+        .map(|f| f.on)
+        .unwrap_or(true)
+}
+
+/// Write his Settings default.
+pub fn save_default(config_dir: &Path, on: bool) -> Result<(), String> {
+    std::fs::create_dir_all(config_dir).map_err(|e| e.to_string())?;
+    let path = config_dir.join(DEFAULT_FILE);
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, format!("{{\"on\":{on}}}")).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
 }
 
 fn write_mode(dir: &Path, mode: Mode, now: i64) {
     let path = dir.join(MODE_FILE);
-    if mode == Mode::Off && !path.exists() {
-        return;
-    }
     let _ = std::fs::create_dir_all(dir);
     let tmp = path.with_extension("json.tmp");
     let text = serde_json::to_string(&ModeFile { mode, set_ms: now }).unwrap_or_default();
@@ -416,7 +455,12 @@ pub async fn ping(spec: &AgentSpec, cancel: &CancellationToken) -> Result<PingRe
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Status {
     pub chat: String,
+    /// The switch as it acts: his choice, else the default.
     pub mode: Mode,
+    /// Whether the chat has his own choice (else `mode` is the default's).
+    pub chosen: bool,
+    /// His Settings default (item 608).
+    pub default_on: bool,
     /// A ping is scheduled or running.
     pub scheduled: bool,
     /// When the cache goes cold if the schedule runs, unix ms; `None`
@@ -441,7 +485,8 @@ pub struct Job {
 }
 
 struct Entry {
-    mode: Mode,
+    /// His own choice for the chat; `None` follows the default.
+    chosen: Option<Mode>,
     dir: PathBuf,
     spec: Option<AgentSpec>,
     reply: Option<Reply>,
@@ -458,7 +503,7 @@ impl Entry {
             spent.add(&l);
         }
         Self {
-            mode: read_mode(dir),
+            chosen: read_choice(dir),
             dir: dir.to_path_buf(),
             spec: None,
             reply: None,
@@ -468,18 +513,86 @@ impl Entry {
             spent,
         }
     }
+
+    /// A chat no folder has been read for.
+    fn blank() -> Self {
+        Self {
+            chosen: None,
+            dir: PathBuf::new(),
+            spec: None,
+            reply: None,
+            touched_ms: None,
+            missed: false,
+            flying: None,
+            spent: Spent::default(),
+        }
+    }
+
+    /// The switch as it acts: his choice, else the default.
+    fn mode(&self, default: Mode) -> Mode {
+        self.chosen.unwrap_or(default)
+    }
+
+    /// "Until I'm back" was answered (or its tab closed): back to off —
+    /// his off when the default is on, the default's off otherwise.
+    fn end_once(&mut self, default: Mode, now: i64) {
+        if default == Mode::Off {
+            self.chosen = None;
+            clear_choice(&self.dir);
+        } else {
+            self.chosen = Some(Mode::Off);
+            write_mode(&self.dir, Mode::Off, now);
+        }
+    }
 }
 
 /// Every chat's keep-warm the process knows. A std mutex, never held
 /// across an await.
-#[derive(Default)]
 pub struct Registry {
     inner: Mutex<HashMap<String, Entry>>,
+    /// His Settings default (item 608); on until the shell reads the file.
+    default_on: AtomicBool,
+}
+
+impl Default for Registry {
+    fn default() -> Self {
+        Self {
+            inner: Mutex::default(),
+            default_on: AtomicBool::new(true),
+        }
+    }
 }
 
 impl Registry {
     fn inner(&self) -> MutexGuard<'_, HashMap<String, Entry>> {
         self.inner.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// His Settings default: every chat without a choice of its own
+    /// follows it. Switching it off stops the pings of those chats.
+    pub fn set_default(&self, on: bool) {
+        self.default_on.store(on, Ordering::Relaxed);
+        if !on {
+            for e in self.inner().values_mut() {
+                if e.chosen.is_none()
+                    && let Some(c) = e.flying.take()
+                {
+                    c.cancel();
+                }
+            }
+        }
+    }
+
+    pub fn default_on(&self) -> bool {
+        self.default_on.load(Ordering::Relaxed)
+    }
+
+    fn default_mode(&self) -> Mode {
+        if self.default_on() {
+            Mode::On
+        } else {
+            Mode::Off
+        }
     }
 
     /// Set the chat's switch, on disk and here. `facts` — the chat's spec
@@ -498,7 +611,7 @@ impl Registry {
             .entry(chat.to_string())
             .or_insert_with(|| Entry::load(dir));
         e.dir = dir.to_path_buf();
-        e.mode = mode;
+        e.chosen = Some(mode);
         e.missed = false;
         write_mode(dir, mode, now);
         if mode == Mode::Off {
@@ -521,12 +634,13 @@ impl Registry {
     /// reply it kept warm is no longer the newest, and "until I'm back"
     /// has been answered. `true` when the switch changed.
     pub fn sent(&self, chat: &str, dir: Option<&Path>, now: i64) -> bool {
+        let default = self.default_mode();
         let mut inner = self.inner();
         if !inner.contains_key(chat) {
             // A chat switched on in an earlier run of the app: its file
             // is the only trace until something reads it.
             match dir {
-                Some(d) if read_mode(d) != Mode::Off => {
+                Some(d) if read_choice(d).unwrap_or(default) != Mode::Off => {
                     inner.insert(chat.to_string(), Entry::load(d));
                 }
                 _ => return false,
@@ -541,9 +655,8 @@ impl Registry {
         e.reply = None;
         e.touched_ms = None;
         e.missed = false;
-        if e.mode == Mode::Once {
-            e.mode = Mode::Off;
-            write_mode(&e.dir, Mode::Off, now);
+        if e.chosen == Some(Mode::Once) {
+            e.end_once(default, now);
             return true;
         }
         false
@@ -552,9 +665,10 @@ impl Registry {
     /// The chat's turn ended with a reply: the schedule starts from it,
     /// when the switch is on.
     pub fn replied(&self, chat: &str, dir: &Path, spec: &AgentSpec, reply: Option<Reply>) {
+        let default = self.default_mode();
         let mut inner = self.inner();
         if !inner.contains_key(chat) {
-            if read_mode(dir) == Mode::Off {
+            if read_choice(dir).unwrap_or(default) == Mode::Off {
                 return;
             }
             inner.insert(chat.to_string(), Entry::load(dir));
@@ -562,7 +676,7 @@ impl Registry {
         let Some(e) = inner.get_mut(chat) else {
             return;
         };
-        if e.mode == Mode::Off {
+        if e.mode(default) == Mode::Off {
             return;
         }
         e.spec = Some(spec.clone());
@@ -571,9 +685,12 @@ impl Registry {
         e.missed = false;
     }
 
-    /// The chat's tab was closed or the chat deleted: the switch goes off
-    /// and stays off. `true` when it was on.
+    /// The chat's tab was closed or the chat deleted: its run ends (a ping
+    /// in flight is cancelled, the reply forgotten). The switch stays as
+    /// he left it (item 608) — but "until I'm back" ends, as at a send.
+    /// `true` when it was on.
     pub fn stop(&self, chat: &str, now: i64) -> bool {
+        let default = self.default_mode();
         let mut inner = self.inner();
         let Some(mut e) = inner.remove(chat) else {
             return false;
@@ -581,20 +698,51 @@ impl Registry {
         if let Some(c) = e.flying.take() {
             c.cancel();
         }
-        let was_on = e.mode != Mode::Off;
-        if was_on {
-            write_mode(&e.dir, Mode::Off, now);
+        let was_on = e.mode(default) != Mode::Off;
+        if e.chosen == Some(Mode::Once) {
+            e.end_once(default, now);
         }
         was_on
+    }
+
+    /// A chat shown with its last reply and agent on hand (after an app
+    /// restart, or a tab reopened): when its switch is on and no run is
+    /// held, the run starts from that reply — the default needs no reply
+    /// first. `step`'s guards decide whether anything is pinged.
+    pub fn offer(&self, chat: &str, dir: &Path, spec: &AgentSpec, reply: Reply) -> bool {
+        let default = self.default_mode();
+        let mut inner = self.inner();
+        let e = inner
+            .entry(chat.to_string())
+            .or_insert_with(|| Entry::load(dir));
+        if e.mode(default) == Mode::Off || e.reply.is_some() || e.flying.is_some() {
+            return false;
+        }
+        e.spec = Some(spec.clone());
+        e.reply = Some(reply);
+        e.touched_ms = None;
+        e.missed = false;
+        true
+    }
+
+    /// Whether the chat would take [`Self::offer`]'s facts: on, nothing held.
+    pub fn wants_facts(&self, chat: &str, dir: &Path) -> bool {
+        let default = self.default_mode();
+        match self.inner().get(chat) {
+            Some(e) => e.mode(default) != Mode::Off && e.reply.is_none() && e.flying.is_none(),
+            None => read_choice(dir).unwrap_or(default) != Mode::Off,
+        }
     }
 
     /// The pings to run now. Each is marked in flight until
     /// [`Self::done`]; `busy` says whether a chat's own turn is running.
     pub fn due(&self, policy: &Policy, now: i64, busy: impl Fn(&str) -> bool) -> Vec<Job> {
+        let default = self.default_mode();
         let mut inner = self.inner();
         let mut jobs = Vec::new();
         for (chat, e) in inner.iter_mut() {
-            if e.mode == Mode::Off || e.flying.is_some() {
+            let mode = e.mode(default);
+            if mode == Mode::Off || e.flying.is_some() {
                 continue;
             }
             let (Some(spec), Some(reply)) = (&e.spec, &e.reply) else {
@@ -602,7 +750,7 @@ impl Registry {
             };
             // Asked only when a ping is otherwise due: the answer takes a lock.
             if step(
-                e.mode,
+                mode,
                 Some(reply),
                 e.touched_ms,
                 e.missed,
@@ -675,6 +823,7 @@ impl Registry {
 
     /// The chat's status. A chat this run has not seen is read from `dir`.
     pub fn status(&self, chat: &str, dir: Option<&Path>, policy: &Policy, now: i64) -> Status {
+        let default = self.default_mode();
         let mut inner = self.inner();
         if !inner.contains_key(chat)
             && let Some(d) = dir
@@ -682,22 +831,12 @@ impl Registry {
         {
             inner.insert(chat.to_string(), Entry::load(d));
         }
-        let Some(e) = inner.get(chat) else {
-            return Status {
-                chat: chat.to_string(),
-                mode: Mode::Off,
-                scheduled: false,
-                warm_until_ms: None,
-                touched_ms: None,
-                next_ping_ms: None,
-                why: Some(Why::Off),
-                spent: Spent::default(),
-                policy: *policy,
-            };
-        };
+        let blank = Entry::blank();
+        let e = inner.get(chat).unwrap_or(&blank);
+        let mode = e.mode(default);
         let flying = e.flying.is_some();
         let s = step(
-            e.mode,
+            mode,
             e.reply.as_ref(),
             e.touched_ms,
             e.missed,
@@ -708,7 +847,9 @@ impl Registry {
         let scheduled = flying || matches!(s, Step::Ping | Step::Wait(_));
         Status {
             chat: chat.to_string(),
-            mode: e.mode,
+            mode,
+            chosen: e.chosen.is_some(),
+            default_on: default == Mode::On,
             scheduled,
             warm_until_ms: e
                 .reply
@@ -729,12 +870,20 @@ impl Registry {
         }
     }
 
+    /// Every chat the registry holds, sorted.
+    pub fn known(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.inner().keys().cloned().collect();
+        ids.sort();
+        ids
+    }
+
     /// The chats whose switch is on, sorted.
     pub fn on(&self) -> Vec<String> {
+        let default = self.default_mode();
         let mut ids: Vec<String> = self
             .inner()
             .iter()
-            .filter(|(_, e)| e.mode != Mode::Off)
+            .filter(|(_, e)| e.mode(default) != Mode::Off)
             .map(|(id, _)| id.clone())
             .collect();
         ids.sort();
@@ -957,7 +1106,7 @@ mod tests {
     }
 
     #[test]
-    fn a_ping_that_read_too_little_stops_the_pinging_and_a_close_switches_off() {
+    fn a_ping_that_read_too_little_stops_the_pinging_and_a_close_ends_the_run() {
         let dir = scratch("miss");
         let reg = Registry::default();
         let p = Policy::default();
@@ -983,13 +1132,133 @@ mod tests {
             read_pings(&dir)[1].error.as_deref(),
             Some("claude not found")
         );
-        // His tab closed: off, on disk too, and gone from the registry.
+        // His tab closed: the run ends and the chat leaves the registry,
+        // but his switch stays on disk as he set it (item 608).
         reg.set_mode("c", &dir, Mode::On, None, 0);
         assert_eq!(reg.on(), vec!["c".to_string()]);
         assert!(reg.stop("c", 0));
-        assert_eq!(read_mode(&dir), Mode::Off);
+        assert_eq!(read_mode(&dir), Mode::On);
         assert!(reg.on().is_empty());
         assert!(!reg.stop("c", 0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Item 608: a chat he never set follows the default — on unless he
+    /// switched the default off — with every guard of `step` intact.
+    #[test]
+    fn every_chat_is_kept_warm_by_default_and_his_own_choice_wins() {
+        let dir = scratch("default");
+        let reg = Registry::default();
+        let p = Policy::default();
+        assert!(reg.default_on(), "the shipped default is on");
+        // A chat never touched: on, no file written for it.
+        let st = reg.status("c", Some(&dir), &p, 0);
+        assert_eq!((st.mode, st.chosen, st.default_on), (Mode::On, false, true));
+        assert_eq!(st.why, Some(Why::NoReply));
+        // Its reply starts the schedule without a click.
+        reg.replied("c", &dir, &spec(), Some(reply(100_000)));
+        assert_eq!(reg.on(), vec!["c".to_string()]);
+        assert_eq!(reg.due(&p, 55 * MIN, |_| false).len(), 1);
+        assert_eq!(read_choice(&dir), None, "the default writes nothing");
+        // The guards still hold: a small context, a 5-minute cache.
+        reg.replied("small", &dir, &spec(), Some(reply(49_999)));
+        assert!(reg.due(&p, 55 * MIN, |_| false).is_empty());
+        let short = Reply {
+            one_hour: false,
+            ..reply(200_000)
+        };
+        reg.replied("short", &dir, &spec(), Some(short));
+        assert!(reg.due(&p, 55 * MIN, |_| false).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // His off for one chat is kept, and outlives the process.
+        let dir = scratch("default-off");
+        let reg = Registry::default();
+        reg.set_mode("c", &dir, Mode::Off, None, 0);
+        assert_eq!(read_choice(&dir), Some(Mode::Off));
+        reg.replied("c", &dir, &spec(), Some(reply(100_000)));
+        assert!(reg.due(&p, 55 * MIN, |_| false).is_empty());
+        let again = Registry::default();
+        let st = again.status("c", Some(&dir), &p, 0);
+        assert_eq!((st.mode, st.chosen), (Mode::Off, true));
+        again.replied("c", &dir, &spec(), Some(reply(100_000)));
+        assert!(again.due(&p, 55 * MIN, |_| false).is_empty());
+        // A close does not turn a default chat off for good.
+        let d2 = scratch("default-close");
+        again.replied("d", &d2, &spec(), Some(reply(100_000)));
+        assert!(again.stop("d", 0));
+        assert_eq!(read_choice(&d2), None);
+        assert_eq!(again.status("d", Some(&d2), &p, 0).mode, Mode::On);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&d2);
+    }
+
+    /// Item 608: the Settings default switched off: chats without a
+    /// choice stop (a ping in flight is cancelled); his on stays on.
+    #[test]
+    fn the_default_off_stops_the_chats_that_follow_it_only() {
+        let a = scratch("dflt-a");
+        let b = scratch("dflt-b");
+        let reg = Registry::default();
+        let p = Policy::default();
+        reg.replied("a", &a, &spec(), Some(reply(100_000)));
+        reg.set_mode("b", &b, Mode::On, Some((spec(), reply(100_000))), 0);
+        let jobs = reg.due(&p, 55 * MIN, |_| false);
+        assert_eq!(jobs.len(), 2);
+        reg.set_default(false);
+        let a_job = jobs.iter().find(|j| j.chat == "a").unwrap();
+        let b_job = jobs.iter().find(|j| j.chat == "b").unwrap();
+        assert!(a_job.cancel.is_cancelled());
+        assert!(!b_job.cancel.is_cancelled());
+        assert_eq!(reg.on(), vec!["b".to_string()]);
+        let st = reg.status("a", None, &p, 56 * MIN);
+        assert_eq!(
+            (st.mode, st.chosen, st.default_on),
+            (Mode::Off, false, false)
+        );
+        // A new chat follows the off default; "until I'm back" then ends
+        // back at the default's off, leaving no choice on disk.
+        let c = scratch("dflt-c");
+        assert_eq!(reg.status("c", Some(&c), &p, 0).mode, Mode::Off);
+        reg.replied("c", &c, &spec(), Some(reply(100_000)));
+        assert!(!reg.on().contains(&"c".to_string()));
+        reg.set_mode("c", &c, Mode::Once, Some((spec(), reply(100_000))), 0);
+        assert!(reg.sent("c", Some(&c), MIN));
+        assert_eq!(read_choice(&c), None);
+        for d in [a, b, c] {
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+
+    /// Item 608: a chat shown after a restart takes its last reply as the
+    /// start, once; a chat already running or off does not.
+    #[test]
+    fn a_shown_chat_starts_from_its_last_reply_without_waiting() {
+        let dir = scratch("offer");
+        let reg = Registry::default();
+        let p = Policy::default();
+        assert!(reg.wants_facts("c", &dir));
+        assert!(reg.offer("c", &dir, &spec(), reply(100_000)));
+        assert!(!reg.wants_facts("c", &dir));
+        assert!(!reg.offer("c", &dir, &spec(), reply(100_000)), "once");
+        assert_eq!(reg.due(&p, 55 * MIN, |_| false).len(), 1);
+        let off = scratch("offer-off");
+        reg.set_mode("o", &off, Mode::Off, None, 0);
+        assert!(!reg.wants_facts("o", &off));
+        assert!(!reg.offer("o", &off, &spec(), reply(100_000)));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&off);
+    }
+
+    #[test]
+    fn the_settings_default_reads_on_without_a_file() {
+        let dir = scratch("dfile");
+        assert!(load_default(None));
+        assert!(load_default(Some(&dir)));
+        save_default(&dir, false).unwrap();
+        assert!(!load_default(Some(&dir)));
+        save_default(&dir, true).unwrap();
+        assert!(load_default(Some(&dir)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

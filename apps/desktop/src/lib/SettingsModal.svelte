@@ -56,6 +56,7 @@
     PALETTES,
     subagentRules,
     setDefaultRules,
+    addToast,
   } from "./state.svelte";
   import * as api from "./api";
   /** A palette's name: "A" is Filament IV under that layout, and 1d4ca17's
@@ -144,8 +145,10 @@
     modelsSummary,
     subagentsSummary,
     updatesSummary,
+    cacheSummary,
     type GroupId as SubGroupId,
   } from "./settings/subscriptionPane";
+  import { keepWarm, loadKeepWarmDefault, setKeepWarmDefault } from "./keepWarm.svelte";
   import { paneFilter, setPaneFilter } from "./settings/paneState.svelte";
   import {
     WRAP_UP,
@@ -1026,7 +1029,16 @@
       auto: cli.prefs.auto,
       layersAtCold: app.layerPrefs.autoAtCold,
     }),
+    cache: cacheSummary(keepWarm.defaultOn),
   });
+  // Item 608: the keep-warm default, read once the pane opens.
+  $effect(() => {
+    void loadKeepWarmDefault();
+  });
+  async function flipKeepWarmDefault(on: boolean): Promise<void> {
+    const refused = await setKeepWarmDefault(on);
+    if (refused) addToast(`Keep warm: ${refused}`);
+  }
 
   /** Turn a whole family on or off in one write rather than one per chip. */
   function setSection(kind: string, s: ModelSection, on: boolean) {
@@ -2514,6 +2526,33 @@
             anyway. Off: the Context page marks the layer <em>newer version
             exists</em> and waits for your Update. Either way <em>Update now</em>
             and <em>Keep this version</em> are on the mark.
+          {/snippet}
+        </SettingRow>
+      </SettingsGroup>
+      <!-- Item 608: keep-warm is automatic — on by default for every chat. -->
+      <SettingsGroup fold="subscription/cache" title={subTitle("cache")} summary={subSummaries.cache} filtering={subFiltering} matches={subMatches("cache")}>
+        <SettingRow fold="subscription/cache-keepwarm" shown={subShown("cache-keepwarm")}>
+          {#snippet label()}
+            <label class="dream-auto cli-auto">
+              <input
+                type="checkbox"
+                aria-label="Keep chats' caches warm automatically"
+                checked={keepWarm.defaultOn ?? true}
+                disabled={keepWarm.defaultOn === null}
+                onchange={(e) => void flipKeepWarmDefault(e.currentTarget.checked)}
+              />
+              <span>Keep chats' caches warm automatically</span>
+            </label>
+          {/snippet}
+          {#snippet help()}
+            On (the default): every chat whose cache is the 1-hour kind and
+            holds 50k tokens or more gets a small hidden request every 55
+            minutes after its last reply, for up to 6 hours, so your next
+            message reads the context from the cache instead of paying to
+            rebuild it. It stops when you send (the reply starts it again),
+            close the chat's tab or delete the chat. The ♨ switch under the
+            message box turns one chat off, or on while this is off; that
+            choice is kept for the chat.
           {/snippet}
         </SettingRow>
       </SettingsGroup>

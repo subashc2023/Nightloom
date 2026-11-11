@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { resetLong, resetText as resetTextAt } from "./resetTime";
   import {
     addToast,
     app,
@@ -265,27 +266,16 @@
             ? "the CLI's /usage, run live (zero tokens)"
             : "the CLI's /usage cache",
   );
-  /** A reset time for the gauge card (board d): `21:40` today, `Thu 09:00`
-   *  on another day. */
+  /** A reset time for the gauge card (board d): `9:40 PM` today, `Thu
+   *  9:00 AM` on another day — 12-hour (blocker 1812), from `resetTime.ts`. */
   function resetText(iso: string | null): string {
-    if (!iso) return "reset time unknown";
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return "reset time unknown";
-    const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
-    const today = new Date(now);
-    return d.toDateString() === today.toDateString()
-      ? `resets ${time}`
-      : `resets ${d.toLocaleDateString([], { weekday: "short" })} ${time}`;
+    return resetTextAt(iso, now);
   }
   const planTitle = $derived.by(() => {
     if (!plan) return "";
     const age = planAgeText;
     const where = planWhere;
-    const when = (iso: string | null) => {
-      if (!iso) return "reset time unknown";
-      const d = new Date(iso);
-      return Number.isNaN(d.getTime()) ? "reset time unknown" : `resets ${d.toLocaleString()}`;
-    };
+    const when = resetLong;
     return (
       `Plan usage, account-wide (every surface, not just this chat): ` +
       `5-hour window ${plan.five_hour}% (${when(plan.five_hour_resets_at)}); ` +
