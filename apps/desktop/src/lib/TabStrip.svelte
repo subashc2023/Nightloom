@@ -19,6 +19,7 @@
   import { draggedShell } from "./terminal.svelte";
   import Icon from "./Icon.svelte";
   import { tabIn, tabOut } from "./tabMotion";
+  import { TabFreeze } from "./tabFreeze";
   import TabChooser from "./TabChooser.svelte";
   import RunningBadge from "./RunningBadge.svelte";
   import { isMac } from "./platform";
@@ -147,6 +148,20 @@
    *  nothing is over it. */
   let dropAt = $state<number | null>(null);
   let stripEl = $state<HTMLElement | null>(null);
+
+  // ---- item 603: closing tabs as Chrome does (`tabFreeze.ts`) ----
+  // A close from the strip holds every tab at the width it had, so the next
+  // close button slides in under the pointer; the strip re-fits when the
+  // pointer leaves it or rests a few seconds. ⌘W (pointer elsewhere) does not
+  // freeze: nothing is under the pointer to keep in place.
+  let frozenW = $state<number | null>(null);
+  const freeze = new TabFreeze((w) => (frozenW = w));
+  $effect(() => () => freeze.thaw());
+  function closeFromStrip(e: MouseEvent, t: tabs.Tab): void {
+    const el = (e.currentTarget as Element | null)?.closest<HTMLElement>(".tab");
+    freeze.closed(el?.getBoundingClientRect().width ?? 0);
+    void closeTab(t.id);
+  }
 
   // ---- a tab dragged: pointer events (nightshift backlog 195) ----
   //
@@ -383,6 +398,8 @@
   ondragover={onDragOver}
   ondragleave={onDragLeave}
   ondrop={onDrop}
+  onpointermove={() => freeze.moved()}
+  onpointerleave={() => freeze.thaw()}
 >
   {#each pane.tabs as t, i (t.id)}
     {@const favicon = t.content.kind === "web" ? web.live[webLabel(t.id)]?.favicon : undefined}
@@ -399,6 +416,7 @@
       tabindex="0"
       aria-selected={pane.active === t.id}
       data-tab={t.id}
+      style:flex={frozenW !== null ? `0 0 ${frozenW}px` : undefined}
       in:tabIn
       out:tabOut
       use:tip={hint(t)}
@@ -412,7 +430,7 @@
       }}
       onauxclick={(e) => {
         // The middle button closes, as in every browser.
-        if (e.button === 1) void closeTab(t.id);
+        if (e.button === 1) closeFromStrip(e, t);
       }}
       oncontextmenu={(e) => openMenu(e, t)}
     >
@@ -459,7 +477,7 @@
         tabindex="-1"
         onclick={(e) => {
           e.stopPropagation();
-          void closeTab(t.id);
+          closeFromStrip(e, t);
         }}
       >
         <Icon name="x" size={10} />
@@ -557,7 +575,10 @@
     padding: 0 10px 0 14px;
     max-width: 240px;
     min-width: 0;
-    flex: 0 1 auto;
+    /* Item 603: one width for every tab, as Chrome's — a share of the strip
+       up to 240 px, not the title's length. A close from the strip holds
+       it (`frozenW`, inline) until the pointer leaves. */
+    flex: 1 1 0;
     border-right: 1px solid var(--line);
     color: var(--dim);
     font-size: 12.5px;
@@ -677,6 +698,10 @@
     cursor: pointer;
     opacity: 0;
     flex-shrink: 0;
+    /* Item 603: at the tab's right edge whatever the title's length, so
+       every tab's × sits at the same place in its tab — the one that
+       slides in under the pointer is under it. */
+    margin-left: auto;
   }
   .tab:hover .close,
   .tab.active .close {

@@ -20,6 +20,8 @@
   import Composer from "./Composer.svelte";
   import ContextDial from "./ContextDial.svelte";
   import DialMotion from "./DialMotion.svelte";
+  import { projectSwitch } from "./projectSwitch.svelte";
+  import SwitchCover from "./SwitchCover.svelte";
   import Icon from "./Icon.svelte";
   import Kbd from "./Kbd.svelte";
   import WelcomeClassic from "./WelcomeClassic.svelte";
@@ -638,6 +640,11 @@
     </button>
   </div>
 </div>
+{/if}
+{#if projectSwitch.on}
+  <!-- Item 598: over the page (and its box), never instead of it: the
+       draft in the box and the page's own state stay mounted. -->
+  <SwitchCover classic={classic()} />
 {/if}
 
 <style>
