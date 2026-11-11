@@ -18,9 +18,9 @@ export const DOT_STEP = 24;
 /** Between the gradient's 1 px solid core and its 1.2 px edge. */
 export const DOT_R = 1.1;
 /** How far from the pointer a dot feels it (CSS px). */
-export const PUSH_RADIUS = 110;
+export const PUSH_RADIUS = 160;
 /** The most a dot moves (CSS px): under half the grid step, so rows never cross. */
-export const PUSH_MAX = 9;
+export const PUSH_MAX = 11;
 /** The spring: stiffness (1/s²) and damping (1/s); a little under critical, so a dot overshoots a hair and settles. */
 export const SPRING_K = 170;
 export const SPRING_C = 2 * Math.sqrt(SPRING_K) * 0.78;
@@ -71,7 +71,11 @@ export function dotsIn(
 export function pushOffset(dx: number, dy: number): { x: number; y: number } {
   const d = Math.hypot(dx, dy);
   if (d >= PUSH_RADIUS || d < 0.01) return { x: 0, y: 0 };
-  const f = 1 - d / PUSH_RADIUS;
+  // His report 2026-11-11 ("the dots also barely move"): (1 − u²)² keeps
+  // the zero-slope edge but holds more push across the radius (half-way:
+  // 0.56 of the peak, was 0.25).
+  const u = d / PUSH_RADIUS;
+  const f = 1 - u * u;
   const m = PUSH_MAX * f * f;
   return { x: (dx / d) * m, y: (dy / d) * m };
 }
