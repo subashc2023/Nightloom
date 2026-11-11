@@ -15,6 +15,8 @@ import "@fontsource/ibm-plex-mono/latin-500.css";
 import "./app.css";
 // Item 618b: the composer row's looks, after app.css (the designs harness's order, so app.css never wins a tie).
 import "./composerRow.css";
+// Item 596: the cache on the message box's frame, after the row's looks.
+import "./cacheLook.css";
 import { app as state, applyPalette } from "./lib/state.svelte";
 import { applyLayout } from "./lib/layout.svelte";
 import { installMathCopy } from "./lib/mathCopy";
