@@ -630,11 +630,8 @@
     text-transform: uppercase;
     color: var(--ink2);
   }
-  :global([data-light="calm"]) .col h4 {
-    font: 600 12px var(--sans);
-    letter-spacing: 0;
-    text-transform: none;
-  }
+  /* Item 629: Calm used to set these headings in 12 px sans; Instrument
+     light changes only the light now, so they are mono capitals in both. */
   .col h4 span {
     font: 11px var(--mono);
     letter-spacing: 0;

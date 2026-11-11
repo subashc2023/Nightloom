@@ -139,12 +139,14 @@
 }
 
 
-/* Calm (IV), and every classic palette: no light, no brackets, no dots. */
+/* Calm (IV), and the Classic layout: no light, no brackets, no dots.
+   Item 629 (agent C, wave 5): was "and every classic palette", so B, C
+   and D under Filament IV wore no light whatever Instrument light said —
+   a palette changing more than colour. Under Classic every palette is
+   classic-A/B/C/D, so `[data-layout="classic"]` draws Classic exactly as
+   before. */
 [data-light="calm"],
-[data-palette="classic-A"],
-[data-palette="B"],
-[data-palette="C"],
-[data-palette="D"] {
+[data-layout="classic"] {
   --glow-live: none;
   --glow-signal: none;
   --glow-accent: none;
@@ -1445,7 +1447,13 @@ mark.find-hit {
   --motion-ink: var(--accent);
   --motion-ink-hi: var(--accent-ink, var(--accent));
 }
-:root:not([data-layout="classic"]):is(:not([data-palette]), [data-palette="A"]) {
+/* Item 629 (agent C, wave 5): the motion colour is its own choice now
+   (Settings → Appearance → Motion colour; `data-motion-ink="accent"`),
+   not the palette's letter — "live" (the default) is the palette's own
+   `--signal`, on every palette. A one-time migration
+   (`settings/look.svelte.ts`) stamps "accent" for a saved B/C/D, so
+   nothing that was drawn changes. Classic still draws the accent. */
+:root:not([data-layout="classic"]):not([data-motion-ink="accent"]) {
   --motion-ink: var(--signal);
   --motion-ink-hi: var(--signal-ink, var(--signal));
 }

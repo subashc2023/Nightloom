@@ -422,7 +422,7 @@
           plan={motionPlan}
         />
         {#if wide}
-          <!-- Lit (IV+): six read-outs on leader lines. Calm hides them for the row below. -->
+          <!-- The wheel: six read-outs on leader lines. New-chat page → Row hides them for the row below (item 629). -->
           <svg class="leaders" width={box} height={box} aria-hidden="true">
             {#each readouts as o (o.key)}
               <line x1={o.x1} y1={o.y} x2={o.x2} y2={o.y} />
@@ -867,17 +867,20 @@
   .ro.warn small {
     color: var(--failed);
   }
-  /* Calm (IV) and the classic palettes: no read-outs, no rings; the row. */
-  :global(:is([data-light="calm"], [data-palette="classic-A"], [data-palette="B"], [data-palette="C"], [data-palette="D"])) .leaders,
-  :global(:is([data-light="calm"], [data-palette="classic-A"], [data-palette="B"], [data-palette="C"], [data-palette="D"])) .irings,
-  :global(:is([data-light="calm"], [data-palette="classic-A"], [data-palette="B"], [data-palette="C"], [data-palette="D"])) .ro {
+  /* Item 629 (agent C, wave 5): the row is its own choice — Settings →
+     Appearance → New-chat page, `data-newchat="row"` — not Calm's or a
+     palette's side effect (his "category error"). Row: no read-outs, no
+     rings. */
+  :global([data-newchat="row"]) .leaders,
+  :global([data-newchat="row"]) .irings,
+  :global([data-newchat="row"]) .ro {
     display: none;
   }
-  /* Lit and wide: the read-outs carry the readings, so no row. */
+  /* Wheel and wide: the read-outs carry the readings, so no row. */
   .wide .ready {
     display: none;
   }
-  :global(:is([data-light="calm"], [data-palette="classic-A"], [data-palette="B"], [data-palette="C"], [data-palette="D"])) .wide .ready {
+  :global([data-newchat="row"]) .wide .ready {
     display: flex;
   }
 
