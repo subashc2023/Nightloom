@@ -27,6 +27,9 @@
   // Item 589: the running step's motion in the turn trace.
   import { STEP_MOTIONS, stepMotion, setStepMotion, type StepMotion } from "./stepMotion.svelte";
   import StepMotionPreview from "./StepMotionPreview.svelte";
+  // Item 617 (own block): Reply text — Line reveal or Word rise.
+  import { REPLY_LOOKS, replyLook, setReplyLook } from "./replyLook.svelte";
+  // End item 617.
   import ContextDial from "./ContextDial.svelte";
   import { planDials, surfaceShares, paceLine, weekGone, resetsWhen } from "./settingsUsage";
   /** The Layout choice: the layout, then the accent again (no accent is stamped under Classic). */
@@ -1909,6 +1912,28 @@
               {/each}
             </div>
           </div>
+          <!-- Item 617 (own block): how a reply's text arrives while it streams. Filament IV only (Classic keeps the word rise). -->
+          <div class="f4-only motion-sub">
+            <div class="sub-h">Reply text</div>
+            <p class="note small">
+              How a reply's words show while it streams.
+              {#if motionStill}Reduce motion is on in macOS, so the text shows as it arrives.{/if}
+            </p>
+            <div class="anims motion-picks" role="radiogroup" aria-label="Reply text">
+              {#each REPLY_LOOKS as l (l.id)}
+                <div class="anim" class:on={replyLook.value === l.id}>
+                  <button class="anim-pick" role="radio" aria-checked={replyLook.value === l.id} onclick={() => setReplyLook(l.id)}>
+                    <span class="anim-name">{l.name}</span>
+                    <span class="anim-blurb">{l.note}</span>
+                  </button>
+                  <div class="anim-foot">
+                    {#if replyLook.value === l.id}<span class="anim-on">In use</span>{/if}
+                  </div>
+                </div>
+              {/each}
+            </div>
+          </div>
+          <!-- End item 617. -->
         {/if}
       </section>
       {#each MOTION_KINDS as mk (mk.kind)}
