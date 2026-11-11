@@ -1,4 +1,5 @@
 import { viewRenameKeys } from "./viewState";
+import { projectSwitch } from "./projectSwitch.svelte";
 import { tick, untrack } from "svelte";
 import { noteThreadHandoff, peekThreadHandoff, takeThreadHandoff } from "./threadHandoff.svelte";
 import { hasHiddenChars } from "./shellRun";
@@ -2874,65 +2875,73 @@ export async function useProject(id: string | null): Promise<void> {
     addToast(String(e));
     return;
   }
-  saveLastProject(app.project?.id ?? null);
-  // ~~The workspace just left is dropped~~ — since backlog 201 it is
-  // written under its project first (while its chat is still the open
-  // one, so an aside tab of it finds its threads), and the new project's
-  // comes back at the end (`restoreTabs`), once its lists are read.
-  flushTabs();
-  tabsOwner = null;
-  // The chat left keeps its asides (backlog 203): without this its cards
-  // stayed on the pending chat and went with the first send into the new
-  // chat, saved under that chat's id too.
-  switchAside(null);
-  app.activeSessionId = null;
-  clearPendingThread();
-  app.events = [];
-  // The tabs were the list just left too (backlog 099): a workspace is a
-  // project's, as an editor's is a folder's. The view that stays (the
-  // Nightshift page, below) lands in the fresh workspace at the end.
-  app.tabs = tabs.emptyWorkspace();
-  // The pending kind was chosen for the list just left; the backend reset
-  // its copy in `open_project` / `close_project` (nightshift backlog 061).
-  app.pendingMode = "normal";
-  // The kind follows the list too (nightshift backlog 102): Claude Code in
-  // a project with a folder, Chat unfiled or in a folderless project. The
-  // backend reset its copy to build, so it is told — the same call the
-  // button makes, on a chat that is already closed.
-  app.pendingKind = defaultKind();
+  // Item 598: the open chat is cleared now and the project's own re-opened
+  // only once its lists are read; the new-chat page that showed in the gap
+  // is covered meanwhile (`projectSwitch.svelte.ts`, `Welcome.svelte`).
+  projectSwitch.on = true;
   try {
-    await api.newSession(undefined, app.pendingKind);
-  } catch {
-    // The first New chat click sends it again.
+    saveLastProject(app.project?.id ?? null);
+    // ~~The workspace just left is dropped~~ — since backlog 201 it is
+    // written under its project first (while its chat is still the open
+    // one, so an aside tab of it finds its threads), and the new project's
+    // comes back at the end (`restoreTabs`), once its lists are read.
+    flushTabs();
+    tabsOwner = null;
+    // The chat left keeps its asides (backlog 203): without this its cards
+    // stayed on the pending chat and went with the first send into the new
+    // chat, saved under that chat's id too.
+    switchAside(null);
+    app.activeSessionId = null;
+    clearPendingThread();
+    app.events = [];
+    // The tabs were the list just left too (backlog 099): a workspace is a
+    // project's, as an editor's is a folder's. The view that stays (the
+    // Nightshift page, below) lands in the fresh workspace at the end.
+    app.tabs = tabs.emptyWorkspace();
+    // The pending kind was chosen for the list just left; the backend reset
+    // its copy in `open_project` / `close_project` (nightshift backlog 061).
+    app.pendingMode = "normal";
+    // The kind follows the list too (nightshift backlog 102): Claude Code in
+    // a project with a folder, Chat unfiled or in a folderless project. The
+    // backend reset its copy to build, so it is told — the same call the
+    // button makes, on a chat that is already closed.
+    app.pendingKind = defaultKind();
+    try {
+      await api.newSession(undefined, app.pendingKind);
+    } catch {
+      // The first New chat click sends it again.
+    }
+    app.error = null;
+    // Switching projects from the Nightshift page stays on it — the page
+    // follows the open project (round 2, point 12); everywhere else it is a
+    // navigation to the new project's chat. The New project form in front
+    // stays in front too (backlog 394): it is the workspace's, not the
+    // project's, and he is still filling it in.
+    const formFront = app.view === "new-project" && app.newProjectOpen;
+    if (app.view !== "nightshift" && !formFront) app.view = "chat";
+    app.openNote = null;
+    reflectTabs();
+    // ~~The connect, then the list, the chats and the notes, each awaited~~
+    // (backlog 211's leftovers, 2026-09-26): the three re-reads run together,
+    // beside the connect, and settle within `REFRESH_LIMIT_MS` whatever the
+    // disk does — a late answer still lands. The tabs wait for them, since
+    // the lists decide which tabs survive.
+    await Promise.all([
+      applyDraft(),
+      refreshWithin("opening " + (app.project?.name ?? "unfiled chats"), [
+        refreshProjects,
+        refreshSessions,
+        refreshNotes,
+      ]),
+    ]);
+    // The project's own tabs (backlog 201). On the Nightshift page the page
+    // stays in front and lands in the restored workspace.
+    const stay = app.view === "nightshift" || formFront;
+    await restoreTabs({ show: !stay, newProjectFront: formFront });
+    if (stay) reflectTabs();
+  } finally {
+    projectSwitch.on = false;
   }
-  app.error = null;
-  // Switching projects from the Nightshift page stays on it — the page
-  // follows the open project (round 2, point 12); everywhere else it is a
-  // navigation to the new project's chat. The New project form in front
-  // stays in front too (backlog 394): it is the workspace's, not the
-  // project's, and he is still filling it in.
-  const formFront = app.view === "new-project" && app.newProjectOpen;
-  if (app.view !== "nightshift" && !formFront) app.view = "chat";
-  app.openNote = null;
-  reflectTabs();
-  // ~~The connect, then the list, the chats and the notes, each awaited~~
-  // (backlog 211's leftovers, 2026-09-26): the three re-reads run together,
-  // beside the connect, and settle within `REFRESH_LIMIT_MS` whatever the
-  // disk does — a late answer still lands. The tabs wait for them, since
-  // the lists decide which tabs survive.
-  await Promise.all([
-    applyDraft(),
-    refreshWithin("opening " + (app.project?.name ?? "unfiled chats"), [
-      refreshProjects,
-      refreshSessions,
-      refreshNotes,
-    ]),
-  ]);
-  // The project's own tabs (backlog 201). On the Nightshift page the page
-  // stays in front and lands in the restored workspace.
-  const stay = app.view === "nightshift" || formFront;
-  await restoreTabs({ show: !stay, newProjectFront: formFront });
-  if (stay) reflectTabs();
 }
 
 /**
