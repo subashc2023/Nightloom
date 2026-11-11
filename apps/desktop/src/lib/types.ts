@@ -1375,6 +1375,10 @@ export type TurnEvent =
    *  `error` is the CLI's category — `unknown` with no `status` is a
    *  failed connection; `waited_ms` is set when no response came at all. */
   | { type: "retry"; attempt: number; max_retries: number; error: string | null; status: number | null; delay_ms: number | null; waited_ms: number | null }
+  /** A running Bash command's latest output lines, whole each time they
+   *  change (item 633; ~3 a second at most). Live only: the row's passing
+   *  text, dropped at the call's result. Claude Code engine only. */
+  | { type: "tool_output"; tool_use_id: string; lines: string[] }
   /** An event of a subagent's own turn on the Claude Code engine, carrying
    *  the id of the `Agent` call that spawned it (nightshift backlog 075);
    *  `event` is the child's text, thinking, call or result as the main
