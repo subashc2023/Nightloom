@@ -103,6 +103,14 @@
   // call already has the grant, so the next read there asks nothing.
   const outside = $derived(kind === "call" && req.outside ? req.outside : null);
   const outsideLeaf = $derived(outside ? (outside.split(/[\\/]/).filter(Boolean).pop() ?? outside) : "");
+  // The model asking for a folder itself (nightshift item 613): the card
+  // says so, and *Allow* is the grant at the model's scope — so "Allow for
+  // this chat", which would promise every later call runs unasked, is not
+  // offered (the gate asks about each folder).
+  const addsFolder = $derived(kind === "call" && req.name === "mcp__nightloom__add_folder");
+  const folderScope = $derived(
+    addsFolder && (req.input as { scope?: unknown } | undefined)?.scope === "project" ? "project" : "chat",
+  );
   function allowAndGrant(scope: "chat" | "project") {
     if (!outside) return;
     decide("allow", undefined, undefined, undefined, { dir: outside, scope });
@@ -520,7 +528,14 @@
   >
     <div class="head">
       <span class="mark" aria-hidden="true">⚠</span>
-      <span>Run <code>{req.name}</code>?</span>
+      {#if addsFolder}
+        <span
+          >Let {folderScope === "project" ? "the project" : "this chat"} see <code>{outsideLeaf || req.name}</code
+          >?</span
+        >
+      {:else}
+        <span>Run <code>{req.name}</code>?</span>
+      {/if}
       <span class="effect">paused · waiting for you</span>
       <span class="sp"></span>
       {@render foldButton()}
@@ -572,11 +587,13 @@
       {/if}
       <div class="actions">
         <button class="ns-btn accent" onclick={() => decide("allow")}>Allow</button>
-        <button
-          class="ns-btn"
-          use:tip={`every later ${req.name} in this chat runs unasked`}
-          onclick={() => decide("always")}>Allow for this chat</button
-        >
+        {#if !addsFolder}
+          <button
+            class="ns-btn"
+            use:tip={`every later ${req.name} in this chat runs unasked`}
+            onclick={() => decide("always")}>Allow for this chat</button
+          >
+        {/if}
         <button class="ns-btn danger" bind:this={denyButton} onclick={() => decide("deny")}>Deny</button>
         <span class="keys">⏎ allow · esc deny · the note goes with either</span>
       </div>

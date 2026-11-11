@@ -157,10 +157,15 @@ impl nightloom_core::tool::Tool for PromptTool {
 /// ([`super::own_browser::PlaywrightGate`]): the CLI runs every matching
 /// entry, in parallel, and two hooks on one call would race for its
 /// one-shot decision file.
-pub const MATCHER: &str = "Bash|Write|Edit|MultiEdit|NotebookEdit|WebFetch|WebSearch|AskUserQuestion|ExitPlanMode|EnterWorktree|ExitWorktree|CronCreate|CronDelete|ScheduleWakeup|mcp__(?!playwright__).*";
+///
+/// `add_folder` (nightshift item 613) is left out the same way, by a second
+/// lookahead rather than a `|` inside the first — the Chat policy splits
+/// this matcher on `|` ([`super::ask_matcher_under_chat_policy`]): its gate
+/// is its own entry in every position (`AgentSpec::folder_gate`).
+pub const MATCHER: &str = "Bash|Write|Edit|MultiEdit|NotebookEdit|WebFetch|WebSearch|AskUserQuestion|ExitPlanMode|EnterWorktree|ExitWorktree|CronCreate|CronDelete|ScheduleWakeup|mcp__(?!playwright__)(?!nightloom__add_folder).*";
 
 /// [`MATCHER`]'s MCP alternative, as a word (the Chat policy narrows it).
-pub const MCP_ALTERNATIVE: &str = "mcp__(?!playwright__).*";
+pub const MCP_ALTERNATIVE: &str = "mcp__(?!playwright__)(?!nightloom__add_folder).*";
 
 /// The plan tool's name, as the CLI reports it in `deferred_tool_use`.
 pub const EXIT_PLAN_TOOL: &str = "ExitPlanMode";
@@ -764,6 +769,13 @@ struct HookInput {
     /// a top-level call's line has no such field.
     #[serde(default)]
     agent_id: Option<String>,
+    /// The call's input — read for `add_folder`'s path (item 613).
+    #[serde(default)]
+    tool_input: Value,
+    /// The process's working folder, on every line the CLI sends (the
+    /// hooks doc's common fields) — `add_folder` inside it needs no card.
+    #[serde(default)]
+    cwd: String,
 }
 
 /// The hook's reply, as the CLI reads it. `None` inside is the empty
@@ -937,6 +949,11 @@ pub fn decide_in(dir: &Path, stdin_json: &str, side: bool) -> HookReply {
         // CLI's own flow decide is the conservative reading.
         Err(_) => return HookReply::new("ask"),
     };
+    // `add_folder`'s own gate (item 613), in every position, before any
+    // rule: a standing allow must never grant a folder he did not see.
+    if input.tool_name == crate::mcp_server::mcp_name(crate::tools::add_folder::NAME) {
+        return decide_add_folder(dir, &input, side);
+    }
     // Playwright's own gate (backlog 367), in every position: its own
     // rules, before any of the Ask position's.
     if super::own_browser::is_playwright(&input.tool_name) {
@@ -995,6 +1012,50 @@ pub fn decide_in(dir: &Path, stdin_json: &str, side: bool) -> HookReply {
         }
         _ => HookReply::defer(),
     }
+}
+
+/// An `add_folder` call (nightshift item 613), in order: this call's own
+/// answer (consumed); a subagent's or a side process's call refused in
+/// words (no card can wait on either); a path that is not a folder refused
+/// with the reason; a folder inside the process's working folder allowed,
+/// since it is readable already; anything else deferred for the card. The
+/// chat's rules are never read: *Allow for this chat* on one folder is
+/// not a grant of the next.
+fn decide_add_folder(dir: &Path, input: &HookInput, side: bool) -> HookReply {
+    use crate::tools::add_folder::{SIDE_REFUSED, SUBAGENT_REFUSED, inside, requested_dir};
+    let path = dir.join(DECISION_FILE);
+    let decision: Option<Decision> = std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok());
+    if let Some(d) = decision
+        && d.tool_use_id == input.tool_use_id
+    {
+        let _ = std::fs::remove_file(&path);
+        return if d.decision == "allow" {
+            HookReply::allow(None)
+        } else {
+            HookReply::deny(
+                d.reason
+                    .filter(|r| !r.trim().is_empty())
+                    .unwrap_or_else(|| "The user did not add this folder.".into()),
+            )
+        };
+    }
+    if input.agent_id.as_deref().is_some_and(|id| !id.is_empty()) {
+        return HookReply::deny(SUBAGENT_REFUSED.into());
+    }
+    if side {
+        return HookReply::deny(SIDE_REFUSED.into());
+    }
+    let folder = match requested_dir(&input.tool_input) {
+        Ok(f) => f,
+        Err(e) => return HookReply::deny(e),
+    };
+    let cwd = PathBuf::from(input.cwd.trim());
+    if cwd.has_root() && inside(&folder, &[cwd]) {
+        return HookReply::allow(None);
+    }
+    HookReply::defer()
 }
 
 /// A Playwright call (backlog 367). First of all the hold (nightshift item
@@ -2066,5 +2127,78 @@ mod tests {
         assert!(files.waiting().is_none());
         assert!(!dir.join(DECISION_FILE).exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `add_folder`'s gate (item 613): a folder inside the working folder
+    /// runs unasked, one outside defers for the card, a path that is not a
+    /// folder is refused in words, a subagent's and a side process's call
+    /// are refused, a standing allow is never read, and the card's answer
+    /// is read once.
+    #[test]
+    fn add_folder_defers_outside_the_working_folder_only() {
+        let dir = scratch();
+        let project = scratch();
+        let outside = scratch();
+        std::fs::create_dir_all(project.join("hw1")).unwrap();
+        let line = |path: &std::path::Path, extra: &str| {
+            format!(
+                r#"{{"cwd":"{}","hook_event_name":"PreToolUse","tool_name":"mcp__nightloom__add_folder","tool_input":{{"path":"{}"}},"tool_use_id":"t613","permission_mode":"auto"{extra}}}"#,
+                project.display(),
+                path.display()
+            )
+        };
+        assert_eq!(
+            decide(&dir, &line(&project.join("hw1"), "")).decision(),
+            "allow"
+        );
+        assert_eq!(decide(&dir, &line(&outside, "")), HookReply::defer());
+        let missing = decide(&dir, &line(&outside.join("nope"), ""));
+        assert_eq!(missing.decision(), "deny");
+        assert!(missing.reason().unwrap().contains("not a folder"));
+        let sub = decide(&dir, &line(&outside, r#","agent_id":"h1""#));
+        assert_eq!(sub.decision(), "deny");
+        assert_eq!(
+            decide_in(&dir, &line(&outside, ""), true).decision(),
+            "deny"
+        );
+        // A rule for the tool is not a grant of the next folder.
+        std::fs::write(
+            dir.join(RULES_FILE),
+            r#"{"allow":["mcp__nightloom__add_folder"]}"#,
+        )
+        .unwrap();
+        assert_eq!(decide(&dir, &line(&outside, "")), HookReply::defer());
+        let c = DeferredCall {
+            id: "t613".into(),
+            name: "mcp__nightloom__add_folder".into(),
+            input: json!({"path": outside.to_string_lossy()}),
+        };
+        AskDir::new(&dir)
+            .write(
+                &c,
+                &Answer::Allow {
+                    updated_input: None,
+                    plan_then: None,
+                    grant: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(decide(&dir, &line(&outside, "")).decision(), "allow");
+        assert_eq!(decide(&dir, &line(&outside, "")), HookReply::defer());
+        for d in [dir, project, outside] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    /// The Ask hook leaves `add_folder` to its own gate, so the two never
+    /// race for one decision file.
+    #[test]
+    fn the_ask_matcher_leaves_add_folder_out() {
+        assert!(MCP_ALTERNATIVE.contains("(?!nightloom__add_folder)"));
+        assert!(MATCHER.ends_with(MCP_ALTERNATIVE));
+        assert!(
+            !MCP_ALTERNATIVE.contains('|'),
+            "the Chat policy splits on |"
+        );
     }
 }

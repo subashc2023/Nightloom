@@ -23,10 +23,11 @@ use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::{
-    AgentOutcome, Answer, AskDir, AskGate, ClaudeCodeAgent, GrantScope, Recorder, carry_transcript,
-    outside_folder,
+    AgentOutcome, Answer, AskDir, AskGate, ClaudeCodeAgent, FolderGrant, GrantScope, Recorder,
+    carry_transcript, outside_folder,
 };
 use crate::council::{self, CouncilRequest};
+use crate::tools::add_folder;
 use crate::turn::{TurnEvent, TurnInput};
 use crate::turn_timing::{self, Mark, TurnTiming};
 use crate::{ProviderKind, mcp_server, project};
@@ -414,24 +415,84 @@ async fn turn_body(
         // On disk while the card waits (item 522): a launch after a quit
         // mid-wait refuses the call rather than meeting it again.
         let _ = ask_files.set_waiting(session_id.as_deref(), &call);
-        let rx = ask.wait(&call.id);
-        let outside = outside_folder(&call.input, &agent_trees(agent));
-        env.approval(&ApprovalPrompt {
-            id: &call.id,
-            name: &call.name,
-            input: &call.input,
-            // Nightloom's own tools by their own effect (backlog 317);
-            // every other deferred call is `Mutating`, as before.
-            effect: crate::mcp_server::effect_of(&call.name),
-            outside,
-            chat: Some(chat_id),
-            reason: crate::agent::own_browser::is_playwright(&call.name)
-                .then(|| reason.lock().ok().and_then(|r| r.reason()))
-                .flatten(),
-        });
-        let answer = tokio::select! {
-            _ = cancel.cancelled() => None,
-            a = rx => a.ok(),
+        // `add_folder` (nightshift item 613): the card offers the folder
+        // the model named — exactly it, never a parent the walk-up would
+        // find — and a call the card has nothing to ask about is answered
+        // here: a path that is not a folder refused with the reason, one
+        // already among the chat's folders allowed (and noted, so the tool
+        // says so).
+        let folder_ask = (call.name == crate::mcp_server::mcp_name(add_folder::NAME))
+            .then(|| add_folder::requested_dir(&call.input));
+        let trees = agent_trees(agent);
+        let preanswer = match &folder_ask {
+            Some(Err(e)) => Some(Answer::Deny { reason: e.clone() }),
+            Some(Ok(d)) if add_folder::inside(d, &trees) => {
+                let _ = add_folder::note_granted(ask_files.path(), d, add_folder::ALREADY);
+                Some(Answer::Allow {
+                    updated_input: None,
+                    plan_then: None,
+                    grant: None,
+                })
+            }
+            _ => None,
+        };
+        let answered_here = preanswer.is_some();
+        let answer = if let Some(a) = preanswer {
+            Some(a)
+        } else {
+            let rx = ask.wait(&call.id);
+            let outside = match &folder_ask {
+                Some(Ok(d)) => Some(d.clone()),
+                _ => outside_folder(&call.input, &trees),
+            };
+            env.approval(&ApprovalPrompt {
+                id: &call.id,
+                name: &call.name,
+                input: &call.input,
+                // Nightloom's own tools by their own effect (backlog 317);
+                // every other deferred call is `Mutating`, as before.
+                effect: crate::mcp_server::effect_of(&call.name),
+                outside,
+                chat: Some(chat_id),
+                reason: crate::agent::own_browser::is_playwright(&call.name)
+                    .then(|| reason.lock().ok().and_then(|r| r.reason()))
+                    .flatten(),
+            });
+            tokio::select! {
+                _ = cancel.cancelled() => None,
+                a = rx => a.ok(),
+            }
+        };
+        // His *Allow* on an `add_folder` card is the grant the call asked
+        // for, at the model's scope unless his button named one; *Allow for
+        // this chat* is the same single grant — the gate reads no rule.
+        let answer = match (&folder_ask, answer) {
+            (
+                Some(Ok(d)),
+                Some(Answer::Allow {
+                    grant: None,
+                    updated_input,
+                    plan_then,
+                }),
+            ) if !answered_here => Some(Answer::Allow {
+                updated_input,
+                plan_then,
+                grant: Some(FolderGrant {
+                    dir: d.clone(),
+                    scope: GrantScope::parse(add_folder::requested_scope(&call.input))
+                        .unwrap_or(GrantScope::Chat),
+                }),
+            }),
+            (Some(Ok(d)), Some(Answer::AllowForChat { updated_input })) => Some(Answer::Allow {
+                updated_input,
+                plan_then: None,
+                grant: Some(FolderGrant {
+                    dir: d.clone(),
+                    scope: GrantScope::parse(add_folder::requested_scope(&call.input))
+                        .unwrap_or(GrantScope::Chat),
+                }),
+            }),
+            (_, a) => a,
         };
         let Some(answer) = answer else {
             // Stopped, or the prompt let go: refused on disk now, for the
@@ -469,13 +530,27 @@ async fn turn_body(
         {
             agent.grant_dir(grant.dir.clone());
             granted_any = true;
-            match grant.scope {
-                GrantScope::Chat => granted_to_chat.push(grant.dir.clone()),
+            let kept = match grant.scope {
+                GrantScope::Chat => {
+                    granted_to_chat.push(grant.dir.clone());
+                    Some("chat")
+                }
                 GrantScope::Project => match env.grant_to_project(&grant.dir).await {
-                    ProjectGrant::Kept => {}
-                    ProjectGrant::NoProject => granted_to_chat.push(grant.dir.clone()),
-                    ProjectGrant::Failed(e) => env.notice(format!("folder not granted: {e}")),
+                    ProjectGrant::Kept => Some("project"),
+                    ProjectGrant::NoProject => {
+                        granted_to_chat.push(grant.dir.clone());
+                        Some("chat")
+                    }
+                    ProjectGrant::Failed(e) => {
+                        env.notice(format!("folder not granted: {e}"));
+                        None
+                    }
                 },
+            };
+            // For `add_folder`'s own result (item 613): it says "added" only
+            // for a folder noted here.
+            if let (Some(Ok(_)), Some(kept)) = (&folder_ask, kept) {
+                let _ = add_folder::note_granted(ask_files.path(), &grant.dir, kept);
             }
         }
         // An approved plan (backlog 085).

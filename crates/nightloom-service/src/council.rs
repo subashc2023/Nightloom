@@ -216,6 +216,8 @@ pub fn seat_spec(chat: &AgentSpec, seat: &Seat) -> AgentSpec {
         }
     }
     spec.chat_policy = true;
+    // No card waits on a seat: `add_folder` is refused in words (item 613).
+    spec.folder_side = true;
     spec.max_turns = Some(SEAT_MAX_TURNS);
     // ~~`spec.brief = None`~~ — kept since 2026-09-22 (nightshift backlog
     // 165, pass 2): the brief's hook is also the budget's, on every tool,

@@ -160,6 +160,13 @@ const MARK_FILE_INSTRUCTION: &str = " Each time you create a file or folder, cal
      document they asked for), \"self\" when it is your own working material; the user's \
      ones are listed for them in Nightloom.";
 
+/// `add_folder`'s line (nightshift item 613), present only when the tool is.
+const ADD_FOLDER_INSTRUCTION: &str = " When the user asks you to look in a folder on their \
+     computer outside the folders you can see (\"look in my ICS 46 folder\"), find its absolute \
+     path, call add_folder on it (ToolSearch mcp__nightloom__add_folder by that full name), \
+     and once it is added read it in the same turn; it stays in the chat's Folders list. \
+     scope project only when the user says every chat in the project should see it.";
+
 /// The last sentence of [`INSTRUCTIONS`], present only when the tool is: a
 /// server started for an incognito chat (`--no-remember`) must not tell the
 /// model to reach for a tool it does not serve.
@@ -213,6 +220,8 @@ const OWN_EFFECTS: &[(&str, Effect)] = &[
     (crate::tools::notes::LIST_NAME, Effect::ReadOnly),
     (crate::tools::notes::FOLDER_NAME, Effect::Mutating),
     (crate::tools::notes::MOVE_NAME, Effect::Mutating),
+    // Widens what the chat may read (item 613): the card asks first.
+    (crate::tools::add_folder::NAME, Effect::Mutating),
 ];
 
 /// The effect of a call by the name the CLI reports it under: this
@@ -259,6 +268,12 @@ fn instructions_for(tools: &[Box<dyn Tool>]) -> String {
         .any(|t| t.def().name == crate::tools::mark_file::NAME)
     {
         out.push_str(MARK_FILE_INSTRUCTION);
+    }
+    if tools
+        .iter()
+        .any(|t| t.def().name == crate::tools::add_folder::NAME)
+    {
+        out.push_str(ADD_FOLDER_INSTRUCTION);
     }
     // Item 472: present only when the organisers are served.
     if tools
@@ -1083,6 +1098,16 @@ pub async fn serve(
     // directory, where the turn's budget ledger is — never to a dream.
     if let (Some(dir), None) = (&args.budget_dir, &args.dream) {
         tools.push(Box::new(crate::agent::budget::SetBudget::new(dir.clone())));
+        // `add_folder` (nightshift item 613): beside it, for a chat that
+        // writes — the grant is kept on the chat's log or the project's
+        // registry, which an incognito or ephemeral chat promised not to
+        // touch. The tool grants nothing itself: the card's answer does.
+        if args.remember && !args.incognito {
+            tools.push(Box::new(crate::tools::AddFolder::new(
+                dir.clone(),
+                args.root.clone(),
+            )));
+        }
     }
     // `preview` (nightshift item 430): the desktop's socket, the chat and
     // its folder all named — never for a dream.
@@ -2657,6 +2682,7 @@ mod tests {
         served.push(Box::new(crate::agent::budget::SetBudget::new(
             config.clone(),
         )));
+        served.push(Box::new(crate::tools::AddFolder::new(config.clone(), None)));
         for tool in &served {
             let name = tool.def().name;
             assert_eq!(
