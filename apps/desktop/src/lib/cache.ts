@@ -153,6 +153,11 @@ export interface PendingSettings {
   approval: boolean;
   agentAsk: boolean;
   agentPlan: boolean;
+  /** The API engine's thinking pick (item 635): "default" | "effort-LEVEL" |
+   *  "budget" with `budget` — the connection draft's fields. Absent, the
+   *  thinking setting is not compared. */
+  thinkingMode?: string;
+  budget?: number;
 }
 
 /**
@@ -172,7 +177,7 @@ export interface PendingContext {
  *  where the measured change re-sent only the conversation after the
  *  system head, so the tooltip says "up to". */
 export interface CacheChange {
-  what: "model" | "tools" | "safe mode" | "plan" | "engine" | "kind";
+  what: "model" | "tools" | "safe mode" | "plan" | "engine" | "kind" | "thinking";
   text: string;
   whole: boolean;
   /** False where a click cannot put it back (item 601: a Chat switched to
@@ -203,6 +208,25 @@ export function kindAtCache(events: SessionEvent[]): ChatKind | null {
 
 const isHaiku = (m: string): boolean => /haiku/i.test(m);
 
+/** The draft's thinking as the backend sends it (`catalog.ts`
+ *  `thinkingString`, on the draft fields this module has), or null when
+ *  the draft carries none. */
+function draftThinking(p: PendingSettings): string | null {
+  const mode = p.thinkingMode;
+  if (mode == null) return null;
+  if (mode === "budget") return `budget=${Math.max(1, Math.floor(p.budget ?? 0))}`;
+  if (mode.startsWith("effort-")) return `effort=${mode.slice(7)}`;
+  return "default";
+}
+
+/** A recorded thinking setting in his words: `default`, `high effort`,
+ *  `budget 8000`. */
+function thinkingWords(t: string): string {
+  if (t.startsWith("effort=")) return `${t.slice(7)} effort`;
+  if (t.startsWith("budget=")) return `budget ${t.slice(7)}`;
+  return t;
+}
+
 /**
  * The pending settings that would lose the cache (backlog 408) — only the
  * ones measured to (Claude Code 2.1.310, 2026-10-24; nightshift
@@ -228,6 +252,8 @@ const isHaiku = (m: string): boolean => /haiku/i.test(m);
  *   144); not restorable, the declaration stands once made;
  * - on the API engine, the model: a cache entry is per model (`external`:
  *   Anthropic's prompt-caching docs claim so). Not measured here.
+ * - on the API engine, the Tools switch and the thinking setting (item
+ *   635), where the reply's key recorded them (`tools_switch`, `thinking`).
  * Still not warned, each checked: effort, Chrome (the browser), claude.ai
  * connectors and fork mode were measured to keep it (408's table); a
  * changed prompt layer is held for the cold moment (backlog 174), so it
@@ -242,7 +268,24 @@ export function cacheLoss(key: CacheKey, p: PendingSettings, ctx: PendingContext
     const was = key.model ?? "";
     const now = ctx.apiModel?.trim();
     if (now && was && was !== now) return [{ what: "model", text: `model ${was} → ${now}`, whole: true }];
-    return [];
+    // Item 635: the Tools switch and the thinking setting, compared only
+    // where the key recorded them — a key logged before then warns of
+    // neither. Both lose it whole (`external`: Anthropic's prompt-caching
+    // page claims a tool change invalidates the whole cache, and a thinking
+    // change the messages always and the tools and system on some models).
+    const out: CacheChange[] = [];
+    if (key.tools_switch != null && key.tools_switch !== p.tools) {
+      out.push({ what: "tools", text: p.tools ? "tools on" : "tools off", whole: true });
+    }
+    const thinkingNow = draftThinking(p);
+    if (key.thinking != null && thinkingNow != null && key.thinking !== thinkingNow) {
+      out.push({
+        what: "thinking",
+        text: `thinking ${thinkingWords(key.thinking)} → ${thinkingWords(thinkingNow)}`,
+        whole: true,
+      });
+    }
+    return out;
   }
   const out: CacheChange[] = [];
   const was = key.model ?? "";
@@ -318,7 +361,8 @@ export function restoreCacheSettings(key: CacheKey, changes: CacheChange[], d: P
     if (c.what === "model") {
       if (key.engine === "claude-code") d.agentModel = key.model ?? "";
       else d.model = key.model ?? "";
-    } else if (c.what === "tools") d.tools = key.tools;
+    } else if (c.what === "tools") d.tools = key.engine === "claude-code" ? key.tools : (key.tools_switch ?? key.tools);
+    else if (c.what === "thinking") restoreThinking(key.thinking ?? "default", d);
     else if (c.what === "safe mode") d.agentSafeMode = key.safe_mode;
     else if (key.plan) {
       d.approval = true;
@@ -329,4 +373,14 @@ export function restoreCacheSettings(key: CacheKey, changes: CacheChange[], d: P
       d.agentAsk = key.ask ?? false;
     }
   }
+}
+
+/** Put a recorded thinking setting back on the draft (item 635), the
+ *  inverse of `draftThinking`. */
+function restoreThinking(t: string, d: PendingSettings): void {
+  if (t.startsWith("effort=")) d.thinkingMode = `effort-${t.slice(7)}`;
+  else if (t.startsWith("budget=")) {
+    d.thinkingMode = "budget";
+    d.budget = Number(t.slice(7));
+  } else d.thinkingMode = "default";
 }

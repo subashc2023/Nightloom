@@ -238,3 +238,55 @@ describe("restoreCacheSettings", () => {
     expect(cacheLoss(askKey, off)).toEqual([]);
   });
 });
+
+describe("cacheLoss, the API engine's Tools and thinking (item 635)", () => {
+  const api = (k: Partial<CacheKey> = {}) =>
+    key({ engine: "api", model: "claude-opus-5-5", tools_switch: true, thinking: "default", ...k });
+  const onApi = (p: Partial<PendingSettings> = {}) =>
+    pending({ engine: "provider", thinkingMode: "default", budget: 8000, ...p });
+
+  it("names the Tools switch turned off or on", () => {
+    expect(cacheLoss(api(), onApi({ tools: false }))).toEqual([{ what: "tools", text: "tools off", whole: true }]);
+    expect(cacheLoss(api({ tools_switch: false }), onApi())).toEqual([{ what: "tools", text: "tools on", whole: true }]);
+    expect(cacheLoss(api(), onApi())).toEqual([]);
+  });
+
+  it("names a thinking change, in words", () => {
+    expect(cacheLoss(api(), onApi({ thinkingMode: "effort-high" }))).toEqual([
+      { what: "thinking", text: "thinking default → high effort", whole: true },
+    ]);
+    expect(cacheLoss(api({ thinking: "budget=8000" }), onApi({ thinkingMode: "budget", budget: 4000 }))[0].text).toBe(
+      "thinking budget 8000 → budget 4000",
+    );
+    expect(cacheLoss(api({ thinking: "budget=8000" }), onApi({ thinkingMode: "budget", budget: 8000 }))).toEqual([]);
+  });
+
+  it("names both, beside a model change", () => {
+    const got = cacheLoss(api(), onApi({ tools: false, thinkingMode: "effort-low" }), { apiModel: "claude-haiku-5-5" });
+    expect(got.map((c) => c.what)).toEqual(["model"]);
+    const both = cacheLoss(api(), onApi({ tools: false, thinkingMode: "effort-low" }));
+    expect(both.map((c) => c.text)).toEqual(["tools off", "thinking default → low effort"]);
+    expect(cacheLossLine(both)).toBe("cache will be lost · tools off, thinking default → low effort");
+  });
+
+  it("warns of neither on a key logged before the fields", () => {
+    const old = key({ engine: "api", model: "claude-opus-5-5" });
+    expect(cacheLoss(old, onApi({ tools: false, thinkingMode: "effort-high" }))).toEqual([]);
+  });
+
+  it("does not compare thinking when the draft carries none", () => {
+    expect(cacheLoss(api({ thinking: "effort=high" }), pending({ engine: "provider" }))).toEqual([]);
+  });
+
+  it("puts both back with the chip", () => {
+    const k = api({ tools_switch: true, thinking: "budget=12000" });
+    const d = onApi({ tools: false, thinkingMode: "effort-high" });
+    restoreCacheSettings(k, cacheLoss(k, d), d);
+    expect(d).toMatchObject({ tools: true, thinkingMode: "budget", budget: 12000 });
+    expect(cacheLoss(k, d)).toEqual([]);
+    const e = api({ thinking: "effort=medium" });
+    const d2 = onApi({ thinkingMode: "default" });
+    restoreCacheSettings(e, cacheLoss(e, d2), d2);
+    expect(d2.thinkingMode).toBe("effort-medium");
+  });
+});

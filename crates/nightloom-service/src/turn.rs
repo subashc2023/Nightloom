@@ -347,6 +347,11 @@ pub struct Chat {
     pub thinking: Thinking,
     pub max_tokens: u32,
     pub tools: Vec<Box<dyn Tool>>,
+    /// The shell's Tools switch (nightshift item 635), recorded in each
+    /// reply's cache key so the window warns when it changes. `None` when
+    /// the shell has no such switch; the key then records whether any tool
+    /// was offered.
+    pub tools_switch: Option<bool>,
     /// How many tool rounds one turn may take before the engine stops it.
     ///
     /// A runaway guard, not a budget, and it was measurably too tight at 8.
@@ -398,7 +403,16 @@ pub struct Chat {
 /// named, and whether it offered tools. The window compares it with the
 /// engine and model the next turn goes to; the Claude Code fields that do
 /// not exist here (safe mode, Ask, Plan) are off.
-pub fn api_cache_key(model: &str, has_tools: bool) -> CacheKey {
+///
+/// Item 635: also the Tools switch (`tools_switch`, [`Chat::tools_switch`];
+/// when the shell set none, whether any tool was offered) and the thinking
+/// setting as sent, so the window can warn of a change to either.
+pub fn api_cache_key(
+    model: &str,
+    has_tools: bool,
+    tools_switch: Option<bool>,
+    thinking: &Thinking,
+) -> CacheKey {
     CacheKey {
         engine: "api".into(),
         model: Some(model.to_owned()),
@@ -406,13 +420,20 @@ pub fn api_cache_key(model: &str, has_tools: bool) -> CacheKey {
         safe_mode: false,
         ask: false,
         plan: false,
+        tools_switch: Some(tools_switch.unwrap_or(has_tools)),
+        thinking: Some(thinking.to_string()),
     }
 }
 
 impl Chat {
     /// This chat's [`api_cache_key`], written on every reply it records.
     fn cache_key(&self) -> CacheKey {
-        api_cache_key(&self.model, !self.tools.is_empty())
+        api_cache_key(
+            &self.model,
+            !self.tools.is_empty(),
+            self.tools_switch,
+            &self.thinking,
+        )
     }
 
     pub fn new(provider: Box<dyn Provider>, model: impl Into<String>) -> Self {
@@ -423,6 +444,7 @@ impl Chat {
             thinking: Thinking::Default,
             max_tokens: 8192,
             tools: Vec::new(),
+            tools_switch: None,
             max_rounds: 24,
             sidecar: sidecar::default_parts(),
             context_limit: None,
@@ -2816,9 +2838,57 @@ pub(crate) mod tests {
         else {
             panic!("no keyed reply");
         };
-        assert_eq!(k, &api_cache_key("test-model", false));
+        assert_eq!(
+            k,
+            &api_cache_key("test-model", false, None, &Thinking::Default)
+        );
         assert_eq!(k.engine, "api");
         assert_eq!(k.model.as_deref(), Some("test-model"));
+        // Item 635: no switch set, so the switch reads as "no tools offered";
+        // the thinking setting is the one sent.
+        assert_eq!(k.tools_switch, Some(false));
+        assert_eq!(k.thinking.as_deref(), Some("default"));
+    }
+
+    /// Item 635: the key records the Tools switch the shell set and the
+    /// thinking setting the request went out with, and both reach the log
+    /// line; a Claude Code key's line is unchanged (no new fields).
+    #[tokio::test]
+    async fn an_api_reply_records_the_tools_switch_and_thinking() {
+        let provider = Scripted::provider(vec![says("hi")]);
+        let mut chat = Chat::new(provider, "test-model");
+        chat.tools_switch = Some(true);
+        chat.thinking = Thinking::Effort("high".into());
+        let mut session = Session::new();
+        let (out, _) = run(&chat, &mut session, "hi").await;
+        assert!(out.is_ok());
+        let last = session.events().last().unwrap();
+        let SessionEvent::AssistantMessage {
+            cache_key: Some(k), ..
+        } = last
+        else {
+            panic!("no keyed reply");
+        };
+        // No tool objects here, but the switch is what the window compares.
+        assert!(!k.tools);
+        assert_eq!(k.tools_switch, Some(true));
+        assert_eq!(k.thinking.as_deref(), Some("effort=high"));
+        let line = serde_json::to_string(last).unwrap();
+        assert!(
+            line.contains(r#""tools_switch":true,"thinking":"effort=high""#),
+            "{line}"
+        );
+    }
+
+    /// Item 635: a key logged before the fields existed reads back with
+    /// both absent — the window warns of nothing it cannot compare.
+    #[test]
+    fn an_old_api_key_reads_without_the_new_fields() {
+        let old = r#"{"engine":"api","model":"m","tools":true,"safe_mode":false,"ask":false,"plan":false}"#;
+        let k: CacheKey = serde_json::from_str(old).unwrap();
+        assert_eq!(k.tools_switch, None);
+        assert_eq!(k.thinking, None);
+        assert_eq!(serde_json::to_string(&k).unwrap(), old);
     }
 
     #[tokio::test]

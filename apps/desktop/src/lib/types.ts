@@ -870,6 +870,12 @@ export interface CacheKey {
   /** The Ask or the Plan position. */
   ask?: boolean;
   plan: boolean;
+  /** The API engine's Tools switch (item 635); absent on Claude Code keys
+   *  and on API keys logged before it. */
+  tools_switch?: boolean;
+  /** The API engine's thinking as sent — `default`, `budget=N`,
+   *  `effort=LEVEL` (item 635); absent on the same terms. */
+  thinking?: string;
 }
 
 /** One MCP server, as reported by `connect`. */
