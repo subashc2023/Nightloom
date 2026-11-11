@@ -1178,6 +1178,9 @@ fn build_chat(
     // chat has turned off stays off whatever the rail says.
     chat.system = nightloom_service::prompt::assemble(&config.without(&spec.layers_off));
     chat.thinking = spec.thinking.clone();
+    // The Tools switch itself, for each reply's cache key (nightshift item
+    // 635): the window warns when it changes while the cache is warm.
+    chat.tools_switch = Some(spec.tools);
     // Gives the sidecar's context gauge a denominator; `None` for a model we
     // have no verified window for, which the gauge handles by reporting raw
     // token counts instead of a percentage.

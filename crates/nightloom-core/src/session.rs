@@ -267,6 +267,17 @@ pub struct CacheKey {
     #[serde(default)]
     pub ask: bool,
     pub plan: bool,
+    /// The API engine's Tools switch as the window set it (nightshift item
+    /// 635), beside `tools`, which says only whether the request offered
+    /// any. Absent on every Claude Code key and on every API key logged
+    /// before the field — and an absent field warns of nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools_switch: Option<bool>,
+    /// The API engine's thinking setting as sent (`default`, `budget=N`,
+    /// `effort=LEVEL` — `Thinking`'s `Display`), item 635. Absent on the
+    /// same terms as `tools_switch`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
 }
 
 /// One entry in a session's append-only event log.

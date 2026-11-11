@@ -201,6 +201,8 @@ pub fn cache_key(spec: &super::AgentSpec) -> CacheKey {
         safe_mode: spec.safe_mode,
         ask: matches!(mode, Some(super::AskMode::Ask | super::AskMode::Plan)),
         plan: mode == Some(super::AskMode::Plan),
+        tools_switch: None,
+        thinking: None,
     }
 }
 
@@ -1282,6 +1284,8 @@ mod tests {
                 safe_mode: true,
                 ask: false,
                 plan: false,
+                tools_switch: None,
+                thinking: None,
             })
         );
         let line = serde_json::to_string(s.events().last().unwrap()).unwrap();
