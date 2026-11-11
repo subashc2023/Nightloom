@@ -815,10 +815,13 @@
     border: 1px solid var(--line2);
     border-radius: var(--r2, 10px);
     /* The second shadow is the page under it: what scrolls past below the
-       pinned card is hidden, as under the main box. */
+       pinned card is hidden, as under the main box. 36px, not 17: WebKit
+       measures `bottom` from inside .sub-view's 16px padding, so the gap
+       under the pinned card is 32px there, plus rounding (rows showed through at zoom
+       1.5); past the scroller's edge the extra paper is never seen. */
     box-shadow:
       0 8px 24px rgba(0, 0, 0, 0.35),
-      0 17px 0 0 var(--paper);
+      0 36px 0 0 var(--paper);
     transition: border-color 0.12s;
   }
   .ask-card:focus-within {
