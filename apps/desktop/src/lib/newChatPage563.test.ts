@@ -129,6 +129,25 @@ describe("item 563: the dial's move to the right column", () => {
   });
 });
 
+describe("item 563 (leftover): the column slides in on the dial's timeline", () => {
+  const from = { x: 500, y: 100, w: 382, h: 382 };
+  const to = { x: 1250, y: 80, w: 132, h: 132 };
+  it("starts a full width out and half-faded, and is home when the dial lands", () => {
+    const a = dialFrameAt(0, from, to);
+    expect(a.slide).toBe(1);
+    expect(a.colOpacity).toBeCloseTo(0.35);
+    const m = dialFrameAt(DIAL_MS * 0.5, from, to);
+    expect(m.slide).toBeGreaterThan(0);
+    expect(m.slide).toBeLessThan(0.2);
+    const b = dialFrameAt(DIAL_MS, from, to);
+    expect(b.slide).toBe(0);
+    expect(b.colOpacity).toBe(1);
+  });
+  it("never slides when there is no column", () => {
+    expect(dialFrameAt(100, from, null)).toMatchObject({ slide: 0, colOpacity: 1 });
+  });
+});
+
 describe("item 563: Classic keeps the old page", () => {
   it("Welcome chooses the verbatim copy under Classic", () => {
     expect(welcomeSrc).toMatch(/\{#if classic\(\)\}\s*<WelcomeClassic \/>/);

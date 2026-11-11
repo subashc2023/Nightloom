@@ -209,7 +209,8 @@
 {/snippet}
 
 {#if column}
-  <aside class="col" aria-label="Context, plan use, this turn and tasks">
+  <!-- Item 563: data-rail-col — the first send from the new-chat page slides this column in (sendMotion.ts departDial). -->
+  <aside class="col" data-rail-col aria-label="Context, plan use, this turn and tasks">
     <section>
       <h4>Context <span>{modelShort(app.connection?.model)}</span></h4>
       <div class="dial-at" data-dial-dock>
