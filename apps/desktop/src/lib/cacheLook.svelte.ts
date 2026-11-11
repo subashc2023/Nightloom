@@ -9,10 +9,11 @@ import type { CacheState } from "./cache";
  * `notes/runner-design/596-loop.html`); the agent's pick is the default
  * (blocker 1898 holds his pick):
  *
- * - Tint (the default): the frame's edge and a faint inner glow, in the
+ * - Tint: the frame's edge and a faint inner glow, in the
  *   lit accent while the cache is fresh, cooling toward the signal blue
  *   as it ages, and a quiet blue once it is cold.
- * - Edge: a 2px line along the top that burns down as the cache ages.
+ * - Edge (the default, his pick in blocker 1898, 2026-11-11): a 2px line
+ *   along the top that burns down as the cache ages.
  * - Ember: a soft glow in the box's top-right corner that shrinks and
  *   cools to a small blue point.
  * - Haze: a faint warm wash up from the foot of the box that cools.
@@ -24,8 +25,8 @@ import type { CacheState } from "./cache";
 export type CacheLook = "tint" | "edge" | "ember" | "haze" | "off";
 
 export const CACHE_LOOKS: { id: CacheLook; name: string; note: string }[] = [
-  { id: "tint", name: "Tint", note: "The default. The box's edge glows the accent while the cache is fresh and cools to blue as it ages; quiet blue once cold." },
-  { id: "edge", name: "Edge", note: "A thin line along the box's top that burns down as the hour runs out; a blue hairline once cold." },
+  { id: "edge", name: "Edge", note: "The default. A thin line along the box's top that burns down as the hour runs out; a blue hairline once cold." },
+  { id: "tint", name: "Tint", note: "The box's edge glows the accent while the cache is fresh and cools to blue as it ages; quiet blue once cold." },
   { id: "ember", name: "Ember", note: "A soft glow in the box's top-right corner that shrinks and cools to a small blue point." },
   { id: "haze", name: "Haze", note: "A faint warm wash rising from the foot of the box that cools to blue." },
   { id: "off", name: "Off", note: "Nothing on the box; the cache chip under it still counts down." },
@@ -35,7 +36,7 @@ const KEY = "nightloom.cacheLook";
 
 /** A stored value read back; anything unknown is the default. */
 export function parseCacheLook(v: string | null): CacheLook {
-  return v === "edge" || v === "ember" || v === "haze" || v === "off" ? v : "tint";
+  return v === "tint" || v === "ember" || v === "haze" || v === "off" ? v : "edge";
 }
 
 function read(): string | null {
@@ -51,7 +52,7 @@ export const cacheLook = $state<{ value: CacheLook }>({ value: parseCacheLook(re
 export function setCacheLook(l: CacheLook): void {
   cacheLook.value = l;
   try {
-    if (l === "tint") localStorage.removeItem(KEY);
+    if (l === "edge") localStorage.removeItem(KEY);
     else localStorage.setItem(KEY, l);
   } catch {
     // No storage (a harness, a private window): the choice holds for this run.

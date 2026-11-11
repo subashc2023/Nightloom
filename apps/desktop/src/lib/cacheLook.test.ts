@@ -27,8 +27,8 @@ describe("item 596: the cache on the box's frame", () => {
   });
 
   it("reads an unknown stored look as the default", () => {
-    expect(parseCacheLook(null)).toBe("tint");
-    expect(parseCacheLook("bogus")).toBe("tint");
+    expect(parseCacheLook(null)).toBe("edge");
+    expect(parseCacheLook("bogus")).toBe("edge");
     expect(parseCacheLook("edge")).toBe("edge");
   });
 
