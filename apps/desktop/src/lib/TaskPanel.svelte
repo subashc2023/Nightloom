@@ -37,6 +37,8 @@
     return () => clearInterval(t);
   });
   const STATE_WORD = { running: "running", done: "done", failed: "failed" } as const;
+  /** The kinds worth their room on the row; a plain subagent's type (often long) stays in its tip. */
+  const SHOWN_KINDS = new Set(["background", "aside", "council seat"]);
 </script>
 
 {#if column}
@@ -74,7 +76,7 @@
               use:tip={h.focus ? `${h.label} · ${h.kind} · ${STATE_WORD[h.state]} — open it in Running tasks` : `${h.label} · ${h.kind} · running`}
               onclick={() => h.focus && openTasksOn(h.focus)}
             >
-              <i aria-hidden="true"></i><span class="hl">{h.label}</span><span class="hk">{h.state === "running" ? h.kind : STATE_WORD[h.state]}</span>
+              <i aria-hidden="true"></i><span class="hl">{h.label}</span><span class="hk">{h.state !== "running" ? STATE_WORD[h.state] : SHOWN_KINDS.has(h.kind) ? h.kind : "running"}</span>
             </button>
           </li>
         {/each}
