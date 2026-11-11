@@ -88,6 +88,8 @@
     noteCodeProject,
   } from "./handoff.svelte";
   import { fold, isFolded, noteStay, unfold } from "./handoffFold.svelte";
+  // Item 618b: the row's look (Settings → Appearance → Composer row), stamped on the root; rules in src/composerRow.css.
+  import { composerRow } from "./composerRow.svelte";
   import ThreadPicker from "./ThreadPicker.svelte";
   import { chatThread, refreshThreadFlags, injectIntoTurn, sendNowRow, openChatKey, takeQueued, takeStopSend, frontQueued, stopSendFor } from "./state.svelte";
   import { injectChip, queueHeadLabel } from "./midTurn";
@@ -2925,6 +2927,7 @@
   class:compact
   class:dropping={dragDepth > 0}
   data-drop-box={aside ? "aside" : "main"}
+  data-composer-row={composerRow.value}
   role="group"
   aria-label={aside ? "aside composer" : "message composer"}
   {ondragenter}
