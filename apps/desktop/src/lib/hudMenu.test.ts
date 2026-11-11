@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { HUD_CLOSE_MS, HUD_OPEN_MS, HUD_PICK_MS, HUD_PICK_WINDOW_MS, hudExit, hudOrigin } from "./hudMenu";
 import ts from "./hudMenu.ts?raw";
@@ -9,7 +8,8 @@ import ts from "./hudMenu.ts?raw";
  * card class and both transitions, and Classic is never touched.
  */
 // Read from disk: vitest hands a `.css?raw` import back empty.
-const css = readFileSync(new URL("./hudMenu.css", import.meta.url), "utf8");
+const fs = (await import(/* @vite-ignore */ "node:" + "fs")) as { readFileSync(u: URL, enc: string): string };
+const css: string = fs.readFileSync(new URL("./hudMenu.css", import.meta.url), "utf8");
 const sources = import.meta.glob("./*.svelte", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
 const src = (name: string) => sources[`./${name}.svelte`];
 
