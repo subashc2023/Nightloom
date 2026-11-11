@@ -23,6 +23,10 @@
   import { LAYOUTS, classic, layout, setLayout } from "./layout.svelte";
   // Filament IV's accent and instrument light (item 571, stage 7).
   import { ACCENTS, LIGHTS, look, setAccent, setLight, applyLook } from "./settings/look.svelte";
+  // Item 629/630: the new-chat layout and the motion colour, their own choices.
+  import { NEW_CHATS, MOTION_INKS, setNewChat, setMotionInk } from "./settings/look.svelte";
+  // Item 631: a slide when a segmented choice changes, one style for Settings.
+  import { pickMotion as pickSlide } from "./settings/pickMotion";
   import { COMPOSER_ROWS, composerRow, setComposerRow } from "./composerRow.svelte";
   // Item 589: the running step's motion in the turn trace.
   import { STEP_MOTIONS, stepMotion, setStepMotion, type StepMotion } from "./stepMotion.svelte";
@@ -67,11 +71,18 @@
     addToast,
   } from "./state.svelte";
   import * as api from "./api";
-  /** A palette's name: "A" is Filament IV under that layout, and 1d4ca17's
-   *  charcoal & amber under Classic (item 542; blocker 1700). */
+  /** A palette's name: "A" is Jarvis under Filament IV (item 628, his name
+   *  for it; was "Filament IV", the layout's name too — labels only, the
+   *  stored id stays "A"), and 1d4ca17's charcoal & amber under Classic
+   *  (item 542; blocker 1700). */
   function paletteName(id: string): string {
-    if (id === "A" && !classic()) return "Filament IV";
+    if (id === "A" && !classic()) return "Jarvis";
     return PALETTES.find((p) => p.id === id)?.name ?? id;
+  }
+  /** Item 630: a classic palette's own accent, the word after "&" in its name ("copper"). */
+  function paletteAccent(id: string): string {
+    const n = PALETTES.find((p) => p.id === id)?.name ?? "";
+    return n.split("&")[1]?.trim() ?? "its own";
   }
   import { DEFAULT_USAGE_LIMITS, parseLimit } from "./autoPass";
   import {
@@ -1357,7 +1368,8 @@
   </section>
 {/snippet}
 
-<div class="modal">
+<!-- Item 631: every radio group in Settings moves when its pick changes (`settings/pickMotion.ts`). -->
+<div class="modal" use:pickSlide>
   <nav class="nav" bind:this={navEl}>
     <div class="nav-h">Settings</div>
     <!-- Usage & Cost (nightshift backlog 206): one category, two tabs —
@@ -1555,15 +1567,63 @@
           </div>
         </div>
       </section>
+      <!-- ==== Item 629/630 (agent C, wave 5): each control says what it
+           changes and changes only that. Palette first (colours), then
+           Jarvis's accent, the light, and the two choices that used to
+           ride on the palette and the light: the new-chat page's layout
+           and the motion colour. Classic's note and order are as before
+           (its f4-only cards are hidden). ==== -->
+      {#if classic()}
+        <p class="note">
+          Four dark palettes. Surfaces and the accent change; the colours that
+          mean something — done, partial, failed, live, added, removed — are the
+          same in all four. Applies at once, everywhere, and is remembered.
+        </p>
+      {:else}
+        <p class="note" data-palette-note>
+          <b>Palette</b> sets colours and nothing else: the surfaces, the ink and
+          the accent. Jarvis has its own status colours; the other three share
+          one set. The layout, the light, the new-chat page and the motion
+          colour below are their own choices. Applies at once and is remembered.
+        </p>
+      {/if}
+      <div class="swatches" role="radiogroup" aria-label="Palette">
+        {#each PALETTES as p (p.id)}
+          <button
+            class="swatch"
+            class:on={app.palette === p.id}
+            role="radio"
+            aria-checked={app.palette === p.id}
+            data-palette={p.id === "A" && classic() ? "classic-A" : p.id}
+            onclick={() => setPalette(p.id)}
+          >
+            <span class="swatch-paper">
+              <span class="swatch-sheet">
+                <span class="swatch-title">Aa</span>
+                <span class="swatch-accent"></span>
+              </span>
+            </span>
+            <span class="swatch-name"><b>{p.id}</b> {paletteName(p.id)}</span>
+          </button>
+        {/each}
+      </div>
       <!-- Filament IV's own choices (item 571; f4-settings-appearance.png):
            the accent and the instrument light. Not drawn
            under Classic, whose palettes carry their own accent and no
-           light. The hand-off line lives only in Subscription → Hand-off (his ask 2026-11-10: one place for one setting). -->
-      <section class="card f4-only" aria-label="Accent">
-        <div class="ch"><span class="t">Accent</span></div>
-        <div class="pick3" role="radiogroup" aria-label="Accent">
+           light. The hand-off line lives only in Subscription → Hand-off (his ask 2026-11-10: one place for one setting).
+           Item 630: Accent is Jarvis's alone — B, C and D carry their own
+           accent in their name — so under them the card says so and its
+           choices rest (picking one there used to change nothing). -->
+      <section class="card f4-only" aria-label="Accent" data-accent-card>
+        <div class="ch"><span class="t">Accent</span><span class="dim small">Jarvis palette only</span></div>
+        {#if app.palette === "A"}
+          <p class="note small">The colour of what you press — buttons, Send, the selected row, the brackets. It does not change the motion colour (below).</p>
+        {:else}
+          <p class="note small" data-accent-own>{paletteName(app.palette)} carries its own accent, {paletteAccent(app.palette)}. Pick Jarvis (A) above to choose one here.</p>
+        {/if}
+        <div class="pick3" class:rests={app.palette !== "A"} role="radiogroup" aria-label="Accent">
           {#each ACCENTS as a (a.id)}
-            <button class="pick" class:on={look.accent === a.id} role="radio" aria-checked={look.accent === a.id} onclick={() => setAccent(a.id)}>
+            <button class="pick" class:on={look.accent === a.id} role="radio" aria-checked={look.accent === a.id} disabled={app.palette !== "A"} onclick={() => setAccent(a.id)}>
               <span class="pick-h"><i class="radio" aria-hidden="true"></i>{a.name}</span>
               <span class="pick-n">{a.note}</span>
               <span class="pick-sw" aria-hidden="true"><i style:background={a.swatch}></i><i class="sig"></i><i class="ctl"></i></span>
@@ -1572,7 +1632,7 @@
         </div>
       </section>
       <section class="card f4-only" aria-label="Instrument light">
-        <div class="ch"><span class="t">Instrument light</span></div>
+        <div class="ch"><span class="t">Instrument light</span><span class="dim small">every palette</span></div>
         <div class="pick2" role="radiogroup" aria-label="Instrument light">
           {#each LIGHTS as l (l.id)}
             <button class="pick" class:on={look.light === l.id} role="radio" aria-checked={look.light === l.id} onclick={() => setLight(l.id)}>
@@ -1580,6 +1640,44 @@
               <span class="pick-n">{l.note}</span>
             </button>
           {/each}
+        </div>
+      </section>
+      <!-- Item 630 (his "I like both of those designs, and those should be
+           both choices"): the new-chat page's layout, once Calm's and B/C/D's
+           side effect. -->
+      <section class="card f4-only" aria-label="New-chat page">
+        <div class="ch"><span class="t">New-chat page</span></div>
+        <div class="pick2" role="radiogroup" aria-label="New-chat page">
+          {#each NEW_CHATS as n (n.id)}
+            <button class="pick" class:on={look.newChat === n.id} role="radio" aria-checked={look.newChat === n.id} onclick={() => setNewChat(n.id)}>
+              <span class="pick-h"><i class="radio" aria-hidden="true"></i>{n.name}</span>
+              <span class="pick-n">{n.note}</span>
+            </button>
+          {/each}
+        </div>
+      </section>
+      <!-- Item 630 + 627: what flies (the send thread, the rewind's strike,
+           the notes card's shuttle, the trace's motion) — once palette A's
+           cyan and B/C/D's accent, now a choice; each option is the current
+           palette's own colour, so it follows the palette and the accent. -->
+      <section class="card f4-only" aria-label="Motion colour">
+        <div class="ch"><span class="t">Motion colour</span></div>
+        <p class="note small">The colour of what moves: the send thread, the rewind's strike, the notes card's shuttle, the running step in the trace. Each option is the current palette's own colour.</p>
+        <div class="type-rows">
+          <div class="type-row">
+            <span class="type-label">Colour</span>
+            <div class="seg" role="radiogroup" aria-label="Motion colour">
+              {#each MOTION_INKS as m (m.id)}
+                <button
+                  class:on={look.motionInk === m.id}
+                  role="radio"
+                  aria-checked={look.motionInk === m.id}
+                  use:tip={m.note}
+                  onclick={() => setMotionInk(m.id)}
+                ><i class="ink-dot {m.id}" aria-hidden="true"></i>{m.name}</button>
+              {/each}
+            </div>
+          </div>
         </div>
       </section>
       <!-- Item 618b (his pick, blocker 1845): the look of the composer's
@@ -1614,31 +1712,6 @@
           {/each}
         </div>
       </section>
-      <p class="note">
-        Four dark palettes. Surfaces and the accent change; the colours that
-        mean something — done, partial, failed, live, added, removed — are the
-        same in all four. Applies at once, everywhere, and is remembered.
-      </p>
-      <div class="swatches" role="radiogroup" aria-label="Palette">
-        {#each PALETTES as p (p.id)}
-          <button
-            class="swatch"
-            class:on={app.palette === p.id}
-            role="radio"
-            aria-checked={app.palette === p.id}
-            data-palette={p.id === "A" && classic() ? "classic-A" : p.id}
-            onclick={() => setPalette(p.id)}
-          >
-            <span class="swatch-paper">
-              <span class="swatch-sheet">
-                <span class="swatch-title">Aa</span>
-                <span class="swatch-accent"></span>
-              </span>
-            </span>
-            <span class="swatch-name"><b>{p.id}</b> {paletteName(p.id)}</span>
-          </button>
-        {/each}
-      </div>
 
       <!-- The transcript's type (nightshift backlog 051). No sample card:
            the change lands in the open transcript behind this pane, which
@@ -5819,4 +5892,26 @@
       transition: none;
     }
   }
+  /* ==== Item 629/630 (agent C, wave 5): Appearance's own choices. ==== */
+  /* Accent under B/C/D: the choices rest, the note says why. */
+  :global(:where(:root:not([data-layout="classic"]))) .pick3.rests .pick {
+    opacity: 0.45;
+    cursor: default;
+  }
+  /* Motion colour: a dot of the colour each option is, on this palette. */
+  :global(:where(:root:not([data-layout="classic"]))) .ink-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-right: 7px;
+    border-radius: 50%;
+    vertical-align: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ink-dot.live {
+    background: var(--signal);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ink-dot.accent {
+    background: var(--accent);
+  }
+  /* ==== end item 629/630 ==== */
 </style>
