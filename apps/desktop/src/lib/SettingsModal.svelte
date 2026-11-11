@@ -5814,13 +5814,6 @@
   .pick-sw i.ctl {
     background: var(--well);
   }
-  .d4-row {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    padding: 4px 0 8px;
-  }
-  .d4-l,
   .u4-l {
     flex: 1;
     min-width: 0;
@@ -5830,7 +5823,6 @@
     font-size: 15px;
     color: var(--ink);
   }
-  .d4-l small,
   .u4-l small {
     font-size: 13px;
     line-height: 1.45;

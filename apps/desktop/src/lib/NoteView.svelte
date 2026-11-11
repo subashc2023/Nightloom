@@ -1691,17 +1691,6 @@
     border-style: dashed;
     color: var(--dim);
   }
-  /* Emitted by the markdown renderer, so scoped styles cannot reach it. */
-  :global(.note .preview a.wikilink) {
-    color: var(--accent);
-    text-decoration: none;
-    border-bottom: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
-    cursor: pointer;
-  }
-  :global(.note .preview a.wikilink.broken) {
-    color: var(--dim);
-    border-bottom-style: dashed;
-  }
 
   /* ---- Filament IV (item 565, stage 8; f4-notes.png) ----
      Look only, behind the layout gate; Classic keeps the rules above. Gated

@@ -56,11 +56,6 @@ export function mainOf(id: string, map: VersionMap, listed: ReadonlySet<string>)
   }
 }
 
-/** Whether `id` is a version kept off the sidebar (another chat has its place). */
-export function isHidden(id: string, map: VersionMap, listed: ReadonlySet<string>): boolean {
-  return mainOf(id, map, listed) !== id;
-}
-
 /**
  * The list the sidebar draws its rows from (`sidebarRows`): each chat made
  * main stands where the first chat of its group stood — the list is

@@ -71,7 +71,8 @@ string cannot carry that), `terminal-exit` at EOF with the code, and
 changes (`tcgetpgrp` + `proc_name` on macOS, `/proc/<pid>/comm` on
 Linux). Commands: `terminal_open(cwd, cols, rows)`, `terminal_write(id,
 data)`, `terminal_resize(id, cols, rows)` (the kernel sends `SIGWINCH`),
-`terminal_close(id)`, `terminal_list()`. The bundle is unsandboxed (as
+`terminal_close(id)`, ~~`terminal_list()`~~ (removed 2026-11-11, item 622b:
+no window called it). The bundle is unsandboxed (as
 backlog 101 checked for `caffeinate`), so the pty and the shell need no
 entitlement.
 

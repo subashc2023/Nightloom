@@ -77,6 +77,26 @@ pub async fn timed_to<T, E>(
     result
 }
 
+/// A step that is not a command, timed from `started` to now and appended to
+/// `log` as a `rust` line stamped with when it began (item 622b: the web
+/// view's creation, so the ~2 s before the window's code runs can be split).
+pub fn mark_to(log: Option<&Path>, name: &str, started: Instant) {
+    let ms = started.elapsed().as_millis();
+    let wall = chrono::Utc::now() - chrono::Duration::milliseconds(ms as i64);
+    if let Some(path) = log {
+        append(
+            path,
+            &line(wall, since_launch(started), "rust", name, ms, ""),
+        );
+    }
+}
+
+/// [`mark_to`] the startup log.
+pub fn mark(name: &str, started: Instant) {
+    let log = log_path();
+    mark_to(log.as_deref(), name, started);
+}
+
 /// [`timed_to`] the startup log.
 pub async fn timed<T, E>(name: &str, fut: impl Future<Output = Result<T, E>>) -> Result<T, E> {
     let log = log_path();
@@ -211,5 +231,25 @@ mod tests {
             .unwrap();
         assert!(ms >= 30, "{ms}");
         assert!(lines[1].ends_with("(error)"), "{}", lines[1]);
+    }
+
+    #[test]
+    fn a_mark_appends_a_rust_line_with_the_steps_time() {
+        let log = scratch("mark");
+        let started = Instant::now();
+        std::thread::sleep(Duration::from_millis(20));
+        mark_to(Some(&log), "webview_created", started);
+        let text = std::fs::read_to_string(&log).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 1, "{text}");
+        assert!(lines[0].contains(" rust webview_created "), "{}", lines[0]);
+        let ms: u128 = lines[0]
+            .split(" webview_created ")
+            .nth(1)
+            .and_then(|r| r.split(' ').next())
+            .and_then(|n| n.parse().ok())
+            .unwrap();
+        assert!(ms >= 20, "{ms}");
+        assert!(lines[0].ends_with(" ms"), "{}", lines[0]);
     }
 }

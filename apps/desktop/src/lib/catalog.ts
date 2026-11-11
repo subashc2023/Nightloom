@@ -131,11 +131,6 @@ export function modelChipLabel(a: {
   return a.connected || a.model.trim() || "model";
 }
 
-/** The first id in `models` that carries `alias`, or null. */
-export function modelForAlias(models: string[], alias: string): string | null {
-  return models.find((m) => m.toLowerCase().includes(alias)) ?? null;
-}
-
 /**
  * The file a model's own instructions live in, under `~/.nightloom/models/`:
  * the id plus `.md`, with a `/` — which router ids carry

@@ -1,3 +1,5 @@
+// Item 622b: first, so its startup-log mark is the window's first script line.
+import "./bootMark";
 import { mount } from "svelte";
 import App from "./App.svelte";
 // The three faces the redesign uses, bundled rather than fetched: a desktop

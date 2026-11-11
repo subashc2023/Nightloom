@@ -36,23 +36,6 @@ export function tokenFromHash(hash: string): string | null {
   return m ? m[1].toLowerCase() : null;
 }
 
-export function loadToken(): string | null {
-  try {
-    return localStorage.getItem(TOKEN_KEY);
-  } catch {
-    return null;
-  }
-}
-
-export function saveToken(token: string | null): void {
-  try {
-    if (token) localStorage.setItem(TOKEN_KEY, token);
-    else localStorage.removeItem(TOKEN_KEY);
-  } catch {
-    // Private mode, or storage off: the token lives for this page load only.
-  }
-}
-
 // ---- the API ------------------------------------------------------------
 
 /** What `/api/state` answers — `RemoteState` in the service crate. */

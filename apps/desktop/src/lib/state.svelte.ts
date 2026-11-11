@@ -108,7 +108,6 @@ import { isMoveNotesTool, movesInAnswer } from "./notesMoved";
 import {
   adoptNewChat,
   emptyRules,
-  hasOwnRules,
   loadRules,
   rulesFor,
   saveRules,
@@ -155,7 +154,7 @@ import {
   type PaneChat,
   type Parked,
 } from "./browse";
-import { SEARCH_COLUMN_MAX, searchGrowth } from "./search.svelte";
+import { searchGrowth } from "./search.svelte";
 import * as tabs from "./tabs";
 import { stopKeepWarm } from "./keepWarm.svelte";
 import { midTurnWire, chipsFromInputs, sendNowToast, deliveredNotice, type SendNowResult } from "./midTurn";
@@ -481,13 +480,6 @@ export function toggleSidebar(): void {
   saveLayout();
 }
 
-/** The sidebar's column while the search panel is open (nightshift backlog
- *  117, board 11a): ~~widened to 380px, or the sidebar's own width when that
- *  is already wider~~ — since backlog 138 (2026-09-17) the sidebar's width
- *  plus a small growth the panel tweens in on open and out on close
- *  (`search.svelte.ts`: up to 80px, never past 380, eased over 160 ms),
- *  so the column no longer jumps; the saved width is untouched. */
-export const SEARCH_COLUMN = SEARCH_COLUMN_MAX;
 export function sidebarColumn(): number {
   return sidebarShown() + Math.round(searchGrowth.current);
 }
@@ -1587,16 +1579,6 @@ export function pickerModels(): string[] {
   const list = modelsFor(app.draft.provider, app.prefs, sel?.default_model ?? null);
   if (app.draft.model && !list.includes(app.draft.model)) list.unshift(app.draft.model);
   return list;
-}
-
-/**
- * What ⌘⇧<letter> switches to. The letters are the Claude Code engine's
- * (2026-09-14, his second look: the CLI takes an alias, so `sonnet` *is* the
- * answer there); on the API engine models are numbered, so the letters name
- * nothing and this is null.
- */
-export function modelForKey(alias: string): string | null {
-  return app.draft.engine === "claude-code" ? alias : null;
 }
 
 /**
@@ -3811,14 +3793,6 @@ function rulesChanged(): void {
   }, RULES_DEBOUNCE_MS);
 }
 
-/** The open chat's rules (New chat's when none is open). */
-export function openChatRules(): string {
-  return rulesFor(subagentRules.store, app.activeSessionId);
-}
-/** Whether the open chat has text of its own, not the default. */
-export function openChatHasOwnRules(): boolean {
-  return hasOwnRules(subagentRules.store, app.activeSessionId);
-}
 /** He typed in the rail's box. */
 export function setOpenChatRules(text: string): void {
   setRulesFor(subagentRules.store, app.activeSessionId, text);
@@ -4844,11 +4818,6 @@ export async function restoreTabs(opts: { show?: boolean; newProjectFront?: bool
   }
 }
 
-/** The pane a tab is drawn in, for the strip's drag handlers. */
-export function paneOfTab(tabId: string): string | null {
-  return tabs.paneOf(app.tabs, tabId)?.id ?? null;
-}
-
 /**
  * A drag source outside the strips (backlog 140 pass 2): the row or
  * button calls this from `dragstart` with what it stands for, and
@@ -4929,16 +4898,6 @@ export function showNightshift(): void {
   // its tab is in the background of the other pane.
   reflectTabs();
   void refreshNightshift();
-}
-
-/**
- * ~~Leave the Nightshift page for the chat.~~ Since backlog 140 the page
- * is a tab and the sidebar's Chats and Notes modes no longer leave it;
- * this remains for the one caller that means "the chat, now".
- */
-export function closeNightshift(): void {
-  app.view = "chat";
-  if (app.leftTab === "nightshift") app.leftTab = "chats";
 }
 
 /**

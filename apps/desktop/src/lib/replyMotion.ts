@@ -94,8 +94,6 @@ export function lineMask(top: number, h: number, x: number): string {
   );
 }
 
-/** Ink rise: each word's fade-up from a soft blur (ms). */
-export const RISE_MS = 520;
 /** The accent weft under new words, fading (ms) — the longer of the two, so a word's whole life. */
 export const WORD_MS = 900;
 /** Words in one delta are staggered this far apart, capped at STAGGER_CAP. */

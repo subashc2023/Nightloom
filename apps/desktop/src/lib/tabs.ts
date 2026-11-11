@@ -728,17 +728,6 @@ export function dropProject(ws: Workspace, id: string): Closed[] {
   return out;
 }
 
-/** Drop every tab holding a note (a deleted note, a vault moved away). */
-export function dropNote(ws: Workspace, scope: NoteScope, name: string): Closed[] {
-  const out: Closed[] = [];
-  for (const t of allTabs(ws)) {
-    if (t.content.kind === "note" && t.content.scope === scope && t.content.name === name) {
-      out.push(close(ws, t.id));
-    }
-  }
-  return out;
-}
-
 /**
  * The tab whose chat is the open one: the focused pane's active tab when
  * it holds `session`, else the first tab anywhere that does. The pane

@@ -18,7 +18,6 @@ import { Marked, type MarkedExtension, type Token, type Tokens } from "marked";
  */
 
 export const HANDOFF_OPEN = "<handoff>";
-export const HANDOFF_CLOSE = "</handoff>";
 /** The card's label. */
 export const HANDOFF_LABEL = "Next chat's prompt";
 
