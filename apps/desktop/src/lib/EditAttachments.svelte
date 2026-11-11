@@ -74,15 +74,28 @@
   <button
     class="ns-btn ghost small attach"
     type="button"
-    use:tip={"Attach images or files to this message (or paste or drop them in the box)"}
+    aria-label="Attach files"
+    use:tip={"Attach files to this message (or paste or drop them in the box)"}
     disabled={!app.connection}
     onclick={() => picker?.click()}
   >
-    <Icon name="plus" /><span>Attach</span>
+    <!-- Item 607: the plus alone under Filament, as the composer's. -->
+    <Icon name="plus" /><span class="attach-word">Attach</span>
   </button>
 </div>
 
 <style>
+  /* Item 607: the plus alone under Filament, as the composer's; Classic
+     keeps its word. */
+  :global(:where(:root:not([data-layout="classic"]))) .attach-word {
+    display: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .attach {
+    justify-content: center;
+    width: 28px;
+    min-height: 28px;
+    padding: 0;
+  }
   .edit-attach {
     display: flex;
     flex-wrap: wrap;

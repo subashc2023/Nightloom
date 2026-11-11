@@ -3281,9 +3281,13 @@
         hidden
         onchange={onpick}
       />
+      <!-- Item 607 (his "remove the word attach on the button so that it's
+           just like the plus icon thing"): under Filament the plus alone,
+           named by its tooltip and label; Classic keeps its word. -->
       <button
         class="ns-btn ghost small attach"
-        use:tip={"Attach images or PDFs"}
+        aria-label="Attach files"
+        use:tip={"Attach files"}
         disabled={!app.connection}
         onclick={() => picker?.click()}
       >
@@ -4558,6 +4562,17 @@
   }
   .council-ico {
     display: none;
+  }
+  /* Item 607: the attach button is the plus alone under Filament — a
+     28-px square, the row's button height, the icon centred. */
+  :global(:where(:root:not([data-layout="classic"]))) .attach .fold-word {
+    display: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .attach {
+    justify-content: center;
+    width: 28px;
+    min-height: 28px;
+    padding: 0;
   }
   .row:is([data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .fold-word,
   .row:is([data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .council-word {
