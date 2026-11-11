@@ -230,10 +230,10 @@ describe("prefs storage", () => {
     const set: Record<string, string> = {};
     const root = { style: { setProperty: (k: string, v: string) => void (set[k] = v) } };
     applyTranscriptType({ font: "newsreader", size: 15 }, root);
-    expect(set).toEqual({ "--transcript-font": "var(--serif)", "--transcript-size": "15px" });
+    expect(set).toEqual({ "--transcript-font": "var(--serif)", "--transcript-size": "15.75px" });
     applyTranscriptType({ font: "plex", size: 17 }, root);
     expect(set["--transcript-font"]).toBe("var(--sans)");
-    expect(set["--transcript-size"]).toBe("17px");
+    expect(set["--transcript-size"]).toBe("17.75px"); // item 619: +0.75 px on top
   });
 
   it("setting the face or size is saved", () => {

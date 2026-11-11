@@ -26,6 +26,15 @@ class MemoryStorage {
   clear(): void {
     this.map.clear();
   }
+
+  // `zoom.ts`'s migration (item 619) walks the keys.
+  get length(): number {
+    return this.map.size;
+  }
+
+  key(i: number): string | null {
+    return [...this.map.keys()][i] ?? null;
+  }
 }
 
 Object.defineProperty(globalThis, "localStorage", {
