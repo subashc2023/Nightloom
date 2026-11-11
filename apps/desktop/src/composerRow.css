@@ -1,0 +1,332 @@
+/* Item 618b (his pick, blocker 1845): the rest of the composer's row — Attach, the model / effort pickers, Ask aside and
+   Council's frames, the bottom row's switches and cache chip, and the box's own frame — in 606's Filament language, as a
+   choice in Settings → Appearance → Composer row (`lib/composerRow.svelte.ts`). Composer stamps the choice on its root as
+   `data-composer-row` (as AssistantMessage stamps 610's `data-motion`), so Settings' previews carry their own choice:
+   glass-rail (the default), glass, rail, strip. Moved from the designs harness (`notes/runner-design/618-harness/designs.css`,
+   nightshift-code) with the selector prefix changed and nothing else, then Glass rail and the motion added at the end.
+   Every rule sits behind html:not([data-layout="classic"]) — Classic renders as before (shot diff, 618b report). Send and
+   its ▾ are left as 606 built them (fixed in 623); the ▾ menu is item 620's. Imported by main.ts after app.css (the
+   harness's order). */
+
+/* A coil, the 606 mark, as a mask: the model dot, the switches' lit track. */
+:root {
+  --c618-coil: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 18'%3E%3Cpath d='M0.5 9 H3 C3.6 4.4 5.4 4.4 6 9 C6.6 13.6 8.4 13.6 9 9 C9.6 4.4 11.4 4.4 12 9 C12.6 13.6 14.4 13.6 15 9 C15.6 4.4 17 4.4 17.5 9 H19.5' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E");
+}
+
+/* ======================================================================================================================
+   1 · RAIL — matte Filament. Every control becomes a small dark bulb of Send's family (the --term fill, an amber-tinted
+   edge, a faint inner haze); hover lights it and a filament underline glows along its foot; the model dot becomes a lit coil;
+   the switches' track becomes a wire that lights when on; the row sits on a hairline "rail" across the card. */
+html:not([data-layout="classic"]) .composer:is([data-composer-row="rail"], [data-composer-row="glass-rail"]) :is(.pick-btn, .row .ns-btn.ghost) {
+  position: relative;
+  background: var(--term);
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line2));
+  box-shadow: inset 0 0 8px color-mix(in srgb, var(--accent) 6%, transparent);
+  color: var(--ink2);
+}
+html:not([data-layout="classic"]) .composer:is([data-composer-row="rail"], [data-composer-row="glass-rail"]) .pick-name { color: var(--ink); }
+html:not([data-layout="classic"]) .composer:is([data-composer-row="rail"], [data-composer-row="glass-rail"]) :is(.pick-btn, .row .ns-btn.ghost)::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: -1px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent) 30%, var(--accent-ink) 50%, var(--accent) 70%, transparent);
+  opacity: 0;
+  pointer-events: none;
+}
+html:not([data-layout="classic"]) .composer:is([data-composer-row="rail"], [data-composer-row="glass-rail"]) :is(.pick-btn, .row .ns-btn.ghost):is(:hover, .open, .on):not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 6%, var(--term));
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--line2));
+  color: var(--ink);
+  box-shadow:
+    inset 0 0 10px color-mix(in srgb, var(--accent) 16%, transparent),
+    0 0 12px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+html:not([data-layout="classic"]) .composer:is([data-composer-row="rail"], [data-composer-row="glass-rail"]) :is(.pick-btn, .row .ns-btn.ghost):is(:hover, .open, .on):not(:disabled)::after {
+  opacity: 0.45; /* as the designs shot it (the harness's value; its comment there was a copy slip) */
+  box-shadow: 0 0 6px var(--accent);
+}
+html:not([data-layout="classic"]) .composer:is([data-composer-row="rail"], [data-composer-row="glass-rail"]) :is(.pick-btn, .row .ns-btn.ghost):active:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 16%, var(--term));
+  border-color: var(--accent);
+  transform: translateY(1px);
+  box-shadow:
+    inset 0 0 14px color-mix(in srgb, var(--accent) 32%, transparent),
+    0 0 16px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+html:not([data-layout="classic"]) .composer:is([data-composer-row="rail"], [data-composer-row="glass-rail"]) :is(.pick-btn, .row .ns-btn.ghost):disabled {
+  opacity: 0.45; /* disabled: dimmed as the app does, without glow */
+  box-shadow: none;
+  border-color: var(--line2);
+  color: color-mix(in srgb, var(--dim) 75%, var(--term));
+}
+html:not([data-layout="classic"]) .composer:is([data-composer-row="rail"], [data-composer-row="glass-rail"]) .attach :is(svg) { color: var(--accent-ink); }
+html:not([data-layout="classic"]) .composer:is([data-composer-row="rail"], [data-composer-row="glass-rail"]) .attach:disabled svg { color: var(--dim); }
+html:not([data-layout="classic"]) .composer:is([data-composer-row="rail"], [data-composer-row="glass-rail"]) .pick-dot {
+  width: 14px;
+  height: 12px;
+  border-radius: 0;
+  background: var(--accent);
+  -webkit-mask: var(--c618-coil) center / contain no-repeat;
+  mask: var(--c618-coil) center / contain no-repeat;
+  filter: drop-shadow(0 0 2px var(--accent));
+}
+html:not([data-layout="classic"]) .composer:is([data-composer-row="rail"], [data-composer-row="glass-rail"]) .pick-btn:disabled .pick-dot { background: var(--dim); filter: none; }
+html:not([data-layout="classic"]) .composer:is([data-composer-row="rail"], [data-composer-row="glass-rail"]) .pick-k { color: var(--dim); font-family: var(--mono); font-size: 11px; }
+/* The rail: a hairline between the text and the row, brightest under the controls. */
+html:not([data-layout="classic"]) .composer:is([data-composer-row="rail"], [data-composer-row="glass-rail"]) .row { position: relative; padding-top: 9px; }
+html:not([data-layout="classic"]) .composer:is([data-composer-row="rail"], [data-composer-row="glass-rail"]) .row::before {
+  content: "";
+  position: absolute;
+  left: -14px;
+  right: -14px;
+  top: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 30%, transparent) 12%, color-mix(in srgb, var(--accent) 10%, transparent) 60%, color-mix(in srgb, var(--accent) 30%, transparent) 92%, transparent);
+}
+/* Bottom row: dark pills with a wire for a track. */
+html:not([data-layout="classic"]) .composer:is([data-composer-row="rail"], [data-composer-row="glass-rail"]) .bottom-toggle,
+html:not([data-layout="classic"]) .composer:is([data-composer-row="rail"], [data-composer-row="glass-rail"]) .bottom-cache {
+  background: var(--term);
+  border: 1px solid color-mix(in srgb, var(--accent) 16%, var(--line2));
+  color: var(--ink2);
+}
+html:not([data-layout="classic"]) .composer:is([data-composer-row="rail"], [data-composer-row="glass-rail"]) .bottom-toggle:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line2));
+  color: var(--ink);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+html:not([data-layout="classic"]) .composer:is([data-composer-row="rail"], [data-composer-row="glass-rail"]) .bottom-toggle:active:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 14%, var(--term));
+  transform: translateY(1px);
+}
+html:not([data-layout="classic"]) .composer:is([data-composer-row="rail"], [data-composer-row="glass-rail"]) .bottom-toggle:disabled { opacity: 0.45; /* disabled: dimmed as the app does, without glow */ color: color-mix(in srgb, var(--dim) 70%, var(--term)); }
+html:not([data-layout="classic"]) .composer:is([data-composer-row="rail"], [data-composer-row="glass-rail"]) .bottom-mark {
+  width: 22px;
+  height: 12px;
+  background: linear-gradient(var(--line2), var(--line2)) center / 100% 1.5px no-repeat;
+}
+html:not([data-layout="classic"]) .composer:is([data-composer-row="rail"], [data-composer-row="glass-rail"]) .bottom-mark::after { top: 2px; left: 1px; background: var(--dim); }
+html:not([data-layout="classic"]) .composer:is([data-composer-row="rail"], [data-composer-row="glass-rail"]) .bottom-toggle.on .bottom-mark {
+  background: linear-gradient(90deg, var(--accent), var(--accent-ink)) center / 100% 1.5px no-repeat;
+  filter: drop-shadow(0 0 3px var(--accent));
+}
+html:not([data-layout="classic"]) .composer:is([data-composer-row="rail"], [data-composer-row="glass-rail"]) .bottom-toggle.on .bottom-mark::after { left: 13px; background: #fff4dc; }
+html:not([data-layout="classic"]) .composer:is([data-composer-row="rail"], [data-composer-row="glass-rail"]) .bottom-cache-when { color: var(--accent-ink); text-shadow: 0 0 6px color-mix(in srgb, var(--accent) 50%, transparent); }
+html:not([data-layout="classic"]) .composer:is([data-composer-row="rail"], [data-composer-row="glass-rail"]) .bottom-cache.cold .bottom-cache-when { color: var(--dim); text-shadow: none; }
+
+/* ======================================================================================================================
+   2 · GLASS — the box is a pane of smoked glass (a translucent fill, a backdrop blur, a lit top rim) and every control a
+   glass capsule with a specular top edge; hover warms the rim amber, press sinks the highlight, on-switches fill with an
+   amber "liquid". Send stays the lit bulb (606) — the one solid light behind the glass. */
+html:not([data-layout="classic"]) .composer:is([data-composer-row="glass"], [data-composer-row="glass-rail"]) .card {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.075), rgba(255, 255, 255, 0.015) 40%, rgba(0, 0, 0, 0.08)),
+    color-mix(in srgb, var(--raised) 70%, transparent);
+  border-color: rgba(255, 255, 255, 0.11);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.3),
+    0 10px 30px rgba(0, 0, 0, 0.45);
+  -webkit-backdrop-filter: blur(18px) saturate(150%) !important;
+  backdrop-filter: blur(18px) saturate(150%) !important;
+}
+html:not([data-layout="classic"]) .composer:is([data-composer-row="glass"], [data-composer-row="glass-rail"]) .card:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 55%, rgba(255, 255, 255, 0.11));
+}
+html:not([data-layout="classic"]) .composer[data-composer-row="glass"] :is(.pick-btn, .row .ns-btn.ghost, .bottom-toggle, .bottom-cache) {
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.11), rgba(255, 255, 255, 0.035));
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.25),
+    0 1px 2px rgba(0, 0, 0, 0.3);
+  color: var(--ink);
+}
+html:not([data-layout="classic"]) .composer[data-composer-row="glass"] .attach { width: 28px; border-radius: 50%; }
+html:not([data-layout="classic"]) .composer[data-composer-row="glass"] :is(.pick-btn, .row .ns-btn.ghost, .bottom-toggle):is(:hover, .open, .on):not(:disabled):not(.bottom-toggle.on:not(:hover)) {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.17), rgba(255, 255, 255, 0.06));
+  border-color: color-mix(in srgb, var(--accent) 45%, rgba(255, 255, 255, 0.15));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.2),
+    0 0 14px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+html:not([data-layout="classic"]) .composer[data-composer-row="glass"] :is(.pick-btn, .row .ns-btn.ghost, .bottom-toggle):active:not(:disabled) {
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.18), rgba(255, 255, 255, 0.08));
+  border-color: color-mix(in srgb, var(--accent) 60%, rgba(255, 255, 255, 0.15));
+  transform: translateY(1px);
+  box-shadow:
+    inset 0 2px 4px rgba(0, 0, 0, 0.35),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.12),
+    0 0 16px color-mix(in srgb, var(--accent) 32%, transparent);
+}
+html:not([data-layout="classic"]) .composer[data-composer-row="glass"] :is(.pick-btn, .row .ns-btn.ghost, .bottom-toggle):disabled {
+  opacity: 0.45; /* disabled: dimmed as the app does, without glow */
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(255, 255, 255, 0.07);
+  box-shadow: none;
+  color: color-mix(in srgb, var(--dim) 75%, transparent);
+}
+html:not([data-layout="classic"]) .composer[data-composer-row="glass"] .pick-dot {
+  background: radial-gradient(circle at 35% 30%, #fff4dc, var(--accent) 55%, color-mix(in srgb, var(--accent) 60%, #000));
+  box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+html:not([data-layout="classic"]) .composer[data-composer-row="glass"] .pick-btn:disabled .pick-dot { background: rgba(255, 255, 255, 0.2); box-shadow: none; }
+html:not([data-layout="classic"]) .composer[data-composer-row="glass"] .bottom-mark {
+  background: rgba(0, 0, 0, 0.35);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5), 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+html:not([data-layout="classic"]) .composer[data-composer-row="glass"] .bottom-mark::after {
+  background: radial-gradient(circle at 35% 30%, #fff, #b9c2cd);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+html:not([data-layout="classic"]) .composer[data-composer-row="glass"] .bottom-toggle.on .bottom-mark {
+  background: linear-gradient(180deg, var(--accent-ink), var(--accent));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4), 0 0 8px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+html:not([data-layout="classic"]) .composer[data-composer-row="glass"] .bottom-cache-when { color: var(--accent-ink); }
+html:not([data-layout="classic"]) .composer[data-composer-row="glass"] .bottom-cache.cold .bottom-cache-when { color: var(--dim); }
+
+/* ======================================================================================================================
+   4 · STRIP — one console. The controls fuse into two segmented strips: a left one (attach · model · effort) and the
+   right one ending in Send (Ask aside · Council · Send ▾), each a single dark frame with hairline dividers; the bottom
+   row's chips fuse into one strip too. Hover lights a segment from inside; press sinks it. */
+html:not([data-layout="classic"]) .composer[data-composer-row="strip"] .row { column-gap: 0; }
+html:not([data-layout="classic"]) .composer[data-composer-row="strip"] .row .spacer { margin: 0 8px; }
+html:not([data-layout="classic"]) .composer[data-composer-row="strip"] :is(.pick-btn, .row .ns-btn.ghost) {
+  border-radius: 0;
+  margin-left: -1px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--well) 70%, var(--term)), var(--term));
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line2));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  color: var(--ink2);
+}
+html:not([data-layout="classic"]) .composer[data-composer-row="strip"] .attach { border-radius: var(--r2) 0 0 var(--r2); margin-left: 0; }
+html:not([data-layout="classic"]) .composer[data-composer-row="strip"] .pick-wrap:last-of-type .pick-btn,
+html:not([data-layout="classic"]) .composer[data-composer-row="strip"] .row > .pick-wrap:nth-child(4) .pick-btn { border-radius: 0 var(--r2) var(--r2) 0; }
+html:not([data-layout="classic"]) .composer[data-composer-row="strip"] .row > .ns-btn.ghost.fil-ghost { border-radius: var(--r2) 0 0 var(--r2); }
+html:not([data-layout="classic"]) .composer[data-composer-row="strip"] .council-wrap .ns-btn.ghost { border-radius: 0; }
+html:not([data-layout="classic"]) .composer[data-composer-row="strip"] .send-split { margin-left: -1px; }
+html:not([data-layout="classic"]) .composer[data-composer-row="strip"] .send-split .send { border-radius: 0; }
+html:not([data-layout="classic"]) .composer[data-composer-row="strip"] .pick-name { color: var(--ink); }
+html:not([data-layout="classic"]) .composer[data-composer-row="strip"] :is(.pick-btn, .row .ns-btn.ghost):is(:hover, .open, .on):not(:disabled) {
+  position: relative;
+  z-index: 1;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 16%, var(--term)), color-mix(in srgb, var(--accent) 5%, var(--term)));
+  border-color: color-mix(in srgb, var(--accent) 65%, var(--line2));
+  color: var(--ink);
+  box-shadow: inset 0 -2px 0 var(--accent), 0 0 12px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+html:not([data-layout="classic"]) .composer[data-composer-row="strip"] :is(.pick-btn, .row .ns-btn.ghost):active:not(:disabled) {
+  position: relative;
+  z-index: 1;
+  background: color-mix(in srgb, var(--accent) 20%, var(--term));
+  border-color: var(--accent);
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.5), inset 0 -2px 0 var(--accent-ink);
+}
+html:not([data-layout="classic"]) .composer[data-composer-row="strip"] :is(.pick-btn, .row .ns-btn.ghost):disabled {
+  opacity: 0.45; /* disabled: dimmed as the app does, without glow */
+  background: var(--term);
+  border-color: var(--line2);
+  box-shadow: none;
+  color: color-mix(in srgb, var(--dim) 70%, var(--term));
+}
+html:not([data-layout="classic"]) .composer[data-composer-row="strip"] .pick-dot { background: var(--accent); box-shadow: 0 0 5px var(--accent); }
+html:not([data-layout="classic"]) .composer[data-composer-row="strip"] .pick-btn:disabled .pick-dot { background: var(--line2); box-shadow: none; }
+/* The bottom row as one strip. */
+html:not([data-layout="classic"]) .composer[data-composer-row="strip"] .bottom-row:not(.aside-row) { gap: 0; }
+html:not([data-layout="classic"]) .composer[data-composer-row="strip"] .bottom-row :is(.bottom-toggle, .bottom-cache) {
+  border-radius: 0;
+  margin-left: -1px;
+  background: var(--term);
+  border: 1px solid color-mix(in srgb, var(--accent) 16%, var(--line2));
+  color: var(--ink2);
+}
+html:not([data-layout="classic"]) .composer[data-composer-row="strip"] .bottom-row > :first-child { border-radius: 12px 0 0 12px; margin-left: 0; }
+html:not([data-layout="classic"]) .composer[data-composer-row="strip"] .bottom-row > :last-child { border-radius: 0 12px 12px 0; }
+html:not([data-layout="classic"]) .composer[data-composer-row="strip"] .bottom-toggle:hover:not(:disabled) {
+  position: relative;
+  z-index: 1;
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--line2));
+  color: var(--ink);
+  background: color-mix(in srgb, var(--accent) 10%, var(--term));
+}
+html:not([data-layout="classic"]) .composer[data-composer-row="strip"] .bottom-toggle:active:not(:disabled) { background: color-mix(in srgb, var(--accent) 20%, var(--term)); }
+html:not([data-layout="classic"]) .composer[data-composer-row="strip"] .bottom-toggle:disabled { opacity: 0.45; /* disabled: dimmed as the app does, without glow */ color: color-mix(in srgb, var(--dim) 70%, var(--term)); }
+html:not([data-layout="classic"]) .composer[data-composer-row="strip"] .bottom-toggle.on .bottom-mark { box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 60%, transparent); }
+html:not([data-layout="classic"]) .composer[data-composer-row="strip"] .bottom-cache-when { color: var(--accent-ink); }
+
+/* ======================================================================================================================
+   GLASS RAIL (the default) — Rail made slightly glassier: Glass's smoked-glass box and lit top rim (shared above), and each
+   of Rail's dark bulbs turned translucent smoked glass with a lit top edge; Rail's filament underline, coil dot and wire
+   switches are kept as they are. */
+html:not([data-layout="classic"]) .composer[data-composer-row="glass-rail"] :is(.pick-btn, .row .ns-btn.ghost) {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.075), rgba(255, 255, 255, 0.012) 55%, rgba(0, 0, 0, 0.06)),
+    color-mix(in srgb, var(--term) 72%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 20%, rgba(255, 255, 255, 0.1));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.25),
+    inset 0 0 8px color-mix(in srgb, var(--accent) 6%, transparent);
+}
+html:not([data-layout="classic"]) .composer[data-composer-row="glass-rail"] :is(.pick-btn, .row .ns-btn.ghost):is(:hover, .open, .on):not(:disabled) {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.11), rgba(255, 255, 255, 0.02) 55%, rgba(0, 0, 0, 0.04)),
+    color-mix(in srgb, var(--accent) 7%, color-mix(in srgb, var(--term) 75%, transparent));
+  border-color: color-mix(in srgb, var(--accent) 60%, rgba(255, 255, 255, 0.12));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    inset 0 0 10px color-mix(in srgb, var(--accent) 16%, transparent),
+    0 0 12px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+html:not([data-layout="classic"]) .composer[data-composer-row="glass-rail"] :is(.pick-btn, .row .ns-btn.ghost):active:not(:disabled) {
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.16), rgba(255, 255, 255, 0.05)),
+    color-mix(in srgb, var(--accent) 16%, var(--term));
+  box-shadow:
+    inset 0 2px 4px rgba(0, 0, 0, 0.35),
+    inset 0 0 14px color-mix(in srgb, var(--accent) 30%, transparent),
+    0 0 16px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+html:not([data-layout="classic"]) .composer[data-composer-row="glass-rail"] :is(.pick-btn, .row .ns-btn.ghost):disabled {
+  background: color-mix(in srgb, var(--term) 60%, transparent);
+  box-shadow: none;
+}
+html:not([data-layout="classic"]) .composer[data-composer-row="glass-rail"] :is(.bottom-toggle, .bottom-cache) {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.01)),
+    color-mix(in srgb, var(--term) 72%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 14%, rgba(255, 255, 255, 0.09));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+/* ======================================================================================================================
+   MOTION (the designs page's plan): hover and press ease; transform, opacity and colour only — the glows' box-shadows and
+   the glass gradients change at once. Rail's underline draws out from the centre. Nothing eases under Reduce motion: the
+   states are the same, they just arrive at once. */
+html:not([data-layout="classic"]) .composer:is([data-composer-row="rail"], [data-composer-row="glass-rail"]) :is(.pick-btn, .row .ns-btn.ghost)::after {
+  transform: scaleX(0.3);
+}
+html:not([data-layout="classic"]) .composer:is([data-composer-row="rail"], [data-composer-row="glass-rail"]) :is(.pick-btn, .row .ns-btn.ghost):is(:hover, .open, .on):not(:disabled)::after {
+  transform: scaleX(1);
+}
+@media (prefers-reduced-motion: no-preference) {
+  html:not([data-layout="classic"]) .composer[data-composer-row] :is(.pick-btn, .row .ns-btn.ghost, .bottom-toggle) {
+    transition:
+      background-color 140ms ease-out,
+      border-color 140ms ease-out,
+      color 140ms ease-out,
+      opacity 140ms ease-out,
+      transform 90ms ease-out;
+  }
+  html:not([data-layout="classic"]) .composer:is([data-composer-row="rail"], [data-composer-row="glass-rail"]) :is(.pick-btn, .row .ns-btn.ghost)::after {
+    transition:
+      opacity 160ms ease-out,
+      transform 200ms cubic-bezier(0.2, 0.7, 0.2, 1);
+  }
+}

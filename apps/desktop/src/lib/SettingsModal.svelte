@@ -23,6 +23,7 @@
   import { LAYOUTS, classic, layout, setLayout } from "./layout.svelte";
   // Filament IV's accent and instrument light (item 571, stage 7).
   import { ACCENTS, LIGHTS, look, setAccent, setLight, applyLook } from "./settings/look.svelte";
+  import { COMPOSER_ROWS, composerRow, setComposerRow } from "./composerRow.svelte";
   // Item 589: the running step's motion in the turn trace.
   import { STEP_MOTIONS, stepMotion, setStepMotion, type StepMotion } from "./stepMotion.svelte";
   import StepMotionPreview from "./StepMotionPreview.svelte";
@@ -1557,6 +1558,38 @@
             <button class="pick" class:on={look.light === l.id} role="radio" aria-checked={look.light === l.id} onclick={() => setLight(l.id)}>
               <span class="pick-h"><i class="radio" aria-hidden="true"></i>{l.name}</span>
               <span class="pick-n">{l.note}</span>
+            </button>
+          {/each}
+        </div>
+      </section>
+      <!-- Item 618b (his pick, blocker 1845): the look of the composer's
+           row — every control on the bar beside Send, and the box. Each
+           choice previews itself: a small box drawn with the real rules
+           (src/composerRow.css), its own choice stamped on it; the lit
+           Council is how a control looks under the pointer. -->
+      <section class="card f4-only" aria-label="Composer row">
+        <div class="ch"><span class="t">Composer row</span></div>
+        <div class="pick2 crow-picks" role="radiogroup" aria-label="Composer row">
+          {#each COMPOSER_ROWS as r (r.id)}
+            <button class="pick" class:on={composerRow.value === r.id} role="radio" aria-checked={composerRow.value === r.id} onclick={() => setComposerRow(r.id)}>
+              <span class="pick-h"><i class="radio" aria-hidden="true"></i>{r.name}</span>
+              <span class="pick-n">{r.note}</span>
+              <span class="composer crow-pv" data-composer-row={r.id} aria-hidden="true">
+                <span class="card">
+                  <span class="pv-text">Ask anything…</span>
+                  <span class="row">
+                    <span class="ns-btn ghost small attach"><Icon name="plus" /></span>
+                    <span class="pick-btn"><span class="pick-dot"></span><span class="pick-name">Opus 5.5</span></span>
+                    <span class="pv-gap"></span>
+                    <span class="ns-btn ghost small open">Council</span>
+                    <span class="pv-send">Send</span>
+                  </span>
+                </span>
+                <span class="bottom-row">
+                  <span class="ns-chip bottom-toggle"><span class="bottom-mark"></span>thinking</span>
+                  <span class="ns-chip bottom-toggle on"><span class="bottom-mark"></span>tools</span>
+                </span>
+              </span>
             </button>
           {/each}
         </div>
@@ -5007,6 +5040,126 @@
     justify-content: flex-end;
   }
 
+  /* Item 618b: the Composer row previews — a small box with an Attach, a
+     model picker, a lit Council and two switches, wearing the real rules
+     (src/composerRow.css keys on the preview's own data-composer-row).
+     Only the bases those rules build on are drawn here (in Composer they
+     are Composer's own), at :where specificity so the real rules win; spans,
+     not buttons, inside the pick button. Kept above stage 7's section: the
+     card is f4-only, so Classic never draws these. */
+  .crow-pv {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: auto;
+    padding: 12px 10px 4px;
+    border-radius: var(--r2);
+    /* A strip of the dot ground behind, so the glass has something to show. */
+    background: radial-gradient(circle, color-mix(in srgb, var(--ink) 12%, transparent) 1px, transparent 1.4px) 0 0 / 10px 10px, var(--paper);
+    pointer-events: none;
+  }
+  .crow-pv .card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 9px 10px 8px;
+    background: var(--raised);
+    border: 1px solid var(--line2);
+    border-radius: var(--r2);
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.3);
+  }
+  :global(:where(.crow-pv) .pv-text) {
+    font-size: 12px;
+    color: var(--dim);
+  }
+  :global(:where(.crow-pv) .row) {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  :global(:where(.crow-pv) .pv-gap) {
+    flex: 1;
+  }
+  :global(:where(.crow-pv) .ns-btn.small.attach) {
+    padding: 0 7px;
+  }
+  :global(:where(.crow-pv) .pick-btn) {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 26px;
+    padding: 0 9px;
+    border-radius: var(--r1);
+    border: 1px solid var(--line2);
+    background: var(--well);
+    font: 500 12px var(--sans);
+    color: var(--ink);
+    white-space: nowrap;
+  }
+  :global(:where(.crow-pv) .pick-dot) {
+    flex: none;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--done);
+  }
+  :global(:where(.crow-pv) .pv-send) {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    height: 26px;
+    padding: 0 10px;
+    font: 500 12px var(--sans);
+    color: var(--accent-ink);
+    border-radius: var(--r1);
+    background: var(--term);
+    border: 1px solid color-mix(in srgb, var(--accent) 60%, var(--line2));
+    box-shadow: inset 0 0 8px color-mix(in srgb, var(--accent) 35%, transparent);
+  }
+  :global(:where(.crow-pv) .bottom-row) {
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+  :global(:where(.crow-pv) .ns-chip.bottom-toggle) {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 22px;
+    padding: 0 9px 0 8px;
+    border-radius: 12px;
+    background: var(--raised);
+    font: 500 11px var(--sans);
+    color: var(--ink2);
+    text-transform: capitalize;
+  }
+  :global(:where(.crow-pv) .bottom-mark) {
+    position: relative;
+    flex: none;
+    width: 20px;
+    height: 12px;
+    border-radius: 6px;
+    background: var(--well2);
+    overflow: hidden;
+  }
+  :global(:where(.crow-pv) .bottom-mark::after) {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--dim);
+  }
+  :global(:where(.crow-pv) .bottom-toggle.on .bottom-mark) {
+    background: var(--accent);
+  }
+  :global(:where(.crow-pv) .bottom-toggle.on .bottom-mark::after) {
+    left: 10px;
+    background: var(--on-accent);
+  }
   /* ---- Filament IV, stage 7 (item 571; 521 report §2 and §5,
      f4-settings-*.png). Every rule below is behind the layout gate
      (`:where()`, zero specificity), so Classic draws exactly as before;
