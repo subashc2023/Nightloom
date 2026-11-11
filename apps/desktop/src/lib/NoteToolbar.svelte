@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hudIn, hudOut } from "./hudMenu";
   /**
    * The note's toolbar (item 498, his reference shot): text style, code,
    * table, image, checklist, Insert +, and at the end the Markdown switch.
@@ -233,8 +234,10 @@
 
 {#if menu}
   <div
-    class="tb-menu"
+    class="tb-menu hud-m"
     role="menu"
+    in:hudIn|global
+    out:hudOut|global
     tabindex="-1"
     aria-label={menu === "style" ? "Text style" : "Insert"}
     bind:this={menuEl}

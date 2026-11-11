@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hudIn, hudOut } from "./hudMenu";
   /**
    * Review → Morning (3.2): the page, rendered as reading material, with a
    * page picker, the unread state and Mark read; beside it the review
@@ -106,11 +107,12 @@
           </button>
           {#if picker}
             <button class="scrim" aria-label="Close" onclick={() => (picker = false)}></button>
-            <div class="menu ns-card">
+            <div class="menu ns-card hud-m" in:hudIn|global out:hudOut|global>
               {#each mornings as m (m.name)}
                 <button
-                  class="item"
+                  class="item hud-row"
                   class:on={sameMorning(m.name, page.name)}
+                  class:hud-cur={sameMorning(m.name, page.name)}
                   onclick={() => { picker = false; void openMorning(m.name); }}
                 >
                   <span class="ns-mono">{m.name}</span>

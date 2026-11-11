@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hudIn, hudOut } from "./hudMenu";
   import { app, browseFree, defaultKind, KIND_LINES, kindLabel, newSession, openContent, saveNote } from "./state.svelte";
   import * as tabs from "./tabs";
   import type { ChatKind, Note, NoteScope } from "./types";
@@ -86,8 +87,10 @@
 
 <button class="tab-chooser-scrim" aria-label="Close" onclick={close}></button>
 <div
-  class="tab-chooser"
+  class="tab-chooser hud-m"
   role="menu"
+  in:hudIn|global
+  out:hudOut|global
   aria-label="New tab"
   style:left="{(at?.left ?? 0) + 8}px"
   style:top="{(at?.bottom ?? 36) + 4}px"

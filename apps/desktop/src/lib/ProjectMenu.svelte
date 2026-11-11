@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hudIn, hudOut } from "./hudMenu";
   import { canLeaveProject } from "./state.svelte";
   import { tip } from "./tip";
   import {
@@ -60,11 +61,11 @@
   }
 </script>
 
-<div class="menu" role="menu">
-  <div class="head">Projects</div>
+<div class="menu hud-m" role="menu" in:hudIn|global out:hudOut|global>
+  <div class="head hud-head">Projects</div>
   <div class="list">
     {#each app.projects as p (p.id)}
-      <div class="row" class:active={app.project?.id === p.id}>
+      <div class="row hud-row" class:active={app.project?.id === p.id} class:hud-cur={app.project?.id === p.id}>
         {#if renaming === p.id}
           <!-- svelte-ignore a11y_autofocus -->
           <input autocorrect="off" autocapitalize="off" spellcheck="false"
@@ -139,24 +140,24 @@
     {/each}
   </div>
 
-  <div class="rule"></div>
-  <button class="wide new" onclick={make} disabled={!canLeaveProject()}>
+  <div class="rule hud-rule"></div>
+  <button class="wide new hud-row" onclick={make} disabled={!canLeaveProject()}>
     <Icon name="plus" size={14} />
     New project…
   </button>
-  <button class="wide quiet" onclick={() => void pick()} disabled={!canLeaveProject()}>
+  <button class="wide quiet hud-row" onclick={() => void pick()} disabled={!canLeaveProject()}>
     <Icon name="folder" size={14} />
     Open project…
     <span class="wide-meta">a folder you already have</span>
   </button>
   {#if app.project}
-    <button class="wide quiet" onclick={() => void choose(null)} disabled={!canLeaveProject()}>
+    <button class="wide quiet hud-row" onclick={() => void choose(null)} disabled={!canLeaveProject()}>
       <Icon name="chevl" size={14} />
       Leave project
       <span class="wide-meta">unfiled chats</span>
     </button>
   {/if}
-  <div class="rule"></div>
+  <div class="rule hud-rule"></div>
   <p class="note">
     A project is a folder. Its shared notes live in <code>.agents</code> inside
     it and its standing instructions in <code>AGENTS.md</code> at the top — both

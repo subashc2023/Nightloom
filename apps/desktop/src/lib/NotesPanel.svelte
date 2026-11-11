@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hudIn, hudOut } from "./hudMenu";
   import { tip } from "./tip";
   import {
     app,
@@ -1239,7 +1240,7 @@
     {@const m = menu}
     <button class="scrim" aria-label="Close" onclick={() => (menu = null)} oncontextmenu={(e) => { e.preventDefault(); menu = null; }}></button>
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div class="note-menu" role="menu" tabindex="-1" use:placeAt={{ x: m.x, y: m.y }} onkeydown={menuKeys}>
+    <div class="note-menu hud-m" role="menu" tabindex="-1" use:placeAt={{ x: m.x, y: m.y }} onkeydown={menuKeys} in:hudIn|global out:hudOut|global>
       {#if m.page === "main"}
         {#if !m.isFolder}
           <button role="menuitem" onclick={() => { menu = null; showNote(m.scope, m.path); }}>Open</button>
@@ -1293,8 +1294,10 @@
     <button class="scrim" aria-label="Close" onclick={() => (addMenu = null)} oncontextmenu={(e) => { e.preventDefault(); addMenu = null; }}></button>
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div
-      class="note-menu add-menu"
+      class="note-menu add-menu hud-m"
       role="menu"
+      in:hudIn|global
+      out:hudOut|global
       tabindex="-1"
       use:placeAt={{ x: a.x, y: a.y }}
       onkeydown={(e) => {

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hudIn, hudOut } from "./hudMenu";
   /**
    * A chat's open asides, listed under its sidebar row when its asides
    * toggle is open (item 265; the design is in `asideSidebar.svelte.ts`).
@@ -108,8 +109,10 @@
 {#if menu}
   <button class="scrim" aria-label="Close" onclick={() => (menu = null)} oncontextmenu={(e) => { e.preventDefault(); menu = null; }}></button>
   <div
-    class="row-menu"
+    class="row-menu hud-m"
     role="menu"
+    in:hudIn|global
+    out:hudOut|global
     style:left="{menu.x}px"
     style:top={menu.up ? undefined : `${menu.y}px`}
     style:bottom={menu.up ? `${menu.y}px` : undefined}

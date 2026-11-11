@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hudIn, hudOut } from "./hudMenu";
   /*
    * The chat's thread, in its top bar (nightshift backlog 281, 2026-10-02 —
    * his "put the threads feature somewhere … more visible": he could not
@@ -93,11 +94,13 @@
 
 {#if open && chip}
   <div
-    class="thread-card"
+    class="thread-card hud-m"
     role="dialog"
     aria-label="Research thread"
     bind:this={popEl}
     use:portal
+    in:hudIn|global
+    out:hudOut|global
     style="top: {pos.top}px; left: {pos.left}px; width: {WIDTH}px"
   >
     {#if bound && app.activeSessionId !== null}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hudIn, hudOut } from "./hudMenu";
   import { tip } from "./tip";
   import * as api from "./api";
   import {
@@ -782,8 +783,10 @@
   </div>
   {#if moreOpen}
     <div
-      class="more-menu"
+      class="more-menu hud-m"
       role="menu"
+      in:hudIn|global
+      out:hudOut|global
       tabindex="-1"
       aria-label="More"
       bind:this={moreEl}
