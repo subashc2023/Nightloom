@@ -17,6 +17,7 @@ import {
   spoke,
   windowElapsed,
   windowTip,
+  keySpin,
 } from "./dialMotion";
 
 // Item 581: the new-chat dial's motion layer — gears, a ticking hand, the
@@ -137,5 +138,14 @@ describe("the motion rules (581; 574b's rules for ContextDial stand unchanged)",
     expect(welcomeSrc.match(/<DialMotion/g)?.length).toBe(2);
     // His keys reach it without touching the Composer: input events bubble to the slot.
     expect(welcomeSrc).toContain('<div class="composer-slot" oninput={() => typed++}>');
+  });
+});
+
+describe("keySpin (his report 2026-11-11: the column dial's gears raced when he typed)", () => {
+  it("is 25 at the 330 px dial and scales down with size, floor 40 %", () => {
+    expect(keySpin(330)).toBe(25);
+    expect(keySpin(104)).toBeCloseTo(10);
+    expect(keySpin(84)).toBeCloseTo(10);
+    expect(keySpin(200)).toBeCloseTo(25 * (200 / 330));
   });
 });

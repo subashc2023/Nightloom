@@ -200,3 +200,12 @@ export function pointerSpoke(theta: number, t: number, surge: number, local: num
   const buzz = 0.5 + 0.5 * Math.sin(31 * theta + 19 * t) * Math.sin(9 * theta - 13 * t);
   return Math.min(1, spoke(theta, t, surge + l) + 0.3 * l * buzz);
 }
+
+/**
+ * A typed key's extra gear turn, in degrees spread over the spin drive's τ:
+ * 25 at the new-chat page's 330 px dial, scaled down with the dial (floor
+ * 40 %) so a small dial's gears do not race (his report 2026-11-11).
+ */
+export function keySpin(size: number): number {
+  return 25 * Math.min(1, Math.max(0.4, size / 330));
+}

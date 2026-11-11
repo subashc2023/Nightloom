@@ -53,6 +53,7 @@
     drive,
     escapement,
     integral,
+    keySpin,
     inSpan,
     kick,
     easePresence,
@@ -160,8 +161,12 @@
     const n = typed;
     if (lastTyped !== undefined && n !== lastTyped) {
       const t = clock();
-      if (level(energy, t) < 1.5) kick(energy, t, 0.3);
-      kick(spin, t, 25);
+      // His report 2026-11-11: on the column's 104 px dial the gears raced and
+      // the wave barely moved. A key's gear nudge scales with the dial (full at
+      // the new-chat page's 330 px, 40 % floor); the column's wave gets twice
+      // the kick, so typing reads in the spokes, not the gears.
+      if (level(energy, t) < (column ? 2 : 1.5)) kick(energy, t, column ? 0.6 : 0.3);
+      kick(spin, t, keySpin(size));
       untrack(paint);
     }
     lastTyped = n;
@@ -406,7 +411,7 @@
       const push = p ? p.weight * (POINTER_HOVER + level(stir, t)) : 0;
       ctx.strokeStyle = ink.signal;
       ctx.lineWidth = column ? 2 : compact ? 1.1 : 1.5 * k;
-      ctx.globalAlpha = Math.min(1, 0.5 + 0.35 * Math.min(1, surge)) * dim;
+      ctx.globalAlpha = Math.min(1, (column ? 0.6 : 0.5) + (column ? 0.4 : 0.35) * Math.min(1, surge)) * dim;
       ctx.beginPath();
       for (let i = 0; i < n; i++) {
         const th = (i * TAU) / n;
