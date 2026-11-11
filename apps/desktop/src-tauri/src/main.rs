@@ -292,6 +292,10 @@ struct PromptBuilt {
     /// 271): compared with the open chat's like `off`, and read by
     /// `prompt_layer_file` to seed the thread layer's edit.
     thread: Option<ThreadContext>,
+    /// Whether the CLI the connection spawns reads the folder's `AGENTS.md`
+    /// itself (nightshift 575), so the walk left it out: the new-chat dial
+    /// counts it under the CLI's instructions then, and only then.
+    cli_agents_md: bool,
 }
 
 /// The registry, plus the project currently open.
@@ -1698,6 +1702,7 @@ async fn connect(
         agent: None,
         mode: spec.mode,
         kind: spec.chat_kind,
+        cli_agents_md: false,
     };
     Ok(info)
 }
@@ -2168,6 +2173,20 @@ async fn connect_agent_body(
         && !incognito
         && nightloom_service::usage::claude_dir()
             .is_some_and(|c| c.join("agents").join("reusable.md").exists());
+    // Nightshift 575: a Claude Code that reads the folder's `AGENTS.md`
+    // itself (by version, safe mode, the CLAUDE.md files on the path and
+    // his `instructionFiles` setting) gets no second copy from the walk.
+    // Its version is asked once per install, off the runtime.
+    let cli_agents_md = if preamble && !incognito {
+        let (bin, safe, cwd) = (spec.binary.clone(), spec.safe_mode, workspace.clone());
+        tokio::task::spawn_blocking(move || {
+            nightloom_service::start_context::spawned_cli_reads_agents_md(&bin, !safe, &cwd)
+        })
+        .await
+        .unwrap_or(false)
+    } else {
+        false
+    };
     let prompt = nightloom_service::agent_prompt_with(
         &PromptConfig {
             identity: false,
@@ -2227,6 +2246,7 @@ async fn connect_agent_body(
             // Nightshift 573: <pacing> names only the limits that are on,
             // and is absent when the budget and the stop line both are.
             limits: spec.subagent_limits,
+            cli_agents_md,
             // Backlog 405: the engine note names only what an incognito
             // chat's server serves.
             incognito,
@@ -2638,6 +2658,7 @@ async fn connect_agent_body(
         agent: Some(prompt),
         mode,
         kind,
+        cli_agents_md,
     };
     Ok(info)
 }
@@ -5743,7 +5764,7 @@ async fn start_context(
 ) -> Result<Option<nightloom_service::start_context::StartContext>, String> {
     use nightloom_service::agent::cli_session;
     use nightloom_service::start_context as sc;
-    let (layers, cwd, off, mode) = {
+    let (layers, cwd, off, mode, agents_md) = {
         let built = state.prompt.lock().await;
         let Some(agent) = built.agent.clone() else {
             return Ok(None);
@@ -5751,7 +5772,13 @@ async fn start_context(
         let Some(cwd) = built.cwd.clone() else {
             return Ok(None);
         };
-        (agent, cwd, built.off.clone(), built.mode)
+        (
+            agent,
+            cwd,
+            built.off.clone(),
+            built.mode,
+            built.cli_agents_md,
+        )
     };
     // The fallback folders: every project's, after the open folder's own.
     let others: Vec<PathBuf> = state
@@ -5780,7 +5807,9 @@ async fn start_context(
             .as_ref()
             .and_then(|p| p.parent().map(Path::to_path_buf));
         let user_level = !safe_mode && mode != ChatMode::Incognito;
-        let files = sc::instruction_files(&cwd, claude_dir.as_deref(), user_level);
+        // The CLI's `AGENTS.md` copies exactly when the walk left them out
+        // (nightshift 575), so the dial counts each file once.
+        let files = sc::instruction_files(&cwd, claude_dir.as_deref(), user_level, agents_md);
         let memory = if off.contains(&SegmentKind::CliMemory) {
             None
         } else {

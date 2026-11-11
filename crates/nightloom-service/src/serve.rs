@@ -820,6 +820,14 @@ impl ServeHost {
                 subagent_rules: None,
                 // Nightshift 573: <pacing> names only the limits that are on.
                 limits: spec.subagent_limits,
+                // Nightshift 575: the server's CLI reads the workspace's
+                // AGENTS.md itself when it can; the walk then sends none.
+                cli_agents_md: !incognito
+                    && crate::start_context::spawned_cli_reads_agents_md(
+                        &spec.binary,
+                        !spec.safe_mode,
+                        workspace,
+                    ),
                 // Backlog 405: the note names only what its server serves.
                 incognito,
             },

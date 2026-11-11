@@ -266,6 +266,57 @@ pub fn installed_version(binary: &Path, home: Option<&Path>) -> Option<String> {
     parse_version(&out)
 }
 
+/// [`installed_version`], asked once per install (nightshift 575): the
+/// answer is kept by the binary's real path and modification time, so an
+/// update (which replaces the file the launcher points at) asks again and
+/// nothing else does. For the prompt, which needs to know whether the CLI
+/// reads `AGENTS.md` itself, at every connect; a `--version` costs ~0.1 s
+/// and no token. `binary` is what the spec spawns: a path, or a bare name
+/// found on `PATH`.
+pub fn cached_version(binary: &Path) -> Option<String> {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::time::SystemTime;
+    type Seen = HashMap<PathBuf, (SystemTime, Option<String>)>;
+    static SEEN: Mutex<Option<Seen>> = Mutex::new(None);
+    let found = if binary.components().count() > 1 {
+        Some(binary.to_path_buf())
+    } else {
+        std::env::var_os("PATH").and_then(|p| {
+            std::env::split_paths(&p)
+                .map(|d| d.join(binary))
+                .find(|c| c.is_file())
+        })
+    };
+    let real = found.as_deref().and_then(|p| p.canonicalize().ok());
+    let mtime = real
+        .as_deref()
+        .and_then(|p| std::fs::metadata(p).ok())
+        .and_then(|m| m.modified().ok());
+    if let (Some(real), Some(mtime)) = (&real, mtime)
+        && let Some((t, v)) = SEEN
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().and_then(|m| m.get(real).cloned()))
+        && t == mtime
+    {
+        return v;
+    }
+    let v = installed_version(binary, None);
+    if let (Some(real), Some(mtime)) = (real, mtime)
+        && let Ok(mut g) = SEEN.lock()
+    {
+        g.get_or_insert_with(HashMap::new)
+            .insert(real, (mtime, v.clone()));
+    }
+    v
+}
+
+/// `version` is `min` or newer, compared as numbers.
+pub fn at_least(version: &str, min: &str) -> bool {
+    !is_behind(version, min)
+}
+
 async fn fetch_text(client: &reqwest::Client, url: &str, max: usize) -> Result<String, String> {
     let r = client.get(url).send().await.map_err(|e| e.to_string())?;
     if !r.status().is_success() {

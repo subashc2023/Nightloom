@@ -401,6 +401,15 @@ pub struct EngineLayers<'a> {
     /// field rather than read from `subagent_rules`, because that layer can
     /// be switched off while the limits still bind.
     pub limits: Option<crate::agent::brief::SubagentLimits>,
+    /// The running Claude Code reads the folder's `AGENTS.md` files itself
+    /// (nightshift 575; [`crate::start_context::cli_reads_agents_md`] says
+    /// when): the project-instructions walk then sends none of them, so the
+    /// first request carries each once — the CLI's copy, in its
+    /// `instructions` attachment. Only the walk's own segments (named by
+    /// the file's path) go; a chat's own text for the layer is his, not the
+    /// file's, and stays. False (an older CLI, safe mode, the API engine's
+    /// callers): the walk is sent whole, as before.
+    pub cli_agents_md: bool,
     /// An incognito chat (nightshift backlog 405): the engine note names
     /// only the Nightloom tool its server serves (`--incognito`) and says
     /// nothing of other chats, memory or the CLI's transcripts.
@@ -416,6 +425,7 @@ impl EngineLayers<'static> {
         subagent_model: crate::agent::brief::SubagentModel::Choose,
         subagent_rules: None,
         limits: None,
+        cli_agents_md: false,
         incognito: false,
     };
 }
@@ -449,13 +459,20 @@ pub fn agent_prompt_with(
         ..config.clone()
     });
     let mut prompt = SystemPrompt::new();
+    // Whether Nightloom has a preamble at all is decided before the CLI's
+    // own copies are taken out: a chat whose only file is an `AGENTS.md`
+    // the CLI sends keeps its engine layers, as it did when the file was
+    // sent twice.
+    let preamble = !assembled.is_empty();
     for seg in assembled.segments() {
+        if layers.cli_agents_md && is_walk_agents_md(seg) {
+            continue;
+        }
         prompt.push(Segment {
             cache_anchor: false,
             ..seg.clone()
         });
     }
-    let preamble = !prompt.is_empty();
     if engine_note && preamble {
         prompt.push(if layers.incognito {
             incognito_engine_note_segment()
@@ -479,6 +496,16 @@ pub fn agent_prompt_with(
         prompt.push(Segment::new(SegmentKind::Custom, "custom", library));
     }
     prompt
+}
+
+/// A segment of the project-instructions walk for an `AGENTS.md` file —
+/// named by its absolute path ([`project_instruction_segments`]), unlike a
+/// chat's own text for the layer (`project-instructions`).
+fn is_walk_agents_md(seg: &Segment) -> bool {
+    let path = Path::new(&seg.name);
+    seg.kind == SegmentKind::ProjectInstructions
+        && path.is_absolute()
+        && path.file_name().is_some_and(|n| n == INSTRUCTION_FILE)
 }
 
 /// The pacing rule (nightshift backlog 250, 2026-09-27; his words: "is it
@@ -2833,6 +2860,99 @@ As of now — the front.
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// Nightshift 575: a chat's first request carries a project's
+    /// `AGENTS.md` once. Counted as the request is built: Nightloom's append
+    /// (this prompt, rendered as `--append-system-prompt` carries it) plus
+    /// the files the CLI loads itself (`start_context::instruction_files`
+    /// under the same decision), the file's text searched in both.
+    #[test]
+    fn a_project_agents_md_reaches_the_first_request_once() {
+        use crate::start_context::{cli_reads_agents_md, instruction_files};
+        let root = temp_dir("agent-agents-once");
+        let claude = root.join("home").join(".claude");
+        let parent = root.join("home").join("projects");
+        let proj = parent.join("p");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::create_dir_all(&proj).unwrap();
+        let rule = "RULE-575: cite every claim";
+        let outer = "OUTER-575: the parent's rule";
+        std::fs::write(proj.join("AGENTS.md"), rule).unwrap();
+        std::fs::write(parent.join("AGENTS.md"), outer).unwrap();
+        let config = PromptConfig {
+            project_instructions: true,
+            ..bare(proj.clone())
+        };
+        let copies = |version: Option<&str>, safe: bool| {
+            let cli = cli_reads_agents_md(version, !safe, &proj, Some(&claude));
+            let append = agent_prompt_with(
+                &config,
+                None,
+                EngineLayers {
+                    engine_note: true,
+                    pacing: true,
+                    cli_agents_md: cli,
+                    ..EngineLayers::NONE
+                },
+            )
+            .render_flat()
+            .unwrap_or_default();
+            let loaded: String = instruction_files(&proj, Some(&claude), !safe, cli)
+                .iter()
+                .map(|f| f.text.clone())
+                .collect();
+            let n = |t: &str| append.matches(t).count() + loaded.matches(t).count();
+            (n(rule), n(outer), append)
+        };
+        // Before: 2.1.322 got each file from both (the 574 finding).
+        let both = {
+            let append = agent_prompt_with(&config, None, EngineLayers::NONE)
+                .render_flat()
+                .unwrap();
+            let loaded: String = instruction_files(&proj, Some(&claude), true, true)
+                .iter()
+                .map(|f| f.text.clone())
+                .collect();
+            append.matches(rule).count() + loaded.matches(rule).count()
+        };
+        assert_eq!(both, 2);
+        // Now: once each, the CLI's copy, and the engine layers stay.
+        let (r, o, append) = copies(Some("2.1.322"), false);
+        assert_eq!((r, o), (1, 1), "{append}");
+        assert!(!append.contains("<project-instructions path="), "{append}");
+        assert!(append.contains("<pacing>"), "{append}");
+        // An older CLI, or safe mode: Nightloom's copy, still once.
+        let (r, o, append) = copies(Some("2.1.263"), false);
+        assert_eq!((r, o), (1, 1));
+        assert!(append.contains(rule));
+        let (r, o, _) = copies(Some("2.1.322"), true);
+        assert_eq!((r, o), (1, 1));
+        // A CLAUDE.md on the path: the CLI reads none, Nightloom sends both.
+        std::fs::write(parent.join("CLAUDE.md"), "claude rules").unwrap();
+        let (r, o, append) = copies(Some("2.1.322"), false);
+        assert_eq!((r, o), (1, 1));
+        assert!(append.contains(rule) && append.contains(outer));
+        // A chat's own text for the layer is his, not the file's: it stays.
+        std::fs::remove_file(parent.join("CLAUDE.md")).unwrap();
+        let edited = PromptConfig {
+            edits: [(SegmentKind::ProjectInstructions, "my own rules".to_string())]
+                .into_iter()
+                .collect(),
+            ..config.clone()
+        };
+        let text = agent_prompt_with(
+            &edited,
+            None,
+            EngineLayers {
+                cli_agents_md: true,
+                ..EngineLayers::NONE
+            },
+        )
+        .render_flat()
+        .unwrap();
+        assert!(text.contains("my own rules"), "{text}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     /// Nightshift 573: `<pacing>` follows the limit switches the rules layer
     /// follows — the defaults keep [`PACING_NOTE`] byte for byte, one switch
     /// off drops every sentence about it, both off drops the layer.
@@ -2993,6 +3113,7 @@ As of now — the front.
             subagent_model: crate::agent::brief::SubagentModel::Choose,
             subagent_rules: None,
             limits: None,
+            cli_agents_md: false,
             incognito: false,
         };
         let full = agent_prompt_with(&config, Some("Be terse."), all);
@@ -3648,6 +3769,7 @@ As of now — the front.
                     fork_mode: true,
                 }),
                 limits: Some(limits),
+                cli_agents_md: false,
                 incognito: false,
             },
         );
