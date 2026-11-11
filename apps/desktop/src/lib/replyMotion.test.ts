@@ -141,7 +141,8 @@ describe("AssistantMessage wiring", () => {
   });
   it("tool rows: the weft while the call runs, filled and faded on finish", () => {
     expect(src).toMatch(/class:rm-born=\{bornW\} class:rm-finished=\{bornW && !running\}/);
-    expect(src).toMatch(/<span class="rm-weft" class:rm-done=\{!running\} aria-hidden="true"><\/span>/);
+    // Item 589: the weft carries its kind and, while a non-shell call runs, the lights of that kind.
+    expect(src).toMatch(/<span class="rm-weft k-\{kind\}" class:mo-weft=\{running\} class:rm-done=\{!running\} aria-hidden="true"/);
   });
   it("every animation sits under no-preference; the decorations are hidden under reduce", () => {
     const style = src.slice(src.indexOf("<style>"));
