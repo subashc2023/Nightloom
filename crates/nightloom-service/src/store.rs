@@ -77,6 +77,16 @@ pub struct SessionSummary {
     /// for a chat with no message yet, or a line written without a time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_message: Option<DateTime<Utc>>,
+    /// How full the chat's context was at its newest reply (nightshift
+    /// item 597): that reply's input plus output tokens, the same pair the
+    /// window's gauge reads, and the model it named. Latest in the raw log,
+    /// like `title` — a rewound reply still counts until the next one — so
+    /// the sidebar can mark a chat past its hand-off mark without opening
+    /// it. `None` before the first reply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_used: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_model: Option<String>,
 }
 
 fn is_normal(mode: &ChatMode) -> bool {
@@ -232,6 +242,14 @@ enum Peek {
         #[serde(default)]
         thread: Option<String>,
     },
+    /// A reply's model and context fill (item 597). Never parsed by serde:
+    /// [`peek_reply`] reads the two fields off the raw line, since a reply
+    /// line is most of a log's bytes.
+    #[serde(skip)]
+    Reply {
+        model: String,
+        used: u64,
+    },
     /// Everything else. Present so a line that gets past [`peek`]'s prefilter
     /// parses to "not interesting" rather than to an error.
     #[serde(other)]
@@ -255,9 +273,43 @@ const LISTED: [&str; 4] = [
     r#""event":"thread""#,
 ];
 
+/// The reply tag, read by [`peek_reply`] rather than parsed (item 597).
+const REPLY: &str = r#""event":"assistant_message""#;
+
+/// A reply line's model and `usage`, without parsing its blocks (item
+/// 597): the writer puts `model` first and `usage` after `blocks`, so the
+/// model is read from the front and the usage object from its *last*
+/// `"usage":{` — a tool call's input is the only place a key spelled so
+/// can appear earlier, and none comes after the real one. Inside a string
+/// the quotes would be escaped, so text cannot fake it. `None` when either
+/// is missing or does not parse.
+fn peek_reply(line: &str) -> Option<Peek> {
+    #[derive(Deserialize)]
+    struct U {
+        #[serde(default)]
+        input_tokens: u64,
+        #[serde(default)]
+        output_tokens: u64,
+    }
+    let at = line.find(r#""model":"#)?;
+    let mut model = serde_json::Deserializer::from_str(&line[at + 8..]).into_iter::<String>();
+    let model = model.next()?.ok()?;
+    let key = r#""usage":"#;
+    let u = line.rfind(key)?;
+    let mut usage = serde_json::Deserializer::from_str(&line[u + key.len()..]).into_iter::<U>();
+    let usage = usage.next()?.ok()?;
+    Some(Peek::Reply {
+        model,
+        used: usage.input_tokens + usage.output_tokens,
+    })
+}
+
 /// One log line as the listing sees it, or `None` for the ~95% of lines that
 /// hold no listing field.
 fn peek(line: &str) -> Option<Peek> {
+    if line.contains(REPLY) {
+        return peek_reply(line);
+    }
     if !LISTED.iter().any(|tag| line.contains(tag)) {
         return None;
     }
@@ -344,6 +396,11 @@ struct Summarizing {
     /// The latest user message's time (item 300 B8).
     #[serde(default)]
     last_message: Option<DateTime<Utc>>,
+    /// The newest reply's fill and model (item 597); latest wins.
+    #[serde(default)]
+    context_used: Option<u64>,
+    #[serde(default)]
+    context_model: Option<String>,
 }
 
 impl Summarizing {
@@ -376,6 +433,10 @@ impl Summarizing {
             // session unnamed, and the next turn records a fresh one after it.
             Peek::Title { text } => self.title = Some(text),
             Peek::Thread { thread } => self.thread = thread.filter(|t| !t.trim().is_empty()),
+            Peek::Reply { model, used } => {
+                self.context_used = Some(used);
+                self.context_model = Some(model);
+            }
             Peek::Other => {}
         }
     }
@@ -398,6 +459,8 @@ impl Summarizing {
             forked_from: self.forked_from.clone(),
             thread: self.thread.clone(),
             last_message: self.last_message,
+            context_used: self.context_used,
+            context_model: self.context_model.clone(),
         }
     }
 
@@ -483,8 +546,10 @@ const LISTING_FILE: &str = ".listing.json";
 /// not, which is the one thing the listing must not get wrong. 3 since the
 /// fork line (2026-09-15, later the same day), on the same reasoning. 4
 /// since the kind (2026-09-16, nightshift backlog 102), likewise. 5 since
-/// the thread binding (2026-10-02, backlog 281).
-const LISTING_VERSION: u32 = 6;
+/// the thread binding (2026-10-02, backlog 281). 7 since the newest
+/// reply's fill (2026-11-10, item 597): an old entry would never learn the
+/// fill of replies it had already scanned.
+const LISTING_VERSION: u32 = 7;
 
 impl Listing {
     fn read(dir: &Path) -> BTreeMap<String, Cached> {
@@ -536,6 +601,10 @@ fn peek_at(event: &SessionEvent) -> Option<Peek> {
         SessionEvent::Title { text, .. } => Some(Peek::Title { text: text.clone() }),
         SessionEvent::Thread { thread, .. } => Some(Peek::Thread {
             thread: thread.clone(),
+        }),
+        SessionEvent::AssistantMessage { model, usage, .. } => Some(Peek::Reply {
+            model: model.clone(),
+            used: usage.input_tokens + usage.output_tokens,
         }),
         _ => None,
     }
@@ -1047,6 +1116,8 @@ mod tests {
             forked_from: None,
             thread: None,
             last_message: None,
+            context_used: None,
+            context_model: None,
         };
         assert_eq!(s.label(60), "can you help me rename a function everywhere");
 
@@ -1423,6 +1494,64 @@ mod tests {
             .record_thread(None);
         assert_eq!(list(&dir).unwrap()[0].thread, None);
 
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Item 597: the listing carries the newest reply's fill (input plus
+    /// output, the gauge's pair) and model, read off the raw line — a
+    /// tool call whose input has a `usage` key does not fool it — and the
+    /// same through the full-event path.
+    #[test]
+    fn a_listing_carries_the_newest_replys_fill() {
+        use nightloom_core::{ContentBlock, Session, Usage};
+        let dir = scratch();
+        let mut s = Session::with_log(&dir).unwrap();
+        s.record_user("q");
+        assert_eq!(list(&dir).unwrap()[0].context_used, None);
+        s.record_assistant(
+            "model-a",
+            vec![ContentBlock::Text {
+                text: r#"say "usage":{"input_tokens":9}"#.into(),
+            }],
+            Some("end_turn".into()),
+            Usage {
+                input_tokens: 1000,
+                output_tokens: 20,
+                ..Default::default()
+            },
+        );
+        let first = list(&dir).unwrap();
+        assert_eq!(first[0].context_used, Some(1020));
+        assert_eq!(first[0].context_model.as_deref(), Some("model-a"));
+        s.record_user("q2");
+        s.record_assistant(
+            "model-b",
+            vec![ContentBlock::ToolUse {
+                id: "t".into(),
+                name: "x".into(),
+                input: serde_json::json!({ "usage": { "input_tokens": 7, "output_tokens": 7 } }),
+                signature: None,
+            }],
+            Some("tool_use".into()),
+            Usage {
+                input_tokens: 250_000,
+                output_tokens: 60_000,
+                ..Default::default()
+            },
+        );
+        // Incrementally, from where the last listing stopped.
+        let second = list(&dir).unwrap();
+        assert_eq!(second[0].context_used, Some(310_000));
+        assert_eq!(second[0].context_model.as_deref(), Some("model-b"));
+        // The full-event path agrees.
+        let ev = Session::load(&second[0].path).unwrap();
+        let mut acc = Summarizing::default();
+        for e in ev.events() {
+            if let Some(p) = peek_at(e) {
+                acc.saw(p);
+            }
+        }
+        assert_eq!(acc.context_used, Some(310_000));
         fs::remove_dir_all(&dir).ok();
     }
 

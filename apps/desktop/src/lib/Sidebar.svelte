@@ -39,9 +39,10 @@
   } from "./state.svelte";
   // Item 534 (Filament IV stage 3): the dated sections, the two-line row's
   // clock and context reading, the live row's line.
-  import { ctxLook, ctxText, daySections, liveClock, rowClock, toolCount } from "./chatList";
+  import { ctxLook, ctxText, daySections, handoffChildren, handoffCue, handoffCueTip, liveClock, pastByTokens, rowClock, toolCount } from "./chatList";
   import { contextOf, noteChatContext } from "./chatContext.svelte";
   import { mark as handoffMark } from "./handoff.svelte";
+  import { cap as handoffCap, NEVER, neverHandsOff, ownMark } from "./handoff.svelte";
   import * as api from "./api";
   import { hasBoxDraft, hasThreadDraft, newDraftKey, readDraft } from "./drafts.svelte";
   import { scheduledFor } from "./scheduled.svelte";
@@ -223,6 +224,17 @@
     const r = contextOf(id);
     if (!r) return null;
     return { used: r.used, look: ctxLook(r.used, r.limit, handoffMark(id, r.limit || null)) };
+  }
+  /** Item 597: which chats a next chat continues, once per listing. */
+  const handedTo = $derived(handoffChildren(app.sessions));
+  /** The row's left-edge cue (item 597): handed off, or needs a hand-off —
+   *  past its mark by the row's own reading, or with none, by the
+   *  listing's newest reply against a mark in tokens (`pastByTokens`). */
+  function rowCue(s: SessionMeta, ctx: ReturnType<typeof rowCtx>) {
+    const past = ctx?.look
+      ? ctx.look.past
+      : pastByTokens(ctx?.used ?? s.context_used, ownMark(s.id)?.value ?? null, handoffCap(), NEVER);
+    return handoffCue(s.id, handedTo, past, neverHandsOff(s.id));
   }
   /** The row's hover: its short id (it left the visible line) and the exact time. */
   function rowTip(s: SessionMeta): string {
@@ -926,6 +938,7 @@
          a prompt waits). -->
     {@const live = liveBy.get(s.id)}
     {@const ctx = rowCtx(s.id)}
+    {@const cue = rowCue(s, ctx)}
     <div class="session-item" class:active={rowLit(s.id)} class:live={!!live} class:waiting={!!live && live.waiting > 0} class:fork={r.depth > 0} style:--depth={r.depth > 0 ? r.depth : undefined}>
       {#if renaming === s.id}
         <!-- Opens with the whole title selected (backlog 376): typing
@@ -945,6 +958,11 @@
           }}
         />
       {:else}
+        {#if cue}
+          <!-- Item 597: the left edge says handed off (a hollow muted
+               tick) or needs a hand-off (a solid hot one). -->
+          <span class="ho-cue {cue.kind}" role="img" aria-label={cue.kind === "handed" ? "handed off" : "needs a hand-off"} use:tip={handoffCueTip(cue)}></span>
+        {/if}
         <!-- Draggable (backlog 140 pass 2): onto a strip for a tab
              of this chat at that slot, onto a pane's half to open
              it beside. The drag carries `{kind: "chat", session}`. -->
@@ -2247,6 +2265,26 @@
   }
   .session-item:hover {
     background: var(--raised);
+  }
+  /* Item 597: the hand-off cue on the row's left edge, inside the
+     active row's 2px accent: needs a hand-off is a solid tick in the
+     hot colour; handed off a hollow one in the muted ink — the shape
+     tells them apart as well as the colour. Its own box so it can carry
+     the tooltip (3px of the row's left padding). */
+  .ho-cue {
+    position: absolute;
+    left: 3px;
+    top: 9px;
+    bottom: 9px;
+    width: 3px;
+    border-radius: 2px;
+    z-index: 1;
+  }
+  .ho-cue.needs {
+    background: var(--hot);
+  }
+  .ho-cue.handed {
+    box-shadow: inset 0 0 0 1px var(--ink2);
   }
   .session-item.active {
     background: var(--well);

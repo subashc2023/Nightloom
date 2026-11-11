@@ -4,8 +4,8 @@ use crate::store::one_line;
 use crate::tools::{CompactContext, CompactSignal, Review, Reviewer, Root, Subagent, TurnHandle};
 use futures::StreamExt;
 use nightloom_core::{
-    ChatRequest, ContentBlock, DocumentInput, Effect, ImageInput, Message, Provider, ProviderError,
-    Role, Session, StreamEvent, SystemPrompt, Thinking, Usage, WireView,
+    CacheKey, ChatRequest, ContentBlock, DocumentInput, Effect, ImageInput, Message, Provider,
+    ProviderError, Role, Session, StreamEvent, SystemPrompt, Thinking, Usage, WireView,
     tool::{Tool, defs, effect_of, run_tool},
 };
 use nightloom_providers::pricing::Price;
@@ -383,7 +383,28 @@ pub struct Chat {
     handle: Option<Arc<TurnHandle>>,
 }
 
+/// What an API-engine reply's cache was built with (nightshift item 601),
+/// on the terms of [`CacheKey`]: engine `"api"`, the model the request
+/// named, and whether it offered tools. The window compares it with the
+/// engine and model the next turn goes to; the Claude Code fields that do
+/// not exist here (safe mode, Ask, Plan) are off.
+pub fn api_cache_key(model: &str, has_tools: bool) -> CacheKey {
+    CacheKey {
+        engine: "api".into(),
+        model: Some(model.to_owned()),
+        tools: has_tools,
+        safe_mode: false,
+        ask: false,
+        plan: false,
+    }
+}
+
 impl Chat {
+    /// This chat's [`api_cache_key`], written on every reply it records.
+    fn cache_key(&self) -> CacheKey {
+        api_cache_key(&self.model, !self.tools.is_empty())
+    }
+
     pub fn new(provider: Box<dyn Provider>, model: impl Into<String>) -> Self {
         Self {
             provider,
@@ -827,7 +848,7 @@ impl Chat {
                 if !blocks.is_empty() {
                     let reason = if interrupted { "interrupted" } else { "error" };
                     let cost = self.price.map(|p| p.cost(&usage));
-                    session.record_assistant_timed(
+                    session.record_assistant_keyed(
                         &self.model,
                         blocks,
                         Some(reason.into()),
@@ -835,6 +856,7 @@ impl Chat {
                         cost,
                         sent_at,
                         self.provider.cache_ttl(),
+                        Some(self.cache_key()),
                     );
                 }
                 if let Some(e) = stream_err {
@@ -864,7 +886,7 @@ impl Chat {
             // is the adapter's when the usage does not name one, since the
             // adapter is what asked for the cache and with what `ttl`.
             let cost = self.price.map(|p| p.cost(&usage));
-            session.record_assistant_timed(
+            session.record_assistant_keyed(
                 &self.model,
                 blocks,
                 stop_reason.clone(),
@@ -872,6 +894,7 @@ impl Chat {
                 cost,
                 sent_at,
                 self.provider.cache_ttl(),
+                Some(self.cache_key()),
             );
 
             if calls.is_empty() {
@@ -2765,6 +2788,27 @@ pub(crate) mod tests {
                 ..
             }
         ));
+    }
+
+    /// Item 601: every API-engine reply names what its cache was built
+    /// with, so the window can warn of a switch to the other engine or
+    /// another model while it is warm.
+    #[tokio::test]
+    async fn an_api_reply_records_its_cache_key() {
+        let provider = Scripted::provider(vec![says("hi")]);
+        let chat = Chat::new(provider, "test-model");
+        let mut session = Session::new();
+        let (out, _) = run(&chat, &mut session, "hi").await;
+        assert!(out.is_ok());
+        let Some(SessionEvent::AssistantMessage {
+            cache_key: Some(k), ..
+        }) = session.events().last()
+        else {
+            panic!("no keyed reply");
+        };
+        assert_eq!(k, &api_cache_key("test-model", false));
+        assert_eq!(k.engine, "api");
+        assert_eq!(k.model.as_deref(), Some("test-model"));
     }
 
     #[tokio::test]

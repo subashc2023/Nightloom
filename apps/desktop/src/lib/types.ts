@@ -945,6 +945,11 @@ export interface SessionMeta {
   /** The research thread the chat is bound to (nightshift backlog 281),
    *  its slug; absent when unbound. The row shows it, small and muted. */
   thread?: string;
+  /** The newest reply's input plus output tokens and its model (item 597,
+   *  `SessionSummary::context_used`): raw log, latest wins; absent before a
+   *  reply. The hand-off cue reads it for a row with no reading of its own. */
+  context_used?: number;
+  context_model?: string;
 }
 
 /** Where a fork came from — the parent's id and the cut, as the creation
