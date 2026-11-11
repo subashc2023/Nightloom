@@ -94,3 +94,36 @@ export function spenderName(s: Pick<Spender, "who" | "agents">): string {
   if (s.who === "main") return "Main chat";
   return s.agents > 1 ? `${s.who} ×${s.agents}` : s.who;
 }
+
+/**
+ * Item 584: a token count in at most five characters, for the Details table
+ * at the column's width: `206`, `6.6k`, `110k`, `10.5M`, `1.7B`.
+ */
+export function compactCount(n: number): string {
+  const v = Math.max(0, Math.round(n));
+  const step = (d: number, u: string) => {
+    const x = v / d;
+    return x >= 100 ? `${Math.round(x)}${u}` : `${parseFloat(x.toFixed(1))}${u}`;
+  };
+  if (v >= 999_500_000) return step(1_000_000_000, "B");
+  if (v >= 999_500) return step(1_000_000, "M");
+  if (v >= 1_000) return step(1_000, "k");
+  return String(v);
+}
+
+/** One part of a stacked share bar: its width (0–1) and its whole percent. */
+export interface StackPart {
+  name: string;
+  share: number;
+  pct: number;
+}
+
+/** Item 584: parts of a stacked bar from raw values (model cost, a spender's share); empty when nothing was spent. */
+export function stackParts(items: readonly { name: string; value: number }[]): StackPart[] {
+  const total = items.reduce((a, i) => a + Math.max(0, i.value), 0);
+  if (total <= 0) return [];
+  return items.map((i) => {
+    const share = Math.max(0, i.value) / total;
+    return { name: i.name, share, pct: Math.round(share * 100) };
+  });
+}

@@ -5,14 +5,16 @@
   import { app, chatAgentSession, contextUsed, currentTodos } from "./state.svelte";
   import * as api from "./api";
   import {
+    compactCount,
     duration,
     modelName,
-    modelSplit,
     resetClock,
     spenderName,
+    stackParts,
     usd,
     type ScopedLimits,
     type SessionFigures,
+    type StackPart,
   } from "./usageFigures";
   import { mark as handoffMark } from "./handoff.svelte";
   import { touchedUntil } from "./keepWarm";
@@ -169,8 +171,39 @@
   });
   /** Only the open chat's figures: another chat's never show while this one's load. */
   const chat = $derived(figures && figures.found && figuresOf === agentSession ? figures : null);
-  const split = $derived(chat ? modelSplit(chat.models) : []);
+  // Item 584: the two splits as stacked bars, and the Details fold (kept across chats and restarts).
+  const modelParts = $derived(chat ? stackParts(chat.models.map((m) => ({ name: modelName(m.model), value: m.cost_usd }))) : []);
+  const usingParts = $derived(chat ? stackParts(chat.using.map((u) => ({ name: spenderName(u), value: u.share }))) : []);
+  const DETAILS_KEY = "nightloom.chatDetails";
+  let details = $state(readDetails());
+  function readDetails(): boolean {
+    try {
+      return localStorage.getItem(DETAILS_KEY) === "1";
+    } catch {
+      return false;
+    }
+  }
+  function toggleDetails() {
+    details = !details;
+    try {
+      localStorage.setItem(DETAILS_KEY, details ? "1" : "0");
+    } catch {
+      /* the fold still works for this run */
+    }
+  }
 </script>
+
+{#snippet stack(title: string, why: string, parts: StackPart[])}
+  <div class="stack" use:tip={why}>
+    <div class="sub">{title}</div>
+    <div class="sbar" role="img" aria-label={`${title}: ${parts.map((p) => `${p.name} ${p.pct}%`).join(", ")}`}>
+      {#each parts as p, i (p.name)}<i class="c{i % 5}" style:flex-grow={p.share}></i>{/each}
+    </div>
+    <div class="lg">
+      {#each parts as p, i (p.name)}<span><i class="c{i % 5}"></i>{p.name}<b>{p.pct}%</b></span>{/each}
+    </div>
+  </div>
+{/snippet}
 
 {#if column}
   <aside class="col" aria-label="Context, plan use, this turn and tasks">
@@ -259,47 +292,66 @@
     {/if}
 
     {#if chat}
+      <!-- Item 584 (his "squashed … not easy to look at" on 569): the cost large, three small tiles, one stacked bar
+           per split; the per-model tokens and both clocks behind Details, which keeps its fold. -->
       <section class="chat-use" aria-label="This chat's usage">
-        <h4>This chat {#if chat.cost_usd != null}<span use:tip={"Claude Code's own estimate at API prices, subagents included — the figure /usage shows"}>{usd(chat.cost_usd)}{chat.unknown_cost ? "+" : ""}</span>{/if}</h4>
-        {#if chat.api_ms != null}
-          <div class="kv" use:tip={"Every request's time, subagents' too, so it can pass the clock"}><span>API time</span><b>{duration(chat.api_ms)}</b></div>
-        {/if}
-        {#if chat.run_ms != null}
-          <div class="kv" use:tip={"Claude Code's own clock over this chat's runs (not /usage's Active, which Claude Code never writes down)"}><span>Run time</span><b>{duration(chat.run_ms)}</b></div>
-        {/if}
-        {#if chat.lines_added != null || chat.lines_removed != null}
-          <div class="kv" use:tip={"Lines Claude's edits added and removed in this chat"}>
-            <span>Lines</span><b><ins>+{chat.lines_added ?? 0}</ins> <del>−{chat.lines_removed ?? 0}</del></b>
+        <h4>This chat</h4>
+        {#if chat.cost_usd != null}
+          <div class="cost" use:tip={"Claude Code's own estimate at API prices, subagents included — the figure /usage shows"}>
+            <b>{usd(chat.cost_usd)}{chat.unknown_cost ? "+" : ""}</b><span>at API prices</span>
           </div>
         {/if}
-        {#if chat.cache_hit != null}
-          <div class="kv" use:tip={"Input read back from the prompt cache, of all input"}><span>Cache hit</span><b>{Math.round(chat.cache_hit * 100)}%</b></div>
+        <div class="tiles">
+          {#if chat.cache_hit != null}
+            <div class="tile" use:tip={"Input read back from the prompt cache, of all input"}>
+              <span>Cache hit</span><b>{Math.round(chat.cache_hit * 100)}%</b>
+            </div>
+          {/if}
+          {#if chat.lines_added != null || chat.lines_removed != null}
+            <div class="tile" use:tip={`Lines Claude's edits added and removed in this chat: +${(chat.lines_added ?? 0).toLocaleString()} −${(chat.lines_removed ?? 0).toLocaleString()}`}>
+              <span>Lines</span><b><ins>+{compactCount(chat.lines_added ?? 0)}</ins> <del>−{compactCount(chat.lines_removed ?? 0)}</del></b>
+            </div>
+          {/if}
+          {#if chat.run_ms != null}
+            <div class="tile" use:tip={"Claude Code's own clock over this chat's runs (not /usage's Active, which Claude Code never writes down)"}>
+              <span>Run time</span><b>{duration(chat.run_ms)}</b>
+            </div>
+          {/if}
+        </div>
+        {#if modelParts.length > 1}
+          {@render stack("Models", "Each model's share of this chat's cost", modelParts)}
         {/if}
-        {#if split.length > 1}
-          <div class="kv"><span>Models</span><b>{split.map((s) => `${s.name} ${s.pct}%`).join(" · ")}</b></div>
+        {#if usingParts.length > 1}
+          {@render stack("Using it", "Who spent this chat's cost: the main chat and each subagent type", usingParts)}
         {/if}
-        {#if chat.models.length}
-          <table class="tok" aria-label="Tokens by model">
-            <thead><tr><th>In</th><th>Out</th><th>Read</th><th>Write</th></tr></thead>
-            <tbody>
-              {#each chat.models as m (m.model)}
-                <tr class="mn"><th scope="rowgroup" colspan="4">{modelName(m.model)}</th></tr>
-                <tr>
-                  <td>{shortTokens(m.input)}</td>
-                  <td>{shortTokens(m.output)}</td>
-                  <td>{shortTokens(m.cache_read)}</td>
-                  <td>{shortTokens(m.cache_write)}</td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        {/if}
-        {#if chat.using.length}
-          <div class="sub" use:tip={"Who spent this chat's cost: the main chat and each subagent type"}>Using it</div>
-          {#each chat.using as s (s.who)}
-            <div class="kv us"><span>{spenderName(s)}</span><b>{pct(s.share)}</b></div>
-            <div class="bar sg"><i style:width="{Math.min(100, s.share * 100)}%"></i></div>
-          {/each}
+        <button class="more" type="button" aria-expanded={details} onclick={toggleDetails}>
+          <svg viewBox="0 0 8 8" aria-hidden="true"><path d="M2.5 1.5 5.5 4 2.5 6.5" /></svg>Details
+        </button>
+        {#if details}
+          <div class="det">
+            {#if chat.api_ms != null}
+              <div class="kv" use:tip={"Every request's time, subagents' too, so it can pass the clock"}><span>API time</span><b>{duration(chat.api_ms)}</b></div>
+            {/if}
+            {#if chat.run_ms != null}
+              <div class="kv" use:tip={"Claude Code's own clock over this chat's runs"}><span>Run time</span><b>{duration(chat.run_ms)}</b></div>
+            {/if}
+            {#if chat.models.length}
+              <table class="tok" aria-label="Tokens by model">
+                <thead><tr><th scope="col">Tokens</th><th scope="col" use:tip={"Input not read from the cache"}>In</th><th scope="col">Out</th><th scope="col" use:tip={"Read back from the prompt cache"}>Read</th><th scope="col" use:tip={"Written to the prompt cache"}>Write</th></tr></thead>
+                <tbody>
+                  {#each chat.models as m (m.model)}
+                    <tr use:tip={`${modelName(m.model)}: in ${m.input.toLocaleString()}, out ${m.output.toLocaleString()}, cache read ${m.cache_read.toLocaleString()}, cache write ${m.cache_write.toLocaleString()} · ${usd(m.cost_usd)}`}>
+                      <th scope="row">{modelName(m.model)}</th>
+                      <td>{compactCount(m.input)}</td>
+                      <td>{compactCount(m.output)}</td>
+                      <td>{compactCount(m.cache_read)}</td>
+                      <td>{compactCount(m.cache_write)}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            {/if}
+          </div>
         {/if}
       </section>
     {/if}
@@ -323,9 +375,9 @@
         {/if}
         {#if toolsLine}
           <div class="kv tools"><span>Tools</span><b>{toolsLine}</b></div>
-          <div class="tks" aria-hidden="true">
+          {#if marks.length > 1}<div class="tks" aria-hidden="true">
             {#each marks as m, i (i)}<i class:r={!m.done} class:e={m.error}></i>{/each}
-          </div>
+          </div>{/if}
         {/if}
       </section>
     {/if}
@@ -536,17 +588,140 @@
     text-align: right;
     margin-top: 1px;
   }
-  .kv b ins {
+  /* ---- Item 584: This chat at a glance. */
+  .cost {
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+    margin: 0 0 10px;
+  }
+  .cost b {
+    font: 400 24px/1 var(--mono);
+    letter-spacing: -0.02em;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+  }
+  .cost span {
+    font-size: 11px;
+    color: var(--dim);
+  }
+  .tiles {
+    display: grid;
+    grid-template-columns: repeat(3, auto);
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .tile {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+  }
+  .tile span {
+    font-size: 10.5px;
+    color: var(--dim);
+    white-space: nowrap;
+  }
+  .tile b {
+    font: 400 13px var(--mono);
+    color: var(--ink);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  .tile b ins {
     text-decoration: none;
     color: var(--done);
   }
-  .kv b del {
+  .tile b del {
     text-decoration: none;
     color: var(--hot);
   }
-  .kv.us {
-    font-size: 12px;
-    padding: 4px 0 1px;
+  .stack {
+    margin-top: 12px;
+  }
+  .stack .sub {
+    margin: 0 0 5px;
+  }
+  .sbar {
+    display: flex;
+    gap: 2px;
+    height: 6px;
+  }
+  .sbar i {
+    flex: 0 0 auto;
+    flex-basis: 0;
+    min-width: 3px;
+    border-radius: 2px;
+  }
+  .lg {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px 12px;
+    margin-top: 6px;
+    font-size: 11.5px;
+    color: var(--ink2);
+  }
+  .lg span {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
+  }
+  .lg i {
+    width: 6px;
+    height: 6px;
+    border-radius: 1px;
+  }
+  .lg b {
+    font: 400 11px var(--mono);
+    color: var(--dim);
+    font-variant-numeric: tabular-nums;
+  }
+  .c0 {
+    background: var(--accent);
+  }
+  .c1 {
+    background: var(--signal);
+  }
+  .c2 {
+    background: var(--done);
+  }
+  .c3 {
+    background: var(--ink2);
+  }
+  .c4 {
+    background: var(--dim);
+  }
+  .more {
+    margin: 12px 0 0;
+    padding: 2px 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: none;
+    border: 0;
+    font: 500 10px var(--mono);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--dim);
+    cursor: pointer;
+  }
+  .more:hover,
+  .more:focus-visible {
+    color: var(--ink);
+  }
+  .more svg {
+    width: 8px;
+    height: 8px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.4;
+  }
+  .more[aria-expanded="true"] svg {
+    transform: rotate(90deg);
+  }
+  .det {
+    margin-top: 6px;
   }
   .sub {
     margin: 9px 0 1px;
@@ -559,13 +734,13 @@
     width: 100%;
     margin-top: 6px;
     border-collapse: collapse;
-    font: 10.5px var(--mono);
+    font: 10px var(--mono);
     font-variant-numeric: tabular-nums;
     table-layout: fixed;
   }
   .tok th,
   .tok td {
-    padding: 2px 0;
+    padding: 3px 0;
     text-align: right;
     font-weight: 400;
     white-space: nowrap;
@@ -575,16 +750,22 @@
   .tok thead th {
     color: var(--dim);
     font-size: 10px;
+    border-bottom: 1px solid var(--line);
   }
-  .tok .mn th {
+  .tok thead th:first-child {
+    width: 27%;
     text-align: left;
-    color: var(--dim);
-    padding-top: 4px;
+  }
+  .tok tbody th {
+    text-align: left;
+    color: var(--ink2);
+    font: 10.5px var(--sans);
   }
   .tok td {
     color: var(--ink);
-    padding-left: 4px;
+    padding-left: 2px;
   }
+
   .bar {
     height: 4px;
     border-radius: 2px;
@@ -638,15 +819,16 @@
   .io .bar {
     margin: 0;
   }
+  /* Item 584: one segment per call, in the bars' grammar (a lone 6 × 12 block read as a stray mark). */
   .tks {
     display: flex;
-    flex-wrap: wrap;
-    gap: 3px;
-    margin-top: 7px;
+    gap: 2px;
+    height: 4px;
+    margin-top: 5px;
   }
   .tks i {
-    width: 6px;
-    height: 12px;
+    flex: 1 1 0;
+    max-width: 18px;
     background: var(--done);
     border-radius: 1px;
   }
