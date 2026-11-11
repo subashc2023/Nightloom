@@ -89,7 +89,7 @@
   // Item 564 (Filament IV stage 5): the turn trace's clock and the stream speed.
   import { untrack } from "svelte";
   // Item 589: the running step's motion, a variant per kind of step.
-  import { toolKind, type StepKind } from "./stepMotion.svelte";
+  import { stepMotion, toolKind, type StepKind, type StepMotion } from "./stepMotion.svelte";
   import { SpeedMeter, barOf, fmtSecs, sparkPoints, stepKeys, traceBook, type TraceRecord } from "./turnTiming";
   // Item 495 part 2: the folds kept past a chat switch.
   import { decodeOverride, encodeOverride, foldKey, keptGet, keptOpen, keptSet, type FoldScope } from "./keptFolds.svelte";
@@ -221,6 +221,7 @@
     folds = null,
     runFrom = null,
     nextChat = null,
+    motion = null,
   }: {
     segs: Segment[];
     footer?: Footer | null;
@@ -287,6 +288,10 @@
     /** Item 506: this is the chat's latest reply and it holds a next-chat
      *  prompt; only the main transcript passes it. */
     nextChat?: NextChat | null;
+    /** Item 610: the running step's motion for this reply's trace; null
+     *  follows the setting (Settings → Animations). Settings' previews pass
+     *  one each. */
+    motion?: StepMotion | null;
   } = $props();
 
   function runBlocks(text: string): RunBlocks | null {
@@ -861,7 +866,7 @@
            numbered steps, a status mark, a bar for each step's place in the
            turn, and a foot that says how many steps and how long, with the
            fold. Bars only where the window timed the steps (this session). -->
-      <div class="activity trace" class:live={streaming} class:timed={isTimed} use:thinkingArrival={blockArrival(g.rows)}>
+      <div class="activity trace" class:live={streaming} class:timed={isTimed} data-motion={motion ?? stepMotion.value} use:thinkingArrival={blockArrival(g.rows)}>
         {#if !folded}
           {#each g.rows as { seg, i } (ids[i] || i)}
             {#if seg.kind === "thinking"}
@@ -2028,8 +2033,10 @@
   }
   /* ---- Item 589: the running step comes alive (stepMotion.svelte.ts) ----
      One grammar — the thread under the row, the bar's head, the status mark —
-     with a variant per kind (data-kind). The setting on <html>
-     (data-step-motion: none = Sweep, "weave", "quiet") applies to all of it.
+     with a variant per kind (data-kind). The setting (Sweep, "weave",
+     "quiet") is stamped on each trace as data-motion (item 610: the trace's
+     own, so Settings' three previews run side by side; the transcript's
+     follow the setting) and applies to all of it.
      Transform and opacity only (the word's light is a background position on
      one word); paused while the window is hidden; under reduced motion
      nothing here moves. The step ending removes .mo-run: the finished look
@@ -2064,7 +2071,7 @@
     background: repeating-linear-gradient(90deg, transparent 0 15px, color-mix(in srgb, var(--signal) 10%, transparent) 15px 16px);
     transform: skewX(-24deg);
   }
-  :global(:root[data-step-motion="weave"]) .mo-bg {
+  .trace[data-motion="weave"] .mo-bg {
     display: block;
   }
   .mo-weft:not(.k-shell)::after {
@@ -2095,18 +2102,18 @@
     background: repeating-linear-gradient(180deg, color-mix(in srgb, var(--signal) 20%, transparent) 0 1px, transparent 1px 2px);
   }
   /* Quiet: the thinking thread is not drawn; tool rows keep today's shuttle. */
-  :global(:root[data-step-motion="quiet"]) .mo-weft.k-think {
+  .trace[data-motion="quiet"] .mo-weft.k-think {
     display: none;
   }
-  :global(:root[data-step-motion="quiet"]) .mo-weft > i {
+  .trace[data-motion="quiet"] .mo-weft > i {
     display: none;
   }
-  :global(:root[data-step-motion="quiet"]) .mo-weft.k-agent {
+  .trace[data-motion="quiet"] .mo-weft.k-agent {
     top: 27px;
     height: 1.5px;
     background: color-mix(in srgb, var(--signal) 22%, transparent);
   }
-  :global(:root[data-step-motion="quiet"]) .mo-weft:not(.k-shell):not(.k-think)::after {
+  .trace[data-motion="quiet"] .mo-weft:not(.k-shell):not(.k-think)::after {
     display: block;
   }
   .scan {
@@ -2262,7 +2269,7 @@
       animation: mo-breathe 1.8s ease-in-out infinite alternate;
     }
     /* A light passing through the word "Thinking" (not under Quiet). */
-    :global(:root:not([data-step-motion="quiet"])) .trace .mo-run[data-kind="think"] .name {
+    :global(:root) .trace:not([data-motion="quiet"]) .mo-run[data-kind="think"] .name {
       -webkit-text-fill-color: transparent;
       background-image: linear-gradient(100deg, var(--ink) 0 42%, var(--signal-ink, var(--signal)) 50%, var(--ink) 58% 100%);
       background-size: 300% 100%;
