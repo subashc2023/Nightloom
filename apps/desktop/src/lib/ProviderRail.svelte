@@ -575,6 +575,9 @@
   <!-- The engine as two cards, each saying who pays and who runs the loop:
        the answer to "what's the difference between Provider and Claude
        Code", on the control itself. -->
+  <!-- Item 577: a ruled "Engine" title over the two rows, shown only
+       under Filament IV (hidden by the ungated rule, shown by the gated). -->
+  <div class="sect-h eng-h" aria-hidden="true"><span class="ns-k">Engine</span><span class="sub">who pays, who runs the loop</span></div>
   <div class="eng" role="radiogroup" aria-label="Engine">
     <button
       class="ecard"
@@ -2594,5 +2597,249 @@
   .p .num {
     color: var(--dim);
     font-size: 0.9em;
+  }
+
+  /* Filament IV, item 577 (his "the menu that opens when u click 'claude
+     code * subscription'", 2026-11-10): stage 6's menus grammar (item 570)
+     on this pane — ruled mono titles with the note after the rule, the
+     engine and kind choices as two-line radio rows (the chosen one on the
+     control fill, its ring amber), flat mono keys, the chosen pill,
+     segment and model row on the control fill rather than the accent
+     block. Look only: no markup but the hidden-under-Classic Engine
+     title. Behind `:where(:root:not([data-layout="classic"]))`; the rules
+     above are Classic's, untouched. */
+  .eng-h {
+    display: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .eng-h {
+    display: flex;
+    margin-bottom: -6px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .sect-h {
+    gap: 8px;
+    padding: 2px 0 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .sect-h .ns-k {
+    font: 500 10px var(--mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink2);
+    flex: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .sect-h::after {
+    order: 1;
+    flex: 1 1 12px;
+    min-width: 12px;
+    background: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .sect-h .sub {
+    order: 2;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    min-width: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .sect-h > :global(*:not(.ns-k):not(.sub)) {
+    order: 3;
+  }
+  /* The engine: two radio rows, the name over its grey line. */
+  :global(:where(:root:not([data-layout="classic"]))) .eng {
+    gap: 1px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ecard {
+    gap: 10px;
+    padding: 7px 10px;
+    border: none;
+    border-radius: var(--r1);
+    background: transparent;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ecard:hover:not(:disabled) {
+    background: var(--well);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ecard.on {
+    background: var(--well);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .radio {
+    width: 9px;
+    height: 9px;
+    margin: 4px 2px 0;
+    border: 1.5px solid var(--dim);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ecard.on .radio {
+    border-color: var(--accent);
+    background: radial-gradient(circle, var(--accent) 0 2.5px, transparent 3px);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ecard.on .radio::after {
+    content: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .et {
+    font-weight: 400;
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ecard.on .et {
+    font-weight: 500;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .et .ns-pill {
+    border: none;
+    background: transparent;
+    padding: 0;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--dim);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ed {
+    font-size: 11.5px;
+  }
+  /* The kind: a ruled title (the kind now after the rule), then the same
+     radio rows, full width. */
+  :global(:where(:root:not([data-layout="classic"]))) .kind-row {
+    gap: 8px;
+    padding: 4px 0 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .kind-row .lbl {
+    width: auto;
+    flex: none;
+    font: 500 10px var(--mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .kind-row::after {
+    content: "";
+    order: 1;
+    flex: 1 1 12px;
+    min-width: 12px;
+    height: 1px;
+    background: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .kind-name {
+    order: 2;
+    flex: none;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--dim);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .kind-row > :global(*:not(.lbl):not(.kind-name)) {
+    order: 3;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .kind-pick {
+    gap: 1px;
+    margin: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .kind-opt {
+    gap: 10px;
+    padding: 6px 10px;
+    border: none;
+    border-radius: var(--r1);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .kind-opt:hover:not(:disabled) {
+    background: var(--well);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .kind-opt.on {
+    background: var(--well);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .kind-glyph {
+    font-size: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 13px;
+    height: 17px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .kind-glyph::before {
+    content: "";
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    border: 1.5px solid var(--dim);
+    box-sizing: border-box;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .kind-opt.on .kind-glyph::before {
+    border-color: var(--accent);
+    background: radial-gradient(circle, var(--accent) 0 2px, transparent 2.5px);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .kind-opt-name {
+    font-size: 13px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .kind-opt.on .kind-opt-name {
+    font-weight: 500;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .kind-confirm,
+  :global(:where(:root:not([data-layout="classic"]))) .kind-line.kind-note {
+    margin-left: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .kind-confirm {
+    background: var(--well);
+    border-radius: var(--r1);
+  }
+  /* Pills: the chosen one on the control fill, keys flat. */
+  :global(:where(:root:not([data-layout="classic"]))) .pv .p {
+    background: var(--well);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pv .p.on {
+    background: var(--well2);
+    border-color: var(--accent);
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pv .p :global(.kbd) {
+    border: none;
+    background: transparent;
+    padding: 0;
+    min-width: 0;
+    height: auto;
+    color: var(--dim);
+    font-size: 10px;
+  }
+  /* The API engine's model list: radio rows on the card, the chosen row
+     on the control fill with the accent tick. */
+  :global(:where(:root:not([data-layout="classic"]))) .ml {
+    border-radius: var(--r1);
+    background: var(--well);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ml .r {
+    border-top-color: var(--line);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ml .r:hover:not(:disabled) {
+    background: var(--well2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ml .r.on {
+    background: var(--well2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ml .r.on::after {
+    content: "✓";
+    color: var(--accent);
+    font-size: 12px;
+    width: 12px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ml .r :global(.kbd) {
+    border: none;
+    background: transparent;
+    padding: 0;
+    min-width: 0;
+    height: auto;
+    color: var(--dim);
+    font-size: 10.5px;
+  }
+  /* Segments (Thinking, Approval, Effort): the chosen one on the control
+     fill, never the accent block (the accent block means the main action). */
+  :global(:where(:root:not([data-layout="classic"]))) .segs {
+    border-radius: var(--r1);
+    background: var(--well);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .segs button {
+    border-radius: calc(var(--r1) - 2px);
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .segs button.on {
+    background: var(--well2);
+    color: var(--ink);
+    box-shadow: inset 0 0 0 1px var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .segs button.on.off {
+    background: var(--failed-soft);
+    color: var(--failed);
+    box-shadow: inset 0 0 0 1px var(--failed);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ml .mfilter {
+    font-family: var(--mono);
   }
 </style>
