@@ -14,8 +14,9 @@ export const ASIDE_HIDDEN = {
   council: "a council turn is a chat turn the chat's model chairs; an aside is one answer off the cache",
   askAside: "the box is already an aside's: its Send asks",
   ghost: "the CLI's predicted next prompt is the chat's",
-  thinkingToggle: "an aside's answer streams its text only; it has no thinking blocks to fold",
-  toolsToggle: "an aside's answer streams its text only; it has no tool calls to fold",
+  // ~~thinkingToggle / toolsToggle: "an aside's answer streams its text
+  // only"~~ — item 403 gave an aside's answer the chat's thinking and tool
+  // rows, so since item 605 (2026-11-11) the two toggles are in its row.
   cacheChip: "the chip times the chat's cache; the aside's head says what it read from it",
   fork: "Fork helpers from here checkpoints the chat's session; an aside has no session of its own",
   removeFromContext: "an aside keeps no context to remove from: its exchanges travel as text, and Rewind drops them",
@@ -39,6 +40,9 @@ export const ASIDE_KEPT = [
   "send",
   "tokens",
   "resize",
+  // Item 605: the transcript toggles, now an aside's answer has both.
+  "thinkingToggle",
+  "toolsToggle",
   "copy",
   "edit",
   "rewind",

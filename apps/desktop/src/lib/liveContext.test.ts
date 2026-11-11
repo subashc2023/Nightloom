@@ -38,7 +38,7 @@ describe("item 590: the wiring", () => {
     expect(dialSrc).toMatch(/\{#if est\}\s*<circle\s+class="arc est"/);
   });
   it("the column reads the live reading only while its chat's turn runs, and passes the estimate", () => {
-    expect(railSrc).toMatch(/column && app\.busy && app\.live != null\s*\? liveFor\(liveContextOf\(app\.activeSessionId\)/);
+    expect(railSrc).toMatch(/column (?:&& !aside )?&& app\.busy && app\.live != null\s*\? liveFor\(liveContextOf\(app\.activeSessionId\)/);
     expect(railSrc).toMatch(/estimate=\{estShare\}/);
   });
   it("the turn's context_live event is stored per chat", () => {

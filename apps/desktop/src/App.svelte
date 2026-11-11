@@ -272,7 +272,7 @@
    */
   const RAIL_W = 224;
   const RAIL_MIN_SPLIT = 900;
-  const railColumn = $derived.by(
+  const chatColumn = $derived.by(
     () =>
       // Not under the Classic layout (item 542): 1d4ca17 had no column.
       !classic() &&
@@ -282,6 +282,32 @@
       !!liveTab &&
       app.tabs.panes.some((p) => p.active === liveTab?.id),
   );
+  /**
+   * Item 605 (his "shouldn't asides still have cost, context, all of the
+   * stuff in the side bar?"): with no chat in front for the column, an
+   * aside tab in front takes it — the focused pane's first, else the
+   * other's — and the column reads that aside. The chat's column wins
+   * when both are in front: one column at the edge.
+   */
+  const railAsideTab = $derived.by(() => {
+    if (classic() || app.asidePanel || splitWidth < RAIL_MIN_SPLIT || chatColumn) return null;
+    const f = tabs.focusedPane(app.tabs);
+    for (const p of [f, ...app.tabs.panes.filter((x) => x.id !== f.id)]) {
+      const c = tabs.activeTab(p).content;
+      if (c.kind === "aside") return c;
+    }
+    return null;
+  });
+  const railColumn = $derived(chatColumn || railAsideTab !== null);
+  /**
+   * Item 605: the panes whose front tab is an aside get the top bar, read
+   * from that aside. The bell and Files for you ride on the first of them
+   * only while no chat bar is up, so the window has one bell.
+   */
+  const asideBellPane = $derived.by(() => {
+    if (barPane !== null) return null;
+    return app.tabs.panes.find((p) => tabs.activeTab(p).content.kind === "aside")?.id ?? null;
+  });
   /** Item 599: folded by his button, the column is a strip with the button to open it again. */
   const RAIL_FOLDED_W = 36;
   const railPx = $derived(railFold.folded ? RAIL_FOLDED_W : RAIL_W);
@@ -750,6 +776,14 @@
             {#if classic()}<TabStripClassic {pane} />{:else}<TabStrip {pane} />{/if}
             {#if barPane === pane.id}
               {#if classic()}<TopBarClassic />{:else}<TopBar />{/if}
+            {:else if t.content.kind === "aside" && !classic()}
+              <!-- Item 605: an aside tab's bar — the chat's TopBar, given
+                   the aside (Filament only: Classic keeps 1d4ca17's look). -->
+              <TopBar
+                aside={asideOf(t.content.session, asideTabThread(t.content) ?? null)}
+                asideChat={t.content.session}
+                bell={asideBellPane === pane.id}
+              />
             {/if}
             <!-- Item 487: the note and the read-only views stay mounted
                  once shown, hidden while another tab is in front, so a
@@ -950,7 +984,12 @@
             <AsideCard aside={panelAside} placement={null} panel session={app.asidePanel} />
           </aside>
         {:else if railColumn}
-          <RightRail column />
+          {#if railAsideTab}
+            <!-- Item 605: the column beside an aside tab, reading the aside. -->
+            <RightRail column aside={asideOf(railAsideTab.session, asideTabThread(railAsideTab) ?? null)} asideChat={railAsideTab.session} />
+          {:else}
+            <RightRail column />
+          {/if}
         {/if}
         {#if asideDragging}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
