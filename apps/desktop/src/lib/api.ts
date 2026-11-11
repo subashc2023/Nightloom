@@ -1301,9 +1301,11 @@ export function sendNowInjected(turn: string, id: string): Promise<import("./mid
 }
 
 /** Stop the subagents still running in a turn whose reply ended (backlog
- *  329); how many were asked to stop. */
-export function stopSubagents(turn: string): Promise<number> {
-  return invoke("stop_subagents", { turn });
+ *  329); how many were asked to stop. With `note` (item 593), Nightloom's
+ *  words to the main agent go with the stop: at once when it is idle, else
+ *  at its next tool call (the chat's `session` names where that queue is). */
+export function stopSubagents(turn: string, session?: string | null, note?: string | null): Promise<number> {
+  return invoke("stop_subagents", { turn, session: session ?? null, note: note ?? null });
 }
 
 /** Take back a message sent into the running turn (backlog 328). */

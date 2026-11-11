@@ -31,6 +31,46 @@ export interface StillRow {
   status: string;
 }
 
+/** A subagent row as the Stop note reads it (item 593): what it is, and
+ *  what it had done — its calls, how long, its last steps. */
+export interface NoteRow extends StillRow {
+  task_id: string;
+  tool_uses: number;
+  startedAt: number;
+  /** Its own steps, as the row keeps them; only the calls' names are read. */
+  segments: readonly { kind: string; call?: { name: string } }[];
+}
+
+/**
+ * Nightloom's note to the main agent when he presses Stop on the line
+ * (nightshift item 593, his "sends a notice to the main agent so that it can
+ * like figure out what to do next"): which helpers he stopped, by name and
+ * agent id, what each had done (calls, minutes, its last few steps), that
+ * its partial work is kept, and that the next move is the main agent's.
+ * Null when no running helper is named (nothing to tell).
+ */
+export function stopNote(names: readonly { label: string; id: string | null; state: NameState }[], rows: readonly NoteRow[], now: number): string | null {
+  const each = names
+    .filter((n) => n.state === "running")
+    .map((n) => {
+      const r = n.id ? rows.find((x) => x.tool_use_id === n.id) : undefined;
+      if (!r) return `\u201c${n.label}\u201d`;
+      const calls = r.segments.filter((s) => s.kind === "tool" && s.call).map((s) => s.call!.name);
+      const count = Math.max(r.tool_uses, calls.length);
+      const ms = Math.max(0, now - r.startedAt);
+      const last = calls.slice(-4);
+      const did = `${count} tool call${count === 1 ? "" : "s"} over ${ms < 60_000 ? "under a minute" : `${Math.round(ms / 60_000)} min`}${last.length ? `, the last ${last.join(", ")}` : ""}`;
+      return `\u201c${n.label}\u201d (agent id \`${r.task_id}\`) after ${did}`;
+    });
+  if (each.length === 0) return null;
+  const one = each.length === 1;
+  return (
+    `[Nightloom, not from Swaraag: he pressed Stop on the still-working line, so Nightloom stopped ${one ? "your subagent" : "your subagents"} ${each.join("; ")}. ` +
+    `${one ? "Its" : "Their"} work so far is kept — any files ${one ? "it" : "they"} wrote, and ${one ? "its" : "their"} transcript and output file. ` +
+    `He stopped ${one ? "it" : "them"} on purpose: do not restart ${one ? "it" : "them"} unasked. Check what ${one ? "it" : "they"} finished, tell him in a line where things stand, and decide what to do next.]`
+  );
+}
+
 export type LineState = "running" | "done" | "stopped";
 export type NameState = "running" | "done" | "failed" | "stopped";
 
@@ -80,8 +120,9 @@ export function lineView(seg: StillRunningSegment, rows: readonly StillRow[]): L
   const running = names.some((x) => x.state === "running");
   if (running)
     return { state: "running", head: "Still working:", count, names, tail: `— the reply continues when ${n === 1 ? "it reports" : "they report"}` };
+  // His Stop (item 593): the line says the main agent was told.
   if (seg.stopped || names.some((x) => x.state === "stopped"))
-    return { state: "stopped", head: "Stopped:", count, names, tail: "" };
+    return { state: "stopped", head: "Stopped:", count, names, tail: seg.stopped ? "— the main agent is told" : "" };
   if (names.every((x) => x.state === "done"))
     return { state: "done", head: "Done:", count, names, tail: n === 1 ? "— it reported" : "— they reported" };
   return { state: "done", head: "Ended:", count, names, tail: n === 1 ? "— it failed" : "— not every one reported" };
