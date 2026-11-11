@@ -139,3 +139,64 @@ export function inSpan(theta: number, from: number, share: number): boolean {
   const d = (((u - a) % 1) + 1) % 1;
   return d < share;
 }
+
+// ---- item 586: the audio ring reacts to the pointer -------------------------
+
+/** The angle between two world angles (radians), 0..π. */
+export function angleGap(a: number, b: number): number {
+  const d = (((a - b) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+  return d > Math.PI ? 2 * Math.PI - d : d;
+}
+
+/** The world angle (0 at 12 o'clock, clockwise) of a point dx, dy (screen px, y down) from the centre. */
+export function pointerAngle(dx: number, dy: number): number {
+  return Math.atan2(dx, -dy);
+}
+
+/**
+ * How near the pointer is to a dial of radius R, 0..1: 1 on or inside the
+ * dial, falling off past its rim over about 4 R (the new-chat dial still
+ * feels a pointer across the page; the column's small dial only one close by).
+ */
+export function pointerNear(dx: number, dy: number, R: number): number {
+  const r = Math.hypot(dx, dy);
+  return Math.exp(-Math.max(0, r - R) / (4 * R));
+}
+
+/**
+ * The pointer's pull on the spoke at θ, 0..1: a lobe facing the pointer
+ * (((1 + cos gap) / 2)^6 — full at the facing spoke, half at ~39°, a tenth at
+ * ~69°), times `pointerNear`. A pointer near the centre faces no side, so
+ * the lobe flattens to an even half all round.
+ */
+export function pointerPull(theta: number, dx: number, dy: number, R: number): number {
+  const r = Math.hypot(dx, dy);
+  const aim = Math.min(1, r / R);
+  const lobe = ((1 + Math.cos(angleGap(theta, pointerAngle(dx, dy)))) / 2) ** 6;
+  return pointerNear(dx, dy, R) * (aim * lobe + (1 - aim) * 0.5);
+}
+
+/** A pointer at rest on the dial stirs the facing spokes this much (a key's kick is 0.3; first shots at 0.5 and 0.9 read as no change). */
+export const POINTER_HOVER = 1.2;
+/** A moving pointer's surge per frame: its travel over this many px is one key's kick, capped at it. */
+export const POINTER_STIR_PX = 120;
+export function stirKick(movedPx: number): number {
+  return Math.min(0.3, Math.max(0, movedPx) / POINTER_STIR_PX * 0.3);
+}
+
+/** Presence easing toward 1 (on the page) or 0 (gone) over dt seconds, τ 0.35 s. */
+export function easePresence(current: number, target: number, dt: number, tau = 0.35): number {
+  return target + (current - target) * Math.exp(-Math.max(0, dt) / tau);
+}
+
+/**
+ * A spoke under the pointer's pull `local` (0..~1.6): the ring's own surge
+ * there (taller, faster shiver), plus a fast buzz of its own so the facing
+ * side visibly vibrates harder than the rest. `local` 0 is `spoke` exactly.
+ */
+export function pointerSpoke(theta: number, t: number, surge: number, local: number): number {
+  if (local <= 0) return spoke(theta, t, surge);
+  const l = Math.min(1.6, local);
+  const buzz = 0.5 + 0.5 * Math.sin(31 * theta + 19 * t) * Math.sin(9 * theta - 13 * t);
+  return Math.min(1, spoke(theta, t, surge + l) + 0.3 * l * buzz);
+}

@@ -460,6 +460,10 @@ export function arrive(node: HTMLElement, params: ArriveParams) {
  * went to the queue) → the ghost is dropped unseen. No column (a narrow
  * window, the aside panel, Classic) → the ghost shrinks a little where it
  * is and fades. Reduced motion → nothing; the column's dial is simply there.
+ * The right column slides in from the right on the same timeline (item
+ * 563's leftover: transform and opacity on `[data-rail-col]`, cleared at the
+ * end), and the flight aims at where the column's dial will be once the slide
+ * is done, so the ghost lands on it.
  * The timeline is `dialFrameAt(ms)`, pure; `window.__dialMotionHold = ms`
  * holds an instant for the harness.
  */
@@ -482,6 +486,13 @@ export interface DialFrame {
   ghost: number;
   /** The column's dial's opacity; null when there is no target. */
   target: number | null;
+  /**
+   * Item 563 (521 §2 Motion, "while the column slides in"): how much of the
+   * right column's width it still sits to the right of its place, 1 → 0 on
+   * the dial's own easing (one timeline), and its opacity. 0 / 1 with no target.
+   */
+  slide: number;
+  colOpacity: number;
   done: boolean;
 }
 
@@ -491,7 +502,7 @@ export function dialFrameAt(ms: number, from: Rect, to: Rect | null): DialFrame 
   const e = easeOutCubic(t);
   const fade = smooth(DIAL_FADE_FROM, 1, t);
   if (!to) {
-    return { dx: 0, dy: 0, scale: lerp(1, 0.86, e), ghost: 1 - smooth(0.2, 1, t), target: null, done: t >= 1 };
+    return { dx: 0, dy: 0, scale: lerp(1, 0.86, e), ghost: 1 - smooth(0.2, 1, t), target: null, slide: 0, colOpacity: 1, done: t >= 1 };
   }
   const fcx = from.x + from.w / 2;
   const fcy = from.y + from.h / 2;
@@ -505,6 +516,8 @@ export function dialFrameAt(ms: number, from: Rect, to: Rect | null): DialFrame 
     scale: lerp(1, s, e),
     ghost: 1 - fade,
     target: fade,
+    slide: 1 - e,
+    colOpacity: lerp(0.35, 1, smooth(0, 0.6, t)),
     done: t >= 1,
   };
 }
@@ -546,6 +559,19 @@ function departDial(at: number): void {
   const from = rectOf(src);
   if (from.w <= 0 || from.h <= 0) return;
   const ghost = src.cloneNode(true) as HTMLElement;
+  // A cloned canvas is blank: copy the motion layer's pixels (item 581's DialMotion) so the ghost carries them.
+  const srcCanvases = src.querySelectorAll("canvas");
+  ghost.querySelectorAll("canvas").forEach((c, i) => {
+    const from = srcCanvases[i];
+    if (!from || !from.width) return;
+    c.width = from.width;
+    c.height = from.height;
+    try {
+      c.getContext("2d")?.drawImage(from, 0, 0);
+    } catch {
+      /* a tainted or lost context: the ghost flies without that layer */
+    }
+  });
   ghost.setAttribute("aria-hidden", "true");
   ghost.removeAttribute("role");
   Object.assign(ghost.style, {
@@ -564,6 +590,9 @@ function departDial(at: number): void {
 
   let raf = 0;
   let target: HTMLElement | null = null;
+  /** Item 563: the right column, slid in on the dial's timeline; `slid` is the offset painted last, px. */
+  let col: HTMLElement | null = null;
+  let slid = 0;
   let started = -1;
   const w = window as unknown as { __dialMotionHold?: number };
   const end = () => {
@@ -571,6 +600,10 @@ function departDial(at: number): void {
     raf = 0;
     ghost.remove();
     if (target) target.style.opacity = "";
+    if (col) {
+      col.style.transform = "";
+      col.style.opacity = "";
+    }
     if (dialCancel === end) dialCancel = null;
   };
   dialCancel = end;
@@ -579,6 +612,11 @@ function departDial(at: number): void {
     ghost.style.transform = `translate(${f.dx}px, ${f.dy}px) scale(${f.scale})`;
     ghost.style.opacity = String(f.ghost);
     if (target && f.target != null) target.style.opacity = String(f.target);
+    if (col) {
+      slid = f.slide * col.offsetWidth;
+      col.style.transform = slid > 0.01 ? `translateX(${slid}px)` : "";
+      col.style.opacity = f.colOpacity < 1 ? String(f.colOpacity) : "";
+    }
   };
   const step = (ts: number) => {
     raf = 0;
@@ -597,12 +635,17 @@ function departDial(at: number): void {
         raf = requestAnimationFrame(step);
         return;
       }
+      col = target?.closest<HTMLElement>("[data-rail-col]") ?? null;
       started = ts;
     }
     const hold = typeof w.__dialMotionHold === "number" ? w.__dialMotionHold : null;
     const ms = hold ?? ts - started;
     // The target is re-measured every frame: the column may still be settling.
-    const f = dialFrameAt(ms, from, target ? rectOf(target) : null);
+    // Item 563: less the slide painted last frame, so the flight lands where the
+    // column's dial will be when the slide ends (a transform moves no layout).
+    let to = target ? rectOf(target) : null;
+    if (to && slid) to = { ...to, x: to.x - slid };
+    const f = dialFrameAt(ms, from, to);
     paint(f);
     if (hold != null) return; // held for the harness; left on the page
     if (f.done) return end();

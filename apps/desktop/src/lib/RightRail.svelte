@@ -131,8 +131,26 @@
   const toolsLine = $derived(toolsText(marks));
   const hasTurn = $derived(turnClock != null || inTokens != null || outTokens != null || toolsLine != null);
   const pct = (n: number) => `${Math.round(n * 100)}%`;
-  /** Item 585: the new-chat layers the column's dial draws. */
-  const COLUMN_LAYERS = ["wave", "hand"];
+  /**
+   * Item 585: the new-chat layers the column's dial draws. Item 587 (his "add
+   * the gear and vibrating thing to the context wheel too", then "the same new
+   * chat animatiosn"): every new-chat layer, in DialMotion's column form, which
+   * keeps them in the band outside the figure. (Null: all layers.)
+   */
+  const COLUMN_LAYERS = null;
+  /** Item 587: the 5-hour hand, from the same plan use the column shows below. */
+  const motionPlan = $derived(plan ? { used: plan.five_hour ?? null, resetsAt: plan.five_hour_resets_at ?? null } : null);
+  /** Item 587: his keys in a composer surge the column's ring, as they do the new-chat dial's. */
+  let keys = $state(0);
+  $effect(() => {
+    if (!column) return;
+    const on = (e: Event) => {
+      const el = e.target as Element | null;
+      if (el?.closest?.(".composer")) keys++;
+    };
+    document.addEventListener("input", on, { passive: true });
+    return () => document.removeEventListener("input", on);
+  });
 
   // ---- item 569: Claude Code's /usage figures. The account's per-model
   // weeklies (the CLI cache) under Plan use; this chat's own totals (its
@@ -209,15 +227,16 @@
 {/snippet}
 
 {#if column}
-  <aside class="col" aria-label="Context, plan use, this turn and tasks">
+  <!-- Item 563: data-rail-col — the first send from the new-chat page slides this column in (sendMotion.ts departDial). -->
+  <aside class="col" data-rail-col aria-label="Context, plan use, this turn and tasks">
     <section>
       <h4>Context <span>{modelShort(app.connection?.model)}</span></h4>
       <div class="dial-at" data-dial-dock>
-        <!-- Item 585: a few of 581's new-chat layers behind the dial, quieter (the compact form at this size:
-             the audio ring and the seconds tick — its gear would sit behind the figure); the ring holds a gentle surge while a turn streams
+        <!-- Item 585: a few of 581's new-chat layers behind the dial, quieter (item 587: DialMotion's column form —
+             all of the new-chat dial's layers, the gears, radar and 5-hour hand between the figure and the inner ring; his keys surge it too); the ring holds a gentle surge while a turn streams
              and each new tool call nudges it. Paused when hidden, still under reduced motion. -->
         <div class="dm-at">
-          <DialMotion size={104} pad={14} quiet layers={COLUMN_LAYERS} streaming={live} typed={marks.length} />
+          <DialMotion size={104} pad={14} quiet column layers={COLUMN_LAYERS} plan={motionPlan} streaming={live} typed={marks.length + keys} />
         <ContextDial
           size={104}
           {share}
