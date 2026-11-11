@@ -1,4 +1,4 @@
-import { Marked, type MarkedExtension, type Tokens } from "marked";
+import { Marked, type MarkedExtension, type Token, type Tokens } from "marked";
 
 /**
  * The tagged hand-off prompt (nightshift item 464, 2026-10-28). One source of
@@ -40,11 +40,61 @@ interface HandoffToken extends Tokens.Generic {
 const BLOCK = /^ {0,3}<handoff>[ \t]*\n?([\s\S]*?)<\/handoff>[ \t]*(?:\n+|$)/;
 const START = /^ {0,3}<handoff>/m;
 
+/** A heading or bold line that names a hand-off prompt (item 583): "## Handoff
+ *  prompt for the next chat", "**Hand-off:**", "Next chat's prompt". */
+const FALLBACK_TITLE = /hand[- ]?off|next chat[’']?s prompt/i;
+
+function titleText(t: Token): string | null {
+  if (t.type === "heading") return (t as Tokens.Heading).text;
+  if (t.type === "paragraph") {
+    const inner = ((t as Tokens.Paragraph).tokens ?? []).filter((x) => !(x.type === "text" && !x.raw.trim()));
+    // A bold line alone, an end colon allowed ("**Handoff prompt:**" or "**Handoff prompt**:").
+    const bold = inner[0];
+    const rest = inner.slice(1).map((x) => x.raw).join("").trim();
+    if (inner.length >= 1 && bold.type === "strong" && (rest === "" || rest === ":")) {
+      return (bold as Tokens.Strong).text;
+    }
+  }
+  return null;
+}
+
+/**
+ * Item 583's fallback: a reply with no closed `<handoff>` block whose prompt
+ * came as a fenced code block directly under a heading or bold line naming a
+ * hand-off — the shape a model writes when he asks for the prompt in his own
+ * words. The last such fence becomes the hand-off token, in place, so the card
+ * shows and `extractHandoff` keeps it through the one path. A tagged block
+ * anywhere wins and nothing is changed; an ordinary code block (no such title
+ * right above it, or an indented one) is left alone.
+ */
+function promoteFallback(tokens: Token[]): Token[] {
+  if (tokens.some((t) => t.type === "handoff")) return tokens;
+  let at = -1;
+  for (let i = 0; i < tokens.length; i++) {
+    const title = titleText(tokens[i]);
+    if (title === null || !FALLBACK_TITLE.test(title)) continue;
+    let j = i + 1;
+    while (j < tokens.length && tokens[j].type === "space") j++;
+    const code = tokens[j] as Tokens.Code | undefined;
+    if (code && code.type === "code" && code.codeBlockStyle !== "indented" && code.text.trim()) at = j;
+  }
+  if (at < 0) return tokens;
+  const code = tokens[at] as Tokens.Code;
+  const handoff: HandoffToken = { type: "handoff", raw: code.raw, text: code.text.trim() };
+  tokens.splice(at, 1, handoff as unknown as Token);
+  return tokens;
+}
+
 function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 export const handoffTag: MarkedExtension = {
+  hooks: {
+    processAllTokens(tokens) {
+      return promoteFallback(tokens as Token[]);
+    },
+  },
   extensions: [
     {
       name: "handoff",
@@ -79,12 +129,14 @@ reader.use(handoffTag);
 /**
  * The last `<handoff>` block of a reply, trimmed; null when there is none,
  * it is blank, it sits inside a code fence or inline code, or it was never
- * closed. Read only from a finished reply (a turn's end), never mid-stream.
+ * closed — except item 583's fallback ([`promoteFallback`]): with no closed
+ * block, a fenced block right under a hand-off heading is the hand-off. Read only from a finished reply (a turn's end), never mid-stream.
  */
 export function extractHandoff(reply: string): string | null {
-  if (!reply.includes(HANDOFF_OPEN)) return null;
+  if (!reply.includes(HANDOFF_OPEN) && !FALLBACK_TITLE.test(reply)) return null;
   let last: string | null = null;
-  const tokens = reader.lexer(reply);
+  // `lexer` runs no hooks: the fallback is applied here as `parse` applies it.
+  const tokens = promoteFallback(reader.lexer(reply));
   reader.walkTokens(tokens, (t) => {
     if (t.type === "handoff") last = (t as HandoffToken).text;
   });

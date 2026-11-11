@@ -62,7 +62,9 @@ Be direct and concrete. Answer what was asked, at the length the question deserv
 
 When tools are available, use them to check rather than guessing, and say plainly when something is unverified. If a request is ambiguous in a way that changes the answer, ask; otherwise take the sensible reading and proceed.
 
-A command for the user to run themselves goes in its own ```bash block, one command per block: the desktop app gives that block a Run button and sends you its output.";
+A command for the user to run themselves goes in its own ```bash block, one command per block: the desktop app gives that block a Run button and sends you its output.
+
+Whenever you write a prompt for the next chat (a hand-off), put it between a line holding only <handoff> and a line holding only </handoff> — plain prose, no code fence, no [brackets] or placeholders; Nightloom shows it as a card with a button that starts the next chat with it.";
 
 /// The instruction file honoured in every directory on the walk, and in the
 /// user's config dir.
@@ -939,6 +941,10 @@ fn engine_note_segment(knowledge: Option<&KnowledgeContext>) -> Segment {
     text.push_str(CITE_NOTE);
     text.push(' ');
     text.push_str(RUN_BLOCK_NOTE);
+    // Item 583: the tag rule rode only in Nightloom's own wrap-up message,
+    // so a hand-off he asked for in words came back as a fenced block.
+    text.push(' ');
+    text.push_str(HANDOFF_NOTE);
     text.push_str("\n</engine-note>");
     Segment::new(SegmentKind::EngineNote, "engine-note", text)
 }
@@ -962,6 +968,19 @@ pub const CONTINUE_LATER_NOTE: &str = "To be continued later without the user �
 pub const RUN_BLOCK_NOTE: &str = "A command for the user to run themselves goes in its own \
      ```bash block, one command per block: the desktop app gives that block a Run button and \
      sends you its output.";
+
+/// Where a prompt for the next chat goes (nightshift item 583, 2026-11-10):
+/// the wrap-up's own sentence (`HANDOFF_ASK`, `apps/desktop/src/lib/handoffTag.ts`)
+/// as a standing rule, so a hand-off he asks for in his own words is tagged
+/// too — the card, its Continue button and the thread's keep read only the
+/// tag (and, since 583, a fence under a hand-off heading as a fallback).
+/// In every chat's engine note and the API engine's identity, threads
+/// included: the desktop's hand-off features have no off switch the prompt
+/// could follow.
+pub const HANDOFF_NOTE: &str = "Whenever you write a prompt for the next chat (a hand-off), put it \
+     between a line holding only <handoff> and a line holding only </handoff> — plain prose, no code \
+     fence, no [brackets] or placeholders; Nightloom shows it as a card with a button that starts the \
+     next chat with it.";
 
 /// What a non-incognito chat on the Claude Code engine is told about the
 /// account details the CLI attaches as context (nightshift backlog 446,
@@ -996,7 +1015,7 @@ fn incognito_engine_note_segment() -> Segment {
          tool mcp__nightloom__fetch_page (ToolSearch it by that full name). For the whole \
          text of a page use fetch_page (WebFetch summarises and truncates); if fetch_page \
          reports a JavaScript shell or returns only a title, use WebFetch on that URL instead \
-         of retrying. {INCOGNITO_NOTE} {CITE_NOTE} {RUN_BLOCK_NOTE}\n</engine-note>"
+         of retrying. {INCOGNITO_NOTE} {CITE_NOTE} {RUN_BLOCK_NOTE} {HANDOFF_NOTE}\n</engine-note>"
     );
     Segment::new(SegmentKind::EngineNote, "engine-note", text)
 }
@@ -3034,6 +3053,34 @@ As of now — the front.
             assert_eq!(text.contains("budget"), !b, "{text}");
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Item 583: the <handoff> rule stands in every chat's prompt — the
+    /// engine note (incognito's too) and the API engine's identity — so a
+    /// hand-off asked for in words is tagged, not only Nightloom's wrap-up.
+    #[test]
+    fn every_chat_is_told_where_a_next_chat_prompt_goes() {
+        assert!(
+            HANDOFF_NOTE.contains(
+                "between a line holding only <handoff> and a line holding only </handoff>"
+            )
+        );
+        assert!(HANDOFF_NOTE.contains("no code fence"));
+        assert!(
+            DEFAULT_IDENTITY.ends_with(HANDOFF_NOTE),
+            "{DEFAULT_IDENTITY}"
+        );
+        for seg in [
+            engine_note_segment(None),
+            engine_note_segment(Some(&KnowledgeContext {
+                dir: PathBuf::from("/kb"),
+            })),
+            incognito_engine_note_segment(),
+        ] {
+            assert!(seg.text.contains(HANDOFF_NOTE), "{}", seg.text);
+        }
+        // Short: its size shows on the new-chat dial.
+        assert!(HANDOFF_NOTE.split_whitespace().count() <= 60);
     }
 
     /// Nightshift 573: under `Choose`, both layers name gathering — search,
