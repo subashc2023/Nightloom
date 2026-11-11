@@ -708,6 +708,9 @@ export interface AsideTurn {
    *  header and footer; absent while asking and on a stored turn. */
   model?: string | null;
   usage?: { input_tokens: number; output_tokens: number; cache_read_tokens?: number };
+  /** The CLI's cost estimate for this answer (item 605), for the aside
+   *  tab's top bar and column; absent while asking or when none came. */
+  cost?: number;
   /** When the answer ended (ISO), for the footer's time. */
   at?: string;
   /** Clock when it was asked (backlog 309): the running list's elapsed.
@@ -9500,6 +9503,8 @@ async function runAside(turn: AsideTurn, sent: string, thread: Aside | null = nu
     if (res.model) t.model = res.model;
     if (res.output_tokens !== undefined)
       t.usage = { input_tokens: res.input_tokens ?? 0, output_tokens: res.output_tokens, cache_read_tokens: res.cache_read };
+    // Item 605: the aside's spend, for its tab's bar and column.
+    if (typeof res.cost_usd === "number") t.cost = res.cost_usd;
     t.at = new Date().toISOString();
   } catch (e) {
     const t = live();

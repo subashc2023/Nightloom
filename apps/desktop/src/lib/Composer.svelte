@@ -3532,44 +3532,10 @@
       {/if}
     </div>
   </div>
-  {#if aside}
-    <!-- The aside's bottom row (backlog 283): its line — where it answers
-         from, or why Send waits — and the format toggle, the one bottom
-         chip that is about the box rather than the chat's transcript. -->
-    <div class="bottom-row aside-row">
-      <span class="aside-line" role="status">
-        {#if asideBlock === "not-open"}
-          Sends only while <em>{asideChatName}</em> is the open chat — an aside answers from its context.
-          <button class="ns-btn ghost small" onclick={() => asideOwner && void openContent({ kind: "chat", session: asideOwner }, "new")}>Open the chat</button>
-        {:else if asideBlock === "engine"}
-          Asides run on the Claude Code engine; the box keeps what is typed.
-        {:else if asideBusy}
-          {aside && asideWaiting(aside) ? "Waiting — one aside answers at a time; ↵ holds the next message." : "Answering — ↵ holds the next message for when it ends."}
-        {:else}
-          Answers from this chat's context; nothing here enters the chat.
-        {/if}
-      </span>
-      <span class="spacer"></span>
-      <button
-        class="ns-chip bottom-toggle"
-        class:on={composerFormat.on}
-        aria-pressed={composerFormat.on}
-        use:tip={composerFormat.on
-          ? "Formatting drawn in the box — $…$ math, **bold**, *italic*, # headings; the message sent is the text as typed. Click for the plain box"
-          : "Plain box — click to draw $…$ math, **bold**, *italic* and # headings in place as you type"}
-        onclick={flipFormat}
-      >
-        <span class="bottom-mark" aria-hidden="true">∑</span>format
-      </button>
-    </div>
-  {:else if !floating}
-    <!-- The bottom row (backlog 112, board 10's C): the two transcript
-         toggles (backlog 052) and the cache chip (063), under the box,
-         right-aligned as drawn. A click on any single block still
-         overrides its toggle; flipping the toggle clears those clicks.
-         Remembered across relaunch; thinking off and tools on is how the
-         transcript read before them. -->
-    <div class="bottom-row">
+  <!-- The two transcript toggles (backlog 052), one snippet since item 605:
+       the chat's bottom row and an aside's draw the same pair, as an
+       aside's answer has thinking and tool rows since item 403. -->
+  {#snippet transcriptToggles()}
       <button
         class="ns-chip bottom-toggle"
         class:on={transcript.thinking}
@@ -3596,6 +3562,49 @@
       >
         <span class="bottom-mark" aria-hidden="true">⚒</span>tools
       </button>
+  {/snippet}
+  {#if aside}
+    <!-- The aside's bottom row (backlog 283): its line — where it answers
+         from, or why Send waits — and the format toggle, the one bottom
+         chip that is about the box rather than the chat's transcript. -->
+    <div class="bottom-row aside-row">
+      <span class="aside-line" role="status">
+        {#if asideBlock === "not-open"}
+          Sends only while <em>{asideChatName}</em> is the open chat — an aside answers from its context.
+          <button class="ns-btn ghost small" onclick={() => asideOwner && void openContent({ kind: "chat", session: asideOwner }, "new")}>Open the chat</button>
+        {:else if asideBlock === "engine"}
+          Asides run on the Claude Code engine; the box keeps what is typed.
+        {:else if asideBusy}
+          {aside && asideWaiting(aside) ? "Waiting — one aside answers at a time; ↵ holds the next message." : "Answering — ↵ holds the next message for when it ends."}
+        {:else}
+          Answers from this chat's context; nothing here enters the chat.
+        {/if}
+      </span>
+      <span class="spacer"></span>
+      <!-- Item 605: the transcript toggles, before the format chip as in the
+           chat's row — Filament only: Classic keeps 1d4ca17's aside row. -->
+      {#if !classic()}{@render transcriptToggles()}{/if}
+      <button
+        class="ns-chip bottom-toggle"
+        class:on={composerFormat.on}
+        aria-pressed={composerFormat.on}
+        use:tip={composerFormat.on
+          ? "Formatting drawn in the box — $…$ math, **bold**, *italic*, # headings; the message sent is the text as typed. Click for the plain box"
+          : "Plain box — click to draw $…$ math, **bold**, *italic* and # headings in place as you type"}
+        onclick={flipFormat}
+      >
+        <span class="bottom-mark" aria-hidden="true">∑</span>format
+      </button>
+    </div>
+  {:else if !floating}
+    <!-- The bottom row (backlog 112, board 10's C): the two transcript
+         toggles (backlog 052) and the cache chip (063), under the box,
+         right-aligned as drawn. A click on any single block still
+         overrides its toggle; flipping the toggle clears those clicks.
+         Remembered across relaunch; thinking off and tools on is how the
+         transcript read before them. -->
+    <div class="bottom-row">
+      {@render transcriptToggles()}
       <!-- Item 276: formatting drawn in the box. Off is the plain box; the
            message sent is the text as typed either way. -->
       <button

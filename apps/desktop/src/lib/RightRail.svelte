@@ -38,6 +38,8 @@
   import { railFold, toggleRailFold } from "./railFold.svelte";
   import { liveContextOf } from "./liveContext.svelte";
   import { liveFor, liveLegend, liveTip, liveTokens, liveValue } from "./liveContext";
+  import type { Aside } from "./state.svelte";
+  import { asideFigures } from "./asideFigures";
 
   interface Props {
     /**
@@ -46,8 +48,19 @@
      * Tasks. Without it, the model chip's popover as before (Model · Tasks).
      */
     column?: boolean;
+    /**
+     * Item 605 (his "shouldn't asides still have cost, context, all of the
+     * stuff in the side bar?"): the column beside an aside tab — the same
+     * column, reading the aside: its context dial, plan use, This aside
+     * (its cost and cache hit), This turn (its newest exchange). No Tasks
+     * (the to-do list is the chat's session's) and no cache timer (the
+     * timer is the chat's newest reply's). Null: the chat's, as before.
+     */
+    aside?: Aside | null;
+    /** The chat the aside is of (item 605), for its hand-off line. */
+    asideChat?: string | null;
   }
-  let { column = false }: Props = $props();
+  let { column = false, aside = null, asideChat = null }: Props = $props();
 
   type Tab = "connection" | "tasks";
 
@@ -77,13 +90,17 @@
    * plus an estimate of what has streamed since — in place of the last
    * round's. (Declared before `used`; `live` and `logged` are below.)
    */
+  let now = $state(Date.now());
+  /** Item 605: the aside's own figures, on the column's clock (declared
+   *  here, before the readings that use it). */
+  const af = $derived(column && aside ? asideFigures(aside, now) : null);
   const liveCtx = $derived(
-    column && app.busy && app.live != null
+    column && !aside && app.busy && app.live != null
       ? liveFor(liveContextOf(app.activeSessionId), lastLoggedTurn(app.events)?.startedAt ?? null)
       : null,
   );
   /** Context: the next request's prefix over the window (the top bar's gauge's figures). */
-  const used = $derived(column ? (liveCtx ? liveTokens(liveCtx) : contextUsed()) : null);
+  const used = $derived(column ? (af ? af.used : liveCtx ? liveTokens(liveCtx) : contextUsed()) : null);
   const limit = $derived(app.connection?.contextLimit ?? null);
   const share = $derived(used != null && limit ? Math.min(used / limit, 1) : 0);
   /** Item 590: the estimated tail of the arc, as a share of the window. */
@@ -91,7 +108,7 @@
   /** Item 590: each exact step swells the column's motion (587's language). */
   const stepKey = $derived(liveCtx ? `${app.activeSessionId ?? ""}:${liveCtx.steps}` : "");
   /** The hand-off line: the chat's own mark, else the Settings percent or token cap (backlog 436). */
-  const markShare = $derived(limit ? handoffMark(app.activeSessionId, limit) : null);
+  const markShare = $derived(limit ? handoffMark(aside ? asideChat : app.activeSessionId, limit) : null);
   const markTokens = $derived(limit && markShare != null ? Math.round(markShare * limit) : null);
   const ticks = $derived(tickCounts(limit));
   const handoffLine = $derived(handoffText(used, markTokens));
@@ -102,8 +119,7 @@
    * second under two minutes — and not at all once cold, so an idle
    * column with a cold cache has no timer.
    */
-  let now = $state(Date.now());
-  const cache = $derived(column ? cacheState(app.events, now, app.activeSessionId ? touchedUntil(keepWarm.byChat[app.activeSessionId]) : null) : null);
+  const cache = $derived(column && !aside ? cacheState(app.events, now, app.activeSessionId ? touchedUntil(keepWarm.byChat[app.activeSessionId]) : null) : null);
   $effect(() => {
     if (!cache || !cache.warm) return;
     const wait = nextTickMs(cache.remainingMs);
@@ -128,20 +144,23 @@
    * request's usage, the clock from his message; idle, the last turn as
    * the log has it, its clock stopped.
    */
-  const logged = $derived(column ? lastLoggedTurn(app.events) : null);
-  const live = $derived(column && app.busy && app.live != null);
+  const logged = $derived(column && !aside ? lastLoggedTurn(app.events) : null);
+  const live = $derived(af ? !!af.turn?.live : column && app.busy && app.live != null);
   $effect(() => {
     if (!live) return;
     const id = setInterval(() => (now = Date.now()), 1000);
     return () => clearInterval(id);
   });
   const turnClock = $derived.by(() => {
+    if (af) return af.turn?.ms != null ? clockText(af.turn.ms) : null;
     if (!logged?.startedAt) return null;
     if (live) return clockText(now - logged.startedAt);
     return logged.endedAt != null && logged.endedAt >= logged.startedAt ? clockText(logged.endedAt - logged.startedAt) : null;
   });
-  const marks = $derived(live ? toolMarks(app.live?.segments ?? []) : (logged?.tools ?? []));
-  const turnUsage = $derived(live ? app.liveUsage : (logged?.usage ?? null));
+  const marks = $derived(
+    aside ? toolMarks(aside.turns[aside.turns.length - 1]?.segments ?? []) : live ? toolMarks(app.live?.segments ?? []) : (logged?.tools ?? []),
+  );
+  const turnUsage = $derived(af ? (af.turn?.usage ?? null) : live ? app.liveUsage : (logged?.usage ?? null));
   const inTokens = $derived(freshIn(turnUsage));
   const outTokens = $derived(turnUsage ? turnUsage.output_tokens : null);
   const ioScale = $derived(niceCeil(Math.max(inTokens ?? 0, outTokens ?? 0)));
@@ -188,7 +207,7 @@
       .catch(() => {});
     return () => (gone = true);
   });
-  const agentSession = $derived(claudeCode ? chatAgentSession(app.events) : null);
+  const agentSession = $derived(claudeCode && !aside ? chatAgentSession(app.events) : null);
   let figures = $state<SessionFigures | null>(null);
   let figuresOf = $state<string | null>(null);
   $effect(() => {
@@ -268,7 +287,7 @@
   <!-- Item 563: data-rail-col — the first send from the new-chat page slides this column in (sendMotion.ts departDial). -->
   <aside class="col" data-rail-col aria-label="Context, plan use, this turn and tasks">
     <section>
-      <h4>Context <span class="hr"><span>{modelShort(app.connection?.model)}</span>{@render foldButton(false)}</span></h4>
+      <h4>Context <span class="hr"><span>{modelShort(af?.model ?? aside?.model ?? app.connection?.model)}</span>{@render foldButton(false)}</span></h4>
       <div class="dial-at" data-dial-dock>
         <!-- Item 585: a few of 581's new-chat layers behind the dial, quieter (item 587: DialMotion's column form —
              all of the new-chat dial's layers, the gears, radar and 5-hour hand between the figure and the inner ring; his keys surge it too); the ring holds a gentle surge while a turn streams
@@ -429,6 +448,23 @@
       </section>
     {/if}
 
+    {#if af && af.cost}
+      <!-- Item 605: the aside's own spend, in This chat's form. -->
+      <section class="chat-use" aria-label="This aside's usage">
+        <h4>This aside</h4>
+        <div class="cost" use:tip={"The CLI's estimate for each of this aside's answers, at API prices — not a bill under a subscription"}>
+          <b>{usd(af.cost.usd)}{af.cost.complete ? "" : "+"}</b><span>at API prices</span>
+        </div>
+        {#if af.cacheHit != null}
+          <div class="tiles">
+            <div class="tile" use:tip={"The newest answer's input read back from the chat's prompt cache, of all its input"}>
+              <span>Cache hit</span><b>{Math.round(af.cacheHit * 100)}%</b>
+            </div>
+          </div>
+        {/if}
+      </section>
+    {/if}
+
     {#if hasTurn}
       <section>
         <h4>This turn {#if turnClock}<span class:sig={live}>{turnClock}</span>{/if}</h4>
@@ -455,9 +491,11 @@
       </section>
     {/if}
 
-    <section class="tasks">
-      <TaskPanel column />
-    </section>
+    {#if !aside}
+      <section class="tasks">
+        <TaskPanel column />
+      </section>
+    {/if}
   </aside>
 {:else}
   <aside class="rail">

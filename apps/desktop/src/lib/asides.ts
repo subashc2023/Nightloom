@@ -16,8 +16,10 @@
  * What a stored turn keeps: the question, the answer as he saw it (the
  * partial text stands in for one cut short), the error, the cancelled
  * mark. Not the `seq` (per launch; a loaded turn gets a negative one,
- * unique for the card's keyed list, which no live exchange has) and not
- * `cacheRead`. A turn still asking when the store
+ * unique for the card's keyed list, which no live exchange has) ~~and not
+ * `cacheRead`~~ — since item 605 (2026-11-11) the answer's tokens and cost
+ * estimate are kept, and `cacheRead` comes back from them, so the aside
+ * tab's top bar and column read the same after a relaunch. A turn still asking when the store
  * was written comes back as cancelled with what had arrived, or not at
  * all if nothing had: nothing can still be asking after a relaunch. ~~A
  * draft card (opened from a selection, nothing asked) is not kept.~~
@@ -102,6 +104,10 @@ interface StoredTurn {
    *  the bytes stay in memory, under the store's cap. */
   files?: { kind: Attachment["kind"]; name: string; media_type: string }[];
   model?: string;
+  /** Item 605: the answer's tokens and cost estimate, so the aside tab's
+   *  bar and column read the same after a relaunch. */
+  usage?: { input_tokens: number; output_tokens: number; cache_read_tokens?: number };
+  cost?: number;
 }
 
 // ---- Backlog 283 (2026-10-02): the aside's composer is the chat's ----
@@ -171,6 +177,8 @@ function storeTurn(t: AsideTurn): StoredTurn | null {
   if (t.attachments && t.attachments.length > 0)
     out.files = t.attachments.map((x) => ({ kind: x.kind, name: x.name, media_type: x.media_type }));
   if (t.model) out.model = t.model;
+  if (t.usage) out.usage = { ...t.usage };
+  if (typeof t.cost === "number") out.cost = t.cost;
   return out;
 }
 
@@ -304,6 +312,16 @@ function loadAside(v: unknown): Aside | null {
       if (files.length > 0) turn.attachments = files;
     }
     if (typeof m.model === "string" && m.model) turn.model = m.model;
+    // Item 605: the figures the tab's bar and column read.
+    const u = m.usage as Record<string, unknown> | undefined;
+    if (u && typeof u === "object" && typeof u.input_tokens === "number" && typeof u.output_tokens === "number") {
+      turn.usage = { input_tokens: u.input_tokens, output_tokens: u.output_tokens };
+      if (typeof u.cache_read_tokens === "number") {
+        turn.usage.cache_read_tokens = u.cache_read_tokens;
+        turn.cacheRead = u.cache_read_tokens;
+      }
+    }
+    if (typeof m.cost === "number" && Number.isFinite(m.cost)) turn.cost = m.cost;
     turns.push(turn);
   }
   const anchor = isAnchor(a.anchor) ? a.anchor : null;
