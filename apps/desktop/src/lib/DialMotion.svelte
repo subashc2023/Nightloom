@@ -1,0 +1,538 @@
+<script lang="ts">
+  /**
+   * Item 581: the new-chat dial's motion — one canvas under the dial
+   * (`ContextDial.svelte` is untouched), drawn by one requestAnimationFrame
+   * loop while the page is visible. His words: "like the turning of the
+   * gears, or like putting a minute clock on it that ticks, or like the
+   * vibrating … audio thing". Layers, outside in:
+   *
+   * - wave   — the audio ring: a spoke every 2° just outside the tick scale,
+   *            idling in three slow travelling waves; it surges while he
+   *            types in the message box (`typed`), on open, on a project
+   *            switch, and swells (with an expanding ring) when a prompt
+   *            layer is switched and the arcs re-flow (`flowKey`).
+   * - hand   — the clock: a bright tick on the tick scale that steps once a
+   *            second on the wall clock, overshooting and settling, with a
+   *            faint trail filling the minute's lap.
+   * - gearA  — 60 teeth inside the inner ring, turning clockwise one tooth a
+   *            second; three index teeth make the turn legible.
+   * - gearB  — 40 blocks, counter-clockwise, stepping one block each time a
+   *            gearA tooth passes 12 o'clock (an escapement: they mesh).
+   * - gearC  — three long arc segments turning clockwise, slower.
+   * - slow   — the 5-hour window's hand: how far through the window he is
+   *            (`plan.resetsAt`), its time left on hover.
+   * - radar  — a faint sweep round the band behind the gears, every 5 s.
+   *
+   * Hover on a part of the dial (`lit`) lights the gear teeth inside that
+   * part's span; a project switch (`spinKey`) spins the gears up for about
+   * a second. Under `prefers-reduced-motion: reduce` one still frame is
+   * drawn (redrawn on hover, theme and once a minute) and nothing loops.
+   * The loop stops while the document is hidden.
+   *
+   * Below 150 px (the short pane's 84 px dial) the compact form draws the
+   * wave, one gear and the clock tick only.
+   */
+  import { onMount, untrack } from "svelte";
+  import { tip as tipAction } from "./tip";
+  import { shortClock } from "./newChatPage";
+  import {
+    drive,
+    escapement,
+    integral,
+    inSpan,
+    kick,
+    level,
+    prune,
+    secondsAngle,
+    spoke,
+    windowElapsed,
+    windowTip,
+  } from "./dialMotion";
+
+  interface Props {
+    /** The dial's track diameter, px (ContextDial's `size`). */
+    size: number;
+    /** ContextDial's `pad`: the canvas centres on the dial's box. */
+    pad: number;
+    /** The hovered part's span, as shares of a turn from 12 o'clock. */
+    lit?: { from: number; share: number } | null;
+    /** A change spins the gears up (the project). */
+    spinKey?: string | null;
+    /** A change swells the wave (the starting context's parts). */
+    flowKey?: string;
+    /** Bumped on every input in the message box. */
+    typed?: number;
+    /** Leave gaps in the wave for the quarter labels. */
+    labelGaps?: boolean;
+    /** The 5-hour window, for the slow hand; null draws none. */
+    plan?: { used: number | null; resetsAt: string | null } | null;
+  }
+
+  let { size, pad, lit = null, spinKey = null, flowKey = "", typed = 0, labelGaps = false, plan = null }: Props = $props();
+
+  /** Room past the dial's box for the wave's tallest spokes. */
+  const compact = $derived(size < 150);
+  const margin = $derived(compact ? 12 : 8);
+  const box = $derived(size + pad * 2);
+  const css = $derived(box + margin * 2);
+
+  type Hook = { at?: number | null; only?: string | null; energy?: number; spin?: number; stats?: boolean };
+  const hook: Hook | null =
+    typeof window !== "undefined" ? ((window as unknown as { __dialMotion?: Hook }).__dialMotion ?? null) : null;
+
+  let canvas = $state<HTMLCanvasElement | null>(null);
+  let probe = $state<HTMLSpanElement | null>(null);
+
+  // ---- colours, read from the palette's tokens (re-read on a theme change)
+  type Ink = { accent: string; accentInk: string; signal: string; signalInk: string; dim: string; line: string; glow: boolean; calm: boolean };
+  let ink: Ink = { accent: "#ffb454", accentInk: "#ffd08a", signal: "#86d8f7", signalInk: "#b8e9fb", dim: "#7d8590", line: "#30363d", glow: true, calm: false };
+  function readInk() {
+    if (!probe) return;
+    const get = (v: string) => {
+      probe!.style.color = `var(${v})`;
+      return getComputedStyle(probe!).color;
+    };
+    const root = document.documentElement;
+    const glowVar = getComputedStyle(root).getPropertyValue("--glow-accent").trim();
+    ink = {
+      accent: get("--accent"),
+      accentInk: get("--accent-ink"),
+      signal: get("--signal"),
+      signalInk: get("--signal-ink"),
+      dim: get("--dim"),
+      line: get("--line2"),
+      glow: glowVar !== "" && glowVar !== "none",
+      calm: root.dataset.light === "calm",
+    };
+  }
+
+  // ---- the clock and the drives
+  const t0 = typeof performance !== "undefined" ? performance.now() : 0;
+  const clock = () => (hook?.at != null ? hook.at / 1000 : (performance.now() - t0) / 1000);
+  const wall = () => (hook?.at != null ? new Date(2026, 10, 10, 17, 0, 0).getTime() + hook.at : Date.now());
+  /** The wave's surge: τ 0.7 s. */
+  const energy = drive(0.7);
+  /** The gears' extra turn, deg/s: τ 0.45 s. */
+  const spin = drive(0.45);
+  /** Swells: an expanding ring per layer switch, 0.8 s each. */
+  let swells: number[] = [];
+  kick(energy, 0, 0.9);
+
+  // Reactions: a key in the box, a layer switch, a project switch.
+  let lastTyped: number | undefined;
+  $effect(() => {
+    const n = typed;
+    if (lastTyped !== undefined && n !== lastTyped) {
+      const t = clock();
+      if (level(energy, t) < 1.5) kick(energy, t, 0.3);
+      kick(spin, t, 25);
+      untrack(paint);
+    }
+    lastTyped = n;
+  });
+  let lastFlow: string | undefined;
+  $effect(() => {
+    const k = flowKey;
+    if (lastFlow !== undefined && lastFlow !== "" && k !== "" && k !== lastFlow) {
+      const t = clock();
+      kick(energy, t, 1.1);
+      swells = [...swells.filter((s) => t - s < 0.8), t];
+      untrack(paint);
+    }
+    if (k !== "") lastFlow = k;
+  });
+  let lastSpin: string | null | undefined;
+  $effect(() => {
+    const k = spinKey;
+    if (lastSpin !== undefined && k !== lastSpin) {
+      const t = clock();
+      kick(spin, t, 340);
+      kick(energy, t, 0.8);
+      untrack(paint);
+    }
+    lastSpin = k;
+  });
+  // A hover redraws at once (the still form has no loop to pick it up).
+  $effect(() => {
+    void lit;
+    void plan;
+    void size;
+    untrack(paint);
+  });
+
+  // ---- the 5-hour hand: where it points, and its hover target
+  let minute = $state(Date.now());
+  const slow = $derived.by(() => {
+    if (compact || !plan?.resetsAt) return null;
+    const share = windowElapsed(plan.resetsAt, hook?.at != null ? wall() : minute);
+    if (share == null) return null;
+    const R = size / 2;
+    const k = size / 330;
+    const a = share * 2 * Math.PI;
+    const r = R - 48 * k;
+    return {
+      share,
+      x: margin + box / 2 + r * Math.sin(a),
+      y: margin + box / 2 - r * Math.cos(a),
+      tip: windowTip(plan.used, plan.resetsAt, minute, shortClock(plan.resetsAt)),
+    };
+  });
+
+  // ---- drawing
+  const TAU = Math.PI * 2;
+  const rad = (deg: number) => (deg * Math.PI) / 180;
+  const shows = (layer: string) => !hook?.only || hook.only.split(",").includes(layer);
+
+  function draw(ctx: CanvasRenderingContext2D, t: number, ms: number, still = false) {
+    const R = size / 2;
+    const k = compact ? size / 84 : size / 330;
+    const c = margin + box / 2;
+    const dim = ink.calm ? 0.7 : 1;
+    ctx.clearRect(0, 0, css, css);
+    ctx.save();
+    ctx.translate(c, c);
+    ctx.lineCap = "butt";
+    // The still form is the idle shape: no surge.
+    const surge = still ? 0 : level(energy, t) + (hook?.energy ?? 0);
+    // The gears' turn: 6°/s, plus the spin-up and a nudge per key.
+    const turnA = 6 * t + integral(spin, t) + (hook?.spin ?? 0);
+    const radial = (th: number, r1: number, r2: number) => {
+      const s = Math.sin(th);
+      const co = -Math.cos(th);
+      ctx.moveTo(r1 * s, r1 * co);
+      ctx.lineTo(r2 * s, r2 * co);
+    };
+    // World angles: 0 at 12 o'clock, clockwise; canvas arcs start at 3 o'clock.
+    const arc = (r: number, a0: number, a1: number) => {
+      ctx.arc(0, 0, r, a0 - Math.PI / 2, a1 - Math.PI / 2);
+    };
+    const isLit = (th: number) => !!lit && lit.share > 0 && inSpan(th, lit.from, lit.share);
+
+    // radar: a wedge sweeping the band behind the gears, every 5 s.
+    if (!compact && shows("radar") && typeof ctx.createConicGradient === "function") {
+      const head = rad(72 * t);
+      const wedge = rad(70);
+      const ro = R - 31 * k;
+      const ri = R - 64 * k;
+      const g = ctx.createConicGradient(head - wedge - Math.PI / 2, 0, 0);
+      const span = wedge / TAU;
+      g.addColorStop(0, "rgba(0,0,0,0)");
+      g.addColorStop(span * 0.999, ink.signal);
+      g.addColorStop(span, "rgba(0,0,0,0)");
+      g.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.globalAlpha = 0.16 * dim;
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(0, 0, ro, 0, TAU);
+      ctx.arc(0, 0, ri, 0, TAU, true);
+      ctx.fill();
+      ctx.globalAlpha = 0.5 * dim;
+      ctx.strokeStyle = ink.signal;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      radial(head, ri, ro);
+      ctx.stroke();
+    }
+
+    // gearC: three long segments, clockwise, slower.
+    if (!compact && shows("gearC")) {
+      const a = rad(10 * t + 0.6 * integral(spin, t) + (hook?.spin ?? 0) * 0.6);
+      const r = R - 54 * k;
+      ctx.strokeStyle = ink.signal;
+      ctx.lineWidth = 2 * k;
+      ctx.globalAlpha = 0.6 * dim;
+      ctx.beginPath();
+      for (const [from, len] of [
+        [0, 64],
+        [140, 38],
+        [250, 18],
+      ]) {
+        const s = a + rad(from);
+        ctx.moveTo(r * Math.sin(s), -r * Math.cos(s));
+        arc(r, s, s + rad(len));
+      }
+      ctx.stroke();
+      ctx.lineWidth = 1.2 * k;
+      ctx.beginPath();
+      for (const [from, len] of [
+        [0, 64],
+        [140, 38],
+        [250, 18],
+      ]) {
+        radial(a + rad(from), r - 4 * k, r + 4 * k);
+        radial(a + rad(from + len), r - 4 * k, r + 4 * k);
+      }
+      ctx.stroke();
+    }
+
+    // gearB: 40 blocks, counter-clockwise, one step per gearA tooth.
+    if (!compact && shows("gearB")) {
+      const a = -rad(escapement(turnA, 6, 9));
+      const r = R - 40 * k;
+      const w = 5 * k;
+      ctx.lineWidth = w;
+      for (const pass of [0, 1]) {
+        ctx.strokeStyle = pass ? ink.accent : ink.dim;
+        ctx.globalAlpha = (pass ? 0.95 : 0.42) * dim;
+        ctx.beginPath();
+        for (let i = 0; i < 40; i++) {
+          const s = a + rad(i * 9);
+          const hot = i % 10 === 0 || isLit(s + rad(2.25));
+          if (hot !== !!pass) continue;
+          ctx.moveTo(r * Math.sin(s), -r * Math.cos(s));
+          arc(r, s, s + rad(4.5));
+        }
+        ctx.stroke();
+      }
+    }
+
+    // gearA: 60 teeth, clockwise, one tooth a second; index teeth at thirds.
+    if (shows("gearA")) {
+      const a = rad(turnA);
+      const n = compact ? 36 : 60;
+      const r1 = compact ? R - 22 * k : R - 30 * k;
+      const r2 = compact ? R - 17 * k : R - 23 * k;
+      ctx.lineWidth = (compact ? 1.4 : 1.6) * k;
+      for (const pass of [0, 1]) {
+        ctx.strokeStyle = pass ? ink.accent : ink.dim;
+        ctx.globalAlpha = (pass ? 1 : 0.62) * dim;
+        ctx.beginPath();
+        for (let i = 0; i < n; i++) {
+          const th = a + (i * TAU) / n;
+          const index = i % (n / 3) === 0;
+          const hot = index || isLit(th);
+          if (hot !== !!pass) continue;
+          const long = index || i % 5 === 0;
+          radial(th, long ? r1 - 3 * k : r1, hot && !index ? r2 + 2 * k : r2);
+        }
+        ctx.stroke();
+      }
+    }
+
+    // slow: the 5-hour window's hand.
+    if (slow && shows("slow")) {
+      const a = slow.share * TAU;
+      const r = R - 48 * k;
+      ctx.globalAlpha = 0.22 * dim;
+      ctx.strokeStyle = ink.signal;
+      ctx.lineWidth = 2 * k;
+      ctx.beginPath();
+      arc(r, 0, a);
+      ctx.stroke();
+      ctx.globalAlpha = 0.95 * dim;
+      ctx.strokeStyle = ink.signalInk;
+      ctx.lineWidth = 2 * k;
+      ctx.beginPath();
+      radial(a, r + 4 * k, R - 26 * k);
+      ctx.stroke();
+      ctx.fillStyle = ink.signalInk;
+      ctx.beginPath();
+      const x = r * Math.sin(a);
+      const y = -r * Math.cos(a);
+      const d = 3.4 * k;
+      ctx.moveTo(x, y - d);
+      ctx.lineTo(x + d, y);
+      ctx.lineTo(x, y + d);
+      ctx.lineTo(x - d, y);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // wave: the audio ring, a spoke every 2° (5° compact).
+    if (shows("wave")) {
+      const n = compact ? 72 : 180;
+      const r0 = compact ? R + 4 * k : R + 11 * k;
+      const base = compact ? 1.2 * k : 2.5 * k;
+      const reach = compact ? 7 * k : 14 * k;
+      ctx.strokeStyle = ink.signal;
+      ctx.lineWidth = compact ? 1.1 : 1.5 * k;
+      ctx.globalAlpha = Math.min(1, 0.5 + 0.35 * Math.min(1, surge)) * dim;
+      ctx.beginPath();
+      for (let i = 0; i < n; i++) {
+        const th = (i * TAU) / n;
+        if (labelGaps) {
+          const q = (((th / (Math.PI / 2)) % 1) + 1) % 1;
+          if (q < 0.045 || q > 0.955) continue;
+        }
+        radial(th, r0, r0 + base + reach * spoke(th, t, surge));
+      }
+      ctx.stroke();
+      // A layer switch: a ring swells out from the track and fades.
+      for (const s of swells) {
+        const u = (t - s) / 0.8;
+        if (u < 0 || u > 1) continue;
+        ctx.globalAlpha = 0.6 * (1 - u) * dim;
+        ctx.strokeStyle = ink.accent;
+        ctx.lineWidth = 2 * k * (1 - u) + 0.5;
+        ctx.beginPath();
+        ctx.arc(0, 0, R + (6 + 24 * (1 - (1 - u) ** 3)) * k, 0, TAU);
+        ctx.stroke();
+      }
+    }
+
+    // hand: the seconds tick, stepping with an overshoot, and its lap trail.
+    if (shows("hand") && Number.isFinite(ms)) {
+      const a = rad(secondsAngle(ms));
+      const rt = compact ? R + 2.5 * k : R + 8.5 * k;
+      ctx.globalAlpha = 0.2 * dim;
+      ctx.strokeStyle = ink.accent;
+      ctx.lineWidth = 2 * k;
+      ctx.beginPath();
+      arc(rt, 0, Math.max(0, a));
+      ctx.stroke();
+      ctx.globalAlpha = dim;
+      ctx.strokeStyle = ink.accentInk;
+      ctx.lineWidth = (compact ? 1.6 : 2.4) * k;
+      ctx.lineCap = "round";
+      if (ink.glow && !ink.calm) {
+        ctx.shadowColor = ink.accent;
+        ctx.shadowBlur = 8;
+      }
+      ctx.beginPath();
+      radial(a, compact ? R - 3 * k : R - 3 * k, compact ? R + 7 * k : R + 16 * k);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+      if (!compact) {
+        ctx.fillStyle = ink.accentInk;
+        const tipR = R + 18 * k;
+        const s = Math.sin(a);
+        const co = -Math.cos(a);
+        const px = -co;
+        const py = s;
+        const w = 3.2 * k;
+        ctx.beginPath();
+        ctx.moveTo(tipR * s, tipR * co);
+        ctx.lineTo((tipR + 6 * k) * s + w * px, (tipR + 6 * k) * co + w * py);
+        ctx.lineTo((tipR + 6 * k) * s - w * px, (tipR + 6 * k) * co - w * py);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.lineCap = "butt";
+    }
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+
+  // ---- the loop
+  const reduce =
+    typeof window !== "undefined" && typeof window.matchMedia === "function"
+      ? window.matchMedia("(prefers-reduced-motion: reduce)")
+      : null;
+  let raf = 0;
+  let running = false;
+  const times: number[] = [];
+  let frames = 0;
+  function paint() {
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const dpr = window.devicePixelRatio || 1;
+    const px = Math.round(css * dpr);
+    if (canvas.width !== px) {
+      canvas.width = px;
+      canvas.height = px;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const still = !!reduce?.matches;
+    const a = hook?.stats ? performance.now() : 0;
+    // The still form: the gears at rest, the wave a gentle shape, no tick.
+    draw(ctx, still ? 0 : clock(), still ? NaN : wall(), still);
+    if (hook?.stats) {
+      times.push(performance.now() - a);
+      if (times.length > 900) times.shift();
+      frames++;
+    }
+  }
+  function frame() {
+    raf = 0;
+    if (!running) return;
+    paint();
+    const t = clock();
+    prune(energy, t);
+    prune(spin, t);
+    raf = requestAnimationFrame(frame);
+  }
+  function start() {
+    if (running || reduce?.matches || document.visibilityState === "hidden") return;
+    running = true;
+    raf = requestAnimationFrame(frame);
+  }
+  function stop() {
+    running = false;
+    if (raf) cancelAnimationFrame(raf);
+    raf = 0;
+  }
+  function sync() {
+    if (reduce?.matches || document.visibilityState === "hidden") stop();
+    else start();
+    paint();
+  }
+
+  onMount(() => {
+    readInk();
+    const mo = new MutationObserver(() => {
+      readInk();
+      paint();
+    });
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ["data-palette", "data-light", "data-theme", "data-layout", "class", "style"] });
+    document.addEventListener("visibilitychange", sync);
+    reduce?.addEventListener?.("change", sync);
+    const tick = setInterval(() => (minute = Date.now()), 60_000);
+    if (hook?.stats) {
+      // The harness's bench: n paints back to back, ms per paint (offscreen WebKit throttles the loop itself).
+      (window as unknown as { __dialMotionBench: (n: number) => number }).__dialMotionBench = (n) => {
+        const a = performance.now();
+        for (let i = 0; i < n; i++) paint();
+        return (performance.now() - a) / n;
+      };
+      (window as unknown as { __dialMotionStats: () => unknown }).__dialMotionStats = () => {
+        const s = [...times].sort((x, y) => x - y);
+        const avg = s.reduce((x, y) => x + y, 0) / Math.max(1, s.length);
+        return { frames, drawAvgMs: +avg.toFixed(3), drawP95Ms: +(s[Math.floor(s.length * 0.95)] ?? 0).toFixed(3), drawMaxMs: +(s[s.length - 1] ?? 0).toFixed(3), seconds: +clock().toFixed(2), running };
+      };
+    }
+    sync();
+    return () => {
+      stop();
+      mo.disconnect();
+      document.removeEventListener("visibilitychange", sync);
+      reduce?.removeEventListener?.("change", sync);
+      clearInterval(tick);
+    };
+  });
+  // The still form redraws when the 5-hour hand moves.
+  $effect(() => {
+    void slow;
+    untrack(paint);
+  });
+</script>
+
+<div class="dm" style:left="{-margin}px" style:top="{-margin}px" style:width="{css}px" style:height="{css}px" aria-hidden="true">
+  <canvas bind:this={canvas} style:width="{css}px" style:height="{css}px"></canvas>
+  <span class="probe" bind:this={probe}></span>
+</div>
+{#if slow}
+  <span class="slow-hit" style:left="{slow.x - margin - 8}px" style:top="{slow.y - margin - 8}px" use:tipAction={slow.tip}></span>
+{/if}
+
+<style>
+  .dm {
+    position: absolute;
+    pointer-events: none;
+  }
+  canvas {
+    display: block;
+  }
+  .probe {
+    display: none;
+  }
+  /* The 5-hour hand's hover target: a 16 px spot on its diamond. */
+  .slow-hit {
+    position: absolute;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    pointer-events: auto;
+    cursor: default;
+  }
+</style>

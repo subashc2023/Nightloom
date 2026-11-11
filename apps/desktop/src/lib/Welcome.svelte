@@ -19,6 +19,7 @@
   import type { ChatKind, ChatMode } from "./types";
   import Composer from "./Composer.svelte";
   import ContextDial from "./ContextDial.svelte";
+  import DialMotion from "./DialMotion.svelte";
   import Icon from "./Icon.svelte";
   import Kbd from "./Kbd.svelte";
   import WelcomeClassic from "./WelcomeClassic.svelte";
@@ -68,6 +69,11 @@
    * wide enough; the message box; the four kinds of chat; the threads to
    * pick up; the key strip. On the first send the dial travels to the
    * right column (`departs` in `sendMotion.ts`).
+   *
+   * Item 581 ("missing the animative quality that makes it like jarvis"):
+   * `DialMotion.svelte` draws gears, a ticking clock hand, the 5-hour
+   * window's slow hand and an audio-style ring under the dial, reacting to
+   * typing, a layer switch, a project switch and a hover on a part.
    *
    * Under the Classic layout (item 542) this is `WelcomeClassic.svelte`,
    * fe79d50's page verbatim: the notes orbiting the composer (2026-09-13).
@@ -181,6 +187,49 @@
   const startTip = $derived(
     `${startSummary(groups)}\nThe inner ring is drawn ${scale.label}; the outer ring is the whole ${limit ? shortTokens(limit) : ""} window.`,
   );
+  // ---- item 581: the dial's motion layer (`DialMotion.svelte`) and what drives it.
+  /** Bumped on every input in the message box: the wave surges while he types. */
+  let typed = $state(0);
+  /** A change in the parts (a layer switched) swells the wave. */
+  const flowKey = $derived(groups.map((g) => `${g.tone}:${g.tokens}`).join(","));
+  /** The hovered part's span, read off the dial's hit bands (ContextDial is not changed). */
+  let litTip = $state<string | null>(null);
+  const lit = $derived.by(() => {
+    if (!litTip) return null;
+    // The part's tone, from either ring; its span on the inner ring (100k), where
+    // a part is wide enough to light a run of teeth, else on the outer one.
+    const tone = (arcs.find((x) => x.tip === litTip) ?? ring.find((x) => x.tip === litTip))?.tone;
+    const r = ring.find((x) => x.tone === tone) ?? arcs.find((x) => x.tone === tone);
+    return r ? { from: r.from, share: r.share } : null;
+  });
+  /** Listens on the dial's box for a pointer or focus on a part's hit band. */
+  function pointsAt(node: HTMLElement) {
+    const on = (e: Event) => {
+      const hit = (e.target as Element | null)?.closest?.(".hit");
+      litTip = hit?.getAttribute("aria-label") ?? null;
+    };
+    const off = () => (litTip = null);
+    node.addEventListener("pointerover", on);
+    node.addEventListener("pointerout", off);
+    node.addEventListener("focusin", on);
+    node.addEventListener("focusout", off);
+    return {
+      destroy() {
+        node.removeEventListener("pointerover", on);
+        node.removeEventListener("pointerout", off);
+        node.removeEventListener("focusin", on);
+        node.removeEventListener("focusout", off);
+      },
+    };
+  }
+  /** The 5-hour window for the slow hand (Claude Code's plan use). */
+  const motionPlan = $derived.by(() => {
+    if (app.connection?.engine !== "claude-code") return null;
+    const u = app.planUsage;
+    if (!u || u.source === "none" || !u.five_hour_resets_at) return null;
+    return { used: u.five_hour ?? null, resetsAt: u.five_hour_resets_at };
+  });
+
   /** Before the first message the dial is the starting context. */
   const fresh = $derived(used === 0 && groups.length > 0);
   const dialShare = $derived(fresh && limit ? Math.min(startTotal / limit, 1) : share);
@@ -359,7 +408,17 @@
 <div class="welcome" data-drop-chat bind:clientWidth={w} bind:clientHeight={h} class:wide>
   <div class="page">
     {#if size > 0}
-      <div class="core" style:width="{box}px" style:height="{box}px">
+      <div class="core" style:width="{box}px" style:height="{box}px" use:pointsAt>
+        <DialMotion
+          {size}
+          pad={PAD}
+          {lit}
+          spinKey={app.project?.id ?? null}
+          {flowKey}
+          {typed}
+          labelGaps={quarters.length === 4}
+          plan={motionPlan}
+        />
         {#if wide}
           <!-- Lit (IV+): six read-outs on leader lines. Calm hides them for the row below. -->
           <svg class="leaders" width={box} height={box} aria-hidden="true">
@@ -443,7 +502,8 @@
            small one stands beside the name — the same parts, inner ring, sweep and light. -->
       <div class="flatrow" class:withdial={fresh && !!limit}>
         {#if fresh && limit}
-          <div class="mini">
+          <div class="mini" use:pointsAt>
+            <DialMotion size={84} pad={8} {lit} spinKey={app.project?.id ?? null} {flowKey} {typed} />
             <ContextDial
               size={84}
               share={dialShare}
@@ -501,7 +561,7 @@
         <p class="warn">{app.error}</p>
       {/if}
 
-      <div class="composer-slot">
+      <div class="composer-slot" oninput={() => typed++}>
         <Composer floating />
       </div>
 
@@ -698,6 +758,10 @@
   }
   .flattext {
     display: contents;
+  }
+  /* 581: the small dial's motion layer sits under it. */
+  .mini {
+    position: relative;
   }
   .dot {
     width: 7px;
