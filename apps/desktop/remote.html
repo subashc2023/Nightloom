@@ -5,7 +5,7 @@
     <!-- The phone page (nightshift backlog 091, Shape B). viewport-fit=cover
          so the safe areas are the page's to pad; the apple-* tags make
          Add to Home Screen a full-screen app with the icon and no Safari
-         chrome; the manifest does the same on Android.
+         chrome; the manifest (main.ts adds it) does the same on Android.
          interactive-widget (300 A15): Android Chrome shrinks the page for
          the keyboard; iOS ignores it, and viewport.ts fits the page there. -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
@@ -21,7 +21,11 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/remote/apple-touch-icon.png" />
     <link rel="apple-touch-icon" href="/remote/icon-256.png" />
     <link rel="icon" href="/remote/icon-128.png" />
-    <link rel="manifest" href="/remote/manifest.webmanifest" />
+    <!-- 604: no manifest link here — main.ts adds it before the page mounts:
+         the static file, or once paired the Home Screen icon's own (its
+         start_url carries the pairing). WebKit loads the first link it
+         finds when asked and never again for the page, so a static one
+         read early would stick. -->
     <title>Nightloom</title>
   </head>
   <body>

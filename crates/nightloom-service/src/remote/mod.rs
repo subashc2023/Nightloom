@@ -1481,6 +1481,39 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
+    /// Item 604: the Home Screen icon's pairing rides a `data:` manifest the
+    /// page builds on the phone (`homeScreen.ts`), so no host ever sees it.
+    /// The static manifest the hosts serve stays token-free, and neither the
+    /// phone listener nor the away server logs a request line (no trace
+    /// layer, no request printing) that a token could land in.
+    #[test]
+    fn remote_home_screen_pairing_never_reaches_a_host_or_a_log() {
+        let m: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../apps/desktop/public/remote/manifest.webmanifest"
+        ))
+        .unwrap();
+        assert_eq!(m["start_url"], "/");
+        let html = include_str!("../../../../apps/desktop/remote.html");
+        assert!(
+            !html.contains("rel=\"manifest\""),
+            "main.ts adds the manifest link"
+        );
+        // The needles are built, so this test's own text does not match.
+        let needles = [
+            ["Trace", "Layer"].concat(),
+            ["on_", "request"].concat(),
+            ["tracing::", "info!"].concat(),
+        ];
+        for (name, src) in [
+            ("remote/mod.rs", include_str!("mod.rs")),
+            ("serve.rs", include_str!("../serve.rs")),
+        ] {
+            for n in &needles {
+                assert!(!src.contains(n.as_str()), "{name} logs requests ({n})");
+            }
+        }
+    }
+
     /// A host that records what it was asked and answers from fixtures.
     /// The fake's note key for a scope: a named project's notes are kept
     /// apart from the open project's (item 300 B1).

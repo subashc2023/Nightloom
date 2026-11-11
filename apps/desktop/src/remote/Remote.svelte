@@ -131,7 +131,6 @@
     guessRole,
     hostName,
     loadHosts,
-    macFromHash,
     whereLine,
     missingSentence,
     mixedBlocked,
@@ -148,6 +147,7 @@
     type Hosts as HostMap,
     type Tried,
   } from "./hosts";
+  import { halvesFromHash, keepStored, manifestHref, setManifest } from "./homeScreen";
   import { heldTap, joinDraft, loadPlace, placeFromHash, placeHash, plainError, samePlace, savePlace, triable, type Place } from "./place";
   import { NO_PROJECT, callProject, notesProject, openedProject, placeProject, resolveAsk, unresolvedAsk } from "./screenProject";
   import { LATE_NOTICE_MS, NEW_CHAT_TURN, noticeFor, turnEndedFor, type EndedTurn } from "./turnNotice";
@@ -173,6 +173,11 @@
   const origin = typeof location === "undefined" ? "" : location.origin;
   /** The paired hosts, each a base URL and its own token (`hosts.ts`). */
   let hosts = $state<HostMap>({});
+  // Item 604: the Home Screen icon starts with every paired host (its
+  // manifest's start_url, `homeScreen.ts`), kept up as pairings change.
+  $effect(() => {
+    if (typeof document !== "undefined") setManifest(document, manifestHref(hosts, origin));
+  });
   /** The host answering now: the state, the stream and the lists are its. */
   let active = $state<HostRole | null>(null);
   /** What the last host choice found on the hosts it did not take. */
@@ -975,11 +980,15 @@
     const fromHash = tokenFromHash(location.hash);
     // Item 588: the Settings → Phone code carries the Mac too, so one scan
     // of the away server's link pairs both and the page falls over by itself.
-    const macHalf = fromHash ? macFromHash(location.hash) : null;
-    if (macHalf && guessRole(origin) !== "mac") {
-      hosts = pair(hosts, "mac", macHalf);
+    // Item 604: the away server's half too, on a link the Mac's page made;
+    // and on the Home Screen icon's own start a host already kept keeps
+    // its token (the icon's link may be older than a paste since).
+    for (const half of fromHash ? halvesFromHash(location.hash) : []) {
+      if (half.role === guessRole(origin) || keepStored(hosts, half.entry.base, location.hash)) continue;
+      hosts = pair(hosts, half.role, half.entry);
       saveHosts(hosts, origin);
     }
+    const ownKept = fromHash !== null && keepStored(hosts, origin, location.hash);
     // Where he was (A21): the hash's place on a reload, the stored one on
     // a launch — read before the token's hash is cleared.
     startPlace = (fromHash ? null : placeFromHash(location.hash)) ?? loadPlace();
@@ -990,7 +999,8 @@
       // Off the address bar the moment it is read: a token in the history
       // is a token in a screenshot.
       history.replaceState(null, "", location.pathname + location.search);
-      start(fromHash);
+      if (ownKept) void streamLoop();
+      else start(fromHash);
     } else if (paired.length > 0) void streamLoop();
     pollLoop();
     document.addEventListener("visibilitychange", () => {
