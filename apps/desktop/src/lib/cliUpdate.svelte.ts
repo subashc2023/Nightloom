@@ -19,6 +19,8 @@
  * project — the runner pins its own CLI, and an update under it would
  * swap the binary between its passes.
  */
+import { touchedUntil } from "./keepWarm";
+import { keepWarm } from "./keepWarm.svelte";
 import * as api from "./api";
 import { cacheState } from "./cache";
 import { CURATED } from "./catalog";
@@ -109,7 +111,8 @@ async function openChatCaches(now: number): Promise<OpenChatCache[]> {
       events = [];
     }
     const s = app.sessions.find((x) => x.id === id);
-    const cache = cacheState(events ?? [], now);
+    // A chat being kept warm (backlog 582) is warm to its last ping's hour.
+    const cache = cacheState(events ?? [], now, touchedUntil(keepWarm.byChat[id]));
     out.push({
       session: id,
       title: chatName(s?.title, s?.first_user),

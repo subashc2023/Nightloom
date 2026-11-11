@@ -1014,6 +1014,17 @@ impl AgentSpec {
         Some(spec)
     }
 
+    /// A keep-warm ping's spec (nightshift backlog 582; [`crate::keep_warm`]):
+    /// the aside's shape — a fork of the chat's session that keeps no file
+    /// of its own, everything that shapes the cached prefix as the chat has
+    /// it — held to one round, since it has nothing to answer. `None`
+    /// without a session to fork.
+    pub fn keep_warm_ping(&self) -> Option<AgentSpec> {
+        let mut spec = self.aside()?;
+        spec.max_turns = Some(1);
+        Some(spec)
+    }
+
     /// The spec for a **checkpoint fork** (nightshift backlog 104, pass 3;
     /// the module doc of [`fork`] has the design): a second CLI process on
     /// the chat's session, forked (`--fork-session`) from a chosen message

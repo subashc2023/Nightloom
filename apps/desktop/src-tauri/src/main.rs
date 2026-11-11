@@ -65,6 +65,8 @@ mod filetab;
 mod for_you;
 /// The notes Inbox's Sort inbox (nightshift backlog 488).
 mod inbox_sort;
+// The keep-warm clock (backlog 582).
+mod keep_warm;
 /// A `.tex` tab's rendered PDF (nightshift backlog 381).
 mod latex;
 mod model_list;
@@ -3862,6 +3864,8 @@ async fn send_agent(
         .log_path()
         .and_then(|p| p.file_stem().map(|s| s.to_os_string()))
         .map(|stem| log_dir.join("ask").join(stem));
+    // His message is going out: a keep-warm ping in flight stops (582).
+    keep_warm::sent(&app, &session.id, ask_dir.as_deref());
     if let Some(dir) = &ask_dir {
         agent.set_ask_dir(dir.clone());
         // Claude's browser (nightshift item 508): the chat's Playwright
@@ -3956,6 +3960,11 @@ async fn send_agent(
     // at once.
     if let Some(dir) = &ask_dir {
         sync_checkpoint(session, agent, dir);
+    }
+    // Keep-warm starts again from this reply, if the chat's switch is on
+    // (582) — not from a turn paused on his answer or by the plan's limit.
+    if outcome.deferred.is_none() && outcome.limit.is_none() {
+        keep_warm::replied(&app, session, agent.spec(), ask_dir.as_deref());
     }
     // The reads the CLI refused outside the trees (backlog 143, pass 2):
     // each folder once, for the rail to offer the grant after the fact.
@@ -5919,6 +5928,7 @@ async fn tool_result_images(
 #[tauri::command]
 async fn delete_session(
     state: State<'_, AppState>,
+    warm: State<'_, keep_warm::Holder>,
     previews: State<'_, preview::Host>,
     browsers: State<'_, claude_browser::Host>,
     id: String,
@@ -5943,6 +5953,7 @@ async fn delete_session(
         }
     };
     state.agents.forget(&full_id);
+    warm.stop(&full_id);
     // The chat's preview goes with it (item 430): nothing could show it.
     let gone = std::sync::Arc::clone(&previews.previews);
     gone.stop(&full_id).await;
@@ -5982,6 +5993,7 @@ async fn restore_session(state: State<'_, AppState>, id: String) -> Result<Strin
 #[tauri::command]
 async fn move_session(
     state: State<'_, AppState>,
+    warm: State<'_, keep_warm::Holder>,
     id: String,
     to: Option<String>,
 ) -> Result<String, String> {
@@ -6012,6 +6024,7 @@ async fn move_session(
         }
     };
     state.agents.forget(&full_id);
+    warm.stop(&full_id);
     if was_active {
         adopt_agent_session(&state, None).await;
     }
@@ -9370,6 +9383,9 @@ fn main() {
             // The schedule clock (backlog 535): Send later's and the limit
             // resume's times are kept here, not by the page's timers.
             app.manage(wake::Wakes::default());
+            // Keep-warm (backlog 582): each switched-on chat's pings.
+            app.manage(keep_warm::Holder::default());
+            keep_warm::watch(app.handle().clone());
             wake::mark_launch();
             wake::watch(app.handle().clone());
             // A debug build's measurement of item 324's refit, only with
@@ -9457,6 +9473,9 @@ fn main() {
             remove_block,
             restore_block,
             fork_session,
+            keep_warm::keep_warm_set,
+            keep_warm::keep_warm_status,
+            keep_warm::keep_warm_stop,
             context_view,
             edit_context,
             prompt_layers,

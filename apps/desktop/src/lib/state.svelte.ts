@@ -152,6 +152,7 @@ import {
 } from "./browse";
 import { SEARCH_COLUMN_MAX, searchGrowth } from "./search.svelte";
 import * as tabs from "./tabs";
+import { stopKeepWarm } from "./keepWarm.svelte";
 import { midTurnWire, chipsFromInputs, sendNowToast, deliveredNotice, type SendNowResult } from "./midTurn";
 import { carriesAlone, FOLLOWS, pendingFor, type ReplyResult } from "./askReply";
 import { answerLanded, clearHandBack, handedHow, noteAnswered } from "./handBack.svelte";
@@ -4575,6 +4576,12 @@ export async function closeTab(tabId?: string): Promise<void> {
   // Its × closes the New project form (backlog 394); the draft stays.
   if (tab.content.kind === "new-project") app.newProjectOpen = false;
   const r = tabs.close(ws, id);
+  // Its keep-warm ends with its last tab (backlog 582).
+  if (tab.content.kind === "chat" && tab.content.session) {
+    const chat = tab.content.session;
+    const still = ws.panes.some((p) => p.tabs.some((t) => t.content.kind === "chat" && t.content.session === chat));
+    if (!still) stopKeepWarm(chat);
+  }
   if (r.show) await activateTab(r.show.id);
 }
 
