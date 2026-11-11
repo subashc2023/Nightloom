@@ -6502,11 +6502,36 @@ export function threadPlusSelected(slug: string): boolean {
  * stayed lit while the page shown was the thread): only when the focused
  * pane's front tab is that chat (and it is the open chat). With no tab
  * yet, the open chat.
+ *
+ * Item 615 (his bug, 2026-11-11: "if i create new chat it doesn't
+ * hihglight that chat as if i'm on it"): a New chat's first turn runs with
+ * `activeSessionId` still null — the id arrives with the turn's first event
+ * and becomes the open chat only at the turn's end (`settleTurnView`) — so
+ * its row, listed meanwhile, was never lit and New chat stayed lit. The
+ * chat on screen is now that made chat (`screenChat`): its row lights, New
+ * chat does not, while its front tab is still the new-chat one.
  */
 export function chatSelected(id: string | null): boolean {
-  if (app.activeSessionId !== id) return false;
+  if (screenChat() !== id) return false;
   const c = frontContent();
-  return !c || (c.kind === "chat" && c.session === id);
+  return !c || (c.kind === "chat" && c.session === app.activeSessionId);
+}
+
+/**
+ * The chat a New chat's first turn made, from its first event until the
+ * turn's view settles (item 615). Set only while that turn is the screen's
+ * (not parked); cleared at every turn's start, when it goes to the
+ * background (`detach`, which makes it the open chat) and at the end of
+ * `settleTurnView` (which does too).
+ */
+export const firstTurnChat = $state<{ chat: string | null }>({ chat: null });
+
+/** The chat on screen for the sidebar's mark (item 615): the open chat, or
+ *  while a New chat's first turn runs on screen, the chat it made. */
+function screenChat(): string | null {
+  if (app.activeSessionId !== null) return app.activeSessionId;
+  if (app.parked) return null;
+  return firstTurnChat.chat;
 }
 
 /** Whether the sidebar draws the thread `slug`'s name selected: its tab is
@@ -7668,6 +7693,7 @@ function detach(): boolean {
     app.activeSessionId = id;
     void tick().then(() => activating--);
   }
+  firstTurnChat.chat = null;
   // And what he queued on its New chat page goes with it (backlog 375).
   if (t.pendingKey) moveQueue(t.pendingKey, id);
   const mine = (r: ApprovalRequest) => !r.chat || r.chat === id;
@@ -8175,6 +8201,9 @@ async function settleTurnView(
     else if (plan.realign?.kind === "new") await api.newSession(app.pendingMode, app.pendingKind);
   } catch {
     // keep the locally-built view if re-sync fails
+  } finally {
+    // Item 615: the open chat now names it (or he left); the stand-in goes.
+    firstTurnChat.chat = null;
   }
 }
 
@@ -9026,6 +9055,7 @@ export async function send(
   // goes off screen instead of parking once its chat has a name.
   const turn: TurnCtx = { chat: app.activeSessionId, detached: false, key: newTurnKey(), choice, provider: true, pendingKey };
   fg = turn;
+  firstTurnChat.chat = null; // item 615: a new turn, no stand-in yet
   let failed: string | null = null;
   try {
     await api.send(
@@ -9177,6 +9207,7 @@ async function sendAgent(
     pendingKey,
   };
   fg = turn;
+  firstTurnChat.chat = null; // item 615: a new turn, no stand-in yet
   // The budget meter (backlog 165, pass 2) follows this chat's ledger
   // while the turn runs; a chat not yet created has no directory to read.
   budgetTyped = turnTyped;
@@ -10107,6 +10138,8 @@ export function applyTurnEvent(ev: TurnEvent & { chat?: string }): void {
   // chat's first turn), and a parked one can then go to the background.
   if (ev.chat && fg && fg.chat === null) {
     fg.chat = ev.chat;
+    // Item 615: the sidebar marks the chat this first turn made.
+    if (!app.parked && app.activeSessionId === null) firstTurnChat.chat = ev.chat;
     // The chat it made keeps the model it was made on (backlog 205).
     if (fg.choice) {
       noteMade(chatChoice.choices, ev.chat, fg.choice);
