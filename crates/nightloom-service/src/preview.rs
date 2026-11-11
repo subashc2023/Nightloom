@@ -1666,7 +1666,8 @@ mod tests {
         ));
         let listener = bind_socket(&sock).unwrap();
         let server_task = tokio::spawn(serve_socket(listener, Arc::clone(&p)));
-        let seen: Arc<Mutex<Vec<(String, Option<Status>)>>> = Arc::default();
+        type Seen = Arc<Mutex<Vec<(String, Option<Status>)>>>;
+        let seen: Seen = Arc::default();
         let seen_c = Arc::clone(&seen);
         p.set_on_change(Arc::new(move |chat, snap| {
             seen_c

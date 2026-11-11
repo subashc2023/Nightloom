@@ -103,10 +103,10 @@ pub fn append(path: &Path, record: &str) {
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    if let Ok(meta) = std::fs::metadata(path) {
-        if meta.len() > ROTATE_AT_BYTES {
-            let _ = std::fs::rename(path, path.with_extension("log.1"));
-        }
+    if let Ok(meta) = std::fs::metadata(path)
+        && meta.len() > ROTATE_AT_BYTES
+    {
+        let _ = std::fs::rename(path, path.with_extension("log.1"));
     }
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)

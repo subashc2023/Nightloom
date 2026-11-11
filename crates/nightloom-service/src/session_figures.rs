@@ -130,10 +130,10 @@ fn fold(p: &mut Parsed, text: &str) {
         let Some(usage) = m.get("usage") else {
             continue;
         };
-        if let Some(id) = m.get("id").and_then(Value::as_str) {
-            if !p.seen.insert(id.to_string()) {
-                continue;
-            }
+        if let Some(id) = m.get("id").and_then(Value::as_str)
+            && !p.seen.insert(id.to_string())
+        {
+            continue;
         }
         let model = m.get("model").and_then(Value::as_str).unwrap_or("unknown");
         let total_w = u(usage, "cache_creation_input_tokens");
@@ -166,17 +166,16 @@ fn tokens_of(path: &Path) -> HashMap<String, Tokens> {
     if len < p.len {
         *p = Parsed::default();
     }
-    if len > p.len {
-        if let Ok(mut f) = std::fs::File::open(path) {
-            if f.seek(SeekFrom::Start(p.len)).is_ok() {
-                let mut buf = Vec::new();
-                if f.take(len - p.len).read_to_end(&mut buf).is_ok() {
-                    // Only whole lines: a line being written waits for the next read.
-                    let end = buf.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
-                    fold(p, &String::from_utf8_lossy(&buf[..end]));
-                    p.len += end as u64;
-                }
-            }
+    if len > p.len
+        && let Ok(mut f) = std::fs::File::open(path)
+        && f.seek(SeekFrom::Start(p.len)).is_ok()
+    {
+        let mut buf = Vec::new();
+        if f.take(len - p.len).read_to_end(&mut buf).is_ok() {
+            // Only whole lines: a line being written waits for the next read.
+            let end = buf.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+            fold(p, &String::from_utf8_lossy(&buf[..end]));
+            p.len += end as u64;
         }
     }
     p.by_model.clone()
@@ -200,12 +199,11 @@ fn last_cost_state(path: &Path) -> Option<Value> {
             text.split_once('\n').map_or("", |(_, r)| r)
         };
         for line in whole.lines().rev() {
-            if line.contains("\"cost-state\"") {
-                if let Ok(v) = serde_json::from_str::<Value>(line) {
-                    if v.get("type").and_then(Value::as_str) == Some("cost-state") {
-                        return Some(v);
-                    }
-                }
+            if line.contains("\"cost-state\"")
+                && let Ok(v) = serde_json::from_str::<Value>(line)
+                && v.get("type").and_then(Value::as_str) == Some("cost-state")
+            {
+                return Some(v);
             }
         }
         if start == 0 {
