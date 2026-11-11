@@ -3610,11 +3610,16 @@
            how long it stays warm, or `cold`. A chat whose last turn
            predates the timer's fields shows the share alone, and the
            title says why. Nothing before the first turn. -->
-      <!-- Keep-warm (backlog 582): the chat's switch beside its cache
-           timer, off by default, and the one-tap "until I'm back" (on
-           until his next message here). Shown once the chat has a 1-hour
-           cache to keep, or whenever its switch is on. -->
-      {#if kwChat && (isOn(kw) || cache?.ttl === "1h")}
+      <!-- Keep-warm (backlog 582; item 608): the chat's switch beside its
+           cache timer, on by default (Settings → Subscription → Keeping
+           caches warm). Shown once the chat has a 1-hour cache to keep, or
+           whenever he switched it on himself — a chat on only by the
+           default shows it only with a 1-hour cache, so a 5-minute engine
+           never reads "on". The one-tap "until I'm back" chip is gone
+           (blocker 1844): with the default on, the switch covers it. A chat
+           already in that mode reads "On until your next message" and ends
+           at his send as before. -->
+      {#if kwChat && ((isOn(kw) && kw?.chosen !== false) || cache?.ttl === "1h")}
         <button
           class="ns-chip bottom-toggle keep-warm"
           class:on={isOn(kw)}
@@ -3625,15 +3630,6 @@
         >
           <span class="bottom-mark" aria-hidden="true">♨</span>{switchLabel(kw, now)}
         </button>
-        {#if !isOn(kw)}
-          <button
-            class="ns-chip bottom-toggle keep-warm-once"
-            use:tip={"Keep this chat's cache warm until your next message here, then switch back off — for when you step away and mean to come back. Same schedule and cap as the switch."}
-            onclick={() => void flipKeepWarm("once")}
-          >
-            until I'm back
-          </button>
-        {/if}
       {/if}
       {#if cache && cacheBuilt && cacheChanges.length > 0}
         <!-- Backlog 408: a pending change would lose the warm cache; the
@@ -4183,8 +4179,7 @@
   }
   /* Keep-warm (582): the label is a clock time or a reason, never
      capitalised like the one-word toggles. */
-  .bottom-toggle.keep-warm,
-  .bottom-toggle.keep-warm-once {
+  .bottom-toggle.keep-warm {
     text-transform: none;
     font-variant-numeric: tabular-nums;
   }
