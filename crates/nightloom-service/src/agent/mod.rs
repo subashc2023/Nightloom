@@ -30,6 +30,7 @@
 
 pub mod ask;
 pub mod brief;
+pub mod budget;
 pub mod cli_session;
 pub mod connectors;
 pub mod fork;
@@ -78,6 +79,10 @@ use tokio_util::sync::CancellationToken;
 /// as a new one. The grace is ten times the measured time to exit, for a
 /// slower machine; past it the kill below is the backstop it always was.
 const INTERRUPT_GRACE: Duration = Duration::from_secs(5);
+
+/// How often a running chat turn looks at its budget ledger for a wake
+/// (item 538): a file read under its lock, nothing when no wake waits.
+const BUDGET_TICK: Duration = Duration::from_secs(2);
 
 /// How long to keep reading after a kill (item 466, 2026-10-29): what the
 /// CLI wrote before it is already in the pipe; this is only the backstop
@@ -1802,6 +1807,14 @@ impl ClaudeCodeAgent {
         {
             self.spec.mcp_config = Some(cfg);
         }
+        // The chat's budget ledger (item 538): Nightloom's own server is
+        // told the directory, so its `set_budget` writes this chat's ledger.
+        if self.spec.brief.is_some()
+            && let Some(cfg) = &self.spec.mcp_config
+            && let Some(cfg) = budget::with_budget_dir(cfg, &dir)
+        {
+            self.spec.mcp_config = Some(cfg);
+        }
         if let Some(brief) = &mut self.spec.brief {
             brief.dir = dir;
             let _ = brief::write(&brief.dir, &brief.text);
@@ -1918,6 +1931,13 @@ impl ClaudeCodeAgent {
                 &brief.dir,
                 &self.spec.subagent_limits.unwrap_or_default(),
                 chair.map_or(brief::TurnPhase::Turn, brief::TurnPhase::Chair),
+            );
+            // A cap his message states (item 538): the backstop, in the
+            // fresh ledger until the model's own `set_budget` replaces it.
+            budget::declare_from_message(
+                &brief.dir,
+                &input.text,
+                chrono::Utc::now().timestamp_millis(),
             );
         }
         let mut translator = match &self.refused {
@@ -2199,6 +2219,16 @@ impl ClaudeCodeAgent {
         let mut limit_at: Option<tokio::time::Instant> = None;
         let mut main_idle = false;
         let mut limit_ended = false;
+        // The budget's wakes (item 538): the chat's ledger is looked at on
+        // a slow tick while the turn's stdin is open, and a wake a helper's
+        // call left there is written to a main thread that sits idle.
+        let budget_dir = inbox
+            .as_ref()
+            .and(spec.brief.as_ref())
+            .map(|b| b.dir.clone())
+            .filter(|d| !d.as_os_str().is_empty());
+        let mut budget_tick = tokio::time::interval(BUDGET_TICK);
+        budget_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
             // A subagent's end the main thread was not told of (406): the
@@ -2242,6 +2272,40 @@ impl ClaudeCodeAgent {
                     limit_ended = true;
                     interrupted = true;
                     break;
+                }
+                _ = budget_tick.tick(), if budget_dir.is_some() => {
+                    if let (Some(dir), Some(inbox)) = (&budget_dir, &inbox) {
+                        let helpers = inbox.agents();
+                        let idle = inbox.idle_with_agents();
+                        let dir = dir.clone();
+                        let now_ms = chrono::Utc::now().timestamp_millis();
+                        let running = !helpers.is_empty();
+                        let d = dir.clone();
+                        let wakes = tokio::task::spawn_blocking(move || {
+                            budget::take_wakes(&d, now_ms, running, idle)
+                        })
+                        .await
+                        .unwrap_or_default();
+                        if let Some(text) = budget::wake_text(&wakes, Some(&helpers)) {
+                            if inbox.note_if_idle(&text) {
+                                let top = wakes.iter().max_by_key(|w| w.at_ms);
+                                on_event(TurnEvent::BudgetWake {
+                                    text,
+                                    kind: wakes
+                                        .iter()
+                                        .map(|w| w.kind.as_str().to_string())
+                                        .collect(),
+                                    pct: top.map(|w| w.pct),
+                                    cap: top.and_then(|w| w.cap),
+                                });
+                            } else {
+                                // Not idle after all: back for the main
+                                // thread's next call, or the next look.
+                                budget::put_back(&dir, wakes);
+                            }
+                        }
+                    }
+                    continue;
                 }
                 _ = &mut silent, if watch_silence && !any_line => {
                     watch_silence = false;

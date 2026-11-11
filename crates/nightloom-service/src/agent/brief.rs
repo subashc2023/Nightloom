@@ -675,9 +675,26 @@ pub fn usage_line(
     }
     if let Some(r) = reading {
         // A stop line switched off (backlog 253) is `NEVER_PCT`: not a line.
-        match b.map(|b| b.stop_at).filter(|s| *s > 0 && *s <= 100) {
-            Some(stop) => parts.push(format!("5-hour {}% (stop line {stop}%)", r.five_hour_pct)),
-            None => parts.push(format!("5-hour {}%", r.five_hour_pct)),
+        // A declared cap (538) is the line, named with its mode and who set it.
+        match (
+            b.and_then(|b| b.cap.as_ref()),
+            b.map(|b| b.stop_at).filter(|s| *s > 0 && *s <= 100),
+        ) {
+            (Some(cap), _) => parts.push(format!(
+                "5-hour {}% (cap {}%: {}, {})",
+                r.five_hour_pct,
+                cap.percent,
+                cap.mode.words(),
+                match cap.source.as_str() {
+                    "model" => "from your set_budget call",
+                    "user" => "set by Swaraag in the window",
+                    _ => "from his message",
+                }
+            )),
+            (None, Some(stop)) => {
+                parts.push(format!("5-hour {}% (stop line {stop}%)", r.five_hour_pct))
+            }
+            (None, None) => parts.push(format!("5-hour {}%", r.five_hour_pct)),
         }
     }
     if let Some(w) = week {
@@ -1199,6 +1216,33 @@ pub struct TurnBudget {
     /// (553), keyed as `usage_shown` is.
     #[serde(default)]
     pub context_shown: std::collections::BTreeMap<String, u64>,
+    /// The cap this message works under (item 538): declared by the model's
+    /// `set_budget` call, read from his message as a backstop, or corrected
+    /// by him in the window. `stop_at` is its percent while it is set.
+    #[serde(default)]
+    pub cap: Option<super::budget::Cap>,
+    /// He corrected the cap in the window this message (538): the model's
+    /// later `set_budget` calls change nothing.
+    #[serde(default)]
+    pub cap_locked: bool,
+    /// The wake thresholds already crossed this message (538): each wakes
+    /// the main agent once.
+    #[serde(default)]
+    pub wakes_fired: Vec<String>,
+    /// Wakes found on a helper's call, waiting for the main thread (538):
+    /// taken by the turn's drive loop when the main thread sits idle, or
+    /// by the main thread's own next call.
+    #[serde(default)]
+    pub wakes_pending: Vec<super::budget::Wake>,
+    /// How many calls each process has made under a wrap-up (538): the
+    /// first [`super::budget::WRAP_CALLS`] run with the wrap-up beside
+    /// them, the rest are refused. Keyed as `usage_shown` is.
+    #[serde(default)]
+    pub wrap_calls: std::collections::BTreeMap<String, u8>,
+    /// Each launch's expected cost, held until the reading catches up
+    /// (538, 537's fix 1); dropped when no helper runs.
+    #[serde(default)]
+    pub reserved: Vec<super::budget::Reservation>,
 }
 
 impl TurnBudget {
@@ -1294,6 +1338,12 @@ pub fn start_turn_budget(
         wrap_at_ms: None,
         usage_shown: Default::default(),
         context_shown: Default::default(),
+        cap: None,
+        cap_locked: false,
+        wakes_fired: Vec::new(),
+        wakes_pending: Vec::new(),
+        wrap_calls: Default::default(),
+        reserved: Vec::new(),
     }
 }
 
@@ -1732,6 +1782,10 @@ pub enum CallVerdict {
     /// His *Wrap up*, not yet delivered: refuse this call with the
     /// instruction and mark the ledger (backlog 192).
     WrapUp(String),
+    /// Allowed under a wrap-up (item 538, 539 pieces 4 and 5): the call
+    /// runs with this note beside it, and counts against the process's
+    /// [`super::budget::WRAP_CALLS`]; past them its calls are refused.
+    Wrapping(String),
 }
 
 /// [`budget_verdict`] with his answer and his presence, pure. *Wrap up*
@@ -1749,10 +1803,41 @@ pub fn call_verdict(
     present: bool,
     subagent: bool,
 ) -> CallVerdict {
+    call_verdict_for(b, reading, ans, present, subagent, "")
+}
+
+/// [`call_verdict`] for the process `who` (keyed as `usage_shown` is).
+/// Since item 538 a helper is not refused at once where it used to be —
+/// at his *Wrap up*, past the stop line, past the message's share: its
+/// next [`super::budget::WRAP_CALLS`] calls run with the wrap-up beside
+/// them (`Wrapping`) so it can save its work, and only then are refused;
+/// under a mode-B cap the refusal names no usage figure. The chat's own
+/// thread gets the same grace past a cap declared for this message.
+pub fn call_verdict_for(
+    b: &TurnBudget,
+    reading: Option<WindowReading>,
+    ans: Option<&Answer>,
+    present: bool,
+    subagent: bool,
+    who: &str,
+) -> CallVerdict {
+    use super::budget;
     let wrapping = matches!(ans, Some(Answer::Wrap(_)));
+    let left = budget::wrap_left(b, who);
+    let hide = subagent && budget::hides_usage(b);
+    // A helper's grace: the wrap-up beside the call, then the refusal.
+    let graced = |after: String, pressed: bool| {
+        if left > 0 {
+            CallVerdict::Wrapping(budget::helper_wrap_note(left, pressed))
+        } else if hide {
+            CallVerdict::Deny(budget::helper_wrapped_reason())
+        } else {
+            CallVerdict::Deny(after)
+        }
+    };
     if let Some(Answer::Wrap(text)) = ans {
         if subagent {
-            return CallVerdict::Deny(wrap_up_subagent_reason());
+            return graced(wrap_up_subagent_reason(), true);
         }
         if b.wrap_at_ms.is_none() {
             return CallVerdict::WrapUp(wrap_up_reason(text));
@@ -1763,28 +1848,30 @@ pub fn call_verdict(
     };
     let mut overridden = false;
     if r.five_hour_pct >= b.stop_at {
+        let stop = || window_stop_all_reason(r.five_hour_pct, b.stop_at, r.resets_at);
         match ans {
             Some(Answer::Continue) => overridden = true,
             _ if wrapping => overridden = true,
-            None if present && !subagent => return CallVerdict::Hold,
-            _ => {
-                return CallVerdict::Deny(window_stop_all_reason(
-                    r.five_hour_pct,
-                    b.stop_at,
-                    r.resets_at,
-                ));
+            _ if subagent => return graced(stop(), false),
+            // Past a cap declared for this message, the chat's own thread
+            // saves its state under the same grace (538).
+            None if b.cap.is_some() && left > 0 => {
+                return CallVerdict::Wrapping(budget::main_at_cap_note(b, r.five_hour_pct, left));
             }
+            None if present => return CallVerdict::Hold,
+            _ => return CallVerdict::Deny(stop()),
         }
     }
     match share_verdict(b, r) {
         Ok(()) => CallVerdict::Allow { overridden },
+        Err(reason) if subagent => graced(reason, false),
         Err(reason) => CallVerdict::Deny(reason),
     }
 }
 
 /// Open the ledger locked, change it, write it back. `None` when there
 /// is no ledger or it cannot be locked or read.
-fn with_ledger<T>(dir: &Path, f: impl FnOnce(&mut TurnBudget) -> T) -> Option<T> {
+pub(super) fn with_ledger<T>(dir: &Path, f: impl FnOnce(&mut TurnBudget) -> T) -> Option<T> {
     use std::io::{Read as _, Seek as _, Write as _};
     let mut file = std::fs::OpenOptions::new()
         .read(true)
@@ -1923,6 +2010,7 @@ fn await_answer(
                         CallVerdict::Allow { overridden }
                     }
                     CallVerdict::Hold => CallVerdict::Hold,
+                    CallVerdict::Wrapping(note) => CallVerdict::Wrapping(note),
                 }
             })
             .unwrap_or_else(|| {
@@ -2025,9 +2113,9 @@ fn note_reading(
     now_ms: i64,
     hold_ms: i64,
     senses: &Senses,
-) -> (CallVerdict, i64, i64, bool) {
+) -> (CallVerdict, i64, i64, bool, Option<String>) {
     use std::io::{Read as _, Seek as _, Write as _};
-    let allowed = (CallVerdict::Allow { overridden: false }, 0, 0, false);
+    let allowed = (CallVerdict::Allow { overridden: false }, 0, 0, false, None);
     let Ok(mut file) = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -2052,10 +2140,15 @@ fn note_reading(
         && ans.is_none()
         && !subagent
         && is_present(read_presence(dir), senses.look(now_ms).0, now_ms);
-    let mut verdict = call_verdict(&b, reading, ans.as_ref(), present, subagent);
+    let mut verdict = call_verdict_for(&b, reading, ans.as_ref(), present, subagent, who);
     let mut deadline = 0;
     match &verdict {
         CallVerdict::Deny(reason) => b.stopped = Some(reason.clone()),
+        // One more of this process's calls under the wrap-up (538).
+        CallVerdict::Wrapping(_) => {
+            let n = b.wrap_calls.entry(who.to_string()).or_insert(0);
+            *n = n.saturating_add(1);
+        }
         CallVerdict::Hold => {
             deadline = now_ms + hold_ms;
             b.pending_since_ms.get_or_insert(now_ms);
@@ -2074,8 +2167,12 @@ fn note_reading(
     }
     // The usage line (backlog 249), judged on an allowed call only: a
     // refusal's own reason already carries the figures.
+    // Never on a helper's call under a mode-B cap (538): it is shown no
+    // usage figure at all.
+    let hide = subagent && super::budget::hides_usage(&b);
     let mut show = false;
     if matches!(verdict, CallVerdict::Allow { .. })
+        && !hide
         && let Some(band) = usage_due(&b, who, spawn)
     {
         b.usage_shown.insert(who.to_string(), band);
@@ -2089,6 +2186,15 @@ fn note_reading(
         b.context_shown.insert(who.to_string(), band);
         show = true;
     }
+    // The wakes this reading brings (538): the main thread's own call
+    // carries them — a call that runs — and a helper's leaves them in the
+    // ledger for the turn's drive loop.
+    let runs = matches!(
+        verdict,
+        CallVerdict::Allow { .. } | CallVerdict::Wrapping(_)
+    );
+    let wakes = super::budget::wakes_for_call(&mut b, reading, !subagent && runs, now_ms);
+    let wake = super::budget::wake_text(&wakes, None);
     let _ = file.set_len(0);
     let _ = file.seek(std::io::SeekFrom::Start(0));
     let _ = file.write_all(
@@ -2096,7 +2202,7 @@ fn note_reading(
             .unwrap_or_default()
             .as_bytes(),
     );
-    (verdict, b.started_at_ms, deadline, show)
+    (verdict, b.started_at_ms, deadline, show, wake)
 }
 
 /// The per-chat, per-day refusal.
@@ -2408,7 +2514,7 @@ pub fn decide_with(dir: &Path, stdin_json: &str, gauge: Option<WindowReading>) -
 /// [`decide_with`] with the hold's length and poll interval passed in,
 /// so the suite holds for milliseconds rather than minutes — and (backlog
 /// 192) what the hook senses of the Mac, so it runs against a fixed one.
-fn decide_holding(
+pub(super) fn decide_holding(
     dir: &Path,
     stdin_json: &str,
     gauge: Option<WindowReading>,
@@ -2462,25 +2568,45 @@ fn decide_holding(
         }
         return reply;
     }
-    let (mut verdict, turn, deadline, show) = note_reading(
+    let (mut verdict, turn, deadline, show, wake) = note_reading(
         dir, reading, subagent, who, spawn, context, now_ms, hold_ms, senses,
     );
+    // Under a mode-B cap a helper is shown no usage figure (538): not the
+    // line, not the weekly figure, not a refusal that quotes the window.
+    let hide = subagent
+        && read_turn_budget(dir)
+            .as_ref()
+            .is_some_and(super::budget::hides_usage);
+    let week = if hide { None } else { week };
     if verdict == CallVerdict::Hold
         && let Some(r) = reading
     {
         verdict = await_answer(dir, turn, deadline, r, subagent, poll_ms, senses);
     }
-    let overridden = match verdict {
+    let (overridden, wrap_note) = match verdict {
         CallVerdict::Deny(reason) | CallVerdict::WrapUp(reason) => {
             return HookReply::deny(with_week(reason, week));
         }
-        CallVerdict::Allow { overridden } => overridden,
-        CallVerdict::Hold => false,
+        CallVerdict::Allow { overridden } => (overridden, None),
+        // Runs under a wrap-up (538): the note rides the call.
+        CallVerdict::Wrapping(note) => (true, Some(note)),
+        CallVerdict::Hold => (false, None),
     };
+    // The cap is the main chat's to declare (538): a helper is shown no
+    // budget, and must not set one.
+    if subagent && input.tool_name == crate::mcp_server::mcp_name(super::budget::TOOL_NAME) {
+        return HookReply::deny(
+            "Not run: only the main chat sets the budget. Carry on with your task.".into(),
+        );
+    }
     // The usage line for this call, when due (backlog 249): read after the
     // verdict, so the ledger it quotes is the one this call just updated.
     let line = if show {
-        let usage = usage_line(read_turn_budget(dir).as_ref(), reading, week, context);
+        let usage = if hide {
+            usage_line(None, None, None, context)
+        } else {
+            usage_line(read_turn_budget(dir).as_ref(), reading, week, context)
+        };
         // A helper past the split mark is told to wrap up (553, 554).
         let usage = match (usage, context) {
             (Some(u), Some(c)) if subagent && c > SPLIT_TOKENS => {
@@ -2502,6 +2628,13 @@ fn decide_holding(
     } else {
         None
     };
+    // The wrap-up and the wake (538) lead what the model reads beside the
+    // call; the usage line follows.
+    let line = [wrap_note.clone(), wake, line]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    let line = (!line.is_empty()).then(|| line.join("\n"));
     // His steering notes (backlog 295): whatever he queued for this
     // process — a subagent by its `agent_id`, the main thread under
     // `steer::MAIN` — goes with this call, once. Taken only on a call that
@@ -2536,6 +2669,14 @@ fn decide_holding(
             _ => line,
         };
         return HookReply::pass().with_context(steered(line));
+    }
+    // Nor does a process under a wrap-up's grace (538): its helper would
+    // be stopped as it started.
+    if wrap_note.is_some() {
+        return HookReply::deny(
+            "Not run: no new subagents while the chat wraps up. Save your own work instead."
+                .into(),
+        );
     }
     // A chat wrapping up starts nothing new (backlog 192).
     if read_turn_budget(dir).is_some_and(|b| b.wrap_at_ms.is_some() && b.started_at_ms == turn) {
@@ -2594,6 +2735,7 @@ fn decide_holding(
     } else {
         match window_verdict(&limits, reading) {
             Ok(cap) => cap,
+            Err(_) if hide => return HookReply::deny(super::budget::helper_launch_reason()),
             Err(reason) => return HookReply::deny(with_week(reason, week)),
         }
     };
@@ -2615,8 +2757,54 @@ fn decide_holding(
         },
         _ => None,
     };
+    // The launch's expected cost, held against the cap (538; 537's fix 1):
+    // under a "finish within" cap one that would not fit is refused, before
+    // the counts so it uses neither up; otherwise it is only held, which
+    // moves the wake earlier — and that wake, when this launch brings it,
+    // rides this very call.
+    let asked_model = input.tool_input.get("model").and_then(Value::as_str);
+    let alias = match chosen.as_ref().map_or_else(
+        || limits.model.for_spawn(asked_model, read_chat_alias(dir)),
+        |(pick, _)| *pick,
+    ) {
+        SpawnModel::Set(m) => Some(m),
+        SpawnModel::Leave => asked_model.and_then(agent_alias).or(read_chat_alias(dir)),
+        SpawnModel::Clear => read_chat_alias(dir),
+    };
+    let points = super::budget::points_for(alias);
+    let mut held = false;
+    let mut mode = None;
+    let mut launch_wake = None;
+    if task {
+        let claim = with_ledger(dir, |b| {
+            mode = b.cap.as_ref().map(|c| c.mode);
+            super::budget::claim_reservation(b, reading, points).map(|()| {
+                let wakes = super::budget::wakes_for_call(b, reading, !subagent, now_ms);
+                super::budget::wake_text(&wakes, None)
+            })
+        });
+        match claim {
+            Some(Ok(w)) => {
+                held = true;
+                launch_wake = w;
+            }
+            Some(Err(reason)) => return HookReply::deny(reason),
+            None => {}
+        }
+    }
+    let release = |held: bool| {
+        if held {
+            with_ledger(dir, |b| super::budget::release_reservation(b, points));
+        }
+    };
+    let line = match (launch_wake, line) {
+        (Some(w), Some(l)) => Some(format!("{w}\n{l}")),
+        (w, l) => w.or(l),
+    };
     if claim_spawn(dir, cap).is_err() {
+        release(held);
         return HookReply::deny(match reading {
+            Some(_) if hide => super::budget::helper_launch_reason(),
             Some(r) if cap < limits.per_turn => with_week(
                 slowed_cap_reason(cap, r.five_hour_pct, limits.slow_at),
                 week,
@@ -2627,6 +2815,7 @@ fn decide_holding(
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     // A day cap of zero is no cap (his answer to blocker 271).
     if limits.per_day > 0 && claim_day_spawn(dir, limits.per_day, &today).is_err() {
+        release(held);
         return HookReply::deny(day_cap_reason(limits.per_day));
     }
     let Value::Object(mut fields) = input.tool_input.clone() else {
@@ -2653,14 +2842,34 @@ fn decide_holding(
         return HookReply::deny(super::fork::report(&out));
     }
     let brief = std::fs::read_to_string(dir.join(BRIEF_FILE)).unwrap_or_default();
+    // What the helper is told of the budget (538, 539's table): under
+    // "work to the cap" nothing — the brief goes in without its pacing
+    // section; under "finish within" its share, in front of its task.
+    let brief = match mode {
+        Some(super::budget::BudgetMode::WorkToCapThenContinue) => {
+            super::budget::without_pacing(&brief)
+        }
+        _ => brief,
+    };
+    let share = (mode == Some(super::budget::BudgetMode::FinishWithin))
+        .then(|| super::budget::share_line(points));
     let mut changed = false;
-    if !brief.trim().is_empty()
-        && let Some(Value::String(prompt)) = fields.get("prompt")
+    if let Some(Value::String(prompt)) = fields.get("prompt")
         && !prompt.trim_start().starts_with(BRIEF_OPEN)
     {
-        let briefed = format!("{}\n\n{prompt}", brief.trim_end());
-        fields.insert("prompt".into(), Value::String(briefed));
-        changed = true;
+        let mut parts: Vec<&str> = Vec::new();
+        if !brief.trim().is_empty() {
+            parts.push(brief.trim_end());
+        }
+        if let Some(share) = &share {
+            parts.push(share);
+        }
+        if !parts.is_empty() {
+            parts.push(prompt);
+            let briefed = parts.join("\n\n");
+            fields.insert("prompt".into(), Value::String(briefed));
+            changed = true;
+        }
     }
     // The subagents' model (pass 2, blocker 280; 257, blocker 584): the
     // switch on the rail sets the spawn's `model` input, which the Agent
@@ -3466,9 +3675,18 @@ mod tests {
             super::call_verdict(&b, reading(90, 2), None, true, false),
             Hold
         );
+        // (Since item 538 a subagent past the line is not refused at once:
+        // its next calls run with the wrap-up beside them, then are refused.)
         assert!(matches!(
             super::call_verdict(&b, reading(90, 2), None, true, true),
-            Deny(_)
+            Wrapping(_)
+        ));
+        let mut used = b.clone();
+        used.wrap_calls
+            .insert(String::new(), super::super::budget::WRAP_CALLS);
+        assert!(matches!(
+            super::call_verdict(&used, reading(90, 2), None, true, true),
+            Deny(r) if r.contains("90%")
         ));
         // Under the line nothing changes: no hold, no override needed.
         assert_eq!(
@@ -3487,9 +3705,15 @@ mod tests {
                 "{v:?}"
             );
         }
-        // … a subagent's call is told to stop …
+        // … a subagent's call is told to wrap up, and runs (item 538; it was
+        // refused, which lost what it had not written down) — its first
+        // WRAP_CALLS calls, then refused as before …
         assert!(matches!(
             super::call_verdict(&b, reading(90, 2), Some(&wrap), true, true),
+            Wrapping(r) if r.contains("wrapping up") && r.contains("Wrap up")
+        ));
+        assert!(matches!(
+            super::call_verdict(&used, reading(90, 2), Some(&wrap), true, true),
             Deny(r) if r.contains("wrapping up")
         ));
         // … and once carried, the chat's calls go on past the line to write it.

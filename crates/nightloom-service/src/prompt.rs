@@ -493,6 +493,9 @@ pub fn agent_prompt_with(
     }
     if let Some(rules) = layers.subagent_rules.filter(|_| preamble) {
         prompt.push(subagent_rules_segment(&rules));
+        // The budget layer (item 538) rides the same switch: a second
+        // segment of the rules' kind, so off, held and noted with them.
+        prompt.push(budget_segment());
     }
     if let Some(library) = library {
         prompt.push(Segment::new(SegmentKind::Custom, "custom", library));
@@ -677,6 +680,33 @@ pub fn subagent_rules_segment(rules: &SubagentRules<'_>) -> Segment {
     )
 }
 
+/// The budget layer (nightshift item 538, 2026-11-10; 539's piece 8): how a
+/// message's usage cap is declared and worked under. Static — no figure, so
+/// the cached prefix never moves; the cap and the readings ride the usage
+/// line and Nightloom's wake lines.
+pub const BUDGET_NOTE: &str = "<budget>\n\
+     A message can work under a usage cap, a percent of the plan's 5-hour window. You declare it \
+     with the tool mcp__nightloom__set_budget (ToolSearch it by that full name): call it when \
+     the user's message states a cap (\"use up to 50%\") or the task is big enough to need \
+     one, before you launch helpers, and again after a continue-later resume. Two modes. \
+     work_to_cap_then_continue, the default for any cap the user states: plan the whole job; \
+     helpers are shown no usage figure, so put none in their briefs or messages; no launch is \
+     refused for the cap. finish_within, only when the user says within, urgent or just get it \
+     working: trim the work to fit; each helper is told its share and a launch that would not \
+     fit is refused. Nightloom holds the cap: the usage line names it, the user can correct it \
+     above the message box, and near it Nightloom wakes you with a line beginning [Nightloom, \
+     not from Swaraag: …] — even while you wait on helpers. Do what it says: send each running \
+     helper the wrap-up with SendMessage, save state, and in the default mode end with a \
+     continue-later line naming the state files. A helper past the cap keeps about ten tool \
+     calls to save its work.\n\
+     </budget>";
+
+/// [`BUDGET_NOTE`] as a segment: the subagent rules' kind, so it follows
+/// that layer's switch, hold and note (`prompt_hold` groups by kind).
+pub fn budget_segment() -> Segment {
+    Segment::new(SegmentKind::SubagentRules, "budget", BUDGET_NOTE)
+}
+
 /// The layer's text without its tags: what the warm note repeats.
 pub fn subagent_rules_body(rules: &SubagentRules<'_>) -> String {
     use crate::agent::brief::SubagentModel;
@@ -823,11 +853,13 @@ pub fn subagent_rules_body(rules: &SubagentRules<'_>) -> String {
 /// is rewritten at the chat's next cold moment. `layer` is the new layer's
 /// whole text, tags included.
 pub fn subagent_rules_update_note(layer: &str) -> String {
+    // The rules' own tags go; the budget layer that follows them in the
+    // same group (item 538) keeps its own.
     let body = layer
         .trim()
         .trim_start_matches("<subagent-rules>")
-        .trim_end_matches("</subagent-rules>")
-        .trim();
+        .replacen("</subagent-rules>", "", 1);
+    let body = body.trim();
     format!(
         "<subagent-rules-update>\n\
          The user changed this chat's subagent rules. These are the new rules; they replace \

@@ -142,6 +142,17 @@ pub enum TurnEvent {
         text: String,
         agents: Vec<String>,
     },
+    /// Nightloom woke an idle main thread for the message's usage cap
+    /// (item 538): `text` is the Nightloom-authored line written to the
+    /// chat (not his words); `kind` the thresholds it was for (`reserved`,
+    /// `near`, `at_cap`, `pace`, `hard`); `pct` the five-hour reading and
+    /// `cap` the cap, when one is set. Claude Code engine only.
+    BudgetWake {
+        text: String,
+        kind: Vec<String>,
+        pct: Option<u8>,
+        cap: Option<u8>,
+    },
     /// The Claude Code CLI is retrying a failed API call (nightshift items
     /// 440 + 441, 2026-10-27): its `system/api_retry` line, one per try.
     /// Live only — a shell keeps **one** status line for the turn and

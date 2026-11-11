@@ -952,6 +952,13 @@ pub fn decide_in(dir: &Path, stdin_json: &str, side: bool) -> HookReply {
     if rules.allow.contains(&input.tool_name) {
         return HookReply::allow(None);
     }
+    // The message's usage cap (item 538) is the model's to declare: it
+    // writes only this chat's own budget ledger, and a card for it would
+    // park the turn on a question he already answered in his message. A
+    // subagent's call is refused by the brief hook, whose deny wins.
+    if input.tool_name == crate::mcp_server::mcp_name(super::budget::TOOL_NAME) {
+        return HookReply::allow(None);
+    }
     if input.agent_id.as_deref().is_some_and(|id| !id.is_empty()) {
         // A subagent's question goes back to the parent (backlog 294,
         // blocker 1031), whatever the switch says.
