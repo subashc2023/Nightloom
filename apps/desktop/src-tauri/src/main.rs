@@ -6755,6 +6755,27 @@ async fn plan_usage() -> Result<nightloom_service::plan_usage::PlanUsage, String
         .map_err(|e| format!("reading the plan usage failed: {e}"))
 }
 
+/// The plan's per-model weeklies (item 569: /usage's "Weekly Fable"), from
+/// the CLI cache.
+#[tauri::command]
+async fn plan_scoped_limits() -> Result<nightloom_service::plan_usage::ScopedLimits, String> {
+    tokio::task::spawn_blocking(nightloom_service::plan_usage::scoped_limits)
+        .await
+        .map_err(|e| format!("reading the scoped limits failed: {e}"))
+}
+
+/// A Claude Code chat's /usage "This session" figures (item 569): the
+/// newest `cost-state` of its transcript and the split by subagent type.
+/// `agent_session` is the chat's Claude Code session id.
+#[tauri::command]
+async fn session_figures(
+    agent_session: String,
+) -> Result<nightloom_service::session_figures::SessionFigures, String> {
+    tokio::task::spawn_blocking(move || nightloom_service::session_figures::read(&agent_session))
+        .await
+        .map_err(|e| format!("reading the chat's figures failed: {e}"))
+}
+
 /// A plan reading is also the end reading of any reply that finished
 /// before its sample was taken (item 323, `turn_usage`).
 fn observed(
@@ -9520,6 +9541,8 @@ fn main() {
             refresh_usage_ledger,
             plan_usage,
             plan_usage_refresh,
+            plan_scoped_limits,
+            session_figures,
             cli_version_check,
             claude_auth_status,
             cli_update,

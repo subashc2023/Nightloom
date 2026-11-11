@@ -512,6 +512,138 @@ pub fn read() -> PlanUsage {
     }
 }
 
+/// One per-model weekly limit (item 569): /usage's "Weekly Fable 51%".
+/// The CLI cache lists them in `utilization.limits[]` as
+/// `{"kind": "weekly_scoped", "percent", "resets_at", "scope": {"model":
+/// {"display_name": "Fable"}}}` beside the session and all-models entries
+/// (measured on CLI 2.1.322, 2026-11-10; `bin/usagectl.py` reads the same
+/// entry). The desktop app's sample has no such figure, so this is the
+/// cache's reading alone, with its own fetch time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScopedLimit {
+    /// The limit's model, as the server names it ("Fable").
+    pub name: String,
+    pub percent: u8,
+    pub resets_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ScopedLimits {
+    pub limits: Vec<ScopedLimit>,
+    /// The cache's `fetchedAtMs`.
+    pub sampled_at_ms: Option<i64>,
+    /// Older than [`STALE_AFTER`] when read, or no reading.
+    pub stale: bool,
+}
+
+/// The scoped weeklies of the CLI cache at `cli_path`; empty for a missing
+/// file, a cache with none, or an entry without a percent or a name.
+pub fn scoped_limits_from(cli_path: &Path, now_ms: i64) -> ScopedLimits {
+    let parsed = std::fs::read_to_string(cli_path)
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok());
+    let Some(cached) = parsed
+        .as_ref()
+        .and_then(|v| v.get("cachedUsageUtilization"))
+    else {
+        return ScopedLimits {
+            stale: true,
+            ..ScopedLimits::default()
+        };
+    };
+    let fetched = cached.get("fetchedAtMs").and_then(Value::as_i64);
+    let limits = cached
+        .pointer("/utilization/limits")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter(|l| l.get("kind").and_then(Value::as_str) == Some("weekly_scoped"))
+                .filter_map(|l| {
+                    let scope = l.get("scope")?;
+                    let name = scope
+                        .pointer("/model/display_name")
+                        .or_else(|| scope.pointer("/surface/display_name"))
+                        .and_then(Value::as_str)?
+                        .to_string();
+                    Some(ScopedLimit {
+                        name,
+                        percent: pct(l.get("percent")?)?,
+                        resets_at: l
+                            .get("resets_at")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    ScopedLimits {
+        limits,
+        sampled_at_ms: fetched,
+        stale: fetched.is_none_or(|f| (now_ms - f).max(0) as u128 > STALE_AFTER.as_millis()),
+    }
+}
+
+/// The live scoped weeklies, from `~/.claude.json`.
+pub fn scoped_limits() -> ScopedLimits {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    match home() {
+        Some(h) => scoped_limits_from(&h.join(CLI_CACHE), now_ms),
+        None => scoped_limits_from(Path::new("/nonexistent"), now_ms),
+    }
+}
+
+#[cfg(test)]
+mod scoped_tests {
+    fn cache(dir: &str, body: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("nl-569-{dir}-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join(".claude.json");
+        std::fs::write(&p, body).unwrap();
+        p
+    }
+
+    /// The shape measured in his cache at 5:09 PM 2026-11-10, trimmed.
+    #[test]
+    fn the_fable_weekly_is_read_from_the_scoped_limit() {
+        let p = cache(
+            "fable",
+            r#"{"oauthAccount":{"x":1},"cachedUsageUtilization":{"fetchedAtMs":1000000,"utilization":{
+              "five_hour":{"utilization":3},"limits":[
+              {"kind":"session","percent":3,"scope":null},
+              {"kind":"weekly_all","percent":74,"scope":null},
+              {"kind":"weekly_scoped","percent":51,"resets_at":"2026-11-11T09:59:59.513705+00:00",
+               "scope":{"model":{"id":null,"display_name":"Fable"},"surface":null}}]}}}"#,
+        );
+        let s = super::scoped_limits_from(&p, 1_000_000 + 60_000);
+        assert_eq!(
+            s.limits,
+            vec![super::ScopedLimit {
+                name: "Fable".into(),
+                percent: 51,
+                resets_at: Some("2026-11-11T09:59:59.513705+00:00".into()),
+            }]
+        );
+        assert_eq!(s.sampled_at_ms, Some(1_000_000));
+        assert!(!s.stale);
+        // Past twenty minutes the same reading is flagged.
+        assert!(super::scoped_limits_from(&p, 1_000_000 + 21 * 60_000).stale);
+    }
+
+    #[test]
+    fn no_cache_or_no_scoped_entry_reads_as_none() {
+        let s = super::scoped_limits_from(std::path::Path::new("/nonexistent/x"), 0);
+        assert!(s.limits.is_empty() && s.stale);
+        let p = cache(
+            "none",
+            r#"{"cachedUsageUtilization":{"fetchedAtMs":5,"utilization":{"limits":[
+              {"kind":"weekly_scoped","scope":{"model":{"display_name":"Fable"}}},
+              {"kind":"weekly_scoped","percent":9,"scope":null}]}}}"#,
+        );
+        assert!(super::scoped_limits_from(&p, 5).limits.is_empty());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     /// Item 323 review: a reading sampled before a reply ended is not fresh

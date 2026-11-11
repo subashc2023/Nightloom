@@ -47,6 +47,7 @@ pub mod rail_store;
 pub mod remote;
 pub mod serve;
 pub mod serve_reads;
+pub mod session_figures;
 pub mod sidecar;
 pub mod start_context;
 pub mod store;

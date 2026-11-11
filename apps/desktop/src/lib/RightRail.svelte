@@ -2,7 +2,18 @@
   import ProviderRail from "./ProviderRail.svelte";
   import TaskPanel from "./TaskPanel.svelte";
   import ContextDial from "./ContextDial.svelte";
-  import { app, contextUsed, currentTodos } from "./state.svelte";
+  import { app, chatAgentSession, contextUsed, currentTodos } from "./state.svelte";
+  import * as api from "./api";
+  import {
+    duration,
+    modelName,
+    modelSplit,
+    resetClock,
+    spenderName,
+    usd,
+    type ScopedLimits,
+    type SessionFigures,
+  } from "./usageFigures";
   import { mark as handoffMark } from "./handoff.svelte";
   import { cacheState, nextTickMs, remainingText } from "./cache";
   import {
@@ -115,6 +126,48 @@
   const toolsLine = $derived(toolsText(marks));
   const hasTurn = $derived(turnClock != null || inTokens != null || outTokens != null || toolsLine != null);
   const pct = (n: number) => `${Math.round(n * 100)}%`;
+
+  // ---- item 569: Claude Code's /usage figures. The account's per-model
+  // weeklies (the CLI cache) under Plan use; this chat's own totals (its
+  // transcript's `cost-state`) in This chat. Neither is drawn from a guess:
+  // a figure the files do not hold is left out.
+  const claudeCode = $derived(column && app.connection?.engine === "claude-code");
+  let scoped = $state<ScopedLimits | null>(null);
+  $effect(() => {
+    if (!claudeCode) return;
+    // Re-read whenever the plan reading moves (its five-minute refresh rewrites the cache).
+    void app.planUsage?.sampled_at_ms;
+    let gone = false;
+    api
+      .planScopedLimits()
+      .then((s) => {
+        if (!gone) scoped = s;
+      })
+      .catch(() => {});
+    return () => (gone = true);
+  });
+  const agentSession = $derived(claudeCode ? chatAgentSession(app.events) : null);
+  let figures = $state<SessionFigures | null>(null);
+  let figuresOf = $state<string | null>(null);
+  $effect(() => {
+    const id = agentSession;
+    // A turn's end writes the newest totals: read again when one ends.
+    const busy = app.busy;
+    if (!id || busy) return;
+    let gone = false;
+    api
+      .sessionFigures(id)
+      .then((f) => {
+        if (gone) return;
+        figures = f;
+        figuresOf = id;
+      })
+      .catch(() => {});
+    return () => (gone = true);
+  });
+  /** Only the open chat's figures: another chat's never show while this one's load. */
+  const chat = $derived(figures && figures.found && figuresOf === agentSession ? figures : null);
+  const split = $derived(chat ? modelSplit(chat.models) : []);
 </script>
 
 {#if column}
@@ -170,15 +223,81 @@
           Plan use
           {#if plan.stale}<span use:tip={"The newest reading is past twenty minutes old and may be behind"}>stale</span>{/if}
         </h4>
-        <div class="kv" use:tip={"Account-wide: every surface, not just this chat"}><span>5 hours</span><b>{plan.five_hour}%</b></div>
+        <div class="kv" use:tip={"Account-wide: every surface, not just this chat"}>
+          <span>5 hours</span><b>{plan.five_hour}%</b>
+        </div>
         <div class="bar am"><i style:width="{Math.min(100, plan.five_hour ?? 0)}%"></i></div>
         <div class="scale"></div>
+        {#if resetClock(plan.five_hour_resets_at)}<div class="rs">resets {resetClock(plan.five_hour_resets_at)}</div>{/if}
         {#if plan.seven_day != null}
-          <div class="kv wk"><span>This week</span><b>{plan.seven_day}%</b></div>
+          <div class="kv wk">
+            <span>This week</span><b>{plan.seven_day}%</b>
+          </div>
           <div class="bar" class:ok={plan.seven_day / 100 <= WEEK_HOT} class:ht={plan.seven_day / 100 > WEEK_HOT}>
             <i style:width="{Math.min(100, plan.seven_day)}%"></i>
           </div>
           <div class="scale"></div>
+          {#if resetClock(plan.seven_day_resets_at)}<div class="rs">resets {resetClock(plan.seven_day_resets_at)}</div>{/if}
+        {/if}
+        {#each scoped?.limits ?? [] as l (l.name)}
+          <div
+            class="kv wk"
+            data-scoped={l.name}
+            use:tip={`The week's ${l.name}-only limit, account-wide (Claude Code's cache, as /usage shows it)${scoped?.stale ? "; the reading is over twenty minutes old" : ""}`}
+          >
+            <span>{l.name} this week</span><b>{l.percent}%</b>
+          </div>
+          <div class="bar" class:ok={l.percent / 100 <= WEEK_HOT} class:ht={l.percent / 100 > WEEK_HOT}>
+            <i style:width="{Math.min(100, l.percent)}%"></i>
+          </div>
+          <div class="scale"></div>
+          {#if resetClock(l.resets_at)}<div class="rs">resets {resetClock(l.resets_at)}</div>{/if}
+        {/each}
+      </section>
+    {/if}
+
+    {#if chat}
+      <section class="chat-use" aria-label="This chat's usage">
+        <h4>This chat {#if chat.cost_usd != null}<span use:tip={"Claude Code's own estimate at API prices, subagents included — the figure /usage shows"}>{usd(chat.cost_usd)}{chat.unknown_cost ? "+" : ""}</span>{/if}</h4>
+        {#if chat.api_ms != null}
+          <div class="kv" use:tip={"Every request's time, subagents' too, so it can pass the clock"}><span>API time</span><b>{duration(chat.api_ms)}</b></div>
+        {/if}
+        {#if chat.run_ms != null}
+          <div class="kv" use:tip={"Claude Code's own clock over this chat's runs (not /usage's Active, which Claude Code never writes down)"}><span>Run time</span><b>{duration(chat.run_ms)}</b></div>
+        {/if}
+        {#if chat.lines_added != null || chat.lines_removed != null}
+          <div class="kv" use:tip={"Lines Claude's edits added and removed in this chat"}>
+            <span>Lines</span><b><ins>+{chat.lines_added ?? 0}</ins> <del>−{chat.lines_removed ?? 0}</del></b>
+          </div>
+        {/if}
+        {#if chat.cache_hit != null}
+          <div class="kv" use:tip={"Input read back from the prompt cache, of all input"}><span>Cache hit</span><b>{Math.round(chat.cache_hit * 100)}%</b></div>
+        {/if}
+        {#if split.length > 1}
+          <div class="kv"><span>Models</span><b>{split.map((s) => `${s.name} ${s.pct}%`).join(" · ")}</b></div>
+        {/if}
+        {#if chat.models.length}
+          <table class="tok" aria-label="Tokens by model">
+            <thead><tr><th>In</th><th>Out</th><th>Read</th><th>Write</th></tr></thead>
+            <tbody>
+              {#each chat.models as m (m.model)}
+                <tr class="mn"><th scope="rowgroup" colspan="4">{modelName(m.model)}</th></tr>
+                <tr>
+                  <td>{shortTokens(m.input)}</td>
+                  <td>{shortTokens(m.output)}</td>
+                  <td>{shortTokens(m.cache_read)}</td>
+                  <td>{shortTokens(m.cache_write)}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {/if}
+        {#if chat.using.length}
+          <div class="sub" use:tip={"Who spent this chat's cost: the main chat and each subagent type"}>Using it</div>
+          {#each chat.using as s (s.who)}
+            <div class="kv us"><span>{spenderName(s)}</span><b>{pct(s.share)}</b></div>
+            <div class="bar sg"><i style:width="{Math.min(100, s.share * 100)}%"></i></div>
+          {/each}
         {/if}
       </section>
     {/if}
@@ -407,6 +526,62 @@
   }
   .kv.tools {
     margin-top: 3px;
+  }
+  /* Item 569: a limit's reset under its bar, small and dim. */
+  .rs {
+    font: 10px var(--mono);
+    color: var(--dim);
+    text-align: right;
+    margin-top: 1px;
+  }
+  .kv b ins {
+    text-decoration: none;
+    color: var(--done);
+  }
+  .kv b del {
+    text-decoration: none;
+    color: var(--hot);
+  }
+  .kv.us {
+    font-size: 12px;
+    padding: 4px 0 1px;
+  }
+  .sub {
+    margin: 9px 0 1px;
+    font: 500 10px var(--mono);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--dim);
+  }
+  .tok {
+    width: 100%;
+    margin-top: 6px;
+    border-collapse: collapse;
+    font: 10.5px var(--mono);
+    font-variant-numeric: tabular-nums;
+    table-layout: fixed;
+  }
+  .tok th,
+  .tok td {
+    padding: 2px 0;
+    text-align: right;
+    font-weight: 400;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .tok thead th {
+    color: var(--dim);
+    font-size: 10px;
+  }
+  .tok .mn th {
+    text-align: left;
+    color: var(--dim);
+    padding-top: 4px;
+  }
+  .tok td {
+    color: var(--ink);
+    padding-left: 4px;
   }
   .bar {
     height: 4px;
