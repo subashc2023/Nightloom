@@ -29,6 +29,7 @@
 //! [`Provider`]: nightloom_core::Provider
 
 pub mod ask;
+mod bash_tail;
 pub mod brief;
 pub mod budget;
 pub mod cli_session;
@@ -2229,6 +2230,10 @@ impl ClaudeCodeAgent {
             .filter(|d| !d.as_os_str().is_empty());
         let mut budget_tick = tokio::time::interval(BUDGET_TICK);
         budget_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // Item 633: the running Bash commands' passing text.
+        let mut bash_tails = bash_tail::BashTails::new();
+        let mut tail_tick = tokio::time::interval(bash_tail::TICK);
+        tail_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
             // A subagent's end the main thread was not told of (406): the
@@ -2304,6 +2309,12 @@ impl ClaudeCodeAgent {
                                 budget::put_back(&dir, wakes);
                             }
                         }
+                    }
+                    continue;
+                }
+                _ = tail_tick.tick(), if bash_tails.active() => {
+                    for (tool_use_id, lines) in bash_tails.poll() {
+                        on_event(TurnEvent::ToolOutput { tool_use_id, lines });
                     }
                     continue;
                 }
@@ -2427,6 +2438,14 @@ impl ClaudeCodeAgent {
                         main_idle = false;
                     }
                     let events = translator.push(&line);
+                    let (started, ended) = translator.take_bash();
+                    for (call, task) in started {
+                        let session = translator.session_id().unwrap_or_default().to_string();
+                        bash_tails.start(call, task, session);
+                    }
+                    for call in ended {
+                        bash_tails.end(&call);
+                    }
                     if limit_at.is_none() && translator.limited() {
                         limit_at = Some(tokio::time::Instant::now());
                     }
@@ -2434,6 +2453,9 @@ impl ClaudeCodeAgent {
                         if let TurnEvent::ToolCall { name, .. } = &event {
                             last_call = Some(name.clone());
                             stopped = None;
+                        }
+                        if let TurnEvent::ToolResult { tool_use_id, .. } = &event {
+                            bash_tails.end(tool_use_id);
                         }
                         if let TurnEvent::ToolResult {
                             name,

@@ -188,6 +188,16 @@ pub enum TurnEvent {
         delay_ms: Option<u64>,
         waited_ms: Option<u64>,
     },
+    /// A running Bash command's latest output (nightshift item 633): its
+    /// last few non-blank lines, as a terminal shows them, whole each time
+    /// they change — at most ~3 a second. Read from the CLI's own spool of
+    /// the command's output, since its stream carries none while a command
+    /// runs. Live only: a shell draws it as the row's passing text and
+    /// drops it at the call's result; never logged. Claude Code engine only.
+    ToolOutput {
+        tool_use_id: String,
+        lines: Vec<String>,
+    },
     /// An event of a subagent's own turn — one the Claude Code CLI spawned
     /// through its `Agent` tool — carrying the id of the call that spawned
     /// it (2026-09-16, nightshift backlog 075; `--forward-subagent-text`).

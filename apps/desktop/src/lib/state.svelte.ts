@@ -1,4 +1,5 @@
 import { noteContextLive } from "./liveContext.svelte";
+import { endPassing, setPassing } from "./bashOutput.svelte";
 import { clock12 as faceClock12 } from "./nightshiftFace";
 import { viewRenameKeys } from "./viewState";
 import { projectSwitch } from "./projectSwitch.svelte";
@@ -10206,6 +10207,13 @@ export function applyTurnEventTo(host: TurnHost, ev: TurnEvent & { chat?: string
     const i = host.approvals.findIndex((r) => r.id === ev.tool_use_id);
     if (i >= 0) host.approvals.splice(i, 1);
   }
+  // Item 633: a running command's passing text — live only, by call id, and
+  // gone at its result; it never touches the message's segments.
+  if (ev.type === "tool_output") {
+    setPassing(ev.tool_use_id, ev.lines);
+    return;
+  }
+  if (ev.type === "tool_result" || ev.type === "tool_denied") endPassing(ev.tool_use_id);
   // Item 483: notes a chat moved take their tabs and drafts along.
   followToolMoves(ev);
   // The Running-tasks rows outlive the live message (backlog 160): a

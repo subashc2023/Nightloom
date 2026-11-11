@@ -143,6 +143,13 @@ pub struct Translator {
     /// a Running-tasks row, so the top bar read "1 agent · 1 running"
     /// over a sleep and "6 agents · done" after six of them.
     not_agents: HashSet<String>,
+    /// The foreground Bash commands that started since the last
+    /// [`Translator::take_bash`] (item 633): `(call id, task id)`, for the
+    /// read loop's tail of the CLI's spool ([`super::bash_tail`]).
+    bash_started: Vec<(String, String)>,
+    /// The not-agent tasks that ended since the last take (their
+    /// `task_notification`).
+    bash_ended: Vec<String>,
     /// Each agent's first spawning call, by its `task_id` (backlog 406):
     /// a SendMessage that resumes a finished agent makes the CLI narrate
     /// the resumed run under the SendMessage call's id (measured on
@@ -506,6 +513,20 @@ impl Translator {
     /// Whether the plan's usage limit has been seen on this turn's stream
     /// (543a): a rejected `rate_limit_event`, a 429, the CLI's sentence —
     /// on the main thread or a helper's.
+    /// The foreground Bash commands started and the not-agent tasks ended
+    /// since the last call (item 633), for the read loop's tails.
+    pub(super) fn take_bash(&mut self) -> (Vec<(String, String)>, Vec<String>) {
+        (
+            std::mem::take(&mut self.bash_started),
+            std::mem::take(&mut self.bash_ended),
+        )
+    }
+
+    /// The session the CLI named on its init line, once seen.
+    pub(super) fn session_id(&self) -> Option<&str> {
+        self.outcome.session_id.as_deref()
+    }
+
     pub fn limited(&self) -> bool {
         self.outcome.limit.is_some()
     }
@@ -768,6 +789,9 @@ impl Translator {
                 task_type,
             } => {
                 if !is_agent_task(&task_type) {
+                    if task_type == "local_bash" && !is_backgrounded {
+                        self.bash_started.push((tool_use_id.clone(), task_id));
+                    }
                     self.not_agents.insert(tool_use_id);
                     return Vec::new();
                 }
@@ -796,8 +820,13 @@ impl Translator {
                 ledger.status = "running".into();
                 return vec![ledger.event(&tool_use_id)];
             }
+            SystemLine::TaskNotification { tool_use_id, .. }
+                if self.not_agents.contains(&tool_use_id) =>
+            {
+                self.bash_ended.push(tool_use_id);
+                return Vec::new();
+            }
             SystemLine::TaskProgress { tool_use_id, .. }
-            | SystemLine::TaskNotification { tool_use_id, .. }
                 if self.not_agents.contains(&tool_use_id) =>
             {
                 return Vec::new();
@@ -2081,5 +2110,40 @@ mod tests {
         // A progress line naming only the SendMessage call (no task_id).
         let ev = t.push(r#"{"type":"system","subtype":"task_progress","tool_use_id":"toolu_0176QKYiQvXCpGikuLVDdohv","usage":{"total_tokens":10,"tool_uses":1,"duration_ms":5}}"#);
         assert_eq!(statuses(&ev)[0].0, "toolu_0167io1Y9jPZHdt16w6e2dkQ");
+    }
+
+    /// Item 633: a foreground Bash task (as measured on 2.1.322) is handed
+    /// to the read loop's tail with its task id; a backgrounded one and an
+    /// agent are not; its `task_notification` ends it; the session is the
+    /// init line's.
+    #[test]
+    fn foreground_bash_tasks_are_handed_to_the_tail() {
+        let mut t = Translator::default();
+        t.push(r#"{"type":"system","subtype":"init","cwd":"/tmp/x","session_id":"20ed5f14-9880","tools":[],"mcp_servers":[],"model":"m","permissionMode":"default"}"#);
+        assert_eq!(t.session_id(), Some("20ed5f14-9880"));
+        let ev = t.push(r#"{"type":"system","subtype":"task_started","task_id":"bi4s82vn0","tool_use_id":"toolu_FG","description":"ticks","is_backgrounded":false,"task_type":"local_bash","session_id":"20ed5f14-9880"}"#);
+        assert!(ev.is_empty());
+        t.push(r#"{"type":"system","subtype":"task_started","task_id":"bbg","tool_use_id":"toolu_BG","description":"bg","is_backgrounded":true,"task_type":"local_bash"}"#);
+        t.push(r#"{"type":"system","subtype":"task_started","task_id":"a1","tool_use_id":"toolu_AG","description":"agent","subagent_type":"general-purpose","is_backgrounded":false,"task_type":"local_agent"}"#);
+        let (started, ended) = t.take_bash();
+        assert_eq!(
+            started,
+            vec![("toolu_FG".to_string(), "bi4s82vn0".to_string())]
+        );
+        assert!(ended.is_empty());
+        t.push(r#"{"type":"system","subtype":"task_notification","task_id":"bi4s82vn0","tool_use_id":"toolu_FG","status":"completed","output_file":"","summary":"ticks"}"#);
+        let (started, ended) = t.take_bash();
+        assert!(started.is_empty());
+        assert_eq!(ended, vec!["toolu_FG".to_string()]);
+        // The event's wire shape.
+        let json = serde_json::to_string(&TurnEvent::ToolOutput {
+            tool_use_id: "toolu_FG".into(),
+            lines: vec!["tick 3".into()],
+        })
+        .unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"tool_output","tool_use_id":"toolu_FG","lines":["tick 3"]}"#
+        );
     }
 }
