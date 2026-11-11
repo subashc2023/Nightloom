@@ -24,6 +24,8 @@ export const WORD_MS = 900;
 /** Words in one delta are staggered this far apart, capped at STAGGER_CAP. */
 export const STAGGER_MS = 22;
 export const STAGGER_CAP_MS = 160;
+/** Item 626: at most this many words of one delta animate; a burst's earlier words show at once. */
+export const BURST_WORDS = 40;
 /** The shuttle hides this long after the last arrival. */
 export const SHUTTLE_IDLE_MS = 900;
 
@@ -39,6 +41,30 @@ export interface Arrival {
 export interface Track {
   len: number;
   live: Arrival[];
+  /** Item 626: the text the offsets index (trailing whitespace trimmed); absent, the text is taken to have only grown. */
+  text?: string;
+}
+
+/**
+ * Item 626: line the shown text `was` up with the text `now` after a re-render rewrote it from offset `p` on (closing
+ * markup — `**wor` → `world`, `[text](ur` → `text`, a table's pipes, a fence's backticks — deletes characters; a table
+ * adds newlines between cells). Greedy: equal characters map; a whitespace character only in `now` is skipped there;
+ * anything else in `was` was deleted. Returns each old character's new offset (or -1) and where the mapped text ends.
+ */
+export function align(was: string, now: string, p: number): { at: Int32Array; end: number } {
+  const at = new Int32Array(was.length).fill(-1);
+  for (let k = 0; k < p; k++) at[k] = k;
+  let i = p;
+  let j = p;
+  let end = p;
+  while (i < was.length && j < now.length) {
+    if (was[i] === now[j]) {
+      at[i++] = j++;
+      end = j;
+    } else if (/\s/.test(now[j]) && !/\s/.test(was[i])) j++;
+    else i++;
+  }
+  return { at, end };
 }
 
 /** The motion is off under the OS's reduced-motion setting (and the harnesses' flags). */
@@ -57,7 +83,28 @@ export function motionOff(): boolean {
 export function arrive(s: Track, full: string, t: number): boolean {
   const L = full.trimEnd().length;
   let grew = false;
-  if (L < s.len) {
+  const was = s.text;
+  if (was !== undefined && !full.startsWith(was)) {
+    // Item 626: text already shown was rewritten (the markdown closed around it). Keep each live word on its own
+    // characters — before, the offsets kept pointing where the word used to be, so spans wrapped pieces of shown
+    // words (hidden again, then rising: the words seemed to move) while the new text showed unanimated.
+    let p = 0;
+    while (p < was.length && p < L && was[p] === full[p]) p++;
+    const { at, end } = align(was, full.slice(0, L), p);
+    const moved: Arrival[] = [];
+    for (const r of s.live) {
+      let a = -1;
+      let b = -1;
+      for (let k = r.from; k < r.to && k < at.length; k++) {
+        if (at[k] < 0) continue;
+        if (a < 0) a = at[k];
+        b = at[k] + 1;
+      }
+      if (a >= 0) moved.push({ from: a, to: b, start: r.start });
+    }
+    s.live = moved;
+    s.len = Math.min(end, L);
+  } else if (L < s.len) {
     s.len = L;
     s.live = s.live.filter((r) => r.from < L);
   }
@@ -75,11 +122,34 @@ export function arrive(s: Track, full: string, t: number): boolean {
       const prev = s.live.find((r) => r.to === from);
       carry = prev ? prev.start : t - WORD_MS;
     }
-    words.forEach(([a, b], k) =>
-      s.live.push({ from: a, to: b, start: k === 0 && carry !== null ? carry : t + Math.min(k * STAGGER_MS, STAGGER_CAP_MS) }),
-    );
+    // Item 626: the stagger runs on from the previous delta's words, never before them. It restarted at `t` on every
+    // delta, so with deltas ~40 ms apart and up to 160 ms of stagger the next delta's first words began while the last
+    // delta's were still hidden — words appeared out of order. Each word starts STAGGER_MS after the one before, and
+    // never later than STAGGER_CAP_MS after its own arrival, so a burst cannot build a queue.
+    let prev = s.live.reduce((m, r) => Math.max(m, r.start), -Infinity);
+    // Item 626 (his second report: after thinking, "the entire screen … gets replaced by a bunch of text, except like
+    // only half of the tokens are actually showing … random letters across the screen"): a burst of thousands of
+    // characters wrapped every word in its own blurred, rising span at once. Only the burst's last BURST_WORDS animate;
+    // the words before them simply show.
+    if (words.length > BURST_WORDS) {
+      words.splice(0, words.length - BURST_WORDS);
+      carry = null;
+      // Words still waiting on their stagger begin now, so none is hidden behind the burst's shown words.
+      for (const r of s.live) if (r.start > t) r.start = t;
+      prev = Math.min(prev, t);
+    }
+    words.forEach(([a, b], k) => {
+      if (k === 0 && carry !== null) {
+        s.live.push({ from: a, to: b, start: carry });
+        return;
+      }
+      const start = Math.min(t + STAGGER_CAP_MS, Math.max(t, prev + STAGGER_MS));
+      prev = start;
+      s.live.push({ from: a, to: b, start });
+    });
     s.len = L;
   }
+  s.text = full.slice(0, L);
   s.live = s.live.filter((r) => r.start + WORD_MS > t);
   return grew;
 }
@@ -116,14 +186,31 @@ export function settlesAt(live: Arrival[]): number | null {
 
 const WRAP = "rm-w";
 const MD = ".markdown";
+/** Item 626: what other code adds inside a block (codeCopy's buttons, the next-chat row) is not the reply's text. */
+const EXTRA = "button.code-copy, button.code-run, div.handoff-go";
+
+/** The block's text nodes, less those inside EXTRA. */
+function textWalker(el: HTMLElement): TreeWalker {
+  return document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
+    acceptNode: (n) => (n.parentElement?.closest(EXTRA) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+  });
+}
+
+/** The block's text as the offsets index it (item 626: before, a Run button's label shifted every offset after it). */
+export function blockText(el: HTMLElement): string {
+  let s = "";
+  const w = textWalker(el);
+  for (let n = w.nextNode(); n; n = w.nextNode()) s += (n as Text).data;
+  return s;
+}
 
 /** Wrap the still-animating words of one block, walking its text nodes back from the end. */
-function decorate(el: HTMLElement, live: Arrival[], t: number): void {
+function decorate(el: HTMLElement, live: Arrival[], t: number, length: number): void {
   if (!live.length) return;
   const minFrom = Math.min(...live.map((r) => r.from));
-  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  const walker = textWalker(el);
   let node = walker.lastChild() as Text | null;
-  let end = (el.textContent ?? "").length;
+  let end = length;
   const todo: [Text, number][] = [];
   while (node && end > minFrom) {
     const a = end - node.data.length;
@@ -229,12 +316,13 @@ export function replyMotion(root: HTMLElement, streaming: boolean) {
 
   function record(el: HTMLElement, t: number): void {
     const s = trackOf(el);
-    if (arrive(s, el.textContent ?? "", t)) {
+    const text = blockText(el);
+    if (arrive(s, text, t)) {
       lastBlock = el;
       lastArrival = t;
       run();
     }
-    decorate(el, s.live, t);
+    decorate(el, s.live, t, text.length);
   }
 
   /** Unwrap every block once its words are done; re-arm while any still animate. */
@@ -318,7 +406,9 @@ export function replyMotion(root: HTMLElement, streaming: boolean) {
     if (obs || motionOff()) return;
     // What is on screen already stays as it is.
     root.querySelectorAll<HTMLElement>(MD).forEach((el) => {
-      trackOf(el).len = (el.textContent ?? "").trimEnd().length;
+      const s = trackOf(el);
+      s.text = blockText(el).trimEnd();
+      s.len = s.text.length;
     });
     shuttle = document.createElement("div");
     shuttle.className = "rm-shuttle";

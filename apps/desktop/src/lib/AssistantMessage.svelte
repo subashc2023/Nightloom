@@ -4,7 +4,8 @@
   import { copyText } from "./clipRing.svelte";
   import type { Segment } from "./state.svelte";
   import type { ApprovalRequest, Usage } from "./types";
-  import { renderReply } from "./markdown";
+  // Item 626: while streaming, the unfinished tail renders as it will once finished (streamingTail).
+  import { renderReply, streamingTail } from "./markdown";
   import { liveHtml } from "./liveHtml";
   import { codeCopy, type RunBlocks } from "./codeCopy";
   import { handoffGo, type NextChat } from "./handoffButton";
@@ -1154,7 +1155,7 @@
       {:else}
         <!-- Item 452: patched in place (liveHtml), not replaced whole per
              streamed delta, so a selection in its written part survives. -->
-        <div class="markdown" use:liveHtml={renderReply(g.seg.text)} use:memoryRefs={{ hits: memHits, text: g.seg.text }} use:codeCopy={runBlocks(g.seg.text)} use:handoffGo={nextChat}></div>
+        <div class="markdown" use:liveHtml={renderReply(streaming ? streamingTail(g.seg.text) : g.seg.text)} use:memoryRefs={{ hits: memHits, text: g.seg.text }} use:codeCopy={runBlocks(g.seg.text)} use:handoffGo={nextChat}></div>
       {/if}
     {:else if g.seg.kind === "removed_tool" || g.seg.kind === "removed_text"}
       {@const seg = g.seg}
@@ -1923,7 +1924,11 @@
     /* Each new word fades up from a soft blur a quarter-line below, under an
        accent weft that fades; the delay (negative once begun) is set per word. */
     .assistant :global(.rm-w) {
-      display: inline-block;
+      /* Item 626: inline, not inline-block — an atomic inline is a line-break opportunity on both sides and trims
+         its edge spaces, so a word split across deltas wrapped mid-word and spacing slipped until the spans went.
+         The rise is `top` on a relative inline (a transform does not apply to an inline box). */
+      display: inline;
+      position: relative;
       animation:
         rm-rise 520ms cubic-bezier(0.2, 0.7, 0.2, 1) both,
         rm-weft-under 900ms ease-out both;
@@ -1962,12 +1967,12 @@
   @keyframes -global-rm-rise {
     from {
       opacity: 0;
-      transform: translateY(0.28em);
+      top: 0.28em;
       filter: blur(3px);
     }
     to {
       opacity: 1;
-      transform: none;
+      top: 0;
       filter: none;
     }
   }

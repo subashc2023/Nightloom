@@ -901,7 +901,11 @@
   }
   @media (prefers-reduced-motion: no-preference) {
     .said.markdown :global(.rm-w) {
-      display: inline-block;
+      /* Item 626: inline, not inline-block — an atomic inline is a line-break opportunity on both sides and trims
+         its edge spaces, so a word split across deltas wrapped mid-word and spacing slipped until the spans went.
+         The rise is `top` on a relative inline (a transform does not apply to an inline box). */
+      display: inline;
+      position: relative;
       animation:
         rm-rise 520ms cubic-bezier(0.2, 0.7, 0.2, 1) both,
         rm-weft-under 900ms ease-out both;

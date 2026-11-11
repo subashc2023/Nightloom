@@ -60,8 +60,21 @@ describe("arrive — which words animate", () => {
     expect(s.live).toEqual([
       { from: 0, to: 4, start: 0 },
       { from: 4, to: 9, start: 0 },
-      { from: 10, to: 14, start: 40 + STAGGER_MS },
+      // Item 626: the stagger runs on from the last word's start (0 + STAGGER_MS), never before its own arrival (40).
+      { from: 10, to: 14, start: 40 },
     ]);
+  });
+
+  it("item 626: a delta's words never start before the previous delta's, and never more than the cap after arriving", () => {
+    const s = track();
+    arrive(s, "one two three four five six seven", 0); // starts 0, 22, … 132
+    arrive(s, "one two three four five six seven eight nine", 40);
+    const starts = s.live.map((r) => r.start);
+    expect(starts).toEqual([...starts].sort((a, b) => a - b));
+    expect(s.live.at(-2)!.start).toBe(6 * STAGGER_MS + STAGGER_MS);
+    // A burst: the schedule is held to the cap past each word's arrival.
+    arrive(s, "one two three four five six seven eight nine " + Array.from({ length: 40 }, (_, k) => `w${k}`).join(" "), 41);
+    expect(Math.max(...s.live.map((r) => r.start))).toBe(41 + STAGGER_CAP_MS);
   });
 
   it("a word whose first piece already finished simply shows", () => {
