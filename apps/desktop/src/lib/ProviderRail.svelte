@@ -1292,7 +1292,7 @@
             text="Claude Code's --effort: how hard the model thinks per turn. default sends no flag and leaves it to the model — high on Fable 5.1, Opus 5 and Sonnet 5, the same as the API's; a level saved in ~/.claude/settings.json (effortLevel, or /effort from a terminal) wins over it. xhigh and max spend more thinking tokens and time, low fewer. A level the model does not support falls back to one it does."
           />
         </div>
-        <div class="segs" role="radiogroup" aria-label="Effort">
+        <div class="segs eff" role="radiogroup" aria-label="Effort">
           {#each EFFORTS as e (e)}
             <button
               class:on={e === app.draft.agentEffort}
@@ -3044,6 +3044,12 @@
     background: var(--well2);
     color: var(--ink);
     box-shadow: inset 0 0 0 1px var(--accent);
+  }
+  /* Effort in the Filament popover (wave 6, w5v): six positions at equal widths cut "default · high"
+     and "medium" to an ellipsis; each takes its text's width instead, the spare split evenly. */
+  :global(:where(:root:not([data-layout="classic"]))) .segs.eff button {
+    flex: 1 1 auto;
+    padding: 4px 3px;
   }
   :global(:where(:root:not([data-layout="classic"]))) .segs button.on.off {
     background: var(--failed-soft);
