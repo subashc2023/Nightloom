@@ -22,6 +22,8 @@
   import { LAYOUTS, classic, layout, setLayout } from "./layout.svelte";
   // Filament IV's accent and instrument light (item 571, stage 7).
   import { ACCENTS, LIGHTS, look, setAccent, setLight, applyLook } from "./settings/look.svelte";
+  // Item 589: the running step's motion in the turn trace.
+  import { STEP_MOTIONS, stepMotion, setStepMotion } from "./stepMotion.svelte";
   import ContextDial from "./ContextDial.svelte";
   import { planDials, surfaceShares, paceLine, weekGone, resetsWhen } from "./settingsUsage";
   /** The Layout choice: the layout, then the accent again (no accent is stamped under Classic). */
@@ -1542,6 +1544,17 @@
             <button class="pick" class:on={look.light === l.id} role="radio" aria-checked={look.light === l.id} onclick={() => setLight(l.id)}>
               <span class="pick-h"><i class="radio" aria-hidden="true"></i>{l.name}</span>
               <span class="pick-n">{l.note}</span>
+            </button>
+          {/each}
+        </div>
+      </section>
+      <section class="card f4-only" aria-label="Thinking motion">
+        <div class="ch"><span class="t">Thinking motion</span></div>
+        <div class="pick3" role="radiogroup" aria-label="Thinking motion">
+          {#each STEP_MOTIONS as m (m.id)}
+            <button class="pick" class:on={stepMotion.value === m.id} role="radio" aria-checked={stepMotion.value === m.id} onclick={() => setStepMotion(m.id)}>
+              <span class="pick-h"><i class="radio" aria-hidden="true"></i>{m.name}</span>
+              <span class="pick-n">{m.note}</span>
             </button>
           {/each}
         </div>
