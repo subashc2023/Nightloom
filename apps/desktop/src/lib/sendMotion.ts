@@ -559,6 +559,19 @@ function departDial(at: number): void {
   const from = rectOf(src);
   if (from.w <= 0 || from.h <= 0) return;
   const ghost = src.cloneNode(true) as HTMLElement;
+  // A cloned canvas is blank: copy the motion layer's pixels (item 581's DialMotion) so the ghost carries them.
+  const srcCanvases = src.querySelectorAll("canvas");
+  ghost.querySelectorAll("canvas").forEach((c, i) => {
+    const from = srcCanvases[i];
+    if (!from || !from.width) return;
+    c.width = from.width;
+    c.height = from.height;
+    try {
+      c.getContext("2d")?.drawImage(from, 0, 0);
+    } catch {
+      /* a tainted or lost context: the ghost flies without that layer */
+    }
+  });
   ghost.setAttribute("aria-hidden", "true");
   ghost.removeAttribute("role");
   Object.assign(ghost.style, {
