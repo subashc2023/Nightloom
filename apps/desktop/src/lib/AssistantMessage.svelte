@@ -13,6 +13,7 @@
   import { openAgentTab } from "./terminal.svelte";
   import { isShellCall } from "./agentCommands";
   import CouncilBlocks from "./CouncilBlocks.svelte";
+  import BashPassing from "./BashPassing.svelte";
   import { parseCouncilRecord, parseCouncilSeat } from "./council";
   import { wordDiff } from "./textdiff";
   import { exactTime, relativeTimeLong } from "./time";
@@ -997,6 +998,8 @@
               <div class="row-wrap tool" class:running class:rm-born={bornW} class:rm-finished={bornW && !running}
                 class:mo-run={running} data-kind={kind}>
                 {#if running}{@render stepLive(kind, false)}{/if}
+                <!-- Item 633: the command's real output passing behind the row. -->
+                {#if running && kind === "shell"}<BashPassing id={seg.call.id} />{/if}
                 <!-- An Agent call's row is a drag source (backlog 160): its
                      subagent's transcript as a tab, dropped on a strip or a
                      pane's half — live while it runs (guess pass 2026-09-25,
