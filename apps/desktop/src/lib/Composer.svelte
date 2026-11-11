@@ -153,6 +153,7 @@
   import { chipStep, isChipTag } from "./chipSteps";
   // Scheduled send (backlog 224): the ▾ beside Send and the chip above.
   import ScheduleMenu from "./ScheduleMenu.svelte";
+  import FilamentMark from "./FilamentMark.svelte";
   import ScheduledChip from "./ScheduledChip.svelte";
   import { scheduledFor } from "./scheduled.svelte";
   import { hasNoTurns } from "./waitingChat";
@@ -2252,8 +2253,25 @@
     if (aside && before && !now) untrack(() => void asideDrain());
   });
 
+  /**
+   * Item 606: Send's Filament "sending" look — from the click until the
+   * turn starts (Stop takes Send's place then) or the send gives up, e.g.
+   * while an office file converts.
+   */
+  let sending = $state(false);
+  $effect(() => {
+    if (busy) sending = false;
+  });
   async function submit() {
     if (aside) return asideSubmit();
+    sending = true;
+    try {
+      await submitNow();
+    } finally {
+      sending = false;
+    }
+  }
+  async function submitNow() {
     const t = text.trim();
     const empty = !t && attachments.length === 0;
     if (empty || !app.connection) return;
@@ -3430,12 +3448,12 @@
       {:else if aside}
         <!-- The aside's Send (backlog 283): no schedule ▾, no council. -->
         <button
-          class="ns-btn accent send act"
+          class="ns-btn accent send act fil-btn fil-send"
           use:tip={asideSendTip}
           onclick={() => void submit()}
           disabled={!app.connection || asideBlock !== null || (!text.trim() && attachments.length === 0)}
         >
-          Send
+          <span class="fil-scan" aria-hidden="true"></span><FilamentMark kind="send" />Send
         </button>
       {:else}
         {#if app.connection?.engine === "claude-code" && app.events.length > 0}
@@ -3446,12 +3464,12 @@
                Not before the first turn: an empty chat has no context to
                ask (the Welcome screen showed it — his report, 2026-09-17). -->
           <button
-            class="ns-btn ghost small act"
+            class="ns-btn ghost small act fil-btn fil-ghost"
             use:tip={"Ask this of the chat without adding it to the chat: answered from what is already in context, no changes, recorded nowhere (Claude Code's /btw)"}
             disabled={!text.trim() && attachments.length === 0}
             onclick={() => void submitAside()}
           >
-            <span class="fold-word">Ask aside</span><span class="short-word">Aside</span>
+            <FilamentMark kind="aside" /><span class="fold-word">Ask aside</span><span class="short-word">Aside</span>
           </button>
         {/if}
         {#if app.connection?.engine === "claude-code"}
@@ -3459,7 +3477,7 @@
                and mode for this turn, then Send to the council. -->
           <span class="council-wrap act" bind:this={councilWrap}>
             <button
-              class="ns-btn ghost small"
+              class="ns-btn ghost small fil-btn fil-ghost"
               class:on={councilOpen}
               bind:this={councilBtn}
               use:tip={"Send this message to a council: several models answer it independently, then this chat's model chairs their answers"}
@@ -3469,7 +3487,7 @@
               onclick={() => (councilOpen = !councilOpen)}
             >
               <!-- Item 289: its icon alone at fold 3 and past. -->
-              <span class="council-ico" aria-hidden="true"><Icon name="agent" size={13} /></span><span class="council-word">Council</span>
+              <FilamentMark kind="council" /><span class="council-ico" aria-hidden="true"><Icon name="agent" size={13} /></span><span class="council-word">Council</span>
             </button>
             {#if councilOpen}
               <CouncilPopover
@@ -3488,13 +3506,14 @@
              New chat ▾ shape; the ▾ schedules the message instead. -->
         <span class="send-split act">
           <button
-            class="ns-btn accent send act"
+            class="ns-btn accent send act fil-btn fil-send"
             use:tip={sendTip(!!app.connection, !text.trim() && attachments.length === 0, sendHeld()) +
               (shown && Number(rowFold) >= 2 ? ` · ${shown.long}` : "")}
             onclick={() => void submit()}
+            class:sending
             disabled={!app.connection || sendHeld() || (!text.trim() && attachments.length === 0)}
           >
-            Send
+            <span class="fil-scan" aria-hidden="true"></span><span class="fil-edge" aria-hidden="true"></span><FilamentMark kind="send" />Send
           </button><ScheduleMenu {key} {text} {attachments} blocked={scheduleBlocked} onscheduled={scheduled} />
         </span>
       {/if}
@@ -4831,6 +4850,203 @@
   .send-split .send {
     border-top-right-radius: 0;
     border-bottom-right-radius: 0;
+  }
+  /* Item 606 (his pick, blocker 1827): Filament — Send a dark bulb with an
+     amber edge and a lit coil (FilamentMark), the ▾ its matching half; Ask
+     aside and Council carry the coil family. Filament IV only; Classic has
+     none of it (the spans below are `display: none` there). Idle: a steady
+     glow and nothing moves. Hover: brighter, wider glow and a scan line
+     crosses the bulb once. Press: a charge-and-release ring. Sending: the
+     coil's pulse loops and a bright point traces the edge. */
+  .fil-scan,
+  .fil-edge {
+    display: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .fil-send {
+    position: relative;
+    overflow: hidden;
+    gap: 6px;
+    padding: 0 14px 0 12px;
+    background: var(--term);
+    border-color: color-mix(in srgb, var(--accent) 70%, var(--line2));
+    color: var(--accent-ink);
+    box-shadow:
+      inset 0 0 10px color-mix(in srgb, var(--accent) 14%, transparent),
+      var(--glow-main);
+    transition:
+      background 140ms ease,
+      border-color 140ms ease,
+      box-shadow 180ms ease;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .send-split :global(.sched-caret) {
+    background: var(--term);
+    border-color: color-mix(in srgb, var(--accent) 70%, var(--line2));
+    border-left-color: color-mix(in srgb, var(--accent) 35%, var(--line2));
+    color: var(--accent-ink);
+    box-shadow:
+      inset 0 0 10px color-mix(in srgb, var(--accent) 14%, transparent),
+      var(--glow-main);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .send-split :global(.sched-caret:hover:not(:disabled)) {
+    background: color-mix(in srgb, var(--accent) 12%, var(--term));
+    border-color: var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .send-split :global(.sched-caret:disabled) {
+    box-shadow: none;
+    border-color: var(--line2);
+    color: var(--dim);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .fil-send:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--accent) 12%, var(--term));
+    border-color: var(--accent);
+    color: #fff4dc;
+    box-shadow:
+      inset 0 0 12px color-mix(in srgb, var(--accent) 26%, transparent),
+      0 0 18px color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .fil-send:active:not(:disabled) {
+    background: color-mix(in srgb, var(--accent) 22%, var(--term));
+    border-color: var(--accent-ink);
+    transform: translateY(1px);
+    box-shadow:
+      inset 0 0 14px color-mix(in srgb, var(--accent) 40%, transparent),
+      0 0 22px color-mix(in srgb, var(--accent) 55%, transparent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .fil-send.sending {
+    border-color: var(--accent);
+    box-shadow:
+      inset 0 0 12px color-mix(in srgb, var(--accent) 30%, transparent),
+      0 0 18px color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .fil-send:disabled {
+    background: var(--term);
+    box-shadow: none;
+    border-color: var(--line2);
+    color: var(--dim);
+  }
+  /* Calm (IV): no light — the bulb keeps its edge, without the halo. */
+  :global(:where([data-light="calm"])) .fil-send,
+  :global(:where([data-light="calm"])) .send-split :global(.sched-caret) {
+    box-shadow: none !important;
+  }
+  /* The scan line: a thin bright bar, parked off the left edge. */
+  :global(:where(:root:not([data-layout="classic"]))) .fil-scan {
+    display: block;
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 10px;
+    pointer-events: none;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      color-mix(in srgb, var(--accent-ink) 55%, transparent) 45%,
+      #fffaf0 50%,
+      color-mix(in srgb, var(--accent-ink) 55%, transparent) 55%,
+      transparent
+    );
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+  /* The edge trace: a ring the shape of the button's edge, lit by a
+     turning conic light (a bright point with an amber tail). */
+  :global(:where(:root:not([data-layout="classic"]))) .fil-edge {
+    display: block;
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1.5px;
+    pointer-events: none;
+    background: conic-gradient(
+      from var(--fil-a, 0deg),
+      transparent 0deg 230deg,
+      color-mix(in srgb, var(--accent) 80%, transparent) 320deg,
+      #fffaf0 352deg,
+      transparent 360deg
+    );
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    mask-composite: exclude;
+    opacity: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .fil-send.sending .fil-edge {
+    opacity: 1;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    :global(:where(:root:not([data-layout="classic"]))) .fil-send:hover:not(:disabled) .fil-scan {
+      animation: fil-scan 0.6s ease-out 1 both;
+    }
+    :global(:where(:root:not([data-layout="classic"]))) .fil-send:active:not(:disabled) {
+      animation: fil-charge 0.32s ease-out 1;
+    }
+    :global(:where(:root:not([data-layout="classic"]))) .fil-send.sending .fil-edge {
+      animation: fil-edge 1s linear infinite;
+    }
+  }
+  /* Reduce motion: static glows only — sending is a full lit edge. */
+  @media (prefers-reduced-motion: reduce) {
+    :global(:where(:root:not([data-layout="classic"]))) .fil-send.sending .fil-edge {
+      background: color-mix(in srgb, var(--accent) 80%, transparent);
+    }
+  }
+  @keyframes fil-scan {
+    0% {
+      opacity: 0;
+      transform: translateX(-12px);
+    }
+    15% {
+      opacity: 0.9;
+    }
+    85% {
+      opacity: 0.9;
+    }
+    100% {
+      opacity: 0;
+      transform: translateX(var(--fil-scan-to, 120px));
+    }
+  }
+  @keyframes fil-charge {
+    0% {
+      box-shadow:
+        inset 0 0 4px color-mix(in srgb, var(--accent) 20%, transparent),
+        0 0 6px color-mix(in srgb, var(--accent) 30%, transparent);
+    }
+    45% {
+      box-shadow:
+        inset 0 0 18px color-mix(in srgb, var(--accent) 60%, transparent),
+        0 0 4px color-mix(in srgb, var(--accent) 40%, transparent);
+    }
+    100% {
+      box-shadow:
+        inset 0 0 14px color-mix(in srgb, var(--accent) 40%, transparent),
+        0 0 22px color-mix(in srgb, var(--accent) 55%, transparent);
+    }
+  }
+  /* The edge light's angle, registered so it turns smoothly (WebKit
+     16.4+); unregistered it would jump, which still reads as a trace. */
+  @property --fil-a {
+    syntax: "<angle>";
+    inherits: false;
+    initial-value: 0deg;
+  }
+  @keyframes fil-edge {
+    to {
+      --fil-a: 360deg;
+    }
+  }
+  /* Ask aside and Council: the coil before the word; Council's coil
+     replaces the agent icon (also its icon-only mark at fold 3+). */
+  :global(:where(:root:not([data-layout="classic"]))) .fil-ghost {
+    gap: 6px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .fil-ghost .council-ico {
+    display: none !important;
   }
   .hint {
     max-width: 760px;

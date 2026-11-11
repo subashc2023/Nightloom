@@ -176,7 +176,7 @@ describe("the top bar and the composer", () => {
     });
   }
   it("Composer's Send carries a tip (walk 2026-09-25: the disabled Send showed none)", () => {
-    expect(composerSrc).toMatch(/class="ns-btn accent send act"\s+use:tip=\{sendTip\(/);
+    expect(composerSrc).toMatch(/class="ns-btn accent send act[^"]*"\s+use:tip=\{sendTip\(/);
   });
 });
 
