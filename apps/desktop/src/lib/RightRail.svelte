@@ -2,6 +2,7 @@
   import ProviderRail from "./ProviderRail.svelte";
   import TaskPanel from "./TaskPanel.svelte";
   import ContextDial from "./ContextDial.svelte";
+  import DialMotion from "./DialMotion.svelte";
   import { app, chatAgentSession, contextUsed, currentTodos } from "./state.svelte";
   import * as api from "./api";
   import {
@@ -130,6 +131,8 @@
   const toolsLine = $derived(toolsText(marks));
   const hasTurn = $derived(turnClock != null || inTokens != null || outTokens != null || toolsLine != null);
   const pct = (n: number) => `${Math.round(n * 100)}%`;
+  /** Item 585: the new-chat layers the column's dial draws. */
+  const COLUMN_LAYERS = ["wave", "hand"];
 
   // ---- item 569: Claude Code's /usage figures. The account's per-model
   // weeklies (the CLI cache) under Plan use; this chat's own totals (its
@@ -210,6 +213,11 @@
     <section>
       <h4>Context <span>{modelShort(app.connection?.model)}</span></h4>
       <div class="dial-at" data-dial-dock>
+        <!-- Item 585: a few of 581's new-chat layers behind the dial, quieter (the compact form at this size:
+             the audio ring and the seconds tick — its gear would sit behind the figure); the ring holds a gentle surge while a turn streams
+             and each new tool call nudges it. Paused when hidden, still under reduced motion. -->
+        <div class="dm-at">
+          <DialMotion size={104} pad={14} quiet layers={COLUMN_LAYERS} streaming={live} typed={marks.length} />
         <ContextDial
           size={104}
           {share}
@@ -223,6 +231,7 @@
             ? `Context ${used.toLocaleString()} tokens${limit ? ` of ${limit.toLocaleString()}` : ""}`
             : "Context: no reading yet"}
         />
+        </div>
       </div>
       <div class="legend">
         {#if limit && used != null}
@@ -521,6 +530,9 @@
   .dial-at {
     display: flex;
     justify-content: center;
+  }
+  .dm-at {
+    position: relative;
   }
   .legend {
     margin-top: 8px;
