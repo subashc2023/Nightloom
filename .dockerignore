@@ -1,0 +1,5 @@
+# Item 602 (2026-11-10): keep the Mac's build output out of the deploy context (it was 28 GB)
+target/
+**/target/
+**/node_modules/
+apps/desktop/dist/
