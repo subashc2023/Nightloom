@@ -53,6 +53,22 @@ fn tell(app: &AppHandle, holder: &Holder, chat: &str) {
 }
 
 /// Tick for the life of the app.
+/// Whether any chat has a keep-warm ping scheduled or running (blocker
+/// 1799, his "yeah"): `wake::watch` keeps the Mac awake while it is, as it
+/// does for a scheduled send, under the same Settings switch.
+pub fn warming(app: &AppHandle) -> bool {
+    let Some(holder) = app.try_state::<Holder>() else {
+        return false;
+    };
+    let p = policy();
+    let now = now_ms();
+    holder
+        .0
+        .on()
+        .iter()
+        .any(|chat| holder.0.status(chat, None, &p, now).scheduled)
+}
+
 pub fn watch(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         loop {

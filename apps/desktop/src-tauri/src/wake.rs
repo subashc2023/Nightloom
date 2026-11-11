@@ -229,8 +229,10 @@ pub fn watch(app: tauri::AppHandle) {
                 continue;
             };
             let (armed, soon) = wakes.pending(now);
-            activity.set(armed);
-            let keep = soon
+            // Blocker 1799: a chat being kept warm holds the Mac awake too.
+            let warming = crate::keep_warm::warming(&app);
+            activity.set(armed || warming);
+            let keep = (soon || warming)
                 && app
                     .try_state::<crate::power::Holder>()
                     .is_none_or(|h| h.keep_awake());
