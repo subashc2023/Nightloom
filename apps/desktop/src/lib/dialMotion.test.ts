@@ -124,7 +124,8 @@ describe("the motion rules (581; 574b's rules for ContextDial stand unchanged)",
     expect(motionSrc).toMatch(/return \(\) => \{\s*stop\(\);/);
   });
   it("calm draws no glow; the canvas never takes the pointer", () => {
-    expect(motionSrc).toContain("if (ink.glow && !ink.calm)");
+    // 585 adds the column's quiet form to the same guard.
+    expect(motionSrc).toMatch(/if \(ink\.glow && !ink\.calm(?: && !quiet)?\) \{/);
     expect(motionSrc).toMatch(/\.dm \{\s*position: absolute;\s*pointer-events: none;/);
   });
   it("sits on the Filament IV page only — Classic and the shared dial are untouched", () => {

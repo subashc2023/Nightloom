@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { duration, modelName, modelSplit, resetClock, spenderName, usd } from "./usageFigures";
+import { compactCount, duration, modelName, modelSplit, resetClock, spenderName, stackParts, usd } from "./usageFigures";
 
 describe("item 569: /usage figures for the column", () => {
   it("prints durations the way /usage does", () => {
@@ -44,5 +44,32 @@ describe("item 569: /usage figures for the column", () => {
     expect(spenderName({ who: "main", agents: 0 })).toBe("Main chat");
     expect(spenderName({ who: "general-purpose", agents: 3 })).toBe("general-purpose ×3");
     expect(spenderName({ who: "reusable", agents: 1 })).toBe("reusable");
+  });
+});
+
+describe("compactCount (item 584)", () => {
+  it("keeps every count to five characters at most", () => {
+    expect(compactCount(206)).toBe("206");
+    expect(compactCount(6_600)).toBe("6.6k");
+    expect(compactCount(110_000)).toBe("110k");
+    expect(compactCount(999_400)).toBe("999k");
+    expect(compactCount(999_600)).toBe("1M");
+    expect(compactCount(10_490_000)).toBe("10.5M");
+    expect(compactCount(1_730_000)).toBe("1.7M");
+    expect(compactCount(153_523_170)).toBe("154M");
+    expect(compactCount(-3)).toBe("0");
+    for (const n of [0, 999, 1_234, 99_949, 123_456_789, 9_999_999_999]) expect(compactCount(n).length).toBeLessThanOrEqual(5);
+  });
+});
+
+describe("stackParts (item 584)", () => {
+  it("splits by value, widths summing to one", () => {
+    const p = stackParts([{ name: "Opus 5.5", value: 17.46 }, { name: "Haiku 5.5", value: 0.18 }]);
+    expect(p.map((x) => x.pct)).toEqual([99, 1]);
+    expect(p[0].share + p[1].share).toBeCloseTo(1);
+  });
+  it("is empty when nothing was spent", () => {
+    expect(stackParts([{ name: "a", value: 0 }])).toEqual([]);
+    expect(stackParts([])).toEqual([]);
   });
 });

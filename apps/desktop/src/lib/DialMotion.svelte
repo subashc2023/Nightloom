@@ -66,9 +66,18 @@
     labelGaps?: boolean;
     /** The 5-hour window, for the slow hand; null draws none. */
     plan?: { used: number | null; resetsAt: string | null } | null;
+    /**
+     * Item 585: the right column's dial — every layer at 60 % and no glow,
+     * so it never pulls his eye from the chat. Off on the new-chat page.
+     */
+    quiet?: boolean;
+    /** Item 585: a turn is streaming — the wave holds a gentle surge while it runs. */
+    streaming?: boolean;
+    /** Item 585: draw only these layers (null: all). The column's dial leaves out the gear behind its figure. */
+    layers?: string[] | null;
   }
 
-  let { size, pad, lit = null, spinKey = null, flowKey = "", typed = 0, labelGaps = false, plan = null }: Props = $props();
+  let { size, pad, lit = null, spinKey = null, flowKey = "", typed = 0, labelGaps = false, plan = null, quiet = false, streaming = false, layers = null }: Props = $props();
 
   /** Room past the dial's box for the wave's tallest spokes. */
   const compact = $derived(size < 150);
@@ -152,10 +161,13 @@
     }
     lastSpin = k;
   });
+  /** Item 585: the held surge while a turn streams (a key's kick is 0.3, the opening sweep's 0.9). */
+  const STREAM_SURGE = 0.45;
   // A hover redraws at once (the still form has no loop to pick it up).
   $effect(() => {
     void lit;
     void plan;
+    void streaming;
     void size;
     untrack(paint);
   });
@@ -181,19 +193,19 @@
   // ---- drawing
   const TAU = Math.PI * 2;
   const rad = (deg: number) => (deg * Math.PI) / 180;
-  const shows = (layer: string) => !hook?.only || hook.only.split(",").includes(layer);
+  const shows = (layer: string) => (!layers || layers.includes(layer)) && (!hook?.only || hook.only.split(",").includes(layer));
 
   function draw(ctx: CanvasRenderingContext2D, t: number, ms: number, still = false) {
     const R = size / 2;
     const k = compact ? size / 84 : size / 330;
     const c = margin + box / 2;
-    const dim = ink.calm ? 0.7 : 1;
+    const dim = (ink.calm ? 0.7 : 1) * (quiet ? 0.6 : 1);
     ctx.clearRect(0, 0, css, css);
     ctx.save();
     ctx.translate(c, c);
     ctx.lineCap = "butt";
     // The still form is the idle shape: no surge.
-    const surge = still ? 0 : level(energy, t) + (hook?.energy ?? 0);
+    const surge = still ? 0 : level(energy, t) + (hook?.energy ?? 0) + (streaming ? STREAM_SURGE : 0);
     // The gears' turn: 6°/s, plus the spin-up and a nudge per key.
     const turnA = 6 * t + integral(spin, t) + (hook?.spin ?? 0);
     const radial = (th: number, r1: number, r2: number) => {
@@ -384,7 +396,7 @@
       ctx.strokeStyle = ink.accentInk;
       ctx.lineWidth = (compact ? 1.6 : 2.4) * k;
       ctx.lineCap = "round";
-      if (ink.glow && !ink.calm) {
+      if (ink.glow && !ink.calm && !quiet) {
         ctx.shadowColor = ink.accent;
         ctx.shadowBlur = 8;
       }
