@@ -296,6 +296,20 @@
     );
   });
 
+  /** Item 595: each reading's own hover, naming it ("Context 212k of 1M",
+   *  "5-hour window 59%"); the chip's hover keeps every figure. */
+  const gaugeTip = $derived.by(() => {
+    if (!gauge) return "";
+    const head = gauge.limit
+      ? `Context ${tokens(gauge.used)} of ${tokens(gauge.limit)} (${Math.round((gauge.ratio ?? 0) * 100)}%)`
+      : `Context ${tokens(gauge.used)} — window size unknown for this model`;
+    return `${head} — click for the figures`;
+  });
+  const planTip = $derived.by(() => {
+    if (!plan) return "";
+    return `5-hour window ${plan.five_hour}% (${resetText(plan.five_hour_resets_at)}) · ${planAgeText}${plan.stale ? " — stale" : ""} — click for the figures`;
+  });
+
   function tokens(n: number): string {
     if (n >= 1_000_000) return `${parseFloat((n / 1_000_000).toFixed(2))}M`;
     if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
@@ -612,26 +626,47 @@
           " — click for the figures (⌘⇧C itemises the context)"}
         onclick={toggleGauge}
       >
+        <!-- Item 595 ("either both dials or both bars"): ~~a 13 px context
+             ring over a 48 px blue five-hour bar, the age at the right~~ —
+             one form for every reading: a small dial with its figure
+             beside it, context then the five-hour window, on one centre
+             line; each reading names itself in its own hover. The
+             five-hour dial takes the rail's colour for it (amber), so the
+             two read as one pair; the context arc turns orange past the
+             hand-off mark as before. -->
         {#if gauge || plan}
-          <span class="bars">
-            {#if gauge?.ratio != null}
+          {#if gauge}
+            <span class="reading" data-reading="context" use:tip={gaugeTip}>
+              {#if gauge.ratio != null}
+                <ContextDial
+                  size={14}
+                  stroke={2.5}
+                  pad={2}
+                  minor={0}
+                  major={0}
+                  share={gauge.ratio}
+                  mark={handoffMark(app.activeSessionId, gauge.limit)}
+                  label={`Context ${Math.round(gauge.ratio * 100)}%`}
+                />
+              {/if}
+              <span class="figure">{tokens(gauge.used)}</span>
+            </span>
+          {/if}
+          {#if plan}
+            <span class="reading" data-reading="five-hour" use:tip={planTip}>
               <ContextDial
-                size={13}
+                size={14}
                 stroke={2.5}
                 pad={2}
                 minor={0}
                 major={0}
-                share={gauge.ratio}
-                mark={handoffMark(app.activeSessionId, gauge.limit)}
-                label={`Context ${Math.round(gauge.ratio * 100)}%`}
+                share={Math.min(plan.five_hour ?? 0, 100) / 100}
+                label={`5-hour window ${plan.five_hour}%`}
               />
-            {/if}
-            {#if plan}
-              <span class="gbar"><span class="fill plan-fill" style:width="{Math.min(plan.five_hour ?? 0, 100)}%"></span></span>
-            {/if}
-          </span>
-          {#if gauge && gauge.ratio == null}<span class="figure">{tokens(gauge.used)}</span>{/if}
-          {#if plan}<span class="of plan-age">{planAgeMark}</span>{/if}
+              <span class="figure">{plan.five_hour}%</span>
+              <span class="of plan-age">{planAgeMark}</span>
+            </span>
+          {/if}
         {:else}
           <span class="figure sans">Context</span>
         {/if}
@@ -926,8 +961,10 @@
   .topbar[data-fold="3"] .fold3 {
     display: none;
   }
-  .topbar[data-fold="3"] .gbar {
-    width: 36px;
+  /* ~~`.gbar { width: 36px }`~~ — item 595: the bars are dials now; at
+     level 3 the plan reading's age folds into its hover instead. */
+  .topbar[data-fold="3"] .plan-age {
+    display: none;
   }
   .topbar[data-fold="3"] .model {
     max-width: 200px;
@@ -1018,21 +1055,24 @@
   .plan-fill {
     background: var(--live);
   }
-  /* The gauge chip (board d): context over plan, two 3 px bars. */
-  .gauge .bars {
+  /* ~~The gauge chip (board d): context over plan, two 3 px bars
+     (`.gauge .bars`, `.gbar`)~~ — item 595: two readings side by side,
+     each an 18 px dial and its figure, sharing one centre line. */
+  .gauge {
+    gap: 10px;
+  }
+  .gauge .reading {
     display: inline-flex;
-    flex-direction: column;
-    gap: 3px;
+    align-items: center;
+    gap: 4px;
+    line-height: 1;
   }
-  .gbar {
-    display: block;
-    width: 48px;
-    height: 3px;
-    border-radius: 2px;
-    background: var(--line2);
-    overflow: hidden;
+  .gauge .reading .figure {
+    color: var(--ink);
   }
-  .gbar .fill,
+  .gauge.hot .reading[data-reading="context"] .figure {
+    color: var(--failed);
+  }
   .gc-bar .fill {
     display: block;
   }
