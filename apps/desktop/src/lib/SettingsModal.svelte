@@ -37,6 +37,7 @@
   import {
     app,
     applyDraft,
+    scheduleApply, // item 612: the Binary row (Subscription → Updates)
     currentModelId,
     fetchModels,
     openChatInstructions,
@@ -2482,6 +2483,34 @@
             </details>
           {/if}
         </SettingRow>
+        <!-- Item 612 (agent F, wave 5) — begin: the CLI's binary, moved here
+             from the Model tab under Filament ("wtf is binary bro"); Classic's
+             rail keeps its own field too. The same draft field, applied the
+             same way (a reconnect on the Claude Code engine). -->
+        <SettingRow fold="subscription/updates-binary" shown={subShown("updates-binary")}>
+          {#snippet label()}<span>Claude Code binary</span>{/snippet}
+          {#snippet control()}
+            <input
+              autocorrect="off"
+              autocapitalize="off"
+              spellcheck="false"
+              type="text"
+              class="cli-binary"
+              placeholder="claude"
+              aria-label="Claude Code binary"
+              bind:value={app.draft.agentBinary}
+              onchange={() => {
+                if (app.draft.engine === "claude-code") scheduleApply();
+              }}
+            />
+          {/snippet}
+          {#snippet help()}
+            Which <code>claude</code> program Nightloom runs. Leave it empty — it is
+            looked for on your PATH, then in ~/.local/bin, /opt/homebrew/bin and
+            /usr/local/bin. Only give a full path if you installed it somewhere else.
+          {/snippet}
+        </SettingRow>
+        <!-- Item 612 — end. -->
         <SettingRow fold="subscription/updates-auto" shown={subShown("updates-auto")}>
           {#snippet label()}
             <label class="dream-auto cli-auto">

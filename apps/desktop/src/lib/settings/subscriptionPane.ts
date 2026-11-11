@@ -45,6 +45,7 @@ export const CONTROLS: readonly Control[] = [
   { id: "models-away", group: "models", label: "Away server's default", terms: "away server phone model default --model" },
   { id: "subagents-default", group: "subagents", label: "Default subagent rules", terms: "subagents agents rules words limits default" },
   { id: "updates-cli", group: "updates", label: "Claude Code version", terms: "claude code cli version check now update installed newest release" },
+  { id: "updates-binary", group: "updates", label: "Claude Code binary", terms: "binary path cli claude executable program location which" },
   { id: "updates-auto", group: "updates", label: "Keep Claude Code up to date", terms: "auto update automatic cold moment claude update" },
   { id: "updates-layers", group: "updates", label: "Changed memory or instructions files", terms: "memory instructions claude.md layer file cold running chats" },
 ];

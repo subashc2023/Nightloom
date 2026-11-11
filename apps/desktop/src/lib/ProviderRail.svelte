@@ -57,6 +57,8 @@
   import { aliasView, currentCliVersion, displayName, familyRows, newestModels, otherOnRows } from "./modelSeen";
   import { isMac } from "./platform";
   import { viewGet, viewSet } from "./viewState";
+  import { layout } from "./layout.svelte";
+  import { tildePath } from "./newChatPage";
 
   /**
    * The Model pane of the popover, redesigned 2026-09-13 (nightshift
@@ -70,6 +72,32 @@
    */
 
   const agentMode = $derived(app.draft.engine === "claude-code");
+
+  // Item 612 (his "this entire thing can be condensed"): the Filament tab
+  // is the condensed one — one-line engine and kind, no status line or
+  // billing card, the subagent knobs folded, the extra folders folded, the
+  // binary in Settings, and two labelled groups that answer "which of these
+  // does Nightloom manage, which are mine". Classic keeps today's rail.
+  const compact = $derived(layout.value !== "classic");
+  /** Short names for the subagent-model segment; the long ones are its tips. */
+  const SUB_SHORT: Record<string, string> = { choose: "Main picks", same: "Chat's model", sonnet: "Sonnet" };
+  // The subagents fold (item 612), kept like the exact limits (item 495).
+  let subOpen = $state(viewGet("rail.subagents", false));
+  $effect(() => viewSet("rail.subagents", subOpen, false));
+  /** The subagents fold's closed line: what is in force, in a few words. */
+  const subSummary = $derived(
+    [
+      app.draft.approval && app.draft.agentAsk ? (app.draft.agentSubagentsAuto ? "run on auto" : "writes refused") : null,
+      SUB_SHORT[app.draft.agentLimits.model] ?? app.draft.agentLimits.model,
+      app.draft.agentForkMode ? "fork" : "start fresh",
+    ]
+      .filter(Boolean)
+      .join(" · "),
+  );
+  // The extra folders fold (item 612); opens by itself while a refused
+  // folder waits for a grant.
+  let foldersOpen = $state(viewGet("rail.folders", false));
+  $effect(() => viewSet("rail.folders", foldersOpen, false));
 
   // His subagent rules in words (nightshift backlog 291): the open chat's
   // text, or the Settings default while it has none of its own.
@@ -408,6 +436,36 @@
   const kind = $derived(chatKind(app.events));
   const declared = $derived(declaredKind(app.events));
   const isChat = $derived(declared === "chat");
+  /** What Nightloom does by itself on the Claude Code engine (item 612):
+   *  the answer to "which ones are automatically managed", each line true
+   *  of this chat now. */
+  const MANAGED = $derived([
+    {
+      name: "Billing",
+      line: agent && !agent.subscription ? "an API key in the environment is billed" : "your Claude plan; the API key is withheld",
+      tip: "Nightloom starts the CLI without ANTHROPIC_API_KEY, so a turn bills your subscription, never the API. If a key is set in the environment it says so in amber above.",
+    },
+    {
+      name: "Session",
+      line: chatResume ? `continues ${chatResume.slice(0, 8)}` : "a new chat starts one",
+      tip: "Each chat keeps its own Claude Code session and resumes it on every turn, so the CLI's history and cache carry over.",
+    },
+    {
+      name: "Folder",
+      line: isChat ? "a neutral, empty one for a Chat" : app.project ? "the project's" : "the one you typed",
+      tip: "The working directory follows the project (or the kind): you never set it per turn.",
+    },
+    {
+      name: "Built-in layers",
+      line: app.layerPrefs.autoAtCold ? "a changed file joins at the next cold moment" : "a changed file waits for your Update",
+      tip: "Your memory, the project's instructions and the notes index are sent with every turn. A file you change reaches a running chat when its cache has gone cold, so no warm cache is rewritten for it (Settings → Subscription → Updates). Each layer is on the Context page.",
+    },
+    {
+      name: "Subagent limits",
+      line: "enforced, whatever the model decides",
+      tip: "The per-turn, per-day and budget limits under Subagents are enforced by Nightloom's hook at each spawn; the model cannot talk past them.",
+    },
+  ]);
   const engineName = $derived(app.connection?.engine ?? app.draft.engine);
   const KIND_ROWS: { kind: "build" | "chat" }[] = [{ kind: "build" }, { kind: "chat" }];
 
@@ -571,13 +629,246 @@
   </div>
 {/snippet}
 
+{#snippet subagentBlock()}
+  {#if app.draft.approval && app.draft.agentAsk}
+    <!-- Subagents under Ask and Plan (nightshift backlog 152): a
+         subagent cannot pause for the card — the CLI drops a pause from
+         that depth (measured 2026-09-16) — so its calls either run or
+         are refused in words. On, they run; the parent's own calls
+         still pause. Per chat: written into the chat's ask rules
+         before each turn. -->
+    <label class="swq sub">
+      <span class="t">Subagents run on auto</span>
+      <Hint
+        text="A subagent the model spawns (its Agent tool) cannot pause for the card, so under Ask and Plan its calls either run unasked or are refused. On: they run, and the panel under the top bar's agents chip shows what each one did. Off: a subagent's write, command or fetch is refused with a sentence the parent repeats to you; the parent can make the call itself and be asked. The parent's own calls pause either way."
+      />
+      <input
+        type="checkbox"
+        class="sw"
+        bind:checked={app.draft.agentSubagentsAuto}
+        onchange={apply}
+        disabled={locked}
+      />
+    </label>
+  {/if}
+  <!-- Subagent rules in words (nightshift backlog 291, 2026-10-03; his
+       words: "if I could just tell the model in words what my rules
+       are on sub-agents, the same way I do to you"). Per chat; a chat
+       with none reads the default from Settings. Saved as he types;
+       a pause reconnects, and the chat's subagent rules layer (293)
+       states them with the limits below. Never disabled: typing
+       needs no connection. -->
+  {#if compact}
+    <!-- Item 612: the rules box left the tab ("subagent rules section can
+         be removed"); the words still apply, from Settings or this chat. -->
+    <p class="note rules-ptr">
+      {rulesOwn ? "This chat has its own rules in words." : "Rules in words: Settings → Subscription → Subagents."}
+      {#if rulesOwn && !droppingRules}<button class="ns-btn ghost small" onclick={() => (rulesText.trim() ? (droppingRules = true) : useDefaultRules())}>Use the default</button>{/if}
+    </p>
+    {#if droppingRules}
+      <p class="note rules-ptr">
+        Drop this chat's rules and use the default?
+        <button
+          class="ns-btn ghost small"
+          onclick={() => {
+            droppingRules = false;
+            useDefaultRules();
+          }}>Drop them</button
+        >
+        <button class="ns-btn ghost small" onclick={() => (droppingRules = false)}>Cancel</button>
+      </p>
+    {/if}
+  {:else}
+  <div class="rules">
+    <div class="swq">
+      <span class="t">Subagent rules</span>
+      <Hint
+        text="Your rules for subagents in this chat, in plain words, the way you would tell Claude Code: when to launch one, how many, which model, when to ask you first. They go into this chat's Subagent rules layer (the Context page) with the exact limits below, which Nightloom enforces whatever the words say. A change reaches a cold chat at once; on a warm chat the next message carries it as a note at its end, and the layer is rewritten at the next cold moment. A chat with no rules of its own uses the default in Settings → Subscription."
+      />
+    </div>
+    <textarea
+      class="rules-box"
+      rows="4"
+      placeholder="e.g. At most two subagents at once. Only for broad searches or long research; do bounded tasks yourself. Ask me before a third."
+      aria-label="Subagent rules for this chat"
+      value={rulesText}
+      oninput={(e) => {
+        droppingRules = false;
+        setOpenChatRules((e.currentTarget as HTMLTextAreaElement).value);
+      }}
+    ></textarea>
+    <div class="rules-foot">
+      {#if droppingRules}
+        <span class="note">Drop this chat's rules and use the default?</span>
+        <button
+          class="ns-btn ghost small"
+          onclick={() => {
+            droppingRules = false;
+            useDefaultRules();
+          }}>Drop them</button
+        >
+        <button class="ns-btn ghost small" onclick={() => (droppingRules = false)}>Cancel</button>
+      {:else if rulesOwn}
+        <span class="note">This chat's own rules.</span>
+        <button
+          class="ns-btn ghost small"
+          onclick={() => (rulesText.trim() ? (droppingRules = true) : useDefaultRules())}>Use the default</button
+        >
+      {:else}
+        <span class="note">{rulesText.trim() ? "The default from Settings; typing here gives this chat its own." : "No rules yet; the limits below apply."}</span>
+      {/if}
+    </div>
+  </div>
+  {/if}
+  <!-- Backlog 291: the eight numbers fold under "Exact limits", their
+       line saying what is in force. Folding is display only: the
+       numbers and switches are kept and enforced as before. -->
+  <details class="exact" bind:open={exactOpen}>
+    <summary>
+      <span class="t">Exact limits</span>
+      <span class="exact-sum">{limitsSummary(app.draft.agentLimits)}</span>
+    </summary>
+    <!-- The subagent limits (nightshift backlog 165): the family behind
+         the first cap of 6. Two are the CLI's own (at once, depth) and
+         go out as its environment; the rest are Nightloom's hook, read
+         from the chat's directory at each spawn. Kept on the connection;
+         a reconnect applies them. -->
+    <div class="row limits">
+      <span class="lbl">Subagent limits</span>
+      <Hint
+        text="Per turn: how many subagents one reply may spawn (Nightloom's hook; the seventh is refused in words). At once and depth: Claude Code's own concurrency and nesting caps, passed to it. Per day: a running count for this chat across turns. Slow at / to: past this share of the 5-hour window, the per-turn cap drops to this number. Stop at: past this share every spawn — and, mid-flight, every tool call — is refused with the reset time. Budget: the share of the 5-hour window one message may spend, counting the main thread, every subagent and every council seat; past it every further tool call is refused with 'stop and report', and the chip in the top bar shows the spend as it runs. The window is the freshest of the gauge and the turn's own readings. Each may start: how many subagents one subagent may start of its own; past it the spawn is refused with a note to do the work itself or ask the main agent, and every one let through is reported to the main agent, which answers for it against the task's size. Subagents use: the chat's own model, or Sonnet for read-heavy scans. The small switch beside each limit turns it off: that limit does not apply at all, and its number is kept for when you switch it back on (slow at and to share one switch). At once and depth off: no limit either — Claude Code has no off value, so Nightloom passes it a million."
+      />
+    </div>
+    <div class="limits-grid">
+      {#each [["per_turn", "per turn"], ["concurrent", "at once"], ["depth", "depth"], ["per_day", "per day"], ["slow_at", "slow at %"], ["slow_to", "to"], ["stop_at", "stop at %"], ["budget_pct", "budget %"], ["nested", "each may start"]] as [k, label] (k)}
+        <!-- Backlog 253: a small switch per limit; off, the limit does not
+             apply at all (the number is kept for switching it back on).
+             The slow pair shares the switch on "slow at". A div, not a
+             label, so a click on the name does not flip the switch. -->
+        {@const sw = switchOf(k)}
+        {@const isOff = sw !== null && app.draft.agentLimits.off[sw]}
+        <div class="limit" class:off={isOff}>
+          <span class="limit-k">
+            {label}
+            {#if sw && k !== "slow_to"}
+              <input
+                type="checkbox"
+                class="sw mini"
+                checked={!isOff}
+                onchange={(e) => {
+                  app.draft.agentLimits.off[sw] = !(e.currentTarget as HTMLInputElement).checked;
+                  apply();
+                }}
+                disabled={locked}
+                aria-label={`${label} limit on`}
+                use:tip={isOff ? `Off — no ${label} limit applies. Switch on to use the number` : `On — switch off and no ${label} limit applies at all`}
+              />
+            {/if}
+          </span>
+          <input
+            type="number"
+            min="0"
+            max={k === "slow_at" || k === "stop_at" || k === "budget_pct" ? 100 : undefined}
+            step="1"
+            aria-label={`subagents ${label}`}
+            bind:value={app.draft.agentLimits[k as "per_turn" | "concurrent" | "depth" | "per_day" | "slow_at" | "slow_to" | "stop_at" | "budget_pct" | "nested"]}
+            onchange={apply}
+            disabled={locked || isOff}
+          />
+        </div>
+      {/each}
+    </div>
+  </details>
+  <!-- The subagents' model (backlog 165, pass 2; ~~blocker 280, his
+       answer: the chat's own~~ nightshift 257, blocker 584: the main
+       agent chooses by his rule, or always the chat's model, or
+       Sonnet). Applied by the hook as the spawn's `model` input, so it
+       holds for every subagent of the chat. -->
+  {#if compact}
+    <!-- Item 612: three segments, not the Mac's own select. -->
+    <div class="row limits-model">
+      <span class="lbl">Subagents use</span>
+      <div class="segs" role="radiogroup" aria-label="subagents use">
+        {#each SUBAGENT_MODELS as m (m)}
+          <button
+            class:on={m === app.draft.agentLimits.model}
+            role="radio"
+            aria-checked={m === app.draft.agentLimits.model}
+            disabled={locked}
+            use:tip={SUBAGENT_MODEL_LABELS[m]}
+            onclick={() => {
+              app.draft.agentLimits.model = m;
+              apply();
+            }}>{SUB_SHORT[m] ?? m}</button
+          >
+        {/each}
+      </div>
+    </div>
+  {:else}
+  <label class="row limits-model">
+    <span class="lbl">Subagents use</span>
+    <select class="limits-model-select" bind:value={app.draft.agentLimits.model} onchange={apply} disabled={locked} aria-label="subagents use">
+      {#each SUBAGENT_MODELS as m (m)}
+        <option value={m}>{SUBAGENT_MODEL_LABELS[m]}</option>
+      {/each}
+    </select>
+  </label>
+  {/if}
+  <!-- Fork mode (nightshift backlog 104, pass 3; blocker 288, his
+       answer: "per-chat switch, on"). On, the turn carries
+       CLAUDE_CODE_FORK_SUBAGENT=1 and the `checkpoint` roster entry;
+       the model picks a helper by task. Per chat, on the connection. -->
+  <label class="swq sub">
+    <span class="t">Helpers fork from this chat</span>
+    <Hint
+      text="On: the model picks a helper by task. A short side task forks from the end of the chat (subagent_type fork — the whole conversation at cache-read cost, its steps kept out of this chat). Long research forks from the chat's checkpoint — the message that ends the general context, set at the first exchange and moved by 'fork from here' on any message — so the helper starts with the instructions and the opening exchange and none of the later turns. Either way the report lands as the Agent call's result. Off: every helper starts fresh from its task text and the brief. Flipping this on a running chat re-writes its cached prefix once."
+    />
+    <input
+      type="checkbox"
+      class="sw"
+      bind:checked={app.draft.agentForkMode}
+      onchange={apply}
+      disabled={locked}
+      aria-label="Helpers fork from this chat"
+    />
+  </label>
+  {#if !compact && !(app.draft.approval && app.draft.agentAsk)}
+    <!-- Said rather than implied: the switch above is the familiar one
+         and the gate behind it is not. Nightloom's approval prompt gates
+         calls its own engine is about to run, and this engine runs its
+         own — headless, with nobody to ask. With Ask on, it does ask,
+         through the CLI's own pause (backlog 084), so the sentence is
+         withheld then. -->
+    <p class="note sub-note">
+      Claude Code decides these itself. Nightloom's approval prompt does not
+      run on this engine, and neither do rewind, compaction, the Context tab
+      or attachments.
+    </p>
+  {/if}
+{/snippet}
+
 <div class="rail">
   <!-- The engine as two cards, each saying who pays and who runs the loop:
        the answer to "what's the difference between Provider and Claude
        Code", on the control itself. -->
   <!-- Item 577: a ruled "Engine" title over the two rows, shown only
        under Filament IV (hidden by the ungated rule, shown by the gated). -->
-  <div class="sect-h eng-h" aria-hidden="true"><span class="ns-k">Engine</span><span class="sub">who pays, who runs the loop</span></div>
+  <!-- Item 612: the descriptions under each engine moved into this `?`,
+       with the billing card's sentence and the resumed session. -->
+  <div class="sect-h eng-h">
+    <span class="ns-k">Engine</span><span class="sub">who pays, who runs the loop</span>
+    {#if compact}
+      <Hint
+        text={`Provider: your own API key, billed per token; Nightloom runs the loop — tools, approval gate, context editing. Subscription: the signed-in claude CLI, billed to your Claude plan; its own loop, tools, permissions and history, as a Claude Code or a Chat kind.${
+          agentMode && agent
+            ? agent.subscription
+              ? " Now: billed to your subscription — Nightloom withholds ANTHROPIC_API_KEY from the CLI."
+              : " Now: an API key in the environment will be used, and the API billed."
+            : ""
+        }${agentMode && chatResume ? ` This chat continues Claude Code session ${chatResume.slice(0, 8)}.` : ""}`}
+      />
+    {/if}
+  </div>
   <div class="eng" role="radiogroup" aria-label="Engine">
     <button
       class="ecard"
@@ -668,7 +959,10 @@
     <p class="kind-line kind-note">A Chat over a Claude Code chat: the folder and the tool list stay, the writers are refused when called.</p>
   {/if}
 
-  <div class="status" use:tip={app.connection?.workspace ?? ""}>
+  <!-- Item 612: under Filament the line shows only while it says something
+       (applying, connecting, not connected); "claude-code · model" went —
+       the top bar's chip and the Model pills already say it. -->
+  <div class="status" class:quiet={compact && !!app.connection && !app.applyPending && !app.connecting} use:tip={app.connection?.workspace ?? ""}>
     {#if app.applyPending}
       <span class="dot pending"></span><span class="dim">applying…</span>
     {:else if app.connecting || (!app.connection && !launch.connectSettled)}
@@ -685,7 +979,9 @@
   </div>
 
   {#if agentMode}
-    {#if agent}
+    {#if agent && !(compact && agent.subscription)}
+      <!-- Item 612: under Filament only the warning stays (an API key
+           will be billed); the subscription sentence is in Engine's `?`. -->
       <div class="ncard" class:warn={!agent.subscription}>
         {#if agent.subscription}
           Billed to your Claude subscription — <code>ANTHROPIC_API_KEY</code> is
@@ -901,7 +1197,7 @@
   {/if}
 
   <section class="sect">
-    <div class="sect-h"><span class="ns-k">Behaviour</span></div>
+    <div class="sect-h"><span class="ns-k">Behaviour</span>{#if compact}<span class="sub">yours · stay as you set them</span>{/if}</div>
     <label class="swq">
       <span class="t">Tools</span>
       <Hint
@@ -938,7 +1234,7 @@
            `approval` (off = the Off position, `bypassPermissions`),
            `agentAsk` (the defer hook, backlog 084) and `agentPlan`
            (`plan` mode under the same hook, backlog 085). -->
-      <div class="approval sub-note">
+      <div class="approval" class:sub-note={!compact}>
         <div class="swq">
           <span class="t">Approval</span>
           <Hint
@@ -962,180 +1258,23 @@
         </div>
         {#if !app.draft.approval}
           <p class="warn">Every call runs unasked, including <code>bash</code>.</p>
-        {:else}
+        {:else if !compact}
+          <!-- Item 612: under Filament the line is the segment's tips and its `?`. -->
           <p class="note">{APPROVAL_LINE[approvalPosition]}</p>
         {/if}
       </div>
-      {#if app.draft.approval && app.draft.agentAsk}
-        <!-- Subagents under Ask and Plan (nightshift backlog 152): a
-             subagent cannot pause for the card — the CLI drops a pause from
-             that depth (measured 2026-09-16) — so its calls either run or
-             are refused in words. On, they run; the parent's own calls
-             still pause. Per chat: written into the chat's ask rules
-             before each turn. -->
-        <label class="swq sub">
-          <span class="t">Subagents run on auto</span>
-          <Hint
-            text="A subagent the model spawns (its Agent tool) cannot pause for the card, so under Ask and Plan its calls either run unasked or are refused. On: they run, and the panel under the top bar's agents chip shows what each one did. Off: a subagent's write, command or fetch is refused with a sentence the parent repeats to you; the parent can make the call itself and be asked. The parent's own calls pause either way."
-          />
-          <input
-            type="checkbox"
-            class="sw"
-            bind:checked={app.draft.agentSubagentsAuto}
-            onchange={apply}
-            disabled={locked}
-          />
-        </label>
-      {/if}
-      <!-- Subagent rules in words (nightshift backlog 291, 2026-10-03; his
-           words: "if I could just tell the model in words what my rules
-           are on sub-agents, the same way I do to you"). Per chat; a chat
-           with none reads the default from Settings. Saved as he types;
-           a pause reconnects, and the chat's subagent rules layer (293)
-           states them with the limits below. Never disabled: typing
-           needs no connection. -->
-      <div class="rules">
-        <div class="swq">
-          <span class="t">Subagent rules</span>
-          <Hint
-            text="Your rules for subagents in this chat, in plain words, the way you would tell Claude Code: when to launch one, how many, which model, when to ask you first. They go into this chat's Subagent rules layer (the Context page) with the exact limits below, which Nightloom enforces whatever the words say. A change reaches a cold chat at once; on a warm chat the next message carries it as a note at its end, and the layer is rewritten at the next cold moment. A chat with no rules of its own uses the default in Settings → Subscription."
-          />
-        </div>
-        <textarea
-          class="rules-box"
-          rows="4"
-          placeholder="e.g. At most two subagents at once. Only for broad searches or long research; do bounded tasks yourself. Ask me before a third."
-          aria-label="Subagent rules for this chat"
-          value={rulesText}
-          oninput={(e) => {
-            droppingRules = false;
-            setOpenChatRules((e.currentTarget as HTMLTextAreaElement).value);
-          }}
-        ></textarea>
-        <div class="rules-foot">
-          {#if droppingRules}
-            <span class="note">Drop this chat's rules and use the default?</span>
-            <button
-              class="ns-btn ghost small"
-              onclick={() => {
-                droppingRules = false;
-                useDefaultRules();
-              }}>Drop them</button
-            >
-            <button class="ns-btn ghost small" onclick={() => (droppingRules = false)}>Cancel</button>
-          {:else if rulesOwn}
-            <span class="note">This chat's own rules.</span>
-            <button
-              class="ns-btn ghost small"
-              onclick={() => (rulesText.trim() ? (droppingRules = true) : useDefaultRules())}>Use the default</button
-            >
-          {:else}
-            <span class="note">{rulesText.trim() ? "The default from Settings; typing here gives this chat its own." : "No rules yet; the limits below apply."}</span>
-          {/if}
-        </div>
-      </div>
-      <!-- Backlog 291: the eight numbers fold under "Exact limits", their
-           line saying what is in force. Folding is display only: the
-           numbers and switches are kept and enforced as before. -->
-      <details class="exact" bind:open={exactOpen}>
-        <summary>
-          <span class="t">Exact limits</span>
-          <span class="exact-sum">{limitsSummary(app.draft.agentLimits)}</span>
-        </summary>
-        <!-- The subagent limits (nightshift backlog 165): the family behind
-             the first cap of 6. Two are the CLI's own (at once, depth) and
-             go out as its environment; the rest are Nightloom's hook, read
-             from the chat's directory at each spawn. Kept on the connection;
-             a reconnect applies them. -->
-        <div class="row limits">
-          <span class="lbl">Subagent limits</span>
-          <Hint
-            text="Per turn: how many subagents one reply may spawn (Nightloom's hook; the seventh is refused in words). At once and depth: Claude Code's own concurrency and nesting caps, passed to it. Per day: a running count for this chat across turns. Slow at / to: past this share of the 5-hour window, the per-turn cap drops to this number. Stop at: past this share every spawn — and, mid-flight, every tool call — is refused with the reset time. Budget: the share of the 5-hour window one message may spend, counting the main thread, every subagent and every council seat; past it every further tool call is refused with 'stop and report', and the chip in the top bar shows the spend as it runs. The window is the freshest of the gauge and the turn's own readings. Each may start: how many subagents one subagent may start of its own; past it the spawn is refused with a note to do the work itself or ask the main agent, and every one let through is reported to the main agent, which answers for it against the task's size. Subagents use: the chat's own model, or Sonnet for read-heavy scans. The small switch beside each limit turns it off: that limit does not apply at all, and its number is kept for when you switch it back on (slow at and to share one switch). At once and depth off: no limit either — Claude Code has no off value, so Nightloom passes it a million."
-          />
-        </div>
-        <div class="limits-grid">
-          {#each [["per_turn", "per turn"], ["concurrent", "at once"], ["depth", "depth"], ["per_day", "per day"], ["slow_at", "slow at %"], ["slow_to", "to"], ["stop_at", "stop at %"], ["budget_pct", "budget %"], ["nested", "each may start"]] as [k, label] (k)}
-            <!-- Backlog 253: a small switch per limit; off, the limit does not
-                 apply at all (the number is kept for switching it back on).
-                 The slow pair shares the switch on "slow at". A div, not a
-                 label, so a click on the name does not flip the switch. -->
-            {@const sw = switchOf(k)}
-            {@const isOff = sw !== null && app.draft.agentLimits.off[sw]}
-            <div class="limit" class:off={isOff}>
-              <span class="limit-k">
-                {label}
-                {#if sw && k !== "slow_to"}
-                  <input
-                    type="checkbox"
-                    class="sw mini"
-                    checked={!isOff}
-                    onchange={(e) => {
-                      app.draft.agentLimits.off[sw] = !(e.currentTarget as HTMLInputElement).checked;
-                      apply();
-                    }}
-                    disabled={locked}
-                    aria-label={`${label} limit on`}
-                    use:tip={isOff ? `Off — no ${label} limit applies. Switch on to use the number` : `On — switch off and no ${label} limit applies at all`}
-                  />
-                {/if}
-              </span>
-              <input
-                type="number"
-                min="0"
-                max={k === "slow_at" || k === "stop_at" || k === "budget_pct" ? 100 : undefined}
-                step="1"
-                aria-label={`subagents ${label}`}
-                bind:value={app.draft.agentLimits[k as "per_turn" | "concurrent" | "depth" | "per_day" | "slow_at" | "slow_to" | "stop_at" | "budget_pct" | "nested"]}
-                onchange={apply}
-                disabled={locked || isOff}
-              />
-            </div>
-          {/each}
-        </div>
-      </details>
-      <!-- The subagents' model (backlog 165, pass 2; ~~blocker 280, his
-           answer: the chat's own~~ nightshift 257, blocker 584: the main
-           agent chooses by his rule, or always the chat's model, or
-           Sonnet). Applied by the hook as the spawn's `model` input, so it
-           holds for every subagent of the chat. -->
-      <label class="row limits-model">
-        <span class="lbl">Subagents use</span>
-        <select class="limits-model-select" bind:value={app.draft.agentLimits.model} onchange={apply} disabled={locked} aria-label="subagents use">
-          {#each SUBAGENT_MODELS as m (m)}
-            <option value={m}>{SUBAGENT_MODEL_LABELS[m]}</option>
-          {/each}
-        </select>
-      </label>
-      <!-- Fork mode (nightshift backlog 104, pass 3; blocker 288, his
-           answer: "per-chat switch, on"). On, the turn carries
-           CLAUDE_CODE_FORK_SUBAGENT=1 and the `checkpoint` roster entry;
-           the model picks a helper by task. Per chat, on the connection. -->
-      <label class="swq sub">
-        <span class="t">Helpers fork from this chat</span>
-        <Hint
-          text="On: the model picks a helper by task. A short side task forks from the end of the chat (subagent_type fork — the whole conversation at cache-read cost, its steps kept out of this chat). Long research forks from the chat's checkpoint — the message that ends the general context, set at the first exchange and moved by 'fork from here' on any message — so the helper starts with the instructions and the opening exchange and none of the later turns. Either way the report lands as the Agent call's result. Off: every helper starts fresh from its task text and the brief. Flipping this on a running chat re-writes its cached prefix once."
-        />
-        <input
-          type="checkbox"
-          class="sw"
-          bind:checked={app.draft.agentForkMode}
-          onchange={apply}
-          disabled={locked}
-          aria-label="Helpers fork from this chat"
-        />
-      </label>
-      {#if !(app.draft.approval && app.draft.agentAsk)}
-        <!-- Said rather than implied: the switch above is the familiar one
-             and the gate behind it is not. Nightloom's approval prompt gates
-             calls its own engine is about to run, and this engine runs its
-             own — headless, with nobody to ask. With Ask on, it does ask,
-             through the CLI's own pause (backlog 084), so the sentence is
-             withheld then. -->
-        <p class="note sub-note">
-          Claude Code decides these itself. Nightloom's approval prompt does not
-          run on this engine, and neither do rewind, compaction, the Context tab
-          or attachments.
-        </p>
+      {#if compact}
+        <!-- Item 612: every subagent knob under one fold, its line saying
+             what is in force. -->
+        <details class="exact subs" bind:open={subOpen}>
+          <summary>
+            <span class="t">Subagents</span>
+            <span class="exact-sum">{subSummary}</span>
+          </summary>
+          {@render subagentBlock()}
+        </details>
+      {:else}
+        {@render subagentBlock()}
       {/if}
     {/if}
     {#if agentMode}
@@ -1177,7 +1316,7 @@
             </button>
           {/each}
         </div>
-        <p class="note">{effortLine}</p>
+        {#if !compact}<p class="note">{effortLine}</p>{/if}
       </div>
       <div class="ctl">
         <div class="swq">
@@ -1261,6 +1400,16 @@
     {/if}
 
     {#if agentMode}
+      {#if compact}
+        <!-- Item 612, his "are they automatically managed? which ones
+             aren't": a ruled title over the switches that are his alone. -->
+        <div class="sect-h grp-h">
+          <span class="ns-k">Extras</span><span class="sub">yours · stay as you set them</span>
+          <Hint
+            text="None of these is ever switched by Nightloom: each stays as you set it, for every chat, until you change it (Playwright is the exception — it is per chat). Safe mode, claude.ai connectors and Browser start off; Preamble starts on. Each has its own ? for what it does."
+          />
+        </div>
+      {/if}
       <label class="swq">
         <span class="t">Safe mode</span>
         <Hint text="Run without your Claude Code setup: no user CLAUDE.md, hooks, skills, allowlist or other MCP servers. Nightloom's own tools (search_chats, read_chat, remember, fetch_page) stay. The project folder's CLAUDE.md still loads. Not --bare, which would put the turn back on an API key." />
@@ -1391,40 +1540,73 @@
         <span class="ns-k">Workspace</span>
         {#if isChat}<span class="sub">none on a Chat</span>{:else if app.project}<span class="sub">set by the project</span>{/if}
       </div>
-      <div class="row">
-        <span class="lbl">Folder</span>
-        <span class="fld-wrap">
+      {#if compact && (isChat || app.project)}
+        <!-- Item 612 ("there's a folder option but it's locked, so like wtf"):
+             a folder he cannot change is a line, not a locked field. -->
+        <div class="row ws-row">
+          <span class="lbl">Folder</span>
           {#if isChat}
-            <!-- A Chat has no folder (backlog 102): the neutral directory,
-                 stated rather than offered as a field. -->
-            <span class="path locked dim-path" use:tip={workspaceTitle}>no folder — a Chat runs in a neutral, empty directory</span>
+            <span class="ws-path dim" use:tip={workspaceTitle}>none — a Chat has no folder</span>
           {:else}
-            {#if app.project}<span class="lock"><Icon name="lock" size={12} /></span>{/if}
-            <input autocorrect="off" autocapitalize="off" spellcheck="false"
-              class="path"
-              class:tail={!!app.project}
-              class:locked={!!app.project}
-              type="text"
-              value={app.project
-                ? (app.project.root ?? app.connection?.workspace ?? "")
-                : app.draft.workspace}
-              oninput={(e) => {
-                if (!app.project) app.draft.workspace = e.currentTarget.value;
-              }}
-              onchange={apply}
-              placeholder="launch folder"
-              use:tip={workspaceTitle}
-              disabled={locked || !!app.project}
-              readonly={!!app.project}
-            />
+            <span class="ws-path" use:tip={workspaceTitle}>{tildePath(app.project?.root ?? app.connection?.workspace ?? "")}</span>
           {/if}
-        </span>
-        <Hint text={workspaceTitle} />
-      </div>
+          <Hint text={workspaceTitle} />
+        </div>
+      {:else}
+        <div class="row">
+          <span class="lbl">Folder</span>
+          <span class="fld-wrap">
+            {#if isChat}
+              <!-- A Chat has no folder (backlog 102): the neutral directory,
+                   stated rather than offered as a field. -->
+              <span class="path locked dim-path" use:tip={workspaceTitle}>no folder — a Chat runs in a neutral, empty directory</span>
+            {:else}
+              {#if app.project}<span class="lock"><Icon name="lock" size={12} /></span>{/if}
+              <input autocorrect="off" autocapitalize="off" spellcheck="false"
+                class="path"
+                class:tail={!!app.project}
+                class:locked={!!app.project}
+                type="text"
+                value={app.project
+                  ? (app.project.root ?? app.connection?.workspace ?? "")
+                  : app.draft.workspace}
+                oninput={(e) => {
+                  if (!app.project) app.draft.workspace = e.currentTarget.value;
+                }}
+                onchange={apply}
+                placeholder="launch folder"
+                use:tip={workspaceTitle}
+                disabled={locked || !!app.project}
+                readonly={!!app.project}
+              />
+            {/if}
+          </span>
+          <Hint text={workspaceTitle} />
+        </div>
+      {/if}
 
       <!-- Extra folders (nightshift backlog 143): the folders this chat may
            see beyond the project's home — granted per chat or per project,
            on both engines. -->
+      {#if compact}
+        <!-- Item 612 ("what's the point of the 'folders' section"): folded,
+             its line saying when it is worth opening; open by itself while
+             a refused folder waits for a grant. -->
+        <details
+          class="exact subs folders"
+          open={foldersOpen || refused.length > 0}
+          ontoggle={(e) => (foldersOpen = (e.currentTarget as HTMLDetailsElement).open)}
+        >
+          <summary>
+            <span class="t">More folders</span>
+            <span class="exact-sum">{folders.length > 0 ? `${folders.length} added` : isChat ? "none on a Chat" : "only for files outside the project"}</span>
+          </summary>
+          {@render foldersRow()}
+        </details>
+      {:else}
+        {@render foldersRow()}
+      {/if}
+      {#snippet foldersRow()}
       <div class="row fold-row">
         <span class="lbl">Folders</span>
         <div class="fold-list">
@@ -1468,6 +1650,7 @@
           text="A project is not one folder: its content may live in others. A folder added here is readable and editable by the model without an approval per read — on Claude Code as an extra working directory (--add-dir), on the provider engine as a named tree the file tools reach by its @alias. Per chat: recorded on the chat's log, kept on reload, inherited by a fork. Per project: every chat in the project, from its next turn. Notes and AGENTS.md stay in the folder above."
         />
       </div>
+      {/snippet}
 
       {#if hasReach}
         <div class="row reach-row">
@@ -1530,7 +1713,16 @@
   <section class="sect" bind:this={promptSect}>
     <div class="sect-h">
       <span class="ns-k">System prompt</span>
-      {#if agentMode}<span class="sub">appended to Claude Code's own</span>{/if}
+      {#if compact}
+        <!-- Item 612 ("it's saying none? but clearly there is a system
+             prompt"): this picks his saved extra, not the whole prompt. -->
+        <span class="sub">your extra</span>
+        <Hint
+          text={agentMode
+            ? "The prompt a turn starts with has layers: Claude Code's own system prompt, then Nightloom's — your memory, the project's instructions, the notes index (the Preamble switch), each on the Context page. This picks one of your saved prompts to add after them. None adds nothing; the built-in layers are always there. The pencil edits your saved prompts."
+            : "The prompt a turn starts with has layers: Nightloom's preamble — identity, environment, AGENTS.md, the notes index (the Preamble switch) — then this: one of your saved prompts. None adds nothing; the preamble is still sent. The pencil edits your saved prompts."}
+        />
+      {:else if agentMode}<span class="sub">appended to Claude Code's own</span>{/if}
     </div>
     <div class="row">
       <select
@@ -1546,7 +1738,7 @@
             ? "Appended to Claude Code's own system prompt."
             : "No system prompt beyond the preamble.")}
       >
-        <option value="">None</option>
+        <option value="">{compact ? "None — the built-in layers only" : "None"}</option>
         {#if custom}
           <option value="__custom">Custom (unsaved)</option>
         {/if}
@@ -1563,7 +1755,9 @@
     </div>
   </section>
 
-  {#if agentMode}
+  {#if agentMode && !compact}
+    <!-- Item 612: under Filament the binary lives in Settings → Subscription
+         → Updates, beside the CLI's version. -->
     <!-- The binary at the foot, not the head (review round 1, 2026-09-13):
          it is set once and read never, and the pane used to open on it. -->
     <section class="sect">
@@ -1585,6 +1779,23 @@
       {#if agent?.version}
         <p class="note indent">found: <code>{agent.binary}</code> — {agent.version}</p>
       {/if}
+    </section>
+  {/if}
+
+  {#if compact && agentMode}
+    <!-- Item 612, his "are they automatically managed? which ones aren't":
+         what Nightloom does by itself on this engine, each with its tip.
+         Everything above this section is his and stays as set. -->
+    <section class="sect managed">
+      <div class="sect-h">
+        <span class="ns-k">Nightloom handles</span><span class="sub">by itself</span>
+        <Hint text="These happen on every turn without a switch. Everything above this section is yours: Nightloom never changes it on its own." />
+      </div>
+      <ul class="managed-list">
+        {#each MANAGED as m (m.name)}
+          <li use:tip={m.tip}><span class="mg-name">{m.name}</span><span class="mg-line">{m.line}</span></li>
+        {/each}
+      </ul>
     </section>
   {/if}
 
@@ -2841,5 +3052,133 @@
   }
   :global(:where(:root:not([data-layout="classic"]))) .ml .mfilter {
     font-family: var(--mono);
+  }
+
+  /* Item 612 — the condensed Model tab (Filament only; Classic keeps
+     today's rail). The engine and kind as two one-line choices side by
+     side, their descriptions in the `?`; the quiet status line hidden; the
+     subagent and folder folds as ruled sub-titles; the "Nightloom handles"
+     list. Markup changes are gated on `compact` in the script. */
+  .status.quiet,
+  .grp-h,
+  .managed-list {
+    display: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .eng {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ecard {
+    gap: 8px;
+    padding: 6px 8px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ecard .ed {
+    display: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .et {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .et .ns-pill {
+    margin-left: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .kind-pick {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .kind-opt {
+    gap: 8px;
+    padding: 6px 8px;
+    align-items: center;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .kind-opt .kind-line {
+    display: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .grp-h {
+    display: flex;
+    margin-top: 6px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .approval {
+    margin-top: 2px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .subs {
+    margin: 2px 0 0;
+    padding: 6px 8px;
+    border-radius: var(--r1);
+    background: var(--well);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .subs > summary {
+    font-size: 12.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .subs[open] > summary {
+    margin-bottom: 8px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .subs .exact {
+    margin: 6px 0 4px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .subs .limits-model {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .subs .limits-model .lbl {
+    width: auto;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .rules-ptr {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin: 0 0 6px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ws-row .ws-path {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ws-row .ws-path.dim {
+    color: var(--dim);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ws-src {
+    flex: none;
+    font-size: 11px;
+    color: var(--dim);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .subs.folders .fold-row .lbl {
+    display: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .managed-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .managed-list li {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    font-size: 11.5px;
+    line-height: 1.35;
+    cursor: default;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .mg-name {
+    flex: none;
+    width: 96px;
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .mg-line {
+    flex: 1;
+    min-width: 0;
+    color: var(--dim);
   }
 </style>
