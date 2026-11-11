@@ -149,6 +149,15 @@ export function toggleTranscriptPref(kind: BlockKind): void {
  * transcript, which is where a font is judged (he found a sample page "too
  * big" at the transcript's own size).
  */
+/**
+ * Item 619 (his words: "the actual screen … chat text and back n forth …
+ * very slightly bigger, even like half a px or maybeee a full px"): the
+ * transcript's text draws this much above the 15 / 16 / 17 the setting
+ * names — 0.75 CSS px, 0.83 px on screen at the re-based 100 % (page zoom
+ * 1.1). Everything that reads `--transcript-size` moves with it.
+ */
+export const TRANSCRIPT_SIZE_BUMP = 0.75;
+
 export function applyTranscriptType(
   prefs: Pick<TranscriptPrefs, "font" | "size"> = transcript,
   root: { style: { setProperty(name: string, value: string): void } } | null = typeof document ===
@@ -159,7 +168,7 @@ export function applyTranscriptType(
   if (!root) return;
   const face = TRANSCRIPT_FONTS.find((f) => f.id === prefs.font) ?? TRANSCRIPT_FONTS[0];
   root.style.setProperty("--transcript-font", face.css);
-  root.style.setProperty("--transcript-size", `${prefs.size}px`);
+  root.style.setProperty("--transcript-size", `${prefs.size + TRANSCRIPT_SIZE_BUMP}px`);
 }
 
 export function setTranscriptFont(font: TranscriptFont): void {
