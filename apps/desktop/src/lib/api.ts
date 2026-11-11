@@ -1167,6 +1167,17 @@ export function planUsageRefresh(afterMs?: number): Promise<PlanUsage> {
   return invoke("plan_usage_refresh", afterMs === undefined ? {} : { afterMs });
 }
 
+/** Item 569: the plan's per-model weeklies ("Weekly Fable"), from the CLI cache. */
+export function planScopedLimits(): Promise<import("./usageFigures").ScopedLimits> {
+  return invoke("plan_scoped_limits");
+}
+
+/** Item 569: a Claude Code chat's /usage "This session" figures, by its
+ *  Claude Code session id. `found: false` before its first turn ends. */
+export function sessionFigures(agentSession: string): Promise<import("./usageFigures").SessionFigures> {
+  return invoke("session_figures", { agentSession });
+}
+
 /** Claude Code's version against the release feed, with the models the
  *  newer release adds (nightshift backlog 182). Zero tokens. `binary` is
  *  the connected chat's resolved CLI, or null for `claude` resolved. */
