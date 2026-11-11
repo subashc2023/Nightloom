@@ -122,3 +122,48 @@ describe("the save at a turn's end (threadHandoff)", () => {
     expect(api.saveThreadHandoff).toHaveBeenCalledWith("stuart", "Run T-04.", "c1");
   });
 });
+
+// Item 583: asked for in his own words, a model wrote the prompt as a code
+// block under a heading — no card, no Continue, nothing kept on the thread.
+describe("the heading-and-fence fallback (item 583)", () => {
+  const shot =
+    "Context is at 500k, so here is the hand-off.\n\n## Handoff prompt for the next chat\n\n" +
+    `${FENCE}\nRead thread.md's Queue rows 3–5, then the newest log.md entry.\nThen run T-07.\n${FENCE}\n`;
+
+  it("takes his screenshot's shape: a heading, then a fence", () => {
+    expect(extractHandoff(shot)).toBe(
+      "Read thread.md's Queue rows 3–5, then the newest log.md entry.\nThen run T-07.",
+    );
+    const html = renderReply(shot);
+    expect(html).toContain('class="handoff-card"');
+    expect(html).toContain("Handoff prompt for the next chat");
+    expect(html).toContain("Then run T-07.");
+  });
+
+  it("takes a bold line, hand-off spelled any way, and next chat's prompt", () => {
+    expect(extractHandoff(`**Hand-off prompt:**\n\n${FENCE}text\nGo.\n${FENCE}`)).toBe("Go.");
+    expect(extractHandoff(`### Next chat’s prompt\n${FENCE}\nGo on.\n${FENCE}`)).toBe("Go on.");
+    expect(extractHandoff(`# HANDOFF\n\n${FENCE}md\nX.\n${FENCE}`)).toBe("X.");
+  });
+
+  it("leaves an ordinary code block alone", () => {
+    const code = `## Install\n\n${FENCE}bash\nnpm install\n${FENCE}\n\nThe handoff is next week.`;
+    expect(extractHandoff(code)).toBeNull();
+    expect(renderReply(code)).not.toContain("handoff-card");
+    // A fence not directly under the title is not taken either.
+    const apart = `## Handoff\n\nSome words first.\n\n${FENCE}\nnot it\n${FENCE}`;
+    expect(extractHandoff(apart)).toBeNull();
+    // Nor an indented block, nor an empty fence.
+    expect(extractHandoff("## Handoff\n\n    indented code\n")).toBeNull();
+    expect(extractHandoff(`## Handoff\n\n${FENCE}\n${FENCE}`)).toBeNull();
+  });
+
+  it("lets a tagged block win", () => {
+    const both = `${shot}\n<handoff>\nThe tagged one.\n</handoff>\n`;
+    expect(extractHandoff(both)).toBe("The tagged one.");
+    const html = renderReply(both);
+    expect(html.match(/handoff-card/g)?.length).toBe(1);
+    // The untagged fence stays an ordinary code block.
+    expect(html).toContain("Then run T-07.");
+  });
+});

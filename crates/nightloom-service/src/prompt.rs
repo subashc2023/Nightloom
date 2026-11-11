@@ -62,7 +62,9 @@ Be direct and concrete. Answer what was asked, at the length the question deserv
 
 When tools are available, use them to check rather than guessing, and say plainly when something is unverified. If a request is ambiguous in a way that changes the answer, ask; otherwise take the sensible reading and proceed.
 
-A command for the user to run themselves goes in its own ```bash block, one command per block: the desktop app gives that block a Run button and sends you its output.";
+A command for the user to run themselves goes in its own ```bash block, one command per block: the desktop app gives that block a Run button and sends you its output.
+
+Whenever you write a prompt for the next chat (a hand-off), put it between a line holding only <handoff> and a line holding only </handoff> — plain prose, no code fence, no [brackets] or placeholders; Nightloom shows it as a card with a button that starts the next chat with it.";
 
 /// The instruction file honoured in every directory on the walk, and in the
 /// user's config dir.
@@ -394,6 +396,22 @@ pub struct EngineLayers<'a> {
     /// This chat's subagent rules layer (nightshift backlog 291 + 293):
     /// `None` when it is switched off or the shell does not offer it.
     pub subagent_rules: Option<SubagentRules<'a>>,
+    /// The chat's subagent limits (nightshift 573), which the pacing layer
+    /// follows the way the rules layer does: it names the per-message
+    /// budget and the window's stop line only where they are on, and is
+    /// absent when both are off. `None` is the defaults (both on). Its own
+    /// field rather than read from `subagent_rules`, because that layer can
+    /// be switched off while the limits still bind.
+    pub limits: Option<crate::agent::brief::SubagentLimits>,
+    /// The running Claude Code reads the folder's `AGENTS.md` files itself
+    /// (nightshift 575; [`crate::start_context::cli_reads_agents_md`] says
+    /// when): the project-instructions walk then sends none of them, so the
+    /// first request carries each once — the CLI's copy, in its
+    /// `instructions` attachment. Only the walk's own segments (named by
+    /// the file's path) go; a chat's own text for the layer is his, not the
+    /// file's, and stays. False (an older CLI, safe mode, the API engine's
+    /// callers): the walk is sent whole, as before.
+    pub cli_agents_md: bool,
     /// An incognito chat (nightshift backlog 405): the engine note names
     /// only the Nightloom tool its server serves (`--incognito`) and says
     /// nothing of other chats, memory or the CLI's transcripts.
@@ -408,6 +426,8 @@ impl EngineLayers<'static> {
         reusable: false,
         subagent_model: crate::agent::brief::SubagentModel::Choose,
         subagent_rules: None,
+        limits: None,
+        cli_agents_md: false,
         incognito: false,
     };
 }
@@ -441,13 +461,20 @@ pub fn agent_prompt_with(
         ..config.clone()
     });
     let mut prompt = SystemPrompt::new();
+    // Whether Nightloom has a preamble at all is decided before the CLI's
+    // own copies are taken out: a chat whose only file is an `AGENTS.md`
+    // the CLI sends keeps its engine layers, as it did when the file was
+    // sent twice.
+    let preamble = !assembled.is_empty();
     for seg in assembled.segments() {
+        if layers.cli_agents_md && is_walk_agents_md(seg) {
+            continue;
+        }
         prompt.push(Segment {
             cache_anchor: false,
             ..seg.clone()
         });
     }
-    let preamble = !prompt.is_empty();
     if engine_note && preamble {
         prompt.push(if layers.incognito {
             incognito_engine_note_segment()
@@ -456,7 +483,10 @@ pub fn agent_prompt_with(
         });
     }
     if layers.pacing && preamble {
-        prompt.push(Segment::new(SegmentKind::Pacing, "pacing", PACING_NOTE));
+        let limits = layers.limits.unwrap_or_default().effective();
+        if let Some(text) = pacing_text(limits.budget_pct > 0, limits.stop_at <= 100) {
+            prompt.push(Segment::new(SegmentKind::Pacing, "pacing", text));
+        }
     }
     if layers.subagents && preamble {
         prompt.push(subagents_segment(layers.reusable, layers.subagent_model));
@@ -468,6 +498,16 @@ pub fn agent_prompt_with(
         prompt.push(Segment::new(SegmentKind::Custom, "custom", library));
     }
     prompt
+}
+
+/// A segment of the project-instructions walk for an `AGENTS.md` file —
+/// named by its absolute path ([`project_instruction_segments`]), unlike a
+/// chat's own text for the layer (`project-instructions`).
+fn is_walk_agents_md(seg: &Segment) -> bool {
+    let path = Path::new(&seg.name);
+    seg.kind == SegmentKind::ProjectInstructions
+        && path.is_absolute()
+        && path.file_name().is_some_and(|n| n == INSTRUCTION_FILE)
 }
 
 /// The pacing rule (nightshift backlog 250, 2026-09-27; his words: "is it
@@ -488,6 +528,46 @@ pub const PACING_NOTE: &str = "<pacing>\n\
      write up what you have and what is left. The weekly figure is information, not a limit; \
      the user's instructions in this chat say how much it matters.\n\
      </pacing>";
+
+/// The pacing layer as this chat's limits have it (nightshift 573,
+/// 2026-11-10; 537b's re-look found `<pacing>` naming a budget and a stop
+/// line in a chat whose `<subagent-rules>` said neither existed). Both on is
+/// [`PACING_NOTE`] byte for byte, so a chat on the defaults keeps its cached
+/// prefix; one off drops every sentence about it; both off is no layer at
+/// all (`None`) — there is nothing to pace against. The usage line still
+/// says where the window stands, and the weekly sentence rides with it.
+/// Static per switch pair: no figure, so the prefix moves only when he
+/// flips a switch, which waits for the cold moment like any layer change.
+pub fn pacing_text(budget: bool, stop_line: bool) -> Option<String> {
+    let (opening, when, sizing) = match (budget, stop_line) {
+        (true, true) => return Some(PACING_NOTE.to_string()),
+        (false, false) => return None,
+        (true, false) => (
+            "Each message has a usage budget, a share of the plan's five-hour window set per \
+             chat; past it Nightloom refuses every tool call.",
+            "it comes with each user message, your first call, each subagent launch, every 5 \
+             points spent, and every call past half the budget.",
+            "Size the plan to the budget from the start: a small budget means fewer subagents \
+             and narrower searches. Past about 70% of it, start no new work: finish what is \
+             half-done and write up what you have and what is left.",
+        ),
+        (false, true) => (
+            "Past the plan's stop line on the five-hour usage window, Nightloom refuses every \
+             tool call until the window resets.",
+            "it comes with each user message, your first call, each subagent launch, and every 5 \
+             points spent.",
+            "Size the plan to the room left below the stop line: little room means fewer \
+             subagents and narrower searches. Close to the line, start no new work: finish what \
+             is half-done and write up what you have and what is left.",
+        ),
+    };
+    Some(format!(
+        "<pacing>\n{opening} The usage line ('Usage: this message …') says where you stand: \
+         {when} An earlier message's line is stale: quote only this message's, and say how old \
+         any other figure is. {sizing} The weekly figure is information, not a limit; the \
+         user's instructions in this chat say how much it matters.\n</pacing>"
+    ))
+}
 
 /// The subagent practices (nightshift backlog 251, 2026-09-27), from the
 /// user's own practices file, cut to what was measured to hold in a
@@ -521,12 +601,17 @@ fn subagents_segment(reusable: bool, model: crate::agent::brief::SubagentModel) 
         // work"~~ — 2026-11-10 (nightshift 540, blocker 1732, his answer:
         // "Fable for the very hardest task, there should be a reason for
         // why Fable is being used"). Opus is the floor; the hook enforces it.
+        // ~~"fable (Fable 5.2) only for the very hardest tasks (a multi-file
+        // systems build, hard research)"~~ — 2026-11-10 (nightshift 573,
+        // 537b's re-look): "hard research" let a chat call seven web-search
+        // helpers Fable work, so gathering is named as Opus work outright.
         SubagentModel::Choose => {
             "Model, named on each launch: opus (Opus 5.5) by default; a launch naming none \
-             runs on it. fable (Fable 5.2) only for the very hardest tasks (a multi-file systems \
-             build, hard research), with a line \"Why Fable: <reason>\", or it is refused. \
-             sonnet or haiku only if the user asked (a line \"User asked for sonnet\"), else it \
-             runs on opus. Forks run this chat's model."
+             runs on it. fable (Fable 5.2) only for a multi-file systems build or hard research \
+             that is a hard reasoning problem, with a line \"Why Fable: <reason>\", or it is \
+             refused. Search, survey and read-and-summarise helpers run on opus, however broad \
+             or many. sonnet or haiku only if the user asked (a line \"User asked for \
+             sonnet\"), else it runs on opus. Forks run this chat's model."
         }
         SubagentModel::Same => {
             "Every subagent runs this chat's model: Nightloom sets it on each launch, \
@@ -705,8 +790,10 @@ pub fn subagent_rules_body(rules: &SubagentRules<'_>) -> String {
     out.push_str(match l.model {
         SubagentModel::Choose => {
             "- Subagents' model: yours to choose on each launch, within the user's rule: opus by \
-             default; fable only with a \"Why Fable:\" line (refused without); sonnet or haiku \
-             only if the user asked (otherwise run on opus).\n"
+             default and for every search, survey or read-and-summarise helper; fable only for a \
+             multi-file systems build or hard research that is a hard reasoning problem, with a \
+             \"Why Fable:\" line (refused without); sonnet or haiku only if the user asked \
+             (otherwise run on opus).\n"
         }
         SubagentModel::Same => "- Subagents' model: always this chat's; Nightloom sets it.\n",
         SubagentModel::Sonnet => {
@@ -854,6 +941,10 @@ fn engine_note_segment(knowledge: Option<&KnowledgeContext>) -> Segment {
     text.push_str(CITE_NOTE);
     text.push(' ');
     text.push_str(RUN_BLOCK_NOTE);
+    // Item 583: the tag rule rode only in Nightloom's own wrap-up message,
+    // so a hand-off he asked for in words came back as a fenced block.
+    text.push(' ');
+    text.push_str(HANDOFF_NOTE);
     text.push_str("\n</engine-note>");
     Segment::new(SegmentKind::EngineNote, "engine-note", text)
 }
@@ -877,6 +968,19 @@ pub const CONTINUE_LATER_NOTE: &str = "To be continued later without the user �
 pub const RUN_BLOCK_NOTE: &str = "A command for the user to run themselves goes in its own \
      ```bash block, one command per block: the desktop app gives that block a Run button and \
      sends you its output.";
+
+/// Where a prompt for the next chat goes (nightshift item 583, 2026-11-10):
+/// the wrap-up's own sentence (`HANDOFF_ASK`, `apps/desktop/src/lib/handoffTag.ts`)
+/// as a standing rule, so a hand-off he asks for in his own words is tagged
+/// too — the card, its Continue button and the thread's keep read only the
+/// tag (and, since 583, a fence under a hand-off heading as a fallback).
+/// In every chat's engine note and the API engine's identity, threads
+/// included: the desktop's hand-off features have no off switch the prompt
+/// could follow.
+pub const HANDOFF_NOTE: &str = "Whenever you write a prompt for the next chat (a hand-off), put it \
+     between a line holding only <handoff> and a line holding only </handoff> — plain prose, no code \
+     fence, no [brackets] or placeholders; Nightloom shows it as a card with a button that starts the \
+     next chat with it.";
 
 /// What a non-incognito chat on the Claude Code engine is told about the
 /// account details the CLI attaches as context (nightshift backlog 446,
@@ -911,7 +1015,7 @@ fn incognito_engine_note_segment() -> Segment {
          tool mcp__nightloom__fetch_page (ToolSearch it by that full name). For the whole \
          text of a page use fetch_page (WebFetch summarises and truncates); if fetch_page \
          reports a JavaScript shell or returns only a title, use WebFetch on that URL instead \
-         of retrying. {INCOGNITO_NOTE} {CITE_NOTE} {RUN_BLOCK_NOTE}\n</engine-note>"
+         of retrying. {INCOGNITO_NOTE} {CITE_NOTE} {RUN_BLOCK_NOTE} {HANDOFF_NOTE}\n</engine-note>"
     );
     Segment::new(SegmentKind::EngineNote, "engine-note", text)
 }
@@ -2775,6 +2879,266 @@ As of now — the front.
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// Nightshift 575: a chat's first request carries a project's
+    /// `AGENTS.md` once. Counted as the request is built: Nightloom's append
+    /// (this prompt, rendered as `--append-system-prompt` carries it) plus
+    /// the files the CLI loads itself (`start_context::instruction_files`
+    /// under the same decision), the file's text searched in both.
+    #[test]
+    fn a_project_agents_md_reaches_the_first_request_once() {
+        use crate::start_context::{cli_reads_agents_md, instruction_files};
+        let root = temp_dir("agent-agents-once");
+        let claude = root.join("home").join(".claude");
+        let parent = root.join("home").join("projects");
+        let proj = parent.join("p");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::create_dir_all(&proj).unwrap();
+        let rule = "RULE-575: cite every claim";
+        let outer = "OUTER-575: the parent's rule";
+        std::fs::write(proj.join("AGENTS.md"), rule).unwrap();
+        std::fs::write(parent.join("AGENTS.md"), outer).unwrap();
+        let config = PromptConfig {
+            project_instructions: true,
+            ..bare(proj.clone())
+        };
+        let copies = |version: Option<&str>, safe: bool| {
+            let cli = cli_reads_agents_md(version, !safe, &proj, Some(&claude));
+            let append = agent_prompt_with(
+                &config,
+                None,
+                EngineLayers {
+                    engine_note: true,
+                    pacing: true,
+                    cli_agents_md: cli,
+                    ..EngineLayers::NONE
+                },
+            )
+            .render_flat()
+            .unwrap_or_default();
+            let loaded: String = instruction_files(&proj, Some(&claude), !safe, cli)
+                .iter()
+                .map(|f| f.text.clone())
+                .collect();
+            let n = |t: &str| append.matches(t).count() + loaded.matches(t).count();
+            (n(rule), n(outer), append)
+        };
+        // Before: 2.1.322 got each file from both (the 574 finding).
+        let both = {
+            let append = agent_prompt_with(&config, None, EngineLayers::NONE)
+                .render_flat()
+                .unwrap();
+            let loaded: String = instruction_files(&proj, Some(&claude), true, true)
+                .iter()
+                .map(|f| f.text.clone())
+                .collect();
+            append.matches(rule).count() + loaded.matches(rule).count()
+        };
+        assert_eq!(both, 2);
+        // Now: once each, the CLI's copy, and the engine layers stay.
+        let (r, o, append) = copies(Some("2.1.322"), false);
+        assert_eq!((r, o), (1, 1), "{append}");
+        assert!(!append.contains("<project-instructions path="), "{append}");
+        assert!(append.contains("<pacing>"), "{append}");
+        // An older CLI, or safe mode: Nightloom's copy, still once.
+        let (r, o, append) = copies(Some("2.1.263"), false);
+        assert_eq!((r, o), (1, 1));
+        assert!(append.contains(rule));
+        let (r, o, _) = copies(Some("2.1.322"), true);
+        assert_eq!((r, o), (1, 1));
+        // A CLAUDE.md on the path: the CLI reads none, Nightloom sends both.
+        std::fs::write(parent.join("CLAUDE.md"), "claude rules").unwrap();
+        let (r, o, append) = copies(Some("2.1.322"), false);
+        assert_eq!((r, o), (1, 1));
+        assert!(append.contains(rule) && append.contains(outer));
+        // A chat's own text for the layer is his, not the file's: it stays.
+        std::fs::remove_file(parent.join("CLAUDE.md")).unwrap();
+        let edited = PromptConfig {
+            edits: [(SegmentKind::ProjectInstructions, "my own rules".to_string())]
+                .into_iter()
+                .collect(),
+            ..config.clone()
+        };
+        let text = agent_prompt_with(
+            &edited,
+            None,
+            EngineLayers {
+                cli_agents_md: true,
+                ..EngineLayers::NONE
+            },
+        )
+        .render_flat()
+        .unwrap();
+        assert!(text.contains("my own rules"), "{text}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Nightshift 573: `<pacing>` follows the limit switches the rules layer
+    /// follows — the defaults keep [`PACING_NOTE`] byte for byte, one switch
+    /// off drops every sentence about it, both off drops the layer.
+    #[test]
+    fn the_pacing_layer_names_only_the_limits_that_are_on() {
+        use crate::agent::brief::SubagentLimits;
+        let dir = temp_dir("agent-pacing-switches");
+        std::fs::write(dir.join("AGENTS.md"), "a project rule").unwrap();
+        let config = PromptConfig {
+            project_instructions: true,
+            ..bare(dir.clone())
+        };
+        let pacing = |limits: Option<SubagentLimits>| {
+            agent_prompt_with(
+                &config,
+                None,
+                EngineLayers {
+                    pacing: true,
+                    limits,
+                    ..EngineLayers::NONE
+                },
+            )
+            .segments()
+            .iter()
+            .find(|s| s.kind == SegmentKind::Pacing)
+            .map(|s| s.text.clone())
+        };
+        let with_off = |budget: bool, stop: bool| {
+            let mut l = SubagentLimits::default();
+            l.off.budget_pct = budget;
+            l.off.stop_at = stop;
+            pacing(Some(l))
+        };
+        // Both on, by the defaults or by a chat that says so: unchanged.
+        assert_eq!(pacing(None).as_deref(), Some(PACING_NOTE));
+        assert_eq!(with_off(false, false).as_deref(), Some(PACING_NOTE));
+        // The budget alone: no stop line named.
+        let budget = with_off(false, true).unwrap();
+        assert!(
+            budget.contains("usage budget") && budget.contains("Past about 70%"),
+            "{budget}"
+        );
+        assert!(budget.contains("past half the budget"), "{budget}");
+        assert!(!budget.contains("stop line"), "{budget}");
+        // The stop line alone: no budget named anywhere.
+        let stop = with_off(true, false).unwrap();
+        assert!(stop.contains("stop line"), "{stop}");
+        assert!(!stop.contains("budget"), "{stop}");
+        assert!(!stop.contains("70%"), "{stop}");
+        // A budget of 0 is no budget, as `usage_line` reads it.
+        let mut zero = SubagentLimits::default();
+        zero.budget_pct = 0;
+        assert_eq!(pacing(Some(zero)), Some(stop.clone()));
+        // Both off: no layer, and nothing else moves.
+        assert_eq!(with_off(true, true), None);
+        for text in [&budget, &stop] {
+            assert!(text.starts_with("<pacing>\n") && text.ends_with("\n</pacing>"));
+            assert!(
+                text.contains("An earlier message's line is stale"),
+                "{text}"
+            );
+            assert!(text.contains("weekly figure is information"), "{text}");
+            assert!(text.split_whitespace().count() <= 145, "{text}");
+        }
+        // The rules layer and the pacing layer agree on each pair.
+        for (b, s) in [(false, true), (true, false), (true, true)] {
+            let mut l = SubagentLimits::default();
+            l.off.budget_pct = b;
+            l.off.stop_at = s;
+            let rules = subagent_rules_body(&SubagentRules {
+                words: "",
+                limits: l,
+                fork_mode: false,
+            });
+            assert_eq!(rules.contains("No stop line"), s, "{rules}");
+            assert_eq!(rules.contains("No per-message share"), b, "{rules}");
+            let text = pacing(Some(l)).unwrap_or_default();
+            assert_eq!(text.contains("stop line"), !s, "{text}");
+            assert_eq!(text.contains("budget"), !b, "{text}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Item 583: the <handoff> rule stands in every chat's prompt — the
+    /// engine note (incognito's too) and the API engine's identity — so a
+    /// hand-off asked for in words is tagged, not only Nightloom's wrap-up.
+    #[test]
+    fn every_chat_is_told_where_a_next_chat_prompt_goes() {
+        assert!(
+            HANDOFF_NOTE.contains(
+                "between a line holding only <handoff> and a line holding only </handoff>"
+            )
+        );
+        assert!(HANDOFF_NOTE.contains("no code fence"));
+        assert!(
+            DEFAULT_IDENTITY.ends_with(HANDOFF_NOTE),
+            "{DEFAULT_IDENTITY}"
+        );
+        for seg in [
+            engine_note_segment(None),
+            engine_note_segment(Some(&KnowledgeContext {
+                dir: PathBuf::from("/kb"),
+            })),
+            incognito_engine_note_segment(),
+        ] {
+            assert!(seg.text.contains(HANDOFF_NOTE), "{}", seg.text);
+        }
+        // Short: its size shows on the new-chat dial.
+        assert!(HANDOFF_NOTE.split_whitespace().count() <= 60);
+    }
+
+    /// Nightshift 573: under `Choose`, both layers name gathering — search,
+    /// survey, read-and-summarise — as Opus work, and keep Fable for a
+    /// multi-file systems build or hard research that is a hard reasoning
+    /// problem; the hook's refusal says the same.
+    #[test]
+    fn the_choose_wording_keeps_search_and_survey_helpers_on_opus() {
+        use crate::agent::brief::{SubagentLimits, SubagentModel};
+        let dir = temp_dir("agent-choose-wording");
+        std::fs::write(dir.join("AGENTS.md"), "a project rule").unwrap();
+        let config = PromptConfig {
+            project_instructions: true,
+            ..bare(dir.clone())
+        };
+        let text = agent_prompt_with(
+            &config,
+            None,
+            EngineLayers {
+                subagents: true,
+                subagent_model: SubagentModel::Choose,
+                subagent_rules: Some(SubagentRules {
+                    words: "",
+                    limits: SubagentLimits::default(),
+                    fork_mode: true,
+                }),
+                ..EngineLayers::NONE
+            },
+        )
+        .render_flat()
+        .unwrap();
+        let sub = &text[text.find("<subagents>").unwrap()..text.find("</subagents>").unwrap()];
+        assert!(
+            sub.contains(
+                "Search, survey and read-and-summarise helpers run on opus, however broad or many."
+            ),
+            "{sub}"
+        );
+        assert!(
+            sub.contains("only for a multi-file systems build or hard research that is a hard reasoning problem"),
+            "{sub}"
+        );
+        assert!(!sub.contains("the very hardest tasks"), "{sub}");
+        let rules =
+            &text[text.find("<subagent-rules>").unwrap()..text.find("</subagent-rules>").unwrap()];
+        assert!(
+            rules.contains(
+                "opus by default and for every search, survey or read-and-summarise helper"
+            ),
+            "{rules}"
+        );
+        assert!(
+            rules.contains("fable only for a multi-file systems build or hard research that is a hard reasoning problem"),
+            "{rules}"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// The pacing rule (nightshift backlog 250) and the subagent practices
     /// (251) are the engine's own layers after the engine note, each on its
     /// own switch; the subagents layer names `reusable` only when the chat's
@@ -2795,6 +3159,8 @@ As of now — the front.
             reusable: true,
             subagent_model: crate::agent::brief::SubagentModel::Choose,
             subagent_rules: None,
+            limits: None,
+            cli_agents_md: false,
             incognito: false,
         };
         let full = agent_prompt_with(&config, Some("Be terse."), all);
@@ -2842,9 +3208,10 @@ As of now — the front.
         );
         // ~~250~~ — 350 since 2026-11-10 (nightshift 553 + 540): the size
         // rule and his Fable rule had to be in it; 338 measured with
-        // `reusable` on.
+        // `reusable` on. ~~350~~ — 360 since 2026-11-10 (nightshift 573):
+        // gathering named as Opus work; 353 measured with `reusable` on.
         assert!(
-            words(SegmentKind::Subagents) <= 350,
+            words(SegmentKind::Subagents) <= 360,
             "{}",
             words(SegmentKind::Subagents)
         );
@@ -3448,6 +3815,8 @@ As of now — the front.
                     limits,
                     fork_mode: true,
                 }),
+                limits: Some(limits),
+                cli_agents_md: false,
                 incognito: false,
             },
         );

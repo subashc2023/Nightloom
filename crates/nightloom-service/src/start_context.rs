@@ -237,28 +237,136 @@ pub struct InstructionFile {
 /// How deep `@` imports are followed (the CLI's documented limit is 5).
 const IMPORT_DEPTH: usize = 5;
 
+/// The first Claude Code that reads a folder's `AGENTS.md` itself in every
+/// session (nightshift 575). `external` — code.claude.com/docs/en/memory
+/// claims it reads `AGENTS.md` from v2.1.277, but before v2.1.281 "some
+/// sessions, such as those on Amazon Bedrock or with telemetry disabled"
+/// read `CLAUDE.md` only; `measured` (575 report) — 214 of 215 Nightloom
+/// chats on 2.1.280–2.1.322 whose layer carried an `AGENTS.md` had the CLI
+/// carry it too, and 2.1.263 never did. Below this Nightloom keeps sending
+/// it: a double is a few hundred tokens, a missing file is lost rules.
+pub const CLI_READS_AGENTS_MD_SINCE: &str = "2.1.281";
+
+/// The built-in plugin that reads `AGENTS.md`, by both its ids
+/// (`agents-md@builtin` before 2.1.285, `external`, the same page).
+const AGENTS_MD_PLUGIN: [&str; 2] = ["cc-plugin-agents-md@builtin", "agents-md@builtin"];
+
+/// Whether the Claude Code at `version` reads the `AGENTS.md` files above
+/// `cwd` itself (nightshift 575), so Nightloom's own walk must not send them
+/// again. `external`, code.claude.com/docs/en/memory: by default it reads
+/// every `AGENTS.md` from `cwd` up **only when no folder on that path has a
+/// `CLAUDE.md`, `.claude/CLAUDE.md` or `CLAUDE.local.md`** (the user's
+/// `~/.claude/CLAUDE.md` does not count); the user setting
+/// `pluginConfigs.<plugin>.options.instructionFiles` makes it
+/// `claude-md-and-agents-md` (always), or `claude-md` / `managed-only`
+/// (never); a plugin switched off in `enabledPlugins` reads none.
+/// `setting_sources` false is safe mode's empty `--setting-sources`: not
+/// measured with an `AGENTS.md`, so Nightloom keeps its copy there.
+/// Unknown version (the binary would not say): keeps it too.
+pub fn cli_reads_agents_md(
+    version: Option<&str>,
+    setting_sources: bool,
+    cwd: &Path,
+    claude_dir: Option<&Path>,
+) -> bool {
+    let Some(v) = version else {
+        return false;
+    };
+    if !setting_sources || !crate::cli_update::at_least(v, CLI_READS_AGENTS_MD_SINCE) {
+        return false;
+    }
+    let settings: serde_json::Value = claude_dir
+        .and_then(|d| std::fs::read_to_string(d.join("settings.json")).ok())
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default();
+    if AGENTS_MD_PLUGIN
+        .iter()
+        .any(|id| settings["enabledPlugins"][id] == serde_json::Value::Bool(false))
+    {
+        return false;
+    }
+    let mode = AGENTS_MD_PLUGIN
+        .iter()
+        .find_map(|id| settings["pluginConfigs"][id]["options"]["instructionFiles"].as_str());
+    match mode {
+        Some("claude-md") | Some("managed-only") => false,
+        Some("claude-md-and-agents-md") => true,
+        _ => !claude_md_on_path(cwd, claude_dir),
+    }
+}
+
+/// [`cli_reads_agents_md`] for the CLI a chat spawns (`binary` as the spec
+/// has it), its version asked once per install
+/// ([`crate::cli_update::cached_version`]) and the user's settings read
+/// from `~/.claude`. Blocking (a `--version` the first time): call it off
+/// the async runtime.
+pub fn spawned_cli_reads_agents_md(binary: &str, setting_sources: bool, cwd: &Path) -> bool {
+    // A unit test never runs the real `claude` on PATH (whatever version
+    // this machine has would change what the serve tests' prompts hold);
+    // the decision itself is tested through `cli_reads_agents_md`.
+    if !setting_sources || cfg!(test) {
+        return false;
+    }
+    let bin = PathBuf::from(crate::resolve_binary(binary));
+    let version = crate::cli_update::cached_version(&bin);
+    cli_reads_agents_md(
+        version.as_deref(),
+        setting_sources,
+        cwd,
+        crate::usage::claude_dir().as_deref(),
+    )
+}
+
+/// A `CLAUDE.md`, `.claude/CLAUDE.md` or `CLAUDE.local.md` in `cwd` or a
+/// folder above it — the user's own `<claude_dir>/CLAUDE.md` excepted,
+/// though it sits at `~/.claude/CLAUDE.md` on the path of every folder
+/// under home.
+fn claude_md_on_path(cwd: &Path, claude_dir: Option<&Path>) -> bool {
+    let user = claude_dir.map(|d| d.canonicalize().unwrap_or_else(|_| d.to_path_buf()));
+    cwd.ancestors().any(|dir| {
+        let dot = dir.join(".claude");
+        let is_user = user
+            .as_ref()
+            .is_some_and(|u| dot.canonicalize().unwrap_or_else(|_| dot.clone()) == *u);
+        dir.join("CLAUDE.md").is_file()
+            || dir.join("CLAUDE.local.md").is_file()
+            || (!is_user && dot.join("CLAUDE.md").is_file())
+    })
+}
+
 /// The instruction files the CLI loads for `cwd`: the user's
 /// `CLAUDE.md` (when `user_level`), then, from the filesystem root down to
 /// `cwd`, each folder's `CLAUDE.md`, `.claude/CLAUDE.md` and
-/// `CLAUDE.local.md` — or its `AGENTS.md` when it has no `CLAUDE.md`
-/// (`inferred` from 2.1.32x loading `AGENTS.md` in folders with no
-/// `CLAUDE.md`, 574 report §1) — each followed by its `@` imports.
+/// `CLAUDE.local.md`, and — when `agents_md`, which is
+/// [`cli_reads_agents_md`]'s answer — its `AGENTS.md` and
+/// `.claude/AGENTS.md`; each followed by its `@` imports.
+/// ~~"or its `AGENTS.md` when it has no `CLAUDE.md`" (per folder)~~ —
+/// 2026-11-10 (nightshift 575): the CLI's rule is the whole path's, and
+/// version- and setting-gated, so the caller decides it once with the
+/// prompt's own test and the dial and the prompt cannot disagree.
 pub fn instruction_files(
     cwd: &Path,
     claude_dir: Option<&Path>,
     user_level: bool,
+    agents_md: bool,
 ) -> Vec<InstructionFile> {
     let mut out: Vec<InstructionFile> = Vec::new();
     let mut seen: Vec<PathBuf> = Vec::new();
     if user_level && let Some(dir) = claude_dir {
         read_with_imports(&dir.join("CLAUDE.md"), true, 0, &mut out, &mut seen);
     }
+    // The user's own file is never a folder's, under safe mode either.
+    if let Some(dir) = claude_dir {
+        seen.push(
+            dir.join("CLAUDE.md")
+                .canonicalize()
+                .unwrap_or_else(|_| dir.join("CLAUDE.md")),
+        );
+    }
     let mut chain: Vec<&Path> = cwd.ancestors().collect();
     chain.reverse();
     for dir in chain {
-        let claude = dir.join("CLAUDE.md");
-        let had = claude.is_file();
-        read_with_imports(&claude, false, 0, &mut out, &mut seen);
+        read_with_imports(&dir.join("CLAUDE.md"), false, 0, &mut out, &mut seen);
         read_with_imports(
             &dir.join(".claude").join("CLAUDE.md"),
             false,
@@ -267,8 +375,15 @@ pub fn instruction_files(
             &mut seen,
         );
         read_with_imports(&dir.join("CLAUDE.local.md"), false, 0, &mut out, &mut seen);
-        if !had {
+        if agents_md {
             read_with_imports(&dir.join("AGENTS.md"), false, 0, &mut out, &mut seen);
+            read_with_imports(
+                &dir.join(".claude").join("AGENTS.md"),
+                false,
+                0,
+                &mut out,
+                &mut seen,
+            );
         }
     }
     out
@@ -671,16 +786,82 @@ mod tests {
         std::fs::write(proj.join("rules").join("extra.md"), "extra").unwrap();
         std::fs::write(proj.join(".env"), "SECRET=1").unwrap();
         std::fs::write(proj.join("AGENTS.md"), "not read: there is a CLAUDE.md").unwrap();
-        let got = instruction_files(&proj, Some(&home), true);
+        // ~~"work rules" read beside proj's CLAUDE.md~~ — 2026-11-10
+        // (nightshift 575): a CLAUDE.md anywhere on the path means no
+        // AGENTS.md at all, the docs' rule and the prompt's.
+        let agents = cli_reads_agents_md(Some("2.1.322"), true, &proj, Some(&home));
+        assert!(!agents);
+        let got = instruction_files(&proj, Some(&home), true, agents);
         let texts: Vec<&str> = got.iter().map(|f| f.text.as_str()).collect();
         assert_eq!(texts[0], "be terse");
         assert!(got[0].user);
-        assert!(texts.contains(&"work rules"));
+        assert!(!texts.contains(&"work rules"));
         assert!(texts.contains(&"extra"));
         assert!(!texts.iter().any(|t| t.contains("SECRET")));
         assert!(!texts.iter().any(|t| t.starts_with("not read")));
-        let no_user = instruction_files(&proj, Some(&home), false);
+        let no_user = instruction_files(&proj, Some(&home), false, agents);
         assert!(no_user.iter().all(|f| !f.user));
+        // With no CLAUDE.md on the path, every AGENTS.md up the tree.
+        std::fs::remove_file(proj.join("CLAUDE.md")).unwrap();
+        let agents = cli_reads_agents_md(Some("2.1.322"), true, &proj, Some(&home));
+        assert!(agents);
+        let got = instruction_files(&proj, Some(&home), true, agents);
+        let texts: Vec<&str> = got.iter().map(|f| f.text.as_str()).collect();
+        assert!(texts.contains(&"work rules"), "{texts:?}");
+        assert!(texts.iter().any(|t| t.starts_with("not read")), "{texts:?}");
+    }
+
+    /// Nightshift 575: when the CLI reads a folder's `AGENTS.md` itself —
+    /// by version, setting sources, the `CLAUDE.md`s on the path (the
+    /// user's own excepted) and his `instructionFiles` setting.
+    #[test]
+    fn the_cli_reads_agents_md_by_version_path_and_setting() {
+        let root = Scratch::new();
+        let home = root.path().join("home");
+        let claude = home.join(".claude");
+        let proj = home.join("projects").join("p");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::write(proj.join("AGENTS.md"), "rules").unwrap();
+        // The user's own ~/.claude/CLAUDE.md sits on the path and does not count.
+        std::fs::write(claude.join("CLAUDE.md"), "be terse").unwrap();
+        let reads =
+            |v: Option<&str>, sources: bool| cli_reads_agents_md(v, sources, &proj, Some(&claude));
+        assert!(reads(Some("2.1.322"), true));
+        assert!(reads(Some(CLI_READS_AGENTS_MD_SINCE), true));
+        assert!(!reads(Some("2.1.280"), true));
+        assert!(!reads(Some("2.1.263"), true));
+        assert!(!reads(None, true));
+        assert!(
+            !reads(Some("2.1.322"), false),
+            "safe mode keeps Nightloom's copy"
+        );
+        // A CLAUDE.local.md or .claude/CLAUDE.md above counts.
+        std::fs::write(home.join("projects").join("CLAUDE.local.md"), "x").unwrap();
+        assert!(!reads(Some("2.1.322"), true));
+        // …unless he asked for both.
+        std::fs::write(
+            claude.join("settings.json"),
+            r#"{"pluginConfigs":{"cc-plugin-agents-md@builtin":{"options":{"instructionFiles":"claude-md-and-agents-md"}}}}"#,
+        )
+        .unwrap();
+        assert!(reads(Some("2.1.322"), true));
+        std::fs::remove_file(home.join("projects").join("CLAUDE.local.md")).unwrap();
+        // CLAUDE.md only, by the old id too, and a plugin switched off.
+        std::fs::write(
+            claude.join("settings.json"),
+            r#"{"pluginConfigs":{"agents-md@builtin":{"options":{"instructionFiles":"claude-md"}}}}"#,
+        )
+        .unwrap();
+        assert!(!reads(Some("2.1.322"), true));
+        std::fs::write(
+            claude.join("settings.json"),
+            r#"{"enabledPlugins":{"cc-plugin-agents-md@builtin":false}}"#,
+        )
+        .unwrap();
+        assert!(!reads(Some("2.1.322"), true));
+        std::fs::write(claude.join("settings.json"), "not json").unwrap();
+        assert!(reads(Some("2.1.322"), true));
     }
 
     #[test]
