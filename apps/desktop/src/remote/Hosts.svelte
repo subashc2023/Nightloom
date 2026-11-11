@@ -19,6 +19,7 @@
     mixedBlocked,
     openLink,
     pairLink,
+    whereLine,
     type HostEntry,
     type HostRole,
     type Hosts,
@@ -107,6 +108,7 @@
   </button>
 {:else}
   <div class="hs-title">Hosts</div>
+  <p class="hs-note hs-where">{whereLine(active, link === "online", tried, hosts)}</p>
   <p class="hs-note">The page tries the Mac first, then Away. Each has its own token; a chat stays with the host it came from.</p>
   {#each ROLES as role (role)}
     {@const e = hosts[role]}

@@ -1342,6 +1342,13 @@ pub struct Remote {
     server: tokio::sync::Mutex<Option<Server>>,
     port: Mutex<u16>,
     keep_awake: Mutex<bool>,
+    /// The switch as he set it (item 588), apart from whether a listener
+    /// runs: on while Tailscale is not up yet, so the keeper brings the
+    /// listener up the moment it can and the card says "waiting".
+    wanted: Mutex<bool>,
+    /// The phone link's Mac half as last bound (`https://<name>:<port>`),
+    /// kept so the one code still pairs the Mac while Tailscale is off.
+    mac_base: Mutex<Option<String>>,
     /// The keep-awake task's stop. The task holds a `power::Holder` guard
     /// across its wait; a guard borrows the holder, so it lives in a task
     /// rather than in this struct.
@@ -1358,10 +1365,56 @@ pub struct Remote {
 /// build tried to take his phone listener on 8642).
 #[derive(Debug, Clone, Default, Serialize, serde::Deserialize)]
 struct Persisted {
+    #[serde(default)]
     on: bool,
+    #[serde(default)]
     port: u16,
+    #[serde(default)]
     keep_awake: bool,
+    /// The file's form: [`PERSISTED_V`] since item 588. Older files are
+    /// read as on (below).
+    #[serde(default)]
+    v: u32,
+    /// The Mac half of the phone link as last bound (item 588).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mac_base: Option<String>,
 }
+
+/// Item 588 (his words, 2026-11-10: "every time i refersh the phone ability
+/// on nightloom is disabled … i want to fully switch to it"): the switch is
+/// on by default. A file from before (no `v`) — whose `on: false` was most
+/// likely written by the keep-awake box after a failed restore, not by
+/// him — is read once as on; from then on his switch is kept as he sets it.
+const PERSISTED_V: u32 = 2;
+
+/// The saved switch as this launch reads it, and whether it changed (so
+/// the new form is written back once).
+fn settle_persisted(raw: Option<Persisted>) -> (Persisted, bool) {
+    match raw {
+        Some(p) if p.v >= PERSISTED_V => (p, false),
+        Some(p) => (
+            Persisted {
+                on: true,
+                v: PERSISTED_V,
+                ..p
+            },
+            true,
+        ),
+        None => (
+            Persisted {
+                on: true,
+                port: DEFAULT_PORT,
+                v: PERSISTED_V,
+                ..Persisted::default()
+            },
+            true,
+        ),
+    }
+}
+
+/// How often the keeper looks for a listener that should be up and is not
+/// (item 588): Tailscale coming up after launch, or after a wake.
+const KEEPER_EVERY: Duration = Duration::from_secs(30);
 
 fn persisted_path() -> Option<std::path::PathBuf> {
     persisted_path_in(
@@ -1395,11 +1448,10 @@ fn may_restore_listener(debug: bool, named_home: bool) -> bool {
     !debug || named_home
 }
 
-fn read_persisted() -> Persisted {
+fn read_persisted() -> Option<Persisted> {
     persisted_path()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default()
 }
 
 fn write_persisted(p: &Persisted) {
@@ -1421,7 +1473,10 @@ impl Remote {
     pub fn install(app: &AppHandle) {
         let host = DesktopHost::new(app.clone());
         host.attach();
-        let saved = read_persisted();
+        let (saved, changed) = settle_persisted(read_persisted());
+        if changed {
+            write_persisted(&saved);
+        }
         app.manage(Remote {
             host,
             server: tokio::sync::Mutex::new(None),
@@ -1431,6 +1486,8 @@ impl Remote {
                 DEFAULT_PORT
             }),
             keep_awake: Mutex::new(saved.keep_awake),
+            wanted: Mutex::new(saved.on),
+            mac_base: Mutex::new(saved.mac_base.clone()),
             awake: Mutex::new(None),
         });
         if saved.on
@@ -1442,24 +1499,39 @@ impl Remote {
             eprintln!(
                 "remote: a dev build on the real home leaves the phone listener off (item 447); set NIGHTLOOM_HOME to give it its own"
             );
-        } else if saved.on {
+        } else {
+            // Item 588: one try at launch was not enough — Tailscale is
+            // often not up yet then, and the listener stayed off until he
+            // switched it again. The keeper tries now and every
+            // [`KEEPER_EVERY`] while the switch is on and nothing listens.
             let app = app.clone();
-            tauri::async_runtime::spawn(async move {
-                let remote = app.state::<Remote>();
-                match start_listener(&app, &remote, None).await {
-                    Ok(st) => eprintln!("remote: listener back up at {:?}", st.address),
-                    Err(e) => eprintln!("remote: could not bring the listener back: {e}"),
-                }
-            });
+            tauri::async_runtime::spawn(keep_listening(app));
         }
     }
 
-    fn persist(&self, on: bool) {
+    fn persist(&self) {
         write_persisted(&Persisted {
-            on,
+            on: self.wanted(),
             port: self.port(),
             keep_awake: self.keep_awake(),
+            v: PERSISTED_V,
+            mac_base: self.mac_base(),
         });
+    }
+
+    fn wanted(&self) -> bool {
+        *self.wanted.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn set_wanted(&self, on: bool) {
+        *self.wanted.lock().unwrap_or_else(|p| p.into_inner()) = on;
+    }
+
+    fn mac_base(&self) -> Option<String> {
+        self.mac_base
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
     }
 
     fn port(&self) -> u16 {
@@ -1491,10 +1563,59 @@ impl Remote {
     }
 }
 
+/// The keeper (item 588): while the switch is on and no listener runs,
+/// try to start one — at launch, then every [`KEEPER_EVERY`]. A failure is
+/// logged once per distinct reason, not every 30 s.
+async fn keep_listening(app: AppHandle) {
+    let mut last_error: Option<String> = None;
+    let mut first = true;
+    loop {
+        if !first {
+            tokio::time::sleep(KEEPER_EVERY).await;
+        }
+        first = false;
+        let remote = app.state::<Remote>();
+        if !remote.wanted() || remote.server.lock().await.is_some() {
+            continue;
+        }
+        match start_listener(&app, &remote, None).await {
+            Ok(st) => {
+                last_error = None;
+                if remote.wanted() {
+                    remote.persist();
+                    eprintln!("remote: listener up at {:?}", st.address);
+                } else {
+                    // Switched off while this start ran: honour the switch.
+                    if let Some(server) = remote.server.lock().await.take() {
+                        server.stop().await;
+                    }
+                    remote.apply_awake(&app, false);
+                }
+            }
+            Err(e) => {
+                if last_error.as_deref() != Some(e.as_str()) {
+                    eprintln!("remote: listener not up yet, retrying every 30 s: {e}");
+                    last_error = Some(e);
+                }
+            }
+        }
+    }
+}
+
 /// What the card shows.
 #[derive(Serialize, Clone, Debug, Default)]
 pub struct RemoteStatus {
     pub on: bool,
+    /// The switch as he set it (item 588): on while the listener waits for
+    /// Tailscale, so the card says "waiting" rather than "off".
+    pub wanted: bool,
+    /// The one link for the phone (item 588): the away server's page that
+    /// pairs both hosts when the away server is set up, else the Mac's own.
+    pub phone_url: Option<String>,
+    /// `phone_url` as a QR.
+    pub phone_qr_svg: Option<String>,
+    /// What `phone_url` pairs: "both", "away" or "mac".
+    pub phone_kind: Option<String>,
     /// The tailnet address the listener is (or would be) bound to; `None`
     /// when Tailscale is not up.
     pub address: Option<String>,
@@ -1532,6 +1653,9 @@ fn status_of(
     keep_awake: bool,
     bound: Option<std::net::SocketAddr>,
     https_name: Option<String>,
+    wanted: bool,
+    mac_base: Option<String>,
+    away: Option<(String, String)>,
 ) -> RemoteStatus {
     let on = bound.is_some();
     let address = match bound {
@@ -1546,8 +1670,23 @@ fn status_of(
         _ => None,
     };
     let qr_svg = setup_url.as_deref().and_then(|u| token::qr_svg(u).ok());
+    let mac_half = match (&setup_url, &token) {
+        (Some(u), Some(t)) if on => Some((base_of_setup_url(u), t.clone())),
+        (_, Some(t)) => mac_base.map(|b| (b, t.clone())),
+        _ => None,
+    };
+    let (phone_url, phone_kind) = match phone_link(away.as_ref(), mac_half.as_ref()) {
+        Some((u, k)) => (Some(u), Some(k.to_string())),
+        None if on => (setup_url.clone(), setup_url.as_ref().map(|_| "mac".to_string())),
+        None => (None, None),
+    };
+    let phone_qr_svg = phone_url.as_deref().and_then(|u| token::qr_svg(u).ok());
     RemoteStatus {
         on,
+        wanted,
+        phone_url,
+        phone_qr_svg,
+        phone_kind,
         address: address.map(|a| a.to_string()),
         port,
         keep_awake,
@@ -1555,6 +1694,47 @@ fn status_of(
         token,
         setup_url,
         qr_svg,
+    }
+}
+
+/// `https://name:port/#token=…` → `https://name:port`.
+fn base_of_setup_url(u: &str) -> String {
+    u.split('#').next().unwrap_or(u).trim_end_matches('/').to_string()
+}
+
+/// The fragment's percent-encoding: everything but unreserved characters.
+fn fragment_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// The phone's one link (item 588): the away server's page with its token,
+/// and the Mac's HTTPS address and token beside it, so one scan pairs both
+/// and the page falls over to the away server whenever the Mac does not
+/// answer (lid closed). A plain-HTTP Mac cannot be called from the away
+/// server's HTTPS page, so then the link pairs the away server alone. No
+/// away server: `None` (the caller falls back to the Mac's own link).
+fn phone_link(
+    away: Option<&(String, String)>,
+    mac: Option<&(String, String)>,
+) -> Option<(String, &'static str)> {
+    let (away_base, away_token) = away?;
+    match mac {
+        Some((mac_base, mac_token)) if mac_base.starts_with("https://") => Some((
+            format!(
+                "{away_base}/#token={away_token}&mac={}&mt={mac_token}",
+                fragment_encode(mac_base)
+            ),
+            "both",
+        )),
+        _ => Some((format!("{away_base}/#token={away_token}"), "away")),
     }
 }
 
@@ -1579,7 +1759,32 @@ async fn status(
             .as_ref()
             .is_some_and(Server::https);
     let https_name = if https { tailnet_name().await } else { None };
-    crate::blocking(move || Ok::<_, String>(status_of(port, keep_awake, bound, https_name))).await
+    let wanted = remote.wanted();
+    let mac_base = remote.mac_base();
+    let st = crate::blocking(move || {
+        let away = crate::away::phone_host();
+        Ok::<_, String>(status_of(
+            port,
+            keep_awake,
+            bound,
+            https_name,
+            wanted,
+            mac_base,
+            away,
+        ))
+    })
+    .await?;
+    // Keep the Mac half of the phone link once the listener is bound.
+    if st.on
+        && let Some(u) = st.setup_url.as_deref()
+    {
+        let base = base_of_setup_url(u);
+        if remote.mac_base().as_deref() != Some(base.as_str()) {
+            *remote.mac_base.lock().unwrap_or_else(|p| p.into_inner()) = Some(base);
+            remote.persist();
+        }
+    }
+    Ok(st)
 }
 
 /// The machine's `<machine>.<tailnet>.ts.net`, or `None` — also when
@@ -1661,8 +1866,14 @@ pub async fn remote_start(
     remote: State<'_, Remote>,
     port: Option<u16>,
 ) -> Result<RemoteStatus, String> {
-    let st = start_listener(&app, &remote, port).await?;
-    remote.persist(true);
+    // Item 588: the switch is his before the start, so a start that fails
+    // (Tailscale not up) stays on and the keeper finishes it.
+    remote.set_wanted(true);
+    remote.persist();
+    let st = start_listener(&app, &remote, port).await.map_err(|e| {
+        format!("{e}. The switch stays on: the phone page comes up by itself once that is fixed.")
+    })?;
+    remote.persist();
     Ok(st)
 }
 
@@ -1772,6 +1983,8 @@ pub async fn remote_stop(
     app: AppHandle,
     remote: State<'_, Remote>,
 ) -> Result<RemoteStatus, String> {
+    // First, so the keeper does not bring it back while it stops.
+    remote.set_wanted(false);
     if let Some(server) = remote.server.lock().await.take() {
         server.stop().await;
     }
@@ -1786,7 +1999,7 @@ pub async fn remote_stop(
         engine.stop().await;
     }
     remote.apply_awake(&app, false);
-    remote.persist(false);
+    remote.persist();
     status(&remote, None).await
 }
 
@@ -1801,7 +2014,9 @@ pub async fn remote_set_keep_awake(
     *remote.keep_awake.lock().unwrap_or_else(|p| p.into_inner()) = on;
     let bound = remote.server.lock().await.as_ref().map(Server::addr);
     remote.apply_awake(&app, on && bound.is_some());
-    remote.persist(bound.is_some());
+    // Item 588: the switch as he set it, never "is a listener up" — that
+    // wrote `on: false` after a failed restore and every relaunch was off.
+    remote.persist();
     status(&remote, bound).await
 }
 
@@ -1896,6 +2111,54 @@ pub async fn remote_self_test(remote: State<'_, Remote>) -> Result<SelfTest, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Item 588: no file, or a file from before, reads as on; a file in the
+    /// new form keeps his switch as he set it.
+    #[test]
+    fn the_phone_switch_is_on_by_default_and_then_kept_as_he_set_it() {
+        let (p, changed) = settle_persisted(None);
+        assert!(p.on && changed && p.port == DEFAULT_PORT && p.v == PERSISTED_V);
+        let old: Persisted =
+            serde_json::from_str(r#"{"on":false,"port":8642,"keep_awake":true}"#).unwrap();
+        let (p, changed) = settle_persisted(Some(old));
+        assert!(p.on && changed && p.keep_awake && p.port == 8642);
+        let off = Persisted {
+            on: false,
+            port: 8642,
+            v: PERSISTED_V,
+            ..Persisted::default()
+        };
+        let (p, changed) = settle_persisted(Some(off));
+        assert!(!p.on && !changed);
+        let round: Persisted =
+            serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        assert_eq!(round.v, PERSISTED_V);
+    }
+
+    /// Item 588: one link pairs both hosts when the Mac serves HTTPS; the
+    /// away server alone when it does not; nothing without an away server.
+    #[test]
+    fn the_phone_link_pairs_both_hosts_when_it_can() {
+        let away = ("https://a.fly.dev".to_string(), "aa11".to_string());
+        let mac = (
+            "https://mac.tail0.ts.net:8642".to_string(),
+            "bb22".to_string(),
+        );
+        let (u, k) = phone_link(Some(&away), Some(&mac)).unwrap();
+        assert_eq!(k, "both");
+        assert_eq!(
+            u,
+            "https://a.fly.dev/#token=aa11&mac=https%3A%2F%2Fmac.tail0.ts.net%3A8642&mt=bb22"
+        );
+        let plain = ("http://100.1.2.3:8642".to_string(), "bb22".to_string());
+        let (u, k) = phone_link(Some(&away), Some(&plain)).unwrap();
+        assert_eq!((u.as_str(), k), ("https://a.fly.dev/#token=aa11", "away"));
+        assert!(phone_link(None, Some(&mac)).is_none());
+        assert_eq!(
+            base_of_setup_url("https://mac.tail0.ts.net:8642/#token=bb22"),
+            "https://mac.tail0.ts.net:8642"
+        );
+    }
 
     /// Item 447: a named home keeps its own switch, and a dev build on the
     /// real home never brings his listener back.

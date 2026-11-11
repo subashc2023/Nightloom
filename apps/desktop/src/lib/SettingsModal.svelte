@@ -99,6 +99,7 @@
     type AwayStatus,
     type SelfTest,
   } from "./awaySettings";
+  import { maskedLink, phoneLine, phoneWanted } from "./phoneSettings";
   import {
     MAX_SEATS as COUNCIL_MAX_SEATS,
     MIN_SEATS as COUNCIL_MIN_SEATS,
@@ -836,6 +837,13 @@
       remotePort = String(remote.port);
     } catch (e) {
       remoteError = String(e);
+      // Item 588: a start that failed leaves the switch on (waiting for
+      // Tailscale); read the card again so it says so.
+      try {
+        remote = await api.remoteStatus();
+      } catch {
+        // The error above already says what went wrong.
+      }
     } finally {
       remoteBusy = false;
     }
@@ -1457,7 +1465,7 @@
       <span class="nav-label">Phone</span>
       <span class="st">
         <span class="dot" class:ok={!!remote?.on}></span>
-        {remote?.on ? "on" : "off"}
+        {remote?.on ? "on" : phoneWanted(remote) ? "waiting" : "off"}
       </span>
     </button>
     <button
@@ -1874,10 +1882,32 @@
     <div class="pane">
       <div class="pane-head">
         <h2 class="pane-title">Phone</h2>
-        <span class="slug">{remote?.on ? `on · ${remote.address}:${remote.port}` : "off"}</span>
+        <span class="slug">{remote?.on ? `on · ${remote.address}:${remote.port}` : phoneWanted(remote) ? "on · waiting for Tailscale" : "off"}</span>
         <span class="spacer"></span>
         <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
       </div>
+      <!-- Item 588: one switch, one sentence, one code. The code opens the
+           away server's page with both hosts paired, so the phone uses
+           this Mac while it answers and the away server with the lid
+           closed; the switch stays on across relaunches. -->
+      <section class="card">
+        <label class="dream-auto phone-switch">
+          <input
+            type="checkbox"
+            checked={phoneWanted(remote)}
+            disabled={remoteBusy}
+            onchange={(e) => remoteToggle(e.currentTarget.checked)}
+          />
+          <span>Phone Nightloom</span>
+        </label>
+        <p class="note small">{phoneLine(remote)}</p>
+        {#if remoteError}<p class="error">{remoteError}</p>{/if}
+        {#if phoneWanted(remote) && remote?.phone_qr_svg}
+          <div class="remote-qr">{@html remote.phone_qr_svg}</div>
+          <p class="note small remote-mono">{maskedLink(remote.phone_url)}</p>
+        {/if}
+      </section>
+
       <p class="note">
         Nightloom on your phone, over Tailscale: the open project's chats, a
         chat's transcript as it streams, Send, Stop, and the approval cards.
@@ -1886,16 +1916,7 @@
       </p>
 
       <section class="card">
-        <div class="ch"><span class="t">Listener</span></div>
-        <label class="dream-auto">
-          <input
-            type="checkbox"
-            checked={!!remote?.on}
-            disabled={remoteBusy}
-            onchange={(e) => remoteToggle(e.currentTarget.checked)}
-          />
-          <span>On — serve the phone page</span>
-        </label>
+        <div class="ch"><span class="t">This Mac's listener</span></div>
         <label class="handoff-row">
           <span>Port</span>
           <input
@@ -1918,7 +1939,6 @@
           />
           <span>Keep the Mac awake while remote is on (needs Palette → Sleep's first switch; a closed lid on battery still sleeps it)</span>
         </label>
-        {#if remoteError}<p class="error">{remoteError}</p>{/if}
         <div class="remote-actions">
           <button class="ns-btn" disabled={selfTesting || !remote?.on} onclick={() => void runSelfTest()}>
             {selfTesting ? "Testing…" : "Test from this Mac"}
@@ -1932,7 +1952,7 @@
       </section>
 
       <section class="card">
-        <div class="ch"><span class="t">Token</span></div>
+        <div class="ch"><span class="t">This Mac's own code</span></div>
         <p class="note small">
           The phone's key. Scan the code with the camera — Safari opens the
           page with the token in it, once — or paste the text into the page.

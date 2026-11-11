@@ -2092,6 +2092,13 @@ export interface RemoteStatus {
   token: string | null;
   setup_url: string | null;
   qr_svg: string | null;
+  /** Item 588: the switch as he set it — on while the listener waits for Tailscale. */
+  wanted?: boolean;
+  /** Item 588: the phone's one link (the away server's page pairing both hosts, or the Mac's own). */
+  phone_url?: string | null;
+  phone_qr_svg?: string | null;
+  /** What `phone_url` pairs: "both", "away" or "mac". */
+  phone_kind?: "both" | "away" | "mac" | null;
 }
 
 /** A subagent the usage limit stopped before it returned (nightshift

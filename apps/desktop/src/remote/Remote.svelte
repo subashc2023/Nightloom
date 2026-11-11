@@ -131,6 +131,8 @@
     guessRole,
     hostName,
     loadHosts,
+    macFromHash,
+    whereLine,
     missingSentence,
     mixedBlocked,
     nextHeldFor,
@@ -825,7 +827,7 @@
       projects = [];
       chatsBy = {};
       expanded = {};
-      if (was !== null) note(`Now on ${hostName(settled.role)}`);
+      if (was !== null) note(settled.role === "away" ? "Now on the away server — the Mac is not answering" : "Back on the Mac");
     }
     remote = got.state;
     return true;
@@ -971,6 +973,13 @@
   onMount(() => {
     hosts = loadHosts(origin);
     const fromHash = tokenFromHash(location.hash);
+    // Item 588: the Settings → Phone code carries the Mac too, so one scan
+    // of the away server's link pairs both and the page falls over by itself.
+    const macHalf = fromHash ? macFromHash(location.hash) : null;
+    if (macHalf && guessRole(origin) !== "mac") {
+      hosts = pair(hosts, "mac", macHalf);
+      saveHosts(hosts, origin);
+    }
     // Where he was (A21): the hash's place on a reload, the stored one on
     // a launch — read before the token's hash is cleared.
     startPlace = (fromHash ? null : placeFromHash(location.hash)) ?? loadPlace();
@@ -3368,7 +3377,7 @@
         <UsageLine {usage} />
         <div class="drawer-foot">
           <span class="dot" class:ok={link === "online"} class:bad={link !== "online"}></span>
-          {link === "online" ? `Connected to ${active ? hostName(active) : "the host"}${remote.engine ? ` · ${remote.engine === "claude-code" ? "Claude Code" : remote.engine}` : ""}` : status}
+          {link === "online" ? `${whereLine(active, true, tried, hosts)}${remote.engine ? ` · ${remote.engine === "claude-code" ? "Claude Code" : remote.engine}` : ""}` : status}
         </div>
       </nav>
 
