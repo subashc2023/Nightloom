@@ -1898,12 +1898,14 @@
   }
 
   /* ---- The streaming motion (backlog 342, his pick of 338: "Loom + fade-in";
-     timings from harness/stream338-motion.css). Text: replyMotion.ts wraps the
-     words still arriving in .rm-w and moves .rm-shuttle. Thinking: the needle.
+     timings from harness/stream338-motion.css). Text: replyMotion.ts reveals each
+     block's lines left to right behind one mask (item 617, Line reveal) or, with
+     Reply text set to Word rise, wraps the words still arriving in .rm-w; either
+     way it moves .rm-shuttle, in the theme's --motion-ink (item 627). Thinking: the needle.
      Tool rows: the weft. Under reduced motion nothing moves and nothing loops. */
   .row-wrap.rm-live > .thinking-text,
   .thinking-text:global(.rm-retract) {
-    background-image: linear-gradient(var(--accent), var(--accent));
+    background-image: linear-gradient(var(--motion-ink, var(--accent)), var(--motion-ink, var(--accent)));
   }
   .row-wrap.rm-live > .thinking-text::after {
     content: "";
@@ -1913,8 +1915,8 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: var(--accent-ink, var(--accent));
-    box-shadow: 0 0 8px var(--accent);
+    background: var(--motion-ink-hi, var(--accent-ink, var(--accent)));
+    box-shadow: 0 0 8px var(--motion-ink, var(--accent));
   }
   .rm-weft {
     position: absolute;
@@ -1953,8 +1955,8 @@
     height: 5px;
     margin: -2.5px 0 0 0;
     border-radius: 50% / 100%;
-    background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 10%, transparent), var(--accent-ink, var(--accent)));
-    box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 70%, transparent);
+    background: linear-gradient(90deg, color-mix(in srgb, var(--motion-ink, var(--accent)) 10%, transparent), var(--motion-ink-hi, var(--accent-ink, var(--accent))));
+    box-shadow: 0 0 8px color-mix(in srgb, var(--motion-ink, var(--accent)) 70%, transparent);
     opacity: 0;
     pointer-events: none;
     transition: opacity 260ms ease-out;
@@ -2024,7 +2026,7 @@
   }
   @keyframes -global-rm-weft-under {
     from {
-      box-shadow: inset 0 -1.5px 0 color-mix(in srgb, var(--accent) 85%, transparent);
+      box-shadow: inset 0 -1.5px 0 color-mix(in srgb, var(--motion-ink, var(--accent)) 85%, transparent);
     }
     to {
       box-shadow: inset 0 -1.5px 0 transparent;
@@ -2032,7 +2034,7 @@
   }
   @keyframes -global-rm-needle {
     50% {
-      box-shadow: 0 0 2px var(--accent);
+      box-shadow: 0 0 2px var(--motion-ink, var(--accent));
       opacity: 0.6;
     }
   }
@@ -2079,7 +2081,7 @@
   }
   @keyframes -global-rm-flash {
     from {
-      color: var(--accent);
+      color: var(--motion-ink, var(--accent));
     }
   }
   /* ---- Item 589: the running step comes alive (stepMotion.svelte.ts) ----

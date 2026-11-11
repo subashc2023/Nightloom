@@ -1546,7 +1546,7 @@
   }
   @keyframes -global-rm-weft-under {
     from {
-      box-shadow: inset 0 -1.5px 0 color-mix(in srgb, var(--accent) 85%, transparent);
+      box-shadow: inset 0 -1.5px 0 color-mix(in srgb, var(--motion-ink, var(--accent)) 85%, transparent);
     }
     to {
       box-shadow: inset 0 -1.5px 0 transparent;
@@ -1554,7 +1554,7 @@
   }
   @keyframes -global-rm-needle {
     50% {
-      box-shadow: 0 0 2px var(--accent);
+      box-shadow: 0 0 2px var(--motion-ink, var(--accent));
       opacity: 0.6;
     }
   }
@@ -1601,7 +1601,7 @@
   }
   @keyframes -global-rm-flash {
     from {
-      color: var(--accent);
+      color: var(--motion-ink, var(--accent));
     }
   }
   /* The moon, kept for the live turn (backlog 096): the same roll as the
