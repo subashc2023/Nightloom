@@ -704,8 +704,11 @@
   }
   .brief-chev {
     flex: none;
-    font-size: 10px;
-    color: var(--dim);
+    width: 10px;
+    text-align: center;
+    font-size: 12px;
+    line-height: 1;
+    color: var(--ink2);
     transition: transform 120ms;
   }
   .brief[open] .brief-chev {
