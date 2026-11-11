@@ -12,6 +12,8 @@
     sessionCost,
     subagentsOfTurn,
   } from "./state.svelte";
+  import { touchedUntil } from "./keepWarm";
+  import { keepWarm } from "./keepWarm.svelte";
   import { cacheState } from "./cache";
   import ContextDial from "./ContextDial.svelte";
   import { mark as handoffMark } from "./handoff.svelte";
@@ -193,7 +195,7 @@
    * changes, so a background chat has no chain and cannot toast.
    */
   $effect(() => {
-    const warmUntil = cacheState(app.events, Date.now())?.warmUntil ?? null;
+    const warmUntil = cacheState(app.events, Date.now(), app.activeSessionId ? touchedUntil(keepWarm.byChat[app.activeSessionId]) : null)?.warmUntil ?? null;
     if (warmUntil == null) return;
     const wait = warmUntil - Date.now();
     if (wait <= 0) return;

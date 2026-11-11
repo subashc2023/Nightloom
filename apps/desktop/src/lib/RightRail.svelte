@@ -15,6 +15,8 @@
     type SessionFigures,
   } from "./usageFigures";
   import { mark as handoffMark } from "./handoff.svelte";
+  import { touchedUntil } from "./keepWarm";
+  import { keepWarm } from "./keepWarm.svelte";
   import { cacheState, nextTickMs, remainingText } from "./cache";
   import {
     clockText,
@@ -81,7 +83,7 @@
    * column with a cold cache has no timer.
    */
   let now = $state(Date.now());
-  const cache = $derived(column ? cacheState(app.events, now) : null);
+  const cache = $derived(column ? cacheState(app.events, now, app.activeSessionId ? touchedUntil(keepWarm.byChat[app.activeSessionId]) : null) : null);
   $effect(() => {
     if (!cache || !cache.warm) return;
     const wait = nextTickMs(cache.remainingMs);
