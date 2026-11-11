@@ -1,4 +1,5 @@
 import { noteContextLive } from "./liveContext.svelte";
+import { clock12 as faceClock12 } from "./nightshiftFace";
 import { viewRenameKeys } from "./viewState";
 import { projectSwitch } from "./projectSwitch.svelte";
 import { tick, untrack } from "svelte";
@@ -5553,13 +5554,10 @@ export async function loadUsage(): Promise<void> {
   }
 }
 
-/** `at 05:10` or `at 05:10 tomorrow`, local time, for toasts and the chip. */
+/** `at 5:10 AM`, `at 5:10 AM tomorrow` or `at 5:10 AM Nov 12`, local time,
+ *  for toasts and the chip — his 12-hour clock (item 611; was `at 05:10`). */
 export function clockOf(ms: number, now: Date = new Date()): string {
-  const d = new Date(ms);
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mm = String(d.getMinutes()).padStart(2, "0");
-  const sameDay = d.toDateString() === now.toDateString();
-  return `at ${hh}:${mm}${sameDay ? "" : " tomorrow"}`;
+  return `at ${faceClock12(ms, now)}`;
 }
 
 /** Re-read the flat file listing under `notes/` — what the Notes screen's

@@ -574,11 +574,12 @@ fn reading_of(u: crate::plan_usage::PlanUsage) -> Option<WindowReading> {
 }
 
 /// `HH:MM` local for the reason, or "when it resets".
+/// `at 5:10 AM` — his 12-hour clock (item 611; was `at 05:10`).
 fn reset_words(resets_at: Option<i64>) -> String {
     match resets_at.and_then(|r| chrono::DateTime::from_timestamp(r, 0)) {
         Some(t) => {
             let local = t.with_timezone(&chrono::Local);
-            format!("at {}", local.format("%H:%M"))
+            format!("at {}", local.format("%-I:%M %p"))
         }
         None => "when the window resets".to_string(),
     }
@@ -5192,5 +5193,23 @@ mod tests {
             .to_string();
         assert!(!ctx.contains("past retirement"), "{ctx}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reset_words_reads_12_hour_am_pm_item_611() {
+        use chrono::TimeZone;
+        for (h, m, want) in [
+            (0, 5, "at 12:05 AM"),
+            (5, 10, "at 5:10 AM"),
+            (12, 0, "at 12:00 PM"),
+            (23, 30, "at 11:30 PM"),
+        ] {
+            let t = chrono::Local
+                .with_ymd_and_hms(2026, 11, 11, h, m, 0)
+                .single()
+                .expect("a local time");
+            assert_eq!(reset_words(Some(t.timestamp())), want);
+        }
+        assert_eq!(reset_words(None), "when the window resets");
     }
 }

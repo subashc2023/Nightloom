@@ -5,6 +5,8 @@ import {
   RETRY_FOR_MS,
   TICK_MS,
   atTime,
+  clockText,
+  dayClockText,
   deliverTo,
   dueAt,
   isLimited,
@@ -292,5 +294,14 @@ describe("scheduled send — the store (blockers 466, 468)", () => {
     await runScheduleTick(deps);
     expect(f.sent).toEqual(["due words"]);
     expect(scheduledFor("chat-1")).toBeNull();
+  });
+});
+
+describe("clockText / dayClockText — 12-hour AM/PM whatever the locale (item 611)", () => {
+  it("never shows a 24-hour time", () => {
+    expect(clockText(new Date(2026, 10, 11, 14, 5).getTime())).toBe("2:05 PM");
+    expect(clockText(new Date(2026, 10, 11, 0, 30).getTime())).toBe("12:30 AM");
+    expect(clockText(new Date(2026, 10, 11, 12, 0).getTime())).toBe("12:00 PM");
+    expect(dayClockText(new Date(2026, 10, 9, 9, 7).getTime())).toMatch(/^\S+ 9:07 AM$/);
   });
 });

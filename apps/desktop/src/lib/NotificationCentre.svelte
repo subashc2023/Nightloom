@@ -24,6 +24,7 @@
   } from "./state.svelte";
   import { KIND_LABEL, KIND_ORDER, countsOf, isInstructionsFile, type Notice, type NoticeKind } from "./centre";
   import { relativeTime } from "./time";
+  import { hourLabel } from "./nightshiftFace";
   import DiffView from "./DiffView.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import CliUpdateActions from "./CliUpdateActions.svelte";
@@ -297,7 +298,7 @@
         </button>
         <span class="centre-last">
           {#if app.centre.daily.on}
-            daily at {String(app.centre.daily.hour).padStart(2, "0")}:00
+            daily at {hourLabel(app.centre.daily.hour)}
           {:else}
             the daily pass is off (Settings → Knowledge)
           {/if}

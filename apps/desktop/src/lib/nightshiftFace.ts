@@ -20,6 +20,13 @@ export function clock12(ms: number, now: Date = new Date()): string {
   return `${t} ${d.toLocaleString("en-US", { month: "short" })} ${d.getDate()}`;
 }
 
+/** A whole hour of the day (0–23) as "3:00 AM" / "12:00 PM" — the daily
+ *  pass's hour in the Centre and its picker in Settings (item 611; was "03:00"). */
+export function hourLabel(h: number): string {
+  const hh = ((Math.trunc(h) % 24) + 24) % 24;
+  return `${hh % 12 || 12}:00 ${hh >= 12 ? "PM" : "AM"}`;
+}
+
 /** A span as "2 h 46 min", "46 min", "under a minute". */
 export function spanWords(ms: number): string {
   const min = Math.floor(Math.max(0, ms) / 60_000);
