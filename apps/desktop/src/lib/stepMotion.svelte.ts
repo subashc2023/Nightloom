@@ -39,7 +39,7 @@ export type StepKind = "think" | "shell" | "agent" | "file" | "web" | "other";
 export type StepMotion = "combo" | "sweep" | "reticle";
 
 export const STEP_MOTIONS: { id: StepMotion; name: string; note: string }[] = [
-  { id: "combo", name: "Combo", note: "The default. Sweep, plus a live mark for each kind, [ ] brackets and a faint light round the running step, and a helper's bar showing its context out of 300k." },
+  { id: "combo", name: "Combo", note: "The default. Sweep, plus a live mark for each kind, [ ] brackets, a faint tint, drifting threads and a light round the running step, and a helper's bar showing its context out of 300k." },
   { id: "sweep", name: "Sweep — today's", note: "A light runs along the running step's thread, a little different for thinking, a command, a helper, a file and the web." },
   { id: "reticle", name: "Reticle", note: "A lock-on: brackets close on the running step, its mark is a small live instrument, and packets run along its thread." },
 ];
