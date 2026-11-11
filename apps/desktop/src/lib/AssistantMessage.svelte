@@ -88,6 +88,8 @@
   import { thinkingArrival, type ArrivalParams } from "./thinkingArrival";
   // Item 564 (Filament IV stage 5): the turn trace's clock and the stream speed.
   import { untrack } from "svelte";
+  // Item 589: the running step's motion, a variant per kind of step.
+  import { toolKind, type StepKind } from "./stepMotion.svelte";
   import { SpeedMeter, barOf, fmtSecs, sparkPoints, stepKeys, traceBook, type TraceRecord } from "./turnTiming";
   // Item 495 part 2: the folds kept past a chat switch.
   import { decodeOverride, encodeOverride, foldKey, keptGet, keptOpen, keptSet, type FoldScope } from "./keptFolds.svelte";
@@ -753,6 +755,17 @@
   </span>
 {/snippet}
 
+<!-- Item 589: a running step's live parts — faint threads behind the row
+     (drawn only under the Weave choice) and the thread under it, whose light
+     runs a little differently per kind. The shell's thread is today's weft
+     (its ::after shuttle), so it carries no children. -->
+{#snippet stepLive(kind: StepKind, threads: boolean)}
+  <span class="mo-bg k-{kind}" aria-hidden="true"></span>
+  {#if threads}
+    <span class="rm-weft mo-weft k-{kind}" aria-hidden="true">{#if kind !== "shell"}<i></i><i></i><i></i>{/if}</span>
+  {/if}
+{/snippet}
+
 {#snippet subagent(children: Segment[], parent: string)}
   {@const calls = children.filter((c) => c.kind === "tool").length}
   {@const names = children
@@ -869,8 +882,11 @@
                      A thinking later in a block arrives on its own row (389). -->
                 <div
                   class="arow static thinking"
+                  class:mo-run={streaming}
+                  data-kind="think"
                   use:thinkingArrival={{ at: seg.at, live: streaming && g.rows[0].i !== i }}
                 >
+                  {#if streaming}{@render stepLive("think", true)}{/if}
                   {@render stepHead(i, "running")}
                   <span class="name">Thinking</span>
                   <span class="arg"></span>
@@ -884,7 +900,9 @@
                      accent with a glowing needle at its newest line; on done
                      the thread retracts and the icon turns once. -->
                 <div class="row-wrap" class:rm-live={streaming && !seg.done} class:rm-thought={bornT && seg.done}
+                  class:mo-run={streaming && !seg.done} data-kind="think"
                   use:thinkingArrival={{ at: seg.at, live: streaming && !seg.done && g.rows[0].i !== i }}>
+                  {#if streaming && !seg.done}{@render stepLive("think", true)}{/if}
                   <button
                     class="arow thinking"
                     aria-expanded={isOpen(i, seg)}
@@ -923,7 +941,10 @@
               {@const running = streaming && !seg.call.result && !seg.call.denied}
               {@const bornW = births.of(ids[i] || `tool:${i}`, streaming, !running)}
               {@const editDiff = editDiffOf(seg.call.name, seg.call.input)}
-              <div class="row-wrap tool" class:running class:rm-born={bornW} class:rm-finished={bornW && !running}>
+              {@const kind = toolKind(seg.call.name)}
+              <div class="row-wrap tool" class:running class:rm-born={bornW} class:rm-finished={bornW && !running}
+                class:mo-run={running} data-kind={kind}>
+                {#if running}{@render stepLive(kind, false)}{/if}
                 <!-- An Agent call's row is a drag source (backlog 160): its
                      subagent's transcript as a tab, dropped on a strip or a
                      pane's half — live while it runs (guess pass 2026-09-25,
@@ -956,7 +977,10 @@
                   <!-- The weft (backlog 342): an accent thread draws across the
                        row as it appears, a bright shuttle runs along it while
                        the call runs, and on finish it fills and fades. -->
-                  <span class="rm-weft" class:rm-done={!running} aria-hidden="true"></span>
+                  <!-- Item 589: the thread's light runs per kind (a command keeps
+                       this shuttle; see stepMotion.svelte.ts). -->
+                  <span class="rm-weft k-{kind}" class:mo-weft={running} class:rm-done={!running} aria-hidden="true"
+                    >{#if running && kind !== "shell"}<i></i><i></i><i></i>{/if}</span>
                 {/if}
                 <!-- A file edit as a diff (backlog 433), drawn whether the row is
                      open or not: the change is what the row is about. -->
@@ -1070,6 +1094,9 @@
             <span class="roll" aria-hidden="true"><Icon name="moon" size={20} /></span>
             <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
             <span class="working-text">{working}</span>
+            <!-- Item 589: three points scanning after the clock, the trace's
+                 running light carried down to the working line. -->
+            <span class="scan" aria-hidden="true"><i></i><i></i><i></i></span>
           </div>
         {/if}
         <button
@@ -1991,6 +2018,440 @@
   @keyframes -global-rm-flash {
     from {
       color: var(--accent);
+    }
+  }
+  /* ---- Item 589: the running step comes alive (stepMotion.svelte.ts) ----
+     One grammar — the thread under the row, the bar's head, the status mark —
+     with a variant per kind (data-kind). The setting on <html>
+     (data-step-motion: none = Sweep, "weave", "quiet") applies to all of it.
+     Transform and opacity only (the word's light is a background position on
+     one word); paused while the window is hidden; under reduced motion
+     nothing here moves. The step ending removes .mo-run: the finished look
+     at once. */
+  .trace .arow.mo-run {
+    position: relative;
+  }
+  .row-wrap.mo-run,
+  .trace .arow.mo-run {
+    isolation: isolate;
+  }
+  .mo-bg {
+    display: none;
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    height: 34px;
+    overflow: hidden;
+    pointer-events: none;
+    z-index: -1;
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 25%, #000 75%, transparent);
+    mask-image: linear-gradient(90deg, transparent, #000 25%, #000 75%, transparent);
+  }
+  .mo-bg::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: -32px;
+    right: -32px;
+    background: repeating-linear-gradient(90deg, transparent 0 15px, color-mix(in srgb, var(--signal) 10%, transparent) 15px 16px);
+    transform: skewX(-24deg);
+  }
+  :global(:root[data-step-motion="weave"]) .mo-bg {
+    display: block;
+  }
+  .mo-weft:not(.k-shell)::after {
+    display: none;
+  }
+  .mo-weft > i {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 100%;
+    width: 30%;
+    border-radius: 2px;
+    opacity: 0;
+    --comet: linear-gradient(90deg, transparent, color-mix(in srgb, var(--signal) 45%, transparent) 70%, var(--signal-ink, var(--signal)));
+  }
+  /* Thinking's thread is the brightest: 2 px, and its bead may glow past
+     the line (clipped only at the ends). */
+  .mo-weft.k-think {
+    top: 26.5px;
+    height: 2px;
+    background: color-mix(in srgb, var(--signal) 16%, transparent);
+    overflow: visible;
+    clip-path: inset(-6px 0 -6px 0);
+  }
+  .mo-weft.k-agent {
+    top: 25px;
+    height: 5px;
+    background: repeating-linear-gradient(180deg, color-mix(in srgb, var(--signal) 20%, transparent) 0 1px, transparent 1px 2px);
+  }
+  /* Quiet: the thinking thread is not drawn; tool rows keep today's shuttle. */
+  :global(:root[data-step-motion="quiet"]) .mo-weft.k-think {
+    display: none;
+  }
+  :global(:root[data-step-motion="quiet"]) .mo-weft > i {
+    display: none;
+  }
+  :global(:root[data-step-motion="quiet"]) .mo-weft.k-agent {
+    top: 27px;
+    height: 1.5px;
+    background: color-mix(in srgb, var(--signal) 22%, transparent);
+  }
+  :global(:root[data-step-motion="quiet"]) .mo-weft:not(.k-shell):not(.k-think)::after {
+    display: block;
+  }
+  .scan {
+    display: none;
+    gap: 4px;
+    align-items: center;
+  }
+  .scan i {
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    background: var(--signal);
+    opacity: 0.25;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    /* The thread: thinking flows one way in two comets; a helper runs three
+       threads at their own speeds; a file is written by a stroke and a nib;
+       the web scans and rests; anything else, one slow comet. */
+    .mo-weft.k-think > i:nth-child(1) {
+      opacity: 1;
+      width: 38%;
+      background: var(--comet);
+      box-shadow: var(--glow-signal, none);
+      --to: 263%;
+      animation: mo-run 1.7s cubic-bezier(0.45, 0.05, 0.4, 1) infinite;
+    }
+    .mo-weft.k-think > i:nth-child(3) {
+      opacity: 1;
+      width: 38%;
+      top: -2px;
+      height: 6px;
+      background: radial-gradient(circle at calc(100% - 3px) 50%, var(--signal-ink, var(--signal)) 0 2.5px, color-mix(in srgb, var(--signal) 45%, transparent) 3.5px, transparent 7px);
+      --to: 263%;
+      animation: mo-run 1.7s cubic-bezier(0.45, 0.05, 0.4, 1) infinite;
+    }
+    .mo-weft.k-think > i:nth-child(2) {
+      opacity: 0.45;
+      width: 22%;
+      background: var(--comet);
+      --to: 455%;
+      animation: mo-run 1.7s cubic-bezier(0.45, 0.05, 0.4, 1) -0.85s infinite;
+    }
+    .mo-weft.k-agent > i {
+      opacity: 1;
+      height: 1px;
+      width: 18%;
+      background: var(--comet);
+      --to: 556%;
+    }
+    .mo-weft.k-agent > i:nth-child(1) {
+      animation: mo-run 1.25s ease-in-out infinite;
+    }
+    .mo-weft.k-agent > i:nth-child(2) {
+      top: 2px;
+      animation: mo-run 1.7s ease-in-out -0.5s infinite;
+    }
+    .mo-weft.k-agent > i:nth-child(3) {
+      top: 4px;
+      animation: mo-run 2.15s ease-in-out -1.3s infinite;
+    }
+    .mo-weft.k-file > i:nth-child(1) {
+      width: 100%;
+      transform-origin: left center;
+      background: color-mix(in srgb, var(--signal) 55%, transparent);
+      animation: mo-write 1.6s cubic-bezier(0.3, 0.6, 0.3, 1) infinite;
+    }
+    .mo-weft.k-file > i:nth-child(2) {
+      width: 100%;
+      background: linear-gradient(90deg, transparent calc(100% - 8px), var(--signal-ink, var(--signal)));
+      animation: mo-nib 1.6s cubic-bezier(0.3, 0.6, 0.3, 1) infinite;
+    }
+    .mo-weft.k-web > i:nth-child(1),
+    .mo-weft.k-web > i:nth-child(2) {
+      width: 10%;
+      background: linear-gradient(90deg, transparent, var(--signal-ink, var(--signal)), transparent);
+      --to: 1000%;
+      animation: mo-scan 1.5s cubic-bezier(0.5, 0, 0.5, 1) infinite;
+    }
+    .mo-weft.k-web > i:nth-child(1) {
+      box-shadow: var(--glow-signal, none);
+    }
+    .mo-weft.k-web > i:nth-child(2) {
+      --peak: 0.35;
+      animation-delay: 0.12s;
+    }
+    .mo-weft.k-other > i:nth-child(1) {
+      opacity: 0.7;
+      background: var(--comet);
+      --to: 333%;
+      animation: mo-run 2.4s linear infinite;
+    }
+    /* The bar's head: a lit point at the running bar's end, beating at the
+       kind's tempo. */
+    .mo-run .tbar > i.tbar-running::after {
+      content: "";
+      position: absolute;
+      right: -3px;
+      top: 50%;
+      width: 7px;
+      height: 7px;
+      margin-top: -3.5px;
+      border-radius: 50%;
+      background: var(--signal-ink, var(--signal));
+      box-shadow: 0 0 6px var(--signal);
+      animation: mo-head var(--beat, 1.2s) ease-in-out infinite;
+    }
+    [data-kind="think"] {
+      --beat: 1.3s;
+    }
+    [data-kind="shell"] {
+      --beat: 0.9s;
+    }
+    [data-kind="file"] {
+      --beat: 0.8s;
+    }
+    [data-kind="web"] {
+      --beat: 1.5s;
+    }
+    [data-kind="other"] {
+      --beat: 1.8s;
+    }
+    /* The mark: a heartbeat (thinking), a cursor's blink (a command), a
+       quarter turn (a helper), a pen's bob (a file), a ping (the web), a
+       breath (the rest). */
+    .mo-run .st-running {
+      position: relative;
+    }
+    .mo-run[data-kind="think"] .st-running {
+      animation: mo-heart 1.3s ease-out infinite;
+    }
+    .mo-run[data-kind="shell"] .st-running {
+      animation: mo-blink 1s steps(1) infinite;
+    }
+    .mo-run[data-kind="agent"] .st-running {
+      animation: mo-quarter 1.2s cubic-bezier(0.6, 0, 0.3, 1) infinite;
+    }
+    .mo-run[data-kind="file"] .st-running {
+      animation: mo-bob 0.8s ease-in-out infinite alternate;
+    }
+    .mo-run[data-kind="web"] .st-running::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 10px;
+      height: 10px;
+      margin: -5px 0 0 -5px;
+      border: 1px solid var(--signal);
+      border-radius: 2px;
+      animation: mo-ping 1.5s ease-out infinite;
+    }
+    .mo-run[data-kind="other"] .st-running {
+      animation: mo-breathe 1.8s ease-in-out infinite alternate;
+    }
+    /* A light passing through the word "Thinking" (not under Quiet). */
+    :global(:root:not([data-step-motion="quiet"])) .trace .mo-run[data-kind="think"] .name {
+      -webkit-text-fill-color: transparent;
+      background-image: linear-gradient(100deg, var(--ink) 0 42%, var(--signal-ink, var(--signal)) 50%, var(--ink) 58% 100%);
+      background-size: 300% 100%;
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      animation: mo-shimmer 2.4s linear infinite;
+    }
+    /* Weave: threads drifting behind the running row, faster for a helper. */
+    .mo-bg::before {
+      animation: mo-drift var(--drift, 1.4s) linear infinite;
+    }
+    .mo-bg.k-think {
+      --drift: 1.8s;
+    }
+    .mo-bg.k-agent {
+      --drift: 0.7s;
+    }
+    .mo-bg.k-other {
+      --drift: 2.4s;
+    }
+    /* The working line's three points scan after its clock. */
+    .activity .working .scan {
+      display: inline-flex;
+    }
+    .scan i {
+      animation: mo-dot 1.2s ease-in-out infinite;
+    }
+    .scan i:nth-child(2) {
+      animation-delay: 0.15s;
+    }
+    .scan i:nth-child(3) {
+      animation-delay: 0.3s;
+    }
+    /* A hidden window: everything here holds still. */
+    :global(:root[data-hidden]) .trace *,
+    :global(:root[data-hidden]) .trace *::before,
+    :global(:root[data-hidden]) .trace *::after {
+      animation-play-state: paused !important;
+    }
+  }
+  @keyframes -global-mo-run {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(var(--to, 300%));
+    }
+  }
+  @keyframes -global-mo-write {
+    0% {
+      transform: scaleX(0);
+      opacity: 1;
+    }
+    70% {
+      transform: scaleX(1);
+      opacity: 1;
+    }
+    100% {
+      transform: scaleX(1);
+      opacity: 0;
+    }
+  }
+  @keyframes -global-mo-nib {
+    0% {
+      transform: translateX(-100%);
+      opacity: 1;
+    }
+    70% {
+      transform: translateX(0);
+      opacity: 1;
+    }
+    100% {
+      transform: translateX(0);
+      opacity: 0;
+    }
+  }
+  @keyframes -global-mo-scan {
+    0% {
+      transform: translateX(-100%);
+      opacity: var(--peak, 1);
+    }
+    45% {
+      transform: translateX(var(--to, 1000%));
+      opacity: var(--peak, 1);
+    }
+    46%,
+    100% {
+      transform: translateX(var(--to, 1000%));
+      opacity: 0;
+    }
+  }
+  @keyframes -global-mo-head {
+    0%,
+    100% {
+      opacity: 0.45;
+      transform: scale(0.7);
+    }
+    50% {
+      opacity: 1;
+      transform: scale(1.15);
+    }
+  }
+  @keyframes -global-mo-heart {
+    0% {
+      transform: scale(1);
+      opacity: 0.8;
+    }
+    14% {
+      transform: scale(1.7);
+      opacity: 1;
+    }
+    28% {
+      transform: scale(1);
+      opacity: 0.85;
+    }
+    42% {
+      transform: scale(1.25);
+      opacity: 1;
+    }
+    70%,
+    100% {
+      transform: scale(1);
+      opacity: 0.8;
+    }
+  }
+  @keyframes -global-mo-blink {
+    0% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.2;
+    }
+  }
+  @keyframes -global-mo-quarter {
+    0% {
+      transform: rotate(0);
+    }
+    60%,
+    100% {
+      transform: rotate(90deg);
+    }
+  }
+  @keyframes -global-mo-bob {
+    from {
+      transform: translateY(1px);
+    }
+    to {
+      transform: translateY(-1.5px);
+    }
+  }
+  @keyframes -global-mo-ping {
+    from {
+      transform: scale(0.6);
+      opacity: 0.9;
+    }
+    to {
+      transform: scale(2.2);
+      opacity: 0;
+    }
+  }
+  @keyframes -global-mo-breathe {
+    from {
+      opacity: 1;
+    }
+    to {
+      opacity: 0.4;
+    }
+  }
+  @keyframes -global-mo-shimmer {
+    from {
+      background-position: 100% 0;
+    }
+    to {
+      background-position: 0 0;
+    }
+  }
+  @keyframes -global-mo-drift {
+    from {
+      transform: skewX(-24deg) translateX(0);
+    }
+    to {
+      transform: skewX(-24deg) translateX(16px);
+    }
+  }
+  @keyframes -global-mo-dot {
+    0%,
+    60%,
+    100% {
+      opacity: 0.25;
+      transform: scale(1);
+    }
+    20% {
+      opacity: 1;
+      transform: scale(1.35);
     }
   }
   /* The moon, kept for the live turn (backlog 096): the same roll as the
