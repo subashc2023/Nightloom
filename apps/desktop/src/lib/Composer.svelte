@@ -91,6 +91,7 @@
   import { fold, isFolded, noteStay, unfold } from "./handoffFold.svelte";
   // Item 618b: the row's look (Settings → Appearance → Composer row), stamped on the root; rules in src/composerRow.css.
   import { composerRow } from "./composerRow.svelte";
+  import { cacheFrame, cacheLook } from "./cacheLook.svelte";
   import ThreadPicker from "./ThreadPicker.svelte";
   import { chatThread, refreshThreadFlags, injectIntoTurn, sendNowRow, openChatKey, takeQueued, takeStopSend, frontQueued, stopSendFor } from "./state.svelte";
   import { injectChip, queueHeadLabel } from "./midTurn";
@@ -2859,6 +2860,8 @@
     if (refused) addToast(`Keep warm: ${refused}`);
   }
   const cache = $derived(floating ? null : cacheState(app.events, now, touchedUntil(kw)));
+  /** Item 596: the same state drawn on the box's frame (`cacheLook.css`). */
+  const frame = $derived(cacheFrame(cache));
   $effect(() => {
     if (floating) return;
     const warmUntil = cacheState(app.events, Date.now(), touchedUntil(kw))?.warmUntil ?? null;
@@ -3214,7 +3217,7 @@
   {#if mathShown}
     <TypedMathBar spans={mathSpans} onaccept={acceptMath} ondeny={denyMath} />
   {/if}
-  <div class="card">
+  <div class="card" data-cache={frame?.cache} data-cache-look={frame ? cacheLook.value : undefined} style={frame?.style}>
     <!-- No autocorrect, capitalisation or spell-marking on a message to a
          model: macOS was rewriting his words as he typed (2026-09-16). -->
     {#if ghost}

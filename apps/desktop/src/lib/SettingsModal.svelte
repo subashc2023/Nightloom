@@ -28,6 +28,7 @@
   // Item 631: a slide when a segmented choice changes, one style for Settings.
   import { pickMotion as pickSlide } from "./settings/pickMotion";
   import { COMPOSER_ROWS, composerRow, setComposerRow } from "./composerRow.svelte";
+  import { CACHE_LOOKS, cacheLook, setCacheLook } from "./cacheLook.svelte";
   // Item 589: the running step's motion in the turn trace.
   import { STEP_MOTIONS, stepMotion, setStepMotion, type StepMotion } from "./stepMotion.svelte";
   import StepMotionPreview from "./StepMotionPreview.svelte";
@@ -1709,6 +1710,20 @@
                   <span class="ns-chip bottom-toggle on"><span class="bottom-mark"></span>tools</span>
                 </span>
               </span>
+            </button>
+          {/each}
+        </div>
+      </section>
+      <!-- Item 596 (his idea, 2026-11-10): the chat's prompt cache drawn on
+           the message box's frame, warm → cold; the agent's pick is the
+           default (blocker 1898). -->
+      <section class="card f4-only" aria-label="Cache on the box">
+        <div class="ch"><span class="t">Cache on the box</span></div>
+        <div class="pick2" role="radiogroup" aria-label="Cache on the box">
+          {#each CACHE_LOOKS as c (c.id)}
+            <button class="pick" class:on={cacheLook.value === c.id} role="radio" aria-checked={cacheLook.value === c.id} onclick={() => setCacheLook(c.id)}>
+              <span class="pick-h"><i class="radio" aria-hidden="true"></i>{c.name}</span>
+              <span class="pick-n">{c.note}</span>
             </button>
           {/each}
         </div>
