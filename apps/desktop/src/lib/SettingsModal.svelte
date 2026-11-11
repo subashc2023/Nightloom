@@ -23,7 +23,8 @@
   // Filament IV's accent and instrument light (item 571, stage 7).
   import { ACCENTS, LIGHTS, look, setAccent, setLight, applyLook } from "./settings/look.svelte";
   // Item 589: the running step's motion in the turn trace.
-  import { STEP_MOTIONS, stepMotion, setStepMotion } from "./stepMotion.svelte";
+  import { STEP_MOTIONS, stepMotion, setStepMotion, type StepMotion } from "./stepMotion.svelte";
+  import StepMotionPreview from "./StepMotionPreview.svelte";
   import ContextDial from "./ContextDial.svelte";
   import { planDials, surfaceShares, paceLine, weekGone, resetsWhen } from "./settingsUsage";
   /** The Layout choice: the layout, then the accent again (no accent is stamped under Classic). */
@@ -223,6 +224,17 @@
     previewArrival(style);
   }
   onDestroy(() => Object.values(stopPreview).forEach((f) => f?.()));
+  // Item 610: the Thinking motion's previews loop on their own (the trace's
+  // CSS); Preview, or picking one, starts that card's loop over.
+  let motionRun = $state<Partial<Record<StepMotion, number>>>({});
+  const motionStill = reducedMotion();
+  function replayStepMotion(m: StepMotion) {
+    motionRun[m] = (motionRun[m] ?? 0) + 1;
+  }
+  function pickStepMotion(m: StepMotion) {
+    setStepMotion(m);
+    replayStepMotion(m);
+  }
 
   // The rewind and delete picks (396 + 397 pass 2, his yes 2026-10-19,
   // default A for both). Each choice card holds a small thread; Preview
@@ -1797,17 +1809,6 @@
         the next time it happens and is remembered. With Reduce motion on in
         macOS, every one of them is a plain fade.
       </p>
-      <section class="card f4-only" aria-label="Thinking motion">
-        <div class="ch"><span class="t">Thinking motion</span></div>
-        <div class="pick3" role="radiogroup" aria-label="Thinking motion">
-          {#each STEP_MOTIONS as m (m.id)}
-            <button class="pick" class:on={stepMotion.value === m.id} role="radio" aria-checked={stepMotion.value === m.id} onclick={() => setStepMotion(m.id)}>
-              <span class="pick-h"><i class="radio" aria-hidden="true"></i>{m.name}</span>
-              <span class="pick-n">{m.note}</span>
-            </button>
-          {/each}
-        </div>
-      </section>
       <section class="card">
         <div class="ch"><span class="t">Thinking block</span></div>
         <p class="note small">How a reply's thinking block comes in when the model starts thinking.</p>
@@ -1837,6 +1838,44 @@
             </div>
           {/each}
         </div>
+        <!-- Item 610 (his ask 2026-11-10: "put it in like the thinking block
+             section with animations"): the Thinking motion (589, moved here
+             from its own card by 609) joins this card under its own
+             sub-heading — arrival above, the motion while it thinks below.
+             Each choice's stage is the real reply running that motion
+             (StepMotionPreview); Preview starts its loop over. Filament IV
+             only, as before (Classic's trace has no running motion). -->
+        {#if !classic()}
+          <div class="f4-only motion-sub">
+            <div class="sub-h">While it thinks</div>
+            <p class="note small">
+              How the running step moves while the model works: the light on its thread, its mark and the bar's head.
+              {#if motionStill}Reduce motion is on in macOS, so the step holds still.{/if}
+            </p>
+            <div class="anims three motion-picks" role="radiogroup" aria-label="Thinking motion">
+              {#each STEP_MOTIONS as m (m.id)}
+                <div class="anim" class:on={stepMotion.value === m.id}>
+                  <button
+                    class="anim-pick"
+                    role="radio"
+                    aria-checked={stepMotion.value === m.id}
+                    onclick={() => pickStepMotion(m.id)}
+                  >
+                    <span class="anim-name">{m.name}</span>
+                    <span class="anim-blurb">{m.note}</span>
+                  </button>
+                  <div class="anim-stage motion-stage" aria-hidden="true">
+                    <StepMotionPreview motion={m.id} run={motionRun[m.id] ?? 0} />
+                  </div>
+                  <div class="anim-foot">
+                    <button class="ns-btn ghost small" onclick={() => replayStepMotion(m.id)}>Preview</button>
+                    {#if stepMotion.value === m.id}<span class="anim-on">In use</span>{/if}
+                  </div>
+                </div>
+              {/each}
+            </div>
+          </div>
+        {/if}
       </section>
       {#each MOTION_KINDS as mk (mk.kind)}
         <section class="card">
@@ -4776,6 +4815,32 @@
      shape messageMotion.ts lays its copy over. */
   .msg-stage {
     gap: 10px;
+  }
+  /* Item 610: the Thinking motion inside the Thinking block card — a
+     sub-heading under the arrival choices, then three stages, each the real
+     reply running its motion (StepMotionPreview), clipped to the stage. */
+  .motion-sub {
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 10px;
+  }
+  .sub-h {
+    font: 500 10px var(--mono);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--dim);
+  }
+  /* A trace row needs ~240 px to read ("01 ■ Thinking" and its thread), so
+     at a narrow pane (150 % zoom) the three fall to two columns, then one. */
+  .anims.three.motion-picks {
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  }
+  .motion-stage {
+    gap: 0;
+    height: 104px;
+    padding: 8px 10px;
+    overflow: hidden;
+    justify-content: flex-start;
   }
   .mini-view {
     height: 112px;

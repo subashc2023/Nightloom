@@ -18,7 +18,10 @@
  * whole family: Sweep (the default, above), Weave (Sweep plus faint threads
  * drifting behind the running row) or Quiet (the mark and the bar's head
  * only; tool rows keep today's shuttle). Stamped on <html> as
- * `data-step-motion` (none for Sweep); remembered in localStorage. While the
+ * `data-step-motion` (none for Sweep); remembered in localStorage. Item 610:
+ * the trace's CSS reads its own `data-motion` (AssistantMessage stamps the
+ * setting, or a preview's own choice), so Settings → Animations → Thinking
+ * block can run all three side by side. While the
  * window is hidden `data-hidden` is stamped and the motion pauses. Reduced
  * motion: nothing new moves (the CSS sits under `no-preference`).
  */
