@@ -818,6 +818,8 @@ impl ServeHost {
                 // The subagent rules layer (backlog 291 + 293) is the
                 // Mac's: the phone's rail has no rules box yet.
                 subagent_rules: None,
+                // Nightshift 573: <pacing> names only the limits that are on.
+                limits: spec.subagent_limits,
                 // Backlog 405: the note names only what its server serves.
                 incognito,
             },

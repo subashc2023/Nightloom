@@ -1052,7 +1052,9 @@ pub fn choose_model(input: &Value) -> Result<(SpawnModel, Option<String>), Strin
             } else {
                 Err(format!(
                     "Not launched: Fable 5.2 is for the very hardest tasks only (a multi-file \
-                     systems build, hard research), and a Fable launch says why on a line of its \
+                     systems build, or hard research that is a hard reasoning problem; never a \
+                     search, survey or read-and-summarise helper), and a Fable launch says why on \
+                     a line of its \
                      prompt: \"{FABLE_LABEL} <the reason this task needs it>\". Add the line and \
                      launch again, or launch it on opus (Opus 5.5), the default for everything \
                      else."

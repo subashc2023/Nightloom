@@ -2224,6 +2224,9 @@ async fn connect_agent_body(
                     fork_mode: spec.fork_mode,
                 },
             ),
+            // Nightshift 573: <pacing> names only the limits that are on,
+            // and is absent when the budget and the stop line both are.
+            limits: spec.subagent_limits,
             // Backlog 405: the engine note names only what an incognito
             // chat's server serves.
             incognito,
