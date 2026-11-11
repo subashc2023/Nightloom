@@ -216,6 +216,27 @@ impl Agents {
         }
     }
 
+    /// The spec `chat` would run on now (backlog 582, keep-warm): its own
+    /// idle agent's, else — when it is the chat on screen — the newest
+    /// connection's. `None` while its turn holds the agent, or with none.
+    pub fn spec_of(&self, chat: &str, focused: bool) -> Option<AgentSpec> {
+        let inner = self.inner();
+        match inner.per_chat.get(chat) {
+            Some(e) => e.slot.try_lock().ok().map(|a| a.spec().clone()),
+            None if focused => inner.spec.clone(),
+            None => None,
+        }
+    }
+
+    /// Whether `chat`'s agent is held now: its turn or an aside runs
+    /// (backlog 582 — a keep-warm ping waits for it).
+    pub fn busy(&self, chat: &str) -> bool {
+        self.inner()
+            .per_chat
+            .get(chat)
+            .is_some_and(|e| e.slot.try_lock().is_err())
+    }
+
     /// Keep for chat `to` the spec chat `from` runs on (backlog 544): a
     /// hand-off made off screen starts the next linked chat in the same
     /// project and thread, on its parent's spec — its own idle agent's, or

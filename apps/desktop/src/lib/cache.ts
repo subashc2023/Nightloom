@@ -45,8 +45,12 @@ const TTL_MS: Record<CacheTtl, number> = {
  * real on the server, but the next request will not share its prefix — the
  * conversation now ends earlier — so the entry that matters is the newest
  * one the next request can actually hit.
+ *
+ * `keptUntil` (backlog 582): when the chat's keep-warm has pinged since
+ * that reply, the moment the last ping's hour ends (`touchedUntil`); the
+ * later of the two is when the cache goes cold.
  */
-export function cacheState(events: SessionEvent[], now: number): CacheState | null {
+export function cacheState(events: SessionEvent[], now: number, keptUntil?: number | null): CacheState | null {
   const live = liveFlags(events);
   for (let i = events.length - 1; i >= 0; i--) {
     if (!live[i]) continue;
@@ -55,9 +59,13 @@ export function cacheState(events: SessionEvent[], now: number): CacheState | nu
     if (!e.sent_at || !e.cache_ttl) return null;
     const sentAt = Date.parse(e.sent_at);
     if (!Number.isFinite(sentAt)) return null;
-    const warmUntil = sentAt + TTL_MS[e.cache_ttl];
+    const own = sentAt + TTL_MS[e.cache_ttl];
+    // A keep-warm ping read the entry after the reply did (backlog 582):
+    // its hour runs from that read. `keptUntil` is when that one ends.
+    const kept = keptUntil != null && keptUntil > own;
+    const warmUntil = kept ? keptUntil : own;
     const remainingMs = warmUntil - now;
-    return { sentAt, ttl: e.cache_ttl, warmUntil, remainingMs, warm: remainingMs > 0 };
+    return { sentAt: kept ? warmUntil - TTL_MS[e.cache_ttl] : sentAt, ttl: e.cache_ttl, warmUntil, remainingMs, warm: remainingMs > 0 };
   }
   return null;
 }

@@ -158,6 +158,9 @@
   import WaitingMoon from "./WaitingMoon.svelte";
   import UserBubble from "./UserBubble.svelte";
   import PendingBubbles from "./PendingBubbles.svelte";
+  import KeepWarmNotice from "./KeepWarmNotice.svelte";
+  import { touchedUntil } from "./keepWarm";
+  import { keepWarm } from "./keepWarm.svelte";
   import AsideLayer from "./AsideLayer.svelte";
   import { openAttachment } from "./attachments.svelte";
   import ApprovalPrompt from "./ApprovalPrompt.svelte";
@@ -277,6 +280,14 @@
     if (chat !== undefined && paneView === null && tabOpening.chat !== chat) void loadPaneLog(chat);
   });
 
+  // His latest live message (backlog 582): the keep-warm notice sits under it.
+  const lastUserIndex = $derived.by(() => {
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (it.kind === "user" && !it.superseded) return it.index;
+    }
+    return -1;
+  });
   // Project SessionEvents into renderable items. tool_result events are
   // consumed by lookup against tool_use blocks and never rendered standalone.
   const items: Item[] = $derived.by(() => {
@@ -719,7 +730,7 @@
     const chipsAt = item.kind === "user" ? chips.map(chipPrint) : undefined;
     void keepPlace(item.index, () => {
       editing = editReduce(editing, { type: "begin", index: item.index, text, parts, chipsAt });
-      editCacheLine = editLine(cacheState(evs, Date.now()));
+      editCacheLine = editLine(cacheState(evs, Date.now(), chatId ? touchedUntil(keepWarm.byChat[chatId]) : null));
     }).then(() => {
       if (editorLive) {
         editorLive.focus();
@@ -2657,6 +2668,9 @@
             <span class="when" use:tip={exactTime(item.at)}>{relativeTimeLong(item.at, now)}</span>
           </div>
         </div>
+        <!-- Keep-warm (backlog 582): under his latest message, while
+             the chat's cache is being kept warm; one click switches it off. -->
+        {#if item.index === lastUserIndex && chatId}<KeepWarmNotice chat={chatId} />{/if}
       {:else if item.kind === "compaction"}
         <details class="compaction" class:superseded={item.superseded} use:keptOpen={{ key: turnFold(item.index, "compaction") }}>
           <summary>conversation compacted — earlier turns replaced by a summary</summary>

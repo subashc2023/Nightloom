@@ -44,6 +44,8 @@
     remainingText,
     restoreCacheSettings,
   } from "./cache";
+  import { isKeeping, isOn, switchLabel, switchTitle, touchedUntil } from "./keepWarm";
+  import { keepWarm, loadKeepWarm, setKeepWarm } from "./keepWarm.svelte";
   import { HIDDEN_THINKING_TITLE, thinkingToggleDead } from "./activity";
   import { toggleTranscriptPref, transcript } from "./transcriptPrefs.svelte";
   import { composerFormat, toggleComposerFormat } from "./composerFormat.svelte";
@@ -2808,10 +2810,25 @@
    * still, whichever view is up — this chain only draws.
    */
   let now = $state(Date.now());
-  const cache = $derived(floating ? null : cacheState(app.events, now));
+  /*
+   * Keep-warm (backlog 582): the open chat's switch, beside the timer it
+   * extends. A ping's read restarts the cache's hour, so the timer counts
+   * from the later of the reply and the last ping.
+   */
+  const kwChat = $derived(floating ? null : app.activeSessionId);
+  const kw = $derived(kwChat ? (keepWarm.byChat[kwChat] ?? null) : null);
+  $effect(() => {
+    if (kwChat) void loadKeepWarm(kwChat);
+  });
+  async function flipKeepWarm(mode: "on" | "once" | "off") {
+    if (!kwChat) return;
+    const refused = await setKeepWarm(kwChat, mode);
+    if (refused) addToast(`Keep warm: ${refused}`);
+  }
+  const cache = $derived(floating ? null : cacheState(app.events, now, touchedUntil(kw)));
   $effect(() => {
     if (floating) return;
-    const warmUntil = cacheState(app.events, Date.now())?.warmUntil ?? null;
+    const warmUntil = cacheState(app.events, Date.now(), touchedUntil(kw))?.warmUntil ?? null;
     if (warmUntil == null) return;
     now = Date.now();
     let id: ReturnType<typeof setTimeout> | null = null;
@@ -3540,6 +3557,31 @@
            how long it stays warm, or `cold`. A chat whose last turn
            predates the timer's fields shows the share alone, and the
            title says why. Nothing before the first turn. -->
+      <!-- Keep-warm (backlog 582): the chat's switch beside its cache
+           timer, off by default, and the one-tap "until I'm back" (on
+           until his next message here). Shown once the chat has a 1-hour
+           cache to keep, or whenever its switch is on. -->
+      {#if kwChat && (isOn(kw) || cache?.ttl === "1h")}
+        <button
+          class="ns-chip bottom-toggle keep-warm"
+          class:on={isOn(kw)}
+          class:keeping={isKeeping(kw, now)}
+          aria-pressed={isOn(kw)}
+          use:tip={switchTitle(kw, now)}
+          onclick={() => void flipKeepWarm(isOn(kw) ? "off" : "on")}
+        >
+          <span class="bottom-mark" aria-hidden="true">♨</span>{switchLabel(kw, now)}
+        </button>
+        {#if !isOn(kw)}
+          <button
+            class="ns-chip bottom-toggle keep-warm-once"
+            use:tip={"Keep this chat's cache warm until your next message here, then switch back off — for when you step away and mean to come back. Same schedule and cap as the switch."}
+            onclick={() => void flipKeepWarm("once")}
+          >
+            until I'm back
+          </button>
+        {/if}
+      {/if}
       {#if cache && cacheBuilt && cacheChanges.length > 0}
         <!-- Backlog 408: a pending change would lose the warm cache; the
              click puts every changed setting back. -->
@@ -4085,6 +4127,13 @@
     opacity: 0.5;
     border-color: transparent;
     color: var(--dim);
+  }
+  /* Keep-warm (582): the label is a clock time or a reason, never
+     capitalised like the one-word toggles. */
+  .bottom-toggle.keep-warm,
+  .bottom-toggle.keep-warm-once {
+    text-transform: none;
+    font-variant-numeric: tabular-nums;
   }
   .bottom-cache {
     font-variant-numeric: tabular-nums;

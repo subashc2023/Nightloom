@@ -818,6 +818,20 @@ export function reserveChatAgent(chat: string, keep: boolean): Promise<boolean> 
   return invoke("reserve_chat_agent", { chat, keep });
 }
 
+// Keep-warm (backlog 582; `keep_warm.rs`): a chat's switch, its status,
+// and the stop a closed tab sends.
+export function keepWarmSet(chat: string, mode: import("./keepWarm").KeepWarmMode): Promise<import("./keepWarm").KeepWarmStatus> {
+  return invoke("keep_warm_set", { chat, mode });
+}
+
+export function keepWarmStatus(chat: string): Promise<import("./keepWarm").KeepWarmStatus> {
+  return invoke("keep_warm_status", { chat });
+}
+
+export function keepWarmStop(chat: string): Promise<boolean> {
+  return invoke("keep_warm_stop", { chat });
+}
+
 /** Where a chat lives (backlog 535): the project whose folder holds its
  *  log (`project: null` — the unfiled chats), or `found: false`. */
 export function chatHome(chat: string): Promise<{ found: boolean; project: string | null; name: string | null }> {
