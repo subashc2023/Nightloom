@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clock12, passLength, passTrace, planRun, spanWords, tally } from "./nightshiftFace";
+import { clock12, hourLabel, passLength, passTrace, planRun, spanWords, tally } from "./nightshiftFace";
 import type { Item, UnitStatus } from "./types";
 
 const unit = (n: number, started: string | null, ended: string | null, outcome: string | null): UnitStatus => ({
@@ -65,5 +65,17 @@ describe("planRun", () => {
       [it("a", "build", 2), it("b", "research", 3), it("c", "build", 1)],
     );
     expect(out.map((x) => `${x.id}·${x.kind}·${x.passes}`)).toEqual(["b·research·3", "a·build·2"]);
+  });
+});
+
+describe("hourLabel — the daily pass's hour, 12-hour (item 611)", () => {
+  it("reads every hour of the day with AM/PM, never 03:00", () => {
+    expect(hourLabel(0)).toBe("12:00 AM");
+    expect(hourLabel(3)).toBe("3:00 AM");
+    expect(hourLabel(11)).toBe("11:00 AM");
+    expect(hourLabel(12)).toBe("12:00 PM");
+    expect(hourLabel(15)).toBe("3:00 PM");
+    expect(hourLabel(23)).toBe("11:00 PM");
+    for (let h = 0; h < 24; h++) expect(hourLabel(h)).toMatch(/^(1[0-2]|[1-9]):00 (AM|PM)$/);
   });
 });

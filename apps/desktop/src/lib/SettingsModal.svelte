@@ -15,6 +15,7 @@
 
 <script lang="ts">
   import { tip } from "./tip";
+  import { hourLabel } from "./nightshiftFace";
   import { setLinkPref, web as webTabs } from "./webtabs.svelte";
   import { STOP_SHAPES } from "./stopButton";
   import { setStopShape, stopPref } from "./stopShape.svelte";
@@ -3173,7 +3174,7 @@
             onchange={(e) => setDailyPrefs({ ...app.centre.daily, hour: Number(e.currentTarget.value) })}
           >
             {#each Array.from({ length: 24 }, (_, h) => h) as h (h)}
-              <option value={String(h)}>{String(h).padStart(2, "0")}:00</option>
+              <option value={String(h)}>{hourLabel(h)}</option>
             {/each}
           </select>
         </label>

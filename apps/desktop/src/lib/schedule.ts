@@ -123,12 +123,15 @@ export function atTime(hhmm: string, nowMs: number): { at: number; tomorrow: boo
   return { at: d.getTime(), tomorrow: false };
 }
 
-/** `14:05`. */
+/** `2:05 PM` — his 12-hour clock whatever the locale (item 611; was the
+ *  locale's `14:05`). */
 export function clockText(ms: number): string {
-  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const d = new Date(ms);
+  const h = d.getHours();
+  return `${h % 12 || 12}:${String(d.getMinutes()).padStart(2, "0")} ${h >= 12 ? "PM" : "AM"}`;
 }
 
-/** `Mon 14:05`. */
+/** `Mon 2:05 PM`. */
 export function dayClockText(ms: number): string {
   const d = new Date(ms);
   return `${d.toLocaleDateString([], { weekday: "short" })} ${clockText(ms)}`;

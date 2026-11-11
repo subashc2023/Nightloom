@@ -891,20 +891,14 @@ pub async fn nightshift_schedule_launch(
     Ok(view)
 }
 
-/// `05:10` local from epoch milliseconds, for the missed-launch message.
+/// `5:10 AM` local from epoch milliseconds, for the missed-launch message —
+/// his 12-hour clock (item 611; was `date -r <secs> +%H:%M`, `05:10`).
 fn clock_of_ms(ms: u64) -> String {
-    use std::process::Command;
-    // Local time without a date crate: `date -r <secs> +%H:%M`, the way the
-    // rest of this file shells out for git and caffeinate.
-    Command::new("date")
-        .arg("-r")
-        .arg((ms / 1000).to_string())
-        .arg("+%H:%M")
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_else(|| iso_of_ms(ms))
+    use chrono::TimeZone;
+    match chrono::Local.timestamp_millis_opt(ms as i64).single() {
+        Some(t) => t.format("%-I:%M %p").to_string(),
+        None => iso_of_ms(ms),
+    }
 }
 
 #[tauri::command]
@@ -1114,6 +1108,23 @@ mod tests {
             Some(install.to_string_lossy().as_ref())
         );
         let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn clock_of_ms_reads_12_hour_am_pm_item_611() {
+        use chrono::TimeZone;
+        for (h, m, want) in [
+            (0, 5, "12:05 AM"),
+            (5, 10, "5:10 AM"),
+            (12, 0, "12:00 PM"),
+            (23, 30, "11:30 PM"),
+        ] {
+            let t = chrono::Local
+                .with_ymd_and_hms(2026, 11, 11, h, m, 0)
+                .single()
+                .expect("a local time");
+            assert_eq!(clock_of_ms(t.timestamp_millis() as u64), want);
+        }
     }
 }
 
