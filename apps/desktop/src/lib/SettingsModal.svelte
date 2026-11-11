@@ -1651,6 +1651,7 @@
             <div class="seg" role="radiogroup" aria-label="Stop button shape">
               {#each STOP_SHAPES as sh (sh.id)}
                 <button
+                  class="stop-choice"
                   class:on={stopPref.shape === sh.id}
                   role="radio"
                   aria-checked={stopPref.shape === sh.id}
@@ -4632,6 +4633,18 @@
   }
   .stop-swatch.wide {
     width: 32px;
+  }
+  /* Item 576 (his "labels are kinda screwed up here", 2026-11-10): the
+     swatch sat on the text's baseline nudged by `vertical-align: -3px`,
+     so each name rode ~5 px above its icon — under Filament IV and Classic
+     alike (measured: label centre 4.88 px / 5.06 px above the icon's). A
+     bug, so fixed under both: the choice is a flex row centring both. */
+  .seg button.stop-choice {
+    display: inline-flex;
+    align-items: center;
+  }
+  .stop-choice .stop-swatch {
+    vertical-align: middle;
   }
   .anim-pick::after {
     content: "";
