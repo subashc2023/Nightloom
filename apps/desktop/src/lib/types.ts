@@ -669,6 +669,31 @@ export interface TurnBudget {
   holds?: number[];
   /** When his *Wrap up* reached the model (backlog 192). */
   wrap_at_ms?: number | null;
+  /** The cap this message works under (item 538): the model's
+   *  `set_budget` call, the "up to N%" in his message, or his correction
+   *  from the cap chip. Absent or null: no cap declared. */
+  cap?: TurnCap | null;
+  /** He corrected the cap this message (item 538): the model's later
+   *  `set_budget` calls change nothing. */
+  cap_locked?: boolean;
+  /** Wake thresholds crossed this message (item 538). */
+  wakes_fired?: string[];
+  /** Points held for running helpers (item 538; 537's fix 1). */
+  reserved?: { points: number; at_pct: number | null; at_ms?: number }[];
+}
+
+/** The two ways a cap is worked under (item 538, blocker 1785). */
+export type CapMode = "finish_within" | "work_to_cap_then_continue";
+
+/** A message's declared usage cap (item 538): the backend's `budget::Cap`. */
+export interface TurnCap {
+  /** Percent of the plan's 5-hour window, 1–100: the message's stop line. */
+  percent: number;
+  mode: CapMode;
+  /** `model` (set_budget), `message` (his words, the backstop), `user` (the chip). */
+  source: "model" | "message" | "user";
+  reason: string;
+  set_at_ms: number;
 }
 
 /**
@@ -1332,6 +1357,10 @@ export type TurnEvent =
    *  is the Nightloom-authored line written to the chat (not his words);
    *  `agents` the descriptions it named. */
   | { type: "woke"; text: string; agents: string[] }
+  /** Nightloom woke an idle main thread for the message's usage cap
+   *  (item 538): `text` is Nightloom's line (not his words); `kind` the
+   *  thresholds (`reserved`, `near`, `at_cap`, `pace`, `hard`). */
+  | { type: "budget_wake"; text: string; kind: string[]; pct: number | null; cap: number | null }
   /** The Claude Code CLI retrying a failed API call (items 440 + 441):
    *  one per try; the live reply keeps one line for them (`retryLine.ts`).
    *  `error` is the CLI's category — `unknown` with no `status` is a

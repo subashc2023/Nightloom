@@ -154,6 +154,7 @@
   import { hasNoTurns } from "./waitingChat";
   import PreviewChip from "./PreviewChip.svelte";
   import ClaudeBrowserChip from "./ClaudeBrowserChip.svelte";
+  import TurnCapChip from "./TurnCapChip.svelte";
   // Item 542: under the Classic layout, 1d4ca17's browser strip.
   import ClaudeBrowserChipClassic from "./ClaudeBrowserChipClassic.svelte";
   import { classic } from "./layout.svelte";
@@ -2906,6 +2907,8 @@
     <PreviewChip chat={app.activeSessionId} />
     <!-- Claude's browser (item 508): offered once it is live; opens only on his click. -->
     <BrowserChip chat={app.activeSessionId} />
+    <!-- The message's usage cap (item 538): only while it runs under one. -->
+    <TurnCapChip plain={classic()} />
   {/if}
   <!-- Item 548: under Filament IV the scheduled message is drawn in the
        transcript as his message (ScheduledBubble); Classic keeps the row. -->

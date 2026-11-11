@@ -46,6 +46,7 @@ import type {
   UsageSummary,
   PlanUsage,
   TurnBudget,
+  CapMode,
   Checkpoint,
   CliMemoryFile,
   CliPromptSnapshot,
@@ -1215,6 +1216,13 @@ export function cliUpdate(binary: string | null): Promise<CliUpdateResult> {
  *  the chat's `turn-budget.json`, or null before its first turn. */
 export function turnBudget(session: string): Promise<TurnBudget | null> {
   return invoke("turn_budget", { session });
+}
+
+/** His correction of the message's usage cap from the cap chip (item 538):
+ *  a new percent, a new mode, both, or — both null — no cap for this
+ *  message. Returns the ledger as it now stands. */
+export function setTurnCap(session: string, capPercent: number | null, mode: CapMode | null): Promise<TurnBudget> {
+  return invoke("set_turn_cap", { session, capPercent, mode });
 }
 
 /** Each reply's share of the plan's windows (item 323): the chat's

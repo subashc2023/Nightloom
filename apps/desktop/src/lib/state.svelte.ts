@@ -5,6 +5,7 @@ import { hasHiddenChars } from "./shellRun";
 import { switchSameToChoose } from "./subagentSwitch";
 import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
+import { wakeNotice } from "./capWake";
 import {
   carryReadOrder,
   firstMessage,
@@ -10259,6 +10260,14 @@ export function applyTurnEventTo(host: TurnHost, ev: TurnEvent & { chat?: string
         text: `${names} finished but its report never reached the main agent — Nightloom told it to continue`,
       });
       if (!onScreen) addToast(`Nightloom woke ${backgroundName(host.bg!.session, host.bg!.events)}: ${names} finished`);
+      break;
+    }
+    case "budget_wake": {
+      // Nightloom woke the main agent for the message's usage cap (item
+      // 538): its words, not his — a notice, as for `woke`.
+      closeThinking(segments);
+      segments.push({ kind: "notice", text: wakeNotice(ev.kind, ev.pct, ev.cap) });
+      if (!onScreen) addToast(`Nightloom woke ${backgroundName(host.bg!.session, host.bg!.events)}: ${wakeNotice(ev.kind, ev.pct, ev.cap)}`);
       break;
     }
     case "round_limit":
