@@ -36,6 +36,9 @@ class El {
   get parentElement() {
     return this.parent;
   }
+  get childNodes() {
+    return this.children;
+  }
   get textContent(): string {
     return this.own + this.children.map((c) => c.textContent).join("");
   }
@@ -198,6 +201,45 @@ describe("503 review 10: while a reply streams the last block waits", () => {
     const r = rootOf(fence("one"));
     add(r, () => {}, "", false);
     add(r, () => {}, "", true);
+    expect(runs(r)).toHaveLength(0);
+  });
+});
+
+describe("636: a block marked has closed and drawn past gets Run while the reply streams", () => {
+  const para = (text: string) => {
+    const p = new El("P");
+    p.own = text;
+    return p;
+  };
+  const src = "```bash\nls\n```\nThen run";
+  it("text drawn after the last block gives it Run mid-stream", () => {
+    const r = rootOf(fence("ls"), para("Then run"));
+    add(r, () => {}, src, true);
+    expect(runs(r)).toHaveLength(1);
+  });
+  it("only blank text or empty elements after it (the motion's shuttle) do not", () => {
+    const shuttle = new El("DIV");
+    shuttle.setAttribute("aria-hidden", "true");
+    const r = rootOf(fence("ls"), para("\n"), shuttle);
+    add(r, () => {}, "```bash\nls\n```\n", true);
+    expect(runs(r)).toHaveLength(0);
+  });
+  it("a block inside a list item with text after it in a later item counts; the fence's own closer line does not", () => {
+    const li = new El("LI");
+    li.appendChild(fence("ls"));
+    const ul = new El("UL");
+    ul.appendChild(li);
+    ul.appendChild(new El("LI")).own = "next";
+    const r = rootOf(ul);
+    add(r, () => {}, "- ```bash\n  ls\n  ```\n- next", true);
+    expect(runs(r)).toHaveLength(1);
+    const r2 = rootOf(fence("ls"));
+    add(r2, () => {}, "```bash\nls\n```", true);
+    expect(runs(r2)).toHaveLength(0);
+  });
+  it("a reply cut off inside its last fence still has none, settled", () => {
+    const r = rootOf(fence("ls"), para("x"));
+    add(r, () => {}, "```bash\nls", false);
     expect(runs(r)).toHaveLength(0);
   });
 });

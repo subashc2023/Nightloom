@@ -163,4 +163,49 @@ describe("item 626 — a streaming reply is prefix-consistent at every delta", (
     expect(streamingTail("```bash\ncd **x")).toBe("```bash\ncd **x");
     expect(streamingTail("Done. **All** of it.")).toBe("Done. **All** of it.");
   });
+
+  it("636: a lone or half-arrived emphasis mark is held back; an open italic is closed", () => {
+    // The 617 check's delta #4: the first star of `**the short version**`.
+    expect(streamingTail("night, and *")).toBe("night, and ");
+    expect(streamingTail("and **the short ver*")).toBe("and **the short ver**");
+    expect(streamingTail("and *the short ver")).toBe("and *the short ver*");
+    expect(streamingTail("and _the short ver")).toBe("and _the short ver_");
+    expect(streamingTail("and __the short ver")).toBe("and __the short ver__");
+    expect(streamingTail("and **the short ver ")).toBe("and **the short ver** ");
+    expect(streamingTail("**bold *it")).toBe("**bold *it***");
+    expect(streamingTail("**bold *")).toBe("**bold** ");
+    expect(streamingTail("and _")).toBe("and ");
+    expect(streamingTail("and ** ")).toBe("and ");
+  });
+
+  it("636: what is not emphasis is left as it is", () => {
+    for (const s of [
+      "a *it* and _it_ done",
+      "* item",
+      "* ",
+      "  * nested",
+      "***",
+      "* * *",
+      "_ _ _",
+      "snake_case and test_sign",
+      "2*3 is 6",
+      "2 * 3 is 6",
+      "an escaped \\* star",
+      "the `a*b` span",
+      "`**`",
+      "Done. **All** of it.",
+      "**Tier 1** and `x`",
+    ])
+      expect(streamingTail(s)).toBe(s);
+  });
+
+  it("636: no streamed prefix of a reply draws a stray * or _ the finished reply does not", () => {
+    const reply = "Short night, and **the short version**: *two* fixes, _both_ small. Run `npm_test`, then __ship__ it.";
+    const marks = (html: string) => textOf(html).replace(/[^*_]/g, "");
+    const final = marks(renderReply(reply));
+    for (let i = 1; i <= reply.length; i++) {
+      const shown = marks(renderReply(streamingTail(reply.slice(0, i))));
+      expect(final.startsWith(shown), `prefix ${i}: ${JSON.stringify(reply.slice(0, i))} shows ${shown}`).toBe(true);
+    }
+  });
 });
