@@ -497,6 +497,11 @@ pub struct AgentSpec {
     /// already allows it. `None` when the chat has no Playwright server in
     /// its `mcp_config` (not installed, or a spec that is not a chat's).
     pub playwright: Option<own_browser::PlaywrightGate>,
+    /// `add_folder`'s gate is registered for a process no card waits on —
+    /// an aside's or a checkpoint fork's (nightshift item 613): the hook
+    /// refuses its call in words instead of deferring it. The gate itself
+    /// rides the brief's directory and binary (`folder_gate_entry`).
+    pub folder_side: bool,
     /// An incognito chat (nightshift backlog 405): set by
     /// [`apply_incognito`](Self::apply_incognito), never directly. On, the
     /// CLI loads no setting file — so not his `~/.claude/CLAUDE.md`, his
@@ -577,11 +582,13 @@ fn ask_matcher_under_chat_policy(matcher: &str, browser: bool) -> String {
 /// Playwright's tools stay out too, as in [`ask::MATCHER`] (backlog 367).
 /// The preview's tool stays out too (item 430): the policy's own deny
 /// entry refuses it, and an Ask card for it would be backlog 147's bug.
-const ASK_MCP_LESS_BROWSER: &str = "mcp__(?!claude-in-chrome__|playwright__|nightloom__preview).*";
+const ASK_MCP_LESS_BROWSER: &str =
+    "mcp__(?!claude-in-chrome__|playwright__|nightloom__preview|nightloom__add_folder).*";
 
 /// The same without the Browser: every MCP tool but Playwright's and the
 /// preview's.
-const ASK_MCP_LESS_PREVIEW: &str = "mcp__(?!playwright__|nightloom__preview).*";
+const ASK_MCP_LESS_PREVIEW: &str =
+    "mcp__(?!playwright__|nightloom__preview|nightloom__add_folder).*";
 
 /// The deny hook's command line. Single-quoted for the POSIX shell the CLI
 /// runs hooks through on macOS and Linux. On Windows, `cmd.exe`'s `echo`
@@ -622,6 +629,12 @@ pub const BROWSER_UNDER_CHAT_POLICY_REASON: &str = "This chat is a Chat now: the
 /// What the model reads when the policy refuses a call — the hook's
 /// `permissionDecisionReason`, delivered as the tool's error result.
 pub const CHAT_POLICY_REASON: &str = "This chat is a Chat now: the shell, the file-editing tools, subagents and plans are withdrawn. Reads, search and the web remain.";
+
+/// What follows `add_folder`'s gate on its command line: it fails closed,
+/// as Playwright's does — a hook that could not run must not let a folder
+/// be asked for unseen (exit 2 blocks the call; the line goes to the model).
+pub const FOLDER_GATE_FAIL_CLOSED: &str =
+    "|| { echo 'The folder was not added: its approval check could not run.' >&2; exit 2; }";
 
 /// What the Ask position adds to the command line.
 ///
@@ -768,6 +781,32 @@ impl AskMode {
 pub const READ_ONLY_TOOLS: [&str; 5] = ["Read", "Glob", "Grep", "WebFetch", "WebSearch"];
 
 impl AgentSpec {
+    /// `add_folder`'s `PreToolUse` entry (nightshift item 613): this
+    /// binary's `--permission-hook` on the chat's directory — the one the
+    /// brief's hook and the server's `--budget-dir` already name — on
+    /// [`crate::tools::add_folder::GATE_MATCHER`], failing closed. `None`
+    /// before a turn has pointed the directory (no tool is served then).
+    pub fn folder_gate_entry(&self) -> Option<serde_json::Value> {
+        let brief = self.brief.as_ref()?;
+        let binary = brief.hook.first()?;
+        if brief.dir.as_os_str().is_empty() {
+            return None;
+        }
+        let mut words = vec![
+            ask::shell_quote(binary),
+            ask::shell_quote("--permission-hook"),
+            ask::shell_quote(&brief.dir.to_string_lossy()),
+        ];
+        if self.folder_side {
+            words.push(ask::shell_quote(own_browser::SIDE_ARG));
+        }
+        words.push(FOLDER_GATE_FAIL_CLOSED.to_string());
+        Some(serde_json::json!({
+            "matcher": crate::tools::add_folder::GATE_MATCHER,
+            "hooks": [{ "type": "command", "command": words.join(" ") }]
+        }))
+    }
+
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
         Self {
             binary: "claude".into(),
@@ -802,6 +841,7 @@ impl AgentSpec {
             claude_ai_blocked: Vec::new(),
             browser: false,
             playwright: None,
+            folder_side: false,
             incognito: false,
             denied_reads: Vec::new(),
             extra_args: Vec::new(),
@@ -995,6 +1035,7 @@ impl AgentSpec {
         if let Some(pw) = &mut spec.playwright {
             pw.side = true;
         }
+        spec.folder_side = true;
         spec.own_browser_for_side();
         Some(spec)
     }
@@ -1059,6 +1100,7 @@ impl AgentSpec {
         if let Some(pw) = &mut spec.playwright {
             pw.side = true;
         }
+        spec.folder_side = true;
         spec.own_browser_for_side();
         if let Some(ask) = &mut spec.ask {
             if ask.mode.is_auto() {
@@ -1399,6 +1441,23 @@ impl AgentSpec {
                     .or_insert_with(|| serde_json::Value::Array(Vec::new()));
                 if let serde_json::Value::Array(prompt) = prompt {
                     prompt.push(brief::prompt_hook_entry(&brief.hook, &brief.dir));
+                }
+            }
+        }
+        // `add_folder`'s gate (nightshift item 613): its own entry in every
+        // position, as Playwright's is, and last of the entries — wherever
+        // the chat's directory is known (the tool is served there,
+        // `--budget-dir`).
+        if let Some(entry) = self.folder_gate_entry() {
+            let hooks = settings
+                .entry("hooks")
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+            if let serde_json::Value::Object(hooks) = hooks {
+                let pre = hooks
+                    .entry("PreToolUse")
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+                if let serde_json::Value::Array(pre) = pre {
+                    pre.push(entry);
                 }
             }
         }
@@ -3209,7 +3268,9 @@ mod tests {
             .collect();
         assert_eq!(
             asks,
-            ["WebFetch|WebSearch|mcp__(?!claude-in-chrome__|playwright__|nightloom__preview).*"],
+            [
+                "WebFetch|WebSearch|mcp__(?!claude-in-chrome__|playwright__|nightloom__preview|nightloom__add_folder).*"
+            ],
             "{pre:?}"
         );
         // Item 430: the preview is the policy's to refuse, not the Ask
@@ -3225,7 +3286,7 @@ mod tests {
         assert!(
             pre.iter()
                 .any(|e| e["matcher"]
-                    == "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview).*"),
+                    == "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview|nightloom__add_folder).*"),
             "{pre:?}"
         );
     }
@@ -3252,6 +3313,9 @@ mod tests {
         alts.iter().any(|alt| match alt.strip_suffix(".*") {
             Some(p) => match p.split_once("(?!") {
                 Some((head, negs)) => {
+                    // Several lookaheads in a row read as one alternation
+                    // (item 613's second one).
+                    let negs = negs.replace(")(?!", "|");
                     name.starts_with(head)
                         && !negs
                             .trim_end_matches(')')
@@ -3922,7 +3986,7 @@ mod tests {
         // The preview's tool is out too (item 430): the policy refuses it.
         assert_eq!(
             narrowed,
-            "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview).*"
+            "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview|nightloom__add_folder).*"
         );
         for withdrawn in [
             "Bash",
@@ -3955,7 +4019,7 @@ mod tests {
         assert_eq!(pre.len(), 3, "{v}");
         assert_eq!(
             pre[0]["matcher"],
-            "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview).*"
+            "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview|nightloom__add_folder).*"
         );
         assert_eq!(pre[1]["matcher"], CHAT_POLICY_MATCHER);
         assert_eq!(pre[2]["matcher"], PREVIEW_TOOL_MATCHER);
@@ -4383,7 +4447,12 @@ mod tests {
         );
         let a = agent.spec().args("hi");
         assert_eq!(brief_entries(&a), 1);
-        assert_eq!(entries(&a).len(), 1, "no Ask hook in Auto");
+        // Beside it only `add_folder`'s own gate (item 613): no Ask hook.
+        assert_eq!(entries(&a).len(), 2, "no Ask hook in Auto");
+        assert_eq!(
+            entries(&a)[1]["matcher"],
+            crate::tools::add_folder::GATE_MATCHER
+        );
         let cmd = entries(&a)[0]["hooks"][0]["command"].clone();
         assert_eq!(cmd, format!("'hook' '--subagent-hook' '{}'", dir.display()));
         // Nightshift 561: the same command on each user message, no matcher.
@@ -4400,9 +4469,10 @@ mod tests {
         agent.set_ask_dir(dir.clone());
         let a = agent.spec().args("hi");
         let e = entries(&a);
-        assert_eq!(e.len(), 2, "{e:?}");
+        assert_eq!(e.len(), 3, "{e:?}");
         assert_eq!(e[0]["matcher"], ask::MATCHER);
         assert_eq!(e[1]["matcher"], brief::BRIEF_MATCHER);
+        assert_eq!(e[2]["matcher"], crate::tools::add_folder::GATE_MATCHER);
         // The aside of that chat carries no hook at all.
         let mut s = asking(AskMode::Ask);
         s.brief = Some(brief.clone());
@@ -4423,8 +4493,8 @@ mod tests {
         assert_eq!(brief_entries(&a), 1);
         assert_eq!(
             entries(&a).len(),
-            3,
-            "the policy's own entry, the preview's deny (item 430) and the budget's"
+            4,
+            "the policy's own entry, the preview's deny (item 430), the budget's and add_folder's gate (613)"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -4555,6 +4625,77 @@ mod tests {
             ask::MATCHER,
             "mcp__playwright__browser_click"
         ));
+    }
+
+    fn with_brief(mut s: AgentSpec) -> AgentSpec {
+        s.brief = Some(brief::BriefSpec {
+            hook: vec!["/app/nl".into(), "--subagent-hook".into()],
+            dir: PathBuf::from("/logs/ask/chat-3"),
+            text: String::new(),
+        });
+        s
+    }
+
+    /// Item 613: `add_folder`'s gate is on the line in every position, as
+    /// this binary's permission hook on the chat's directory, and the only
+    /// permission entry that matches the tool — the Ask hook leaves it out.
+    /// A side process's gate carries `--side`; no directory, no gate.
+    #[test]
+    fn the_add_folder_gate_is_registered_in_every_position() {
+        let mut bypass = with_brief(spec());
+        bypass.permission_mode = Some("bypassPermissions".into());
+        let mut chat = with_brief(asking(AskMode::Ask));
+        chat.chat_policy = true;
+        chat.browser = true;
+        let mut chat_plain = with_brief(asking(AskMode::Ask));
+        chat_plain.chat_policy = true;
+        let positions = [
+            ("bypass", bypass),
+            ("auto", with_brief(asking(AskMode::Auto))),
+            ("ask", with_brief(asking(AskMode::Ask))),
+            ("plan", with_brief(asking(AskMode::Plan))),
+            ("chat policy, browser", chat),
+            ("chat policy", chat_plain),
+        ];
+        let tool = "mcp__nightloom__add_folder";
+        for (name, s) in positions {
+            let pre = pre_entries(&s);
+            let gates: Vec<&serde_json::Value> = pre
+                .iter()
+                .filter(|e| {
+                    let m = e["matcher"].as_str().unwrap_or("");
+                    let cmd = e["hooks"][0]["command"].as_str().unwrap_or("");
+                    regex_like_matches(m, tool) && cmd.contains("--permission-hook")
+                })
+                .collect();
+            assert_eq!(gates.len(), 1, "{name}: {pre:?}");
+            assert_eq!(gates[0]["matcher"], crate::tools::add_folder::GATE_MATCHER);
+            assert_eq!(
+                gates[0]["hooks"][0]["command"],
+                format!(
+                    "'/app/nl' '--permission-hook' '/logs/ask/chat-3' {FOLDER_GATE_FAIL_CLOSED}"
+                ),
+                "{name}"
+            );
+        }
+        let mut side = with_brief(asking(AskMode::Auto));
+        side.folder_side = true;
+        let entry = side.folder_gate_entry().unwrap();
+        assert!(
+            entry["hooks"][0]["command"]
+                .as_str()
+                .unwrap()
+                .contains("'--side'")
+        );
+        assert!(spec().folder_gate_entry().is_none());
+        let mut pointless = with_brief(spec());
+        if let Some(b) = &mut pointless.brief {
+            b.dir = PathBuf::new();
+        }
+        assert!(pointless.folder_gate_entry().is_none());
+        // Every other MCP tool still asks under Ask.
+        assert!(regex_like_matches(ask::MATCHER, "mcp__nightloom__remember"));
+        assert!(!regex_like_matches(ask::MATCHER, tool));
     }
 
     /// An aside and a checkpoint fork keep the gate but never defer
