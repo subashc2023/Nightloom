@@ -3,6 +3,7 @@
 //! as it did in `main.rs`; `main.rs` keeps startup, the builder and the
 //! `generate_handler!` list, which names each command by its module.
 
+pub(crate) mod attachments;
 pub(crate) mod cli;
 pub(crate) mod memory;
 pub(crate) mod notes;
