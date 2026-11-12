@@ -75,7 +75,7 @@
   import { memoryRefs, openMemoryEdit } from "./memoryOpen";
   import { memoryEditOf, type MemoryEdit } from "./memoryEdits";
   import type { ReplyUsageView } from "./replyUsage";
-  import { hasUsage, isSignedOut, isStandIn, stopNote } from "./replyFooter";
+  import { footerStopNote, hasUsage, isSignedOut, isStandIn } from "./replyFooter";
   import EditDiffView from "./EditDiffView.svelte";
   import { editDiffOf } from "./editDiff";
   import ToolImagesView from "./ToolImagesView.svelte";
@@ -1355,11 +1355,11 @@
              and the week, measured or ≈ estimated; hover says how. -->
         <span class="meta plan" use:tip={planUsage.title}>{planUsage.text}</span>
       {/if}
-      {#if stopNote(footer.stop_reason)}
+      {#if footerStopNote(footer.stop_reason, standIn)}
         <!-- Why the reply stopped (backlog 202): the API error the CLI
              ended it with, as the log recorded it — or that its stream
              ended before the reply did (backlog 332). -->
-        <span class="meta stopped">{stopNote(footer.stop_reason)}</span>
+        <span class="meta stopped">{footerStopNote(footer.stop_reason, standIn)}</span>
       {/if}
       {#if fmtShare(share)}
         <!-- The reply's share of the window (backlog 090), the gauge's bar
