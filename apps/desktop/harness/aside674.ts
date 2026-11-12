@@ -6,7 +6,7 @@ import AsideView from "../src/lib/AsideView.svelte";
 import AsideCard from "../src/lib/AsideCard.svelte";
 import Transcript from "../src/lib/Transcript.svelte";
 import { app, asideTurnEvent, draftAside, runToastAction, settleAsideSegments, type Aside, type Segment } from "../src/lib/state.svelte";
-import { readDraft } from "../src/lib/drafts.svelte";
+import { enqueueMessage, readDraft } from "../src/lib/drafts.svelte";
 import { asideDraftKey } from "../src/lib/asides";
 import { applyLayout, layout } from "../src/lib/layout.svelte";
 import type { SessionEvent } from "../src/lib/types";
@@ -248,6 +248,34 @@ async function drive(): Promise<void> {
     await settle(400);
     const copies = (t.textContent ?? "").split("More of the answer, line 11.").length - 1;
     say(`streaming: scroll ${before.foot} live ${before.live} replies ${before.replies} → settled: scroll ${foot(t)} (was ${top}) · line 8 at y ${line()} (was ${lineTop}) · live ${$$("[data-nav-live]", t).length} · replies ${$$(".assistant", t).length} · copies of the last line ${copies}`);
+  } else if (act === "queue" || act === "queue-edit" || act === "queue-drain") {
+    // 674 follow-up: two follow-ups held while the answer runs (asking=1) are
+    // his greyed bubbles under it, not rows over the aside's box.
+    const k = asideDraftKey(a);
+    enqueueMessage(k, "Held one: and if the runner dies mid-commit?", []);
+    enqueueMessage(k, "Held two: what does the watermark file look like?", []);
+    await settle(250);
+    const bubbles = () => $$(".midturn[data-midturn='pending']", t);
+    const rows = () => $$(".queue-row");
+    say(
+      `bubbles ${bubbles().length} · states "${bubbles().map((b) => $(".mt-state", b)?.textContent?.trim()).join('" / "')}" · actions ${bubbles()[0] ? $$("[data-mt]", bubbles()[0]).map((x) => x.dataset.mt).join(",") : "-"} · box rows ${rows().length} · at foot ${t.scrollHeight - t.scrollTop - t.clientHeight < 8}`,
+    );
+    if (act === "queue-edit") {
+      press($("[data-mt='edit']", bubbles()[1]));
+      await settle(250);
+      const ta = $<HTMLTextAreaElement>("textarea[data-composer], .composer textarea, textarea");
+      say(`after Edit on the 2nd: bubbles ${bubbles().length} · queue ${readDraft(k).queue.length} · box "${readDraft(k).text}" · focused ${document.activeElement === ta ? "the aside's box" : document.activeElement?.tagName}`);
+    }
+    if (act === "queue-drain") {
+      // The answer ends: the oldest held one goes as the next question.
+      const turn = a.turns.at(-1)!;
+      asks.at(-1)?.done({ answer: turn.partial, cost_usd: 0.1, cache_read: 0, is_error: false, notices: [], output_tokens: 10, input_tokens: 10 });
+      settleAsideSegments(turn, turn.partial);
+      turn.answer = turn.partial;
+      turn.at = new Date().toISOString();
+      await settle(400);
+      say(`after the answer ended: bubbles ${bubbles().length} · queue ${readDraft(k).queue.length} · asks ${asks.length} · last question "${a.turns.at(-1)?.question}"`);
+    }
   } else if (act === "shrink") {
     // The card's room shrinks (a shorter window, another card above the
     // composer): a view at the foot stays at the foot (item 233).

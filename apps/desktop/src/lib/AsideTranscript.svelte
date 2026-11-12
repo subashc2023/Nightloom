@@ -209,6 +209,10 @@
     bare: ev.bare,
     sizes: ev.sizes,
     planUse: ev.planUse,
+    pending: {
+      key: asideDraftKey(aside),
+      aside: { busy: asking !== null, blocked: !onClaudeCode ? "engine" : !open ? "not-open" : null },
+    },
     waitNote,
   });
 </script>

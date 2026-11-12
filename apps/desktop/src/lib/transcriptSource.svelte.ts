@@ -12,7 +12,7 @@
  * it is guarded by `kind` — and `transcriptFeatures.ts` lists every such
  * guard with its reason, checked by a test.
  */
-import { app, chatAgentSession, paneChat, type Segment } from "./state.svelte";
+import { app, chatAgentSession, openChatKey, paneChat, type Segment } from "./state.svelte";
 import type { AsideNote } from "./asideTranscript";
 import { scrollKey } from "./scroll.svelte";
 import type { ApprovalRequest, Attachment, SessionEvent } from "./types";
@@ -90,6 +90,13 @@ export interface TranscriptSource {
    *  measured lines (`replyUsage.svelte.ts`, by `chat`). An aside's:
    *  the estimate from its cost (`estimateView`). */
   planUse?: Map<number, ReplyUsageView>;
+  /** The messages he sent while an answer runs, drawn as his greyed
+   *  bubbles under it (`PendingBubbles`, item 465; an aside's since 674's
+   *  follow-up): `key` is the drafts entry whose queue they are. `aside`:
+   *  the queue goes when the aside's answer ends — no mid-turn choices,
+   *  and `blocked` says why a held one waits (`engine` / `not-open`).
+   *  Absent: none (a pane). */
+  pending?: { key: string; aside?: { busy: boolean; blocked: "engine" | "not-open" | null } };
   /** A note beside the waiting moon (an aside queued behind a turn). */
   waitNote?: string | null;
 }
@@ -116,6 +123,7 @@ export function chatSource(): TranscriptSource {
     liveModel: app.connection?.model ?? null,
     chatActions: true,
     actions: {},
+    pending: { key: openChatKey() },
   };
 }
 

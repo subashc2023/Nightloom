@@ -164,7 +164,7 @@ export async function editPending(key: string, qid: number): Promise<boolean> {
   if (!takeBackQueued(key, qid)) return false;
   delete letArrive[qid];
   groundFlight(qid);
-  requestComposerFocus();
+  requestComposerFocus(key);
   return true;
 }
 

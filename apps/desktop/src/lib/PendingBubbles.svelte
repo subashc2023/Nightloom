@@ -15,21 +15,28 @@
    *  Stop or the wrap-up's turn; the wrap-up queued while he was away), and
    *  the message scheduled in this chat — every waiting message drawn as
    *  a message, none as a row over the box. */
-  const key = $derived(openChatKey());
-  const busyHere = $derived(app.busy && !app.parked);
-  const rows = $derived(bubbledRows(readDraft(key).queue, busyHere, !classic(), app.busy && !!app.parked));
+  /** Whose queue (item 674's follow-up): the open chat's, or an aside's
+   *  — its composer's queue, which goes when its answer ends, drawn under
+   *  Filament (Classic's aside keeps its rows over the box). */
+  let { of }: { of?: { key: string; aside?: { busy: boolean; blocked: "engine" | "not-open" | null } } } = $props();
+  const aside = $derived(of?.aside ?? null);
+  const key = $derived(of?.key ?? openChatKey());
+  const busyHere = $derived(aside ? aside.busy : app.busy && !app.parked);
+  const rows = $derived(
+    aside ? (classic() ? [] : readDraft(key).queue) : bubbledRows(readDraft(key).queue, busyHere, !classic(), app.busy && !!app.parked),
+  );
   /** Item 522: a prompt waits on him, so no process runs — a row here can
    *  go now, in place of an answer. */
-  const waiting = $derived(app.busy && !app.parked && pendingFor(app.pendingApprovals, app.connection?.engine) !== null);
+  const waiting = $derived(!aside && app.busy && !app.parked && pendingFor(app.pendingApprovals, app.connection?.engine) !== null);
   /** Why a row waits with no turn running (item 548), as the box's head said. */
   const held = $derived<HeldWhy | null>(
-    busyHere ? null : (queueHold(handoff.chat !== null && handoff.chat === app.activeSessionId ? handoff.stage : "idle", turnWasStopped()) ?? "idle"),
+    busyHere ? null : aside ? "idle" : (queueHold(handoff.chat !== null && handoff.chat === app.activeSessionId ? handoff.stage : "idle", turnWasStopped()) ?? "idle"),
   );
-  const sched = $derived(!classic() && app.activeSessionId !== null && scheduledFor(key) !== null);
+  const sched = $derived(!aside && !classic() && app.activeSessionId !== null && scheduledFor(key) !== null);
 </script>
 
 {#each rows as row (row.id)}
-  <MidTurnBubble {row} chatKey={key} {waiting} {held} />
+  <MidTurnBubble {row} chatKey={key} {waiting} {held} {aside} />
 {/each}
 {#if sched}
   <ScheduledBubble {key} />

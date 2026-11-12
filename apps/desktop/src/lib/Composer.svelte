@@ -440,7 +440,9 @@
    * are left out of the queue box, so each mid-turn row shows in one place.
    * Item 548: under Filament IV the transcript draws the held ones too
    * (`bubbledRows`), so the main chat's box keeps no rows of its own. */
-  const bubbledIds = $derived(new Set(aside ? [] : bubbledRows(queue, app.busy && !app.parked, !classic(), app.busy && !!app.parked).map((q) => q.id)));
+  // Item 674's follow-up: an aside's held messages are bubbles in its
+  // transcript under Filament, as the chat's are; Classic keeps the rows.
+  const bubbledIds = $derived(new Set(aside ? (classic() ? [] : queue.map((q) => q.id)) : bubbledRows(queue, app.busy && !app.parked, !classic(), app.busy && !!app.parked).map((q) => q.id)));
   /** Item 548: which tray rows he opened past their first line (this launch). */
   let rowOpen = $state<Record<number, true>>({});
   const boxQueue = $derived(queue.filter((q) => !bubbledIds.has(q.id)));
@@ -1054,7 +1056,10 @@
   let focusSeen = untrack(() => composerFocus.seq);
   $effect(() => {
     const seq = composerFocus.seq;
-    if (aside || seq === focusSeen) return;
+    // Item 674's follow-up: a request naming a box goes to that box (an
+    // aside's bubble's Edit); one naming none to the chat's, as before.
+    const wanted = composerFocus.key;
+    if (seq === focusSeen || (wanted === undefined ? !!aside : wanted !== key)) return;
     focusSeen = seq;
     void tick().then(() => {
       if (!ta) return;
@@ -2279,7 +2284,12 @@
     const a = aside;
     if (!a || asideBusy || asideBlock) return;
     const head = queue[0];
-    if (head) launch("aside", document.querySelector(`.queue-row[data-queue-id="${head.id}"] .queue-text`));
+    if (head)
+      launch(
+        "aside",
+        document.querySelector(`.queue-row[data-queue-id="${head.id}"] .queue-text`) ??
+          document.querySelector(`.midturn[data-queue-id="${head.id}"] .user-bubble`),
+      );
     const q = shiftQueue(key);
     if (!q) return;
     await asideDispatch(a, q.text, q.attachments);

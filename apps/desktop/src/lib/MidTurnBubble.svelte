@@ -49,6 +49,7 @@
     delivered = null,
     waiting = false,
     held = null,
+    aside = null,
   }: {
     row?: QueuedMessage | null;
     chatKey?: string;
@@ -57,7 +58,23 @@
     waiting?: boolean;
     /** Item 548 (Filament IV): no turn runs and the row waits — why. */
     held?: HeldWhy | null;
+    /** Item 674's follow-up: a row of an aside's queue — it goes when the
+     *  aside's answer ends; nothing reaches a running answer, so no Send
+     *  now / Let it arrive, only Edit and Cancel. */
+    aside?: { busy: boolean; blocked: "engine" | "not-open" | null } | null;
   } = $props();
+  /** An aside row's state line and its tip (the aside box's own words). */
+  const asideHead = $derived(
+    !aside
+      ? null
+      : aside.busy
+        ? { line: "queued · sent when this answer ends", tip: "Not sent yet — it goes as the next question when this answer ends" }
+        : aside.blocked === "not-open"
+          ? { line: "queued · waiting — open the chat to send", tip: "Not sent yet — an aside answers from its chat's context; open the chat and it goes" }
+          : aside.blocked === "engine"
+            ? { line: "queued · waiting — connect Claude Code", tip: "Not sent yet — an aside is answered by Claude Code" }
+            : { line: "queued · waiting to send", tip: "Not sent yet" },
+  );
 
   /** Items 548/549/547: the Filament IV look; Classic keeps 465's words. */
   const filament = $derived(!classic());
@@ -177,7 +194,11 @@
   <div class="mt-key">
     {#if pending && st}
       <span class="mt-mark" class:still={!!held} aria-hidden="true"></span>
-      <span class="mt-state" data-state={held ? `held-${held}` : st} use:tip={held ? heldTip(held) : pendingLabel(st, arrive)}>{pendingHead(st, arrive, held)}</span>
+      {#if asideHead}
+        <span class="mt-state" data-state={held ? `held-${held}` : st} data-aside use:tip={asideHead.tip}>{asideHead.line}</span>
+      {:else}
+        <span class="mt-state" data-state={held ? `held-${held}` : st} use:tip={held ? heldTip(held) : pendingLabel(st, arrive)}>{pendingHead(st, arrive, held)}</span>
+      {/if}
       {#if wrapUp}
         <span class="ns-chip mono" data-wrapup use:tip={"Put here by Nightloom: the window crossed this chat's hand-off mark while you were away. Cancel takes it back."}
           >wrap-up · queued while you were away</span
@@ -206,7 +227,7 @@
         <button class="ns-btn small danger" disabled={working} onclick={() => void run(() => cancelPending(chatKey, row!.id))}>Cancel message</button>
         <button class="ns-btn ghost small" onclick={() => (confirming = false)}>Keep it</button>
       {:else}
-        {#if held}
+        {#if held && !aside}
           <WaitAct
             icon="send"
             accent
@@ -220,7 +241,7 @@
             }}
           />
         {/if}
-        {#if !held && offersReply(st)}
+        {#if !held && !aside && offersReply(st)}
           <WaitAct
             icon="send"
             accent
@@ -234,7 +255,7 @@
             }}
           />
         {/if}
-        {#if !held && plan && offersSendNow(st, plan.plan)}
+        {#if !held && !aside && plan && offersSendNow(st, plan.plan)}
           <WaitAct
             icon="send"
             accent
@@ -249,7 +270,7 @@
             }}
           />
         {/if}
-        {#if !held && offersChoice(st, arrive)}
+        {#if !held && !aside && offersChoice(st, arrive)}
           <WaitAct
             icon="check"
             label="Let it arrive"
