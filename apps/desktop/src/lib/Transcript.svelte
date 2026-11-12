@@ -1324,7 +1324,10 @@
     e.preventDefault();
     // In an aside's card the Escape is the editor's, never the card's ×.
     if (inAside) e.stopPropagation();
-    if (action === "cancel") cancelEdit();
+    // The "drop this edit?" question is already up: Escape answers it
+    // "keep" (in an aside the key never reaches the dialog's own listener).
+    if (action === "cancel" && dropAsk) dropAsk = null;
+    else if (action === "cancel") cancelEdit();
     else if (action === "send") void commitSend(item);
     else void commitSave();
   }
@@ -2036,8 +2039,23 @@
   // A resize changes whether the view scrolls and where the third line is.
   $effect(() => {
     if (!viewport || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(() => measureNav());
-    ro.observe(viewport);
+    const vp = viewport;
+    let height = vp.clientHeight;
+    const ro = new ResizeObserver(() => {
+      // Item 233, shared since 674: a view held at the foot stays there
+      // when its room shrinks or grows (a shorter window, an aside card
+      // given less room by another above the composer).
+      if (vp.clientHeight !== height) {
+        height = vp.clientHeight;
+        if (pinned && !presence.away) {
+          scrollingSelf = true;
+          vp.scrollTop = vp.scrollHeight;
+          requestAnimationFrame(() => (scrollingSelf = false));
+        }
+      }
+      measureNav();
+    });
+    ro.observe(vp);
     return () => ro.disconnect();
   });
 

@@ -314,6 +314,10 @@
    *  panel it is the way back, not the end of the thread. */
   function cardKeys(e: KeyboardEvent): void {
     if (e.key !== "Escape") return;
+    // Item 674: a question the thread's transcript is asking (drop this
+    // edit?) takes the Escape itself — it must never close the card with
+    // a half-typed edit in it.
+    if (root?.querySelector('[role="dialog"][aria-modal="true"]')) return;
     e.preventDefault();
     e.stopPropagation();
     // The discard question is up (backlog 228): Escape answers it "keep".

@@ -467,8 +467,21 @@ export function cleanAsideName(v: unknown): string | null {
   if (typeof v !== "string") return null;
   const one = v.replace(/\s+/g, " ").trim();
   if (!one) return null;
-  return one.length > ASIDE_NAME_MAX ? one.slice(0, ASIDE_NAME_MAX) : one;
+  return cutWords(one, ASIDE_NAME_MAX);
 }
+
+/** `s` in at most `max` characters, cut after a whole word with an
+ *  ellipsis (items 673, 674: his title read cut mid-word, then ended
+ *  abruptly at the name's cap); a single word longer than half the limit
+ *  has no boundary to cut at. */
+function cutWords(s: string, max: number): string {
+  if (s.length <= max) return s;
+  const cut = s.slice(0, max - 1);
+  const sp = cut.lastIndexOf(" ");
+  return (sp > max * 0.5 ? cut.slice(0, sp) : cut).replace(/[\s,;:.—-]+$/, "") + "…";
+}
+/** A question or passage on one line, uncapped: the label's own `max` cuts it. */
+const oneLine = (v: unknown): string | null => (typeof v === "string" ? v.replace(/\s+/g, " ").trim() || null : null);
 
 /** What a thread is called: its name, else its first question, else a
  *  snippet of its passage, else "Aside". One line, at most `max` chars. */
@@ -478,13 +491,8 @@ export function asideLabel(
 ): string {
   const pick =
     cleanAsideName(a.name) ??
-    cleanAsideName(a.turns[0]?.question) ??
-    cleanAsideName(a.quote?.text) ??
+    oneLine(a.turns[0]?.question) ??
+    oneLine(a.quote?.text) ??
     "Aside";
-  if (pick.length <= max) return pick;
-  // Item 673: cut after a whole word (his title read cut mid-word); a
-  // single word longer than half the limit has no boundary to cut at.
-  const cut = pick.slice(0, max - 1);
-  const sp = cut.lastIndexOf(" ");
-  return (sp > max * 0.5 ? cut.slice(0, sp) : cut).replace(/[\s,;:.—-]+$/, "") + "…";
+  return cutWords(pick, max);
 }
