@@ -119,16 +119,17 @@ mod webview_fit;
 
 // The moved command groups, so the code left here (and the tests) reads
 // their items by bare name, as before the move (item 642).
-use commands::notes::*;
-use commands::sessions::*;
-use commands::usage::*;
-// Read only by the tests below.
 use commands::agent::*;
-#[cfg(test)]
-use commands::aside::*;
 use commands::chat::*;
 use commands::connect::*;
+use commands::notes::*;
+use commands::sessions::*;
 use commands::system::*;
+use commands::usage::*;
+
+// Read only by the tests below.
+#[cfg(test)]
+use commands::aside::*;
 
 struct AppState {
     /// The provider engine (the API key's loop). ~~Held for a whole turn
@@ -2827,6 +2828,33 @@ mod tests {
         for (name, text) in [
             ("main.rs", include_str!("main.rs")),
             ("webtab.rs", include_str!("webtab.rs")),
+            // The command groups moved out of main.rs (item 642).
+            ("commands/agent.rs", include_str!("commands/agent.rs")),
+            ("commands/aside.rs", include_str!("commands/aside.rs")),
+            (
+                "commands/attachments.rs",
+                include_str!("commands/attachments.rs"),
+            ),
+            ("commands/chat.rs", include_str!("commands/chat.rs")),
+            ("commands/cli.rs", include_str!("commands/cli.rs")),
+            ("commands/connect.rs", include_str!("commands/connect.rs")),
+            ("commands/context.rs", include_str!("commands/context.rs")),
+            ("commands/edits.rs", include_str!("commands/edits.rs")),
+            ("commands/memory.rs", include_str!("commands/memory.rs")),
+            ("commands/menu.rs", include_str!("commands/menu.rs")),
+            ("commands/mod.rs", include_str!("commands/mod.rs")),
+            ("commands/notes.rs", include_str!("commands/notes.rs")),
+            ("commands/projects.rs", include_str!("commands/projects.rs")),
+            (
+                "commands/providers.rs",
+                include_str!("commands/providers.rs"),
+            ),
+            ("commands/sessions.rs", include_str!("commands/sessions.rs")),
+            ("commands/steer.rs", include_str!("commands/steer.rs")),
+            ("commands/system.rs", include_str!("commands/system.rs")),
+            ("commands/threads.rs", include_str!("commands/threads.rs")),
+            ("commands/turns.rs", include_str!("commands/turns.rs")),
+            ("commands/usage.rs", include_str!("commands/usage.rs")),
         ] {
             assert!(
                 !text.contains(&banned),
