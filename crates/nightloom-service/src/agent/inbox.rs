@@ -462,27 +462,27 @@ impl Inbox {
 
     /// [`on_line`](Self::on_line) at `now` (the wake's clock, 406).
     pub fn on_line_at(&self, line: &str, now: std::time::Instant) -> Option<Effect> {
-        self.track_wake(line, now);
+        // Item 658: the line's own `type`, wherever the key sits.
+        let ty = super::protocol::line_type(line);
+        self.track_wake(line, ty, now);
         if line.contains(r#""subtype":"background_tasks_changed""#) {
             self.track_commands(line);
             return None;
         }
         // Cheap tests first: most lines are none of these.
-        let kind = if line.contains(r#""type":"command_lifecycle""#) {
+        let kind = if ty == Some("command_lifecycle") {
             0
-        } else if line.contains(r#""type":"control_response""#) {
+        } else if ty == Some("control_response") {
             1
-        } else if line.starts_with(r#"{"type":"result""#) || line.contains(r#""type":"result""#) {
+        } else if ty == Some("result") {
             2
         } else if line.contains(r#""subtype":"task_started""#)
             || line.contains(r#""subtype":"task_notification""#)
         {
             3
-        } else if line.starts_with(r#"{"type":"assistant""#)
-            && line.contains(r#""name":"SendMessage""#)
-        {
+        } else if ty == Some("assistant") && line.contains(r#""name":"SendMessage""#) {
             4
-        } else if line.starts_with(r#"{"type":"user""#)
+        } else if ty == Some("user")
             && line.contains(r#""tool_result""#)
             && !self.lock().relays.is_empty()
         {
@@ -821,14 +821,14 @@ impl Inbox {
     /// replayed hand-back (the command is about that agent); and a
     /// main-thread assistant line in a command that began after the
     /// completion — the main thread answered, so no wake.
-    fn track_wake(&self, line: &str, now: std::time::Instant) {
-        let assistant = line.starts_with(r#"{"type":"assistant""#);
-        let user = line.starts_with(r#"{"type":"user""#);
+    /// `ty` is the line's own `type` ([`super::protocol::line_type`]).
+    fn track_wake(&self, line: &str, ty: Option<&str>, now: std::time::Instant) {
+        let assistant = ty == Some("assistant");
+        let user = ty == Some("user");
         let interesting = line.contains(r#""subtype":"task_started""#)
             || line.contains(r#""subtype":"task_notification""#)
             || line.contains(r#""subtype":"init""#)
-            || line.starts_with(r#"{"type":"result""#)
-            || (line.contains(r#""type":"result""#) && !assistant && !user)
+            || ty == Some("result")
             || (assistant && line.contains("SubagentHandback"))
             || (assistant && line.contains(r#""name":"SendMessage""#))
             || (user && line.contains(r#""isReplay":true"#))
@@ -1619,6 +1619,47 @@ mod tests {
         }
     }
 
+    /// A line with its `type` key moved to the end, as CLI 2.1.322 prints
+    /// its `result` line (item 658).
+    fn type_last(line: &str) -> String {
+        let mut v: serde_json::Value = serde_json::from_str(line).unwrap();
+        let kind = v.as_object_mut().unwrap().remove("type").unwrap();
+        let rest = v.to_string();
+        format!("{},\"type\":{kind}}}", &rest[..rest.len() - 1])
+    }
+
+    /// Item 658: every kind the inbox reads — a command's lifecycle, the
+    /// result, the main thread's SendMessage and its tool result — with
+    /// the `type` key last; and a `type` nested in a line is not its own.
+    #[test]
+    fn the_inbox_reads_each_lines_type_wherever_the_key_sits() {
+        let inbox = Inbox::default();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        inbox.open(tx);
+        inbox.send(ID, "late").unwrap();
+        let started = type_last(&lifecycle("started"));
+        assert!(!started.starts_with(r#"{"type""#), "{started}");
+        assert!(matches!(inbox.on_line(&started), Some(Effect::Taken(_))));
+        // A main-thread call whose input holds a `"type":"result"`: a
+        // SendMessage, not a result (the old substring test said result).
+        assert_eq!(
+            inbox.on_line(&type_last(r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_s1","name":"SendMessage","input":{"to":"a8bb","message":"skip June","x":{"type":"result"}}}]},"parent_tool_use_id":null}"#)),
+            None
+        );
+        assert!(matches!(
+            inbox.on_line(&type_last(r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_s1","content":[{"type":"text","text":"Message queued for delivery to a8bb at its next tool round."}]}]},"parent_tool_use_id":null}"#)),
+            Some(Effect::Relayed(Relayed { ok: true, .. }))
+        ));
+        assert_eq!(
+            inbox.on_line(&type_last(RESULT)),
+            Some(Effect::Result {
+                closed: true,
+                running: vec![]
+            })
+        );
+        assert!(!inbox.is_open());
+    }
+
     /// The real CLI through the real turn (nightshift backlog 328): a
     /// message sent at the first call is delivered at the next step and
     /// answered in the same turn; one taken back never reaches the model.
@@ -1712,8 +1753,8 @@ mod tests {
         const A_BENCH: &str = "a05b3fd749ee094f2";
         const A_MARKET: &str = "a162a44caa6992ce2";
 
-        /// A line as the CLI prints it, `type` first: the inbox's cheap
-        /// tests read the prefix, and `json!` sorts its keys.
+        /// A line as the CLI usually prints it, `type` first (`json!` sorts
+        /// its keys); the inbox reads the key wherever it sits (item 658).
         fn typed(mut v: serde_json::Value) -> String {
             let kind = v.as_object_mut().unwrap().remove("type").unwrap();
             let rest = v.to_string();
@@ -2030,6 +2071,39 @@ mod tests {
                 steps.extend(r2.steps.iter().skip(his_sequence().len() + 2).cloned());
                 std::fs::write(path, serde_json::to_string_pretty(&steps).unwrap()).unwrap();
             }
+        }
+
+        /// Item 658: his sequence with every line's `type` key last (the
+        /// wake reads assistant, user and result lines by it): the same one
+        /// wake, at the same time, and the woken command's result closes
+        /// the stdin.
+        #[test]
+        fn the_wake_reads_lines_whose_type_is_not_first() {
+            let last_of = |line: &str| super::type_last(line);
+            let mut r = Run::new();
+            let seq = his_sequence();
+            let last = seq.len() as u64;
+            for (i, (label, line)) in seq.iter().enumerate() {
+                r.line(label, &last_of(line), i as u64);
+                assert!(
+                    !r.tick(i as u64 + 9),
+                    "no wake before the lone notification ({label})"
+                );
+            }
+            assert!(r.inbox.is_open());
+            let due = r.inbox.wake_due().unwrap();
+            assert_eq!(due, r.t0 + Duration::from_secs(last - 1) + WAKE_GRACE);
+            assert!(r.tick(last + 9));
+            assert!(!r.tick(last + 30), "exactly once");
+            assert_eq!(r.written().len(), 1);
+            r.line("init", &last_of(&init()), last + 10);
+            r.line(
+                "woken reply",
+                &last_of(&main_text("m6", "Done.")),
+                last + 11,
+            );
+            r.line("result", &last_of(&result(1)), last + 12);
+            assert!(!r.inbox.is_open());
         }
 
         #[test]
