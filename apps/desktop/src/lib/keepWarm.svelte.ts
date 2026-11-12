@@ -51,6 +51,19 @@ export async function setKeepWarm(chat: string, mode: KeepWarmMode): Promise<str
   }
 }
 
+/** Item 643: hold a chat warm for 12 or 24 h (6 back to the default).
+ *  Resolves to the error's words when refused. */
+export async function holdKeepWarm(chat: string, hours: number): Promise<string | null> {
+  watchKeepWarm();
+  try {
+    const s = await api.keepWarmHold(chat, hours);
+    if (s) keepWarm.byChat[chat] = s;
+    return null;
+  } catch (e) {
+    return String(e);
+  }
+}
+
 /** A chat's tab was closed: its keep-warm run ends. The switch stays as
  *  he set it (item 608), but "until I'm back" ends, as at a send. */
 export function stopKeepWarm(chat: string): void {

@@ -177,9 +177,47 @@ pub async fn keep_warm_set(
     chat: String,
     mode: Mode,
 ) -> Result<Status, String> {
+    let (full, dir, facts) = held_chat(&state, &chat).await?;
+    let now = now_ms();
+    holder.0.set_mode(&full, &dir, mode, facts, now);
+    let status = holder.0.status(&full, Some(&dir), &policy(), now);
+    emit(&app, &status);
+    Ok(status)
+}
+
+/// Hold a chat warm longer (item 643): `hours` 12 or 24 caps its
+/// keep-warm at that many hours after each reply until a whole hold
+/// passes without one; 6 (or anything else) puts it back on the default
+/// cap. A chat whose switch reads off is switched on.
+#[tauri::command]
+pub async fn keep_warm_hold(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    holder: State<'_, Holder>,
+    chat: String,
+    hours: u32,
+) -> Result<Status, String> {
+    let (full, dir, facts) = held_chat(&state, &chat).await?;
+    let now = now_ms();
+    holder.0.set_hold(&full, &dir, hours, facts, now);
+    let status = holder.0.status(&full, Some(&dir), &policy(), now);
+    emit(&app, &status);
+    Ok(status)
+}
+
+/// [`held_chat`]'s answer: the full id, the folder, the facts.
+type HeldChat = (
+    String,
+    std::path::PathBuf,
+    Option<(AgentSpec, keep_warm::Reply)>,
+);
+
+/// A held chat's full id, its keep-warm folder, and — when its log is
+/// free and its agent known — the facts that start a schedule now.
+async fn held_chat(state: &AppState, chat: &str) -> Result<HeldChat, String> {
     let (full, log) = state
         .chats
-        .find(&chat)
+        .find(chat)
         .ok_or_else(|| "open the chat to switch its keep-warm".to_string())?;
     let focused = state.chats.focus().as_deref() == Some(full.as_str());
     let fallback = state.log_dir().await.join("ask").join(&full);
@@ -206,11 +244,7 @@ pub async fn keep_warm_set(
         // Its turn is running: `replied` brings the facts.
         Err(_) => (fallback, None),
     };
-    let now = now_ms();
-    holder.0.set_mode(&full, &dir, mode, facts, now);
-    let status = holder.0.status(&full, Some(&dir), &policy(), now);
-    emit(&app, &status);
-    Ok(status)
+    Ok((full, dir, facts))
 }
 
 /// A chat's keep-warm, for the window: the switch, when the cache goes

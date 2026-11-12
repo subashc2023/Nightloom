@@ -813,6 +813,11 @@ export function keepWarmSet(chat: string, mode: import("./keepWarm").KeepWarmMod
   return invoke("keep_warm_set", { chat, mode });
 }
 
+/** Item 643: hold the chat warm for 12 or 24 h; 6 (the default) takes the hold away. */
+export function keepWarmHold(chat: string, hours: number): Promise<import("./keepWarm").KeepWarmStatus> {
+  return invoke("keep_warm_hold", { chat, hours });
+}
+
 export function keepWarmStatus(chat: string): Promise<import("./keepWarm").KeepWarmStatus> {
   return invoke("keep_warm_status", { chat });
 }

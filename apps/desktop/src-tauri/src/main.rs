@@ -9612,6 +9612,7 @@ fn main() {
             restore_block,
             fork_session,
             keep_warm::keep_warm_set,
+            keep_warm::keep_warm_hold,
             keep_warm::keep_warm_status,
             keep_warm::keep_warm_stop,
             keep_warm::keep_warm_default,
