@@ -20,6 +20,14 @@
  * For Enter, also the end of the opening fence line itself, so typing
  * ```py and Enter starts the block instead of sending three backticks.
  * After the closing fence, Enter sends as before.
+ *
+ * Item 676 (his bug, 2026-11-12: "i cant fucking get out of the cpp code
+ * block … ohh its cuz i never did the closing ```"): a block never traps
+ * the caret. ```py and Enter with nothing below adds the closing fence;
+ * Right at the end of an unclosed block, or Down on its last line, adds
+ * the closing fence and puts the caret on a new line below; at a closed
+ * block's foot Right and Down step onto the line after it (added if the
+ * fence ends the text).
  */
 import { isImeKey } from "./imeKey";
 
@@ -177,6 +185,7 @@ export function codeBlockEdit(text: string, start: number, end: number, e: Block
   const chord = !!(e.metaKey || e.ctrlKey);
   if (e.key === "Enter") return chord || e.altKey ? null : enter(text, from, to);
   if (e.key === "ArrowRight") return chord || e.altKey || e.shiftKey || start !== end ? null : pastFence(text, from);
+  if (e.key === "ArrowDown") return chord || e.altKey || e.shiftKey || start !== end ? null : belowBlock(text, from);
   if (chord) return null;
   if (e.key === "Tab") return e.altKey ? null : tab(text, from, to, !!e.shiftKey);
   if (e.key === "Backspace") return e.altKey || e.shiftKey ? null : backspace(text, from, to);
@@ -197,6 +206,15 @@ function enter(text: string, from: number, to: number): BlockEdit | null {
   const before = text.slice(lines.starts[L], from);
   const indent = leadingWs(before);
   if (L === f.open) {
+    // Item 676: ```py and Enter with nothing after it adds the closing
+    // fence below, so the block is closed from the start and never traps
+    // the caret. Not when text follows (a fence typed above lines to wrap
+    // them is closed by hand where they end).
+    if (f.close === null && from === to && text.slice(from).trim() === "") {
+      const first = "\n" + indent;
+      const ins = first + "\n" + closingFence(text, f);
+      return { from, to, insert: ins, anchor: from + first.length, head: from + first.length };
+    }
     const ins = "\n" + indent;
     return { from, to, insert: ins, anchor: from + ins.length, head: from + ins.length };
   }
@@ -338,19 +356,68 @@ function closer(text: string, from: number, to: number, key: string): BlockEdit 
   return { from, to, insert: "", anchor: from + 1, head: from + 1 };
 }
 
+/** The fence that closes `f`: its opening line's indent and mark (``` or
+ *  ~~~, as long as the opener's), so the pair reads as one block. */
+function closingFence(text: string, f: Fence): string {
+  const eol = text.indexOf("\n", f.start);
+  const m = OPEN.exec(text.slice(f.start, eol < 0 ? text.length : eol));
+  return m ? m[1] + m[2] : "```";
+}
+
+/**
+ * Item 676 (his words, 2026-11-12: "if i try to do right arrow even
+ * without the closing ``` then you should auto put the three `` and then
+ * send me to new line"): the unclosed block `f`, which runs to the end of
+ * the text, gets its closing fence on a line of its own, then a new line
+ * below it with the caret there — one edit, one undo. An empty last line
+ * takes the fence; any other last line (text, or indentation, kept as
+ * typed) gets the fence on the line after it. Nothing typed is removed.
+ */
+function closeAndExit(text: string, f: Fence): BlockEdit {
+  const lastStart = text.lastIndexOf("\n") + 1;
+  const emptyLast = lastStart > f.start && lastStart === text.length;
+  const ins = (emptyLast ? "" : "\n") + closingFence(text, f) + "\n";
+  const at = text.length;
+  return { from: at, to: at, insert: ins, anchor: at + ins.length, head: at + ins.length };
+}
+
+/**
+ * Down arrow on the box's last line, at the foot of a block (item 676):
+ * on a closing fence that ends the text, a new line is added below and the
+ * caret goes onto it; inside an unclosed block, the block is closed and
+ * the caret goes below it (`closeAndExit`). Down anywhere else — a line
+ * with a line below it, or after a block — is the box's own.
+ */
+function belowBlock(text: string, pos: number): BlockEdit | null {
+  const lines = linesOf(text);
+  const L = lineIndex(lines, pos);
+  if (L !== lines.starts.length - 1) return null;
+  const fences = fencesOf(text);
+  if (fences.some((f) => f.close === L)) {
+    return { from: text.length, to: text.length, insert: "\n", anchor: text.length + 1, head: text.length + 1 };
+  }
+  const open = fences.find((f) => f.close === null && f.open <= L);
+  return open ? closeAndExit(text, open) : null;
+}
+
 /**
  * Right arrow at the very end of a closing fence (his ask, 2026-11-11:
  * "there should be a new line placed at the end of a code block always so
  * that i can just jump to it with right arrow"): the caret goes to the
  * start of the line after the block, and when the fence ends the text a
  * newline is added first — one undoable step. Anywhere else Right is the
- * box's own.
+ * box's own — except the end of an unclosed block (the end of the text,
+ * the caret inside it), where the closing fence is added first (item 676,
+ * `closeAndExit`).
  */
 function pastFence(text: string, pos: number): BlockEdit | null {
   const lines = linesOf(text);
   const L = lineIndex(lines, pos);
   if (pos !== lines.ends[L]) return null;
-  if (!fencesOf(text).some((f) => f.close === L)) return null;
+  if (!fencesOf(text).some((f) => f.close === L)) {
+    const f = pos === text.length ? blockAt(text, pos) : null;
+    return f && f.close === null ? closeAndExit(text, f) : null;
+  }
   if (pos === text.length) return { from: pos, to: pos, insert: "\n", anchor: pos + 1, head: pos + 1 };
   return { from: pos, to: pos, insert: "", anchor: pos + 1, head: pos + 1 };
 }
