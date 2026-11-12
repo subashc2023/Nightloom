@@ -45,8 +45,18 @@
    * track; gear A (24 teeth), gear B (16 blocks), gear C and the 5-hour hand
    * (on gear C's radius), and the radar, all in the band between the figure's
    * corners (r ≈ 30) and the inner ring (r ≈ 44), so the figure stays clear.
+   *
+   * Item 654 (his pick B3): `gear` — the context drives the machinery
+   * (`dialDrive.ts`, read once a frame): gear A gains one 15° tooth per 1k
+   * tokens (gear B ratchets with it, gear C at 0.6×) and winds to the real
+   * figure at the end, backward when it is lower; the audio ring's surge and
+   * the radar's speed follow the token rate while a reply runs; gear A's
+   * index teeth glow with the rate and click bright on landing, and the ring
+   * swells then. Under reduced motion the still frame draws the gears at the
+   * token position (`gearKey` redraws it). Without `gear`, as before.
    */
   import { onMount, untrack } from "svelte";
+  import type { GearView } from "./dialDrive";
   import { tip as tipAction } from "./tip";
   import { shortClock } from "./newChatPage";
   import {
@@ -96,9 +106,13 @@
     layers?: string[] | null;
     /** Item 587: the right column's form (gears and the wave, legible at ~104 px). */
     column?: boolean;
+    /** Item 654: the context's drive on the gears, radar and ring (read each frame); null: the clock alone. */
+    gear?: GearView | null;
+    /** Item 654: bumped when `gear` changes, so the still frame redraws. */
+    gearKey?: number;
   }
 
-  let { size, pad, lit = null, spinKey = null, flowKey = "", typed = 0, labelGaps = false, plan = null, quiet = false, streaming = false, layers = null, column = false }: Props = $props();
+  let { size, pad, lit = null, spinKey = null, flowKey = "", typed = 0, labelGaps = false, plan = null, quiet = false, streaming = false, layers = null, column = false, gear = null, gearKey = 0 }: Props = $props();
 
   /** Room past the dial's box for the wave's tallest spokes. */
   const compact = $derived(size < 150 && !column);
@@ -204,6 +218,14 @@
     untrack(paint);
   });
 
+  /** Item 654: the landings seen (−1: none yet, so the first reading swells nothing). */
+  let lastLandings = -1;
+  // The still form (reduced motion) has no loop: redraw when the drive moves.
+  $effect(() => {
+    void gearKey;
+    if (!running) untrack(paint);
+  });
+
   // ---- the 5-hour hand: where it points, and its hover target
   let minute = $state(Date.now());
   const slow = $derived.by(() => {
@@ -246,9 +268,10 @@
     ctx.translate(c, c);
     ctx.lineCap = "butt";
     // The still form is the idle shape: no surge.
-    const surge = still ? 0 : level(energy, t) + (hook?.energy ?? 0) + (streaming ? STREAM_SURGE : 0);
-    // The gears' turn: 6°/s, plus the spin-up and a nudge per key.
-    const turnA = 6 * t + integral(spin, t) + (hook?.spin ?? 0);
+    const surge = still ? 0 : level(energy, t) + (hook?.energy ?? 0) + (streaming ? (gear?.surge ?? STREAM_SURGE) : 0);
+    // The gears' turn: 6°/s, plus the spin-up and a nudge per key; item 654: plus the tokens.
+    const tok = gear?.tok ?? 0;
+    const turnA = 6 * t + integral(spin, t) + (hook?.spin ?? 0) + tok;
     const radial = (th: number, r1: number, r2: number) => {
       const s = Math.sin(th);
       const co = -Math.cos(th);
@@ -263,7 +286,7 @@
 
     // radar: a wedge sweeping the band behind the gears, every 5 s.
     if (!compact && shows("radar") && typeof ctx.createConicGradient === "function") {
-      const head = rad(72 * t);
+      const head = rad(72 * t + (gear?.radar ?? 0));
       const wedge = rad(70);
       // Item 587: the column's band runs from the figure's corners to the inner ring.
       const ro = column ? R - 9 : R - 31 * k;
@@ -290,7 +313,7 @@
 
     // gearC: three long segments, clockwise, slower.
     if (!compact && shows("gearC")) {
-      const a = rad(10 * t + 0.6 * integral(spin, t) + (hook?.spin ?? 0) * 0.6);
+      const a = rad(10 * t + 0.6 * integral(spin, t) + (hook?.spin ?? 0) * 0.6 + 0.6 * tok);
       // Item 587: the column's form — just outside the figure's corners, thinner.
       const r = column ? R - 21 : R - 54 * k;
       const cap = column ? 1.6 : 4 * k;
@@ -355,7 +378,7 @@
       ctx.lineWidth = column ? 1.8 : (compact ? 1.4 : 1.6) * k;
       for (const pass of [0, 1]) {
         ctx.strokeStyle = pass ? ink.accent : ink.dim;
-        ctx.globalAlpha = (pass ? 1 : 0.62) * dim;
+        ctx.globalAlpha = Math.min(1, (pass ? 1 : 0.62) * dim * (pass ? (gear?.glow ?? 1) : 1));
         ctx.beginPath();
         for (let i = 0; i < n; i++) {
           const th = a + (i * TAU) / n;
@@ -526,6 +549,11 @@
       }
       seen = { x: pointer.x, y: pointer.y };
     } else seen = null;
+    // Item 654: a landing swells the ring.
+    if (gear && gear.landings !== lastLandings) {
+      if (lastLandings >= 0) swells = [...swells.filter((s) => t0f - s < 0.8), t0f];
+      lastLandings = gear.landings;
+    }
     paint();
     const t = clock();
     prune(energy, t);

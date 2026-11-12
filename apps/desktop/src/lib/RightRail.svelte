@@ -3,6 +3,7 @@
   import TaskPanel from "./TaskPanel.svelte";
   import ContextDial from "./ContextDial.svelte";
   import DialMotion from "./DialMotion.svelte";
+  import { ContextDrive } from "./contextDrive.svelte";
   import { app, chatAgentSession, contextUsed, currentTodos } from "./state.svelte";
   import * as api from "./api";
   import {
@@ -140,6 +141,35 @@
   const TTL_MS = { "5m": 5 * 60_000, "1h": 60 * 60_000 } as const;
   const cacheShare = $derived(cache ? Math.max(0, cache.remainingMs) / TTL_MS[cache.ttl] : null);
   const cacheLeft = $derived(cache ? remainingText(cache.remainingMs) : null);
+
+  /**
+   * Item 654 (his pick B3, blocker 1962): the column's dial moves with a
+   * reply — the drive (`dialDrive.ts`) follows the live reading while one
+   * runs (the chat's `liveCtx`; an aside's figure as it lands) and runs the
+   * landing when it ends; ContextDial draws its layer, DialMotion's gears
+   * count its tokens. At rest it holds still, as before.
+   */
+  const drive = new ContextDrive();
+  $effect(() => {
+    if (!column || used == null || !limit) return;
+    drive.set({
+      exact: liveCtx ? liveCtx.exact : used,
+      estimate: liveCtx ? liveCtx.estimate : 0,
+      limit,
+      streaming: live,
+      ticks: ticks.minor,
+    });
+  });
+  $effect(() => () => drive.destroy());
+  const dv = $derived(column && used != null && limit ? drive.view : null);
+  /** The figure: the drive's count while it moves, `~` while it is an estimate. */
+  const dialValue = $derived.by(() => {
+    if (dv && used != null) {
+      const estimating = dv.estimating || (liveCtx != null && liveCtx.estimate > 0);
+      return `${estimating || est ? "~" : ""}${shortTokens(dv.figure)}`;
+    }
+    return liveCtx ? liveValue(liveCtx, shortTokens) : used != null ? `${est ? "~" : ""}${shortTokens(used)}` : "—";
+  });
 
   /** Plan use (backlog 073): the Claude Code engine's five-hour and week, account-wide. */
   const plan = $derived.by(() => {
@@ -305,16 +335,17 @@
              all of the new-chat dial's layers, the gears, radar and 5-hour hand between the figure and the inner ring; his keys surge it too); the ring holds a gentle surge while a turn streams
              and each new tool call nudges it. Paused when hidden, still under reduced motion. -->
         <div class="dm-at">
-          <DialMotion size={104} pad={14} quiet column layers={COLUMN_LAYERS} plan={motionPlan} streaming={live} typed={marks.length + keys} flowKey={stepKey} />
+          <DialMotion size={104} pad={14} quiet column layers={COLUMN_LAYERS} plan={motionPlan} streaming={live} typed={marks.length + keys} flowKey={stepKey} gear={dv ? drive.gear : null} gearKey={drive.n} />
         <ContextDial
           size={104}
-          {share}
+          share={dv ? dv.solid : share}
           mark={markShare}
           inner={cache ? cacheShare : null}
-          estimate={estShare}
+          estimate={dv ? null : estShare}
+          drive={dv}
           minor={ticks.minor}
           major={ticks.major}
-          value={liveCtx ? liveValue(liveCtx, shortTokens) : used != null ? `${est ? "~" : ""}${shortTokens(used)}` : "—"}
+          value={dialValue}
           unit={limit ? `of ${shortTokens(limit)}` : used != null ? "window unknown" : ""}
           label={used != null
             ? `Context ${(liveCtx && liveCtx.estimate > 0) || est ? "about " : ""}${used.toLocaleString()} tokens${limit ? ` of ${limit.toLocaleString()}` : ""}${liveCtx && liveCtx.estimate > 0 ? ", estimated since the last step" : ""}${est ? ", estimated" : ""}`

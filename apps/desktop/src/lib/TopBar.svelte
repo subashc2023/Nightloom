@@ -18,6 +18,9 @@
   import { keepWarm } from "./keepWarm.svelte";
   import { cacheState } from "./cache";
   import ContextDial from "./ContextDial.svelte";
+  import { lastLoggedTurn } from "./contextDial";
+  import { liveFor, liveTokens } from "./liveContext";
+  import { liveContextOf } from "./liveContext.svelte";
   import { mark as handoffMark } from "./handoff.svelte";
   import { connectionWord, launch } from "./launch.svelte";
   import { budgetChip, budgetTitle } from "./budget";
@@ -171,8 +174,36 @@
    * model reading the same figure in its sidecar — that there is headroom
    * nobody verified.
    */
+  /**
+   * Item 654 (B3's chip: "stays simple"): while the chat's reply runs, the
+   * chip reads the live figure the right column does (item 590's), so its
+   * arc eases with the reply (ContextDial's 300 ms) and the figure shows
+   * `~`, dimmed, while it is an estimate; when the reply ends it flashes
+   * once as it lands on the real figure. Asides keep their own figures.
+   */
+  const liveCtx = $derived(
+    !aside && app.busy && app.live != null
+      ? liveFor(liveContextOf(app.activeSessionId), lastLoggedTurn(app.events)?.startedAt ?? null)
+      : null,
+  );
+  const liveEst = $derived(liveCtx != null && liveCtx.estimate > 0);
+  let landFlash = $state(false);
+  let wasLive = false;
+  $effect(() => {
+    const on = liveCtx != null;
+    if (wasLive && !on) {
+      landFlash = true;
+      const id = setTimeout(() => (landFlash = false), 500);
+      wasLive = on;
+      return () => {
+        clearTimeout(id);
+        landFlash = false;
+      };
+    }
+    wasLive = on;
+  });
   const gauge = $derived.by(() => {
-    const used = af ? af.used : contextUsed();
+    const used = af ? af.used : liveCtx ? liveTokens(liveCtx) : contextUsed();
     if (used == null) return null;
     const limit = app.connection?.contextLimit ?? null;
     const ratio = limit ? Math.min(used / limit, 1) : null;
@@ -721,7 +752,7 @@
                   label={`Context ${Math.round(gauge.ratio * 100)}%`}
                 />
               {/if}
-              <span class="figure">{af?.estimated ? "~" : ""}{tokens(gauge.used)}</span>
+              <span class="figure" class:dimmed={liveEst} class:landed={landFlash}>{af?.estimated || liveEst ? "~" : ""}{tokens(gauge.used)}</span>
             </span>
           {/if}
           {#if plan}
@@ -1178,6 +1209,19 @@
   }
   .gauge.hot .reading[data-reading="context"] .figure {
     color: var(--failed);
+  }
+  /* Item 654: an estimate reads dimmed; the landing flashes once (motion only). */
+  .gauge .reading .figure.dimmed {
+    color: var(--ink2);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .gauge .reading[data-reading="context"] .figure {
+      transition: color 500ms ease;
+    }
+    .gauge .reading[data-reading="context"] .figure.landed {
+      color: var(--accent-ink);
+      transition: color 80ms ease;
+    }
   }
   .gc-bar .fill {
     display: block;
