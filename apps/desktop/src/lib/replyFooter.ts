@@ -27,6 +27,17 @@ export function stopNote(stopReason: string | null | undefined): string | null {
   return null;
 }
 
+/** The footer's stop note for a reply that may be Nightloom's stand-in
+ *  (item 665): none when it is, since the stand-in's notice already says
+ *  the same reason in full — "No reply: API Error …" drew twice, the notice
+ *  and a red "stopped · API Error …" under it. The notice is the clearer of
+ *  the two (whole sentence, wrapped, under the "Nightloom" header), so it
+ *  is the one kept, for every stand-in: an error, a stop before a reply,
+ *  and signed out (its own notice with Sign in). */
+export function footerStopNote(stopReason: string | null | undefined, standIn: boolean): string | null {
+  return standIn ? null : stopNote(stopReason);
+}
+
 /** The service's words for a turn that ended before the model said
  *  anything (backlog 361; `nightloom_core::STOPPED_BEFORE_REPLY` and
  *  `NO_REPLY_PREFIX`) — Nightloom's, not the model's. */

@@ -1,5 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { hasUsage, isStandIn, stopNote } from "./replyFooter";
+import { footerStopNote, hasUsage, isStandIn, stopNote } from "./replyFooter";
+
+describe("the error drawn once (item 665)", () => {
+  const refusal =
+    "API Error: Opus 5.5's safeguards flagged this message … Details: [reasoning_extraction]";
+  it("leaves the footer silent under a stand-in, which already says why", () => {
+    const reason = `error: ${refusal}`;
+    expect(isStandIn([`No reply: ${refusal}`], reason)).toBe(true);
+    expect(footerStopNote(reason, true)).toBeNull();
+    expect(footerStopNote("stopped", true)).toBeNull();
+    expect(footerStopNote("error: signed out: Not logged in", true)).toBeNull();
+  });
+  it("keeps the footer's note on a reply that said something", () => {
+    expect(footerStopNote(`error: ${refusal}`, false)).toBe(`stopped · ${refusal}`);
+    expect(footerStopNote("cut off: the stream ended", false)).toBe("cut off · the stream ended");
+    expect(footerStopNote("end_turn", false)).toBeNull();
+  });
+});
 
 describe("reply footer (backlog 332)", () => {
   it("shows no figure for a reply with no usage", () => {
