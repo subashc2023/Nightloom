@@ -268,17 +268,53 @@ function tab(text: string, from: number, to: number, out: boolean): BlockEdit | 
   return { from: rFrom, to: rTo, insert, anchor: map(from, true), head: map(to, false) };
 }
 
-/** Backspace between an empty pair inside a block deletes both. */
+/** Backspace between an empty pair inside a block deletes both; with only
+ *  spaces or tabs before the caret on its line, it deletes back to the
+ *  previous indent stop (item 653). */
 function backspace(text: string, from: number, to: number): BlockEdit | null {
   if (from !== to || from === 0) return null;
   const prev = text.charAt(from - 1);
   const isQuote = QUOTES.has(prev) && text.charAt(from) === prev;
-  if (!isQuote && (!(prev in OPENERS) || OPENERS[prev] !== text.charAt(from))) return null;
+  if (!isQuote && (!(prev in OPENERS) || OPENERS[prev] !== text.charAt(from))) return outdentBack(text, from);
   const f = blockAt(text, from, true);
   if (!f) return null;
   // An empty quote pair, not one in a comment (there quotes are prose).
   if (isQuote && scanTo(text, f.bodyFrom, from - 1) === "comment") return null;
   return { from: from - 1, to: from + 1, insert: "", anchor: from - 1, head: from - 1 };
+}
+
+/** Tab stops count four columns, as `tab()`'s Shift+Tab does. */
+const TAB_WIDTH = 4;
+
+/**
+ * Backspace (no selection) in a block's body with only spaces/tabs before
+ * the caret on its line, and at least one (item 653): a tab right before
+ * the caret goes as one; a run of spaces goes back to the previous stop of
+ * the block's indent step (8 → 4, 6 → 4, 3 → 0 with four), never past a
+ * tab. Null elsewhere: the box's own Backspace.
+ */
+function outdentBack(text: string, from: number): BlockEdit | null {
+  const lines = linesOf(text);
+  const start = lines.starts[lineIndex(lines, from)];
+  const ws = text.slice(start, from);
+  if (ws === "" || !/^[ \t]+$/.test(ws)) return null;
+  const f = blockAt(text, from, true);
+  if (!f) return null;
+  let cut = 1;
+  if (!ws.endsWith("\t")) {
+    const col = (s: string): number => {
+      let c = 0;
+      for (const ch of s) c = ch === "\t" ? (Math.floor(c / TAB_WIDTH) + 1) * TAB_WIDTH : c + 1;
+      return c;
+    };
+    const unit = indentUnit(text, f);
+    const w = unit === "\t" ? TAB_WIDTH : unit.length;
+    const runStart = ws.lastIndexOf("\t") + 1;
+    const floor = col(ws.slice(0, runStart));
+    const here = col(ws);
+    cut = here - Math.max(floor, Math.floor((here - 1) / w) * w);
+  }
+  return { from: from - cut, to: from, insert: "", anchor: from - cut, head: from - cut };
 }
 
 /** An opener inside a block: wraps a selection, else auto-closes before

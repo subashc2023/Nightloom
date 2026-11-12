@@ -1,7 +1,8 @@
 // Item 648: the code-editor keys inside a ``` block in a message box.
 import { describe, expect, it } from "vitest";
 import type { EditorView } from "@codemirror/view";
-import { undoDepth } from "@codemirror/commands";
+import { undo, undoDepth } from "@codemirror/commands";
+import { BoxHistory } from "./boxHistory";
 import { applyBlockEdit, applyToField, blockAt, codeBlockEdit, fencesOf, indentUnit, scanTo, takeBlockKey, type BlockKey } from "./codeBlockKeys";
 import { findFences } from "./codeDetect";
 import { composerKeymap, composerState, LiveBoxHandle } from "./composerEditor";
@@ -295,6 +296,52 @@ describe("quotes inside a block (648, blocker 1928: \"unless you're in a comment
   });
 });
 
+describe("Backspace in a line's leading whitespace inside a block (653)", () => {
+  const sp = (n: number) => " ".repeat(n);
+  it("deletes back to the previous indent stop of a four-space step: 8 → 4, 6 → 4, 3 → 0, 4 → 0", () => {
+    expect(press("```\n" + sp(8) + "|", "Backspace")).toBe("```\n" + sp(4) + "|");
+    expect(press("```\n" + sp(6) + "|\n```", "Backspace")).toBe("```\n" + sp(4) + "|\n```");
+    expect(press("```\n" + sp(3) + "|", "Backspace")).toBe("```\n|");
+    expect(press("```\n" + sp(4) + "|", "Backspace")).toBe("```\n|");
+    expect(press("```\n" + sp(1) + "|", "Backspace")).toBe("```\n|");
+  });
+  it("with code after the caret too", () => {
+    const head = "```py\nif x:\n" + sp(4) + "if y:\n";
+    expect(press(head + sp(8) + "|z = 1", "Backspace")).toBe(head + sp(4) + "|z = 1");
+  });
+  it("uses the block's own step (two spaces in a block written with two)", () => {
+    expect(press("```\na\n  b\n    c\n" + sp(4) + "|", "Backspace")).toBe("```\na\n  b\n    c\n" + sp(2) + "|");
+    expect(press("```\na\n  b\n    c\n" + sp(3) + "|", "Backspace")).toBe("```\na\n  b\n    c\n" + sp(2) + "|");
+  });
+  it("a tab right before the caret deletes as one", () => {
+    expect(press("```\n\t\t|", "Backspace")).toBe("```\n\t|");
+    expect(press("```\n\t|x", "Backspace")).toBe("```\n|x");
+    expect(press("```\n" + sp(2) + "\t|", "Backspace")).toBe("```\n" + sp(2) + "|");
+  });
+  it("spaces after a tab stop at the tab, never past it", () => {
+    expect(press("```\n\t" + sp(6) + "|", "Backspace")).toBe("```\n\t" + sp(4) + "|");
+    expect(press("```\n\t" + sp(2) + "|", "Backspace")).toBe("```\n\t|");
+  });
+  it("unchanged: mid-line, column 0, a selection, the fence lines, outside a block, modified or composing keys", () => {
+    expect(press("```\nx" + sp(4) + "|", "Backspace")).toBeNull();
+    expect(press("```\n" + sp(4) + "x|", "Backspace")).toBeNull();
+    expect(press("```\na\n|" + sp(4) + "b", "Backspace")).toBeNull();
+    expect(press("```\n[" + sp(8) + "]", "Backspace")).toBeNull();
+    expect(press("```\n" + sp(4) + "[" + sp(4) + "]", "Backspace")).toBeNull();
+    expect(press(sp(2) + "```|\nx", "Backspace")).toBeNull();
+    expect(press("```\nx\n" + sp(2) + "|```", "Backspace")).toBeNull();
+    expect(press(sp(8) + "|", "Backspace")).toBeNull();
+    expect(press("```\nx\n```\n" + sp(8) + "|", "Backspace")).toBeNull();
+    expect(press("```\n" + sp(8) + "|", { key: "Backspace", altKey: true })).toBeNull();
+    expect(press("```\n" + sp(8) + "|", { key: "Backspace", metaKey: true })).toBeNull();
+    expect(press("```\n" + sp(8) + "|", { key: "Backspace", keyCode: 229 })).toBeNull();
+  });
+  it("648's paired delete still wins after leading whitespace", () => {
+    expect(press("```\n" + sp(4) + "(|)", "Backspace")).toBe("```\n" + sp(4) + "|");
+    expect(press("```\n" + sp(4) + '"|"', "Backspace")).toBe("```\n" + sp(4) + "|");
+  });
+});
+
 describe("Right arrow at the end of a closing fence (648)", () => {
   it("the fence ends the text: a new line is added and the caret goes onto it", () => {
     expect(press("```\nx\n```|", "ArrowRight")).toBe("```\nx\n```\n|");
@@ -430,5 +477,35 @@ describe("applied to the boxes (648)", () => {
     expect(takeBlockKey(key("Backspace"), h)).toBe(true);
     expect(h.value).toBe("```\n  f() {\n      ");
     expect(undoDepth(state)).toBeGreaterThan(0);
+  });
+  it("653: an indent-step Backspace is one undo step, in the formatted box and the plain box's history", () => {
+    // Formatted (CodeMirror) box.
+    let state = composerState("```\nx\n        ", [composerKeymap()]);
+    const view = {
+      get state() {
+        return state;
+      },
+      dispatch(spec: Parameters<typeof state.update>[0]) {
+        state = state.update(spec).state;
+      },
+    };
+    const h = new LiveBoxHandle(view as unknown as EditorView);
+    const depth = undoDepth(state);
+    expect(takeBlockKey(key("Backspace"), h)).toBe(true);
+    expect(h.value).toBe("```\nx\n    ");
+    expect(undoDepth(state)).toBe(depth + 1);
+    expect(undo({ state, dispatch: (tr) => (state = tr.state) })).toBe(true);
+    expect(state.doc.toString()).toBe("```\nx\n        ");
+    // Plain box: Composer's `applyBoxEdit` records the edit as one `external` step.
+    const el = new FakeField();
+    el.value = "```\nx\n      ";
+    el.setSelectionRange(el.value.length, el.value.length);
+    const hist = new BoxHistory(el.value);
+    const ed = codeBlockEdit(el.value, el.selectionStart, el.selectionEnd, { key: "Backspace" })!;
+    const next = applyToField(el, ed);
+    expect(hist.external(next, ed.head)).toBe(true);
+    expect(el.value).toBe("```\nx\n    ");
+    expect(hist.undo()?.text).toBe("```\nx\n      ");
+    expect(hist.canUndo).toBe(false);
   });
 });
