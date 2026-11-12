@@ -54,13 +54,23 @@ function benchAll(srcs: Record<string, string>, hr: number): Record<string, numb
   return out;
 }
 const base = newSrc("horizon");
-const rep = (a: string, b: string) => { if (!base.includes(a)) throw new Error("missing: " + a.slice(0, 50)); return base.replace(a, b); };
+const rep = (a: string, b: string, src = base) => { if (!src.includes(a)) throw new Error("missing: " + a.slice(0, 50)); return src.replace(a, b); };
+// The previous built set (stars Vivid, aurora Vivid+, events Soft, no satellite: nightshift a86e9e8), from the max source.
+const softSrc = (() => {
+  let s = base;
+  for (const k of ["starSky2(q, u, ", "cometSky(q, ", "meteors(q, ", "moonSky(q, ", "breakers(q, dy, ", "reflectSea(q, dy, "]) s = s.split(k + "2.0)").join(k + "1.0)");
+  s = rep("if (fi >= 6.0) break;", "if (fi >= 3.0) break;", s);
+  s = rep("if (h1(id * 1.37 + 0.5) > 0.55) return", "if (h1(id * 1.37 + 0.5) > 0.35) return", s);
+  return rep("if (wN > 0.0 && ev > 0.5) col += satellite(q) * wN;", "", s);
+})();
 const V: Record<string, string> = {
   clear: "",
   shipped: baseSrc("horizon"),
   now: base,
   noL2: rep("for (int L = 0; L < 3; L++) {\n    float fl = float(L), sz = L == 0 ? 24.0", "for (int L = 0; L < 2; L++) {\n    float fl = float(L), sz = L == 0 ? 24.0"),
-  noStars: rep("col += (starSky2(q, u, 1.0) + moonSky", "col += (moonSky"),
+  soft: softSrc,
+  noStars: base.replace(/col \+= \(starSky2\(q, u, [0-9.]+\) \+ moonSky/, "col += (moonSky"),
+  noSatellite: rep("if (wN > 0.0 && ev > 0.5) col += satellite(q) * wN;", ""),
   noReflect: rep("if (dy < 80.0) col += reflectSea", "if (false) col += reflectSea"),
   noBreakers: rep("if (dy < 60.0 && ev > 0.5) col += breakers", "if (false) col += breakers"),
   noSunSky: rep("if (wE > 0.0) sky += (duskSky(u, lat) + sunSky(q)) * wE;", ""),

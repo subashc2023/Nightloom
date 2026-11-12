@@ -193,7 +193,9 @@ export function seaTyping(): SeaTyping {
 // sky follows his local clock: a soft dawn (7–9 AM), the aurora by day (11:30 AM–2:30 PM), the red sun at evening
 // (5:30–7:30 PM), stars and space dust at night (10 PM–4:30 AM), each handover a 2.5–3 h smoothstep. On top: a slow comet at
 // night, rare shooting stars (~2 a minute), distant waves breaking on the far sea, a crescent moon, the sky reflected in the
-// sea. Built set (the orchestrator's pick from round 3): stars Vivid, aurora Vivid+, every event Soft, no satellite.
+// sea, and a satellite crossing the night. Built set: every element at its strongest (his round 3 verdict, 2026-11-12: "i made
+// all of the options pick strong, vivid+ on and wtv else was like the max version and it loked a lot better"): stars Vivid+,
+// aurora Vivid+, comet / shooting stars / breakers / moon / reflection Strong, satellite on.
 // Reduce motion: one still pose at the current hour (redrawn once a minute), no events. Radar is untouched.
 // Design and measurements: nightshift notes/runner-design/671-r3-designs/index.html and 671-r3-report-2026-11-12.md.
 
@@ -205,16 +207,20 @@ export const SKY_HANDOVERS: readonly [number, number][] = [
   [19.5, 22.0],
 ];
 const H = SKY_HANDOVERS;
-/** The built levels (1 = round 3's Soft/Vivid, 2 = Strong/Vivid+). */
-export const SKY_LEVELS = { stars: 1, aurora: 2, events: 1 } as const;
-/** Shooting stars: one slot of this many seconds holds at most one, with probability METEOR_P. */
+/** The built levels (1 = round 3's Soft/Vivid, 2 = Strong/Vivid+): all at 2, his pick. */
+export const SKY_LEVELS = { stars: 2, aurora: 2, events: 2 } as const;
+/** Shooting stars: one slot of this many seconds holds at most one, with probability METEOR_P (Strong: ~3 a minute). */
 export const METEOR_SLOT = 10;
-export const METEOR_P = 0.35;
+export const METEOR_P = 0.55;
 /** The comet: one pass per this many seconds, visible from 0 to 0.88 of it. */
 export const COMET_PERIOD = 300;
-/** Distant breakers: lanes, and one wave's life (s); each lane's period is 8–14 s, longer than a life. */
-export const BREAKER_LANES = 3;
+/** Distant breakers: lanes (Strong: 6), and one wave's life (s); each lane's period is 8–14 s, longer than a life. */
+export const BREAKER_LANES = 6;
 export const BREAKER_LIFE = 5.5;
+/** The satellite: a slot of this many seconds holds one pass with probability SATELLITE_P; a pass crosses in SATELLITE_PASS s. */
+export const SATELLITE_SLOT = 70;
+export const SATELLITE_P = 0.6;
+export const SATELLITE_PASS = 25;
 
 const smooth = (a: number, b: number, x: number) => {
   const k = Math.min(1, Math.max(0, (x - a) / (b - a)));
@@ -252,6 +258,12 @@ export function meteorSlot(id: number): { on: boolean; start: number; dur: numbe
 export function cometVisibility(te: number): number {
   const f = (te - Math.floor(te / COMET_PERIOD) * COMET_PERIOD) / COMET_PERIOD;
   return smooth(0, 0.08, f) * (1 - smooth(0.78, 0.88, f));
+}
+/** The satellite's fade at event time `te` (s), as satellite() draws it: 0 outside a pass, 4 s fades at each end. */
+export function satelliteVisibility(te: number): number {
+  const id = Math.floor(te / SATELLITE_SLOT), tt = te - id * SATELLITE_SLOT;
+  if (skyHash(id * 3.17 + 0.9) > SATELLITE_P || tt > SATELLITE_PASS) return 0;
+  return smooth(0, 4, tt) * (1 - smooth(SATELLITE_PASS - 4, SATELLITE_PASS, tt));
 }
 /** Breaker lane `i`'s period (s), as breakers() computes it. */
 export function breakerPeriod(i: number): number {
@@ -405,14 +417,14 @@ vec3 cometSky(vec2 q, float V) {
   return c * vis * (V > 1.5 ? 1.25 : 1.0);
 }
 
-/* Shooting stars: one 10 s slot of event clock at a time; a slot holds a meteor with probability 0.35 (soft, ~2 a minute) or 0.55
-   (strong, ~3 a minute). A meteor lasts 0.65-1.05 s, eases in over 0.18 s and out over 0.3 s (no flash), runs 380-560 px/s at
+/* Shooting stars: one 10 s slot of event clock at a time; a slot holds a meteor with probability METEOR_P (0.55: strong, ~3 a
+   minute). A meteor lasts 0.65-1.05 s, eases in over 0.18 s and out over 0.3 s (no flash), runs 380-560 px/s at
    18-38 degrees downward, with a 70-140 px tail (x1.3 strong) going from white at the head to lilac-cyan. */
 vec3 meteors(vec2 q, float V) {
   float S = ${f(METEOR_SLOT)}, id = floor(te / S), tau = te - id * S;
   float dur = 0.65 + 0.4 * h1(id * 2.1 + 0.3);
   float st = h1(id * 3.3 + 0.1) * max(S - dur - 0.1, 0.0), tt = tau - st;
-  if (h1(id * 1.37 + 0.5) > (V > 1.5 ? 0.55 : ${f(METEOR_P)})) return vec3(0.0);
+  if (h1(id * 1.37 + 0.5) > ${f(METEOR_P)}) return vec3(0.0);
   if (tt < 0.0 || tt > dur) return vec3(0.0);
   float side = h1(id * 4.7) > 0.5 ? 1.0 : -1.0, ang = mix(0.31, 0.66, h1(id * 7.3));
   vec2 p0 = vec2(mix(60.0, 1120.0, h1(id * 5.9)), mix(8.0, 90.0, h1(id * 6.1))), dir = vec2(side * cos(ang), sin(ang));
@@ -425,6 +437,18 @@ vec3 meteors(vec2 q, float V) {
   float tail = exp(-b * b / (0.35 + 0.6 * (1.0 - along))) * along * along * step(0.0, a);
   vec3 c = mix(mix(LIL, CYAN, 0.5), vec3(1.0, 0.98, 0.94), along);
   return (c * tail * 1.5 + vec3(1.0) * (exp(-dot(rel, rel) / 2.6) * 1.6 + exp(-length(rel) / 5.0) * 0.25)) * env * (V > 1.5 ? 1.3 : 1.0);
+}
+
+/* Satellite: a faint steady point crossing the upper sky in ~25 s of event clock, fading in and out over 4 s at each end (as if
+   entering Earth's shadow); a 70 s slot holds one with probability 0.6 (round 3's, verbatim but for the constants). */
+vec3 satellite(vec2 q) {
+  float S = ${f(SATELLITE_SLOT)}, PS = ${f(SATELLITE_PASS)}, id = floor(te / S), tt = te - id * S;
+  if (h1(id * 3.17 + 0.9) > ${f(SATELLITE_P)} || tt > PS) return vec3(0.0);
+  float y0 = mix(14.0, 60.0, h1(id * 1.9)), y1 = mix(14.0, 60.0, h1(id * 2.7));
+  vec2 pos = mix(vec2(-20.0, y0), vec2(1200.0, y1), tt / PS);
+  if (h1(id * 5.1) > 0.5) pos.x = 1180.0 - pos.x;
+  vec2 d = q - pos;
+  return vec3(0.95, 0.97, 1.0) * exp(-dot(d, d) / 0.8) * 0.75 * smoothstep(0.0, 4.0, tt) * (1.0 - smoothstep(PS - 4.0, PS, tt));
 }
 
 const vec2 MOON = vec2(322.0, 34.0);
@@ -448,7 +472,7 @@ vec3 breakers(vec2 q, float dy, float V) {
   vec3 foamC = mix(mix(CYAN, vec3(1.0), 0.55), vec3(1.0, 0.72, 0.5), 0.6 * w.w);
   for (int i = 0; i < 6; i++) {
     float fi = float(i);
-    if (fi >= 3.0 * V) break;
+    if (fi >= ${f(BREAKER_LANES)}) break;
     float P = 8.0 + 6.0 * h1(fi * 3.1 + 0.7), D = ${f(BREAKER_LIFE)}, ph = t + fi * 2.37 * P;
     float id = floor(ph / P), tau = ph - id * P;
     if (tau > D || h1(id * 7.13 + fi * 31.7) > 0.65) continue;
@@ -531,6 +555,7 @@ void main() {
     if (wN > 0.0) col += (starSky2(q, u, ${f(SKY_LEVELS.stars)}) + moonSky(q, ${f(SKY_LEVELS.events)}) * smoothstep(2.0, 24.0, u)) * wN;
     if (wN > 0.0 && ev > 0.5) col += cometSky(q, ${f(SKY_LEVELS.events)}) * wN * smoothstep(2.0, 24.0, u);
     if (ev > 0.5) col += meteors(q, ${f(SKY_LEVELS.events)}) * (0.55 + 0.45 * wN) * smoothstep(2.0, 14.0, u);
+    if (wN > 0.0 && ev > 0.5) col += satellite(q) * wN;
     // Item 669 (his pick, B Rim flare "slightly less bright"): a short cyan-white flare at each ray's foot,
     // starting on the tick ring's outer edge (r 184), so the light reads as leaving the rim; then today's warm body.
     float sh = pow(0.5 + 0.5 * sin(a * 26.0 + t * 0.25), 10.0), foot = smoothstep(176.0, 190.0, r);
