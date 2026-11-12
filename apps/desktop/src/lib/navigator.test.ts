@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import transcriptSrc from "./Transcript.svelte?raw";
+import navigatorSrc from "./Navigator.svelte?raw";
 import {
   FULL_WEIGHT_CHARS,
   MIN_TICKS,
@@ -7,6 +8,7 @@ import {
   RIB_CURRENT,
   RIB_END,
   RIB_GAP,
+  RIB_HIT,
   RIB_MESSAGE,
   RIB_ROW,
   activeTick,
@@ -20,6 +22,7 @@ import {
   magnified,
   magnifyFalloff,
   nextTarget,
+  onStrip,
   prevTarget,
   previewOf,
   previewText,
@@ -290,5 +293,54 @@ describe("359 review: the eased jump stops when it should", () => {
     expect(body).toMatch(/const wheel = \(e: WheelEvent\) => \{\s*cancelScroll\(\);/);
     expect(body).toMatch(/const touchmove = \(e: TouchEvent\) => \{\s*cancelScroll\(\);/);
     expect(body).toMatch(/if \(!e\.altKey && \[[^\]]*"ArrowDown"[^\]]*\]\.includes\(e\.key\)\)\s*cancelScroll\(\);/);
+  });
+});
+
+// Item 651: the strip takes the pointer only where it is drawn; the column's
+// other 40 px (where the flare and the preview are drawn) let it through to
+// the transcript under them — a code block's Copy beside the rail.
+describe("the strip's hover zone (item 651)", () => {
+  const css = navigatorSrc.slice(navigatorSrc.indexOf("<style>"));
+  const rule = (sel: string) => {
+    const at = css.indexOf(`\n  ${sel} {`);
+    expect(at, sel).toBeGreaterThan(-1);
+    return css.slice(at, css.indexOf("}", at));
+  };
+
+  it("covers a message rib at rest and stays well inside the 56 px column", () => {
+    expect(RIB_HIT).toBeGreaterThanOrEqual(RIB_MESSAGE.baseW);
+    expect(RIB_HIT).toBeLessThan(RIB_MESSAGE.peakW);
+    // Measured (651 harness, 780 px pane): Copy's right edge is 24 px left of the column's.
+    expect(RIB_HIT).toBeLessThan(24);
+  });
+
+  it("is the rightmost RIB_HIT px of the column", () => {
+    const right = 1026;
+    expect(onStrip(right - 4, right)).toBe(true);
+    expect(onStrip(right - RIB_HIT, right)).toBe(true);
+    expect(onStrip(right - RIB_HIT - 1, right)).toBe(false);
+    // The pointer on Copy (980–1002 in the harness) is off the strip.
+    expect(onStrip(991, right)).toBe(false);
+    expect(onStrip(1002, right)).toBe(false);
+  });
+
+  it("the stylesheet draws that rule: the box and column pass the pointer, the ribs take it", () => {
+    expect(rule(".nav")).toContain("pointer-events: none");
+    expect(rule(".end,\n  .col")).toContain("pointer-events: none");
+    const rib = rule(".rib");
+    expect(rib).toContain("width: var(--hit)");
+    expect(rib).toContain("pointer-events: auto");
+    expect(rib).not.toContain("width: 100%");
+    expect(rule(".line")).toContain("pointer-events: none");
+    expect(rule(".chev")).toContain("pointer-events: auto");
+    expect(rule(".tip")).toContain("pointer-events: none");
+    expect(navigatorSrc).toContain('style:--hit="{RIB_HIT}px"');
+  });
+
+  it("a move reported off the strip is a leave, not a flare", () => {
+    const at = navigatorSrc.indexOf("function pointermove(");
+    const body = navigatorSrc.slice(at, navigatorSrc.indexOf("\n  }\n", at));
+    expect(body).toMatch(/!onStrip\(e\.clientX, col\.getBoundingClientRect\(\)\.right\)/);
+    expect(body.indexOf("pointerleave()")).toBeLessThan(body.indexOf("interacting = true"));
   });
 });
