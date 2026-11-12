@@ -1450,8 +1450,8 @@
     void approvalsNow.length;
     // A message he queues or schedules mid-turn is drawn below the reply
     // (PendingBubbles) and follows the foot like any other (item 560).
-    if (src.pending) {
-      const key = src.pending.key;
+    if (src.queue) {
+      const key = src.queue.key;
       void readDraft(key).queue.length;
       void scheduledFor(key);
     }
@@ -3024,7 +3024,7 @@
     {#if isChat}<AskHandBack />{/if}
     <!-- Item 465: messages he sent while this turn runs, not yet taken —
          greyed bubbles with Send now / Let it arrive / Edit / Cancel. -->
-    {#if src.pending}<PendingBubbles of={src.pending} />{/if}
+    {#if src.queue}<PendingBubbles of={src.queue} />{/if}
     {#each stranded as req (req.id)}
       <ApprovalPrompt {req} />
     {/each}

@@ -25,7 +25,6 @@ export type Where =
 const shared: Where = { in: "shared" };
 const mainOnly = (why: string): Where => ({ in: "mainOnly", why });
 const asideOnly: Where = { in: "asideOnly" };
-const pending = (why: string): Where => ({ in: "pending", why });
 
 /** The feature table (the 674 map's §1, as built). */
 export const TRANSCRIPT_FEATURES: Record<string, Where> = {

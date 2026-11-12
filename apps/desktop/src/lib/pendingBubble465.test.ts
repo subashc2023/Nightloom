@@ -89,7 +89,7 @@ describe("the wiring", () => {
 
   it("pending bubbles sit under the live reply, and Cancel asks first", () => {
     // Item 674's follow-up: whose queue is the source's (the chat's, or an aside's).
-    expect(transcriptSource).toContain("<PendingBubbles of={src.pending} />");
+    expect(transcriptSource).toContain("<PendingBubbles of={src.queue} />");
     expect(bubbleSource).toContain("Cancel this message?");
     expect(bubbleSource).toContain('data-mt="send-now"');
     expect(bubbleSource).toContain('data-mt="arrive"');

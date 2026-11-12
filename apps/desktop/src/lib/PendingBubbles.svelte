@@ -32,7 +32,7 @@
   const held = $derived<HeldWhy | null>(
     busyHere ? null : aside ? "idle" : (queueHold(handoff.chat !== null && handoff.chat === app.activeSessionId ? handoff.stage : "idle", turnWasStopped()) ?? "idle"),
   );
-  const sched = $derived(!aside && !classic() && app.activeSessionId !== null && scheduledFor(key) !== null);
+  const sched = $derived(!classic() && !aside && app.activeSessionId !== null && scheduledFor(key) !== null);
 </script>
 
 {#each rows as row (row.id)}

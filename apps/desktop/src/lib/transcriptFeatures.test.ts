@@ -58,6 +58,15 @@ describe("674: one transcript for the chat and its asides", () => {
     expect(featureTable().split("\n").length).toBe(Object.keys(TRANSCRIPT_FEATURES).length);
   });
 
+  it("674 follow-up: nothing of the chat's transcript is pending for asides any more", () => {
+    const pending = Object.entries(TRANSCRIPT_FEATURES).filter(([, w]) => w.in === "pending").map(([n]) => n);
+    expect(pending).toEqual([]);
+    for (const n of ["per-turn context share bar", "per-reply plan use", "pending bubbles (a message held mid-answer)", "usage-limit pause card", "drop files on the transcript"])
+      expect(TRANSCRIPT_FEATURES[n], n).toEqual({ in: "shared" });
+    // Each rides the source, read by Transcript with no kind guard.
+    for (const k of ["src.sizes", "src.planUse", "src.queue", "src.limit", "src.dropKey"]) expect(transcript, k).toContain(k);
+  });
+
   it("an aside has the chat's ground, rail and jump-down: none is guarded by kind, only by the compact frame", () => {
     expect(transcript).toMatch(/\{#if !compact\}<canvas class="dot-field"/);
     expect(transcript).toMatch(/const showNav = \$derived\(!compact && /);

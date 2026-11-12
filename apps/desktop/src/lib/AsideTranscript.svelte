@@ -259,9 +259,9 @@
     planUse: ev.planUse,
     limit: limitCard,
     dropKey: asideDraftKey(aside),
-    pending: {
+    queue: {
       key: asideDraftKey(aside),
-      aside: { busy: asking !== null, blocked: !onClaudeCode ? "engine" : !open ? "not-open" : null },
+      aside: { busy: asking !== null, blocked: !onClaudeCode ? ("engine" as const) : !open ? ("not-open" as const) : null },
     },
     waitNote,
   });

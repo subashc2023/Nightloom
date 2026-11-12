@@ -97,7 +97,7 @@ export interface TranscriptSource {
    *  the queue goes when the aside's answer ends — no mid-turn choices,
    *  and `blocked` says why a held one waits (`engine` / `not-open`).
    *  Absent: none (a pane). */
-  pending?: { key: string; aside?: { busy: boolean; blocked: "engine" | "not-open" | null } };
+  queue?: { key: string; aside?: { busy: boolean; blocked: "engine" | "not-open" | null } };
   /** The usage-limit card under the thread (nightshift backlog 164; an
    *  aside's since 674's follow-up): what the plan's limit stopped, when
    *  the window opens, and the one button that goes on then — the chat's
@@ -166,7 +166,7 @@ export function chatSource(): TranscriptSource {
     liveModel: app.connection?.model ?? null,
     chatActions: true,
     actions: {},
-    pending: { key: openChatKey() },
+    queue: { key: openChatKey() },
     limit: chatLimit(id),
     dropKey: "",
   };

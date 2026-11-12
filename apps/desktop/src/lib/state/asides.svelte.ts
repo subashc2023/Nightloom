@@ -366,7 +366,7 @@ async function runAside(turn: AsideTurn, sent: string, thread: Aside | null = nu
     if (typeof res.context_tokens === "number") t.context = res.context_tokens;
     // Item 674: the plan share the shared footer shows, and the limit card.
     if (res.plan_est) t.planEst = { ...res.plan_est };
-    if (res.limit) t.limit = limitPauseFrom({ limit: res.limit }, null);
+    if (res.limit) t.limit = limitPauseFrom({ limit: res.limit }, null) ?? undefined;
     // Item 677: the answer's read of the chat's cache, for the cache bar.
     if (!res.is_error && typeof res.sent_ms === "number" && typeof res.round_read === "number") {
       t.readAt = res.sent_ms;
