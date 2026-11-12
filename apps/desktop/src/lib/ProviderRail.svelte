@@ -47,7 +47,7 @@
     sanitizeThinking,
     thinkingSupport,
   } from "./catalog";
-  import { effortDefaultLabel } from "./effortDefaults";
+  import { effortDefaultLabel, effortModel } from "./effortDefaults";
   import { modelList } from "./modelList.svelte";
   import Hint from "./Hint.svelte";
   import Icon from "./Icon.svelte";
@@ -374,9 +374,13 @@
    * (`effortDefaults.ts`, the documented default per model and engine):
    * a level, `none` for a model with no effort control (Haiku 4.5), `?`
    * when the table has not heard of the model — the empty alias, a
-   * foreign id. A `?` is never drawn as a value.
+   * foreign id. A `?` is never drawn as a value. An alias reads the row of the
+   * model the CLI last ran it as on this CLI version (`modelSeen`, item 666),
+   * and the table's newest-first rule only before the first turn on it.
    */
-  const effortDefaultText = $derived(effortDefaultLabel("claude-code", app.draft.agentModel));
+  const effortDefaultText = $derived(
+    effortDefaultLabel("claude-code", effortModel(app.draft.agentModel, modelSeen.byAlias, cliNow)),
+  );
   /** The line under the Effort segment, one per state (board 3b revised). */
   const effortLine = $derived.by(() => {
     const picked = app.draft.agentEffort;

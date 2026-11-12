@@ -34,7 +34,7 @@
   import { modelSeen } from "./modelSeen.svelte";
   import { aliasView, currentCliVersion, displayName, familyRows, newestModels, otherOnRows } from "./modelSeen";
   import { cli } from "./cliUpdate.svelte";
-  import { effortDefaultLabel } from "./effortDefaults";
+  import { effortDefaultLabel, effortModel } from "./effortDefaults";
   import {
     cacheBuiltWith,
     cacheLine,
@@ -2458,7 +2458,18 @@
   });
   /** The CLI's effort levels (backlog 076), *default* (no flag) first. */
   const EFFORTS = ["", "low", "medium", "high", "xhigh", "max"];
-  const effortDefaultText = $derived(effortDefaultLabel("claude-code", app.draft.agentModel));
+  // Item 666: an alias reads the row of the model the CLI last ran it as on this CLI version
+  // (`modelSeen`, item 511); before the first turn on it, the table's newest-first rule.
+  const effortDefaultText = $derived(
+    effortDefaultLabel(
+      "claude-code",
+      effortModel(
+        app.draft.agentModel,
+        modelSeen.byAlias,
+        currentCliVersion(cli.status?.installed, app.connection?.agent?.version),
+      ),
+    ),
+  );
   const effortLabel = $derived(app.draft.agentEffort || `default · ${effortDefaultText}`);
   function pickEffort(e: string) {
     if (e === app.draft.agentEffort) return;
