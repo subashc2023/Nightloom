@@ -117,6 +117,14 @@
      edge 1.2 → 1.55 px). Every dotted ground reads these two tokens. */
   --ground-dot-ink: color-mix(in srgb, var(--ink) 16%, transparent);
   --ground-dots: radial-gradient(circle, var(--ground-dot-ink) 1.35px, transparent 1.55px);
+  /* Item 680 (his "the dots on chats now are too noticeable. make them
+     slighty smaller and fainter"): the chat's own dots — behind the
+     messages (the pointer field, `lib/dotField.ts`, and its CSS tile) and
+     the strip under the box — about halfway back to before 655: 16% → 12%
+     of the ink, 2.7 px → 2.4 px across (core 1.35 → 1.2 px, edge 1.55 →
+     1.4 px). The new-chat page and the other grounds keep 655's. */
+  --chat-dot-ink: color-mix(in srgb, var(--ink) 12%, transparent);
+  --chat-dots: radial-gradient(circle, var(--chat-dot-ink) 1.2px, transparent 1.4px);
   --bracket: var(--accent);
 
   --serif: "Newsreader Variable", Georgia, "Times New Roman", serif;
@@ -157,6 +165,7 @@
   --glow-main: none;
   --wash-live: none;
   --ground-dots: none;
+  --chat-dots: none;
   --bracket: transparent;
 }
 

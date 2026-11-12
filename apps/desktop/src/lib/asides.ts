@@ -118,6 +118,10 @@ interface StoredTurn {
    *  column's This turn keeps its clock after a relaunch. */
   at?: string;
   ms?: number;
+  /** Item 677: when the aside's request went out and its newest round's
+   *  cache read, so its refresh of the chat's cache outlives a relaunch. */
+  readAt?: number;
+  roundRead?: number;
 }
 
 // ---- Backlog 283 (2026-10-02): the aside's composer is the chat's ----
@@ -192,6 +196,10 @@ function storeTurn(t: AsideTurn): StoredTurn | null {
   if (typeof t.added === "number") out.added = t.added;
   if (typeof t.context === "number") out.context = t.context;
   if (t.at) out.at = t.at;
+  if (typeof t.readAt === "number" && typeof t.roundRead === "number") {
+    out.readAt = t.readAt;
+    out.roundRead = t.roundRead;
+  }
   const end = t.at ? Date.parse(t.at) : NaN;
   if (t.startedAt != null && Number.isFinite(end)) out.ms = Math.max(0, end - t.startedAt);
   else if (typeof t.tookMs === "number") out.ms = t.tookMs;
@@ -344,6 +352,11 @@ function loadAside(v: unknown): Aside | null {
     // Item 639: the answer's time and clock.
     if (typeof m.at === "string" && Number.isFinite(Date.parse(m.at))) turn.at = m.at;
     if (typeof m.ms === "number" && Number.isFinite(m.ms) && m.ms >= 0) turn.tookMs = m.ms;
+    // Item 677: the answer's read of the chat's cache.
+    if (typeof m.readAt === "number" && Number.isFinite(m.readAt) && typeof m.roundRead === "number" && m.roundRead >= 0) {
+      turn.readAt = m.readAt;
+      turn.roundRead = m.roundRead;
+    }
     turns.push(turn);
   }
   const anchor = isAnchor(a.anchor) ? a.anchor : null;

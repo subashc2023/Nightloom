@@ -99,7 +99,7 @@
   let groundCtl: { set(style: typeof groundPick.value): void; destroy(): void } | null = null;
   // Item 640: Horizon and Radar draw on their own WebGL canvas over the dot tile.
   let shaderCanvas = $state<HTMLCanvasElement | null>(null);
-  let shaderCtl: { set(style: string): void; destroy(): void } | null = null;
+  let shaderCtl: { set(style: string): void; typed(): void; destroy(): void } | null = null;
   $effect(() => {
     const host = groundEl;
     const canvas = shaderCanvas;
@@ -251,6 +251,14 @@
   // ---- item 581: the dial's motion layer (`DialMotion.svelte`) and what drives it.
   /** Bumped on every input in the message box: the wave surges while he types. */
   let typed = $state(0);
+  // Item 662: each key in the message box also reaches the Horizon sea (it eases its own response; nothing per key).
+  let seaTyped = 0;
+  $effect(() => {
+    const n = typed;
+    if (n === seaTyped) return;
+    seaTyped = n;
+    untrack(() => shaderCtl?.typed());
+  });
   /** A change in the parts (a layer switched) swells the wave. */
   const flowKey = $derived(groups.map((g) => `${g.tone}:${g.tokens}`).join(","));
   /** The hovered part's span, read off the dial's hit bands (ContextDial is not changed). */
@@ -383,9 +391,9 @@
   );
   const hello = $derived(
     ready
-      ? `${greeting(now.getHours())} Everything is ready.`
+      ? `${greeting(now.getHours(), now)} Everything is ready.`
       : app.connecting
-        ? `${greeting(now.getHours())} Connecting…`
+        ? `${greeting(now.getHours(), now)} Connecting…`
         : app.project?.root && !app.project.exists
           ? "The project's folder is missing."
           : "Not connected yet.",

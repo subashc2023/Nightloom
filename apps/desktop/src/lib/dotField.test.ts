@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import transcriptSrc from "./Transcript.svelte?raw";
+import composerSrc from "./Composer.svelte?raw";
 import {
   DOT_STEP,
   GLOW_LEVELS,
@@ -8,6 +9,7 @@ import {
   PUSH_MAX,
   PUSH_RADIUS,
   SCATTER,
+  DOT_R,
   type Dot,
   advanceDot,
   deviceStep,
@@ -122,6 +124,22 @@ describe("when it runs", () => {
   });
 });
 
+describe("the chat's own dots (item 680): smaller and fainter than the other grounds'", () => {
+  it("draws the transcript, its canvas and the box's strip in --chat-dots at 12% ink, 1.2 / 1.4 px; the other grounds keep 655's", async () => {
+    const fs = (await import(/* @vite-ignore */ "node:" + "fs")) as { readFileSync(u: URL, enc: string): string };
+    // Read from disk: vitest hands a `.css?raw` import back empty.
+    const appCss = fs.readFileSync(new URL("../app.css", import.meta.url), "utf8");
+    expect(appCss).toContain("--chat-dot-ink: color-mix(in srgb, var(--ink) 12%, transparent);");
+    expect(appCss).toContain("--chat-dots: radial-gradient(circle, var(--chat-dot-ink) 1.2px, transparent 1.4px);");
+    expect(appCss).toContain("--ground-dots: radial-gradient(circle, var(--ground-dot-ink) 1.35px, transparent 1.55px);");
+    // Calm and the classic palettes: no chat dots either.
+    expect(appCss).toMatch(/--ground-dots: none;\s*--chat-dots: none;/);
+    expect(transcriptSrc).toContain("background: var(--chat-dots, none) left bottom / 24px 24px;");
+    expect(composerSrc).toContain("background: var(--chat-dots, none) left top / 24px 24px var(--paper);");
+    expect(DOT_R).toBe(1.3);
+  });
+});
+
 describe("each dot's seeded randomness (655)", () => {
   const all = (amount = SCATTER) => {
     const out = [];
@@ -138,27 +156,27 @@ describe("each dot's seeded randomness (655)", () => {
       expect(u).toBeLessThan(1);
     }
   });
-  it("is 0.6 of round 2's: off-angle within ±19°, weight 0.65–1.25, return speed 0.55–1.87", () => {
-    expect(SCATTER).toBe(0.6);
+  it("is 0.8 of round 2's (item 680, was 0.6): off-angle within ±25°, weight 0.55–1.35, return speed 0.45–2.21", () => {
+    expect(SCATTER).toBe(0.8);
     const s = all();
     const ang = s.map((x) => (x.angle * 180) / Math.PI);
-    expect(Math.max(...ang.map(Math.abs))).toBeLessThanOrEqual(0.6 * 31.52 + 1e-9);
-    expect(Math.max(...ang)).toBeGreaterThan(18); // the range is used, not just bounded
-    expect(Math.min(...ang)).toBeLessThan(-18);
+    expect(Math.max(...ang.map(Math.abs))).toBeLessThanOrEqual(0.8 * 31.52 + 1e-9);
+    expect(Math.max(...ang)).toBeGreaterThan(24); // the range is used, not just bounded
+    expect(Math.min(...ang)).toBeLessThan(-24);
     const w = s.map((x) => x.weight);
-    expect(Math.min(...w)).toBeGreaterThanOrEqual(0.65 - 1e-9);
-    expect(Math.max(...w)).toBeLessThanOrEqual(1.25 + 1e-9);
+    expect(Math.min(...w)).toBeGreaterThanOrEqual(0.55 - 1e-9);
+    expect(Math.max(...w)).toBeLessThanOrEqual(1.35 + 1e-9);
     const r = s.map((x) => x.ret);
-    expect(Math.min(...r)).toBeGreaterThanOrEqual(0.554);
-    expect(Math.max(...r)).toBeLessThanOrEqual(1.874);
+    expect(Math.min(...r)).toBeGreaterThanOrEqual(0.452);
+    expect(Math.max(...r)).toBeLessThanOrEqual(2.213);
   });
   it("narrows each spread about its median, so the typical dot is unchanged", () => {
     const a = all(SCATTER);
     const b = all(1);
     const spread = (v: number[]) => Math.max(...v) - Math.min(...v);
-    expect(spread(a.map((x) => x.weight)) / spread(b.map((x) => x.weight))).toBeCloseTo(0.6, 6);
-    expect(spread(a.map((x) => x.angle)) / spread(b.map((x) => x.angle))).toBeCloseTo(0.6, 6);
-    expect(spread(a.map((x) => x.ret)) / spread(b.map((x) => x.ret))).toBeCloseTo(0.6, 6);
+    expect(spread(a.map((x) => x.weight)) / spread(b.map((x) => x.weight))).toBeCloseTo(SCATTER, 6);
+    expect(spread(a.map((x) => x.angle)) / spread(b.map((x) => x.angle))).toBeCloseTo(SCATTER, 6);
+    expect(spread(a.map((x) => x.ret)) / spread(b.map((x) => x.ret))).toBeCloseTo(SCATTER, 6);
     expect(median(a.map((x) => x.weight))).toBeCloseTo(0.95, 1);
     expect(median(a.map((x) => x.ret))).toBeCloseTo(0.86, 1);
     expect(Math.abs(median(a.map((x) => x.angle)))).toBeLessThan(0.02);

@@ -77,15 +77,32 @@ describe("item 563: the new-chat page's readings", () => {
     expect(ns({ live: true })).toBe("Running");
     expect(ns({ armedAt: null })).toBe("Ready");
   });
+  it("the greeting varies now and then, fixed for a day part", () => {
+    const seen = new Set<string>();
+    let usual = 0;
+    for (let d = 1; d <= 120; d++) {
+      const on = new Date(2026, 0, d, 9);
+      const g = greeting(9, on);
+      expect(greeting(9, new Date(2026, 0, d, 11))).toBe(g); // same part, same pick
+      seen.add(g);
+      if (g === "Good morning, Swaraag.") usual++;
+    }
+    expect(usual).toBeGreaterThan(60); // mostly the usual one
+    expect(seen.size).toBeGreaterThan(2); // and some of the others
+  });
+
   it("small helpers", () => {
     expect(tildePath("/Users/you/a/b")).toBe("~/a/b");
     expect(tildePath("/opt/x")).toBe("/opt/x");
     expect(leafOf("/a/b/")).toBe("b");
     expect(modelName("claude-sonnet-5-0")).toBe("Sonnet 5.0");
-    expect(greeting(8)).toBe("Good morning.");
-    expect(greeting(13)).toBe("Good afternoon.");
-    expect(greeting(20)).toBe("Good evening.");
-    expect(greeting(2)).toBe("Good evening.");
+    expect(greeting(8)).toBe("Good morning, Swaraag.");
+    expect(greeting(13)).toBe("Good afternoon, Swaraag.");
+    expect(greeting(20)).toBe("Good evening, Swaraag.");
+    // Item 679: a real night (22–5), not "evening" from 5 PM to 5 AM.
+    expect(greeting(23)).toBe("Up late, Swaraag.");
+    expect(greeting(2)).toBe("Up late, Swaraag.");
+    expect(greeting(5)).toBe("Good morning, Swaraag.");
     expect(quarterLabels(1_000_000)).toEqual(["0", "250k", "500k", "750k"]);
     expect(quarterLabels(null)).toEqual([]);
     const now = new Date(2026, 10, 9, 20, 14);

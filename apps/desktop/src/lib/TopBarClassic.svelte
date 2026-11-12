@@ -36,7 +36,7 @@
   import { chatRun } from "./runGroups";
   const runSign = $derived(chatRun(allRunning(), app.activeSessionId).state);
   import { threadChip } from "./thread";
-  import { chatThread } from "./state.svelte";
+  import { chatThread, asideReads } from "./state.svelte";
   import { auth } from "./claudeAuth.svelte";
   import { chipWord } from "./claudeAuth";
   import { openChatSpend, trackOpenChatFigures } from "./chatFigures.svelte";
@@ -197,7 +197,7 @@
    * changes, so a background chat has no chain and cannot toast.
    */
   $effect(() => {
-    const warmUntil = cacheState(app.events, Date.now(), app.activeSessionId ? touchedUntil(keepWarm.byChat[app.activeSessionId]) : null)?.warmUntil ?? null;
+    const warmUntil = cacheState(app.events, Date.now(), app.activeSessionId ? touchedUntil(keepWarm.byChat[app.activeSessionId]) : null, asideReads(app.activeSessionId))?.warmUntil ?? null;
     if (warmUntil == null) return;
     const wait = warmUntil - Date.now();
     if (wait <= 0) return;

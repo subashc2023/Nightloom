@@ -106,7 +106,7 @@
   import KeepButton from "./KeepButton.svelte";
   import { keepKey } from "./keep";
   import { keepStateOf, revealKept } from "./keep.svelte";
-  import { menuInterceptors } from "./state.svelte";
+  import { menuInterceptors, asideReads } from "./state.svelte";
   import { declaredKind, useEngine } from "./state.svelte";
   import { bubbledRows, registerSendHeld } from "./pendingBubble.svelte";
   import WaitAct from "./WaitAct.svelte";
@@ -2929,12 +2929,12 @@
     const refused = await holdKeepWarm(kwChat, hours);
     if (refused) addToast(`Keep warm: ${refused}`);
   }
-  const cache = $derived(floating ? null : cacheState(app.events, now, touchedUntil(kw)));
+  const cache = $derived(floating ? null : cacheState(app.events, now, touchedUntil(kw), asideReads(kwChat)));
   /** Item 596: the same state drawn on the box's frame (`cacheLook.css`). */
   const frame = $derived(cacheFrame(cache));
   $effect(() => {
     if (floating) return;
-    const warmUntil = cacheState(app.events, Date.now(), touchedUntil(kw))?.warmUntil ?? null;
+    const warmUntil = cacheState(app.events, Date.now(), touchedUntil(kw), asideReads(kwChat))?.warmUntil ?? null;
     if (warmUntil == null) return;
     now = Date.now();
     let id: ReturnType<typeof setTimeout> | null = null;
@@ -2986,7 +2986,12 @@
     if (!cache.warm) {
       return "The last turn's prompt cache has expired, so the next turn re-reads the whole history either way and editing it now costs nothing extra.";
     }
-    const what = `Time left on the last turn's prompt cache (${cache.ttl}), counted from when its request was sent: until it expires an edit to the history re-writes the cache, and after it the next turn pays for the whole history whether or not you edited it.`;
+    // Item 677: an aside's read restarted the clock; say so, and how much of the history it read.
+    const from =
+      cache.asideShare != null
+        ? `counted from the aside asked at ${new Date(cache.sentAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}, which read ${Math.round(cache.asideShare * 100)}% of the history from it and so refreshed that much`
+        : "counted from when its request was sent";
+    const what = `Time left on the last turn's prompt cache (${cache.ttl}), ${from}: until it expires an edit to the history re-writes the cache, and after it the next turn pays for the whole history whether or not you edited it.`;
     return engine === "claude-code"
       ? `${what} On this engine you are on the subscription, so "free" means an edit costs no more usage than an unedited turn would — whether cache reads are discounted against the plan's limit is not documented.`
       : what;
@@ -4314,7 +4319,8 @@
     position: relative;
     /* The lit level's dot ground goes on under the box (item 525), from
        the top so it meets the transcript's, which is anchored to its foot. */
-    background: var(--ground-dots, none) left top / 24px 24px var(--paper);
+    /* Item 680: the chat's dots, matching the transcript's above it. */
+    background: var(--chat-dots, none) left top / 24px 24px var(--paper);
     padding: 12px 20px 22px;
   }
   :global(:where([data-layout="classic"])) .composer {
