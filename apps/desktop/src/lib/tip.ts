@@ -42,17 +42,20 @@ export const TIP_WARM_MS = 300;
 const GAP = 6;
 const MARGIN = 8;
 
-export type TipArg = string | { text: string; keys?: string } | null | undefined | false;
+// `click: true` (item 638): a `?` mark, whose pill a click pins open until a
+// second click, Escape or a press elsewhere — every other tip hides on a press.
+export type TipArg = string | { text: string; keys?: string; click?: boolean } | null | undefined | false;
 
 interface TipContent {
   text: string;
   keys?: string;
+  click?: boolean;
 }
 
 function content(arg: TipArg): TipContent | null {
   if (!arg) return null;
   if (typeof arg === "string") return arg.trim() ? { text: arg } : null;
-  return arg.text && arg.text.trim() ? { text: arg.text, keys: arg.keys } : null;
+  return arg.text && arg.text.trim() ? { text: arg.text, keys: arg.keys, click: arg.click } : null;
 }
 
 export interface AnchorRect {
@@ -166,6 +169,14 @@ export function sendTip(connected: boolean, empty: boolean, held = false): { tex
   return { text: "Send this message", keys: "↵" };
 }
 
+/**
+ * A click on a click-mode anchor (item 638): an unpinned pill — hidden, or
+ * shown by hover — pins open; a pinned one closes. Free of the DOM for tests.
+ */
+export function pinStep(pinned: boolean): { pinned: boolean; open: boolean } {
+  return pinned ? { pinned: false, open: false } : { pinned: true, open: true };
+}
+
 // When the last pill was hidden, shared across every anchor so the warm
 // run spans controls.
 let lastHidden = -Infinity;
@@ -262,7 +273,23 @@ export function tip(node: TipAnchor, arg: TipArg): { update(arg: TipArg): void; 
     }
   };
 
-  const onScroll = () => timer.leave();
+  // Item 638: a click-mode anchor's pin (see `TipArg`).
+  let pinned = false;
+  const unpin = () => {
+    if (!pinned) return;
+    pinned = false;
+    document.removeEventListener("pointerdown", onOutside, true);
+  };
+  const onOutside = (e: Event) => {
+    if (!node.contains(e.target as Node)) {
+      unpin();
+      timer.dismiss();
+    }
+  };
+  const onScroll = () => {
+    unpin();
+    timer.leave();
+  };
   const show = () => {
     if (!c || !node.isConnected || !tipAllowed(node)) return;
     // Another anchor's pill hands over.
@@ -288,7 +315,9 @@ export function tip(node: TipAnchor, arg: TipArg): { update(arg: TipArg): void; 
   const timer = tipTimer({ show, hide });
 
   const onEnter = () => timer.enter();
-  const onLeave = () => timer.leave();
+  const onLeave = () => {
+    if (!pinned) timer.leave();
+  };
   const onFocus = () => {
     let keyboard = true;
     try {
@@ -298,18 +327,42 @@ export function tip(node: TipAnchor, arg: TipArg): { update(arg: TipArg): void; 
     }
     if (keyboard) timer.focus();
   };
-  const onBlur = () => timer.leave();
-  const onDown = () => timer.dismiss();
-  const onKey = (e: Event) => {
-    if ((e as KeyboardEvent).key === "Escape" && timer.shown) timer.dismiss();
+  const onBlur = () => {
+    unpin();
+    timer.leave();
   };
-  const onRelease = () => timer.leave();
+  const onDown = () => {
+    if (!c?.click) timer.dismiss();
+  };
+  const onClick = () => {
+    if (!c?.click) return;
+    const next = pinStep(pinned);
+    if (next.pinned) {
+      pinned = true;
+      document.addEventListener("pointerdown", onOutside, true);
+      timer.focus();
+    } else {
+      unpin();
+      timer.dismiss();
+    }
+  };
+  const onKey = (e: Event) => {
+    if ((e as KeyboardEvent).key === "Escape" && timer.shown) {
+      unpin();
+      timer.dismiss();
+    }
+  };
+  const onRelease = () => {
+    unpin();
+    timer.leave();
+  };
 
   node.addEventListener("pointerenter", onEnter);
   node.addEventListener("pointerleave", onLeave);
   node.addEventListener("focus", onFocus);
   node.addEventListener("blur", onBlur);
   node.addEventListener("pointerdown", onDown);
+  node.addEventListener("click", onClick);
   node.addEventListener("keydown", onKey);
   node.addEventListener("nl-tip-release", onRelease);
   syncLabel();
@@ -318,19 +371,24 @@ export function tip(node: TipAnchor, arg: TipArg): { update(arg: TipArg): void; 
     update(next: TipArg) {
       c = content(next);
       syncLabel();
-      if (!c) timer.leave();
+      if (!c) {
+        unpin();
+        timer.leave();
+      }
       else if (timer.shown && owner === node) {
         fill(c);
         position(node);
       }
     },
     destroy() {
+      unpin();
       timer.leave();
       node.removeEventListener("pointerenter", onEnter);
       node.removeEventListener("pointerleave", onLeave);
       node.removeEventListener("focus", onFocus);
       node.removeEventListener("blur", onBlur);
       node.removeEventListener("pointerdown", onDown);
+      node.removeEventListener("click", onClick);
       node.removeEventListener("keydown", onKey);
       node.removeEventListener("nl-tip-release", onRelease);
       if (labelled) node.removeAttribute("aria-label");

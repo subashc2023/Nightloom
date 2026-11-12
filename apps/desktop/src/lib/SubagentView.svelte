@@ -364,7 +364,7 @@
             </button>
           {/if}
           <span class="ask-hint">{hintShort}</span>
-          <button type="button" class="ask-why" aria-label={hintLong} use:tip={hintLong}>?</button>
+          <button type="button" class="ask-why" aria-label={hintLong} use:tip={{ text: hintLong, click: true }}>?</button>
           {#if !live && adopted}
             <button class="link" onclick={() => adopted && openSession(adopted)}>Open that chat</button>
           {/if}
