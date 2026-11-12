@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import stateSrc from "./state.svelte.ts?raw";
+import stateSrc from "./state/projects.svelte.ts?raw"; // item 641: useProject moved here
 import welcomeSrc from "./Welcome.svelte?raw";
 import coverSrc from "./SwitchCover.svelte?raw";
 import stripSrc from "./TabStrip.svelte?raw";
