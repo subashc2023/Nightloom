@@ -300,7 +300,8 @@ describe("what an aside draws and hides (283)", () => {
       expect(s).toMatch(/<Composer \{aside\}/);
       expect(s).toMatch(/<AsideThread \{aside\}/);
       expect(s).not.toMatch(/<AsideBox/);
-      expect(s).toMatch(/Aside of <em>/);
+      // Item 673: the tab's head reads "ASIDE · of ‹chat›" (the kicker).
+      expect(s).toMatch(f.includes("View") ? /class="aside-kick">Aside<\/span>[\s\S]{0,400}>of <em>/ : /Aside of <em>/);
     }
     // The thread draws his words with the transcript's own bubble and the
     // answer with the chat's reply piece; the transcript uses the bubble too.

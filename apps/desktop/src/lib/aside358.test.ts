@@ -36,7 +36,7 @@ describe("358: the aside after its answer completes", () => {
     });
     it(`${name}: the cache chip is short and keeps its room; the full count is its tip`, () => {
       expect(src).not.toContain("read from cache</span>");
-      expect(src).toMatch(/class="ns-chip mono aside-cache"[^>]*tokens read from cache/);
+      expect(src).toMatch(/class="(ns-chip mono )?aside-cache"[^>]*tokens read from cache/);
       expect(src).toContain("{fmtTokens(last.cacheRead)} cached");
     });
   }
@@ -55,16 +55,22 @@ describe("358: the aside after its answer completes", () => {
     expect(viewSrc).toMatch(/\.aside-view-col \{\s*max-width: 760px;\s*margin: 0 auto;/);
     expect(viewSrc).toMatch(/\.aside-view-foot-inner \{\s*max-width: 760px;\s*margin: 0 auto;/);
     // The transcript's own padding (Transcript.svelte `.transcript`).
-    expect(viewSrc).toMatch(/\.aside-view-scroll \{[^}]*padding: 28px 20px 20px;/);
-    // Title, head, quote and turns all sit inside the column.
+    // ~~The transcript's own padding, 28px~~ — item 673 (2026-11-12): the
+    // head is a strip above the scroller and carries the top; item 674: the
+    // Filament thread is the chat's own Transcript (its column), and this
+    // scroller is Classic's.
+    expect(viewSrc).toMatch(/\.aside-view-scroll \{[^}]*padding: 18px 20px 20px;/);
+    expect(viewSrc).toMatch(/\.aside-head-in \{\s*max-width: 760px;\s*margin: 0 auto;/);
+    expect(viewSrc).toMatch(/<AsideTranscript \{aside\} \{open\} owner=\{session\} frame="full"/);
     const open = viewSrc.indexOf('<div class="aside-view-col">');
     expect(open).toBeGreaterThan(-1);
-    for (const piece of ['class="aside-view-title"', 'class="aside-view-head"', 'class="aside-view-turns"'])
-      expect(viewSrc.indexOf(piece)).toBeGreaterThan(open);
+    expect(viewSrc.indexOf('class="aside-view-turns"')).toBeGreaterThan(open);
   });
 
   it("tab: the head is one row and the chat's name gives way, so the prompt is not printed in full", () => {
-    expect(viewSrc).toMatch(/\.aside-view-head \{[^}]*flex-wrap: nowrap;/);
+    // Item 673: the kicker row (`.aside-head-row`), one line by default.
+    expect(viewSrc).toMatch(/\.aside-head-row > :global\(\*\) \{\s*flex-shrink: 0;/);
+    expect(viewSrc).toMatch(/\.aside-head-row > \.aside-view-of \{\s*flex: 0 1 auto;/);
     expect(viewSrc).toMatch(/\.aside-view-of \{[^}]*white-space: nowrap;[^}]*text-overflow: ellipsis;/);
   });
 });

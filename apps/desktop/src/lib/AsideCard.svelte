@@ -29,6 +29,9 @@
   // Backlog 283: the chat's composer and the chat's message pieces.
   import Composer from "./Composer.svelte";
   import AsideThread from "./AsideThread.svelte";
+  // Item 674: the thread is the chat's transcript; Classic keeps AsideThread.
+  import AsideTranscript from "./AsideTranscript.svelte";
+  import { classic } from "./layout.svelte";
   import { fmtTokens } from "./tokens";
 
   /**
@@ -476,7 +479,31 @@
     {/if}
   </div>
   {#if !folded}
-  {#if !aside.draft || panel}
+  {#if (!aside.draft || panel) && !classic()}
+    <!-- Item 674 (blocker 1990): the chat's own transcript in the card's
+         room — the same turns, tools, folds and reading place as the tab
+         and the chat; no ground and no rail in this frame. -->
+    {#snippet quoted()}
+      {#if aside.quote && panel}
+        <!-- The passage it hangs off (283): under its passage the card
+             needs none; in the side panel it is far from it. -->
+        <blockquote class="aside-card-quote">{@html renderReply(aside.quote.text)}</blockquote>
+      {/if}
+    {/snippet}
+    <div class="aside-card-body shared">
+      {#key aside.uid ?? aside.id}
+        <AsideTranscript
+          {aside}
+          open={!readOnly}
+          {owner}
+          frame="compact"
+          scrollKey={asideCardScrollKey(owner ?? "", aside.id)}
+          lead={quoted}
+        />
+      {/key}
+    </div>
+  {:else if !aside.draft || panel}
+    <!-- Classic keeps its own thread (blocker 1989). -->
     <div class="aside-card-body" bind:this={body} onscroll={bodyScrolled}>
       {#if aside.quote && panel}
         <!-- The passage it hangs off (283): under its passage the card
@@ -651,6 +678,22 @@
     padding: 10px 12px 12px;
     overflow-y: auto;
     min-height: 0;
+  }
+  /* Item 674: the shared transcript scrolls itself; this is its frame
+     (positioned for its ⌄), sized by the thread up to the card's room. */
+  .aside-card-body.shared {
+    position: relative;
+    padding: 0;
+    gap: 0;
+    overflow: hidden;
+    flex: 0 1 auto;
+  }
+  .aside-card-body.shared :global(.transcript.compact) {
+    flex: 0 1 auto;
+  }
+  .aside-card.panel .aside-card-body.shared,
+  .aside-card.panel .aside-card-body.shared :global(.transcript.compact) {
+    flex: 1 1 auto;
   }
   /* ~~`.aside-card-q` / `-a` / `-wait` / `-row`~~ — the thread is
      `AsideThread.svelte` and the box the chat's composer since backlog 283. */
