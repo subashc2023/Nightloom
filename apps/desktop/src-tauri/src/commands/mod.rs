@@ -12,4 +12,5 @@ pub(crate) mod notes;
 pub(crate) mod projects;
 pub(crate) mod sessions;
 pub(crate) mod steer;
+pub(crate) mod threads;
 pub(crate) mod usage;
