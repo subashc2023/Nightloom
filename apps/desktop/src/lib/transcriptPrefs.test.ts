@@ -183,11 +183,10 @@ describe("toolSummary", () => {
 describe("prefs storage", () => {
   beforeEach(() => localStorage.clear());
 
-  // Plex at 16 px and the pre-toggle reading (thinking off, tools on):
-  // the defaults a first launch after the release must not change.
-  const defaults = { thinking: false, tools: true, font: "plex", size: 16 };
+  // Plex at 16 px, tools on, and thinking open (item 674, his ask).
+  const defaults = { thinking: true, tools: true, font: "plex", size: 16 };
 
-  it("defaults to thinking off and tools on, Plex at 16 px", () => {
+  it("defaults to thinking open and tools on, Plex at 16 px", () => {
     expect(DEFAULT_TRANSCRIPT_PREFS).toEqual(defaults);
     expect(loadTranscriptPrefs()).toEqual(defaults);
   });
@@ -200,6 +199,17 @@ describe("prefs storage", () => {
       font: "newsreader",
       size: 17,
     });
+  });
+
+  it("a record saved before thinking opened by default reads as open once", () => {
+    localStorage.setItem(
+      "nightloom.transcript",
+      JSON.stringify({ thinking: false, tools: false, font: "plex", size: 16 }),
+    );
+    expect(loadTranscriptPrefs()).toEqual({ ...defaults, tools: false });
+    // A choice made after the change is kept.
+    saveTranscriptPrefs({ thinking: false, tools: true, font: "plex", size: 16 });
+    expect(loadTranscriptPrefs().thinking).toBe(false);
   });
 
   it("survives a malformed or partial record by falling to the defaults", () => {

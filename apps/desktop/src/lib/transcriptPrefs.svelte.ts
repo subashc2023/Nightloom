@@ -45,17 +45,21 @@ export interface TranscriptPrefs {
 }
 
 /**
- * Thinking off and tools on is how the transcript read before the toggles
- * existed, so the first launch after the release changes nothing; Plex at
+ * ~~Thinking off~~ **thinking open** (2026-11-12, nightshift item 674, his
+ * "yeah open by default i think for thinking blocks") and tools on; tools on
+ * is how the transcript read before the toggles existed; Plex at
  * 16 px is his pick of 2026-09-14 and what `AssistantMessage` hard-coded
  * until the setting existed.
  */
 export const DEFAULT_TRANSCRIPT_PREFS: TranscriptPrefs = {
-  thinking: false,
+  thinking: true,
   tools: true,
   font: "plex",
   size: 16,
 };
+
+/** Bumped when the thinking default changed (2 = open, 2026-11-12). */
+const THINKING_DEFAULT_V = 2;
 
 function isFont(v: unknown): v is TranscriptFont {
   return TRANSCRIPT_FONTS.some((f) => f.id === v);
@@ -68,10 +72,16 @@ export function loadTranscriptPrefs(storage: Pick<Storage, "getItem"> = localSto
   try {
     const raw = storage.getItem(KEY);
     if (raw) {
-      const p = JSON.parse(raw) as Partial<TranscriptPrefs>;
+      const p = JSON.parse(raw) as Partial<TranscriptPrefs> & { thinkingV?: number };
+      // A record saved before thinking opened by default (no `thinkingV`)
+      // stored the old default, not a choice he made after it: it reads as
+      // open once, and the next save records the version (item 674).
+      const current = p.thinkingV === THINKING_DEFAULT_V;
       return {
         thinking:
-          typeof p.thinking === "boolean" ? p.thinking : DEFAULT_TRANSCRIPT_PREFS.thinking,
+          current && typeof p.thinking === "boolean"
+            ? p.thinking
+            : DEFAULT_TRANSCRIPT_PREFS.thinking,
         tools: typeof p.tools === "boolean" ? p.tools : DEFAULT_TRANSCRIPT_PREFS.tools,
         font: isFont(p.font) ? p.font : DEFAULT_TRANSCRIPT_PREFS.font,
         size: isSize(p.size) ? p.size : DEFAULT_TRANSCRIPT_PREFS.size,
@@ -92,6 +102,7 @@ export function saveTranscriptPrefs(
       KEY,
       JSON.stringify({
         thinking: prefs.thinking,
+        thinkingV: THINKING_DEFAULT_V,
         tools: prefs.tools,
         font: prefs.font,
         size: prefs.size,
