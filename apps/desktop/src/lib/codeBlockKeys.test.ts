@@ -100,7 +100,6 @@ describe("Enter inside a block (648)", () => {
     expect(press("```\n  a|\n```", { key: "Enter", shiftKey: true })).toBe("```\n  a\n  |\n```");
   });
   it("on the opening fence line's end: a new line, never a send", () => {
-    expect(press("```py|", "Enter")).toBe("```py\n|");
     expect(press("```|\n```", "Enter")).toBe("```\n|\n```");
   });
   it("one step more after a line ending in { ( [ or :", () => {
@@ -350,9 +349,9 @@ describe("Right arrow at the end of a closing fence (648)", () => {
   it("text follows the fence: the caret goes to the next line's start, nothing added", () => {
     expect(press("```\nx\n```|\nbye", "ArrowRight")).toBe("```\nx\n```\n|bye");
   });
-  it("an unclosed block: Right is the box's own", () => {
-    expect(press("```\nx|", "ArrowRight")).toBeNull();
-    expect(press("```py|", "ArrowRight")).toBeNull();
+  it("an unclosed block mid-text: Right is the box's own", () => {
+    expect(press("```\nx|y", "ArrowRight")).toBeNull();
+    expect(press("```\nx|\ny", "ArrowRight")).toBeNull();
   });
   it("a selection, a modifier, or a caret not at the fence's end: not taken", () => {
     expect(press("```\nx\n[```]", "ArrowRight")).toBeNull();
@@ -507,5 +506,103 @@ describe("applied to the boxes (648)", () => {
     expect(el.value).toBe("```\nx\n    ");
     expect(hist.undo()?.text).toBe("```\nx\n      ");
     expect(hist.canUndo).toBe(false);
+  });
+});
+
+describe("a code block never traps the caret (676)", () => {
+  it("Right at the end of an unclosed block adds the closing fence and a new line below it", () => {
+    expect(press("```cpp\nint main() {}|", "ArrowRight")).toBe("```cpp\nint main() {}\n```\n|");
+    expect(press("hi\n```py\nx = 1|", "ArrowRight")).toBe("hi\n```py\nx = 1\n```\n|");
+    expect(press("```\nx|", "ArrowRight")).toBe("```\nx\n```\n|");
+  });
+  it("an empty last line takes the fence; indentation on the last line is kept", () => {
+    expect(press("```cpp\nint x;\n|", "ArrowRight")).toBe("```cpp\nint x;\n```\n|");
+    expect(press("```cpp\nint x;\n    |", "ArrowRight")).toBe("```cpp\nint x;\n    \n```\n|");
+  });
+  it("on the opening line itself (nothing typed yet) it closes an empty block", () => {
+    expect(press("```py|", "ArrowRight")).toBe("```py\n```\n|");
+  });
+  it("the closing fence matches the opener's mark, length and indent", () => {
+    expect(press("````md\nx|", "ArrowRight")).toBe("````md\nx\n````\n|");
+    expect(press("~~~\nx|", "ArrowRight")).toBe("~~~\nx\n~~~\n|");
+    expect(press("  ```\nx|", "ArrowRight")).toBe("  ```\nx\n  ```\n|");
+  });
+  it("Down on the last line of an unclosed block does the same, from any column", () => {
+    expect(press("```cpp\nint| main() {}", "ArrowDown")).toBe("```cpp\nint main() {}\n```\n|");
+    expect(press("```cpp\nint x;\n|", "ArrowDown")).toBe("```cpp\nint x;\n```\n|");
+  });
+  it("Down on a closing fence that ends the text adds a line below and goes there", () => {
+    expect(press("```\nx\n``|`", "ArrowDown")).toBe("```\nx\n```\n|");
+  });
+  it("Down anywhere with a line below, or outside a block, is the box's own", () => {
+    expect(press("```\nx|\ny", "ArrowDown")).toBeNull();
+    expect(press("```\nx|\n```", "ArrowDown")).toBeNull();
+    expect(press("```\nx\n```\nbye|", "ArrowDown")).toBeNull();
+    expect(press("plain|", "ArrowDown")).toBeNull();
+  });
+  it("Down with Shift, a modifier, a selection or a composing key is not taken", () => {
+    expect(press("```\nx|", { key: "ArrowDown", shiftKey: true })).toBeNull();
+    expect(press("```\nx|", { key: "ArrowDown", metaKey: true })).toBeNull();
+    expect(press("```\nx|", { key: "ArrowDown", ctrlKey: true })).toBeNull();
+    expect(press("```\nx|", { key: "ArrowDown", altKey: true })).toBeNull();
+    expect(press("```\n[x]", "ArrowDown")).toBeNull();
+    expect(press("```\nx|", { key: "ArrowDown", keyCode: 229 })).toBeNull();
+  });
+  it("Enter after an opening fence with nothing below adds the closing fence, caret inside", () => {
+    expect(press("```py|", "Enter")).toBe("```py\n|\n```");
+    expect(press("hi\n  ```cpp|", "Enter")).toBe("hi\n  ```cpp\n  |\n  ```");
+    expect(press("~~~~|", "Enter")).toBe("~~~~\n|\n~~~~");
+    expect(press("```py|\n\n", "Enter")).toBe("```py\n|\n```\n\n");
+  });
+  it("Enter after an opening fence with text below is a plain new line (no fence added)", () => {
+    expect(press("```py|\nx = 1", "Enter")).toBe("```py\n|\nx = 1");
+  });
+  it("nothing typed is lost: every edit only inserts", () => {
+    const cases: [string, string][] = [
+      ["```cpp\nint x;|", "ArrowRight"],
+      ["```cpp\nint x;\n    |", "ArrowDown"],
+      ["```py|", "Enter"],
+      ["```\nx\n``|`", "ArrowDown"],
+    ];
+    for (const [src, key] of cases) {
+      const { text, start, end } = parse(src);
+      const ed = codeBlockEdit(text, start, end, { key })!;
+      expect(ed.to).toBe(ed.from);
+      const next = applyBlockEdit(text, ed);
+      expect(next.slice(0, ed.from) + next.slice(ed.from + ed.insert.length)).toBe(text);
+    }
+  });
+  it("after the fence is added, the block is closed and the next Enter sends", () => {
+    const { text, start } = parse("```cpp\nint x;|");
+    const ed = codeBlockEdit(text, start, start, { key: "ArrowRight" })!;
+    const next = applyBlockEdit(text, ed);
+    expect(fencesOf(next)[0].close).not.toBeNull();
+    expect(codeBlockEdit(next, ed.head, ed.head, { key: "Enter" })).toBeNull();
+  });
+  it("in the formatted box and a plain textarea: Right closes the block in one undo step", () => {
+    let state = composerState("```cpp\nint x;", [composerKeymap()]);
+    const view = {
+      get state() {
+        return state;
+      },
+      dispatch(spec: Parameters<typeof state.update>[0]) {
+        state = state.update(spec).state;
+      },
+    };
+    const h = new LiveBoxHandle(view as unknown as EditorView);
+    const depth = undoDepth(state);
+    expect(takeBlockKey(key("ArrowRight"), h)).toBe(true);
+    expect(h.value).toBe("```cpp\nint x;\n```\n");
+    expect(h.selectionStart).toBe(h.value.length);
+    expect(undoDepth(state)).toBe(depth + 1);
+    expect(undo({ state, dispatch: (tr) => (state = tr.state) })).toBe(true);
+    expect(state.doc.toString()).toBe("```cpp\nint x;");
+    const el = new FakeField();
+    el.value = "```cpp\nint x;";
+    el.setSelectionRange(3, 3);
+    expect(takeBlockKey(key("ArrowDown"), el)).toBe(false);
+    el.setSelectionRange(el.value.length - 2, el.value.length - 2);
+    expect(takeBlockKey(key("ArrowDown"), el)).toBe(true);
+    expect([el.value, el.selectionStart]).toEqual(["```cpp\nint x;\n```\n", 18]);
   });
 });
