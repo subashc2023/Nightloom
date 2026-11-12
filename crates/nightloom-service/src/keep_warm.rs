@@ -832,8 +832,15 @@ impl Registry {
         }
         // Item 643: a hold that ran out before this message went out is
         // gone; one still running counts its hours from this reply.
+        // Blocker 1954 (his answer, 2026-11-12): back within the cache's own
+        // hour (no ping had to keep it) and the hold goes on; back later,
+        // after a ping kept it warm, and the hold is used — the default again.
         if let Some(r) = reply {
             e.expire_hold(r.sent_ms);
+            if e.touched_ms.is_some() && e.hold.is_some() {
+                e.hold = None;
+                clear_hold(&e.dir);
+            }
             if let Some(h) = e.hold.as_mut() {
                 h.until_ms = h.until_ms.max(r.sent_ms + h.ms());
                 let h = *h;
@@ -1529,6 +1536,31 @@ mod tests {
         // Hours that are not 12 or 24 on disk read as no hold.
         std::fs::write(dir.join(HOLD_FILE), r#"{"hours":100,"until_ms":0}"#).unwrap();
         assert_eq!(read_hold(&dir), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Blocker 1954: a reply within the cache's own hour (no ping since the
+    /// last reply) keeps the hold going; a reply after a ping kept the
+    /// cache warm uses the hold up, and the chat is back on the default.
+    #[test]
+    fn a_hold_is_used_once_a_ping_has_kept_the_cache() {
+        let p = Policy::default();
+        let dir = scratch("hold-used");
+        let reg = Registry::default();
+        reg.set_hold("c", &dir, 24, None, 0);
+        let at = |h: i64| Reply {
+            sent_ms: h * HOUR,
+            ..reply(100_000)
+        };
+        // Back within the hour: no ping fired; the hold moves on.
+        reg.replied("c", &dir, &spec(), Some(at(0)));
+        assert_eq!(read_hold(&dir).map(|h| h.until_ms), Some(24 * HOUR));
+        // A ping kept the cache at 1 h; he is back at 3 h: the hold is used.
+        reg.inner().get_mut("c").unwrap().touched_ms = Some(HOUR);
+        reg.replied("c", &dir, &spec(), Some(at(3)));
+        assert_eq!(read_hold(&dir), None);
+        let st = reg.status("c", Some(&dir), &p, 3 * HOUR);
+        assert_eq!((st.hold_hours, st.cap_ms), (None, 6 * HOUR));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
