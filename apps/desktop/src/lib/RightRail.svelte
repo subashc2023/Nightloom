@@ -40,6 +40,7 @@
   import { liveFor, liveLegend, liveTip, liveTokens, liveValue } from "./liveContext";
   import type { Aside } from "./state.svelte";
   import { asideFigures } from "./asideFigures";
+  import { contextOf } from "./chatContext.svelte";
 
   interface Props {
     /**
@@ -93,7 +94,16 @@
   let now = $state(Date.now());
   /** Item 605: the aside's own figures, on the column's clock (declared
    *  here, before the readings that use it). */
-  const af = $derived(column && aside ? asideFigures(aside, now) : null);
+  /** Item 639: the chat's last context reading — the prefix every aside of
+   *  it forks from — for an aside that kept no tokens (answered before 605). */
+  const asideBase = $derived.by(() => {
+    if (!column || !aside || !asideChat) return null;
+    if (asideChat === app.activeSessionId) return contextUsed() ?? contextOf(asideChat)?.used ?? null;
+    return contextOf(asideChat)?.used ?? null;
+  });
+  const af = $derived(column && aside ? asideFigures(aside, now, asideBase) : null);
+  /** Item 639: the dial's figure is an estimate (no turn kept its tokens). */
+  const est = $derived(af?.estimated ?? null);
   const liveCtx = $derived(
     column && !aside && app.busy && app.live != null
       ? liveFor(liveContextOf(app.activeSessionId), lastLoggedTurn(app.events)?.startedAt ?? null)
@@ -101,7 +111,7 @@
   );
   /** Context: the next request's prefix over the window (the top bar's gauge's figures). */
   const used = $derived(column ? (af ? af.used : liveCtx ? liveTokens(liveCtx) : contextUsed()) : null);
-  const limit = $derived(app.connection?.contextLimit ?? null);
+  const limit = $derived(app.connection?.contextLimit ?? (aside && asideChat ? contextOf(asideChat)?.limit || null : null));
   const share = $derived(used != null && limit ? Math.min(used / limit, 1) : 0);
   /** Item 590: the estimated tail of the arc, as a share of the window. */
   const estShare = $derived(liveCtx && liveCtx.estimate > 0 && limit ? Math.min(liveCtx.estimate / limit, share) : null);
@@ -162,7 +172,9 @@
   );
   const turnUsage = $derived(af ? (af.turn?.usage ?? null) : live ? app.liveUsage : (logged?.usage ?? null));
   const inTokens = $derived(freshIn(turnUsage));
-  const outTokens = $derived(turnUsage ? turnUsage.output_tokens : null);
+  /** Item 639: an aside answer that kept no tokens: its output estimated from its text. */
+  const outEst = $derived(!turnUsage && af?.turn?.estOut != null);
+  const outTokens = $derived(turnUsage ? turnUsage.output_tokens : (af?.turn?.estOut ?? null));
   const ioScale = $derived(niceCeil(Math.max(inTokens ?? 0, outTokens ?? 0)));
   const toolsLine = $derived(toolsText(marks));
   const hasTurn = $derived(turnClock != null || inTokens != null || outTokens != null || toolsLine != null);
@@ -302,10 +314,10 @@
           estimate={estShare}
           minor={ticks.minor}
           major={ticks.major}
-          value={liveCtx ? liveValue(liveCtx, shortTokens) : used != null ? shortTokens(used) : "—"}
+          value={liveCtx ? liveValue(liveCtx, shortTokens) : used != null ? `${est ? "~" : ""}${shortTokens(used)}` : "—"}
           unit={limit ? `of ${shortTokens(limit)}` : used != null ? "window unknown" : ""}
           label={used != null
-            ? `Context ${liveCtx && liveCtx.estimate > 0 ? "about " : ""}${used.toLocaleString()} tokens${limit ? ` of ${limit.toLocaleString()}` : ""}${liveCtx && liveCtx.estimate > 0 ? ", estimated since the last step" : ""}`
+            ? `Context ${(liveCtx && liveCtx.estimate > 0) || est ? "about " : ""}${used.toLocaleString()} tokens${limit ? ` of ${limit.toLocaleString()}` : ""}${liveCtx && liveCtx.estimate > 0 ? ", estimated since the last step" : ""}${est ? ", estimated" : ""}`
             : "Context: no reading yet"}
         />
         </div>
@@ -314,6 +326,17 @@
         {#if limit && used != null}
           <div class="dk" use:tip={"What the next request carries, over the model's window"}>
             <i class="u"></i><span>Used</span><b>{pct(share)}</b>
+          </div>
+        {/if}
+        {#if est}
+          <!-- Item 639: an aside that kept no tokens — its figure is estimated, and says from what. -->
+          <div
+            class="dk est"
+            use:tip={est === "chat"
+              ? "Estimated: this aside kept no token counts (answered before Nov 11), so the figure is the chat's last context reading plus the thread's text (characters ÷ 4)"
+              : "Estimated, a floor: no token counts kept and no reading of the chat's context yet, so only the thread's text (characters ÷ 4)"}
+          >
+            <i class="e"></i><span>Estimated</span><b>{est === "chat" ? "chat + thread" : "thread only"}</b>
           </div>
         {/if}
         {#if liveCtx}
@@ -448,20 +471,30 @@
       </section>
     {/if}
 
-    {#if af && af.cost}
-      <!-- Item 605: the aside's own spend, in This chat's form. -->
+    {#if af && af.exchanges > 0}
+      <!-- Item 605: the aside's own spend, in This chat's form. Item 639: always drawn for an asked aside — an
+           old one says its cost was not kept rather than dropping the section. -->
       <section class="chat-use" aria-label="This aside's usage">
         <h4>This aside</h4>
-        <div class="cost" use:tip={"The CLI's estimate for each of this aside's answers, at API prices — not a bill under a subscription"}>
-          <b>{usd(af.cost.usd)}{af.cost.complete ? "" : "+"}</b><span>at API prices</span>
-        </div>
-        {#if af.cacheHit != null}
-          <div class="tiles">
+        {#if af.cost}
+          <div class="cost" use:tip={"The CLI's estimate for each of this aside's answers, at API prices — not a bill under a subscription"}>
+            <b>{usd(af.cost.usd)}{af.cost.complete ? "" : "+"}</b><span>at API prices</span>
+          </div>
+        {:else}
+          <div class="kv" data-cost-unkept use:tip={"Answers before Nov 11 kept no cost estimate; the next answer here is counted"}>
+            <span>Cost</span><b>not kept</b>
+          </div>
+        {/if}
+        <div class="tiles">
+          <div class="tile" use:tip={"Questions asked in this aside"}>
+            <span>Exchanges</span><b>{af.exchanges}</b>
+          </div>
+          {#if af.cacheHit != null}
             <div class="tile" use:tip={"The newest answer's input read back from the chat's prompt cache, of all its input"}>
               <span>Cache hit</span><b>{Math.round(af.cacheHit * 100)}%</b>
             </div>
-          </div>
-        {/if}
+          {/if}
+        </div>
       </section>
     {/if}
 
@@ -476,10 +509,10 @@
           </div>
         {/if}
         {#if outTokens != null}
-          <div class="io" use:tip={"The newest request's output"}>
+          <div class="io" use:tip={outEst ? "The newest answer's output, estimated from its text (characters ÷ 4): this answer kept no token counts" : "The newest request's output"}>
             <span>Out</span>
             <div class="bar sg"><i style:width="{(outTokens / ioScale) * 100}%"></i></div>
-            <b>{shortTokens(outTokens)}</b>
+            <b>{outEst ? "~" : ""}{shortTokens(outTokens)}</b>
           </div>
         {/if}
         {#if toolsLine}

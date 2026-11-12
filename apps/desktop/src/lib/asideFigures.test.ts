@@ -1,7 +1,7 @@
 // Item 605: an aside tab's top bar and right column read the aside's own figures.
 import { describe, expect, it } from "vitest";
 import type { Aside, AsideTurn } from "./state.svelte";
-import { asideFigures, asideSpendText } from "./asideFigures";
+import { asideFigures, asideSpendText, threadTokens } from "./asideFigures";
 import { asideFromStored, storedAsideOf } from "./asides";
 import { ASIDE_HIDDEN, ASIDE_KEPT, composerShows } from "./asideControls";
 
@@ -14,7 +14,7 @@ function aside(turns: AsideTurn[]): Aside {
 
 describe("asideFigures (605)", () => {
   it("is empty for no aside or no turns", () => {
-    expect(asideFigures(null)).toEqual({ used: null, cost: null, cacheHit: null, turn: null, model: null });
+    expect(asideFigures(null)).toEqual({ used: null, cost: null, cacheHit: null, turn: null, model: null, estimated: null, exchanges: 0 });
     expect(asideFigures(aside([])).used).toBeNull();
   });
 
@@ -83,5 +83,72 @@ describe("the transcript toggles reach an aside (605)", () => {
     expect(ASIDE_KEPT).toContain("toolsToggle");
     expect("thinkingToggle" in ASIDE_HIDDEN).toBe(false);
     expect(composerShows("handoff", true)).toBe(false);
+  });
+});
+
+// Item 639 (his "why does an aside not get context info?"): an aside answered
+// before 605 kept no tokens, and its dial read "—".
+describe("the dial's figure for an old and a new aside (639)", () => {
+  // An old aside as the store gives it back: text only, no usage, no cost.
+  const old = () =>
+    asideFromStored({ quote: null, turns: [{ question: "What is a monad?", answer: "x".repeat(4000), error: null, cancelled: false }] })!;
+
+  it("estimates an old aside from the chat's context plus the thread, and says so", () => {
+    const a = old();
+    const f = asideFigures(a, Date.now(), 180_000);
+    expect(f.estimated).toBe("chat");
+    const thread = threadTokens(a);
+    expect(thread).toBeGreaterThanOrEqual(1000); // the 4000-character answer alone is 1000
+    expect(f.used).toBe(180_000 + thread);
+  });
+
+  it("falls back to the thread alone, marked a floor, when the chat has no reading — never null", () => {
+    const f = asideFigures(old(), Date.now(), null);
+    expect(f.estimated).toBe("thread");
+    expect(f.used).toBe(threadTokens(old()));
+    expect(f.used).toBeGreaterThan(0);
+  });
+
+  it("reads a new aside's own usage exactly, whatever the chat's reading", () => {
+    const a = aside([turn({ usage: { input_tokens: 184_000, output_tokens: 400 } })]);
+    const f = asideFigures(a, Date.now(), 999_999);
+    expect(f.used).toBe(184_400);
+    expect(f.estimated).toBeNull();
+    expect(f.turn?.estOut).toBeUndefined();
+  });
+
+  it("estimates the newest answer's output from its text when no usage was kept", () => {
+    expect(asideFigures(old()).turn?.estOut).toBe(1000);
+  });
+
+  it("counts the exchanges, so the This aside section has something for an old aside", () => {
+    expect(asideFigures(old()).exchanges).toBe(1);
+    expect(asideFigures(old()).cost).toBeNull();
+  });
+
+  it("estimates a first question still asking from the chat's prefix", () => {
+    const a = aside([turn({ answer: null, partial: "", startedAt: 1_000 })]);
+    const f = asideFigures(a, 2_000, 50_000);
+    expect(f.estimated).toBe("chat");
+    expect(f.used).toBeGreaterThan(50_000);
+  });
+
+  it("leaves a draft with no chat reading at no figure", () => {
+    const d: Aside = { id: 1, quote: null, draft: true, turns: [], anchor: null };
+    expect(asideFigures(d, Date.now(), null).used).toBeNull();
+    expect(asideFigures(d, Date.now(), 10).estimated).toBe("chat");
+  });
+});
+
+describe("an aside answer's clock survives the store (639)", () => {
+  it("keeps when it ended and how long it took", () => {
+    const at = new Date(10_000).toISOString();
+    const a = aside([turn({ startedAt: 4_000, at })]);
+    const back = asideFromStored(JSON.parse(JSON.stringify(storedAsideOf(a))))!;
+    expect(back.turns[0]?.at).toBe(at);
+    expect(back.turns[0]?.tookMs).toBe(6_000);
+    expect(back.turns[0]?.startedAt).toBeUndefined();
+    expect(asideFigures(back).turn?.ms).toBe(6_000);
+    expect(asideFigures(back).turn?.live).toBe(false);
   });
 });
