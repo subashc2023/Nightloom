@@ -47,7 +47,7 @@
  * (`isPrivateChat`), so a thread stored before this rule is dropped at the
  * next save once its chat is known to be private.
  */
-import type { Aside, AsideTurn } from "./state.svelte";
+import type { Aside, AsideTurn, Segment } from "./state.svelte";
 import type { ChatMode } from "./types";
 import type { AsideQuote } from "./asideQuote";
 import type { AsideAnchor } from "./asideCard";
@@ -95,9 +95,94 @@ export function resetPrivateChats(): void {
   privateChats.clear();
 }
 
+/** A reply's segment as the store keeps it (item 674 step 6): thinking and
+ *  calls trimmed past a size; a text segment as its length alone — its
+ *  words are the turn's `answer`, cut back out in order on load. */
+type StoredSeg =
+  | { k: "th"; text: string; ms?: number }
+  | { k: "rd" }
+  | { k: "tx"; n: number }
+  | { k: "tl"; id: string; name: string; input: unknown; result?: { content: string; is_error: boolean } };
+/** The most of a thinking block, a call's input (as JSON) and a call's
+ *  result the store keeps; `ASIDES_MAX_CHARS` still bounds the whole. */
+export const ASIDE_SEG_MAX = { thinking: 8000, input: 2000, result: 2000 } as const;
+const cutTo = (s: string, max: number): string => (s.length > max ? `${s.slice(0, max - 1)}…` : s);
+
+/** A turn's segments for the store, or null when its text says it all. */
+function storeSegs(segs: Segment[] | undefined, answer: string): StoredSeg[] | null {
+  if (!segs || !segs.some((x) => x.kind === "thinking" || x.kind === "tool" || x.kind === "redacted")) return null;
+  const out: StoredSeg[] = [];
+  let said = "";
+  for (const x of segs) {
+    if (x.kind === "thinking") {
+      if (!x.text) continue;
+      out.push({ k: "th", text: cutTo(x.text, ASIDE_SEG_MAX.thinking), ...(typeof x.ms === "number" ? { ms: x.ms } : {}) });
+    } else if (x.kind === "redacted") out.push({ k: "rd" });
+    else if (x.kind === "text") {
+      said += x.text;
+      out.push({ k: "tx", n: x.text.length });
+    } else if (x.kind === "tool") {
+      let input: unknown = x.call.input;
+      try {
+        if (JSON.stringify(input ?? null).length > ASIDE_SEG_MAX.input) input = {};
+      } catch {
+        input = {};
+      }
+      const r = x.call.result;
+      out.push({
+        k: "tl",
+        id: x.call.id,
+        name: x.call.name,
+        input,
+        ...(r ? { result: { content: cutTo(String(r.content ?? ""), ASIDE_SEG_MAX.result), is_error: r.is_error === true } } : {}),
+      });
+    }
+  }
+  // The text segments must be the answer, in order; else the answer goes
+  // after the rest as one segment on load (no lengths kept).
+  return said === answer ? out : [...out.filter((x) => x.k !== "tx")];
+}
+
+/** Stored segments back as a reply's (thinking closed; a call without a
+ *  result reads as it was left). Null: nothing usable — the turn is its text. */
+function loadSegs(v: unknown, answer: string): Segment[] | null {
+  if (!Array.isArray(v) || v.length === 0) return null;
+  const out: Segment[] = [];
+  let at = 0;
+  let texts = 0;
+  for (const raw of v) {
+    if (raw === null || typeof raw !== "object") continue;
+    const x = raw as Record<string, unknown>;
+    if (x.k === "th" && typeof x.text === "string")
+      out.push({ kind: "thinking", text: x.text, done: true, ...(typeof x.ms === "number" && Number.isFinite(x.ms) ? { ms: x.ms } : {}) });
+    else if (x.k === "rd") out.push({ kind: "redacted" });
+    else if (x.k === "tx" && typeof x.n === "number" && Number.isInteger(x.n) && x.n >= 0) {
+      texts++;
+      out.push({ kind: "text", text: answer.slice(at, at + x.n) });
+      at += x.n;
+    } else if (x.k === "tl" && typeof x.id === "string" && typeof x.name === "string") {
+      const r = x.result as Record<string, unknown> | undefined;
+      const result = r && typeof r === "object" && typeof r.content === "string" ? { content: r.content, is_error: r.is_error === true } : null;
+      out.push({ kind: "tool", call: { id: x.id, name: x.name, input: x.input ?? {}, result } } as Segment);
+    }
+  }
+  if (!out.some((x) => x.kind !== "text")) return null;
+  if (texts === 0 || at !== answer.length) {
+    // The lengths do not add up to the answer (or none were kept): the
+    // whole answer after the thinking and the calls.
+    const rest: Segment[] = out.filter((x) => x.kind !== "text");
+    if (answer) rest.push({ kind: "text", text: answer });
+    return rest;
+  }
+  return out;
+}
+
 interface StoredTurn {
   question: string;
   answer: string;
+  /** Item 674 step 6: the reply's thinking and calls, so they survive a
+   *  relaunch; absent on a text-only turn and on one stored before. */
+  segs?: StoredSeg[];
   error: string | null;
   cancelled: boolean;
   /** The chips the question carried (backlog 283): names and kinds only —
@@ -203,6 +288,8 @@ function storeTurn(t: AsideTurn): StoredTurn | null {
   const end = t.at ? Date.parse(t.at) : NaN;
   if (t.startedAt != null && Number.isFinite(end)) out.ms = Math.max(0, end - t.startedAt);
   else if (typeof t.tookMs === "number") out.ms = t.tookMs;
+  const segs = storeSegs(t.segments, answer);
+  if (segs && segs.length > 0) out.segs = segs;
   return out;
 }
 
@@ -357,6 +444,10 @@ function loadAside(v: unknown): Aside | null {
       turn.readAt = m.readAt;
       turn.roundRead = m.roundRead;
     }
+    // Item 674 step 6: the thinking and calls; an older entry has none
+    // and reads as its text.
+    const segs = loadSegs(m.segs, turn.partial);
+    if (segs) turn.segments = segs;
     turns.push(turn);
   }
   const anchor = isAnchor(a.anchor) ? a.anchor : null;

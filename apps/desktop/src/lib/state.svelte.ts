@@ -735,8 +735,10 @@ export interface AsideTurn {
    *  calls and text in order, built by the chat's own `applyToSegments`
    *  from `aside-delta` and `aside-turn-event`, so `AssistantMessage`
    *  draws an aside's turn as it draws the chat's — the thinking block's
-   *  arrival, the activity rows, the working moon. In memory only; a
-   *  stored turn is its text (`partial`). */
+   *  arrival, the activity rows, the working moon. ~~In memory only; a
+   *  stored turn is its text (`partial`)~~ — kept by the store, trimmed,
+   *  since item 674 step 6 (`asides.ts` `storeSegs`); a turn stored
+   *  before has none and is its text. */
   segments?: Segment[];
   /** Where it stands before it runs (item 404): `queued` while the
    *  chat's own turn holds the agent, `running` once the aside has it. */
