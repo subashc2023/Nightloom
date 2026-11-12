@@ -10,6 +10,7 @@
    * refused ask loses nothing.
    */
   import { onMount } from "svelte";
+  import { takeBlockKey } from "../lib/codeBlockKeys";
   import { renderMarkdown } from "../lib/markdown";
   import { COPIED_MS, copyIconSvg } from "../lib/copyIcon";
   import { loadDraft, saveDraft, type Aside, type PastAside } from "./client";
@@ -102,6 +103,7 @@
     placeholder={asking ? "Wait for this answer…" : "A quick question, beside the chat…"}
     bind:value={text}
     oninput={() => saveDraft(key, text)}
+    onkeydown={(e) => takeBlockKey(e, e.currentTarget)}
   ></textarea>
   {#if problem}<p class="as-problem">{problem}</p>{/if}
   <div class="as-actions">

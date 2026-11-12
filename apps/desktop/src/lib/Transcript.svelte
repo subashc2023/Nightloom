@@ -105,6 +105,7 @@
   import BoxLayer, { layerShown } from "./BoxLayer.svelte";
   import LiveBox from "./LiveBox.svelte";
   import { LiveBoxHandle, type ComposerBox } from "./composerEditor";
+  import { takeBlockKey } from "./codeBlockKeys";
   import { composerFormat } from "./composerFormat.svelte";
   import { fenced, findFences, withFenceLanguage } from "./codeDetect";
   import { pasteSteps, textPastePlan } from "./textPaste";
@@ -1243,6 +1244,11 @@
         return;
       }
     }
+    // Item 648: inside a ``` block the keys are a code editor's — Enter a
+    // new line at the indentation (⌘Enter still sends or saves), Tab
+    // indents, brackets close (`codeBlockKeys.ts`); outside one, nothing.
+    const blockBox = e.currentTarget instanceof HTMLTextAreaElement ? e.currentTarget : editorLive instanceof LiveBoxHandle ? editorLive : null;
+    if (takeBlockKey(e, blockBox)) return;
     const step = item.kind === "user" && !editorLive ? historyKey(e, isMac) : null;
     if (step && editStep(step)) {
       e.preventDefault();

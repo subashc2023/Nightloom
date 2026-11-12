@@ -55,6 +55,7 @@
   import { toggleTranscriptPref, transcript } from "./transcriptPrefs.svelte";
   import { composerFormat, toggleComposerFormat } from "./composerFormat.svelte";
   import { LiveBoxHandle, boxElement, type ComposerBox } from "./composerEditor";
+  import { applyToField, codeBlockEdit, type BlockEdit } from "./codeBlockKeys";
   import LiveBox from "./LiveBox.svelte";
   import { isMac } from "./platform";
   import { BoxHistory, editKind, historyInput, historyKey } from "./boxHistory";
@@ -1315,6 +1316,19 @@
       // Anything else types as usual and closes the list.
       clipOpen = false;
     }
+    // Item 648: inside a ``` block the keys are a code editor's — Enter a
+    // new line at the indentation (not a send; ⌘Enter sends), Tab /
+    // Shift+Tab indent, brackets close (`codeBlockKeys.ts`). Before the
+    // maths offer's Tab: inside a block Tab indents. Outside a block
+    // `codeBlockEdit` takes nothing and every key below is as it was.
+    if (ta && !boxIsLocked) {
+      const ed = codeBlockEdit(ta.value, ta.selectionStart, ta.selectionEnd, e);
+      if (ed) {
+        e.preventDefault();
+        applyBoxEdit(ed);
+        return;
+      }
+    }
     // ⌥⌘↑ / ⌥⌘↓ (⌥Ctrl elsewhere) make the box a line taller or shorter
     // (backlog 111) — the keyboard's version of the handle. Before the
     // picker's own arrows, which are the bare keys. Free: `App.svelte`'s
@@ -1538,6 +1552,24 @@
       cap: MAX_IMAGE_BASE64,
       toast: (m) => addToast(m),
     });
+  }
+
+  /** Item 648: a code-block key's edit, in either box. The textarea's is a
+   *  step of the box's own history (blocker 1210), set at once so the next
+   *  keystroke lands after it; the formatted box's is CodeMirror's typing. */
+  function applyBoxEdit(ed: BlockEdit): void {
+    if (!ta) return;
+    if (ta instanceof LiveBoxHandle) {
+      ta.applyEdit(ed);
+      return;
+    }
+    const el = ta as HTMLTextAreaElement;
+    hist.select(el.selectionStart, el.selectionEnd);
+    const next = applyToField(el, ed);
+    if (hist.external(next, ed.head)) setDraftText(key, next);
+    else hist.select(el.selectionStart, el.selectionEnd);
+    noteActivity();
+    autogrow();
   }
 
   /** Item 348: the converted math paste in place of the selection, one

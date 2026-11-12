@@ -1,0 +1,374 @@
+/**
+ * Item 648 (his ask, 2026-11-11): inside a ``` block in a message box the
+ * keys act as a code editor's — "entering a new line respects spacing and
+ * indentation", Enter inside a block makes a new line rather than sending
+ * ("to send the message you either have to command enter or exit the code
+ * block and click enter"), Tab indents, Enter between `{}` makes the two
+ * lines, and "brackets can be autoclosed". No autocorrect (the boxes have
+ * had it off everywhere since 2026-09-16) and quotes are not auto-closed
+ * (blocker 1928: apostrophes in comments would fight it).
+ *
+ * Pure over the text and the selection, so every box — the composer's
+ * textarea and its formatted editor, the sent-message edit box, the
+ * phone's boxes — applies the same answer its own way. `codeBlockEdit`
+ * answers null for every key it does not take: outside a block nothing
+ * changes.
+ *
+ * "Inside a block" (`blockAt`): the caret on a line after an opening fence
+ * and before its closing one (to the end of the box while it is unclosed).
+ * For Enter, also the end of the opening fence line itself, so typing
+ * ```py and Enter starts the block instead of sending three backticks.
+ * After the closing fence, Enter sends as before.
+ */
+import { isImeKey } from "./imeKey";
+
+/** A fenced block: its opening and closing lines (null: open to the end),
+ *  the opening line's start, the body's span — `codeDetect.ts`'s `Fence`
+ *  without the language, whose highlighter the phone's page does not load. */
+export interface Fence {
+  open: number;
+  close: number | null;
+  start: number;
+  bodyFrom: number;
+  bodyTo: number;
+}
+
+const OPEN = /^( {0,3})(`{3,}|~{3,})([^`]*)$/;
+
+/** The fenced blocks in `text` by `codeDetect.ts`'s `findFences` rule
+ *  (CommonMark's: an opening ``` or ~~~ up to three spaces in, closed by
+ *  the same mark at least as long; unclosed runs to the end). The suite
+ *  holds the two to the same answers. */
+export function fencesOf(text: string): Fence[] {
+  const lines = text.split("\n");
+  const starts: number[] = [];
+  let off = 0;
+  for (const l of lines) {
+    starts.push(off);
+    off += l.length + 1;
+  }
+  const out: Fence[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = OPEN.exec(lines[i]);
+    if (!m) continue;
+    const mark = m[2];
+    const closeRe = new RegExp(`^ {0,3}${mark[0] === "`" ? "`" : "~"}{${mark.length},}\\s*$`);
+    let j = i + 1;
+    while (j < lines.length && !closeRe.test(lines[j])) j++;
+    const close = j < lines.length ? j : null;
+    const bodyFrom = i + 1 < lines.length ? starts[i + 1] : text.length;
+    const bodyTo = close === null ? text.length : Math.max(bodyFrom, starts[close] - 1);
+    out.push({ open: i, close, start: starts[i], bodyFrom, bodyTo });
+    i = close ?? lines.length;
+  }
+  return out;
+}
+
+/** The parts of a key event read here (a `KeyboardEvent` is one). */
+export interface BlockKey {
+  key: string;
+  shiftKey?: boolean;
+  metaKey?: boolean;
+  ctrlKey?: boolean;
+  altKey?: boolean;
+  isComposing?: boolean;
+  keyCode?: number;
+}
+
+/** One replacement of `[from, to)` by `insert`, and the selection after it
+ *  (`anchor`, `head`: offsets into the text after the edit). */
+export interface BlockEdit {
+  from: number;
+  to: number;
+  insert: string;
+  anchor: number;
+  head: number;
+}
+
+const OPENERS: Record<string, string> = { "(": ")", "[": "]", "{": "}" };
+const CLOSERS = new Set(Object.values(OPENERS));
+/** An opener auto-closes only before these (or a line end), as VS Code's
+ *  default does: `(` typed in front of a word stays one character. */
+const CLOSE_BEFORE = /^[\s)\]};,.:]/;
+
+interface Lines {
+  starts: number[];
+  ends: number[];
+}
+
+function linesOf(text: string): Lines {
+  const starts = [0];
+  const ends: number[] = [];
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 10) {
+      ends.push(i);
+      starts.push(i + 1);
+    }
+  }
+  ends.push(text.length);
+  return { starts, ends };
+}
+
+function lineIndex(lines: Lines, pos: number): number {
+  let lo = 0;
+  let hi = lines.starts.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (lines.starts[mid] <= pos) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
+/**
+ * The fenced block the caret at `pos` is inside, or null. `body` only: a
+ * line strictly between the fences (Tab and the brackets — the opening
+ * line holds the info string, ```{r} among them); otherwise the end of the
+ * opening fence line counts too (Enter).
+ */
+export function blockAt(text: string, pos: number, body = false): Fence | null {
+  const lines = linesOf(text);
+  const L = lineIndex(lines, pos);
+  for (const f of fencesOf(text)) {
+    if (L > f.open && (f.close === null || L < f.close)) return f;
+    if (!body && L === f.open && pos === lines.ends[L]) return f;
+    if (f.open > L) break;
+  }
+  return null;
+}
+
+/** The block's indent step: a tab if a body line starts with one, else
+ *  the smallest step in from one non-blank line to the next (two spaces in
+ *  a block written with two), else four spaces. */
+export function indentUnit(text: string, f: Fence): string {
+  const body = text.slice(f.bodyFrom, f.bodyTo).split("\n");
+  let least = Infinity;
+  let prev: number | null = null;
+  for (const l of body) {
+    if (l.startsWith("\t")) return "\t";
+    if (l.trim() === "") continue;
+    const n = /^ */.exec(l)![0].length;
+    if (prev !== null && n - prev >= 2 && n - prev < least) least = n - prev;
+    prev = n;
+  }
+  return Number.isFinite(least) ? " ".repeat(Math.min(least, 8)) : "    ";
+}
+
+/** The block both `from` and `to` are inside, or null. */
+function sameBlock(text: string, from: number, to: number, body: boolean): Fence | null {
+  const f = blockAt(text, from, body);
+  if (!f || from === to) return f;
+  const g = blockAt(text, to, body);
+  return g && g.start === f.start ? f : null;
+}
+
+const leadingWs = (s: string): string => /^[ \t]*/.exec(s)![0];
+
+/**
+ * What `e` does in a box holding `text` with the selection `[start, end)`:
+ * the edit to apply (the caller prevents the key's default), or null — the
+ * key is not taken here, and the box does what it always did.
+ */
+export function codeBlockEdit(text: string, start: number, end: number, e: BlockKey): BlockEdit | null {
+  if (isImeKey(e)) return null;
+  const from = Math.min(start, end);
+  const to = Math.max(start, end);
+  const chord = !!(e.metaKey || e.ctrlKey);
+  if (e.key === "Enter") return chord || e.altKey ? null : enter(text, from, to);
+  if (chord) return null;
+  if (e.key === "Tab") return e.altKey ? null : tab(text, from, to, !!e.shiftKey);
+  if (e.key === "Backspace") return e.altKey || e.shiftKey ? null : backspace(text, from, to);
+  if (e.key in OPENERS) return opener(text, from, to, e.key);
+  if (CLOSERS.has(e.key)) return closer(text, from, to, e.key);
+  return null;
+}
+
+/** Enter (and Shift+Enter) inside a block: a new line at this line's
+ *  indentation, one step more after `{` `(` `[` `:`, and `{|}` split into
+ *  the caret's line and the closer's. */
+function enter(text: string, from: number, to: number): BlockEdit | null {
+  const f = sameBlock(text, from, to, false);
+  if (!f) return null;
+  const lines = linesOf(text);
+  const L = lineIndex(lines, from);
+  const before = text.slice(lines.starts[L], from);
+  const indent = leadingWs(before);
+  if (L === f.open) {
+    const ins = "\n" + indent;
+    return { from, to, insert: ins, anchor: from + ins.length, head: from + ins.length };
+  }
+  const unit = indentUnit(text, f);
+  const prev = before.slice(-1);
+  const next = text.charAt(to);
+  if (prev in OPENERS && OPENERS[prev] === next) {
+    const first = "\n" + indent + unit;
+    const ins = first + "\n" + indent;
+    return { from, to, insert: ins, anchor: from + first.length, head: from + first.length };
+  }
+  const last = before.trimEnd().slice(-1);
+  const ins = "\n" + indent + (last in OPENERS || last === ":" ? unit : "");
+  return { from, to, insert: ins, anchor: from + ins.length, head: from + ins.length };
+}
+
+/** Tab / Shift+Tab inside a block's body: a caret gets one step (Tab); a
+ *  selection, or Shift+Tab, indents or outdents every line it touches
+ *  (blank lines of a multi-line selection are left blank). */
+function tab(text: string, from: number, to: number, out: boolean): BlockEdit | null {
+  const f = sameBlock(text, from, to, true);
+  if (!f) return null;
+  const unit = indentUnit(text, f);
+  if (!out && from === to) {
+    return { from, to, insert: unit, anchor: from + unit.length, head: from + unit.length };
+  }
+  const lines = linesOf(text);
+  const L1 = lineIndex(lines, from);
+  let L2 = lineIndex(lines, to);
+  // A selection ending at a line's very start does not take that line.
+  if (L2 > L1 && to === lines.starts[L2]) L2--;
+  const width = unit === "\t" ? 4 : unit.length;
+  const parts: string[] = [];
+  /** Per line: characters added (+) or removed (-) at its start. */
+  const deltas: number[] = [];
+  for (let L = L1; L <= L2; L++) {
+    const line = text.slice(lines.starts[L], lines.ends[L]);
+    if (out) {
+      const cut = line.startsWith("\t") ? 1 : Math.min(/^ */.exec(line)![0].length, width);
+      parts.push(line.slice(cut));
+      deltas.push(-cut);
+    } else if (line.trim() === "" && L1 !== L2) {
+      parts.push(line);
+      deltas.push(0);
+    } else {
+      parts.push(unit + line);
+      deltas.push(unit.length);
+    }
+  }
+  const rFrom = lines.starts[L1];
+  const rTo = lines.ends[L2];
+  const insert = parts.join("\n");
+  if (insert === text.slice(rFrom, rTo)) return { from: rFrom, to: rFrom, insert: "", anchor: from, head: to };
+  /** Where `p` lands: moved by every changed line before its own, and on
+   *  its own line by the indent added past it (a selection start at the
+   *  line's start stays there, taking the new indent in) or the cut. */
+  const map = (p: number, isStart: boolean): number => {
+    const L = lineIndex(lines, p);
+    let shift = 0;
+    for (let i = L1; i < Math.min(L, L2 + 1); i++) shift += deltas[i - L1];
+    if (L >= L1 && L <= L2) {
+      const d = deltas[L - L1];
+      const col = p - lines.starts[L];
+      if (d > 0) shift += col > 0 || !isStart || from === to ? d : 0;
+      else shift += Math.max(d, -col);
+    }
+    return p + shift;
+  };
+  return { from: rFrom, to: rTo, insert, anchor: map(from, true), head: map(to, false) };
+}
+
+/** Backspace between an empty pair inside a block deletes both. */
+function backspace(text: string, from: number, to: number): BlockEdit | null {
+  if (from !== to || from === 0) return null;
+  const prev = text.charAt(from - 1);
+  if (!(prev in OPENERS) || OPENERS[prev] !== text.charAt(from)) return null;
+  if (!blockAt(text, from, true)) return null;
+  return { from: from - 1, to: from + 1, insert: "", anchor: from - 1, head: from - 1 };
+}
+
+/** An opener inside a block: wraps a selection, else auto-closes before
+ *  a line end, a space or a closer. */
+function opener(text: string, from: number, to: number, key: string): BlockEdit | null {
+  if (!sameBlock(text, from, to, true)) return null;
+  const close = OPENERS[key];
+  if (from !== to) {
+    const sel = text.slice(from, to);
+    return { from, to, insert: key + sel + close, anchor: from + 1, head: from + 1 + sel.length };
+  }
+  const next = text.slice(to, to + 1);
+  if (next !== "" && !CLOSE_BEFORE.test(next)) return null;
+  return { from, to, insert: key + close, anchor: from + 1, head: from + 1 };
+}
+
+/** A closer typed in front of the same closer inside a block steps over it. */
+function closer(text: string, from: number, to: number, key: string): BlockEdit | null {
+  if (from !== to || text.charAt(from) !== key) return null;
+  if (!blockAt(text, from, true)) return null;
+  return { from, to, insert: "", anchor: from + 1, head: from + 1 };
+}
+
+/** `text` with `ed` applied. */
+export function applyBlockEdit(text: string, ed: BlockEdit): string {
+  return text.slice(0, ed.from) + ed.insert + text.slice(ed.to);
+}
+
+/** The parts of a plain `<textarea>` the edit is applied through. */
+export interface FieldLike {
+  value: string;
+  readonly selectionStart: number;
+  readonly selectionEnd: number;
+  setSelectionRange(start: number, end: number, direction?: "forward" | "backward" | "none"): void;
+}
+
+/**
+ * `ed` applied to a plain `<textarea>`: its value set, the selection put
+ * where `ed` says (a backward one kept backward). The caller records the
+ * step in the box's history, if it keeps one, and tells its state.
+ */
+export function applyToField(el: FieldLike, ed: BlockEdit): string {
+  const next = applyBlockEdit(el.value, ed);
+  if (next !== el.value) el.value = next;
+  const a = Math.min(ed.anchor, ed.head);
+  const b = Math.max(ed.anchor, ed.head);
+  el.setSelectionRange(a, b, ed.head < ed.anchor ? "backward" : "forward");
+  return next;
+}
+
+/** A box the edit can be handed to whole (the formatted editor's handle). */
+export interface EditableBox {
+  readonly value: string;
+  readonly selectionStart: number;
+  readonly selectionEnd: number;
+  applyEdit(ed: BlockEdit): void;
+}
+
+/** A textarea as `takeBlockKey` uses it. */
+export interface InputField extends FieldLike {
+  disabled?: boolean;
+  readOnly?: boolean;
+  dispatchEvent(e: Event): boolean;
+}
+
+/** The key event as `takeBlockKey` uses it (a `KeyboardEvent` is one). */
+export interface TakenKey extends BlockKey {
+  readonly defaultPrevented: boolean;
+  preventDefault(): void;
+}
+
+function inputEvent(type: string): Event {
+  const init = { bubbles: true, inputType: "insertReplacementText" };
+  return typeof InputEvent !== "undefined" ? new InputEvent(type, init) : new Event(type, init);
+}
+
+/**
+ * The code-block keys for a box that hears its own edits from `input`
+ * events (the edit box, the phone's boxes): the key's edit applied between
+ * a `beforeinput` and an `input` event, so the box's own handlers record
+ * the step and its state takes the text — the path a keystroke takes. A
+ * formatted editor's handle takes the edit itself. True when the key was
+ * taken (its default prevented).
+ */
+export function takeBlockKey(e: TakenKey, box: InputField | EditableBox | null): boolean {
+  if (!box || e.defaultPrevented) return false;
+  const ed = codeBlockEdit(box.value, box.selectionStart, box.selectionEnd, e);
+  if (!ed) return false;
+  e.preventDefault();
+  if ("applyEdit" in box) {
+    box.applyEdit(ed);
+    return true;
+  }
+  if (box.disabled || box.readOnly) return true;
+  const before = box.value;
+  box.dispatchEvent(inputEvent("beforeinput"));
+  applyToField(box, ed);
+  if (box.value !== before) box.dispatchEvent(inputEvent("input"));
+  return true;
+}

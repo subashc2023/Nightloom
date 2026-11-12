@@ -846,6 +846,22 @@ export class LiveBoxHandle implements ComposerBox {
   replaceRanges(changes: { from: number; to: number; insert: string }[]): void {
     this.view.dispatch({ changes, userEvent: "input", annotations: isolateHistory.of("full"), scrollIntoView: true });
   }
+  /** Item 648: a code-block key's edit (`codeBlockKeys.ts`) — the change
+   *  and the selection after it, as typing, so it joins the box's undo
+   *  the way the keystroke would have. */
+  applyEdit(ed: { from: number; to: number; insert: string; anchor: number; head: number }): void {
+    const len = this.view.state.doc.length;
+    const from = Math.max(0, Math.min(ed.from, len));
+    const to = Math.max(from, Math.min(ed.to, len));
+    const after = len - (to - from) + ed.insert.length;
+    const clamp = (p: number) => Math.max(0, Math.min(p, after));
+    this.view.dispatch({
+      changes: from === to && ed.insert === "" ? [] : { from, to, insert: ed.insert },
+      selection: EditorSelection.range(clamp(ed.anchor), clamp(ed.head)),
+      userEvent: ed.insert === "" && to > from ? "delete.backward" : "input.type",
+      scrollIntoView: true,
+    });
+  }
   getBoundingClientRect(): DOMRect {
     return this.view.dom.getBoundingClientRect();
   }
