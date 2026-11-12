@@ -14,7 +14,7 @@
   /* The two family hues; violet and copper are used nowhere else in Jarvis (amber his, blue Claude working / cold,
      green done, orange hand-off, red error). */
   --fable: #b9a3ff;
-  --opus: #e08a5a;
+  --opus: #c97a52; /* darker copper, item 650 */
 }
 
 html:not([data-layout="classic"]) .composer[data-model-family="fable"] {
@@ -23,7 +23,7 @@ html:not([data-layout="classic"]) .composer[data-model-family="fable"] {
 }
 html:not([data-layout="classic"]) .composer[data-model-family="opus"] {
   --c644-hue: var(--opus);
-  --c644-opus-k: 3; /* his pick was the design page's Copper (blocker 1923); 1 read as today's box */
+  --c644-opus-k: 1.8; /* 1 read as today's box (round 2); 3 was "def too bright" (item 650, 2026-11-11) */
   --c644-k: var(--c644-opus-k);
 }
 
@@ -32,17 +32,17 @@ html:not([data-layout="classic"]) .composer:is([data-model-family="fable"], [dat
   background:
     linear-gradient(
       180deg,
-      color-mix(in srgb, var(--c644-hue) min(calc(10% * var(--c644-k)), 18%), transparent),
+      color-mix(in srgb, var(--c644-hue) min(calc(10% * var(--c644-k)), 14%), transparent),
       rgba(255, 255, 255, 0.012) 45%,
       rgba(0, 0, 0, 0.08)
     ),
     color-mix(in srgb, color-mix(in srgb, var(--c644-hue) calc(7% * var(--c644-k)), var(--raised)) 72%, transparent);
-  border-color: color-mix(in srgb, var(--c644-hue) min(calc(30% * var(--c644-k)), 45%), rgba(255, 255, 255, 0.08));
+  border-color: color-mix(in srgb, var(--c644-hue) min(calc(30% * var(--c644-k)), 36%), rgba(255, 255, 255, 0.08));
   box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--c644-hue) min(calc(26% * var(--c644-k)), 40%), transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--c644-hue) min(calc(26% * var(--c644-k)), 32%), transparent),
     inset 0 -1px 0 rgba(0, 0, 0, 0.3),
     0 10px 30px rgba(0, 0, 0, 0.45),
-    0 0 22px color-mix(in srgb, var(--c644-hue) min(calc(7% * var(--c644-k)), 12%), transparent);
+    0 0 22px color-mix(in srgb, var(--c644-hue) min(calc(7% * var(--c644-k)), 9%), transparent);
 }
 /* Typing keeps the amber focus rim every box has (Glass and Glass rail's softer one, composerRow.css; Composer's own else). */
 html:not([data-layout="classic"]) .composer:is([data-model-family="fable"], [data-model-family="opus"]) .card:focus-within {
