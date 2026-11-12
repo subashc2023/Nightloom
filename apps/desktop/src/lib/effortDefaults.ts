@@ -73,7 +73,16 @@ const API_DOC = "https://platform.claude.com/docs/en/build-with-claude/effort";
  */
 export const EFFORT_DEFAULTS: Record<Engine, Record<string, EffortFacts>> = {
   "claude-code": {
+    // 2026-11-11 (item 659): code.claude.com/docs/en/model-config, "Resolution order" step 5:
+    // "Fable 5.2, Opus 5.5, Sonnet 5.5, and Haiku 5.5 default to `medium`" — and a top-level
+    // `effortLevel` in user settings does not apply to Opus 5.5 or later models.
+    // `fable-5-2` sits after `fable-5-1` on purpose: the CLI's `fable` alias still means 5.1
+    // (blocker 1692), and a bare alias resolves to the first key of its family.
+    "opus-5-5": { default: "medium", levels: ALL, source: CLI_DOC },
+    "sonnet-5-5": { default: "medium", levels: ALL, source: CLI_DOC },
+    "haiku-5-5": { default: "medium", levels: ALL, source: CLI_DOC },
     "fable-5-1": { default: "high", levels: ALL, source: CLI_DOC },
+    "fable-5-2": { default: "medium", levels: ALL, source: CLI_DOC },
     "fable-5": { default: "high", levels: ALL, source: CLI_DOC },
     "opus-5": { default: "high", levels: ALL, source: CLI_DOC },
     "opus-4-8": { default: "high", levels: ALL, source: CLI_DOC },
@@ -88,7 +97,13 @@ export const EFFORT_DEFAULTS: Record<Engine, Record<string, EffortFacts>> = {
     "haiku-4-5": { default: null, levels: NONE, source: CLI_DOC },
   },
   provider: {
+    // 2026-11-11 (item 659): effort defaults to `high` on every current model except
+    // Opus 5.5 and Haiku 5.5, whose default is `medium` (platform docs, effort page).
+    "opus-5-5": { default: "medium", levels: ALL, source: API_DOC },
+    "sonnet-5-5": { default: "high", levels: ALL, source: API_DOC },
+    "haiku-5-5": { default: "medium", levels: ALL, source: API_DOC },
     "fable-5-1": { default: "high", levels: ALL, source: API_DOC },
+    "fable-5-2": { default: "high", levels: ALL, source: API_DOC },
     "fable-5": { default: "high", levels: ALL, source: API_DOC },
     "opus-5": { default: "high", levels: ALL, source: API_DOC },
     "opus-4-8": { default: "high", levels: ALL, source: API_DOC },
@@ -115,7 +130,10 @@ export function effortFamily(engine: Engine, model: string): string | null {
   // A full id or a dated snapshot: the longest family key it starts with,
   // so `fable-5-1` is not read as `fable-5`.
   const exact = Object.keys(table)
-    .filter((k) => m === k || m.startsWith(k + "-"))
+    // Only a dated snapshot suffix counts (`-20260115`, `-2026-01-15`): a newer release
+    // in the family (`opus-5-5` under `opus-5`) is a different model with its own default,
+    // and must read `?` until its row is added (item 659: Opus 5.5 inherited Opus 5's `high`).
+    .filter((k) => m === k || (m.startsWith(k + "-") && /^-\d{4}-?\d{2}-?\d{2}$/.test(m.slice(k.length))))
     .sort((a, b) => b.length - a.length)[0];
   if (exact) return exact;
   // A bare alias: the first (newest) key of that family.
