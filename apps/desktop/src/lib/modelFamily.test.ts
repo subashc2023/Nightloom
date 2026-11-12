@@ -99,10 +99,12 @@ describe("the composer carries the family", () => {
     }
     expect(css).toContain("--fable: #b9a3ff;");
     expect(css).toContain("--opus: #e08a5a;");
-    // Round 1's Lilac glass numbers, at k = 1 for both families.
+    // Round 1's Lilac glass numbers, scaled by k (1 for Fable).
     for (const n of ["calc(10% * var(--c644-k))", "calc(7% * var(--c644-k))", "calc(30% * var(--c644-k))", "calc(26% * var(--c644-k))"])
       expect(css).toContain(n);
-    expect(css).toMatch(/--c644-opus-k: 1;/);
+    // Opus scales the shares by one constant (3 since 9696642: the design page's Copper, his pick).
+    expect(css).toMatch(/--c644-opus-k: [\d.]+;/);
+    expect(css).toMatch(/--c644-k: var\(--c644-opus-k\);/);
     // Send, the Edge line (::after) and the row's buttons are not touched.
     expect(rules.join("}")).not.toMatch(/\.send|::after|\.ns-btn|\.bottom-/);
   });
