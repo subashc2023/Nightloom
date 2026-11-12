@@ -22,7 +22,6 @@
     sendEdit,
     setCheckpoint,
     openSession,
-    resumeAfterLimit,
     retryConnect,
     runningChatName,
     setAsideRewound,
@@ -37,7 +36,6 @@
   import { asideReads } from "./state.svelte";
   import { continuableReply, continuedFromReply, type NextChat } from "./handoffButton";
   import { checkpointLine, checkpointOwner } from "./checkpoint";
-  import { pauseLabel, resetLabel, resumeDelayMs } from "./limit";
   import {
     REMOVED_PLACEHOLDER,
     blockEdits,
@@ -3103,23 +3101,24 @@
          continues the turn then (scheduled if pressed early, never into
          an exhausted window), naming the subagents that died so they are
          resumed rather than relaunched. -->
-    {#if isChat && app.limitPause && app.limitPause.session === app.activeSessionId && !app.busy}
-      {@const pause = app.limitPause}
+    {#if src.limit}
+      {@const L = src.limit}
+      {@const pause = L.pause}
       <div class="limit-card" role="status">
         <div class="limit-head">
-          <span class="ns-chip mono">{pauseLabel(pause)}</span>
+          <span class="ns-chip mono">{L.label}</span>
           {#if pause.agents.length > 0}
             <span class="limit-sub" use:tip={pause.agents.map((a) => a.description || a.agent_id || a.tool_use_id).join(" · ")}>{pause.agents.length === 1 ? "one subagent" : `${pause.agents.length} subagents`} stopped before returning · resumed, not relaunched</span>
           {/if}
         </div>
         <div class="limit-text">{pause.text}</div>
         <div class="limit-actions">
-          {#if app.limitResumeAt !== null}
-            <span class="limit-sub">will resume at {resetLabel({ resetsAtMs: app.limitResumeAt })}</span>
-            <button class="ns-btn ghost small" onclick={resumeAfterLimit}>Cancel</button>
+          {#if L.scheduled !== null}
+            <span class="limit-sub">{L.scheduled}</span>
+            <button class="ns-btn ghost small" onclick={L.cancel}>Cancel</button>
           {:else}
-            <button class="ns-btn accent small" disabled={!app.connection} use:tip={resumeDelayMs(pause) === 0 ? "Continue the turn now" : `Continue the turn when the window resets, at ${resetLabel(pause)}`} onclick={resumeAfterLimit}>
-              {resumeDelayMs(pause) === 0 ? "Resume" : `Resume at ${resetLabel(pause)}`}
+            <button class="ns-btn accent small" disabled={!L.can} use:tip={L.tip} onclick={L.go}>
+              {L.button}
             </button>
           {/if}
         </div>

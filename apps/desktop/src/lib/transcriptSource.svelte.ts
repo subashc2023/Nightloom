@@ -12,7 +12,8 @@
  * it is guarded by `kind` — and `transcriptFeatures.ts` lists every such
  * guard with its reason, checked by a test.
  */
-import { app, chatAgentSession, openChatKey, paneChat, type Segment } from "./state.svelte";
+import { app, chatAgentSession, openChatKey, paneChat, resumeAfterLimit, type Segment } from "./state.svelte";
+import { pauseLabel, resetLabel, resumeDelayMs, type LimitPause } from "./limit";
 import type { AsideNote } from "./asideTranscript";
 import { scrollKey } from "./scroll.svelte";
 import type { ApprovalRequest, Attachment, SessionEvent } from "./types";
@@ -97,8 +98,45 @@ export interface TranscriptSource {
    *  and `blocked` says why a held one waits (`engine` / `not-open`).
    *  Absent: none (a pane). */
   pending?: { key: string; aside?: { busy: boolean; blocked: "engine" | "not-open" | null } };
+  /** The usage-limit card under the thread (nightshift backlog 164; an
+   *  aside's since 674's follow-up): what the plan's limit stopped, when
+   *  the window opens, and the one button that goes on then — the chat's
+   *  Resume (the turn continues), an aside's Ask again (the question is
+   *  asked again in place). Null: no card. */
+  limit?: LimitCard | null;
   /** A note beside the waiting moon (an aside queued behind a turn). */
   waitNote?: string | null;
+}
+
+export interface LimitCard {
+  pause: LimitPause;
+  /** The chip's line (`pauseLabel`). */
+  label: string;
+  /** Pressed early: the line saying when it goes, with Cancel; else null. */
+  scheduled: string | null;
+  /** The button's words and tip, and whether it can go now. */
+  button: string;
+  tip: string;
+  can: boolean;
+  go: () => void;
+  cancel: () => void;
+}
+
+/** The open chat's limit card: its turn paused, Resume schedules or goes. */
+function chatLimit(id: string | null): LimitCard | null {
+  const p = app.limitPause;
+  if (!p || p.session !== id || app.busy) return null;
+  const now = resumeDelayMs(p) === 0;
+  return {
+    pause: p,
+    label: pauseLabel(p),
+    scheduled: app.limitResumeAt !== null ? `will resume at ${resetLabel({ resetsAtMs: app.limitResumeAt })}` : null,
+    button: now ? "Resume" : `Resume at ${resetLabel(p)}`,
+    tip: now ? "Continue the turn now" : `Continue the turn when the window resets, at ${resetLabel(p)}`,
+    can: !!app.connection,
+    go: resumeAfterLimit,
+    cancel: resumeAfterLimit,
+  };
 }
 
 /** The open chat. */
@@ -124,6 +162,7 @@ export function chatSource(): TranscriptSource {
     chatActions: true,
     actions: {},
     pending: { key: openChatKey() },
+    limit: chatLimit(id),
   };
 }
 

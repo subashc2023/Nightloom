@@ -81,8 +81,10 @@ export function resumeDelayMs(p: Pick<LimitPause, "resetsAtMs">, nowMs: number =
   return Math.max(0, p.resetsAtMs + RESUME_MARGIN_MS - nowMs);
 }
 
-/** The line the transcript's card shows. */
-export function pauseLabel(p: Pick<LimitPause, "resetsAtMs" | "window">, nowMs: number = Date.now()): string {
+/** The line the transcript's card shows. `then` (item 674's follow-up):
+ *  what happens at the reset — the chat's turn `resumes`; an aside's
+ *  question is `asked again`. */
+export function pauseLabel(p: Pick<LimitPause, "resetsAtMs" | "window">, nowMs: number = Date.now(), then = "resumes"): string {
   // The chat asked to be continued later (backlog 543b, `chatResume.ts`):
   // not a limit pause, the same card.
   if (p.window === "asked") {
@@ -94,7 +96,7 @@ export function pauseLabel(p: Pick<LimitPause, "resetsAtMs" | "window">, nowMs: 
   const when = resetLabel(p, nowMs);
   return resumeDelayMs(p, nowMs) === 0 && p.resetsAtMs != null
     ? `paused by the ${which} limit · the window has reset`
-    : `paused by the ${which} limit · resumes at ${when}`;
+    : `paused by the ${which} limit · ${then} at ${when}`;
 }
 
 /** The stopped children of a result; one from before pass 2 (no

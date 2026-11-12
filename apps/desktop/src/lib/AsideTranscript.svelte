@@ -18,8 +18,9 @@
   import { scheduleAsideSave } from "./asides.svelte";
   import { asideDraftKey } from "./asides";
   import { asideWait, quietLabel } from "./asideWait";
+  import { RESUME_MARGIN_MS, pauseLabel, resetLabel, resumeDelayMs } from "./limit";
   import { asideEvents, asideLive } from "./asideTranscript";
-  import type { TranscriptSource } from "./transcriptSource.svelte";
+  import type { LimitCard, TranscriptSource } from "./transcriptSource.svelte";
   import Transcript from "./Transcript.svelte";
   import AsideFoldPanel from "./AsideFoldPanel.svelte";
 
@@ -160,6 +161,53 @@
     await askInPlace(i, t.question, "", chipsOfTurn(i));
   }
 
+  /**
+   * The usage limit stopped the last answer (item 674's follow-up): the
+   * chat's limit card, with Ask again — at once once the window has reset,
+   * else at the reset (kept on the exchange, so it goes when this aside is
+   * on screen then or next; Cancel takes it back).
+   */
+  const stoppedBy = $derived.by(() => {
+    const t = aside.turns[aside.turns.length - 1];
+    return t && t.limit && !asking ? t : null;
+  });
+  const limitCard = $derived.by((): LimitCard | null => {
+    const t = stoppedBy;
+    if (!t?.limit) return null;
+    const p = t.limit;
+    const now = resumeDelayMs(p) === 0;
+    const i = aside.turns.length - 1;
+    return {
+      pause: p,
+      label: pauseLabel(p, Date.now(), "ask again"),
+      scheduled: t.limitAskAt != null ? `will ask again at ${resetLabel({ resetsAtMs: t.limitAskAt - RESUME_MARGIN_MS })}` : null,
+      button: now ? "Ask again" : `Ask again at ${resetLabel(p)}`,
+      tip: now
+        ? "Ask this question again now (Undo on the notice puts this exchange back)"
+        : `Ask this question again when the window resets, at ${resetLabel(p)}`,
+      can: open && onClaudeCode,
+      go: () => {
+        if (resumeDelayMs(p) === 0) void askAgain(i);
+        else t.limitAskAt = Date.now() + resumeDelayMs(p);
+      },
+      cancel: () => {
+        t.limitAskAt = null;
+      },
+    };
+  });
+  // Ask again pressed early goes at its time, while this aside is drawn.
+  $effect(() => {
+    const t = stoppedBy;
+    const at = t?.limitAskAt;
+    if (!t || at == null || !open || !onClaudeCode) return;
+    const id = setTimeout(() => {
+      if (t.limitAskAt == null || aside.turns[aside.turns.length - 1] !== t) return;
+      t.limitAskAt = null;
+      void askAgain(aside.turns.length - 1);
+    }, Math.max(0, at - Date.now()));
+    return () => clearTimeout(id);
+  });
+
   const source = $derived<TranscriptSource>({
     kind: "aside",
     frame,
@@ -209,6 +257,7 @@
     bare: ev.bare,
     sizes: ev.sizes,
     planUse: ev.planUse,
+    limit: limitCard,
     pending: {
       key: asideDraftKey(aside),
       aside: { busy: asking !== null, blocked: !onClaudeCode ? "engine" : !open ? "not-open" : null },

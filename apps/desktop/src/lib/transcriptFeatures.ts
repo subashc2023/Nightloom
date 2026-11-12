@@ -55,7 +55,7 @@ export const TRANSCRIPT_FEATURES: Record<string, Where> = {
   "per-turn context share bar": shared,
   "per-reply plan use": shared,
   "pending bubbles (a message held mid-answer)": shared,
-  "usage-limit pause card": pending("an aside's limit hit arrives as its turn's error text; a pause scoped to the aside needs state in runAside (item 677's file)"),
+  "usage-limit pause card": shared,
   "drop files on the transcript": pending("the drop target adds to the open chat's composer; the aside's composer takes drops itself"),
   "versions of an edited message": mainOnly("versions are session forks; an aside's edit replaces in place"),
   "edit a reply's text, remove a block or a turn, restore": mainOnly("an aside keeps no context of its own to edit"),
@@ -102,7 +102,7 @@ export const TRANSCRIPT_PIECES: Record<string, Where> = {
  * it in `TRANSCRIPT_FEATURES`, then update the count.
  */
 export const KIND_GUARDS = {
-  isChat: 16,
+  isChat: 15,
   inPane: 8,
   inAside: 7,
   "src.chatActions": 10,

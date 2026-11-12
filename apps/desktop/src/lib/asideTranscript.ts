@@ -152,7 +152,9 @@ export function asideEvents(aside: Pick<Aside, "turns">): AsideEvents {
     }
     const ns: AsideNote[] = [];
     if (t.cancelled) ns.push({ kind: "stopped", text: "stopped here" });
-    if (t.error) ns.push({ kind: "error", text: t.error });
+    // Item 674's follow-up: the limit that stopped the last answer is the
+    // transcript's limit card (`AsideTranscript`), not a note as well.
+    if (t.error && !(t.limit && i === aside.turns.length - 1)) ns.push({ kind: "error", text: t.error });
     if (ns.length) notes.set(last, ns);
   });
   return { events, turnOf, seqOf, notes, bare, sizes, planUse };

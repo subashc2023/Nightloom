@@ -276,6 +276,28 @@ async function drive(): Promise<void> {
       await settle(400);
       say(`after the answer ended: bubbles ${bubbles().length} · queue ${readDraft(k).queue.length} · asks ${asks.length} · last question "${a.turns.at(-1)?.question}"`);
     }
+  } else if (act === "limit-later" || act === "limit-now") {
+    // 674 follow-up: the plan's limit stopped the last answer. The chat's
+    // limit card stands under it with Ask again (at the reset, or now).
+    const last = a.turns.at(-1)!;
+    const resets = act === "limit-now" ? Date.now() - 120_000 : Date.now() + 95 * 60_000;
+    last.error = "You've hit your session limit · resets 7:35am";
+    last.limit = { session: null, resetsAtMs: resets, window: "five_hour", text: "You've hit your session limit · resets 7:35am", subagents: [], agents: [], hitAtMs: Date.now() };
+    await settle(250);
+    const cardText = () => ($(".limit-card", t)?.textContent ?? "").replace(/\s+/g, " ").trim();
+    say(`card "${cardText()}" · error notes ${$$(".turn-note", t).length}`);
+    press($(".limit-card .ns-btn", t));
+    await settle(300);
+    say(`after the button: card "${cardText()}" · asks ${asks.length} · exchanges ${a.turns.length} · last question "${a.turns.at(-1)?.question.slice(0, 30)}" · toast "${app.toasts.at(-1)?.text ?? ""}"`);
+    if (act === "limit-later") {
+      press($(".limit-card .ns-btn", t));
+      await settle(200);
+      say(`after Cancel: card "${cardText()}"`);
+      // The scheduled ask firing: its time brought to 0.3 s from now.
+      last.limitAskAt = Date.now() + 300;
+      await settle(700);
+      say(`scheduled time reached: asks ${asks.length} · card "${cardText()}" · toast "${app.toasts.at(-1)?.text ?? ""}"`);
+    }
   } else if (act === "shrink") {
     // The card's room shrinks (a shorter window, another card above the
     // composer): a view at the foot stays at the foot (item 233).
