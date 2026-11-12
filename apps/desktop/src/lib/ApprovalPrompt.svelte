@@ -367,7 +367,8 @@
       placeholder="Note for the model — optional"
       aria-label="note for the model, optional"
     />
-    <span class="q" use:tip={NOTE_TIP[kind]} aria-label={NOTE_TIP[kind]} role="img">?</span>
+    <!-- Item 638: a button (the keyboard reaches it) whose click pins the pill. -->
+    <button type="button" class="q" use:tip={{ text: NOTE_TIP[kind], click: true }} aria-label={NOTE_TIP[kind]}>?</button>
   </div>
 {/snippet}
 
@@ -951,10 +952,19 @@
   .note-row .q {
     position: absolute;
     right: 10px;
+    padding: 0;
+    background: none;
+    border: none;
+    font-family: inherit;
     font-size: 12px;
     color: var(--dim);
     cursor: help;
     user-select: none;
+  }
+  .note-row .q:hover,
+  .note-row .q:focus-visible {
+    outline: none;
+    color: var(--accent);
   }
   .ask .actions {
     align-items: center;

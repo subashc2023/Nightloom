@@ -90,7 +90,8 @@ describe("SubagentView's markup", () => {
     const card = src.slice(src.indexOf('<div class="ask-card"'), src.indexOf("</style>"));
     expect(card).toMatch(/class="tell-chip"[\s\S]*?aria-pressed=\{agentAsk\.tellMain\}[\s\S]*?onclick=\{\(\) => setTellMain\(!agentAsk\.tellMain\)\}/);
     expect(card).toMatch(/<span class="ask-hint">\{hintShort\}<\/span>/);
-    expect(card).toMatch(/class="ask-why" aria-label=\{hintLong\} use:tip=\{hintLong\}/);
+    // Item 638: the `?` pins its pill on a click (click mode).
+    expect(card).toMatch(/class="ask-why" aria-label=\{hintLong\} use:tip=\{\{ text: hintLong, click: true \}\}/);
     expect(card).toMatch(/class="ns-btn accent ask-send"/);
     // The note is the kept draft, and Enter still sends.
     expect(card).toMatch(/value=\{agentAsk\.drafts\[key\] \?\? ""\}\s*oninput=\{\(e\) => setAgentDraft\(key, e\.currentTarget\.value\)\}\s*onkeydown=\{onKey\}/);
