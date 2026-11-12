@@ -101,7 +101,9 @@ describe("the chat view's kept folds", () => {
   });
 
   it("the transcript passes every reply its folds' place, and the diff its call", () => {
-    expect(transcriptSrc.match(/folds=\{turnFolds\(/g)?.length).toBe(2);
+    // Item 674: the running reply's place is `liveFolds` (an aside keeps one
+    // scope for the live and the recorded answer).
+    expect(transcriptSrc.match(/folds=\{(turnFolds|liveFolds)\(/g)?.length).toBe(2);
     expect(messageSrc.match(/<EditDiffView [^>]*keep=\{detailsKey\(`tool:\$\{[a-z.]+\.id\}:diff`\)\}/g)?.length).toBe(2);
     expect(messageSrc).toMatch(/<details class="sub" use:keptOpen=/);
     expect(messageSrc).toMatch(/<details class="removed-original" use:keptOpen=/);

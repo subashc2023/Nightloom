@@ -28,9 +28,7 @@
     setAsideRewound,
     keepRewound,
     loadPaneLog,
-    paneChat,
     tabOpening,
-    chatAgentSession,
     continuedThisRun,
     continueWithPrompt,
     openChatKey,
@@ -76,7 +74,7 @@
   import { replyUsageView } from "./replyUsage";
   import { loadReplyUsage, replyUsageOf } from "./replyUsage.svelte";
   import { cacheState } from "./cache";
-  import { leaveScroll, moveScroll, recallScroll, rememberScroll, scrollKey, NEW_SCROLL_KEY } from "./scroll.svelte";
+  import { leaveScroll, moveScroll, recallScroll, rememberScroll, NEW_SCROLL_KEY } from "./scroll.svelte";
   import {
     BUFFER_SCREENS,
     FILL_SCREENS,
@@ -187,6 +185,9 @@
   import { hasText, turnClock } from "./turnTiming";
   // The dot ground the pointer pushes (item 621).
   import { dotField } from "./dotField";
+  // Item 674: what is drawn — the open chat, a pane's chat, or an aside.
+  import { chatSource, paneSource, type TranscriptSource } from "./transcriptSource.svelte";
+  import type { Snippet } from "svelte";
 
   interface AssistantFooter {
     model: string;
@@ -249,25 +250,43 @@
    * (`focusPane`), and this gives way to the open chat's transcript.
    * Without `chat` it is the open chat's, as it always was.
    */
-  let { chat }: { chat?: string } = $props();
-  const inPane = $derived(chat !== undefined);
-  const paneView = $derived(chat !== undefined ? paneChat(chat) : null);
-  /** The events drawn: the open chat's, or the pane's chat's. */
-  const evs = $derived(chat !== undefined ? (paneView?.events ?? []) : app.events);
+  /*
+   * Item 674 (2026-11-12): one transcript for the chat, a pane and an
+   * aside. Everything that differs between them is read from `src`
+   * (`transcriptSource.svelte.ts`): `source` given (an aside's, built by
+   * `AsideTranscript.svelte`), else the pane's chat for `chat`, else the
+   * open chat. `lead` / `foot` are drawn at the column's head and end, and
+   * `afterLive` under the running reply — an aside's own parts (its quoted
+   * passage, Fold into thread, the stalled notice), added, never forked.
+   */
+  let {
+    chat,
+    source,
+    lead,
+    foot,
+    afterLive,
+  }: { chat?: string; source?: TranscriptSource; lead?: Snippet; foot?: Snippet; afterLive?: Snippet } = $props();
+  const src = $derived<TranscriptSource>(source ?? (chat !== undefined ? paneSource(chat) : chatSource()));
+  const inPane = $derived(src.kind === "pane");
+  /** The open chat's own transcript: the chat-level cards, prompts, keys. */
+  const isChat = $derived(src.kind === "chat");
+  const inAside = $derived(src.kind === "aside");
+  const compact = $derived(src.frame === "compact");
+  /** The events drawn: the open chat's, the pane's chat's, an aside's. */
+  const evs = $derived(src.events);
   /** The live turn drawn. */
-  const liveNow = $derived(chat !== undefined ? (paneView?.live ?? null) : app.live);
+  const liveNow = $derived(src.live);
   /** The prompts answered here: none in a pane (the click opens the chat). */
-  const approvalsNow = $derived(chat !== undefined ? [] : app.pendingApprovals);
+  const approvalsNow = $derived(src.approvals);
   /** The per-message controls are off while a turn runs, and in a pane. */
-  const locked = $derived(chat !== undefined || app.busy);
-  /** The chat drawn. */
-  const chatId = $derived(chat !== undefined ? chat : app.activeSessionId);
+  const locked = $derived(src.locked);
+  /** The chat drawn; null for an aside, which has none of a chat's own
+   *  (versions, plan use, keep-warm). */
+  const chatId = $derived(src.chat);
   /** Its Claude Code session, where a tool result's images are read from
    *  (backlog 434): the log's, or for a first turn not yet re-synced the
    *  open chat's init line. */
-  const cliSession = $derived(
-    chatAgentSession(evs) ?? (chat === undefined ? (app.agentInit?.session_id ?? null) : null),
-  );
+  const cliSession = $derived(src.cliSession);
   // The versions under an edited message (item 299): the forks in this
   // chat's lineage are read once each, so the arrows know where each one's
   // edited message is.
@@ -280,7 +299,7 @@
   // A pane's chat whose log has not been read yet: read it — unless a tab
   // click is opening this very chat, whose log is on its way (item 454).
   $effect(() => {
-    if (chat !== undefined && paneView === null && tabOpening.chat !== chat) void loadPaneLog(chat);
+    if (src.kind === "pane" && src.chat && src.pending && tabOpening.chat !== src.chat) void loadPaneLog(src.chat);
   });
 
   // His latest live message (backlog 582): the keep-warm notice sits under it.
@@ -491,7 +510,7 @@
   // on a chat switch, when a turn ends (`busy` falls) and when the plan
   // reading changes — a turn's line is written by the next reading after
   // it, which is the next turn's first response or the chip's refresh.
-  const usageChat = $derived(chat ?? app.activeSessionId);
+  const usageChat = $derived(src.chat);
   const usageLines = $derived(replyUsageOf(usageChat));
   $effect(() => {
     const id = usageChat;
@@ -521,7 +540,7 @@
   // which draws another, shows Copy alone.
   const nextChat = $derived.by((): NextChat | null => {
     const from = chatId;
-    if (inPane || !from) return null;
+    if (!isChat || !from) return null;
     const reply = continuableReply(items.map((it) => ({ ...it, segs: it.kind === "assistant" ? it.segs : undefined })));
     if (!reply) return null;
     return {
@@ -553,6 +572,8 @@
   // some other way); the message then counts from its own mount.
   const liveSince: number | null = $derived.by(() => {
     if (!liveNow) return null;
+    // An aside's exchange knows its own start (item 674).
+    if (liveNow.since !== undefined) return liveNow.since;
     for (let i = evs.length - 1; i >= 0; i--) {
       const e = evs[i];
       if (e.event === "user_message") {
@@ -572,7 +593,7 @@
   // A Wrap up pressed during a turn that no tool call carried goes as the
   // next message when the turn ends (nightshift backlog 192).
   $effect(() => {
-    if (!inPane && !app.busy && wrapAsk.session) void afterWrapTurn();
+    if (isChat && !app.busy && wrapAsk.session) void afterWrapTurn();
   });
   $effect(() => {
     const t = setInterval(() => (now = Date.now()), 30_000);
@@ -592,12 +613,31 @@
   // part 2 (`keptFolds`, session only: a chat switch and back keeps it;
   // a chat with no id yet keeps its own); a click on the mark flips it.
   let diffLocal = $state<Record<number, boolean>>({});
-  const isDiffOpen = (index: number): boolean =>
-    chatId ? keptGet(`fold:${chatId}|${index}|edited`, false) : !!diffLocal[index];
+  /** A turn's name in the fold scope: its log index — or what the source
+   *  says (an aside's exchange number, item 674, so its kept folds are the
+   *  ones `AsideThread` wrote). */
+  const foldTurn = (turn: number | string): string | null =>
+    src.foldTurn && typeof turn === "number" ? src.foldTurn(turn) : String(turn);
+  const isDiffOpen = (index: number): boolean => {
+    const key = turnFold(index, "edited");
+    return key ? keptGet(key, false) : !!diffLocal[index];
+  };
   /** Where turn `index`'s folds are kept: this chat's, by turn. */
-  const turnFolds = (turn: number | string): FoldScope | null => (chatId ? { chat: chatId, turn: String(turn) } : null);
+  const turnFolds = (turn: number | string): FoldScope | null => {
+    const t = foldTurn(turn);
+    return src.foldChat && t !== null ? { chat: src.foldChat, turn: t } : null;
+  };
+  /** The running reply's folds: its own scope in a chat; in an aside the
+   *  exchange's, the same once it settles (a click mid-stream holds). */
+  const liveFolds = (since: number | null): FoldScope | null => {
+    const t = src.foldTurn ? src.foldTurn("live") : `live:${since ?? ""}`;
+    return src.foldChat && t !== null ? { chat: src.foldChat, turn: t } : null;
+  };
   /** A native fold of turn `index` (`<details use:keptOpen>`), or null. */
-  const turnFold = (index: number, name: string): string | null => (chatId ? `fold:${chatId}|${index}|${name}` : null);
+  const turnFold = (index: number, name: string): string | null => {
+    const t = foldTurn(index);
+    return src.foldChat && t !== null ? `fold:${src.foldChat}|${t}|${name}` : null;
+  };
   // ~~`textOpen`~~ — a text attachment's fold (item 284) is the bubble's
   // own state since backlog 283 (`UserBubble.svelte`).
   // The toggle keeps the reader's place (backlog 115): the diff view is a
@@ -613,7 +653,8 @@
     void keepPlace(
       index,
       () => {
-        if (chatId) keptSet(`fold:${chatId}|${index}|edited`, !isDiffOpen(index), false);
+        const key = turnFold(index, "edited");
+        if (key) keptSet(key, !isDiffOpen(index), false);
         else diffLocal[index] = !diffLocal[index];
       },
       anchor,
@@ -743,7 +784,9 @@
     const chipsAt = item.kind === "user" ? chips.map(chipPrint) : undefined;
     void keepPlace(item.index, () => {
       editing = editReduce(editing, { type: "begin", index: item.index, text, parts, chipsAt });
-      editCacheLine = editLine(cacheState(evs, Date.now(), chatId ? touchedUntil(keepWarm.byChat[chatId]) : null));
+      editCacheLine = src.words
+        ? src.words.editLine
+        : editLine(cacheState(evs, Date.now(), chatId ? touchedUntil(keepWarm.byChat[chatId]) : null));
     }).then(() => {
       if (editorLive) {
         editorLive.focus();
@@ -799,6 +842,13 @@
   // refused or failed call lets the copy go on the next frame.
   async function rewindHere(index: number): Promise<void> {
     const m = prepareRewind(viewport, index);
+    // An aside rewinds its own exchanges (item 674); false: nothing went.
+    if (src.actions.rewind) {
+      const went = await src.actions.rewind(index);
+      if (went === false) m?.cancel();
+      else m?.commit();
+      return;
+    }
     try {
       await rewindTo(index, true);
     } finally {
@@ -1212,13 +1262,17 @@
       stashEdit(sessionKey, null);
       setDraftAttachments(editKey, []);
     });
-    const ok = await sendEdit(index, withNote(index, draft), wire.images, wire.documents, null, wire.files);
+    // An aside asks the edit in place of the exchange (item 674); the chat
+    // forks from here.
+    const ok = src.actions.askEdited
+      ? (await src.actions.askEdited(index, draft.trim(), chips)) !== false
+      : await sendEdit(index, withNote(index, draft), wire.images, wire.documents, null, wire.files);
     // The fork refused (an error toast, or a turn started meanwhile): the
     // edit comes back — words and chips — rather than vanish on one Enter
     // (practices §7; w6-review 2026-10-11).
     if (!ok && sessionKey === key) {
       setDraftAttachments(chipsKey, chips);
-      if (app.busy) stashEdit(key, { editing: before, line });
+      if (src.busy) stashEdit(key, { editing: before, line });
       else if (!editing) {
         editing = before;
         editCacheLine = line;
@@ -1267,6 +1321,8 @@
     const action = editorKey(e, item.kind !== "user");
     if (!action) return;
     e.preventDefault();
+    // In an aside's card the Escape is the editor's, never the card's ×.
+    if (inAside) e.stopPropagation();
     if (action === "cancel") cancelEdit();
     else if (action === "send") void commitSend(item);
     else void commitSave();
@@ -1277,7 +1333,7 @@
   // discard it), and comes back when the turn ends: the turn appends, so
   // the edited turn is where it was.
   $effect(() => {
-    const busy = app.busy;
+    const busy = src.busy;
     // A pane opens no editor (piece 5): the open chat's transcript holds it.
     if (inPane) return;
     untrack(() => {
@@ -1300,7 +1356,7 @@
   // while the field runs (`dotField` decides; it drops the CSS tile then).
   let dotCanvas = $state<HTMLCanvasElement | null>(null);
   $effect(() => {
-    if (!dotCanvas || !viewport) return;
+    if (!dotCanvas || !viewport || compact) return;
     const f = dotField(dotCanvas, viewport);
     return () => f.destroy();
   });
@@ -1384,13 +1440,13 @@
 
   $effect(() => {
     void evs.length;
-    void app.liveVersion;
+    // The stream's every delta: the chat's, a pane's chat's off screen
+    // (piece 5), an aside's (item 674).
+    void src.liveVersion();
     void approvalsNow.length;
-    // A pane follows its chat's stream off screen too (piece 5).
-    if (inPane) void app.paneVersion;
     // A message he queues or schedules mid-turn is drawn below the reply
     // (PendingBubbles) and follows the foot like any other (item 560).
-    if (!inPane) {
+    if (isChat) {
       const key = openChatKey();
       void readDraft(key).queue.length;
       void scheduledFor(key);
@@ -1399,7 +1455,7 @@
       // The live reply's first words are in the DOM now; the frame that
       // draws them is its first paint (item 256's timing line) — the open
       // chat's transcript's frame, not a pane's.
-      if (!inPane && turnClock.waitingForPaint() && hasText(liveNow?.segments)) {
+      if (isChat && turnClock.waitingForPaint() && hasText(liveNow?.segments)) {
         requestAnimationFrame(() => turnClock.painted());
       }
       // Not looking (backlog 347): while the window is in the background
@@ -1434,7 +1490,7 @@
   // switch: the key goes from "new" to the created id while this same
   // transcript is on screen (the composer's `blank` test mounts it on the
   // send), and the entry follows the key rather than being restored.
-  const sessionKey = $derived(scrollKey(chatId));
+  const sessionKey = $derived(src.scrollKey);
   /** The edit box's chips (item 336): the chat's `editDraftKey` in the
    *  drafts store, where the composer's attach code puts them. */
   const editKey = $derived(editDraftKey(sessionKey));
@@ -1721,7 +1777,7 @@
       // off "new") with the turn already in it; a launch from the box is
       // waiting, so that turn flies too (194 fix pass). A plain open or
       // switch has no fresh launch and loads whole, as before.
-      const fresh = (enterKey === null || enterKey === NEW_SCROLL_KEY) && live && hasLaunch("chat");
+      const fresh = (enterKey === null || enterKey === NEW_SCROLL_KEY) && live && hasLaunch(src.channel);
       enterKey = key;
       enterFrom = fresh ? 0 : Infinity;
       enterLen = len;
@@ -1925,13 +1981,15 @@
   let navScrolls = $state(false);
   // Item 359: shown from three messages whether or not the chat scrolls
   // (LibreChat's rule); before, only when it scrolled and from four.
-  const showNav = $derived(navTicks.length >= MIN_TICKS);
+  const showNav = $derived(!compact && navTicks.length >= MIN_TICKS);
   // The round ⌄ above the composer (item 218): lit when scrolled up past
   // `JUMP_DOWN_SHOW`, dark at the foot and while its own click is carrying
   // the view down (`chasing`, cleared at the foot or on any upward input).
   let jumpDown = $state(false);
   /** Item 304: a reply still coming here — the ⌄ shows the speaking dots. */
-  const speaking = $derived(replyGoing(liveNow !== null, app.busy, inPane, app.parked !== null));
+  const speaking = $derived(
+    inAside ? liveNow !== null : replyGoing(liveNow !== null, app.busy, inPane, app.parked !== null),
+  );
   let chasing = false;
   let chaseTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -2075,7 +2133,7 @@
     const n = app.toLatest;
     if (n === seenLatest) return;
     seenLatest = n;
-    if (chat === undefined) untrack(() => toBottom());
+    if (isChat) untrack(() => toBottom());
   });
 
   // ⌥↑ / ⌥↓ step to the previous / next message. On the viewport rather
@@ -2141,7 +2199,7 @@
   // while the chat's turn runs waits for it ("queued") and then answers,
   // as the composer's own aside box already allowed. A pane still offers
   // no pill (piece 5).
-  const canAsk = $derived(onClaudeCode && chat === undefined);
+  const canAsk = $derived(onClaudeCode && isChat);
 
   // Per turn index, the message's 1-based place among the live messages
   // of its kind — "your 3rd reply" in the framing. Rewound and removed
@@ -2165,7 +2223,10 @@
     const el = node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement;
     const prose = el?.closest(".markdown, .user-text") ?? null;
     if (!prose || !viewport.contains(prose)) return null;
-    // Item 481: an aside card's thread has its own Reply (`AsideThread`).
+    // Item 674: an aside card is a transcript inside this one; its prose
+    // is its own transcript's to offer Reply on, never the chat's.
+    if (prose.closest(".transcript") !== viewport) return null;
+    // Item 481: a Classic aside card's thread has its own Reply (`AsideThread`).
     if (prose.closest(".aside-thread")) return null;
     const turnEl = prose.closest<HTMLElement>("[data-turn]");
     if (!turnEl) return null;
@@ -2215,7 +2276,7 @@
 
   function placePill() {
     // A pane offers no Ask aside or Reply (piece 5): the click opens it.
-    if (!viewport || inPane) {
+    if (!viewport || !src.reply) {
       asidePill = null;
       return;
     }
@@ -2275,12 +2336,13 @@
     if (!pill) return;
     document.getSelection()?.removeAllRanges();
     asidePill = null;
-    requestReply(pill.quote.text);
+    // Into the chat's box, or the aside's own follow-up (item 481).
+    requestReply(pill.quote.text, src.draftKey ?? null);
   }
 
   function asideChord(e: KeyboardEvent): void {
     const primary = isMac ? e.metaKey : e.ctrlKey;
-    if (inPane || !primary || !e.shiftKey || e.altKey || e.code !== "KeyA") return;
+    if (!isChat || !primary || !e.shiftKey || e.altKey || e.code !== "KeyA") return;
     if (!asidePill || !canAsk) return;
     e.preventDefault();
     askAboutSelection();
@@ -2303,6 +2365,13 @@
   let inner = $state<HTMLDivElement | null>(null);
 </script>
 
+{#snippet notes(index: number)}
+  <!-- Item 674: what an aside says under an exchange — where a stopped
+       answer ends, an error in the chat's own error look. -->
+  {#each src.notes?.get(index) ?? [] as n (n.kind)}
+    {#if n.kind === "error"}<div class="error-banner turn-note">{n.text}</div>{:else}<div class="turn-mark">{n.text}</div>{/if}
+  {/each}
+{/snippet}
 <svelte:document onselectionchange={placePill} />
 <svelte:window onkeydown={asideChord} />
 {#if removing}
@@ -2346,19 +2415,22 @@
      a control, and the lint has no role for that. -->
 <!-- Item 621: the dot ground's canvas, placed over the scroller's box by
      `dotField` and painted under it (the scroller is positioned after it). -->
-<canvas class="dot-field" aria-hidden="true" bind:this={dotCanvas}></canvas>
+{#if !compact}<canvas class="dot-field" aria-hidden="true" bind:this={dotCanvas}></canvas>{/if}
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="transcript"
   class:narrow-gutter={narrowGutter}
+  class:compact
+  class:of-aside={inAside}
   bind:this={viewport}
-  data-drop-chat={inPane ? undefined : ""}
+  data-drop-chat={isChat ? "" : undefined}
   {onscroll}
   use:scrollIntent
   tabindex="-1"
   onkeydown={viewportKeys}
 >
   <div class="inner" bind:this={inner}>
+    {@render lead?.()}
     {#if continuedFrom && drawFrom === 0}
       <div class="continued">
         <span class="continued-ic"><Icon name="branch" size={14} /></span>
@@ -2383,7 +2455,7 @@
           class="user-turn"
           class:superseded={item.superseded}
           class:removed={item.removed}
-          use:arrive={{ channel: "chat", active: item.index >= enterFrom, bubble: ".user-bubble", riseWithout: true }}
+          use:arrive={{ channel: src.channel, active: item.index >= enterFrom, bubble: ".user-bubble", riseWithout: true }}
           data-turn={item.index}
         >
           <div class="user-key">
@@ -2478,12 +2550,15 @@
               <div class="editor-row">
                 <button
                   class="ns-btn small"
-                  disabled={!editButtons(editing, editChips).send}
-                  use:tip={"Start a fork from here with this text as its next message; this chat stays as it is"}
+                  disabled={!editButtons(editing, editChips).send || !!src.words?.sendBlocked}
+                  use:tip={src.words
+                    ? (src.words.sendBlocked ?? src.words.sendTip)
+                    : "Start a fork from here with this text as its next message; this chat stays as it is"}
                   onclick={() => void commitSend(item)}
                 >
-                  Send
+                  {src.words?.sendLabel ?? "Send"}
                 </button>
+                {#if src.chatActions}
                 <button
                   class="ns-btn ghost small"
                   disabled={!editButtons(editing, editChips).save}
@@ -2492,6 +2567,7 @@
                 >
                   Save
                 </button>
+                {/if}
                 <button
                   class="ns-btn ghost small"
                   onclick={cancelEdit}
@@ -2514,7 +2590,7 @@
               sending={item.sending ?? []}
               keep={turnFold(item.index, "bubble")}
               custom={diffShown || !!adoptedMsg.carried}
-              onopenimage={(j, rect, size) => {
+              onopenimage={inAside ? undefined : (j, rect, size) => {
                 if (!app.activeSessionId) return;
                 openAttachment(
                   { kind: "attachment", session: app.activeSessionId, turn: item.index, index: j, media: "image", name: "image" },
@@ -2522,7 +2598,7 @@
                   size,
                 );
               }}
-              onopendoc={(j, rect) => {
+              onopendoc={inAside ? undefined : (j, rect) => {
                 if (!app.activeSessionId) return;
                 const doc = item.documents[j];
                 if (!doc) return;
@@ -2640,13 +2716,24 @@
                 {:else}
                   <button
                     class="tool-btn"
-                    use:tip={rewindTitle}
+                    use:tip={src.words?.rewindTip ?? rewindTitle}
                     aria-label="Rewind to here"
                     onclick={() => void rewindHere(item.index)}
                   >
                     <Icon name="revert" size={14} />
                   </button>
-                  {#if redo && redo.prompt === item.index && app.activeSessionId}
+                  {#if redo && redo.prompt === item.index && src.actions.retry}
+                    <!-- Item 674: an aside's last question asked again, the
+                         chat's Redo by the aside's own action. -->
+                    <button
+                      class="tool-btn"
+                      use:tip={src.words?.retryTip ?? "Redo"}
+                      aria-label="Redo the reply to this message"
+                      onclick={() => void src.actions.retry?.(redo.reply)}
+                    >
+                      <Icon name="refresh" size={14} />
+                    </button>
+                  {:else if redo && redo.prompt === item.index && app.activeSessionId && src.chatActions}
                     <!-- Redo (item 439): Claude answers this message again,
                          no retyping — the Retry under the reply (item 333),
                          here beside Rewind. The old reply stays a version
@@ -2660,10 +2747,10 @@
                       <Icon name="refresh" size={14} />
                     </button>
                   {/if}
-                  {#if item.editable}
+                  {#if item.editable && (src.chatActions || src.actions.askEdited)}
                     <button
                       class="tool-btn"
-                      use:tip={"Edit this message: Save keeps it here with the new text; Send starts a fork from here."}
+                      use:tip={src.words?.editTip ?? "Edit this message: Save keeps it here with the new text; Send starts a fork from here."}
                       aria-label="Edit this message"
                       onclick={() => beginEdit(item)}
                     >
@@ -2671,6 +2758,7 @@
                     </button>
                   {/if}
                   <!-- A delete look, apart from Edit's pencil (item 356). -->
+                  {#if src.chatActions}
                   <button
                     class="tool-btn danger"
                     use:tip={removeTip("message")}
@@ -2679,7 +2767,8 @@
                   >
                     <Icon name="trash" size={14} />
                   </button>
-                  {#if app.connection?.engine === "claude-code" && checkpointOwner(userIndexes, app.checkpoint) !== item.index}
+                  {/if}
+                  {#if src.chatActions && app.connection?.engine === "claude-code" && checkpointOwner(userIndexes, app.checkpoint) !== item.index}
                     <!-- "Fork from here" (nightshift backlog 104, pass 3):
                          helpers fork from the end of this exchange — this
                          message and its reply — instead of the first one. -->
@@ -2695,7 +2784,7 @@
                 {/if}
               </span>
             {/if}
-            {#if !inPane && app.checkpoint && checkpointOwner(userIndexes, app.checkpoint) === item.index}
+            {#if isChat && app.checkpoint && checkpointOwner(userIndexes, app.checkpoint) === item.index}
               <!-- The checkpoint's marker (backlog 104): on the exchange
                    helpers fork from, always drawn, not only on hover. -->
               <span class="checkpoint-mark" use:tip={checkpointLine(app.checkpoint, true)}>
@@ -2709,7 +2798,7 @@
                    mono 11px beside the time: the log's exact figure with
                    its share of the window (backlog 090), or the text's
                    estimate, marked ~, where the log cannot say. -->
-              {@const fig = userFigure(sizes[item.index], item.text, windowLimit)}
+              {@const fig = userFigure(inAside ? null : sizes[item.index], item.text, windowLimit)}
               {#if fig}
                 {@const share = fig.exact ? shareOf(fig.tokens, windowLimit) : null}
                 <span class="turn-size" use:tip={fig.title}>
@@ -2721,8 +2810,9 @@
                 </span>
               {/if}
             {/if}
-            <span class="when" use:tip={exactTime(item.at)}>{relativeTimeLong(item.at, now)}</span>
+            {#if item.at}<span class="when" use:tip={exactTime(item.at)}>{relativeTimeLong(item.at, now)}</span>{/if}
           </div>
+          {@render notes(item.index)}
         </div>
         <!-- Keep-warm (backlog 582): under his latest message until a reply
              arrives (item 663 moves it under the reply), while
@@ -2794,25 +2884,29 @@
                  for a removed reply stays a row under the placeholder. -->
             <AssistantMessage
               segs={item.segs}
-              footer={item.footer}
-              size={sizes[item.index]}
+              footer={src.bare?.has(item.index) ? { ...item.footer, bare: true } : item.footer}
+              size={inAside ? null : sizes[item.index]}
               limit={windowLimit}
               {controlsTitle}
-              onremove={editable ? (block) => void removeBlock(item.index, block) : null}
-              onrestore={editable ? (block) => void restoreBlock(item.index, block) : null}
+              onremove={editable && src.chatActions ? (block) => void removeBlock(item.index, block) : null}
+              onrestore={editable && src.chatActions ? (block) => void restoreBlock(item.index, block) : null}
               originals={item.originals ?? null}
               diff={isDiffOpen(item.index)}
               clock={now}
               headed={!continued[i]}
-              onedit={editable && item.editable ? () => beginEdit(item) : null}
-              onremoveturn={editable
+              onedit={editable && item.editable && src.chatActions ? () => beginEdit(item) : null}
+              onremoveturn={editable && src.chatActions
                 ? () => (removing = { index: item.index, kind: "reply", text: textOf(item.segs), key: sessionKey })
                 : null}
               planUsage={replyUsageView(usageLines.get(item.index))}
-              onretry={editable && turnEnds[i] && app.activeSessionId ? () => void retryReply(item.index) : null}
+              onretry={editable && turnEnds[i] && src.actions.retry
+                ? () => void src.actions.retry?.(item.index)
+                : editable && turnEnds[i] && app.activeSessionId && src.chatActions
+                  ? () => void retryReply(item.index)
+                  : null}
               {cliSession}
               folds={turnFolds(item.index)}
-              runFrom={{ chat: chatId }}
+              runFrom={src.runFrom}
               nextChat={nextChat?.index === item.index ? nextChat : null}
             />
             {#if item.original !== null && item.removed}
@@ -2833,6 +2927,7 @@
               </div>
             {/if}
           {/if}
+          {@render notes(item.index)}
           {#if !item.superseded && !locked && item.removed}
             <span class="turn-tools assistant-tools" use:tip={controlsTitle}>
               <button
@@ -2883,27 +2978,33 @@
              the OS asked for less motion it is three still dots. It says
              nothing about progress, because it can see none. -->
         <!-- Since item 403 the one piece the chat and its asides wait with. -->
-        <WaitingMoon />
+        {#if inAside}
+          <!-- An aside's wait says what it waits behind (317, 404). -->
+          <WaitingMoon label="Waiting for the answer">{src.waitNote ?? ""}</WaitingMoon>
+        {:else}
+          <WaitingMoon />
+        {/if}
       {:else}
         <AssistantMessage
           segs={shown.segments}
           streaming
           since={shown.since}
-          model={chat !== undefined ? null : (app.connection?.model ?? null)}
+          model={src.liveModel}
           approvals={approvalsNow}
           {cliSession}
-          folds={turnFolds(`live:${shown.since ?? ""}`)}
-          runFrom={{ chat: chatId }}
+          folds={liveFolds(shown.since)}
+          runFrom={src.runFrom}
         />
       {/if}
       </div>
     {/if}
+    {@render afterLive?.()}
     <!-- Item 522: between his answer to a prompt and the turn showing
          it, a line says the answer was taken (and, past 20 s, how long). -->
-    {#if !inPane}<AskHandBack />{/if}
+    {#if isChat}<AskHandBack />{/if}
     <!-- Item 465: messages he sent while this turn runs, not yet taken —
          greyed bubbles with Send now / Let it arrive / Edit / Cancel. -->
-    {#if !inPane}<PendingBubbles />{/if}
+    {#if isChat}<PendingBubbles />{/if}
     {#each stranded as req (req.id)}
       <ApprovalPrompt {req} />
     {/each}
@@ -2911,19 +3012,19 @@
          backlog 189): ~~only in the chat the turn runs in~~ — since 192 in
          the chat on screen whichever it is, naming the running chat when
          that is another (review 2026-09-23 finding 3), while it runs. -->
-    {#if !inPane && app.busy && app.budgetSession && app.turnBudget?.pending_since_ms}
+    {#if isChat && app.busy && app.budgetSession && app.turnBudget?.pending_since_ms}
       <BudgetStopCard
         session={app.budgetSession}
         elsewhere={app.parked && app.activeSessionId !== app.budgetSession ? runningChatName() : null}
       />
     {/if}
-    {#if !inPane && app.error}
+    {#if isChat && app.error}
       <div class="error-banner">{app.error}</div>
     {/if}
     <!-- The files the rewound turns wrote (item 259): the next run would
          read them as real. Ticked ones move to a dated folder outside the
          project, never deleted; Keep leaves them all. -->
-    {#if !inPane && app.rewoundWrites && app.rewoundWrites.session === app.activeSessionId}
+    {#if isChat && app.rewoundWrites && app.rewoundWrites.session === app.activeSessionId}
       {@const rw = app.rewoundWrites}
       <div class="limit-card" role="status">
         <div class="limit-head">
@@ -2964,7 +3065,7 @@
     <!-- Not connected, and why (item 261): a failed connect used to leave
          every chat saying "not connected" with nothing to press but a
          relaunch. One Retry connects again with the rail as it is. -->
-    {#if !inPane && !app.connection && app.connectError && !app.connecting}
+    {#if isChat && !app.connection && app.connectError && !app.connecting}
       <div class="limit-card" role="status">
         <div class="limit-head">
           <span class="ns-chip mono">not connected</span>
@@ -2980,7 +3081,7 @@
          continues the turn then (scheduled if pressed early, never into
          an exhausted window), naming the subagents that died so they are
          resumed rather than relaunched. -->
-    {#if !inPane && app.limitPause && app.limitPause.session === app.activeSessionId && !app.busy}
+    {#if isChat && app.limitPause && app.limitPause.session === app.activeSessionId && !app.busy}
       {@const pause = app.limitPause}
       <div class="limit-card" role="status">
         <div class="limit-head">
@@ -3005,7 +3106,8 @@
     <!-- The floating aside cards (backlog 141; several since 176): the
          column's last children, absolute under their passages, stuck
          above the composer when there is none. -->
-    {#if !inPane}
+    {@render foot?.()}
+    {#if isChat}
       <AsideLayer {viewport} {inner} {proseBlocks} version={items.length} drawn={turnDrawn} reveal={revealTurn} />
     {/if}
   </div>
@@ -3248,6 +3350,24 @@
        canvas just before it; its only child, `.inner`, is positioned
        itself, so nothing inside is placed differently. */
     position: relative;
+  }
+  /* Item 674: an aside's card or side panel — the same column in the
+     card's own room: no ground, the card's padding, its scroll its own. */
+  .transcript.compact {
+    padding: 10px 12px;
+    background: none;
+  }
+  .transcript.compact .inner {
+    gap: 14px;
+  }
+  .turn-mark {
+    align-self: flex-start;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--dim);
+  }
+  .turn-note {
+    align-self: stretch;
   }
   /* While the pointer field runs, the canvas draws the dots instead. */
   .transcript:global(.dotfield) {

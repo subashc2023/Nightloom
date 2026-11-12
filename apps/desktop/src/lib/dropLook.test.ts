@@ -258,7 +258,8 @@ describe("362: the window watcher", () => {
 
 describe("362: wired into the boxes", () => {
   it("the live transcript and the empty chat take a drop for the chat; read-only panes do not", () => {
-    expect(transcriptSrc).toContain('data-drop-chat={inPane ? undefined : ""}');
+    // Item 674: the open chat's transcript alone (not a pane's, not an aside's).
+    expect(transcriptSrc).toContain('data-drop-chat={isChat ? "" : undefined}');
     expect(welcomeSrc).toContain('class="welcome" data-drop-chat');
   });
   it("the composer, the aside box and the edit box are boxes; only the chat's composer draws the overlay", () => {
