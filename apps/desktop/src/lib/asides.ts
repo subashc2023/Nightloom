@@ -199,6 +199,8 @@ interface StoredTurn {
   /** Item 675: what the answer itself added, and the context it left. */
   added?: number;
   context?: number;
+  /** Item 674: the answer's plan-share estimate. */
+  plan?: { five_hour: number | null; seven_day: number | null; replies: number };
   /** Item 639: when the answer ended (ISO) and how long it took, so the
    *  column's This turn keeps its clock after a relaunch. */
   at?: string;
@@ -280,6 +282,7 @@ function storeTurn(t: AsideTurn): StoredTurn | null {
   if (typeof t.cost === "number") out.cost = t.cost;
   if (typeof t.added === "number") out.added = t.added;
   if (typeof t.context === "number") out.context = t.context;
+  if (t.planEst) out.plan = { ...t.planEst };
   if (t.at) out.at = t.at;
   if (typeof t.readAt === "number" && typeof t.roundRead === "number") {
     out.readAt = t.readAt;
@@ -436,6 +439,12 @@ function loadAside(v: unknown): Aside | null {
     // Item 675: the answer's own cost and the context it left.
     if (typeof m.added === "number" && Number.isFinite(m.added) && m.added >= 0) turn.added = m.added;
     if (typeof m.context === "number" && Number.isFinite(m.context) && m.context >= 0) turn.context = m.context;
+    // Item 674: the plan-share estimate.
+    const pe = m.plan as { five_hour?: unknown; seven_day?: unknown; replies?: unknown } | null | undefined;
+    if (pe && typeof pe === "object" && typeof pe.replies === "number") {
+      const pct = (x: unknown) => (typeof x === "number" && Number.isFinite(x) ? x : null);
+      turn.planEst = { five_hour: pct(pe.five_hour), seven_day: pct(pe.seven_day), replies: pe.replies };
+    }
     // Item 639: the answer's time and clock.
     if (typeof m.at === "string" && Number.isFinite(Date.parse(m.at))) turn.at = m.at;
     if (typeof m.ms === "number" && Number.isFinite(m.ms) && m.ms >= 0) turn.tookMs = m.ms;

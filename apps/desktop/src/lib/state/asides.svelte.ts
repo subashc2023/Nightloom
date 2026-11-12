@@ -13,6 +13,7 @@ import type { TabContent } from "../tabs";
 import { pdfFileName, pdfRoute } from "../attachKinds";
 import type { Attachment, AsideSendOptions, TurnEvent } from "../types";
 import { type Segment, app, closeThinking, applyToSegments } from "../state.svelte";
+import { limitPauseFrom, type LimitPause } from "../limit";
 
 /** One exchange of the open chat's aside (backlog 081; streamed since
  *  backlog 128; a thread of them since backlog 130) — see `app.aside`. */
@@ -54,6 +55,16 @@ export interface AsideTurn {
    *  follow-up carries. `usage` sums the answer's rounds, each of which
    *  sends the chat's prefix again. Absent on a turn answered before 675. */
   context?: number;
+  /** Item 674: the answer's share of the plan, estimated from `added` at
+   *  the fitted rates (`ask_aside`'s `plan_est`); kept by the store. */
+  planEst?: { five_hour: number | null; seven_day: number | null; replies: number };
+  /** Item 674: the plan's usage limit stopped this answer — the shared
+   *  transcript's limit card stands under it, with Ask again. In memory
+   *  only: after a relaunch the error text stands. */
+  limit?: LimitPause;
+  /** Item 674: Ask again was pressed before the window reset — it goes at
+   *  this time (ms epoch) while the aside is on screen. In memory only. */
+  limitAskAt?: number | null;
   /** When the answer ended (ISO), for the footer's time. */
   at?: string;
   /** Item 677: when the aside's request went out (ms epoch) and what its
@@ -353,6 +364,9 @@ async function runAside(turn: AsideTurn, sent: string, thread: Aside | null = nu
     // cost off), and the context its last round left.
     if (typeof res.cost_usd === "number") t.added = res.cost_usd;
     if (typeof res.context_tokens === "number") t.context = res.context_tokens;
+    // Item 674: the plan share the shared footer shows, and the limit card.
+    if (res.plan_est) t.planEst = { ...res.plan_est };
+    if (res.limit) t.limit = limitPauseFrom({ limit: res.limit }, null);
     // Item 677: the answer's read of the chat's cache, for the cache bar.
     if (!res.is_error && typeof res.sent_ms === "number" && typeof res.round_read === "number") {
       t.readAt = res.sent_ms;

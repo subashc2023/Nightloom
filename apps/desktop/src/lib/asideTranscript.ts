@@ -29,6 +29,7 @@ import type { Aside, AsideTurn, Segment } from "./state.svelte";
 import type { ContentBlock, DocumentInput, ImageInput, SessionEvent } from "./types";
 import type { TurnSize } from "./tokens";
 import { exchangeSizes } from "./asideFigures";
+import { estimateView, type ReplyUsageView } from "./replyUsage";
 
 export interface AsideNote {
   kind: "stopped" | "error";
@@ -48,6 +49,8 @@ export interface AsideEvents {
   /** Per event index, the per-turn figure (`exchangeSizes`), as
    *  `turnSizes` gives the chat's: his question's share bar, the reply's size. */
   sizes: (TurnSize | null)[];
+  /** Per reply's event index, its share of the plan (`estimateView`). */
+  planUse: Map<number, ReplyUsageView>;
 }
 
 /** The exchange still being asked, or null (`asideAsking`, kept pure). */
@@ -81,6 +84,7 @@ export function asideEvents(aside: Pick<Aside, "turns">): AsideEvents {
   const notes = new Map<number, AsideNote[]>();
   const bare = new Set<number>();
   const sizes: (TurnSize | null)[] = [];
+  const planUse = new Map<number, ReplyUsageView>();
   const asking = askingOf(aside);
   const fig = exchangeSizes(aside);
   aside.turns.forEach((t, i) => {
@@ -142,6 +146,8 @@ export function asideEvents(aside: Pick<Aside, "turns">): AsideEvents {
         at: t.at ?? "",
       }, fig[i]?.answer ?? null);
       if (t.usage === undefined) bare.add(last);
+      const plan = estimateView(t.planEst, t.added);
+      if (plan) planUse.set(last, plan);
       for (const r of results) put(r);
     }
     const ns: AsideNote[] = [];
@@ -149,7 +155,7 @@ export function asideEvents(aside: Pick<Aside, "turns">): AsideEvents {
     if (t.error) ns.push({ kind: "error", text: t.error });
     if (ns.length) notes.set(last, ns);
   });
-  return { events, turnOf, seqOf, notes, bare, sizes };
+  return { events, turnOf, seqOf, notes, bare, sizes, planUse };
 }
 
 /** The asking exchange as the transcript's live turn, or null. */

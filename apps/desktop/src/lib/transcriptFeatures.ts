@@ -53,7 +53,7 @@ export const TRANSCRIPT_FEATURES: Record<string, Where> = {
   "turn size estimate under his message": shared,
   "narrow-gutter tool placement": shared,
   "per-turn context share bar": shared,
-  "per-reply plan use": pending("the plan-use lines are recorded per chat turn by the service; an aside's turn writes none"),
+  "per-reply plan use": shared,
   "pending bubbles (a message held mid-answer)": pending("PendingBubbles reads the open chat's queue; the aside's held message stays in its composer"),
   "usage-limit pause card": pending("an aside's limit hit arrives as its turn's error text; a pause scoped to the aside needs state in runAside (item 677's file)"),
   "drop files on the transcript": pending("the drop target adds to the open chat's composer; the aside's composer takes drops itself"),

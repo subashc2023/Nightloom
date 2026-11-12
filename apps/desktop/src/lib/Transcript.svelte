@@ -2921,7 +2921,7 @@
               onremoveturn={editable && src.chatActions
                 ? () => (removing = { index: item.index, kind: "reply", text: textOf(item.segs), key: sessionKey })
                 : null}
-              planUsage={replyUsageView(usageLines.get(item.index))}
+              planUsage={src.planUse ? (src.planUse.get(item.index) ?? null) : replyUsageView(usageLines.get(item.index))}
               onretry={editable && turnEnds[i] && src.actions.retry
                 ? () => void src.actions.retry?.(item.index)
                 : editable && turnEnds[i] && app.activeSessionId && src.chatActions

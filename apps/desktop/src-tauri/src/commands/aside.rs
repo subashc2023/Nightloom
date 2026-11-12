@@ -33,6 +33,13 @@ pub(crate) struct AsideResult {
     /// The newest round's cache read (item 677): the share of the chat's
     /// prefix found warm, which `cache_read` (summed) overcounts.
     round_read: u64,
+    /// The answer's share of the plan, estimated from `cost_usd` at the
+    /// rates fitted over lone chat replies (item 674): an aside takes no
+    /// readings of its own. `None` before the fit has enough replies.
+    plan_est: Option<nightloom_service::turn_usage::Estimate>,
+    /// The plan's usage limit stopped the answer (item 674): the shared
+    /// transcript draws the chat's limit card under it, with Ask again.
+    limit: Option<nightloom_service::agent::LimitHit>,
 }
 
 /// A piece of an aside's answer as it streams (nightshift backlog 128):
@@ -274,6 +281,8 @@ pub(crate) async fn ask_aside(
             answer
         },
         cost_usd: outcome.cost_usd,
+        plan_est: nightloom_service::turn_usage::estimate_cost(outcome.cost_usd),
+        limit: outcome.limit,
         cache_read: outcome.usage.cache_read_tokens.unwrap_or(0),
         is_error: outcome.is_error,
         notices: outcome.notices,

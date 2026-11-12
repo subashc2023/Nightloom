@@ -82,6 +82,7 @@ describe("the footer row carries it", () => {
     expect(assistantSrc).toMatch(/class="meta plan" use:tip=\{planUsage\.title\}>\{planUsage\.text\}/);
   });
   it("the transcript passes each reply its line", () => {
-    expect(transcriptSrc).toMatch(/planUsage=\{replyUsageView\(usageLines\.get\(item\.index\)\)\}/);
+    // Item 674: an aside's source brings its own (`src.planUse`); the chat's lines otherwise.
+    expect(transcriptSrc).toMatch(/planUsage=\{src\.planUse \? \(src\.planUse\.get\(item\.index\) \?\? null\) : replyUsageView\(usageLines\.get\(item\.index\)\)\}/);
   });
 });

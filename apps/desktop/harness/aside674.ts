@@ -72,7 +72,7 @@ for (let i = 0; i < n; i++) {
     cacheRead: 188_342,
     model: "claude-opus-5-5",
     usage: asking ? undefined : { input_tokens: 190_000 + i * (plain ? 81_000 : 900), output_tokens: 640, cache_read_tokens: 188_342 },
-    ...(plain && !asking ? { context: 190_000 + i * 81_000 + 640 } : {}),
+    ...(plain && !asking ? { context: 190_000 + i * 81_000 + 640, added: 0.12 + i * 0.05, planEst: { five_hour: 0.4 + i * 0.3, seven_day: 0.03, replies: 37 } } : {}),
     at: asking ? undefined : new Date(Date.now() - (n - i) * 60_000).toISOString(),
     tookMs: 9_000,
     startedAt: asking ? Date.now() - 12_000 : undefined,

@@ -1472,6 +1472,13 @@ export interface AsideResult {
   /** The newest round's cache read (item 677): the share of the chat's
    *  prefix the aside found warm (`cache_read` sums the rounds). */
   round_read?: number;
+  /** Item 674: the answer's share of the plan, estimated from `cost_usd`
+   *  at the rates fitted over lone chat replies; null before the fit has
+   *  enough replies. Absent from an older backend. */
+  plan_est?: { five_hour: number | null; seven_day: number | null; replies: number } | null;
+  /** Item 674: the plan's usage limit stopped the answer — the shape a
+   *  turn's result carries (`AgentTurnResult.limit`). */
+  limit?: AgentTurnResult["limit"];
 }
 
 /** What an aside's question carries besides its words (backlog 283): the

@@ -411,6 +411,16 @@ pub fn reading(key: Option<&Path>, r: Reading) {
     tracker().reading(key, r, fit_path);
 }
 
+/// A cost's share of the plan at the fitted rates (item 674, 2026-11-12):
+/// for an aside's answer, which takes no readings of its own — it is a
+/// fork beside the chat's turns — so its reply shows the estimate a chat
+/// reply shows beside its measured rise. `None` before the fit has
+/// enough replies, or with no cost.
+pub fn estimate_cost(cost: Option<f64>) -> Option<Estimate> {
+    let path = crate::project::config_dir()?.join(FIT_FILE);
+    read_fit(&path).estimate(cost)
+}
+
 fn read_fit(path: &Path) -> Fit {
     std::fs::read_to_string(path)
         .ok()

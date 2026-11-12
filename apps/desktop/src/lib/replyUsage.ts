@@ -104,3 +104,30 @@ export function byTarget(lines: TurnUsageLine[]): Map<number, TurnUsageLine> {
   for (const l of lines) m.set(l.target, l);
   return m;
 }
+
+/**
+ * Item 674 (2026-11-12): an aside's answer in the same footer. An aside
+ * is a fork beside the chat's turns and takes no plan readings of its own,
+ * so there is no measured rise — only the estimate a chat reply shows
+ * beside one: its API-equivalent cost at the rates fitted over lone chat
+ * replies (`ask_aside`'s `plan_est`), marked `≈` as the chat's estimates are.
+ */
+export function estimateView(
+  est: { five_hour: number | null; seven_day: number | null; replies: number } | null | undefined,
+  costUsd: number | null | undefined,
+): ReplyUsageView | null {
+  if (!est) return null;
+  const one = (p: number | null) => (p == null ? null : p < 0.05 ? "≈<0.1%" : `≈+${fmtEstimate(p)}%`);
+  const fh = one(est.five_hour);
+  const wk = one(est.seven_day);
+  if (!fh && !wk) return null;
+  const text = [fh && `5h ${fh}`, wk && `week ${wk}`].filter(Boolean).join(" · ");
+  const cost = costUsd != null ? ` ($${costUsd.toFixed(2)})` : "";
+  return {
+    text,
+    title: [
+      `This answer's share of the plan, estimated from its API-equivalent cost${cost} at the rate fitted over ${est.replies} chat replies that ran alone.`,
+      "An aside takes no plan readings of its own (it runs beside the chat's turns), so there is no measured rise to show.",
+    ].join("\n"),
+  };
+}

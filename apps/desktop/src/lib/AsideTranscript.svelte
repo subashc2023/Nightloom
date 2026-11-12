@@ -208,6 +208,7 @@
     notes: ev.notes,
     bare: ev.bare,
     sizes: ev.sizes,
+    planUse: ev.planUse,
     waitNote,
   });
 </script>
