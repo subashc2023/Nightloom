@@ -1,4 +1,4 @@
-import { mathPasteText } from "./mathPaste";
+import { mathPasteText, tablePasteText } from "./mathPaste";
 
 /**
  * Item 352, the other direction of 348: copying rendered math out of the
@@ -173,7 +173,41 @@ export function mathSelection(sel: Selection | null): { text: string; html: stri
   return out;
 }
 
+/**
+ * Item 684: the range's HTML when it takes any of a table — a selection inside one table (a few
+ * rows, or cells) as that table cut to the rows it touches, its header row always kept; a wider
+ * selection as cloned. Empty when it takes no table.
+ */
+function tableRangeHtml(range: Range): string {
+  const anc = range.commonAncestorContainer;
+  const inTable = (anc instanceof Element ? anc : anc.parentElement)?.closest("table");
+  if (inTable) {
+    const rows = Array.from(inTable.rows);
+    const keep = rows.filter((r, i) => i === 0 || range.intersectsNode(r));
+    const t = document.createElement("table");
+    for (const r of keep) t.appendChild(r.cloneNode(true));
+    return t.outerHTML;
+  }
+  const frag = range.cloneContents();
+  if (!frag.querySelector("table")) return "";
+  const box = document.createElement("div");
+  box.appendChild(frag);
+  return box.innerHTML;
+}
+
 function computeSelection(sel: Selection): { text: string; html: string } | null {
+  const got = mathOnly(sel);
+  if (got) return got;
+  // Item 684: a selection taking a table copies it as a Markdown table on the plain-text side
+  // (pasted into the message box it stays a table to fill in); the rich side keeps the table.
+  const tparts: string[] = [];
+  for (let i = 0; i < sel.rangeCount; i++) tparts.push(tableRangeHtml(sel.getRangeAt(i)));
+  const thtml = tparts.join("\n");
+  const ttext = thtml ? tablePasteText(thtml) : null;
+  return ttext === null ? null : { text: ttext, html: thtml };
+}
+
+function mathOnly(sel: Selection): { text: string; html: string } | null {
   const parts: string[] = [];
   for (let i = 0; i < sel.rangeCount; i++) parts.push(rangeHtml(sel.getRangeAt(i)));
   const html = parts.join("\n");

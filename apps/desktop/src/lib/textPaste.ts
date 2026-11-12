@@ -17,7 +17,7 @@
  * caller, since its images need the caller's chips.
  */
 import { codePasteLanguage, fenced } from "./codeDetect";
-import { mathPasteText } from "./mathPaste";
+import { mathPasteText, tablePasteText } from "./mathPaste";
 import { normalizeNewlines } from "./pasteAttach";
 
 export type TextPastePlan =
@@ -35,6 +35,10 @@ export function textPastePlan(p: {
   caret: number;
 }): TextPastePlan {
   if (p.fileCount > 0) return { kind: "files" };
+  // Item 684: a pasted table (from a reply or a web page) goes in as a Markdown table to fill in;
+  // it rides the `math` kind, which is "the paste's HTML, converted to text" (math in it is TeX too).
+  const table = tablePasteText(p.html);
+  if (table !== null) return { kind: "math", text: normalizeNewlines(table) };
   const math = mathPasteText(p.html);
   if (math !== null) return { kind: "math", text: normalizeNewlines(math) };
   if (p.plain) {
