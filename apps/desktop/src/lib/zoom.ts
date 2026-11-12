@@ -27,6 +27,7 @@
 import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
 import { addToast } from "./state.svelte";
+import { keepPlacesAcross } from "./zoomAnchor";
 
 /** Chrome's presets as labels, ascending; 1 is Actual Size ("100%"). */
 export const ZOOM_STEPS = [
@@ -169,7 +170,8 @@ export async function runZoom(
   const next =
     id === "zoom_reset" ? 1 : stepZoom(current, id === "zoom_in" ? 1 : -1);
   if (next === current) return;
-  await apply(next);
+  // Item 672: every scrolled view keeps the line it was on.
+  await keepPlacesAcross(() => apply(next));
   saveZoom(next);
   addToast(zoomLabel(next));
 }
