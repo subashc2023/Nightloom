@@ -17,7 +17,8 @@
   import { noticeLine, switchTitle } from "./keepWarm";
   import { keepWarm, loadKeepWarm, setKeepWarm } from "./keepWarm.svelte";
 
-  let { chat }: { chat: string } = $props();
+  // Item 663: `reply` hangs it on the reply's side (left) instead of his.
+  let { chat, side = "user" }: { chat: string; side?: "user" | "reply" } = $props();
 
   const status = $derived(keepWarm.byChat[chat] ?? null);
   $effect(() => {
@@ -45,7 +46,7 @@
 </script>
 
 {#if line}
-  <div class="keep-warm-notice" role="status">
+  <div class="keep-warm-notice" class:under-reply={side === "reply"} role="status">
     <span class="kw-dot" aria-hidden="true"></span>
     <span class="kw-line" use:tip={switchTitle(status, now)}>{line}{status?.mode === "once" ? " or your next message" : ""}</span>
     <button class="kw-off" type="button" use:tip={"Switch this chat's keep-warm off — no more requests; the cache runs out its hour"} onclick={() => void off()}>turn off</button>
@@ -107,5 +108,11 @@
   }
   :global(:where(:root:not([data-layout="classic"]))) .kw-off:hover {
     color: var(--accent);
+  }
+  .keep-warm-notice.under-reply {
+    justify-content: flex-start;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .keep-warm-notice.under-reply {
+    margin: 4px auto 8px 0;
   }
 </style>

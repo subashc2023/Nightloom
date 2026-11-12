@@ -289,6 +289,16 @@
     }
     return -1;
   });
+  // Item 663: the keep-warm notice sits under the model's latest live
+  // reply to that message — under his message only until a reply arrives.
+  const warmNoticeIndex = $derived.by(() => {
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (it.index <= lastUserIndex) break;
+      if (it.kind === "assistant" && !it.superseded && !it.removed) return it.index;
+    }
+    return lastUserIndex;
+  });
   // Project SessionEvents into renderable items. tool_result events are
   // consumed by lookup against tool_use blocks and never rendered standalone.
   const items: Item[] = $derived.by(() => {
@@ -2672,9 +2682,10 @@
             <span class="when" use:tip={exactTime(item.at)}>{relativeTimeLong(item.at, now)}</span>
           </div>
         </div>
-        <!-- Keep-warm (backlog 582): under his latest message, while
+        <!-- Keep-warm (backlog 582): under his latest message until a reply
+             arrives (item 663 moves it under the reply), while
              the chat's cache is being kept warm; one click switches it off. -->
-        {#if item.index === lastUserIndex && chatId}<KeepWarmNotice chat={chatId} />{/if}
+        {#if item.index === warmNoticeIndex && chatId}<KeepWarmNotice chat={chatId} />{/if}
       {:else if item.kind === "compaction"}
         <details class="compaction" class:superseded={item.superseded} use:keptOpen={{ key: turnFold(item.index, "compaction") }}>
           <summary>conversation compacted — earlier turns replaced by a summary</summary>
@@ -2793,6 +2804,7 @@
             </span>
           {/if}
         </div>
+        {#if item.index === warmNoticeIndex && chatId}<KeepWarmNotice chat={chatId} side="reply" />{/if}
       {/if}
     {/each}
     <!-- The aside (nightshift backlog 081): a side question answered off the
