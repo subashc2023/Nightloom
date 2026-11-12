@@ -26,6 +26,7 @@ import { LANGUAGES, segments } from "./codeHighlight";
 import { findMath, type MathSpan } from "./math";
 import { renderMathHtml, renderReply } from "./markdown";
 import { quoteLine, quoteNeedsRender, quoteRuns } from "./replyQuote.svelte";
+import { crossesLine } from "./emphasisLines";
 
 /** Node types whose content is code: nothing inside is math or emphasis. */
 const CODE_NODES = new Set(["InlineCode", "FencedCode", "CodeBlock", "HTMLBlock", "CommentBlock"]);
@@ -237,6 +238,8 @@ export function liveSpans(state: EditorState): LiveSpan[] {
           if (inMath(from, to)) return false;
           if (name !== "Strikethrough" && intrawordStar(text, from, to)) return;
           if (strayMark(node.node, text)) return;
+          // Item 670: a run never crosses a line break (`emphasisLines.ts`).
+          if (crossesLine(text, from, to)) return;
           const kind = name === "Emphasis" ? "em" : name === "StrongEmphasis" ? "strong" : "strike";
           out.push({ kind, from, to, open: touches(state, from, to) });
           return;
