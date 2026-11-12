@@ -5744,7 +5744,9 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns"
     }
 
     /// 543a: a turn that is still working when the limit is seen is not cut
-    /// short — the main thread's own 429 ends it the ordinary way.
+    /// short — the main thread's own 429 ends it the ordinary way. The
+    /// stand-in sleeps 0.9 s, off the 200 ms grace's re-arm grid: at exactly
+    /// 1 s its result raced the timer under load (blocker 1961).
     #[cfg(unix)]
     #[tokio::test]
     async fn a_working_turn_is_not_closed_by_the_limit_grace() {
@@ -5752,7 +5754,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns"
         std::fs::create_dir_all(&dir).unwrap();
         let body = r#"printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"m","permissionMode":"auto","session_id":"lim-543b"}'
 printf '%s\n' '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1794321000,"rateLimitType":"five_hour","overageStatus":"rejected","isUsingOverage":false}}'
-sleep 1
+sleep 0.9
 printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"num_turns":1,"result":"limit","session_id":"lim-543b","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}'
 "#;
         let mut s = AgentSpec::new(&dir);
