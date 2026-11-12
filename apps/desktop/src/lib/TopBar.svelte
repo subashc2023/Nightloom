@@ -47,6 +47,7 @@
   import { asideFigures, asideSpendText } from "./asideFigures";
   import { contextOf } from "./chatContext.svelte";
   import { chatLabel } from "./chatLabel";
+  import { asidePick, askAsidePick, pickOpenFor } from "./asidePick.svelte";
 
   interface Props {
     /**
@@ -453,6 +454,22 @@
     showGauge = false;
     app.showRail = !app.showRail;
   }
+  /** Item 657: the aside chip opens the aside's own pickers (its composer's
+   *  model menu, effort beside it), and a second click closes them. The
+   *  menu's own outside-mousedown closes it before the click lands, so
+   *  whether it was open is read on pointerdown, which comes first. */
+  const asidePickOpen = $derived(aside ? pickOpenFor(asidePick, asideChat, aside.id) : false);
+  let asidePickWasOpen = false;
+  function asideChipDown(): void {
+    asidePickWasOpen = asidePickOpen;
+  }
+  function asideChipClick(): void {
+    const was = asidePickWasOpen;
+    asidePickWasOpen = false;
+    if (!aside || !asideChat || was) return;
+    showGauge = false;
+    askAsidePick(asideChat, aside.id);
+  }
   // The card's place, refreshed while it is open on resize and on scroll
   // (backlog 163). ~~From the chip's rectangle~~ — since 2026-09-22 from the
   // bar's (nightshift backlog 180, his word: "it used to be on the right
@@ -609,16 +626,23 @@
          and the engine, no model. The model's name is the composer's
          button; this chip still opens the rail, where the model is. -->
     {#if aside}
-      <!-- Item 605: the aside's kind chip — not a button: the model and
+      <!-- Item 605: the aside's kind chip. ~~Not a button: the model and
            effort are the composer's buttons, and the model popover is the
-           chat's. -->
-      <span
+           chat's~~ — item 657 (his "doesn't do anything"): a button that
+           opens the aside's own settings, its composer's model menu with
+           the effort button beside it, as the chat's chip opens the chat's. -->
+      <button
         class="ns-chip model aside-kind"
-        use:tip={`An aside: answered from ${asideChatName}'s context on the Claude Code engine, never part of it — its model (${af?.model ?? "the chat's"}) and effort are the composer's buttons`}
+        class:open={asidePickOpen}
+        aria-haspopup="menu"
+        aria-expanded={asidePickOpen}
+        use:tip={`An aside: answered from ${asideChatName}'s context on the Claude Code engine, never part of it — click to pick its model (${af?.model ?? "the chat's"}); its effort is beside it`}
+        onpointerdown={asideChipDown}
+        onclick={asideChipClick}
       >
         <span class="dot" class:unknown={!app.connection} class:failed={!!signedOut}></span>
         <span class="model-name">Aside<span class="fold2">{" · "}{engineName || "subscription"}</span></span>
-      </span>
+      </button>
     {:else}
     <button
       class="ns-chip model"
