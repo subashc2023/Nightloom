@@ -3244,7 +3244,8 @@
        the words move (nothing repaints on scroll). Anchored to the foot so
        it meets the composer's own, which starts at its top. Calm and the
        classic palettes set the token to none. */
-    background: var(--ground-dots, none) left bottom / 24px 24px;
+    /* Item 680: the chat's own, smaller and fainter tokens. */
+    background: var(--chat-dots, none) left bottom / 24px 24px;
     /* Item 621: positioned (no z-index) so it paints over the dot field's
        canvas just before it; its only child, `.inner`, is positioned
        itself, so nothing inside is placed differently. */

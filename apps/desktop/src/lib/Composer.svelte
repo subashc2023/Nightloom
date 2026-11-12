@@ -4319,7 +4319,8 @@
     position: relative;
     /* The lit level's dot ground goes on under the box (item 525), from
        the top so it meets the transcript's, which is anchored to its foot. */
-    background: var(--ground-dots, none) left top / 24px 24px var(--paper);
+    /* Item 680: the chat's dots, matching the transcript's above it. */
+    background: var(--chat-dots, none) left top / 24px 24px var(--paper);
     padding: 12px 20px 22px;
   }
   :global(:where([data-layout="classic"])) .composer {

@@ -1,7 +1,7 @@
 // Item 621 (his words: "whichever dots it's nearest to, kind of like spread
 // out away, you know, as my cursor moves around the screen"): the chat's dot
 // ground as a field the pointer pushes. One canvas behind the transcript
-// draws the same grid the CSS `--ground-dots` tile draws (one dot per 24 px,
+// draws the same grid the CSS `--chat-dots` tile draws (item 680; `--ground-dots` before) (one dot per 24 px,
 // anchored to the scroller's foot); the dots within PUSH_RADIUS of the
 // pointer ease away from it on a spring and settle back when it leaves.
 //
@@ -21,8 +21,8 @@ import { reducedMotion } from "./sendMotion";
 
 /** The CSS tile's size (`background-size: 24px 24px` on `.transcript`). */
 export const DOT_STEP = 24;
-/** Between the gradient's 1.35 px solid core and its 1.55 px edge (app.css `--ground-dots`; was 1.1 for 1 / 1.2 px). */
-export const DOT_R = 1.45;
+/** Between the gradient's 1.2 px solid core and its 1.4 px edge (app.css `--chat-dots`, item 680; 655's was 1.45 for 1.35 / 1.55 px, 621's 1.1 for 1 / 1.2 px). */
+export const DOT_R = 1.3;
 /** How far from the pointer a dot feels it (CSS px). 655: 160 → 300 (Scatter's reach). */
 export const PUSH_RADIUS = 300;
 /** A weight-1 dot's push at the pointer (CSS px). 655: 11 → 40; rows now cross near the pointer, which is the scatter he picked. */
@@ -32,10 +32,12 @@ export const PUSH_CLAMP = 58;
 /**
  * How random each dot is, as a share of round 2's Scatter (1 = round 2:
  * off-angle ±32°, weight 0.45–1.45, return speed 0.35–2.55 × the base).
- * 0.6 (his "slightly less random"): ±19°, 0.65–1.25, 0.55–1.87. Each spread
- * narrows about its median, so the typical push and return stay as they were.
+ * ~~0.6 (his "slightly less random"): ±19°, 0.65–1.25, 0.55–1.87~~ — 0.8
+ * since item 680 (his "make the dots more random again"), halfway back to
+ * round 2: ±25°, 0.55–1.35, 0.45–2.21. Each spread narrows about its
+ * median, so the typical push and return stay as they were.
  */
-export const SCATTER = 0.6;
+export const SCATTER = 0.8;
 /** Round 2's spreads, before SCATTER: the weight's and return speed's medians and full ranges, the off-angle's half-range (radians). */
 export const WEIGHT_MID = 0.95;
 export const WEIGHT_LO = 0.45;
@@ -289,7 +291,7 @@ export function dotField(canvas: HTMLCanvasElement, viewport: HTMLElement): { de
   const key = (i: number, j: number) => i * 65536 + j;
 
   function readColour() {
-    canvas.style.color = "var(--ground-dot-ink)";
+    canvas.style.color = "var(--chat-dot-ink)";
     const c = getComputedStyle(canvas).color;
     if (c) colour = c;
     canvas.style.color = "var(--signal)";
