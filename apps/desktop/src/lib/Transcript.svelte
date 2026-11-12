@@ -504,8 +504,11 @@
   // projection of the log's usage figures (`tokens.ts`), one entry per
   // event, null where nothing can be said; the share is against the
   // connected model's window, which the picker rows carry and the top-bar
-  // gauge already scales by. Null window: the figure, no bar.
-  const sizes = $derived(turnSizes(evs, liveFlags(evs)));
+  // gauge already scales by. Null window: the figure, no bar. An aside's
+  // source brings its own (item 674, `exchangeSizes`): its usage sums
+  // rounds that each carry the chat's prefix, which `turnSizes` would
+  // read as growth.
+  const sizes = $derived(src.sizes ?? turnSizes(evs, liveFlags(evs)));
 
   // Each reply's share of the plan (item 323): the chat's lines, re-read
   // on a chat switch, when a turn ends (`busy` falls) and when the plan
@@ -2818,7 +2821,7 @@
                    mono 11px beside the time: the log's exact figure with
                    its share of the window (backlog 090), or the text's
                    estimate, marked ~, where the log cannot say. -->
-              {@const fig = userFigure(inAside ? null : sizes[item.index], item.text, windowLimit)}
+              {@const fig = userFigure(sizes[item.index] ?? null, item.text, windowLimit)}
               {#if fig}
                 {@const share = fig.exact ? shareOf(fig.tokens, windowLimit) : null}
                 <span class="turn-size" use:tip={fig.title}>
@@ -2905,7 +2908,7 @@
             <AssistantMessage
               segs={item.segs}
               footer={src.bare?.has(item.index) ? { ...item.footer, bare: true } : item.footer}
-              size={inAside ? null : sizes[item.index]}
+              size={sizes[item.index] ?? null}
               limit={windowLimit}
               {controlsTitle}
               onremove={editable && src.chatActions ? (block) => void removeBlock(item.index, block) : null}

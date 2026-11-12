@@ -16,6 +16,7 @@ import { app, chatAgentSession, paneChat, type Segment } from "./state.svelte";
 import type { AsideNote } from "./asideTranscript";
 import { scrollKey } from "./scroll.svelte";
 import type { ApprovalRequest, Attachment, SessionEvent } from "./types";
+import type { TurnSize } from "./tokens";
 
 export interface TranscriptActions {
   /** Rewind to the user turn at `index`. False: nothing was rewound. */
@@ -81,6 +82,9 @@ export interface TranscriptSource {
   notes?: Map<number, AsideNote[]>;
   /** Replies with no token figures (a stored aside turn). */
   bare?: Set<number>;
+  /** Per event index, the per-turn figure; absent: `turnSizes` of the
+   *  events (the chat's and a pane's log). An aside's: `exchangeSizes`. */
+  sizes?: (TurnSize | null)[];
   /** A note beside the waiting moon (an aside queued behind a turn). */
   waitNote?: string | null;
 }

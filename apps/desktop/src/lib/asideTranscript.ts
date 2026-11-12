@@ -27,6 +27,8 @@
  */
 import type { Aside, AsideTurn, Segment } from "./state.svelte";
 import type { ContentBlock, DocumentInput, ImageInput, SessionEvent } from "./types";
+import type { TurnSize } from "./tokens";
+import { exchangeSizes } from "./asideFigures";
 
 export interface AsideNote {
   kind: "stopped" | "error";
@@ -43,6 +45,9 @@ export interface AsideEvents {
   notes: Map<number, AsideNote[]>;
   /** Replies whose tokens were not kept (a stored turn): a bare footer. */
   bare: Set<number>;
+  /** Per event index, the per-turn figure (`exchangeSizes`), as
+   *  `turnSizes` gives the chat's: his question's share bar, the reply's size. */
+  sizes: (TurnSize | null)[];
 }
 
 /** The exchange still being asked, or null (`asideAsking`, kept pure). */
@@ -75,12 +80,15 @@ export function asideEvents(aside: Pick<Aside, "turns">): AsideEvents {
   const seqOf: number[] = [];
   const notes = new Map<number, AsideNote[]>();
   const bare = new Set<number>();
+  const sizes: (TurnSize | null)[] = [];
   const asking = askingOf(aside);
+  const fig = exchangeSizes(aside);
   aside.turns.forEach((t, i) => {
-    const put = (e: SessionEvent): number => {
+    const put = (e: SessionEvent, size: TurnSize | null = null): number => {
       events.push(e);
       turnOf.push(i);
       seqOf.push(t.seq);
+      sizes.push(size);
       return events.length - 1;
     };
     const images: ImageInput[] = [];
@@ -97,7 +105,7 @@ export function asideEvents(aside: Pick<Aside, "turns">): AsideEvents {
       ...(images.length ? { images } : {}),
       ...(documents.length ? { documents } : {}),
       at: askedAt(t),
-    });
+    }, fig[i]?.question ?? null);
     if (t === asking) return;
     const segs = segsOfTurn(t);
     const blocks: ContentBlock[] = [];
@@ -132,7 +140,7 @@ export function asideEvents(aside: Pick<Aside, "turns">): AsideEvents {
           ...(t.usage?.cache_read_tokens !== undefined ? { cache_read_tokens: t.usage.cache_read_tokens } : {}),
         },
         at: t.at ?? "",
-      });
+      }, fig[i]?.answer ?? null);
       if (t.usage === undefined) bare.add(last);
       for (const r of results) put(r);
     }
@@ -141,7 +149,7 @@ export function asideEvents(aside: Pick<Aside, "turns">): AsideEvents {
     if (t.error) ns.push({ kind: "error", text: t.error });
     if (ns.length) notes.set(last, ns);
   });
-  return { events, turnOf, seqOf, notes, bare };
+  return { events, turnOf, seqOf, notes, bare, sizes };
 }
 
 /** The asking exchange as the transcript's live turn, or null. */

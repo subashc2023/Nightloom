@@ -54,7 +54,10 @@ for (let i = 0; i < n; i++) {
   const asking = q.get("asking") === "1" && i === n - 1;
   const stopped = q.get("stopped") === "1" && i === n - 1;
   const ans = Array.from({ length: 3 }, (_, k) => `Paragraph ${k + 1} of answer ${i + 1}. ${para.repeat(2)}`).join("\n\n");
-  const segments: Segment[] = [
+  // &plain=1: text-only answers that kept their context (item 674 follow-up:
+  // the per-turn figures, which an answer that thought or used tools withholds).
+  const plain = q.get("plain") === "1";
+  const segments: Segment[] = plain ? [{ kind: "text", text: asking ? ans.slice(0, 220) : ans }] : [
     { kind: "thinking", text: `Thinking about question ${i + 1}: the unit either lands or it does not.`, done: !asking },
     { kind: "tool", call: { id: `t${i}`, name: "Read", input: { file_path: "state/watermark.json" }, result: { content: '{"unit": 41}', is_error: false } } },
     { kind: "text", text: asking ? ans.slice(0, 220) : stopped ? ans.slice(0, 300) : ans },
@@ -68,7 +71,8 @@ for (let i = 0; i < n; i++) {
     cancelled: stopped,
     cacheRead: 188_342,
     model: "claude-opus-5-5",
-    usage: asking ? undefined : { input_tokens: 190_000 + i * 900, output_tokens: 640, cache_read_tokens: 188_342 },
+    usage: asking ? undefined : { input_tokens: 190_000 + i * (plain ? 81_000 : 900), output_tokens: 640, cache_read_tokens: 188_342 },
+    ...(plain && !asking ? { context: 190_000 + i * 81_000 + 640 } : {}),
     at: asking ? undefined : new Date(Date.now() - (n - i) * 60_000).toISOString(),
     tookMs: 9_000,
     startedAt: asking ? Date.now() - 12_000 : undefined,
@@ -256,6 +260,13 @@ async function drive(): Promise<void> {
   }
   await settle(150);
   const tt = asideT();
+  // &figs=1: the per-turn figures under his questions and in the replies' footers (674 follow-up).
+  const flat = (x: Element) => (x.textContent ?? "").replace(/\s+/g, " ").trim();
+  if (q.get("figs") === "1" && tt)
+    say(
+      `question figures: ${$$(".turn-size", tt).map((x) => `"${flat(x)}"${x.querySelector(".share-bar") ? "+bar" : ""}`).join(", ")}` +
+        ` · reply figures: ${$$(".assistant .footer .meta:not(.when)", tt).map(flat).join(" | ")}`,
+    );
   const s = (sel: string) => document.querySelectorAll(sel).length;
   const head = $(".aside-head");
   const base =

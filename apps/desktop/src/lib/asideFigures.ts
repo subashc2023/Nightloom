@@ -32,7 +32,7 @@
  */
 import type { Aside, AsideTurn } from "./state.svelte";
 import { asideFollowUp } from "./asideQuote";
-import { estimateTokens } from "./tokens";
+import { estimateTokens, type TurnSize } from "./tokens";
 
 export interface AsideFigures {
   /** Tokens the next follow-up carries as its prefix; null before any answer. */
@@ -154,4 +154,51 @@ export function asideSpendText(c: AsideFigures["cost"]): string | null {
   if (c.usd === 0 && c.complete) return null;
   const digits = c.usd > 0 && c.usd < 0.01 ? 4 : 2;
   return `+$${c.usd.toFixed(digits)}`;
+}
+
+/**
+ * Item 674 (2026-11-12): each exchange's figures for the transcript's
+ * per-turn row — what `turnSizes` gives a chat's turns, read from an
+ * aside's own usage, so the shared Transcript draws the share bar under
+ * his question and the size in the reply's footer as it does in the chat.
+ *
+ * An aside's follow-up is a fresh fork that carries the chat's prefix and
+ * the thread so far as text, so what one exchange added is measured the
+ * chat's way, between two answers: this answer's prompt (its context less
+ * its output) less the context the previous answer left. That holds only
+ * where the two are comparable, and nothing is guessed elsewhere:
+ *
+ * - the first exchange's prompt holds the chat's whole context too —
+ *   flagged `preamble` + `forked`, so the question shows its estimate and
+ *   the exact figure in the title (`userFigure`), as a chat's first message does;
+ * - after an answer that thought (its thinking is output, not carried
+ *   into the next follow-up), one with no usage (stored before 605, an
+ *   error, a stop) or a growth that comes out negative: no figure, the
+ *   question's estimate stands in;
+ * - an answer that used tools: its rounds' results cannot be told from
+ *   the question in the sums, so the question gets no figure.
+ *
+ * The reply's figure is its output, as a chat reply's is. Pure.
+ */
+export function exchangeSizes(a: Pick<Aside, "turns">): { question: TurnSize | null; answer: TurnSize | null }[] {
+  let prev: number | null | undefined = undefined; // undefined: no exchange before
+  return a.turns.map((t) => {
+    const u = t.usage;
+    const before = prev;
+    if (!u || (u.input_tokens === 0 && u.output_tokens === 0)) {
+      prev = null;
+      return { question: null, answer: null };
+    }
+    const ctx = t.context ?? u.input_tokens + u.output_tokens;
+    const prompt = ctx - u.output_tokens;
+    const segs = t.segments ?? [];
+    const thought = segs.some((s) => s.kind === "thinking" || s.kind === "redacted");
+    const tools = segs.some((s) => s.kind === "tool");
+    prev = thought ? null : ctx;
+    const answer: TurnSize = { tokens: u.output_tokens, out: u.output_tokens };
+    if (before === undefined) return { question: { tokens: prompt, preamble: true, forked: true }, answer };
+    if (before === null || tools) return { question: null, answer };
+    const growth = prompt - before;
+    return { question: growth >= 0 ? { tokens: growth } : null, answer };
+  });
 }

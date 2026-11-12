@@ -52,7 +52,7 @@ export const TRANSCRIPT_FEATURES: Record<string, Where> = {
   "send arrive motion": shared,
   "turn size estimate under his message": shared,
   "narrow-gutter tool placement": shared,
-  "per-turn context share bar": pending("an aside's usage sums rounds that each resend the chat's prefix; the per-turn figure is asideFigures' (item 675) and is not wired to the footer yet"),
+  "per-turn context share bar": shared,
   "per-reply plan use": pending("the plan-use lines are recorded per chat turn by the service; an aside's turn writes none"),
   "pending bubbles (a message held mid-answer)": pending("PendingBubbles reads the open chat's queue; the aside's held message stays in its composer"),
   "usage-limit pause card": pending("an aside's limit hit arrives as its turn's error text; a pause scoped to the aside needs state in runAside (item 677's file)"),
@@ -104,7 +104,7 @@ export const TRANSCRIPT_PIECES: Record<string, Where> = {
 export const KIND_GUARDS = {
   isChat: 18,
   inPane: 8,
-  inAside: 9,
+  inAside: 7,
   "src.chatActions": 10,
 } as const;
 

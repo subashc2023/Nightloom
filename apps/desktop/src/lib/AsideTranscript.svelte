@@ -207,6 +207,7 @@
     },
     notes: ev.notes,
     bare: ev.bare,
+    sizes: ev.sizes,
     waitNote,
   });
 </script>
