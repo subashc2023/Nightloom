@@ -11,7 +11,10 @@
   import type { Segment } from "./state.svelte";
   import type { StepMotion } from "./stepMotion.svelte";
 
-  let { motion, run = 0 }: { motion: StepMotion; run?: number } = $props();
+  // Item 667: the step's motion eases in over its first 5 s here too (the
+  // reply's own stepRamp); `rampStart` overrides the start rate (the
+  // comparison page only; none = the app's RAMP_START).
+  let { motion, run = 0, rampStart = null }: { motion: StepMotion; run?: number; rampStart?: number | null } = $props();
 
   // One step, running: the Thinking step, the one the motion is chosen for
   // (the trace keys its clock by tool id, so a thinking-only sample stays
@@ -22,7 +25,7 @@
 </script>
 
 {#key run}
-  <div class="motion-sample" data-motion-sample={motion}>
+  <div class="motion-sample" data-motion-sample={motion} data-ramp-start={rampStart ?? undefined}>
     <AssistantMessage segs={sample()} streaming={true} headed={false} since={Date.now()} {motion} />
   </div>
 {/key}

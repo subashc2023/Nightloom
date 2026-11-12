@@ -88,7 +88,8 @@
   import { Births, needleIn, needleOut, replyMotion } from "./replyMotion";
   // The thinking block's arrival (backlog 389): a live thinking row's first
   // appearance is thrown in along the send flight's path, not spawned.
-  import { thinkingArrival, type ArrivalParams } from "./thinkingArrival";
+  import { FRESH_MS, thinkingArrival, type ArrivalParams } from "./thinkingArrival";
+  import { stepRamp, type RampParams } from "./stepRamp";
   // Item 564 (Filament IV stage 5): the turn trace's clock and the stream speed.
   import { untrack } from "svelte";
   // Item 589: the running step's motion, a variant per kind of step.
@@ -586,6 +587,18 @@
   $effect(() => {
     births.settled = true;
   });
+  // Item 667: a running step's motion eases in over its first 5 s
+  // (stepRamp.ts). Fresh = it began in view: a thinking block by its own
+  // clock (as its arrival, 389); a call born mid-turn under this reply, or
+  // in the first moments of a turn just sent. A step already under way when
+  // the chat opened runs at today's pace from the start.
+  function rampThink(i: number, at: number | undefined, live: boolean): RampParams {
+    const fresh = at !== undefined ? Date.now() - at < FRESH_MS : Date.now() - (since ?? startedAt) < 2000;
+    return { key: at !== undefined ? `think:${at}` : `think:${since ?? startedAt}:${ids[i]}`, fresh, live };
+  }
+  function rampTool(id: string, born: boolean, live: boolean): RampParams {
+    return { key: `tool:${id}`, fresh: born || Date.now() - (since ?? startedAt) < 2000, live };
+  }
   const summarised = $derived(!!footer && modelOmitsThinking(footer.model));
   // The block the moon rides is the last one, whether or not text follows
   // it (board 1 draws the moon as the block's last row with the reply's
@@ -944,6 +957,7 @@
                   class:mo-run={streaming}
                   data-kind="think"
                   use:thinkingArrival={{ at: seg.at, live: streaming && g.rows[0].i !== i }}
+                  use:stepRamp={rampThink(i, seg.at, streaming)}
                 >
                   {#if streaming}{@render stepLive("think", true)}{/if}
                   {@render stepHead(i, "running", "think")}
@@ -960,7 +974,8 @@
                      the thread retracts and the icon turns once. -->
                 <div class="row-wrap" class:rm-live={streaming && !seg.done} class:rm-thought={bornT && seg.done}
                   class:mo-run={streaming && !seg.done} data-kind="think"
-                  use:thinkingArrival={{ at: seg.at, live: streaming && !seg.done && g.rows[0].i !== i }}>
+                  use:thinkingArrival={{ at: seg.at, live: streaming && !seg.done && g.rows[0].i !== i }}
+                  use:stepRamp={rampThink(i, seg.at, streaming && !seg.done)}>
                   {#if streaming && !seg.done}{@render stepLive("think", true)}{/if}
                   <button
                     class="arow thinking"
@@ -1003,7 +1018,8 @@
               {@const kind = toolKind(seg.call.name)}
               {@const remnant = !running && kind === "shell" && passingEnded(seg.call.id)}
               <div class="row-wrap tool" class:running class:rm-born={bornW} class:rm-finished={bornW && !running}
-                class:mo-run={running} class:bash-rem={remnant} data-kind={kind}>
+                class:mo-run={running} class:bash-rem={remnant} data-kind={kind}
+                use:stepRamp={rampTool(seg.call.id, bornW, running)}>
                 {#if running}{@render stepLive(kind, false)}{/if}
                 <!-- Item 633: the command's real output passing behind the row. -->
                 {#if running && kind === "shell"}<BashPassing id={seg.call.id} />{/if}
