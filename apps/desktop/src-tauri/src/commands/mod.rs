@@ -1,0 +1,6 @@
+//! The desktop's Tauri commands, by group, moved out of `main.rs` by pure
+//! moves (item 642). Each module takes `use crate::*` so its code reads
+//! as it did in `main.rs`; `main.rs` keeps startup, the builder and the
+//! `generate_handler!` list, which names each command by its module.
+
+pub(crate) mod notes;
