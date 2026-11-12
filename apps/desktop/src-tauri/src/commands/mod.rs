@@ -12,6 +12,7 @@ pub(crate) mod edits;
 pub(crate) mod memory;
 pub(crate) mod notes;
 pub(crate) mod projects;
+pub(crate) mod providers;
 pub(crate) mod sessions;
 pub(crate) mod steer;
 pub(crate) mod system;
