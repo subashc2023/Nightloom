@@ -62,6 +62,12 @@
       )?.id ?? null,
   );
   let naming = $state(false);
+  // Item 673 C1: the card's quote, folded to two lines until clicked.
+  let quoteOpen = $state(false);
+  $effect(() => {
+    void (aside?.uid ?? aside?.id);
+    untrack(() => (quoteOpen = false));
+  });
   const chatName = $derived.by(() => {
     const s = app.sessions.find((x) => x.id === session);
     return chatLabel(s, session.slice(0, 8));
@@ -110,68 +116,151 @@
 </script>
 
 <div class="aside-view" role="note" aria-label="aside, not part of the chat">
-  <!-- Item 673 (pick A, Kicker): the aside's own strip under the top bar —
-       a kicker row (Aside · of ‹chat› · about · cached · Fold · Close), then
-       the title, which wraps on whole words and is never cut mid-word. It
-       sits outside the scroller, its content on the transcript's column. -->
-  <header class="aside-head">
-    <div class="aside-head-in">
-      <div class="aside-head-row">
-        <span class="aside-kick">Aside</span>
-        <!-- One line (358): an untitled chat is named by its whole first
-             prompt; the tip carries all of it. -->
-        <span class="aside-view-of" use:tip={`An aside of “${chatName}”: answered from that chat's context, never part of it`}
-          >of <em>{chatName}</em></span
-        >
-        {#if aside?.quote}
-          <span class="aside-about"><Icon name="reply" size={11} />about {quoteLabel(aside.quote, "card")}</span>
-        {/if}
-        {#if last && last.answer !== null && last.cacheRead > 0}
-          <span class="aside-cache" use:tip={`${last.cacheRead.toLocaleString()} tokens read from cache`}
-            >{fmtTokens(last.cacheRead)} cached</span
+  {#if classic()}
+    <!-- Classic keeps round 1's Kicker strip as built (item 673 round 2). -->
+    <!-- Item 673 (pick A, Kicker): the aside's own strip under the top bar —
+         a kicker row (Aside · of ‹chat› · about · cached · Fold · Close), then
+         the title, which wraps on whole words and is never cut mid-word. It
+         sits outside the scroller, its content on the transcript's column. -->
+    <header class="aside-head">
+      <div class="aside-head-in">
+        <div class="aside-head-row">
+          <span class="aside-kick">Aside</span>
+          <!-- One line (358): an untitled chat is named by its whole first
+               prompt; the tip carries all of it. -->
+          <span class="aside-view-of" use:tip={`An aside of “${chatName}”: answered from that chat's context, never part of it`}
+            >of <em>{chatName}</em></span
           >
-        {/if}
-        <span class="spacer"></span>
+          {#if aside?.quote}
+            <span class="aside-about"><Icon name="reply" size={11} />about {quoteLabel(aside.quote, "card")}</span>
+          {/if}
+          {#if last && last.answer !== null && last.cacheRead > 0}
+            <span class="aside-cache" use:tip={`${last.cacheRead.toLocaleString()} tokens read from cache`}
+              >{fmtTokens(last.cacheRead)} cached</span
+            >
+          {/if}
+          <span class="spacer"></span>
+          {#if aside}
+            <!-- Fold into thread (nightshift backlog 282). -->
+            <AsideFoldPanel {aside} part="button" {open} />
+          {/if}
+          {#if aside}
+            <!-- ~~× (only while the chat was open): "Dismiss the aside — the
+                 thread ends"~~ — item 266 (2026-09-29, blocker 640): Close, on
+                 every aside tab, moves the thread to the chat's Past list (the
+                 card's ×) and takes him back to the chat it came from. -->
+            <button
+              class="ns-btn ghost small aside-view-close"
+              use:tip={asking
+                ? "Stop the answer, move this aside to the chat's Past list, and go back to the chat"
+                : "Close this aside — it moves to the chat's Past list, reopenable — and go back to the chat"}
+              onclick={() => closeAsideToChat(session, aside, myTab)}><Icon name="x" size={12} /> Close</button
+            >
+          {/if}
+        </div>
         {#if aside}
-          <!-- Fold into thread (nightshift backlog 282). -->
-          <AsideFoldPanel {aside} part="button" {open} />
-        {/if}
-        {#if aside}
-          <!-- ~~× (only while the chat was open): "Dismiss the aside — the
-               thread ends"~~ — item 266 (2026-09-29, blocker 640): Close, on
-               every aside tab, moves the thread to the chat's Past list (the
-               card's ×) and takes him back to the chat it came from. -->
-          <button
-            class="ns-btn ghost small aside-view-close"
-            use:tip={asking
-              ? "Stop the answer, move this aside to the chat's Past list, and go back to the chat"
-              : "Close this aside — it moves to the chat's Past list, reopenable — and go back to the chat"}
-            onclick={() => closeAsideToChat(session, aside, myTab)}><Icon name="x" size={12} /> Close</button
-          >
+          <!-- The thread's name (item 265): his, or its first question until
+               he names it; a click renames it, here as in the sidebar and the
+               asides list. -->
+          {#if naming}
+            <AsideNameEdit
+              value={aside.name ?? ""}
+              placeholder={asideLabel({ ...aside, name: undefined })}
+              oncommit={(v) => {
+                naming = false;
+                renameAside(aside, v);
+              }}
+              oncancel={() => (naming = false)}
+            />
+          {:else}
+            <button class="aside-view-name" class:unnamed={!aside.name} use:tip={"Rename this aside"} onclick={() => (naming = true)}
+              >{asideLabel(aside, 120)}<span class="pen"><Icon name="pencil" size={12} /></span></button
+            >
+          {/if}
         {/if}
       </div>
-      {#if aside}
-        <!-- The thread's name (item 265): his, or its first question until
-             he names it; a click renames it, here as in the sidebar and the
-             asides list. -->
-        {#if naming}
-          <AsideNameEdit
-            value={aside.name ?? ""}
-            placeholder={asideLabel({ ...aside, name: undefined })}
-            oncommit={(v) => {
-              naming = false;
-              renameAside(aside, v);
-            }}
-            oncancel={() => (naming = false)}
-          />
-        {:else}
-          <button class="aside-view-name" class:unnamed={!aside.name} use:tip={"Rename this aside"} onclick={() => (naming = true)}
-            >{asideLabel(aside, 120)}<span class="pen"><Icon name="pencil" size={12} /></span></button
+    </header>
+  {:else}
+    <!-- Item 673 round 2 (his pick C1, Twin: "Do twin for the asdies
+         thign"): the strip is a card, the composer's own box (fill, edge,
+         corners, shadow and the lit brackets), so the aside opens and closes
+         on the same object. A cap row (◆ ASIDE · of ‹chat› · rule · cached),
+         the title (wraps on whole words), the quoted passage (two lines; a
+         click shows all of it), then the composer's row: the about pill,
+         Fold into thread with the Ask-aside coil, Close. -->
+    <header class="aside-head twin">
+      <div class="aside-head-in">
+        <div class="aside-head-row">
+          <span class="aside-kick">Aside</span>
+          <span class="aside-view-of" use:tip={`An aside of “${chatName}”: answered from that chat's context, never part of it`}
+            >of <em>{chatName}</em></span
           >
+          <span class="aside-rule" aria-hidden="true"></span>
+          {#if last && last.answer !== null && last.cacheRead > 0}
+            <span class="aside-cache" use:tip={`${last.cacheRead.toLocaleString()} tokens read from cache`}
+              >{fmtTokens(last.cacheRead)} cached</span
+            >
+          {/if}
+        </div>
+        {#if aside}
+          {#if naming}
+            <AsideNameEdit
+              value={aside.name ?? ""}
+              placeholder={asideLabel({ ...aside, name: undefined })}
+              oncommit={(v) => {
+                naming = false;
+                renameAside(aside, v);
+              }}
+              oncancel={() => (naming = false)}
+            />
+          {:else}
+            <button class="aside-view-name" class:unnamed={!aside.name} use:tip={"Rename this aside"} onclick={() => (naming = true)}
+              >{asideLabel(aside, 120)}<span class="pen"><Icon name="pencil" size={12} /></span></button
+            >
+          {/if}
         {/if}
-      {/if}
-    </div>
-  </header>
+        {#if aside?.quote}
+          <!-- The passage, in the card (was the thread's lead): the app's
+               reply quote, two lines; a click shows all of it. -->
+          <div
+            class="aside-head-quote"
+            class:open={quoteOpen}
+            role="button"
+            tabindex="0"
+            aria-expanded={quoteOpen}
+            onkeydown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                quoteOpen = !quoteOpen;
+              }
+            }}
+            use:tip={quoteOpen
+              ? "The passage he highlighted, sent with the question exactly as selected — click to fold it to two lines"
+              : "The passage he highlighted, sent with the question exactly as selected — click to show all of it"}
+            onclick={() => (quoteOpen = !quoteOpen)}
+          >
+            {@html renderReply(aside.quote.text)}
+          </div>
+        {/if}
+        <div class="aside-head-foot">
+          {#if aside?.quote}
+            <span class="aside-about"><Icon name="reply" size={11} />about {quoteLabel(aside.quote, "card")}</span>
+          {/if}
+          <span class="spacer"></span>
+          {#if aside}
+            <AsideFoldPanel {aside} part="button" {open} twin />
+            <button
+              class="ns-btn ghost aside-view-close"
+              use:tip={asking
+                ? "Stop the answer, move this aside to the chat's Past list, and go back to the chat"
+                : "Close this aside — it moves to the chat's Past list, reopenable — and go back to the chat"}
+              onclick={() => closeAsideToChat(session, aside, myTab)}><Icon name="x" size={12} /> Close</button
+            >
+          {/if}
+        </div>
+      </div>
+    </header>
+  {/if}
   {#snippet quoted()}
     {#if aside?.quote}
       <blockquote class="aside-view-quote" use:tip={"The passage he highlighted, sent with the question exactly as selected"}>{@html renderReply(aside.quote.text)}</blockquote>
@@ -204,8 +293,10 @@
          reading place, tools — given this thread; the frame is positioned
          as the chat's `.content` is, for the ground's canvas and the ⌄. -->
     <div class="aside-view-body">
+      <!-- Item 673 C1: the quoted passage is in the header card now, so the
+           transcript gets no `lead` (Classic still leads with it). -->
       {#key aside.uid ?? aside.id}
-        <AsideTranscript {aside} {open} owner={session} frame="full" scrollKey={asideScrollKey(session, aside.id)} lead={quoted} />
+        <AsideTranscript {aside} {open} owner={session} frame="full" scrollKey={asideScrollKey(session, aside.id)} />
       {/key}
     </div>
   {/if}
@@ -432,6 +523,126 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
+  }
+  /* Item 673 round 2, C1 Twin (his pick): on Filament the strip above is
+     a card — the composer's own box (Composer.svelte's `.card`: the raised
+     fill, the control edge, 8 px corners, one dark shadow, the lit level's
+     brackets), on the aside's ground. The rules above stay Classic's
+     (round 1's Kicker strip, kept as built). */
+  .aside-head.twin {
+    background: transparent;
+    box-shadow: none;
+    border-bottom: none;
+    /* 12 px under the card: room for the brackets (7 px outside it). */
+    padding: 18px 20px 12px;
+  }
+  .twin .aside-head-in {
+    position: relative;
+    gap: 8px;
+    padding: 13px 14px 12px;
+    background: var(--raised);
+    border: 1px solid var(--line2);
+    border-radius: var(--r2);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  }
+  /* The composer card's brackets, verbatim (Composer.svelte ~4657):
+     transparent in Calm (`--bracket`). */
+  .twin .aside-head-in::before {
+    content: "";
+    position: absolute;
+    inset: -7px;
+    pointer-events: none;
+    --tk: var(--bracket, transparent);
+    background:
+      linear-gradient(var(--tk), var(--tk)) 0 0 / 12px 1.5px no-repeat,
+      linear-gradient(var(--tk), var(--tk)) 0 0 / 1.5px 12px no-repeat,
+      linear-gradient(var(--tk), var(--tk)) 100% 0 / 12px 1.5px no-repeat,
+      linear-gradient(var(--tk), var(--tk)) 100% 0 / 1.5px 12px no-repeat,
+      linear-gradient(var(--tk), var(--tk)) 0 100% / 12px 1.5px no-repeat,
+      linear-gradient(var(--tk), var(--tk)) 0 100% / 1.5px 12px no-repeat,
+      linear-gradient(var(--tk), var(--tk)) 100% 100% / 12px 1.5px no-repeat,
+      linear-gradient(var(--tk), var(--tk)) 100% 100% / 1.5px 12px no-repeat;
+  }
+  .twin .aside-head-row {
+    min-height: 0;
+  }
+  /* The group heading's rule (app.css `.ns-cap::after`), running right. */
+  .twin .aside-head-row > .aside-rule {
+    flex: 1 1 24px;
+    min-width: 12px;
+    height: 1px;
+    background: var(--line2);
+  }
+  .twin .aside-view-name {
+    font-size: 17px;
+  }
+  /* The app's reply quote (app.css `.markdown blockquote`), two lines. */
+  .aside-head-quote {
+    margin: 0;
+    padding: 0.1em 0 0.1em 0.9em;
+    border-left: 3px solid var(--accent);
+    color: var(--dim);
+    font-size: 13px;
+    line-height: 1.5;
+    cursor: pointer;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+  }
+  .aside-head-quote:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+  .aside-head-quote.open {
+    display: block;
+    -webkit-line-clamp: unset;
+    line-clamp: none;
+    max-height: 40vh;
+    overflow-y: auto;
+  }
+  .aside-head-quote :global(p) {
+    margin: 0;
+    display: inline;
+  }
+  .aside-head-quote.open :global(p) {
+    display: block;
+  }
+  .aside-head-quote.open :global(p + p) {
+    margin-top: 0.5em;
+  }
+  /* The composer's row (Composer.svelte `.row`). */
+  .aside-head-foot {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px 8px;
+    padding-top: 2px;
+  }
+  .aside-head-foot .spacer {
+    flex: 1 1 0;
+    min-width: 4px;
+  }
+  .aside-head-foot > :global(*) {
+    flex-shrink: 0;
+  }
+  /* Fold: a composer row button (Composer.svelte ~4680), the coil lit by
+     FilamentMark's own `.fil-ghost:hover` rule. */
+  .aside-head-foot :global(.ns-btn.aside-fold) {
+    min-height: 28px;
+    padding: 0 11px;
+    gap: 6px;
+    font-size: 12.5px;
+    background: var(--well);
+    border-color: var(--line2);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    color: var(--ink);
+  }
+  .aside-head-foot :global(.ns-btn.aside-fold:hover:not(:disabled)) {
+    background: var(--well2);
+    border-color: var(--dim);
   }
   /* Item 674: the shared transcript's frame, as App's `.content`. */
   .aside-view-body {

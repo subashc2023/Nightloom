@@ -32,7 +32,10 @@ const cancelled: number[] = [];
   transformCallback: () => 0,
 };
 
-app.sessions = [{ id: "chat-a", title: "Midterm prep" }] as unknown as typeof app.sessions;
+// Item 673 C1: &longchat=1 names the chat by a long title (its line gives way).
+app.sessions = [
+  { id: "chat-a", title: q.get("longchat") === "1" ? "Midterm prep: CS 161 data structures, Big-O of queue-backed stacks and amortised analysis review" : "Midterm prep" },
+] as unknown as typeof app.sessions;
 app.connection = { engine: "claude-code", model: "claude-opus-5-5", contextLimit: 1_000_000 } as unknown as typeof app.connection;
 app.activeSessionId = "chat-a";
 // A project, so Fold into thread is offered (its own condition).
@@ -47,6 +50,21 @@ const para =
 // A composer aside (no passage): in the chat view its card sits above the composer.
 const a: Aside = draftAside({ text: "The watermark advances only on success.", role: "assistant", ordinal: 2 }, null)!;
 a.draft = false;
+// Item 673 C1: &quote=long gives the passage three lines' worth (the card folds it to two).
+if (q.get("quote") === "long")
+  a.quote = {
+    ...a.quote!,
+    text: "The watermark advances only on success, so a unit that fails is redone rather than skipped: the runner commits on the unit's behalf, verifies the commit, and only then moves the mark, which means a crash between the two leaves the unit to run again on the next pass.",
+  };
+// Item 673 C1: &hover=1 draws the header's hover states (an offscreen WebKit has no pointer).
+if (q.get("hover") === "1") {
+  const st = document.createElement("style");
+  st.textContent = `.aside-head.twin .aside-view-name { background: var(--well); } .aside-head.twin .aside-view-name .pen { opacity: 1; }
+    .aside-head-foot .ns-btn.aside-fold { background: var(--well2) !important; border-color: var(--dim) !important; }
+    .aside-head-foot .aside-fold .fil-svg { color: var(--accent) !important; filter: drop-shadow(0 0 1.5px var(--accent)); }
+    .aside-head-foot .aside-view-close { background: var(--well) !important; color: var(--ink) !important; }`;
+  document.head.appendChild(st);
+}
 const first = q.get("long") === "1"
   ? "Why is the stack built on one queue instead of two, and what would break in the amortised analysis if the transfer happened on every push rather than only when the output side runs dry?"
   : "Stack on one queue";
