@@ -17,7 +17,7 @@
  * is not loaded into the box at all.
  */
 import { EditorSelection, EditorState, Prec, StateEffect, StateField, type Extension, type Range } from "@codemirror/state";
-import { Decoration, EditorView, WidgetType, drawSelection, keymap, type DecorationSet } from "@codemirror/view";
+import { Decoration, EditorView, RectangleMarker, WidgetType, drawSelection, keymap, layer, type DecorationSet } from "@codemirror/view";
 import { LanguageSupport, ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import { markdownLanguage } from "@codemirror/lang-markdown";
 import { history, historyKeymap, insertNewline, isolateHistory, standardKeymap } from "@codemirror/commands";
@@ -532,6 +532,37 @@ const livePreview = StateField.define<DecorationSet>({
 });
 
 /**
+ * Item 652 (his bug 2026-11-11: a double-clicked word in a code block showed
+ * no highlight). CodeMirror draws the selection in a layer *under* the text
+ * (`z-index: -1`), so a ground painted on the lines themselves — the code
+ * block's and inline code's `var(--well)` — covered it: the word was
+ * selected but nothing showed. The grounds are drawn here instead, as their
+ * own layer under the selection's (layers listed later sit lower), measured
+ * from the decorated elements so they keep the look they had on the lines.
+ */
+export const codeGrounds: Parameters<typeof layer>[0] = {
+  above: false,
+  class: "cm-ccodegrounds",
+  markers(view) {
+    const out: RectangleMarker[] = [];
+    const sc = view.scrollDOM;
+    const r0 = sc.getBoundingClientRect();
+    const left0 = r0.left - sc.scrollLeft * view.scaleX;
+    const top0 = r0.top - sc.scrollTop * view.scaleY;
+    for (const el of view.contentDOM.querySelectorAll(".cm-ccodeblock, .cm-ccode")) {
+      const cls = el.classList.contains("cm-ccodeblock") ? "cm-ccodeground" : "cm-ccodeground cm-ccodeground-inline";
+      for (const r of el.getClientRects()) {
+        if (r.width <= 0 || r.height <= 0) continue;
+        out.push(new RectangleMarker(cls, (r.left - left0) / view.scaleX, (r.top - top0) / view.scaleY, r.width / view.scaleX, r.height / view.scaleY));
+      }
+    }
+    return out;
+  },
+  update: (u) => u.docChanged || u.selectionSet || u.viewportChanged || u.geometryChanged || u.heightChanged,
+};
+export const codeGroundLayer = layer(codeGrounds);
+
+/**
  * The box's state for `text`, cursor at the end. The line separator is
  * CodeMirror's default — `\r\n`, `\r` and `\n` all read as a line break and
  * the text comes back joined with `\n` — which is what a textarea does to
@@ -553,6 +584,9 @@ export function composerState(
       ...(hasFocus === null ? [] : [focusField.init(() => hasFocus), focusChange]),
       livePreview,
       ...extensions,
+      // After the caller's `drawSelection` (in `composerKeymap`): a later
+      // layer sits lower, so the selection is drawn over the code grounds.
+      codeGroundLayer,
     ],
   });
 }
@@ -632,18 +666,20 @@ export const composerTheme = EditorView.theme({
   ".cm-cem": { fontStyle: "italic" },
   ".cm-cstrong": { fontWeight: "650" },
   ".cm-cstrike": { textDecoration: "line-through" },
+  // Item 652: the code grounds are drawn by `codeGroundLayer`, under the
+  // selection, not as these elements' own backgrounds, which covered it.
   ".cm-ccode": {
     fontFamily: "var(--mono)",
     fontSize: "0.88em",
-    background: "var(--well)",
     borderRadius: "4px",
     padding: "0.05em 0.25em",
   },
   ".cm-ccodeblock": {
     fontFamily: "var(--mono)",
     fontSize: "0.86em",
-    background: "var(--well)",
   },
+  "& > .cm-scroller > .cm-ccodegrounds .cm-ccodeground": { background: "var(--well)" },
+  "& > .cm-scroller > .cm-ccodegrounds .cm-ccodeground-inline": { borderRadius: "4px" },
   ".cm-cfence": { color: "var(--dim)" },
   ".cm-ccodelang": {
     float: "right",
