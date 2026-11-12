@@ -66,7 +66,7 @@
 {#if part === "button"}
   {#if shown}
     <button
-      class="ns-btn ghost small fold-btn"
+      class="ns-btn small fold-btn"
       disabled={blocked !== null}
       use:tip={blocked
         ? FOLD_BLOCK_TEXT[blocked]

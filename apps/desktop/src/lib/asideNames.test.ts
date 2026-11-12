@@ -42,6 +42,11 @@ describe("an aside's name (item 265)", () => {
     expect(asideLabel({ ...a, name: "Cache" })).toBe("Cache");
     expect(asideLabel({ ...a, turns: [] })).toBe("passage 1");
     expect(asideLabel({ ...a, turns: [], quote: null })).toBe("Aside");
+    // Item 673: a long first question cuts after a whole word.
+    const long = { ...a, turns: [{ question: "Why is the stack built on one queue instead of two, and what breaks otherwise" }] };
+    expect(asideLabel(long, 30)).toBe("Why is the stack built on…");
+    expect(asideLabel(long, 28)).toBe("Why is the stack built on…");
+    expect(asideLabel({ ...a, turns: [{ question: "Supercalifragilisticexpialidocious and more" }] }, 20)).toBe("Supercalifragilisti…");
   });
 
   it("is written with the thread and read back after a relaunch", () => {

@@ -468,5 +468,10 @@ export function asideLabel(
     cleanAsideName(a.turns[0]?.question) ??
     cleanAsideName(a.quote?.text) ??
     "Aside";
-  return pick.length > max ? `${pick.slice(0, max - 1)}…` : pick;
+  if (pick.length <= max) return pick;
+  // Item 673: cut after a whole word (his title read cut mid-word); a
+  // single word longer than half the limit has no boundary to cut at.
+  const cut = pick.slice(0, max - 1);
+  const sp = cut.lastIndexOf(" ");
+  return (sp > max * 0.5 ? cut.slice(0, sp) : cut).replace(/[\s,;:.—-]+$/, "") + "…";
 }

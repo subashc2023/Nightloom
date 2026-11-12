@@ -30,6 +30,8 @@ export const ICONS = {
   cols: '<rect x="3" y="4" width="14" height="12" rx="1.5"/><path d="M10 4v12"/>',
   // The chat-surface redesign (nightshift notes/runner-design/surface-redesign-2026-09-13).
   folder: '<path d="M3 6a1.5 1.5 0 0 1 1.5-1.5H8l2 2h5.5A1.5 1.5 0 0 1 17 8v7a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 3 15z"/>',
+  // Item 673: the aside head's "about its Nth reply" pill.
+  reply: '<path d="M8 5 4 9l4 4"/><path d="M4 9h7a5 5 0 0 1 5 5v1"/>',
   pencil: '<path d="m4 16 3.5-.7 8-8-2.8-2.8-8 8zM11.5 5.7l2.8 2.8"/>',
   key: '<circle cx="7" cy="12" r="3.5"/><path d="M9.5 9.5 16 3M13 6l2 2M11 8l2 2"/>',
   x: '<path d="M5 5l10 10M15 5 5 15"/>',
