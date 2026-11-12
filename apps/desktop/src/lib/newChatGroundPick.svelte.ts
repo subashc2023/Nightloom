@@ -7,12 +7,18 @@
  */
 import type { GroundStyle } from "./newChatGround";
 
-export const DEFAULT_GROUND: GroundStyle = "weft";
+// Item 640: Horizon is the default now (his "horizon blows everything out of
+// the water"). The default is not stored, so a page that never picked moves
+// to Horizon; Default (Weft) is stored as "weft" from now on. A stored look
+// Settings no longer offers (dots, ripple, drift, aurora) still reads back and
+// draws as before; Settings shows it as the earlier pick until another is chosen.
+export const DEFAULT_GROUND: GroundStyle = "horizon";
+const ALL: GroundStyle[] = ["horizon", "radar", "weft", "dots", "ripple", "drift", "aurora"];
 const KEY = "nightloom.newChatGround";
 
 /** A stored value read back; anything unknown is the default. */
 export function parseGround(v: string | null): GroundStyle {
-  return v === "dots" || v === "ripple" || v === "weft" || v === "drift" || v === "aurora" ? v : DEFAULT_GROUND;
+  return (ALL as (string | null)[]).includes(v) ? (v as GroundStyle) : DEFAULT_GROUND;
 }
 
 function read(): string | null {

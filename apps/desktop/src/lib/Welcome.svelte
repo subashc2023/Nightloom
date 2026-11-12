@@ -62,6 +62,7 @@
   } from "./newChatPage";
   import { newChatGround } from "./newChatGround";
   import { groundPick } from "./newChatGroundPick.svelte";
+  import { shaderGround, VEIL_SELECTOR } from "./newChatShader";
 
   /**
    * The new-chat page. Filament IV (item 563, stage 4; 521 report §2 "The
@@ -96,6 +97,32 @@
   let groundEl = $state<HTMLElement | null>(null);
   let groundCanvas = $state<HTMLCanvasElement | null>(null);
   let groundCtl: { set(style: typeof groundPick.value): void; destroy(): void } | null = null;
+  // Item 640: Horizon and Radar draw on their own WebGL canvas over the dot tile.
+  let shaderCanvas = $state<HTMLCanvasElement | null>(null);
+  let shaderCtl: { set(style: string): void; destroy(): void } | null = null;
+  $effect(() => {
+    const host = groundEl;
+    const canvas = shaderCanvas;
+    if (!host || !canvas) return;
+    const ctl = shaderGround(
+      canvas,
+      host,
+      () => {
+        const core = host.querySelector(".core");
+        if (!core) return null;
+        const hr = host.getBoundingClientRect();
+        const cr = core.getBoundingClientRect();
+        return { x: cr.left + cr.width / 2 - hr.left, y: cr.top + cr.height / 2 - hr.top, r: Math.max(1, cr.width / 2 - PAD) };
+      },
+      { veil: VEIL_SELECTOR },
+    );
+    shaderCtl = ctl;
+    ctl.set(untrack(() => groundPick.value));
+    return () => {
+      ctl.destroy();
+      shaderCtl = null;
+    };
+  });
   $effect(() => {
     const host = groundEl;
     const canvas = groundCanvas;
@@ -117,6 +144,7 @@
   $effect(() => {
     const g = groundPick.value;
     groundCtl?.set(g);
+    shaderCtl?.set(g);
   });
   const colMax = $derived(Math.max(320, Math.min(700, w - 40)));
 
@@ -440,6 +468,7 @@
      transcript does. -->
 <div class="welcome" data-drop-chat bind:clientWidth={w} bind:clientHeight={h} class:wide bind:this={groundEl}>
   <canvas class="ground-canvas" bind:this={groundCanvas} aria-hidden="true"></canvas>
+  <canvas class="ground-canvas" bind:this={shaderCanvas} aria-hidden="true"></canvas>
   <div class="page">
     {#if size > 0}
       <div class="core" style:width="{box}px" style:height="{box}px" use:pointsAt>
