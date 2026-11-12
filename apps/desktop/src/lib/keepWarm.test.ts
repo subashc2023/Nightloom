@@ -12,6 +12,8 @@ import {
   isKeeping,
   isOn,
   noticeLine,
+  noticeRow,
+  rowToggle,
   perHourWords,
   pingsUnder,
   switchLabel,
@@ -20,6 +22,7 @@ import {
   type KeepWarmStatus,
 } from "./keepWarm";
 import type { SessionEvent } from "./types";
+import noticeSrc from "./KeepWarmNotice.svelte?raw";
 
 const HOUR = 3_600_000;
 const MIN = 60_000;
@@ -197,5 +200,47 @@ describe("hold longer (item 643)", () => {
     action.destroy();
     expect(Object.values(on).every((l) => l.length === 0)).toBe(true);
     vi.useRealTimers();
+  });
+});
+
+// Item 681: the line after a reply is one switch, the whole row the button.
+describe("the keep-warm row is a toggle (item 681)", () => {
+  it("on: keeping, its end, and a click switches it off", () => {
+    const row = noticeRow(status(), T0)!;
+    expect(row).toEqual({ on: true, text: "Keeping warm until ~11:30 PM" });
+    expect(rowToggle(row)).toBe("off");
+    expect(noticeRow(status({ mode: "once" }), T0)!.text).toBe("Keeping warm until ~11:30 PM or your next message");
+  });
+
+  it("off by his switch while the cache is still warm: stays, says so, and a click switches it back on", () => {
+    // What the backend reports after a switch-off: nothing scheduled, the reply's own hour left.
+    const off = status({ mode: "off", chosen: true, scheduled: false, next_ping_ms: null, why: "off", warm_until_ms: T0 + 40 * MIN });
+    const row = noticeRow(off, T0)!;
+    expect(row.on).toBe(false);
+    expect(row.text).toBe("Not keeping warm — warm until ~5:40 PM; click to keep it");
+    expect(rowToggle(row)).toBe("on");
+    // Back on, the row reads on again; toggled twice is where it began.
+    expect(rowToggle(noticeRow(status(), T0)!)).toBe("off");
+  });
+
+  it("is gone with nothing to keep: no status, the cache cold, or on but not running", () => {
+    expect(noticeRow(null, T0)).toBeNull();
+    expect(noticeRow(status({ mode: "off", scheduled: false, warm_until_ms: T0 - 1 }), T0)).toBeNull();
+    expect(noticeRow(status({ mode: "off", scheduled: false, warm_until_ms: null }), T0)).toBeNull();
+    expect(noticeRow(status({ scheduled: false, why: "cap" }), T0)).toBeNull();
+  });
+
+  it("is one button with role switch, the switch first, keyboard by the button itself", () => {
+    const markup = noticeSrc.slice(noticeSrc.indexOf("{#if row}"), noticeSrc.indexOf("{/if}"));
+    expect(markup).toMatch(/^\{#if row\}\s*<button\s+type="button"/);
+    expect(markup).toContain('role="switch"');
+    expect(markup).toContain("aria-checked={on}");
+    expect(markup).toContain("onclick={() => void flip()}");
+    expect(markup.indexOf("kw-switch")).toBeLessThan(markup.indexOf("kw-line"));
+    expect((markup.match(/<button/g) ?? []).length).toBe(1);
+    expect(noticeSrc).toContain("const mode = rowToggle(row);");
+    expect(noticeSrc).toContain("await setKeepWarm(chat, mode)");
+    // Motion only without Reduce motion.
+    expect(noticeSrc).toMatch(/@media \(prefers-reduced-motion: no-preference\) \{\s*\.kw-knob \{\s*transition/);
   });
 });
