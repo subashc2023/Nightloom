@@ -5,8 +5,9 @@
  * ("to send the message you either have to command enter or exit the code
  * block and click enter"), Tab indents, Enter between `{}` makes the two
  * lines, and "brackets can be autoclosed". No autocorrect (the boxes have
- * had it off everywhere since 2026-09-16) and quotes are not auto-closed
- * (blocker 1928: apostrophes in comments would fight it).
+ * had it off everywhere since 2026-09-16). Quotes " ' ` close too —
+ * "unless you're in a comment they should close tho" (his words, blocker
+ * 1928) — and ' not right after a letter or digit (don't, it's).
  *
  * Pure over the text and the selection, so every box — the composer's
  * textarea and its formatted editor, the sent-message edit box, the
@@ -175,10 +176,12 @@ export function codeBlockEdit(text: string, start: number, end: number, e: Block
   const to = Math.max(start, end);
   const chord = !!(e.metaKey || e.ctrlKey);
   if (e.key === "Enter") return chord || e.altKey ? null : enter(text, from, to);
+  if (e.key === "ArrowRight") return chord || e.altKey || e.shiftKey || start !== end ? null : pastFence(text, from);
   if (chord) return null;
   if (e.key === "Tab") return e.altKey ? null : tab(text, from, to, !!e.shiftKey);
   if (e.key === "Backspace") return e.altKey || e.shiftKey ? null : backspace(text, from, to);
   if (e.key in OPENERS) return opener(text, from, to, e.key);
+  if (QUOTES.has(e.key)) return quote(text, from, to, e.key);
   if (CLOSERS.has(e.key)) return closer(text, from, to, e.key);
   return null;
 }
@@ -269,8 +272,12 @@ function tab(text: string, from: number, to: number, out: boolean): BlockEdit | 
 function backspace(text: string, from: number, to: number): BlockEdit | null {
   if (from !== to || from === 0) return null;
   const prev = text.charAt(from - 1);
-  if (!(prev in OPENERS) || OPENERS[prev] !== text.charAt(from)) return null;
-  if (!blockAt(text, from, true)) return null;
+  const isQuote = QUOTES.has(prev) && text.charAt(from) === prev;
+  if (!isQuote && (!(prev in OPENERS) || OPENERS[prev] !== text.charAt(from))) return null;
+  const f = blockAt(text, from, true);
+  if (!f) return null;
+  // An empty quote pair, not one in a comment (there quotes are prose).
+  if (isQuote && scanTo(text, f.bodyFrom, from - 1) === "comment") return null;
   return { from: from - 1, to: from + 1, insert: "", anchor: from - 1, head: from - 1 };
 }
 
@@ -293,6 +300,91 @@ function closer(text: string, from: number, to: number, key: string): BlockEdit 
   if (from !== to || text.charAt(from) !== key) return null;
   if (!blockAt(text, from, true)) return null;
   return { from, to, insert: "", anchor: from + 1, head: from + 1 };
+}
+
+/**
+ * Right arrow at the very end of a closing fence (his ask, 2026-11-11:
+ * "there should be a new line placed at the end of a code block always so
+ * that i can just jump to it with right arrow"): the caret goes to the
+ * start of the line after the block, and when the fence ends the text a
+ * newline is added first — one undoable step. Anywhere else Right is the
+ * box's own.
+ */
+function pastFence(text: string, pos: number): BlockEdit | null {
+  const lines = linesOf(text);
+  const L = lineIndex(lines, pos);
+  if (pos !== lines.ends[L]) return null;
+  if (!fencesOf(text).some((f) => f.close === L)) return null;
+  if (pos === text.length) return { from: pos, to: pos, insert: "\n", anchor: pos + 1, head: pos + 1 };
+  return { from: pos, to: pos, insert: "", anchor: pos + 1, head: pos + 1 };
+}
+
+const QUOTES = new Set(['"', "'", "`"]);
+
+/**
+ * What the caret at `to` sits in, reading the block's body from `from`:
+ * code, a string ("…" '…' `…`, backslash escapes; " and ' end at a line
+ * end) or a comment (// or # to the line end — # only at a line start or
+ * after a space, so `a#b` and `"#fff"` are not one — or /* … *\/). A # or
+ * // inside a string is not a comment. Not a parser: Python's triple
+ * quotes read as an empty string then a quote, and a Rust lifetime 'a
+ * opens a '-string to its line end.
+ */
+export function scanTo(text: string, from: number, to: number): "code" | "string" | "comment" {
+  let i = from;
+  let q = "";
+  while (i < to) {
+    const c = text.charAt(i);
+    if (q) {
+      if (c === "\\") i += 2;
+      else {
+        if (c === q || (c === "\n" && q !== "`")) q = "";
+        i++;
+      }
+      continue;
+    }
+    const lineStart = i === 0 || text.charAt(i - 1) === "\n";
+    if ((c === "/" && text.charAt(i + 1) === "/") || (c === "#" && (lineStart || /\s/.test(text.charAt(i - 1))))) {
+      const eol = text.indexOf("\n", i);
+      if (eol < 0 || eol >= to) return "comment";
+      i = eol + 1;
+      continue;
+    }
+    if (c === "/" && text.charAt(i + 1) === "*") {
+      const end = text.indexOf("*/", i + 2);
+      if (end < 0 || end + 2 > to) return "comment";
+      i = end + 2;
+      continue;
+    }
+    if (QUOTES.has(c)) q = c;
+    i++;
+  }
+  return q ? "string" : "code";
+}
+
+/** A quote inside a block's body, outside a comment: wraps a selection,
+ *  steps over the quote ending the string it is in, else closes itself before a line end,
+ *  a space or a closer — not ' after a letter or digit (don't), not
+ *  inside a string, and not a ` on a line of only backticks (a fence being
+ *  typed). In a comment it is just itself. */
+function quote(text: string, from: number, to: number, key: string): BlockEdit | null {
+  const f = sameBlock(text, from, to, true);
+  if (!f) return null;
+  const at = scanTo(text, f.bodyFrom, from);
+  if (at === "comment") return null;
+  if (from !== to) {
+    const sel = text.slice(from, to);
+    return { from, to, insert: key + sel + key, anchor: from + 1, head: from + 1 + sel.length };
+  }
+  const next = text.charAt(to);
+  // The quote that ends the string the caret is in (the one auto-inserted,
+  // or one typed by hand); a quote opening the next string is typed.
+  if (at === "string") return next === key ? { from, to, insert: "", anchor: from + 1, head: from + 1 } : null;
+  if (next !== "" && !CLOSE_BEFORE.test(next)) return null;
+  const prev = text.charAt(from - 1);
+  if (key === "'" && /[\p{L}\p{N}]/u.test(prev)) return null;
+  if (key === "`" && /^[ \t]*`*$/.test(text.slice(text.lastIndexOf("\n", from - 1) + 1, from))) return null;
+  return { from, to, insert: key + key, anchor: from + 1, head: from + 1 };
 }
 
 /** `text` with `ed` applied. */

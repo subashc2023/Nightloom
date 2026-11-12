@@ -1,5 +1,6 @@
 <script lang="ts">
   import { isImeKey } from "./imeKey";
+  import { takeBlockKey } from "./codeBlockKeys";
   import { tip } from "./tip";
   import { copyText } from "./clipRing.svelte";
   import { arrive } from "./sendMotion";
@@ -240,6 +241,9 @@
     // Item 322: the input method's keys (Enter committing a composition,
     // Esc cancelling one) are its own, never a send or a close.
     if (isImeKey(e)) return;
+    // Item 648: inside a ``` block, a code editor's keys (Enter keeps the
+    // indentation and never asks; ⌘Enter asks) — `codeBlockKeys.ts`.
+    if (takeBlockKey(e, e.currentTarget as HTMLTextAreaElement)) return;
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();

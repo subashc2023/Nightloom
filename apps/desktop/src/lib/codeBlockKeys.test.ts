@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import type { EditorView } from "@codemirror/view";
 import { undoDepth } from "@codemirror/commands";
-import { applyBlockEdit, applyToField, blockAt, codeBlockEdit, fencesOf, indentUnit, takeBlockKey, type BlockKey } from "./codeBlockKeys";
+import { applyBlockEdit, applyToField, blockAt, codeBlockEdit, fencesOf, indentUnit, scanTo, takeBlockKey, type BlockKey } from "./codeBlockKeys";
 import { findFences } from "./codeDetect";
 import { composerKeymap, composerState, LiveBoxHandle } from "./composerEditor";
 
@@ -208,11 +208,6 @@ describe("brackets inside a block (648, blocker 1928)", () => {
     expect(press("```\nx = [a + b]\n```", "(")).toBe("```\nx = ([a + b])\n```");
     expect(press("```\n[k]", "{")).toBe("```\n{[k]}");
   });
-  it("quotes are never auto-closed", () => {
-    expect(press("```\nx = |", '"')).toBeNull();
-    expect(press("```\nx = |", "'")).toBeNull();
-    expect(press("```\nx = |", "`")).toBeNull();
-  });
   it("outside a block nothing changes: no auto-close, no step-over, no paired Backspace", () => {
     expect(press("call f|", "(")).toBeNull();
     expect(press("f(|)", ")")).toBeNull();
@@ -226,6 +221,103 @@ describe("brackets inside a block (648, blocker 1928)", () => {
     expect(press("```\nx |", { key: "(", metaKey: true })).toBeNull();
     expect(press("```\nx |", { key: "(", ctrlKey: true })).toBeNull();
     expect(press("```\nx |", { key: "{", altKey: true })).toBe("```\nx {|}");
+  });
+});
+
+describe("quotes inside a block (648, blocker 1928: \"unless you're in a comment they should close tho\")", () => {
+  it('" \' ` close themselves in code', () => {
+    expect(press("```\nx = |", '"')).toBe('```\nx = "|"');
+    expect(press("```\nx = |", "'")).toBe("```\nx = '|'");
+    expect(press("```js\nx = |", "`")).toBe("```js\nx = `|`");
+    expect(press("```\nf(|)", '"')).toBe('```\nf("|")');
+  });
+  it("' right after a letter or digit is an apostrophe, not a pair", () => {
+    expect(press("```\nprint(\"don|", "'")).toBeNull();
+    expect(press("```\nx = it|", "'")).toBeNull();
+    expect(press("```\nn = 3|", "'")).toBeNull();
+    expect(press("```\nx = é|", "'")).toBeNull();
+  });
+  it('" after a letter still closes (f"…", r"…")', () => {
+    expect(press("```py\ns = f|", '"')).toBe('```py\ns = f"|"');
+  });
+  it("in a // or # line comment, or inside /* … */, a quote is just itself", () => {
+    expect(press("```\nx = 1 // it|", "'")).toBeNull();
+    expect(press("```\nx = 1 // see |", '"')).toBeNull();
+    expect(press("```py\n# say |", '"')).toBeNull();
+    expect(press("```py\nx = 1  # say |", '"')).toBeNull();
+    expect(press("```\n/* a\n  b |", "'")).toBeNull();
+    expect(press("```\n/* a */ x = |", "'")).toBe("```\n/* a */ x = '|'");
+  });
+  it("the next line after a line comment is code again", () => {
+    expect(press("```py\n# note\nx = |", '"')).toBe('```py\n# note\nx = "|"');
+  });
+  it("a # or // inside a string is not a comment", () => {
+    expect(scanTo('x = "#fff" + ', 0, 13)).toBe("code");
+    expect(press('```\nc = "#fff"; d = |', "'")).toBe('```\nc = "#fff"; d = \'|\'');
+    expect(press('```\nu = "http://a"; v = |', '"')).toBe('```\nu = "http://a"; v = "|"');
+  });
+  it("# after a letter is not a comment (a#b, C# in prose)", () => {
+    expect(scanTo("a#b ", 0, 4)).toBe("code");
+  });
+  it("typing the quote that ends the string steps over it", () => {
+    expect(press('```\nx = "|"', '"')).toBe('```\nx = ""|');
+    expect(press("```\nx = 'ab|'", "'")).toBe("```\nx = 'ab'|");
+    expect(press("```\nx = `|`", "`")).toBe("```\nx = ``|");
+  });
+  it("a quote in front of the next string is typed, not stepped over", () => {
+    expect(press('```\nx = |"abc"', '"')).toBeNull();
+  });
+  it("inside a string, another kind of quote is just itself", () => {
+    expect(press('```\nx = "it|"', "'")).toBeNull();
+    expect(press('```\nx = "a |"', "'")).toBeNull();
+  });
+  it("a selection is wrapped", () => {
+    expect(press("```\nx = [abc]", '"')).toBe('```\nx = "[abc]"');
+    expect(press("```\nx = [abc]", "`")).toBe("```\nx = `[abc]`");
+  });
+  it("Backspace between an empty quote pair deletes both; in a comment it does not", () => {
+    expect(press('```\nx = "|"', "Backspace")).toBe("```\nx = |");
+    expect(press("```\nx = '|'", "Backspace")).toBe("```\nx = |");
+    expect(press("```\n// a ''|'", "Backspace")).toBeNull();
+    expect(press("```\n// say \"|\"", "Backspace")).toBeNull();
+  });
+  it("backticks on a line of their own are a fence being typed, never paired", () => {
+    expect(press("```\nx\n|", "`")).toBeNull();
+    expect(press("```\nx\n``|", "`")).toBeNull();
+  });
+  it("outside a block quotes are untouched", () => {
+    expect(press('say |', '"')).toBeNull();
+    expect(press("```\nx\n```\nsay |", "'")).toBeNull();
+    expect(press('a "|"', "Backspace")).toBeNull();
+  });
+  it("on the opening fence line a quote is just itself", () => {
+    expect(press("```|", "'")).toBeNull();
+  });
+});
+
+describe("Right arrow at the end of a closing fence (648)", () => {
+  it("the fence ends the text: a new line is added and the caret goes onto it", () => {
+    expect(press("```\nx\n```|", "ArrowRight")).toBe("```\nx\n```\n|");
+    expect(press("hi\n```py\nx = 1\n```|", "ArrowRight")).toBe("hi\n```py\nx = 1\n```\n|");
+  });
+  it("text follows the fence: the caret goes to the next line's start, nothing added", () => {
+    expect(press("```\nx\n```|\nbye", "ArrowRight")).toBe("```\nx\n```\n|bye");
+  });
+  it("an unclosed block: Right is the box's own", () => {
+    expect(press("```\nx|", "ArrowRight")).toBeNull();
+    expect(press("```py|", "ArrowRight")).toBeNull();
+  });
+  it("a selection, a modifier, or a caret not at the fence's end: not taken", () => {
+    expect(press("```\nx\n[```]", "ArrowRight")).toBeNull();
+    expect(press("```\nx\n```|", { key: "ArrowRight", shiftKey: true })).toBeNull();
+    expect(press("```\nx\n```|", { key: "ArrowRight", metaKey: true })).toBeNull();
+    expect(press("```\nx\n```|", { key: "ArrowRight", altKey: true })).toBeNull();
+    expect(press("```\nx\n``|`", "ArrowRight")).toBeNull();
+    expect(press("```\nx|\n```", "ArrowRight")).toBeNull();
+    expect(press("plain|", "ArrowRight")).toBeNull();
+  });
+  it("the opening fence's end is not the end of a block", () => {
+    expect(press("```|\nx\n```", "ArrowRight")).toBeNull();
   });
 });
 
