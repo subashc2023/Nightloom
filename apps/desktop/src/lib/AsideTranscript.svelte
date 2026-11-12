@@ -258,6 +258,7 @@
     sizes: ev.sizes,
     planUse: ev.planUse,
     limit: limitCard,
+    dropKey: asideDraftKey(aside),
     pending: {
       key: asideDraftKey(aside),
       aside: { busy: asking !== null, blocked: !onClaudeCode ? "engine" : !open ? "not-open" : null },

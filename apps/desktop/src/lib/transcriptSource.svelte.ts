@@ -104,6 +104,11 @@ export interface TranscriptSource {
    *  Resume (the turn continues), an aside's Ask again (the question is
    *  asked again in place). Null: no card. */
   limit?: LimitCard | null;
+  /** The drop region's key (`data-drop-chat`, item 362; an aside's since
+   *  674's follow-up): files dropped on the transcript join this box's
+   *  next message — "" the chat's composer, an aside's draft key its box.
+   *  Absent: the transcript takes no drop (a pane). */
+  dropKey?: string;
   /** A note beside the waiting moon (an aside queued behind a turn). */
   waitNote?: string | null;
 }
@@ -163,6 +168,7 @@ export function chatSource(): TranscriptSource {
     actions: {},
     pending: { key: openChatKey() },
     limit: chatLimit(id),
+    dropKey: "",
   };
 }
 

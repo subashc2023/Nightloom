@@ -3016,6 +3016,7 @@
   class:compact
   class:dropping={dragDepth > 0}
   data-drop-box={aside ? "aside" : "main"}
+  data-drop-for={aside ? key : undefined}
   data-composer-row={composerRow.value}
   data-model-family={family}
   role="group"
@@ -3105,11 +3106,10 @@
       {/each}
     </div>
   {/if}
-  {#if aside === null}
-    <!-- Item 362: the veil and zone while a file is held over the chat,
-         and the landing at the drop; drawn on `body`. -->
-    <DropOverlay root={() => root} accept={(files) => void accept(files)} />
-  {/if}
+  <!-- Item 362: the veil and zone while a file is held over the chat,
+       and the landing at the drop; drawn on `body`. Item 674's follow-up:
+       an aside's box too, for a file held over its thread. -->
+  <DropOverlay root={() => root} accept={(files) => void accept(files)} region={aside ? key : ""} />
   {#if attachments.length > 0}
     <div class="attachments" in:rowIn>
       {#each attachments as a (a.id)}

@@ -2443,7 +2443,7 @@
   class:compact
   class:of-aside={inAside}
   bind:this={viewport}
-  data-drop-chat={isChat ? "" : undefined}
+  data-drop-chat={src.dropKey}
   {onscroll}
   use:scrollIntent
   tabindex="-1"

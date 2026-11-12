@@ -64,6 +64,19 @@ describe("362: which box a file drag is over", () => {
     expect(dropKind(asideBox).kind).toBe("box");
     expect(dropKind(asideBox).box).toBe(asideBox);
   });
+  it("674 follow-up: an aside's thread is a drop region of its own, for its box", () => {
+    // The card's thread drawn by the shared Transcript: a region keyed by the aside's draft key.
+    const thread = new El({ "data-drop-chat": "aside:u1" }, asideCard);
+    const inThread = new El({}, thread);
+    const box = new El({ "data-drop-box": "aside", "data-drop-for": "aside:u1" }, asideCard);
+    expect(dropKind(inThread)).toMatchObject({ kind: "chat", region: "aside:u1" });
+    expect(dropKind(box)).toMatchObject({ kind: "box", region: "aside:u1" });
+    // The card's own head (outside its thread) still takes nothing; the chat's region is "".
+    expect(dropKind(asideThread)).toMatchObject({ kind: "none", region: null });
+    expect(dropKind(bubble)).toMatchObject({ kind: "chat", region: "" });
+    expect(dropKind(textarea)).toMatchObject({ kind: "main", region: "" });
+    expect(dropKind(edit)).toMatchObject({ kind: "box", region: null });
+  });
   it("follows only drags that carry files", () => {
     expect(carriesFiles({ types: ["Files"] })).toBe(true);
     expect(carriesFiles({ types: ["text/plain"] })).toBe(false);
@@ -259,14 +272,16 @@ describe("362: the window watcher", () => {
 describe("362: wired into the boxes", () => {
   it("the live transcript and the empty chat take a drop for the chat; read-only panes do not", () => {
     // Item 674: the open chat's transcript alone (not a pane's, not an aside's).
-    expect(transcriptSrc).toContain('data-drop-chat={isChat ? "" : undefined}');
+    // Item 674's follow-up: the region is the source's (the chat's "", an aside's key; a pane none).
+    expect(transcriptSrc).toContain("data-drop-chat={src.dropKey}");
     expect(welcomeSrc).toContain('class="welcome" data-drop-chat');
   });
   it("the composer, the aside box and the edit box are boxes; only the chat's composer draws the overlay", () => {
     expect(composerSrc).toContain('data-drop-box={aside ? "aside" : "main"}');
     expect(transcriptSrc).toContain('class="editor" data-drop-box="edit"');
     expect(asideCardSrc).toMatch(/class="aside-card"\s+data-drop-none/);
-    expect(composerSrc).toMatch(/\{#if aside === null\}\s*<!--[^]*?-->\s*<DropOverlay /);
+    // Item 674's follow-up: every box draws the overlay for its own region.
+    expect(composerSrc).toContain('<DropOverlay root={() => root} accept={(files) => void accept(files)} region={aside ? key : ""} />');
   });
   it("dropped chips arrive with the drop's motion in the composer and the edit box", () => {
     expect(composerSrc).toContain("const dropped = takeDropped(a.name);");

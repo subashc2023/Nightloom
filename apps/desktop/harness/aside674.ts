@@ -298,6 +298,23 @@ async function drive(): Promise<void> {
       await settle(700);
       say(`scheduled time reached: asks ${asks.length} · card "${cardText()}" · toast "${app.toasts.at(-1)?.text ?? ""}"`);
     }
+  } else if (act === "drop") {
+    // 674 follow-up: a file held over and dropped on the aside's thread joins its box.
+    const k = asideDraftKey(a);
+    const dt = new DataTransfer();
+    dt.items.add(new File(["unit: 41\n"], "watermark.txt", { type: "text/plain" }));
+    const at = $$(".assistant", t)[0] ?? t;
+    const r = at.getBoundingClientRect();
+    const ev = (type: string) => new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt, clientX: r.left + 40, clientY: r.top + 20 });
+    at.dispatchEvent(ev("dragenter"));
+    at.dispatchEvent(ev("dragover"));
+    await settle(200);
+    say(`held over the thread: veil ${$$(".drop-layer .veil").length} · zone ${$$(".drop-layer .zone").length} · zone title "${$(".drop-layer .zone b")?.textContent ?? ""}"`);
+    if (q.get("held") !== "1") {
+      at.dispatchEvent(ev("drop"));
+      await settle(600);
+      say(`after the drop: aside box chips ${readDraft(k).attachments.length} (${readDraft(k).attachments.map((x) => x.name).join(", ")}) · chat box chips ${readDraft("chat-a").attachments.length}`);
+    }
   } else if (act === "shrink") {
     // The card's room shrinks (a shorter window, another card above the
     // composer): a view at the foot stays at the foot (item 233).

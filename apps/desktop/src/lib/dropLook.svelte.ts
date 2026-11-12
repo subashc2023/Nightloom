@@ -25,11 +25,13 @@ export type Landing = {
   more: number;
 };
 
-export const drop = $state<{ kind: DropKind | "idle"; landings: Landing[] }>({ kind: "idle", landings: [] });
+export const drop = $state<{ kind: DropKind | "idle"; region: string | null; landings: Landing[] }>({ kind: "idle", region: null, landings: [] });
 
 export const dropMarks = new DropMarks();
 
-type Sink = { accept: (files: File[]) => void; card: () => Element | null };
+/** `key`: the region it takes drops for — "" the chat's composer, an
+ *  aside's draft key its box (item 674's follow-up). */
+type Sink = { accept: (files: File[]) => void; card: () => Element | null; key?: string };
 const sinks: Sink[] = [];
 
 /** The chat's composer offers itself as the taker of drops on the chat
@@ -41,7 +43,11 @@ export function registerChatDrop(sink: Sink): () => void {
     if (i >= 0) sinks.splice(i, 1);
   };
 }
-const sink = (): Sink | null => sinks[sinks.length - 1] ?? null;
+const sink = (region: string | null = ""): Sink | null => {
+  if (region === null) return null;
+  for (let i = sinks.length - 1; i >= 0; i--) if ((sinks[i]!.key ?? "") === region) return sinks[i]!;
+  return null;
+};
 
 let depth = 0;
 let over: Element | null = null;
@@ -60,16 +66,18 @@ function reset(): void {
   depth = 0;
   setOver(null);
   if (drop.kind !== "idle") drop.kind = "idle";
+  if (drop.region !== null) drop.region = null;
   if (stale) {
     clearInterval(stale);
     stale = null;
   }
 }
 
-function track(e: DragEvent): DropKind {
-  const { kind, box } = dropKind(e.target);
+function track(e: DragEvent): { kind: DropKind; region: string | null } {
+  const { kind, box, region } = dropKind(e.target);
   setOver((box as Element | null) ?? null);
   if (drop.kind !== kind) drop.kind = kind;
+  if (drop.region !== region) drop.region = region;
   lastOver = performance.now();
   // A drag that leaves the window may not say so; one that stops sending
   // `dragover` (AppKit sends it periodically even when the pointer rests)
@@ -79,7 +87,7 @@ function track(e: DragEvent): DropKind {
   stale ??= setInterval(() => {
     if (performance.now() - lastOver > 1500) reset();
   }, 500);
-  return kind;
+  return { kind, region };
 }
 
 function onEnter(e: DragEvent): void {
@@ -90,7 +98,8 @@ function onEnter(e: DragEvent): void {
 
 function onOver(e: DragEvent): void {
   if (!carriesFiles(e.dataTransfer)) return;
-  if (track(e) === "chat" && sink()) {
+  const at = track(e);
+  if (at.kind === "chat" && sink(at.region)) {
     // The chat takes the drop for its box (B): without this the drop
     // would not happen here.
     e.preventDefault();
@@ -106,10 +115,10 @@ function onLeave(e: DragEvent): void {
 
 function onDrop(e: DragEvent): void {
   const files = Array.from(e.dataTransfer?.files ?? []);
-  const { kind, box } = dropKind(e.target);
+  const { kind, box, region } = dropKind(e.target);
   reset();
   if (files.length === 0 || kind === "none") return;
-  const s = sink();
+  const s = sink(region);
   if (kind === "chat" && !s) return;
   const now = performance.now();
   dropMarks.mark(
