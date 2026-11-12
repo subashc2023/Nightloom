@@ -1,0 +1,27 @@
+<!doctype html>
+<!-- Item 674: the real AsideView — an aside tab drawn by the chat's own Transcript (dot ground, rail, tools) under
+     item 673's Kicker head. Served by vite on a spare port, snapped with nightshift-code bin/snap/snap (WebKit).
+     ?turns=<n> answered exchanges  &asking=1 (the last still streaming)  &long=1 (a long first question as the title)
+     &stopped=1 (the last answered one stopped, with an error under the one before). -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      html, body { margin: 0; height: 100%; background: var(--paper, #111); }
+      /* An offscreen WKWebView runs no animations. */
+      *, *::before, *::after { animation: none !important; }
+      #root { position: relative; display: flex; flex-direction: column; width: 100vw; height: 100vh; }
+      #cap { position: fixed; left: 0; bottom: 0; font: 11px/1.4 ui-monospace, monospace; color: #ddd; background: #000; padding: 2px 6px; white-space: pre; z-index: 99; }
+      #cap:empty { display: none; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="cap"></div>
+    <script>
+      window.addEventListener("error", (e) => (document.getElementById("cap").textContent = "error: " + e.message));
+      window.addEventListener("unhandledrejection", (e) => (document.getElementById("cap").textContent = "rejection: " + e.reason));
+    </script>
+    <script type="module" src="./aside674.ts"></script>
+  </body>
+</html>

@@ -399,10 +399,10 @@
     cursor: text;
     white-space: normal;
     overflow-wrap: break-word;
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 3;
-    line-clamp: 3;
+    /* Three lines at most, as a height: the label is 120 characters at
+       most, so this only guards a very narrow pane. */
+    display: block;
+    max-height: calc(1.35em * 3 + 4px);
     overflow: hidden;
   }
   .aside-view-name.unnamed {
