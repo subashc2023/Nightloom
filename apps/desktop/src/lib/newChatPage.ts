@@ -184,11 +184,53 @@ export function readings(i: ReadingsInput): Reading[] {
   return out;
 }
 
-/** "Good morning/afternoon/evening" by the hour (5–12, 12–17, else evening). */
-export function greeting(hour: number): string {
-  if (hour >= 5 && hour < 12) return "Good morning.";
-  if (hour >= 12 && hour < 17) return "Good afternoon.";
-  return "Good evening.";
+/** Who the new-chat page greets (nightshift item 679, his "Good ___, Swaraag"). */
+export const GREET_NAME = "Swaraag";
+
+type DayPart = "morning" | "afternoon" | "evening" | "night";
+
+/**
+ * ~~5–12, 12–17, else evening~~ (until item 679, 2026-11-12: every hour from
+ * 5 PM to 5 AM read "evening") — morning 5–12, afternoon 12–17, evening
+ * 17–22, night 22–5.
+ */
+export function dayPart(hour: number): DayPart {
+  if (hour >= 5 && hour < 12) return "morning";
+  if (hour >= 12 && hour < 17) return "afternoon";
+  if (hour >= 17 && hour < 22) return "evening";
+  return "night";
+}
+
+const USUAL: Record<DayPart, string> = {
+  morning: `Good morning, ${GREET_NAME}.`,
+  afternoon: `Good afternoon, ${GREET_NAME}.`,
+  evening: `Good evening, ${GREET_NAME}.`,
+  night: `Up late, ${GREET_NAME}.`,
+};
+
+/** The now-and-then variety (his "or other greetings"). */
+const OTHERS: Record<DayPart, string[]> = {
+  morning: [`Morning, ${GREET_NAME}.`, `Rise and shine, ${GREET_NAME}.`, `Fresh start, ${GREET_NAME}.`],
+  afternoon: [`Hey, ${GREET_NAME}.`, `Afternoon, ${GREET_NAME}.`, `Welcome back, ${GREET_NAME}.`],
+  evening: [`Evening, ${GREET_NAME}.`, `Welcome back, ${GREET_NAME}.`, `Winding down, ${GREET_NAME}?`],
+  night: [`Still up, ${GREET_NAME}?`, `Hello, night owl.`, `Burning the midnight oil, ${GREET_NAME}?`],
+};
+
+/**
+ * The greeting for an hour. With `on` (the page's clock), one day part in
+ * four picks one of the other greetings instead of the usual one; the pick
+ * is fixed by the date and the day part, so it does not change while the
+ * page is open, or from one new chat to the next within the same part.
+ */
+export function greeting(hour: number, on?: Date): string {
+  const part = dayPart(hour);
+  if (!on) return USUAL[part];
+  const key = `${on.getFullYear()}-${on.getMonth()}-${on.getDate()}-${part}`;
+  let h = 2166136261;
+  for (let i = 0; i < key.length; i++) h = Math.imul(h ^ key.charCodeAt(i), 16777619) >>> 0;
+  if (h % 4 !== 0) return USUAL[part];
+  const pool = OTHERS[part];
+  return pool[(h >>> 2) % pool.length]!;
 }
 
 /** The four quarter labels around the dial, for a window: 0, ¼, ½, ¾. */

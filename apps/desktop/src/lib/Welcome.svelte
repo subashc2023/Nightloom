@@ -383,9 +383,9 @@
   );
   const hello = $derived(
     ready
-      ? `${greeting(now.getHours())} Everything is ready.`
+      ? `${greeting(now.getHours(), now)} Everything is ready.`
       : app.connecting
-        ? `${greeting(now.getHours())} Connecting…`
+        ? `${greeting(now.getHours(), now)} Connecting…`
         : app.project?.root && !app.project.exists
           ? "The project's folder is missing."
           : "Not connected yet.",
