@@ -186,7 +186,7 @@ export function codeBlockEdit(text: string, start: number, end: number, e: Block
   if (e.key === "Enter") return chord || e.altKey ? null : enter(text, from, to);
   if (e.key === "ArrowRight") return chord || e.altKey || e.shiftKey || start !== end ? null : pastFence(text, from);
   if (e.key === "ArrowDown") return chord || e.altKey || e.shiftKey || start !== end ? null : belowBlock(text, from);
-  if (chord) return null;
+  if (chord) return isCommentKey(e) ? toggleComment(text, from, to) : null;
   if (e.key === "Tab") return e.altKey ? null : tab(text, from, to, !!e.shiftKey);
   if (e.key === "Backspace") return e.altKey || e.shiftKey ? null : backspace(text, from, to);
   if (e.key in OPENERS) return opener(text, from, to, e.key);
@@ -420,6 +420,136 @@ function pastFence(text: string, pos: number): BlockEdit | null {
   }
   if (pos === text.length) return { from: pos, to: pos, insert: "\n", anchor: pos + 1, head: pos + 1 };
   return { from: pos, to: pos, insert: "", anchor: pos + 1, head: pos + 1 };
+}
+
+/** ⌘/ (Ctrl+/ elsewhere) with no other modifier — the code editors'
+ *  comment key (item 678). `/` by the key typed, or the physical key, so a
+ *  layout whose / needs Shift still has it. */
+export function isCommentKey(e: BlockKey & { code?: string }): boolean {
+  if (!(e.metaKey || e.ctrlKey) || e.altKey) return false;
+  return e.key === "/" || (!e.shiftKey && e.code === "Slash");
+}
+
+/** A language's line comment: a prefix (`//`), or a pair each commented
+ *  line is wrapped in (`<!--` … `-->`). */
+export interface CommentTokens {
+  open: string;
+  close?: string;
+}
+
+const COMMENT_GROUPS: [string, CommentTokens][] = [
+  [
+    "c cpp c++ cc cxx h hpp hh objc objective-c objectivec java js javascript jsx mjs cjs ts typescript tsx rust rs go golang swift kotlin kt kts scala cs csharp c# fs fsharp dart php groovy gradle zig scss sass less json5 jsonc proto protobuf solidity sol glsl hlsl wgsl cuda verilog v sv d",
+    { open: "//" },
+  ],
+  [
+    "python py py3 python3 ipython sh bash zsh shell console fish ksh ruby rb yaml yml toml perl pl r rscript powershell ps1 pwsh make makefile mk dockerfile docker cmake elixir ex exs nim julia jl tcl coffee coffeescript graphql gql nix crystal cr awk gdscript conf properties starlark bzl",
+    { open: "#" },
+  ],
+  ["sql mysql postgres postgresql psql pgsql plsql sqlite tsql lua haskell hs elm ada vhdl applescript purescript idris agda", { open: "--" }],
+  ["matlab octave tex latex erlang erl prolog postscript ps", { open: "%" }],
+  ["html htm xml xhtml svg vue svelte markdown md xsl xslt plist", { open: "<!--", close: "-->" }],
+  ["css", { open: "/*", close: "*/" }],
+  ["lisp commonlisp common-lisp cl elisp emacs-lisp el scheme scm racket rkt clojure clj cljs edn fennel asm nasm masm gas x86 x86asm armasm s ini dosini", { open: ";" }],
+  ["vb vbnet vba vbscript", { open: "'" }],
+  ["bat batch cmd", { open: "REM" }],
+];
+const COMMENTS = new Map<string, CommentTokens>();
+for (const [names, tok] of COMMENT_GROUPS) for (const n of names.split(" ")) COMMENTS.set(n, tok);
+
+/** The fence's language as written after the mark (```py, ```{r},
+ *  ```.cpp, ```python title="x"), lower-cased; "" when none. */
+export function fenceLanguage(text: string, f: Fence): string {
+  const eol = text.indexOf("\n", f.start);
+  const m = OPEN.exec(text.slice(f.start, eol < 0 ? text.length : eol));
+  const info = (m?.[3] ?? "").trim().replace(/^[{.]+/, "");
+  return (/^[^\s{},]+/.exec(info)?.[0] ?? "").toLowerCase();
+}
+
+/** The comment tokens for a language name; `//` for one not listed. */
+export function commentTokens(lang: string): CommentTokens {
+  return COMMENTS.get(lang.toLowerCase()) ?? { open: "//" };
+}
+
+/**
+ * Item 678 (his bug, 2026-11-12: "highlighting text and doing like command
+ * slash to comment it doesnt work in the code editor"): ⌘/ inside a
+ * block's body comments the lines the selection touches (the caret's line
+ * with none) in the block's language, or uncomments them when every
+ * non-blank one already is. As VS Code does: the token goes at the
+ * smallest indent of the lines, followed by a space; blank lines stay
+ * blank (unless every line is blank); uncommenting takes the token and
+ * one space after it. One edit, so one undo; the selection stays over the
+ * same text. Null outside a block's body (the box's own ⌘/).
+ */
+export function toggleComment(text: string, from: number, to: number): BlockEdit | null {
+  const lines = linesOf(text);
+  const L1 = lineIndex(lines, from);
+  let L2 = lineIndex(lines, to);
+  if (L2 > L1 && to === lines.starts[L2]) L2--;
+  const f = blockAt(text, lines.starts[L1], true);
+  if (!f || L1 <= f.open || (f.close !== null && L2 >= f.close)) return null;
+  const tok = commentTokens(fenceLanguage(text, f));
+  const rows: string[] = [];
+  for (let L = L1; L <= L2; L++) rows.push(text.slice(lines.starts[L], lines.ends[L]));
+  const filled = rows.filter((r) => r.trim() !== "");
+  const isCommented = (r: string): boolean => {
+    const t = r.trim();
+    return t.startsWith(tok.open) && (!tok.close || (t.length >= tok.open.length + tok.close.length && t.endsWith(tok.close)));
+  };
+  const un = filled.length > 0 && filled.every(isCommented);
+  const col = filled.length ? Math.min(...filled.map((r) => leadingWs(r).length)) : Math.min(...rows.map((r) => r.length));
+  /** Per line: [column, chars removed, text inserted] at its start, and the
+   *  same at its end (the wrap's close). */
+  const edits = rows.map((r) => {
+    if (filled.length && r.trim() === "") return { at: 0, cut: 0, ins: "", endCut: 0, endIns: "" };
+    if (!un) return { at: col, cut: 0, ins: tok.open + " ", endCut: 0, endIns: tok.close ? " " + tok.close : "" };
+    const at = leadingWs(r).length;
+    const body = r.slice(at);
+    const cut = tok.open.length + (body.charAt(tok.open.length) === " " ? 1 : 0);
+    let endCut = 0;
+    if (tok.close) {
+      const trimmed = r.trimEnd();
+      const tail = r.length - trimmed.length;
+      const before = trimmed.charAt(trimmed.length - tok.close.length - 1);
+      endCut = tok.close.length + tail + (before === " " && trimmed.length - tok.close.length - 1 >= at + cut ? 1 : 0);
+    }
+    return { at, cut, ins: "", endCut, endIns: "" };
+  });
+  const out = rows.map((r, i) => {
+    const e = edits[i];
+    const head = r.slice(0, e.at) + e.ins + r.slice(e.at + e.cut, r.length - e.endCut);
+    return head + e.endIns;
+  });
+  /** Where `p` lands. Past the token's place it moves with the text; inside
+   *  a removed token it goes to where the token was; at the token's place a
+   *  caret moves past the inserted token, a selection's start stays before
+   *  it (the whole line stays selected) and a selection's end at a line end
+   *  takes in the added close. */
+  const sel = from !== to;
+  const map = (p: number, isStart: boolean): number => {
+    const L = lineIndex(lines, p);
+    let shift = 0;
+    for (let i = L1; i < L; i++) {
+      const e = edits[i - L1];
+      shift += e.ins.length - e.cut + e.endIns.length - e.endCut;
+    }
+    const e = edits[L - L1];
+    const len = rows[L - L1].length;
+    let c = Math.min(p - lines.starts[L], len - e.endCut);
+    if (c > e.at + e.cut || (c === e.at && e.cut === 0 && e.ins && !(sel && isStart))) c += e.ins.length - e.cut;
+    else if (c > e.at) c = e.at;
+    if (sel && !isStart && p - lines.starts[L] === len) c += e.endIns.length;
+    return lines.starts[L] + shift + c;
+  };
+  const rFrom = lines.starts[L1];
+  const rTo = lines.ends[L2];
+  const a = map(Math.max(from, rFrom), true);
+  const insert = out.join("\n");
+  // A selection running on to the next line's start (whole lines picked)
+  // keeps ending there.
+  const b = !sel ? a : to > rTo ? to + insert.length - (rTo - rFrom) : map(to, false);
+  return { from: rFrom, to: rTo, insert, anchor: a, head: b };
 }
 
 const QUOTES = new Set(['"', "'", "`"]);

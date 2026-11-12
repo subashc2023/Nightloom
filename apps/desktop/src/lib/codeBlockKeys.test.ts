@@ -606,3 +606,77 @@ describe("a code block never traps the caret (676)", () => {
     expect([el.value, el.selectionStart]).toEqual(["```cpp\nint x;\n```\n", 18]);
   });
 });
+
+describe("⌘/ toggles line comments inside a block (678)", () => {
+  const cmd = { key: "/", metaKey: true };
+  it("comments the caret's line in the block's language, caret moving with the text", () => {
+    expect(press("```cpp\nint |x;\n```", cmd)).toBe("```cpp\n// int |x;\n```");
+    expect(press("```py\n    x = |1\n```", cmd)).toBe("```py\n    # x = |1\n```");
+    expect(press("```sql\nselect |1\n```", cmd)).toBe("```sql\n-- select |1\n```");
+    expect(press("```lisp\n(car |x)\n```", cmd)).toBe("```lisp\n; (car |x)\n```");
+    expect(press("```matlab\nx = |1\n```", cmd)).toBe("```matlab\n% x = |1\n```");
+  });
+  it("an unknown or missing language uses //", () => {
+    expect(press("```\nfoo|\n```", cmd)).toBe("```\n// foo|\n```");
+    expect(press("```weird\nfoo|\n```", cmd)).toBe("```\n// foo|\n```".replace("```\n", "```weird\n"));
+  });
+  it("Ctrl+/ does the same; the language is read from ```{r}, ```.cpp and an info string", () => {
+    expect(press("```{r}\nx|\n```", { key: "/", ctrlKey: true })).toBe("```{r}\n# x|\n```");
+    expect(press("```.cpp\nx|\n```", cmd)).toBe("```.cpp\n// x|\n```");
+    expect(press('```python title="a.py"\nx|\n```', cmd)).toBe('```python title="a.py"\n# x|\n```');
+    expect(press("```Python\nx|\n```", cmd)).toBe("```Python\n# x|\n```");
+  });
+  it("a selection: every line it touches, at the lines' smallest indent; blank lines stay blank; selection kept", () => {
+    expect(press("```js\n[if (a) {\n\n  b()\n}]\n```", cmd)).toBe("```js\n[// if (a) {\n\n// " + "  b()\n// }]\n```");
+  });
+  it("a selection ending at a line's start does not take that line, and still ends there", () => {
+    expect(press("```py\n[a\nb\n]c\n```", cmd)).toBe("```py\n[# a\n# b\n]c\n```");
+  });
+  it("uncomments when every non-blank line is commented, with or without the space", () => {
+    expect(press("```js\n[// a\n\n  //b]\n```", cmd)).toBe("```js\n[a\n\n  b]\n```");
+    expect(press("```py\n  # x = |1\n```", cmd)).toBe("```py\n  x = |1\n```");
+  });
+  it("a mix of commented and not comments them all (as VS Code does)", () => {
+    expect(press("```js\n[// a\nb]\n```", cmd)).toBe("```js\n[// // a\n// b]\n```");
+  });
+  it("wrapping languages: each line wrapped, and unwrapped", () => {
+    expect(press("```html\n<p>|hi</p>\n```", cmd)).toBe("```html\n<!-- <p>|hi</p> -->\n```");
+    expect(press("```html\n<!-- <p>|hi</p> -->\n```", cmd)).toBe("```html\n<p>|hi</p>\n```");
+    expect(press("```css\n[a { }]\n```", cmd)).toBe("```css\n[/* a { } */]\n```");
+    expect(press("```css\n[/* a { } */]\n```", cmd)).toBe("```css\n[a { }]\n```");
+  });
+  it("works in an unclosed block too", () => {
+    expect(press("```rust\nlet x|", cmd)).toBe("```rust\n// let x|");
+  });
+  it("outside a block's body, on a fence line, or across a fence: not taken", () => {
+    expect(press("plain| text", cmd)).toBeNull();
+    expect(press("```py|\nx\n```", cmd)).toBeNull();
+    expect(press("```py\nx\n```|", cmd)).toBeNull();
+    expect(press("[hi\n```py\nx]\n```", cmd)).toBeNull();
+    expect(press("```py\n[x\n```]", cmd)).toBeNull();
+  });
+  it("⌥⌘/ is not taken; ⌘? (Shift) by the typed / only", () => {
+    expect(press("```\nx|\n```", { key: "/", metaKey: true, altKey: true })).toBeNull();
+    expect(press("```\nx|\n```", { key: "?", metaKey: true, shiftKey: true })).toBeNull();
+  });
+  it("one undo step in the formatted box", () => {
+    let state = composerState("```py\nx = 1\ny = 2", [composerKeymap()]);
+    const view = {
+      get state() {
+        return state;
+      },
+      dispatch(spec: Parameters<typeof state.update>[0]) {
+        state = state.update(spec).state;
+      },
+    };
+    const h = new LiveBoxHandle(view as unknown as EditorView);
+    state = state.update({ selection: { anchor: 6, head: state.doc.length } }).state;
+    const depth = undoDepth(state);
+    expect(takeBlockKey(key("/", { metaKey: true }), h)).toBe(true);
+    expect(h.value).toBe("```py\n# x = 1\n# y = 2");
+    expect([h.selectionStart, h.selectionEnd]).toEqual([6, h.value.length]);
+    expect(undoDepth(state)).toBe(depth + 1);
+    expect(undo({ state, dispatch: (tr) => (state = tr.state) })).toBe(true);
+    expect(state.doc.toString()).toBe("```py\nx = 1\ny = 2");
+  });
+});
