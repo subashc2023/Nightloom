@@ -98,7 +98,7 @@ describe("the composer carries the family", () => {
       expect(sel).not.toContain('"other"');
     }
     expect(css).toContain("--fable: #b9a3ff;");
-    expect(css).toContain("--opus: #e08a5a;");
+    expect(css).toContain("--opus: #c97a52;");
     // Round 1's Lilac glass numbers, scaled by k (1 for Fable).
     for (const n of ["calc(10% * var(--c644-k))", "calc(7% * var(--c644-k))", "calc(30% * var(--c644-k))", "calc(26% * var(--c644-k))"])
       expect(css).toContain(n);
