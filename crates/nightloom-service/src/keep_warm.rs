@@ -28,6 +28,11 @@
 //! leaves the switch as it was (item 608: written "off", every chat he
 //! ever closed would be off for good under an on default).
 //!
+//! **Holding one chat longer** (item 643): a chat can be held for 12 or
+//! 24 h instead of the cap ([`Registry::set_hold`], [`HOLD_FILE`]). While
+//! held its cap is the hold's hours after each reply; once a whole hold
+//! passes with no reply, the hold goes and the chat is back on the cap.
+//!
 //! **Never a second writer, never a surprise.** A ping does not run while
 //! the chat's own turn does ([`Registry::due`]'s `busy`), is cancelled
 //! when he sends ([`Registry::sent`]), is not sent once the cache has
@@ -77,6 +82,13 @@ pub const POLICY_FILE: &str = "keep-warm-policy.json";
 /// config directory: `{"on": bool}`; no file reads as on (item 608). Its
 /// own file, so a retune of the policy (580/579) never touches it.
 pub const DEFAULT_FILE: &str = "keep-warm-default.json";
+/// A chat's "hold longer" (item 643, his "click hold for logner"), beside
+/// [`MODE_FILE`]: `{"hours": 12|24, "until_ms": …}`. Its own file, so the
+/// on/off choice (item 608) is never rewritten by it.
+pub const HOLD_FILE: &str = "keep-warm-hold.json";
+/// The longer caps a chat can be held for, in hours; the default is the
+/// policy's cap (6 h).
+pub const HOLD_HOURS: [u32; 2] = [12, 24];
 /// A test-only interval in seconds (a measurement, a dev run): read from
 /// the environment, never from the shipped defaults.
 pub const TEST_EVERY_ENV: &str = "NIGHTLOOM_KEEP_WARM_EVERY_S";
@@ -396,6 +408,54 @@ pub fn save_default(config_dir: &Path, on: bool) -> Result<(), String> {
     std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
 }
 
+/// A chat held longer than the default cap (item 643): its cap is
+/// `hours` while `now < until_ms`; `until_ms` is the newest reply's send
+/// plus `hours`, moved on at each reply. Past it the chat is back on the
+/// policy's cap and the file goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hold {
+    pub hours: u32,
+    pub until_ms: i64,
+}
+
+impl Hold {
+    pub fn ms(&self) -> i64 {
+        i64::from(self.hours) * 3_600_000
+    }
+
+    /// The policy in force while held: the hold's cap, never shorter
+    /// than the policy's own.
+    pub fn apply(&self, policy: &Policy) -> Policy {
+        Policy {
+            cap_ms: policy.cap_ms.max(self.ms()),
+            ..*policy
+        }
+    }
+}
+
+/// The chat's hold as its folder holds it; `None` without one, or with
+/// hours that are not one of [`HOLD_HOURS`].
+pub fn read_hold(dir: &Path) -> Option<Hold> {
+    std::fs::read_to_string(dir.join(HOLD_FILE))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Hold>(&t).ok())
+        .filter(|h| HOLD_HOURS.contains(&h.hours))
+}
+
+fn write_hold(dir: &Path, hold: &Hold) {
+    let path = dir.join(HOLD_FILE);
+    let _ = std::fs::create_dir_all(dir);
+    let tmp = path.with_extension("json.tmp");
+    let text = serde_json::to_string(hold).unwrap_or_default();
+    if std::fs::write(&tmp, text).is_ok() {
+        let _ = std::fs::rename(&tmp, path);
+    }
+}
+
+fn clear_hold(dir: &Path) {
+    let _ = std::fs::remove_file(dir.join(HOLD_FILE));
+}
+
 fn write_mode(dir: &Path, mode: Mode, now: i64) {
     let path = dir.join(MODE_FILE);
     let _ = std::fs::create_dir_all(dir);
@@ -472,7 +532,16 @@ pub struct Status {
     /// Why nothing is scheduled, when nothing is.
     pub why: Option<Why>,
     pub spent: Spent,
+    /// The policy's own numbers (the default cap among them).
     pub policy: Policy,
+    /// The cap in force for this chat: the hold's while held, else the
+    /// policy's (item 643).
+    pub cap_ms: i64,
+    /// The chat's hold, 12 or 24 h; `None` on the default cap.
+    pub hold_hours: Option<u32>,
+    /// When the hold runs out and the chat goes back to the default cap,
+    /// unix ms (the newest reply's send plus the hold).
+    pub hold_until_ms: Option<i64>,
 }
 
 /// A ping to run: [`Registry::due`] hands these out, [`Registry::done`]
@@ -494,6 +563,8 @@ struct Entry {
     missed: bool,
     flying: Option<CancellationToken>,
     spent: Spent,
+    /// His "hold longer" for the chat (item 643), as on disk.
+    hold: Option<Hold>,
 }
 
 impl Entry {
@@ -504,6 +575,7 @@ impl Entry {
         }
         Self {
             chosen: read_choice(dir),
+            hold: read_hold(dir),
             dir: dir.to_path_buf(),
             spec: None,
             reply: None,
@@ -525,12 +597,29 @@ impl Entry {
             missed: false,
             flying: None,
             spent: Spent::default(),
+            hold: None,
         }
     }
 
     /// The switch as it acts: his choice, else the default.
     fn mode(&self, default: Mode) -> Mode {
         self.chosen.unwrap_or(default)
+    }
+
+    /// The hold, once it has run out (`now` past its end): gone, on disk
+    /// too, and the chat back on the default cap.
+    fn expire_hold(&mut self, now: i64) {
+        if self.hold.is_some_and(|h| now >= h.until_ms) {
+            self.hold = None;
+            clear_hold(&self.dir);
+        }
+    }
+
+    /// The policy in force for the chat at `now` (item 643): the hold's
+    /// cap while it lasts, else `policy` as it is.
+    fn policy(&mut self, policy: &Policy, now: i64) -> Policy {
+        self.expire_hold(now);
+        self.hold.map_or(*policy, |h| h.apply(policy))
     }
 
     /// "Until I'm back" was answered (or its tab closed): back to off —
@@ -618,6 +707,10 @@ impl Registry {
             if let Some(c) = e.flying.take() {
                 c.cancel();
             }
+            // Off is off: a hold longer goes with it (item 643).
+            if e.hold.take().is_some() {
+                clear_hold(dir);
+            }
             return;
         }
         if let Some((spec, reply)) = facts {
@@ -627,6 +720,64 @@ impl Registry {
             }
             e.spec = Some(spec);
             e.reply = Some(reply);
+        }
+    }
+
+    /// Hold the chat warm longer (item 643): `hours` one of
+    /// [`HOLD_HOURS`] caps it at that many hours after each reply until a
+    /// gap that long passes without one; anything else (the default's 6)
+    /// takes the hold away. A chat whose switch reads off is switched on
+    /// — his own on — since a hold on an off chat would keep nothing.
+    /// `facts` as for [`Self::set_mode`].
+    pub fn set_hold(
+        &self,
+        chat: &str,
+        dir: &Path,
+        hours: u32,
+        facts: Option<(AgentSpec, Reply)>,
+        now: i64,
+    ) {
+        let default = self.default_mode();
+        let hold = HOLD_HOURS.contains(&hours).then(|| {
+            let from = {
+                let inner = self.inner();
+                facts
+                    .as_ref()
+                    .map(|(_, r)| r.sent_ms)
+                    .or_else(|| inner.get(chat).and_then(|e| e.reply.map(|r| r.sent_ms)))
+                    .unwrap_or(now)
+            };
+            Hold {
+                hours,
+                until_ms: from + i64::from(hours) * 3_600_000,
+            }
+        });
+        let off = {
+            let mut inner = self.inner();
+            let e = inner
+                .entry(chat.to_string())
+                .or_insert_with(|| Entry::load(dir));
+            e.dir = dir.to_path_buf();
+            e.hold = hold;
+            match &hold {
+                Some(h) => write_hold(dir, h),
+                None => clear_hold(dir),
+            }
+            e.mode(default) == Mode::Off
+        };
+        if hold.is_some() && off {
+            self.set_mode(chat, dir, Mode::On, facts, now);
+        } else if let Some((spec, reply)) = facts {
+            let mut inner = self.inner();
+            if let Some(e) = inner.get_mut(chat)
+                && e.mode(default) != Mode::Off
+            {
+                if e.reply != Some(reply) {
+                    e.touched_ms = None;
+                }
+                e.spec = Some(spec);
+                e.reply = Some(reply);
+            }
         }
     }
 
@@ -678,6 +829,16 @@ impl Registry {
         };
         if e.mode(default) == Mode::Off {
             return;
+        }
+        // Item 643: a hold that ran out before this message went out is
+        // gone; one still running counts its hours from this reply.
+        if let Some(r) = reply {
+            e.expire_hold(r.sent_ms);
+            if let Some(h) = e.hold.as_mut() {
+                h.until_ms = h.until_ms.max(r.sent_ms + h.ms());
+                let h = *h;
+                write_hold(&e.dir, &h);
+            }
         }
         e.spec = Some(spec.clone());
         e.reply = reply;
@@ -745,19 +906,12 @@ impl Registry {
             if mode == Mode::Off || e.flying.is_some() {
                 continue;
             }
+            let held = e.policy(policy, now);
             let (Some(spec), Some(reply)) = (&e.spec, &e.reply) else {
                 continue;
             };
             // Asked only when a ping is otherwise due: the answer takes a lock.
-            if step(
-                mode,
-                Some(reply),
-                e.touched_ms,
-                e.missed,
-                false,
-                policy,
-                now,
-            ) != Step::Ping
+            if step(mode, Some(reply), e.touched_ms, e.missed, false, &held, now) != Step::Ping
                 || busy(chat)
             {
                 continue;
@@ -827,12 +981,16 @@ impl Registry {
         let mut inner = self.inner();
         if !inner.contains_key(chat)
             && let Some(d) = dir
-            && (d.join(MODE_FILE).exists() || d.join(PINGS_FILE).exists())
+            && (d.join(MODE_FILE).exists()
+                || d.join(PINGS_FILE).exists()
+                || d.join(HOLD_FILE).exists())
         {
             inner.insert(chat.to_string(), Entry::load(d));
         }
-        let blank = Entry::blank();
-        let e = inner.get(chat).unwrap_or(&blank);
+        let mut blank = Entry::blank();
+        let e = inner.get_mut(chat).unwrap_or(&mut blank);
+        let held = e.policy(policy, now);
+        let e = &*e;
         let mode = e.mode(default);
         let flying = e.flying.is_some();
         let s = step(
@@ -841,7 +999,7 @@ impl Registry {
             e.touched_ms,
             e.missed,
             false,
-            policy,
+            &held,
             now,
         );
         let scheduled = flying || matches!(s, Step::Ping | Step::Wait(_));
@@ -854,7 +1012,7 @@ impl Registry {
             warm_until_ms: e
                 .reply
                 .as_ref()
-                .map(|r| warm_until(r, e.touched_ms, scheduled, policy)),
+                .map(|r| warm_until(r, e.touched_ms, scheduled, &held)),
             touched_ms: e.touched_ms,
             next_ping_ms: match s {
                 Step::Wait(at) => Some(at),
@@ -867,6 +1025,9 @@ impl Registry {
             },
             spent: e.spent,
             policy: *policy,
+            cap_ms: held.cap_ms,
+            hold_hours: e.hold.map(|h| h.hours),
+            hold_until_ms: e.hold.map(|h| h.until_ms),
         }
     }
 
@@ -1248,6 +1409,154 @@ mod tests {
         assert!(!reg.offer("o", &off, &spec(), reply(100_000)));
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&off);
+    }
+
+    /// Pings every 55 min from 55 min up to `until`, each a hit; the
+    /// minutes (after the reply) at which one ran.
+    fn run_pings(reg: &Registry, p: &Policy, until: i64) -> Vec<i64> {
+        let mut at = Vec::new();
+        let mut t = 55 * MIN;
+        while t <= until {
+            for job in reg.due(p, t, |_| false) {
+                let hit = PingResult {
+                    cache_read: job.context,
+                    ..PingResult::default()
+                };
+                reg.done(&job, t, Ok(hit));
+                at.push(t / MIN);
+            }
+            t += 55 * MIN;
+        }
+        at
+    }
+
+    /// Item 643's proof: a chat held 24 h, idle 8 h, still pings; the
+    /// same chat on the default 6 h has stopped.
+    #[test]
+    fn a_chat_held_24_hours_still_pings_at_8_hours_and_a_6_hour_one_stops() {
+        let p = Policy::default();
+        let eight = 8 * HOUR;
+
+        let d6 = scratch("hold-6");
+        let six = Registry::default();
+        six.replied("c", &d6, &spec(), Some(reply(150_000)));
+        let pings = run_pings(&six, &p, eight);
+        assert_eq!(pings, vec![55, 110, 165, 220, 275, 330], "the 6 h cap");
+        let st = six.status("c", Some(&d6), &p, eight);
+        assert_eq!(
+            (st.why, st.cap_ms, st.hold_hours),
+            (Some(Why::Cap), 6 * HOUR, None)
+        );
+
+        let d24 = scratch("hold-24");
+        let held = Registry::default();
+        held.replied("c", &d24, &spec(), Some(reply(150_000)));
+        held.set_hold("c", &d24, 24, None, 0);
+        let pings = run_pings(&held, &p, eight);
+        assert_eq!(pings.len(), 8, "a ping every 55 min through 8 h: {pings:?}");
+        assert_eq!(pings.last(), Some(&440));
+        let st = held.status("c", Some(&d24), &p, eight);
+        assert!(st.scheduled, "still on schedule at 8 h");
+        assert_eq!(
+            (st.cap_ms, st.hold_hours, st.hold_until_ms),
+            (24 * HOUR, Some(24), Some(24 * HOUR))
+        );
+        // The last ping the 24 h cap allows is at 23 h 50 min (26 × 55 min);
+        // the cache stays warm an hour past it.
+        assert_eq!(st.warm_until_ms, Some(26 * 55 * MIN + HOUR));
+        // 12 h: a ping at 8 h too, none past 12 h.
+        let d12 = scratch("hold-12");
+        let twelve = Registry::default();
+        twelve.replied("c", &d12, &spec(), Some(reply(150_000)));
+        twelve.set_hold("c", &d12, 12, None, 0);
+        let pings = run_pings(&twelve, &p, 30 * HOUR);
+        assert_eq!(pings.len(), 13);
+        assert_eq!(pings.last(), Some(&715));
+        for d in [d6, d24, d12] {
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+
+    /// The hold is kept with the chat (a restart reads it), moves on with
+    /// each reply, runs out after a whole hold with no reply, and goes
+    /// with an off or a pick of the default.
+    #[test]
+    fn a_hold_is_kept_moves_on_with_each_reply_and_runs_out() {
+        let p = Policy::default();
+        let dir = scratch("hold-keep");
+        let reg = Registry::default();
+        reg.set_hold("c", &dir, 24, None, 0);
+        assert_eq!(
+            read_hold(&dir),
+            Some(Hold {
+                hours: 24,
+                until_ms: 24 * HOUR
+            })
+        );
+        // A restart: a new registry reads the hold from the folder.
+        let again = Registry::default();
+        let st = again.status("c", Some(&dir), &p, HOUR);
+        assert_eq!((st.hold_hours, st.cap_ms), (Some(24), 24 * HOUR));
+        // A reply at 10 h: the hold now ends 24 h after it.
+        let late = Reply {
+            sent_ms: 10 * HOUR,
+            ..reply(100_000)
+        };
+        again.replied("c", &dir, &spec(), Some(late));
+        assert_eq!(read_hold(&dir).map(|h| h.until_ms), Some(34 * HOUR));
+        // Past its end with no reply: gone, on disk too; the default cap.
+        let st = again.status("c", Some(&dir), &p, 34 * HOUR);
+        assert_eq!((st.hold_hours, st.cap_ms), (None, 6 * HOUR));
+        assert_eq!(read_hold(&dir), None);
+        // A message after the hold ran out does not bring it back: held
+        // 12 h from the 10 h reply (ends at 22 h), next message at 23 h.
+        again.set_hold("c", &dir, 12, None, 0);
+        assert_eq!(read_hold(&dir).map(|h| h.until_ms), Some(22 * HOUR));
+        let after = Reply {
+            sent_ms: 23 * HOUR,
+            ..reply(100_000)
+        };
+        again.replied("c", &dir, &spec(), Some(after));
+        assert_eq!(read_hold(&dir), None);
+        // Picking the default (6) or switching off takes it away.
+        again.set_hold("c", &dir, 12, None, 0);
+        again.set_hold("c", &dir, 6, None, 0);
+        assert_eq!(read_hold(&dir), None);
+        again.set_hold("c", &dir, 24, None, 0);
+        again.set_mode("c", &dir, Mode::Off, None, 0);
+        assert_eq!(read_hold(&dir), None);
+        assert_eq!(again.status("c", Some(&dir), &p, 0).hold_hours, None);
+        // Hours that are not 12 or 24 on disk read as no hold.
+        std::fs::write(dir.join(HOLD_FILE), r#"{"hours":100,"until_ms":0}"#).unwrap();
+        assert_eq!(read_hold(&dir), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A hold on a chat he switched off switches it on (his own on); on
+    /// a chat on by default it leaves the choice as it was.
+    #[test]
+    fn a_hold_on_an_off_chat_switches_it_on() {
+        let p = Policy::default();
+        let dir = scratch("hold-off");
+        let reg = Registry::default();
+        reg.set_mode("c", &dir, Mode::Off, None, 0);
+        reg.set_hold("c", &dir, 12, Some((spec(), reply(100_000))), 0);
+        assert_eq!(read_choice(&dir), Some(Mode::On));
+        let st = reg.status("c", Some(&dir), &p, 0);
+        assert_eq!(
+            (st.mode, st.scheduled, st.hold_hours),
+            (Mode::On, true, Some(12))
+        );
+        let d2 = scratch("hold-dflt");
+        reg.set_hold("d", &d2, 24, Some((spec(), reply(100_000))), 0);
+        assert_eq!(
+            read_choice(&d2),
+            None,
+            "the default's on stays the default's"
+        );
+        assert!(reg.status("d", Some(&d2), &p, 0).scheduled);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&d2);
     }
 
     #[test]

@@ -49,8 +49,9 @@
     remainingText,
     restoreCacheSettings,
   } from "./cache";
-  import { isKeeping, isOn, switchLabel, switchTitle, touchedUntil } from "./keepWarm";
-  import { keepWarm, loadKeepWarm, setKeepWarm } from "./keepWarm.svelte";
+  import { holdPress, isKeeping, isOn, switchLabel, switchTitle, touchedUntil } from "./keepWarm";
+  import { holdKeepWarm, keepWarm, loadKeepWarm, setKeepWarm } from "./keepWarm.svelte";
+  import KeepWarmHold from "./KeepWarmHold.svelte";
   import { HIDDEN_THINKING_TITLE, thinkingToggleDead } from "./activity";
   import { toggleTranscriptPref, transcript } from "./transcriptPrefs.svelte";
   import { composerFormat, toggleComposerFormat } from "./composerFormat.svelte";
@@ -2905,6 +2906,15 @@
     const refused = await setKeepWarm(kwChat, mode);
     if (refused) addToast(`Keep warm: ${refused}`);
   }
+  // Item 643: right-click or hold the switch → 6 h / 12 h / 24 h for this chat.
+  let kwButton: HTMLElement | null = $state(null);
+  let kwHoldOpen = $state(false);
+  async function holdFor(hours: number) {
+    kwHoldOpen = false;
+    if (!kwChat) return;
+    const refused = await holdKeepWarm(kwChat, hours);
+    if (refused) addToast(`Keep warm: ${refused}`);
+  }
   const cache = $derived(floating ? null : cacheState(app.events, now, touchedUntil(kw)));
   /** Item 596: the same state drawn on the box's frame (`cacheLook.css`). */
   const frame = $derived(cacheFrame(cache));
@@ -3685,11 +3695,15 @@
           class:on={isOn(kw)}
           class:keeping={isKeeping(kw, now)}
           aria-pressed={isOn(kw)}
+          aria-haspopup="menu"
+          bind:this={kwButton}
           use:tip={switchTitle(kw, now)}
+          use:holdPress={() => (kwHoldOpen = true)}
           onclick={() => void flipKeepWarm(isOn(kw) ? "off" : "on")}
         >
-          <span class="bottom-mark" aria-hidden="true">♨</span>{switchLabel(kw, now)}
+          <span class="bottom-mark" aria-hidden="true">♨</span>{switchLabel(kw, now)}{#if kw?.hold_hours}<span class="keep-warm-hold">· {kw.hold_hours} h</span>{/if}
         </button>
+        {#if kwHoldOpen && kwButton}<KeepWarmHold anchor={kwButton} status={kw} onpick={(h) => void holdFor(h)} onclose={() => (kwHoldOpen = false)} />{/if}
       {/if}
       {#if cache && cacheBuilt && cacheChanges.length > 0}
         <!-- Backlog 408: a pending change would lose the warm cache; the
@@ -4244,6 +4258,11 @@
   .bottom-toggle.keep-warm {
     text-transform: none;
     font-variant-numeric: tabular-nums;
+  }
+  /* Item 643: a held chat says so on the switch ("· 24 h"). */
+  .keep-warm-hold {
+    margin-left: 4px;
+    color: var(--dim);
   }
   .bottom-cache {
     font-variant-numeric: tabular-nums;

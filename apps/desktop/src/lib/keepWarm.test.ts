@@ -1,6 +1,24 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { cacheState } from "./cache";
-import { clockTime, idleWords, isKeeping, isOn, noticeLine, switchLabel, switchTitle, touchedUntil, type KeepWarmStatus } from "./keepWarm";
+import {
+  HOLD_PRESS_MS,
+  POINTS_PER_PING,
+  capOf,
+  clockTime,
+  holdPress,
+  holdRows,
+  holdWords,
+  idleWords,
+  isKeeping,
+  isOn,
+  noticeLine,
+  perHourWords,
+  pingsUnder,
+  switchLabel,
+  switchTitle,
+  touchedUntil,
+  type KeepWarmStatus,
+} from "./keepWarm";
 import type { SessionEvent } from "./types";
 
 const HOUR = 3_600_000;
@@ -108,5 +126,76 @@ describe("keep-warm words (backlog 582)", () => {
     // An older touch never shortens the reply's own hour; off ignores it.
     expect(cacheState(events, T0, T0 - MIN)?.warmUntil).toBe(T0 + HOUR);
     expect(touchedUntil(status({ mode: "off", touched_ms: T0 }))).toBeNull();
+  });
+});
+
+describe("hold longer (item 643)", () => {
+  it("offers 6 h (default), 12 h and 24 h with the extra pings and their cost", () => {
+    const rows = holdRows(status());
+    expect(rows.map((r) => [r.hours, r.label, r.detail, r.on])).toEqual([
+      [6, "6 h (default)", "6 pings at most", true],
+      [12, "12 h", "+7 pings ≈ 0.14 pts", false],
+      [24, "24 h", "+20 pings ≈ 0.40 pts", false],
+    ]);
+    expect(holdRows(status({ hold_hours: 24 })).map((r) => r.on)).toEqual([false, false, true]);
+    // No status yet: the shipped numbers.
+    expect(holdRows(null).map((r) => r.hours)).toEqual([6, 12, 24]);
+    expect(pingsUnder(24 * HOUR, 55 * MIN)).toBe(26);
+    expect(POINTS_PER_PING).toBe(0.02);
+    expect(perHourWords(status())).toContain("≈ 0.02 points of the 5-hour window per extra hour");
+    expect(perHourWords(status())).toContain("item 541");
+  });
+
+  it("says the hold in the tooltip and uses its cap", () => {
+    const held = status({ cap_ms: 24 * HOUR, hold_hours: 24, hold_until_ms: T0 + 24 * HOUR });
+    const t = switchTitle(held, T0);
+    expect(t).toContain("for up to 24 h");
+    expect(t).toContain("Held 24 h for this chat (until ~Wed 5:00 PM unless you reply again), then back to 6 h.");
+    expect(idleWords({ ...held, why: "cap" })).toBe("ended — 24 h since the last reply");
+    expect(capOf(held)).toBe(24 * HOUR);
+    expect(capOf(status())).toBe(6 * HOUR);
+    expect(holdWords(status(), T0)).toBe("");
+    // Discoverable: every tooltip, on or off, ends with the hint.
+    expect(switchTitle(status(), T0)).toContain("Right-click or press and hold to keep it warm for 12 h or 24 h.");
+    expect(switchTitle(null, T0)).toContain("Right-click or press and hold");
+  });
+
+  it("opens on a right-click or a 500 ms press, and swallows the click that ends a long press", () => {
+    vi.useFakeTimers();
+    const on: Record<string, ((e: unknown) => void)[]> = {};
+    const node = {
+      addEventListener: (k: string, f: (e: unknown) => void) => (on[k] ??= []).push(f),
+      removeEventListener: (k: string, f: (e: unknown) => void) => (on[k] = (on[k] ?? []).filter((g) => g !== f)),
+    } as unknown as HTMLElement;
+    const fire = (k: string, e: Record<string, unknown> = {}) => {
+      const ev = { button: 0, defaultPrevented: false, stopped: false, preventDefault() { ev.defaultPrevented = true; }, stopImmediatePropagation() { ev.stopped = true; }, ...e };
+      for (const f of on[k] ?? []) f(ev);
+      return ev;
+    };
+    let opened = 0;
+    const action = holdPress(node, () => opened++);
+    // A plain click: nothing opens, the click goes through.
+    fire("pointerdown");
+    vi.advanceTimersByTime(200);
+    fire("pointerup");
+    expect(fire("click").stopped).toBe(false);
+    expect(opened).toBe(0);
+    // A held press opens at 500 ms; its click is swallowed (the switch does not flip).
+    fire("pointerdown");
+    vi.advanceTimersByTime(HOLD_PRESS_MS);
+    expect(opened).toBe(1);
+    fire("pointerup");
+    expect(fire("click").stopped).toBe(true);
+    expect(fire("click").stopped).toBe(false);
+    // A right-click opens at once, without the system menu.
+    expect(fire("contextmenu").defaultPrevented).toBe(true);
+    expect(opened).toBe(2);
+    // A press with the right button does not start the timer.
+    fire("pointerdown", { button: 2 });
+    vi.advanceTimersByTime(1000);
+    expect(opened).toBe(2);
+    action.destroy();
+    expect(Object.values(on).every((l) => l.length === 0)).toBe(true);
+    vi.useRealTimers();
   });
 });
