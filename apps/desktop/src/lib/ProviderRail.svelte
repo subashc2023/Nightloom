@@ -59,6 +59,9 @@
   import { viewGet, viewSet } from "./viewState";
   import { layout } from "./layout.svelte";
   import { tildePath } from "./newChatPage";
+  import type { Aside } from "./state.svelte";
+  import { scheduleAsideSave } from "./asides.svelte";
+  import { chatLabel } from "./chatLabel";
 
   /**
    * The Model pane of the popover, redesigned 2026-09-13 (nightshift
@@ -79,6 +82,35 @@
   // binary in Settings, and two labelled groups that answer "which of these
   // does Nightloom manage, which are mine". Classic keeps today's rail.
   const compact = $derived(layout.value !== "classic");
+
+  /*
+   * Item 657 (his "the aside * subscription button doesn't do anything",
+   * then "which on the normal chat is like the list of settings"): the same
+   * card over an aside tab, from its "Aside · subscription" chip. What the
+   * aside keeps on its own thread (backlog 283: `aside.model`,
+   * `aside.effort`, sent with each question by `asideWire`) is picked here
+   * and changes the aside only; the first pill, "the chat's", puts it back.
+   * Everything else — engine, kind, approval, tools, folders, prompt,
+   * subagents, fallback — is the chat's session's, which every aside forks
+   * from: drawn with the chat's values, under a `fieldset disabled` and a
+   * line saying whose they are. Null: the chat's card, as before.
+   */
+  let { aside = null, asideChat = null }: { aside?: Aside | null; asideChat?: string | null } = $props();
+  /** Whether the chat-owned rows read the aside's own chat: `app.draft` is
+   *  the open chat's, so for another chat's aside they are not drawn. */
+  const asideChatOpen = $derived(!aside || asideChat === app.activeSessionId);
+  const asideChatName = $derived.by(() => {
+    if (!asideChat) return "the chat";
+    const s = app.sessions.find((x) => x.id === asideChat);
+    return chatLabel(s, asideChat.slice(0, 8));
+  });
+  function pickAside(field: "model" | "effort", v: string | null): void {
+    const a = aside;
+    if (!a) return;
+    if (v === null) delete a[field];
+    else a[field] = v;
+    scheduleAsideSave();
+  }
   /** Short names for the subagent-model segment; the long ones are its tips. */
   const SUB_SHORT: Record<string, string> = { choose: "Main picks", same: "Chat's model", sonnet: "Sonnet" };
   // The subagents fold (item 612), kept like the exact limits (item 495).
@@ -314,6 +346,10 @@
   const newestIds = $derived(newestModels(app.modelLists["anthropic"]));
   const railRows = $derived(
     familyRows(AGENT_PILLS, newestIds, modelSeen.byAlias, cliNow, app.draft.agentModel).filter((r) => r.kind !== "newest"),
+  );
+  /** Item 657: the same pills, on for the aside's own pick (none: "the chat's"). */
+  const asideRailRows = $derived(
+    aside ? familyRows(AGENT_PILLS, newestIds, modelSeen.byAlias, cliNow, aside.model ?? "").filter((r) => r.kind !== "newest") : [],
   );
   /** The family pills whose alias resolves to an older model, said under them. */
   const laggingNotes = $derived(railRows.filter((r) => r.kind === "family" && r.capAlias === null && !railRows.some((x) => x.key === `lagging:${r.key.slice(7)}`)));
@@ -847,7 +883,16 @@
   {/if}
 {/snippet}
 
-<div class="rail">
+<div class="rail" class:aside-scope={!!aside}>
+  {#if aside}
+    <!-- Item 657: whose rows are whose, said once at the top. -->
+    <p class="aside-head" data-aside-head>
+      <b>This aside</b> — its model and effort are its own. The rest is {asideChatName}'s, which every aside of it
+      shares: {asideChatOpen ? "shown here, changed in the chat" : "open the chat to see it"}.
+    </p>
+  {/if}
+  {#if asideChatOpen}
+  <fieldset class="chat-own" disabled={!!aside}>
   <!-- The engine as two cards, each saying who pays and who runs the loop:
        the answer to "what's the difference between Provider and Claude
        Code", on the control itself. -->
@@ -977,8 +1022,43 @@
       <span class="dot off"></span><span class="dim">not connected</span>
     {/if}
   </div>
+  </fieldset>
+  {/if}
 
-  {#if agentMode}
+  {#if aside}
+    <!-- Item 657: the aside's own model, the chat's pills with "the chat's"
+         first. An aside always runs on Claude Code, whatever the open chat's engine. -->
+    <section class="sect" data-aside-own="model">
+      <div class="sect-h">
+        <span class="ns-k">Model</span>
+        <span class="sub">this aside's · the chat's unless picked</span>
+      </div>
+      <div class="pv" role="radiogroup" aria-label="This aside's model">
+        <button
+          class="p"
+          class:on={aside.model == null}
+          role="radio"
+          aria-checked={aside.model == null}
+          use:tip={`The chat's model (${app.draft.agentModel.trim() || "default"}) — reads the chat's prompt cache`}
+          onclick={() => pickAside("model", null)}
+        >
+          the chat's
+        </button>
+        {#each asideRailRows as r (r.key)}
+          <button
+            class="p"
+            class:on={aside.model != null && r.on}
+            role="radio"
+            aria-checked={aside.model != null && r.on}
+            use:tip={`${r.title} — its own model: no cache from the chat, so its first answer reads the whole context fresh`}
+            onclick={() => pickAside("model", r.pick)}
+          >
+            {r.name}{#if r.version}&nbsp;<span class="num">{r.version}</span>{/if}
+          </button>
+        {/each}
+      </div>
+    </section>
+  {:else if agentMode}
     {#if agent && !(compact && agent.subscription)}
       <!-- Item 612: under Filament only the warning stays (an API key
            will be billed); the subscription sentence is in Engine's `?`. -->
@@ -1196,6 +1276,42 @@
     </section>
   {/if}
 
+  {#if aside}
+    <!-- Item 657: the aside's own effort, the chat's segment with "the chat's" first. -->
+    <section class="sect" data-aside-own="effort">
+      <div class="sect-h">
+        <span class="ns-k">Effort</span>
+        <span class="sub">this aside's · --effort</span>
+      </div>
+      <div class="segs eff" role="radiogroup" aria-label="This aside's effort">
+        <button
+          class:on={aside.effort == null}
+          role="radio"
+          aria-checked={aside.effort == null}
+          use:tip={`The chat's effort (${app.draft.agentEffort || "default"})`}
+          onclick={() => pickAside("effort", null)}
+        >
+          the chat's
+        </button>
+        {#each EFFORTS as e (e)}
+          <button
+            class:on={aside.effort === e}
+            class:d={!e}
+            role="radio"
+            aria-checked={aside.effort === e}
+            use:tip={e ? `--effort ${e}` : "no --effort flag; the model's own default"}
+            onclick={() => pickAside("effort", e)}
+          >
+            {e || "default"}
+          </button>
+        {/each}
+      </div>
+    </section>
+  {/if}
+
+  {#if asideChatOpen}
+  <fieldset class="chat-own" disabled={!!aside}>
+  {#if aside}<p class="chat-mark">{asideChatName}'s — shared by its asides, changed in the chat</p>{/if}
   <section class="sect">
     <div class="sect-h"><span class="ns-k">Behaviour</span>{#if compact}<span class="sub">yours · stay as you set them</span>{/if}</div>
     <label class="swq">
@@ -1831,6 +1947,9 @@
     </section>
   {/if}
 
+  </fieldset>
+  {/if}
+
   {#if app.connectError}
     <div class="error">{app.connectError}</div>
   {/if}
@@ -1844,6 +1963,30 @@
 </div>
 
 <style>
+  /* Item 657: the chat-owned rows' wrapper adds no box — the rail lays its
+     sections out as before — and only disables them, for an aside's card. */
+  .chat-own {
+    display: contents;
+  }
+  .aside-head {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--ink2);
+  }
+  .aside-head b {
+    color: var(--ink);
+    font-weight: 500;
+  }
+  .chat-mark {
+    margin: 4px 0 -4px;
+    font: 500 10px var(--mono);
+    letter-spacing: 0.06em;
+    color: var(--dim);
+  }
+  .aside-scope .chat-own > :not(.chat-mark) {
+    opacity: 0.55;
+  }
   /* Chrome (panel background, left border) belongs to RightRail now;
      this is one pane inside its tab strip. */
   .rail {
