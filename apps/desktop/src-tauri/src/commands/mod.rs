@@ -12,6 +12,7 @@ pub(crate) mod connect;
 pub(crate) mod context;
 pub(crate) mod edits;
 pub(crate) mod memory;
+pub(crate) mod menu;
 pub(crate) mod notes;
 pub(crate) mod projects;
 pub(crate) mod providers;
