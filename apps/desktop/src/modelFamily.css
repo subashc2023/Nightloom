@@ -1,0 +1,68 @@
+/* Item 644 (his picks, 2026-11-11): the message box by the chat's model family. Composer stamps its root with
+   `data-model-family` (opus / fable / other, `lib/modelFamily.ts`), live with the model pill.
+   - Fable: round 1's design 1, "Lilac glass" (nightshift-code `notes/runner-design/644-designs/round1.html`,
+     `[data-d="1"][data-model="fable"]`), its rules as they are: the fill, rim, soft outer haze, the model coil and the
+     four corner brackets.
+   - Opus: round 3's option 4, "Copper" (blocker 1923, "I like copper for opus the most"), the same five parts, built at
+     Fable's strength (the page's Copper was louder: fill 22 % against 7 %). `--c644-opus-k` scales every Opus share:
+     1 is Fable's strength; ~1.4 reaches the page's rim, ~3 the page's fill.
+   - Every other model: nothing here; today's box.
+   Send, the button row (618), the cache's Edge line (596, on the card's ::after) and the focus rim keep their colours.
+   Every rule sits behind html:not([data-layout="classic"]) — Classic renders as before. Imported by main.ts last. */
+
+:root {
+  /* The two family hues; violet and copper are used nowhere else in Jarvis (amber his, blue Claude working / cold,
+     green done, orange hand-off, red error). */
+  --fable: #b9a3ff;
+  --opus: #e08a5a;
+}
+
+html:not([data-layout="classic"]) .composer[data-model-family="fable"] {
+  --c644-hue: var(--fable);
+  --c644-k: 1;
+}
+html:not([data-layout="classic"]) .composer[data-model-family="opus"] {
+  --c644-hue: var(--opus);
+  --c644-opus-k: 3; /* his pick was the design page's Copper (blocker 1923); 1 read as today's box */
+  --c644-k: var(--c644-opus-k);
+}
+
+/* The glass: fill, rim and a soft outer haze (round 1's numbers; × k). */
+html:not([data-layout="classic"]) .composer:is([data-model-family="fable"], [data-model-family="opus"]) .card {
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--c644-hue) min(calc(10% * var(--c644-k)), 18%), transparent),
+      rgba(255, 255, 255, 0.012) 45%,
+      rgba(0, 0, 0, 0.08)
+    ),
+    color-mix(in srgb, color-mix(in srgb, var(--c644-hue) calc(7% * var(--c644-k)), var(--raised)) 72%, transparent);
+  border-color: color-mix(in srgb, var(--c644-hue) min(calc(30% * var(--c644-k)), 45%), rgba(255, 255, 255, 0.08));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--c644-hue) min(calc(26% * var(--c644-k)), 40%), transparent),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.3),
+    0 10px 30px rgba(0, 0, 0, 0.45),
+    0 0 22px color-mix(in srgb, var(--c644-hue) min(calc(7% * var(--c644-k)), 12%), transparent);
+}
+/* Typing keeps the amber focus rim every box has (Glass and Glass rail's softer one, composerRow.css; Composer's own else). */
+html:not([data-layout="classic"]) .composer:is([data-model-family="fable"], [data-model-family="opus"]) .card:focus-within {
+  border-color: var(--accent);
+}
+html:not([data-layout="classic"]) .composer:is([data-model-family="fable"], [data-model-family="opus"]):is([data-composer-row="glass"], [data-composer-row="glass-rail"]) .card:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 55%, rgba(255, 255, 255, 0.11));
+}
+
+/* The four corner brackets (Composer's `.card::before`, drawn in `--bracket`) — not under calm light, which has none. */
+html:not([data-layout="classic"]):not([data-light="calm"]) .composer:is([data-model-family="fable"], [data-model-family="opus"]) .card {
+  --bracket: var(--c644-hue);
+}
+
+/* The model coil (Rail and Glass rail draw the dot as a coil; Glass and Strip as a dot). */
+html:not([data-layout="classic"]) .composer:is([data-model-family="fable"], [data-model-family="opus"]):is([data-composer-row="rail"], [data-composer-row="glass-rail"]) .pick-btn:not(:disabled) .pick-dot:not(.unknown) {
+  background: var(--c644-hue);
+  filter: drop-shadow(0 0 2px var(--c644-hue));
+}
+html:not([data-layout="classic"]) .composer:is([data-model-family="fable"], [data-model-family="opus"]):is([data-composer-row="glass"], [data-composer-row="strip"]) .pick-btn:not(:disabled) .pick-dot:not(.unknown) {
+  background: var(--c644-hue);
+  box-shadow: 0 0 5px var(--c644-hue);
+}

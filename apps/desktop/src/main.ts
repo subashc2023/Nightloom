@@ -19,6 +19,8 @@ import "./app.css";
 import "./composerRow.css";
 // Item 596: the cache on the message box's frame, after the row's looks.
 import "./cacheLook.css";
+// Item 644: the box by the chat's model family (Opus Copper, Fable Lilac glass), last, so it wins the card's ties.
+import "./modelFamily.css";
 import { app as state, applyPalette } from "./lib/state.svelte";
 import { applyLayout } from "./lib/layout.svelte";
 import { installMathCopy } from "./lib/mathCopy";
