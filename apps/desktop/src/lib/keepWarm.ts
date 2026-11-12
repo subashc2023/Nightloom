@@ -273,6 +273,36 @@ export function noticeLine(s: KeepWarmStatus | null | undefined, now: number): s
   return `Keeping warm until ~${clockTime(s.warm_until_ms)}`;
 }
 
+/**
+ * The keep-warm row after a reply (item 681, his "should be like a toggle
+ * … on the left side … the entire thing should be clickable"): on while
+ * the cache is being kept, with its end; off once he switched the chat off
+ * while its reply is held and its cache is still warm, so a click can
+ * still keep it. Null otherwise (nothing to keep, the cap passed, the
+ * chat's turn running, the cache cold) — as `noticeLine` was.
+ */
+export interface NoticeRow {
+  on: boolean;
+  text: string;
+}
+export function noticeRow(s: KeepWarmStatus | null | undefined, now: number): NoticeRow | null {
+  if (!s) return null;
+  if (isKeeping(s, now)) {
+    const once = s.mode === "once" ? " or your next message" : "";
+    return { on: true, text: `Keeping warm until ~${clockTime(s.warm_until_ms as number)}${once}` };
+  }
+  if (s.mode === "off" && s.warm_until_ms != null && s.warm_until_ms > now) {
+    return { on: false, text: `Not keeping warm — warm until ~${clockTime(s.warm_until_ms)}; click to keep it` };
+  }
+  return null;
+}
+
+/** What a click on the row sends (item 681): off while on, else on — the
+ *  composer's keep-warm switch's own two modes. */
+export function rowToggle(row: NoticeRow): "on" | "off" {
+  return row.on ? "off" : "on";
+}
+
 /** When the next ping-kept reading of the cache ends: a ping's read
  *  restarts the hour. Null without one. */
 export function touchedUntil(s: KeepWarmStatus | null | undefined): number | null {
