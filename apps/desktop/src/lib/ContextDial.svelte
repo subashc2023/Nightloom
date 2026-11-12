@@ -1,3 +1,7 @@
+<script lang="ts" module>
+  let maskSeq = 0;
+</script>
+
 <script lang="ts">
   /**
    * The context dial (item 533, Filament IV stage 2; 521 report §2): one
@@ -32,8 +36,18 @@
    * under 40 px (the top bar's 13 px, the phone's 30 px) the ticks, the
    * notch and the head are dropped — at that size they read as a stray dot
    * and a dash — and the dial is a clean thin ring with a round-capped arc.
+   *
+   * Item 654 (his pick B3, blocker 1962): `drive` — the right column's dial,
+   * drawn frame by frame from `dialDrive.ts` while a reply runs and as it
+   * lands: the estimate's tail marches, the used ticks tint and the next one
+   * fills, the head beats, the track breathes, and at the end a light runs
+   * the arc to the real figure, lighting the ticks it passes, the head
+   * ripples, the notch flares and the cache ring swells. The caller passes
+   * the drive's `solid` as `share`; the CSS transitions stand down (the
+   * drive eases). Every other use passes none and draws as before.
    */
   import { dialGeometry } from "./contextDial";
+  import type { DialView } from "./dialDrive";
   import { tip } from "./tip";
   import type { StartArc } from "./startDial";
 
@@ -67,6 +81,8 @@
      * while a reply streams; null (the default) draws none.
      */
     estimate?: number | null;
+    /** Item 654: the frame-by-frame layer (the right column's dial); null draws none. */
+    drive?: DialView | null;
   }
 
   let {
@@ -85,6 +101,7 @@
     pulse = false,
     ring = null,
     estimate = null,
+    drive = null,
   }: Props = $props();
 
   /** Item 578: the small form, below this size. */
@@ -119,6 +136,31 @@
     const e = Math.min(estimate, s);
     return { len: e * g.track.c, off: -(s - e) * g.track.c };
   });
+  /** Item 654: the drive's layer, never on the small form. */
+  const dv = $derived(drive && !small ? drive : null);
+  const maskId = `dial-tail-${++maskSeq}`;
+  /** One radial line per minor tick, lit by the drive; majors reach further. */
+  const litLines = $derived.by(() => {
+    if (!dv || !g.minorDash || minor <= 0) return [];
+    const per = major > 0 ? Math.max(1, Math.round(minor / major)) : 0;
+    const out: { x1: number; y1: number; x2: number; y2: number; major: boolean }[] = [];
+    for (let i = 0; i < minor; i++) {
+      const a = (i / minor) * 2 * Math.PI;
+      const isMajor = per > 0 && i % per === 0;
+      const r1 = g.minorRing.r - 1.5;
+      const r2 = isMajor ? g.majorRing.r + 2.5 : g.minorRing.r + 1.5;
+      out.push({ x1: g.mid + r1 * Math.sin(a), y1: g.mid - r1 * Math.cos(a), x2: g.mid + r2 * Math.sin(a), y2: g.mid - r2 * Math.cos(a), major: isMajor });
+    }
+    return out;
+  });
+  const tail = $derived.by(() => {
+    if (!dv) return null;
+    const from = Math.max(0, Math.min(1, dv.tailFrom));
+    const len = Math.max(0, (Math.min(1, dv.tailTo) - from) * g.track.c);
+    return len > 0.05 ? { len, off: -from * g.track.c } : null;
+  });
+  /** The light's segment: a tenth of the track, at most 32 px, ending at its angle. */
+  const seg = $derived(Math.min(g.track.c * 0.1, 32));
   /** The inner ring (574b): inside the track by the ticks' depth, bolder than it. */
   const ringR = $derived(Math.max(8, g.track.r - Math.max(10, g.stroke * 4)));
   const ringW = $derived(Math.max(3, Math.round(g.stroke * 1.8)));
@@ -146,6 +188,7 @@
   class:pulse
   class:pointing={hover != null}
   class:small
+  class:framed={!!dv}
   style:width="{g.box}px"
   style:height="{g.box}px"
   role={driven ? "group" : "img"}
@@ -160,6 +203,9 @@
         <circle class="tick major" cx={g.mid} cy={g.mid} r={g.majorRing.r} stroke-width="5" stroke-dasharray={g.majorDash} stroke-dashoffset="0.7" />
       {/if}
       <circle class="track" cx={g.mid} cy={g.mid} r={g.track.r} stroke-width={g.stroke} />
+      {#if dv && dv.wash > 0}
+        <circle class="wash" cx={g.mid} cy={g.mid} r={g.track.r} stroke-width={g.stroke} opacity={dv.wash} />
+      {/if}
       {#if driven}
         {#each drawn as p, i (p.tone)}
           <circle
@@ -220,10 +266,47 @@
           style:stroke-dashoffset={est.off}
         />
       {/if}
+      {#if dv && tail}
+        {#if dv.march}
+          <mask id={maskId} maskUnits="userSpaceOnUse" x="0" y="0" width={g.box} height={g.box}>
+            <circle
+              cx={g.mid}
+              cy={g.mid}
+              r={g.track.r}
+              stroke="#fff"
+              stroke-width={g.stroke + 2}
+              stroke-dasharray="{tail.len} {g.track.c}"
+              stroke-dashoffset={tail.off}
+            />
+          </mask>
+          <circle
+            class="arc march"
+            cx={g.mid}
+            cy={g.mid}
+            r={g.track.r}
+            stroke-width={g.stroke}
+            stroke-dasharray="3 2.6"
+            stroke-dashoffset={-dv.marchOff}
+            mask="url(#{maskId})"
+            opacity={dv.tailAlpha}
+          />
+        {:else}
+          <circle
+            class="arc est"
+            cx={g.mid}
+            cy={g.mid}
+            r={g.track.r}
+            stroke-width={g.stroke}
+            stroke-dasharray="{tail.len} {g.track.c}"
+            stroke-dashoffset={tail.off}
+            opacity={dv.tailAlpha}
+          />
+        {/if}
+      {/if}
       {#if g.inner != null}
         <circle class="inner-track" cx={g.mid} cy={g.mid} r={g.innerRing.r} stroke-width="2" />
         {#if g.inner > 0}
-          <circle class="inner" cx={g.mid} cy={g.mid} r={g.innerRing.r} stroke-width="2" stroke-dasharray="{g.inner} {g.innerRing.c}" />
+          <circle class="inner" cx={g.mid} cy={g.mid} r={g.innerRing.r} stroke-width={2 + (dv?.innerSwell ?? 0)} stroke-dasharray="{g.inner} {g.innerRing.c}" />
         {/if}
       {/if}
     </g>
@@ -245,12 +328,54 @@
     {#if ringEnd}
       <circle class="ring-end" class:pulse cx={ringEnd.x} cy={ringEnd.y} r={ringW * 0.9} />
     {/if}
+    {#if dv}
+      <!-- Item 654: the lit scale, one line per minor tick (opacity from the drive). -->
+      {#each litLines as l, i (i)}
+        <line class="lit" x1={l.x1} y1={l.y1} x2={l.x2} y2={l.y2} stroke-width={l.major ? 1.6 : 1.2} opacity={dv.ticks[i] ?? 0} />
+      {/each}
+      {#if dv.lightAlpha > 0}
+        <!-- Item 654: the landing's light, its segment ending at its angle. -->
+        <g class="run" style:transform="rotate({dv.light * 360}deg)" style:transform-origin="{g.mid}px {g.mid}px" style:opacity={dv.lightAlpha}>
+          <circle
+            cx={g.mid}
+            cy={g.mid}
+            r={g.track.r}
+            stroke-width={g.stroke + 2}
+            fill="none"
+            stroke-linecap="round"
+            stroke-dasharray="{seg} {g.track.c - seg}"
+            stroke-dashoffset={seg}
+            transform="rotate(-90 {g.mid} {g.mid})"
+          />
+        </g>
+      {/if}
+    {/if}
     {#if g.notch && !small}
-      <line class="notch" x1={g.notch.x1} y1={g.notch.y1} x2={g.notch.x2} y2={g.notch.y2} stroke-width="1.5" />
+      <line
+        class="notch"
+        class:flare={(dv?.notchFlare ?? 0) > 0.05}
+        x1={g.notch.x1}
+        y1={g.notch.y1}
+        x2={g.notch.x2}
+        y2={g.notch.y2}
+        stroke-width={1.5 + 1.5 * (dv?.notchFlare ?? 0)}
+      />
+    {/if}
+    {#if dv && dv.ripple > 0}
+      <g class="turn" style:transform="rotate({dv.rippleAt * 360}deg)" style:transform-origin="{g.mid}px {g.mid}px">
+        <circle class="ripple" cx={g.mid} cy={g.mid - g.track.r} r={g.headR} style:opacity={dv.ripple} style:transform="scale({dv.rippleScale})" />
+      </g>
     {/if}
     {#if !small}
-    <g class="turn" style:transform="rotate({g.headDeg}deg)" style:transform-origin="{g.mid}px {g.mid}px">
-      <circle class="head" class:past={g.past} cx={g.mid} cy={g.mid - g.track.r} r={g.headR} />
+    <g class="turn" style:transform="rotate({dv ? dv.head * 360 : g.headDeg}deg)" style:transform-origin="{g.mid}px {g.mid}px">
+      <circle
+        class="head"
+        class:past={dv ? mark != null && dv.head > mark : g.past}
+        cx={g.mid}
+        cy={g.mid - g.track.r}
+        r={g.headR}
+        style:transform={dv && dv.headScale > 1.005 ? `scale(${dv.headScale})` : null}
+      />
     </g>
     {/if}
     {#if driven}
@@ -299,7 +424,7 @@
   </svg>
   {#if value || unit}
     <div class="c">
-      {#if value}<span class="n">{value}</span>{/if}
+      {#if value}<span class="n" class:dimmed={!!dv?.estimating}>{value}</span>{/if}
       {#if unit}<span class="u">{unit}</span>{/if}
     </div>
   {/if}
@@ -336,6 +461,38 @@
   }
   .inner-track {
     stroke: var(--line);
+  }
+  /* Item 654: the drive's layer — the marching tail, the lit ticks, the
+     track's breath, the landing's light and ripple. */
+  .arc.march {
+    stroke: var(--accent);
+  }
+  .wash {
+    stroke: var(--accent);
+  }
+  .lit {
+    stroke: var(--accent-ink);
+  }
+  .run circle {
+    stroke: var(--accent-ink);
+    filter: drop-shadow(var(--glow-accent));
+  }
+  .ripple {
+    fill: none;
+    stroke: var(--accent-ink);
+    stroke-width: 1.4;
+    transform-box: fill-box;
+    transform-origin: center;
+  }
+  .framed .head {
+    transform-box: fill-box;
+    transform-origin: center;
+  }
+  .notch.flare {
+    stroke: var(--accent-ink);
+  }
+  .n.dimmed {
+    color: var(--ink2);
   }
   /* Item 574's parts: muted shades of the tokens already in the palette —
      amber is his (Nightloom's layers, his instruction files and memory),
@@ -461,6 +618,14 @@
        would drag the head behind the arc. */
     .driven .turn {
       transition: none;
+    }
+    /* Item 654: the drive eases the column's dial itself. */
+    .framed .arc,
+    .framed .turn {
+      transition: none;
+    }
+    .framed .arc.est {
+      animation-name: none;
     }
     .part {
       transition: stroke-width 120ms ease;
