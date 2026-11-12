@@ -126,7 +126,68 @@ vec2 M(vec2 p) { return (p - CL) / K + C; }
 /* Horizon: a wireframe sea whose horizon runs straight through the dial's centre; a dawn glow and light-rays rise behind the wheel,
    specks above. Item 640's tint: the rays and the glow at the wheel's foot warm toward the accent (softened), fading back to the
    cyan at the edges and upward. tint = 0 is round 4's page exactly. */
+// ---- Item 662 (his pick B1 Roll, round 4, 2026-11-12; he said "B is good but not niticeable enough still. maybe needs
+// more brightness. also takes too long to fade back"): while he types in the composer, the sea's grid eases from 40 to
+// about 92 px/s toward him, its lines grow about 3.6× as bright and a soft cyan glow gathers on the wave crests; it all
+// settles back about 1.3 s after his last key. Only the sea (below the horizon) responds; the sky is untouched.
+// Design and measurements: nightshift notes/runner-design/662-r4-designs/index.html and 662-r4-report-2026-11-12.md.
+
+/** At full response: the grid rolls 40 × (1 + this) px/s. */
+export const SEA_TYPING_ROLL = 1.3;
+/** At full response: every sea line is (1 + this) times as bright. */
+export const SEA_TYPING_LIT = 2.6;
+/** At full response: the crest glow's strength. */
+export const SEA_TYPING_GLOW = 1.2;
+/** The sea grid's period (px); the extra roll is kept modulo it, so the float stays small. */
+export const SEA_GRID = 64;
+
+/**
+ * The typing response (0..1), round 4's curve. No key reaches the sea directly: each key adds 0.35 to a reservoir (cap
+ * 1.3). While keys keep coming (the last under 0.4 s ago) it drains slowly (τ 2 s), so typing at 3 keys/s or faster holds
+ * it full; after that it drains fast (τ 0.15 s). The response eases toward min(1, reservoir): τ 0.5 s rising, 0.22 s
+ * falling, then a second 0.15 s ease so its slope stays continuous. From rest at 5 keys/s: 0.68 after 1 s, 0.96 after 2 s;
+ * under 0.10 1.33 s after the last key. `roll` is the extra distance the grid has rolled (px, modulo SEA_GRID).
+ */
+export interface SeaTyping {
+  e: number;
+  roll: number;
+  key(): void;
+  tick(dt: number): number;
+  reset(): void;
+}
+export function seaTyping(): SeaTyping {
+  let s1 = 0;
+  let s2 = 0;
+  let since = 99;
+  return {
+    e: 0,
+    roll: 0,
+    key() {
+      s1 = Math.min(1.3, s1 + 0.35);
+      since = 0;
+    },
+    tick(dt: number) {
+      if (!(dt > 0)) return this.e;
+      since += dt;
+      s1 *= Math.exp(-dt / (since < 0.4 ? 2.0 : 0.15));
+      const g = Math.min(1, s1);
+      s2 += (g - s2) * (1 - Math.exp(-dt / (g > s2 ? 0.5 : 0.22)));
+      this.e += (s2 - this.e) * (1 - Math.exp(-dt / 0.15));
+      if (this.e < 1e-4 && s1 < 1e-4) this.e = 0;
+      this.roll = (this.roll + 40 * SEA_TYPING_ROLL * this.e * dt) % SEA_GRID;
+      return this.e;
+    },
+    reset() {
+      s1 = 0;
+      s2 = 0;
+      since = 99;
+      this.e = 0;
+    },
+  };
+}
+
 const HORIZON = `
+uniform float seaTypingE; uniform float seaTypingRoll;
 void main() {
   vec2 p = P(), q = M(p); float HZ = C.y, F = 700.0, CH = 150.0;
   vec3 col = vec3(0.0);
@@ -134,12 +195,14 @@ void main() {
   if (dy > 0.5) {
     float Z = CH * F / dy, X = (q.x - C.x) * Z / F;
     float w = 22.0 * sin(X * 0.010 + t * 0.55) * cos(Z * 0.0075 - t * 0.40) + 11.0 * sin((X + Z) * 0.018 - t * 0.9);
-    float Xg = X + w * 0.6, Zg = Z - w * 4.0 - t * 40.0;
+    float Xg = X + w * 0.6, Zg = Z - w * 4.0 - t * 40.0 - seaTypingRoll;
     float px_ = Z / F, pz = Z * Z / (CH * F);
     float lx = 1.0 - smoothstep(0.0, px_ * 1.4, abs(fract(Xg / 64.0) - 0.5) * 64.0);
     float lz = (1.0 - smoothstep(0.0, pz * 1.4, abs(fract(Zg / 64.0) - 0.5) * 64.0)) * smoothstep(40.0, 10.0, pz);
     float crest = smoothstep(-20.0, 26.0, w), fade = exp(-Z / 2600.0) * smoothstep(0.0, 26.0, dy);
     col += mix(DEEP, CYAN, crest) * (lx * 0.55 + lz * 0.75) * fade * (0.55 + 0.6 * crest);
+    // Item 662: typing lights the sea (its lines, and a glow on the crests).
+    col += mix(CYAN, SIG, 0.5) * ((lx * 0.55 + lz * 0.75) * (0.55 + 0.6 * crest) * ${f(SEA_TYPING_LIT)} + 0.05 * ${f(SEA_TYPING_GLOW)} * (0.35 + 0.65 * crest)) * fade * seaTypingE;
     col += DEEP * 0.10 * exp(-dy / 90.0);
   } else {
     vec2 d = q - vec2(C.x, HZ); float r = length(d), a = atan(-d.y, d.x);
@@ -210,6 +273,9 @@ export interface ShaderFrame {
   rects: number[][];
   colours: ShaderColours;
   tint: number;
+  /** Item 662: the sea's typing response (0..1) and the grid's extra roll (px); absent = none. */
+  seaTypingE?: number;
+  seaTypingRoll?: number;
 }
 
 /** The sun-ray tint item 640 ships (0 = round 4's page). */
@@ -252,6 +318,7 @@ export function makeRenderer(gl: WebGLRenderingContext, look: ShaderLook): Rende
   const u = {
     t: U("t"), res: U("res"), px: U("px"), gain: U("gain"), CL: U("CL"), K: U("K"), tint: U("tint"),
     SIG: U("SIG"), AMB: U("AMB"), CYAN: U("CYAN"), DEEP: U("DEEP"), LIL: U("LIL"), DAWN: U("DAWN"), RC: U("RC"), nR: U("nR"),
+    seaTypingE: U("seaTypingE"), seaTypingRoll: U("seaTypingRoll"),
   };
   const rc = new Float32Array(MAX_RECTS * 4);
   return {
@@ -286,6 +353,8 @@ export function makeRenderer(gl: WebGLRenderingContext, look: ShaderLook): Rende
       for (let i = 0; i < n; i++) rc.set(fr.rects[i], i * 4);
       gl.uniform4fv(u.RC, rc);
       gl.uniform1f(u.nR, n);
+      if (u.seaTypingE) gl.uniform1f(u.seaTypingE, fr.seaTypingE ?? 0);
+      if (u.seaTypingRoll) gl.uniform1f(u.seaTypingRoll, fr.seaTypingRoll ?? 0);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     },
   };
@@ -330,8 +399,11 @@ export function shaderGround(
   host: HTMLElement,
   originOf: () => { x: number; y: number; r: number } | null,
   opts: ShaderOptions = {},
-): { set(style: string): void; destroy(): void } {
+): { set(style: string): void; typed(): void; destroy(): void } {
   const w = window as Win;
+  // Item 662: the sea's typing response, ticked by this loop's own frames.
+  const sea = seaTyping();
+  let lastFrame = 0;
   let style = "";
   let gl: WebGLRenderingContext | null = null;
   let lost = false;
@@ -394,6 +466,8 @@ export function shaderGround(
     fr.t = tSec;
     fr.gain = still ? 0.8 : 1;
     fr.tint = typeof w.__shaderTint === "number" ? w.__shaderTint : TINT;
+    fr.seaTypingE = still ? 0 : sea.e;
+    fr.seaTypingRoll = still ? 0 : sea.roll;
     const t0 = performance.now();
     renderer.draw(fr);
     const s = w.__groundStats;
@@ -416,6 +490,9 @@ export function shaderGround(
     frames++;
     if (frames <= 60 || frames % 30 === 0) readLayout();
     else readOrigin();
+    // Real time between frames (capped, so a stall or a hidden spell does not jump the response).
+    sea.tick(lastFrame ? Math.min(0.1, Math.max(0, (t - lastFrame) / 1000)) : 0);
+    lastFrame = t;
     draw(nowSec(t));
     raf = requestAnimationFrame(frame);
   }
@@ -425,6 +502,7 @@ export function shaderGround(
   function stop() {
     if (raf) cancelAnimationFrame(raf);
     raf = 0;
+    lastFrame = 0;
   }
   function decide() {
     stop();
@@ -446,6 +524,7 @@ export function shaderGround(
     canvas.style.display = "block";
     frames = 0;
     still = reducedMotion();
+    if (still) sea.reset();
     readColours();
     resize();
     // Draw at once, so the light is there even while the loop waits (hidden window, Reduce motion's one pose).
@@ -497,6 +576,12 @@ export function shaderGround(
   canvas.addEventListener("webglcontextrestored", onRestored);
   decide();
   return {
+    /** A key landed in the composer (Reduce motion: no response; Radar ignores it). */
+    typed() {
+      if (still || style !== "horizon") return;
+      sea.key();
+      kick();
+    },
     set(next: string) {
       if (next === style) return;
       style = next;
