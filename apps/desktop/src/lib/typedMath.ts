@@ -491,8 +491,16 @@ function spansOf(its: Item[]): Item[][] {
   let lead = false;
   const flush = () => {
     let dangling = lead;
-    while (cur.length && cur[cur.length - 1].kind === "OP") dangling ||= !cur.pop()!.spoken;
-    while (cur.length && cur[0].kind === "OP") dangling ||= !cur.shift()!.spoken;
+    // Pop/shift first, then OR: `dangling ||= !cur.pop()…` skips the pop once
+    // dangling is true and spins forever — "(n/2)^2 -> 4 * (" froze the app (item 647).
+    while (cur.length && cur[cur.length - 1].kind === "OP") {
+      const op = cur.pop()!;
+      dangling = dangling || !op.spoken;
+    }
+    while (cur.length && cur[0].kind === "OP") {
+      const op = cur.shift()!;
+      dangling = dangling || !op.spoken;
+    }
     if (cur.length && !dangling && accept(cur)) spans.push(cur);
     cur = [];
     lead = false;
