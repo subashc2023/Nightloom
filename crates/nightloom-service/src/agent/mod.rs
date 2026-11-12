@@ -103,15 +103,6 @@ const STDERR_TAIL: usize = 4096;
 /// a user's own Claude Code hooks can tell a Nightloom turn from theirs.
 pub const NIGHTLOOM_MARKER_ENV: &str = "NIGHTLOOM";
 
-/// How many model rounds one aside question may take (nightshift item 675,
-/// 2026-11-12; his "max turns after 3 messages? u have to be kidding me").
-/// It was 2 — an answering round plus one read — so a question the model
-/// thought about, read two things for and then answered ended in
-/// `error_max_turns` with no answer. Twenty lets an aside do real work;
-/// `dontAsk` still refuses anything that would prompt, and the bound keeps
-/// a looping aside from running on behind its card.
-pub const ASIDE_MAX_TURNS: u32 = 20;
-
 /// The last [`STDERR_TAIL`] bytes of `text`, cut on a character boundary:
 /// a byte offset that lands inside a multi-byte character would panic the
 /// reader task and lose the tail exactly when it is the only diagnosis
@@ -381,11 +372,13 @@ pub struct AgentSpec {
     /// the brief for the Agent hook. `None` is the defaults.
     pub subagent_limits: Option<brief::SubagentLimits>,
     /// `--max-turns <n>`: how many model rounds one turn may take. `None`
-    /// is the CLI's default (unbounded). An aside sends
-    /// [`ASIDE_MAX_TURNS`] ([`AgentSpec::aside`]) — ~~2: its answering
-    /// round, plus one in case the model read something first~~ (until
-    /// item 675, 2026-11-12: two rounds ended an aside that thought, read
-    /// two things and answered in `error_max_turns`) — measured, a turn
+    /// is the CLI's default (unbounded). An aside keeps the chat's own
+    /// value ([`AgentSpec::aside`]) — ~~2: its answering round, plus one
+    /// in case the model read something first~~ (until item 675,
+    /// 2026-11-12: two rounds ended an aside that thought, read two things
+    /// and answered in `error_max_turns`), ~~then 20~~ (removed 2026-11-12,
+    /// his "why is there a max turns on asides in the first place gang":
+    /// an aside runs like the main chat) — measured, a turn
     /// that calls a tool under `--max-turns 1` runs the tool and then ends
     /// `error_max_turns` with no answer (nightshift
     /// `081-report-2026-09-16.md`, M4).
@@ -1022,8 +1015,8 @@ impl AgentSpec {
     /// 242; `--tools ""` read **0** and wrote 10,360; `plan` mode read 0
     /// and wrote 44,176. So an aside is not toolless — it is harmless:
     /// `dontAsk` refuses anything that would prompt, a read inside the
-    /// workspace may still happen, and `--max-turns` ([`ASIDE_MAX_TURNS`];
-    /// 2 until item 675) gives its reads their answering round.
+    /// workspace may still happen, and it has no `--max-turns` of its own
+    /// (2, then 20, until 2026-11-12): it takes the chat's, unbounded.
     /// `--fork-session` keeps the chat's session
     /// untouched (the next real turn saw nothing of the aside, M2) and
     /// `--no-session-persistence` keeps the fork off the disk (no file
@@ -1036,7 +1029,6 @@ impl AgentSpec {
         let mut spec = self.clone();
         spec.fork_session = true;
         spec.no_session_persistence = true;
-        spec.max_turns = Some(ASIDE_MAX_TURNS);
         spec.permission_mode = Some("dontAsk".into());
         if let Some(ask) = &mut spec.ask {
             ask.mode = AskMode::Aside;
@@ -3806,9 +3798,6 @@ mod tests {
             ("--append-system-prompt", "preamble"),
             ("--permission-prompt-tool", ask::PROMPT_TOOL),
             ("--permission-mode", "dontAsk"),
-            // Item 675: room to read and think before it answers — two
-            // rounds ended his third question in `error_max_turns`.
-            ("--max-turns", "20"),
         ] {
             let i = a
                 .iter()
@@ -3819,6 +3808,8 @@ mod tests {
         for flag in ["--fork-session", "--no-session-persistence"] {
             assert!(a.iter().any(|x| x == flag), "{flag} in {a:?}");
         }
+        // No turn cap of its own (2026-11-12, his ask): it runs like main.
+        assert!(!a.iter().any(|x| x == "--max-turns"), "{a:?}");
         // No hook: a deferral would park the aside on a prompt (the
         // settings object may still carry the chat's other switches). And
         // the tools are untouched — `--tools ""` is what goes cold.
