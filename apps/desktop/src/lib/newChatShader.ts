@@ -148,8 +148,12 @@ void main() {
     vec3 glow = mix(CYAN, LIL, up);
     glow = mix(glow, DAWN, tint * 0.55 * exp(-pow(d.x / 300.0, 2.0)) * (1.0 - 0.75 * up));
     col += glow * 0.30 * br * exp(-pow(length(d * vec2(0.42, 1.0)) / 250.0, 2.0));
+    // Item 669 (his pick, B Rim flare "slightly less bright"): a short cyan-white flare at each ray's foot,
+    // starting on the tick ring's outer edge (r 184), so the light reads as leaving the rim; then today's warm body.
+    float sh = pow(0.5 + 0.5 * sin(a * 26.0 + t * 0.25), 10.0), foot = smoothstep(176.0, 190.0, r);
     vec3 ray = mix(SIG, DAWN, tint * 0.85 * (1.0 - smoothstep(200.0, 660.0, r)));
-    col += ray * pow(0.5 + 0.5 * sin(a * 26.0 + t * 0.25), 10.0) * 0.16 * exp(-r / 520.0) * smoothstep(150.0, 210.0, r);
+    col += ray * sh * 0.16 * exp(-r / 520.0) * foot;
+    col += mix(SIG, vec3(1.0), 0.3) * sh * 0.18 * exp(-(r - 184.0) / 34.0) * foot;
     col += SIG * specks(q, 0.16) * 0.55 * smoothstep(0.0, 60.0, -dy);
   }
   col += CYAN * exp(-abs(dy) / 1.6) * 0.65 * exp(-pow((q.x - C.x) / 700.0, 2.0));
