@@ -110,9 +110,13 @@
   /* Item 621 (his "maybe five percent brighter, like barely any
      difference"): the dot's ink went 5% → 5.5%, so the dot itself reads
      ~5% brighter. `--ground-dot-ink` is the one value; the chat's pointer
-     field (`lib/dotField.ts`) draws its dots in it too. */
-  --ground-dot-ink: color-mix(in srgb, var(--ink) 8%, transparent);
-  --ground-dots: radial-gradient(circle, var(--ground-dot-ink) 1px, transparent 1.2px);
+     field (`lib/dotField.ts`) draws its dots in it too.
+     Item 655 (his "the dots need to be more visible on the screen i can
+     barely see them still"; Wake's dots, picked with Scatter, blocker 1974):
+     8% → 16% of the ink, and the dot 2 px → 2.7 px across (core 1 → 1.35 px,
+     edge 1.2 → 1.55 px). Every dotted ground reads these two tokens. */
+  --ground-dot-ink: color-mix(in srgb, var(--ink) 16%, transparent);
+  --ground-dots: radial-gradient(circle, var(--ground-dot-ink) 1.35px, transparent 1.55px);
   --bracket: var(--accent);
 
   --serif: "Newsreader Variable", Georgia, "Times New Roman", serif;
