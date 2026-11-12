@@ -10,11 +10,19 @@
    * Fixed-cap form: the time is the schedule's end (the last ping the cap
    * allows, plus the cache's hour), not a prediction of his return — 579's
    * predictor is not shipped.
+   *
+   * Item 681 (his "should be like a toggle instaed of jus like \"turn
+   * fof\" and teh toggle sh be on the left side too and the entire thing
+   * should be clickable"): the line is one switch — a small toggle on its
+   * left, the words after it, the whole row the button (`role="switch"`,
+   * Space / Enter from the keyboard). Off, it stays while the reply's cache
+   * is still warm and says a click keeps it (`noticeRow`); a click sends
+   * what the composer's keep-warm switch sends (`rowToggle`).
    */
   import { onDestroy } from "svelte";
   import { tip } from "./tip";
   import { addToast } from "./state.svelte";
-  import { noticeLine, switchTitle } from "./keepWarm";
+  import { noticeRow, rowToggle, switchTitle } from "./keepWarm";
   import { keepWarm, loadKeepWarm, setKeepWarm } from "./keepWarm.svelte";
 
   // Item 663: `reply` hangs it on the reply's side (left) instead of his.
@@ -37,80 +45,132 @@
   onDestroy(() => {
     if (timer != null) clearTimeout(timer);
   });
-  const line = $derived(noticeLine(status, now));
+  const row = $derived(noticeRow(status, now));
+  // The switch moves at the click, before the backend answers; the answer
+  // (or a refusal) puts it where the status says.
+  let pending: boolean | null = $state(null);
+  const on = $derived(pending ?? row?.on ?? false);
 
-  async function off() {
-    const refused = await setKeepWarm(chat, "off");
+  async function flip() {
+    if (!row || pending !== null) return;
+    const mode = rowToggle(row);
+    pending = mode === "on";
+    const refused = await setKeepWarm(chat, mode);
+    pending = null;
     if (refused) addToast(`Keep warm: ${refused}`);
   }
 </script>
 
-{#if line}
-  <div class="keep-warm-notice" class:under-reply={side === "reply"} role="status">
-    <span class="kw-dot" aria-hidden="true"></span>
-    <span class="kw-line" use:tip={switchTitle(status, now)}>{line}{status?.mode === "once" ? " or your next message" : ""}</span>
-    <button class="kw-off" type="button" use:tip={"Switch this chat's keep-warm off — no more requests; the cache runs out its hour"} onclick={() => void off()}>turn off</button>
-  </div>
+{#if row}
+  <button
+    type="button"
+    class="keep-warm-notice"
+    class:under-reply={side === "reply"}
+    class:on
+    role="switch"
+    aria-checked={on}
+    use:tip={switchTitle(status, now)}
+    onclick={() => void flip()}
+  >
+    <span class="kw-switch" aria-hidden="true"><span class="kw-knob"></span></span>
+    <span class="kw-line">{row.text}</span>
+  </button>
 {/if}
 
 <style>
-  /* Classic: a plain dim line, right-aligned under his bubble. */
+  /* Classic: a plain dim row, right-aligned under his bubble (left under
+     the reply), the switch drawn in the line's own colours. */
   .keep-warm-notice {
     display: flex;
     align-items: center;
     justify-content: flex-end;
-    gap: 6px;
-    margin: 2px 0 6px;
+    gap: 7px;
+    width: fit-content;
+    margin: 2px 0 6px auto;
+    padding: 2px 6px;
+    border: 0;
+    border-radius: 6px;
+    background: none;
     font: 11.5px var(--sans);
     color: var(--dim);
     font-variant-numeric: tabular-nums;
-  }
-  .kw-dot {
-    display: none;
-  }
-  .kw-off {
-    padding: 0;
-    border: 0;
-    background: none;
-    font: inherit;
-    color: var(--dim);
-    text-decoration: underline;
-    text-underline-offset: 2px;
+    text-align: left;
     cursor: pointer;
   }
-  .kw-off:hover {
+  .keep-warm-notice:hover {
     color: var(--ink);
+    background: color-mix(in srgb, var(--ink) 6%, transparent);
   }
-  /* Filament IV: a small raised pill with a warm dot. */
+  .keep-warm-notice:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  /* The switch: a 22 × 12 track, a 8 px knob; on, the knob slides right on the accent. */
+  .kw-switch {
+    position: relative;
+    flex: none;
+    width: 22px;
+    height: 12px;
+    border-radius: 6px;
+    border: 1px solid var(--line2, currentColor);
+    background: transparent;
+    box-sizing: border-box;
+  }
+  .kw-knob {
+    position: absolute;
+    top: 1px;
+    left: 1px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+  .keep-warm-notice.on .kw-switch {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+  .keep-warm-notice.on .kw-knob {
+    transform: translateX(10px);
+    background: var(--accent);
+    /* Lit: a faint glow; Calm and Classic set the token to none. */
+    box-shadow: var(--glow-accent, none);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .kw-knob {
+      transition:
+        transform 180ms cubic-bezier(0.3, 0.7, 0.4, 1),
+        background-color 180ms ease;
+    }
+    .kw-switch,
+    .keep-warm-notice {
+      transition:
+        background-color 180ms ease,
+        border-color 180ms ease,
+        color 120ms ease;
+    }
+  }
+  /* Filament IV: a small raised pill. */
   :global(:where(:root:not([data-layout="classic"]))) .keep-warm-notice {
-    width: fit-content;
     margin: 4px 0 8px auto;
-    padding: 3px 10px 3px 9px;
-    gap: 7px;
+    padding: 3px 10px 3px 7px;
     border: 1px solid var(--line2);
     border-radius: 12px;
     background: var(--raised);
     font: 500 11px var(--sans);
     color: var(--ink2);
   }
-  :global(:where(:root:not([data-layout="classic"]))) .kw-dot {
-    display: block;
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--accent);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .kw-off {
-    padding-left: 7px;
-    border-left: 1px solid var(--line2);
-    text-decoration: none;
+  :global(:where(:root:not([data-layout="classic"]))) .keep-warm-notice:not(.on) {
     color: var(--dim);
   }
-  :global(:where(:root:not([data-layout="classic"]))) .kw-off:hover {
-    color: var(--accent);
+  :global(:where(:root:not([data-layout="classic"]))) .keep-warm-notice:hover {
+    border-color: color-mix(in srgb, var(--accent) 45%, var(--line2));
+    background: color-mix(in srgb, var(--accent) 7%, var(--raised));
+    color: var(--ink);
   }
   .keep-warm-notice.under-reply {
     justify-content: flex-start;
+    margin-left: 0;
+    margin-right: auto;
   }
   :global(:where(:root:not([data-layout="classic"]))) .keep-warm-notice.under-reply {
     margin: 4px auto 8px 0;
