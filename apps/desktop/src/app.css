@@ -1457,3 +1457,66 @@ mark.find-hit {
   --motion-ink: var(--signal);
   --motion-ink-hi: var(--signal-ink, var(--signal));
 }
+
+/* ---- what can be selected (item 646) ----------------------------------------
+
+   His words: "i dont like that u can like highlight in this way" — a drag
+   or Select All on the new-chat screen painted blue boxes over the dial
+   and its labels. So the app is chrome by default: `body` cannot be
+   selected, and the content he reads or may copy opts back in — messages
+   (his and Claude's, in a chat or an aside), code, tool output, Markdown
+   (notes, files, the review pages), every field and editor, and error
+   text. Chrome inside content (buttons, tabs, menu items, a turn's tools)
+   opts out again. `user-select` is inherited in WebKit, so a container
+   carries its whole subtree; a component's own `user-select: none` (a
+   line number, a time row) still wins, being more specific. ⌘A outside a
+   text box selects only the pane he is in (`lib/selectScope.ts`). Not
+   gated by layout: Filament IV and Classic alike. */
+body {
+  -webkit-user-select: none;
+  user-select: none;
+}
+input,
+textarea,
+[contenteditable]:not([contenteditable="false"]),
+.cm-editor,
+pre,
+code,
+.markdown,
+.transcript,
+.aside-thread,
+.assistant,
+.user-bubble,
+.mt-bubble,
+.diffview .scroll,
+.ed-body,
+.runs .log,
+.error,
+.err,
+.error-banner,
+.tex-error,
+.row-error,
+.tp-error,
+.preview-error,
+.aside-err,
+.fold-err,
+.toast-text {
+  -webkit-user-select: text;
+  user-select: text;
+}
+button,
+[role="button"],
+[role="tab"],
+[role="menu"],
+[role="menuitem"],
+.cm-gutters,
+.turn-tools,
+.turn-foot,
+.assistant .who,
+.assistant .footer,
+.ns-k,
+.jump-down,
+.rewound {
+  -webkit-user-select: none;
+  user-select: none;
+}
