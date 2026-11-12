@@ -32,7 +32,7 @@ import { reducedMotion } from "./sendMotion";
 /** The rate a running step's motion starts at (1 = today's pace). */
 export const RAMP_START = 0.2;
 /** How long the motion takes to reach today's pace. */
-export const RAMP_MS = 5000;
+export const RAMP_MS = 3500; // his pick 2026-11-12: "5s is too long. make it 3.5" (was 5000)
 
 /** Ease-in (quadratic): slow to gather, quickest at the end. */
 const easeIn = (u: number) => u * u;

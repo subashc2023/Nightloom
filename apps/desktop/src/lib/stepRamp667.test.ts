@@ -5,25 +5,25 @@ import messageSrc from "./AssistantMessage.svelte?raw";
 import previewSrc from "./StepMotionPreview.svelte?raw";
 
 describe("the ramp's rate curve", () => {
-  it("starts at RAMP_START and reaches today's pace at 5 s", () => {
-    expect(RAMP_MS).toBe(5000);
+  it("starts at RAMP_START and reaches today's pace at RAMP_MS (3.5 s)", () => {
+    expect(RAMP_MS).toBe(3500);
     expect(rampRate(0)).toBe(RAMP_START);
     expect(rampRate(-50)).toBe(RAMP_START);
-    expect(rampRate(5000)).toBe(1);
+    expect(rampRate(RAMP_MS)).toBe(1);
     expect(rampRate(12_000)).toBe(1);
   });
 
   it("eases in: rises the whole way, slow first, quickest at the end", () => {
     for (const s of [0, 0.1, 0.2, 0.4]) {
       let last = -1;
-      for (let t = 0; t <= 5000; t += 250) {
+      for (let t = 0; t <= RAMP_MS; t += 250) {
         const r = rampRate(t, s);
         expect(r).toBeGreaterThanOrEqual(last);
         last = r;
       }
       // Ease-in: the first half gains a quarter of the way, the second three quarters.
-      expect(rampRate(2500, s) - s).toBeCloseTo((1 - s) * 0.25, 6);
-      expect(rampRate(1000, s) - rampRate(0, s)).toBeLessThan(rampRate(5000, s) - rampRate(4000, s));
+      expect(rampRate(RAMP_MS / 2, s) - s).toBeCloseTo((1 - s) * 0.25, 6);
+      expect(rampRate(1000, s) - rampRate(0, s)).toBeLessThan(rampRate(RAMP_MS, s) - rampRate(RAMP_MS - 1000, s));
     }
   });
 
