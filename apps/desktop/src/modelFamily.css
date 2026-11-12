@@ -23,7 +23,7 @@ html:not([data-layout="classic"]) .composer[data-model-family="fable"] {
 }
 html:not([data-layout="classic"]) .composer[data-model-family="opus"] {
   --c644-hue: var(--opus);
-  --c644-opus-k: 1;
+  --c644-opus-k: 3; /* his pick was the design page's Copper (blocker 1923); 1 read as today's box */
   --c644-k: var(--c644-opus-k);
 }
 
