@@ -90,10 +90,7 @@
     overflow: hidden;
     background: var(--paper);
   }
-  .gp.still {
-    background-image: var(--ground-dots);
-    background-size: 22px 22px;
-  }
+  /* Item 682: .gp.still has no dot tile, to match the new chat page. */
   .gp canvas {
     position: absolute;
     left: 0;

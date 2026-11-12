@@ -118,16 +118,8 @@ function baseGrid(view: GroundView): HTMLCanvasElement | OffscreenCanvas | null 
   if (!c) return null;
   const g = c.getContext("2d") as Ctx | null;
   if (!g) return null;
-  g.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
-  g.fillStyle = view.colours.dot;
-  g.beginPath();
-  const s = GROUND_STEP;
-  for (let x = s / 2; x < view.w; x += s)
-    for (let y = s / 2; y < view.h; y += s) {
-      g.moveTo(x + GROUND_DOT_R, y);
-      g.arc(x, y, GROUND_DOT_R, 0, Math.PI * 2);
-    }
-  g.fill();
+  // Item 682 (his ask, 2026-11-12: "remove the background dots"): the grid is
+  // left blank. It stays a canvas because Weft repaints its trails from it.
   return c;
 }
 

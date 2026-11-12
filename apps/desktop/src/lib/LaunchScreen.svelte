@@ -86,8 +86,7 @@
      (item 542) is the rules above. */
   :where(:root:not([data-layout="classic"])) .launch {
     background-color: var(--paper);
-    background-image: var(--ground-dots);
-    background-size: 22px 22px;
+    /* Item 682: no dot tile, to match the new chat page. */
   }
   :where(:root:not([data-layout="classic"])) .line {
     font: 12px var(--mono);

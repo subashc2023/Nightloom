@@ -391,7 +391,7 @@
   );
   const hello = $derived(
     ready
-      ? `${greeting(now.getHours(), now)} Everything is ready.`
+      ? greeting(now.getHours(), now) // item 682: no "Everything is ready."
       : app.connecting
         ? `${greeting(now.getHours(), now)} Connecting…`
         : app.project?.root && !app.project.exists
@@ -725,8 +725,7 @@
     display: flex;
     flex-direction: column;
     padding: 10px 1.5rem 2.75rem;
-    background-image: var(--ground-dots);
-    background-size: 22px 22px;
+    /* Item 682: no dot tile (his ask, 2026-11-12). */
   }
   /* Item 632: the moving ground. The canvas draws the same dots, so the
      tile goes while it runs; the page is positioned so it paints over it. */

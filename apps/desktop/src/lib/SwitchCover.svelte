@@ -35,8 +35,7 @@
     align-items: center;
     justify-content: center;
     background-color: var(--paper);
-    background-image: var(--ground-dots);
-    background-size: 22px 22px;
+    /* Item 682: no dot tile, to match the new chat page. */
   }
   .switching.classic {
     background-image: none;

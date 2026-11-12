@@ -2959,7 +2959,7 @@
             <div class="h4-in">
               <span class="h4-when">{d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })} · {clock12(now)}</span>
               <span class="h4-name">{projectName(newProject)}</span>
-              <span class="h4-ready"><span class="dot" class:ok={ready} class:run={link === "online" && remote.busy} class:bad={link !== "online"}></span>{ready ? "Everything is ready." : link !== "online" ? status : remote.busy ? "Busy in another chat." : status}</span>
+              <span class="h4-ready"><span class="dot" class:ok={ready} class:run={link === "online" && remote.busy} class:bad={link !== "online"}></span>{ready ? "" : link !== "online" ? status : remote.busy ? "Busy in another chat." : status}</span>
               <span class="h4-zero"><b>0</b> in context</span>
             </div>
           </div>
