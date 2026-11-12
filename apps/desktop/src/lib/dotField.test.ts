@@ -1,6 +1,27 @@
 import { describe, expect, it } from "vitest";
 import transcriptSrc from "./Transcript.svelte?raw";
-import { DOT_STEP, PUSH_MAX, PUSH_RADIUS, type Dot, deviceStep, dotCentre, dotsIn, fieldWanted, pushOffset, stepDot } from "./dotField";
+import {
+  DOT_STEP,
+  GLOW_LEVELS,
+  HOME_K,
+  PUSH_CLAMP,
+  PUSH_MAX,
+  PUSH_RADIUS,
+  SCATTER,
+  type Dot,
+  advanceDot,
+  deviceStep,
+  dotCentre,
+  dotRandoms,
+  dotsIn,
+  fieldWanted,
+  glowFills,
+  glowLevel,
+  parseColour,
+  pushOffset,
+  scatterOf,
+  stepDot,
+} from "./dotField";
 
 describe("the dot grid matches the CSS tile (item 621)", () => {
   it("puts dot (0, 0) at the tile centre at the foot-left corner", () => {
@@ -42,8 +63,20 @@ describe("the push", () => {
     expect(pushOffset(PUSH_RADIUS, 0)).toEqual({ x: 0, y: 0 });
     expect(pushOffset(0, 0)).toEqual({ x: 0, y: 0 });
   });
-  it("never moves a dot half a grid step (rows never cross)", () => {
-    expect(PUSH_MAX).toBeLessThan(DOT_STEP / 2);
+  it("reaches Scatter's 300 px with a 40 px typical push, never past the 58 px clamp (655)", () => {
+    expect(PUSH_RADIUS).toBe(300);
+    expect(PUSH_MAX).toBe(40);
+    expect(Math.hypot(pushOffset(1, 0).x, pushOffset(1, 0).y)).toBeCloseTo(40, 1);
+    const heavy = { weight: 3, angle: 0, ret: 1 };
+    expect(Math.hypot(pushOffset(1, 0, heavy).x, pushOffset(1, 0, heavy).y)).toBeCloseTo(PUSH_CLAMP, 6);
+  });
+  it("scales by a dot's weight and turns by its off-angle", () => {
+    const s = { weight: 1.2, angle: 0.3, ret: 1 };
+    const p = pushOffset(50, 0, s);
+    const q = pushOffset(50, 0);
+    expect(Math.hypot(p.x, p.y)).toBeCloseTo(Math.hypot(q.x, q.y) * 1.2, 6);
+    expect(Math.atan2(p.y, p.x)).toBeCloseTo(0.3, 6);
+    expect(pushOffset(PUSH_RADIUS, 0, s)).toEqual({ x: 0, y: 0 });
   });
 });
 
@@ -59,15 +92,17 @@ describe("the spring", () => {
     expect(n).toBeLessThan(120);
     expect([d.px, d.py, d.vx, d.vy]).toEqual([0, 0, 0, 0]);
   });
-  it("overshoots only a hair", () => {
+  it("shoves out with next to no overshoot (0.95 of critical)", () => {
     const d: Dot = { i: 0, j: 0, px: 0, py: 0, vx: 0, vy: 0 };
     let peak = 0;
+    let n = 0;
     for (let k = 0; k < 200; k++) {
-      stepDot(d, 8, 0, 1 / 60);
+      stepDot(d, 30, 0, 1 / 60);
       peak = Math.max(peak, d.px);
+      if (d.px < 27) n = k + 1;
     }
-    expect(peak).toBeGreaterThan(8);
-    expect(peak).toBeLessThan(8.5);
+    expect(peak).toBeLessThan(30.3);
+    expect(n).toBeLessThan(20); // 90 % of the way in a third of a second
   });
 });
 
@@ -84,5 +119,127 @@ describe("when it runs", () => {
     expect(transcriptSrc).toContain('<canvas class="dot-field" aria-hidden="true" bind:this={dotCanvas}></canvas>');
     expect(transcriptSrc).toContain("const f = dotField(dotCanvas, viewport);");
     expect(transcriptSrc).toMatch(/\.transcript:global\(\.dotfield\) \{\s*background: none;/);
+  });
+});
+
+describe("each dot's seeded randomness (655)", () => {
+  const all = (amount = SCATTER) => {
+    const out = [];
+    for (let i = 0; i < 80; i++) for (let j = 0; j < 60; j++) out.push(scatterOf(i, j, amount));
+    return out;
+  };
+  const median = (a: number[]) => [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)];
+  it("is the same for the same dot on every call", () => {
+    expect(scatterOf(3, 17)).toEqual(scatterOf(3, 17));
+    expect(dotRandoms(40, 2)).toEqual(dotRandoms(40, 2));
+    expect(scatterOf(3, 17)).not.toEqual(scatterOf(17, 3));
+    for (const u of dotRandoms(9, 9)) {
+      expect(u).toBeGreaterThanOrEqual(0);
+      expect(u).toBeLessThan(1);
+    }
+  });
+  it("is 0.6 of round 2's: off-angle within ±19°, weight 0.65–1.25, return speed 0.55–1.87", () => {
+    expect(SCATTER).toBe(0.6);
+    const s = all();
+    const ang = s.map((x) => (x.angle * 180) / Math.PI);
+    expect(Math.max(...ang.map(Math.abs))).toBeLessThanOrEqual(0.6 * 31.52 + 1e-9);
+    expect(Math.max(...ang)).toBeGreaterThan(18); // the range is used, not just bounded
+    expect(Math.min(...ang)).toBeLessThan(-18);
+    const w = s.map((x) => x.weight);
+    expect(Math.min(...w)).toBeGreaterThanOrEqual(0.65 - 1e-9);
+    expect(Math.max(...w)).toBeLessThanOrEqual(1.25 + 1e-9);
+    const r = s.map((x) => x.ret);
+    expect(Math.min(...r)).toBeGreaterThanOrEqual(0.554);
+    expect(Math.max(...r)).toBeLessThanOrEqual(1.874);
+  });
+  it("narrows each spread about its median, so the typical dot is unchanged", () => {
+    const a = all(SCATTER);
+    const b = all(1);
+    const spread = (v: number[]) => Math.max(...v) - Math.min(...v);
+    expect(spread(a.map((x) => x.weight)) / spread(b.map((x) => x.weight))).toBeCloseTo(0.6, 6);
+    expect(spread(a.map((x) => x.angle)) / spread(b.map((x) => x.angle))).toBeCloseTo(0.6, 6);
+    expect(spread(a.map((x) => x.ret)) / spread(b.map((x) => x.ret))).toBeCloseTo(0.6, 6);
+    expect(median(a.map((x) => x.weight))).toBeCloseTo(0.95, 1);
+    expect(median(a.map((x) => x.ret))).toBeCloseTo(0.86, 1);
+    expect(Math.abs(median(a.map((x) => x.angle)))).toBeLessThan(0.02);
+    // round 2's own ranges at 1
+    const w1 = b.map((x) => x.weight);
+    expect(Math.min(...w1)).toBeGreaterThanOrEqual(0.45);
+    expect(Math.max(...w1)).toBeLessThanOrEqual(1.45);
+  });
+  it("gives no randomness at 0: every dot straight out, weight 1-ish, one return speed", () => {
+    const s = scatterOf(5, 5, 0);
+    expect(s.angle).toBe(0);
+    expect(s.weight).toBeCloseTo(0.95, 9);
+  });
+});
+
+describe("the push and the return home (655)", () => {
+  it("shoves dots out fast, then every dot drifts back to exactly home after the pointer leaves", () => {
+    const dots: Dot[] = [];
+    for (let i = 0; i < 25; i++) for (let j = 0; j < 25; j++) dots.push({ i, j, px: 0, py: 0, vx: 0, vy: 0 });
+    const ptr = { x: 12 * 24 + 5, y: 12 * 24 + 7 };
+    const dt = 1 / 60;
+    for (let f = 0; f < 30; f++) for (const d of dots) advanceDot(d, { x: d.i * 24 - ptr.x, y: d.j * 24 - ptr.y }, dt);
+    const offs = dots.map((d) => Math.hypot(d.px, d.py)).filter((v) => v > 1);
+    expect(offs.length).toBeGreaterThan(200);
+    expect(Math.max(...offs)).toBeLessThanOrEqual(PUSH_CLAMP + 1e-9);
+    // neighbours at the same distance fly different distances
+    expect(new Set(offs.map((v) => Math.round(v))).size).toBeGreaterThan(20);
+    let frames = 0;
+    let halfAt = 0;
+    const start = Math.max(...offs);
+    while (frames < 60 * 30) {
+      let busy = false;
+      let most = 0;
+      for (const d of dots) {
+        if (!advanceDot(d, null, dt)) busy = true;
+        most = Math.max(most, Math.hypot(d.px, d.py));
+      }
+      frames++;
+      if (!halfAt && most < start / 2) halfAt = frames;
+      if (!busy) break;
+    }
+    for (const d of dots) expect([d.px, d.py, d.vx, d.vy]).toEqual([0, 0, 0, 0]);
+    expect(halfAt / 60).toBeGreaterThan(0.4); // slow: not today's snap
+    expect(frames / 60).toBeLessThan(12);
+  });
+  it("brings slow-return dots home slower than fast ones", () => {
+    const pick = (fast: boolean) => {
+      let best = { i: 0, j: 0, r: fast ? 0 : 9 };
+      for (let i = 0; i < 40; i++)
+        for (let j = 0; j < 40; j++) {
+          const r = scatterOf(i, j).ret;
+          if (fast ? r > best.r : r < best.r) best = { i, j, r };
+        }
+      return best;
+    };
+    const home = (p: { i: number; j: number }) => {
+      const d: Dot = { i: p.i, j: p.j, px: 30, py: 0, vx: 0, vy: 0 };
+      let n = 0;
+      while (!advanceDot(d, null, 1 / 60) && n < 6000) n++;
+      return n;
+    };
+    expect(home(pick(false))).toBeGreaterThan(home(pick(true)) * 1.5);
+    expect(HOME_K).toBe(5);
+  });
+});
+
+describe("the brighter, lit dots (655)", () => {
+  it("parses what WebKit computes for a color-mix and lifts displaced dots toward the signal", () => {
+    expect(parseColour("color(srgb 0.913725 0.929412 0.94902 / 0.16)")).toEqual([
+      expect.closeTo(233, 0),
+      expect.closeTo(237, 0),
+      expect.closeTo(242, 0),
+      0.16,
+    ]);
+    expect(parseColour("rgb(134, 216, 247)")).toEqual([134, 216, 247, 1]);
+    const f = glowFills("rgba(233, 237, 242, 0.16)", "rgb(134, 216, 247)");
+    expect(f).toHaveLength(GLOW_LEVELS);
+    expect(f[0]).toBe("rgba(233, 237, 242, 0.16)");
+    expect(f[GLOW_LEVELS - 1]).toBe("rgba(218, 234, 243, 0.300)");
+    expect(glowFills("nonsense", "rgb(1, 2, 3)").every((x) => x === "nonsense")).toBe(true);
+    expect(glowLevel(0, 0)).toBe(0);
+    expect(glowLevel(PUSH_MAX, 0)).toBe(GLOW_LEVELS - 1);
   });
 });

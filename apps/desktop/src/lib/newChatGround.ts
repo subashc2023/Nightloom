@@ -41,8 +41,8 @@ export const GROUND_MENU: { id: GroundStyle; name: string; note: string }[] = [
 
 /** The CSS tile's size on `.welcome` (`background-size: 22px 22px`). */
 export const GROUND_STEP = 22;
-/** Between the gradient's 1 px solid core and its 1.2 px edge. */
-export const GROUND_DOT_R = 1.1;
+/** Between the gradient's 1.35 px solid core and its 1.55 px edge (item 655; was 1.1 for 1 / 1.2 px). */
+export const GROUND_DOT_R = 1.45;
 
 export type Rgb = [number, number, number];
 export interface GroundColours {

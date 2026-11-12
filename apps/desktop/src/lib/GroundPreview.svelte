@@ -34,7 +34,7 @@
       dpr,
       origin: { x: wv / 2, y: hv / 2 },
       colours: {
-        dot: read("var(--ground-dot-ink)") || "rgba(233, 237, 242, 0.08)",
+        dot: read("var(--ground-dot-ink)") || "rgba(233, 237, 242, 0.16)",
         ink: parseRgb(read("var(--ink)"), [233, 237, 242]),
         signal: parseRgb(read("var(--signal)"), [134, 216, 247]),
         accent: parseRgb(read("var(--accent)"), [255, 180, 84]),
