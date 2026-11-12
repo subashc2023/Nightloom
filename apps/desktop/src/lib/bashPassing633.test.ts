@@ -50,7 +50,8 @@ describe("the row", () => {
   });
 
   it("is fed by the live-only tool_output event, which never reaches the segments", () => {
-    expect(stateSrc).toMatch(/if \(ev\.type === "tool_output"\) \{\s*setPassing\(ev\.tool_use_id, ev\.lines\);\s*return;/);
-    expect(stateSrc).toMatch(/endPassing\(ev\.tool_use_id\)/);
+    // ~~the handler's own branch~~ — item 649: one helper for the chat's and an aside's stream.
+    expect(stateSrc).toMatch(/if \(passingEvent\(ev, isShellForPassing\)\) return;/);
+    expect(stateSrc).toMatch(/if \(passingEvent\(e\.payload\.event, isShellForPassing\)\) return;/);
   });
 });

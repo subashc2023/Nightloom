@@ -14,6 +14,7 @@
   import { isShellCall } from "./agentCommands";
   import CouncilBlocks from "./CouncilBlocks.svelte";
   import BashPassing from "./BashPassing.svelte";
+  import { passingEnded } from "./bashOutput.svelte";
   import { parseCouncilRecord, parseCouncilSeat } from "./council";
   import { wordDiff } from "./textdiff";
   import { exactTime, relativeTimeLong } from "./time";
@@ -844,7 +845,12 @@
         {#if c.kind === "tool"}
           {@const icon = toolIcon(c.call.name)}
           {@const childDiff = editDiffOf(c.call.name, c.call.input)}
-          <div class="arow static" class:error={!!c.call.result?.is_error}>
+          {@const childShell = toolKind(c.call.name) === "shell"}
+          {@const childRun = childShell && streaming && !c.call.result && !c.call.denied}
+          {@const childRem = childShell && !childRun && passingEnded(c.call.id)}
+          <div class="arow static" class:error={!!c.call.result?.is_error} class:sub-pass={childRun || childRem}>
+            <!-- Item 649: a subagent's command passes its output too. -->
+            {#if childRun || childRem}<BashPassing id={c.call.id} ended={childRem} />{/if}
             <span class="ico">{#if icon}<Icon name={icon} size={13} />{:else}⚒{/if}</span>
             <span class="name" use:tip={c.call.name}>{shortToolName(c.call.name)}</span>
             <span class="arg">{toolInputSummary(c.call.input)}</span>
@@ -995,11 +1001,14 @@
               {@const bornW = births.of(ids[i] || `tool:${i}`, streaming, !running)}
               {@const editDiff = editDiffOf(seg.call.name, seg.call.input)}
               {@const kind = toolKind(seg.call.name)}
+              {@const remnant = !running && kind === "shell" && passingEnded(seg.call.id)}
               <div class="row-wrap tool" class:running class:rm-born={bornW} class:rm-finished={bornW && !running}
-                class:mo-run={running} data-kind={kind}>
+                class:mo-run={running} class:bash-rem={remnant} data-kind={kind}>
                 {#if running}{@render stepLive(kind, false)}{/if}
                 <!-- Item 633: the command's real output passing behind the row. -->
                 {#if running && kind === "shell"}<BashPassing id={seg.call.id} />{/if}
+                <!-- Item 649: and its last lines a moment after it ends, fading. -->
+                {#if remnant}<BashPassing id={seg.call.id} ended />{/if}
                 <!-- An Agent call's row is a drag source (backlog 160): its
                      subagent's transcript as a tab, dropped on a strip or a
                      pane's half — live while it runs (guess pass 2026-09-25,
@@ -2102,6 +2111,13 @@
   }
   .row-wrap.mo-run,
   .trace .arow.mo-run {
+    isolation: isolate;
+  }
+  /* Item 649: the remnant and a subagent row's passing text sit behind the
+     row's text, inside the row — not behind the trace. */
+  .row-wrap.bash-rem,
+  .arow.sub-pass {
+    position: relative;
     isolation: isolate;
   }
   /* ---- Item 616: Combo and Reticle (616-demo/combo.html) ----

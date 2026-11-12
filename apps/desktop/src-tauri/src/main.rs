@@ -4715,6 +4715,8 @@ fn aside_drawn(e: &TurnEvent) -> bool {
             | TurnEvent::ToolCall { .. }
             | TurnEvent::ToolResult { .. }
             | TurnEvent::ToolDenied { .. }
+            // Item 649: an aside's running command passes its output too.
+            | TurnEvent::ToolOutput { .. }
     )
 }
 
@@ -9903,6 +9905,10 @@ mod tests {
             id: "1".into(),
             name: "Read".into(),
             input: serde_json::json!({}),
+        }));
+        assert!(aside_drawn(&TurnEvent::ToolOutput {
+            tool_use_id: "t".into(),
+            lines: vec!["tick 1".into()],
         }));
         assert!(!aside_drawn(&TurnEvent::TextDelta { text: "x".into() }));
         assert!(!aside_drawn(&TurnEvent::RoundLimit { rounds: 2 }));

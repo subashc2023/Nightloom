@@ -1,5 +1,6 @@
 import { noteContextLive } from "./liveContext.svelte";
-import { endPassing, setPassing } from "./bashOutput.svelte";
+import { passingEvent } from "./bashOutput.svelte";
+import { isShellCall as isShellForPassing } from "./agentCommands";
 import { clock12 as faceClock12 } from "./nightshiftFace";
 import { viewRenameKeys } from "./viewState";
 import { projectSwitch } from "./projectSwitch.svelte";
@@ -1649,6 +1650,8 @@ export async function init(): Promise<void> {
   // The rest of an aside's turn (item 403): its thinking and calls, into
   // the same segments the chat's live reply is made of.
   await listen<{ seq: number; event: TurnEvent }>("aside-turn-event", (e) => {
+    // Item 649: an aside's running command passes its output too.
+    if (passingEvent(e.payload.event, isShellForPassing)) return;
     const t = findAsideTurn(e.payload.seq);
     if (t) asideTurnEvent(t, e.payload.event);
     // Item 483: an aside's moves are followed too, card or no card.
@@ -10173,11 +10176,8 @@ export function applyTurnEventTo(host: TurnHost, ev: TurnEvent & { chat?: string
   }
   // Item 633: a running command's passing text — live only, by call id, and
   // gone at its result; it never touches the message's segments.
-  if (ev.type === "tool_output") {
-    setPassing(ev.tool_use_id, ev.lines);
-    return;
-  }
-  if (ev.type === "tool_result" || ev.type === "tool_denied") endPassing(ev.tool_use_id);
+  // Item 649: a shell call's end leaves its output's last lines as a fading remnant.
+  if (passingEvent(ev, isShellForPassing)) return;
   // Item 483: notes a chat moved take their tabs and drafts along.
   followToolMoves(ev);
   // The Running-tasks rows outlive the live message (backlog 160): a

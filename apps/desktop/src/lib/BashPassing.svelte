@@ -5,16 +5,18 @@
   // Reticle; Sweep keeps today's row. Behind the row's text, right of its
   // argument, faint and masked top and bottom; each new line slides in from
   // below (a transform only, inside no-preference — Reduce motion: still).
-  import { passingLines } from "./bashOutput.svelte";
+  // Item 649: `ended` — the command's remnant, its last lines fading out
+  // over LINGER_MS after its result (a fade, under no-preference only).
+  import { LINGER_MS, passingLines } from "./bashOutput.svelte";
 
-  let { id }: { id: string } = $props();
+  let { id, ended = false }: { id: string; ended?: boolean } = $props();
   const lines = $derived(passingLines(id));
   // Restarts the slide on each new last line.
   const last = $derived(lines.length ? `${lines.length}:${lines[lines.length - 1]}` : "");
 </script>
 
 {#if lines.length}
-  <span class="passing" aria-hidden="true" data-testid="bash-passing">
+  <span class="passing" class:ended aria-hidden="true" data-testid="bash-passing" style:--linger="{LINGER_MS}ms">
     {#key last}
       <span class="pl">{#each lines as l, i (i)}<span>{l}</span>{/each}</span>
     {/key}
@@ -58,6 +60,20 @@
   @media (prefers-reduced-motion: no-preference) {
     .pl {
       animation: pass-in 0.24s steps(4, end) both;
+    }
+    .passing.ended {
+      animation: pass-out var(--linger, 2400ms) ease-in both;
+    }
+    @keyframes pass-out {
+      from {
+        opacity: 0.5;
+      }
+      60% {
+        opacity: 0.4;
+      }
+      to {
+        opacity: 0;
+      }
     }
     @keyframes pass-in {
       from {
