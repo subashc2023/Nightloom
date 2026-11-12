@@ -1,0 +1,23 @@
+<!doctype html>
+<!-- Item 662 proof: one frame of the real Horizon shader (makeRenderer from newChatShader.ts) on a 1180 x 822 stand-in of
+     the new-chat main area, at rest (?mode=rest) or after 3 s of typing at 5 keys/s through the real seaTyping() (?mode=typed).
+     Served by vite on a spare port and snapped with nightshift-code bin/snap (WebKit). -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      body { margin: 0; background: var(--paper, #0b0d10); }
+      #host { position: relative; width: 1180px; height: 822px; overflow: hidden; background-image: var(--ground-dots); background-size: 22px 22px; }
+      #host canvas { position: absolute; left: 0; top: 0; }
+      #cap { position: fixed; top: 0; left: 0; right: 0; z-index: 9; font: 13px/1.5 ui-monospace, monospace; color: #e9edf2; background: rgba(0,0,0,.6); padding: 4px 8px; }
+    </style>
+  </head>
+  <body>
+    <div id="cap">running…</div>
+    <div id="host"><canvas></canvas></div>
+    <script>
+      window.addEventListener("error", (e) => (document.getElementById("cap").textContent = "error: " + e.message));
+    </script>
+    <script type="module" src="./sea662.ts"></script>
+  </body>
+</html>
