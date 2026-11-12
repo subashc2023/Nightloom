@@ -11,6 +11,11 @@ html:not([data-layout="classic"]) .composer .card[data-cache]:not([data-cache-lo
   isolation: isolate;
   --cache-ink: color-mix(in oklab, var(--accent) var(--cache-w, 0%), var(--signal));
 }
+/* Item 664: while a pending change (the "… · restore" chip, item 408) would drop the cache, the same drawing turns red —
+   its length still the share left, so he sees what he would lose. Clears on restore or once the change is sent. */
+html:not([data-layout="classic"]) .composer .card[data-cache][data-cache-losing]:not([data-cache-look="off"]) {
+  --cache-ink: color-mix(in oklab, var(--failed) 88%, var(--accent));
+}
 html:not([data-layout="classic"]) .composer .card[data-cache]:not([data-cache-look="off"])::after {
   content: "";
   position: absolute;

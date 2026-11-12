@@ -3277,7 +3277,7 @@
   {#if mathShown}
     <TypedMathBar spans={mathSpans} onaccept={acceptMath} ondeny={denyMath} />
   {/if}
-  <div class="card" data-cache={frame?.cache} data-cache-look={frame ? cacheLook.value : undefined} style={frame?.style}>
+  <div class="card" data-cache={frame?.cache} data-cache-look={frame ? cacheLook.value : undefined} data-cache-losing={frame && cacheBuilt && cacheChanges.length > 0 ? "" : undefined} style={frame?.style}>
     <!-- No autocorrect, capitalisation or spell-marking on a message to a
          model: macOS was rewriting his words as he typed (2026-09-16). -->
     {#if ghost}
