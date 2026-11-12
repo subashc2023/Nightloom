@@ -2245,8 +2245,9 @@
     // Item 674: an aside card is a transcript inside this one; its prose
     // is its own transcript's to offer Reply on, never the chat's.
     if (prose.closest(".transcript") !== viewport) return null;
-    // Item 481: a Classic aside card's thread has its own Reply (`AsideThread`).
-    if (prose.closest(".aside-thread")) return null;
+    // ~~Item 481: a Classic aside card's thread has its own Reply
+    // (`AsideThread`)~~ — item 674 step 7 (2026-11-12): `AsideThread` mounts
+    // under Classic only, where `TranscriptClassic` draws (it keeps the check).
     const turnEl = prose.closest<HTMLElement>("[data-turn]");
     if (!turnEl) return null;
     const turn = Number(turnEl.dataset.turn);
