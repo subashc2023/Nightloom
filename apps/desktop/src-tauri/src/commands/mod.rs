@@ -5,3 +5,4 @@
 
 pub(crate) mod memory;
 pub(crate) mod notes;
+pub(crate) mod projects;
