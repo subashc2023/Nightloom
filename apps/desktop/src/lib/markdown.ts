@@ -2,6 +2,7 @@ import { Marked, marked, Renderer, type Tokens } from "marked";
 import DOMPurify from "dompurify";
 import { math, renderMath } from "./math";
 import { tilde } from "./tilde";
+import { emphasisLines } from "./emphasisLines";
 import { cite } from "./cite";
 import { proseBlocks } from "./proseBlock";
 import { handoffTag } from "./handoffTag";
@@ -58,6 +59,8 @@ export function renderMarkdown(src: string, opts: { breaks?: boolean } = {}): st
 const replyMarked = new Marked();
 replyMarked.use(math);
 replyMarked.use(tilde);
+// Item 670: in a reply, bold, italics and strikethrough stay on one line.
+replyMarked.use(emphasisLines);
 replyMarked.use(cite);
 // Item 463: a fenced prompt (a hand-off's `start-prompt`, a ```text paragraph) wraps.
 replyMarked.use(proseBlocks);
