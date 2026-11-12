@@ -701,9 +701,21 @@ export interface AsideTurn {
    *  header and footer; absent while asking and on a stored turn. */
   model?: string | null;
   usage?: { input_tokens: number; output_tokens: number; cache_read_tokens?: number };
-  /** The CLI's cost estimate for this answer (item 605), for the aside
-   *  tab's top bar and column; absent while asking or when none came. */
+  /** Until item 675 (2026-11-12) the aside's spend (item 605) — but what
+   *  it held was the CLI's `total_cost_usd`, which on an aside's fork is
+   *  the **whole chat's** running cost plus the answer's: three easy
+   *  answers on a $12 chat read "$40.47". Kept only as a stored turn read
+   *  it back; nothing sums it. */
   cost?: number;
+  /** What this answer itself added, at API prices (item 675): the CLI's
+   *  estimate less the chat's running cost its fork restored. The aside
+   *  tab's bar and column sum these; absent while asking, when none came,
+   *  and on a turn answered before 675. */
+  added?: number;
+  /** The newest round's prompt plus output (item 675): what the next
+   *  follow-up carries. `usage` sums the answer's rounds, each of which
+   *  sends the chat's prefix again. Absent on a turn answered before 675. */
+  context?: number;
   /** When the answer ended (ISO), for the footer's time. */
   at?: string;
   /** Clock when it was asked (backlog 309): the running list's elapsed.
@@ -9468,8 +9480,11 @@ async function runAside(turn: AsideTurn, sent: string, thread: Aside | null = nu
     if (res.model) t.model = res.model;
     if (res.output_tokens !== undefined)
       t.usage = { input_tokens: res.input_tokens ?? 0, output_tokens: res.output_tokens, cache_read_tokens: res.cache_read };
-    // Item 605: the aside's spend, for its tab's bar and column.
-    if (typeof res.cost_usd === "number") t.cost = res.cost_usd;
+    // Item 605: the aside's spend, for its tab's bar and column. Item
+    // 675: what this answer added (the backend takes the chat's running
+    // cost off), and the context its last round left.
+    if (typeof res.cost_usd === "number") t.added = res.cost_usd;
+    if (typeof res.context_tokens === "number") t.context = res.context_tokens;
     t.at = new Date().toISOString();
   } catch (e) {
     const t = live();
@@ -10886,6 +10901,21 @@ export function chatAgentSession(events: SessionEvent[]): string | null {
     if (live[i] && e.event === "agent_session" && e.agent === "claude-code") return e.id;
   }
   return null;
+}
+
+/**
+ * Every Claude Code session the chat has run on, oldest first, rewound
+ * ones included (item 675, 2026-11-12): a rewind starts a new CLI session
+ * — a cut copy of the one before — whose running cost restarts below
+ * where the chat had been, so the chat's cost is read over all of them
+ * (`session_figures::read_chain`). Each id once, at its first place.
+ */
+export function chatAgentSessions(events: SessionEvent[]): string[] {
+  const ids: string[] = [];
+  for (const e of events) {
+    if (e.event === "agent_session" && e.agent === "claude-code" && !ids.includes(e.id)) ids.push(e.id);
+  }
+  return ids;
 }
 
 /**

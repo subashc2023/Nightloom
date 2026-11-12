@@ -404,6 +404,10 @@ async fn turn_body(
     // is settled here for the project and after the turn for the chat.
     let mut granted_to_chat: Vec<PathBuf> = Vec::new();
     let mut granted_any = false;
+    // What the turn's earlier processes spent (item 675): each outcome
+    // carries its own process's cost, and a turn that paused on a question
+    // spans several.
+    let mut spent_before: Option<f64> = None;
     while let Ok(outcome) = &result
         && let Some(call) = outcome.deferred.clone()
     {
@@ -573,6 +577,9 @@ async fn turn_body(
             Answer::Reply { id: Some(id), text } => Some((id.clone(), text.clone())),
             _ => None,
         };
+        if let Some(c) = result.as_ref().ok().and_then(|o| o.cost_usd) {
+            spent_before = Some(spent_before.unwrap_or(0.0) + c);
+        }
         if reply.is_some() {
             let mut relay = |e: TurnEvent| {
                 let landed = matches!(
@@ -619,6 +626,9 @@ async fn turn_body(
     }
     if let Ok(o) = &mut result {
         o.notices.extend(council_notices);
+        if let Some(before) = spent_before {
+            o.cost_usd = Some(before + o.cost_usd.unwrap_or(0.0));
+        }
     }
 
     match result {

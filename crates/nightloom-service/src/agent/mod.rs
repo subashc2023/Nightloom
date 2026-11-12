@@ -103,6 +103,15 @@ const STDERR_TAIL: usize = 4096;
 /// a user's own Claude Code hooks can tell a Nightloom turn from theirs.
 pub const NIGHTLOOM_MARKER_ENV: &str = "NIGHTLOOM";
 
+/// How many model rounds one aside question may take (nightshift item 675,
+/// 2026-11-12; his "max turns after 3 messages? u have to be kidding me").
+/// It was 2 — an answering round plus one read — so a question the model
+/// thought about, read two things for and then answered ended in
+/// `error_max_turns` with no answer. Twenty lets an aside do real work;
+/// `dontAsk` still refuses anything that would prompt, and the bound keeps
+/// a looping aside from running on behind its card.
+pub const ASIDE_MAX_TURNS: u32 = 20;
+
 /// The last [`STDERR_TAIL`] bytes of `text`, cut on a character boundary:
 /// a byte offset that lands inside a multi-byte character would panic the
 /// reader task and lose the tail exactly when it is the only diagnosis
@@ -372,11 +381,14 @@ pub struct AgentSpec {
     /// the brief for the Agent hook. `None` is the defaults.
     pub subagent_limits: Option<brief::SubagentLimits>,
     /// `--max-turns <n>`: how many model rounds one turn may take. `None`
-    /// is the CLI's default (unbounded). An aside sends 2
-    /// ([`AgentSpec::aside`]): its answering round, plus one in case the
-    /// model read something first — measured, a turn that calls a tool
-    /// under `--max-turns 1` runs the tool and then ends `error_max_turns`
-    /// with no answer (nightshift `081-report-2026-09-16.md`, M4).
+    /// is the CLI's default (unbounded). An aside sends
+    /// [`ASIDE_MAX_TURNS`] ([`AgentSpec::aside`]) — ~~2: its answering
+    /// round, plus one in case the model read something first~~ (until
+    /// item 675, 2026-11-12: two rounds ended an aside that thought, read
+    /// two things and answered in `error_max_turns`) — measured, a turn
+    /// that calls a tool under `--max-turns 1` runs the tool and then ends
+    /// `error_max_turns` with no answer (nightshift
+    /// `081-report-2026-09-16.md`, M4).
     pub max_turns: Option<u32>,
     /// Keep `ANTHROPIC_API_KEY` out of the child's environment.
     ///
@@ -1010,8 +1022,9 @@ impl AgentSpec {
     /// 242; `--tools ""` read **0** and wrote 10,360; `plan` mode read 0
     /// and wrote 44,176. So an aside is not toolless — it is harmless:
     /// `dontAsk` refuses anything that would prompt, a read inside the
-    /// workspace may still happen, and `--max-turns 2` gives such a read
-    /// its answering round. `--fork-session` keeps the chat's session
+    /// workspace may still happen, and `--max-turns` ([`ASIDE_MAX_TURNS`];
+    /// 2 until item 675) gives its reads their answering round.
+    /// `--fork-session` keeps the chat's session
     /// untouched (the next real turn saw nothing of the aside, M2) and
     /// `--no-session-persistence` keeps the fork off the disk (no file
     /// appeared, M3's last row). The Ask position's hook is not
@@ -1023,7 +1036,7 @@ impl AgentSpec {
         let mut spec = self.clone();
         spec.fork_session = true;
         spec.no_session_persistence = true;
-        spec.max_turns = Some(2);
+        spec.max_turns = Some(ASIDE_MAX_TURNS);
         spec.permission_mode = Some("dontAsk".into());
         if let Some(ask) = &mut spec.ask {
             ask.mode = AskMode::Aside;
@@ -2167,6 +2180,15 @@ impl ClaudeCodeAgent {
             None => (spec.resume_args(), Stdio::null()),
         };
         let key = warm::Key::of(spec, &args);
+        // The running cost this process restores (item 675): a resumed or
+        // forked process's `total_cost_usd` starts from its session's, and
+        // the outcome carries only what this process added. Read before
+        // the message goes in; a process that waited (`warm`) restored the
+        // same line — nothing writes the chat's transcript between turns.
+        let restored = spec
+            .resume
+            .as_deref()
+            .and_then(crate::session_figures::restored_cost);
         // Never for a deferred resume: a waiting process is one that has
         // not yet been given its message, which a resume has none of.
         let taken = if chat && piped && input.is_some() {
@@ -2637,6 +2659,7 @@ impl ClaudeCodeAgent {
         if interrupted {
             wind_down(child, stderr_task);
             let mut outcome = translator.finish();
+            outcome.cost_usd = crate::session_figures::own_cost(outcome.cost_usd, restored);
             // The CLI's `result` on an interrupt is `is_error: true` with
             // `subtype: "error_during_execution"` (`terminal_reason:
             // "aborted_tools"` or `"aborted_streaming"`); that is the
@@ -2660,6 +2683,7 @@ impl ClaudeCodeAgent {
         let status = child.wait().await?;
         let stderr = stderr_task.await.unwrap_or_default();
         let mut outcome = translator.finish();
+        outcome.cost_usd = crate::session_figures::own_cost(outcome.cost_usd, restored);
 
         // A stream that ended before its `result` line (backlog 332): what
         // arrived is kept, and the reply says it was cut off and why,
@@ -3782,7 +3806,9 @@ mod tests {
             ("--append-system-prompt", "preamble"),
             ("--permission-prompt-tool", ask::PROMPT_TOOL),
             ("--permission-mode", "dontAsk"),
-            ("--max-turns", "2"),
+            // Item 675: room to read and think before it answers — two
+            // rounds ended his third question in `error_max_turns`.
+            ("--max-turns", "20"),
         ] {
             let i = a
                 .iter()

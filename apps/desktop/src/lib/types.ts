@@ -1448,7 +1448,9 @@ export interface SubagentStatus {
  *  chat's warm cache, recorded nowhere. */
 export interface AsideResult {
   answer: string;
-  /** The CLI's estimate of the API cost — not a bill under a subscription. */
+  /** The CLI's estimate of the API cost — not a bill under a subscription.
+   *  What this answer itself added (item 675): the backend takes the
+   *  chat's running cost, which the fork's process restores, off it. */
   cost_usd: number | null;
   /** Tokens of the chat's prefix the aside read back from cache. */
   cache_read: number;
@@ -1460,6 +1462,10 @@ export interface AsideResult {
   model?: string | null;
   input_tokens?: number;
   output_tokens?: number;
+  /** The newest round's prompt plus output (item 675): what the next
+   *  follow-up carries. The two sums above count the chat's prefix once
+   *  per round. Absent from an older backend or when no round reported. */
+  context_tokens?: number | null;
 }
 
 /** What an aside's question carries besides its words (backlog 283): the

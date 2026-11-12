@@ -1186,9 +1186,12 @@ export function planScopedLimits(): Promise<import("./usageFigures").ScopedLimit
 }
 
 /** Item 569: a Claude Code chat's /usage "This session" figures, by its
- *  Claude Code session id. `found: false` before its first turn ends. */
-export function sessionFigures(agentSession: string): Promise<import("./usageFigures").SessionFigures> {
-  return invoke("session_figures", { agentSession });
+ *  Claude Code session id. `found: false` before its first turn ends.
+ *  `earlier` (item 675): the sessions the chat ran on before this one —
+ *  a rewind starts a new one — oldest first, so what they spent stays in
+ *  the cost. */
+export function sessionFigures(agentSession: string, earlier: string[] = []): Promise<import("./usageFigures").SessionFigures> {
+  return invoke("session_figures", { agentSession, earlier });
 }
 
 /** Claude Code's version against the release feed, with the models the

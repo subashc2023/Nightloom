@@ -39,11 +39,33 @@ describe("asideFigures (605)", () => {
     expect(f.turn).toEqual({ usage: null, ms: 3_000, live: true });
   });
 
-  it("sums the cost and marks it a floor when an answer had none", () => {
-    expect(asideFigures(aside([turn({ cost: 0.01 }), turn({ cost: 0.02 })])).cost).toEqual({ usd: 0.03, complete: true });
-    const partial = asideFigures(aside([turn({ cost: 0.01 }), turn({})])).cost;
+  it("sums what each answer added and marks it a floor when an answer had none", () => {
+    expect(asideFigures(aside([turn({ added: 0.01 }), turn({ added: 0.02 })])).cost).toEqual({ usd: 0.03, complete: true });
+    const partial = asideFigures(aside([turn({ added: 0.01 }), turn({})])).cost;
     expect(partial?.complete).toBe(false);
     expect(asideFigures(aside([turn({})])).cost).toBeNull();
+  });
+
+  // Item 675 (his "an easy ass response jus doubled the cost. another easy
+  // ass response just added 15 bucks"): until then a turn's `cost` was the
+  // CLI's `total_cost_usd`, which on an aside's fork is the whole chat's
+  // running cost plus the answer's. His screenshot's shape: a chat near
+  // $12, three exchanges, "$40.47".
+  it("never sums a turn's old cost — the chat's running total — into the aside (675)", () => {
+    const old = aside([turn({ cost: 11.5 }), turn({ seq: 2, cost: 13.2 }), turn({ seq: 3, cost: 15.77 })]);
+    expect(asideFigures(old).cost).toBeNull();
+    // The same thread once its next answer comes with its own cost: that
+    // answer alone, marked a floor for the three that kept none.
+    const next = aside([...old.turns, turn({ seq: 4, added: 0.42 })]);
+    expect(asideFigures(next).cost).toEqual({ usd: 0.42, complete: false });
+    expect(asideSpendText(asideFigures(next).cost)).toBe("+$0.42");
+  });
+
+  // Item 675: an aside may now take twenty rounds, each sending the
+  // chat's prefix again; `usage` sums them, `context` is the last one's.
+  it("reads the context from the last round, not the rounds' sum (675)", () => {
+    const a = aside([turn({ usage: { input_tokens: 560_000, output_tokens: 900, cache_read_tokens: 540_000 }, context: 187_300 })]);
+    expect(asideFigures(a).used).toBe(187_300);
   });
 
   it("times an ended turn from its question to its answer", () => {
@@ -52,11 +74,11 @@ describe("asideFigures (605)", () => {
     expect(f.turn?.live).toBe(false);
   });
 
-  it("writes the spend as the chat's bar does", () => {
+  it("writes the spend as the chat's bar does, with a plus: it is added over the chat (675)", () => {
     expect(asideSpendText(null)).toBeNull();
     expect(asideSpendText({ usd: 0, complete: true })).toBeNull();
-    expect(asideSpendText({ usd: 0.0042, complete: true })).toBe("$0.0042");
-    expect(asideSpendText({ usd: 1.5, complete: false })).toBe("$1.50");
+    expect(asideSpendText({ usd: 0.0042, complete: true })).toBe("+$0.0042");
+    expect(asideSpendText({ usd: 1.5, complete: false })).toBe("+$1.50");
   });
 });
 
@@ -67,6 +89,15 @@ describe("an aside's figures survive the store (605)", () => {
     expect(back?.turns[0]?.usage).toEqual({ input_tokens: 500, output_tokens: 20, cache_read_tokens: 400 });
     expect(back?.turns[0]?.cost).toBe(0.004);
     expect(back?.turns[0]?.cacheRead).toBe(400);
+  });
+
+  it("keeps what each answer added and the context it left (675)", () => {
+    const a = aside([turn({ usage: { input_tokens: 900, output_tokens: 20 }, added: 0.37, context: 480 })]);
+    const back = asideFromStored(JSON.parse(JSON.stringify(storedAsideOf(a))));
+    expect(back?.turns[0]?.added).toBe(0.37);
+    expect(back?.turns[0]?.context).toBe(480);
+    expect(asideFigures(back!).cost).toEqual({ usd: 0.37, complete: true });
+    expect(asideFigures(back!).used).toBe(480);
   });
 
   it("reads an older store with no figures as before", () => {

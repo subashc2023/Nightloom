@@ -137,6 +137,28 @@ describe("several aside cards at once (backlog 176)", () => {
     vi.mocked(api.askAside).mockImplementation(async () => ({ answer: "because", cost_usd: null, cache_read: 10, is_error: false, notices: [] }));
   });
 
+  // Item 675: the answer's cost is what it added (the backend takes the
+  // chat's running cost off) — kept as `added`, never as the old `cost`
+  // the tab summed — with the context its last round left.
+  it("keeps an answer's own cost as what it added, and its last round's context (675)", async () => {
+    vi.mocked(api.askAside).mockImplementationOnce(async () => ({
+      answer: "because",
+      cost_usd: 0.42,
+      cache_read: 180_000,
+      is_error: false,
+      notices: [],
+      input_tokens: 560_000,
+      output_tokens: 900,
+      context_tokens: 187_300,
+    }));
+    const card = draftAside(quote(2), anchor(3))!;
+    await askAside("why?", quote(2), card);
+    const t = app.asides[0]!.turns[0]!;
+    expect(t.added).toBe(0.42);
+    expect(t.cost).toBeUndefined();
+    expect(t.context).toBe(187_300);
+  });
+
   it("past three open cards the oldest folds, and opening it folds the next oldest (blocker 318)", () => {
     const ids = [1, 2, 3, 4].map((n) => draftAside(quote(n), anchor(n))!.id);
     expect(app.asides.map((a) => a.folded === true)).toEqual([true, false, false, false]);

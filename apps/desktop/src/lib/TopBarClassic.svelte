@@ -10,7 +10,6 @@
     liveFlags,
     MODE_GLYPH,
     latestSubagents,
-    sessionCost,
     subagentsOfTurn,
   } from "./state.svelte";
   import { touchedUntil } from "./keepWarm";
@@ -40,6 +39,7 @@
   import { chatThread } from "./state.svelte";
   import { auth } from "./claudeAuth.svelte";
   import { chipWord } from "./claudeAuth";
+  import { openChatSpend, trackOpenChatFigures } from "./chatFigures.svelte";
 
   /**
    * The chat top bar in the redesign (item 036, the mock-up's Chat artboard):
@@ -162,14 +162,17 @@
    * identical at two decimal places, and only one of them is true.
    */
   const spend = $derived.by(() => {
-    const c = sessionCost();
+    // Item 675: a Claude Code chat's spend is the CLI's running cost for
+    // it — its replies carry no logged cost (`sessionCost` read $0.00).
+    const c = openChatSpend();
     if (!c) return null;
     if (c.usd === 0 && c.complete) return null;
     // Sub-cent turns are the common case early in a session; two decimals
     // would render most of them as $0.00 and look broken.
     const digits = c.usd > 0 && c.usd < 0.01 ? 4 : 2;
-    return { text: `$${c.usd.toFixed(digits)}`, complete: c.complete };
+    return { text: `$${c.usd.toFixed(digits)}`, complete: c.complete, agent: c.agent };
   });
+  $effect(() => trackOpenChatFigures());
 
   /**
    * The prompt-cache timer (nightshift backlog 063, 2026-09-15): when the
@@ -759,9 +762,13 @@
             <span
               class="gc-fig"
               class:partial={!spend.complete}
-              use:tip={spend.complete
-                ? "Session cost so far, summed from each exchange at the price in force when it ran"
-                : "At least this much: some exchanges ran on a model with no verified price"}
+              use:tip={spend.agent
+                ? spend.complete
+                  ? "This chat's cost so far at API prices: Claude Code's own running estimate, subagents and rewound replies included — not a bill under a subscription"
+                  : "At least this much: Claude Code could not price one of the models this chat ran on"
+                : spend.complete
+                  ? "Session cost so far, summed from each exchange at the price in force when it ran"
+                  : "At least this much: some exchanges ran on a model with no verified price"}
               >{spend.complete ? "" : "at least "}{spend.text}</span
             >
           </span>

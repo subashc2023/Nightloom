@@ -11,7 +11,6 @@
     liveFlags,
     MODE_GLYPH,
     latestSubagents,
-    sessionCost,
     subagentsOfTurn,
   } from "./state.svelte";
   import { touchedUntil } from "./keepWarm";
@@ -48,6 +47,7 @@
   import { chipWord } from "./claudeAuth";
   import type { Aside } from "./state.svelte";
   import { asideFigures, asideSpendText } from "./asideFigures";
+  import { openChatSpend, trackOpenChatFigures } from "./chatFigures.svelte";
   import { contextOf } from "./chatContext.svelte";
   import { chatLabel } from "./chatLabel";
   import { displayName } from "./modelSeen";
@@ -222,16 +222,20 @@
   const spend = $derived.by(() => {
     if (af) {
       const text = asideSpendText(af.cost);
-      return text && af.cost ? { text, complete: af.cost.complete } : null;
+      return text && af.cost ? { text, complete: af.cost.complete, agent: true } : null;
     }
-    const c = sessionCost();
+    // Item 675: a Claude Code chat's spend is the CLI's running cost for
+    // it (the right column's figure) — its replies carry no logged cost,
+    // so the log's sum (`sessionCost`) read "at least $0.00" here.
+    const c = openChatSpend();
     if (!c) return null;
     if (c.usd === 0 && c.complete) return null;
     // Sub-cent turns are the common case early in a session; two decimals
     // would render most of them as $0.00 and look broken.
     const digits = c.usd > 0 && c.usd < 0.01 ? 4 : 2;
-    return { text: `$${c.usd.toFixed(digits)}`, complete: c.complete };
+    return { text: `$${c.usd.toFixed(digits)}`, complete: c.complete, agent: c.agent };
   });
+  $effect(() => trackOpenChatFigures());
 
   /**
    * The prompt-cache timer (nightshift backlog 063, 2026-09-15): when the
@@ -932,11 +936,15 @@
               class:partial={!spend.complete}
               use:tip={aside
                 ? spend.complete
-                  ? "This aside's cost so far: the CLI's estimate for each answer at API prices — not a bill under a subscription"
-                  : "At least this much: some answers came with no estimate"
-                : spend.complete
-                  ? "Session cost so far, summed from each exchange at the price in force when it ran"
-                  : "At least this much: some exchanges ran on a model with no verified price"}
+                  ? "What this aside has added on top of the chat: each answer's own cost at API prices (the CLI's estimate) — not a bill under a subscription"
+                  : "At least this much on top of the chat: some answers kept no cost of their own (none came, or they were answered before Nov 12)"
+                : spend.agent
+                  ? spend.complete
+                    ? "This chat's cost so far at API prices: Claude Code's own running estimate, subagents and rewound replies included — not a bill under a subscription"
+                    : "At least this much: Claude Code could not price one of the models this chat ran on"
+                  : spend.complete
+                    ? "Session cost so far, summed from each exchange at the price in force when it ran"
+                    : "At least this much: some exchanges ran on a model with no verified price"}
               >{spend.complete ? "" : "at least "}{spend.text}</span
             >
           </span>

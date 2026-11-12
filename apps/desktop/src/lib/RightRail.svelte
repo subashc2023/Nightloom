@@ -6,6 +6,7 @@
   import { ContextDrive } from "./contextDrive.svelte";
   import { app, chatAgentSession, contextUsed, currentTodos } from "./state.svelte";
   import * as api from "./api";
+  import { figuresOf, trackOpenChatFigures } from "./chatFigures.svelte";
   import {
     compactCount,
     duration,
@@ -250,26 +251,15 @@
     return () => (gone = true);
   });
   const agentSession = $derived(claudeCode && !aside ? chatAgentSession(app.events) : null);
-  let figures = $state<SessionFigures | null>(null);
-  let figuresOf = $state<string | null>(null);
+  // Item 675: read through the store the top bar's "Spent" reads too
+  // (`chatFigures.svelte.ts`), over every CLI session the chat has run on
+  // — a rewind no longer lowers the cost. A turn's end writes the newest
+  // totals: the store reads again when one ends.
   $effect(() => {
-    const id = agentSession;
-    // A turn's end writes the newest totals: read again when one ends.
-    const busy = app.busy;
-    if (!id || busy) return;
-    let gone = false;
-    api
-      .sessionFigures(id)
-      .then((f) => {
-        if (gone) return;
-        figures = f;
-        figuresOf = id;
-      })
-      .catch(() => {});
-    return () => (gone = true);
+    if (claudeCode) trackOpenChatFigures();
   });
   /** Only the open chat's figures: another chat's never show while this one's load. */
-  const chat = $derived(figures && figures.found && figuresOf === agentSession ? figures : null);
+  const chat = $derived<SessionFigures | null>(figuresOf(agentSession));
   // Item 584: the two splits as stacked bars, and the Details fold (kept across chats and restarts).
   const modelParts = $derived(chat ? stackParts(chat.models.map((m) => ({ name: modelName(m.model), value: m.cost_usd }))) : []);
   const usingParts = $derived(chat ? stackParts(chat.using.map((u) => ({ name: spenderName(u), value: u.share }))) : []);
@@ -443,7 +433,12 @@
       <section class="chat-use" aria-label="This chat's usage">
         <h4>This chat</h4>
         {#if chat.cost_usd != null}
-          <div class="cost" use:tip={"Claude Code's own estimate at API prices, subagents included — the figure /usage shows"}>
+          <div
+            class="cost"
+            use:tip={chat.rewound_usd
+              ? `Claude Code's own estimate at API prices, subagents included — /usage's figure plus ${usd(chat.rewound_usd)} of replies you rewound: a rewind does not un-spend them`
+              : "Claude Code's own estimate at API prices, subagents included — the figure /usage shows"}
+          >
             <b>{usd(chat.cost_usd)}{chat.unknown_cost ? "+" : ""}</b><span>at API prices</span>
           </div>
         {/if}
@@ -508,11 +503,23 @@
       <section class="chat-use" aria-label="This aside's usage">
         <h4>This aside</h4>
         {#if af.cost}
-          <div class="cost" use:tip={"The CLI's estimate for each of this aside's answers, at API prices — not a bill under a subscription"}>
-            <b>{usd(af.cost.usd)}{af.cost.complete ? "" : "+"}</b><span>at API prices</span>
+          <!-- Item 675 (his "asides should show the cost as the added cost compared to the regular chat"): what the
+               aside added over the chat, each answer's own spend — never the CLI's running total for the chat. -->
+          <div
+            class="cost"
+            data-aside-added
+            use:tip={af.cost.complete
+              ? "What this aside has added on top of the chat: each answer's own cost at API prices (the CLI's estimate) — not a bill under a subscription"
+              : "At least this much on top of the chat: some answers here kept no cost of their own (none came, or they were answered before Nov 12, when an answer's figure was the whole chat's running total)"}
+          >
+            <b>+{usd(af.cost.usd)}{af.cost.complete ? "" : "+"}</b><span>over the chat, at API prices</span>
           </div>
         {:else}
-          <div class="kv" data-cost-unkept use:tip={"Answers before Nov 11 kept no cost estimate; the next answer here is counted"}>
+          <div
+            class="kv"
+            data-cost-unkept
+            use:tip={"Answers before Nov 12 kept no cost of their own (the figure shown then was the whole chat's running total, counted again with each answer); the next answer here is counted"}
+          >
             <span>Cost</span><b>not kept</b>
           </div>
         {/if}
