@@ -8,6 +8,7 @@ pub(crate) mod attachments;
 pub(crate) mod chat;
 pub(crate) mod cli;
 pub(crate) mod context;
+pub(crate) mod edits;
 pub(crate) mod memory;
 pub(crate) mod notes;
 pub(crate) mod projects;
