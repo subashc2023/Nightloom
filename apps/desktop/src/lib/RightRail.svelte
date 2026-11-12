@@ -4,7 +4,7 @@
   import ContextDial from "./ContextDial.svelte";
   import DialMotion from "./DialMotion.svelte";
   import { ContextDrive } from "./contextDrive.svelte";
-  import { app, chatAgentSession, contextUsed, currentTodos } from "./state.svelte";
+  import { app, asideReads, chatAgentSession, contextUsed, currentTodos } from "./state.svelte";
   import * as api from "./api";
   import { figuresOf, trackOpenChatFigures } from "./chatFigures.svelte";
   import {
@@ -131,7 +131,7 @@
    * second under two minutes — and not at all once cold, so an idle
    * column with a cold cache has no timer.
    */
-  const cache = $derived(column && !aside ? cacheState(app.events, now, app.activeSessionId ? touchedUntil(keepWarm.byChat[app.activeSessionId]) : null) : null);
+  const cache = $derived(column && !aside ? cacheState(app.events, now, app.activeSessionId ? touchedUntil(keepWarm.byChat[app.activeSessionId]) : null, asideReads(app.activeSessionId)) : null);
   $effect(() => {
     if (!cache || !cache.warm) return;
     const wait = nextTickMs(cache.remainingMs);

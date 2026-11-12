@@ -125,6 +125,7 @@ import { onAway, watchPresence } from "./away.svelte";
 import { RESUME_TEXT, SleepWatch, loadSleepPrefs, pushPowerPrefs, type Woke } from "./sleep";
 import { asideFollowUp, asideQuestion, type AsideQuote } from "./asideQuote";
 import type { AsideAnchor } from "./asideCard";
+import type { AsideRead } from "./cache";
 import { asideDraftKey, asideKept, ensureAsideUid, isPrivateChat, loadAsides, markChatMode, nextAsideId } from "./asides";
 import { MAX_OPEN_ASIDES, foldTheOldest } from "./asideCard";
 import { loadCouncilPrefs, type CouncilPrefs, type CouncilRequest } from "./council";
@@ -718,6 +719,12 @@ export interface AsideTurn {
   context?: number;
   /** When the answer ended (ISO), for the footer's time. */
   at?: string;
+  /** Item 677: when the aside's request went out (ms epoch) and what its
+   *  newest round read from cache — an answer that read the chat's cache
+   *  restarts the cache's hour (`cacheState`'s `asides`). Absent on a turn
+   *  answered before 677, which then moves nothing. */
+  readAt?: number;
+  roundRead?: number;
   /** Clock when it was asked (backlog 309): the running list's elapsed.
    *  In memory only; a stored turn is never running. */
   startedAt?: number;
@@ -4883,6 +4890,21 @@ export function asideInTab(session: string | null, thread?: number): boolean {
 export function asideTabThread(content: TabContent): number | undefined {
   const t = (content as { thread?: unknown }).thread;
   return typeof t === "number" ? t : undefined;
+}
+
+/**
+ * Every answered aside's read of the chat's cache (item 677), for
+ * `cacheState`: an aside is a fork of the chat on its cache, so one that
+ * read it refreshed it. A cancelled or failed turn, and one answered
+ * before 677, gives none.
+ */
+export function asideReads(session: string | null | undefined): AsideRead[] {
+  if (!session) return [];
+  const out: AsideRead[] = [];
+  for (const a of asidesOf(session))
+    for (const t of a.turns)
+      if (!t.cancelled && !t.error && t.readAt != null && t.roundRead != null) out.push({ at: t.readAt, read: t.roundRead });
+  return out;
 }
 
 /** A chat's aside threads, oldest first: the open chat's cards, or a
@@ -9485,6 +9507,11 @@ async function runAside(turn: AsideTurn, sent: string, thread: Aside | null = nu
     // cost off), and the context its last round left.
     if (typeof res.cost_usd === "number") t.added = res.cost_usd;
     if (typeof res.context_tokens === "number") t.context = res.context_tokens;
+    // Item 677: the answer's read of the chat's cache, for the cache bar.
+    if (!res.is_error && typeof res.sent_ms === "number" && typeof res.round_read === "number") {
+      t.readAt = res.sent_ms;
+      t.roundRead = res.round_read;
+    }
     t.at = new Date().toISOString();
   } catch (e) {
     const t = live();

@@ -37,6 +37,7 @@
   } from "./state.svelte";
   import { scheduledFor } from "./scheduled.svelte";
   import type { Segment } from "./state.svelte";
+  import { asideReads } from "./state.svelte";
   import { continuableReply, continuedFromReply, type NextChat } from "./handoffButton";
   import { checkpointLine, checkpointOwner } from "./checkpoint";
   import { pauseLabel, resetLabel, resumeDelayMs } from "./limit";
@@ -743,7 +744,7 @@
     const chipsAt = item.kind === "user" ? chips.map(chipPrint) : undefined;
     void keepPlace(item.index, () => {
       editing = editReduce(editing, { type: "begin", index: item.index, text, parts, chipsAt });
-      editCacheLine = editLine(cacheState(evs, Date.now(), chatId ? touchedUntil(keepWarm.byChat[chatId]) : null));
+      editCacheLine = editLine(cacheState(evs, Date.now(), chatId ? touchedUntil(keepWarm.byChat[chatId]) : null, asideReads(chatId)));
     }).then(() => {
       if (editorLive) {
         editorLive.focus();

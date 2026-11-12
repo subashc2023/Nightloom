@@ -1466,6 +1466,12 @@ export interface AsideResult {
    *  follow-up carries. The two sums above count the chat's prefix once
    *  per round. Absent from an older backend or when no round reported. */
   context_tokens?: number | null;
+  /** When the aside's request went out, ms epoch (item 677): its read of
+   *  the chat's cache restarts the cache's hour from here. */
+  sent_ms?: number;
+  /** The newest round's cache read (item 677): the share of the chat's
+   *  prefix the aside found warm (`cache_read` sums the rounds). */
+  round_read?: number;
 }
 
 /** What an aside's question carries besides its words (backlog 283): the

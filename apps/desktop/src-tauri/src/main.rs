@@ -4675,6 +4675,12 @@ struct AsideResult {
     /// per round, which an aside that reads before it answers has several
     /// of. `None` when no round reported.
     context_tokens: Option<u64>,
+    /// When the aside's request went out, unix ms (item 677): its read of
+    /// the chat's cache restarts the cache's hour from here.
+    sent_ms: i64,
+    /// The newest round's cache read (item 677): the share of the chat's
+    /// prefix found warm, which `cache_read` (summed) overcounts.
+    round_read: u64,
 }
 
 /// A piece of an aside's answer as it streams (nightshift backlog 128):
@@ -4824,6 +4830,10 @@ async fn ask_aside(
         }
     };
     timing.mark(Mark::Started);
+    // Item 677: the aside's request goes out from here on — the moment its
+    // read of the chat's cache restarts the cache's hour (a little early:
+    // the CLI starts first, so the hour is never overstated).
+    let sent_ms = keep_warm::now();
     let _ = app.emit(
         "aside-phase",
         AsidePhase {
@@ -4893,6 +4903,18 @@ async fn ask_aside(
     } else {
         "ok"
     });
+    // Item 677: the newest round's read — every round sends the chat's
+    // prefix, so it is the share of the prefix the aside found warm.
+    let round_read = outcome
+        .last_round
+        .and_then(|u| u.cache_read_tokens)
+        .unwrap_or(0);
+    if !outcome.is_error
+        && !cancel.is_cancelled()
+        && let Some(chat) = target.id()
+    {
+        keep_warm::aside_read(&app, chat, sent_ms, round_read);
+    }
     Ok(AsideResult {
         answer: if answer.trim().is_empty() {
             outcome.text
@@ -4907,6 +4929,8 @@ async fn ask_aside(
         input_tokens: outcome.usage.input_tokens,
         output_tokens: outcome.usage.output_tokens,
         context_tokens: outcome.last_round.map(|u| u.input_tokens + u.output_tokens),
+        sent_ms,
+        round_read,
     })
 }
 

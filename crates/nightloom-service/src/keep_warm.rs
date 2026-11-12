@@ -49,6 +49,15 @@
 //! session file (`--no-session-persistence`), so no list, search or
 //! history can show one.
 //!
+//! **An aside counts as a read** (item 677, his "it doesn't update in the
+//! aside that cache bar still stays where it was"): an aside is the
+//! ping's shape — a fork of the chat on its cache — so an answer that read
+//! at least half the reply's context ([`aside_refreshes`], the ping's own
+//! hit rule) moves the cache's hour, and the next ping, to when the aside
+//! was sent ([`Registry::aside_read`]). Kept apart from the pings' read,
+//! so an aside never uses up a hold (blocker 1954 counts only a ping that
+//! had to keep the cache).
+//!
 //! This module is the schedule ([`step`]), the per-chat state
 //! ([`Registry`]) and the ping ([`ping`]); the shell owns the clock and
 //! says which chats are busy.
@@ -203,6 +212,16 @@ pub fn reply_of(session: &Session) -> Option<Reply> {
         context: usage.input_tokens + usage.output_tokens,
         one_hour: *cache_ttl == Some(CacheTtl::OneHour),
     })
+}
+
+/// Whether an aside sent at `sent_ms` that read `cache_read` tokens from
+/// cache (its newest round's read: every round sends the chat's prefix)
+/// refreshed `reply`'s cache (item 677): sent after the reply, and a read
+/// of at least half its context — a ping's hit ([`Registry::done`]). A
+/// read of less matched only the head of the prefix; the rest still
+/// runs out on the reply's (or the last ping's) hour.
+pub fn aside_refreshes(reply: &Reply, sent_ms: i64, cache_read: u64) -> bool {
+    sent_ms > reply.sent_ms && cache_read.saturating_mul(2) >= reply.context
 }
 
 /// Why nothing is scheduled.
@@ -526,7 +545,8 @@ pub struct Status {
     /// When the cache goes cold if the schedule runs, unix ms; `None`
     /// with no reply on hand.
     pub warm_until_ms: Option<i64>,
-    /// When the cache was last read by a ping, unix ms.
+    /// When the cache was last read by a ping or, since item 677, an
+    /// aside, unix ms.
     pub touched_ms: Option<i64>,
     pub next_ping_ms: Option<i64>,
     /// Why nothing is scheduled, when nothing is.
@@ -560,6 +580,10 @@ struct Entry {
     spec: Option<AgentSpec>,
     reply: Option<Reply>,
     touched_ms: Option<i64>,
+    /// When an aside last refreshed the cache (item 677), unix ms. Counts
+    /// only while it is later than the held reply's send, so a new reply
+    /// (or none) needs no reset.
+    aside_ms: Option<i64>,
     missed: bool,
     flying: Option<CancellationToken>,
     spent: Spent,
@@ -580,6 +604,7 @@ impl Entry {
             spec: None,
             reply: None,
             touched_ms: None,
+            aside_ms: None,
             missed: false,
             flying: None,
             spent,
@@ -594,10 +619,23 @@ impl Entry {
             spec: None,
             reply: None,
             touched_ms: None,
+            aside_ms: None,
             missed: false,
             flying: None,
             spent: Spent::default(),
             hold: None,
+        }
+    }
+
+    /// When the cache was last read since the held reply: by a ping or by
+    /// an aside (item 677), the later. `None` before either.
+    fn last_read(&self) -> Option<i64> {
+        let aside = self
+            .aside_ms
+            .filter(|&a| self.reply.is_some_and(|r| a > r.sent_ms));
+        match (self.touched_ms, aside) {
+            (Some(t), Some(a)) => Some(t.max(a)),
+            (t, a) => t.or(a),
         }
     }
 
@@ -918,7 +956,15 @@ impl Registry {
                 continue;
             };
             // Asked only when a ping is otherwise due: the answer takes a lock.
-            if step(mode, Some(reply), e.touched_ms, e.missed, false, &held, now) != Step::Ping
+            if step(
+                mode,
+                Some(reply),
+                e.last_read(),
+                e.missed,
+                false,
+                &held,
+                now,
+            ) != Step::Ping
                 || busy(chat)
             {
                 continue;
@@ -982,6 +1028,27 @@ impl Registry {
         }
     }
 
+    /// An aside in `chat`, sent at `sent_ms`, read `cache_read` tokens
+    /// from cache (item 677): when that refreshed the held reply's cache
+    /// ([`aside_refreshes`]), the cache's hour and the next ping count
+    /// from it. `true` when the schedule moved. A chat with nothing held
+    /// (switched off, or no reply yet) has no schedule to move.
+    pub fn aside_read(&self, chat: &str, sent_ms: i64, cache_read: u64) -> bool {
+        let mut inner = self.inner();
+        let Some(e) = inner.get_mut(chat) else {
+            return false;
+        };
+        let Some(reply) = e.reply else {
+            return false;
+        };
+        if !aside_refreshes(&reply, sent_ms, cache_read) || e.aside_ms.is_some_and(|a| a >= sent_ms)
+        {
+            return false;
+        }
+        e.aside_ms = Some(sent_ms);
+        true
+    }
+
     /// The chat's status. A chat this run has not seen is read from `dir`.
     pub fn status(&self, chat: &str, dir: Option<&Path>, policy: &Policy, now: i64) -> Status {
         let default = self.default_mode();
@@ -1000,15 +1067,8 @@ impl Registry {
         let e = &*e;
         let mode = e.mode(default);
         let flying = e.flying.is_some();
-        let s = step(
-            mode,
-            e.reply.as_ref(),
-            e.touched_ms,
-            e.missed,
-            false,
-            &held,
-            now,
-        );
+        let read = e.last_read();
+        let s = step(mode, e.reply.as_ref(), read, e.missed, false, &held, now);
         let scheduled = flying || matches!(s, Step::Ping | Step::Wait(_));
         Status {
             chat: chat.to_string(),
@@ -1019,8 +1079,8 @@ impl Registry {
             warm_until_ms: e
                 .reply
                 .as_ref()
-                .map(|r| warm_until(r, e.touched_ms, scheduled, &held)),
-            touched_ms: e.touched_ms,
+                .map(|r| warm_until(r, read, scheduled, &held)),
+            touched_ms: read,
             next_ping_ms: match s {
                 Step::Wait(at) => Some(at),
                 Step::Ping => Some(now),
@@ -1561,6 +1621,78 @@ mod tests {
         assert_eq!(read_hold(&dir), None);
         let st = reg.status("c", Some(&dir), &p, 3 * HOUR);
         assert_eq!((st.hold_hours, st.cap_ms), (None, 6 * HOUR));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Item 677: an aside that read at least half the context moves the
+    /// cache's hour and the next ping to when it was sent; one that read
+    /// less, or was sent before the reply, moves nothing.
+    #[test]
+    fn an_aside_that_read_the_cache_moves_the_next_ping() {
+        let p = Policy::default();
+        let dir = scratch("aside-read");
+        let reg = Registry::default();
+        reg.replied("c", &dir, &spec(), Some(reply(100_000)));
+        assert_eq!(
+            reg.status("c", Some(&dir), &p, MIN).next_ping_ms,
+            Some(55 * MIN)
+        );
+        // Under half: only the head of the prefix was read.
+        assert!(!reg.aside_read("c", 20 * MIN, 49_999));
+        assert!(!reg.aside_read("c", 0, 100_000), "not after the reply");
+        assert_eq!(
+            reg.status("c", Some(&dir), &p, 21 * MIN).next_ping_ms,
+            Some(55 * MIN)
+        );
+        // Half or more (his aside read 53%): the hour runs from the aside.
+        assert!(reg.aside_read("c", 20 * MIN, 53_000));
+        let st = reg.status("c", Some(&dir), &p, 21 * MIN);
+        assert_eq!(st.next_ping_ms, Some(75 * MIN));
+        assert_eq!(st.touched_ms, Some(20 * MIN));
+        assert!(
+            !reg.aside_read("c", 10 * MIN, 100_000),
+            "an older aside moves nothing back"
+        );
+        // A ping later than the aside wins; a new reply leaves the aside behind.
+        reg.inner().get_mut("c").unwrap().touched_ms = Some(70 * MIN);
+        assert_eq!(
+            reg.status("c", Some(&dir), &p, 71 * MIN).next_ping_ms,
+            Some(125 * MIN)
+        );
+        reg.replied(
+            "c",
+            &dir,
+            &spec(),
+            Some(Reply {
+                sent_ms: 2 * HOUR,
+                ..reply(100_000)
+            }),
+        );
+        assert_eq!(reg.status("c", Some(&dir), &p, 2 * HOUR).touched_ms, None);
+        // Nothing held (an off chat): nothing to move.
+        assert!(!reg.aside_read("nobody", HOUR, 100_000));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Item 677 with blocker 1954: an aside is him using the chat, not a
+    /// ping keeping it — it never uses up a hold.
+    #[test]
+    fn an_aside_read_does_not_use_up_a_hold() {
+        let dir = scratch("aside-hold");
+        let reg = Registry::default();
+        reg.set_hold("c", &dir, 24, None, 0);
+        reg.replied("c", &dir, &spec(), Some(reply(100_000)));
+        assert!(reg.aside_read("c", 30 * MIN, 100_000));
+        reg.replied(
+            "c",
+            &dir,
+            &spec(),
+            Some(Reply {
+                sent_ms: 3 * HOUR,
+                ..reply(100_000)
+            }),
+        );
+        assert_eq!(read_hold(&dir).map(|h| h.until_ms), Some(27 * HOUR));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

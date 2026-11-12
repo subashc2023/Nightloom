@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cacheClause, cacheLine, cacheState, nextTickMs, remainingText } from "./cache";
+import { asideRefreshes, cacheClause, cacheLine, cacheState, nextTickMs, remainingText } from "./cache";
 import type { CacheTtl, SessionEvent } from "./types";
 
 // A log with known timestamps. `sent_at` is what the timer runs from; `at`
@@ -129,5 +129,64 @@ describe("nextTickMs", () => {
     expect(seen[seen.length - 1]).toBe("0:00");
     // 3 min, 2 min, then 1:59 down to 0:00 is 120 values.
     expect(seen.length).toBe(2 + 120);
+  });
+});
+
+// Item 677: an aside is a fork of the chat on its cache; one that read it
+// refreshed it, so the bar counts from the aside's send.
+describe("cacheState with asides (item 677)", () => {
+  const MIN = 60_000;
+  /** A reply of 100k context sent at T0 on the 1-hour cache. */
+  const chat = (): SessionEvent[] => {
+    const evs = turn(T0, "1h");
+    const reply = evs[1] as Extract<SessionEvent, { event: "assistant_message" }>;
+    reply.usage = { input_tokens: 99_000, output_tokens: 1_000, cache_read_tokens: 90_000 };
+    return evs;
+  };
+
+  it("restarts the hour from an aside that read at least half the context", () => {
+    // His aside: 53% of the history read from cache, 30 min after the reply.
+    const s = cacheState(chat(), T0 + 31 * MIN, null, [{ at: T0 + 30 * MIN, read: 53_000 }]);
+    expect(s!.warmUntil).toBe(T0 + 90 * MIN);
+    expect(s!.sentAt).toBe(T0 + 30 * MIN);
+    expect(s!.remainingMs).toBe(59 * MIN);
+    expect(s!.asideShare).toBeCloseTo(0.53);
+  });
+
+  it("moves nothing for a read under half, an aside before the reply, or none", () => {
+    for (const asides of [[{ at: T0 + 30 * MIN, read: 49_999 }], [{ at: T0 - MIN, read: 100_000 }], []]) {
+      const s = cacheState(chat(), T0 + 31 * MIN, null, asides);
+      expect(s!.warmUntil).toBe(T0 + 60 * MIN);
+      expect(s!.asideShare).toBeUndefined();
+    }
+    expect(cacheState(chat(), T0 + 31 * MIN)!.warmUntil).toBe(T0 + 60 * MIN);
+  });
+
+  it("takes the latest of the reply, a keep-warm ping and the asides", () => {
+    const asides = [
+      { at: T0 + 10 * MIN, read: 100_000 },
+      { at: T0 + 40 * MIN, read: 100_000 },
+    ];
+    // A ping kept it to T0 + 1h50; the newer aside reads to T0 + 1h40: the ping wins.
+    const kept = cacheState(chat(), T0 + 41 * MIN, T0 + 110 * MIN, asides);
+    expect(kept!.warmUntil).toBe(T0 + 110 * MIN);
+    expect(kept!.asideShare).toBeUndefined();
+    // No ping: the newest aside.
+    expect(cacheState(chat(), T0 + 41 * MIN, null, asides)!.warmUntil).toBe(T0 + 100 * MIN);
+    // An aside is the newest read once its hour passes too: cold.
+    expect(cacheState(chat(), T0 + 100 * MIN, null, asides)!.warm).toBe(false);
+  });
+
+  it("an aside after a later reply is the one that counts; one before it is not", () => {
+    const evs = [...chat(), ...turn(T0 + 50 * MIN, "1h")];
+    // The second reply's context is 2 tokens (the helper's): an aside that read 1 is half.
+    const s = cacheState(evs, T0 + 51 * MIN, null, [{ at: T0 + 40 * MIN, read: 100_000 }]);
+    expect(s!.warmUntil).toBe(T0 + 110 * MIN);
+  });
+
+  it("asideRefreshes is the keep-warm ping's hit rule", () => {
+    expect(asideRefreshes({ at: 2, read: 50 }, 1, 100)).toBe(true);
+    expect(asideRefreshes({ at: 2, read: 49 }, 1, 100)).toBe(false);
+    expect(asideRefreshes({ at: 1, read: 100 }, 1, 100)).toBe(false);
   });
 });

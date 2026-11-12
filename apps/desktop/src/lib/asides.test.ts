@@ -119,6 +119,17 @@ describe("the aside threads across a relaunch (backlog 137)", () => {
     expect(new Set(back.map((a) => a.id)).size).toBe(2);
   });
 
+  it("keeps an answer's read of the chat's cache (item 677), and an old turn reads back without one", () => {
+    const one: Aside[] = [
+      { id: 1, quote: null, draft: false, turns: [turn({ readAt: 1_700_000_000_000, roundRead: 53_000 }), turn({ question: "old" })], anchor: null },
+    ];
+    const s = new Mem();
+    saveAsides(new Map([["a", one]]), s);
+    const [read, old] = loadAsides(s).get("a")![0]!.turns;
+    expect([read!.readAt, read!.roundRead]).toEqual([1_700_000_000_000, 53_000]);
+    expect([old!.readAt, old!.roundRead]).toEqual([undefined, undefined]);
+  });
+
   it("reads a store written before, one thread per chat, as a list of one", () => {
     const s = new Mem();
     s.setItem(
