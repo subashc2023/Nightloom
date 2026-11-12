@@ -76,13 +76,15 @@ export const EFFORT_DEFAULTS: Record<Engine, Record<string, EffortFacts>> = {
     // 2026-11-11 (item 659): code.claude.com/docs/en/model-config, "Resolution order" step 5:
     // "Fable 5.2, Opus 5.5, Sonnet 5.5, and Haiku 5.5 default to `medium`" — and a top-level
     // `effortLevel` in user settings does not apply to Opus 5.5 or later models.
-    // `fable-5-2` sits after `fable-5-1` on purpose: the CLI's `fable` alias still means 5.1
-    // (blocker 1692), and a bare alias resolves to the first key of its family.
+    // ~~`fable-5-2` sits after `fable-5-1` on purpose: the CLI's `fable` alias still means 5.1
+    // (blocker 1692)~~ (struck 2026-11-11, item 660): model-config "Version history" says
+    // "v2.1.321 | `fable` resolves to Fable 5.2", and the installed CLI is 2.1.322, so `fable-5-2`
+    // now comes first. A bare alias resolves to the first key of its family.
     "opus-5-5": { default: "medium", levels: ALL, source: CLI_DOC },
     "sonnet-5-5": { default: "medium", levels: ALL, source: CLI_DOC },
     "haiku-5-5": { default: "medium", levels: ALL, source: CLI_DOC },
-    "fable-5-1": { default: "high", levels: ALL, source: CLI_DOC },
     "fable-5-2": { default: "medium", levels: ALL, source: CLI_DOC },
+    "fable-5-1": { default: "high", levels: ALL, source: CLI_DOC },
     "fable-5": { default: "high", levels: ALL, source: CLI_DOC },
     "opus-5": { default: "high", levels: ALL, source: CLI_DOC },
     "opus-4-8": { default: "high", levels: ALL, source: CLI_DOC },
@@ -102,8 +104,8 @@ export const EFFORT_DEFAULTS: Record<Engine, Record<string, EffortFacts>> = {
     "opus-5-5": { default: "medium", levels: ALL, source: API_DOC },
     "sonnet-5-5": { default: "high", levels: ALL, source: API_DOC },
     "haiku-5-5": { default: "medium", levels: ALL, source: API_DOC },
-    "fable-5-1": { default: "high", levels: ALL, source: API_DOC },
     "fable-5-2": { default: "high", levels: ALL, source: API_DOC },
+    "fable-5-1": { default: "high", levels: ALL, source: API_DOC },
     "fable-5": { default: "high", levels: ALL, source: API_DOC },
     "opus-5": { default: "high", levels: ALL, source: API_DOC },
     "opus-4-8": { default: "high", levels: ALL, source: API_DOC },

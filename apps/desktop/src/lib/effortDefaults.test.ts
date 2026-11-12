@@ -50,7 +50,9 @@ describe("effort defaults per model and per engine (backlog 100)", () => {
     expect(effortFamily("provider", "Claude-Sonnet-5")).toBe("sonnet-5");
     // The longest key wins, so a point release is not read as its parent.
     expect(effortFamily("provider", "claude-fable-5-1")).toBe("fable-5-1");
-    expect(effortFamily("claude-code", "fable")).toBe("fable-5-1");
+    // Item 660: since CLI 2.1.321 the `fable` alias means Fable 5.2 (model-config, "Version history").
+    expect(effortFamily("claude-code", "fable")).toBe("fable-5-2");
+    expect(effortDefaultLabel("claude-code", "fable")).toBe("medium");
   });
 
   it("answers ? for a model the table has never heard of", () => {

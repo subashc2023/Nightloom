@@ -14,6 +14,7 @@
  * many tokens the warm ones would rewrite.
  */
 import type { CliNewModel, CliStatus, CliUpdateResult } from "./types";
+import { effortDefault } from "./effortDefaults";
 
 // ---- the switch and the cadence ----
 
@@ -99,7 +100,7 @@ export function cliNoticeTitle(s: CliStatus): string {
 
 /**
  * What Nightloom lacks for a new model, or null when it has everything:
- * "no price or context window in Nightloom yet", "not in the Anthropic
+ * "no price, context window or effort default in Nightloom yet", "not in the Anthropic
  * model list". The price and window are the backend's table rows (an
  * id's own row, not its family's); the list is the provider engine's
  * curated ids. The Claude Code engine's pickers name aliases, which follow
@@ -109,8 +110,12 @@ export function modelGap(m: CliNewModel, curated: string[]): string | null {
   const tables: string[] = [];
   if (!m.has_price) tables.push("price");
   if (!m.has_window) tables.push("context window");
+  // Item 660: the effort table too — a model it lacks reads `default · ?` on the rail until its
+  // row is added from code.claude.com model-config, "Resolution order" step 5 (no API carries a
+  // default: the Models API lists supported levels only).
+  if (!effortDefault("claude-code", m.id)) tables.push("effort default");
   const parts: string[] = [];
-  if (tables.length) parts.push(`no ${tables.join(" or ")} in Nightloom yet`);
+  if (tables.length) parts.push(`no ${tables.length > 1 ? `${tables.slice(0, -1).join(", ")} or ${tables[tables.length - 1]}` : tables[0]} in Nightloom yet`);
   if (!curated.includes(m.id)) parts.push("not in the Anthropic model list");
   return parts.length ? parts.join("; ") : null;
 }

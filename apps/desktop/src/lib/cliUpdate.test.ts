@@ -82,6 +82,12 @@ describe("the notice", () => {
       "no price or context window in Nightloom yet; not in the Anthropic model list",
     );
     expect(modelGap({ ...FABLE51, has_window: true }, ["claude-fable-5-1"])).toBe("no price in Nightloom yet");
+    // Item 660: a model the effort table lacks is a gap too (its rail label would read `default · ?`).
+    const OPUS6 = { ...OPUS55, id: "claude-opus-6", name: "Opus 6" };
+    expect(modelGap(OPUS6, ["claude-opus-6"])).toBe("no effort default in Nightloom yet");
+    expect(modelGap({ ...OPUS6, has_price: false, has_window: false }, ["claude-opus-6"])).toBe(
+      "no price, context window or effort default in Nightloom yet",
+    );
     expect(cliNoticeDetail(status({ new_models: [OPUS55, FABLE51] }), ["claude-opus-5-5"])).toBe(
       "Opus 5.5 (claude-opus-5-5) — Nightloom's tables already know it. Fable 5.1 (claude-fable-5-1) — no price or context window in Nightloom yet; not in the Anthropic model list.",
     );
