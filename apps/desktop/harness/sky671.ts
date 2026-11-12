@@ -31,7 +31,9 @@ const frame = (h: number, tt: number): ShaderFrame => ({
   ev: 1,
 });
 const fmt = (h: number) => `${((Math.floor(h) + 11) % 12) + 1}:${String(Math.round((h % 1) * 60)).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`;
-if (qs.get("bench") === "1") {
+if (qs.get("bench") === "2") {
+  void import("./sky671bench");
+} else if (qs.get("bench") === "1") {
   // Synced (one 1-px readback a frame, 150 frames, first 20 dropped) at 1x, 1180 x 822. The shipped shader and the new one
   // alternate, three rounds each, so load drift hits both; the figure is the median of the three means.
   setTimeout(() => {
