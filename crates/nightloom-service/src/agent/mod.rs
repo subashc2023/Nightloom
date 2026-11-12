@@ -2397,13 +2397,15 @@ impl ClaudeCodeAgent {
             match next {
                 Ok(Some(line)) => {
                     any_line = true;
+                    // Item 658: by the `type` key, not the line's start.
+                    let kind = protocol::line_type(&line);
                     if !init_seen && line.contains(r#""subtype":"init""#) {
                         init_seen = true;
                         if let Some(t) = &timing {
                             t.mark(crate::turn_timing::Mark::Init);
                         }
                     }
-                    if !event_seen && line.contains(r#""type":"stream_event""#) {
+                    if !event_seen && kind == Some("stream_event") {
                         event_seen = true;
                         if let Some(t) = &timing {
                             t.mark(crate::turn_timing::Mark::FirstEvent);
@@ -2457,8 +2459,7 @@ impl ClaudeCodeAgent {
                     if let Some(inbox) = &inbox
                         && inbox.idle_with_agents()
                         && (line.contains(r#""subtype":"task_started""#)
-                            || (line.starts_with(r#"{"type":"user""#)
-                                && line.contains(r#""is_error":true"#)))
+                            || (kind == Some("user") && line.contains(r#""is_error":true"#)))
                         && let Some(dir) = spec.brief.as_ref().map(|b| b.dir.clone())
                         && !dir.as_os_str().is_empty()
                         && let Some(note) = steer::take(
@@ -2485,14 +2486,14 @@ impl ClaudeCodeAgent {
                             );
                         }
                     }
-                    if held_stdin.is_some() && line.starts_with(r#"{"type":"result""#) {
+                    if held_stdin.is_some() && kind == Some("result") {
                         held_stdin = None;
                     }
-                    if line.starts_with(r#"{"type":"result""#) {
+                    if kind == Some("result") {
                         main_idle = true;
                     } else if main_idle
+                        && kind == Some("system")
                         && line.contains(r#""subtype":"init""#)
-                        && line.starts_with(r#"{"type":"system""#)
                     {
                         main_idle = false;
                     }
@@ -2588,7 +2589,7 @@ impl ClaudeCodeAgent {
                         // `wind_down`'s, in the background: read to the end
                         // of the stream, a Stop that had already worked
                         // took the whole grace and was then called a kill.
-                        let closed = line.starts_with(r#"{"type":"result""#);
+                        let closed = protocol::line_type(&line) == Some("result");
                         for event in translator.push(&line) {
                             on_event(event);
                         }
@@ -5554,18 +5555,24 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"num_turns":
     /// - `slow_ack`: it takes 3 s to write its `result` and exit (a CLI
     ///   whose abort waits on a stalled connection);
     /// - `lingers`: it writes its `result` at once but its process stays up
-    ///   8 s, holding stdout (an exit held up on the network);
+    ///   8 s, holding stdout (an exit held up on the network); `lingers_322`
+    ///   the same with 2.1.322's `result` line, `type` not first (658);
     /// - `ignores`: it ignores the interrupt (a stalled CLI);
     /// - `ignores_orphan`: as `ignores`, and a child it started holds its
     ///   pipes 8 s past the kill.
     #[cfg(unix)]
     fn stop_stand_in(kind: &str) -> String {
         let init = r#"printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"m","permissionMode":"auto","session_id":"stop-466"}'"#;
-        let result = r#"printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_streaming","num_turns":1,"session_id":"stop-466","stop_reason":null,"usage":{"input_tokens":0,"output_tokens":0}}'"#;
+        let result = if kind == "lingers_322" {
+            // Item 658: CLI 2.1.322's order, `type` not first.
+            r#"printf '%s\n' '{"duration_api_ms":0,"stop_reason":null,"session_id":"stop-466","usage":{"input_tokens":0,"output_tokens":0},"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_streaming","num_turns":1}'"#
+        } else {
+            r#"printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_streaming","num_turns":1,"session_id":"stop-466","stop_reason":null,"usage":{"input_tokens":0,"output_tokens":0}}'"#
+        };
         let on_int = match kind {
             "prompt" => "trap 'res; exit 0' INT",
             "slow_ack" => "trap 'sleep 3; res; exit 0' INT",
-            "lingers" => "trap 'res; sleep 8; exit 0' INT",
+            "lingers" | "lingers_322" => "trap 'res; sleep 8; exit 0' INT",
             // Ignores it, and a process it started holds its stdout and
             // stderr 8 s past its kill (an MCP server, a hook).
             "ignores_orphan" => "trap '' INT\nsleep 8 &",
@@ -5995,6 +6002,97 @@ cat >/dev/null
                 .iter()
                 .any(|e| matches!(e, TurnEvent::ToolOutput { .. }))
         );
+    }
+
+    /// Item 658: the Stop's drain ends at 2.1.322's `result` line too
+    /// (`type` not first), not at the kill 5 s later.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stop_ends_at_a_result_line_whose_type_is_not_first() {
+        let (t, notices) = time_stop("lingers_322").await;
+        assert!(t < Duration::from_secs(1), "{t:?}");
+        assert_eq!(
+            notices,
+            vec!["interrupted — Claude Code ended the turn".to_string()]
+        );
+    }
+
+    /// Item 658: a turn with attachments (stdin held, no inbox, 332) gets
+    /// its EOF at the `result` line in either key order, so a CLI that
+    /// reads its stdin to the end exits; before, 2.1.322's order held the
+    /// stdin open and the turn never ended.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_attachment_turn_closes_its_stdin_at_the_result_in_either_order() {
+        for result in [
+            r#"{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"ok","session_id":"att-658","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}"#,
+            r#"{"duration_api_ms":12,"stop_reason":"end_turn","session_id":"att-658","usage":{"input_tokens":1,"output_tokens":1},"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"ok"}"#,
+        ] {
+            let dir = std::env::temp_dir().join(format!("nightloom-658a-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let body = format!(
+                "read -r line\nprintf '%s\\n' '{{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"x\",\"tools\":[],\"mcp_servers\":[],\"model\":\"m\",\"permissionMode\":\"auto\",\"session_id\":\"att-658\"}}'\nprintf '%s\\n' '{result}'\ncat >/dev/null\nexit 0\n"
+            );
+            let mut s = AgentSpec::new(&dir);
+            s.binary = stand_in(&dir, &body);
+            let agent = ClaudeCodeAgent::new(s.clone());
+            let input = TurnInput {
+                text: "what colour".into(),
+                images: vec![nightloom_core::ImageInput {
+                    media_type: "image/png".into(),
+                    data: "AAAA".into(),
+                }],
+                documents: Vec::new(),
+            };
+            let cancel = CancellationToken::new();
+            let mut on_event = |_e: TurnEvent| {};
+            let run = agent.run_with(&s, input, &cancel, &mut on_event);
+            let outcome = tokio::time::timeout(Duration::from_secs(10), run)
+                .await
+                .expect("the stdin was closed at the result")
+                .unwrap();
+            assert!(outcome.result_seen, "{result}");
+            assert_eq!(outcome.session_id.as_deref(), Some("att-658"));
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    /// Item 658: 543a's turn (idle on helpers the limit stopped) with
+    /// 2.1.322's `result` line: the main thread is idle at it, so the turn
+    /// still ends paused by itself. (543a's own test is the old order.)
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_turn_idle_on_helpers_ends_paused_at_a_result_whose_type_is_not_first() {
+        let dir = std::env::temp_dir().join(format!("nightloom-658b-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let body = r#"res() { printf '%s\n' '{"duration_api_ms":0,"stop_reason":null,"session_id":"lim-658","usage":{"input_tokens":0,"output_tokens":0},"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_streaming","num_turns":1}'; }
+printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"m","permissionMode":"auto","session_id":"lim-658"}'
+printf '%s\n' '{"type":"system","subtype":"task_started","task_id":"a8bb","tool_use_id":"toolu_HELPER","description":"funding scan","task_type":"local_agent"}'
+printf '%s\n' '{"duration_api_ms":2219,"stop_reason":"end_turn","session_id":"lim-658","usage":{"input_tokens":1,"output_tokens":1},"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"Three helpers are running."}'
+printf '%s\n' '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1794321000,"rateLimitType":"five_hour","overageStatus":"rejected","isUsingOverage":false}}'
+trap 'res; exit 0' INT
+sleep 30 >/dev/null 2>&1 & wait
+wait
+"#;
+        let mut s = AgentSpec::new(&dir);
+        s.binary = stand_in(&dir, body);
+        let mut agent = ClaudeCodeAgent::new(s);
+        agent.limit_grace = Duration::from_millis(300);
+        let cancel = CancellationToken::new();
+        let began = std::time::Instant::now();
+        let outcome = agent.run_turn("go", &cancel, &mut |_| {}).await.unwrap();
+        let took = began.elapsed();
+        assert!(took < Duration::from_secs(5), "the turn hung: {took:?}");
+        let hit = outcome.limit.expect("the limit is on the outcome");
+        assert_eq!(hit.resets_at, Some(1794321000));
+        assert_eq!(
+            outcome.notices,
+            vec![
+                "paused — the plan's usage limit stopped the helpers this turn was waiting on"
+                    .to_string()
+            ]
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Item 466's measurement, printed (`--ignored --nocapture`).
