@@ -17,8 +17,8 @@ import { app, applyPalette } from "./state.svelte";
 
 export type Layout = "filament" | "classic";
 export const LAYOUTS: { id: Layout; name: string; note: string }[] = [
-  { id: "filament", name: "Filament IV", note: "The new look: lit controls, the right column, the dated chat list." },
-  { id: "classic", name: "Classic", note: "The look before Filament IV, every screen as it was, with its palettes." },
+  { id: "filament", name: "Jarvis", note: "The new look: lit controls, the right column, the dated chat list." },
+  { id: "classic", name: "Classic", note: "The look before Jarvis, every screen as it was, with its palettes." },
 ];
 // Its own key: `nightloom.layout` is the window's sizes (`state.svelte.ts`),
 // and sharing it meant picking Classic wiped his sidebar and pane sizes and

@@ -257,7 +257,7 @@
        does not reach the phone, so the page keeps its own (look.ts). -->
   <div class="rs-label">Look on this phone</div>
   <div class="rs-seg" role="radiogroup" aria-label="Look on this phone" data-act="look">
-    <button class:on={look === "filament"} role="radio" aria-checked={look === "filament"} onclick={() => onlook("filament")}>Filament IV</button>
+    <button class:on={look === "filament"} role="radio" aria-checked={look === "filament"} onclick={() => onlook("filament")}>Jarvis</button>
     <button class:on={look === "classic"} role="radio" aria-checked={look === "classic"} onclick={() => onlook("classic")}>Classic</button>
   </div>
   <small class="rs-small">Classic is the page as it was before Filament IV. Kept on this phone only.</small>
