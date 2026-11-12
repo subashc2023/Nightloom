@@ -1554,7 +1554,7 @@
       <section class="card" data-layout-pick>
         <div class="ch"><span class="t">Layout</span></div>
         <p class="note small">
-          Classic puts every screen back the way it was before Filament IV —
+          Classic puts every screen back the way it was before Jarvis —
           the chat, the composer, the sidebar, the tabs, the top bar, the
           terminal strip — with its four palettes (A is charcoal &amp; amber
           again). Applies at once and is remembered; switch back any time.

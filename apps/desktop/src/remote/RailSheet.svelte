@@ -260,7 +260,7 @@
     <button class:on={look === "filament"} role="radio" aria-checked={look === "filament"} onclick={() => onlook("filament")}>Jarvis</button>
     <button class:on={look === "classic"} role="radio" aria-checked={look === "classic"} onclick={() => onlook("classic")}>Classic</button>
   </div>
-  <small class="rs-small">Classic is the page as it was before Filament IV. Kept on this phone only.</small>
+  <small class="rs-small">Classic is the page as it was before Jarvis. Kept on this phone only.</small>
 {/if}
 
 <style>
