@@ -92,6 +92,8 @@
   import { fold, isFolded, noteStay, unfold } from "./handoffFold.svelte";
   // Item 618b: the row's look (Settings → Appearance → Composer row), stamped on the root; rules in src/composerRow.css.
   import { composerRow } from "./composerRow.svelte";
+  // Item 644: the box takes the chat's model family (Opus Copper, Fable Lilac glass, others today's).
+  import { composerModelId, modelFamily } from "./modelFamily";
   import { cacheFrame, cacheLook } from "./cacheLook.svelte";
   import ThreadPicker from "./ThreadPicker.svelte";
   import { chatThread, refreshThreadFlags, injectIntoTurn, sendNowRow, openChatKey, takeQueued, takeStopSend, frontQueued, stopSendFor } from "./state.svelte";
@@ -2589,6 +2591,18 @@
   const chatModelName = $derived(app.draft.agentModel.trim() || "default");
   const chatEffortName = $derived(app.draft.agentEffort || `default · ${effortDefaultText}`);
   const asideModelLabel = $derived(aside?.model ? aside.model : `chat's · ${chatModelName}`);
+  // Item 644: the family of the model this box sends to, live with the pickers (the chip's choice).
+  const family = $derived(
+    modelFamily(
+      composerModelId({
+        agentMode,
+        agentModel: app.draft.agentModel,
+        model: app.draft.model,
+        connected: app.connection?.model,
+        asideModel: aside?.model ?? null,
+      }),
+    ),
+  );
   const asideEffortLabel = $derived(
     aside && aside.effort != null ? aside.effort || "default" : `chat's · ${chatEffortName}`,
   );
@@ -2964,6 +2978,7 @@
   class:dropping={dragDepth > 0}
   data-drop-box={aside ? "aside" : "main"}
   data-composer-row={composerRow.value}
+  data-model-family={family}
   role="group"
   aria-label={aside ? "aside composer" : "message composer"}
   {ondragenter}
