@@ -161,6 +161,23 @@ pub fn replied(app: &AppHandle, session: &Session, spec: &AgentSpec, dir: Option
     );
 }
 
+/// An aside in `chat` read the cache (item 677): sent at `sent_ms`, its
+/// newest round read `cache_read` tokens. When that refreshed the held
+/// reply's cache the schedule counts from it, and the window is told.
+pub fn aside_read(app: &AppHandle, chat: &str, sent_ms: i64, cache_read: u64) {
+    let Some(holder) = app.try_state::<Holder>() else {
+        return;
+    };
+    if holder.0.aside_read(chat, sent_ms, cache_read) {
+        emit(app, &holder.0.status(chat, None, &policy(), now_ms()));
+    }
+}
+
+/// Now, unix ms — for a caller outside this file (an aside's send).
+pub fn now() -> i64 {
+    now_ms()
+}
+
 fn chat_id_ok(chat: &str) -> bool {
     !chat.is_empty() && chat.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
