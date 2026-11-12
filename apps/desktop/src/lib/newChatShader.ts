@@ -131,13 +131,21 @@ vec2 M(vec2 p) { return (p - CL) / K + C; }
 // about 92 px/s toward him, its lines grow about 3.6× as bright and a soft cyan glow gathers on the wave crests; it all
 // settles back about 1.3 s after his last key. Only the sea (below the horizon) responds; the sky is untouched.
 // Design and measurements: nightshift notes/runner-design/662-r4-designs/index.html and 662-r4-report-2026-11-12.md.
+// Round 5 (his verdict on round 4: "Roll stronger is good in terms of color and vibrancy but looks too uniform"; build
+// pick E2 Travelling swells): B2's strength (40 to ~104 px/s, lines ~5.8x, crest glow 3.8), but the added light rides two
+// long swells that roll toward him at different angles and speeds, and the sea lifts up to 9 px along them so their crests
+// catch the glow. Nightshift notes/runner-design/662-r5-designs/index.html and 662-r5-report-2026-11-12.md.
 
 /** At full response: the grid rolls 40 × (1 + this) px/s. */
-export const SEA_TYPING_ROLL = 1.3;
+export const SEA_TYPING_ROLL = 1.6;
 /** At full response: every sea line is (1 + this) times as bright. */
-export const SEA_TYPING_LIT = 2.6;
+export const SEA_TYPING_LIT = 4.8;
 /** At full response: the crest glow's strength. */
-export const SEA_TYPING_GLOW = 1.2;
+export const SEA_TYPING_GLOW = 3.8;
+/** At full response: the travelling swells' height (px), lifting the sea along them. */
+export const SEA_TYPING_SWELL = 9;
+/** The added light's overall gain, so the swell-shaped light matches B2's mean brightness. */
+export const SEA_TYPING_GAIN = 0.83;
 /** The sea grid's period (px); the extra roll is kept modulo it, so the float stays small. */
 export const SEA_GRID = 64;
 
@@ -527,14 +535,18 @@ void main() {
   if (dy > 0.5) {
     float Z = CH * F / dy, X = (q.x - C.x) * Z / F;
     float w = 22.0 * sin(X * 0.010 + t * 0.55) * cos(Z * 0.0075 - t * 0.40) + 11.0 * sin((X + Z) * 0.018 - t * 0.9);
-    float Xg = X + w * 0.6, Zg = Z - w * 4.0 - t * 40.0 - seaTypingRoll;
+    // Item 662: two swells rolling toward the viewer (shape mean 1); while he types the sea lifts along them.
+    float sw = (pow(0.5 + 0.5 * sin((Z + 0.30 * X) * 0.0105 + t * 1.1), 3.0) + pow(0.5 + 0.5 * sin((Z - 0.45 * X) * 0.0078 + t * 0.6 + 1.3), 3.0)) * 1.6;
+    float wb = ${f(SEA_TYPING_SWELL)} * seaTypingE * (sw - 1.0);
+    float Xg = X + (w + wb) * 0.6, Zg = Z - w * 4.0 - wb * 0.5 - t * 40.0 - seaTypingRoll;
+    w += wb;
     float px_ = Z / F, pz = Z * Z / (CH * F);
     float lx = 1.0 - smoothstep(0.0, px_ * 1.4, abs(fract(Xg / 64.0) - 0.5) * 64.0);
     float lz = (1.0 - smoothstep(0.0, pz * 1.4, abs(fract(Zg / 64.0) - 0.5) * 64.0)) * smoothstep(40.0, 10.0, pz);
     float crest = smoothstep(-20.0, 26.0, w), fade = exp(-Z / 2600.0) * smoothstep(0.0, 26.0, dy);
     col += mix(DEEP, CYAN, crest) * (lx * 0.55 + lz * 0.75) * fade * (0.55 + 0.6 * crest);
-    // Item 662: typing lights the sea (its lines, and a glow on the crests).
-    col += mix(CYAN, SIG, 0.5) * ((lx * 0.55 + lz * 0.75) * (0.55 + 0.6 * crest) * ${f(SEA_TYPING_LIT)} + 0.05 * ${f(SEA_TYPING_GLOW)} * (0.35 + 0.65 * crest)) * fade * seaTypingE;
+    // Item 662: typing lights the sea (its lines, and a glow on the crests), shaped by the travelling swells.
+    col += mix(CYAN, SIG, 0.5) * ((lx * 0.55 + lz * 0.75) * (0.55 + 0.6 * crest) * ${f(SEA_TYPING_LIT)} + 0.05 * ${f(SEA_TYPING_GLOW)} * (0.35 + 0.65 * crest)) * fade * seaTypingE * sw * ${f(SEA_TYPING_GAIN)};
     col += DEEP * 0.10 * exp(-dy / 90.0);
     // Item 671: waves breaking far out (an event: none under Reduce motion) and the sky of the hour reflected.
     if (dy < 60.0 && ev > 0.5) col += breakers(q, dy, ${f(SKY_LEVELS.events)});

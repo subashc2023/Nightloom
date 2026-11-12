@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SEA_GRID, seaTyping, shaderSource } from "./newChatShader";
+import { SEA_GRID, SEA_TYPING_GAIN, SEA_TYPING_GLOW, SEA_TYPING_LIT, SEA_TYPING_ROLL, SEA_TYPING_SWELL, seaTyping, shaderSource } from "./newChatShader";
 
 // Item 662: typing on the new-chat page moves the Horizon sea (his pick B1 Roll, round 4).
 // Types `secs` at `rate` keys/s from rest, then idles; samples every 1/120 s.
@@ -78,5 +78,18 @@ describe("item 662: typing moves the sea", () => {
     const sky = h.slice(h.indexOf("} else {"));
     expect(sky).not.toContain("seaTyping");
     expect(shaderSource("radar")).not.toContain("seaTyping");
+  });
+
+  it("round 5 (E2 Travelling swells): B2's strength, the light and a small lift riding two travelling swells", () => {
+    expect([SEA_TYPING_ROLL, SEA_TYPING_LIT, SEA_TYPING_GLOW, SEA_TYPING_SWELL, SEA_TYPING_GAIN]).toEqual([1.6, 4.8, 3.8, 9, 0.83]);
+    const h = shaderSource("horizon");
+    const sea = h.slice(h.indexOf("if (dy > 0.5)"), h.indexOf("} else {"));
+    expect(sea).toContain("float sw = ");
+    // the lift is scaled by the response, so the sea at rest is exactly as before
+    expect(sea).toContain("float wb = 9.0 * seaTypingE * (sw - 1.0);");
+    expect(sea).toContain("w += wb;");
+    // the lift comes before the crest is measured, so the swells' crests catch the glow
+    expect(sea.indexOf("w += wb;")).toBeLessThan(sea.indexOf("float crest"));
+    expect(sea).toContain("* fade * seaTypingE * sw * 0.83;");
   });
 });
