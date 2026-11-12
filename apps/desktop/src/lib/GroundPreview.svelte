@@ -5,6 +5,7 @@
   // under Reduce motion.
   import { fpsFor, makeScene, parseRgb, type GroundStyle, type GroundView } from "./newChatGround";
   import { reducedMotion } from "./sendMotion";
+  import { isShaderLook, shaderGround } from "./newChatShader";
 
   let { look }: { look: GroundStyle } = $props();
   let box = $state<HTMLElement | null>(null);
@@ -13,7 +14,7 @@
   $effect(() => {
     const host = box;
     const c = canvas;
-    if (!host || !c || look === "dots") return;
+    if (!host || !c || look === "dots" || isShaderLook(look)) return;
     const ctx = c.getContext("2d");
     if (!ctx) return;
     const read = (v: string) => {
@@ -62,10 +63,22 @@
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
   });
+
+  // Item 640: Horizon and Radar on the card, by the page's own shader code,
+  // round the stand-in wheel (54 px: radius 28 in the page's dial terms).
+  let glCanvas = $state<HTMLCanvasElement | null>(null);
+  $effect(() => {
+    const host = box;
+    const c = glCanvas;
+    if (!host || !c || !isShaderLook(look)) return;
+    const ctl = shaderGround(c, host, () => ({ x: host.clientWidth / 2, y: host.clientHeight / 2, r: 28 }), { always: true });
+    ctl.set(look);
+    return () => ctl.destroy();
+  });
 </script>
 
-<div class="gp" class:still={look === "dots"} bind:this={box} aria-hidden="true">
-  {#if look !== "dots"}<canvas bind:this={canvas}></canvas>{/if}
+<div class="gp" class:still={look === "dots" || isShaderLook(look)} bind:this={box} aria-hidden="true">
+  {#if isShaderLook(look)}<canvas bind:this={glCanvas}></canvas>{:else if look !== "dots"}<canvas bind:this={canvas}></canvas>{/if}
   <span class="gp-wheel"></span>
 </div>
 

@@ -33,10 +33,17 @@
   import { STEP_MOTIONS, stepMotion, setStepMotion, type StepMotion } from "./stepMotion.svelte";
   import StepMotionPreview from "./StepMotionPreview.svelte";
   // Item 632 (agent E, wave 5): the new-chat page's background.
-  import { GROUND_STYLES } from "./newChatGround";
+  import { GROUND_STYLES, GROUND_MENU } from "./newChatGround";
   import { groundPick, setGroundPick } from "./newChatGroundPick.svelte";
   import GroundPreview from "./GroundPreview.svelte";
   // End item 632.
+  // Item 640: Settings offers Horizon, Radar and Default (Weft); a stored look
+  // no longer offered shows as one more card, the earlier pick, until he picks.
+  const groundCards = $derived.by(() => {
+    if (GROUND_MENU.some((g) => g.id === groundPick.value)) return GROUND_MENU;
+    const old = GROUND_STYLES.find((g) => g.id === groundPick.value);
+    return old ? [...GROUND_MENU, { ...old, name: `${old.name} (earlier pick)` }] : GROUND_MENU;
+  });
   // Item 617 (own block): Reply text — Line reveal or Word rise.
   import { REPLY_LOOKS, replyLook, setReplyLook } from "./replyLook.svelte";
   // End item 617.
@@ -2098,10 +2105,10 @@
           <div class="ch"><span class="t">New-chat background</span></div>
           <p class="note small">
             What moves behind the wheel on the new-chat page.
-            {#if motionStill}Reduce motion is on in macOS, so the page keeps the still dots.{/if}
+            {#if motionStill}Reduce motion is on in macOS, so Horizon and Radar hold one still pose and Default keeps the still dots.{/if}
           </p>
           <div class="anims three" role="radiogroup" aria-label="New-chat background">
-            {#each GROUND_STYLES as g (g.id)}
+            {#each groundCards as g (g.id)}
               <div class="anim" class:on={groundPick.value === g.id}>
                 <button class="anim-pick" role="radio" aria-checked={groundPick.value === g.id} onclick={() => setGroundPick(g.id)}>
                   <span class="anim-name">{g.name}</span>

@@ -13,14 +13,30 @@
 // Classic's page is WelcomeClassic and never mounts this.
 import { reducedMotion } from "./sendMotion";
 
-export type GroundStyle = "dots" | "ripple" | "weft" | "drift" | "aurora";
+// Item 640: Horizon and Radar are WebGL looks (`newChatShader.ts`, their own
+// canvas over the CSS dot tile); this module's canvas stays off for them.
+export type GroundStyle = "dots" | "ripple" | "weft" | "drift" | "aurora" | "horizon" | "radar";
 
 export const GROUND_STYLES: { id: GroundStyle; name: string; note: string }[] = [
-  { id: "weft", name: "Weft", note: "The default. Lights run along rows of the dots like shuttles on a loom, each leaving a short fading thread." },
+  { id: "horizon", name: "Horizon", note: "The wheel is a sun on a horizon: a wireframe sea rolls toward you, warm light-rays and a dawn glow rise behind the dial." },
+  { id: "radar", name: "Radar", note: "The wheel is a radar: a polar grid, a turning sweep with its afterglow, pings radiating out, blips flaring as it passes." },
+  { id: "weft", name: "Weft", note: "Lights run along rows of the dots like shuttles on a loom, each leaving a short fading thread." },
   { id: "ripple", name: "Ripple", note: "Every few seconds a soft ring of light leaves the wheel and passes out through the dots." },
   { id: "drift", name: "Drift", note: "A slow constellation: points drift over the dots, faint lines joining the ones near each other." },
   { id: "aurora", name: "Aurora", note: "Three wide, faint glows in the theme's colours wander slowly behind the dots." },
   { id: "dots", name: "Dots — today's", note: "The still dot grid, as before." },
+];
+
+/**
+ * Item 640 (his pick, 2026-11-11: "keep horizon and radar and default (no
+ * background, jus like the lines we have rn nothing else) as the options in
+ * settings"): what Settings offers. Default is today's page, Weft (blocker
+ * 1945). The other looks stay drawable so a stored pick never breaks.
+ */
+export const GROUND_MENU: { id: GroundStyle; name: string; note: string }[] = [
+  { id: "horizon", name: "Horizon", note: "The wheel as a sun on a horizon: a wireframe sea rolls toward you, warm light-rays and a dawn glow rise behind the dial." },
+  { id: "radar", name: "Radar", note: "The wheel as a radar: a polar grid, a turning sweep with its afterglow, pings radiating out, blips flaring as it passes." },
+  { id: "weft", name: "Default", note: "Today's page: the dot ground, lights running along its rows like shuttles, each leaving a short fading thread." },
 ];
 
 /** The CSS tile's size on `.welcome` (`background-size: 22px 22px`). */
@@ -412,7 +428,7 @@ export function makeScene(style: GroundStyle, view: GroundView): Scene | null {
 /** Whether the canvas runs: a moving look, the lit dot ground on, motion allowed. */
 export function groundWanted(style: GroundStyle, groundToken: string, reduce: boolean): boolean {
   const g = groundToken.trim();
-  return style !== "dots" && !reduce && g !== "" && g !== "none";
+  return style !== "dots" && style !== "horizon" && style !== "radar" && !reduce && g !== "" && g !== "none";
 }
 
 /** Frame timings a harness reads (`window.__groundStats = { frames: 0, totalMs: 0, maxMs: 0 }`). */
