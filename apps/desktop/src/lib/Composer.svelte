@@ -218,6 +218,7 @@
   import { asideDraftKey } from "./asides";
   import { composerShows } from "./asideControls";
   import { scheduleAsideSave } from "./asides.svelte";
+  import { asidePick, askIsFor } from "./asidePick.svelte";
   import {
     prewarmAfterTurn,
     prewarmer,
@@ -2844,6 +2845,38 @@
     if (!menu) return;
     document.addEventListener("mousedown", onMenuDocClick, true);
     return () => document.removeEventListener("mousedown", onMenuDocClick, true);
+  });
+  // Item 657: the aside tab's engine chip opens this thread's model menu —
+  // the aside's own settings, as the chat's chip opens the chat's rail. Only
+  // the tab's composer (`takeFocus`), not a floating card's of the same
+  // thread. An ask made before this box mounted is not replayed.
+  let seenPick = untrack(() => asidePick.n);
+  $effect(() => {
+    const n = asidePick.n;
+    if (!aside || !takeFocus) return;
+    if (!askIsFor(asidePick, asideChat, aside.id, seenPick)) return;
+    seenPick = n;
+    untrack(() => {
+      if (menu !== "model") openMenu("model");
+    });
+  });
+  // …and says while its model or effort menu is open, for the chip's
+  // aria-expanded and its toggle.
+  $effect(() => {
+    if (!aside || !takeFocus || (menu !== "model" && menu !== "effort")) return;
+    const chat = asideChat;
+    const id = aside.id;
+    untrack(() => {
+      asidePick.openChat = chat;
+      asidePick.openThread = id;
+    });
+    return () =>
+      untrack(() => {
+        if (asidePick.openChat === chat && asidePick.openThread === id) {
+          asidePick.openChat = null;
+          asidePick.openThread = null;
+        }
+      });
   });
   // A chat or engine switch under an open menu closes it: the rows it
   // drew were the old one's.
