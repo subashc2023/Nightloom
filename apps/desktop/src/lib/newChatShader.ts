@@ -361,10 +361,13 @@ export function shaderGround(
     };
     fr.colours = shaderColours(parse(read("var(--signal)"), JARVIS_SIG), parse(read("var(--accent)"), [255, 180, 84]));
   }
-  function readLayout() {
+  function readOrigin() {
     const o = originOf();
     fr.origin = o ? { x: o.x, y: o.y } : { x: fr.w / 2, y: fr.h / 2 };
     fr.r = o?.r ?? MOCK_R;
+  }
+  function readLayout() {
+    readOrigin();
     fr.rects = veilRects(host, opts.veil ?? "");
   }
   function context(): WebGLRenderingContext | null {
@@ -401,7 +404,14 @@ export function shaderGround(
   function frame(t: number) {
     raf = 0;
     if (!on || still || !renderer || document.hidden || !seen) return; // visibility restarts it
-    if (++frames % 30 === 0) readLayout();
+    // Item 668 (his bug, 2026-11-12): the sea is centred on the dial, which is
+    // still settling when the page opens; read only every 30 frames, the sea
+    // jumped to the dial's new place ~1 s in. The dial's place is read every
+    // frame (two rects); the veils every frame for the first second, then
+    // every 30.
+    frames++;
+    if (frames <= 60 || frames % 30 === 0) readLayout();
+    else readOrigin();
     draw(nowSec(t));
     raf = requestAnimationFrame(frame);
   }
@@ -430,6 +440,7 @@ export function shaderGround(
       return;
     }
     canvas.style.display = "block";
+    frames = 0;
     still = reducedMotion();
     readColours();
     resize();
@@ -448,7 +459,10 @@ export function shaderGround(
   if (typeof IntersectionObserver !== "undefined") {
     io = new IntersectionObserver((es) => {
       seen = es.some((e) => e.isIntersecting);
-      if (seen) kick();
+      if (seen) {
+        frames = 0;
+        kick();
+      }
       else stop();
     });
     io.observe(host);
