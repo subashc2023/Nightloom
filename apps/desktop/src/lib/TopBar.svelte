@@ -47,7 +47,7 @@
   import { asideFigures, asideSpendText } from "./asideFigures";
   import { contextOf } from "./chatContext.svelte";
   import { chatLabel } from "./chatLabel";
-  import { asidePick, askAsidePick, pickOpenFor } from "./asidePick.svelte";
+  import { displayName } from "./modelSeen";
 
   interface Props {
     /**
@@ -430,7 +430,10 @@
   let gaugePopEl = $state<HTMLElement | null>(null);
   function onDocClick(e: MouseEvent): void {
     const t = e.target as Node;
-    if (!(popEl?.contains(t) || chipEl?.contains(t))) app.showRail = false;
+    if (!(popEl?.contains(t) || chipEl?.contains(t))) {
+      app.showRail = false;
+      showAsideCard = false;
+    }
     if (!(gaugePopEl?.contains(t) || gaugeEl?.contains(t))) showGauge = false;
   }
   function onKey(e: KeyboardEvent): void {
@@ -438,10 +441,11 @@
       app.showRail = false;
       app.showContext = false;
       showGauge = false;
+      showAsideCard = false;
     }
   }
   $effect(() => {
-    if (!app.showRail && !app.showContext && !showGauge) return;
+    if (!app.showRail && !app.showContext && !showGauge && !showAsideCard) return;
     document.addEventListener("mousedown", onDocClick, true);
     document.addEventListener("keydown", onKey);
     return () => {
@@ -454,21 +458,17 @@
     showGauge = false;
     app.showRail = !app.showRail;
   }
-  /** Item 657: the aside chip opens the aside's own pickers (its composer's
-   *  model menu, effort beside it), and a second click closes them. The
-   *  menu's own outside-mousedown closes it before the click lands, so
-   *  whether it was open is read on pointerdown, which comes first. */
-  const asidePickOpen = $derived(aside ? pickOpenFor(asidePick, asideChat, aside.id) : false);
-  let asidePickWasOpen = false;
-  function asideChipDown(): void {
-    asidePickWasOpen = asidePickOpen;
-  }
-  function asideChipClick(): void {
-    const was = asidePickWasOpen;
-    asidePickWasOpen = false;
-    if (!aside || !asideChat || was) return;
+  /** Item 657 (his "the aside * subscription button doesn't do anything",
+   *  then "on the normal chat is like the list of settings"): the aside's
+   *  chip opens the same settings card, in the same place, scoped to the
+   *  aside (`RightRail` → `ProviderRail` given the aside). Its own flag, not
+   *  `app.showRail`: a chat bar in another pane opens the chat's card from
+   *  that, and must not open with this one. */
+  let showAsideCard = $state(false);
+  function toggleAsideCard(): void {
+    app.showContext = false;
     showGauge = false;
-    askAsidePick(asideChat, aside.id);
+    showAsideCard = !showAsideCard;
   }
   // The card's place, refreshed while it is open on resize and on scroll
   // (backlog 163). ~~From the chip's rectangle~~ — since 2026-09-22 from the
@@ -486,7 +486,7 @@
     popPos = anchorBelow({ left: r.left, right: r.right - 20, bottom: r.bottom - 1 }, POP_WIDTH, window.innerWidth, 0);
   }
   $effect(() => {
-    if (!app.showRail) return;
+    if (aside ? !showAsideCard : !app.showRail) return;
     placePop();
     window.addEventListener("resize", placePop);
     window.addEventListener("scroll", placePop, true);
@@ -629,16 +629,15 @@
       <!-- Item 605: the aside's kind chip. ~~Not a button: the model and
            effort are the composer's buttons, and the model popover is the
            chat's~~ — item 657 (his "doesn't do anything"): a button that
-           opens the aside's own settings, its composer's model menu with
-           the effort button beside it, as the chat's chip opens the chat's. -->
+           opens the same settings card as the chat's chip, scoped to the
+           aside — its model and effort its own, the rest the chat's. -->
       <button
         class="ns-chip model aside-kind"
-        class:open={asidePickOpen}
-        aria-haspopup="menu"
-        aria-expanded={asidePickOpen}
-        use:tip={`An aside: answered from ${asideChatName}'s context on the Claude Code engine, never part of it — click to pick its model (${af?.model ?? "the chat's"}); its effort is beside it`}
-        onpointerdown={asideChipDown}
-        onclick={asideChipClick}
+        class:open={showAsideCard}
+        bind:this={chipEl}
+        aria-expanded={showAsideCard}
+        use:tip={`An aside: answered from ${asideChatName}'s context on the Claude Code engine, never part of it — its model (${af?.model ? displayName(af.model) : "the chat's"}), effort and settings, click to open`}
+        onclick={toggleAsideCard}
       >
         <span class="dot" class:unknown={!app.connection} class:failed={!!signedOut}></span>
         <span class="model-name">Aside<span class="fold2">{" · "}{engineName || "subscription"}</span></span>
@@ -817,10 +816,11 @@
     {/if}
   </div>
 
-  {#if app.showRail && !aside}
+  {#if aside ? showAsideCard : app.showRail}
     <!-- Portalled to body and placed by the chip's rectangle (backlog 163):
          inside the bar's stacking context it painted under the Welcome
-         page's floating composer and off its chip. -->
+         page's floating composer and off its chip. Item 657: an aside's
+         bar opens the same card from its chip, scoped to the aside. -->
     <div
       class="popover hud-m"
       bind:this={popEl}
@@ -829,7 +829,7 @@
       out:hudOut|global
       style="top: {popPos.top}px; left: {popPos.left}px"
     >
-      <RightRail />
+      <RightRail {aside} {asideChat} />
     </div>
   {/if}
   {#if showGauge && app.connection}

@@ -533,7 +533,8 @@
 {:else}
   <aside class="rail">
     <div class="tabs" role="tablist">
-      {#each TABS as t (t.id)}
+      <!-- Item 657: an aside's card (its chip's) has no Tasks — the to-do list is the chat's session's, as in 605's column. -->
+      {#each aside ? TABS.filter((t) => t.id !== "tasks") : TABS as t (t.id)}
         <button
           role="tab"
           aria-selected={tab === t.id}
@@ -546,8 +547,8 @@
       {/each}
     </div>
 
-    {#if tab === "connection"}
-      <ProviderRail />
+    {#if tab === "connection" || aside}
+      <ProviderRail {aside} {asideChat} />
     {:else}
       <TaskPanel />
     {/if}

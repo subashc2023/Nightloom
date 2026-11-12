@@ -2589,9 +2589,12 @@
    * the chat's cannot read the chat's prompt cache, so its first answer
    * pays to read the whole context: the row says so.
    */
-  const chatModelName = $derived(app.draft.agentModel.trim() || "default");
+  // Item 657 (his "idk why its like this w the full slug"): ~~the raw id,
+  // `chat's · claude-opus-5-5`~~ — the model's name, `Opus 5.5`, as the
+  // chat's own button reads (`modelChipLabel`); an alias stays as it is.
+  const chatModelName = $derived(app.draft.agentModel.trim() ? displayName(app.draft.agentModel) : "default");
   const chatEffortName = $derived(app.draft.agentEffort || `default · ${effortDefaultText}`);
-  const asideModelLabel = $derived(aside?.model ? aside.model : `chat's · ${chatModelName}`);
+  const asideModelLabel = $derived(aside?.model ? displayName(aside.model) : `chat's · ${chatModelName}`);
   // Item 644: the family of the model this box sends to, live with the pickers (the chip's choice).
   const family = $derived(
     modelFamily(
