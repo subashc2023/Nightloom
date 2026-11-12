@@ -86,6 +86,8 @@ describe("the wiring (backlog 373)", () => {
   it("the state posts held banners on leaving, asking whether each call still waits", async () => {
     const src = (await import("./state.svelte.ts?raw")).default as string;
     expect(src).toContain("onAway(() => void postHeldNeedsYou(approvalWaits))");
-    expect(src).toMatch(/function approvalWaits[\s\S]*pendingApprovals[\s\S]*app\.background/);
+    // Item 641: approvalWaits moved to state/resumes.svelte.ts; the wiring stays in state.svelte.ts.
+    const resumesSrc = (await import("./state/resumes.svelte.ts?raw")).default as string;
+    expect(resumesSrc).toMatch(/function approvalWaits[\s\S]*pendingApprovals[\s\S]*app\.background/);
   });
 });

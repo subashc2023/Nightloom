@@ -7,7 +7,7 @@ import * as $ from "svelte/internal/client";
 import { draftKey, drafts, enqueueMessage, readDraft } from "./drafts.svelte";
 import { app, openChatKey, takeQueued, turnOwnsKey } from "./state.svelte";
 import composerSrc from "./Composer.svelte?raw";
-import stateSrc from "./state.svelte?raw";
+import stateSrc from "./state/queue.svelte?raw"; // item 641: replyToPending moved here
 
 // Nightshift backlog 375 (his report, 2026-10-18), review: drive the
 // drain the way the composer runs it across the real switch. He queued a
