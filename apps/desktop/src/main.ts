@@ -25,12 +25,16 @@ import { app as state, applyPalette } from "./lib/state.svelte";
 import { applyLayout } from "./lib/layout.svelte";
 import { installMathCopy } from "./lib/mathCopy";
 import { installFieldUndo } from "./lib/fieldUndo";
+import { installSelectScope } from "./lib/selectScope";
 
 // Item 352: copying a rendered formula gives its TeX.
 installMathCopy();
 
 // Item 421: ⌘Z in a plain field undoes that field, never another box.
 installFieldUndo();
+
+// Item 646: ⌘A outside a text box selects the pane he is in, never the whole app.
+installSelectScope();
 
 // The saved palette, before the first paint.
 applyPalette(state.palette);
