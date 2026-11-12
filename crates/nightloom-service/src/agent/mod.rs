@@ -2513,6 +2513,16 @@ impl ClaudeCodeAgent {
                             last_call = Some(name.clone());
                             stopped = None;
                         }
+                        // Item 656: a foreground Bash call's spool is looked
+                        // for from the call — its `task_started` comes ~3 s in.
+                        if let TurnEvent::ToolCall { id, name, input } = &event
+                            && name == "Bash"
+                            && input.get("run_in_background").and_then(|v| v.as_bool())
+                                != Some(true)
+                            && let Some(session) = translator.session_id()
+                        {
+                            bash_tails.call(id.clone(), session.to_string());
+                        }
                         if let TurnEvent::ToolResult { tool_use_id, .. } = &event {
                             bash_tails.end(tool_use_id);
                         }
@@ -5778,6 +5788,212 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"num_turns":
         assert!(
             t < INTERRUPT_GRACE + KILLED_DRAIN + Duration::from_millis(700),
             "{t:?}"
+        );
+    }
+
+    /// Item 656's stand-in: the lines CLI 2.1.322 printed for one 8-second
+    /// foreground `./tick.sh` run with the app's own flags (measured
+    /// 2026-11-11, `656-report-2026-11-11.md`), verbatim but for the ids, and
+    /// the spool written beside them as the CLI writes it — `task_started`
+    /// arrives ~3 s after the command started, the spool already has lines,
+    /// and it is deleted before `task_notification`. The turn goes through
+    /// the real read loop: the tail, its tick, the event.
+    #[cfg(unix)]
+    async fn bash_tail_turn(result_line: &str, announced: bool) -> Vec<TurnEvent> {
+        let tag = uuid::Uuid::new_v4().simple().to_string();
+        let dir = std::env::temp_dir().join(format!("nightloom-656-{tag}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let session = format!("s656-{tag}");
+        let task = format!("b656{}", &tag[..8]);
+        // Where the CLI keeps it: `/tmp/claude-<uid>/<cwd slug>/<session>/tasks/`.
+        let spool_root = std::path::PathBuf::from(format!("/tmp/claude-656t-{tag}"));
+        let tasks = spool_root.join("-cwd-slug").join(&session).join("tasks");
+        let spool = tasks.join(format!("{task}.output"));
+        let lines = [
+            format!(
+                r#"{{"type":"system","subtype":"init","cwd":"x","session_id":"{session}","tools":["Bash"],"mcp_servers":[],"model":"claude-haiku-5-5","permissionMode":"default"}}"#
+            ),
+            format!(
+                r#"{{"type":"assistant","message":{{"model":"claude-haiku-5-5","id":"msg_011CgxW3PeGLfahq5oDdNbmm","type":"message","role":"assistant","content":[{{"type":"tool_use","id":"toolu_656","name":"Bash","input":{{"command":"./tick.sh","description":"Run tick.sh in the foreground from the working directory","run_in_background":false}},"caller":{{"type":"direct"}}}}],"container":null,"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{{"input_tokens":2,"cache_creation_input_tokens":12252,"cache_read_input_tokens":24142,"output_tokens":17}}}},"parent_tool_use_id":null,"session_id":"{session}","uuid":"a0ec972d-bcca-4050-bf9d-ea2a4aa20a23"}}"#
+            ),
+            format!(
+                r#"{{"type":"system","subtype":"task_started","task_id":"{task}","run_id":"0mwd4gula-88b450f7","tool_use_id":"toolu_656","description":"Run tick.sh in the foreground from the working directory","is_backgrounded":false,"task_type":"local_bash","uuid":"f248cd06-05f2-4472-a088-384d9dbf23ae","session_id":"{session}"}}"#
+            ),
+            format!(
+                r#"{{"type":"system","subtype":"task_notification","task_id":"{task}","run_id":"0mwd4gula-88b450f7","tool_use_id":"toolu_656","status":"completed","output_file":"","summary":"Run tick.sh in the foreground from the working directory","uuid":"61e5eac5-3bde-4a8f-9de9-4493b9b5836e","session_id":"{session}"}}"#
+            ),
+            format!(
+                r#"{{"type":"user","message":{{"role":"user","content":[{{"tool_use_id":"toolu_656","type":"tool_result","content":"line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8","is_error":false}}]}},"parent_tool_use_id":null,"session_id":"{session}","uuid":"c6efa4b2-ff34-4ec9-831b-9aabafffe610"}}"#
+            ),
+            result_line.replace("SESSION", &session),
+        ];
+        for (i, l) in lines.iter().enumerate() {
+            // A command over before the CLI would announce it (< ~3 s):
+            // no `task_started`, no `task_notification`.
+            let l = if !announced && (i == 2 || i == 3) {
+                String::new()
+            } else {
+                format!("{l}\n")
+            };
+            std::fs::write(dir.join(format!("l{i}.json")), l).unwrap();
+        }
+        let d = dir.display();
+        let (t, s) = (tasks.display(), spool.display());
+        let body = format!(
+            r#"read -r line
+cat '{d}/l0.json' '{d}/l1.json'
+mkdir -p '{t}'; : > '{s}'
+for i in 1 2; do echo "line $i" >> '{s}'; sleep 0.4; done
+cat '{d}/l2.json'
+for i in 3 4 5 6 7 8; do echo "line $i" >> '{s}'; sleep 0.4; done
+rm -f '{s}'
+cat '{d}/l3.json' '{d}/l4.json' '{d}/l5.json'
+cat >/dev/null
+"#
+        );
+        let mut spec = AgentSpec::new(&dir);
+        spec.binary = stand_in(&dir, &body);
+        let agent = ClaudeCodeAgent::new(spec);
+        let cancel = CancellationToken::new();
+        let mut events = Vec::new();
+        let ended = {
+            let mut on_event = |e| events.push(e);
+            let run = agent.run_turn("run it", &cancel, &mut on_event);
+            tokio::time::timeout(Duration::from_secs(20), run).await
+        };
+        let _ = std::fs::remove_dir_all(&spool_root);
+        let _ = std::fs::remove_dir_all(&dir);
+        ended.expect("the turn ends").unwrap();
+        events
+    }
+
+    /// Item 656: the read loop turns the running command's spool into
+    /// `ToolOutput` events — after its `task_started`, before its result.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_running_foreground_bash_passes_its_spool_as_tool_output() {
+        let events = bash_tail_turn(
+            r#"{"type":"result","subtype":"success","is_error":false,"num_turns":2,"result":"done","session_id":"SESSION","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}"#,
+            true,
+        )
+        .await;
+        let outs: Vec<&Vec<String>> = events
+            .iter()
+            .filter_map(|e| match e {
+                TurnEvent::ToolOutput { tool_use_id, lines } if tool_use_id == "toolu_656" => {
+                    Some(lines)
+                }
+                _ => None,
+            })
+            .collect();
+        eprintln!("656 tool_output events: {outs:?}");
+        assert!(outs.len() >= 2, "{outs:?}");
+        // From the call, not from `task_started` (656): line 1 alone first.
+        assert_eq!(outs[0], &vec!["line 1".to_string()], "{outs:?}");
+        assert!(outs.iter().all(|l| l.len() <= bash_tail::LINES));
+        let last_out = events
+            .iter()
+            .rposition(|e| matches!(e, TurnEvent::ToolOutput { .. }))
+            .unwrap();
+        let result = events
+            .iter()
+            .position(|e| matches!(e, TurnEvent::ToolResult { .. }))
+            .unwrap();
+        assert!(last_out < result, "no passing text after the result");
+    }
+
+    /// Item 656: a command over before the CLI announces it (no
+    /// `task_started` at all — most commands) still passes its text.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_command_never_announced_still_passes_its_text() {
+        let events = bash_tail_turn(
+            r#"{"type":"result","subtype":"success","is_error":false,"num_turns":2,"result":"done","session_id":"SESSION","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}"#,
+            false,
+        )
+        .await;
+        assert!(
+            events.iter().any(|e| matches!(e, TurnEvent::ToolOutput { tool_use_id, .. } if tool_use_id == "toolu_656")),
+            "{events:?}"
+        );
+    }
+
+    /// Item 656 with the real CLI (`cargo test -p nightloom-service --lib
+    /// live_656 -- --ignored --nocapture`): one Haiku turn running a 3-line,
+    /// 1.5-second script — under the ~3 s the CLI waits before announcing a
+    /// command — allowed by one rule, nothing else. Prints the events.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore]
+    async fn live_656_a_short_command_passes_its_text_with_the_real_cli() {
+        let dir = std::env::temp_dir().join(format!("nightloom-656-live-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("tick.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nfor i in 1 2 3; do echo line $i; sleep 0.5; done\n",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut spec = AgentSpec::new(&dir);
+        spec.binary = "claude".into();
+        spec.model = Some("haiku".into());
+        spec.no_session_persistence = true;
+        spec.permission_mode = Some("default".into());
+        spec.allowed_tools = vec!["Bash(./tick.sh)".into()];
+        let agent = ClaudeCodeAgent::new(spec);
+        let cancel = CancellationToken::new();
+        let t0 = std::time::Instant::now();
+        let mut seen = Vec::new();
+        {
+            let mut on_event = |e: TurnEvent| match &e {
+                TurnEvent::ToolCall { name, .. } => {
+                    seen.push(format!("{:.2} call {name}", t0.elapsed().as_secs_f64()))
+                }
+                TurnEvent::ToolOutput { lines, .. } => seen.push(format!(
+                    "{:.2} output {lines:?}",
+                    t0.elapsed().as_secs_f64()
+                )),
+                TurnEvent::ToolResult { .. } => {
+                    seen.push(format!("{:.2} result", t0.elapsed().as_secs_f64()))
+                }
+                TurnEvent::ToolDenied { .. } => {
+                    seen.push(format!("{:.2} denied", t0.elapsed().as_secs_f64()))
+                }
+                _ => {}
+            };
+            agent
+                .run_turn(
+                    "Run exactly this Bash command in the foreground, then reply done: ./tick.sh",
+                    &cancel,
+                    &mut on_event,
+                )
+                .await
+                .unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        for s in &seen {
+            println!("656 live: {s}");
+        }
+        assert!(seen.iter().any(|s| s.contains("output")), "{seen:?}");
+    }
+
+    /// Item 656, found on the way: 2.1.322's `result` line no longer starts
+    /// with `"type"` (measured: `{"duration_api_ms":…,"type":"result",…}`).
+    /// The turn still ends on it, and the command still passes its text.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_result_line_whose_type_is_not_first_still_ends_the_turn() {
+        let events = bash_tail_turn(
+            r#"{"duration_api_ms":2219,"stop_reason":"end_turn","session_id":"SESSION","total_cost_usd":0.004,"usage":{"input_tokens":1,"output_tokens":1},"type":"result","subtype":"success","is_error":false,"num_turns":2,"result":"done"}"#,
+            true,
+        )
+        .await;
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, TurnEvent::ToolOutput { .. }))
         );
     }
 

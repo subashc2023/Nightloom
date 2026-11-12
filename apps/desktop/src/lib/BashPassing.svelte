@@ -28,17 +28,21 @@
     position: absolute;
     right: 196px;
     top: 2px;
-    height: 30px;
+    /* Item 656 (his "still dont see the bash text"): the newest line — the
+       bottom one — sat in the mask's bottom fade and on Reticle's dashed bus
+       at 50 %, so it could not be seen. It now ends above the bus (22 px,
+       not 30), only older lines fade (top), and the ink is 0.7. */
+    height: 22px;
     width: 220px;
     overflow: hidden;
     pointer-events: none;
     z-index: -1;
-    opacity: 0.5;
+    opacity: 0.7;
     display: flex;
     flex-direction: column;
     justify-content: flex-end;
-    -webkit-mask: linear-gradient(180deg, transparent, #000 35%, #000 72%, transparent);
-    mask: linear-gradient(180deg, transparent, #000 35%, #000 72%, transparent);
+    -webkit-mask: linear-gradient(180deg, transparent, #000 55%);
+    mask: linear-gradient(180deg, transparent, #000 55%);
   }
   .pl {
     display: flex;
@@ -66,10 +70,10 @@
     }
     @keyframes pass-out {
       from {
-        opacity: 0.5;
+        opacity: 0.7;
       }
       60% {
-        opacity: 0.4;
+        opacity: 0.55;
       }
       to {
         opacity: 0;
