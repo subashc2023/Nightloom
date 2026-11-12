@@ -8,9 +8,16 @@
  * - **Context** is the newest answered request's input plus output — the
  *   chat's prefix the aside forked from, the thread so far, and its answer:
  *   what the next follow-up carries (the chat's gauge's rule, `contextUsed`).
- * - **Cost** sums the CLI's estimate for each answer (`cost_usd`, an API-
- *   price estimate, not a bill under a subscription); `complete` is false
- *   when some answered turn carried none, so the sum is a floor.
+ * - **Cost** is what the aside has **added on top of the chat** (item 675,
+ *   2026-11-12; his "asides should show the cost as the added cost
+ *   compared to the regular chat"): the sum of each answer's own spend
+ *   (`added` — the CLI's API-price estimate less the chat's running cost
+ *   its fork restored; not a bill under a subscription). Until 675 it
+ *   summed `cost`, the CLI's `total_cost_usd`, which on a fork is the
+ *   whole chat's cost so far plus the answer's — each easy answer on a
+ *   $12 chat added $12 and change. `complete` is false when some answered
+ *   turn carried no `added` (none came, or it was answered before 675),
+ *   so the sum is a floor.
  * - **Cache hit** is the newest answer's input read back from the cache.
  * - **This turn** is the newest exchange: its fresh input, output, clock.
  *
@@ -87,7 +94,9 @@ export function asideFigures(a: Aside | null, now: number = Date.now(), chatBase
   for (let i = a.turns.length - 1; i >= 0; i--) {
     const u = a.turns[i]!.usage;
     if (u) {
-      out.used = u.input_tokens + u.output_tokens;
+      // Item 675: the last round's own reading when the turn kept one —
+      // `usage` sums the answer's rounds, each carrying the prefix again.
+      out.used = a.turns[i]!.context ?? u.input_tokens + u.output_tokens;
       out.cacheHit = u.cache_read_tokens != null && u.input_tokens > 0 ? Math.min(1, u.cache_read_tokens / u.input_tokens) : null;
       break;
     }
@@ -103,8 +112,9 @@ export function asideFigures(a: Aside | null, now: number = Date.now(), chatBase
   let complete = true;
   for (const t of a.turns) {
     if (!answered(t)) continue;
-    if (typeof t.cost === "number") {
-      usd += t.cost;
+    // Item 675: `added` only — a turn's old `cost` is the chat's total.
+    if (typeof t.added === "number") {
+      usd += t.added;
       any = true;
     } else complete = false;
   }
@@ -137,10 +147,11 @@ export function asideFigures(a: Aside | null, now: number = Date.now(), chatBase
   return out;
 }
 
-/** The spend as the bar writes it: four decimals under a cent, else two. */
+/** The spend as the bar writes it: four decimals under a cent, else two.
+ *  Item 675: with a plus — it is what the aside added over the chat. */
 export function asideSpendText(c: AsideFigures["cost"]): string | null {
   if (!c) return null;
   if (c.usd === 0 && c.complete) return null;
   const digits = c.usd > 0 && c.usd < 0.01 ? 4 : 2;
-  return `$${c.usd.toFixed(digits)}`;
+  return `+$${c.usd.toFixed(digits)}`;
 }

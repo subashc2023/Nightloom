@@ -4657,6 +4657,8 @@ async fn switch_subagents_same_to_choose(state: State<'_, AppState>) -> Result<u
 struct AsideResult {
     answer: String,
     /// The CLI's estimate of the API cost — not a bill under a subscription.
+    /// What this answer itself added (item 675): the fork's process
+    /// restores the chat's running cost, which the agent takes off.
     cost_usd: Option<f64>,
     /// The aside read the chat's prefix from cache: this many tokens.
     cache_read: u64,
@@ -4665,8 +4667,14 @@ struct AsideResult {
     /// The model the CLI resolved (backlog 283): the aside's answer is
     /// drawn as the chat's replies are, under the model's name.
     model: Option<String>,
+    /// Summed over the answer's rounds, as `cache_read` is.
     input_tokens: u64,
     output_tokens: u64,
+    /// The newest round's prompt plus its output (item 675): what the
+    /// next follow-up carries. The sums above count the chat's prefix once
+    /// per round, which an aside that reads before it answers has several
+    /// of. `None` when no round reported.
+    context_tokens: Option<u64>,
 }
 
 /// A piece of an aside's answer as it streams (nightshift backlog 128):
@@ -4898,6 +4906,7 @@ async fn ask_aside(
         model: outcome.model,
         input_tokens: outcome.usage.input_tokens,
         output_tokens: outcome.usage.output_tokens,
+        context_tokens: outcome.last_round.map(|u| u.input_tokens + u.output_tokens),
     })
 }
 
@@ -6891,14 +6900,23 @@ async fn plan_scoped_limits() -> Result<nightloom_service::plan_usage::ScopedLim
 
 /// A Claude Code chat's /usage "This session" figures (item 569): the
 /// newest `cost-state` of its transcript and the split by subagent type.
-/// `agent_session` is the chat's Claude Code session id.
+/// `agent_session` is the chat's Claude Code session id; `earlier` the
+/// sessions it ran on before — a rewind starts a new one — oldest first
+/// (item 675): what those spent that the live one left behind stays in
+/// the cost, so a rewind never lowers it.
 #[tauri::command]
 async fn session_figures(
     agent_session: String,
+    earlier: Option<Vec<String>>,
 ) -> Result<nightloom_service::session_figures::SessionFigures, String> {
-    tokio::task::spawn_blocking(move || nightloom_service::session_figures::read(&agent_session))
-        .await
-        .map_err(|e| format!("reading the chat's figures failed: {e}"))
+    tokio::task::spawn_blocking(move || {
+        nightloom_service::session_figures::read_chat(
+            &agent_session,
+            earlier.as_deref().unwrap_or_default(),
+        )
+    })
+    .await
+    .map_err(|e| format!("reading the chat's figures failed: {e}"))
 }
 
 /// A plan reading is also the end reading of any reply that finished

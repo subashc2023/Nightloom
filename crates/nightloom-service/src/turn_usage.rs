@@ -23,7 +23,7 @@
 //! **The estimate (his 10/7 question, blocker 1271).** Each reply also
 //! carries `est`: its API-equivalent cost (the CLI's own estimate, which
 //! prices each model and each kind of token) times the percent-per-dollar
-//! fitted over replies that ran alone ([`Fit`], `<config>/usage-fit.json`),
+//! fitted over replies that ran alone ([`Fit`], `<config>/usage-fit-2.json`),
 //! once [`FIT_MIN_REPLIES`] such replies exist. Whole-percent readings make
 //! one reply's measured figure mostly +0 or +1; the fit averages that out.
 //!
@@ -38,8 +38,11 @@ use serde::{Deserialize, Serialize};
 
 /// The per-chat file of reply figures, beside `turn-budget.json`.
 pub const LINES_FILE: &str = "turn-usage.jsonl";
-/// The fit across chats, in the config directory.
-pub const FIT_FILE: &str = "usage-fit.json";
+/// The fit across chats, in the config directory. ~~`usage-fit.json`~~
+/// until item 675 (2026-11-12): every cost in that file was the chat's
+/// running total, not the reply's own (the CLI's `total_cost_usd` on a
+/// resumed session), so the fit starts again under a new name.
+pub const FIT_FILE: &str = "usage-fit-2.json";
 /// Replies that ran alone before the estimate is offered.
 pub const FIT_MIN_REPLIES: u32 = 5;
 /// Turns waiting for an end reading; the oldest go past this.
@@ -127,7 +130,14 @@ pub struct TurnUsageLine {
     pub seven_day: Option<Span>,
     /// Another chat's turn in this app ran inside the span.
     pub shared: bool,
+    /// The reply's own API-equivalent cost when [`Self::own`]; on a line
+    /// written before item 675 the chat's running total at its end.
     pub cost_usd: Option<f64>,
+    /// `cost_usd` is this reply's own spend (item 675, 2026-11-12). Absent
+    /// on older lines, whose cost — and the estimate made from it — is the
+    /// whole chat's so far; a reader shows neither for those.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub own: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub est: Option<Estimate>,
     /// When the start and end readings were taken.
@@ -229,6 +239,7 @@ pub fn line_of(
         ),
         shared,
         cost_usd,
+        own: true,
         est: fit.estimate(cost_usd),
         start_at_ms: start.at_ms,
         end_at_ms: end.at_ms,

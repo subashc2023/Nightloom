@@ -31,10 +31,22 @@ pub struct AgentOutcome {
     pub model: Option<String>,
     /// Summed across every round of the turn.
     pub usage: Usage,
+    /// The newest round's own usage (nightshift item 675): its prompt plus
+    /// its output is what the next request carries — the context — where
+    /// [`Self::usage`] counts the prefix once per round. `None` when no
+    /// round reported.
+    pub last_round: Option<Usage>,
     /// The CLI's own client-side estimate, and **not** a bill: under a
     /// subscription nothing here is charged per token. Carried so a shell
     /// can show what the same turn would have cost on the API, which is the
     /// only reading of this number that is true.
+    ///
+    /// **This process's own spend** since item 675 (2026-11-12): the
+    /// `result` line's `total_cost_usd` is the session's running total — a
+    /// resumed or forked process restores the cost of everything before it
+    /// — so [`super::Agent`] takes what it restored off before handing
+    /// the outcome on (`session_figures::own_cost`). Straight from the
+    /// translator it is still the CLI's total.
     pub cost_usd: Option<f64>,
     /// Assistant turns the CLI took internally, tool rounds included.
     pub rounds: Option<u32>,
@@ -605,6 +617,7 @@ impl Translator {
             StreamEv::MessageDelta { usage: Some(raw) } => {
                 let usage = raw.to_usage();
                 self.outcome.usage.add(usage);
+                self.outcome.last_round = Some(usage);
                 let live = self.live.exact(usage.input_tokens + usage.output_tokens);
                 vec![TurnEvent::Usage { usage }, live]
             }
@@ -1516,6 +1529,20 @@ mod tests {
         assert_eq!(usage.cache_write_tokens, Some(10));
         assert_eq!(usage.reasoning_tokens, Some(36));
         assert_eq!(outcome.usage.input_tokens, 3656);
+    }
+
+    /// Item 675: the outcome's usage sums the turn's rounds, each of which
+    /// sends the prefix again; the newest round's own reading is the
+    /// context the next request carries (an aside's dial reads it).
+    #[test]
+    fn the_last_round_is_kept_beside_the_sum() {
+        let (_, outcome) = drive(&[MSG_DELTA, MSG_DELTA_263]);
+        assert_eq!(outcome.usage.input_tokens, 3656 + 10 + 7619 + 12144);
+        let last = outcome.last_round.expect("a round reported");
+        assert_eq!(last.input_tokens, 10 + 7619 + 12144);
+        assert_eq!(last.output_tokens, 42);
+        let (_, none) = drive(&[]);
+        assert_eq!(none.last_round, None);
     }
 
     /// Verbatim from one `claude -p` turn on 2.1.263 (2026-09-15, nightshift

@@ -89,6 +89,12 @@ pub struct SessionFigures {
     pub using: Vec<Spender>,
     /// The CLI could not price some model, so the cost is low.
     pub unknown_cost: bool,
+    /// Of `cost_usd`, what the chat spent on replies a rewind (or a fresh
+    /// CLI session) later left behind (nightshift item 675): the newest
+    /// transcript's running total no longer holds them, and money spent
+    /// stays counted. `None` when there is none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rewound_usd: Option<f64>,
 }
 
 /// Token counts of one transcript, by model, deduplicated by message id.
@@ -353,7 +359,114 @@ pub fn read_transcript(main: &Path, rates: Option<&crate::usage::Rates>) -> Sess
             .get("hasUnknownModelCost")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        rewound_usd: None,
     }
+}
+
+/// Every `cost-state` of a transcript, oldest first: its `startTime` (the
+/// CLI restores it with the cost, so it names the lineage) and its
+/// `totalCostUSD`.
+fn cost_states(path: &Path) -> Vec<(Option<f64>, f64)> {
+    let Ok(text) = std::fs::read(path) else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&text)
+        .lines()
+        .filter(|l| l.contains("\"cost-state\""))
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|v| v.get("type").and_then(Value::as_str) == Some("cost-state"))
+        .filter_map(|v| {
+            Some((
+                v.get("startTime").and_then(Value::as_f64),
+                v.get("totalCostUSD").and_then(Value::as_f64)?,
+            ))
+        })
+        .collect()
+}
+
+/// What `earlier` spent that `later` — the chat's next CLI session — did
+/// not carry on (nightshift item 675). A rewind's session is a copy of the
+/// one before it, cut at the rewind, so the two share their first
+/// `cost-state` lines and the later one's total restarts from the last
+/// shared line: the earlier session's total past that line is the rewound
+/// replies' spend. Measured 2026-11-12 on his ICS 46 chat: 9.13 at the
+/// rewind, the copy restarting from 8.91 — $0.22 the newest total lost.
+///
+/// With no shared line: the same `startTime` means the later session
+/// restored the earlier one's cost without its lines, and it carries what
+/// the earlier one had reached by the later one's first total; another
+/// `startTime` (a fresh session) carries nothing. Pure.
+fn left_behind(earlier: &[(Option<f64>, f64)], later: &[(Option<f64>, f64)]) -> f64 {
+    let Some(&(start, last)) = earlier.last() else {
+        return 0.0;
+    };
+    let shared = earlier
+        .iter()
+        .zip(later)
+        .take_while(|(a, b)| a == b)
+        .count();
+    let carried = if shared > 0 {
+        earlier[shared - 1].1
+    } else {
+        match later.first() {
+            Some(&(s, first)) if s.is_some() && s == start => earlier
+                .iter()
+                .map(|e| e.1)
+                .filter(|c| *c <= first)
+                .fold(0.0, f64::max),
+            _ => 0.0,
+        }
+    };
+    (last - carried).max(0.0)
+}
+
+/// [`read_transcript`] for a chat that has run on several CLI sessions
+/// (nightshift item 675): `chain` is every session the chat has had,
+/// oldest first, the last one live. The figures are the live session's;
+/// the cost adds what each earlier session spent that its successor left
+/// behind, so a rewind never lowers it.
+pub fn read_chain(chain: &[PathBuf], rates: Option<&crate::usage::Rates>) -> SessionFigures {
+    let Some(main) = chain.last() else {
+        return SessionFigures::default();
+    };
+    let mut f = read_transcript(main, rates);
+    if !f.found || chain.len() < 2 {
+        return f;
+    }
+    let states: Vec<_> = chain.iter().map(|p| cost_states(p)).collect();
+    let lost: f64 = states.windows(2).map(|w| left_behind(&w[0], &w[1])).sum();
+    // Under a cent of drift is float noise between two lines, not spend.
+    if lost >= 0.005 {
+        f.rewound_usd = Some(lost);
+        f.cost_usd = Some(f.cost_usd.unwrap_or(0.0) + lost);
+    }
+    f
+}
+
+/// What the CLI restores as session `id`'s running cost on `--resume`:
+/// its transcript's newest `cost-state` total (nightshift item 675). The
+/// `result` line's `total_cost_usd` of a resumed or forked process starts
+/// from it (measured 2026-11-12, CLI 2.1.322: a session at $0.00198, its
+/// `--fork-session --no-session-persistence` fork answering one word for
+/// $0.00135 reported `total_cost_usd` 0.00333). `None` with no transcript
+/// or no `cost-state` in it, when the CLI restores nothing.
+pub fn restored_cost_in(projects: &Path, id: &str) -> Option<f64> {
+    let main = find_transcript(projects, id)?;
+    last_cost_state(&main)?
+        .get("totalCostUSD")
+        .and_then(Value::as_f64)
+}
+
+/// [`restored_cost_in`] under the CLI's own projects folder.
+pub fn restored_cost(id: &str) -> Option<f64> {
+    restored_cost_in(&crate::agent::cli_session::projects_dir()?, id)
+}
+
+/// What one CLI process itself spent (nightshift item 675): its `result`
+/// line's `total_cost_usd` less the running cost it restored at launch.
+/// Never negative; `None` when the CLI named no cost.
+pub fn own_cost(total: Option<f64>, restored: Option<f64>) -> Option<f64> {
+    total.map(|t| (t - restored.unwrap_or(0.0)).max(0.0))
 }
 
 /// A session id is a file name here: letters, digits and dashes only.
@@ -378,14 +491,33 @@ pub fn find_transcript(projects: &Path, id: &str) -> Option<PathBuf> {
 
 /// The live figures of Claude Code session `id`.
 pub fn read(id: &str) -> SessionFigures {
+    read_chat(id, &[])
+}
+
+/// The live figures of a chat whose CLI session is `id` and whose earlier
+/// sessions — a rewind starts a new one — were `earlier`, oldest first
+/// (nightshift item 675; [`read_chain`]). An earlier session with no
+/// transcript left is passed over.
+pub fn read_chat(id: &str, earlier: &[String]) -> SessionFigures {
     let Some(dir) = crate::usage::claude_dir() else {
         return SessionFigures::default();
     };
-    let Some(main) = find_transcript(&dir.join("projects"), id) else {
+    let projects = dir.join("projects");
+    let Some(main) = find_transcript(&projects, id) else {
         return SessionFigures::default();
     };
+    let mut chain: Vec<PathBuf> = Vec::new();
+    for e in earlier {
+        if e != id
+            && let Some(p) = find_transcript(&projects, e)
+            && !chain.contains(&p)
+        {
+            chain.push(p);
+        }
+    }
+    chain.push(main);
     let rates = crate::usage::load_rates_in(&dir).ok();
-    read_transcript(&main, rates.as_ref())
+    read_chain(&chain, rates.as_ref())
 }
 
 #[cfg(test)]
@@ -529,6 +661,116 @@ mod tests {
         let again = read(&id);
         println!("{f:#?}\nfirst read {first:?}, second {:?}", t1.elapsed());
         assert_eq!(f, again);
+    }
+
+    fn cost_state(start: u64, total: f64) -> String {
+        format!(
+            r#"{{"type":"cost-state","sessionId":"x","totalCostUSD":{total},"startTime":{start},"modelUsage":{{}}}}"#
+        )
+    }
+
+    fn transcript(d: &Path, name: &str, states: &[(u64, f64)]) -> PathBuf {
+        let p = d.join(format!("{name}.jsonl"));
+        let mut s = String::new();
+        for (start, total) in states {
+            s.push_str(r#"{"type":"user","message":{"content":"hi"}}"#);
+            s.push('\n');
+            s.push_str(&cost_state(*start, *total));
+            s.push('\n');
+        }
+        std::fs::write(&p, s).unwrap();
+        p
+    }
+
+    /// Item 675, the shape of his ICS 46 chat on 2026-11-12: a rewind's
+    /// session is a cut copy of the one before, so its total restarts
+    /// below where the chat had been — the chat's cost must not fall.
+    #[test]
+    fn a_rewind_never_lowers_the_chats_cost() {
+        let d = dir("chain");
+        let first = transcript(&d, "a", &[(7, 1.04), (7, 6.46)]);
+        // Rewound at the first session's end: nothing left behind.
+        let second = transcript(
+            &d,
+            "b",
+            &[(7, 1.04), (7, 6.46), (7, 8.91), (7, 8.97), (7, 9.13)],
+        );
+        // Rewound two replies back: 9.13 − 8.91 left behind.
+        let third = transcript(
+            &d,
+            "c",
+            &[(7, 1.04), (7, 6.46), (7, 8.91), (7, 9.12), (7, 11.92)],
+        );
+        assert_eq!(read_transcript(&third, None).cost_usd, Some(11.92));
+        let f = read_chain(&[first.clone(), second.clone(), third.clone()], None);
+        assert!(
+            (f.cost_usd.unwrap() - 12.14).abs() < 1e-9,
+            "{:?}",
+            f.cost_usd
+        );
+        assert!((f.rewound_usd.unwrap() - 0.22).abs() < 1e-9);
+        // One session, or a chain that lost nothing, is the plain reading.
+        assert_eq!(
+            read_chain(std::slice::from_ref(&third), None).rewound_usd,
+            None
+        );
+        let f = read_chain(&[first, second], None);
+        assert_eq!((f.cost_usd, f.rewound_usd), (Some(9.13), None));
+    }
+
+    #[test]
+    fn what_a_later_session_did_not_carry_is_left_behind() {
+        let s = |v: &[(u64, f64)]| -> Vec<(Option<f64>, f64)> {
+            v.iter().map(|(a, b)| (Some(*a as f64), *b)).collect()
+        };
+        // A fresh session (another start) carries nothing of the old one.
+        assert_eq!(left_behind(&s(&[(1, 2.0), (1, 5.0)]), &s(&[(2, 0.5)])), 5.0);
+        // The same lineage restored without its lines: all of it carried.
+        assert_eq!(left_behind(&s(&[(1, 2.0), (1, 5.0)]), &s(&[(1, 5.5)])), 0.0);
+        // … or restored from an earlier point of it.
+        assert_eq!(left_behind(&s(&[(1, 2.0), (1, 5.0)]), &s(&[(1, 2.5)])), 3.0);
+        // An earlier session with no reading spent nothing we can count.
+        assert_eq!(left_behind(&[], &s(&[(1, 1.0)])), 0.0);
+        // A successor with no reading yet: the whole earlier total stands.
+        assert_eq!(left_behind(&s(&[(1, 2.0)]), &[]), 2.0);
+    }
+
+    /// Item 675: a resumed or forked process reports the session's running
+    /// total; its own spend is that less what it restored.
+    #[test]
+    fn a_process_own_cost_is_its_total_less_what_it_restored() {
+        let d = dir("own");
+        let proj = d.join("projects").join("-some-folder");
+        std::fs::create_dir_all(&proj).unwrap();
+        transcript(&proj, "sess-1", &[(7, 0.5), (7, 0.0019812)]);
+        let base = restored_cost_in(&d.join("projects"), "sess-1");
+        assert_eq!(base, Some(0.0019812));
+        let own = own_cost(Some(0.00332902), base).unwrap();
+        assert!((own - 0.00134782).abs() < 1e-12, "{own}");
+        // No transcript: nothing restored, the total is its own.
+        assert_eq!(restored_cost_in(&d.join("projects"), "nope"), None);
+        assert_eq!(own_cost(Some(0.25), None), Some(0.25));
+        assert_eq!(own_cost(None, Some(1.0)), None);
+        assert_eq!(own_cost(Some(1.0), Some(1.5)), Some(0.0));
+    }
+
+    /// Live check of a chat's chain (item 675's measurement):
+    /// `NL_675_CHAIN=<id>,<id>,… cargo test … live_chain_figures -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn live_chain_figures() {
+        let ids: Vec<String> = std::env::var("NL_675_CHAIN")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::to_string)
+            .collect();
+        let (last, earlier) = ids.split_last().unwrap();
+        let alone = read(last);
+        let all = read_chat(last, earlier);
+        println!(
+            "newest alone {:?}; chain {:?}, rewound {:?}",
+            alone.cost_usd, all.cost_usd, all.rewound_usd
+        );
     }
 
     #[test]

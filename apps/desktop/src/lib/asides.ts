@@ -107,7 +107,13 @@ interface StoredTurn {
   /** Item 605: the answer's tokens and cost estimate, so the aside tab's
    *  bar and column read the same after a relaunch. */
   usage?: { input_tokens: number; output_tokens: number; cache_read_tokens?: number };
+  /** Until item 675 the CLI's running total for the whole chat, not the
+   *  answer's cost: still read back (and written again, so nothing is
+   *  dropped), never summed. */
   cost?: number;
+  /** Item 675: what the answer itself added, and the context it left. */
+  added?: number;
+  context?: number;
   /** Item 639: when the answer ended (ISO) and how long it took, so the
    *  column's This turn keeps its clock after a relaunch. */
   at?: string;
@@ -183,6 +189,8 @@ function storeTurn(t: AsideTurn): StoredTurn | null {
   if (t.model) out.model = t.model;
   if (t.usage) out.usage = { ...t.usage };
   if (typeof t.cost === "number") out.cost = t.cost;
+  if (typeof t.added === "number") out.added = t.added;
+  if (typeof t.context === "number") out.context = t.context;
   if (t.at) out.at = t.at;
   const end = t.at ? Date.parse(t.at) : NaN;
   if (t.startedAt != null && Number.isFinite(end)) out.ms = Math.max(0, end - t.startedAt);
@@ -330,6 +338,9 @@ function loadAside(v: unknown): Aside | null {
       }
     }
     if (typeof m.cost === "number" && Number.isFinite(m.cost)) turn.cost = m.cost;
+    // Item 675: the answer's own cost and the context it left.
+    if (typeof m.added === "number" && Number.isFinite(m.added) && m.added >= 0) turn.added = m.added;
+    if (typeof m.context === "number" && Number.isFinite(m.context) && m.context >= 0) turn.context = m.context;
     // Item 639: the answer's time and clock.
     if (typeof m.at === "string" && Number.isFinite(Date.parse(m.at))) turn.at = m.at;
     if (typeof m.ms === "number" && Number.isFinite(m.ms) && m.ms >= 0) turn.tookMs = m.ms;

@@ -45,6 +45,9 @@ export interface SessionFigures {
   cache_hit: number | null;
   using: Spender[];
   unknown_cost: boolean;
+  /** Item 675: of `cost_usd`, the spend of replies a rewind left behind —
+   *  the newest transcript's total no longer holds them. Absent when none. */
+  rewound_usd?: number | null;
 }
 
 /** `$64.03`; under a cent, `<$0.01`. */
