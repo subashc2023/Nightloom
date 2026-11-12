@@ -108,6 +108,10 @@ interface StoredTurn {
    *  bar and column read the same after a relaunch. */
   usage?: { input_tokens: number; output_tokens: number; cache_read_tokens?: number };
   cost?: number;
+  /** Item 639: when the answer ended (ISO) and how long it took, so the
+   *  column's This turn keeps its clock after a relaunch. */
+  at?: string;
+  ms?: number;
 }
 
 // ---- Backlog 283 (2026-10-02): the aside's composer is the chat's ----
@@ -179,6 +183,10 @@ function storeTurn(t: AsideTurn): StoredTurn | null {
   if (t.model) out.model = t.model;
   if (t.usage) out.usage = { ...t.usage };
   if (typeof t.cost === "number") out.cost = t.cost;
+  if (t.at) out.at = t.at;
+  const end = t.at ? Date.parse(t.at) : NaN;
+  if (t.startedAt != null && Number.isFinite(end)) out.ms = Math.max(0, end - t.startedAt);
+  else if (typeof t.tookMs === "number") out.ms = t.tookMs;
   return out;
 }
 
@@ -322,6 +330,9 @@ function loadAside(v: unknown): Aside | null {
       }
     }
     if (typeof m.cost === "number" && Number.isFinite(m.cost)) turn.cost = m.cost;
+    // Item 639: the answer's time and clock.
+    if (typeof m.at === "string" && Number.isFinite(Date.parse(m.at))) turn.at = m.at;
+    if (typeof m.ms === "number" && Number.isFinite(m.ms) && m.ms >= 0) turn.tookMs = m.ms;
     turns.push(turn);
   }
   const anchor = isAnchor(a.anchor) ? a.anchor : null;

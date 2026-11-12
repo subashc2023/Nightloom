@@ -6,8 +6,15 @@
    * be the control's `title=`, so nothing is explained less — it is explained
    * on demand. A button rather than a span so the keyboard reaches it.
    */
+  import { portal } from "./portal";
+  import { HINT_CLOSED, hintOpen, hintStep, type HintEvent } from "./hintState";
+
   let { text, side = "left" }: { text: string; side?: "left" | "right" } = $props();
-  let open = $state(false);
+  // Item 638: hover and focus show it while they last; a click pins it
+  // (it used to toggle, so a click on a hovered `?` shut it).
+  let hs = $state(HINT_CLOSED);
+  const open = $derived(hintOpen(hs));
+  const step = (e: HintEvent) => (hs = hintStep(hs, e));
   const id = `hint-${Math.random().toString(36).slice(2, 8)}`;
 
   // Placed against the window, not the `?` (nightshift backlog 180,
@@ -50,6 +57,33 @@
       window.removeEventListener("scroll", place, true);
     };
   });
+  // A pinned tip closes on a press anywhere else or Escape.
+  $effect(() => {
+    if (!hs.pinned) return;
+    const down = (e: PointerEvent) => {
+      if (btn && !btn.contains(e.target as Node)) step("outside");
+    };
+    const key = (e: KeyboardEvent) => {
+      if (e.key === "Escape") step("escape");
+    };
+    document.addEventListener("pointerdown", down, true);
+    document.addEventListener("keydown", key, true);
+    return () => {
+      document.removeEventListener("pointerdown", down, true);
+      document.removeEventListener("keydown", key, true);
+    };
+  });
+  function onFocus(): void {
+    // Keyboard focus only (as `use:tip`): a mouse press that focuses the
+    // button is the click's business.
+    let keyboard = true;
+    try {
+      keyboard = btn?.matches(":focus-visible") ?? true;
+    } catch {
+      /* no :focus-visible: every focus shows it */
+    }
+    if (keyboard) step("focus");
+  }
 </script>
 
 <span class="hint">
@@ -60,19 +94,28 @@
     bind:this={btn}
     aria-label="What this does"
     aria-describedby={open ? id : undefined}
-    onmouseenter={() => (open = true)}
-    onmouseleave={() => (open = false)}
-    onfocus={() => (open = true)}
-    onblur={() => (open = false)}
+    onmouseenter={() => step("enter")}
+    onmouseleave={() => step("leave")}
+    onfocus={onFocus}
+    onblur={() => step("blur")}
+    onkeydown={(e) => {
+      if (e.key === "Escape" && open) step("escape");
+    }}
     onclick={(e) => {
       e.preventDefault();
-      open = !open;
+      step("click");
     }}
   >
     ?
   </button>
   {#if open}
-    <span class="tip" role="tooltip" {id} bind:this={tipEl} style="top: {pos.top}px; left: {pos.left}px">{text}</span>
+    <!-- Item 638: on `document.body`. Inside the Model · Tasks card a
+         `fixed` tip was placed against the card, not the window — the
+         card's Filament glass (`backdrop-filter`, item 620) makes it the
+         containing block — and its `overflow: hidden` cut the tip off. -->
+    <span class="tip" role="tooltip" {id} bind:this={tipEl} use:portal style="top: {pos.top}px; left: {pos.left}px"
+      >{text}</span
+    >
   {/if}
 </span>
 

@@ -708,6 +708,9 @@ export interface AsideTurn {
   /** Clock when it was asked (backlog 309): the running list's elapsed.
    *  In memory only; a stored turn is never running. */
   startedAt?: number;
+  /** How long the answer took (item 639), kept by the store so a stored
+   *  turn's "This turn" clock survives a relaunch; `startedAt` is not kept. */
+  tookMs?: number;
   /** The turn as the chat's live reply holds it (item 403): its thinking,
    *  calls and text in order, built by the chat's own `applyToSegments`
    *  from `aside-delta` and `aside-turn-event`, so `AssistantMessage`

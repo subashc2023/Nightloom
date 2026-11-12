@@ -45,6 +45,7 @@
   import { chipWord } from "./claudeAuth";
   import type { Aside } from "./state.svelte";
   import { asideFigures, asideSpendText } from "./asideFigures";
+  import { contextOf } from "./chatContext.svelte";
   import { chatLabel } from "./chatLabel";
 
   interface Props {
@@ -264,7 +265,14 @@
   // the clock here runs from `sampled_at_ms` every 30 s.
   let now = $state(Date.now());
   /** The aside's figures, refreshed with the bar's 30 s clock (item 605). */
-  const af = $derived(aside ? asideFigures(aside, now) : null);
+  /** Item 639: the chat's last context reading, for an aside that kept no
+   *  tokens (answered before 605) — the same base the right column uses. */
+  const asideBase = $derived.by(() => {
+    if (!aside || !asideChat) return null;
+    if (asideChat === app.activeSessionId) return contextUsed() ?? contextOf(asideChat)?.used ?? null;
+    return contextOf(asideChat)?.used ?? null;
+  });
+  const af = $derived(aside ? asideFigures(aside, now, asideBase) : null);
   /** The aside's chat by name (item 605), for the chip's and card's words. */
   const asideChatName = $derived.by(() => {
     if (!asideChat) return "the chat";
@@ -330,7 +338,8 @@
     const head = gauge.limit
       ? `Context ${tokens(gauge.used)} of ${tokens(gauge.limit)} (${Math.round((gauge.ratio ?? 0) * 100)}%)`
       : `Context ${tokens(gauge.used)} — window size unknown for this model`;
-    return `${head} — click for the figures`;
+    // Item 639: an aside that kept no token counts reads an estimate, and says so.
+    return `${af?.estimated ? "About: " : ""}${head}${af?.estimated ? " (estimated: this aside kept no token counts)" : ""} — click for the figures`;
   });
   const planTip = $derived.by(() => {
     if (!plan) return "";
@@ -689,7 +698,7 @@
                   label={`Context ${Math.round(gauge.ratio * 100)}%`}
                 />
               {/if}
-              <span class="figure">{tokens(gauge.used)}</span>
+              <span class="figure">{af?.estimated ? "~" : ""}{tokens(gauge.used)}</span>
             </span>
           {/if}
           {#if plan}
@@ -822,10 +831,15 @@
               <span class="gc-bar {level}"><span class="fill" style:width="{gauge.ratio * 100}%"></span></span>
             {/if}
             <span class="gc-fig"
-              >{gauge.used.toLocaleString()}{" "}{#if gauge.limit}of {gauge.limit.toLocaleString()} · {Math.round(
+              >{af?.estimated ? "about " : ""}{gauge.used.toLocaleString()}{" "}{#if gauge.limit}of {gauge.limit.toLocaleString()} · {Math.round(
                   (gauge.ratio ?? 0) * 100,
                 )}%{:else}tokens — window size unknown{/if}</span
             >
+            {#if af?.estimated}
+              <span class="gc-note"
+                >{af.estimated === "chat" ? "estimated: the chat's context plus this thread's text" : "estimated, a floor: this thread's text only"} — this aside kept no token counts</span
+              >
+            {/if}
             {#if !aside && agents.rows.length > 0}
               <span class="gc-note"
                 >+ subagents: {agents.tokens.toLocaleString()} tokens ({agents.rows.length}, not in the window)</span
