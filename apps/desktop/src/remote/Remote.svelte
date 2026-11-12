@@ -1,5 +1,6 @@
 <script lang="ts">
   import { isImeKey } from "../lib/imeKey";
+  import { takeBlockKey } from "../lib/codeBlockKeys";
   /**
    * The phone page (nightshift backlog 091, Shape B; redesigned in item 246
    * toward the Claude app): a top bar (menu, the chat's title, new chat), a
@@ -3220,6 +3221,9 @@
             bind:value={draft}
             oninput={typed}
             onkeydown={(e) => {
+              // Item 648: inside a ``` block, a code editor's keys (Enter
+              // keeps the indentation and never sends; ⌘Enter sends).
+              if (takeBlockKey(e, box)) return;
               // A phone's Return is a new line; a hardware keyboard's
               // Return sends, as on the desktop.
               if (e.key === "Enter" && !e.shiftKey && !isImeKey(e) && !matchMedia("(pointer: coarse)").matches) {
