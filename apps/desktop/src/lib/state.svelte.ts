@@ -170,6 +170,8 @@ import { peekNew, viewMark, sameView, adoptOpen, settleTurnView, openSession, co
 import { loadLastProject, saveLastProject, loadDreamPrefs, loadPalette, loadLayout, viewport, loadReadPages, DREAM_ENGINE, DREAM_PREFS_VERSION, parseDreamPrefs, saveDreamPrefs, PALETTES, applyPalette, setPalette, SIDEBAR_MIN, SIDEBAR_MAX, toggleSidebar, sidebarColumn, SIDEBAR_SHARE, fitSidebar, sidebarShown, setSidebarWidth, paneWidth, setPaneWidth, READ_KEY, type Palette, type DreamPrefs, type Layout } from "./state/prefs.svelte";
 import { runMenuCommand, menuInterceptors, providerPills, switchProvider, toggleEngine, pickerModels, switchModel, switchModelAt, loadContextLimits } from "./state/menu.svelte";
 import { rewindTo, setAsideRewound, keepRewound } from "./state/rewind.svelte";
+import { addToast, TOAST_MS, ACTION_TOAST_MS, dismissToast, runToastAction } from "./state/toasts.svelte";
+export { TOAST_MS, ACTION_TOAST_MS, addToast, dismissToast, runToastAction };
 export { rewindTo, setAsideRewound, keepRewound };
 export { menuInterceptors, runMenuCommand, providerPills, switchProvider, toggleEngine, pickerModels, switchModel, switchModelAt, loadContextLimits };
 export { saveLastProject, DREAM_ENGINE, DREAM_PREFS_VERSION, parseDreamPrefs, saveDreamPrefs, PALETTES, applyPalette, setPalette, SIDEBAR_MIN, SIDEBAR_MAX, toggleSidebar, sidebarColumn, SIDEBAR_SHARE, fitSidebar, sidebarShown, setSidebarWidth, paneWidth, setPaneWidth, READ_KEY };
@@ -2615,33 +2617,6 @@ export async function resolveApproval(
     addToast(`Your answer was not taken: ${String(e)}`);
     return false;
   }
-}
-
-let toastSeq = 0;
-
-/** How long a toast stays: five seconds, eight when it carries an action
- *  — his "an undo floating button for 8s" (backlog 066). */
-export const TOAST_MS = 5000;
-export const ACTION_TOAST_MS = 8000;
-
-export function addToast(text: string, action?: { label: string; run: () => void }): void {
-  const id = ++toastSeq;
-  app.toasts.push(action ? { id, text, action } : { id, text });
-  setTimeout(() => dismissToast(id), action ? ACTION_TOAST_MS : TOAST_MS);
-}
-
-export function dismissToast(id: number): void {
-  const i = app.toasts.findIndex((t) => t.id === id);
-  if (i >= 0) app.toasts.splice(i, 1);
-}
-
-/** A toast's action, run once: the toast goes with the click, so the
- *  same Undo cannot fire twice. */
-export function runToastAction(id: number): void {
-  const t = app.toasts.find((t) => t.id === id);
-  if (!t?.action) return;
-  dismissToast(id);
-  t.action.run();
 }
 
 /** Mark a trailing in-progress thinking segment as complete (collapses its pill). */
