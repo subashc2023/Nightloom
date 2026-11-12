@@ -42,6 +42,7 @@
  */
 
 import type { Engine } from "./catalog";
+import { aliasView, type SeenModels } from "./modelSeen";
 
 /** The CLI's five levels, as `claude --help` 2.1.263 lists them. */
 export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
@@ -127,7 +128,13 @@ export const EFFORT_DEFAULTS: Record<Engine, Record<string, EffortFacts>> = {
  */
 export function effortFamily(engine: Engine, model: string): string | null {
   const table = EFFORT_DEFAULTS[engine];
-  const m = model.trim().toLowerCase().replace(/^claude-/, "");
+  // A context tag (`[1m]`, as in `opus[1m]` or `claude-opus-5-5[1m]`) names the same model with a
+  // longer window, so the same effort row (item 666).
+  const m = model
+    .trim()
+    .toLowerCase()
+    .replace(/\[[^\]]*\]$/, "")
+    .replace(/^claude-/, "");
   if (!m) return null;
   // A full id or a dated snapshot: the longest family key it starts with,
   // so `fable-5-1` is not read as `fable-5`.
@@ -157,4 +164,17 @@ export function effortDefaultLabel(engine: Engine, model: string): string {
   const f = effortDefault(engine, model);
   if (!f) return "?";
   return f.default ?? "none";
+}
+
+/**
+ * The model id to look the default up by (item 666): what the CLI actually ran for an alias,
+ * not the table's row order. A full id is itself. An alias — or `""`, the CLI's own default —
+ * whose `modelSeen` record (item 511) holds for the CLI now reads as the id that turn reported,
+ * so `fable` on a CLI where it means Fable 5.2 reads 5.2's row whatever order the rows are in.
+ * Before the first turn on this CLI (no record, or one from an earlier CLI version, since an
+ * update can move an alias) it is the alias itself, and {@link effortFamily}'s newest-first rule
+ * applies as before.
+ */
+export function effortModel(model: string, seen: SeenModels, cliNow: string | null): string {
+  return aliasView(seen, model, cliNow).current?.id ?? model;
 }
