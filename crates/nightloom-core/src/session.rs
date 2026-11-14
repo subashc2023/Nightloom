@@ -3441,7 +3441,12 @@ enum Repair {
 
 struct JsonlLog {
     path: PathBuf,
-    file: File,
+    /// Opened for appending on the first write, not at load (item 692): a
+    /// log only read — a Mac chat the away server keeps read-only (0444)
+    /// and forks — must open, and `open(append)` on it fails with
+    /// "Permission denied (os error 13)". A write to such a log fails at
+    /// that write instead, as a [`WriteFailure`].
+    file: Option<File>,
     repair: Option<Repair>,
 }
 
@@ -3456,18 +3461,27 @@ impl JsonlLog {
             .open(&path)?;
         Ok(Self {
             path,
-            file,
+            file: Some(file),
             repair: None,
         })
     }
 
     fn append_to(path: &Path, repair: Option<Repair>) -> io::Result<Self> {
-        let file = OpenOptions::new().append(true).open(path)?;
         Ok(Self {
             path: path.to_path_buf(),
-            file,
+            file: None,
             repair,
         })
+    }
+
+    /// The append handle, opened on first use. Never creates the file: a
+    /// log deleted since it was loaded fails here rather than restarting
+    /// as a fragment.
+    fn file(&mut self) -> io::Result<&mut File> {
+        if self.file.is_none() {
+            self.file = Some(OpenOptions::new().append(true).open(&self.path)?);
+        }
+        Ok(self.file.as_mut().expect("opened just above"))
     }
 
     fn append(&mut self, event: &SessionEvent) -> io::Result<()> {
@@ -3476,8 +3490,9 @@ impl JsonlLog {
         }
         let line = serde_json::to_string(event)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        writeln!(self.file, "{line}")?;
-        self.file.flush()
+        let file = self.file()?;
+        writeln!(file, "{line}")?;
+        file.flush()
     }
 
     fn repair_tail(&mut self, repair: Repair) -> io::Result<()> {
@@ -3490,7 +3505,7 @@ impl JsonlLog {
                 .write(true)
                 .open(&self.path)?
                 .set_len(len),
-            Repair::Separator => self.file.write_all(b"\n"),
+            Repair::Separator => self.file()?.write_all(b"\n"),
         }
     }
 }
@@ -4739,6 +4754,33 @@ mod tests {
         assert_eq!(loaded.messages().len(), 3);
         loaded.rewind(1).unwrap();
         assert!(loaded.messages().is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Item 692: a read-only log (the away server's copy of a Mac chat)
+    /// opens and reads, and is left untouched; a write to it is a
+    /// `WriteFailure`, not a failed load.
+    #[test]
+    fn a_read_only_log_loads_and_a_write_to_it_is_a_write_failure() {
+        let (dir, mut s) = logged_session("read-only");
+        s.record_user("one");
+        let path = s.log_path().unwrap().to_path_buf();
+        drop(s);
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&path, perms).unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        let mut loaded = Session::load(&path).expect("a read-only log opens");
+        assert_eq!(loaded.messages().len(), 1);
+        loaded.record_user("two");
+        assert!(loaded.write_failure().is_some());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        std::fs::set_permissions(&path, perms).unwrap();
         std::fs::remove_dir_all(&dir).ok();
     }
 

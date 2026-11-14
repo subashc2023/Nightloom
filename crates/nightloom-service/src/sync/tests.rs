@@ -665,6 +665,14 @@ fn a_fork_leaves_the_original_byte_identical() {
     fs::write(&mirrored_cli, cli_fixture(&sid, mac_ws)).unwrap();
     let log_before = fs::read(&original_log).unwrap();
     let cli_before = fs::read(&mirrored_cli).unwrap();
+    // Read-only (0444), as `mirror::write_whole` leaves every mirrored
+    // file (item 692: forking opened the original for appending, and every
+    // phone send to a Mac chat failed "Permission denied (os error 13)").
+    for f in [&original_log, &mirrored_cli] {
+        let mut perms = fs::metadata(f).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(f, perms).unwrap();
+    }
     assert!(layout.needs_fork(&original_log));
 
     let server_claude = root.join("server-claude");
