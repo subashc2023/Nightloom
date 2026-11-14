@@ -55,6 +55,7 @@
   import { HIDDEN_THINKING_TITLE, thinkingToggleDead } from "./activity";
   import { toggleTranscriptPref, transcript } from "./transcriptPrefs.svelte";
   import { composerFormat, toggleComposerFormat } from "./composerFormat.svelte";
+  import { hasTable } from "./mdTable";
   import { LiveBoxHandle, boxElement, type ComposerBox } from "./composerEditor";
   import { applyToField, codeBlockEdit, type BlockEdit } from "./codeBlockKeys";
   import LiveBox from "./LiveBox.svelte";
@@ -1279,6 +1280,26 @@
   // Item 223 / 315: quote lines and fenced code drawn in a layer behind
   // the textarea (`BoxLayer`), while the draft has either.
   const layered = $derived(layerShown(text));
+  /*
+   * Item 689 (blocker 1993, his "I think grid makes more sense no?"): a
+   * Markdown table in the box is drawn as a grid of cells to type in. The
+   * grid is the formatted box's (`tableGrid.ts`), so with the Format switch
+   * off the box is that editor drawing only the grid, quotes and code — the
+   * text round them plain — while the draft holds a table, and stays it for
+   * this chat once it came on (`gridKey`), so ⌘Z after deleting the table
+   * still has the box's history. The text is the Markdown either way.
+   */
+  let gridKey = $state<string | null>(null);
+  const gridBox = $derived(!composerFormat.on && (gridKey === key || hasTable(text)));
+  $effect(() => {
+    const k = key;
+    untrack(() => {
+      if (gridKey !== null && gridKey !== k) gridKey = null;
+    });
+  });
+  $effect(() => {
+    if (gridBox && gridKey !== key) untrack(() => (gridKey = key));
+  });
 
   function onkeydown(e: KeyboardEvent) {
     // ⌥⌘V: paste the clipboard's text as an attachment (item 284).
@@ -1505,6 +1526,26 @@
     if (withImages && ta) {
       e.preventDefault();
       pasteWithImages(withImages);
+      return;
+    }
+    if (math !== null && ta && !(ta instanceof LiveBoxHandle) && hasTable(math)) {
+      // Item 689: a table pasted into the plain box — the box becomes the
+      // grid box first, then the paste goes into it, so ⌘Z takes it back.
+      e.preventDefault();
+      const from = Math.min(ta.selectionStart, ta.selectionEnd);
+      const to = Math.max(ta.selectionStart, ta.selectionEnd);
+      const chatKey = key;
+      gridKey = key;
+      formatCaret = from;
+      void tick().then(() => {
+        if (!(ta instanceof LiveBoxHandle) || key !== chatKey) return;
+        ta.focus();
+        ta.selectionStart = from;
+        ta.selectionEnd = to;
+        pasteMath(math);
+        offer = longPasteOffer(math, from);
+        converted = null;
+      });
       return;
     }
     if (math !== null && ta) {
@@ -3375,7 +3416,7 @@
         pointerDown = false;
       }}
     >
-    {#if composerFormat.on}
+    {#if composerFormat.on || gridBox}
       <!-- Item 276: the same draft with its formatting drawn in place —
            math typeset, bold / italic / headings styled, the source back
            under the cursor. The text, the keys and the draft are the
@@ -3387,6 +3428,7 @@
         placeholder={app.connection ? boxPlaceholder : ""}
         disabled={boxIsLocked}
         {floating}
+        drawing={composerFormat.on ? "all" : "plain"}
         initialCaret={formatCaret}
         oninput={() => {
           noteActivity();

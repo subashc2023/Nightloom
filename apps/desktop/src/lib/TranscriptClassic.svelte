@@ -108,6 +108,7 @@
   import { LiveBoxHandle, type ComposerBox } from "./composerEditor";
   import { takeBlockKey } from "./codeBlockKeys";
   import { composerFormat } from "./composerFormat.svelte";
+  import { hasTable } from "./mdTable";
   import { fenced, findFences, withFenceLanguage } from "./codeDetect";
   import { pasteSteps, textPastePlan } from "./textPaste";
   import { BoxHistory, editKind, historyInput, historyKey } from "./boxHistory";
@@ -636,6 +637,17 @@
   // turn's editor is the composer's formatted box (`LiveBox`), as the
   // composer is; this is its handle, null while the textarea stands.
   let editorLive = $state<ComposerBox | null>(null);
+  /** Item 689: the edit box draws a table as a grid — the formatted box
+   *  drawing only the grid, quotes and code while the draft holds a table,
+   *  kept for this message once it came on (the composer's `gridKey`). */
+  let editGridAt = $state<number | null>(null);
+  const editGrid = $derived(!composerFormat.on && !!editing && (editGridAt === editing.index || hasTable(editing.draft)));
+  $effect(() => {
+    if (editGrid && editing && editGridAt !== editing.index) {
+      const i = editing.index;
+      untrack(() => (editGridAt = i));
+    }
+  });
   // A reply's editor is one textarea per text block (backlog 066); the
   // first takes the focus and each grows to its own text.
   let editorEls = $state<(HTMLTextAreaElement | null)[]>([]);
@@ -874,6 +886,25 @@
     }
     const plan = textPastePlan({ plain, html, fileCount: files.length, text: editing.draft, caret });
     if (plain) recordText("pasted", plan.kind === "math" ? plan.text : plain);
+    if (plan.kind === "math" && box && !(box instanceof LiveBoxHandle) && editing && hasTable(plan.text)) {
+      // Item 689: the grid box first, then the paste into it (⌘Z takes it back).
+      e.preventDefault();
+      const from = Math.min(box.selectionStart, box.selectionEnd);
+      const to = Math.max(box.selectionStart, box.selectionEnd);
+      const at = editing.index;
+      const text = plan.text;
+      editGridAt = at;
+      void tick().then(() => {
+        const live = editorLive;
+        if (!(live instanceof LiveBoxHandle) || editing?.index !== at) return;
+        live.focus();
+        live.selectionStart = from;
+        live.selectionEnd = to;
+        live.pasteText(text);
+        editOffer = longPasteOffer(text, from);
+      });
+      return;
+    }
     if (plan.kind === "math" && box) {
       e.preventDefault();
       editInsert(box, plan.text);
@@ -2375,10 +2406,11 @@
                    it — with the format toggle on, its formatted box; off,
                    the textarea with quote and code lines drawn in a layer
                    behind it (BoxLayer). -->
-              {#if composerFormat.on}
+              {#if composerFormat.on || editGrid}
                 <div class="edit-live">
                   <LiveBox
                     bind:handle={editorLive}
+                    drawing={composerFormat.on ? "all" : "plain"}
                     value={editing.draft}
                     label="Edit this message"
                     onchange={(v) => {

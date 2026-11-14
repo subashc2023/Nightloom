@@ -15,7 +15,7 @@
   import { onMount, untrack } from "svelte";
   import { Compartment, EditorSelection, Prec, type Extension } from "@codemirror/state";
   import { EditorView, placeholder as placeholderExt } from "@codemirror/view";
-  import { composerKeymap, composerState, composerTheme, LiveBoxHandle, type ComposerBox } from "./composerEditor";
+  import { boxDrawing, composerKeymap, composerState, composerTheme, LiveBoxHandle, type BoxDrawing, type ComposerBox } from "./composerEditor";
 
   interface Props {
     value: string;
@@ -34,6 +34,9 @@
     /** The text's height may have changed without his typing (a chat switch): re-measure the box. */
     onresize?: () => void;
     handle?: ComposerBox | null;
+    /** Item 689: "plain" — the plain box while it holds a table: the grid
+     *  (and quote / code lines) drawn, the text round them plain. */
+    drawing?: BoxDrawing;
   }
   let {
     value,
@@ -49,12 +52,14 @@
     onblur,
     onresize,
     handle = $bindable(null),
+    drawing = "all",
   }: Props = $props();
 
   let host = $state<HTMLDivElement | null>(null);
   let view: EditorView | null = null;
   const editable = new Compartment();
   const hint = new Compartment();
+  const draws = new Compartment();
 
   function extensions(): Extension[] {
     return [
@@ -69,6 +74,7 @@
         autocapitalize: "off",
       }),
       composerTheme,
+      draws.of(boxDrawing.of(untrack(() => drawing))),
       editable.of(EditorView.editable.of(!disabled)),
       hint.of(placeholder ? placeholderExt(placeholder) : []),
       // Before CodeMirror's own handling: the composer's keys (Enter sends,
@@ -170,6 +176,11 @@
       view.setState(composerState(next, extensions(), next.length, view.hasFocus));
       resizeAfterLayout(view);
     });
+  });
+
+  $effect(() => {
+    const d = drawing;
+    untrack(() => view?.dispatch({ effects: draws.reconfigure(boxDrawing.of(d)) }));
   });
 
   $effect(() => {
