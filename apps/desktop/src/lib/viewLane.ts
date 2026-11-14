@@ -18,11 +18,19 @@
  */
 let tail: Promise<unknown> = Promise.resolve();
 
-export function inViewLane<T>(step: () => Promise<T>): Promise<T> {
+/** A step that has not settled by now no longer holds the lane: a hung
+ *  backend call must not stop every later tab switch (686 review). */
+export const LANE_RELEASE_MS = 15_000;
+
+export function inViewLane<T>(step: () => Promise<T>, releaseMs = LANE_RELEASE_MS): Promise<T> {
   const run = tail.then(step, step);
-  tail = run.then(
-    () => undefined,
-    () => undefined,
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const release = new Promise<void>((done) => {
+    timer = setTimeout(done, releaseMs);
+  });
+  tail = Promise.race([run, release]).then(
+    () => clearTimeout(timer),
+    () => clearTimeout(timer),
   );
   return run;
 }

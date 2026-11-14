@@ -30,3 +30,12 @@ describe("inViewLane", () => {
     await expect(next).resolves.toBe(7);
   });
 });
+
+describe("a hung step", () => {
+  it("lets the next step run after the release time", async () => {
+    const { inViewLane } = await import("./viewLane");
+    void inViewLane(() => new Promise<void>(() => {}), 20);
+    const got = await inViewLane(async () => "ran", 20);
+    expect(got).toBe("ran");
+  });
+});
