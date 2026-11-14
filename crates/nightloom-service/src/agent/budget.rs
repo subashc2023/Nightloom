@@ -69,6 +69,26 @@ pub const WRAP_UP_HELPER: &str = "Stop starting new work. Finish or undo the edi
      every file is coherent; write what you found, what is done and exactly what is left to a \
      state file (notes/<task>-state.md, or beside your report); then report, naming that file.";
 
+/// How the work goes on after a wrap-up (item 693, his question "does this
+/// only happen if it is truly unfinished?"): only what a state file names
+/// as left, and a helper still warm is continued rather than re-launched —
+/// a fresh one pays its start again, a warm one's context is cached.
+pub const RESUME_RULE: &str = "When the work goes on (after the reset, or sooner if Swaraag raises \
+     the cap), take up only what a state file names as left; a helper that reported done needs \
+     nothing. For each piece left, continue the helper that did it with SendMessage if the list of \
+     this chat's earlier subagents shows it warm and under 300k; otherwise launch a fresh one that \
+     starts from its state file.";
+
+/// The chat's earlier subagents beside a wake (item 693), so the choice to
+/// continue a helper or launch a fresh one is made with each one's cache
+/// state in hand, not one launch later.
+pub fn with_earlier(wake: Option<String>, earlier: Option<String>) -> Option<String> {
+    match (wake, earlier) {
+        (Some(w), Some(e)) => Some(format!("{w}\n{e}")),
+        (w, _) => w,
+    }
+}
+
 /// What a helper is told in mode A, where the work is trimmed to fit.
 pub const FINISH_NOW_HELPER: &str = "Finish now with what you have: make every file coherent, \
      skip what is left, and report what works and what you skipped.";
@@ -157,6 +177,9 @@ pub enum WakeKind {
     Pace,
     /// No cap: [`HARD_WAKE_PCT`] with helpers running.
     Hard,
+    /// He raised the cap on the chip after a wrap-up had been asked for
+    /// (item 693): the work goes on in this window.
+    Raised,
 }
 
 impl WakeKind {
@@ -167,6 +190,7 @@ impl WakeKind {
             Self::AtCap => "at_cap",
             Self::Pace => "pace",
             Self::Hard => "hard",
+            Self::Raised => "raised",
         }
     }
 
@@ -182,6 +206,8 @@ impl WakeKind {
             Self::Near => 2,
             Self::Hard => 3,
             Self::AtCap => 4,
+            // The newest word on the cap: it outranks the wrap-up it undoes.
+            Self::Raised => 5,
         }
     }
 }
@@ -202,6 +228,9 @@ pub struct Wake {
     /// Points this message had spent.
     #[serde(default)]
     pub spent: u8,
+    /// The cap before his raise (`Raised` only).
+    #[serde(default)]
+    pub from: Option<u8>,
     pub at_ms: i64,
 }
 
@@ -307,6 +336,7 @@ pub fn due_wakes(b: &mut TurnBudget, reading: Option<WindowReading>, now_ms: i64
         mode: cap.as_ref().map(|c| c.mode),
         reserved: held,
         spent,
+        from: None,
         at_ms: now_ms,
     };
     let mut out = Vec::new();
@@ -377,7 +407,7 @@ pub fn wake_text(wakes: &[Wake], helpers: Option<&[(String, String)]>) -> Option
              usage figure in it: \"{WRAP_UP_HELPER}\" When they have reported, save your own \
              state to a file and end your reply with a line of its own, <continue-later \
              at=\"reset\">…</continue-later>, naming the state files to continue from; \
-             Nightloom sends it to you after the reset and you re-launch what is unfinished."
+             Nightloom sends it to you after the reset. {RESUME_RULE}"
         ),
         BudgetMode::FinishWithin => format!(
             "{lead} Start nothing new. {list} Send each one this with SendMessage: \
@@ -415,6 +445,14 @@ pub fn wake_text(wakes: &[Wake], helpers: Option<&[(String, String)]>) -> Option
             w.pct,
             w.spent,
             mode.words()
+        ),
+        WakeKind::Raised => format!(
+            "Swaraag raised this message's cap from {}% to {cap}% of the 5-hour window ({}); \
+             usage is at {}%. Stop wrapping up: the work goes on in this window. {RESUME_RULE} \
+             Nightloom wakes you again near the new cap.",
+            w.from.unwrap_or(0),
+            mode.words(),
+            w.pct
         ),
         WakeKind::Hard => format!(
             "usage is at {}% of the 5-hour window, and the plan stops everything at 100%. \
@@ -616,6 +654,18 @@ pub fn set_cap(
 ) {
     let percent = percent.clamp(1, 100);
     let moved = b.cap.as_ref().is_none_or(|c| c.percent != percent);
+    // His raise after a wrap-up was asked for (item 693): the main agent
+    // is told the work goes on, or it keeps wrapping up under the new cap.
+    let raised_from = b
+        .cap
+        .as_ref()
+        .filter(|c| source == "user" && percent > c.percent)
+        .filter(|_| {
+            b.wakes_fired
+                .iter()
+                .any(|k| matches!(k.as_str(), "cap" | "near"))
+        })
+        .map(|c| (c.percent, c.mode));
     b.cap = Some(Cap {
         percent,
         mode,
@@ -629,6 +679,18 @@ pub fn set_cap(
         b.wakes_fired
             .retain(|k| !matches!(k.as_str(), "cap" | "near" | "reserved" | "hard"));
         b.wakes_pending.retain(|w| matches!(w.kind, WakeKind::Pace));
+        if let Some((from, _)) = raised_from {
+            b.wakes_pending.push(Wake {
+                kind: WakeKind::Raised,
+                pct: b.latest_pct.unwrap_or(0),
+                cap: Some(percent),
+                mode: Some(mode),
+                reserved: 0,
+                spent: 0,
+                from: Some(from),
+                at_ms: now_ms,
+            });
+        }
         b.wrap_calls.clear();
         b.stopped = None;
     }
@@ -1407,6 +1469,85 @@ mod tests {
             "{text}"
         );
         assert!(wake_text(&[], None).is_none());
+    }
+
+    /// Item 693: the mode-B wake says to take up only what is left and to
+    /// continue a warm helper rather than re-launch it.
+    #[test]
+    fn the_wake_says_continue_warm_helpers_and_relaunch_only_what_is_left() {
+        let mut b = ledger(26, Some((50, B)));
+        let text = wake_text(&due_wakes(&mut b, reading(46, 1), 1), None).unwrap();
+        assert!(text.contains(RESUME_RULE), "{text}");
+        assert!(!text.contains("re-launch what is unfinished"), "{text}");
+        assert_eq!(
+            with_earlier(Some("w".into()), Some("e".into())).as_deref(),
+            Some("w\ne")
+        );
+        assert_eq!(with_earlier(Some("w".into()), None).as_deref(), Some("w"));
+        assert_eq!(with_earlier(None, Some("e".into())), None);
+    }
+
+    /// Item 693: his raise on the chip after a wrap-up was asked for wakes
+    /// the main agent to go on; a raise before one, a lowering, or the
+    /// model's own call does not.
+    #[test]
+    fn his_raise_after_a_wrap_up_wakes_the_main_agent_to_go_on() {
+        let mut b = ledger(26, Some((50, B)));
+        due_wakes(&mut b, reading(46, 1), 1);
+        b.latest_pct = Some(47);
+        set_cap(&mut b, 75, B, "user", "", 2);
+        let raised: Vec<_> = b
+            .wakes_pending
+            .iter()
+            .filter(|w| w.kind == WakeKind::Raised)
+            .collect();
+        assert_eq!(raised.len(), 1);
+        assert_eq!(
+            (raised[0].from, raised[0].cap, raised[0].pct),
+            (Some(50), Some(75), 47)
+        );
+        let text = wake_text(&b.wakes_pending, None).unwrap();
+        assert!(
+            text.contains("raised this message's cap from 50% to 75%"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Stop wrapping up") && text.contains(RESUME_RULE),
+            "{text}"
+        );
+        // Outranks a wrap-up still waiting beside it.
+        let mut both = b.wakes_pending.clone();
+        both.push(Wake {
+            kind: WakeKind::AtCap,
+            pct: 50,
+            cap: Some(50),
+            mode: Some(B),
+            reserved: 0,
+            spent: 0,
+            from: None,
+            at_ms: 3,
+        });
+        assert!(wake_text(&both, None).unwrap().contains("Stop wrapping up"));
+
+        // No wrap-up asked for yet: nothing to undo.
+        let mut early = ledger(26, Some((50, B)));
+        set_cap(&mut early, 75, B, "user", "", 2);
+        assert!(
+            early
+                .wakes_pending
+                .iter()
+                .all(|w| w.kind != WakeKind::Raised)
+        );
+        // A lowering, or the model's own call, is no raise of his.
+        for (pct, source) in [(40, "user"), (75, "model")] {
+            let mut c = ledger(26, Some((50, B)));
+            due_wakes(&mut c, reading(46, 1), 1);
+            set_cap(&mut c, pct, B, source, "", 2);
+            assert!(
+                c.wakes_pending.iter().all(|w| w.kind != WakeKind::Raised),
+                "{pct} {source}"
+            );
+        }
     }
 
     const HELPER_READ: &str =

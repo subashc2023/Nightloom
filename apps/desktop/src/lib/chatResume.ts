@@ -206,7 +206,9 @@ export function continueMessage(ask: Pick<ContinueAsk, "text">): string {
   const what = ask.text ? ` You said what to do next: ${ask.text}` : "";
   return (
     "[Nightloom, not from Swaraag: you asked to be continued at this time, and it has come — the usage window you were " +
-    `waiting on has reset if that was the reason.${what} Continue the work from where you stopped. If you stop again ` +
+    `waiting on has reset if that was the reason.${what} Continue the work from where you stopped: take up only what ` +
+    "your state files name as left (a helper that reported done needs nothing); continue a helper with SendMessage " +
+    "only if it is still warm and under 300k, otherwise launch a fresh one that starts from its state file. If you stop again " +
     `with work left, end your reply with another <${CONTINUE_TAG}> line.]`
   );
 }

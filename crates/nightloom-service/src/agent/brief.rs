@@ -868,6 +868,31 @@ pub fn earlier_agents(transcript: &Path, skip: Option<&str>) -> Vec<EarlierAgent
     out
 }
 
+impl EarlierAgent {
+    /// Its cache still alive: a reusable agent's hour, anything else's
+    /// five minutes, since it last ran.
+    pub fn warm(&self, now_ms: i64) -> bool {
+        let ttl_min: i64 = if self.reusable { 60 } else { 5 };
+        now_ms - self.last_ms < ttl_min * 60_000
+    }
+
+    /// Worth continuing now (item 693): warm and not past retirement.
+    pub fn continuable(&self, now_ms: i64) -> bool {
+        self.warm(now_ms) && !self.context.is_some_and(|c| c > RETIRE_TOKENS)
+    }
+}
+
+/// The list beside a user message or a wake (item 693): only when one of
+/// them could be continued now — a list of cold helpers changes nothing
+/// there, and launches carry the full list anyway.
+pub fn continuable_agents_lines(transcript: &Path, now_ms: i64) -> Option<String> {
+    let agents = earlier_agents(transcript, None);
+    if !agents.iter().any(|a| a.continuable(now_ms)) {
+        return None;
+    }
+    earlier_agents_lines(&agents, now_ms)
+}
+
 /// The list as the launch's context: one line per agent, `None` when the
 /// chat has none yet.
 pub fn earlier_agents_lines(agents: &[EarlierAgent], now_ms: i64) -> Option<String> {
@@ -880,8 +905,7 @@ pub fn earlier_agents_lines(agents: &[EarlierAgent], now_ms: i64) -> Option<Stri
     );
     for a in agents {
         let mins = (now_ms - a.last_ms).max(0) / 60_000;
-        let ttl_min: i64 = if a.reusable { 60 } else { 5 };
-        let warm = now_ms - a.last_ms < ttl_min * 60_000;
+        let warm = a.warm(now_ms);
         let name = a
             .name
             .as_deref()
@@ -1235,6 +1259,11 @@ pub struct TurnBudget {
     /// by the main thread's own next call.
     #[serde(default)]
     pub wakes_pending: Vec<super::budget::Wake>,
+    /// The main thread's CLI transcript, as its hook calls name it (item
+    /// 693): where the drive loop finds the chat's earlier subagents to
+    /// list beside a wake it delivers.
+    #[serde(default)]
+    pub main_transcript: Option<PathBuf>,
     /// How many calls each process has made under a wrap-up (538): the
     /// first [`super::budget::WRAP_CALLS`] run with the wrap-up beside
     /// them, the rest are refused. Keyed as `usage_shown` is.
@@ -1343,6 +1372,7 @@ pub fn start_turn_budget(
         cap_locked: false,
         wakes_fired: Vec::new(),
         wakes_pending: Vec::new(),
+        main_transcript: None,
         wrap_calls: Default::default(),
         reserved: Vec::new(),
     }
@@ -2562,9 +2592,26 @@ pub(super) fn decide_holding(
     // A user message (561): the line before the model answers, from this
     // message's reading — never only an older message's — recorded as its
     // first showing. Nothing is refused here; the calls are judged as ever.
+    // The main thread's transcript, kept for the drive loop's wakes (693).
+    if !subagent && let Some(t) = input.transcript_path.as_deref() {
+        let known = read_turn_budget(dir).and_then(|b| b.main_transcript);
+        if known.as_deref() != Some(t) {
+            with_ledger(dir, |b| b.main_transcript = Some(t.to_path_buf()));
+        }
+    }
     if input.hook_event_name == PROMPT_EVENT {
         note_prompt(dir, reading, who, context);
         let line = usage_line(read_turn_budget(dir).as_ref(), reading, week, context);
+        // A helper still warm beside his message (693): "go on", "another
+        // 25%" — the main agent can continue it rather than start afresh.
+        let earlier = (!subagent)
+            .then_some(input.transcript_path.as_deref())
+            .flatten()
+            .and_then(|t| continuable_agents_lines(t, now_ms));
+        let line = match (line, earlier) {
+            (Some(l), Some(e)) => Some(format!("{l}\n{e}")),
+            (l, e) => l.or(e),
+        };
         let mut reply = HookReply::pass().with_context(line);
         if let Some(o) = &mut reply.hook_specific_output {
             o.hook_event_name = PROMPT_EVENT.into();
@@ -2630,6 +2677,19 @@ pub(super) fn decide_holding(
         }
     } else {
         None
+    };
+    // A wake on the main thread carries the chat's helpers when one is
+    // still warm (693) — not on a launch that lists them already.
+    let wake = if wake.is_some() && !subagent && !(spawn && show) {
+        super::budget::with_earlier(
+            wake,
+            input
+                .transcript_path
+                .as_deref()
+                .and_then(|t| continuable_agents_lines(t, now_ms)),
+        )
+    } else {
+        wake
     };
     // The wrap-up and the wake (538) lead what the model reads beside the
     // call; the usage line follows.
@@ -4664,6 +4724,17 @@ mod tests {
         assert_eq!(
             lines[3],
             "- a3: context <1k · last ran 30 min ago · 5 min cache, cold"
+        );
+        // Item 693: beside a message or a wake only while one could be
+        // continued — a1 is warm and under 300k (a2 is past retirement).
+        assert!(agents[1].continuable(base_ms) && !agents[0].continuable(base_ms));
+        assert_eq!(
+            super::continuable_agents_lines(&main, base_ms).as_deref(),
+            Some(text.as_str())
+        );
+        assert_eq!(
+            super::continuable_agents_lines(&main, base_ms + 2 * 3_600_000),
+            None
         );
         // The asker is not its own peer; none at all says nothing.
         assert!(

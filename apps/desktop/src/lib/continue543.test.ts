@@ -77,6 +77,9 @@ describe("543b — the entry and its card", () => {
     expect(text).toMatch(/^\[Nightloom, not from Swaraag:/);
     expect(text).toContain("run wave B");
     expect(text).toContain("<continue-later>");
+    // Item 693: only what is left, warm helpers continued, cold ones fresh.
+    expect(text).toContain("only what your state files name as left");
+    expect(text).toContain("continue a helper with SendMessage only if it is still warm and under 300k");
   });
   it("the card reads as asked, not as a limit pause, and the entry survives a relaunch", () => {
     const r = askedResume("c1", { id: "p", name: "P" }, { at: "+30m", text: "next" }, null, NOW);

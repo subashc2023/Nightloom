@@ -150,6 +150,10 @@ describe("the wake notice and the composer's slot", () => {
     expect(wakeNotice(["near", "at_cap"], 51, 50)).toContain("usage at 51% reached the 50% cap");
     expect(wakeNotice(["reserved"], 30, 50)).toContain("launch no more");
     expect(wakeNotice(["hard"], 96, null)).toContain("plan's limit");
+    // Item 693: his raise outranks the wrap-up it undoes.
+    expect(wakeNotice(["near", "raised"], 49, 75)).toBe(
+      "cap raised to 75% — Nightloom told the main agent to stop wrapping up and continue, reusing helpers still warm",
+    );
   });
 
   it("the chip sits beside the browser chip, plain under Classic, and Classic draws no ring or motion", () => {

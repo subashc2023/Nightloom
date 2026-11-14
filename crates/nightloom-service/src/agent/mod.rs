@@ -2359,12 +2359,22 @@ impl ClaudeCodeAgent {
                         let now_ms = chrono::Utc::now().timestamp_millis();
                         let running = !helpers.is_empty();
                         let d = dir.clone();
-                        let wakes = tokio::task::spawn_blocking(move || {
-                            budget::take_wakes(&d, now_ms, running, idle)
+                        // The wakes, and the chat's helpers when one is
+                        // still warm (item 693), by the main transcript
+                        // the hook recorded.
+                        let (wakes, earlier) = tokio::task::spawn_blocking(move || {
+                            let wakes = budget::take_wakes(&d, now_ms, running, idle);
+                            let earlier = (!wakes.is_empty())
+                                .then(|| brief::read_turn_budget(&d).and_then(|b| b.main_transcript))
+                                .flatten()
+                                .and_then(|t| brief::continuable_agents_lines(&t, now_ms));
+                            (wakes, earlier)
                         })
                         .await
                         .unwrap_or_default();
-                        if let Some(text) = budget::wake_text(&wakes, Some(&helpers)) {
+                        if let Some(text) =
+                            budget::with_earlier(budget::wake_text(&wakes, Some(&helpers)), earlier)
+                        {
                             if inbox.note_if_idle(&text) {
                                 let top = wakes.iter().max_by_key(|w| w.at_ms);
                                 on_event(TurnEvent::BudgetWake {
