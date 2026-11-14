@@ -1212,7 +1212,7 @@
                 use:tip={`${g.open ? "Hide" : "Show"} the chats in the thread ${g.slug}`}
                 onclick={() => toggleThread(g.slug)}
               >
-                <span class="tg-chev"><Icon name="chevr" size={11} /></span>
+                <span class="tg-chev"><Icon name="chevr" size={13} /></span>
               </button>
               {#if threadRenaming === g.slug}
                 <!-- Rename (item 424): the title only; the slug stays. -->
@@ -2422,6 +2422,17 @@
   }
   .tg-toggle:hover .tg-chev {
     color: var(--ink);
+  }
+  /* Item 690 (his bug, 2026-11-13: "a very very small button, has no
+     highlight"; a click missed it): a 24-px-wide target with the forks
+     button's hover. */
+  .tg-toggle {
+    min-width: 24px;
+    justify-content: center;
+    padding: 6px 4px;
+  }
+  .tg-toggle:hover {
+    background: var(--line);
   }
   .tg-open {
     flex: 1;
