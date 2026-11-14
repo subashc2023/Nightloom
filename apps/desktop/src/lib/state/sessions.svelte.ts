@@ -9,6 +9,7 @@ import * as tabs from "../tabs";
 import { chipsFromInputs } from "../midTurn";
 import { adoptPending, mergeRows, rowsFromLog } from "../subagentRows";
 import { releaseStop } from "../stopState";
+import { inViewLane } from "../viewLane";
 import { UNFILED_TABS, carryTabsTo } from "../tabsStore";
 import type { ChatKind, ChatMode, DocumentInput, ImageInput, SessionEvent } from "../types";
 import { switchAside } from "./asides.svelte";
@@ -56,21 +57,28 @@ async function peekSession(id: string): Promise<void> {
     await unpark();
     return;
   }
-  try {
-    const events = await api.openSession(id);
-    park();
-    switchAside(id);
-    app.activeSessionId = id;
-    app.events = events;
-    // Its recorded agents, as `openSession` (backlog 160).
-    app.subagents = mergeRows(app.subagents, rowsFromLog(events, id));
-    app.error = null;
-    app.suggestion = null;
-    leaveNote();
-  } catch (e) {
-    app.error = String(e);
-    app.openNext = "replace";
-  }
+  // In the view's lane (item 686): an open asked for earlier answers first.
+  const moved = await inViewLane(async () => {
+    // The turn ended while it waited: an ordinary open, out of the lane.
+    if (!app.busy || app.background[id]) return true;
+    try {
+      const events = await api.openSession(id);
+      park();
+      switchAside(id);
+      app.activeSessionId = id;
+      app.events = events;
+      // Its recorded agents, as `openSession` (backlog 160).
+      app.subagents = mergeRows(app.subagents, rowsFromLog(events, id));
+      app.error = null;
+      app.suggestion = null;
+      leaveNote();
+    } catch (e) {
+      app.error = String(e);
+      app.openNext = "replace";
+    }
+    return false;
+  });
+  if (moved) await openSession(id);
 }
 
 /** New chat on screen while a turn runs: refused only while the running
@@ -93,24 +101,32 @@ export async function peekNew(mode?: ChatMode, kind?: ChatKind): Promise<void> {
     app.openNext = "replace";
     return;
   }
-  park();
-  switchAside(null);
-  app.activeSessionId = null;
-  clearPendingThread();
-  app.events = [];
-  app.pendingMode = mode ?? "normal";
-  app.pendingKind = kind ?? defaultKind();
-  app.error = null;
-  app.suggestion = null;
-  leaveNote();
-  // The backend's open chat is New chat too (backlog 159, A1): it answers
-  // during the turn now, and the kind asked for is the one its first
-  // message makes. Best-effort: the turn's end re-aligns (`settleTurnView`).
-  try {
-    await api.newSession(app.pendingMode, app.pendingKind);
-  } catch {
-    // re-aligned at the turn's end
-  }
+  // In the view's lane (item 686): an open asked for earlier lands first,
+  // never over this New chat.
+  const moved = await inViewLane(async () => {
+    // The turn ended while it waited: an ordinary New chat, out of the lane.
+    if (!app.busy) return true;
+    park();
+    switchAside(null);
+    app.activeSessionId = null;
+    clearPendingThread();
+    app.events = [];
+    app.pendingMode = mode ?? "normal";
+    app.pendingKind = kind ?? defaultKind();
+    app.error = null;
+    app.suggestion = null;
+    leaveNote();
+    // The backend's open chat is New chat too (backlog 159, A1): it answers
+    // during the turn now, and the kind asked for is the one its first
+    // message makes. Best-effort: the turn's end re-aligns (`settleTurnView`).
+    try {
+      await api.newSession(app.pendingMode, app.pendingKind);
+    } catch {
+      // re-aligned at the turn's end
+    }
+    return false;
+  });
+  if (moved) await newSession(mode, kind);
 }
 
 /** The chat and project on screen (535f, the review's 534-1), taken
@@ -214,6 +230,18 @@ export async function openSession(id: string): Promise<void> {
   // neither, and a failed open changes nothing — so the modifier would
   // stay armed and the *next* plain click would open a tab (review E,
   // 2026-09-17). Both paths hand it back here; `newTab` does the same.
+  // In the view's lane (item 686): what the screen is when its turn comes.
+  const moved = await inViewLane(async () => {
+    // A turn started, or this chat went to the background, while it waited.
+    if (app.busy || app.background[id]) return true;
+    await openNow(id);
+    return false;
+  });
+  if (moved) await openSession(id);
+}
+
+/** `openSession`'s own work, in the view's lane. */
+async function openNow(id: string): Promise<void> {
   const inFront = id === app.activeSessionId && app.view === "chat";
   // The chat being left, for the other pane when it shows it (piece 5).
   const leaving = app.activeSessionId;

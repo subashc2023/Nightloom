@@ -171,6 +171,7 @@ import { loadLastProject, saveLastProject, loadDreamPrefs, loadPalette, loadLayo
 import { runMenuCommand, menuInterceptors, providerPills, switchProvider, toggleEngine, pickerModels, switchModel, switchModelAt, loadContextLimits } from "./state/menu.svelte";
 import { rewindTo, setAsideRewound, keepRewound } from "./state/rewind.svelte";
 import { addToast, TOAST_MS, ACTION_TOAST_MS, dismissToast, runToastAction } from "./state/toasts.svelte";
+import { inViewLane } from "./viewLane";
 export { TOAST_MS, ACTION_TOAST_MS, addToast, dismissToast, runToastAction };
 export { rewindTo, setAsideRewound, keepRewound };
 export { menuInterceptors, runMenuCommand, providerPills, switchProvider, toggleEngine, pickerModels, switchModel, switchModelAt, loadContextLimits };
@@ -1291,32 +1292,41 @@ export async function newSession(mode?: ChatMode, kind?: ChatKind): Promise<void
     await peekNew(mode, kind);
     return;
   }
-  // The kind is the second axis (nightshift backlog 102): absent means the
-  // project's default — Claude Code where there is a folder, Chat where
-  // there is none — never the backend's `build`, so the wide button and
-  // the privacy rows make the kind the sidebar's dot shows.
-  const wanted = kind ?? defaultKind();
-  // New chat already the open chat, maybe behind a thread's tab (297).
-  const inFront = app.activeSessionId === null && app.view === "chat";
-  try {
-    await api.newSession(mode, wanted);
-    // The aside thread stays with the chat being left (backlog 130).
-    switchAside(null);
-    app.activeSessionId = null;
-    clearPendingThread();
-    app.events = [];
-    app.pendingMode = mode ?? "normal";
-    app.pendingKind = wanted;
-    app.error = null;
-    app.agentTurn = null;
-    app.agentInit = null;
-    // ~~`app.subagents = []`~~ — rows are per chat since backlog 160.
-    app.suggestion = null;
-    leaveNote();
-    if (inFront) frontOpenChat();
-  } catch (e) {
-    app.error = String(e);
-  }
+  // In the view's lane (item 686): a chat's open asked for earlier — a
+  // closed tab's neighbour, reading its log from disk — lands first, never
+  // over this New chat, here or in the backend.
+  const moved = await inViewLane(async () => {
+    // A turn started while it waited: the running chat's New chat path.
+    if (app.busy) return true;
+    // The kind is the second axis (nightshift backlog 102): absent means the
+    // project's default — Claude Code where there is a folder, Chat where
+    // there is none — never the backend's `build`, so the wide button and
+    // the privacy rows make the kind the sidebar's dot shows.
+    const wanted = kind ?? defaultKind();
+    // New chat already the open chat, maybe behind a thread's tab (297).
+    const inFront = app.activeSessionId === null && app.view === "chat";
+    try {
+      await api.newSession(mode, wanted);
+      // The aside thread stays with the chat being left (backlog 130).
+      switchAside(null);
+      app.activeSessionId = null;
+      clearPendingThread();
+      app.events = [];
+      app.pendingMode = mode ?? "normal";
+      app.pendingKind = wanted;
+      app.error = null;
+      app.agentTurn = null;
+      app.agentInit = null;
+      // ~~`app.subagents = []`~~ — rows are per chat since backlog 160.
+      app.suggestion = null;
+      leaveNote();
+      if (inFront) frontOpenChat();
+    } catch (e) {
+      app.error = String(e);
+    }
+    return false;
+  });
+  if (moved) await newSession(mode, kind);
 }
 
 /**
@@ -1493,20 +1503,23 @@ export function park(): void {
  *  focus now and answers during the turn). A New chat's first turn has
  *  no id on this side yet; the backend names it (`turn_session`). */
 export async function unpark(): Promise<void> {
-  const p = app.parked;
-  if (!p) return;
-  app.parked = null;
-  switchAside(p.session);
-  app.activeSessionId = p.session;
-  app.pendingMode = p.pendingMode;
-  app.pendingKind = p.pendingKind;
-  app.events = p.events;
-  app.live = p.live;
-  app.liveUsage = p.liveUsage;
-  app.liveVersion++;
-  app.error = null;
-  leaveNote();
-  await refocus(p.session);
+  // In the view's lane (item 686): an open asked for earlier lands first.
+  await inViewLane(async () => {
+    const p = app.parked;
+    if (!p) return;
+    app.parked = null;
+    switchAside(p.session);
+    app.activeSessionId = p.session;
+    app.pendingMode = p.pendingMode;
+    app.pendingKind = p.pendingKind;
+    app.events = p.events;
+    app.live = p.live;
+    app.liveUsage = p.liveUsage;
+    app.liveVersion++;
+    app.error = null;
+    leaveNote();
+    await refocus(p.session);
+  });
 }
 
 /** Point the backend's open chat at the running one again (backlog 159,
@@ -1671,40 +1684,55 @@ export async function attach(id: string): Promise<void> {
     await openRunningChat(id);
     return;
   }
-  if (app.busy && !detach()) {
-    addToast("A turn is just starting here — open that chat again in a moment");
-    app.openNext = "replace";
-    return;
+  // In the view's lane (item 686): an open asked for earlier lands first,
+  // never over this chat; what is read is read again when its turn comes.
+  const moved = await inViewLane(async () => {
+    const b = app.background[id];
+    const t = bgTurns.get(id);
+    // Its turn ended while it waited: an ordinary open, out of the lane.
+    if (!b || !t) return true;
+    if (inOtherProject(b, app.project?.id ?? null)) return true;
+    if (app.busy && !detach()) {
+      addToast("A turn is just starting here — open that chat again in a moment");
+      app.openNext = "replace";
+      return false;
+    }
+    // The chat being left, for the other pane when it shows it (piece 5).
+    const leaving = app.activeSessionId;
+    if (leaving && leaving !== id) keepPaneLog(leaving, app.events);
+    delete app.background[id];
+    bgTurns.delete(id);
+    t.detached = false;
+    fg = t;
+    switchAside(id);
+    app.activeSessionId = id;
+    // Only what this chat's own screen held when it left (559, 535-5).
+    if (b.pendingFromScreen) {
+      app.pendingMode = b.pendingMode;
+      app.pendingKind = b.pendingKind;
+    }
+    app.events = b.events;
+    app.live = b.live;
+    app.liveUsage = b.liveUsage;
+    app.pendingApprovals.push(...b.approvals);
+    app.busy = true;
+    // Its meter and init line back with it (A4); the clock is running.
+    app.budgetSession = id;
+    app.turnBudget = b.budget ?? null;
+    app.agentInit = b.agentInit ?? null;
+    ensureBudgetPoll();
+    app.liveVersion++;
+    app.error = null;
+    app.suggestion = null;
+    leaveNote();
+    await refocus(id);
+    return false;
+  });
+  // Ended, or in another project now: opened as any chat is.
+  if (moved) {
+    if (app.background[id]) await attach(id);
+    else await openSession(id);
   }
-  // The chat being left, for the other pane when it shows it (piece 5).
-  const leaving = app.activeSessionId;
-  if (leaving && leaving !== id) keepPaneLog(leaving, app.events);
-  delete app.background[id];
-  bgTurns.delete(id);
-  t.detached = false;
-  fg = t;
-  switchAside(id);
-  app.activeSessionId = id;
-  // Only what this chat's own screen held when it left (559, 535-5).
-  if (b.pendingFromScreen) {
-    app.pendingMode = b.pendingMode;
-    app.pendingKind = b.pendingKind;
-  }
-  app.events = b.events;
-  app.live = b.live;
-  app.liveUsage = b.liveUsage;
-  app.pendingApprovals.push(...b.approvals);
-  app.busy = true;
-  // Its meter and init line back with it (A4); the clock is running.
-  app.budgetSession = id;
-  app.turnBudget = b.budget ?? null;
-  app.agentInit = b.agentInit ?? null;
-  ensureBudgetPoll();
-  app.liveVersion++;
-  app.error = null;
-  app.suggestion = null;
-  leaveNote();
-  await refocus(id);
 }
 
 /** A background turn's end (A2): nothing on screen changes; the chat's

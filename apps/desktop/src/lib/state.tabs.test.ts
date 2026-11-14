@@ -258,6 +258,49 @@ describe("closing", () => {
     expect(chats(app.tabs)).toEqual([["b"]]);
   });
 
+  // Item 686 (his "the text box where I'm supposed to type was gone"):
+  // tabs closed fast, each close opening the neighbour. The neighbour's
+  // open reads its log from disk (slow; iCloud) while New chat touches no
+  // disk, so the last tab's New chat answered first and the neighbour's
+  // late answer made the closed chat the open one under the New chat tab —
+  // no tab was the live one, and the pane drew the "Not the open chat"
+  // card, which has no box.
+  it("tabs closed fast: a closed neighbour's slow open never lands under the last tab's New chat", async () => {
+    await openSession("a");
+    reflectTabs();
+    app.openNext = "new";
+    await openSession("b");
+    reflectTabs();
+    let release: () => void = () => {};
+    const slow = new Promise<void>((r) => (release = r));
+    const open = vi.mocked(api.openSession);
+    const made = vi.mocked(api.newSession);
+    const order: string[] = [];
+    open.mockImplementationOnce(async (id: string) => {
+      await slow;
+      order.push(`open ${id}`);
+      return [{ event: "user_message", at: "2026-01-01T00:00:00Z", text: `hello from ${id}` }];
+    });
+    made.mockImplementationOnce(async () => {
+      order.push("new");
+      return { mode: "normal", kind: "build" };
+    });
+    const first = closeTab(); // b goes; a comes forward and starts opening
+    const second = closeTab(); // a goes before its open answers
+    await new Promise((r) => setTimeout(r, 0));
+    release();
+    await first;
+    await second;
+    await new Promise((r) => setTimeout(r, 0));
+    expect(chats(app.tabs)).toEqual([["new"]]);
+    expect(app.activeSessionId).toBeNull();
+    // The pane draws the Welcome page (and its box) only for the live tab.
+    const front = tabs.activeTab(tabs.focusedPane(app.tabs));
+    expect(tabs.liveTab(app.tabs, app.activeSessionId)?.id).toBe(front.id);
+    // And the backend's open chat is New chat too: its call came last.
+    expect(order.at(-1)).toBe("new");
+  });
+
   // Backlog 140: the × he found dead was the sole New chat tab's — the
   // model swapped it for an identical one and nothing showed.
   it("× on the sole New chat tab says so; on a sole chat it leaves the new-chat page", async () => {
