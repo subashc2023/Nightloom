@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hudIn, hudOut } from "./hudMenu";
   import { canLeaveProject } from "./state.svelte";
   import { tip } from "./tip";
   import {
@@ -60,11 +61,11 @@
   }
 </script>
 
-<div class="menu" role="menu">
-  <div class="head">Projects</div>
+<div class="menu hud-m" role="menu" in:hudIn|global out:hudOut|global>
+  <div class="head hud-head">Projects</div>
   <div class="list">
     {#each app.projects as p (p.id)}
-      <div class="row" class:active={app.project?.id === p.id}>
+      <div class="row hud-row" class:active={app.project?.id === p.id} class:hud-cur={app.project?.id === p.id}>
         {#if renaming === p.id}
           <!-- svelte-ignore a11y_autofocus -->
           <input autocorrect="off" autocapitalize="off" spellcheck="false"
@@ -139,24 +140,24 @@
     {/each}
   </div>
 
-  <div class="rule"></div>
-  <button class="wide new" onclick={make} disabled={!canLeaveProject()}>
+  <div class="rule hud-rule"></div>
+  <button class="wide new hud-row" onclick={make} disabled={!canLeaveProject()}>
     <Icon name="plus" size={14} />
     New project…
   </button>
-  <button class="wide quiet" onclick={() => void pick()} disabled={!canLeaveProject()}>
+  <button class="wide quiet hud-row" onclick={() => void pick()} disabled={!canLeaveProject()}>
     <Icon name="folder" size={14} />
     Open project…
     <span class="wide-meta">a folder you already have</span>
   </button>
   {#if app.project}
-    <button class="wide quiet" onclick={() => void choose(null)} disabled={!canLeaveProject()}>
+    <button class="wide quiet hud-row" onclick={() => void choose(null)} disabled={!canLeaveProject()}>
       <Icon name="chevl" size={14} />
       Leave project
       <span class="wide-meta">unfiled chats</span>
     </button>
   {/if}
-  <div class="rule"></div>
+  <div class="rule hud-rule"></div>
   <p class="note">
     A project is a folder. Its shared notes live in <code>.agents</code> inside
     it and its standing instructions in <code>AGENTS.md</code> at the top — both
@@ -375,5 +376,76 @@
     font-family: var(--mono);
     font-size: 0.94em;
     color: var(--ink2);
+  }
+
+  /* Filament IV stage 6 (item 570, f4-menus2.png): a card in front, the
+     ruled mono title, the open project on the control fill with the
+     accent tick (no accent wash), New project the one accent row. Behind
+     `:where(:root:not([data-layout="classic"]))`; the rules above are
+     Classic's, untouched. */
+  :global(:where(:root:not([data-layout="classic"]))) .menu {
+    background: var(--raised);
+    border-radius: var(--r2);
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.6);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font: 500 10px var(--mono);
+    letter-spacing: 0.14em;
+    color: var(--ink2);
+    padding: 6px 8px 6px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .head::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .row {
+    border-radius: var(--r1);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .row.active {
+    background: var(--well);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .row.active .name-text {
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .open {
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .row:hover .open,
+  :global(:where(:root:not([data-layout="classic"]))) .row.active .open {
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .name {
+    font-size: 13.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .rule {
+    background: var(--line2);
+    margin: 4px 4px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .wide {
+    border-radius: var(--r1);
+    font-size: 13px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .wide.quiet {
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .rename {
+    background: var(--term);
+    border-radius: var(--r1);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    :global(:where(:root:not([data-layout="classic"]))) .menu {
+      animation: menu-rise 90ms ease-out;
+    }
+  }
+  @keyframes menu-rise {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
   }
 </style>

@@ -17,6 +17,7 @@
  * Pure over its inputs, so the suite pins the message and the timing.
  */
 import type { AgentTurnResult, StoppedAgent } from "./types";
+import { clockText } from "./schedule";
 
 export interface LimitPause {
   /** The chat the turn ran in; null for the pending chat. */
@@ -60,11 +61,13 @@ export function limitPauseFrom(
   };
 }
 
-/** `HH:MM` in the local zone, or "later" when the CLI gave no time. */
+/** `2:05 PM` (or `Nov 12 2:05 PM` on another day) in the local zone, 12-hour
+ *  whatever the locale (item 611b; was the locale's `02:05 PM` / `14:05`), or
+ *  "later" when the CLI gave no time. */
 export function resetLabel(p: Pick<LimitPause, "resetsAtMs">, nowMs: number = Date.now()): string {
   if (p.resetsAtMs == null) return "later";
   const d = new Date(p.resetsAtMs);
-  const hm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const hm = clockText(p.resetsAtMs);
   return d.toDateString() === new Date(nowMs).toDateString()
     ? hm
     : `${d.toLocaleDateString([], { month: "short", day: "numeric" })} ${hm}`;
@@ -78,13 +81,22 @@ export function resumeDelayMs(p: Pick<LimitPause, "resetsAtMs">, nowMs: number =
   return Math.max(0, p.resetsAtMs + RESUME_MARGIN_MS - nowMs);
 }
 
-/** The line the transcript's card shows. */
-export function pauseLabel(p: Pick<LimitPause, "resetsAtMs" | "window">, nowMs: number = Date.now()): string {
+/** The line the transcript's card shows. `then` (item 674's follow-up):
+ *  what happens at the reset — the chat's turn `resumes`; an aside's
+ *  question is `asked again`. */
+export function pauseLabel(p: Pick<LimitPause, "resetsAtMs" | "window">, nowMs: number = Date.now(), then = "resumes"): string {
+  // The chat asked to be continued later (backlog 543b, `chatResume.ts`):
+  // not a limit pause, the same card.
+  if (p.window === "asked") {
+    return resumeDelayMs(p, nowMs) === 0
+      ? "asked to be continued · its time has come"
+      : `asked to be continued · at ${resetLabel({ resetsAtMs: (p.resetsAtMs ?? nowMs) + RESUME_MARGIN_MS }, nowMs)}`;
+  }
   const which = p.window === "seven_day" ? "weekly" : p.window === "five_hour" ? "5-hour" : "usage";
   const when = resetLabel(p, nowMs);
   return resumeDelayMs(p, nowMs) === 0 && p.resetsAtMs != null
     ? `paused by the ${which} limit · the window has reset`
-    : `paused by the ${which} limit · resumes at ${when}`;
+    : `paused by the ${which} limit · ${then} at ${when}`;
 }
 
 /** The stopped children of a result; one from before pass 2 (no

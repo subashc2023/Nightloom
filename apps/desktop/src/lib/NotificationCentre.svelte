@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hudIn, hudOut } from "./hudMenu";
   import { tip } from "./tip";
   /**
    * The bell and its panel (nightshift backlog 069): what waits on him,
@@ -24,6 +25,7 @@
   } from "./state.svelte";
   import { KIND_LABEL, KIND_ORDER, countsOf, isInstructionsFile, type Notice, type NoticeKind } from "./centre";
   import { relativeTime } from "./time";
+  import { hourLabel } from "./nightshiftFace";
   import DiffView from "./DiffView.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import CliUpdateActions from "./CliUpdateActions.svelte";
@@ -165,9 +167,11 @@
 
   {#if app.centre.open}
     <div
-      class="centre-panel"
+      class="centre-panel hud-m"
       bind:this={panelEl}
       use:portal
+      in:hudIn|global
+      out:hudOut|global
       style="top: {panelPos.top}px; left: {panelPos.left}px; width: {panelPos.width}px"
     >
       <div class="centre-head">
@@ -297,7 +301,7 @@
         </button>
         <span class="centre-last">
           {#if app.centre.daily.on}
-            daily at {String(app.centre.daily.hour).padStart(2, "0")}:00
+            daily at {hourLabel(app.centre.daily.hour)}
           {:else}
             the daily pass is off (Settings → Knowledge)
           {/if}
@@ -478,5 +482,82 @@
   .centre-last {
     color: var(--dim);
     font-size: 11.5px;
+  }
+
+  /* Filament IV stage 6 (item 570, f4-menus2.png's Notices): a card in
+     front; "To review" a ruled mono title; each kind a ruled mono heading
+     with its count after the rule (no pill); the item's title in the ink,
+     its detail grey, its time in mono at the right. Behind
+     `:where(:root:not([data-layout="classic"]))`; Classic's rules above. */
+  :global(:where(:root:not([data-layout="classic"]))) .centre-panel {
+    background: var(--raised);
+    border-radius: var(--r2);
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.6);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .centre-head {
+    border-bottom: none;
+    padding: 8px 12px 4px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .centre-title {
+    font: 500 10px var(--mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .centre-head .spacer {
+    height: 1px;
+    background: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .centre-kind-head {
+    border-bottom: none;
+    gap: 8px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .centre-kind-title {
+    font: 500 10px var(--mono);
+    letter-spacing: 0.14em;
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .centre-n {
+    order: 2;
+    background: none;
+    padding: 0;
+    color: var(--dim);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .centre-kind-head .spacer {
+    order: 1;
+    height: 1px;
+    background: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .centre-kind-head .ns-btn {
+    order: 3;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .centre-item {
+    border-bottom-color: var(--line);
+    padding: 8px 0 9px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .centre-item-title {
+    font-size: 13.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .centre-when {
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .centre-foot {
+    border-top-color: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .centre-last {
+    font-family: var(--mono);
+    font-size: 10.5px;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    :global(:where(:root:not([data-layout="classic"]))) .centre-panel {
+      animation: menu-rise 90ms ease-out;
+    }
+  }
+  @keyframes menu-rise {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
   }
 </style>

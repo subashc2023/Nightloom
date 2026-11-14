@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hudIn, hudOut } from "./hudMenu";
   /**
    * A chat's open asides, listed under its sidebar row when its asides
    * toggle is open (item 265; the design is in `asideSidebar.svelte.ts`).
@@ -108,8 +109,10 @@
 {#if menu}
   <button class="scrim" aria-label="Close" onclick={() => (menu = null)} oncontextmenu={(e) => { e.preventDefault(); menu = null; }}></button>
   <div
-    class="row-menu"
+    class="row-menu hud-m"
     role="menu"
+    in:hudIn|global
+    out:hudOut|global
     style:left="{menu.x}px"
     style:top={menu.up ? undefined : `${menu.y}px`}
     style:bottom={menu.up ? `${menu.y}px` : undefined}
@@ -129,7 +132,8 @@
   .aside-item {
     display: flex;
     align-items: stretch;
-    border-radius: 8px;
+    /* Item 534: the chat rows' shape, fills and tick (Filament IV). */
+    border-radius: 0 var(--r1) var(--r1) 0;
     margin-left: calc(min(var(--depth, 1), 4) * 0.9rem);
     position: relative;
   }
@@ -142,11 +146,11 @@
     border-left: 1px dotted var(--line2);
   }
   .aside-item:hover {
-    background: var(--well);
+    background: var(--raised);
   }
   .aside-item.active {
-    background: var(--sheet);
-    box-shadow: 0 0 0 1px var(--line2);
+    background: var(--well);
+    box-shadow: inset 2px 0 0 var(--accent);
   }
   .aside-row {
     flex: 1;
@@ -158,13 +162,15 @@
     text-align: left;
     background: transparent;
     border: none;
-    border-radius: 8px;
-    padding: 0.35rem 0.6rem;
+    border-radius: 0 var(--r1) var(--r1) 0;
+    padding: 6px 10px 7px;
     cursor: pointer;
     color: var(--text);
+    font-family: var(--sans);
   }
   .snippet {
-    font-size: 0.8rem;
+    font-size: 12.5px;
+    color: var(--ink2);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -176,9 +182,8 @@
     color: var(--accent-ink, var(--dim));
   }
   .meta {
-    font-size: 0.68rem;
+    font: 10.5px var(--mono);
     color: var(--dim);
-    font-family: var(--mono);
   }
   .more-btn {
     flex-shrink: 0;

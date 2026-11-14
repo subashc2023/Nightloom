@@ -734,4 +734,43 @@
   .search-foot[data-fold="2"] .right {
     display: none;
   }
+
+  /* ---- Filament IV (item 565, stage 8) ---- behind the layout gate; the
+     field, the scope switch and the hits in the shared grammar, the open
+     hit with the amber bar as the open note in the Notes list. */
+  :global(:where(:root:not([data-layout="classic"]))) .search-field-wrap {
+    min-height: 34px;
+    box-sizing: border-box;
+    background: var(--paper);
+    border-color: var(--line2);
+    border-radius: var(--r2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .search-scope {
+    background: var(--paper);
+    border-color: var(--line2);
+    border-radius: var(--r2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .search-scope button {
+    border-radius: var(--r1);
+    font-size: 12.5px;
+    font-weight: 500;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .search-scope button.on {
+    background: var(--well);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .search-gh .gn,
+  :global(:where(:root:not([data-layout="classic"]))) .search-gh .proj {
+    border-radius: var(--r1);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .search-hit {
+    border-radius: var(--r1);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .search-hit:hover {
+    background: color-mix(in srgb, var(--well) 60%, transparent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .search-hit.on {
+    background: var(--well);
+    box-shadow: none;
+  }
 </style>

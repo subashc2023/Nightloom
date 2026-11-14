@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { resetLong, resetText as resetTextAt } from "./resetTime";
+  import { hudIn, hudOut } from "./hudMenu";
   import {
     addToast,
     app,
@@ -9,10 +11,16 @@
     liveFlags,
     MODE_GLYPH,
     latestSubagents,
-    sessionCost,
     subagentsOfTurn,
   } from "./state.svelte";
+  import { touchedUntil } from "./keepWarm";
+  import { keepWarm } from "./keepWarm.svelte";
   import { cacheState } from "./cache";
+  import ContextDial from "./ContextDial.svelte";
+  import { lastLoggedTurn } from "./contextDial";
+  import { liveFor, liveTokens } from "./liveContext";
+  import { liveContextOf } from "./liveContext.svelte";
+  import { mark as handoffMark } from "./handoff.svelte";
   import { connectionWord, launch } from "./launch.svelte";
   import { budgetChip, budgetTitle } from "./budget";
   import RightRail from "./RightRail.svelte";
@@ -28,10 +36,40 @@
   import { canMakeMain } from "./versions";
   import { makeMainChat, versions } from "./versions.svelte";
   import ThreadChip from "./ThreadChip.svelte";
+  // Item 556: the open chat's own running sign, at the bar's left.
+  import ChatRunSign from "./ChatRunSign.svelte";
+  import { allRunning } from "./running.svelte";
+  import { chatRun } from "./runGroups";
+  const runSign = $derived(chatRun(allRunning(), app.activeSessionId).state);
   import { threadChip } from "./thread";
-  import { chatThread } from "./state.svelte";
+  import { chatThread, asideReads } from "./state.svelte";
   import { auth } from "./claudeAuth.svelte";
   import { chipWord } from "./claudeAuth";
+  import type { Aside } from "./state.svelte";
+  import { asideFigures, asideSpendText } from "./asideFigures";
+  import { openChatSpend, trackOpenChatFigures } from "./chatFigures.svelte";
+  import { contextOf } from "./chatContext.svelte";
+  import { chatLabel } from "./chatLabel";
+  import { displayName } from "./modelSeen";
+
+  interface Props {
+    /**
+     * Item 605 (2026-11-11, his "that entire top bar, even like the
+     * notification bell place is gone for asides"): the bar over an aside
+     * tab — the same bar, reading the aside's own figures: its context
+     * (the next follow-up's prefix), the plan, its spend; the bell and
+     * Files for you. What is about the chat's session alone (the mode mark,
+     * the thread chip, Make main, the agents chip, Compact, the model popover)
+     * stays the chat's bar's. Null: the chat's bar, as before.
+     */
+    aside?: Aside | null;
+    /** The chat the aside is of (item 605), for its hand-off line. */
+    asideChat?: string | null;
+    /** Whether this bar carries the bell and Files for you (item 605): an
+     *  aside's bar does only while no chat bar is up, so the window has one. */
+    bell?: boolean;
+  }
+  let { aside = null, asideChat = null, bell = true }: Props = $props();
 
   /**
    * The chat top bar in the redesign (item 036, the mock-up's Chat artboard):
@@ -136,8 +174,36 @@
    * model reading the same figure in its sidecar — that there is headroom
    * nobody verified.
    */
+  /**
+   * Item 654 (B3's chip: "stays simple"): while the chat's reply runs, the
+   * chip reads the live figure the right column does (item 590's), so its
+   * arc eases with the reply (ContextDial's 300 ms) and the figure shows
+   * `~`, dimmed, while it is an estimate; when the reply ends it flashes
+   * once as it lands on the real figure. Asides keep their own figures.
+   */
+  const liveCtx = $derived(
+    !aside && app.busy && app.live != null
+      ? liveFor(liveContextOf(app.activeSessionId), lastLoggedTurn(app.events)?.startedAt ?? null)
+      : null,
+  );
+  const liveEst = $derived(liveCtx != null && liveCtx.estimate > 0);
+  let landFlash = $state(false);
+  let wasLive = false;
+  $effect(() => {
+    const on = liveCtx != null;
+    if (wasLive && !on) {
+      landFlash = true;
+      const id = setTimeout(() => (landFlash = false), 500);
+      wasLive = on;
+      return () => {
+        clearTimeout(id);
+        landFlash = false;
+      };
+    }
+    wasLive = on;
+  });
   const gauge = $derived.by(() => {
-    const used = contextUsed();
+    const used = af ? af.used : liveCtx ? liveTokens(liveCtx) : contextUsed();
     if (used == null) return null;
     const limit = app.connection?.contextLimit ?? null;
     const ratio = limit ? Math.min(used / limit, 1) : null;
@@ -154,14 +220,22 @@
    * identical at two decimal places, and only one of them is true.
    */
   const spend = $derived.by(() => {
-    const c = sessionCost();
+    if (af) {
+      const text = asideSpendText(af.cost);
+      return text && af.cost ? { text, complete: af.cost.complete, agent: true } : null;
+    }
+    // Item 675: a Claude Code chat's spend is the CLI's running cost for
+    // it (the right column's figure) — its replies carry no logged cost,
+    // so the log's sum (`sessionCost`) read "at least $0.00" here.
+    const c = openChatSpend();
     if (!c) return null;
     if (c.usd === 0 && c.complete) return null;
     // Sub-cent turns are the common case early in a session; two decimals
     // would render most of them as $0.00 and look broken.
     const digits = c.usd > 0 && c.usd < 0.01 ? 4 : 2;
-    return { text: `$${c.usd.toFixed(digits)}`, complete: c.complete };
+    return { text: `$${c.usd.toFixed(digits)}`, complete: c.complete, agent: c.agent };
   });
+  $effect(() => trackOpenChatFigures());
 
   /**
    * The prompt-cache timer (nightshift backlog 063, 2026-09-15): when the
@@ -186,7 +260,9 @@
    * changes, so a background chat has no chain and cannot toast.
    */
   $effect(() => {
-    const warmUntil = cacheState(app.events, Date.now())?.warmUntil ?? null;
+    // Item 605: the chat's bar alone toasts its cache going cold.
+    if (aside) return;
+    const warmUntil = cacheState(app.events, Date.now(), app.activeSessionId ? touchedUntil(keepWarm.byChat[app.activeSessionId]) : null, asideReads(app.activeSessionId))?.warmUntil ?? null;
     if (warmUntil == null) return;
     const wait = warmUntil - Date.now();
     if (wait <= 0) return;
@@ -224,6 +300,21 @@
   // ago' in the bar at the top"): `age_seconds` is fixed at the read, so
   // the clock here runs from `sampled_at_ms` every 30 s.
   let now = $state(Date.now());
+  /** The aside's figures, refreshed with the bar's 30 s clock (item 605). */
+  /** Item 639: the chat's last context reading, for an aside that kept no
+   *  tokens (answered before 605) — the same base the right column uses. */
+  const asideBase = $derived.by(() => {
+    if (!aside || !asideChat) return null;
+    if (asideChat === app.activeSessionId) return contextUsed() ?? contextOf(asideChat)?.used ?? null;
+    return contextOf(asideChat)?.used ?? null;
+  });
+  const af = $derived(aside ? asideFigures(aside, now, asideBase) : null);
+  /** The aside's chat by name (item 605), for the chip's and card's words. */
+  const asideChatName = $derived.by(() => {
+    if (!asideChat) return "the chat";
+    const s = app.sessions.find((x) => x.id === asideChat);
+    return chatLabel(s, asideChat.slice(0, 8));
+  });
   $effect(() => {
     const t = setInterval(() => (now = Date.now()), 30_000);
     return () => clearInterval(t);
@@ -258,33 +349,37 @@
             ? "the CLI's /usage, run live (zero tokens)"
             : "the CLI's /usage cache",
   );
-  /** A reset time for the gauge card (board d): `21:40` today, `Thu 09:00`
-   *  on another day. */
+  /** A reset time for the gauge card (board d): `9:40 PM` today, `Thu
+   *  9:00 AM` on another day — 12-hour (blocker 1812), from `resetTime.ts`. */
   function resetText(iso: string | null): string {
-    if (!iso) return "reset time unknown";
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return "reset time unknown";
-    const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
-    const today = new Date(now);
-    return d.toDateString() === today.toDateString()
-      ? `resets ${time}`
-      : `resets ${d.toLocaleDateString([], { weekday: "short" })} ${time}`;
+    return resetTextAt(iso, now);
   }
   const planTitle = $derived.by(() => {
     if (!plan) return "";
     const age = planAgeText;
     const where = planWhere;
-    const when = (iso: string | null) => {
-      if (!iso) return "reset time unknown";
-      const d = new Date(iso);
-      return Number.isNaN(d.getTime()) ? "reset time unknown" : `resets ${d.toLocaleString()}`;
-    };
+    const when = resetLong;
     return (
       `Plan usage, account-wide (every surface, not just this chat): ` +
       `5-hour window ${plan.five_hour}% (${when(plan.five_hour_resets_at)}); ` +
       `7-day window ${plan.seven_day ?? "?"}% (${when(plan.seven_day_resets_at)}). ` +
       `From ${where}, ${age}${plan.stale ? " — stale: past 20 minutes, may be behind" : ""}. Refreshed at each turn end.`
     );
+  });
+
+  /** Item 595: each reading's own hover, naming it ("Context 212k of 1M",
+   *  "5-hour window 59%"); the chip's hover keeps every figure. */
+  const gaugeTip = $derived.by(() => {
+    if (!gauge) return "";
+    const head = gauge.limit
+      ? `Context ${tokens(gauge.used)} of ${tokens(gauge.limit)} (${Math.round((gauge.ratio ?? 0) * 100)}%)`
+      : `Context ${tokens(gauge.used)} — window size unknown for this model`;
+    // Item 639: an aside that kept no token counts reads an estimate, and says so.
+    return `${af?.estimated ? "About: " : ""}${head}${af?.estimated ? " (estimated: this aside kept no token counts)" : ""} — click for the figures`;
+  });
+  const planTip = $derived.by(() => {
+    if (!plan) return "";
+    return `5-hour window ${plan.five_hour}% (${resetText(plan.five_hour_resets_at)}) · ${planAgeText}${plan.stale ? " — stale" : ""} — click for the figures`;
   });
 
   function tokens(n: number): string {
@@ -296,7 +391,7 @@
   // Compaction needs at least one completed exchange to summarize — one the
   // projection still carries, since that is what the backend summarizes.
   const canCompact = $derived.by(() => {
-    if (!app.connection) return false;
+    if (!app.connection || aside) return false;
     // Compaction rewrites what the *log* projects onto the next request, and
     // on the agent engine nothing projects: the next turn resumes a history
     // Claude Code keeps. The button would change what this window shows and
@@ -344,7 +439,7 @@
    *  them is a click away even in a chat with no subagents. */
   const offScreen = $derived(liveChats().filter((c) => !c.onScreen).length);
   const agentsTail = $derived(
-    agents.rows.length > 0
+    !aside && agents.rows.length > 0
       ? ` · + subagents: ${agents.tokens.toLocaleString()} tokens (${agents.rows.length}, not in the window)`
       : "",
   );
@@ -370,7 +465,10 @@
   let gaugePopEl = $state<HTMLElement | null>(null);
   function onDocClick(e: MouseEvent): void {
     const t = e.target as Node;
-    if (!(popEl?.contains(t) || chipEl?.contains(t))) app.showRail = false;
+    if (!(popEl?.contains(t) || chipEl?.contains(t))) {
+      app.showRail = false;
+      showAsideCard = false;
+    }
     if (!(gaugePopEl?.contains(t) || gaugeEl?.contains(t))) showGauge = false;
   }
   function onKey(e: KeyboardEvent): void {
@@ -378,10 +476,11 @@
       app.showRail = false;
       app.showContext = false;
       showGauge = false;
+      showAsideCard = false;
     }
   }
   $effect(() => {
-    if (!app.showRail && !app.showContext && !showGauge) return;
+    if (!app.showRail && !app.showContext && !showGauge && !showAsideCard) return;
     document.addEventListener("mousedown", onDocClick, true);
     document.addEventListener("keydown", onKey);
     return () => {
@@ -393,6 +492,18 @@
     app.showContext = false;
     showGauge = false;
     app.showRail = !app.showRail;
+  }
+  /** Item 657 (his "the aside * subscription button doesn't do anything",
+   *  then "on the normal chat is like the list of settings"): the aside's
+   *  chip opens the same settings card, in the same place, scoped to the
+   *  aside (`RightRail` → `ProviderRail` given the aside). Its own flag, not
+   *  `app.showRail`: a chat bar in another pane opens the chat's card from
+   *  that, and must not open with this one. */
+  let showAsideCard = $state(false);
+  function toggleAsideCard(): void {
+    app.showContext = false;
+    showGauge = false;
+    showAsideCard = !showAsideCard;
   }
   // The card's place, refreshed while it is open on resize and on scroll
   // (backlog 163). ~~From the chip's rectangle~~ — since 2026-09-22 from the
@@ -410,7 +521,7 @@
     popPos = anchorBelow({ left: r.left, right: r.right - 20, bottom: r.bottom - 1 }, POP_WIDTH, window.innerWidth, 0);
   }
   $effect(() => {
-    if (!app.showRail) return;
+    if (aside ? !showAsideCard : !app.showRail) return;
     placePop();
     window.addEventListener("resize", placePop);
     window.addEventListener("scroll", placePop, true);
@@ -489,6 +600,7 @@
       canCompact,
       modeText,
       continuedFrom,
+      runSign,
       app.connection,
       gauge == null,
       plan == null,
@@ -507,11 +619,13 @@
   <!-- ~~The title and the short id~~ — board d (backlog 175): the tab is
        the title, its hover the id. The mode mark and "continued from"
        stay, at the bar's left, when a chat has one. -->
-  {#if modeText || continuedFrom || threadChipShown || mainable}
+  {#if !aside && (runSign !== "idle" || modeText || continuedFrom || threadChipShown || mainable)}
     <div class="left">
       <!-- The chat's research thread (nightshift backlog 281): first on
            the left, where the title row's name used to be — the tab names
            the chat, this says what it works from. -->
+      <!-- Item 556: whether this chat runs — first, so it is seen. -->
+      <ChatRunSign />
       <ThreadChip />
       {#if modeText}
         <span class="mode {mode}" use:tip={modeTitle}
@@ -534,7 +648,7 @@
           use:tip={"This chat is a version of another: Make main puts it in that chat's row, name and place, and keeps the other as a version (‹ › under the edited message)"}
           onclick={() => void makeMainChat(sid)}
         >
-          <span aria-hidden="true">⑂</span><span class="fold1"> Make main</span>
+          <span class="mm-icon" aria-hidden="true">⑂</span><span class="fold3">Make main</span>
         </button>
       {/if}
     </div>
@@ -546,6 +660,24 @@
          subscription`, `Build · anthropic`, `Chat · anthropic` — the kind
          and the engine, no model. The model's name is the composer's
          button; this chip still opens the rail, where the model is. -->
+    {#if aside}
+      <!-- Item 605: the aside's kind chip. ~~Not a button: the model and
+           effort are the composer's buttons, and the model popover is the
+           chat's~~ — item 657 (his "doesn't do anything"): a button that
+           opens the same settings card as the chat's chip, scoped to the
+           aside — its model and effort its own, the rest the chat's. -->
+      <button
+        class="ns-chip model aside-kind"
+        class:open={showAsideCard}
+        bind:this={chipEl}
+        aria-expanded={showAsideCard}
+        use:tip={`An aside: answered from ${asideChatName}'s context on the Claude Code engine, never part of it — its model (${af?.model ? displayName(af.model) : "the chat's"}), effort and settings, click to open`}
+        onclick={toggleAsideCard}
+      >
+        <span class="dot" class:unknown={!app.connection} class:failed={!!signedOut}></span>
+        <span class="model-name">Aside<span class="fold2">{" · "}{engineName || "subscription"}</span></span>
+      </button>
+    {:else}
     <button
       class="ns-chip model"
       class:open={app.showRail}
@@ -574,6 +706,7 @@
       {/if}
       {#if openTasks > 0}<span class="badge" use:tip={`${openTasks} open tasks`}>{openTasks}</span>{/if}
     </button>
+    {/if}
 
     <!-- The gauge chip (board d, nightshift backlog 175 pass 2): the
          context gauge and the plan chip made one — two thin bars, context
@@ -600,17 +733,47 @@
           " — click for the figures (⌘⇧C itemises the context)"}
         onclick={toggleGauge}
       >
+        <!-- Item 595 ("either both dials or both bars"): ~~a 13 px context
+             ring over a 48 px blue five-hour bar, the age at the right~~ —
+             one form for every reading: a small dial with its figure
+             beside it, context then the five-hour window, on one centre
+             line; each reading names itself in its own hover. The
+             five-hour dial takes the rail's colour for it (amber), so the
+             two read as one pair; the context arc turns orange past the
+             hand-off mark as before. -->
         {#if gauge || plan}
-          <span class="bars">
-            {#if gauge?.ratio != null}
-              <span class="gbar ctx"><span class="fill" style:width="{gauge.ratio * 100}%"></span></span>
-            {/if}
-            {#if plan}
-              <span class="gbar"><span class="fill plan-fill" style:width="{Math.min(plan.five_hour ?? 0, 100)}%"></span></span>
-            {/if}
-          </span>
-          {#if gauge && gauge.ratio == null}<span class="figure">{tokens(gauge.used)}</span>{/if}
-          {#if plan}<span class="of plan-age">{planAgeMark}</span>{/if}
+          {#if gauge}
+            <span class="reading" data-reading="context" use:tip={gaugeTip}>
+              {#if gauge.ratio != null}
+                <ContextDial
+                  size={14}
+                  stroke={2.5}
+                  pad={2}
+                  minor={0}
+                  major={0}
+                  share={gauge.ratio}
+                  mark={handoffMark(aside ? asideChat : app.activeSessionId, gauge.limit)}
+                  label={`Context ${Math.round(gauge.ratio * 100)}%`}
+                />
+              {/if}
+              <span class="figure" class:dimmed={liveEst} class:landed={landFlash}>{af?.estimated || liveEst ? "~" : ""}{tokens(gauge.used)}</span>
+            </span>
+          {/if}
+          {#if plan}
+            <span class="reading" data-reading="five-hour" use:tip={planTip}>
+              <ContextDial
+                size={14}
+                stroke={2.5}
+                pad={2}
+                minor={0}
+                major={0}
+                share={Math.min(plan.five_hour ?? 0, 100) / 100}
+                label={`5-hour window ${plan.five_hour}%`}
+              />
+              <span class="figure">{plan.five_hour}%</span>
+              <span class="of plan-age">{planAgeMark}</span>
+            </span>
+          {/if}
         {:else}
           <span class="figure sans">Context</span>
         {/if}
@@ -623,7 +786,7 @@
          agent's transcript stays a click away — ~~until the next turn~~
          since backlog 160 until a later turn spawns agents: the chip reads
          the chat's latest turn that had any (`chipAgents`). -->
-    {#if chipAgents.rows.length > 0 || offScreen > 0}
+    {#if !aside && (chipAgents.rows.length > 0 || offScreen > 0)}
       <button
         class="ns-chip mono agents"
         class:live={chipAgents.running > 0 || offScreen > 0}
@@ -682,21 +845,26 @@
          him, five kinds; the Nightshift header carries the same one. -->
     <!-- Files for you (nightshift backlog 377): what the model marked for
          him, a dot for new ones. -->
-    <ForYouButton />
-    <NotificationCentre />
+    {#if bell}
+      <ForYouButton />
+      <NotificationCentre />
+    {/if}
   </div>
 
-  {#if app.showRail}
+  {#if aside ? showAsideCard : app.showRail}
     <!-- Portalled to body and placed by the chip's rectangle (backlog 163):
          inside the bar's stacking context it painted under the Welcome
-         page's floating composer and off its chip. -->
+         page's floating composer and off its chip. Item 657: an aside's
+         bar opens the same card from its chip, scoped to the aside. -->
     <div
-      class="popover"
+      class="popover hud-m"
       bind:this={popEl}
       use:portal
+      in:hudIn|global
+      out:hudOut|global
       style="top: {popPos.top}px; left: {popPos.left}px"
     >
-      <RightRail />
+      <RightRail {aside} {asideChat} />
     </div>
   {/if}
   {#if showGauge && app.connection}
@@ -704,14 +872,16 @@
          context gauge, the plan chip and the spend chip carried, portalled
          and placed under the gauge chip as the rail's card is (163). -->
     <div
-      class="gauge-card"
+      class="gauge-card hud-m"
       role="dialog"
       aria-label="Context and plan"
       bind:this={gaugePopEl}
       use:portal
+      in:hudIn|global
+      out:hudOut|global
       style="top: {gaugePos.top}px; left: {gaugePos.left}px; width: {GAUGE_WIDTH}px"
     >
-      <div class="gc-head">Context and plan</div>
+      <div class="gc-head">{aside ? "This aside's context and plan" : "Context and plan"}</div>
       <div class="gc-row">
         <span class="gc-label">Context</span>
         <span class="gc-val">
@@ -720,11 +890,16 @@
               <span class="gc-bar {level}"><span class="fill" style:width="{gauge.ratio * 100}%"></span></span>
             {/if}
             <span class="gc-fig"
-              >{gauge.used.toLocaleString()}{" "}{#if gauge.limit}of {gauge.limit.toLocaleString()} · {Math.round(
+              >{af?.estimated ? "about " : ""}{gauge.used.toLocaleString()}{" "}{#if gauge.limit}of {gauge.limit.toLocaleString()} · {Math.round(
                   (gauge.ratio ?? 0) * 100,
                 )}%{:else}tokens — window size unknown{/if}</span
             >
-            {#if agents.rows.length > 0}
+            {#if af?.estimated}
+              <span class="gc-note"
+                >{af.estimated === "chat" ? "estimated: the chat's context plus this thread's text" : "estimated, a floor: this thread's text only"} — this aside kept no token counts</span
+              >
+            {/if}
+            {#if !aside && agents.rows.length > 0}
               <span class="gc-note"
                 >+ subagents: {agents.tokens.toLocaleString()} tokens ({agents.rows.length}, not in the window)</span
               >
@@ -759,9 +934,17 @@
             <span
               class="gc-fig"
               class:partial={!spend.complete}
-              use:tip={spend.complete
-                ? "Session cost so far, summed from each exchange at the price in force when it ran"
-                : "At least this much: some exchanges ran on a model with no verified price"}
+              use:tip={aside
+                ? spend.complete
+                  ? "What this aside has added on top of the chat: each answer's own cost at API prices (the CLI's estimate) — not a bill under a subscription"
+                  : "At least this much on top of the chat: some answers kept no cost of their own (none came, or they were answered before Nov 12)"
+                : spend.agent
+                  ? spend.complete
+                    ? "This chat's cost so far at API prices: Claude Code's own running estimate, subagents and rewound replies included — not a bill under a subscription"
+                    : "At least this much: Claude Code could not price one of the models this chat ran on"
+                  : spend.complete
+                    ? "Session cost so far, summed from each exchange at the price in force when it ran"
+                    : "At least this much: some exchanges ran on a model with no verified price"}
               >{spend.complete ? "" : "at least "}{spend.text}</span
             >
           </span>
@@ -773,9 +956,14 @@
             Stale: past 20 minutes, may be behind.{/if} Refreshed at each turn end.
         </p>
       {/if}
-      <div class="gc-actions">
-        <button class="ns-btn ghost small" onclick={itemise}>Itemise the context <span class="gc-key">⌘⇧C</span></button>
-      </div>
+      {#if aside}
+        <!-- Item 605: the Context page itemises the chat's request, not an aside's. -->
+        <p class="gc-foot">The aside's context: {asideChatName}'s, the thread so far, and the newest answer — what the next follow-up carries.</p>
+      {:else}
+        <div class="gc-actions">
+          <button class="ns-btn ghost small" onclick={itemise}>Itemise the context <span class="gc-key">⌘⇧C</span></button>
+        </div>
+      {/if}
     </div>
   {/if}
   <!-- The Context page is no longer a popover here: it opens as a centre
@@ -800,9 +988,10 @@
     gap: 12px;
     background: var(--paper);
     border-bottom: 1px solid var(--line);
-    padding: 0 20px;
-    /* ~~52px~~ — 44 px with the title row gone (board d, backlog 175). */
-    min-height: 44px;
+    padding: 0 16px;
+    /* ~~52px~~ — 44 px with the title row gone (board d, backlog 175);
+       ~~44~~ 40 since item 534, the tab strip's 38 and a hair. */
+    min-height: 40px;
     /* Past the three folds the bar wraps to a second line rather than
        clipping its last chip (his screenshot at ⌘+ zoom, 2026-09-18:
        "≥$0.0" cut at the edge — the gauge grew a week bar after 129
@@ -847,6 +1036,30 @@
   .continued:hover {
     color: var(--ink);
   }
+  /* Make main (item 555, his report 2026-11-10: the folded ⑂ alone was
+     tiny and sank into the background): an accent pill that keeps its
+     words until the last fold level and never shrinks away. */
+  .continued.make-main {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex-shrink: 0;
+    padding: 3px 10px;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    color: var(--accent);
+    font-weight: 600;
+    overflow: visible;
+  }
+  .continued.make-main:hover {
+    background: color-mix(in srgb, var(--accent) 24%, transparent);
+    color: var(--ink);
+  }
+  .make-main .mm-icon {
+    font-size: 14px;
+    line-height: 1;
+  }
   .right {
     display: flex;
     align-items: center;
@@ -880,8 +1093,10 @@
   .topbar[data-fold="3"] .fold3 {
     display: none;
   }
-  .topbar[data-fold="3"] .gbar {
-    width: 36px;
+  /* ~~`.gbar { width: 36px }`~~ — item 595: the bars are dials now; at
+     level 3 the plan reading's age folds into its hover instead. */
+  .topbar[data-fold="3"] .plan-age {
+    display: none;
   }
   .topbar[data-fold="3"] .model {
     max-width: 200px;
@@ -972,21 +1187,50 @@
   .plan-fill {
     background: var(--live);
   }
-  /* The gauge chip (board d): context over plan, two 3 px bars. */
-  .gauge .bars {
+  /* ~~The gauge chip (board d): context over plan, two 3 px bars
+     (`.gauge .bars`, `.gbar`)~~ — item 595: two readings side by side,
+     each an 18 px dial and its figure, sharing one centre line. */
+  .gauge {
+    gap: 10px;
+  }
+  .gauge .reading {
     display: inline-flex;
-    flex-direction: column;
-    gap: 3px;
+    align-items: center;
+    gap: 4px;
+    line-height: 1;
   }
-  .gbar {
-    display: block;
-    width: 48px;
-    height: 3px;
-    border-radius: 2px;
-    background: var(--line2);
-    overflow: hidden;
+  .gauge .reading .figure {
+    color: var(--ink);
   }
-  .gbar .fill,
+  /* Item 614 ("why tf is it still off centered"): app.css's `.ns-chip svg
+     { 14px }` drew each dial's 18 px SVG at 14 px in the top-left of its
+     18 px box, so the ring sat 2 px above the figures' midline and 4 px
+     too far from its figure. The box now shrinks to the SVG (same 14 px
+     ring as before), centred on the line; the left padding gives back the
+     ring's stroke inset (0.6 px) so the ink is equally padded each side. */
+  .gauge .reading :global(.dial) {
+    width: auto !important;
+    height: auto !important;
+  }
+  .right > .ns-chip.gauge {
+    padding-left: 9.5px;
+  }
+  .gauge.hot .reading[data-reading="context"] .figure {
+    color: var(--failed);
+  }
+  /* Item 654: an estimate reads dimmed; the landing flashes once (motion only). */
+  .gauge .reading .figure.dimmed {
+    color: var(--ink2);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .gauge .reading[data-reading="context"] .figure {
+      transition: color 500ms ease;
+    }
+    .gauge .reading[data-reading="context"] .figure.landed {
+      color: var(--accent-ink);
+      transition: color 80ms ease;
+    }
+  }
   .gc-bar .fill {
     display: block;
   }
@@ -995,12 +1239,6 @@
   }
   .gauge.stale .plan-age {
     font-style: italic;
-  }
-  .gauge.warm .gbar.ctx .fill {
-    background: var(--partial);
-  }
-  .gauge.hot .gbar.ctx .fill {
-    background: var(--failed);
   }
   /* The gauge card: the rail card's frame, a label column and a value
      column; portalled, so fixed to the viewport. */
@@ -1119,5 +1357,84 @@
     background: transparent;
     flex: 1;
     min-height: 0;
+  }
+  /* Item 577 (Filament IV, stage 6's menus grammar, item 570): the chip's
+     popover is a card in front — raised, token corners, the deep shadow,
+     rising in over 90 ms — and its Model | Tasks strip a quiet control
+     with the open tab on the control fill. The strip's markup is
+     RightRail's (shared with the column); it is styled from here, inside
+     `.popover`, so the column and Classic (TopBarClassic) are untouched. */
+  .popover {
+    background: var(--raised);
+    border-radius: var(--r2);
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.6);
+  }
+  .popover :global(.rail .tabs) {
+    margin: 10px 12px 2px;
+    background: var(--well);
+    border: 1px solid var(--line2);
+    border-radius: var(--r1);
+  }
+  .popover :global(.rail .tabs button) {
+    border-radius: calc(var(--r1) - 2px);
+    font: 500 10px var(--mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink2);
+    padding: 5px 4px;
+  }
+  .popover :global(.rail .tabs button:hover) {
+    color: var(--ink);
+  }
+  .popover :global(.rail .tabs button.active) {
+    background: var(--well2);
+    color: var(--ink);
+    box-shadow: none;
+  }
+  .popover :global(.rail .tabs .badge) {
+    font-family: var(--mono);
+    letter-spacing: 0;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .popover {
+      animation: rail-rise 90ms ease-out;
+    }
+  }
+  @keyframes rail-rise {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+  }
+
+  /* Item 534 (Filament IV stage 3): ~~pills~~ — the bar's chips take the
+     control grammar (a fill, an edge, the small corner, 28 px), and the
+     kind chip reads as the mockup's plain line, "Claude Code ·
+     subscription", until hovered or open. The gauge chip's insides are
+     stage 2's (item 533). */
+  .right > .ns-chip {
+    height: 28px;
+    box-sizing: border-box;
+    padding: 0 10px;
+    border-radius: var(--r1);
+    background: var(--well);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  }
+  .right > .ns-chip.model {
+    background: transparent;
+    border-color: transparent;
+    box-shadow: none;
+    color: var(--dim);
+    font-size: 12px;
+  }
+  .right > .ns-chip.model:hover,
+  .right > .ns-chip.model.open {
+    background: var(--raised);
+    border-color: var(--line2);
+    color: var(--ink);
+  }
+  .badge {
+    border-radius: 3px;
+    font-family: var(--mono);
   }
 </style>

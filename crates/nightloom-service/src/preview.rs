@@ -797,7 +797,7 @@ async fn read_lines(reader: impl AsyncRead + Unpin, log: Arc<Mutex<VecDeque<Stri
 }
 
 #[cfg(unix)]
-fn signal_group(pgid: u32, sig: libc::c_int) {
+pub(crate) fn signal_group(pgid: u32, sig: libc::c_int) {
     // SAFETY: killpg takes plain integers and has no memory effects.
     unsafe {
         libc::killpg(pgid as libc::pid_t, sig);
@@ -805,12 +805,12 @@ fn signal_group(pgid: u32, sig: libc::c_int) {
 }
 
 #[cfg(unix)]
-fn group_alive(pgid: u32) -> bool {
+pub(crate) fn group_alive(pgid: u32) -> bool {
     // SAFETY: as above; signal 0 only checks.
     unsafe { libc::killpg(pgid as libc::pid_t, 0) == 0 }
 }
 
-async fn stop_group(pgid: Option<u32>) {
+pub(crate) async fn stop_group(pgid: Option<u32>) {
     #[cfg(unix)]
     if let Some(pgid) = pgid {
         signal_group(pgid, libc::SIGTERM);
@@ -828,7 +828,7 @@ async fn stop_group(pgid: Option<u32>) {
 /// gone — the app killed or crashed past its exit handler. In the group,
 /// so a stop takes it too.
 #[cfg(unix)]
-fn spawn_watchdog(pgid: u32, watch: u32) {
+pub(crate) fn spawn_watchdog(pgid: u32, watch: u32) {
     let script =
         format!("while kill -0 {watch} 2>/dev/null; do sleep 2; done; kill -KILL -- -{pgid}");
     let mut cmd = std::process::Command::new("/bin/sh");
@@ -1666,7 +1666,8 @@ mod tests {
         ));
         let listener = bind_socket(&sock).unwrap();
         let server_task = tokio::spawn(serve_socket(listener, Arc::clone(&p)));
-        let seen: Arc<Mutex<Vec<(String, Option<Status>)>>> = Arc::default();
+        type Seen = Arc<Mutex<Vec<(String, Option<Status>)>>>;
+        let seen: Seen = Arc::default();
         let seen_c = Arc::clone(&seen);
         p.set_on_change(Arc::new(move |chat, snap| {
             seen_c

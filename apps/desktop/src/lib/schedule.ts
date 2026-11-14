@@ -13,6 +13,8 @@
  * queues it; incognito and ephemeral keep it in memory only).
  */
 
+import type { Attachment } from "./types";
+
 export type ScheduleKind = "five_hour" | "seven_day" | "time";
 
 /**
@@ -24,9 +26,38 @@ export type ScheduleKind = "five_hour" | "seven_day" | "time";
  */
 export type ScheduleState = "waiting" | "retrying" | "limited" | "missed" | "held";
 
+/** Where a chat lives: its project's id and name; `id: null` is the
+ *  unfiled chats. */
+export interface ChatProject {
+  id: string | null;
+  name: string | null;
+}
+
 export interface Scheduled {
   /** The chat's id: its draft key. One scheduled message per chat. */
   key: string;
+  /**
+   * The project its chat lives in (backlog 535), set at the pick: delivery
+   * goes into this project's chat whatever is open. Absent on an entry
+   * made before 535 — found once from the chat's log (`TickDeps.home`).
+   */
+  project?: ChatProject;
+  /**
+   * A delivery was tried while the app ran and could not happen yet
+   * (backlog 535). Such a message is not "missed while the app was
+   * closed": after a relaunch it keeps trying by itself.
+   */
+  tried?: boolean;
+  /**
+   * A tick or Send now is delivering it right now (backlog 535; never
+   * stored). Set before the first await of a delivery and read by every
+   * other path, so one message is never sent twice.
+   */
+  claimed?: boolean;
+  /** Cancelled or edited away while a delivery of it was in flight (never
+   *  stored): that delivery stops before it sends — the words are back in
+   *  the box. */
+  gone?: boolean;
   text: string;
   kind: ScheduleKind;
   /** The moment chosen (ms): the reset itself, or the typed time. */
@@ -40,6 +71,15 @@ export interface Scheduled {
   note: string | null;
   /** False in an incognito or ephemeral chat: nothing on disk (blocker 217). */
   persist: boolean;
+  /**
+   * The box's files and images at the pick (backlog 531). Each one's bytes
+   * are kept on disk by `stash` (the drafts' `stash_draft_file` copy, item
+   * 491) and the store holds the chip without them; read back after a
+   * relaunch (`pending` until then). A chip whose copy could not be made
+   * keeps its bytes in the store instead. Absent on an entry made before
+   * 531 — read as none.
+   */
+  attachments?: Attachment[];
 }
 
 /** After a reset, the margin before sending (item 164's resume margin). */
@@ -83,12 +123,15 @@ export function atTime(hhmm: string, nowMs: number): { at: number; tomorrow: boo
   return { at: d.getTime(), tomorrow: false };
 }
 
-/** `14:05`. */
+/** `2:05 PM` — his 12-hour clock whatever the locale (item 611; was the
+ *  locale's `14:05`). */
 export function clockText(ms: number): string {
-  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const d = new Date(ms);
+  const h = d.getHours();
+  return `${h % 12 || 12}:${String(d.getMinutes()).padStart(2, "0")} ${h >= 12 ? "PM" : "AM"}`;
 }
 
-/** `Mon 14:05`. */
+/** `Mon 2:05 PM`. */
 export function dayClockText(ms: number): string {
   const d = new Date(ms);
   return `${d.toLocaleDateString([], { weekday: "short" })} ${clockText(ms)}`;
@@ -127,6 +170,29 @@ export interface TickDeps {
   /** Re-read the plan and say whether a window is still exhausted. */
   limited(): Promise<boolean>;
   deliver(s: Scheduled): Promise<Delivery>;
+  /** Where the chat `key` lives, from its log on disk; null when no
+   *  project has it (backlog 535: an entry from before it carried one). */
+  home?(key: string): Promise<ChatProject | null>;
+  /** Tell the clock that outlives the page's timers when the next check
+   *  is (`wake.rs`); null when nothing waits (backlog 535). */
+  arm?(atMs: number | null): void;
+  /** Called for every entry on every tick, due or not: the app keeps what
+   *  a later send off screen needs (the chat's agent spec, backlog 535). */
+  keep?(s: Scheduled): void;
+  /** A line for the schedule log (`<config dir>/logs/schedule.log`). */
+  log?(text: string): void;
+}
+
+/** When the clock should next look: the earliest check among the entries
+ *  that still go by themselves; null when none does (backlog 535). */
+export function nextCheckAt(map: Record<string, Scheduled>): number | null {
+  let at: number | null = null;
+  for (const s of Object.values(map)) {
+    if (s.state !== "waiting" && s.state !== "retrying") continue;
+    const t = s.nextTryAt ?? dueAt(s);
+    if (at === null || t < at) at = t;
+  }
+  return at;
 }
 
 /**
@@ -137,63 +203,108 @@ export interface TickDeps {
  */
 export async function tickOne(s: Scheduled, deps: TickDeps): Promise<"sent" | "kept"> {
   if (s.state !== "waiting" && s.state !== "retrying") return "kept";
+  // Being delivered by another path right now (Send now, an earlier tick
+  // still in flight): that path owns it (backlog 535).
+  if (s.claimed) return "kept";
   const now = deps.now();
   if ((s.nextTryAt ?? dueAt(s)) > now) return "kept";
-  if (await deps.limited()) {
-    if (s.firstTryAt === null) s.firstTryAt = now;
-    if (now - s.firstTryAt >= RETRY_FOR_MS) {
-      s.state = "limited";
-      s.nextTryAt = null;
-      s.note = "not sent — still limited";
+  // Claimed before the first await, so nothing else delivers it meanwhile.
+  s.claimed = true;
+  try {
+    if (await deps.limited()) {
+      s.tried = true;
+      if (s.firstTryAt === null) s.firstTryAt = now;
+      if (now - s.firstTryAt >= RETRY_FOR_MS) {
+        s.state = "limited";
+        s.nextTryAt = null;
+        s.note = "not sent — still limited";
+        return "kept";
+      }
+      s.state = "retrying";
+      s.nextTryAt = now + RETRY_EVERY_MS;
+      s.note = `still limited — trying each minute until ${clockText(s.firstTryAt + RETRY_FOR_MS)}`;
       return "kept";
     }
-    s.state = "retrying";
-    s.nextTryAt = now + RETRY_EVERY_MS;
-    s.note = `still limited — trying each minute until ${clockText(s.firstTryAt + RETRY_FOR_MS)}`;
+    if (s.gone) return "kept";
+    const r = await deliverSafely(s, deps);
+    if (r.ok) return "sent";
+    if (s.gone) return "kept";
+    // Cannot go yet: tried again at every tick while the cause can clear
+    // (backlog 535; a minute before it, which read as stuck).
+    s.state = "waiting";
+    s.firstTryAt = null;
+    s.tried = true;
+    s.nextTryAt = deps.now() + TICK_MS;
+    s.note = r.why;
     return "kept";
+  } finally {
+    s.claimed = false;
   }
-  const r = await deps.deliver(s);
-  if (r.ok) return "sent";
-  s.nextTryAt = now + RETRY_EVERY_MS;
-  s.note = r.why;
-  return "kept";
 }
 
-/** What delivery needs to know and do; the app's, or a test's. */
+/** `deps.deliver`, with a throw read as "cannot go yet" — a failed
+ *  delivery is a reason in the row, never an error in some other chat. */
+export async function deliverSafely(s: Scheduled, deps: Pick<TickDeps, "deliver">): Promise<Delivery> {
+  try {
+    return await deps.deliver(s);
+  } catch (e) {
+    return { ok: false, why: `waiting — ${String(e)}` };
+  }
+}
+
+/** What delivery needs to know and do; the app's, or a test's. Every
+ *  step names the entry's own chat (and through `ready`/`start` its
+ *  project) — none reads "the open chat" (backlog 535). */
 export interface DeliverEnv {
-  connected: () => boolean;
-  /** The open chat's key. */
-  activeKey: () => string | null;
-  busy: () => boolean;
-  open: (key: string) => Promise<void>;
-  enqueue: (key: string, text: string) => void;
-  /** Send the open chat's queue now (the composer's drain). */
-  drain: () => Promise<void>;
+  /** Whether a turn runs in chat `key` now, on screen or off. */
+  running: (key: string) => boolean;
+  /** Into chat `key`'s own queue, behind its running turn. */
+  enqueue: (key: string, text: string, attachments: Attachment[]) => void;
+  /** Whether the entry's chat can take a send now, wherever it is; else
+   *  the real cause, in words for the row. Sends nothing. */
+  ready: (s: Scheduled) => Promise<Delivery>;
+  /** Start the turn in the entry's chat, in its project. Returns once the
+   *  message has left the scheduler's hands. */
+  start: (s: Scheduled) => void;
 }
 
 /**
- * Put a due message into its chat: open the chat when nothing runs (the
- * phone's rule), then into the chat's queue — behind a running turn when
- * there is one, else sent at once through the composer's drain, which
- * gives the words back to the box if the send fails. Waits, with a
- * reason, when there is no engine or another chat's turn is running.
+ * Put a due message into its own chat (backlog 535): behind that chat's
+ * running turn when it has one (its queue, which that turn's end sends),
+ * else sent at once in that chat — on screen if it is the chat he is
+ * looking at, in the background otherwise. Nothing here opens a chat or a
+ * project, and nothing here reads which chat is open. Waits, with the
+ * real reason, when the chat cannot take it yet.
  */
 export async function deliverTo(s: Scheduled, env: DeliverEnv): Promise<Delivery> {
-  if (!env.connected()) return { ok: false, why: "waiting — no engine is connected" };
-  if (env.activeKey() !== s.key) {
-    if (env.busy()) return { ok: false, why: "waiting — another chat is running a turn" };
-    await env.open(s.key);
-    if (env.activeKey() !== s.key) return { ok: false, why: "waiting — this chat could not be opened" };
+  // A chip still being read back from its copy on disk (backlog 531) goes
+  // with its bytes or not at all.
+  if ((s.attachments ?? []).some((a) => a.pending || !a.data))
+    return { ok: false, why: "waiting — its files are being read back" };
+  if (env.running(s.key)) {
+    env.enqueue(s.key, s.text, s.attachments ?? []);
+    return { ok: true };
   }
-  env.enqueue(s.key, s.text);
-  if (!env.busy()) await env.drain();
+  const r = await env.ready(s);
+  if (!r.ok) return r;
+  // Cancelled while that was asked: the words are back in the box.
+  if (s.gone) return { ok: false, why: "cancelled" };
+  // A turn began in it while that was asked: behind it, as above.
+  if (env.running(s.key)) {
+    env.enqueue(s.key, s.text, s.attachments ?? []);
+    return { ok: true };
+  }
+  env.start(s);
   return { ok: true };
 }
 
 /**
  * The store read at launch. A malformed entry costs that entry; one whose
  * time passed while the app was closed comes back `missed` — asked about,
- * never sent by itself (blocker 468).
+ * never sent by itself (blocker 468). One whose delivery was already being
+ * tried while the app ran (`tried`; before 535, a "waiting — …" note or
+ * the limit's retry) was not missed: it comes back waiting and goes by
+ * itself (backlog 535 — his row stuck on "could not be opened").
  */
 export function readScheduled(raw: string | null, nowMs: number): Record<string, Scheduled> {
   const out: Record<string, Scheduled> = {};
@@ -208,28 +319,161 @@ export function readScheduled(raw: string | null, nowMs: number): Record<string,
   for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
     if (v === null || typeof v !== "object") continue;
     const m = v as Record<string, unknown>;
-    if (typeof m.text !== "string" || !m.text) continue;
+    if (typeof m.text !== "string") continue;
     if (typeof m.at !== "number") continue;
+    const attachments = readChips(m.attachments);
+    if (!m.text && attachments.length === 0) continue;
     const kind: ScheduleKind =
       m.kind === "five_hour" || m.kind === "seven_day" || m.kind === "time" ? m.kind : "time";
     const states: ScheduleState[] = ["waiting", "retrying", "limited", "missed", "held"];
     let state: ScheduleState = states.includes(m.state as ScheduleState) ? (m.state as ScheduleState) : "waiting";
     let note = typeof m.note === "string" ? m.note : null;
+    const tried = m.tried === true || state === "retrying" || (state === "waiting" && !!note && note.startsWith("waiting"));
     if ((state === "waiting" || state === "retrying") && dueAt({ kind, at: m.at }) <= nowMs) {
-      state = "missed";
-      note = null;
+      if (tried) {
+        state = "waiting";
+      } else {
+        state = "missed";
+        note = null;
+      }
     }
-    out[k] = { key: k, text: m.text, kind, at: m.at, state, firstTryAt: null, nextTryAt: null, note, persist: true };
+    const project = readProject(m.project);
+    out[k] = {
+      key: k,
+      text: m.text,
+      kind,
+      at: m.at,
+      state,
+      firstTryAt: null,
+      nextTryAt: null,
+      note,
+      persist: true,
+      attachments,
+      ...(project ? { project } : {}),
+      ...(tried ? { tried: true } : {}),
+    };
   }
   return out;
 }
 
+/** A stored entry's project; undefined when absent or malformed (it is
+ *  then found again from the chat's log). */
+function readProject(v: unknown): ChatProject | undefined {
+  if (v === null || typeof v !== "object") return undefined;
+  const p = v as Record<string, unknown>;
+  if (p.id !== null && typeof p.id !== "string") return undefined;
+  return { id: p.id, name: typeof p.name === "string" ? p.name : null };
+}
+
+/** The chips of a stored entry: a malformed one costs that chip; one kept
+ *  by its copy on disk comes back `pending`, to be read back. */
+function readChips(v: unknown): Attachment[] {
+  if (!Array.isArray(v)) return [];
+  const out: Attachment[] = [];
+  for (const c of v) {
+    if (c === null || typeof c !== "object") continue;
+    const a = c as Record<string, unknown>;
+    if (typeof a.id !== "number" || typeof a.media_type !== "string" || typeof a.name !== "string") continue;
+    if (a.kind !== "image" && a.kind !== "document" && a.kind !== "file") continue;
+    const data = typeof a.data === "string" ? a.data : "";
+    const stash = typeof a.stash === "string" && /^[0-9a-f]{64}$/i.test(a.stash) ? a.stash : undefined;
+    if (!data && !stash) continue;
+    out.push({
+      id: a.id,
+      kind: a.kind,
+      media_type: a.media_type,
+      name: a.name,
+      data,
+      ...(typeof a.label === "string" ? { label: a.label } : {}),
+      ...(a.pasted === true ? { pasted: true } : {}),
+      ...(typeof a.pages === "number" ? { pages: a.pages } : {}),
+      ...(a.whole === true ? { whole: true } : {}),
+      ...(typeof a.source_sha256 === "string" ? { source_sha256: a.source_sha256 } : {}),
+      ...(stash ? { stash } : {}),
+      ...(!data ? { pending: true } : {}),
+    });
+  }
+  return out;
+}
+
+/** A chip as the store keeps it: without its bytes when a copy is on disk
+ *  (or, with `bare`, always — the over-quota retry), never `pending`. */
+function writeChip(a: Attachment, bare: boolean): Attachment | null {
+  const data = a.stash || bare ? "" : a.data;
+  if (!data && !a.stash) return null;
+  return {
+    id: a.id,
+    kind: a.kind,
+    media_type: a.media_type,
+    name: a.name,
+    data,
+    ...(a.label ? { label: a.label } : {}),
+    ...(a.pasted ? { pasted: true } : {}),
+    ...(a.pages ? { pages: a.pages } : {}),
+    ...(a.whole ? { whole: true } : {}),
+    ...(a.source_sha256 ? { source_sha256: a.source_sha256 } : {}),
+    ...(a.stash ? { stash: a.stash } : {}),
+  };
+}
+
 /** The store as written: only the entries that may touch the disk. */
-export function writeScheduled(map: Record<string, Scheduled>): string {
-  const out: Record<string, Pick<Scheduled, "text" | "kind" | "at" | "state" | "note">> = {};
+export function writeScheduled(map: Record<string, Scheduled>, bare = false): string {
+  const out: Record<
+    string,
+    Pick<Scheduled, "text" | "kind" | "at" | "state" | "note" | "attachments" | "project" | "tried">
+  > = {};
   for (const [k, s] of Object.entries(map)) {
     if (!s.persist) continue;
-    out[k] = { text: s.text, kind: s.kind, at: s.at, state: s.state, note: s.note };
+    const attachments = (s.attachments ?? []).map((a) => writeChip(a, bare)).filter((a): a is Attachment => a !== null);
+    out[k] = {
+      text: s.text,
+      kind: s.kind,
+      at: s.at,
+      state: s.state,
+      note: s.note,
+      attachments,
+      ...(s.project ? { project: { id: s.project.id, name: s.project.name } } : {}),
+      ...(s.tried ? { tried: true } : {}),
+    };
   }
   return JSON.stringify(out);
+}
+
+/** The chip's first line (ScheduledChip, the waiting page): what it is
+ *  waiting for, or why it has not gone. */
+export function scheduleHead(s: Scheduled, when: (ms: number) => string): string {
+  const at = when(dueAt(s));
+  if (s.claimed) return `scheduled · ${at} · sending…`;
+  switch (s.state) {
+    case "missed":
+      return `was due ${at} — the app was closed`;
+    case "held":
+      return s.note ? `held — ${s.note}` : "held — not scheduled";
+    case "limited":
+      return "not sent — still limited";
+    case "retrying":
+      return s.note ?? "still limited";
+    default:
+      return s.note ? `scheduled · ${at} · ${s.note}` : `scheduled · ${at} · ${kindText(s.kind)}`;
+  }
+}
+
+/**
+ * A chat made by Send later has no message yet, so the list would call it
+ * by the untitled fallback (backlog 532). Until it is sent, its row's
+ * first message is the scheduled one — what the list will read once it
+ * goes (a first send's title is its first message). Rows with a title or a
+ * first message, and rows with nothing scheduled, come back unchanged.
+ */
+export function nameScheduledRows<T extends { id: string; title?: string | null; first_user?: string | null }>(
+  rows: T[],
+  map: Record<string, Pick<Scheduled, "text" | "attachments">>,
+): T[] {
+  return rows.map((r) => {
+    if (r.title || r.first_user) return r;
+    const s = map[r.id];
+    if (!s) return r;
+    const name = s.text.trim() || (s.attachments ?? []).map((a) => a.name).join(", ");
+    return name ? { ...r, first_user: name } : r;
+  });
 }

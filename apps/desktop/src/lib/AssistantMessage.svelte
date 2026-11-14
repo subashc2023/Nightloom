@@ -4,13 +4,17 @@
   import { copyText } from "./clipRing.svelte";
   import type { Segment } from "./state.svelte";
   import type { ApprovalRequest, Usage } from "./types";
-  import { renderReply } from "./markdown";
+  // Item 626: while streaming, the unfinished tail renders as it will once finished (streamingTail).
+  import { renderReply, streamingTail } from "./markdown";
   import { liveHtml } from "./liveHtml";
   import { codeCopy, type RunBlocks } from "./codeCopy";
+  import { handoffGo, type NextChat } from "./handoffButton";
   import { runBlock, type RunFrom } from "./shellRun.svelte";
   import { openAgentTab } from "./terminal.svelte";
   import { isShellCall } from "./agentCommands";
   import CouncilBlocks from "./CouncilBlocks.svelte";
+  import BashPassing from "./BashPassing.svelte";
+  import { passingEnded } from "./bashOutput.svelte";
   import { parseCouncilRecord, parseCouncilSeat } from "./council";
   import { wordDiff } from "./textdiff";
   import { exactTime, relativeTimeLong } from "./time";
@@ -71,7 +75,7 @@
   import { memoryRefs, openMemoryEdit } from "./memoryOpen";
   import { memoryEditOf, type MemoryEdit } from "./memoryEdits";
   import type { ReplyUsageView } from "./replyUsage";
-  import { hasUsage, isSignedOut, isStandIn, stopNote } from "./replyFooter";
+  import { footerStopNote, hasUsage, isSignedOut, isStandIn } from "./replyFooter";
   import EditDiffView from "./EditDiffView.svelte";
   import { editDiffOf } from "./editDiff";
   import ToolImagesView from "./ToolImagesView.svelte";
@@ -84,7 +88,13 @@
   import { Births, needleIn, needleOut, replyMotion } from "./replyMotion";
   // The thinking block's arrival (backlog 389): a live thinking row's first
   // appearance is thrown in along the send flight's path, not spawned.
-  import { thinkingArrival, type ArrivalParams } from "./thinkingArrival";
+  import { FRESH_MS, thinkingArrival, type ArrivalParams } from "./thinkingArrival";
+  import { stepRamp, type RampParams } from "./stepRamp";
+  // Item 564 (Filament IV stage 5): the turn trace's clock and the stream speed.
+  import { untrack } from "svelte";
+  // Item 589: the running step's motion, a variant per kind of step.
+  import { HELPER_WINDOW, stepMotion, toolKind, type StepKind, type StepMotion } from "./stepMotion.svelte";
+  import { SpeedMeter, barOf, fmtSecs, sparkPoints, stepKeys, traceBook, type TraceRecord } from "./turnTiming";
   // Item 495 part 2: the folds kept past a chat switch.
   import { decodeOverride, encodeOverride, foldKey, keptGet, keptOpen, keptSet, type FoldScope } from "./keptFolds.svelte";
 
@@ -179,6 +189,13 @@
     const sec = Math.max(1, Math.round(seg.ms / 1000));
     return sec < 60 ? `thought for ${sec} s` : `thought for ${Math.floor(sec / 60)} min ${sec % 60} s`;
   }
+  /** A thinking row's size column (item 564): how long it took — the
+   *  window's own clock, else the stream's `ms` — or `…` while it runs. */
+  function thinkSize(i: number, seg: Segment): string {
+    const ms = stepMs(i) ?? (seg.kind === "thinking" ? (seg.ms ?? null) : null);
+    if (seg.kind === "thinking" && !seg.done) return ms !== null ? fmtSecs(ms) : "…";
+    return ms !== null ? fmtSecs(ms) : "";
+  }
   /** The summary's first line, for the row's argument column. */
   function firstLine(text: string): string {
     return text.trim().split(/\n/, 1)[0] ?? "";
@@ -189,6 +206,7 @@
     footer = null,
     streaming = false,
     since = null,
+    model = null,
     size = null,
     limit = null,
     approvals = [],
@@ -206,6 +224,8 @@
     cliSession = null,
     folds = null,
     runFrom = null,
+    nextChat = null,
+    motion = null,
   }: {
     segs: Segment[];
     footer?: Footer | null;
@@ -213,6 +233,9 @@
     /** When the live turn was sent (ms since epoch), for the `working · 41 s`
      *  row (backlog 096); absent, the count starts when this mounts. */
     since?: number | null;
+    /** The model answering a live turn (item 525), for the header while no
+     *  footer says; null draws the header without one. */
+    model?: string | null;
     /** What this reply added to the context (backlog 090), null when the
      *  log cannot say; `limit` is the model's window for the share. */
     size?: TurnSize | null;
@@ -266,6 +289,13 @@
      *  block's Run and a shell call's way to Agent commands go by it. Null: a
      *  surface with no terminal to send to. */
     runFrom?: RunFrom | null;
+    /** Item 506: this is the chat's latest reply and it holds a next-chat
+     *  prompt; only the main transcript passes it. */
+    nextChat?: NextChat | null;
+    /** Item 610: the running step's motion for this reply's trace; null
+     *  follows the setting (Settings → Animations). Settings' previews pass
+     *  one each. */
+    motion?: StepMotion | null;
   } = $props();
 
   function runBlocks(text: string): RunBlocks | null {
@@ -366,6 +396,14 @@
   function rowOf(id: string): SubagentRow | null {
     return app.subagents.find((r) => r.tool_use_id === id) ?? null;
   }
+  /** Item 616: a helper's context so far (its latest round's request and
+   *  response, the CLI's `total_tokens`), or null when it is not a helper
+   *  or nothing has been reported yet — then its bar stays today's. */
+  function helperContext(call: { id: string; name: string }): number | null {
+    if (!isAgentCall(call.name)) return null;
+    const r = rowOf(call.id);
+    return r && r.tokens > 0 ? r.tokens : null;
+  }
   /** The press already flipped the row (the toggle is on pointerdown, for
    *  the streaming reason above); a press that turns into a drag was not a
    *  click, so the flip is undone as the drag starts. */
@@ -393,10 +431,155 @@
   $effect(() => {
     if (!streaming) return;
     now = Date.now();
-    const t = setInterval(() => (now = Date.now()), 1000);
+    // His ask 2026-11-11: a running step's time counts in tenths ("7.0 s"
+    // stood still for a second at a time), so the live clock ticks every 0.1 s.
+    const t = setInterval(() => (now = Date.now()), 100);
     return () => clearInterval(t);
   });
   const working = $derived(workingLabel(now - (since ?? startedAt)));
+
+  // ---- The turn trace (item 564, Filament IV stage 5) ----------------------
+  // Each step (a thinking block, a call) is a numbered row with a status mark
+  // and a bar: where in the turn it started and how long it ran. The times
+  // are the window's own (`traceBook`, turnTiming.ts): stamped while the turn
+  // streams and kept for the session, so the recorded reply that replaces the
+  // live one keeps its bars; a reply read back after a relaunch has none.
+  const stepKey = $derived(stepKeys(segs));
+  // Each step's number in the reply, 1-based, in the order it happened.
+  const stepNo = $derived.by(() => {
+    const out: number[] = [];
+    let n = 0;
+    stepKey.forEach((k, i) => (out[i] = k === null ? 0 : ++n));
+    return out;
+  });
+  let traceRev = $state(0);
+  let liveRec: TraceRecord | null = null;
+  let firstLook = true;
+  // What the effect reads so it runs again on every change that matters: a
+  // step's arrival, its end, a delta of words or thinking.
+  function shape(): string {
+    return segs
+      .map((s) =>
+        s.kind === "tool"
+          ? `t${s.call.result || s.call.denied ? 1 : 0}`
+          : s.kind === "thinking"
+            ? `k${s.done ? 1 : 0}${s.text.length}`
+            : s.kind === "text"
+              ? `x${s.text.length}`
+              : s.kind[0],
+      )
+      .join(",");
+  }
+  $effect(() => {
+    if (!streaming) return;
+    void shape();
+    const at = Date.now();
+    liveRec ??= traceBook.find(segs) ?? { t0: since ?? at, t1: null, steps: {}, tps: null };
+    // A reply first seen well into its turn (a chat opened mid-turn): steps
+    // already done then have no honest start and draw no bar.
+    const fresh = firstLook && segs.length > 0 && at - (since ?? at) > 2000;
+    firstLook = false;
+    traceBook.observe(liveRec, segs, at, fresh);
+    // Untracked: the effect must not depend on the counter it bumps.
+    untrack(() => traceRev++);
+  });
+  // The turn ended under this reply: steps still open end with it.
+  $effect(() => {
+    if (streaming || !liveRec) return;
+    traceBook.close(liveRec);
+    untrack(() => traceRev++);
+  });
+  const traceRec = $derived.by<TraceRecord | null>(() => {
+    void traceRev;
+    if (streaming) return liveRec;
+    const r = liveRec ?? traceBook.find(segs);
+    return r;
+  });
+  /** The turn's span so far: to now while live, to its end once done. */
+  function traceEnd(r: TraceRecord): number {
+    return streaming ? now : (r.t1 ?? r.seen ?? now);
+  }
+  function barFor(i: number): { left: number; width: number } | null {
+    void traceRev;
+    const r = traceRec;
+    const k = stepKey[i];
+    if (!r || !k) return null;
+    return barOf(r.steps[k], r.t0, traceEnd(r));
+  }
+  /** A step's own time, for its title and a thinking row's size column. */
+  function stepMs(i: number): number | null {
+    void traceRev;
+    const r = traceRec;
+    const k = stepKey[i];
+    const st = r && k ? r.steps[k] : undefined;
+    if (!st) return null;
+    // A step stamped since the last tick reads from the clock, not below zero.
+    return (st.end ?? Math.max(now, Date.now())) - st.start;
+  }
+  function barTitle(i: number): string {
+    const r = traceRec;
+    const k = stepKey[i];
+    const st = r && k ? r.steps[k] : undefined;
+    if (!r || !st) return "";
+    const ran = fmtSecs((st.end ?? now) - st.start);
+    return `Started ${fmtSecs(st.start - r.t0)} into the turn; ${st.end === null ? "running for" : "took"} ${ran}`;
+  }
+  /** Any step in this block has a time: else its bar column is left out. */
+  function timed(rows: readonly { i: number }[]): boolean {
+    void traceRev;
+    const r = traceRec;
+    return !!r && rows.some(({ i }) => !!stepKey[i] && !!r.steps[stepKey[i]!]);
+  }
+  /** The trace's foot: how many steps, how long the turn has run. */
+  function traceFoot(rows: readonly { i: number }[]): { steps: string; elapsed: string | null } {
+    const n = rows.length;
+    const r = traceRec;
+    return {
+      steps: `${n} step${n === 1 ? "" : "s"}`,
+      elapsed: r ? fmtSecs(traceEnd(r) - r.t0) : null,
+    };
+  }
+
+  // ---- Stream speed (item 564): "~38 tok/s" in the header while live -------
+  // Estimated from the characters streamed (turnTiming.ts says why), sampled
+  // once a second; the sparkline is the last 24 seconds.
+  const meter = new SpeedMeter();
+  let speed = $state<number | null>(null);
+  let spark = $state("");
+  function streamedChars(): number {
+    let n = 0;
+    for (const s of segs) if (s.kind === "text" || s.kind === "thinking") n += s.text.length;
+    return n;
+  }
+  $effect(() => {
+    if (!streaming) return;
+    // Untracked: a delta must not restart the once-a-second clock.
+    untrack(() => meter.sample(streamedChars()));
+    const t = setInterval(() => {
+      meter.sample(streamedChars());
+      speed = meter.rate();
+      spark = sparkPoints(meter.samples, 64, 14);
+      if (liveRec && speed !== null) liveRec.tps = speed;
+    }, 1000);
+    return () => clearInterval(t);
+  });
+  const SPEED_TITLE =
+    "Stream speed, estimated: the characters the reply has streamed, at about four to a token, over the seconds it was streaming. Thinking the model keeps to itself is not counted.";
+  // The header (item 525, Filament IV): who is answering, and while the turn
+  // is live "Replying m:ss" in the signal colour. A Claude model reads
+  // "Claude" and its family and version ("Opus 5.5"); any other model reads
+  // as its own id.
+  const who = $derived.by(() => {
+    if (standIn) return { name: "Nightloom", model: "" };
+    const m = footer?.model ?? model ?? "";
+    const x = /^claude-([a-z]+)-(\d+)-(\d+)/.exec(m);
+    if (x) return { name: "Claude", model: `${x[1][0].toUpperCase()}${x[1].slice(1)} ${x[2]}.${x[3]}` };
+    return m.startsWith("claude") || !m ? { name: "Claude", model: m.replace(/^claude-?/, "") } : { name: m, model: "" };
+  });
+  const replyClock = $derived.by(() => {
+    const t = Math.max(0, Math.floor((now - (since ?? startedAt)) / 1000));
+    return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`;
+  });
   // Rows born live (first seen after this message's first render, mid-turn)
   // get the needle and the weft (backlog 342); a reply drawn again keeps its
   // finished rows still.
@@ -404,6 +587,18 @@
   $effect(() => {
     births.settled = true;
   });
+  // Item 667: a running step's motion eases in over its first 5 s
+  // (stepRamp.ts). Fresh = it began in view: a thinking block by its own
+  // clock (as its arrival, 389); a call born mid-turn under this reply, or
+  // in the first moments of a turn just sent. A step already under way when
+  // the chat opened runs at today's pace from the start.
+  function rampThink(i: number, at: number | undefined, live: boolean): RampParams {
+    const fresh = at !== undefined ? Date.now() - at < FRESH_MS : Date.now() - (since ?? startedAt) < 2000;
+    return { key: at !== undefined ? `think:${at}` : `think:${since ?? startedAt}:${ids[i]}`, fresh, live };
+  }
+  function rampTool(id: string, born: boolean, live: boolean): RampParams {
+    return { key: `tool:${id}`, fresh: born || Date.now() - (since ?? startedAt) < 2000, live };
+  }
   const summarised = $derived(!!footer && modelOmitsThinking(footer.model));
   // The block the moon rides is the last one, whether or not text follows
   // it (board 1 draws the moon as the block's last row with the reply's
@@ -577,6 +772,67 @@
   }
 </script>
 
+<!-- Item 564: a trace row's number and status mark (done ✓, running ■,
+     error ✕, denied ⊘), as in the mockup: no tool icon, the name says it. -->
+{#snippet stepHead(i: number, st: "done" | "running" | "error" | "denied", kind: StepKind | null = null)}
+  <span class="no" aria-hidden="true">{String(stepNo[i]).padStart(2, "0")}</span>
+  <!-- Item 616: a running step's mark under Combo and Reticle is a small
+       live instrument per kind (.st-ico); Sweep keeps the ■ (.st-sq). -->
+  <span class="st st-{st}" aria-label={st}>{#if st === "done"}✓{:else if st === "running"}<span class="st-sq">■</span>{#if kind}<span class="st-ico k-{kind}" aria-hidden="true">{@render markIcon(kind)}</span>{/if}{:else if st === "error"}✕{:else}⊘{/if}</span>
+{/snippet}
+<!-- Item 616: Reticle's instruments (616-demo/combo.html, card A): two
+     counter-turning rings round a beating core (thinking), a page with a
+     scan line (a file), a prompt with a blinking cursor (a command), a radar
+     sweep with blips (the web), a hub with three satellites (a helper), one
+     turning ring (the rest). -->
+{#snippet markIcon(kind: StepKind)}
+  {#if kind === "think"}
+    <svg viewBox="0 0 18 18"><circle class="ring r1" cx="9" cy="9" r="7.5" /><circle class="ring r2" cx="9" cy="9" r="4.6" /><circle class="core" cx="9" cy="9" r="2" /></svg>
+  {:else if kind === "file"}
+    <svg viewBox="0 0 18 18"><path class="ring" d="M4 2 H11 L14 5 V16 H4 Z" /><line class="scanl" x1="5.5" x2="12.5" y1="9" y2="9" /></svg>
+  {:else if kind === "shell"}
+    <svg viewBox="0 0 18 18"><path class="ring" d="M2.5 4.5 L7 9 L2.5 13.5" /><rect class="cursor" x="9" y="11.5" width="6.5" height="2.5" /></svg>
+  {:else if kind === "web"}
+    <span class="radar"></span><span class="blip b1"></span><span class="blip b2"></span>
+  {:else if kind === "agent"}
+    <span class="hub"></span><span class="orbit o1"><b></b></span><span class="orbit o2"><b></b></span><span class="orbit o3"><b></b></span>
+  {:else}
+    <svg viewBox="0 0 18 18"><circle class="ring r1" cx="9" cy="9" r="7" /><circle class="core" cx="9" cy="9" r="2" /></svg>
+  {/if}
+{/snippet}
+<!-- Item 564: the step's bar — its place in the turn — on a hairline track. -->
+{#snippet stepBar(i: number, st: "done" | "running" | "error", ctx: number | null = null)}
+  {@const b = barFor(i)}
+  <span class="tbar" class:has-ctx={ctx !== null} use:tip={barTitle(i)}>
+    {#if b}<i class="tbar-{st}" style:left="{b.left * 100}%" style:width="{b.width * 100}%"></i>{/if}
+    {#if ctx !== null}
+      <!-- Item 616 (Combo): a running helper's bar is its context out of
+           300k — the subagent's latest round, request and response, as the
+           CLI reports it (SubagentRow.tokens). Drawn by scale, not width. -->
+      <i class="tbar-ctx" style:transform="scaleX({Math.min(1, ctx / HELPER_WINDOW)})"></i>
+      <span class="ctx-lbl">context {fmtTokens(ctx)} / {fmtTokens(HELPER_WINDOW)} · {Math.round((ctx / HELPER_WINDOW) * 100)}%</span>
+    {/if}
+  </span>
+{/snippet}
+
+<!-- Item 589: a running step's live parts — faint threads behind the row
+     (drawn only under the Weave choice) and the thread under it, whose light
+     runs a little differently per kind. The shell's thread is today's weft
+     (its ::after shuttle), so it carries no children. -->
+{#snippet stepLive(kind: StepKind, threads: boolean)}
+  <!-- Item 616: Combo's and Reticle's parts, drawn only under their choice —
+       the faint tint, the [ ] brackets, the light round the edge (Combo),
+       the data bus with its packets (Reticle). -->
+  <span class="mo-bg k-{kind}" aria-hidden="true"></span>
+  <span class="mo-tex k-{kind}" aria-hidden="true"></span>
+  <span class="mo-brk" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+  <svg class="mo-edge" aria-hidden="true"><rect class="e-tail" width="100%" height="100%" rx="6" pathLength="100" /><rect class="e-head" width="100%" height="100%" rx="6" pathLength="100" /></svg>
+  <span class="mo-bus k-{kind}" aria-hidden="true"><i></i><i></i><i></i></span>
+  {#if threads}
+    <span class="rm-weft mo-weft k-{kind}" aria-hidden="true">{#if kind !== "shell"}<i></i><i></i><i></i>{/if}</span>
+  {/if}
+{/snippet}
+
 {#snippet subagent(children: Segment[], parent: string)}
   {@const calls = children.filter((c) => c.kind === "tool").length}
   {@const names = children
@@ -602,7 +858,12 @@
         {#if c.kind === "tool"}
           {@const icon = toolIcon(c.call.name)}
           {@const childDiff = editDiffOf(c.call.name, c.call.input)}
-          <div class="arow static" class:error={!!c.call.result?.is_error}>
+          {@const childShell = toolKind(c.call.name) === "shell"}
+          {@const childRun = childShell && streaming && !c.call.result && !c.call.denied}
+          {@const childRem = childShell && !childRun && passingEnded(c.call.id)}
+          <div class="arow static" class:error={!!c.call.result?.is_error} class:sub-pass={childRun || childRem}>
+            <!-- Item 649: a subagent's command passes its output too. -->
+            {#if childRun || childRem}<BashPassing id={c.call.id} ended={childRem} />{/if}
             <span class="ico">{#if icon}<Icon name={icon} size={13} />{:else}⚒{/if}</span>
             <span class="name" use:tip={c.call.name}>{shortToolName(c.call.name)}</span>
             <span class="arg">{toolInputSummary(c.call.input)}</span>
@@ -644,8 +905,20 @@
 
 
 <div class="assistant" use:replyMotion={streaming}>
-  {#if footer && headed}
-    <span class="ns-k">{standIn ? "Nightloom" : footer.model}</span>
+  {#if headed && (footer || streaming)}
+    <div class="who" class:live={streaming} use:tip={footer && !standIn ? footer.model : undefined}>
+      <span class="who-ring" aria-hidden="true"></span>
+      <b>{who.name}</b>
+      {#if who.model}<span class="who-model">{who.model}</span>{/if}
+      {#if streaming}<span aria-hidden="true">·</span><span class="who-live">Replying <span class="who-clock">{replyClock}</span></span>{/if}
+      {#if streaming && speed !== null}
+        <!-- Item 564: the stream speed, redrawn once a second. -->
+        <span class="who-speed" use:tip={SPEED_TITLE}>
+          {#if spark}<svg class="who-spark" width="64" height="14" viewBox="0 0 64 14" aria-hidden="true"><polyline points={spark} /></svg>{/if}
+          <span class="who-tps">~{Math.round(speed)} tok/s</span>
+        </span>
+      {/if}
+    </div>
   {/if}
   {#each groups as g (g.kind === "activity" ? g.key : `one:${g.i}`)}
     {#if g.kind === "activity"}
@@ -654,17 +927,13 @@
       <!-- One block for the run: a left rule, accent while the turn is
            live; a summary line that folds and unfolds the rows; the rows
            on one grid — icon · name · argument · size (backlog 096). -->
-      <div class="activity" class:live={streaming} use:thinkingArrival={blockArrival(g.rows)}>
-        <button
-          class="fold"
-          aria-expanded={!folded}
-          use:tip={folded ? "Show the calls" : "Fold to one line"}
-          onpointerdown={(e) => pressFold(e, g.key)}
-          onclick={(e) => keyFold(e, g.key)}
-        >
-          <span class="caret">{folded ? "▸" : "▾"}</span>
-          <span class="fold-text">{activitySummary(g.rows, streaming)}</span>
-        </button>
+      {@const isTimed = timed(g.rows)}
+      {@const foot = traceFoot(g.rows)}
+      <!-- Item 564 (Filament IV stage 5): the block is the turn's trace —
+           numbered steps, a status mark, a bar for each step's place in the
+           turn, and a foot that says how many steps and how long, with the
+           fold. Bars only where the window timed the steps (this session). -->
+      <div class="activity trace" class:live={streaming} class:timed={isTimed} data-motion={motion ?? stepMotion.value} use:thinkingArrival={blockArrival(g.rows)}>
         {#if !folded}
           {#each g.rows as { seg, i } (ids[i] || i)}
             {#if seg.kind === "thinking"}
@@ -673,21 +942,29 @@
                      097): a fact in the dim style, no pointer, nothing to
                      open — a button here did nothing, which is what he
                      saw. -->
-                <div class="arow static thinking hidden wide" use:tip={HIDDEN_THINKING_TITLE}>
-                  <span class="ico"><Icon name="think" size={13} /></span>
-                  <span class="name">thought · hidden by the model</span>
-                  <span class="size"></span>
+                <div class="arow static thinking hidden" use:tip={HIDDEN_THINKING_TITLE}>
+                  {@render stepHead(i, "done")}
+                  <span class="name">Thought</span>
+                  <span class="arg">hidden by the model</span>
+                  {@render stepBar(i, "done")}
+                  <span class="size">{thinkSize(i, seg)}</span>
                 </div>
               {:else if !seg.done && seg.text.trim() === ""}
                 <!-- Begun, nothing arrived yet: under way, not yet a button.
                      A thinking later in a block arrives on its own row (389). -->
                 <div
-                  class="arow static thinking wide"
+                  class="arow static thinking"
+                  class:mo-run={streaming}
+                  data-kind="think"
                   use:thinkingArrival={{ at: seg.at, live: streaming && g.rows[0].i !== i }}
+                  use:stepRamp={rampThink(i, seg.at, streaming)}
                 >
-                  <span class="ico"><Icon name="think" size={13} /></span>
-                  <span class="name">thinking</span>
-                  <span class="size">…</span>
+                  {#if streaming}{@render stepLive("think", true)}{/if}
+                  {@render stepHead(i, "running", "think")}
+                  <span class="name">Thinking</span>
+                  <span class="arg"></span>
+                  {@render stepBar(i, "running")}
+                  <span class="size">{thinkSize(i, seg)}</span>
                 </div>
               {:else}
                 {@const summary = summarised && seg.done}
@@ -696,19 +973,22 @@
                      accent with a glowing needle at its newest line; on done
                      the thread retracts and the icon turns once. -->
                 <div class="row-wrap" class:rm-live={streaming && !seg.done} class:rm-thought={bornT && seg.done}
-                  use:thinkingArrival={{ at: seg.at, live: streaming && !seg.done && g.rows[0].i !== i }}>
+                  class:mo-run={streaming && !seg.done} data-kind="think"
+                  use:thinkingArrival={{ at: seg.at, live: streaming && !seg.done && g.rows[0].i !== i }}
+                  use:stepRamp={rampThink(i, seg.at, streaming && !seg.done)}>
+                  {#if streaming && !seg.done}{@render stepLive("think", true)}{/if}
                   <button
                     class="arow thinking"
-                    class:wide={!summary}
                     aria-expanded={isOpen(i, seg)}
                     use:tip={isOpen(i, seg) ? "Hide the thinking" : "Show the thinking"}
                     onpointerdown={(e) => press(e, i, seg)}
                     onclick={(e) => keyClick(e, i, seg)}
                   >
-                    <span class="ico"><Icon name="think" size={13} /></span>
-                    <span class="name">{thoughtLabel(seg)}</span>
-                    {#if summary}<span class="arg summary">{firstLine(seg.text)}</span>{/if}
-                    <span class="size">{seg.done ? (isOpen(i, seg) ? "▾" : "▸") : "…"}</span>
+                    {@render stepHead(i, seg.done ? "done" : "running", "think")}
+                    <span class="name" use:tip={thoughtLabel(seg)}>{seg.done ? "Thought" : "Thinking"}</span>
+                    <span class="arg" class:summary>{firstLine(seg.text)}</span>
+                    {@render stepBar(i, seg.done ? "done" : "running")}
+                    <span class="size">{thinkSize(i, seg)} <span class="open-mark">{isOpen(i, seg) ? "▾" : "▸"}</span></span>
                   </button>
                   {#if isOpen(i, seg)}
                     <div
@@ -720,21 +1000,31 @@
                 </div>
               {/if}
             {:else if seg.kind === "redacted"}
-              <div class="arow static thinking wide">
-                <span class="ico"><Icon name="think" size={13} /></span>
-                <span class="name">redacted thinking</span>
-                <span class="size"></span>
+              <div class="arow static thinking">
+                {@render stepHead(i, "done")}
+                <span class="name">Thought</span>
+                <span class="arg">redacted</span>
+                {@render stepBar(i, "done")}
+                <span class="size">{thinkSize(i, seg)}</span>
               </div>
             {:else if seg.kind === "tool"}
               {@const open = isOpen(i, seg)}
               {@const bad = !!seg.call.result?.is_error || !!seg.call.denied}
-              {@const icon = toolIcon(seg.call.name)}
               {@const agentTab = agentTabOf(seg.call)}
               {@const agentRow = agentTab ? rowOf(seg.call.id) : null}
               {@const running = streaming && !seg.call.result && !seg.call.denied}
               {@const bornW = births.of(ids[i] || `tool:${i}`, streaming, !running)}
               {@const editDiff = editDiffOf(seg.call.name, seg.call.input)}
-              <div class="row-wrap tool" class:rm-born={bornW} class:rm-finished={bornW && !running}>
+              {@const kind = toolKind(seg.call.name)}
+              {@const remnant = !running && kind === "shell" && passingEnded(seg.call.id)}
+              <div class="row-wrap tool" class:running class:rm-born={bornW} class:rm-finished={bornW && !running}
+                class:mo-run={running} class:bash-rem={remnant} data-kind={kind}
+                use:stepRamp={rampTool(seg.call.id, bornW, running)}>
+                {#if running}{@render stepLive(kind, false)}{/if}
+                <!-- Item 633: the command's real output passing behind the row. -->
+                {#if running && kind === "shell"}<BashPassing id={seg.call.id} />{/if}
+                <!-- Item 649: and its last lines a moment after it ends, fading. -->
+                {#if remnant}<BashPassing id={seg.call.id} ended />{/if}
                 <!-- An Agent call's row is a drag source (backlog 160): its
                      subagent's transcript as a tab, dropped on a strip or a
                      pane's half — live while it runs (guess pass 2026-09-25,
@@ -755,18 +1045,22 @@
                   onpointerdown={(e) => press(e, i, seg)}
                   onclick={(e) => keyClick(e, i, seg)}
                 >
-                  <span class="ico">{#if icon}<Icon name={icon} size={13} />{:else}⚒{/if}</span>
+                  {@render stepHead(i, running ? "running" : seg.call.denied ? "denied" : bad ? "error" : "done", kind)}
                   <span class="name" use:tip={seg.call.name}>{shortToolName(seg.call.name)}</span>
                   <span class="arg">{toolInputSummary(seg.call.input)}</span>
+                  {@render stepBar(i, running ? "running" : bad ? "error" : "done", running ? helperContext(seg.call) : null)}
                   <span class="size" use:tip={agentRow ? `${seg.call.name} call · ${toolResultSummary(seg.call, streaming)}` : undefined}
-                    >{agentRow ? agentRowLine(agentRow) : toolResultSummary(seg.call, streaming)}</span
+                    >{agentRow ? agentRowLine(agentRow) : running && stepMs(i) !== null ? `running ${fmtSecs(stepMs(i)!)}` : toolResultSummary(seg.call, streaming)}</span
                   >
                 </button>
                 {#if bornW && streaming}
                   <!-- The weft (backlog 342): an accent thread draws across the
                        row as it appears, a bright shuttle runs along it while
                        the call runs, and on finish it fills and fades. -->
-                  <span class="rm-weft" class:rm-done={!running} aria-hidden="true"></span>
+                  <!-- Item 589: the thread's light runs per kind (a command keeps
+                       this shuttle; see stepMotion.svelte.ts). -->
+                  <span class="rm-weft k-{kind}" class:mo-weft={running} class:rm-done={!running} aria-hidden="true"
+                    >{#if running && kind !== "shell"}<i></i><i></i><i></i>{/if}</span>
                 {/if}
                 <!-- A file edit as a diff (backlog 433), drawn whether the row is
                      open or not: the change is what the row is about. -->
@@ -880,8 +1174,23 @@
             <span class="roll" aria-hidden="true"><Icon name="moon" size={20} /></span>
             <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
             <span class="working-text">{working}</span>
+            <!-- Item 589: three points scanning after the clock, the trace's
+                 running light carried down to the working line. -->
+            <span class="scan" aria-hidden="true"><i></i><i></i><i></i></span>
           </div>
         {/if}
+        <button
+          class="fold trace-foot"
+          aria-expanded={!folded}
+          use:tip={folded ? "Show the steps" : "Fold to one line"}
+          onpointerdown={(e) => pressFold(e, g.key)}
+          onclick={(e) => keyFold(e, g.key)}
+        >
+          <span class="fold-text">
+            <span class="foot-k">Trace</span> {foot.steps}{#if foot.elapsed}<span class="foot-gap"></span><span class="foot-k">elapsed</span> {foot.elapsed}{/if}{#if folded}<span class="foot-gap"></span>{activitySummary(g.rows, streaming)}{:else if isTimed}<span class="foot-gap"></span><span class="foot-note">the bar is each step's place in the turn</span>{/if}{#if !streaming && traceRec?.tps}<span class="foot-gap"></span><span use:tip={SPEED_TITLE}>~{Math.round(traceRec.tps)} tok/s</span>{/if}
+          </span>
+          <span class="foot-fold">{folded ? "Expand" : "Collapse"} <span class="caret">{folded ? "▾" : "▴"}</span></span>
+        </button>
       </div>
       <!-- What the block changed in memory (backlog 305): one line per
            memory note, AGENTS.md or thread file an edit in it wrote, outside
@@ -920,7 +1229,7 @@
       {:else}
         <!-- Item 452: patched in place (liveHtml), not replaced whole per
              streamed delta, so a selection in its written part survives. -->
-        <div class="markdown" use:liveHtml={renderReply(g.seg.text)} use:memoryRefs={{ hits: memHits, text: g.seg.text }} use:codeCopy={runBlocks(g.seg.text)}></div>
+        <div class="markdown" use:liveHtml={renderReply(streaming ? streamingTail(g.seg.text) : g.seg.text)} use:memoryRefs={{ hits: memHits, text: g.seg.text }} use:codeCopy={runBlocks(g.seg.text)} use:handoffGo={nextChat}></div>
       {/if}
     {:else if g.seg.kind === "removed_tool" || g.seg.kind === "removed_text"}
       {@const seg = g.seg}
@@ -1062,11 +1371,11 @@
              and the week, measured or ≈ estimated; hover says how. -->
         <span class="meta plan" use:tip={planUsage.title}>{planUsage.text}</span>
       {/if}
-      {#if stopNote(footer.stop_reason)}
+      {#if footerStopNote(footer.stop_reason, standIn)}
         <!-- Why the reply stopped (backlog 202): the API error the CLI
              ended it with, as the log recorded it — or that its stream
              ended before the reply did (backlog 332). -->
-        <span class="meta stopped">{stopNote(footer.stop_reason)}</span>
+        <span class="meta stopped">{footerStopNote(footer.stop_reason, standIn)}</span>
       {/if}
       {#if fmtShare(share)}
         <!-- The reply's share of the window (backlog 090), the gauge's bar
@@ -1150,9 +1459,67 @@
     flex-direction: column;
     gap: 0.5rem;
     width: 100%;
-    max-width: 640px;
+    /* ~~640px~~ The column's 760 (Filament IV, item 525): the reply, its
+       trace and the composer share one measure. */
+    max-width: 760px;
     /* The streaming shuttle (backlog 342) is placed against the reply. */
     position: relative;
+  }
+  /* The reply header (item 525): a ring, who answers, the model; while the
+     turn is live the ring and "Replying m:ss" are the signal colour. Still:
+     the motion that says "live" is the reply's own (the weft, the shuttle). */
+  .who {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    margin-bottom: 2px;
+    font-size: 12.5px;
+    color: var(--dim);
+    align-self: flex-start;
+  }
+  .who b {
+    color: var(--ink);
+    font-weight: 600;
+  }
+  .who-ring {
+    flex: none;
+    width: 13px;
+    height: 13px;
+    border-radius: 50%;
+    border: 1.5px solid var(--line2);
+  }
+  .who.live .who-ring {
+    border-color: var(--signal);
+    border-right-color: transparent;
+  }
+  .who-live {
+    color: var(--signal);
+  }
+  .who-clock {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    font-variant-numeric: tabular-nums;
+  }
+  /* The stream speed (item 564): at the header's right end while live, a
+     blue sparkline of the last 24 seconds and the figure in mono. */
+  .who:has(.who-speed) {
+    align-self: stretch;
+  }
+  .who-speed {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    font-variant-numeric: tabular-nums;
+    color: var(--ink2, var(--text));
+  }
+  .who-spark polyline {
+    fill: none;
+    stroke: var(--signal);
+    stroke-width: 1.2;
+    stroke-linejoin: round;
   }
   .assistant :global(.markdown) {
     /* Plex Sans, the interface face, since 2026-09-14: the editorial serif
@@ -1163,7 +1530,7 @@
        defaults. */
     font-family: var(--transcript-font, var(--sans));
     font-size: var(--transcript-size, 16px);
-    line-height: 1.55;
+    line-height: 1.62;
     color: var(--ink);
   }
   /* The edit as a diff (backlog 105): the source pre-wrapped in the same
@@ -1191,16 +1558,36 @@
   .activity {
     display: flex;
     flex-direction: column;
-    border: 1px solid var(--line);
-    border-left: 2px solid var(--line2);
-    border-radius: 8px;
-    background: color-mix(in srgb, var(--sheet) 60%, transparent);
+    /* A card in front (Filament IV, item 525): the raised fill, the control
+       edge all round. ~~A left rule, accent while live~~: live is the
+       signal colour on the edge, and on the running row. */
+    /* ~~The raised fill and the control edge~~ (item 594, his words
+       2026-11-10: the same shade as the message box "almost makes me think
+       that the thinking section is like a textbox"): an instrument panel a
+       step darker than the composer, between it and the ground, with a
+       faint cool tint and a quieter edge. A mix, not `--sheet`, so it stays
+       apart where a palette's raised fill is the sheet (B–D). */
+    border: 1px solid color-mix(in srgb, var(--line2) 70%, var(--paper, var(--bg)));
+    border-radius: var(--r2);
+    background: color-mix(in srgb, color-mix(in srgb, var(--raised) 55%, var(--paper, var(--bg))) 96%, var(--signal));
     min-width: 0;
     /* Not `overflow: hidden`: the call's hover Remove (backlog 066) sits
        past the right edge. */
   }
   .activity.live {
-    border-left-color: var(--accent);
+    border-color: color-mix(in srgb, var(--signal) 40%, var(--line2));
+  }
+  /* The running call (blue is Claude working): its result column in the
+     signal colour and, in the lit level, a soft wash across the row. */
+  .row-wrap.tool.running {
+    background: var(--wash-live, none);
+  }
+  .row-wrap.tool.running > .arow .size {
+    color: var(--signal);
+    opacity: 1;
+  }
+  .row-wrap.tool.running > .arow .ico {
+    color: var(--signal);
   }
   /* "Updated course-progress.md" (backlog 305): a compact link under the
      block whose edit wrote a memory note, AGENTS.md or a thread file. */
@@ -1239,15 +1626,15 @@
      28px tall on one grid — icon 18 · name 118 · argument · size — a
      hairline between neighbours, 12px in from either edge. */
   .activity > * + * {
-    border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+    border-top: 1px solid var(--line);
   }
   /* The subagent row under an Agent call (backlog 075): the disclosure's
      summary drawn like a row, indented one column in on the paper, its
      body one rule in. */
   .sub {
     margin: 0;
-    border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
-    background: color-mix(in srgb, var(--paper) 50%, transparent);
+    border-top: 1px solid var(--line);
+    background: var(--sheet);
   }
   .sub-line {
     display: grid;
@@ -1310,6 +1697,127 @@
   .fold {
     grid-template-columns: 18px minmax(0, 1fr);
   }
+  /* ---- The trace (item 564, Filament IV stage 5; mockup f4-chat.png) ----
+     A step row: number · status · name · argument · bar · size. The bar
+     column is there only when the window timed the block's steps. The
+     subagent's rows inside keep their own grid (below). */
+  .trace > .row-wrap > .arow,
+  .trace > .arow {
+    grid-template-columns: 22px 14px 96px minmax(0, 1fr) auto;
+    column-gap: 10px;
+    min-height: 34px;
+    padding: 6px 16px 6px 14px;
+  }
+  .trace.timed > .row-wrap > .arow,
+  .trace.timed > .arow {
+    grid-template-columns: 22px 14px 96px minmax(0, 1fr) 120px auto;
+  }
+  .trace:not(.timed) .tbar {
+    display: none;
+  }
+  .no {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    color: var(--dim);
+  }
+  .st {
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1;
+    text-align: center;
+  }
+  .st-done {
+    color: var(--done);
+  }
+  .st-running {
+    color: var(--signal);
+    font-size: 10px;
+  }
+  .st-error,
+  .st-denied {
+    color: var(--failed);
+  }
+  .trace .name {
+    font-size: 13px;
+  }
+  /* The thinking row reads as a step like the rest (the mockup's "Thought"),
+     its first line dim in the argument column. */
+  .trace > .row-wrap > .arow.thinking .name,
+  .trace > .arow.thinking .name {
+    font-style: normal;
+    font-weight: 600;
+    color: var(--ink);
+  }
+  .trace > .row-wrap > .arow.thinking .arg,
+  .trace > .arow.thinking .arg {
+    color: var(--dim);
+  }
+  .trace > .arow.thinking.hidden .arg {
+    font-style: italic;
+  }
+  .open-mark {
+    color: var(--dim);
+    margin-left: 4px;
+  }
+  /* The bar: a hairline track, the step's span on it — green once done,
+     blue while running, red on an error. */
+  .tbar {
+    position: relative;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--line2);
+    align-self: center;
+  }
+  .tbar > i {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    border-radius: 2px;
+    background: var(--done);
+  }
+  .tbar > i.tbar-running {
+    background: var(--signal);
+    box-shadow: var(--glow-signal, none);
+  }
+  .tbar > i.tbar-error {
+    background: var(--failed);
+  }
+  .trace .size {
+    font-size: 11.5px;
+    min-width: 72px;
+  }
+  /* The foot: Trace · steps · elapsed · the legend, and the fold at its
+     right end. Mono, dim; the labels dimmer. */
+  .trace-foot {
+    grid-template-columns: minmax(0, 1fr) auto;
+    min-height: 30px;
+    padding: 5px 16px 5px 14px;
+    background: color-mix(in srgb, var(--ground, var(--bg)) 35%, transparent);
+  }
+  .trace-foot .fold-text {
+    color: var(--ink2, var(--text));
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .foot-k,
+  .foot-note {
+    color: var(--dim);
+  }
+  .foot-gap {
+    display: inline-block;
+    width: 14px;
+  }
+  .foot-fold {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--dim);
+  }
+  .trace-foot:hover .foot-fold {
+    color: var(--text);
+  }
   /* A row with nothing in the argument column lets its name run across. */
   .arow.wide {
     grid-template-columns: 18px minmax(0, 1fr) auto;
@@ -1336,7 +1844,8 @@
   }
   .name {
     font-family: var(--sans);
-    color: var(--ink2);
+    font-weight: 600;
+    color: var(--ink);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1345,6 +1854,7 @@
      hidden one (backlog 097) is dimmer still and no pointer. */
   .arow.thinking .name {
     font-style: italic;
+    font-weight: 400;
     color: var(--dim);
   }
   .arow.thinking .ico {
@@ -1416,12 +1926,14 @@
   }
 
   /* ---- The streaming motion (backlog 342, his pick of 338: "Loom + fade-in";
-     timings from harness/stream338-motion.css). Text: replyMotion.ts wraps the
-     words still arriving in .rm-w and moves .rm-shuttle. Thinking: the needle.
+     timings from harness/stream338-motion.css). Text: replyMotion.ts reveals each
+     block's lines left to right behind one mask (item 617, Line reveal) or, with
+     Reply text set to Word rise, wraps the words still arriving in .rm-w; either
+     way it moves .rm-shuttle, in the theme's --motion-ink (item 627). Thinking: the needle.
      Tool rows: the weft. Under reduced motion nothing moves and nothing loops. */
   .row-wrap.rm-live > .thinking-text,
   .thinking-text:global(.rm-retract) {
-    background-image: linear-gradient(var(--accent), var(--accent));
+    background-image: linear-gradient(var(--motion-ink, var(--accent)), var(--motion-ink, var(--accent)));
   }
   .row-wrap.rm-live > .thinking-text::after {
     content: "";
@@ -1431,8 +1943,8 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: var(--accent-ink, var(--accent));
-    box-shadow: 0 0 8px var(--accent);
+    background: var(--motion-ink-hi, var(--accent-ink, var(--accent)));
+    box-shadow: 0 0 8px var(--motion-ink, var(--accent));
   }
   .rm-weft {
     position: absolute;
@@ -1442,7 +1954,7 @@
     height: 1.5px;
     transform-origin: left center;
     pointer-events: none;
-    background: color-mix(in srgb, var(--accent) 22%, transparent);
+    background: color-mix(in srgb, var(--signal) 22%, transparent);
     overflow: hidden;
   }
   .rm-weft::after {
@@ -1452,10 +1964,12 @@
     bottom: 0;
     width: 28%;
     border-radius: 2px;
-    background: linear-gradient(90deg, transparent, var(--accent-ink, var(--accent)), transparent);
+    background: linear-gradient(90deg, transparent, var(--signal-ink, var(--signal)), transparent);
+    box-shadow: var(--glow-signal, none);
   }
+  /* Done is green (Filament IV: "green is finished"), then gone. */
   .rm-weft.rm-done {
-    background: var(--accent);
+    background: var(--done);
     opacity: 0;
   }
   .rm-weft.rm-done::after {
@@ -1469,8 +1983,8 @@
     height: 5px;
     margin: -2.5px 0 0 0;
     border-radius: 50% / 100%;
-    background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 10%, transparent), var(--accent-ink, var(--accent)));
-    box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 70%, transparent);
+    background: linear-gradient(90deg, color-mix(in srgb, var(--motion-ink, var(--accent)) 10%, transparent), var(--motion-ink-hi, var(--accent-ink, var(--accent))));
+    box-shadow: 0 0 8px color-mix(in srgb, var(--motion-ink, var(--accent)) 70%, transparent);
     opacity: 0;
     pointer-events: none;
     transition: opacity 260ms ease-out;
@@ -1486,7 +2000,11 @@
     /* Each new word fades up from a soft blur a quarter-line below, under an
        accent weft that fades; the delay (negative once begun) is set per word. */
     .assistant :global(.rm-w) {
-      display: inline-block;
+      /* Item 626: inline, not inline-block — an atomic inline is a line-break opportunity on both sides and trims
+         its edge spaces, so a word split across deltas wrapped mid-word and spacing slipped until the spans went.
+         The rise is `top` on a relative inline (a transform does not apply to an inline box). */
+      display: inline;
+      position: relative;
       animation:
         rm-rise 520ms cubic-bezier(0.2, 0.7, 0.2, 1) both,
         rm-weft-under 900ms ease-out both;
@@ -1525,18 +2043,18 @@
   @keyframes -global-rm-rise {
     from {
       opacity: 0;
-      transform: translateY(0.28em);
+      top: 0.28em;
       filter: blur(3px);
     }
     to {
       opacity: 1;
-      transform: none;
+      top: 0;
       filter: none;
     }
   }
   @keyframes -global-rm-weft-under {
     from {
-      box-shadow: inset 0 -1.5px 0 color-mix(in srgb, var(--accent) 85%, transparent);
+      box-shadow: inset 0 -1.5px 0 color-mix(in srgb, var(--motion-ink, var(--accent)) 85%, transparent);
     }
     to {
       box-shadow: inset 0 -1.5px 0 transparent;
@@ -1544,7 +2062,7 @@
   }
   @keyframes -global-rm-needle {
     50% {
-      box-shadow: 0 0 2px var(--accent);
+      box-shadow: 0 0 2px var(--motion-ink, var(--accent));
       opacity: 0.6;
     }
   }
@@ -1591,7 +2109,981 @@
   }
   @keyframes -global-rm-flash {
     from {
-      color: var(--accent);
+      color: var(--motion-ink, var(--accent));
+    }
+  }
+  /* ---- Item 589: the running step comes alive (stepMotion.svelte.ts) ----
+     One grammar — the thread under the row, the bar's head, the status mark —
+     with a variant per kind (data-kind). The setting (item 616: "combo",
+     the default; "sweep", today's; "reticle") is stamped on each trace as data-motion (item 610: the trace's
+     own, so Settings' three previews run side by side; the transcript's
+     follow the setting) and applies to all of it.
+     Transform and opacity only (the word's light is a background position on
+     one word); paused while the window is hidden; under reduced motion
+     nothing here moves. The step ending removes .mo-run: the finished look
+     at once. */
+  .trace .arow.mo-run {
+    position: relative;
+  }
+  .row-wrap.mo-run,
+  .trace .arow.mo-run {
+    isolation: isolate;
+  }
+  /* Item 649: the remnant and a subagent row's passing text sit behind the
+     row's text, inside the row — not behind the trace. */
+  .row-wrap.bash-rem,
+  .arow.sub-pass {
+    position: relative;
+    isolation: isolate;
+  }
+  /* ---- Item 616: Combo and Reticle (616-demo/combo.html) ----
+     Their parts sit in the running row's top 34 px (the row itself; an
+     open thinking's text below is not framed). None is drawn under Sweep. */
+  .mo-bg,
+  .mo-tex,
+  .mo-brk,
+  .mo-edge,
+  .mo-bus,
+  .st-ico,
+  .tbar-ctx,
+  .ctx-lbl {
+    display: none;
+  }
+  /* The demo's white-hot point: the theme's signal ink, nearly white. */
+  .trace {
+    --mo-hot: color-mix(in srgb, var(--signal-ink, var(--signal)) 45%, #fffaf0);
+  }
+  .mo-bg,
+  .mo-brk,
+  .mo-edge {
+    position: absolute;
+    left: 6px;
+    right: 6px;
+    top: 2px;
+    height: 30px;
+    pointer-events: none;
+    z-index: -1;
+  }
+  /* Reticle's faint tint (his 1:2x AM ask: Combo takes it too). */
+  .mo-bg {
+    border-radius: 3px;
+    background: linear-gradient(90deg, color-mix(in srgb, var(--signal) 9%, transparent), transparent 60%);
+  }
+  /* Combo (his later ask: the "slightly angled lines … slowly shifting
+     across"): 589's Weave texture, faint skewed threads drifting behind the
+     running row, on every kind. Transform only. */
+  .mo-tex {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    height: 34px;
+    overflow: hidden;
+    pointer-events: none;
+    z-index: -1;
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 25%, #000 75%, transparent);
+    mask-image: linear-gradient(90deg, transparent, #000 25%, #000 75%, transparent);
+  }
+  .mo-tex::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: -32px;
+    right: -32px;
+    background: repeating-linear-gradient(90deg, transparent 0 15px, color-mix(in srgb, var(--signal) 10%, transparent) 15px 16px);
+    transform: skewX(-24deg);
+  }
+  .trace[data-motion="combo"] .mo-tex {
+    display: block;
+  }
+  .mo-brk i {
+    position: absolute;
+    width: 9px;
+    height: 7px;
+    border: 0 solid var(--signal);
+    opacity: 0.85;
+  }
+  .mo-brk i:nth-child(1) {
+    left: 0;
+    top: 0;
+    border-left-width: 1.5px;
+    border-top-width: 1.5px;
+  }
+  .mo-brk i:nth-child(2) {
+    right: 0;
+    top: 0;
+    border-right-width: 1.5px;
+    border-top-width: 1.5px;
+  }
+  .mo-brk i:nth-child(3) {
+    left: 0;
+    bottom: 0;
+    border-left-width: 1.5px;
+    border-bottom-width: 1.5px;
+  }
+  .mo-brk i:nth-child(4) {
+    right: 0;
+    bottom: 0;
+    border-right-width: 1.5px;
+    border-bottom-width: 1.5px;
+  }
+  .trace:is([data-motion="combo"], [data-motion="reticle"]) .mo-bg,
+  .trace:is([data-motion="combo"], [data-motion="reticle"]) .mo-brk {
+    display: block;
+  }
+  /* Combo: a faint light running round the row's edge (Live wire's, at
+     45 %) — a dash along the outline, moved by its offset. Held still it
+     sits at the top right. */
+  .trace[data-motion="combo"] .mo-edge {
+    display: block;
+    overflow: visible;
+    width: calc(100% - 12px);
+    opacity: 0.45;
+  }
+  .mo-edge rect {
+    fill: none;
+    stroke-linecap: round;
+    stroke-dashoffset: 30;
+  }
+  .mo-edge .e-tail {
+    stroke: color-mix(in srgb, var(--signal) 70%, transparent);
+    stroke-width: 1;
+    stroke-dasharray: 22 78;
+  }
+  /* The head: the tail's leading 4 (a gap of 18 first), so one offset
+     moves both. */
+  .mo-edge .e-head {
+    stroke: var(--mo-hot);
+    stroke-width: 1.2;
+    stroke-dasharray: 0 18 4 78;
+  }
+  /* The mark: the instrument in place of the ■. */
+  .st-running {
+    position: relative;
+  }
+  .trace:is([data-motion="combo"], [data-motion="reticle"]) .st-sq {
+    display: none;
+  }
+  .trace:is([data-motion="combo"], [data-motion="reticle"]) .st-ico {
+    display: block;
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 16px;
+    height: 16px;
+    margin: -8px 0 0 -8px;
+  }
+  .st-ico svg {
+    width: 16px;
+    height: 16px;
+    overflow: visible;
+    display: block;
+  }
+  .st-ico .ring {
+    fill: none;
+    stroke: var(--signal);
+    stroke-width: 1.2;
+    transform-origin: 9px 9px;
+    transform-box: view-box;
+  }
+  .st-ico .core {
+    fill: var(--signal-ink, var(--signal));
+    transform-origin: 9px 9px;
+    transform-box: view-box;
+  }
+  .st-ico .r1 {
+    stroke-dasharray: 6 3.4;
+  }
+  .st-ico .r2 {
+    stroke-dasharray: 2 2.6;
+    opacity: 0.7;
+  }
+  .st-ico .scanl {
+    stroke: var(--mo-hot);
+    stroke-width: 1.2;
+    filter: drop-shadow(0 0 1.5px var(--signal));
+  }
+  .st-ico .cursor {
+    fill: var(--signal-ink, var(--signal));
+  }
+  .st-ico .radar {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    border: 1.2px solid color-mix(in srgb, var(--signal) 70%, transparent);
+    background: conic-gradient(from 0deg, transparent 0 270deg, color-mix(in srgb, var(--signal) 60%, transparent) 355deg, var(--mo-hot) 360deg);
+    -webkit-mask: radial-gradient(circle, #000 64%, transparent 66%);
+    mask: radial-gradient(circle, #000 64%, transparent 66%);
+  }
+  .st-ico .blip {
+    position: absolute;
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    background: var(--mo-hot);
+    box-shadow: 0 0 4px var(--signal);
+    opacity: 0;
+  }
+  .st-ico .b1 {
+    left: 10px;
+    top: 3.5px;
+  }
+  .st-ico .b2 {
+    left: 3.5px;
+    top: 10px;
+  }
+  .st-ico .orbit {
+    position: absolute;
+    inset: 0;
+  }
+  .st-ico .orbit > b {
+    position: absolute;
+    left: 50%;
+    top: 0;
+    width: 3.5px;
+    height: 3.5px;
+    margin-left: -1.75px;
+    border-radius: 50%;
+    background: var(--signal-ink, var(--signal));
+    box-shadow: 0 0 4px var(--signal);
+  }
+  .st-ico .o2 {
+    inset: 3px;
+  }
+  .st-ico .o3 {
+    inset: -2px;
+  }
+  .st-ico .o2 > b {
+    opacity: 0.8;
+  }
+  .st-ico .o3 > b {
+    opacity: 0.6;
+  }
+  .st-ico .hub {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 5px;
+    height: 5px;
+    margin: -2.5px;
+    border-radius: 50%;
+    background: var(--signal);
+    box-shadow: 0 0 6px var(--signal);
+  }
+  /* Combo: a running helper's bar is its context out of 300k, labelled
+     above it; today's span gives way to it. */
+  .trace[data-motion="combo"] .tbar.has-ctx > i.tbar-running {
+    opacity: 0;
+  }
+  .trace[data-motion="combo"] .tbar-ctx {
+    display: block;
+    left: 0;
+    right: 0;
+    transform-origin: left center;
+    background: var(--signal);
+    box-shadow: var(--glow-signal, none);
+    transition: transform 0.6s cubic-bezier(0.2, 0.7, 0.2, 1);
+  }
+  .trace[data-motion="combo"] .ctx-lbl {
+    display: block;
+    position: absolute;
+    right: 0;
+    bottom: 5px;
+    font: 9px var(--mono);
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+    color: color-mix(in srgb, var(--signal) 75%, transparent);
+    pointer-events: none;
+  }
+  /* Reticle: no Sweep thread — a data bus with packets runs under the
+     row instead; the bar is dashed with a blinking head. */
+  .trace[data-motion="reticle"] .mo-weft {
+    display: none;
+  }
+  .trace[data-motion="reticle"] .mo-bus {
+    display: block;
+    position: absolute;
+    left: 46px;
+    right: 16px;
+    top: 26px;
+    height: 3px;
+    overflow: hidden;
+    pointer-events: none;
+  }
+  .mo-bus::before {
+    content: "";
+    position: absolute;
+    top: 1px;
+    left: -12px;
+    right: 0;
+    height: 1px;
+    background: repeating-linear-gradient(90deg, color-mix(in srgb, var(--signal) 35%, transparent) 0 6px, transparent 6px 12px);
+  }
+  /* A packet: the bus's whole width, lit at its right end, carried across
+     by translate (its own width is the bus's, so -100% → 0 crosses it). */
+  .mo-bus > i {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 3px;
+    background: linear-gradient(90deg, transparent calc(100% - 16px), var(--signal-ink, var(--signal)) calc(100% - 5px), var(--mo-hot));
+    transform: translateX(-100%);
+  }
+  .mo-bus.k-shell > i {
+    background: linear-gradient(90deg, transparent calc(100% - 6px), var(--signal-ink, var(--signal)) calc(100% - 2px), var(--mo-hot));
+  }
+  .mo-bus.k-agent {
+    height: 7px;
+    top: 24px;
+  }
+  .mo-bus.k-agent::before {
+    box-shadow:
+      0 2px 0 color-mix(in srgb, var(--signal) 25%, transparent),
+      0 4px 0 color-mix(in srgb, var(--signal) 18%, transparent);
+  }
+  .mo-bus.k-agent > i {
+    height: 1.5px;
+    background: linear-gradient(90deg, transparent calc(100% - 12px), var(--signal-ink, var(--signal)) calc(100% - 4px), var(--mo-hot));
+  }
+  .mo-bus.k-agent > i:nth-child(1) {
+    top: 1px;
+  }
+  .mo-bus.k-agent > i:nth-child(2) {
+    top: 3px;
+  }
+  .mo-bus.k-agent > i:nth-child(3) {
+    top: 5px;
+  }
+  .trace[data-motion="reticle"] .tbar {
+    height: 4px;
+    background: repeating-linear-gradient(90deg, var(--line2) 0 3px, transparent 3px 5px);
+  }
+  .trace[data-motion="reticle"] .mo-run .tbar > i.tbar-running {
+    background: repeating-linear-gradient(90deg, var(--signal) 0 3px, transparent 3px 5px);
+    box-shadow: none;
+  }
+  .trace[data-motion="reticle"] .mo-run .tbar > i.tbar-running::after {
+    content: "";
+    position: absolute;
+    right: -2px;
+    top: -3px;
+    width: 2px;
+    height: 10px;
+    margin-top: 0;
+    border-radius: 0;
+    background: var(--mo-hot);
+    box-shadow: 0 0 6px var(--signal);
+  }
+  .mo-weft:not(.k-shell)::after {
+    display: none;
+  }
+  .mo-weft > i {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 100%;
+    width: 30%;
+    border-radius: 2px;
+    opacity: 0;
+    --comet: linear-gradient(90deg, transparent, color-mix(in srgb, var(--signal) 45%, transparent) 70%, var(--signal-ink, var(--signal)));
+  }
+  /* Thinking's thread is the brightest: 2 px, and its bead may glow past
+     the line (clipped only at the ends). */
+  .mo-weft.k-think {
+    top: 26.5px;
+    height: 2px;
+    background: color-mix(in srgb, var(--signal) 16%, transparent);
+    overflow: visible;
+    clip-path: inset(-6px 0 -6px 0);
+  }
+  .mo-weft.k-agent {
+    top: 25px;
+    height: 5px;
+    background: repeating-linear-gradient(180deg, color-mix(in srgb, var(--signal) 20%, transparent) 0 1px, transparent 1px 2px);
+  }
+  .scan {
+    display: none;
+    gap: 4px;
+    align-items: center;
+  }
+  .scan i {
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    background: var(--signal);
+    opacity: 0.25;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    /* The thread: thinking flows one way in two comets; a helper runs three
+       threads at their own speeds; a file is written by a stroke and a nib;
+       the web scans and rests; anything else, one slow comet. */
+    .mo-weft.k-think > i:nth-child(1) {
+      opacity: 1;
+      width: 38%;
+      background: var(--comet);
+      box-shadow: var(--glow-signal, none);
+      --to: 263%;
+      animation: mo-run 1.7s cubic-bezier(0.45, 0.05, 0.4, 1) infinite;
+    }
+    .mo-weft.k-think > i:nth-child(3) {
+      opacity: 1;
+      width: 38%;
+      top: -2px;
+      height: 6px;
+      background: radial-gradient(circle at calc(100% - 3px) 50%, var(--signal-ink, var(--signal)) 0 2.5px, color-mix(in srgb, var(--signal) 45%, transparent) 3.5px, transparent 7px);
+      --to: 263%;
+      animation: mo-run 1.7s cubic-bezier(0.45, 0.05, 0.4, 1) infinite;
+    }
+    .mo-weft.k-think > i:nth-child(2) {
+      opacity: 0.45;
+      width: 22%;
+      background: var(--comet);
+      --to: 455%;
+      animation: mo-run 1.7s cubic-bezier(0.45, 0.05, 0.4, 1) -0.85s infinite;
+    }
+    .mo-weft.k-agent > i {
+      opacity: 1;
+      height: 1px;
+      width: 18%;
+      background: var(--comet);
+      --to: 556%;
+    }
+    .mo-weft.k-agent > i:nth-child(1) {
+      animation: mo-run 1.25s ease-in-out infinite;
+    }
+    .mo-weft.k-agent > i:nth-child(2) {
+      top: 2px;
+      animation: mo-run 1.7s ease-in-out -0.5s infinite;
+    }
+    .mo-weft.k-agent > i:nth-child(3) {
+      top: 4px;
+      animation: mo-run 2.15s ease-in-out -1.3s infinite;
+    }
+    .mo-weft.k-file > i:nth-child(1) {
+      width: 100%;
+      transform-origin: left center;
+      background: color-mix(in srgb, var(--signal) 55%, transparent);
+      animation: mo-write 1.6s cubic-bezier(0.3, 0.6, 0.3, 1) infinite;
+    }
+    .mo-weft.k-file > i:nth-child(2) {
+      width: 100%;
+      background: linear-gradient(90deg, transparent calc(100% - 8px), var(--signal-ink, var(--signal)));
+      animation: mo-nib 1.6s cubic-bezier(0.3, 0.6, 0.3, 1) infinite;
+    }
+    .mo-weft.k-web > i:nth-child(1),
+    .mo-weft.k-web > i:nth-child(2) {
+      width: 10%;
+      background: linear-gradient(90deg, transparent, var(--signal-ink, var(--signal)), transparent);
+      --to: 1000%;
+      animation: mo-scan 1.5s cubic-bezier(0.5, 0, 0.5, 1) infinite;
+    }
+    .mo-weft.k-web > i:nth-child(1) {
+      box-shadow: var(--glow-signal, none);
+    }
+    .mo-weft.k-web > i:nth-child(2) {
+      --peak: 0.35;
+      animation-delay: 0.12s;
+    }
+    .mo-weft.k-other > i:nth-child(1) {
+      opacity: 0.7;
+      background: var(--comet);
+      --to: 333%;
+      animation: mo-run 2.4s linear infinite;
+    }
+    /* The bar's head: a lit point at the running bar's end, beating at the
+       kind's tempo. */
+    .mo-run .tbar > i.tbar-running::after {
+      content: "";
+      position: absolute;
+      right: -3px;
+      top: 50%;
+      width: 7px;
+      height: 7px;
+      margin-top: -3.5px;
+      border-radius: 50%;
+      background: var(--signal-ink, var(--signal));
+      box-shadow: 0 0 6px var(--signal);
+      animation: mo-head var(--beat, 1.2s) ease-in-out infinite;
+    }
+    [data-kind="think"] {
+      --beat: 1.3s;
+    }
+    [data-kind="shell"] {
+      --beat: 0.9s;
+    }
+    [data-kind="file"] {
+      --beat: 0.8s;
+    }
+    [data-kind="web"] {
+      --beat: 1.5s;
+    }
+    [data-kind="other"] {
+      --beat: 1.8s;
+    }
+    /* The mark: a heartbeat (thinking), a cursor's blink (a command), a
+       quarter turn (a helper), a pen's bob (a file), a ping (the web), a
+       breath (the rest). */
+    .mo-run .st-running {
+      position: relative;
+    }
+    .trace[data-motion="sweep"] .mo-run[data-kind="think"] .st-running {
+      animation: mo-heart 1.3s ease-out infinite;
+    }
+    .trace[data-motion="sweep"] .mo-run[data-kind="shell"] .st-running {
+      animation: mo-blink 1s steps(1) infinite;
+    }
+    .trace[data-motion="sweep"] .mo-run[data-kind="agent"] .st-running {
+      animation: mo-quarter 1.2s cubic-bezier(0.6, 0, 0.3, 1) infinite;
+    }
+    .trace[data-motion="sweep"] .mo-run[data-kind="file"] .st-running {
+      animation: mo-bob 0.8s ease-in-out infinite alternate;
+    }
+    .trace[data-motion="sweep"] .mo-run[data-kind="web"] .st-running::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 10px;
+      height: 10px;
+      margin: -5px 0 0 -5px;
+      border: 1px solid var(--signal);
+      border-radius: 2px;
+      animation: mo-ping 1.5s ease-out infinite;
+    }
+    .trace[data-motion="sweep"] .mo-run[data-kind="other"] .st-running {
+      animation: mo-breathe 1.8s ease-in-out infinite alternate;
+    }
+    /* A light passing through the word "Thinking". */
+    :global(:root) .trace .mo-run[data-kind="think"] .name {
+      -webkit-text-fill-color: transparent;
+      background-image: linear-gradient(100deg, var(--ink) 0 42%, var(--signal-ink, var(--signal)) 50%, var(--ink) 58% 100%);
+      background-size: 300% 100%;
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      animation: mo-shimmer 2.4s linear infinite;
+    }
+    /* Item 616 — Combo and Reticle. The brackets lock on and settle;
+       Combo's edge light runs the outline at the kind's pace; the marks
+       turn, beat, scan and blink; Reticle's packets cross the bus. */
+    .trace:is([data-motion="combo"], [data-motion="reticle"]) .mo-run .mo-brk {
+      animation: mo-lock 2.4s cubic-bezier(0.2, 0.7, 0.2, 1) infinite;
+    }
+    .mo-edge rect {
+      animation: mo-edge var(--edge, 3s) linear infinite;
+    }
+    .mo-tex::before {
+      animation: mo-drift var(--drift, 1.4s) linear infinite;
+    }
+    .mo-tex.k-think {
+      --drift: 1.8s;
+    }
+    .mo-tex.k-agent {
+      --drift: 0.7s;
+    }
+    .mo-tex.k-other {
+      --drift: 2.4s;
+    }
+    [data-kind="think"] {
+      --edge: 3.2s;
+    }
+    [data-kind="shell"] {
+      --edge: 1.4s;
+    }
+    [data-kind="file"] {
+      --edge: 2.4s;
+    }
+    [data-kind="web"] {
+      --edge: 2s;
+    }
+    [data-kind="agent"] {
+      --edge: 2.6s;
+    }
+    .st-ico .r1 {
+      animation: mo-spin 2.4s linear infinite;
+    }
+    .st-ico .r2 {
+      animation: mo-spin 1.6s linear infinite reverse;
+    }
+    .st-ico.k-think .core {
+      animation: mo-core 1.3s ease-out infinite;
+    }
+    .st-ico .scanl {
+      animation: mo-scanl 1.1s ease-in-out infinite alternate;
+    }
+    .st-ico .cursor {
+      animation: mo-blink 0.9s steps(1) infinite;
+    }
+    .st-ico .radar {
+      animation: mo-spin 1.6s linear infinite;
+    }
+    .st-ico .blip {
+      animation: mo-blip 1.6s linear infinite;
+    }
+    .st-ico .b2 {
+      animation-delay: -0.5s;
+    }
+    .st-ico .orbit {
+      animation: mo-spin 1.4s linear infinite;
+    }
+    .st-ico .o2 {
+      animation-duration: 1s;
+    }
+    .st-ico .o3 {
+      animation-duration: 2s;
+    }
+    .mo-bus::before {
+      animation: mo-bus-drift 0.6s linear infinite;
+    }
+    .mo-bus > i {
+      animation: mo-pkt 1.4s cubic-bezier(0.5, 0, 0.5, 1) infinite;
+    }
+    .mo-bus > i:nth-child(2) {
+      animation-delay: -0.7s;
+      opacity: 0.6;
+    }
+    .mo-bus > i:nth-child(3) {
+      display: none;
+    }
+    .mo-bus.k-file > i,
+    .mo-bus.k-shell > i {
+      display: block;
+      opacity: 1;
+      animation: mo-pkt 0.9s linear infinite;
+    }
+    .mo-bus.k-file > i:nth-child(2) {
+      animation-delay: -0.3s;
+    }
+    .mo-bus.k-file > i:nth-child(3) {
+      animation-delay: -0.6s;
+    }
+    .mo-bus.k-shell > i {
+      animation-duration: 0.55s;
+    }
+    .mo-bus.k-shell > i:nth-child(2) {
+      animation-delay: -0.18s;
+    }
+    .mo-bus.k-shell > i:nth-child(3) {
+      animation-delay: -0.36s;
+    }
+    .mo-bus.k-web > i {
+      animation: mo-pkt-ping 1.6s cubic-bezier(0.3, 0, 0.3, 1) infinite;
+    }
+    .mo-bus.k-web > i:nth-child(2) {
+      animation-delay: 0.1s;
+      opacity: 0.4;
+    }
+    .mo-bus.k-agent > i {
+      display: block;
+      opacity: 1;
+    }
+    .mo-bus.k-agent > i:nth-child(1) {
+      animation: mo-pkt 1.1s linear infinite;
+    }
+    .mo-bus.k-agent > i:nth-child(2) {
+      animation: mo-pkt 1.6s linear -0.4s infinite;
+    }
+    .mo-bus.k-agent > i:nth-child(3) {
+      animation: mo-pkt 2.1s linear -1.1s infinite;
+    }
+    .trace[data-motion="reticle"] .mo-run .tbar > i.tbar-running::after {
+      animation: mo-blink 0.9s steps(1) infinite;
+    }
+    /* Reticle: a highlight band sweeps the search's words. */
+    .trace[data-motion="reticle"] .mo-run[data-kind="web"] .arg {
+      position: relative;
+    }
+    .trace[data-motion="reticle"] .mo-run[data-kind="web"] .arg::after {
+      content: "";
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: 40px;
+      background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--signal) 28%, transparent), transparent);
+      animation: mo-band 1.6s cubic-bezier(0.3, 0, 0.3, 1) infinite;
+    }
+    /* The working line's three points scan after its clock. */
+    .activity .working .scan {
+      display: inline-flex;
+    }
+    .scan i {
+      animation: mo-dot 1.2s ease-in-out infinite;
+    }
+    .scan i:nth-child(2) {
+      animation-delay: 0.15s;
+    }
+    .scan i:nth-child(3) {
+      animation-delay: 0.3s;
+    }
+    /* A hidden window: everything here holds still. */
+    :global(:root[data-hidden]) .trace *,
+    :global(:root[data-hidden]) .trace *::before,
+    :global(:root[data-hidden]) .trace *::after {
+      animation-play-state: paused !important;
+    }
+  }
+  @keyframes -global-mo-run {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(var(--to, 300%));
+    }
+  }
+  @keyframes -global-mo-write {
+    0% {
+      transform: scaleX(0);
+      opacity: 1;
+    }
+    70% {
+      transform: scaleX(1);
+      opacity: 1;
+    }
+    100% {
+      transform: scaleX(1);
+      opacity: 0;
+    }
+  }
+  @keyframes -global-mo-nib {
+    0% {
+      transform: translateX(-100%);
+      opacity: 1;
+    }
+    70% {
+      transform: translateX(0);
+      opacity: 1;
+    }
+    100% {
+      transform: translateX(0);
+      opacity: 0;
+    }
+  }
+  @keyframes -global-mo-scan {
+    0% {
+      transform: translateX(-100%);
+      opacity: var(--peak, 1);
+    }
+    45% {
+      transform: translateX(var(--to, 1000%));
+      opacity: var(--peak, 1);
+    }
+    46%,
+    100% {
+      transform: translateX(var(--to, 1000%));
+      opacity: 0;
+    }
+  }
+  @keyframes -global-mo-head {
+    0%,
+    100% {
+      opacity: 0.45;
+      transform: scale(0.7);
+    }
+    50% {
+      opacity: 1;
+      transform: scale(1.15);
+    }
+  }
+  @keyframes -global-mo-heart {
+    0% {
+      transform: scale(1);
+      opacity: 0.8;
+    }
+    14% {
+      transform: scale(1.7);
+      opacity: 1;
+    }
+    28% {
+      transform: scale(1);
+      opacity: 0.85;
+    }
+    42% {
+      transform: scale(1.25);
+      opacity: 1;
+    }
+    70%,
+    100% {
+      transform: scale(1);
+      opacity: 0.8;
+    }
+  }
+  @keyframes -global-mo-blink {
+    0% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.2;
+    }
+  }
+  @keyframes -global-mo-quarter {
+    0% {
+      transform: rotate(0);
+    }
+    60%,
+    100% {
+      transform: rotate(90deg);
+    }
+  }
+  @keyframes -global-mo-bob {
+    from {
+      transform: translateY(1px);
+    }
+    to {
+      transform: translateY(-1.5px);
+    }
+  }
+  @keyframes -global-mo-ping {
+    from {
+      transform: scale(0.6);
+      opacity: 0.9;
+    }
+    to {
+      transform: scale(2.2);
+      opacity: 0;
+    }
+  }
+  @keyframes -global-mo-breathe {
+    from {
+      opacity: 1;
+    }
+    to {
+      opacity: 0.4;
+    }
+  }
+  @keyframes -global-mo-shimmer {
+    from {
+      background-position: 100% 0;
+    }
+    to {
+      background-position: 0 0;
+    }
+  }
+  @keyframes -global-mo-drift {
+    from {
+      transform: skewX(-24deg) translateX(0);
+    }
+    to {
+      transform: skewX(-24deg) translateX(16px);
+    }
+  }
+  /* Item 616's keyframes (Combo, Reticle). */
+  @keyframes -global-mo-lock {
+    0% {
+      transform: scale(1.025, 1.25);
+      opacity: 0;
+    }
+    14% {
+      transform: none;
+      opacity: 1;
+    }
+    80% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0.55;
+    }
+  }
+  @keyframes -global-mo-edge {
+    from {
+      stroke-dashoffset: 100;
+    }
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+  @keyframes -global-mo-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @keyframes -global-mo-core {
+    0% {
+      transform: scale(0.6);
+      opacity: 0.7;
+    }
+    15% {
+      transform: scale(1.25);
+      opacity: 1;
+    }
+    30% {
+      transform: scale(0.8);
+    }
+    45% {
+      transform: scale(1.05);
+    }
+    100% {
+      transform: scale(0.6);
+      opacity: 0.7;
+    }
+  }
+  @keyframes -global-mo-scanl {
+    from {
+      transform: translateY(-4.5px);
+    }
+    to {
+      transform: translateY(4.5px);
+    }
+  }
+  @keyframes -global-mo-blip {
+    0%,
+    62% {
+      opacity: 0;
+    }
+    66% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0;
+    }
+  }
+  @keyframes -global-mo-bus-drift {
+    to {
+      transform: translateX(12px);
+    }
+  }
+  @keyframes -global-mo-pkt {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(0);
+    }
+  }
+  @keyframes -global-mo-pkt-ping {
+    0% {
+      transform: translateX(-100%);
+    }
+    45% {
+      transform: translateX(0);
+    }
+    46%,
+    100% {
+      transform: translateX(0);
+      opacity: 0;
+    }
+  }
+  @keyframes -global-mo-band {
+    0% {
+      transform: translateX(-40px);
+    }
+    45%,
+    100% {
+      transform: translateX(260px);
+    }
+  }
+  @keyframes -global-mo-dot {
+    0%,
+    60%,
+    100% {
+      opacity: 0.25;
+      transform: scale(1);
+    }
+    20% {
+      opacity: 1;
+      transform: scale(1.35);
     }
   }
   /* The moon, kept for the live turn (backlog 096): the same roll as the
@@ -1677,6 +3169,15 @@
     display: flex;
     gap: 2px;
   }
+  /* Item 592: where the transcript's gutter is too narrow for them
+     (`narrow-gutter`, measured in Transcript.svelte) — his zoom — they come
+     inside the row's top right corner, on their panel fill, instead of
+     past the edge. */
+  :global(.transcript.narrow-gutter) .block-tools,
+  :global(.transcript.narrow-gutter) .block-tools.two {
+    right: 6px;
+    top: 6px;
+  }
   .arow.agent-drag {
     cursor: grab;
   }
@@ -1687,7 +3188,7 @@
     height: 20px;
     background: var(--panel);
     border: 1px solid transparent;
-    border-radius: 6px;
+    border-radius: var(--r1);
     color: var(--dim);
     padding: 0;
     cursor: pointer;
@@ -1760,9 +3261,9 @@
     font-family: var(--mono);
     font-size: 0.75rem;
     color: var(--dim);
-    background: var(--bg);
+    background: var(--term);
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--r1);
     padding: 0.5rem 0.65rem;
     max-height: 14rem;
     overflow: auto;
@@ -1825,8 +3326,8 @@
     min-width: 0;
     padding: 8px 12px;
     border: 1px solid var(--line2);
-    border-radius: 8px;
-    background: var(--sheet);
+    border-radius: var(--r2);
+    background: var(--raised);
     font-size: 13.5px;
     color: var(--ink);
   }

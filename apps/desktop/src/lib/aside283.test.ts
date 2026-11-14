@@ -300,12 +300,16 @@ describe("what an aside draws and hides (283)", () => {
       expect(s).toMatch(/<Composer \{aside\}/);
       expect(s).toMatch(/<AsideThread \{aside\}/);
       expect(s).not.toMatch(/<AsideBox/);
-      expect(s).toMatch(/Aside of <em>/);
+      // Item 673: the tab's head reads "ASIDE · of ‹chat›" (the kicker).
+      expect(s).toMatch(f.includes("View") ? /class="aside-kick">Aside<\/span>[\s\S]{0,400}>of <em>/ : /Aside of <em>/);
     }
     // The thread draws his words with the transcript's own bubble and the
     // answer with the chat's reply piece; the transcript uses the bubble too.
-    expect(src("./AsideThread.svelte")).toMatch(/<UserBubble /);
-    expect(src("./AsideThread.svelte")).toMatch(/<AssistantMessage/);
+    // test-change: item 674 step 7 — AsideThread is Classic's alone (blocker
+    // 1989), so its pieces are the Classic ones; Filament's are Transcript's.
+    expect(src("./AsideThread.svelte")).toMatch(/<UserBubbleClassic /);
+    expect(src("./AsideThread.svelte")).toMatch(/<AssistantMessageClassic\b/);
+    expect(src("./AsideThread.svelte")).not.toMatch(/<UserBubble |<AssistantMessage\s|classic\(\)/);
     expect(src("./Transcript.svelte")).toMatch(/<UserBubble/);
     // Fork and Remove-from-context are not in the aside's thread.
     expect(src("./AsideThread.svelte")).not.toMatch(/Fork helpers from here"/);

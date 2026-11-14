@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hudIn, hudOut } from "./hudMenu";
   import { tip } from "./tip";
   /**
    * The ⌘⇧V list (nightshift backlog 173): the in-app clipboard ring,
@@ -24,7 +25,7 @@
   });
 </script>
 
-<div class="clip" role="listbox" aria-label="Clipboard history" bind:this={list}>
+<div class="clip hud-m" role="listbox" aria-label="Clipboard history" bind:this={list} in:hudIn|global out:hudOut|global>
   {#if entries.length === 0}
     <div class="clip-foot">
       Nothing copied or pasted in Nightloom yet — what you copy, paste or send here is listed, newest first · Esc closes

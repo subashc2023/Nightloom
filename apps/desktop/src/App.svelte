@@ -50,11 +50,13 @@
   import ConfirmDialog from "./lib/ConfirmDialog.svelte";
   import { quoteLabel } from "./lib/asideQuote";
   import AttachmentLayer from "./lib/AttachmentLayer.svelte";
+  import WaitingNotices from "./lib/WaitingNotices.svelte";
   import AttachmentView from "./lib/AttachmentView.svelte";
   import SubagentView from "./lib/SubagentView.svelte";
   import { agentAsk, deliverDue } from "./lib/subagentAsk.svelte";
   import FileView from "./lib/FileView.svelte";
   import ThreadView from "./lib/ThreadView.svelte";
+  import ClaudeBrowserView from "./lib/ClaudeBrowserView.svelte";
   import WebView from "./lib/WebView.svelte";
   import { closeOrphans, initWebTabs, routeLink } from "./lib/webtabs.svelte";
   import RunningTasks from "./lib/RunningTasks.svelte";
@@ -75,22 +77,37 @@
   import SettingsModal from "./lib/SettingsModal.svelte";
   import WrapAsidesDialog from "./lib/WrapAsidesDialog.svelte";
   import ContextPanel from "./lib/ContextPanel.svelte";
+  import RightRail from "./lib/RightRail.svelte";
+  import { railFold, RAIL_SLIDE_MS } from "./lib/railFold.svelte";
   import PromptLibrary from "./lib/PromptLibrary.svelte";
   import Transcript from "./lib/Transcript.svelte";
   import Composer from "./lib/Composer.svelte";
   import NoteView from "./lib/NoteView.svelte";
   import GraphView from "./lib/GraphView.svelte";
   import Welcome from "./lib/Welcome.svelte";
+  import WaitingChat from "./lib/WaitingChat.svelte";
+  import { scheduledFor } from "./lib/scheduled.svelte";
+  import { chatPage } from "./lib/waitingChat";
   import NewProject from "./lib/NewProject.svelte";
   import Palette from "./lib/Palette.svelte";
   import NightshiftSurface from "./lib/NightshiftSurface.svelte";
   import { isKeptKind, keptBox, keptIn } from "./lib/keptTabs.svelte";
   import { placeKey, tabPlace } from "./lib/tabPlace";
   import TerminalDock from "./lib/TerminalDock.svelte";
+  // Item 542: the Classic layout — 1d4ca17's files, kept verbatim, mounted
+  // in place of the Filament IV ones while Settings → Appearance → Layout
+  // is Classic (`layout.svelte.ts`).
+  import { classic } from "./lib/layout.svelte";
+  import SidebarClassic from "./lib/SidebarClassic.svelte";
+  import TitleBarClassic from "./lib/TitleBarClassic.svelte";
+  import TopBarClassic from "./lib/TopBarClassic.svelte";
+  import TabStripClassic from "./lib/TabStripClassic.svelte";
+  import TranscriptClassic from "./lib/TranscriptClassic.svelte";
   import Icon from "./lib/Icon.svelte";
   import { externalHref } from "./lib/extlink";
   import LaunchScreen from "./lib/LaunchScreen.svelte";
   import { launch } from "./lib/launch.svelte";
+  import { startScheduleRuntime } from "./lib/scheduleRuntime";
 
   onMount(() => {
     // The pickers' models from `model-list.json` (item 272); the built-in
@@ -103,11 +120,15 @@
     void pruneDraftCopies();
     // A launch that fails outright must not leave the launch screen up
     // over the reason (item 220).
-    void init().catch((e: unknown) => {
-      launch.opening = false;
-      launch.connectSettled = true;
-      app.error = String(e);
-    });
+    void init()
+      .catch((e: unknown) => {
+        launch.opening = false;
+        launch.connectSettled = true;
+        app.error = String(e);
+      })
+      // The schedule's clock and the backend's wakes (535f, 535-3): from
+      // app start, whatever tab is in front — not from a composer's mount.
+      .finally(() => startScheduleRuntime());
     // The stored zoom back on the window, and the View menu's zoom items
     // (nightshift backlog 108).
     void initZoom();
@@ -241,7 +262,56 @@
    * or when the chat is deleted; *back* puts the card under the passage.
    */
   const PANEL_W = 360;
-  const panelPx = $derived(app.asidePanel ? PANEL_W : 0);
+  /**
+   * The right column (item 533, Filament IV stage 2; blocker 1710): the
+   * context dial, plan use, this turn and tasks beside the open chat, as
+   * the approved mockup draws it. Shown while the open chat is in front in
+   * a pane and has a message (the new-chat page has none, blocker 1690),
+   * never with the aside panel (one column at the edge), and only while
+   * the split is wide enough to leave the chat its measure.
+   */
+  const RAIL_W = 224;
+  const RAIL_MIN_SPLIT = 900;
+  const chatColumn = $derived.by(
+    () =>
+      // Not under the Classic layout (item 542): 1d4ca17 had no column.
+      !classic() &&
+      !app.asidePanel &&
+      !blank &&
+      splitWidth >= RAIL_MIN_SPLIT &&
+      !!liveTab &&
+      app.tabs.panes.some((p) => p.active === liveTab?.id),
+  );
+  /**
+   * Item 605 (his "shouldn't asides still have cost, context, all of the
+   * stuff in the side bar?"): with no chat in front for the column, an
+   * aside tab in front takes it — the focused pane's first, else the
+   * other's — and the column reads that aside. The chat's column wins
+   * when both are in front: one column at the edge.
+   */
+  const railAsideTab = $derived.by(() => {
+    if (classic() || app.asidePanel || splitWidth < RAIL_MIN_SPLIT || chatColumn) return null;
+    const f = tabs.focusedPane(app.tabs);
+    for (const p of [f, ...app.tabs.panes.filter((x) => x.id !== f.id)]) {
+      const c = tabs.activeTab(p).content;
+      if (c.kind === "aside") return c;
+    }
+    return null;
+  });
+  const railColumn = $derived(chatColumn || railAsideTab !== null);
+  /**
+   * Item 605: the panes whose front tab is an aside get the top bar, read
+   * from that aside. The bell and Files for you ride on the first of them
+   * only while no chat bar is up, so the window has one bell.
+   */
+  const asideBellPane = $derived.by(() => {
+    if (barPane !== null) return null;
+    return app.tabs.panes.find((p) => tabs.activeTab(p).content.kind === "aside")?.id ?? null;
+  });
+  /** Item 599: folded by his button, the column is a strip with the button to open it again. */
+  const RAIL_FOLDED_W = 36;
+  const railPx = $derived(railFold.folded ? RAIL_FOLDED_W : RAIL_W);
+  const panelPx = $derived(app.asidePanel ? PANEL_W : railColumn ? railPx : 0);
   const leftPx = $derived(
     Math.max(
       SPLIT_MIN,
@@ -408,6 +478,18 @@
           e.event === "assistant_message" ||
           e.event === "compaction",
       ),
+  );
+
+  /**
+   * A blank chat holding a scheduled message (backlog 532) — one made by
+   * Send later from a New chat — is a chat page whose only content is the
+   * waiting message, with the docked composer under it, not the Welcome
+   * page. The first message landing makes it the normal chat.
+   */
+  const waiting = $derived(
+    blank &&
+      chatPage(app.events, !!app.live, app.activeSessionId, !!app.activeSessionId && scheduledFor(app.activeSessionId) !== null) ===
+        "waiting",
   );
 
   /** The find bar (nightshift backlog 106), for ⌘F below. */
@@ -612,14 +694,14 @@
 />
 
 <div class="shell">
-  <TitleBar />
+  {#if classic()}<TitleBarClassic />{:else}<TitleBar />{/if}
   <div
     class="app"
     class:nightshift={app.view === "nightshift"}
     class:collapsed={app.layout.sidebarCollapsed}
     style:grid-template-columns="{app.layout.sidebarCollapsed ? 0 : sidebarColumn()}px minmax(0, 1fr)"
   >
-    <Sidebar />
+    {#if classic()}<SidebarClassic />{:else}<Sidebar />{/if}
     <!-- The launch screen (item 220): over the app until the project list
          is read and the last project has reopened. -->
     {#if launch.opening}<LaunchScreen />{/if}
@@ -661,9 +743,11 @@
       <div
         class="split"
         class:two={app.tabs.panes.length > 1}
+        class:rail-sliding={railFold.sliding && railColumn}
+        style:--rail-slide="{RAIL_SLIDE_MS}ms"
         bind:clientWidth={splitWidth}
         style:grid-template-columns={(app.tabs.panes.length > 1 ? `${leftPx}px minmax(0, 1fr)` : "minmax(0, 1fr)") +
-          (app.asidePanel ? ` ${PANEL_W}px` : "")}
+          (app.asidePanel ? ` ${PANEL_W}px` : railColumn ? ` ${railPx}px` : "")}
       >
         {#each app.tabs.panes as pane, i (pane.id)}
           {@const t = tabs.activeTab(pane)}
@@ -689,9 +773,17 @@
                 />
               </div>
             {/if}
-            <TabStrip {pane} />
+            {#if classic()}<TabStripClassic {pane} />{:else}<TabStrip {pane} />{/if}
             {#if barPane === pane.id}
-              <TopBar />
+              {#if classic()}<TopBarClassic />{:else}<TopBar />{/if}
+            {:else if t.content.kind === "aside" && !classic()}
+              <!-- Item 605: an aside tab's bar — the chat's TopBar, given
+                   the aside (Filament only: Classic keeps 1d4ca17's look). -->
+              <TopBar
+                aside={asideOf(t.content.session, asideTabThread(t.content) ?? null)}
+                asideChat={t.content.session}
+                bell={asideBellPane === pane.id}
+              />
             {/if}
             <!-- Item 487: the note and the read-only views stay mounted
                  once shown, hidden while another tab is in front, so a
@@ -721,6 +813,10 @@
                   <!-- What a research thread stores (backlog 292): its name
                        clicked in the sidebar, read-only. -->
                   <ThreadView content={k.content} />
+                {:else if k.content.kind === "browser"}
+                  <!-- Claude's browser (item 508): the live picture of the
+                       chat's Playwright browser; hidden, it stops watching. -->
+                  <ClaudeBrowserView session={k.content.session} {away} />
                 {/if}
                 {#if focused && !away}<FindBar bind:this={findBar} />{/if}
               </div>
@@ -789,8 +885,12 @@
               </div>
             {:else if liveTab?.id === t.id}
               <div class="content">
-                {#if blank}
+                {#if waiting && app.activeSessionId}
+                  <WaitingChat key={app.activeSessionId} />
+                {:else if blank}
                   <Welcome />
+                {:else if classic()}
+                  <TranscriptClassic />
                 {:else}
                   <Transcript />
                 {/if}
@@ -800,7 +900,7 @@
                      rather than in any of them. -->
                 {#if focused}<FindBar bind:this={findBar} />{/if}
               </div>
-              {#if !blank}
+              {#if !blank || waiting}
                 <Composer />
               {/if}
             {:else if t.content.kind === "chat" && t.content.session !== null}
@@ -815,7 +915,7 @@
               {@const v = paneChat(session)}
               <div class="content">
                 {#key session}
-                  <Transcript chat={session} />
+                  {#if classic()}<TranscriptClassic chat={session} />{:else}<Transcript chat={session} />{/if}
                 {/key}
                 {#if focused}<FindBar bind:this={findBar} />{/if}
               </div>
@@ -883,6 +983,13 @@
             </div>
             <AsideCard aside={panelAside} placement={null} panel session={app.asidePanel} />
           </aside>
+        {:else if railColumn}
+          {#if railAsideTab}
+            <!-- Item 605: the column beside an aside tab, reading the aside. -->
+            <RightRail column aside={asideOf(railAsideTab.session, asideTabThread(railAsideTab) ?? null)} asideChat={railAsideTab.session} />
+          {:else}
+            <RightRail column />
+          {/if}
         {/if}
         {#if asideDragging}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -900,7 +1007,10 @@
       <!-- The floating attachment tab (backlog 145): over the panes,
            under the dialogs. -->
       <AttachmentLayer />
-      {#if app.toasts.length > 0}
+      <!-- The waiting notices (nightshift item 523) share the toasts'
+           corner and stack: under the passing toasts, staying until closed
+           or answered. -->
+      {#if app.toasts.length > 0 || app.pendingApprovals.length > 0 || Object.keys(app.background).length > 0}
         <div class="toasts">
           {#each app.toasts as t (t.id)}
             <!-- A toast with an action (backlog 066: "Removed from
@@ -915,6 +1025,7 @@
               </button>
             </div>
           {/each}
+          <WaitingNotices />
         </div>
       {/if}
     </div>
@@ -1143,6 +1254,12 @@
     min-width: 0;
     min-height: 0;
     overflow: hidden;
+  }
+  /* Item 599: the column's fold slides, only on his press (instant under reduced motion). */
+  @media (prefers-reduced-motion: no-preference) {
+    .split.rail-sliding {
+      transition: grid-template-columns var(--rail-slide) ease;
+    }
   }
   .split.two .pane + .pane {
     border-left: 1px solid var(--line);

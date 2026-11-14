@@ -39,6 +39,7 @@
  *   SOFTWARE.
  */
 import type { SessionEvent } from "./types";
+import { shownText } from "./keep";
 
 export interface Tick {
   /** The event's index in the log — what the turn's anchor carries. */
@@ -105,11 +106,14 @@ export function ticks(
     if (!live[index]) return;
     const edited = texts?.[index] ?? null;
     if (e.event === "user_message") {
-      const text = edited ?? e.text;
+      // Item 515: the tick quotes his words, else the files he sent — never
+      // the note for the CLI. Its weight is still the whole message.
+      const raw = edited ?? e.text;
+      const text = shownText(raw);
       out.push({
         index,
         role: "user",
-        weight: weightOf(text.length),
+        weight: weightOf(raw.length),
         first_line: firstLine(text),
         preview: previewOf(text),
       });
@@ -283,6 +287,22 @@ export const RIB_CURRENT: RibDims = { baseW: 21, baseH: 3, peakW: 39, peakH: 6 }
  *  exceeds the row, so magnifying never reflows the rail. */
 export const RIB_ROW = 6;
 export const RIB_GAP = 6;
+/** Item 651 (his "cant click the copy button bc the side thing flares
+ *  up"): how far in from the column's right edge the strip takes the
+ *  pointer, CSS px. LibreChat's rows are the column's full 56 px, so an
+ *  invisible band reached over the transcript, and a code block's Copy
+ *  under it (24 px from the column's edge in a 780 px pane) swelled the
+ *  ribs and took the click. Now only the drawn strip does: a message rib's
+ *  12 px at rest and 4 px of slack. The rest of the column is still drawn
+ *  into (the flare and the preview), but the pointer falls through it. */
+export const RIB_HIT = 16;
+
+/** Whether a pointer at `clientX` is on the strip whose column's right
+ *  edge is `colRight` (item 651) — the rule the stylesheet draws: the
+ *  ribs' hit boxes are `RIB_HIT` wide at the column's right. */
+export function onStrip(clientX: number, colRight: number, hit: number = RIB_HIT): boolean {
+  return clientX >= colRight - hit && clientX <= colRight;
+}
 /** The magnifier's reach above and below the pointer. */
 export const MAG_INFLUENCE = 50;
 /** Delay before the preview first opens; later moves follow at once. */

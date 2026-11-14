@@ -1,0 +1,59 @@
+/* Item 631: the one motion for a changed pick in Settings (`pickMotion.ts`).
+   Filament IV only — Classic keeps today's look — and only while moving:
+   the ghost ring and the classes below exist for a fraction of a second. */
+
+/* A segmented choice: the options' fills fade, the ring slides. */
+html:not([data-layout="classic"]) .seg[role="radiogroup"] > button {
+  transition:
+    background-color 0.18s ease-out,
+    color 0.18s ease-out;
+}
+html:not([data-layout="classic"]) .seg > .pick-ghost {
+  position: absolute;
+  box-sizing: border-box;
+  pointer-events: none;
+  border: 1px solid var(--accent);
+  border-radius: var(--r1);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+/* While the ring travels to it, the new option shows only its fill. */
+html:not([data-layout="classic"]) .seg > button.pick-landing {
+  border-color: var(--line2) !important;
+  box-shadow: none !important;
+}
+
+/* Any other choice: one ring that eases out, and the radio dot settling in. */
+html:not([data-layout="classic"]) .pick-pop {
+  animation: nl-pick-pop 0.26s ease-out 1;
+}
+html:not([data-layout="classic"]) .pick-pop .radio {
+  animation: nl-pick-dot 0.26s cubic-bezier(0.2, 0.7, 0.2, 1) 1;
+}
+@keyframes nl-pick-pop {
+  from {
+    outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+    outline-offset: 0;
+  }
+  to {
+    outline: 2px solid transparent;
+    outline-offset: 5px;
+  }
+}
+@keyframes nl-pick-dot {
+  from {
+    transform: scale(0.55);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html .seg[role="radiogroup"] > button {
+    transition: none;
+  }
+  html .pick-pop,
+  html .pick-pop .radio {
+    animation: none;
+  }
+}

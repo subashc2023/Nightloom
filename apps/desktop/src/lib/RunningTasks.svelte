@@ -31,6 +31,15 @@
    * note edits, the dream and capture, Nightshift. A row with a chat opens
    * it — in its own project, at the running turn (`openRun`). Opened from
    * the badge at the tab strip's end as well as the agents chip.
+   *
+   * By project (item 558, 2026-11-10; his "doesn't [sort] by project so I
+   * can't easily see … the tasks that are running within the project that
+   * I'm in", "way too wide"): ~~one flat "Running everywhere" list~~ under
+   * Filament IV — project → chat → its agents and asides (`runGroups.ts`),
+   * the open project first and open, the others folded to a count (each
+   * fold kept, `viewState`), and the sheet narrowed from 68rem to 50rem.
+   * Classic keeps its flat list and width (item 542: the backup layout as
+   * it was; blocker 1754).
    */
   import {
     app,
@@ -53,6 +62,8 @@
   import { tasksFocus } from "./tasksFocus.svelte";
   import { onDestroy } from "svelte";
   import { viewGet, viewSet } from "./viewState";
+  import { classic } from "./layout.svelte";
+  import { groupRuns, projectSummary, type ChatRuns, type ProjectRuns } from "./runGroups";
 
   // Opened on one agent (backlog 357: a name on the still-running line):
   // its row is marked and scrolled into view; the mark goes with the panel.
@@ -83,6 +94,23 @@
   }
   function runElapsed(r: RunEntry): string {
     return r.startedAt === null ? "" : fmtElapsed(now - r.startedAt);
+  }
+  /** Item 558: the runs by project, the open one first. */
+  const byProject = $derived(groupRuns(runs, app.project?.id ?? null));
+  /** Each project's fold, kept past the panel closing (practices §7): the
+   *  open project open, the rest folded, until he says otherwise. */
+  let foldTick = $state(0);
+  function projectOpen(p: ProjectRuns): boolean {
+    void foldTick;
+    return viewGet(`tasks.proj.${p.key}`, p.here);
+  }
+  function toggleProject(p: ProjectRuns): void {
+    viewSet(`tasks.proj.${p.key}`, !projectOpen(p), p.here);
+    foldTick++;
+  }
+  /** A chat's line: what its turn does, else its first part's. */
+  function chatHead(c: ChatRuns): RunEntry {
+    return c.turn ?? c.parts[0];
   }
   /** A row with a chat opens it, in its project, at the running turn. */
   function canOpen(r: RunEntry): boolean {
@@ -190,6 +218,18 @@
   </span>
 {/snippet}
 
+{#snippet chatCells(c: ChatRuns, h: RunEntry)}
+  <span class="dot" class:wait={c.waiting}></span>
+  <span class="cname">
+    <span class="desc">{c.chat}</span>
+    {#if c.onScreen}<span class="tag">on screen</span>{/if}
+  </span>
+  <span class="cdoing">{c.waiting ? "waiting on you" : h.doing}</span>
+  <span class="num">{runElapsed(h)}</span>
+  <span class="num">{usageOf(h)}</span>
+  <span class="act">{#if canOpen(h)}<Icon name="chevr" size={12} />{/if}</span>
+{/snippet}
+
 {#snippet agentRow(r: SubagentRow)}
   {@const st = rowState(r)}
   <div class="row {st}" class:focus={tasksFocus.id === r.tool_use_id} use:focusRow={r.tool_use_id}>
@@ -236,13 +276,67 @@
     <div class="caps" use:tip={budgetTitle(app.turnBudget)}>{caps}</div>
   {/if}
   <div class="pane">
-    {#if runs.length > 0 || mine.length > 0}
+    {#if !classic() && runs.length > 0}
+      <!-- Item 558: by project, then chat, then what runs inside it. -->
+      {#each byProject as p (p.key)}
+        {@const open = projectOpen(p)}
+        <section class="proj" class:here={p.here} class:open data-project={p.where}>
+          <button class="proj-head" aria-expanded={open} onclick={() => toggleProject(p)}>
+            <span class="chev"><Icon name={open ? "chev" : "chevr"} size={12} /></span>
+            <span class="proj-name">{p.where}</span>
+            {#if p.here}<span class="here-tag">this project</span>{/if}
+            <span class="spacer"></span>
+            {#if p.waiting}<span class="ask">waiting on you</span>{/if}
+            {#if !open}<span class="aside">{projectSummary(p)}</span>{/if}
+            <span class="count live">{p.count}</span>
+          </button>
+          {#if open}
+            <div class="proj-body">
+              {#each p.chats as c (c.key)}
+                {@const h = chatHead(c)}
+                <div class="chat-run" class:waiting={c.waiting}>
+                  {#if canOpen(h)}
+                    <div
+                      class="crow clickable"
+                      role="button"
+                      tabindex="0"
+                      data-run={h.kind}
+                      use:tip={[c.chat, h.doing, h.onScreen ? "on screen" : ""].filter(Boolean).join("\n") + "\nClick to open it"}
+                      onclick={() => void openRun(h)}
+                      onkeydown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          void openRun(h);
+                        }
+                      }}
+                    >
+                      {@render chatCells(c, h)}
+                    </div>
+                  {:else}
+                    <div class="crow" data-run={h.kind} use:tip={h.doing}>{@render chatCells(c, h)}</div>
+                  {/if}
+                  {#each c.turn ? c.parts : c.parts.slice(1) as r (r.id)}
+                    <div class="prow" data-run={r.kind} use:tip={r.doing}>
+                      <span class="pkind">{r.kind}</span>
+                      <span class="pdoing">{r.doing}</span>
+                      <span class="num">{runElapsed(r)}</span>
+                    </div>
+                  {/each}
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </section>
+      {/each}
+    {/if}
+
+    {#if classic() && (runs.length > 0 || mine.length > 0)}
       <!-- One column head for every group below: they share the columns. -->
       <div class="cols" aria-hidden="true">
         <span>state</span><span>{mine.length > 0 ? "agent" : "chat"}</span><span>{mine.length > 0 ? "model" : ""}</span><span class="num">elapsed</span><span class="num">tokens</span><span class="num">{mine.length > 0 ? "tools" : ""}</span><span></span>
       </div>
     {/if}
-    {#if runs.length > 0}
+    {#if classic() && runs.length > 0}
       <section class="group chats" data-group="everywhere">
         <header class="group-head">
           <span class="ns-k">Running everywhere</span><span class="count live">{runs.length}</span>
@@ -281,6 +375,14 @@
         its tokens and tool uses as it runs, and its transcript opens as a tab.
       </p>
     {:else}
+      {#if !classic()}
+        <!-- Item 558: the open chat's own agents, under their own head and
+             columns, below every project's runs. -->
+        <h3 class="sub">This chat's subagents</h3>
+        <div class="cols" aria-hidden="true">
+          <span>state</span><span>agent</span><span>model</span><span class="num">elapsed</span><span class="num">tokens</span><span class="num">tools</span><span></span>
+        </div>
+      {/if}
 
       {#if groups.running.length > 0}
         <section class="group" data-group="running">
@@ -347,13 +449,19 @@
     background: var(--sheet);
     border: 1px solid var(--line2);
     border-radius: 12px;
-    width: min(68rem, calc(100vw - 4rem));
+    /* Item 558: ~~min(68rem, …)~~ — "way too wide": 50rem under Filament
+       IV, the columns tightened to fit; Classic keeps 68rem (below). */
+    width: min(50rem, calc(100vw - 4rem));
     max-height: calc(100vh - 3rem);
     display: flex;
     flex-direction: column;
     overflow: hidden;
     box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
     /* One column set for every group, so the figures line up down the page. */
+    --cols: 5.75rem minmax(0, 1fr) 5.25rem 4.25rem 3.75rem 2.75rem 6.75rem;
+  }
+  :global([data-layout="classic"]) .modal {
+    width: min(68rem, calc(100vw - 4rem));
     --cols: 7.25rem minmax(0, 1fr) 6.5rem 4.75rem 4.25rem 3.25rem 7.25rem;
   }
   .pane-head {
@@ -645,5 +753,149 @@
   }
   .act .ns-btn {
     gap: 2px;
+  }
+
+  /* Item 558: at 50rem the agent's name needs the room; its type is in
+     the name's hover. Classic (68rem) keeps it on the line. */
+  .type {
+    display: none;
+  }
+  :global([data-layout="classic"]) .type {
+    display: inline;
+  }
+
+  /* ---- item 558: by project (Filament IV) ---- */
+  .proj {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--paper);
+    overflow: hidden;
+  }
+  .proj.here {
+    border-color: color-mix(in srgb, var(--live) 35%, var(--line));
+  }
+  .proj-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 9px 12px;
+    border: 0;
+    background: var(--well);
+    font: inherit;
+    color: var(--ink);
+    text-align: left;
+    cursor: pointer;
+  }
+  .proj-head:hover {
+    background: var(--line);
+  }
+  .proj.open .proj-head {
+    border-bottom: 1px solid var(--line);
+  }
+  .proj-name {
+    font-weight: 600;
+    font-size: 13.5px;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .here-tag {
+    flex: none;
+    font-size: 11px;
+    color: var(--live);
+    background: var(--live-soft);
+    border-radius: 999px;
+    padding: 1px 8px;
+  }
+  .proj-body {
+    display: flex;
+    flex-direction: column;
+  }
+  .chat-run + .chat-run {
+    border-top: 1px solid var(--line);
+  }
+  /* A chat's line: dot, name, what it does, elapsed, tokens, open mark. */
+  .crow {
+    display: grid;
+    grid-template-columns: 7px minmax(0, 0.9fr) minmax(0, 1.1fr) 3.75rem 3.5rem 1rem;
+    column-gap: 10px;
+    align-items: center;
+    min-height: 36px;
+    padding: 0 12px;
+    font-size: 13px;
+    color: var(--ink);
+    box-shadow: inset 2px 0 0 var(--live);
+  }
+  .chat-run.waiting .crow {
+    box-shadow: inset 2px 0 0 var(--accent);
+  }
+  .crow .dot {
+    background: var(--live);
+    box-shadow: var(--glow-live);
+  }
+  .crow .dot.wait {
+    background: var(--accent);
+    box-shadow: none;
+  }
+  .crow.clickable {
+    cursor: pointer;
+  }
+  .crow.clickable:hover {
+    background: var(--sheet);
+  }
+  .crow.clickable:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  .cname {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+  }
+  .cdoing,
+  .pdoing {
+    min-width: 0;
+    color: var(--dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .chat-run.waiting .cdoing {
+    color: var(--accent-ink);
+  }
+  .crow .act {
+    color: var(--dim);
+    display: inline-flex;
+    justify-content: flex-end;
+  }
+  /* What runs inside the chat: indented under its name, one line each. */
+  .prow {
+    display: grid;
+    grid-template-columns: 6.5rem minmax(0, 1fr) 3.75rem;
+    column-gap: 10px;
+    align-items: center;
+    min-height: 28px;
+    padding: 0 12px 0 29px;
+    font-size: 12.5px;
+    color: var(--ink2);
+    border-top: 1px dashed var(--line);
+  }
+  .pkind {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--live);
+    white-space: nowrap;
+  }
+  .sub {
+    margin: 6px 0 -6px;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--dim);
   }
 </style>

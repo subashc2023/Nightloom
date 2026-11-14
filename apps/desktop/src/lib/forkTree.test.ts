@@ -93,6 +93,15 @@ describe("sidebarRows (backlog 207)", () => {
     expect(closed[0].expanded).toBe(false);
   });
 
+  it("keeps a hand-off's new chat top-level, and a fork of it under it (509)", () => {
+    const handed: SessionMeta = { ...meta("b"), forked_from: { session: "a", index: 0, reason: "handoff" } };
+    const rows = sidebarRows([meta("a"), handed, meta("c", "b")], new Set(["b"]));
+    expect(rows.map((r) => [r.meta.id, r.depth, r.forks])).toEqual([
+      ["a", 0, 0],
+      ["b", 0, 1],
+      ["c", 1, 0],
+    ]);
+  });
   it("survives a cycle by leaving its chats top-level", () => {
     const list = [meta("a", "b"), meta("b", "a")];
     expect(ids(sidebarRows(list, new Set()))).toEqual(["a", "b"]);

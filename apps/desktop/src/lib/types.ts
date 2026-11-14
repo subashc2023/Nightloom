@@ -669,6 +669,31 @@ export interface TurnBudget {
   holds?: number[];
   /** When his *Wrap up* reached the model (backlog 192). */
   wrap_at_ms?: number | null;
+  /** The cap this message works under (item 538): the model's
+   *  `set_budget` call, the "up to N%" in his message, or his correction
+   *  from the cap chip. Absent or null: no cap declared. */
+  cap?: TurnCap | null;
+  /** He corrected the cap this message (item 538): the model's later
+   *  `set_budget` calls change nothing. */
+  cap_locked?: boolean;
+  /** Wake thresholds crossed this message (item 538). */
+  wakes_fired?: string[];
+  /** Points held for running helpers (item 538; 537's fix 1). */
+  reserved?: { points: number; at_pct: number | null; at_ms?: number }[];
+}
+
+/** The two ways a cap is worked under (item 538, blocker 1785). */
+export type CapMode = "finish_within" | "work_to_cap_then_continue";
+
+/** A message's declared usage cap (item 538): the backend's `budget::Cap`. */
+export interface TurnCap {
+  /** Percent of the plan's 5-hour window, 1–100: the message's stop line. */
+  percent: number;
+  mode: CapMode;
+  /** `model` (set_budget), `message` (his words, the backstop), `user` (the chip). */
+  source: "model" | "message" | "user";
+  reason: string;
+  set_at_ms: number;
 }
 
 /**
@@ -845,6 +870,12 @@ export interface CacheKey {
   /** The Ask or the Plan position. */
   ask?: boolean;
   plan: boolean;
+  /** The API engine's Tools switch (item 635); absent on Claude Code keys
+   *  and on API keys logged before it. */
+  tools_switch?: boolean;
+  /** The API engine's thinking as sent — `default`, `budget=N`,
+   *  `effort=LEVEL` (item 635); absent on the same terms. */
+  thinking?: string;
 }
 
 /** One MCP server, as reported by `connect`. */
@@ -920,6 +951,11 @@ export interface SessionMeta {
   /** The research thread the chat is bound to (nightshift backlog 281),
    *  its slug; absent when unbound. The row shows it, small and muted. */
   thread?: string;
+  /** The newest reply's input plus output tokens and its model (item 597,
+   *  `SessionSummary::context_used`): raw log, latest wins; absent before a
+   *  reply. The hand-off cue reads it for a row with no reading of its own. */
+  context_used?: number;
+  context_model?: string;
 }
 
 /** Where a fork came from — the parent's id and the cut, as the creation
@@ -1171,6 +1207,10 @@ export type SessionEvent =
       images?: ImageInput[];
       documents?: DocumentInput[];
       at: string;
+      /** Item 515: only on the window's optimistic copy, never logged: the
+       *  names of the files for Claude Code being saved with it, drawn as
+       *  cards until the log's message (with its note) replaces it. */
+      sending_files?: string[];
     }
   | {
       event: "assistant_message";
@@ -1306,6 +1346,10 @@ export type TurnEvent =
   /** The model compacted the context itself, mid-turn, via `compact_context`. */
   | { type: "compacted"; summary: string }
   | { type: "usage"; usage: Usage }
+  /** The context the reply has built so far (nightshift backlog 590; Claude
+   *  Code engine): the last exact figure plus an estimate of what has streamed
+   *  since, by characters; `rough` when thinking is in the estimate. */
+  | { type: "context_live"; exact_tokens: number; estimate_tokens: number; rough: boolean; steps: number }
   /** What the Claude Code session has, from the CLI's `system/init` line —
    *  the first event of every turn on that engine (nightshift backlog 077). */
   | ({ type: "agent_init" } & AgentInit)
@@ -1328,11 +1372,19 @@ export type TurnEvent =
    *  is the Nightloom-authored line written to the chat (not his words);
    *  `agents` the descriptions it named. */
   | { type: "woke"; text: string; agents: string[] }
+  /** Nightloom woke an idle main thread for the message's usage cap
+   *  (item 538): `text` is Nightloom's line (not his words); `kind` the
+   *  thresholds (`reserved`, `near`, `at_cap`, `pace`, `hard`). */
+  | { type: "budget_wake"; text: string; kind: string[]; pct: number | null; cap: number | null }
   /** The Claude Code CLI retrying a failed API call (items 440 + 441):
    *  one per try; the live reply keeps one line for them (`retryLine.ts`).
    *  `error` is the CLI's category — `unknown` with no `status` is a
    *  failed connection; `waited_ms` is set when no response came at all. */
   | { type: "retry"; attempt: number; max_retries: number; error: string | null; status: number | null; delay_ms: number | null; waited_ms: number | null }
+  /** A running Bash command's latest output lines, whole each time they
+   *  change (item 633; ~3 a second at most). Live only: the row's passing
+   *  text, dropped at the call's result. Claude Code engine only. */
+  | { type: "tool_output"; tool_use_id: string; lines: string[] }
   /** An event of a subagent's own turn on the Claude Code engine, carrying
    *  the id of the `Agent` call that spawned it (nightshift backlog 075);
    *  `event` is the child's text, thinking, call or result as the main
@@ -1396,7 +1448,9 @@ export interface SubagentStatus {
  *  chat's warm cache, recorded nowhere. */
 export interface AsideResult {
   answer: string;
-  /** The CLI's estimate of the API cost — not a bill under a subscription. */
+  /** The CLI's estimate of the API cost — not a bill under a subscription.
+   *  What this answer itself added (item 675): the backend takes the
+   *  chat's running cost, which the fork's process restores, off it. */
   cost_usd: number | null;
   /** Tokens of the chat's prefix the aside read back from cache. */
   cache_read: number;
@@ -1408,6 +1462,23 @@ export interface AsideResult {
   model?: string | null;
   input_tokens?: number;
   output_tokens?: number;
+  /** The newest round's prompt plus output (item 675): what the next
+   *  follow-up carries. The two sums above count the chat's prefix once
+   *  per round. Absent from an older backend or when no round reported. */
+  context_tokens?: number | null;
+  /** When the aside's request went out, ms epoch (item 677): its read of
+   *  the chat's cache restarts the cache's hour from here. */
+  sent_ms?: number;
+  /** The newest round's cache read (item 677): the share of the chat's
+   *  prefix the aside found warm (`cache_read` sums the rounds). */
+  round_read?: number;
+  /** Item 674: the answer's share of the plan, estimated from `cost_usd`
+   *  at the rates fitted over lone chat replies; null before the fit has
+   *  enough replies. Absent from an older backend. */
+  plan_est?: { five_hour: number | null; seven_day: number | null; replies: number } | null;
+  /** Item 674: the plan's usage limit stopped the answer — the shape a
+   *  turn's result carries (`AgentTurnResult.limit`). */
+  limit?: AgentTurnResult["limit"];
 }
 
 /** What an aside's question carries besides its words (backlog 283): the
@@ -2088,6 +2159,13 @@ export interface RemoteStatus {
   token: string | null;
   setup_url: string | null;
   qr_svg: string | null;
+  /** Item 588: the switch as he set it — on while the listener waits for Tailscale. */
+  wanted?: boolean;
+  /** Item 588: the phone's one link (the away server's page pairing both hosts, or the Mac's own). */
+  phone_url?: string | null;
+  phone_qr_svg?: string | null;
+  /** What `phone_url` pairs: "both", "away" or "mac". */
+  phone_kind?: "both" | "away" | "mac" | null;
 }
 
 /** A subagent the usage limit stopped before it returned (nightshift

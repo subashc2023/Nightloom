@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hudIn, hudOut } from "./hudMenu";
   /**
    * Review → Morning (3.2): the page, rendered as reading material, with a
    * page picker, the unread state and Mark read; beside it the review
@@ -106,11 +107,12 @@
           </button>
           {#if picker}
             <button class="scrim" aria-label="Close" onclick={() => (picker = false)}></button>
-            <div class="menu ns-card">
+            <div class="menu ns-card hud-m" in:hudIn|global out:hudOut|global>
               {#each mornings as m (m.name)}
                 <button
-                  class="item"
+                  class="item hud-row"
                   class:on={sameMorning(m.name, page.name)}
+                  class:hud-cur={sameMorning(m.name, page.name)}
                   onclick={() => { picker = false; void openMorning(m.name); }}
                 >
                   <span class="ns-mono">{m.name}</span>
@@ -375,5 +377,30 @@
   }
   .earlier-item:hover {
     color: var(--accent);
+  }
+
+  /* Filament IV (item 566): the side column's cards in front of the panel,
+     its headings ruled like every group heading. Gated; Classic unchanged. */
+  :global(:where(:root:not([data-layout="classic"]))) .aside .ns-k.mb {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font: 500 10px var(--mono);
+    letter-spacing: 0.14em;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aside .ns-k.mb::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .block,
+  :global(:where(:root:not([data-layout="classic"]))) .review {
+    background: var(--raised);
+    border-color: var(--line2);
+    border-radius: var(--r2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .block.link:hover {
+    border-color: var(--accent);
   }
 </style>

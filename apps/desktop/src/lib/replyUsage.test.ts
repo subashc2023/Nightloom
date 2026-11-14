@@ -11,6 +11,7 @@ const line = (over: Partial<TurnUsageLine> = {}): TurnUsageLine => ({
   seven_day: { start: 12, end: 13 },
   shared: false,
   cost_usd: 0.4,
+  own: true,
   est: null,
   start_at_ms: Date.UTC(2026, 9, 8, 16, 0),
   end_at_ms: Date.UTC(2026, 9, 8, 16, 5),
@@ -45,6 +46,16 @@ describe("replyUsageView", () => {
     expect(v.text).toBe("5h +4% · week +1%");
     expect(v.title).toMatch(/9 replies that ran alone: 5h ≈0\.3%, week ≈<0\.1%/);
   });
+  // Item 675: a line written before 2026-11-12 carries the chat's running
+  // total as its cost (his ICS 46 chat's lines run 1.04, 1.82 … 11.92),
+  // and an estimate made from that; neither is shown.
+  it("drops the estimate of a line whose cost was the chat's running total (675)", () => {
+    const est = { five_hour: 9.1, seven_day: 1.2, replies: 9 };
+    const old = line({ own: undefined, cost_usd: 11.92, five_hour: { start: 41, end: 41 }, seven_day: { start: 12, end: 12 }, est });
+    const v = replyUsageView(old)!;
+    expect(v.text).toBe("5h +0% · week +0%");
+    expect(v.title).not.toMatch(/API-equivalent cost/);
+  });
   it("names both readings and their times on hover", () => {
     const t = replyUsageView(line())!.title;
     expect(t).toMatch(/5-hour window 41% → 45% \(\+4%\), week 12% → 13% \(\+1%\)/);
@@ -71,6 +82,7 @@ describe("the footer row carries it", () => {
     expect(assistantSrc).toMatch(/class="meta plan" use:tip=\{planUsage\.title\}>\{planUsage\.text\}/);
   });
   it("the transcript passes each reply its line", () => {
-    expect(transcriptSrc).toMatch(/planUsage=\{replyUsageView\(usageLines\.get\(item\.index\)\)\}/);
+    // Item 674: an aside's source brings its own (`src.planUse`); the chat's lines otherwise.
+    expect(transcriptSrc).toMatch(/planUsage=\{src\.planUse \? \(src\.planUse\.get\(item\.index\) \?\? null\) : replyUsageView\(usageLines\.get\(item\.index\)\)\}/);
   });
 });

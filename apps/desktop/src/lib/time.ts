@@ -37,11 +37,13 @@ function relative(iso: string, now: number, long: boolean): string {
 }
 
 /**
- * The exact moment for a hover — `Sep 16, 2026, 3:40 PM` in the user's
- * locale (backlog 123). Empty for a time the log could not parse.
+ * The exact moment for a hover — `Sep 16, 2026, 3:40 PM` (backlog 123),
+ * always the 12-hour clock whatever the locale (item 611b; was the locale's
+ * own, 24-hour under most). Takes an ISO string, epoch ms or a Date. Empty
+ * for a time that could not be parsed.
  */
-export function exactTime(iso: string): string {
-  const then = new Date(iso);
+export function exactTime(at: string | number | Date): string {
+  const then = new Date(at);
   if (Number.isNaN(then.getTime())) return "";
-  return then.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+  return then.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short", hour12: true });
 }

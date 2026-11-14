@@ -18,6 +18,14 @@ use clap::{Parser, Subcommand};
 pub(crate) const DIM: &str = "\x1b[2m";
 pub(crate) const RESET: &str = "\x1b[0m";
 
+/// A listing's stamp, `2026-11-11 2:05 PM`: the local zone, his 12-hour
+/// clock (item 611b; was `%Y-%m-%d %H:%M`, and in UTC for observations).
+pub(crate) fn stamp12<Tz: chrono::TimeZone>(at: &chrono::DateTime<Tz>) -> String {
+    at.with_timezone(&chrono::Local)
+        .format("%Y-%m-%d %-I:%M %p")
+        .to_string()
+}
+
 #[derive(Parser)]
 #[command(
     name = "nightloom",
@@ -104,5 +112,28 @@ async fn main() -> Result<()> {
         // the loop and the tools, and Nightloom renders what it streams.
         None if cli.chat.agent.is_some() => agent::run(cli.chat).await,
         None => chat::run(cli.chat).await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stamp12;
+    use chrono::TimeZone;
+
+    #[test]
+    fn stamp12_reads_12_hour_am_pm_item_611b() {
+        let pm = chrono::Local
+            .with_ymd_and_hms(2026, 11, 11, 14, 5, 0)
+            .unwrap();
+        assert_eq!(stamp12(&pm), "2026-11-11 2:05 PM");
+        let am = chrono::Local
+            .with_ymd_and_hms(2026, 11, 11, 0, 5, 0)
+            .unwrap();
+        assert_eq!(stamp12(&am), "2026-11-11 12:05 AM");
+        // A UTC time is shown in the local zone.
+        assert_eq!(
+            stamp12(&pm.with_timezone(&chrono::Utc)),
+            "2026-11-11 2:05 PM"
+        );
     }
 }

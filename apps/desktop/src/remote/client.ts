@@ -11,6 +11,7 @@ import type { WireView } from "../lib/types";
 import type { ContextReply, LayerChange } from "./ContextSheet.svelte";
 import { isCouncilBlock } from "../lib/council";
 import { parseSubagentBlock } from "../lib/subagent";
+import { cleanPassage, shownText, splitAttachNote } from "../lib/keep";
 import { isSendFile, parseSentFile, sentFileRoute, type SentFile } from "../lib/sentFiles";
 import { aimOf } from "../lib/aim";
 import { isPlaywright } from "../lib/playwright";
@@ -33,23 +34,6 @@ export const DRAFTS_KEY = "nightloom.remote.drafts";
 export function tokenFromHash(hash: string): string | null {
   const m = /(?:^#|[#&])token=([0-9a-fA-F]{16,128})(?:&|$)/.exec(hash);
   return m ? m[1].toLowerCase() : null;
-}
-
-export function loadToken(): string | null {
-  try {
-    return localStorage.getItem(TOKEN_KEY);
-  } catch {
-    return null;
-  }
-}
-
-export function saveToken(token: string | null): void {
-  try {
-    if (token) localStorage.setItem(TOKEN_KEY, token);
-    else localStorage.removeItem(TOKEN_KEY);
-  } catch {
-    // Private mode, or storage off: the token lives for this page load only.
-  }
 }
 
 // ---- the API ------------------------------------------------------------
@@ -371,7 +355,8 @@ export type SearchScope = "this" | "all" | "notes";
 
 /** A group's name as the drawer shows it: the chat's label, else its id. */
 export function searchGroupLabel(g: SearchChatGroup): string {
-  for (const t of [g.title, g.first_user]) if (typeof t === "string" && t.trim()) return t.trim().replace(/\s+/g, " ");
+  // Item 515: a first message that is only files is named by them.
+  for (const t of [g.title, g.first_user ? shownText(g.first_user) : g.first_user]) if (typeof t === "string" && t.trim()) return t.trim().replace(/\s+/g, " ");
   return "Untitled chat";
 }
 
@@ -893,7 +878,9 @@ export class Client {
   }
 
   async search(q: string, scope: SearchScope, signal?: AbortSignal): Promise<SearchResult> {
-    return (await this.call(`/search?q=${encodeURIComponent(q)}&scope=${scope}`, { signal })).json();
+    const r = (await (await this.call(`/search?q=${encodeURIComponent(q)}&scope=${scope}`, { signal })).json()) as SearchResult;
+    // Item 515: a passage in a note for the CLI reads as the file names.
+    return r && Array.isArray(r.groups) ? { ...r, groups: r.groups.map((g) => ({ ...g, rows: g.rows.map((h) => ({ ...h, ...cleanPassage(h) })) })) } : r;
   }
 
   /** Start the Mac's dream or capture pass (wave 5): 202 `{status:"started"}`; a 409 is why not
@@ -1274,6 +1261,11 @@ export type Row =
       edited: boolean;
       /** Photos sent with it. */
       images: number;
+      /** Item 515: his words, the note for the CLI taken out (`text` keeps
+       *  it, for an edit to put back). */
+      said: string;
+      /** The files the note names (and documents sent with it), by name. */
+      files: string[];
     }
   | {
       kind: "assistant";
@@ -1387,6 +1379,8 @@ export function transcriptRows(events: SessionEvent[]): Row[] {
           removed: mk.removed.has(i),
           edited: edit !== undefined,
           images: e.images?.length ?? 0,
+          said: splitAttachNote(edit ?? e.text).said,
+          files: [...(e.documents ?? []).map((d) => d.name), ...splitAttachNote(edit ?? e.text).files.map((f) => f.name)],
         });
         break;
       }

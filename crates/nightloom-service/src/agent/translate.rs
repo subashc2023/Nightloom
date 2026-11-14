@@ -31,10 +31,22 @@ pub struct AgentOutcome {
     pub model: Option<String>,
     /// Summed across every round of the turn.
     pub usage: Usage,
+    /// The newest round's own usage (nightshift item 675): its prompt plus
+    /// its output is what the next request carries — the context — where
+    /// [`Self::usage`] counts the prefix once per round. `None` when no
+    /// round reported.
+    pub last_round: Option<Usage>,
     /// The CLI's own client-side estimate, and **not** a bill: under a
     /// subscription nothing here is charged per token. Carried so a shell
     /// can show what the same turn would have cost on the API, which is the
     /// only reading of this number that is true.
+    ///
+    /// **This process's own spend** since item 675 (2026-11-12): the
+    /// `result` line's `total_cost_usd` is the session's running total — a
+    /// resumed or forked process restores the cost of everything before it
+    /// — so [`super::Agent`] takes what it restored off before handing
+    /// the outcome on (`session_figures::own_cost`). Straight from the
+    /// translator it is still the CLI's total.
     pub cost_usd: Option<f64>,
     /// Assistant turns the CLI took internally, tool rounds included.
     pub rounds: Option<u32>,
@@ -143,6 +155,13 @@ pub struct Translator {
     /// a Running-tasks row, so the top bar read "1 agent · 1 running"
     /// over a sleep and "6 agents · done" after six of them.
     not_agents: HashSet<String>,
+    /// The foreground Bash commands that started since the last
+    /// [`Translator::take_bash`] (item 633): `(call id, task id)`, for the
+    /// read loop's tail of the CLI's spool ([`super::bash_tail`]).
+    bash_started: Vec<(String, String)>,
+    /// The not-agent tasks that ended since the last take (their
+    /// `task_notification`).
+    bash_ended: Vec<String>,
     /// Each agent's first spawning call, by its `task_id` (backlog 406):
     /// a SendMessage that resumes a finished agent makes the CLI narrate
     /// the resumed run under the SendMessage call's id (measured on
@@ -164,6 +183,87 @@ pub struct Translator {
     /// by a paragraph break, or the two run together in the transcript and
     /// the log ("…notifies me.The agent said: hello", walk 2026-09-25).
     text_break: bool,
+    /// The live context reading (backlog 590).
+    live: LiveContext,
+}
+
+/// The context a reply has built so far, as the stream lets it be known
+/// (nightshift backlog 590, his "calculate context like in the middle of a
+/// reply … and like take estimates"). Exact at each round's two ends — the
+/// `message_start` usage is the whole prompt that round sent, the
+/// `message_delta` usage that plus the round's output — and between them
+/// an estimate of what has streamed since, by characters: three to a token
+/// for everything — measured 2026-11-10 on a real Claude Code turn (2.1.322,
+/// Haiku 4.5): 3,294 characters of markdown reply cost 1,140 output tokens
+/// (2.9 a token), so the usual "four for English" undercounted a reply by a
+/// quarter. Thinking makes the estimate rough:
+/// Claude Code streams a summary of it, not every token it cost. Nothing
+/// is sent before the first exact figure, and the estimate goes out once
+/// it has grown by [`LiveContext::STEP`] tokens, not on every delta.
+#[derive(Debug, Default)]
+struct LiveContext {
+    exact: u64,
+    steps: u32,
+    prose_chars: u64,
+    dense_chars: u64,
+    thinking_chars: u64,
+    sent: u64,
+}
+
+/// What a character run streamed since the last exact figure is.
+#[derive(Debug, Clone, Copy)]
+enum Streamed {
+    Prose,
+    Dense,
+    Thinking,
+}
+
+impl LiveContext {
+    /// Tokens of estimate between two sends (~100 characters).
+    const STEP: u64 = 32;
+    /// Characters to a token, for every kind (see the type's note).
+    const CHARS_PER_TOKEN: u64 = 3;
+
+    fn estimate(&self) -> u64 {
+        (self.prose_chars + self.thinking_chars + self.dense_chars).div_ceil(Self::CHARS_PER_TOKEN)
+    }
+
+    fn event(&self) -> TurnEvent {
+        TurnEvent::ContextLive {
+            exact_tokens: self.exact,
+            estimate_tokens: self.estimate(),
+            rough: self.thinking_chars > 0,
+            steps: self.steps,
+        }
+    }
+
+    /// An exact figure: the estimate starts again from it.
+    fn exact(&mut self, tokens: u64) -> TurnEvent {
+        *self = LiveContext {
+            exact: tokens,
+            steps: self.steps + 1,
+            ..LiveContext::default()
+        };
+        self.event()
+    }
+
+    /// Characters streamed; an event once the estimate has grown a step.
+    fn grow(&mut self, kind: Streamed, chars: usize) -> Option<TurnEvent> {
+        if self.steps == 0 || chars == 0 {
+            return None;
+        }
+        let n = chars as u64;
+        match kind {
+            Streamed::Prose => self.prose_chars += n,
+            Streamed::Dense => self.dense_chars += n,
+            Streamed::Thinking => self.thinking_chars += n,
+        }
+        let est = self.estimate();
+        (est >= self.sent + Self::STEP).then(|| {
+            self.sent = est;
+            self.event()
+        })
+    }
 }
 
 /// A subagent's accounting, as the stream lets it be kept (2026-09-17,
@@ -422,6 +522,27 @@ impl Translator {
     }
 
     /// The accumulated outcome. Call after the stream ends.
+    /// Whether the plan's usage limit has been seen on this turn's stream
+    /// (543a): a rejected `rate_limit_event`, a 429, the CLI's sentence —
+    /// on the main thread or a helper's.
+    /// The foreground Bash commands started and the not-agent tasks ended
+    /// since the last call (item 633), for the read loop's tails.
+    pub(super) fn take_bash(&mut self) -> (Vec<(String, String)>, Vec<String>) {
+        (
+            std::mem::take(&mut self.bash_started),
+            std::mem::take(&mut self.bash_ended),
+        )
+    }
+
+    /// The session the CLI named on its init line, once seen.
+    pub(super) fn session_id(&self) -> Option<&str> {
+        self.outcome.session_id.as_deref()
+    }
+
+    pub fn limited(&self) -> bool {
+        self.outcome.limit.is_some()
+    }
+
     pub fn finish(mut self) -> AgentOutcome {
         if let Some(hit) = self.outcome.limit.as_mut() {
             hit.agents = stopped_agents(&hit.subagents, &self.subagent_order, &self.subagents);
@@ -465,14 +586,30 @@ impl Translator {
                         _ => text,
                     };
                     self.prose_tail = text.chars().last();
-                    vec![TurnEvent::TextDelta { text }]
+                    let live = self.live.grow(Streamed::Prose, text.chars().count());
+                    std::iter::once(TurnEvent::TextDelta { text })
+                        .chain(live)
+                        .collect()
                 }
                 Delta::Thinking { thinking } => {
                     self.prose_tail = None;
                     self.text_break = false;
-                    vec![TurnEvent::ThinkingDelta { text: thinking }]
+                    let live = self.live.grow(Streamed::Thinking, thinking.chars().count());
+                    std::iter::once(TurnEvent::ThinkingDelta { text: thinking })
+                        .chain(live)
+                        .collect()
                 }
+                Delta::InputJson { partial_json } => self
+                    .live
+                    .grow(Streamed::Dense, partial_json.chars().count())
+                    .into_iter()
+                    .collect(),
                 Delta::Other => Vec::new(),
+            },
+            // Backlog 590: the round's prompt, exact — the live reading's anchor.
+            StreamEv::MessageStart { message } => match message.usage {
+                Some(raw) => vec![self.live.exact(raw.to_usage().input_tokens)],
+                None => Vec::new(),
             },
             // One per API call, so this is the round's accounting rather
             // than a running total — which is exactly what a context gauge
@@ -480,7 +617,9 @@ impl Translator {
             StreamEv::MessageDelta { usage: Some(raw) } => {
                 let usage = raw.to_usage();
                 self.outcome.usage.add(usage);
-                vec![TurnEvent::Usage { usage }]
+                self.outcome.last_round = Some(usage);
+                let live = self.live.exact(usage.input_tokens + usage.output_tokens);
+                vec![TurnEvent::Usage { usage }, live]
             }
             StreamEv::MessageDelta { usage: None } | StreamEv::Other => Vec::new(),
         }
@@ -504,6 +643,7 @@ impl Translator {
     /// (`protocol::Block::Text`); a top-level line's are still dropped.
     fn blocks(&mut self, message: ApiMessage, nested: Option<String>) -> Vec<TurnEvent> {
         let mut out = Vec::new();
+        let mut live = Vec::new();
         // A child's round, once per message id (backlog 152): the status
         // event goes out ahead of the round's blocks, so a panel has the
         // model and the count before the calls land under it.
@@ -536,10 +676,15 @@ impl Translator {
                         .pending
                         .remove(&tool_use_id)
                         .unwrap_or_else(|| "unknown".to_string());
+                    let content = flatten(&content);
+                    // Backlog 590: a main-thread result is in the next prompt.
+                    if nested.is_none() {
+                        live.extend(self.live.grow(Streamed::Dense, content.chars().count()));
+                    }
                     TurnEvent::ToolResult {
                         tool_use_id,
                         name,
-                        content: flatten(&content),
+                        content,
                         is_error,
                     }
                 }
@@ -566,6 +711,7 @@ impl Translator {
                 None => event,
             });
         }
+        out.extend(live);
         out
     }
 
@@ -656,6 +802,9 @@ impl Translator {
                 task_type,
             } => {
                 if !is_agent_task(&task_type) {
+                    if task_type == "local_bash" && !is_backgrounded {
+                        self.bash_started.push((tool_use_id.clone(), task_id));
+                    }
                     self.not_agents.insert(tool_use_id);
                     return Vec::new();
                 }
@@ -684,8 +833,13 @@ impl Translator {
                 ledger.status = "running".into();
                 return vec![ledger.event(&tool_use_id)];
             }
+            SystemLine::TaskNotification { tool_use_id, .. }
+                if self.not_agents.contains(&tool_use_id) =>
+            {
+                self.bash_ended.push(tool_use_id);
+                return Vec::new();
+            }
             SystemLine::TaskProgress { tool_use_id, .. }
-            | SystemLine::TaskNotification { tool_use_id, .. }
                 if self.not_agents.contains(&tool_use_id) =>
             {
                 return Vec::new();
@@ -1248,6 +1402,120 @@ mod tests {
         assert!(matches!(&events[0], TurnEvent::ToolResult { name, .. } if name == "unknown"));
     }
 
+    /// The live readings in a stream (backlog 590), as (exact, estimate, rough, steps).
+    fn live_of(events: &[TurnEvent]) -> Vec<(u64, u64, bool, u32)> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                TurnEvent::ContextLive {
+                    exact_tokens,
+                    estimate_tokens,
+                    rough,
+                    steps,
+                } => Some((*exact_tokens, *estimate_tokens, *rough, *steps)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn text_delta(text: &str) -> String {
+        serde_json::json!({"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":text}}}).to_string()
+    }
+
+    const MSG_START: &str = r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-4-1","content":[],"usage":{"input_tokens":3,"cache_creation_input_tokens":500,"cache_read_input_tokens":20000,"output_tokens":1}}},"session_id":"s","parent_tool_use_id":null}"#;
+
+    /// Backlog 590: each round's start is an exact figure, the streamed text
+    /// an estimate on top of it sent a step at a time, and the round's end
+    /// exact again (prompt plus output).
+    #[test]
+    fn the_context_reads_live_through_a_round() {
+        let mut lines = vec![MSG_START.to_string()];
+        // 40 deltas of 10 characters: 400 characters, ~134 tokens.
+        for _ in 0..40 {
+            lines.push(text_delta("abcdefghij"));
+        }
+        lines.push(MSG_DELTA.to_string());
+        let refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+        let (events, _) = drive(&refs);
+        let live = live_of(&events);
+        assert_eq!(live.first(), Some(&(20503, 0, false, 1)));
+        // A send each time the estimate has grown 32 tokens: at 100, 200,
+        // 300 and 400 characters (34, 67, 100 and 134 tokens).
+        let estimates: Vec<u64> = live[1..live.len() - 1].iter().map(|l| l.1).collect();
+        assert_eq!(estimates, vec![34, 67, 100, 134]);
+        assert!(
+            live[1..live.len() - 1]
+                .iter()
+                .all(|l| l.0 == 20503 && !l.2 && l.3 == 1)
+        );
+        // The round's end: MSG_DELTA's 3656 prompt + 43 output, exact.
+        assert_eq!(live.last(), Some(&(3656 + 43, 0, false, 2)));
+        // The text still streams whole, every delta.
+        let text = events
+            .iter()
+            .filter(|e| matches!(e, TurnEvent::TextDelta { .. }))
+            .count();
+        assert_eq!(text, 40);
+    }
+
+    /// Thinking marks the estimate rough; tool arguments and a main-thread
+    /// result count; a subagent's result does not.
+    #[test]
+    fn thinking_is_rough_and_results_count_dense() {
+        let thinking = serde_json::json!({"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"x".repeat(200)}}}).to_string();
+        let args = serde_json::json!({"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"y".repeat(99)}}}).to_string();
+        let result = serde_json::json!({"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"z".repeat(300)}]},"parent_tool_use_id":null}).to_string();
+        let nested = serde_json::json!({"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_2","content":"z".repeat(3000)}]},"parent_tool_use_id":"toolu_AGENT"}).to_string();
+        let (events, _) = drive(&[MSG_START, &thinking, &args, &result, &nested]);
+        let live = live_of(&events);
+        // 200 thinking chars = 67 tokens, rough; + 99 = 100; + 300 = 200.
+        assert_eq!(
+            live,
+            vec![
+                (20503, 0, false, 1),
+                (20503, 67, true, 1),
+                (20503, 100, true, 1),
+                (20503, 200, true, 1)
+            ]
+        );
+    }
+
+    /// Backlog 590's measurement: a real recorded stream (`NIGHTLOOM_590_STREAM`
+    /// names the file), each live reading printed beside the next exact one,
+    /// so the estimate's error at each step can be read off. Run by hand.
+    #[test]
+    #[ignore]
+    fn replay_a_recorded_stream_for_the_live_reading() {
+        let Ok(path) = std::env::var("NIGHTLOOM_590_STREAM") else {
+            return;
+        };
+        let text = std::fs::read_to_string(path).unwrap();
+        let mut t = Translator::new();
+        for line in text.lines() {
+            for e in t.push(line) {
+                if let TurnEvent::ContextLive {
+                    exact_tokens,
+                    estimate_tokens,
+                    rough,
+                    steps,
+                } = e
+                {
+                    println!(
+                        "step {steps} exact {exact_tokens} estimate {estimate_tokens} total {} rough {rough}",
+                        exact_tokens + estimate_tokens
+                    );
+                }
+            }
+        }
+    }
+
+    /// Before the first exact figure nothing is guessed.
+    #[test]
+    fn no_live_reading_before_a_round_starts() {
+        let (events, _) = drive(&[&text_delta(&"a".repeat(400))]);
+        assert!(live_of(&events).is_empty());
+    }
+
     /// Anthropic reports `input_tokens` exclusive of cache traffic. Summed
     /// here or the gauge reads 3546 against a real prompt of 3656.
     #[test]
@@ -1261,6 +1529,20 @@ mod tests {
         assert_eq!(usage.cache_write_tokens, Some(10));
         assert_eq!(usage.reasoning_tokens, Some(36));
         assert_eq!(outcome.usage.input_tokens, 3656);
+    }
+
+    /// Item 675: the outcome's usage sums the turn's rounds, each of which
+    /// sends the prefix again; the newest round's own reading is the
+    /// context the next request carries (an aside's dial reads it).
+    #[test]
+    fn the_last_round_is_kept_beside_the_sum() {
+        let (_, outcome) = drive(&[MSG_DELTA, MSG_DELTA_263]);
+        assert_eq!(outcome.usage.input_tokens, 3656 + 10 + 7619 + 12144);
+        let last = outcome.last_round.expect("a round reported");
+        assert_eq!(last.input_tokens, 10 + 7619 + 12144);
+        assert_eq!(last.output_tokens, 42);
+        let (_, none) = drive(&[]);
+        assert_eq!(none.last_round, None);
     }
 
     /// Verbatim from one `claude -p` turn on 2.1.263 (2026-09-15, nightshift
@@ -1855,5 +2137,40 @@ mod tests {
         // A progress line naming only the SendMessage call (no task_id).
         let ev = t.push(r#"{"type":"system","subtype":"task_progress","tool_use_id":"toolu_0176QKYiQvXCpGikuLVDdohv","usage":{"total_tokens":10,"tool_uses":1,"duration_ms":5}}"#);
         assert_eq!(statuses(&ev)[0].0, "toolu_0167io1Y9jPZHdt16w6e2dkQ");
+    }
+
+    /// Item 633: a foreground Bash task (as measured on 2.1.322) is handed
+    /// to the read loop's tail with its task id; a backgrounded one and an
+    /// agent are not; its `task_notification` ends it; the session is the
+    /// init line's.
+    #[test]
+    fn foreground_bash_tasks_are_handed_to_the_tail() {
+        let mut t = Translator::default();
+        t.push(r#"{"type":"system","subtype":"init","cwd":"/tmp/x","session_id":"20ed5f14-9880","tools":[],"mcp_servers":[],"model":"m","permissionMode":"default"}"#);
+        assert_eq!(t.session_id(), Some("20ed5f14-9880"));
+        let ev = t.push(r#"{"type":"system","subtype":"task_started","task_id":"bi4s82vn0","tool_use_id":"toolu_FG","description":"ticks","is_backgrounded":false,"task_type":"local_bash","session_id":"20ed5f14-9880"}"#);
+        assert!(ev.is_empty());
+        t.push(r#"{"type":"system","subtype":"task_started","task_id":"bbg","tool_use_id":"toolu_BG","description":"bg","is_backgrounded":true,"task_type":"local_bash"}"#);
+        t.push(r#"{"type":"system","subtype":"task_started","task_id":"a1","tool_use_id":"toolu_AG","description":"agent","subagent_type":"general-purpose","is_backgrounded":false,"task_type":"local_agent"}"#);
+        let (started, ended) = t.take_bash();
+        assert_eq!(
+            started,
+            vec![("toolu_FG".to_string(), "bi4s82vn0".to_string())]
+        );
+        assert!(ended.is_empty());
+        t.push(r#"{"type":"system","subtype":"task_notification","task_id":"bi4s82vn0","tool_use_id":"toolu_FG","status":"completed","output_file":"","summary":"ticks"}"#);
+        let (started, ended) = t.take_bash();
+        assert!(started.is_empty());
+        assert_eq!(ended, vec!["toolu_FG".to_string()]);
+        // The event's wire shape.
+        let json = serde_json::to_string(&TurnEvent::ToolOutput {
+            tool_use_id: "toolu_FG".into(),
+            lines: vec!["tick 3".into()],
+        })
+        .unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"tool_output","tool_use_id":"toolu_FG","lines":["tick 3"]}"#
+        );
     }
 }

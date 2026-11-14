@@ -13,8 +13,12 @@ export const ICONS = {
   chevl: '<path d="m12 6-4 4 4 4"/>',
   chevr: '<path d="m8 6 4 4-4 4"/>',
   ext: '<path d="M8 4H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1v-3M12 4h4v4M16 4l-7 7"/>',
+  /* Claude's browser (item 508): a globe, its meridian and equator. */
+  globe: '<circle cx="10" cy="10" r="6.5"/><path d="M3.5 10h13M10 3.5c-1.9 1.9-2.8 4.1-2.8 6.5s.9 4.6 2.8 6.5c1.9-1.9 2.8-4.1 2.8-6.5s-.9-4.6-2.8-6.5z"/>',
   gear: '<circle cx="10" cy="10" r="2.5"/><path d="M10 3v2M10 15v2M3 10h2M15 10h2M5 5l1.4 1.4M13.6 13.6 15 15M5 15l1.4-1.4M13.6 6.4 15 5"/>',
   play: '<path d="M6 4.5v11l9-5.5z"/>',
+  /* Send a waiting message now (item 549): an arrow up, the send of a chat box. */
+  send: '<path d="M10 16V4.5M5 9.5l5-5 5 5"/>',
   /* Stop a turn (item 398): a filled rounded square, the media-stop shape,
      filled where the set is otherwise line — the one solid glyph, so it reads
      as an action at the size of the Send it replaces. */
@@ -26,6 +30,8 @@ export const ICONS = {
   cols: '<rect x="3" y="4" width="14" height="12" rx="1.5"/><path d="M10 4v12"/>',
   // The chat-surface redesign (nightshift notes/runner-design/surface-redesign-2026-09-13).
   folder: '<path d="M3 6a1.5 1.5 0 0 1 1.5-1.5H8l2 2h5.5A1.5 1.5 0 0 1 17 8v7a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 3 15z"/>',
+  // Item 673: the aside head's "about its Nth reply" pill.
+  reply: '<path d="M8 5 4 9l4 4"/><path d="M4 9h7a5 5 0 0 1 5 5v1"/>',
   pencil: '<path d="m4 16 3.5-.7 8-8-2.8-2.8-8 8zM11.5 5.7l2.8 2.8"/>',
   key: '<circle cx="7" cy="12" r="3.5"/><path d="M9.5 9.5 16 3M13 6l2 2M11 8l2 2"/>',
   x: '<path d="M5 5l10 10M15 5 5 15"/>',

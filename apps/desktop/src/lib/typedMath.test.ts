@@ -130,3 +130,15 @@ describe("applyTypedMath", () => {
     expect(inside.text.slice(0, inside.caret)).toBe("so $s^{2}$");
   });
 });
+
+describe("item 647: an operator left at a run's edge never hangs", () => {
+  // `dangling ||= !cur.pop()` skipped the pop once dangling was true: an endless loop that froze the app.
+  it.each([
+    "(n/2)^2 -> 4 * (",
+    "Level 1: 4 * (n/2)^2 -> 4 * (",
+    "1. \nT(n) = 4T(n/2) + n\nLevel 0: n, Level 1: 4 * n/2\nT(n) = 4T(n/2) + n^2\nLevel 0: n^2\nLevel 1: 4 * (n/2)^2 -> 4 * (",
+    "* + x^2 - * +",
+  ])("returns for %j", (s) => {
+    expect(Array.isArray(findTypedMath(s))).toBe(true);
+  });
+});

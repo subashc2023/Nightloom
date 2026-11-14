@@ -1,360 +1,720 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { tip as tipAction } from "./tip";
   import {
     app,
+    contextUsed,
     importFromClaude,
+    MODE_LINES,
+    KIND_LINES,
+    newChatInThread,
+    newSession,
     openProjectFolder,
-    pickerModels,
     revealFolder,
     runMenuCommand,
     showNewProject,
-    showNote,
+    showNightshift,
   } from "./state.svelte";
-  import { MODEL_KEYS, providerLabel } from "./catalog";
-  import type { Note, NoteScope } from "./types";
+  import { providerLabel } from "./catalog";
+  import type { ChatKind, ChatMode } from "./types";
   import Composer from "./Composer.svelte";
+  import ContextDial from "./ContextDial.svelte";
+  import DialMotion from "./DialMotion.svelte";
+  import { projectSwitch } from "./projectSwitch.svelte";
+  import SwitchCover from "./SwitchCover.svelte";
   import Icon from "./Icon.svelte";
   import Kbd from "./Kbd.svelte";
+  import WelcomeClassic from "./WelcomeClassic.svelte";
+  import { classic } from "./layout.svelte";
   import { isMac } from "./platform";
-  import { relativeTime } from "./time";
+  import { mark as handoffMark } from "./handoff.svelte";
+  import { shortTokens, tickCounts } from "./contextDial";
+  import { threadList } from "./threadPanel.svelte";
+  import { departs } from "./sendMotion";
+  import { startContext, type StartContext } from "./api";
+  import {
+    REFLOW_MS,
+    SWEEP_MS,
+    approxTokens,
+    blendSizes,
+    drawnGroups,
+    easeOut,
+    ringArcs,
+    startArcs,
+    startGroups,
+    startScale,
+    startSummary,
+    type StartGroup,
+    type StartTone,
+  } from "./startDial";
+  import {
+    aroundAt,
+    clockLine,
+    columnWithoutRow,
+    dialSize,
+    greeting,
+    quarterLabels,
+    readings,
+    readoutsFit,
+    shortClock,
+    threadWhen,
+    type Reading,
+  } from "./newChatPage";
+  import { newChatGround } from "./newChatGround";
+  import { groundPick } from "./newChatGroundPick.svelte";
+  import { shaderGround, VEIL_SELECTOR } from "./newChatShader";
 
   /**
-   * The new-chat page, redesigned 2026-09-13 (nightshift
-   * notes/runner-design/surface-redesign-2026-09-13, canvas row 5; blocker
-   * 030): the project's notes orbit the composer on an inner ring, the
-   * knowledge base's on an outer one. Hover pauses a note and shows its
-   * first line; click opens it in the centre pane, as the Notes tab does.
-   * The project list left the page — ⌘P is the switcher, ⌘K the command
-   * palette — and a strip of the stable keys sits at the foot. Nothing the
-   * old page could do is gone; the paths moved.
+   * The new-chat page. Filament IV (item 563, stage 4; 521 report §2 "The
+   * new-chat page", mockups `f4-new.png` calm and `f4x-new.png` lit): the
+   * context dial, 330 px, in the centre with the date and time, the
+   * project's name, a greeting and "0 of 1M in context" inside it; the
+   * ready readings — a row of five in calm, six read-outs around the dial
+   * with leader lines in lit (the default, blocker 1689) when the pane is
+   * wide enough; the message box; the four kinds of chat; the threads to
+   * pick up; the key strip. On the first send the dial travels to the
+   * right column (`departs` in `sendMotion.ts`).
+   *
+   * Item 581 ("missing the animative quality that makes it like jarvis"):
+   * `DialMotion.svelte` draws gears, a ticking clock hand, the 5-hour
+   * window's slow hand and an audio-style ring under the dial, reacting to
+   * typing, a layer switch, a project switch and a hover on a part.
+   *
+   * Under the Classic layout (item 542) this is `WelcomeClassic.svelte`,
+   * fe79d50's page verbatim: the notes orbiting the composer (2026-09-13).
+   *
+   * Item 422's column stays: 700 px, "slightly" narrower than the chat's
+   * box, at his ask (the mockup drew 760).
    */
 
-  /**
-   * ~~On the Claude Code engine the notes are still on disk and its tools can
-   * read them — but nothing indexes them into its prompt, because it
-   * assembles its own. So the count line says how many there are, not that a
-   * new chat starts knowing them, which on this engine it does not.~~
-   * Since 2026-09-14 the indexes cross to that engine too (the preamble
-   * bridge in `connect_agent`), so the count line reads the same on both.
-   */
-  const agentMode = $derived(app.connection?.engine === "claude-code");
-
-  // The rings. Capped: a forty-note vault as a ring of text would be the
-  // clutter the round-2 critique was about; the rest are one click away.
-  const INNER_MAX = 8;
-  const OUTER_MAX = 6;
-  const inner = $derived(app.project ? app.notes.slice(0, INNER_MAX) : []);
-  const outer = $derived(app.vault.slice(0, OUTER_MAX));
-
-  // Stage geometry, read off the element so the ellipses follow the pane.
+  // Stage geometry, read off the element.
   let w = $state(0);
   let h = $state(0);
-  // Below this the rings would cross the column; the column alone remains.
-  const rings = $derived(w >= 760 && h >= 480);
-  const cx = $derived(w / 2);
-  const cy = $derived(h / 2 - 16);
-  // Inner ring first; the outer one stays inside the pane (a chip is ~70px
-  // either side of its centre), and the column is sized to clear the inner
-  // ring — on the default window it would otherwise graze the composer.
-  const innerR = $derived({ rx: Math.round(w * 0.33), ry: Math.round(h * 0.26) });
-  const outerR = $derived({
-    rx: Math.round(Math.min(w * 0.44, w / 2 - 95)),
-    ry: Math.round(h * 0.36),
+
+  // ---- the ground (item 632): a moving background behind the page, the
+  // look picked in Settings → Animations (`newChatGround.ts` draws it; off
+  // under Reduce motion and Calm, where the CSS dot tile stays).
+  let groundEl = $state<HTMLElement | null>(null);
+  let groundCanvas = $state<HTMLCanvasElement | null>(null);
+  let groundCtl: { set(style: typeof groundPick.value): void; destroy(): void } | null = null;
+  // Item 640: Horizon and Radar draw on their own WebGL canvas over the dot tile.
+  let shaderCanvas = $state<HTMLCanvasElement | null>(null);
+  let shaderCtl: { set(style: string): void; typed(): void; destroy(): void } | null = null;
+  $effect(() => {
+    const host = groundEl;
+    const canvas = shaderCanvas;
+    if (!host || !canvas) return;
+    const ctl = shaderGround(
+      canvas,
+      host,
+      () => {
+        const core = host.querySelector(".core");
+        if (!core) return null;
+        const hr = host.getBoundingClientRect();
+        const cr = core.getBoundingClientRect();
+        return { x: cr.left + cr.width / 2 - hr.left, y: cr.top + cr.height / 2 - hr.top, r: Math.max(1, cr.width / 2 - PAD) };
+      },
+      { veil: VEIL_SELECTOR },
+    );
+    shaderCtl = ctl;
+    ctl.set(untrack(() => groundPick.value));
+    return () => {
+      ctl.destroy();
+      shaderCtl = null;
+    };
   });
-  // 720, up from 560 (his 2026-09-16 review: a long prompt "feels kinda
-  // compressed horizontally") — near the open chat's composer width, still
-  // held inside the inner ring on a narrow window.
-  // ~~`rings ? Math.min(720, 2 * (innerR.rx - 60)) : 720`~~ — item 289
-  // (2026-10-02, his "off centered or on different rows"): inside the ring
-  // the column was ~340 px at his zoom and the composer's controls split
-  // into two lopsided rows. The column is the chat composer's width now
-  // (its card is 760 px), the pane's less a margin; the rings pass behind.
-  // ~~760~~ → 700 (item 422, 2026-10-27, his "slightly, just slightly, not
-  // too much"): 8 % narrower than the chat's box, on this page only.
+  $effect(() => {
+    const host = groundEl;
+    const canvas = groundCanvas;
+    if (!host || !canvas) return;
+    const ctl = newChatGround(canvas, host, () => {
+      const core = host.querySelector(".core");
+      if (!core) return null;
+      const hr = host.getBoundingClientRect();
+      const cr = core.getBoundingClientRect();
+      return { x: cr.left + cr.width / 2 - hr.left, y: cr.top + cr.height / 2 - hr.top };
+    });
+    groundCtl = ctl;
+    ctl.set(untrack(() => groundPick.value));
+    return () => {
+      ctl.destroy();
+      groundCtl = null;
+    };
+  });
+  $effect(() => {
+    const g = groundPick.value;
+    groundCtl?.set(g);
+    shaderCtl?.set(g);
+  });
   const colMax = $derived(Math.max(320, Math.min(700, w - 40)));
 
-  function ellipse(rx: number, ry: number): string {
-    return `M ${cx + rx} ${cy} A ${rx} ${ry} 0 1 1 ${cx - rx} ${cy} A ${rx} ${ry} 0 1 1 ${cx + rx} ${cy}`;
-  }
-  const innerPath = $derived(ellipse(innerR.rx, innerR.ry));
-  const outerPath = $derived(ellipse(outerR.rx, outerR.ry));
-  const INNER_LAP = 240; // seconds — the board's "one lap ≈ 4 min"
-  const OUTER_LAP = 400;
-
-  interface Traveller {
-    scope: NoteScope;
-    note: Note;
-    path: string;
-    lap: number;
-    /** Negative, so the ring starts spread rather than bunched. */
-    delay: number;
-  }
-  const travellers = $derived.by((): Traveller[] => {
-    const out: Traveller[] = [];
-    inner.forEach((note, i) =>
-      out.push({
-        scope: "project",
-        note,
-        path: innerPath,
-        lap: INNER_LAP,
-        delay: -((i / Math.max(inner.length, 1)) * INNER_LAP),
-      }),
+  // ---- the dial
+  // The column under the dial, measured: the dial takes what is left.
+  let colH = $state(0);
+  const PAD = 26;
+  /** Page padding (10 + 44), the dial's margin (4) and its box's pad (2 × PAD). */
+  const size = $derived(dialSize(h, colH + 58 + PAD * 2));
+  const box = $derived(size + PAD * 2);
+  const mid = $derived(box / 2);
+  const limit = $derived(app.connection?.contextLimit ?? null);
+  const used = $derived(contextUsed() ?? 0);
+  const share = $derived(limit ? Math.min(used / limit, 1) : 0);
+  const markShare = $derived(limit ? handoffMark(null, limit) : null);
+  const ticks = $derived(tickCounts(limit));
+  const quarters = $derived(quarterLabels(limit));
+  const handoffAt = $derived.by(() => {
+    if (markShare == null || !limit || size === 0) return null;
+    const p = aroundAt(markShare, size / 2 + 16, mid);
+    return { ...p, left: markShare > 0.5, text: `hand-off ${shortTokens(markShare * limit)}` };
+  });
+  // ---- what the new chat already holds (item 574): Claude Code's own
+  // prompt and tools, Nightloom's layers, the instruction files and the
+  // memory the CLI loads — fetched on every reconnect (a layer switched or
+  // edited in the prompt menu reconnects), drawn as the arc's parts. The
+  // arc sweeps up from 0 on open and re-flows when the parts change; the
+  // number counts with it. Nothing here touches the message box.
+  let start = $state<StartContext | null>(null);
+  let startSeq = 0;
+  $effect(() => {
+    const conn = app.connection;
+    // Read so a switch of kind, mode, project or layers refetches.
+    void app.pendingKind;
+    void app.pendingMode;
+    void app.project?.id;
+    void app.events.length;
+    // While a reconnect runs the old parts stay up, so a layer switch
+    // re-flows from them instead of emptying and sweeping again.
+    if (app.connecting) return;
+    if (!conn || conn.engine !== "claude-code") {
+      start = null;
+      return;
+    }
+    const seq = ++startSeq;
+    startContext(conn.agent?.safe_mode ?? false).then(
+      (c) => {
+        if (seq === startSeq) start = c;
+      },
+      () => {
+        if (seq === startSeq) start = null;
+      },
     );
-    outer.forEach((note, i) =>
-      out.push({
-        scope: "knowledge",
-        note,
-        path: outerPath,
-        lap: OUTER_LAP,
-        // Offset by half a slot so an outer note never starts directly
-        // above an inner one.
-        delay: -(((i + 0.5) / Math.max(outer.length, 1)) * OUTER_LAP),
-      }),
-    );
-    return out;
+  });
+  const groups = $derived(startGroups(start));
+  /** Shown sizes by group, tweened toward `groups`. */
+  let shown = $state(new Map<StartTone, number>());
+  let leaving: StartGroup[] = [];
+  let lastGroups: StartGroup[] = [];
+  let frame = 0;
+  /** The project the shown sizes belong to (574b): a switch sweeps from 0 again. */
+  let sweptFor: string | null | undefined = undefined;
+  const reduce =
+    typeof window !== "undefined" && typeof window.matchMedia === "function"
+      ? window.matchMedia("(prefers-reduced-motion: reduce)")
+      : null;
+  $effect(() => {
+    const to = groups;
+    // 574b: a project switch on this page sweeps again from 0 (it re-flowed
+    // between near-equal sizes before — no visible motion).
+    const pid = untrack(() => app.project?.id ?? null);
+    const switched = sweptFor !== undefined && pid !== sweptFor && to.length > 0;
+    if (to.length > 0) sweptFor = pid;
+    const from = switched ? new Map<StartTone, number>() : untrack(() => new Map(shown));
+    if (switched) leaving = [];
+    const first = [...from.values()].every((v) => v === 0);
+    leaving = lastGroups.filter((g) => !to.some((x) => x.tone === g.tone));
+    lastGroups = to;
+    cancelAnimationFrame(frame);
+    if (reduce?.matches) {
+      shown = blendSizes(new Map(), to, 1);
+      return;
+    }
+    const ms = first ? SWEEP_MS : REFLOW_MS;
+    const t0 = performance.now();
+    const step = (now: number) => {
+      const t = Math.min(1, (now - t0) / ms);
+      shown = blendSizes(from, to, easeOut(t));
+      if (t < 1) frame = requestAnimationFrame(step);
+    };
+    frame = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(frame);
+  });
+  const drawn = $derived(drawnGroups(shown, groups, leaving));
+  const startTotal = $derived(drawn.sizes.reduce((a, b) => a + b, 0));
+  const arcs = $derived(startArcs(drawn.groups, drawn.sizes, limit));
+  // 574b: the same parts on an inner ring of their own scale — the hand-off
+  // mark when under 200k, else 100k — so 38k fills ~38% of a ring, not 14°.
+  const scale = $derived(startScale(markShare != null && limit ? markShare * limit : null));
+  const ring = $derived(ringArcs(drawn.groups, drawn.sizes, scale));
+  const startTip = $derived(
+    `${startSummary(groups)}\nThe inner ring is drawn ${scale.label}; the outer ring is the whole ${limit ? shortTokens(limit) : ""} window.`,
+  );
+  // ---- item 581: the dial's motion layer (`DialMotion.svelte`) and what drives it.
+  /** Bumped on every input in the message box: the wave surges while he types. */
+  let typed = $state(0);
+  // Item 662: each key in the message box also reaches the Horizon sea (it eases its own response; nothing per key).
+  let seaTyped = 0;
+  $effect(() => {
+    const n = typed;
+    if (n === seaTyped) return;
+    seaTyped = n;
+    untrack(() => shaderCtl?.typed());
+  });
+  /** A change in the parts (a layer switched) swells the wave. */
+  const flowKey = $derived(groups.map((g) => `${g.tone}:${g.tokens}`).join(","));
+  /** The hovered part's span, read off the dial's hit bands (ContextDial is not changed). */
+  let litTip = $state<string | null>(null);
+  const lit = $derived.by(() => {
+    if (!litTip) return null;
+    // The part's tone, from either ring; its span on the inner ring (100k), where
+    // a part is wide enough to light a run of teeth, else on the outer one.
+    const tone = (arcs.find((x) => x.tip === litTip) ?? ring.find((x) => x.tip === litTip))?.tone;
+    const r = ring.find((x) => x.tone === tone) ?? arcs.find((x) => x.tone === tone);
+    return r ? { from: r.from, share: r.share } : null;
+  });
+  /** Listens on the dial's box for a pointer or focus on a part's hit band. */
+  function pointsAt(node: HTMLElement) {
+    const on = (e: Event) => {
+      const hit = (e.target as Element | null)?.closest?.(".hit");
+      litTip = hit?.getAttribute("aria-label") ?? null;
+    };
+    const off = () => (litTip = null);
+    node.addEventListener("pointerover", on);
+    node.addEventListener("pointerout", off);
+    node.addEventListener("focusin", on);
+    node.addEventListener("focusout", off);
+    return {
+      destroy() {
+        node.removeEventListener("pointerover", on);
+        node.removeEventListener("pointerout", off);
+        node.removeEventListener("focusin", on);
+        node.removeEventListener("focusout", off);
+      },
+    };
+  }
+  /** The 5-hour window for the slow hand (Claude Code's plan use). */
+  const motionPlan = $derived.by(() => {
+    if (app.connection?.engine !== "claude-code") return null;
+    const u = app.planUsage;
+    if (!u || u.source === "none" || !u.five_hour_resets_at) return null;
+    return { used: u.five_hour ?? null, resetsAt: u.five_hour_resets_at };
   });
 
-  /**
-   * The hovered note's preview card. Positioned from where the traveller
-   * *is* when the pointer reaches it — it is moving — and kept open while
-   * the pointer crosses to the card, or "open" could never be clicked.
-   */
-  let tip = $state<{ t: Traveller; x: number; y: number; right: boolean } | null>(null);
-  let stage = $state<HTMLElement | null>(null);
-  let hideTimer: ReturnType<typeof setTimeout> | null = null;
-  function showTip(t: Traveller, el: HTMLElement) {
-    if (hideTimer) clearTimeout(hideTimer);
-    hideTimer = null;
-    const r = el.getBoundingClientRect();
-    const s = stage?.getBoundingClientRect();
-    if (!s) return;
-    const x = r.left - s.left;
-    const y = r.top - s.top;
-    // The card sits on whichever side has room; 270 = its width + a gap.
-    const right = x + r.width + 270 < w;
-    tip = { t, x: right ? x + r.width + 8 : x - 268, y: Math.max(8, y - 6), right };
-  }
-  function hideTipSoon() {
-    if (hideTimer) clearTimeout(hideTimer);
-    hideTimer = setTimeout(() => (tip = null), 160);
-  }
-  function holdTip() {
-    if (hideTimer) clearTimeout(hideTimer);
-    hideTimer = null;
-  }
-  function key(t: Traveller): string {
-    return `${t.scope}:${t.note.name}`;
-  }
-  const held = $derived(tip ? key(tip.t) : null);
+  /** Before the first message the dial is the starting context. */
+  const fresh = $derived(used === 0 && groups.length > 0);
+  const dialShare = $derived(fresh && limit ? Math.min(startTotal / limit, 1) : share);
 
-  function open(t: Traveller) {
-    tip = null;
-    showNote(t.scope, t.note.name);
-  }
-  function reveal(t: Traveller) {
-    tip = null;
-    const dir = t.scope === "project" ? app.project?.notes_dir : app.knowledge?.dir;
-    void revealFolder(dir);
-  }
-  /** The last path segment: `research/plan.md` → `plan.md`; the card has the whole. */
-  function leaf(name: string): string {
-    const i = name.lastIndexOf("/");
-    return i >= 0 ? name.slice(i + 1) : name;
-  }
+  // The centre's type follows the dial's size (the mockup's 33 px at 330).
+  const titlePx = $derived(Math.max(18, Math.round((33 * size) / 330)));
 
-  // The count line's parts; nothing renders when there is nothing to count,
-  // for the reason the old page gave — an empty docspace is explained by the
-  // Notes tab, not here.
-  const counts = $derived.by(() => {
-    const parts: string[] = [];
-    const n = app.project ? app.notes.length : 0;
-    const k = app.vault.length;
-    if (n > 0) parts.push(`${n} project note${n === 1 ? "" : "s"}`);
-    if (k > 0) parts.push(`${k} from your knowledge base`);
-    return parts;
+  // ---- the clock: wakes once a minute, on the minute; nothing else ticks.
+  let now = $state(new Date());
+  $effect(() => {
+    const wait = 60_000 - (now.getSeconds() * 1000 + now.getMilliseconds()) + 50;
+    const id = setTimeout(() => (now = new Date()), wait);
+    return () => clearTimeout(id);
   });
 
-  // The key strip. Each cap is a button too, so the mouse loses nothing.
+  // ---- the readings
+  const openRow = $derived(
+    app.project ? (app.nightshift.rows.find((r) => r.id === app.project?.id) ?? null) : null,
+  );
+  const plan = $derived.by(() => {
+    if (app.connection?.engine !== "claude-code") return null;
+    const u = app.planUsage;
+    if (!u || u.source === "none" || u.five_hour == null) return null;
+    return { five: u.five_hour, week: u.seven_day, resets: shortClock(u.five_hour_resets_at) };
+  });
+  const list = $derived(
+    readings({
+      engine: app.connection?.engine ?? app.draft.engine ?? null,
+      provider: providerLabel(app.connection?.provider ?? app.draft.provider),
+      connected: !!app.connection,
+      connecting: app.connecting,
+      subscription: app.connection?.agent?.subscription ?? null,
+      cliVersion: app.connection?.agent?.version ?? null,
+      model: app.connection?.model ?? null,
+      limit,
+      project: app.project ? { root: app.project.root ?? null, exists: app.project.exists } : null,
+      notes: app.project ? app.notes.length : 0,
+      vault: app.vault.length,
+      chats: app.sessions.length,
+      plan,
+      nightshift: app.project
+        ? {
+            enabled: !!openRow?.nightshift,
+            live: !!openRow?.nightshift?.live,
+            armedAt:
+              app.nightshift.pending && app.nightshift.selected === app.project.id
+                ? shortClock(new Date(app.nightshift.pending.fire_at_ms).toISOString())
+                : null,
+            items: openRow?.nightshift?.items ?? 0,
+            blockers: openRow?.nightshift?.open_blockers ?? 0,
+          }
+        : null,
+    }),
+  );
+  /** The calm row: five, the model left to the composer's own chip. */
+  const row = $derived(list.filter((r) => r.key !== "model"));
+  const byKey = (k: Reading["key"]) => list.find((r) => r.key === k) ?? null;
+  /** The lit read-outs: the mockup's six slots, left then right, top down. */
+  const SLOTS: { key: Reading["key"]; side: "l" | "r"; deg: number }[] = [
+    { key: "engine", side: "l", deg: -40 },
+    { key: "folder", side: "l", deg: -10 },
+    { key: "memory", side: "l", deg: 42 },
+    { key: "model", side: "r", deg: -40 },
+    { key: "plan", side: "r", deg: -10 },
+    { key: "nightshift", side: "r", deg: 42 },
+  ];
+  // Decided on the dial the page would draw without the calm row, which lit
+  // hides while the read-outs show — else the choice flips every frame in a
+  // band of widths (w4 review; `columnWithoutRow`).
+  let rowH = $state(0);
+  const bareSize = $derived(dialSize(h, columnWithoutRow(colH, row.length > 0 ? rowH : 0) + 58 + PAD * 2));
+  const wide = $derived(size > 0 && bareSize > 0 && readoutsFit(w, bareSize));
+  const readouts = $derived.by(() => {
+    const R = size / 2 + 20;
+    const reach = size / 2 + 79;
+    return SLOTS.flatMap((s) => {
+      const r = byKey(s.key);
+      if (!r) return [];
+      const t = (s.deg * Math.PI) / 180;
+      const dx = R * Math.cos(t);
+      const y = mid + R * Math.sin(t);
+      const x1 = s.side === "r" ? mid + dx : mid - dx;
+      const x2 = s.side === "r" ? mid + reach : mid - reach;
+      return [{ ...s, r, y, x1, x2, at: reach + 10 }];
+    });
+  });
+
+  const ready = $derived(
+    !!app.connection && !(app.project?.root && !app.project.exists),
+  );
+  const hello = $derived(
+    ready
+      ? greeting(now.getHours(), now) // item 682: no "Everything is ready."
+      : app.connecting
+        ? `${greeting(now.getHours(), now)} Connecting…`
+        : app.project?.root && !app.project.exists
+          ? "The project's folder is missing."
+          : "Not connected yet.",
+  );
+
+  function act(r: Reading) {
+    switch (r.key) {
+      case "engine":
+      case "model":
+        runMenuCommand("model");
+        break;
+      case "folder":
+        if (app.project) void revealFolder(app.project.root ?? app.project.notes_dir);
+        else void openProjectFolder();
+        break;
+      case "memory":
+        app.leftTab = "notes";
+        break;
+      case "nightshift":
+        showNightshift();
+        break;
+      case "plan":
+        runMenuCommand("settings");
+        break;
+    }
+  }
+  const actTip: Record<Reading["key"], string> = {
+    engine: "Model and connection (⌘M)",
+    model: "Model and connection (⌘M)",
+    folder: "Show this folder",
+    memory: "Open the notes",
+    nightshift: "Open Nightshift",
+    plan: "Settings",
+  };
+
+  // ---- the four kinds
   const mod = isMac ? "⌘" : "Ctrl+";
   const shift = isMac ? "⇧" : "Shift+";
-  // Claude Code: the CLI's four aliases on their letters. The API engine:
-  // the picker's models on ⌘⇧1…9 (2026-09-14) — the first five here, the
-  // rest in the popover, so a long picker cannot push the strip off the foot.
-  const modelKeys = $derived.by(() => {
-    if (agentMode) {
-      return MODEL_KEYS.map((k) => ({
-        id: `model_${k.alias}`,
-        label: k.alias,
-        key: `${mod}${shift}${k.key}`,
-        title: `Switch to ${k.alias}`,
-      }));
-    }
-    return pickerModels()
-      .slice(0, 5)
-      .map((m, i) => ({
-        id: `model_${i + 1}`,
-        label: m,
-        key: `${mod}${shift}${i + 1}`,
-        title: `Switch to ${m} (${providerLabel(app.draft.provider)})`,
-      }));
-  });
+  const alt = isMac ? "⌥⌘" : "Ctrl+Alt+";
+  const engine = $derived(app.connection?.engine ?? app.draft.engine);
+  type KindCard = { id: string; name: string; line: string; tip: string; key: string; kind?: ChatKind; mode?: ChatMode };
+  const kinds = $derived<KindCard[]>([
+    {
+      id: "build",
+      name: engine === "claude-code" ? "Claude Code" : "Build",
+      line: "The project folder · all tools · plans",
+      tip: KIND_LINES.build,
+      key: `${mod}N`,
+      kind: "build",
+    },
+    { id: "chat", name: "Chat", line: "Reads only · the web · no folder", tip: KIND_LINES.chat, key: `${alt}N`, kind: "chat" },
+    {
+      id: "incognito",
+      name: "Incognito",
+      line: "Kept and marked; knows nothing about you",
+      tip: MODE_LINES.incognito,
+      key: `${mod}${shift}N`,
+      mode: "incognito",
+    },
+    { id: "ephemeral", name: "Ephemeral", line: "Nothing is kept; gone when you close it", tip: MODE_LINES.ephemeral, key: "", mode: "ephemeral" },
+  ]);
+  const chosen = $derived(app.pendingMode !== "normal" ? app.pendingMode : app.pendingKind);
+  function pick(k: KindCard) {
+    if (chosen === k.id) return;
+    if (k.mode) void newSession(k.mode);
+    else void newSession(undefined, k.kind);
+  }
+
+  // ---- the threads to pick up: the project's, most recently touched first.
+  const THREADS_MAX = 3;
+  const threads = $derived(
+    app.project && threadList.project === app.project.id ? threadList.list.slice(0, THREADS_MAX) : [],
+  );
 </script>
 
+{#if classic()}
+  <WelcomeClassic />
+{:else}
 <!-- Item 362: the empty chat takes a dropped file for its box, as the
      transcript does. -->
-<div class="welcome" data-drop-chat bind:this={stage} bind:clientWidth={w} bind:clientHeight={h}>
-  {#if rings && travellers.length > 0}
-    <div class="sky" aria-hidden="true">
-      <svg viewBox="0 0 {w} {h}" preserveAspectRatio="none">
-        {#if inner.length > 0}
-          <ellipse cx={cx} cy={cy} rx={innerR.rx} ry={innerR.ry} class="ring" stroke-dasharray="2 6" />
+<div class="welcome" data-drop-chat bind:clientWidth={w} bind:clientHeight={h} class:wide bind:this={groundEl}>
+  <canvas class="ground-canvas" bind:this={groundCanvas} aria-hidden="true"></canvas>
+  <canvas class="ground-canvas" bind:this={shaderCanvas} aria-hidden="true"></canvas>
+  <div class="page">
+    {#if size > 0}
+      <div class="core" style:width="{box}px" style:height="{box}px" use:pointsAt>
+        <DialMotion
+          {size}
+          pad={PAD}
+          {lit}
+          spinKey={app.project?.id ?? null}
+          {flowKey}
+          {typed}
+          labelGaps={quarters.length === 4}
+          plan={motionPlan}
+        />
+        {#if wide}
+          <!-- The wheel: six read-outs on leader lines. New-chat page → Row hides them for the row below (item 629). -->
+          <svg class="leaders" width={box} height={box} aria-hidden="true">
+            {#each readouts as o (o.key)}
+              <line x1={o.x1} y1={o.y} x2={o.x2} y2={o.y} />
+              <circle class="foot" cx={o.x1} cy={o.y} r="2" />
+              <circle class="tip" cx={o.x2} cy={o.y} r="2" />
+            {/each}
+          </svg>
+          {#each readouts as o (o.key)}
+            <button
+              class="ro {o.side}"
+              class:warn={o.r.warn}
+              style:top="{o.y - 8}px"
+              style:left={o.side === "r" ? `${mid + o.at}px` : undefined}
+              style:right={o.side === "l" ? `${mid + o.at}px` : undefined}
+              use:tipAction={actTip[o.key]}
+              onclick={() => act(o.r)}
+            >
+              <span class="ro-k">{o.r.label}</span>
+              <span class="ro-v">{o.r.value}</span>
+              <small>{o.r.sub}</small>
+            </button>
+          {/each}
+          <svg class="irings" width={box} height={box} aria-hidden="true" fill="none">
+            <circle cx={mid} cy={mid} r={size / 2 - 16} class="ir1" />
+            <circle cx={mid} cy={mid} r={size / 2 - 22} class="ir2" stroke-dasharray="{size * 0.21} {size * 0.08} {size * 0.024} {size * 0.08} {size * 0.42} {size * 0.18} {size * 0.024} {size * 0.18}" />
+            <circle cx={mid} cy={mid} r={size / 2 - 30} class="ir3" stroke-dasharray="2 6" />
+          </svg>
         {/if}
-        {#if outer.length > 0}
-          <ellipse cx={cx} cy={cy} rx={outerR.rx} ry={outerR.ry} class="ring" stroke-dasharray="2 8" />
-        {/if}
-      </svg>
-    </div>
-    {#each travellers as t (key(t))}
-      <button
-        class="trav"
-        class:kb={t.scope === "knowledge"}
-        class:held={held === key(t)}
-        style:offset-path="path('{t.path}')"
-        style:animation-duration="{t.lap}s"
-        style:animation-delay="{t.delay}s"
-        use:tipAction={t.note.name}
-        onmouseenter={(e) => showTip(t, e.currentTarget)}
-        onmouseleave={hideTipSoon}
-        onfocus={(e) => showTip(t, e.currentTarget)}
-        onblur={hideTipSoon}
-        onclick={() => open(t)}
-      >
-        <Icon name="note" size={12} />
-        <span class="tname">{t.scope === "knowledge" ? "@kb · " : ""}{leaf(t.note.name)}</span>
-      </button>
-    {/each}
-    {#if tip}
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div
-        class="tip"
-        style:left="{tip.x}px"
-        style:top="{tip.y}px"
-        onmouseenter={holdTip}
-        onmouseleave={hideTipSoon}
-      >
-        <div class="tip-head">
-          <span class="tip-name">{tip.t.note.name}</span>
-          <span class="tip-when">{relativeTime(tip.t.note.modified)}</span>
+        <div class="dial-wrap" use:departs>
+          <ContextDial
+            {size}
+            share={dialShare}
+            parts={fresh ? arcs : null}
+            ring={fresh ? ring : null}
+            pulse={fresh}
+            mark={markShare}
+            inner={null}
+            stroke={3}
+            pad={PAD}
+            minor={ticks.minor}
+            major={ticks.major}
+            label={fresh && limit && start
+              ? `A new chat starts with about ${start.total.toLocaleString()} of ${limit.toLocaleString()} tokens`
+              : limit
+                ? `Context ${used.toLocaleString()} of ${limit.toLocaleString()} tokens`
+                : "Context: window unknown until connected"}
+          />
         </div>
-        {#if tip.t.note.summary}
-          <div class="tip-sum">{tip.t.note.summary}</div>
+        {#if quarters.length === 4}
+          <span class="tq" style:left="{mid}px" style:top="1px" style:transform="translateX(-50%)">{quarters[0]}</span>
+          <span class="tq" style:left="{box - 12}px" style:top="{mid - 6}px">{quarters[1]}</span>
+          <span class="tq" style:left="{mid}px" style:bottom="0" style:transform="translateX(-50%)">{quarters[2]}</span>
+          <span class="tq" style:right="{box - 12}px" style:top="{mid - 6}px">{quarters[3]}</span>
         {/if}
-        <div class="tip-acts">
-          <button class="tip-open" onclick={() => open(tip!.t)}>open</button>
-          <button onclick={() => reveal(tip!.t)}>show in folder</button>
+        {#if handoffAt}
+          <span
+            class="tq h"
+            style:top="{handoffAt.y - 6}px"
+            style:left={handoffAt.left ? undefined : `${handoffAt.x + 6}px`}
+            style:right={handoffAt.left ? `${box - handoffAt.x + 6}px` : undefined}>{handoffAt.text}</span
+          >
+        {/if}
+        <div class="c" style:--title="{titlePx}px" style:--inner="{Math.round(size * 0.95)}px">
+          <div class="clock">{clockLine(now)}</div>
+          <h1 class="name">{app.project?.name ?? "New chat"}</h1>
+          <div class="hello"><span class="dot" class:off={!ready}></span>{hello}</div>
+          {#if fresh}
+            <div class="zero start" use:tipAction={startTip}>
+              <b>{approxTokens(startTotal)}</b> already in context
+            </div>
+          {:else}
+            <div class="zero"><b>{shortTokens(used)}</b> of {limit ? shortTokens(limit) : "—"} in context</div>
+          {/if}
+        </div>
+      </div>
+    {:else}
+      <!-- A pane too short for the dial: the name and the greeting alone. -->
+      <!-- 574b: at his size (1440 × 900 at 150 %) the big dial does not fit, so a
+           small one stands beside the name — the same parts, inner ring, sweep and light. -->
+      <div class="flatrow" class:withdial={fresh && !!limit}>
+        {#if fresh && limit}
+          <div class="mini" use:pointsAt>
+            <DialMotion size={84} pad={8} {lit} spinKey={app.project?.id ?? null} {flowKey} {typed} />
+            <ContextDial
+              size={84}
+              share={dialShare}
+              parts={arcs}
+              {ring}
+              pulse
+              mark={markShare}
+              inner={null}
+              stroke={3}
+              pad={8}
+              minor={0}
+              major={0}
+              label={start ? `A new chat starts with about ${start.total.toLocaleString()} of ${limit.toLocaleString()} tokens` : "Starting context"}
+            />
+          </div>
+        {/if}
+        <div class="flattext">
+          <h1 class="name flat">{app.project?.name ?? "New chat"}</h1>
+          <div class="hello flat"><span class="dot" class:off={!ready}></span>{hello}</div>
+          {#if fresh}
+            <!-- Item 574: the starting context keeps its line when the dial does not fit. -->
+            <div class="zero start flat" use:tipAction={startTip}>
+              <b>{approxTokens(startTotal)}</b> already in context
+            </div>
+          {/if}
         </div>
       </div>
     {/if}
-  {/if}
 
-  <div class="ccol" style:max-width="{colMax}px">
-    {#if app.project}
-      <h1 class="ctitle">{app.project.name}</h1>
-      <button
-        class="pathchip"
-        use:tipAction={app.project.root ? "Show this folder" : "Show the notes folder"}
-        onclick={() => void revealFolder(app.project?.root ?? app.project?.notes_dir)}
-      >
-        <Icon name="folder" size={13} />
-        <span class="ptext">{app.project.root ?? "No folder — notes and chats only"}</span>
-        <Icon name="ext" size={12} />
-      </button>
-      {#if !app.project.exists}
+    <div class="colw" style:max-width="{colMax}px" bind:clientHeight={colH}>
+      {#if row.length > 0}
+        <div class="ready" aria-label="What is ready" bind:clientHeight={rowH}>
+          {#each row as r (r.key)}
+            <button class="rd" class:warn={r.warn} use:tipAction={`${r.value} — ${r.sub}`} onclick={() => act(r)}>
+              <span class="rd-k">{r.label}</span>
+              <span class="rd-v">{#if r.ok}<i>✓</i>{/if}{r.short}</span>
+            </button>
+          {/each}
+        </div>
+      {/if}
+
+      {#if app.project && !app.project.exists && app.project.root}
         <p class="warn">
           That folder is not there right now. Tools rooted at it will fail until
           it comes back.
         </p>
       {/if}
-    {:else}
-      <h1 class="ctitle">New chat</h1>
-      <p class="lede">
-        No folder — the model has no workspace and no shared notes until you
-        open a project.
-      </p>
-    {/if}
+      {#if !app.project}
+        <p class="lede">
+          No folder — the model has no workspace and no shared notes until you
+          open a project.
+        </p>
+      {/if}
+      {#if app.error}
+        <p class="warn">{app.error}</p>
+      {/if}
 
-    {#if app.error}
-      <p class="warn">{app.error}</p>
-    {/if}
-
-    <div class="composer-slot">
-      <Composer floating />
-    </div>
-
-    {#if counts.length > 0}
-      <p class="count">
-        {counts.join(" · ")} ·
-        <button class="link" onclick={() => (app.leftTab = "notes")}>all notes</button>
-      </p>
-    {/if}
-
-    {#if !app.project}
-      <div class="unfiled">
-        <button class="ns-btn outline" onclick={showNewProject}>
-          <Icon name="plus" size={13} />
-          New project…
-        </button>
-        <button class="ns-btn ghost" onclick={() => void openProjectFolder()}>
-          <Icon name="folder" size={13} />
-          Open project…
-        </button>
-        <button class="ns-btn ghost" onclick={() => void importFromClaude()}>
-          <Icon name="download" size={13} />
-          Import from Claude…
-        </button>
-        <span class="import-note">
-          Turns a claude.ai export into projects: instructions, knowledge and chats.
-        </span>
+      <div class="composer-slot" oninput={() => typed++}>
+        <Composer floating />
       </div>
-    {/if}
+
+      {#if !app.project}
+        <div class="unfiled">
+          <button class="ns-btn outline" onclick={showNewProject}>
+            <Icon name="plus" size={13} />
+            New project…
+          </button>
+          <button class="ns-btn ghost" onclick={() => void openProjectFolder()}>
+            <Icon name="folder" size={13} />
+            Open project…
+          </button>
+          <button class="ns-btn ghost" onclick={() => void importFromClaude()}>
+            <Icon name="download" size={13} />
+            Import from Claude…
+          </button>
+          <span class="import-note">
+            Turns a claude.ai export into projects: instructions, knowledge and chats.
+          </span>
+        </div>
+      {/if}
+
+      <div class="kinds" role="radiogroup" aria-label="Kind of chat">
+        {#each kinds as k (k.id)}
+          <button
+            class="kind"
+            class:on={chosen === k.id}
+            role="radio"
+            aria-checked={chosen === k.id}
+            use:tipAction={k.tip}
+            onclick={() => pick(k)}
+          >
+            <b><span class="kn">{k.name}</span>{#if k.key}<span class="kk-key">{k.key}</span>{/if}</b>
+            <span class="kl">{k.line}</span>
+          </button>
+        {/each}
+      </div>
+
+      {#if threads.length > 0}
+        <div class="thr">
+          <div class="ns-cap">Or pick up a thread</div>
+          {#each threads as t (t.slug)}
+            <button
+              class="tr"
+              class:on={app.pendingThread === t.slug}
+              disabled={app.busy || app.connecting}
+              use:tipAction={"A new chat in this thread, its hand-off in the box"}
+              onclick={() => void newChatInThread(t.slug)}
+            >
+              <span class="tdot"></span>
+              <span class="tt">{t.title}</span>
+              <span class="ts">{t.status || t.slug}</span>
+              <i>{threadWhen(t.touched, now)}</i>
+            </button>
+          {/each}
+        </div>
+      {/if}
+    </div>
   </div>
 
   <div class="keys" aria-label="Keyboard shortcuts">
     <button class="kk" onclick={() => runMenuCommand("commands")} use:tipAction={"Every command and its key"}>
-      <Kbd keys="{mod}K" />commands
+      <Kbd keys="{mod}K" />Commands
     </button>
     <button class="kk" onclick={() => runMenuCommand("projects")} use:tipAction={"Switch project — 1–9, N new, O open, I import, 0 leave"}>
-      <Kbd keys="{mod}P" />projects
-    </button>
-    <button class="kk" onclick={() => runMenuCommand("add_project")} use:tipAction={"Open a folder you already have as a project"}>
-      <Kbd keys="{mod}O" />open project
+      <Kbd keys="{mod}P" />Projects
     </button>
     <button class="kk" onclick={() => runMenuCommand("model")} use:tipAction={"Model, tasks and context"}>
-      <Kbd keys="{mod}M" />model
-    </button>
-    <span class="ksep">|</span>
-    {#each modelKeys as k (k.id)}
-      <button class="kk" use:tipAction={k.title} onclick={() => runMenuCommand(k.id)}>
-        <Kbd keys={k.key} />{k.label}
-      </button>
-    {/each}
-    <span class="ksep">|</span>
-    <button class="kk" onclick={() => runMenuCommand("new_chat")}>
-      <Kbd keys="{mod}N" />new chat
-    </button>
-    <!-- The two other kinds (nightshift backlog 059): incognito on ⌘⇧N;
-         ephemeral has no key, and the cap is still a button. -->
-    <button class="kk" onclick={() => runMenuCommand("new_incognito")} use:tipAction={"Kept and marked; knows nothing about you, writes nothing, unread by other chats"}>
-      <Kbd keys="{mod}{shift}N" />incognito
-    </button>
-    <button class="kk" onclick={() => runMenuCommand("new_ephemeral")} use:tipAction={"Nothing is kept; gone when you close it"}>
-      ephemeral
+      <Kbd keys="{mod}M" />Model
     </button>
     <button class="kk" onclick={() => runMenuCommand("settings")}>
-      <Kbd keys="{mod}," />settings
+      <Kbd keys="{mod}," />Settings
     </button>
   </div>
 </div>
+{/if}
+{#if projectSwitch.on}
+  <!-- Item 598: over the page (and its box), never instead of it: the
+       draft in the box and the page's own state stay mounted. -->
+  <SwitchCover classic={classic()} />
+{/if}
 
 <style>
   .welcome {
@@ -363,202 +723,306 @@
     position: relative;
     overflow: hidden;
     display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 1.5rem 1.5rem 3.5rem;
+    flex-direction: column;
+    padding: 10px 1.5rem 2.75rem;
+    /* Item 682: no dot tile (his ask, 2026-11-12). */
   }
-
-  /* The rings: two dashed ellipses the notes travel along (CSS motion path). */
-  .sky {
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
+  /* Item 632: the moving ground. The canvas draws the same dots, so the
+     tile goes while it runs; the page is positioned so it paints over it. */
+  .welcome:global(.ground-live) {
+    background-image: none;
   }
-  .sky svg {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-  }
-  .ring {
-    fill: none;
-    stroke: var(--line);
-  }
-  .trav {
+  .ground-canvas {
     position: absolute;
     left: 0;
     top: 0;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    max-width: 220px;
-    padding: 4px 10px;
-    border: 1px solid var(--line2);
-    border-radius: 999px;
-    background: var(--well);
-    font-family: var(--mono);
-    font-size: 11.5px;
-    color: var(--ink2);
-    cursor: pointer;
-    offset-rotate: 0deg;
-    /* Centre the chip on the path rather than its top-left corner. */
-    offset-anchor: 50% 50%;
-    animation: orbit linear infinite;
-    z-index: 1;
+    display: none;
+    pointer-events: none;
   }
-  .trav :global(.ns-ico) {
-    color: var(--dim);
-  }
-  /* Dashed and a step quieter, and under a project note when the two rings'
-     chips cross — they move at different speeds, so they do. */
-  .trav.kb {
-    border-style: dashed;
-    background: var(--sheet);
-    color: var(--dim);
-    z-index: 0;
-  }
-  .tname {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .trav:hover,
-  .trav.held,
-  .trav:focus-visible {
-    border-color: var(--accent);
-    color: var(--ink);
-    animation-play-state: paused;
-    outline: none;
-  }
-  @keyframes orbit {
-    from {
-      offset-distance: 0%;
-    }
-    to {
-      offset-distance: 100%;
-    }
-  }
-  /* Parked at their spread positions — the negative delays do that — for
-     anyone who has asked the OS for less motion. */
-  @media (prefers-reduced-motion: reduce) {
-    .trav {
-      animation-play-state: paused;
-    }
-  }
-
-  .tip {
-    position: absolute;
-    width: 260px;
-    padding: 10px 12px;
-    background: var(--sheet);
-    border: 1px solid var(--line2);
-    border-radius: 8px;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-    font-size: 12px;
-    color: var(--ink2);
-    line-height: 1.4;
+  .page {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    z-index: 4;
+    align-items: center;
   }
-  .tip-head {
-    display: flex;
-    justify-content: space-between;
-    gap: 10px;
-    font-family: var(--mono);
-    font-size: 11.5px;
-    color: var(--ink);
-  }
-  .tip-name {
-    overflow-wrap: anywhere;
-  }
-  .tip-when {
-    color: var(--dim);
+  /* The page scrolls rather than squeezing what is in it. */
+  .page > * {
     flex: none;
   }
-  .tip-sum {
-    overflow: hidden;
-    display: -webkit-box;
-    -webkit-line-clamp: 3;
-    line-clamp: 3;
-    -webkit-box-orient: vertical;
-  }
-  .tip-acts {
+  .colw {
+    width: 100%;
     display: flex;
+    flex-direction: column;
+    align-items: stretch;
     gap: 10px;
-    font-size: 11.5px;
   }
-  .tip-acts button {
+
+  /* ---- the dial and what is in it */
+  .core {
+    position: relative;
+    flex: none;
+    margin-bottom: 4px;
+  }
+  .dial-wrap {
+    position: absolute;
+    inset: 0;
+  }
+  .tq {
+    position: absolute;
+    font: 10px var(--mono);
+    color: var(--dim);
+    white-space: nowrap;
+    pointer-events: none;
+  }
+  .tq.h {
+    color: var(--ink2);
+  }
+  .c {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    pointer-events: none;
+  }
+  .clock {
+    font: 11px var(--mono);
+    color: var(--dim);
+    font-variant-numeric: tabular-nums;
+  }
+  .name {
+    margin: 6px 0 8px;
+    font: 300 var(--title, 33px) / 1.1 var(--sans);
+    letter-spacing: -0.02em;
+    color: var(--ink);
+    max-width: var(--inner, 280px);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .name.flat {
+    --title: 28px;
+    max-width: 100%;
+    margin-top: 18px;
+  }
+  .hello {
+    font-size: 13px;
+    color: var(--ink2);
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .hello.flat {
+    margin-bottom: 12px;
+  }
+  .zero.flat {
+    margin: -6px 0 12px;
+  }
+  /* 574b: the flat page's small dial, left of the name. */
+  .flatrow {
+    display: contents;
+  }
+  .flatrow.withdial {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    max-width: 100%;
+    margin-top: 10px;
+  }
+  .flatrow.withdial .flattext {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .flatrow.withdial .name.flat {
+    margin-top: 0;
+  }
+  .flattext {
+    display: contents;
+  }
+  /* 581: the small dial's motion layer sits under it. */
+  .mini {
+    position: relative;
+  }
+  .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--done);
+    flex: none;
+  }
+  .dot.off {
+    background: var(--dim);
+  }
+  .zero {
+    margin-top: 16px;
+    font: 11px var(--mono);
+    color: var(--dim);
+  }
+  .zero.start {
+    pointer-events: auto;
+    cursor: default;
+  }
+  .zero b {
+    font-weight: 500;
+    font-size: 13px;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ---- lit (IV+): read-outs on leader lines, two thin inner rings */
+  .leaders,
+  .irings {
+    position: absolute;
+    left: 0;
+    top: 0;
+    overflow: visible;
+    pointer-events: none;
+  }
+  .leaders line {
+    stroke: var(--line2);
+  }
+  .leaders .foot {
+    fill: var(--ink2);
+  }
+  .leaders .tip {
+    fill: var(--accent);
+  }
+  .ir1 {
+    stroke: var(--line2);
+    stroke-width: 1;
+  }
+  .ir2 {
+    stroke: var(--signal);
+    stroke-opacity: 0.55;
+    stroke-width: 2;
+  }
+  .ir3 {
+    stroke: var(--line);
+    stroke-width: 1;
+  }
+  .ro {
+    position: absolute;
+    display: block;
     background: none;
     border: none;
     padding: 0;
     font: inherit;
-    color: var(--dim);
-    cursor: pointer;
-  }
-  .tip-acts button:hover {
+    font-size: 12.5px;
     color: var(--ink);
+    white-space: nowrap;
+    cursor: pointer;
+    text-align: left;
   }
-  .tip-acts .tip-open {
-    color: var(--accent);
+  .ro.l {
+    text-align: right;
+  }
+  .ro-k {
+    display: block;
+    font: 500 10px var(--mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--dim);
+    margin-bottom: 3px;
+  }
+  .ro-v {
+    display: block;
+  }
+  .ro small {
+    display: block;
+    font: 10.5px var(--mono);
+    color: var(--dim);
+    margin-top: 2px;
+  }
+  .ro:hover .ro-v,
+  .ro:focus-visible .ro-v {
+    color: var(--accent-ink);
+  }
+  .ro.warn small {
+    color: var(--failed);
+  }
+  /* Item 629 (agent C, wave 5): the row is its own choice — Settings →
+     Appearance → New-chat page, `data-newchat="row"` — not Calm's or a
+     palette's side effect (his "category error"). Row: no read-outs, no
+     rings. */
+  :global([data-newchat="row"]) .leaders,
+  :global([data-newchat="row"]) .irings,
+  :global([data-newchat="row"]) .ro {
+    display: none;
+  }
+  /* Wheel and wide: the read-outs carry the readings, so no row. */
+  .wide .ready {
+    display: none;
+  }
+  :global([data-newchat="row"]) .wide .ready {
+    display: flex;
   }
 
-  /* The centre column. */
-  .ccol {
-    position: relative;
-    z-index: 2;
-    width: 100%;
-    max-height: 100%;
-    overflow-y: auto;
+  /* ---- the calm row of readings */
+  .ready {
+    display: flex;
+    border: 1px solid var(--line2);
+    border-radius: var(--r1);
+    background: var(--sheet);
+    font-size: 12px;
+    overflow: hidden;
+  }
+  .rd {
+    flex: 1 1 0;
+    min-width: 0;
     display: flex;
     flex-direction: column;
-    align-items: center;
-    gap: 12px;
+    align-items: flex-start;
+    padding: 7px 12px;
+    border: none;
+    border-right: 1px solid var(--line);
+    background: none;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
   }
-  .ctitle {
-    margin: 0;
-    font-family: var(--serif);
-    font-size: 30px;
+  .rd:last-child {
+    border-right: none;
+  }
+  .rd:hover {
+    background: var(--raised);
+  }
+  .rd-k {
+    font-size: 11px;
+    color: var(--dim);
+    margin-bottom: 2px;
+  }
+  .rd-v {
     font-weight: 500;
-    letter-spacing: -0.015em;
-    line-height: 1.15;
-    text-align: center;
     color: var(--ink);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+    font-variant-numeric: tabular-nums;
   }
+  .rd-v i {
+    font-style: normal;
+    color: var(--done);
+    margin-right: 5px;
+    font-size: 10.5px;
+  }
+  .rd.warn .rd-v {
+    color: var(--failed);
+  }
+
   .lede {
     margin: 0;
     font-size: 13.5px;
     color: var(--dim);
     text-align: center;
-  }
-  .pathchip {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    max-width: 100%;
-    padding: 5px 10px;
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    background: var(--sheet);
-    font-family: var(--mono);
-    font-size: 11.5px;
-    color: var(--ink2);
-    cursor: pointer;
-  }
-  .pathchip :global(.ns-ico) {
-    color: var(--dim);
-  }
-  .pathchip:hover {
-    border-color: var(--accent);
-    color: var(--ink);
-  }
-  .ptext {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    direction: rtl;
-    text-align: left;
   }
   .warn {
     margin: 0;
@@ -569,25 +1033,7 @@
   }
   .composer-slot {
     width: 100%;
-    margin-top: 6px;
-  }
-  .count {
-    margin: 0;
-    font-size: 12px;
-    color: var(--dim);
-    text-align: center;
-  }
-  .link {
-    background: none;
-    border: none;
-    padding: 0;
-    font: inherit;
-    color: var(--accent);
-    cursor: pointer;
-  }
-  .link:hover {
-    color: var(--accent-ink);
-    text-decoration: underline;
+    margin-top: 2px;
   }
   .unfiled {
     display: flex;
@@ -595,7 +1041,6 @@
     justify-content: center;
     flex-wrap: wrap;
     gap: 10px;
-    margin-top: 4px;
   }
   .ns-btn.outline {
     background: transparent;
@@ -612,19 +1057,155 @@
     text-align: center;
   }
 
-  /* The key strip. */
+  /* ---- the four kinds */
+  .kinds {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    border: 1px solid var(--line2);
+    border-radius: var(--r2);
+    background: var(--sheet);
+    overflow: hidden;
+  }
+  .kind {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    min-width: 0;
+    padding: 9px 12px 10px;
+    border: none;
+    border-right: 1px solid var(--line);
+    background: none;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .kind:last-child {
+    border-right: none;
+  }
+  .kind:hover {
+    background: var(--raised);
+  }
+  .kind b {
+    font-weight: 500;
+    font-size: 13px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    color: var(--ink2);
+  }
+  .kind b::before {
+    content: "";
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    border: 1.5px solid var(--line2);
+    flex: none;
+  }
+  .kn {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .kk-key {
+    margin-left: auto;
+    font: 10.5px var(--mono);
+    color: var(--dim);
+    flex: none;
+  }
+  .kl {
+    margin: 4px 0 0 19px;
+    font-size: 11.5px;
+    line-height: 1.4;
+    color: var(--dim);
+  }
+  .kind.on {
+    background: var(--well);
+  }
+  .kind.on b {
+    color: var(--ink);
+    font-weight: 600;
+  }
+  .kind.on b::before {
+    border: 3.5px solid var(--accent);
+    background: var(--on-accent);
+  }
+  .kind.on .kl {
+    color: var(--ink2);
+  }
+  .kind:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: -1px;
+  }
+
+  /* ---- the threads */
+  .thr {
+    margin-top: 6px;
+    display: flex;
+    flex-direction: column;
+  }
+  .thr .ns-cap {
+    margin-bottom: 6px;
+  }
+  .tr {
+    display: grid;
+    grid-template-columns: 8px minmax(0, 150px) minmax(0, 1fr) 70px;
+    gap: 14px;
+    align-items: center;
+    padding: 7px 0;
+    border: none;
+    border-top: 1px solid var(--line);
+    background: none;
+    font: inherit;
+    font-size: 12.5px;
+    color: var(--ink);
+    text-align: left;
+    cursor: pointer;
+  }
+  .tr:hover:not(:disabled) .tt {
+    color: var(--accent-ink);
+  }
+  .tr:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+  .tdot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--dim);
+  }
+  .tr.on .tdot {
+    background: var(--accent);
+  }
+  .tt,
+  .ts {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ts {
+    color: var(--dim);
+  }
+  .tr i {
+    font: 10.5px var(--mono);
+    color: var(--dim);
+    font-style: normal;
+    text-align: right;
+  }
+
+  /* ---- the key strip */
   .keys {
     position: absolute;
     left: 0;
     right: 0;
-    bottom: 18px;
+    bottom: 14px;
     display: flex;
     justify-content: center;
     align-items: center;
     flex-wrap: wrap;
     gap: 4px 14px;
     padding: 0 16px;
-    font-size: 12px;
+    font-size: 11.5px;
     color: var(--dim);
     z-index: 1;
   }
@@ -637,7 +1218,6 @@
     padding: 2px 2px;
     border-radius: 4px;
     font: inherit;
-    font-size: 12px;
     color: var(--dim);
     cursor: pointer;
   }
@@ -647,8 +1227,5 @@
   .kk:focus-visible {
     outline: 1px solid var(--accent);
     outline-offset: 1px;
-  }
-  .ksep {
-    opacity: 0.4;
   }
 </style>

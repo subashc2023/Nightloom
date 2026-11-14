@@ -7,6 +7,7 @@
     MAG_INFLUENCE,
     RIB_END,
     RIB_GAP,
+    RIB_HIT,
     RIB_ROW,
     TOOLTIP_OPEN_DELAY,
     columnFollow,
@@ -14,6 +15,7 @@
     magnified,
     magnifyFalloff,
     nextTarget,
+    onStrip,
     prevTarget,
     previewText,
     ribBox,
@@ -324,6 +326,13 @@
   }
 
   function pointermove(e: PointerEvent) {
+    // Item 651: only the drawn strip takes the pointer (the stylesheet's
+    // `--hit`); a move reported off it — the transcript's Copy beside the
+    // rail — is a leave, never a flare.
+    if (col && !dragging && !onStrip(e.clientX, col.getBoundingClientRect().right)) {
+      if (pointerY !== null) pointerleave();
+      return;
+    }
     interacting = true;
     pointerY = e.clientY;
     if (!magRaf) magRaf = requestAnimationFrame(applyMagnify);
@@ -496,6 +505,8 @@
   style:right="{navRight}px"
   style:gap="{px(RIB_GAP)}px"
   style:--row="{px(RIB_ROW)}px"
+  style:--rgap="{px(RIB_GAP)}px"
+  style:--hit="{RIB_HIT}px"
   style:padding="{px(8)}px {px(6)}px"
 >
   <button class="chev" onclick={prev} disabled={!canUp} aria-label="Previous message">
@@ -597,6 +608,10 @@
     flex-direction: column;
     align-items: flex-end;
     box-sizing: border-box;
+    /* Item 651: the box (68 px, over the transcript's right edge) takes no
+       pointer; only the chevrons and the ribs' `--hit`-wide strip do, so a
+       control beside the rail (a code block's Copy) is under the pointer. */
+    pointer-events: none;
   }
   /* Their chevron: 16 px, `p-0.5 -mr-1 rounded-md`, tertiary at 40 %;
      secondary while the rail is hovered, primary on itself, 30 % when
@@ -612,6 +627,7 @@
     opacity: 0.4;
     cursor: pointer;
     display: flex;
+    pointer-events: auto;
     transition:
       color 0.3s,
       opacity 0.3s;
@@ -645,6 +661,8 @@
     touch-action: none;
     user-select: none;
     -webkit-user-select: none;
+    /* Item 651: drawn into (the flare), not hit; the ribs are. */
+    pointer-events: none;
   }
   .end {
     flex: none;
@@ -658,10 +676,17 @@
   .col::-webkit-scrollbar {
     display: none;
   }
-  /* A rib: a full-width row (its hit target), the line at its right. */
+  /* A rib: a row at the column's right, the line at its right. Item 651:
+     the row is the strip's `--hit` wide, not the column's 56 px (theirs),
+     and the line takes no pointer, so a flared line drawn left of the
+     strip covers nothing clickable; `::before` fills the gap above and
+     below, so the pointer moving down the strip never drops through it. */
   .rib {
     flex: none;
-    width: 100%;
+    position: relative;
+    align-self: flex-end;
+    width: var(--hit);
+    pointer-events: auto;
     height: var(--row);
     padding: 0;
     border: none;
@@ -693,9 +718,18 @@
     outline: 2px solid var(--line2);
     outline-offset: 0;
   }
+  .rib::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: calc(var(--rgap) / -2);
+    bottom: calc(var(--rgap) / -2);
+  }
   .line {
     display: block;
     flex: none;
+    pointer-events: none;
     border-radius: 999px;
     background: currentColor;
   }

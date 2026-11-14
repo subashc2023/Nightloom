@@ -1,0 +1,317 @@
+/* The one shared menu (item 620; see hudMenu.ts for how a menu joins).
+   Every rule is keyed off Classic, whose menus stay exactly as they were.
+   No rule here changes a menu's box (no padding, border width or size), so
+   the placement helpers measure the same menu they always did. */
+
+/* ---------- The card: darker glass, an amber-tinted edge, a deep shadow ---------- */
+:root:not([data-layout="classic"]) .hud-m.hud-m {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--raised) 92%, transparent),
+    color-mix(in srgb, color-mix(in srgb, var(--raised) 55%, var(--term)) 95%, transparent)
+  );
+  -webkit-backdrop-filter: blur(16px) saturate(1.25);
+  backdrop-filter: blur(16px) saturate(1.25);
+  border-color: color-mix(in srgb, var(--accent) 20%, var(--line2));
+  border-radius: var(--r2);
+  box-shadow:
+    0 18px 44px rgba(0, 0, 0, 0.6),
+    0 0 0 1px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 color-mix(in srgb, var(--accent) 22%, transparent),
+    inset 0 0 24px color-mix(in srgb, var(--accent) 5%, transparent);
+  /* The menus' own 90 ms rises are replaced by the phases below; `none` at
+     rest so taking a phase class off never restarts an old one. */
+  animation: none;
+}
+
+/* ---------- The head: mono, ruled, uppercase ---------- */
+:root:not([data-layout="classic"]) .hud-m .hud-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font: 500 10px var(--mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink2);
+}
+:root:not([data-layout="classic"]) .hud-m .hud-head::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 30%, var(--line2)), transparent);
+}
+:root:not([data-layout="classic"]) .hud-m .hud-rule {
+  background: linear-gradient(90deg, transparent, var(--line2) 20%, var(--line2) 80%, transparent);
+  border-color: transparent;
+}
+
+/* ---------- Rows: one hover for all, the well fill and a thin amber lead ---------- */
+:root:not([data-layout="classic"]) .hud-m :is(.hud-row, [role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="option"]) {
+  border-radius: var(--r1);
+}
+:root:not([data-layout="classic"]) .hud-m :is(.hud-row, [role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="option"]):hover:not(:disabled, [aria-disabled="true"]),
+:root:not([data-layout="classic"]) .hud-m :is(.hud-row, [role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="option"]):focus-visible,
+:root:not([data-layout="classic"]) .hud-m :is(.hud-row, [role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="option"]).hud-key,
+:root:not([data-layout="classic"]) .hud-m :is(.hud-row, [role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="option"])[aria-selected="true"] {
+  background: var(--well);
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 55%, transparent);
+  outline: none;
+}
+/* The current one (the open project, the model in use): lit, a full-strength lead. */
+:root:not([data-layout="classic"]) .hud-m :is(.hud-row, [role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="option"]):is(.hud-cur, [aria-checked="true"]),
+:root:not([data-layout="classic"]) .hud-m :is(.hud-row, [role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="option"]):is(.hud-cur, [aria-checked="true"]):hover {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 16%, var(--raised)), var(--accent-soft) 70%);
+  box-shadow:
+    inset 2px 0 0 var(--accent),
+    0 0 12px color-mix(in srgb, var(--accent) 10%, transparent);
+}
+/* A menu's own action button (Send ▾'s Schedule): the Filament bulb, not a solid amber block. */
+:root:not([data-layout="classic"]) .hud-m .ns-btn.accent {
+  background: var(--term);
+  border: 1px solid color-mix(in srgb, var(--accent) 70%, var(--line2));
+  color: var(--accent-ink);
+  box-shadow:
+    inset 0 0 10px color-mix(in srgb, var(--accent) 14%, transparent),
+    var(--glow-main);
+}
+
+/* ---------- The brackets: one fixed frame on <body>, kept on the menu's box ---------- */
+.hud-frame {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: var(--mw, 0);
+  height: var(--mh, 0);
+  z-index: 9000;
+  pointer-events: none;
+}
+.hud-frame > i {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  border: 0 solid var(--accent);
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--accent) 70%, transparent));
+}
+[data-light="calm"] .hud-frame > i {
+  filter: none;
+}
+.hud-frame > .tl {
+  top: -2px;
+  left: -2px;
+  border-top-width: 1.5px;
+  border-left-width: 1.5px;
+  border-top-left-radius: 3px;
+}
+.hud-frame > .tr {
+  top: -2px;
+  right: -2px;
+  border-top-width: 1.5px;
+  border-right-width: 1.5px;
+  border-top-right-radius: 3px;
+}
+.hud-frame > .bl {
+  bottom: -2px;
+  left: -2px;
+  border-bottom-width: 1.5px;
+  border-left-width: 1.5px;
+  border-bottom-left-radius: 3px;
+}
+.hud-frame > .br {
+  bottom: -2px;
+  right: -2px;
+  border-bottom-width: 1.5px;
+  border-right-width: 1.5px;
+  border-bottom-right-radius: 3px;
+}
+
+/* ---------- Open, 220 ms: the brackets spring out of the button, the glass fills in behind ---------- */
+:root:not([data-layout="classic"]) .hud-m.hud-in {
+  animation: hud-glass-in 220ms ease-out both;
+}
+:root:not([data-layout="classic"]) .hud-m.hud-in > * {
+  animation: hud-part-in 90ms ease-out 148ms backwards;
+}
+:root:not([data-layout="classic"]) .hud-m.hud-in > :nth-child(1) { animation-delay: 70ms; }
+:root:not([data-layout="classic"]) .hud-m.hud-in > :nth-child(2) { animation-delay: 76ms; }
+:root:not([data-layout="classic"]) .hud-m.hud-in > :nth-child(3) { animation-delay: 82ms; }
+:root:not([data-layout="classic"]) .hud-m.hud-in > :nth-child(4) { animation-delay: 88ms; }
+:root:not([data-layout="classic"]) .hud-m.hud-in > :nth-child(5) { animation-delay: 94ms; }
+:root:not([data-layout="classic"]) .hud-m.hud-in > :nth-child(6) { animation-delay: 100ms; }
+:root:not([data-layout="classic"]) .hud-m.hud-in > :nth-child(7) { animation-delay: 106ms; }
+:root:not([data-layout="classic"]) .hud-m.hud-in > :nth-child(8) { animation-delay: 112ms; }
+:root:not([data-layout="classic"]) .hud-m.hud-in > :nth-child(9) { animation-delay: 118ms; }
+:root:not([data-layout="classic"]) .hud-m.hud-in > :nth-child(10) { animation-delay: 124ms; }
+:root:not([data-layout="classic"]) .hud-m.hud-in > :nth-child(11) { animation-delay: 130ms; }
+:root:not([data-layout="classic"]) .hud-m.hud-in > :nth-child(12) { animation-delay: 136ms; }
+:root:not([data-layout="classic"]) .hud-m.hud-in > :nth-child(13) { animation-delay: 142ms; }
+.hud-frame.hud-in > i {
+  animation: 220ms cubic-bezier(0.3, 1.35, 0.5, 1) both;
+}
+.hud-frame.hud-in > .tl { animation-name: hud-tl-in; }
+.hud-frame.hud-in > .tr { animation-name: hud-tr-in; }
+.hud-frame.hud-in > .bl { animation-name: hud-bl-in; }
+.hud-frame.hud-in > .br { animation-name: hud-br-in; }
+@keyframes hud-glass-in {
+  0%,
+  25% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+@keyframes hud-part-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}
+@keyframes hud-tl-in {
+  0% { opacity: 0; transform: translate(var(--ox), var(--oy)); }
+  15% { opacity: 1; }
+  70%, 100% { opacity: 1; transform: none; }
+}
+@keyframes hud-tr-in {
+  0% { opacity: 0; transform: translate(calc(var(--ox) - var(--mw)), var(--oy)); }
+  15% { opacity: 1; }
+  70%, 100% { opacity: 1; transform: none; }
+}
+@keyframes hud-bl-in {
+  0% { opacity: 0; transform: translate(var(--ox), calc(var(--oy) - var(--mh))); }
+  15% { opacity: 1; }
+  70%, 100% { opacity: 1; transform: none; }
+}
+@keyframes hud-br-in {
+  0% { opacity: 0; transform: translate(calc(var(--ox) - var(--mw)), calc(var(--oy) - var(--mh))); }
+  15% { opacity: 1; }
+  70%, 100% { opacity: 1; transform: none; }
+}
+
+/* ---------- Dismiss, 150 ms: the brackets fall back into the button, the glass clears with them ---------- */
+:root:not([data-layout="classic"]) .hud-m.hud-out {
+  animation: hud-glass-out 150ms ease-in both;
+}
+.hud-frame.hud-out > i {
+  animation: 150ms ease-in reverse both;
+}
+.hud-frame.hud-out > .tl { animation-name: hud-tl-in; }
+.hud-frame.hud-out > .tr { animation-name: hud-tr-in; }
+.hud-frame.hud-out > .bl { animation-name: hud-bl-in; }
+.hud-frame.hud-out > .br { animation-name: hud-br-in; }
+@keyframes hud-glass-out {
+  0% {
+    opacity: 1;
+  }
+  60%,
+  100% {
+    opacity: 0;
+  }
+}
+
+/* ---------- Pick, 300 ms: the brackets lock round the chosen row, the rest clears, the row fades last ---------- */
+:root:not([data-layout="classic"]) .hud-m.hud-pick {
+  animation: hud-glass-clear 300ms linear both;
+}
+/* Everything but the chosen row and what holds it. */
+:root:not([data-layout="classic"]) .hud-m.hud-pick *:not(.hud-picked):not(:has(.hud-picked)):not(.hud-picked *) {
+  animation: hud-rest-clear 300ms linear both;
+}
+:root:not([data-layout="classic"]) .hud-m.hud-pick .hud-picked {
+  animation: hud-row-lock 300ms linear both;
+}
+.hud-frame.hud-pick > i {
+  animation: 300ms cubic-bezier(0.3, 1.2, 0.5, 1) both;
+}
+.hud-frame.hud-pick > .tl { animation-name: hud-tl-lock; }
+.hud-frame.hud-pick > .tr { animation-name: hud-tr-lock; }
+.hud-frame.hud-pick > .bl { animation-name: hud-bl-lock; }
+.hud-frame.hud-pick > .br { animation-name: hud-br-lock; }
+@keyframes hud-glass-clear {
+  0%,
+  35% {
+  }
+  70%,
+  100% {
+    background: transparent;
+    border-color: transparent;
+    box-shadow: none;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+@keyframes hud-rest-clear {
+  0% {
+    opacity: 1;
+  }
+  45%,
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes hud-row-lock {
+  0% {
+    background: var(--well);
+    opacity: 1;
+  }
+  35%,
+  75% {
+    background: color-mix(in srgb, var(--accent) 22%, var(--raised));
+    box-shadow: 0 0 16px color-mix(in srgb, var(--accent) 35%, transparent);
+    opacity: 1;
+  }
+  100% {
+    background: color-mix(in srgb, var(--accent) 22%, var(--raised));
+    box-shadow: 0 0 16px color-mix(in srgb, var(--accent) 35%, transparent);
+    opacity: 0;
+  }
+}
+@keyframes hud-tl-lock {
+  0% { transform: none; opacity: 1; }
+  45%, 75% { transform: translate(var(--px), var(--py)); opacity: 1; }
+  100% { transform: translate(var(--px), var(--py)); opacity: 0; }
+}
+@keyframes hud-tr-lock {
+  0% { transform: none; opacity: 1; }
+  45%, 75% { transform: translate(calc(var(--px) + var(--pw) - var(--mw)), var(--py)); opacity: 1; }
+  100% { transform: translate(calc(var(--px) + var(--pw) - var(--mw)), var(--py)); opacity: 0; }
+}
+@keyframes hud-bl-lock {
+  0% { transform: none; opacity: 1; }
+  45%, 75% { transform: translate(var(--px), calc(var(--py) + var(--ph) - var(--mh))); opacity: 1; }
+  100% { transform: translate(var(--px), calc(var(--py) + var(--ph) - var(--mh))); opacity: 0; }
+}
+@keyframes hud-br-lock {
+  0% { transform: none; opacity: 1; }
+  45%, 75% { transform: translate(calc(var(--px) + var(--pw) - var(--mw)), calc(var(--py) + var(--ph) - var(--mh))); opacity: 1; }
+  100% { transform: translate(calc(var(--px) + var(--pw) - var(--mw)), calc(var(--py) + var(--ph) - var(--mh))); opacity: 0; }
+}
+
+/* ---------- Reduce motion: a plain 100 ms fade; a pick shows only the lit row ---------- */
+:root:not([data-layout="classic"]) .hud-m.hud-rm.hud-in,
+.hud-frame.hud-rm.hud-in {
+  animation: hud-fade-in 100ms linear both;
+}
+:root:not([data-layout="classic"]) .hud-m.hud-rm.hud-out,
+:root:not([data-layout="classic"]) .hud-m.hud-rm.hud-pick,
+.hud-frame.hud-rm.hud-out,
+.hud-frame.hud-rm.hud-pick {
+  animation: hud-fade-out 100ms linear both;
+}
+:root:not([data-layout="classic"]) .hud-m.hud-rm > *,
+:root:not([data-layout="classic"]) .hud-m.hud-rm.hud-pick *,
+.hud-frame.hud-rm > i {
+  animation: none !important;
+}
+:root:not([data-layout="classic"]) .hud-m.hud-rm.hud-pick .hud-picked {
+  background: color-mix(in srgb, var(--accent) 22%, var(--raised));
+}
+@keyframes hud-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes hud-fade-out {
+  to {
+    opacity: 0;
+  }
+}

@@ -29,6 +29,9 @@
   // Backlog 283: the chat's composer and the chat's message pieces.
   import Composer from "./Composer.svelte";
   import AsideThread from "./AsideThread.svelte";
+  // Item 674: the thread is the chat's transcript; Classic keeps AsideThread.
+  import AsideTranscript from "./AsideTranscript.svelte";
+  import { classic } from "./layout.svelte";
   import { fmtTokens } from "./tokens";
 
   /**
@@ -311,6 +314,10 @@
    *  panel it is the way back, not the end of the thread. */
   function cardKeys(e: KeyboardEvent): void {
     if (e.key !== "Escape") return;
+    // Item 674: a question the thread's transcript is asking (drop this
+    // edit?) takes the Escape itself — it must never close the card with
+    // a half-typed edit in it.
+    if (root?.querySelector('[role="dialog"][aria-modal="true"]')) return;
     e.preventDefault();
     e.stopPropagation();
     // The discard question is up (backlog 228): Escape answers it "keep".
@@ -476,7 +483,31 @@
     {/if}
   </div>
   {#if !folded}
-  {#if !aside.draft || panel}
+  {#if (!aside.draft || panel) && !classic()}
+    <!-- Item 674 (blocker 1990): the chat's own transcript in the card's
+         room — the same turns, tools, folds and reading place as the tab
+         and the chat; no ground and no rail in this frame. -->
+    {#snippet quoted()}
+      {#if aside.quote && panel}
+        <!-- The passage it hangs off (283): under its passage the card
+             needs none; in the side panel it is far from it. -->
+        <blockquote class="aside-card-quote">{@html renderReply(aside.quote.text)}</blockquote>
+      {/if}
+    {/snippet}
+    <div class="aside-card-body shared">
+      {#key aside.uid ?? aside.id}
+        <AsideTranscript
+          {aside}
+          open={!readOnly}
+          {owner}
+          frame="compact"
+          scrollKey={asideCardScrollKey(owner ?? "", aside.id)}
+          lead={quoted}
+        />
+      {/key}
+    </div>
+  {:else if !aside.draft || panel}
+    <!-- Classic keeps its own thread (blocker 1989). -->
     <div class="aside-card-body" bind:this={body} onscroll={bodyScrolled}>
       {#if aside.quote && panel}
         <!-- The passage it hangs off (283): under its passage the card
@@ -652,6 +683,22 @@
     overflow-y: auto;
     min-height: 0;
   }
+  /* Item 674: the shared transcript scrolls itself; this is its frame
+     (positioned for its ⌄), sized by the thread up to the card's room. */
+  .aside-card-body.shared {
+    position: relative;
+    padding: 0;
+    gap: 0;
+    overflow: hidden;
+    flex: 0 1 auto;
+  }
+  .aside-card-body.shared :global(.transcript.compact) {
+    flex: 0 1 auto;
+  }
+  .aside-card.panel .aside-card-body.shared,
+  .aside-card.panel .aside-card-body.shared :global(.transcript.compact) {
+    flex: 1 1 auto;
+  }
   /* ~~`.aside-card-q` / `-a` / `-wait` / `-row`~~ — the thread is
      `AsideThread.svelte` and the box the chat's composer since backlog 283. */
   /* The foot: the composer pinned under the thread, never scrolled away. */
@@ -721,5 +768,32 @@
   }
   .aside-card-quote :global(p) {
     margin: 0;
+  }
+
+  /* Item 567 (Filament IV stage 10): the aside keeps its own face (283:
+     the tint and the dashed accent edge, so it never reads as the chat),
+     in Filament IV's measures — the card's 8 px corner, a lighter shadow,
+     the head on a panel band. ("Aside of" as a mono capital label was
+     tried and dropped: its width cut the chat's name to four letters.)
+     Filament IV only (item 542's
+     gate); Classic keeps the rules above. */
+  :global(:where(:root:not([data-layout="classic"]))) .aside-card {
+    border-radius: var(--r2);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.32);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aside-card.panel {
+    border-radius: 0;
+    box-shadow: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aside-card-head {
+    background: color-mix(in srgb, var(--aside-tint) 70%, var(--paper));
+    border-radius: var(--r2) var(--r2) 0 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aside-card.panel .aside-card-head {
+    border-radius: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aside-card.folded .aside-card-head {
+    border-radius: var(--r2);
+    border-bottom: none;
   }
 </style>

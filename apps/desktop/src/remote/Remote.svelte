@@ -1,5 +1,6 @@
 <script lang="ts">
   import { isImeKey } from "../lib/imeKey";
+  import { takeBlockKey } from "../lib/codeBlockKeys";
   /**
    * The phone page (nightshift backlog 091, Shape B; redesigned in item 246
    * toward the Claude app): a top bar (menu, the chat's title, new chat), a
@@ -14,7 +15,7 @@
    * chat list): the chat the Mac has open — what the Mac is on — with the
    * list one tap away in the drawer; with no chat open, a new chat.
    */
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import { fade, fly } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
   import {
@@ -78,6 +79,8 @@
     resetMs,
     replyLine,
     replySizes,
+    liveFlags,
+    shortModel,
     resumeAction,
     speakText,
     type ExtraOp,
@@ -89,6 +92,8 @@
   import { aimAction, liveSegments, retryStopping, sentOf } from "./client";
   import { retryText } from "../lib/retryLine";
   import { parseRan } from "../lib/shellRun";
+  /** Item 515: a file card's badge on the phone, as the Mac's. */
+  const fileBadgeOf = (name: string) => extOf(name).slice(0, 5).toUpperCase() || "FILE";
   import { sentExt, type SentFile } from "../lib/sentFiles";
   import { codeBlocks } from "./codeBlocks";
   import { trackViewport } from "./viewport";
@@ -116,6 +121,9 @@
   import { dragAxis, drawerX, fingerSpeed, settleOpen } from "./client";
   import { UNFILED, lastActive as chatWhen, projectSummaries, recentRows } from "./recents";
   import ProjectsSheet from "./ProjectsSheet.svelte";
+  // Item 572 (Filament IV stage 11): the phone's own look, the context dial.
+  import { applyLook, cacheLeft, contextLine, kTokens, loadLook, saveLook, type Look } from "./look";
+  import ContextDial from "../lib/ContextDial.svelte";
   import ProjectPage from "./ProjectPage.svelte";
   import {
     PROBE_MS,
@@ -124,6 +132,7 @@
     guessRole,
     hostName,
     loadHosts,
+    whereLine,
     missingSentence,
     mixedBlocked,
     nextHeldFor,
@@ -139,6 +148,7 @@
     type Hosts as HostMap,
     type Tried,
   } from "./hosts";
+  import { halvesFromHash, keepStored, manifestHref, setManifest } from "./homeScreen";
   import { heldTap, joinDraft, loadPlace, placeFromHash, placeHash, plainError, samePlace, savePlace, triable, type Place } from "./place";
   import { NO_PROJECT, callProject, notesProject, openedProject, placeProject, resolveAsk, unresolvedAsk } from "./screenProject";
   import { LATE_NOTICE_MS, NEW_CHAT_TURN, noticeFor, turnEndedFor, type EndedTurn } from "./turnNotice";
@@ -164,6 +174,11 @@
   const origin = typeof location === "undefined" ? "" : location.origin;
   /** The paired hosts, each a base URL and its own token (`hosts.ts`). */
   let hosts = $state<HostMap>({});
+  // Item 604: the Home Screen icon starts with every paired host (its
+  // manifest's start_url, `homeScreen.ts`), kept up as pairings change.
+  $effect(() => {
+    if (typeof document !== "undefined") setManifest(document, manifestHref(hosts, origin));
+  });
   /** The host answering now: the state, the stream and the lists are its. */
   let active = $state<HostRole | null>(null);
   /** What the last host choice found on the hosts it did not take. */
@@ -347,6 +362,23 @@
   let openSteps = $state<Record<string, boolean>>({});
 
   const activePid = $derived(projects.find((p) => p.active)?.id ?? "");
+  /** Item 556: the chats whose turns run on the host, from `/api/running`
+   *  (read again each time the drawer or the Projects page opens); the
+   *  desktop's open chat by the live `busy` flag, which is never stale. */
+  const runningIds = $derived.by(() => {
+    const ids = new Set((running?.chats ?? []).flatMap((c) => (c.chat ? [c.chat] : [])));
+    if (remote.active_chat) {
+      if (remote.busy) ids.add(remote.active_chat);
+      else ids.delete(remote.active_chat);
+    }
+    return ids;
+  });
+  $effect(() => {
+    if (!(drawer || projectsView) || link !== "online") return;
+    untrack(() => {
+      if (client && hasFeature(remote, "running")) void refreshBudget();
+    });
+  });
   /** The host lists No project as a project (serve, Away); the Mac's own
    *  listener does not, and refuses `unfiled` on its chat routes. */
   const listsUnfiled = $derived(projects.some((p) => p.id === NO_PROJECT));
@@ -426,6 +458,32 @@
   let limitBusy = $state(false);
   let budgetBusy = $state(false);
   const sizes = $derived(replySizes(events));
+  // ---- item 572: Filament IV on the phone ----------------------------------
+  /** This phone's look (look.ts); main.ts stamped it before the first paint. */
+  let look = $state<Look>(loadLook());
+  const fil = $derived(look === "filament");
+  function setLook(l: Look) {
+    look = l;
+    saveLook(l);
+    applyLook(l);
+  }
+  /** The header's context line: the newest reply's prompt size and the
+   *  cache's time left, from the chat's own log. */
+  const ctxLine = $derived(chatId ? contextLine(events, liveFlags(events)) : { used: null, warmUntil: null });
+  const cacheText = $derived(cacheLeft(ctxLine.warmUntil, now));
+  /** The window size, once the Context sheet has read it for this chat
+   *  (`view.context_limit`); the phone has no other source (blocker 1781). */
+  let ctxLimits = $state<Record<string, number>>({});
+  const ctxLimit = $derived(chatId ? (ctxLimits[chatId] ?? null) : null);
+  /** The model of the newest reply, for the composer's model button. */
+  const lastModel = $derived.by(() => {
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const r = rows[i];
+      if (r.kind === "assistant" && r.model) return shortModel(r.model);
+    }
+    return null;
+  });
+  const fiveHour = $derived(usage?.plan.five_hour ?? null);
   const busyHere = $derived(remote.busy && !readOnly && sameHost && chatId !== null && chatId === remote.active_chat);
   /** The budget hook holds a call in the running chat on screen. */
   const heldHere = $derived(busyHere ? budgetHeld(running?.budget, now) : null);
@@ -611,6 +669,9 @@
   }
 
   async function everything() {
+    // Item 572: the header's 5h figure reads the plan's usage (the drawer
+    // used to be the only reader).
+    void refreshUsage();
     await refreshState();
     await refreshProjects();
     await refreshChats();
@@ -772,7 +833,7 @@
       projects = [];
       chatsBy = {};
       expanded = {};
-      if (was !== null) note(`Now on ${hostName(settled.role)}`);
+      if (was !== null) note(settled.role === "away" ? "Now on the away server — the Mac is not answering" : "Back on the Mac");
     }
     remote = got.state;
     return true;
@@ -918,6 +979,17 @@
   onMount(() => {
     hosts = loadHosts(origin);
     const fromHash = tokenFromHash(location.hash);
+    // Item 588: the Settings → Phone code carries the Mac too, so one scan
+    // of the away server's link pairs both and the page falls over by itself.
+    // Item 604: the away server's half too, on a link the Mac's page made;
+    // and on the Home Screen icon's own start a host already kept keeps
+    // its token (the icon's link may be older than a paste since).
+    for (const half of fromHash ? halvesFromHash(location.hash) : []) {
+      if (half.role === guessRole(origin) || keepStored(hosts, half.entry.base, location.hash)) continue;
+      hosts = pair(hosts, half.role, half.entry);
+      saveHosts(hosts, origin);
+    }
+    const ownKept = fromHash !== null && keepStored(hosts, origin, location.hash);
     // Where he was (A21): the hash's place on a reload, the stored one on
     // a launch — read before the token's hash is cleared.
     startPlace = (fromHash ? null : placeFromHash(location.hash)) ?? loadPlace();
@@ -928,7 +1000,8 @@
       // Off the address bar the moment it is read: a token in the history
       // is a token in a screenshot.
       history.replaceState(null, "", location.pathname + location.search);
-      start(fromHash);
+      if (ownKept) void streamLoop();
+      else start(fromHash);
     } else if (paired.length > 0) void streamLoop();
     pollLoop();
     document.addEventListener("visibilitychange", () => {
@@ -2732,7 +2805,7 @@
 {#snippet toolBox(tools: ToolRow[], key: string, running: boolean, row: Row | null = null)}
   {@const n = toolCount(tools)}
   {#if n <= 3 || openTools[key]}
-    <div class="tools">
+    <div class="tools" class:t4run={running}>
       {@render toolRows(tools, 0, row)}
       {#if n > 3}<button class="tools-toggle" onclick={() => (openTools = { ...openTools, [key]: false })}>Hide steps</button>{/if}
     </div>
@@ -2772,10 +2845,20 @@
         <span class="title">{title}</span>
         <span class="sub">
           <span class="dot" class:ok={link === "online" && !remote.busy} class:run={link === "online" && remote.busy} class:bad={link !== "online"}></span>
-          <span class="sub-text">{chatId ? projectName(chatProject) : projectName(newProject)} · {status}</span>
+          {#if fil}
+            <span class="sub-text">{chatId ? projectName(chatProject) : projectName(newProject)} · <span class="st" class:run={link === "online" && remote.busy}>{status}</span></span>
+          {:else}
+            <span class="sub-text">{chatId ? projectName(chatProject) : projectName(newProject)} · {status}</span>
+          {/if}
         </span>
       </button>
       <Hosts mode="chip" {hosts} {active} {link} onopen={() => (sheet = "hosts")} />
+      {#if fil && chatId && ctxLimit && ctxLine.used !== null}
+        <!-- Item 572: the context dial, once the window is known. -->
+        <button class="hdr-dial" onclick={() => (contextOn = true)} aria-label="Context: {kTokens(ctxLine.used)} of {kTokens(ctxLimit)}">
+          <ContextDial size={30} stroke={3} pad={5} minor={40} major={8} share={ctxLine.used / ctxLimit} mark={Math.min(1, 300_000 / ctxLimit)} value={String(Math.round((ctxLine.used / ctxLimit) * 100))} label="Context used" />
+        </button>
+      {/if}
       <!-- One button in this slot (wave 3 B2): the title had lost the
            sliders' width. With a chat open, Model and settings is the
            first row of its ⋯ sheet. -->
@@ -2786,6 +2869,20 @@
       {/if}
       <button class="icon-btn" onclick={() => startNew(chatProject ?? newProject)} aria-label="New chat">{@render icon("new")}</button>
     </header>
+    {#if fil && chatId && (ctxLine.used !== null || fiveHour !== null)}
+      <!-- Item 572 (f4-phone-390): the chat's context, the cache's time
+           left and the 5-hour window, under the title. Tap: the Context sheet. -->
+      <button class="ctx-row" onclick={() => hasFeature(remote, "context") && (contextOn = true)} aria-label="Context">
+        {#if ctxLine.used !== null}
+          <span class="ctx-k">Context</span>
+          <b class="ctx-v">{kTokens(ctxLine.used)}</b>
+          {#if ctxLimit}<span class="ctx-k">of {kTokens(ctxLimit)}</span>{/if}
+        {/if}
+        <span class="spacer"></span>
+        {#if cacheText}<span class="ctx-k">cache <b class="ctx-v sig">{cacheText}</b></span>{/if}
+        {#if fiveHour !== null}<span class="ctx-k">5h <b class="ctx-v" class:hot={fiveHour >= 85}>{Math.round(fiveHour)}%</b></span>{/if}
+      </button>
+    {/if}
 
     {#if link === "off"}
       <div class="bar bad" transition:fly={{ y: -12, duration: motion(200) }}>
@@ -2849,6 +2946,44 @@
         <!-- 300 A17: a greeting, not a letter tile that read as a broken
              avatar (the Claude app's empty chat, `inferred`). -->
         {@const hour = new Date(now).getHours()}
+        {#if fil}
+        <!-- Item 572 (f4-phonenew-390): the new-chat page — the dial with the
+             date, the project and the ready line, then the readings. The
+             kinds and the folder's git state are left out: the phone has
+             neither (report "Left out"). -->
+        {@const d = new Date(now)}
+        {@const ready = link === "online" && remote.connected && !remote.busy}
+        <div class="hello4" in:fade={{ duration: motion(200) }}>
+          <div class="h4-dial">
+            <ContextDial size={210} stroke={2} pad={16} minor={60} major={12} share={0} label="Nothing in context yet" />
+            <div class="h4-in">
+              <span class="h4-when">{d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })} · {clock12(now)}</span>
+              <span class="h4-name">{projectName(newProject)}</span>
+              <span class="h4-ready"><span class="dot" class:ok={ready} class:run={link === "online" && remote.busy} class:bad={link !== "online"}></span>{ready ? "" : link !== "online" ? status : remote.busy ? "Busy in another chat." : status}</span>
+              <span class="h4-zero"><b>0</b> in context</span>
+            </div>
+          </div>
+          <div class="h4-read">
+            <div class="h4-cell">
+              <span class="h4-k">Engine</span>
+              <span class="h4-v">{#if remote.connected}<i class="ok">✓</i>{/if}{remote.engine === "claude-code" ? "Claude Code" : remote.engine ?? "none"}</span>
+            </div>
+            <button class="h4-cell" onclick={() => (sheet = "project")}>
+              <span class="h4-k">Project</span>
+              <span class="h4-v">{projectName(newProject)} {@render icon("chev")}</span>
+            </button>
+            <div class="h4-cell">
+              <span class="h4-k">Plan use</span>
+              <span class="h4-v">{usage && usage.plan.five_hour !== null ? `${Math.round(usage.plan.five_hour)}%` : "—"}{usage && usage.plan.seven_day !== null ? ` · ${Math.round(usage.plan.seven_day)}%` : ""}</span>
+            </div>
+            <div class="h4-cell">
+              <span class="h4-k">Host</span>
+              <span class="h4-v">{#if link === "online"}<i class="ok">✓</i>{/if}{active === "away" ? "Away" : "the Mac"}</span>
+            </div>
+          </div>
+          <p class="hello-note">Your first message starts the chat on {active === "away" ? "Away" : "the Mac"}.</p>
+        </div>
+        {:else}
         <div class="hello" in:fade={{ duration: motion(200) }}>
           <div class="hello-title">How can I help you this {hour < 12 ? "morning" : hour < 18 ? "afternoon" : "evening"}?</div>
           <button class="chip" onclick={() => (sheet = "project")}>
@@ -2857,14 +2992,15 @@
           </button>
           <p class="hello-note">Your first message starts the chat on {active === "away" ? "Away" : "the Mac"}.</p>
         </div>
+        {/if}
       {/if}
       {#each rows as r, i (i)}
         {#if r.kind === "user"}
           <!-- Item 503: a block he ran at the Mac, its output folded as there. -->
-          {@const ran = parseRan(r.text)}
+          {@const ran = parseRan(r.said)}
           <div class="turn user" data-row={i} class:enter={i >= enterFrom && !still} class:removed={r.removed} use:arrive={{ channel: "phone" }}>
             <div class="bubble" use:press={() => openMenu(r)}>
-              {#if r.images > 0}<span class="pics">{r.images} photo{r.images === 1 ? "" : "s"}</span>{/if}{#if ran}<div class="ran-card"><div class="ran-head">Ran in terminal · {ran.status}</div><div class="ran-cmd">{ran.command}</div>{#if ran.output}<details><summary>Output</summary><pre>{ran.output}</pre></details>{/if}</div>{:else}{r.text}{/if}
+              {#if r.images > 0}<span class="pics">{r.images} photo{r.images === 1 ? "" : "s"}</span>{/if}{#each r.files as f, fi (fi)}<span class="file-card"><span class="file-badge">{fileBadgeOf(f)}</span><span class="file-name">{f}</span></span>{/each}{#if ran}<div class="ran-card"><div class="ran-head">Ran in terminal · {ran.status}</div><div class="ran-cmd">{ran.command}</div>{#if ran.output}<details><summary>Output</summary><pre>{ran.output}</pre></details>{/if}</div>{:else}{r.said}{/if}
             </div>
             <div class="stamp">
               {#if r.removed}{"removed from the context · "}{:else if r.edited}{"edited · "}{/if}{shortWhen(r.at)}
@@ -2891,6 +3027,10 @@
       {/each}
       {#if liveHere && live}
         <div class="turn reply live" class:enter={!still}>
+          {#if fil}
+            <!-- Item 572: the reply's header, Claude working in blue. -->
+            <div class="reply-head"><span class="rh-ring" aria-hidden="true"></span><b>Claude</b>{#if lastModel}<span class="rh-model">{lastModel}</span>{/if}<span class="rh-sep">·</span><span class="rh-st">Replying</span></div>
+          {/if}
           {#each liveSegments(live) as s, k (k)}
             {#if s.kind === "tools"}{@render toolBox(s.tools, `live${k}`, true)}
             {:else}<div class="md" use:codeBlocks={copy}>{@html renderMarkdown(s.text, { breaks: true })}</div>{/if}
@@ -3069,14 +3209,21 @@
           {#if canPhoto}
             <button class="attach" onclick={() => picker?.click()} aria-label="Attach a photo">{@render icon("plus")}</button>
           {/if}
+          {#if fil}
+            <!-- Item 572: the model, as the desktop's composer shows it; opens Model and settings. -->
+            <button class="model-btn" onclick={openRail} aria-label="Model and settings"><span class="dot" class:ok={link === "online"} class:bad={link !== "online"}></span>{rail?.model || lastModel || "Model"}<span class="caret" aria-hidden="true">▾</span></button>
+          {/if}
           <textarea
             data-kept
             bind:this={box}
             rows="1"
-            placeholder={chatId ? "Reply…" : `Message ${projectName(newProject)}…`}
+            placeholder={chatId ? "Reply…" : fil ? "What are we making?" : `Message ${projectName(newProject)}…`}
             bind:value={draft}
             oninput={typed}
             onkeydown={(e) => {
+              // Item 648: inside a ``` block, a code editor's keys (Enter
+              // keeps the indentation and never sends; ⌘Enter sends).
+              if (takeBlockKey(e, box)) return;
               // A phone's Return is a new line; a hardware keyboard's
               // Return sends, as on the desktop.
               if (e.key === "Enter" && !e.shiftKey && !isImeKey(e) && !matchMedia("(pointer: coarse)").matches) {
@@ -3101,11 +3248,15 @@
             approvals={pendingHere}
             onanswer={(req, decision) => void answer(req, decision)}
           />
+          {#if fil && chatId && hasFeature(remote, "aside") && busyHere}
+            <!-- Item 572 (f4-phone-390): Aside beside Stop while a turn runs. -->
+            <button class="aside-btn" onclick={openAside}>Aside</button>
+          {/if}
           {#if busyHere && link === "online" && !draft.trim()}
-            <button class="send stop" onclick={stop} aria-label="Stop the turn">{@render icon("stop")}</button>
+            <button class="send stop" onclick={stop} aria-label="Stop the turn">{@render icon("stop")}{#if fil}<span class="send-word">Stop</span>{/if}</button>
           {:else}
             <button class="send" disabled={!draft.trim()} onclick={sendNow} aria-label={link === "online" && !remote.busy ? "Send" : `Hold until ${hostWord} is free`}>
-              {@render icon("up")}
+              {@render icon("up")}{#if fil}<span class="send-word">{link === "online" && !remote.busy ? "Send" : "Hold"}</span>{/if}
             </button>
           {/if}
         </div>
@@ -3226,7 +3377,8 @@
             <button class="chat-row" class:here onclick={() => openChat(r.chat.id, r.pid || null)}>
               <span class="chat-label">{r.chat.label}</span>
               <span class="chat-meta">
-                {#if r.pid === activePid && r.chat.id === remote.active_chat}<span class="live-dot" class:run={remote.busy}></span>{/if}
+                <!-- Item 556: ~~only the desktop's open chat~~ — every chat whose turn runs. -->
+                {#if r.pid === activePid && r.chat.id === remote.active_chat}<span class="live-dot" class:run={remote.busy}></span>{:else if runningIds.has(r.chat.id)}<span class="live-dot run"></span>{/if}
                 <span>{shortWhen(chatWhen(r.chat))}{r.chat.mode !== "normal" ? ` · ${r.chat.mode}` : ""}</span>
                 {#if r.project}<span class="tag">{r.project}</span>{/if}
               </span>
@@ -3239,7 +3391,7 @@
         <UsageLine {usage} />
         <div class="drawer-foot">
           <span class="dot" class:ok={link === "online"} class:bad={link !== "online"}></span>
-          {link === "online" ? `Connected to ${active ? hostName(active) : "the host"}${remote.engine ? ` · ${remote.engine === "claude-code" ? "Claude Code" : remote.engine}` : ""}` : status}
+          {link === "online" ? `${whereLine(active, true, tried, hosts)}${remote.engine ? ` · ${remote.engine === "claude-code" ? "Claude Code" : remote.engine}` : ""}` : status}
         </div>
       </nav>
 
@@ -3260,6 +3412,7 @@
             id={pid}
             name={p?.name ?? "Project"}
             chats={chatsBy[pid] ?? null}
+            {runningIds}
             here={chatProject === pid || (chatProject === null && activePid === pid) ? chatId : null}
             instructions={hasFeature(remote, "notes") && (pid === activePid || hasFeature(remote, "notes_project")) ? () => {
                     // Read before the page closes: `pid` is derived from `projectsView`.
@@ -3289,6 +3442,7 @@
           canLayers={hasFeature(remote, "layers")}
           host={remote.host}
           onclose={() => (contextOn = false)}
+          onlimit={(n) => (ctxLimits = { ...ctxLimits, [chatId!]: n })}
         />
       {/key}
     {/if}
@@ -3381,7 +3535,7 @@
             onclose={() => ((sheet = null), (menuOn = null))}
           />
         {:else if sheet === "rail"}
-          <RailSheet {rail} problem={railProblem} busy={remote.busy} onpatch={patchRail} />
+          <RailSheet {rail} problem={railProblem} busy={remote.busy} onpatch={patchRail} {look} onlook={setLook} />
         {:else if sheet === "notes" && client}
           <NotesSheet {client} where={hostName(active ?? "mac")} host={remote.host} available={hasFeature(remote, "notes")} start={notesStart} onnote={note} ontall={(t) => (sheetTall = t)} project={notesPid} projectLabel={notesPid === null ? null : notesPid === NO_PROJECT ? "No project" : (projects.find((x) => x.id === notesPid)?.name ?? null)} resume={notesResume} onview={(v) => (notesPlace = v)} />
         {:else if sheet === "nightshift" && client}
@@ -3455,6 +3609,8 @@
         {:else if sheet === "running"}
           <RunningSheet
             {running}
+            {projects}
+            here={(chatProject ?? activePid) || null}
             problem={runningProblem}
             onrefresh={refreshRunning}
             where={hostName(active ?? "mac")}
@@ -4894,6 +5050,36 @@
     font-size: 12px;
     color: var(--dim);
   }
+  /* Item 515: a file he sent, as the Mac's card — the accent edge on the
+     well — not the note for the CLI as his words. */
+  .file-card {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin: 0 0 6px;
+    padding: 6px 10px;
+    border: 1px solid var(--accent-soft);
+    border-left: 3px solid var(--accent);
+    border-radius: 8px;
+    background: var(--well);
+    font-size: 14px;
+    white-space: normal;
+  }
+  .file-card:last-child {
+    margin-bottom: 0;
+  }
+  .file-badge {
+    flex: none;
+    font-family: var(--mono, monospace);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    color: var(--accent-ink);
+  }
+  .file-name {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
   .new-row.quiet {
     color: var(--ink2);
     font-weight: 400;
@@ -5246,5 +5432,556 @@
       transition-duration: 0.001ms !important;
       scroll-behavior: auto !important;
     }
+  }
+
+  /* ==== Filament IV on the phone (item 572, stage 11; 521 report §2,
+     mockups f4-phone-390, f4x-phone-390, f4-phonenew-390) ==============
+     Every rule below is behind `:where(:root:not([data-layout="classic"]))`
+     (G below), weightless, so under Classic (look.ts, his choice in Model
+     and settings) none applies and the page is as it was. The token names
+     the Filament rules read are given Classic-safe values first, then the
+     Filament IV dark values for palette A in the dark scheme (a light
+     Filament IV palette is not drawn — blocker 1687 — so light and the
+     classic palettes B–D keep their surfaces and wear only the shapes). */
+  :global(:root) {
+    --raised: var(--sheet);
+    --well2: color-mix(in srgb, var(--well) 88%, var(--ink));
+    --term: color-mix(in srgb, var(--paper) 70%, #000);
+    --signal: var(--live);
+    --hot: #ff7d4f;
+    --r1: 5px;
+    --r2: 8px;
+    --glow-signal: none;
+  }
+  :global(:root[data-scheme="light"]) {
+    --term: color-mix(in srgb, var(--paper) 90%, var(--ink));
+  }
+  :global(:root:not([data-layout="classic"]):not([data-scheme="light"]):not([data-palette])) {
+    --paper: #0b0d10;
+    --sheet: #14181e;
+    --raised: #1c212a;
+    --well: #2a313d;
+    --well2: #343c4a;
+    --term: #07090c;
+    --ink: #e9edf2;
+    --ink2: #b9c2cd;
+    --dim: #939eae;
+    --line: #242b35;
+    --line2: #414c5d;
+    --accent: #ffb454;
+    --accent-ink: #ffd08a;
+    --accent-soft: #2e2414;
+    --on-accent: #1a1206;
+    --signal: #86d8f7;
+    --done: #7cd69a;
+    --failed: #f07f7f;
+    --live: #86d8f7;
+    --bubble: var(--raised);
+    --glow-signal: 0 0 8px #86d8f7;
+  }
+
+  /* -- the header: boxed controls, the title left, the context row -- */
+  :global(:where(:root:not([data-layout="classic"]))) .top {
+    background: var(--sheet);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    gap: 6px;
+    padding: 8px 10px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .top:has(+ .ctx-row) {
+    border-bottom-color: transparent;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .top > .icon-btn {
+    width: 40px;
+    height: 40px;
+    border-radius: var(--r1);
+    background: var(--raised);
+    box-shadow: inset 0 0 0 1px var(--line2);
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .top > .icon-btn:active {
+    background: var(--well2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .title-btn {
+    align-items: flex-start;
+    text-align: left;
+    border-radius: var(--r1);
+    padding: 0 2px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .title {
+    font-size: 16.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .sub {
+    font-size: 12.5px;
+  }
+  .st.run {
+    color: var(--signal);
+  }
+  .hdr-dial {
+    all: unset;
+    flex: none;
+    cursor: pointer;
+    display: grid;
+    place-items: center;
+    font-size: 11px;
+  }
+  .ctx-row {
+    all: unset;
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    padding: 0 14px 8px;
+    background: var(--sheet);
+    border-bottom: 1px solid var(--line);
+    font-size: 12.5px;
+    color: var(--dim);
+    font-variant-numeric: tabular-nums;
+    position: relative;
+    z-index: 2;
+    cursor: pointer;
+  }
+  .ctx-row .ctx-k + .ctx-k {
+    margin-left: 6px;
+  }
+  .ctx-v {
+    font-family: var(--mono);
+    font-weight: 500;
+    color: var(--ink);
+  }
+  .ctx-v.sig {
+    color: var(--ink);
+  }
+  .ctx-v.hot {
+    color: var(--hot);
+  }
+
+  /* -- his message: a card in front with his amber edge -- */
+  :global(:where(:root:not([data-layout="classic"]))) .bubble {
+    background: var(--raised);
+    border: 1px solid var(--line2);
+    border-radius: var(--r2);
+    box-shadow: inset -3px 0 0 var(--accent);
+    padding: 12px 18px 12px 16px;
+    font-size: 16px;
+    line-height: 1.5;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .turn.user .stamp {
+    font-family: var(--mono);
+    font-size: 11.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .turn.user .stamp::before {
+    content: "You · ";
+    color: var(--ink2);
+  }
+
+  /* -- the reply: a header in blue while it runs, the steps as a trace -- */
+  .reply-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+    font-size: 15px;
+  }
+  .rh-ring {
+    width: 13px;
+    height: 13px;
+    border-radius: 50%;
+    border: 2px solid var(--signal);
+    border-right-color: transparent;
+    flex: none;
+  }
+  .rh-model {
+    color: var(--dim);
+  }
+  .rh-sep {
+    color: var(--dim);
+  }
+  .rh-st {
+    color: var(--signal);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .rh-ring {
+      animation: rh-spin 1s linear infinite;
+    }
+  }
+  @keyframes rh-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tools {
+    gap: 0;
+    padding: 0 12px;
+    border-radius: var(--r2);
+    background: var(--sheet);
+    border-color: var(--line2);
+    counter-reset: step;
+    overflow: hidden;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tools-folded {
+    padding: 0 12px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tool {
+    counter-increment: step;
+    align-items: center;
+    gap: 10px;
+    min-height: 40px;
+    margin: 0 -12px;
+    padding-right: 12px;
+    border-top: 1px solid var(--line);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tool:first-child {
+    border-top: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tool::before {
+    content: counter(step, decimal-leading-zero);
+    margin-left: 12px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--dim);
+    flex: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tools .tool-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    animation: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tools .tool-dot.ok {
+    width: 9px;
+    height: 5px;
+    border-radius: 0;
+    background: none;
+    border-left: 2px solid var(--done);
+    border-bottom: 2px solid var(--done);
+    transform: translateY(-2px) rotate(-45deg);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tools .tool-dot.run {
+    background: var(--signal);
+    box-shadow: var(--glow-signal);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tool-name {
+    font-size: 14.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tool-sum {
+    flex: 1;
+    min-width: 0;
+    font-size: 12.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tools-toggle {
+    margin: 0 -12px;
+    padding: 10px 12px;
+    border-top: 1px solid var(--line);
+  }
+  .tools.t4run::after {
+    content: "";
+    display: block;
+    height: 2px;
+    margin: -1px 35% 0;
+    background: linear-gradient(90deg, transparent, var(--signal), transparent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .turn.reply {
+    font-size: 16px;
+  }
+
+  /* -- code and cards -- */
+  :global(:where(:root:not([data-layout="classic"]))) .md :global(pre) {
+    background: var(--term);
+    border-color: var(--line2);
+    border-radius: var(--r2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .md :global(.code-box) {
+    background: var(--term);
+    border-color: var(--line2);
+    border-radius: var(--r2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .md :global(.code-head) {
+    background: var(--sheet);
+    font-family: var(--mono);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .md :global(.code-body.more)::after {
+    background: linear-gradient(to right, transparent, var(--term));
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .md :global(:not(pre) > code) {
+    background: var(--raised);
+    border: 1px solid var(--line2);
+    border-radius: 4px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .card {
+    background: var(--raised);
+    border-radius: var(--r2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .btn {
+    border-radius: var(--r1);
+    background: var(--well);
+    min-height: 42px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .btn.small {
+    min-height: 34px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .btn.accent {
+    background: var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .btn.danger {
+    background: transparent;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .toast {
+    border-radius: var(--r1);
+  }
+
+  /* -- the composer: a card in front, the box over a row of controls -- */
+  :global(:where(:root:not([data-layout="classic"]))) .composer {
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px 10px;
+    border-radius: var(--r2);
+    background: var(--raised);
+    box-shadow: none;
+    transition: border-color 0.15s;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .composer:focus-within {
+    border-color: var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .composer textarea {
+    flex: 1 0 100%;
+    order: -1;
+    padding: 9px 6px 4px;
+    font-size: 16px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .composer .attach + textarea {
+    padding-left: 6px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .attach {
+    margin: 0;
+    border-radius: var(--r1);
+    background: var(--well);
+    box-shadow: inset 0 0 0 1px var(--line2);
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .composer :global(.mic) {
+    margin: 0;
+    border-radius: var(--r1);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .composer :global(.mic:not(.armed)) {
+    background: var(--well);
+    box-shadow: inset 0 0 0 1px var(--line2);
+    color: var(--ink);
+  }
+  .model-btn,
+  .aside-btn {
+    all: unset;
+    box-sizing: border-box;
+    height: 40px;
+    padding: 0 12px;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    border-radius: var(--r1);
+    background: var(--well);
+    box-shadow: inset 0 0 0 1px var(--line2);
+    font-size: 15px;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .model-btn {
+    /* Basis 0, so the row fits before it would wrap; it grows to its own
+       width and no further. */
+    flex: 1 1 0;
+    min-width: 0;
+    max-width: max-content;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-right: auto;
+  }
+  .model-btn .caret {
+    font-size: 10px;
+    color: var(--dim);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .send {
+    width: auto;
+    min-width: 40px;
+    height: 40px;
+    padding: 0 16px;
+    margin: 0;
+    border-radius: var(--r1);
+    display: inline-flex;
+    gap: 8px;
+    font-weight: 600;
+    font-size: 15px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .send:not(.stop) .ico {
+    display: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .send.stop {
+    background: transparent;
+    color: var(--ink);
+    box-shadow: inset 0 0 0 1px var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .send.stop .ico {
+    width: 14px;
+    height: 14px;
+    color: var(--failed);
+  }
+
+  /* -- the new-chat page (f4-phonenew-390) -- */
+  .hello4 {
+    margin: 4px auto auto;
+    width: 100%;
+    max-width: 440px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    padding: 0 2px 4vh;
+  }
+  .h4-dial {
+    position: relative;
+    display: grid;
+    place-items: center;
+  }
+  .h4-in {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    text-align: center;
+    padding: 0 30px;
+  }
+  .h4-when {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    white-space: nowrap;
+    color: var(--dim);
+  }
+  .h4-name {
+    font-weight: 300;
+    font-size: 26px;
+    line-height: 1.12;
+    color: var(--ink);
+    overflow-wrap: anywhere;
+  }
+  .h4-ready {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 13.5px;
+    color: var(--ink2);
+  }
+  .h4-zero {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--dim);
+  }
+  .h4-zero b {
+    color: var(--ink);
+    font-weight: 500;
+  }
+  .h4-read {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    border: 1px solid var(--line2);
+    border-radius: var(--r2);
+    background: var(--sheet);
+    overflow: hidden;
+  }
+  .h4-cell {
+    all: unset;
+    box-sizing: border-box;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 10px 14px;
+    border-right: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+  }
+  button.h4-cell {
+    cursor: pointer;
+  }
+  button.h4-cell:active {
+    background: var(--well);
+  }
+  .h4-cell:nth-child(2n) {
+    border-right: 0;
+  }
+  .h4-cell:nth-child(n + 3) {
+    border-bottom: 0;
+  }
+  .h4-k {
+    font-size: 12.5px;
+    color: var(--dim);
+  }
+  .h4-v {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--ink);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .h4-v i {
+    font-style: normal;
+    color: var(--done);
+  }
+  .h4-v .ico {
+    width: 14px;
+    height: 14px;
+    color: var(--dim);
+  }
+
+  /* -- the drawer and the sheets -- */
+  :global(:where(:root:not([data-layout="classic"]))) .drawer {
+    background: var(--sheet);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .recents-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 12px 0 4px;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .recents-head::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .chat-row,
+  :global(:where(:root:not([data-layout="classic"]))) .new-row {
+    border-radius: var(--r1);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .chat-row.here {
+    background: var(--well);
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .search {
+    border-radius: var(--r1);
+    background: var(--term);
+    box-shadow: inset 0 0 0 1px var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .sheet {
+    background: var(--raised);
+    border-radius: 14px 14px 0 0;
+    box-shadow:
+      0 -1px 0 var(--line2),
+      0 -8px 32px rgba(0, 0, 0, 0.4);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .menu {
+    background: var(--sheet);
+    border-radius: var(--r2);
+    box-shadow: inset 0 0 0 1px var(--line);
   }
 </style>

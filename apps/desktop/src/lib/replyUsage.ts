@@ -25,6 +25,10 @@ export interface TurnUsageLine {
   seven_day: UsageSpan | null;
   shared: boolean;
   cost_usd: number | null;
+  /** Item 675: `cost_usd` is this reply's own. Absent on a line written
+   *  before 2026-11-12, whose cost is the chat's running total at the
+   *  reply's end — neither it nor the estimate made from it is shown. */
+  own?: boolean;
   est?: { five_hour: number | null; seven_day: number | null; replies: number } | null;
   start_at_ms: number;
   end_at_ms: number;
@@ -61,8 +65,11 @@ function part(span: UsageSpan | null, est: number | null | undefined, shared: bo
 /** The footer's figure and its hover text; null when there is nothing to say. */
 export function replyUsageView(line: TurnUsageLine | null | undefined): ReplyUsageView | null {
   if (!line) return null;
-  const fh = part(line.five_hour, line.est?.five_hour, line.shared);
-  const wk = part(line.seven_day, line.est?.seven_day, line.shared);
+  // Item 675: an older line's estimate was made from the chat's running
+  // total, not the reply's cost — the measured figure alone stands.
+  const est = line.own ? line.est : null;
+  const fh = part(line.five_hour, est?.five_hour, line.shared);
+  const wk = part(line.seven_day, est?.seven_day, line.shared);
   if (!fh && !wk) return null;
   const parts = [fh && `5h ${fh}`, wk && `week ${wk}`].filter(Boolean) as string[];
   const usedEst = [fh, wk].some((p) => p?.startsWith("≈"));
@@ -75,14 +82,14 @@ export function replyUsageView(line: TurnUsageLine | null | undefined): ReplyUsa
     `This reply's share of the plan, measured: ${m.join(", ")}.`,
     `Readings are whole percents, account-wide: at the reply's first response (${clock(line.start_at_ms)}) and the next reading after it ended (${clock(line.end_at_ms)}).`,
   ];
-  if (line.est && line.cost_usd != null) {
+  if (est && line.cost_usd != null) {
     const e = [
-      line.est.five_hour != null ? `5h ≈${fmtEstimate(line.est.five_hour)}%` : null,
-      line.est.seven_day != null ? `week ≈${fmtEstimate(line.est.seven_day)}%` : null,
+      est.five_hour != null ? `5h ≈${fmtEstimate(est.five_hour)}%` : null,
+      est.seven_day != null ? `week ≈${fmtEstimate(est.seven_day)}%` : null,
     ].filter(Boolean);
     if (e.length > 0)
       lines.push(
-        `Estimate from this reply's API-equivalent cost ($${line.cost_usd.toFixed(2)}) at the rate fitted over ${line.est.replies} replies that ran alone: ${e.join(", ")}.`,
+        `Estimate from this reply's API-equivalent cost ($${line.cost_usd.toFixed(2)}) at the rate fitted over ${est.replies} replies that ran alone: ${e.join(", ")}.`,
       );
   }
   if (line.shared)
@@ -96,4 +103,31 @@ export function byTarget(lines: TurnUsageLine[]): Map<number, TurnUsageLine> {
   const m = new Map<number, TurnUsageLine>();
   for (const l of lines) m.set(l.target, l);
   return m;
+}
+
+/**
+ * Item 674 (2026-11-12): an aside's answer in the same footer. An aside
+ * is a fork beside the chat's turns and takes no plan readings of its own,
+ * so there is no measured rise — only the estimate a chat reply shows
+ * beside one: its API-equivalent cost at the rates fitted over lone chat
+ * replies (`ask_aside`'s `plan_est`), marked `≈` as the chat's estimates are.
+ */
+export function estimateView(
+  est: { five_hour: number | null; seven_day: number | null; replies: number } | null | undefined,
+  costUsd: number | null | undefined,
+): ReplyUsageView | null {
+  if (!est) return null;
+  const one = (p: number | null) => (p == null ? null : p < 0.05 ? "≈<0.1%" : `≈+${fmtEstimate(p)}%`);
+  const fh = one(est.five_hour);
+  const wk = one(est.seven_day);
+  if (!fh && !wk) return null;
+  const text = [fh && `5h ${fh}`, wk && `week ${wk}`].filter(Boolean).join(" · ");
+  const cost = costUsd != null ? ` ($${costUsd.toFixed(2)})` : "";
+  return {
+    text,
+    title: [
+      `This answer's share of the plan, estimated from its API-equivalent cost${cost} at the rate fitted over ${est.replies} chat replies that ran alone.`,
+      "An aside takes no plan readings of its own (it runs beside the chat's turns), so there is no measured rise to show.",
+    ].join("\n"),
+  };
 }

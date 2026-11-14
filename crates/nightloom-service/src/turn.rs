@@ -4,8 +4,8 @@ use crate::store::one_line;
 use crate::tools::{CompactContext, CompactSignal, Review, Reviewer, Root, Subagent, TurnHandle};
 use futures::StreamExt;
 use nightloom_core::{
-    ChatRequest, ContentBlock, DocumentInput, Effect, ImageInput, Message, Provider, ProviderError,
-    Role, Session, StreamEvent, SystemPrompt, Thinking, Usage, WireView,
+    CacheKey, ChatRequest, ContentBlock, DocumentInput, Effect, ImageInput, Message, Provider,
+    ProviderError, Role, Session, StreamEvent, SystemPrompt, Thinking, Usage, WireView,
     tool::{Tool, defs, effect_of, run_tool},
 };
 use nightloom_providers::pricing::Price;
@@ -72,6 +72,22 @@ pub enum TurnEvent {
     /// the same number off the trailing `AssistantMessage` instead.
     Usage {
         usage: Usage,
+    },
+    /// The context a reply has built so far, live (nightshift backlog 590;
+    /// Claude Code engine only). `exact_tokens` is the last exact figure —
+    /// a round's `message_start` prompt, or its `message_delta` prompt plus
+    /// output — and `estimate_tokens` what has streamed since, counted by
+    /// characters (text, tool arguments, tool results). `rough` when
+    /// thinking is part of the estimate: Claude Code streams a summary of
+    /// it, so its length says little about the tokens it cost. Sent at
+    /// each exact figure and as the estimate grows; the turn's trailing
+    /// `AssistantMessage` is still the final word.
+    ContextLive {
+        exact_tokens: u64,
+        estimate_tokens: u64,
+        rough: bool,
+        /// Exact figures seen this turn (1 at the first round's start).
+        steps: u32,
     },
     /// What the Claude Code session has, from the CLI's `system/init` line
     /// — the first line of every turn on that engine (nightshift backlog
@@ -142,6 +158,17 @@ pub enum TurnEvent {
         text: String,
         agents: Vec<String>,
     },
+    /// Nightloom woke an idle main thread for the message's usage cap
+    /// (item 538): `text` is the Nightloom-authored line written to the
+    /// chat (not his words); `kind` the thresholds it was for (`reserved`,
+    /// `near`, `at_cap`, `pace`, `hard`); `pct` the five-hour reading and
+    /// `cap` the cap, when one is set. Claude Code engine only.
+    BudgetWake {
+        text: String,
+        kind: Vec<String>,
+        pct: Option<u8>,
+        cap: Option<u8>,
+    },
     /// The Claude Code CLI is retrying a failed API call (nightshift items
     /// 440 + 441, 2026-10-27): its `system/api_retry` line, one per try.
     /// Live only — a shell keeps **one** status line for the turn and
@@ -160,6 +187,16 @@ pub enum TurnEvent {
         status: Option<u16>,
         delay_ms: Option<u64>,
         waited_ms: Option<u64>,
+    },
+    /// A running Bash command's latest output (nightshift item 633): its
+    /// last few non-blank lines, as a terminal shows them, whole each time
+    /// they change — at most ~3 a second. Read from the CLI's own spool of
+    /// the command's output, since its stream carries none while a command
+    /// runs. Live only: a shell draws it as the row's passing text and
+    /// drops it at the call's result; never logged. Claude Code engine only.
+    ToolOutput {
+        tool_use_id: String,
+        lines: Vec<String>,
     },
     /// An event of a subagent's own turn — one the Claude Code CLI spawned
     /// through its `Agent` tool — carrying the id of the call that spawned
@@ -310,6 +347,11 @@ pub struct Chat {
     pub thinking: Thinking,
     pub max_tokens: u32,
     pub tools: Vec<Box<dyn Tool>>,
+    /// The shell's Tools switch (nightshift item 635), recorded in each
+    /// reply's cache key so the window warns when it changes. `None` when
+    /// the shell has no such switch; the key then records whether any tool
+    /// was offered.
+    pub tools_switch: Option<bool>,
     /// How many tool rounds one turn may take before the engine stops it.
     ///
     /// A runaway guard, not a budget, and it was measurably too tight at 8.
@@ -356,7 +398,44 @@ pub struct Chat {
     handle: Option<Arc<TurnHandle>>,
 }
 
+/// What an API-engine reply's cache was built with (nightshift item 601),
+/// on the terms of [`CacheKey`]: engine `"api"`, the model the request
+/// named, and whether it offered tools. The window compares it with the
+/// engine and model the next turn goes to; the Claude Code fields that do
+/// not exist here (safe mode, Ask, Plan) are off.
+///
+/// Item 635: also the Tools switch (`tools_switch`, [`Chat::tools_switch`];
+/// when the shell set none, whether any tool was offered) and the thinking
+/// setting as sent, so the window can warn of a change to either.
+pub fn api_cache_key(
+    model: &str,
+    has_tools: bool,
+    tools_switch: Option<bool>,
+    thinking: &Thinking,
+) -> CacheKey {
+    CacheKey {
+        engine: "api".into(),
+        model: Some(model.to_owned()),
+        tools: has_tools,
+        safe_mode: false,
+        ask: false,
+        plan: false,
+        tools_switch: Some(tools_switch.unwrap_or(has_tools)),
+        thinking: Some(thinking.to_string()),
+    }
+}
+
 impl Chat {
+    /// This chat's [`api_cache_key`], written on every reply it records.
+    fn cache_key(&self) -> CacheKey {
+        api_cache_key(
+            &self.model,
+            !self.tools.is_empty(),
+            self.tools_switch,
+            &self.thinking,
+        )
+    }
+
     pub fn new(provider: Box<dyn Provider>, model: impl Into<String>) -> Self {
         Self {
             provider,
@@ -365,6 +444,7 @@ impl Chat {
             thinking: Thinking::Default,
             max_tokens: 8192,
             tools: Vec::new(),
+            tools_switch: None,
             max_rounds: 24,
             sidecar: sidecar::default_parts(),
             context_limit: None,
@@ -800,7 +880,7 @@ impl Chat {
                 if !blocks.is_empty() {
                     let reason = if interrupted { "interrupted" } else { "error" };
                     let cost = self.price.map(|p| p.cost(&usage));
-                    session.record_assistant_timed(
+                    session.record_assistant_keyed(
                         &self.model,
                         blocks,
                         Some(reason.into()),
@@ -808,6 +888,7 @@ impl Chat {
                         cost,
                         sent_at,
                         self.provider.cache_ttl(),
+                        Some(self.cache_key()),
                     );
                 }
                 if let Some(e) = stream_err {
@@ -837,7 +918,7 @@ impl Chat {
             // is the adapter's when the usage does not name one, since the
             // adapter is what asked for the cache and with what `ttl`.
             let cost = self.price.map(|p| p.cost(&usage));
-            session.record_assistant_timed(
+            session.record_assistant_keyed(
                 &self.model,
                 blocks,
                 stop_reason.clone(),
@@ -845,6 +926,7 @@ impl Chat {
                 cost,
                 sent_at,
                 self.provider.cache_ttl(),
+                Some(self.cache_key()),
             );
 
             if calls.is_empty() {
@@ -2738,6 +2820,75 @@ pub(crate) mod tests {
                 ..
             }
         ));
+    }
+
+    /// Item 601: every API-engine reply names what its cache was built
+    /// with, so the window can warn of a switch to the other engine or
+    /// another model while it is warm.
+    #[tokio::test]
+    async fn an_api_reply_records_its_cache_key() {
+        let provider = Scripted::provider(vec![says("hi")]);
+        let chat = Chat::new(provider, "test-model");
+        let mut session = Session::new();
+        let (out, _) = run(&chat, &mut session, "hi").await;
+        assert!(out.is_ok());
+        let Some(SessionEvent::AssistantMessage {
+            cache_key: Some(k), ..
+        }) = session.events().last()
+        else {
+            panic!("no keyed reply");
+        };
+        assert_eq!(
+            k,
+            &api_cache_key("test-model", false, None, &Thinking::Default)
+        );
+        assert_eq!(k.engine, "api");
+        assert_eq!(k.model.as_deref(), Some("test-model"));
+        // Item 635: no switch set, so the switch reads as "no tools offered";
+        // the thinking setting is the one sent.
+        assert_eq!(k.tools_switch, Some(false));
+        assert_eq!(k.thinking.as_deref(), Some("default"));
+    }
+
+    /// Item 635: the key records the Tools switch the shell set and the
+    /// thinking setting the request went out with, and both reach the log
+    /// line; a Claude Code key's line is unchanged (no new fields).
+    #[tokio::test]
+    async fn an_api_reply_records_the_tools_switch_and_thinking() {
+        let provider = Scripted::provider(vec![says("hi")]);
+        let mut chat = Chat::new(provider, "test-model");
+        chat.tools_switch = Some(true);
+        chat.thinking = Thinking::Effort("high".into());
+        let mut session = Session::new();
+        let (out, _) = run(&chat, &mut session, "hi").await;
+        assert!(out.is_ok());
+        let last = session.events().last().unwrap();
+        let SessionEvent::AssistantMessage {
+            cache_key: Some(k), ..
+        } = last
+        else {
+            panic!("no keyed reply");
+        };
+        // No tool objects here, but the switch is what the window compares.
+        assert!(!k.tools);
+        assert_eq!(k.tools_switch, Some(true));
+        assert_eq!(k.thinking.as_deref(), Some("effort=high"));
+        let line = serde_json::to_string(last).unwrap();
+        assert!(
+            line.contains(r#""tools_switch":true,"thinking":"effort=high""#),
+            "{line}"
+        );
+    }
+
+    /// Item 635: a key logged before the fields existed reads back with
+    /// both absent — the window warns of nothing it cannot compare.
+    #[test]
+    fn an_old_api_key_reads_without_the_new_fields() {
+        let old = r#"{"engine":"api","model":"m","tools":true,"safe_mode":false,"ask":false,"plan":false}"#;
+        let k: CacheKey = serde_json::from_str(old).unwrap();
+        assert_eq!(k.tools_switch, None);
+        assert_eq!(k.thinking, None);
+        assert_eq!(serde_json::to_string(&k).unwrap(), old);
     }
 
     #[tokio::test]

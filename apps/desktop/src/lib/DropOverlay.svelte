@@ -14,13 +14,15 @@
   import { drop, endLanding, registerChatDrop, watchDrops, type Landing } from "./dropLook.svelte";
   import { prefersReducedMotion } from "./chipFade";
 
-  let { root, accept }: { root: () => HTMLElement | null; accept: (files: File[]) => void } = $props();
+  /** `region` (item 674's follow-up): whose drops — "" the chat's, an
+   *  aside's draft key its thread's (the region `Transcript` marks). */
+  let { root, accept, region = "" }: { root: () => HTMLElement | null; accept: (files: File[]) => void; region?: string } = $props();
 
   const card = () => root()?.querySelector(".card") ?? null;
 
   onMount(() => {
     const unwatch = watchDrops();
-    const unregister = registerChatDrop({ accept: (f) => accept(f), card });
+    const unregister = registerChatDrop({ accept: (f) => accept(f), card, key: region });
     return () => {
       unregister();
       unwatch();
@@ -35,7 +37,9 @@
 
   type Geo = { veil: Rect; clip: string | null; zone: Rect | null };
   let geo = $state<Geo | null>(null);
-  const shown = $derived(drop.kind === "chat" || drop.kind === "main");
+  const shown = $derived(drop.region === region && drop.kind !== "none" && drop.kind !== "idle");
+  /** Held over the box itself (the chat's composer, or this aside's box). */
+  const onBox = $derived(drop.kind === "main" || drop.kind === "box");
   let reduced = $state(false);
 
   function rectOf(el: Element): Rect {
@@ -51,7 +55,7 @@
       return;
     }
     const measure = () => {
-      const chat = document.querySelector("[data-drop-chat]");
+      const chat = document.querySelector(`[data-drop-chat="${CSS.escape(region)}"]`);
       const box = root();
       const c = card();
       if (!chat || !box || !c) {
@@ -123,7 +127,7 @@
     {#if geo.zone}
       <div
         class="zone"
-        class:on={drop.kind === "main"}
+        class:on={onBox}
         style:left="{geo.zone.left}px"
         style:top="{geo.zone.top}px"
         style:width="{geo.zone.width}px"
@@ -139,7 +143,7 @@
             stroke-linejoin="round"
           /></svg
         >
-        <b>{zoneTitle(drop.kind === "main" ? "main" : "chat")}</b>
+        <b>{onBox || region === "" ? zoneTitle(onBox ? "main" : "chat") : "Drop anywhere in the aside"}</b>
         <span>{ZONE_LINE}</span>
       </div>
     {/if}
@@ -226,8 +230,8 @@
     opacity: 0;
     transform: translate(-50%, -50%);
     border-radius: 50%;
-    border: 2px solid var(--accent);
-    background: radial-gradient(circle, color-mix(in srgb, var(--accent) 22%, transparent), transparent 70%);
+    border: 2px solid var(--motion-ink, var(--accent, #e0a458));
+    background: radial-gradient(circle, color-mix(in srgb, var(--motion-ink, var(--accent, #e0a458)) 22%, transparent), transparent 70%);
   }
   .ghost {
     position: absolute;

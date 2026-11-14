@@ -145,6 +145,38 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  /* Item 564 (Filament IV stage 5): a seat and the sources record read as
+     trace steps — a raised card with the control edge, the arg in mono, the
+     caret blue while closed, a failed seat's rule red. Classic: unchanged. */
+  :global(:where(:root:not([data-layout="classic"]))) .council-seat,
+  :global(:where(:root:not([data-layout="classic"]))) .council-record {
+    border: 1px solid var(--line2);
+    border-radius: var(--r2);
+    background: var(--raised);
+    margin-top: 6px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .council-seat.failed {
+    border-color: color-mix(in srgb, var(--failed) 45%, var(--line2));
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .council-seat-line {
+    min-height: 34px;
+    padding: 6px 16px 6px 14px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .council-seat-line .name {
+    color: var(--ink);
+    font-size: 13px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .council-seat-line .arg {
+    font-family: var(--mono);
+    font-size: 11.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .council-seat-line .ico {
+    color: var(--signal);
+    font-family: var(--mono);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .council-seat[open] > .council-seat-line .ico {
+    color: var(--done);
+  }
   .council-seat-body {
     border-left: 2px solid var(--line);
     padding-left: 0.8rem;

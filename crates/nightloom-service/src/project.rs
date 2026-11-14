@@ -1542,7 +1542,14 @@ fn walk_notes(
         let Ok(relative) = path.strip_prefix(base) else {
             continue;
         };
-        let (summary, kind) = summarize(&path);
+        // An iCloud-evicted file is listed without opening it: open() waits for
+        // the download, and on 2026-11-11 one evicted file held the launch at
+        // "Opening Nightloom…" for minutes (list_projects walks every project).
+        let (summary, kind) = if dataless(&meta) {
+            (None, None)
+        } else {
+            summarize(&path)
+        };
         out.push(Note {
             name: relative.to_string_lossy().replace('\\', "/"),
             bytes: meta.len(),
@@ -1558,6 +1565,21 @@ fn walk_notes(
         }
     }
     complete
+}
+
+/// Whether the file's contents are not on this Mac (iCloud "Optimize Mac
+/// Storage" evicted it): macOS's `SF_DATALESS` flag. Reading the flag is a
+/// stat and never starts a download; opening the file does, and blocks.
+#[cfg(target_os = "macos")]
+pub(crate) fn dataless(meta: &fs::Metadata) -> bool {
+    use std::os::macos::fs::MetadataExt;
+    const SF_DATALESS: u32 = 0x4000_0000;
+    meta.st_flags() & SF_DATALESS != 0
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn dataless(_meta: &fs::Metadata) -> bool {
+    false
 }
 
 /// A note's one-line gist and, for a file that is not text, what it is.
@@ -2022,6 +2044,30 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn a_file_on_disk_is_not_dataless_and_is_summarized() {
+        // The evicted case cannot be made in a test (only iCloud sets the
+        // flag); this pins the ordinary path: a local file still gets its gist.
+        let dir = temp_dir("dataless");
+        let note = dir.join("a.md");
+        fs::write(&note, "# Heading\nbody").unwrap();
+        assert!(!dataless(&fs::metadata(&note).unwrap()));
+        let mut out = Vec::new();
+        walk_notes(
+            &dir,
+            &dir,
+            0,
+            Walk {
+                depth: 4,
+                limit: 10,
+            },
+            &mut out,
+            &mut None,
+        );
+        assert_eq!(out.len(), 1);
+        assert!(out[0].summary.is_some());
+    }
 
     fn temp_dir(label: &str) -> PathBuf {
         // Same reason as `tools::test_dir`: a store path is derived from the

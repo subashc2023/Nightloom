@@ -45,17 +45,21 @@ export interface TranscriptPrefs {
 }
 
 /**
- * Thinking off and tools on is how the transcript read before the toggles
- * existed, so the first launch after the release changes nothing; Plex at
+ * ~~Thinking off~~ **thinking open** (2026-11-12, nightshift item 674, his
+ * "yeah open by default i think for thinking blocks") and tools on; tools on
+ * is how the transcript read before the toggles existed; Plex at
  * 16 px is his pick of 2026-09-14 and what `AssistantMessage` hard-coded
  * until the setting existed.
  */
 export const DEFAULT_TRANSCRIPT_PREFS: TranscriptPrefs = {
-  thinking: false,
+  thinking: true,
   tools: true,
   font: "plex",
   size: 16,
 };
+
+/** Bumped when the thinking default changed (2 = open, 2026-11-12). */
+const THINKING_DEFAULT_V = 2;
 
 function isFont(v: unknown): v is TranscriptFont {
   return TRANSCRIPT_FONTS.some((f) => f.id === v);
@@ -68,10 +72,16 @@ export function loadTranscriptPrefs(storage: Pick<Storage, "getItem"> = localSto
   try {
     const raw = storage.getItem(KEY);
     if (raw) {
-      const p = JSON.parse(raw) as Partial<TranscriptPrefs>;
+      const p = JSON.parse(raw) as Partial<TranscriptPrefs> & { thinkingV?: number };
+      // A record saved before thinking opened by default (no `thinkingV`)
+      // stored the old default, not a choice he made after it: it reads as
+      // open once, and the next save records the version (item 674).
+      const current = p.thinkingV === THINKING_DEFAULT_V;
       return {
         thinking:
-          typeof p.thinking === "boolean" ? p.thinking : DEFAULT_TRANSCRIPT_PREFS.thinking,
+          current && typeof p.thinking === "boolean"
+            ? p.thinking
+            : DEFAULT_TRANSCRIPT_PREFS.thinking,
         tools: typeof p.tools === "boolean" ? p.tools : DEFAULT_TRANSCRIPT_PREFS.tools,
         font: isFont(p.font) ? p.font : DEFAULT_TRANSCRIPT_PREFS.font,
         size: isSize(p.size) ? p.size : DEFAULT_TRANSCRIPT_PREFS.size,
@@ -92,6 +102,7 @@ export function saveTranscriptPrefs(
       KEY,
       JSON.stringify({
         thinking: prefs.thinking,
+        thinkingV: THINKING_DEFAULT_V,
         tools: prefs.tools,
         font: prefs.font,
         size: prefs.size,
@@ -149,6 +160,15 @@ export function toggleTranscriptPref(kind: BlockKind): void {
  * transcript, which is where a font is judged (he found a sample page "too
  * big" at the transcript's own size).
  */
+/**
+ * Item 619 (his words: "the actual screen … chat text and back n forth …
+ * very slightly bigger, even like half a px or maybeee a full px"): the
+ * transcript's text draws this much above the 15 / 16 / 17 the setting
+ * names — 0.75 CSS px, 0.83 px on screen at the re-based 100 % (page zoom
+ * 1.1). Everything that reads `--transcript-size` moves with it.
+ */
+export const TRANSCRIPT_SIZE_BUMP = 0.75;
+
 export function applyTranscriptType(
   prefs: Pick<TranscriptPrefs, "font" | "size"> = transcript,
   root: { style: { setProperty(name: string, value: string): void } } | null = typeof document ===
@@ -159,7 +179,7 @@ export function applyTranscriptType(
   if (!root) return;
   const face = TRANSCRIPT_FONTS.find((f) => f.id === prefs.font) ?? TRANSCRIPT_FONTS[0];
   root.style.setProperty("--transcript-font", face.css);
-  root.style.setProperty("--transcript-size", `${prefs.size}px`);
+  root.style.setProperty("--transcript-size", `${prefs.size + TRANSCRIPT_SIZE_BUMP}px`);
 }
 
 export function setTranscriptFont(font: TranscriptFont): void {

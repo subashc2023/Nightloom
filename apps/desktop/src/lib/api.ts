@@ -25,7 +25,6 @@ import type {
   FolderGrant,
   ImageInput,
   ImportSummary,
-  Item,
   ItemList,
   KnowledgeInfo,
   LinkGraph,
@@ -46,6 +45,7 @@ import type {
   UsageSummary,
   PlanUsage,
   TurnBudget,
+  CapMode,
   Checkpoint,
   CliMemoryFile,
   CliPromptSnapshot,
@@ -54,7 +54,6 @@ import type {
   EditableLayer,
   PromptLayer,
   PromptLayersInfo,
-  Proposal,
   ProposalEntry,
   ProposalNotice,
   ProposalScope,
@@ -67,7 +66,6 @@ import type {
   ThreadTidy,
   ThreadUpkeep,
   RevertPreview,
-  Schedules,
   SearchBackendInfo,
   ShiftSummary,
   ContextEdit,
@@ -75,7 +73,6 @@ import type {
   RemoteStatus,
   SessionEvent,
   SessionMeta,
-  SessionHit,
   SearchResult,
   SearchScope,
   TurnResult,
@@ -86,6 +83,7 @@ import type { CouncilRequest } from "./council";
 import type { ForYouRow } from "./forYou";
 import type { PriorExchange } from "./noteEdit";
 import type { TurnUsageLine } from "./replyUsage";
+import { cleanPassage, shownText } from "./keep";
 
 // All backend errors reject with a plain string.
 
@@ -481,6 +479,9 @@ export function approveCall(
   answer?: unknown,
   then?: "ask" | "auto",
   grant?: FolderGrant,
+  /** His message in place of an answer (nightshift item 522): with "deny", the refusal's reason is his
+   *  words and the turn reports the message delivered under `id` (the queued row's wire id). */
+  reply?: { text: string; id: string },
 ): Promise<null> {
   return invoke("approve_call", {
     id,
@@ -491,6 +492,8 @@ export function approveCall(
     then,
     grantDir: grant?.dir,
     grantScope: grant?.scope,
+    reply: reply?.text,
+    replyId: reply?.id,
   });
 }
 
@@ -504,11 +507,16 @@ export function playwrightForChat(chat: string, on?: boolean): Promise<{ install
 }
 
 export function listSessions(): Promise<SessionMeta[]> {
-  return invoke("list_sessions");
+  return invoke<SessionMeta[]>("list_sessions").then((l) => (Array.isArray(l) ? l.map(shownFirst) : l));
 }
 
-export function searchSessions(query: string): Promise<SessionHit[]> {
-  return invoke("search_sessions", { query });
+/** Item 515: a chat named by its first message never shows the note for
+ *  the CLI (`[Attached a file — saved for you …]`): his words, else the
+ *  file names. In memory only; the log and the CLI keep the note. */
+function shownFirst<T extends { first_user?: string | null }>(s: T): T {
+  return s && typeof s.first_user === "string" && s.first_user.includes("[Attached ")
+    ? { ...s, first_user: shownText(s.first_user) }
+    : s;
 }
 
 /** The search-everywhere panel's query (nightshift backlog 117): results
@@ -517,7 +525,11 @@ export function searchEverywhere(
   query: string,
   scope: SearchScope,
 ): Promise<SearchResult> {
-  return invoke("search_everywhere", { query, scope });
+  return invoke<SearchResult>("search_everywhere", { query, scope }).then((r) =>
+    r && Array.isArray(r.groups)
+      ? { ...r, groups: r.groups.map((g) => ({ ...shownFirst(g), rows: g.rows.map((row) => (row.who === "you" ? { ...row, ...cleanPassage(row) } : row)) })) }
+      : r,
+  );
 }
 
 /** `active` is the open chat's id (backlog 136): with a turn running, the
@@ -767,6 +779,109 @@ export function setPromptLayers(off: PromptLayer[]): Promise<SessionEvent[]> {
 }
 
 /**
+ * Make the open New chat a chat now, without sending (nightshift backlog
+ * 527): resolves with its transcript, `session_created` first. An open
+ * chat comes back as it is.
+ */
+export function startChat(): Promise<SessionEvent[]> {
+  return invoke("start_chat");
+}
+
+/**
+ * Whether a message could be sent into chat `chat` of `project` now, off
+ * screen (nightshift backlog 535): resolves when it could; rejects with
+ * the cause ("its project is not open", "its chat's log could not be
+ * read", "Claude Code is not connected"). Sends nothing.
+ */
+export function canSendInChat(chat: string, project: string | null): Promise<null> {
+  return invoke("can_send_in_chat", { chat, project });
+}
+
+/**
+ * Keep (or with `keep: false` let go) the agent spec of chat `chat` for a
+ * later send into it off screen (backlog 535): a scheduled message runs
+ * in its own chat, in its own project, whatever is open at its time.
+ * Resolves true when a spec is kept.
+ */
+export function reserveChatAgent(chat: string, keep: boolean): Promise<boolean> {
+  return invoke("reserve_chat_agent", { chat, keep });
+}
+
+// Keep-warm (backlog 582; `keep_warm.rs`): a chat's switch, its status,
+// and the stop a closed tab sends.
+export function keepWarmSet(chat: string, mode: import("./keepWarm").KeepWarmMode): Promise<import("./keepWarm").KeepWarmStatus> {
+  return invoke("keep_warm_set", { chat, mode });
+}
+
+/** Item 643: hold the chat warm for 12 or 24 h; 6 (the default) takes the hold away. */
+export function keepWarmHold(chat: string, hours: number): Promise<import("./keepWarm").KeepWarmStatus> {
+  return invoke("keep_warm_hold", { chat, hours });
+}
+
+export function keepWarmStatus(chat: string): Promise<import("./keepWarm").KeepWarmStatus> {
+  return invoke("keep_warm_status", { chat });
+}
+
+export function keepWarmStop(chat: string): Promise<boolean> {
+  return invoke("keep_warm_stop", { chat });
+}
+
+/** Item 608: his Settings default for every chat without its own switch. */
+export function keepWarmDefault(): Promise<boolean> {
+  return invoke("keep_warm_default");
+}
+
+export function keepWarmSetDefault(on: boolean): Promise<boolean> {
+  return invoke("keep_warm_set_default", { on });
+}
+
+/** Where a chat lives (backlog 535): the project whose folder holds its
+ *  log (`project: null` — the unfiled chats), or `found: false`. */
+export function chatHome(chat: string): Promise<{ found: boolean; project: string | null; name: string | null }> {
+  return invoke("chat_home", { chat });
+}
+
+/**
+ * Arm (or with `null` clear) a named wake of the backend's schedule clock
+ * (backlog 535, `wake.rs`): the window gets a `wake-due` event carrying
+ * the name at that wall-clock moment, whatever its own timers are doing.
+ */
+export function armWake(name: string, atMs: number | null): Promise<null> {
+  return invoke("arm_wake", { name, atMs: atMs === null ? null : Math.max(0, Math.round(atMs)) });
+}
+
+/** Continue chat `chat` of `project` in a fresh linked chat without opening
+ *  either (backlog 544): the new chat's id. */
+export function continueChat(chat: string, project: string | null): Promise<string> {
+  return invoke("continue_chat", { chat, project });
+}
+
+/** Seconds since the last keyboard or mouse input on this Mac (backlog
+ *  544); null where it cannot be read. */
+export function idleSeconds(): Promise<number | null> {
+  return invoke("idle_seconds");
+}
+
+/** Blocker 1757's one-time switch of every chat's subagent model from Same
+ *  to Choose (`subagentSwitch.ts` calls it once); how many were switched. */
+export function switchSubagentsSameToChoose(): Promise<number> {
+  return invoke("switch_subagents_same_to_choose");
+}
+
+/** A line for `<config dir>/logs/schedule.log` (backlog 535). */
+export function scheduleLog(text: string): Promise<null> {
+  return invoke("schedule_log", { text });
+}
+
+/** A debug build's schedule timing probe (item 535m): when to schedule a
+ *  message for a chat that does not exist (one chat per time), and a limit
+ *  resume; empty / null unless the run set `NIGHTLOOM_PROBE_DUE_S` / `_LIMIT_S`, and always in
+ *  a release build. */
+export function scheduleProbe(): Promise<{ due_ms: number[]; limit_ms: number | null }> {
+  return invoke("schedule_probe");
+}
+
+/**
  * Make the open chat the other kind from the next turn on (nightshift
  * backlog 144). Resolves with the new transcript — a `kind` event lands in
  * the log — and changes nothing on the wire until the caller reconnects,
@@ -846,6 +961,10 @@ export function saveThreadHandoff(slug: string, text: string, fromChat: string):
 
 /** The thread's + (item 464): the saved hand-off's text if no child chat
  *  has started from it yet (`chat` is then the one that did), else null. */
+export function peekThreadHandoff(slug: string): Promise<string | null> {
+  return invoke("peek_thread_handoff", { slug });
+}
+
 export function takeThreadHandoff(slug: string, chat: string): Promise<string | null> {
   return invoke("take_thread_handoff", { slug, chat });
 }
@@ -915,6 +1034,32 @@ export function cliMemoryFile(): Promise<CliMemoryFile> {
   return invoke("cli_memory_file");
 }
 
+/** One part of what a new chat starts with (item 574). */
+export interface StartPart {
+  name: string;
+  /** The dial's shade: Claude Code's own, a Nightloom layer, an
+   *  instruction file the CLI loads, or its auto memory. */
+  kind: "claude_code" | "layer" | "instructions" | "memory";
+  layer?: PromptLayer;
+  tokens: number;
+  approx: boolean;
+}
+
+/** What the open New chat already holds before its first message: the
+ *  parts in the dial's order and their sum. */
+export interface StartContext {
+  parts: StartPart[];
+  total: number;
+  /** The Claude Code session file its own part was measured from. */
+  measured_from?: string;
+}
+
+/** The new-chat dial's parts (item 574). Null on the provider engine and
+ *  before a connect. */
+export function startContext(safeMode: boolean): Promise<StartContext | null> {
+  return invoke("start_context", { safeMode });
+}
+
 /** Claude Code's own system prompt for the open chat, from the CLI's
  *  session file (nightshift backlog 077). Read-only; null before the first
  *  turn, for an ephemeral chat, and on the other engine. */
@@ -982,10 +1127,6 @@ export function listProjects(): Promise<ProjectInfo[]> {
   return invoke("list_projects");
 }
 
-export function activeProject(): Promise<ProjectInfo | null> {
-  return invoke("active_project");
-}
-
 /** Register a folder. Idempotent — the same folder is the same project. */
 export function createProject(
   path: string,
@@ -1039,6 +1180,20 @@ export function planUsageRefresh(afterMs?: number): Promise<PlanUsage> {
   return invoke("plan_usage_refresh", afterMs === undefined ? {} : { afterMs });
 }
 
+/** Item 569: the plan's per-model weeklies ("Weekly Fable"), from the CLI cache. */
+export function planScopedLimits(): Promise<import("./usageFigures").ScopedLimits> {
+  return invoke("plan_scoped_limits");
+}
+
+/** Item 569: a Claude Code chat's /usage "This session" figures, by its
+ *  Claude Code session id. `found: false` before its first turn ends.
+ *  `earlier` (item 675): the sessions the chat ran on before this one —
+ *  a rewind starts a new one — oldest first, so what they spent stays in
+ *  the cost. */
+export function sessionFigures(agentSession: string, earlier: string[] = []): Promise<import("./usageFigures").SessionFigures> {
+  return invoke("session_figures", { agentSession, earlier });
+}
+
 /** Claude Code's version against the release feed, with the models the
  *  newer release adds (nightshift backlog 182). Zero tokens. `binary` is
  *  the connected chat's resolved CLI, or null for `claude` resolved. */
@@ -1062,6 +1217,13 @@ export function cliUpdate(binary: string | null): Promise<CliUpdateResult> {
  *  the chat's `turn-budget.json`, or null before its first turn. */
 export function turnBudget(session: string): Promise<TurnBudget | null> {
   return invoke("turn_budget", { session });
+}
+
+/** His correction of the message's usage cap from the cap chip (item 538):
+ *  a new percent, a new mode, both, or — both null — no cap for this
+ *  message. Returns the ledger as it now stands. */
+export function setTurnCap(session: string, capPercent: number | null, mode: CapMode | null): Promise<TurnBudget> {
+  return invoke("set_turn_cap", { session, capPercent, mode });
 }
 
 /** Each reply's share of the plan's windows (item 323): the chat's
@@ -1140,9 +1302,11 @@ export function sendNowInjected(turn: string, id: string): Promise<import("./mid
 }
 
 /** Stop the subagents still running in a turn whose reply ended (backlog
- *  329); how many were asked to stop. */
-export function stopSubagents(turn: string): Promise<number> {
-  return invoke("stop_subagents", { turn });
+ *  329); how many were asked to stop. With `note` (item 593), Nightloom's
+ *  words to the main agent go with the stop: at once when it is idle, else
+ *  at its next tool call (the chat's `session` names where that queue is). */
+export function stopSubagents(turn: string, session?: string | null, note?: string | null): Promise<number> {
+  return invoke("stop_subagents", { turn, session: session ?? null, note: note ?? null });
 }
 
 /** Take back a message sent into the running turn (backlog 328). */
@@ -1313,10 +1477,6 @@ export function listProposals(scope: ProposalScope): Promise<ProposalEntry[]> {
   return invoke("list_proposals", { scope });
 }
 
-export function readProposal(scope: ProposalScope, id: string): Promise<Proposal> {
-  return invoke("read_proposal", { scope, id });
-}
-
 /** Move a proposal aside as turned down; it is kept under `dismissed/`. */
 export function dismissProposal(scope: ProposalScope, id: string): Promise<null> {
   return invoke("dismiss_proposal", { scope, id });
@@ -1433,6 +1593,66 @@ export function previewRestart(chat: string): Promise<PreviewSnapshot> {
 export function previewUnavailable(): Promise<string | null> {
   return invoke("preview_unavailable");
 }
+
+/** Claude's browser (nightshift item 508): the chat's Playwright browser the
+ *  app keeps between messages, as `notes/runner-design/508-interface-2026-11-09.md`
+ *  names it. The viewport is fixed; the tab letterboxes its picture. */
+export interface BrowserStatus {
+  /** The browser process is up. */
+  live: boolean;
+  url: string;
+  title: string;
+  held_by: "model" | "user";
+  width: number;
+  height: number;
+  /** Open pages (target=_blank adds one); the active one is shown. */
+  pages: number;
+  /** A message is using it now (item 557); false between messages, while
+   *  it is only kept for its logins. Absent from an older backend: read as
+   *  in use. */
+  in_use?: boolean;
+}
+/** x, y in page CSS pixels of the 1280×800 viewport. */
+export type BrowserInput =
+  | { kind: "click"; x: number; y: number; button: "left" | "right" | "middle"; clicks: 1 | 2; modifiers: string[] }
+  | { kind: "move"; x: number; y: number }
+  | { kind: "wheel"; x: number; y: number; dx: number; dy: number }
+  | { kind: "key"; key: string; modifiers: string[] }
+  | { kind: "text"; text: string };
+export type BrowserNav = "back" | "forward" | "reload" | "goto";
+export interface BrowserFrameEvent {
+  session: string;
+  seq: number;
+  /** base64 */
+  jpeg: string;
+  w: number;
+  h: number;
+}
+export type BrowserStatusEvent = { session: string } & BrowserStatus;
+export interface BrowserDialogEvent {
+  session: string;
+  kind: "alert" | "confirm" | "prompt" | "file";
+  message: string;
+}
+/** Null: this chat has no app-owned browser. */
+export function claudeBrowserStatus(session: string): Promise<BrowserStatus | null> {
+  return invoke("claude_browser_status", { session });
+}
+/** Frames flow only while some tab watches. */
+export function claudeBrowserWatch(session: string, on: boolean): Promise<null> {
+  return invoke("claude_browser_watch", { session, on });
+}
+/** The first input while the model holds the browser takes it for him. */
+export function claudeBrowserInput(session: string, input: BrowserInput): Promise<null> {
+  return invoke("claude_browser_input", { session, input });
+}
+export function claudeBrowserNav(session: string, action: BrowserNav, url?: string): Promise<null> {
+  return invoke("claude_browser_nav", url === undefined ? { session, action } : { session, action, url });
+}
+/** `true` Take over, `false` Give back. */
+export function claudeBrowserHold(session: string, held: boolean): Promise<BrowserStatus> {
+  return invoke("claude_browser_hold", { session, held });
+}
 export function forYouFiles(): Promise<ForYouRow[]> {
   return invoke("for_you_files");
 }
@@ -1496,6 +1716,10 @@ export function terminalOpen(cwd: string, cols: number, rows: number): Promise<S
 /** A block of a reply's, run under his login shell in its own pty (item 503). */
 export function terminalRun(cwd: string, cols: number, rows: number, command: string): Promise<ShellInfo> {
   return invoke("terminal_run", { cwd, cols, rows, command });
+}
+/** The folder an ended block's shell was in, once; null when none was left (backlog 529). */
+export function terminalRunCwd(id: number): Promise<string | null> {
+  return invoke("terminal_run_cwd", { id });
 }
 export function terminalWrite(id: number, data: string): Promise<null> {
   return invoke("terminal_write", { id, data });
@@ -1723,10 +1947,6 @@ export function nightshiftItems(projectId: string): Promise<ItemList> {
   return invoke("nightshift_items", { projectId });
 }
 
-export function nightshiftItem(projectId: string, id: string): Promise<Item> {
-  return invoke("nightshift_item", { projectId, id });
-}
-
 /** Rewrite `backlog/order.json`. Refused while a shift is live. */
 export function nightshiftSetOrder(
   projectId: string,
@@ -1768,13 +1988,6 @@ export function nightshiftAnswerBlocker(
 
 export function nightshiftShifts(projectId: string): Promise<ShiftSummary[]> {
   return invoke("nightshift_shifts", { projectId });
-}
-
-export function nightshiftShift(
-  projectId: string,
-  shiftId: string,
-): Promise<ShiftSummary> {
-  return invoke("nightshift_shift", { projectId, shiftId });
 }
 
 /** The last `maxBytes` of a shift's `run.log` (default 64 KiB). */
@@ -1898,29 +2111,6 @@ export function nightshiftReadFile(
   path: string,
 ): Promise<string> {
   return invoke("nightshift_read_file", { projectId, path });
-}
-
-/**
- * The last `limit` rows (default 200) of a jsonl stream, by `stream` =
- * `spend` | `adherence` | `limits`.
- */
-export function nightshiftStream(
-  projectId: string,
-  stream: string,
-  limit?: number,
-): Promise<unknown[]> {
-  return invoke("nightshift_stream", { projectId, stream, limit });
-}
-
-export function nightshiftSchedule(projectId: string): Promise<Schedules> {
-  return invoke("nightshift_schedule", { projectId });
-}
-
-export function nightshiftSetSchedule(
-  projectId: string,
-  schedules: Schedules,
-): Promise<Schedules> {
-  return invoke("nightshift_set_schedule", { projectId, schedules });
 }
 
 /** What one unit changed: the diff of its commit. */

@@ -22,13 +22,13 @@ describe("the handoff-written banner", () => {
   const base = { chat: "Q5 draft", segs: [] as Segment[], outTokens: 1200, elapsedMs: 5000, error: null };
   it("reads as board 5c draws it", () => {
     expect(handoffWrittenTitle("Q5 draft")).toBe("Q5 draft — handoff written");
-    expect(handoffWrittenBody(0.72)).toBe("72% · Continue in a new chat, or stay");
-    expect(handoffWrittenBody(1.4)).toBe("100% · Continue in a new chat, or stay");
+    expect(handoffWrittenBody(0.72)).toBe("72% · Continue with the next chat's prompt, or stay");
+    expect(handoffWrittenBody(1.4)).toBe("100% · Continue with the next chat's prompt, or stay");
   });
   it("replaces the turn-end banner only for the wrap-up's turn, and never for a failed one", () => {
     expect(turnEndBanner({ ...base, handoffFill: 0.72 })).toEqual([
       "Q5 draft — handoff written",
-      "72% · Continue in a new chat, or stay",
+      "72% · Continue with the next chat's prompt, or stay",
     ]);
     expect(turnEndBanner({ ...base, handoffFill: null })[0]).toBe("Q5 draft — turn finished");
     expect(turnEndBanner(base)[0]).toBe("Q5 draft — turn finished");

@@ -1,5 +1,8 @@
 <script lang="ts">
+  import { hudIn, hudOut } from "./hudMenu";
   import { tick, untrack } from "svelte";
+  import { MODEL_OTHER } from "./railEvents";
+  import { clockText } from "./schedule";
   import Icon from "./Icon.svelte";
   import { isImeKey } from "./imeKey";
   import Kbd from "./Kbd.svelte";
@@ -28,10 +31,16 @@
   } from "./state.svelte";
   import { MODEL_KEYS, modelChipLabel, thinkingSupport } from "./catalog";
   import { modelList } from "./modelList.svelte";
-  import { effortDefaultLabel } from "./effortDefaults";
+  import { modelSeen } from "./modelSeen.svelte";
+  import { aliasView, currentCliVersion, displayName, familyRows, newestModels, otherOnRows } from "./modelSeen";
+  import { cli } from "./cliUpdate.svelte";
+  import { effortDefaultLabel, effortModel } from "./effortDefaults";
   import {
     cacheBuiltWith,
     cacheLine,
+    canRestore,
+    kindAtCache,
+    restoreEngine,
     cacheLoss,
     cacheLossLine,
     cacheLossTitle,
@@ -40,15 +49,20 @@
     remainingText,
     restoreCacheSettings,
   } from "./cache";
+  import { holdPress, isKeeping, isOn, switchLabel, switchTitle, touchedUntil } from "./keepWarm";
+  import { holdKeepWarm, keepWarm, loadKeepWarm, setKeepWarm } from "./keepWarm.svelte";
+  import KeepWarmHold from "./KeepWarmHold.svelte";
   import { HIDDEN_THINKING_TITLE, thinkingToggleDead } from "./activity";
   import { toggleTranscriptPref, transcript } from "./transcriptPrefs.svelte";
   import { composerFormat, toggleComposerFormat } from "./composerFormat.svelte";
+  import { hasTable } from "./mdTable";
   import { LiveBoxHandle, boxElement, type ComposerBox } from "./composerEditor";
+  import { applyToField, codeBlockEdit, type BlockEdit } from "./codeBlockKeys";
   import LiveBox from "./LiveBox.svelte";
   import { isMac } from "./platform";
   import { BoxHistory, editKind, historyInput, historyKey } from "./boxHistory";
   import TypedMathBar from "./TypedMathBar.svelte";
-  import { applyTypedMath, findTypedMath, wrapTypedMath, type TypedMathSpan } from "./typedMath";
+  import { applyTypedMath, findTypedMath, rebaseTypedMath, wrapTypedMath, type TypedMathSpan } from "./typedMath";
   import { clearDenied, deniedFor, denyTypedMath, typedMathPrefs } from "./typedMathPrefs.svelte";
   import {
     RE_ASK,
@@ -56,19 +70,15 @@
     awayNow,
     beginWrapUp,
     clearMessage,
-    clearReadOrder,
     handoff,
     hasOwnMessage,
-    hasOwnReadOrder,
     hasOwnThreshold,
     message,
     noteActivity,
     noteFill,
     queueHold,
-    readOrder,
     reconsider,
     setMessage,
-    setReadOrder,
     setThreshold,
     stayHere,
     reopenHandoff,
@@ -81,9 +91,14 @@
     codeProjectFor,
     noteCodeProject,
   } from "./handoff.svelte";
-  import { fold, isFolded, noteStay, stayedFromWrapped, unfold } from "./handoffFold.svelte";
+  import { fold, isFolded, noteStay, unfold } from "./handoffFold.svelte";
+  // Item 618b: the row's look (Settings → Appearance → Composer row), stamped on the root; rules in src/composerRow.css.
+  import { composerRow } from "./composerRow.svelte";
+  // Item 644: the box takes the chat's model family (Opus Copper, Fable Lilac glass, others today's).
+  import { composerModelId, modelFamily } from "./modelFamily";
+  import { cacheFrame, cacheLook } from "./cacheLook.svelte";
   import ThreadPicker from "./ThreadPicker.svelte";
-  import { chatThread, refreshThreadFlags, injectIntoTurn, sendNowRow, openChatKey, takeQueued } from "./state.svelte";
+  import { chatThread, refreshThreadFlags, injectIntoTurn, sendNowRow, openChatKey, takeQueued, takeStopSend, frontQueued, stopSendFor } from "./state.svelte";
   import { injectChip, queueHeadLabel } from "./midTurn";
   import { rowsOf } from "./subagentRows";
   import { draftEstimate, draftEstimateTitle, draftExact, draftExactTitle, EXACT_TOKENS_FROM, fmtTokens } from "./tokens";
@@ -92,8 +107,10 @@
   import KeepButton from "./KeepButton.svelte";
   import { keepKey } from "./keep";
   import { keepStateOf, revealKept } from "./keep.svelte";
-  import { menuInterceptors } from "./state.svelte";
-  import { pendingRows } from "./pendingBubble.svelte";
+  import { menuInterceptors, asideReads } from "./state.svelte";
+  import { declaredKind, useEngine } from "./state.svelte";
+  import { bubbledRows, registerSendHeld } from "./pendingBubble.svelte";
+  import WaitAct from "./WaitAct.svelte";
   import {
     canUndo,
     followOffer,
@@ -141,14 +158,22 @@
     ranKey,
     takeBackQueued,
     updateAttachment,
-    NEW_DRAFT_PREFIX,
   } from "./drafts.svelte";
   import type { Attachment } from "./types";
   import { chipStep, isChipTag } from "./chipSteps";
   // Scheduled send (backlog 224): the ▾ beside Send and the chip above.
   import ScheduleMenu from "./ScheduleMenu.svelte";
+  import FilamentMark from "./FilamentMark.svelte";
   import ScheduledChip from "./ScheduledChip.svelte";
+  import { scheduledFor } from "./scheduled.svelte";
+  import { hasNoTurns } from "./waitingChat";
   import PreviewChip from "./PreviewChip.svelte";
+  import ClaudeBrowserChip from "./ClaudeBrowserChip.svelte";
+  import TurnCapChip from "./TurnCapChip.svelte";
+  // Item 542: under the Classic layout, 1d4ca17's browser strip.
+  import ClaudeBrowserChipClassic from "./ClaudeBrowserChipClassic.svelte";
+  import { classic } from "./layout.svelte";
+  const BrowserChip = $derived(classic() ? ClaudeBrowserChipClassic : ClaudeBrowserChip);
   import { registerScheduleDrain } from "./scheduleRuntime";
   import CouncilPopover from "./CouncilPopover.svelte";
   import ClipPanel from "./ClipPanel.svelte";
@@ -171,7 +196,7 @@
     type ConvertTag,
   } from "./pastedText.svelte";
   import { pasteSteps, textPastePlan } from "./textPaste";
-  import { attachPastedImages, fetchPasteImage, htmlImagePaste, preparePaste, rasterize, type ImagePaste } from "./pasteImages";
+  import { attachPastedImages, fetchPasteImage, htmlImagePaste, lostImagesNote, preparePaste, rasterize, type ImagePaste } from "./pasteImages";
   import { launch } from "./sendMotion";
   import { composerConnectHint, launch as launchState } from "./launch.svelte";
   import { insertQuote, replyRequest, takeReply } from "./replyQuote.svelte";
@@ -255,7 +280,7 @@
    * entry moves to the chat its first message creates (the one line in
    * `send`). Sending clears the entry, and nothing else does.
    */
-  const key = $derived(aside ? asideDraftKey(aside) : draftKey(app.activeSessionId, app.project?.id, app.pendingMode));
+  const key = $derived(aside ? asideDraftKey(aside) : draftKey(app.activeSessionId, app.project?.id, app.pendingMode, app.pendingThread));
   const draft = $derived(readDraft(key));
   const text = $derived(draft.text);
 
@@ -413,8 +438,14 @@
   const queue = $derived(draft.queue);
   /* Item 465 (merge patch note from agent E): the rows the transcript
    * already draws as pending bubbles (`PendingBubbles`, main chat only)
-   * are left out of the queue box, so each mid-turn row shows in one place. */
-  const bubbledIds = $derived(new Set(aside ? [] : pendingRows(queue, app.busy && !app.parked).map((q) => q.id)));
+   * are left out of the queue box, so each mid-turn row shows in one place.
+   * Item 548: under Filament IV the transcript draws the held ones too
+   * (`bubbledRows`), so the main chat's box keeps no rows of its own. */
+  // Item 674's follow-up: an aside's held messages are bubbles in its
+  // transcript under Filament, as the chat's are; Classic keeps the rows.
+  const bubbledIds = $derived(new Set(aside ? (classic() ? [] : queue.map((q) => q.id)) : bubbledRows(queue, app.busy && !app.parked, !classic(), app.busy && !!app.parked).map((q) => q.id)));
+  /** Item 548: which tray rows he opened past their first line (this launch). */
+  let rowOpen = $state<Record<number, true>>({});
   const boxQueue = $derived(queue.filter((q) => !bubbledIds.has(q.id)));
   /*
    * The box he types in: the textarea, or — with the format toggle on
@@ -493,6 +524,7 @@
    */
   function afterSend(k: string): void {
     sentSinceDrag.sent(k);
+    if (lostPaste?.key === k) lostPaste = null;
     requestAnimationFrame(autogrow);
   }
 
@@ -725,8 +757,9 @@
    * notice shows the fill, a field that raises the mark for this chat, the
    * wrap-up message editable for this chat, **Wrap up now** and **Stay
    * here**; ~~the wrap-up rides the next message~~ — it is its own message
-   * now. Once its turn ends the bar offers *Continue in a new chat · Stay
-   * here* (asked, not automatic — blocker 092, answered by 120). Only for
+   * now. ~~Once its turn ends the bar offers *Continue in a new chat · Stay
+   * here*~~ — item 506: the reply's next-chat card carries the way on; the
+   * composer speaks only when the reply wrote no prompt. Only for
    * the chat the state is about, and only on the Claude Code engine, which
    * is the one that fills.
    */
@@ -804,7 +837,6 @@
   /** The wrap-up this chat would send: its own edit, else its thread's, else the Settings default. */
   const wrapUpText = $derived(message(app.activeSessionId));
   /** The read order this chat's continuation opens with (backlog 193). */
-  const readOrderText = $derived(readOrder(app.activeSessionId));
   /** The wrap-up Nightloom queued while he was away is still in the queue. */
   const wrapUpQueued = $derived(handoff.queuedId !== 0 && queue.some((q) => q.id === handoff.queuedId));
 
@@ -873,9 +905,13 @@
    * draft (`typedMathPrefs.svelte.ts`). The rules: `typedMath.ts`.
    */
   const MATH_PAUSE_MS = 600;
+  /** Item 687: a paste this long is not scanned for typed maths. */
+  const PASTE_NO_MATH = 200;
   let mathSpans = $state<TypedMathSpan[]>([]);
   let mathTimer: ReturnType<typeof setTimeout> | null = null;
   let mathKey = untrack(() => key);
+  /** Item 687: the text the offers' offsets are into, so an edit moves them. */
+  let mathPrev = "";
   $effect(() => {
     const t = text;
     const k = key;
@@ -899,8 +935,13 @@
       if (!t) clearDenied(k);
       return;
     }
-    if (mathSpans.length && mathSpans.some((s) => t.slice(s.from, s.to) !== s.src))
-      mathSpans = mathSpans.filter((s) => t.slice(s.from, s.to) === s.src);
+    // Item 687: moved with the edit, not dropped — typing above a formula
+    // no longer hides the bar until the pause (the page jumped per key).
+    if (mathSpans.length) {
+      const moved = rebaseTypedMath(mathPrev, t, mathSpans);
+      if (moved !== mathSpans) mathSpans = moved;
+    }
+    mathPrev = t;
     mathTimer = setTimeout(findMathNow, MATH_PAUSE_MS);
   }
   function findMathNow(): void {
@@ -911,6 +952,7 @@
       return;
     }
     const d = deniedFor(key);
+    mathPrev = text;
     mathSpans = findTypedMath(text).filter((s) => !d.has(s.src));
   }
   /** Wrap `one` (or every offered formula) as `$…$` (`$$…$$` for a whole line): one undo step. */
@@ -945,6 +987,7 @@
       });
     }
     const d = deniedFor(key);
+    mathPrev = next;
     mathSpans = findTypedMath(next).filter((s) => !d.has(s.src));
     ta.focus();
   }
@@ -1026,7 +1069,10 @@
   let focusSeen = untrack(() => composerFocus.seq);
   $effect(() => {
     const seq = composerFocus.seq;
-    if (aside || seq === focusSeen) return;
+    // Item 674's follow-up: a request naming a box goes to that box (an
+    // aside's bubble's Edit); one naming none to the chat's, as before.
+    const wanted = composerFocus.key;
+    if (seq === focusSeen || (wanted === undefined ? !!aside : wanted !== key)) return;
     focusSeen = seq;
     void tick().then(() => {
       if (!ta) return;
@@ -1234,6 +1280,26 @@
   // Item 223 / 315: quote lines and fenced code drawn in a layer behind
   // the textarea (`BoxLayer`), while the draft has either.
   const layered = $derived(layerShown(text));
+  /*
+   * Item 689 (blocker 1993, his "I think grid makes more sense no?"): a
+   * Markdown table in the box is drawn as a grid of cells to type in. The
+   * grid is the formatted box's (`tableGrid.ts`), so with the Format switch
+   * off the box is that editor drawing only the grid, quotes and code — the
+   * text round them plain — while the draft holds a table, and stays it for
+   * this chat once it came on (`gridKey`), so ⌘Z after deleting the table
+   * still has the box's history. The text is the Markdown either way.
+   */
+  let gridKey = $state<string | null>(null);
+  const gridBox = $derived(!composerFormat.on && (gridKey === key || hasTable(text)));
+  $effect(() => {
+    const k = key;
+    untrack(() => {
+      if (gridKey !== null && gridKey !== k) gridKey = null;
+    });
+  });
+  $effect(() => {
+    if (gridBox && gridKey !== key) untrack(() => (gridKey = key));
+  });
 
   function onkeydown(e: KeyboardEvent) {
     // ⌥⌘V: paste the clipboard's text as an attachment (item 284).
@@ -1290,6 +1356,19 @@
       }
       // Anything else types as usual and closes the list.
       clipOpen = false;
+    }
+    // Item 648: inside a ``` block the keys are a code editor's — Enter a
+    // new line at the indentation (not a send; ⌘Enter sends), Tab /
+    // Shift+Tab indent, brackets close (`codeBlockKeys.ts`). Before the
+    // maths offer's Tab: inside a block Tab indents. Outside a block
+    // `codeBlockEdit` takes nothing and every key below is as it was.
+    if (ta && !boxIsLocked) {
+      const ed = codeBlockEdit(ta.value, ta.selectionStart, ta.selectionEnd, e);
+      if (ed) {
+        e.preventDefault();
+        applyBoxEdit(ed);
+        return;
+      }
     }
     // ⌥⌘↑ / ⌥⌘↓ (⌥Ctrl elsewhere) make the box a line taller or shorter
     // (backlog 111) — the keyboard's version of the handle. Before the
@@ -1449,6 +1528,26 @@
       pasteWithImages(withImages);
       return;
     }
+    if (math !== null && ta && !(ta instanceof LiveBoxHandle) && hasTable(math)) {
+      // Item 689: a table pasted into the plain box — the box becomes the
+      // grid box first, then the paste goes into it, so ⌘Z takes it back.
+      e.preventDefault();
+      const from = Math.min(ta.selectionStart, ta.selectionEnd);
+      const to = Math.max(ta.selectionStart, ta.selectionEnd);
+      const chatKey = key;
+      gridKey = key;
+      formatCaret = from;
+      void tick().then(() => {
+        if (!(ta instanceof LiveBoxHandle) || key !== chatKey) return;
+        ta.focus();
+        ta.selectionStart = from;
+        ta.selectionEnd = to;
+        pasteMath(math);
+        offer = longPasteOffer(math, from);
+        converted = null;
+      });
+      return;
+    }
     if (math !== null && ta) {
       e.preventDefault();
       const at = Math.min(ta.selectionStart, ta.selectionEnd);
@@ -1488,6 +1587,12 @@
   /** Item 382: the paste's text with its markers at the caret (as a math
    *  paste goes in), then its images as chips in marker order, under the
    *  key of the moment of the paste. */
+  /** Item 687: the paste's lost images, said under the chips until he
+   *  closes it, sends, or empties the box (a toast alone was missed). */
+  let lostPaste = $state<{ key: string; text: string } | null>(null);
+  $effect(() => {
+    if (lostPaste && lostPaste.key === key && !text) untrack(() => (lostPaste = null));
+  });
   function pasteWithImages(paste: ImagePaste): void {
     const chatKey = key;
     const ready = preparePaste(paste, MAX_IMAGE_BASE64);
@@ -1513,13 +1618,36 @@
       record: (chip) => recordImage("pasted", chip),
       cap: MAX_IMAGE_BASE64,
       toast: (m) => addToast(m),
-    });
+      lostNote: (n, total, whys) => (lostPaste = { key: chatKey, text: lostImagesNote(n, total, whys) }),
+    }, ready.whys);
+  }
+
+  /** Item 648: a code-block key's edit, in either box. The textarea's is a
+   *  step of the box's own history (blocker 1210), set at once so the next
+   *  keystroke lands after it; the formatted box's is CodeMirror's typing. */
+  function applyBoxEdit(ed: BlockEdit): void {
+    if (!ta) return;
+    if (ta instanceof LiveBoxHandle) {
+      ta.applyEdit(ed);
+      return;
+    }
+    const el = ta as HTMLTextAreaElement;
+    hist.select(el.selectionStart, el.selectionEnd);
+    const next = applyToField(el, ed);
+    if (hist.external(next, ed.head)) setDraftText(key, next);
+    else hist.select(el.selectionStart, el.selectionEnd);
+    noteActivity();
+    autogrow();
   }
 
   /** Item 348: the converted math paste in place of the selection, one
    *  undo step, as a plain paste would be. */
   function pasteMath(raw: string): void {
     if (!ta) return;
+    // Item 687 (his bug, 2026-11-13): the bar is for maths he types. A long
+    // paste (a homework page's MIPS code: `$t0`, `i=0`) filled it with five
+    // rows of offers; its spans are not offered in this draft.
+    if (raw.length >= PASTE_NO_MATH) denyTypedMath(key, findTypedMath(raw).map((s) => s.src));
     if (ta instanceof LiveBoxHandle) {
       ta.pasteText(raw);
       return;
@@ -2003,6 +2131,18 @@
     if (aside) return asideDrain();
     // A provider turn off screen holds the engine (backlog 159, A4).
     if (app.busy || !app.connection || providerElsewhereName()) return;
+    // A forced send is on its way and its turn has not started yet (item
+    // 536): no second drain sends the next row beside it.
+    if (forcing) return;
+    // His *Send now* stopped the turn (item 536): that row goes now, at
+    // the head of this chat's own queue, whatever the hold after a Stop
+    // says — taken once, so it goes once.
+    const forced = takeStopSend(liveKey());
+    if (forced !== null) {
+      if (!frontQueued(liveKey(), forced)) return;
+      explicit = true;
+      from = undefined;
+    }
     if (!explicit && hold) return;
     // Only the open chat's own queue, and after a turn only when that turn
     // was this chat's (backlog 375): a message never leaves for a chat it
@@ -2010,14 +2150,41 @@
     // `takeQueued` (state.svelte.ts) is where that rule lives and is tested.
     const q = takeQueued(key, aside !== null, from);
     if (!q) return;
+    // Free again once its turn has started (the effect below) or the
+    // send has come back without one.
+    if (forced !== null) forcing = true;
     // The held row is where this message leaves from (backlog 194); its
     // element is still in the DOM until the next flush.
-    launch("chat", document.querySelector(`.queue-row[data-queue-id="${q.id}"] .queue-text`));
+    // Item 547: under Filament IV a held row is his bubble in the transcript,
+    // and it flies from there.
+    launch(
+      "chat",
+      document.querySelector(`.queue-row[data-queue-id="${q.id}"] .queue-text`) ??
+        (classic() ? null : document.querySelector(`.midturn[data-queue-id="${q.id}"] .user-bubble`)),
+    );
     // The row Nightloom queued while he was away is the wrap-up going.
     const wrapUp = handoffHere && q.id === handoff.queuedId;
     if (wrapUp) beginWrapUp(app.activeSessionId);
-    await dispatch(q.text, q.attachments, wrapUp);
+    try {
+      await dispatch(q.text, q.attachments, wrapUp);
+    } finally {
+      if (forced !== null) forcing = false;
+    }
   }
+
+  /** A forced send (536) taken and not yet started as a turn. */
+  let forcing = false;
+  $effect(() => {
+    if (app.busy) forcing = false;
+  });
+  // The stopped turn is over and his *Send now* row waits (item 536): send
+  // it — the turn's own end usually drains first; this covers a turn this
+  // composer did not start (a background chat brought back, the phone).
+  $effect(() => {
+    if (aside || app.busy) return;
+    if (stopSendFor(key) === null) return;
+    untrack(() => void drain());
+  });
 
   // Scheduled send (backlog 224): a due message joins this chat's queue
   // and goes through `drain`, which gives the words back on a failure.
@@ -2029,16 +2196,36 @@
   $effect(() => untrack(() => (aside ? undefined : registerProviderDrain(() => drain()))));
   // And a block he ran has ended (item 503): its output goes as the next turn.
   $effect(() => untrack(() => (aside ? undefined : registerRunDrain(() => drain(true)))));
-  /** Why nothing can be scheduled from this box, if nothing can. */
-  const scheduleBlocked = $derived(
-    key.startsWith(NEW_DRAFT_PREFIX)
-      ? "send a first message first — a new chat has no id to wait under"
-      : attachments.length > 0
-        ? "attachments cannot be scheduled yet; text only"
-        : null,
+  // Item 548: *Send now* on a held bubble in the transcript is *Send next*
+  // for that row — to the head of the queue, then the same drain.
+  $effect(() =>
+    untrack(() =>
+      aside
+        ? undefined
+        : registerSendHeld(async (qid) => {
+            if (frontQueued(liveKey(), qid)) await drain(true);
+          }),
+    ),
   );
-  function scheduled(): void {
-    clearDraft(key);
+  /** Why nothing can be scheduled from this box, if nothing can. */
+  // A New chat is made at the pick (backlog 527), and the box's files and
+  // images go with the message (backlog 531): only a chip still converting
+  // (no bytes yet) blocks.
+  const scheduleBlocked = $derived(
+    attachments.some((a) => a.pending) ? "a file is still being prepared — Send later opens when it is ready" : null,
+  );
+  /** The waiting page above holds the scheduled message as its card
+   *  (backlog 532), so the row over the box would say it twice. */
+  const onWaitingPage = $derived(
+    !aside &&
+      !floating &&
+      app.activeSessionId !== null &&
+      key === app.activeSessionId &&
+      scheduledFor(key) !== null &&
+      hasNoTurns(app.events, !!app.live),
+  );
+  function scheduled(to: string): void {
+    clearDraft(to);
     requestAnimationFrame(autogrow);
   }
   function scheduleEdited(): void {
@@ -2161,7 +2348,12 @@
     const a = aside;
     if (!a || asideBusy || asideBlock) return;
     const head = queue[0];
-    if (head) launch("aside", document.querySelector(`.queue-row[data-queue-id="${head.id}"] .queue-text`));
+    if (head)
+      launch(
+        "aside",
+        document.querySelector(`.queue-row[data-queue-id="${head.id}"] .queue-text`) ??
+          document.querySelector(`.midturn[data-queue-id="${head.id}"] .user-bubble`),
+      );
     const q = shiftQueue(key);
     if (!q) return;
     await asideDispatch(a, q.text, q.attachments);
@@ -2175,8 +2367,31 @@
     if (aside && before && !now) untrack(() => void asideDrain());
   });
 
+  /**
+   * Item 606: Send's Filament "sending" look — from the click until the
+   * turn starts (Stop takes Send's place then) or the send gives up, e.g.
+   * while an office file converts.
+   */
+  let sending = $state(false);
+  $effect(() => {
+    if (busy) sending = false;
+  });
+  /** Send's hover plus, at fold 2+, the token estimate. sendTip returns
+   *  { text, keys }; adding a string to it showed "[object Object]" (his
+   *  report, 2026-11-11). */
+  function withEstimate(t: { text: string; keys?: string }): { text: string; keys?: string } {
+    return shown && Number(rowFold) >= 2 ? { ...t, text: `${t.text} · ${shown.long}` } : t;
+  }
   async function submit() {
     if (aside) return asideSubmit();
+    sending = true;
+    try {
+      await submitNow();
+    } finally {
+      sending = false;
+    }
+  }
+  async function submitNow() {
     const t = text.trim();
     const empty = !t && attachments.length === 0;
     if (empty || !app.connection) return;
@@ -2317,7 +2532,18 @@
   });
   /** The CLI's effort levels (backlog 076), *default* (no flag) first. */
   const EFFORTS = ["", "low", "medium", "high", "xhigh", "max"];
-  const effortDefaultText = $derived(effortDefaultLabel("claude-code", app.draft.agentModel));
+  // Item 666: an alias reads the row of the model the CLI last ran it as on this CLI version
+  // (`modelSeen`, item 511); before the first turn on it, the table's newest-first rule.
+  const effortDefaultText = $derived(
+    effortDefaultLabel(
+      "claude-code",
+      effortModel(
+        app.draft.agentModel,
+        modelSeen.byAlias,
+        currentCliVersion(cli.status?.installed, app.connection?.agent?.version),
+      ),
+    ),
+  );
   const effortLabel = $derived(app.draft.agentEffort || `default · ${effortDefaultText}`);
   function pickEffort(e: string) {
     if (e === app.draft.agentEffort) return;
@@ -2343,6 +2569,12 @@
     app.railScrollTo = "model";
     app.showRail = true;
   }
+  /** *other…* (item 513, his report): the rail opens with its Id field
+   *  shown and focused, not only the Model section. */
+  function openRailOther() {
+    openRail();
+    window.dispatchEvent(new CustomEvent(MODEL_OTHER));
+  }
 
   interface MenuRow {
     id: string;
@@ -2352,26 +2584,50 @@
     /** The chord that does the same from anywhere, as a key cap. */
     cap?: string | null;
     on?: boolean;
+    /** The hover's text. */
+    title?: string;
+    /** A thin rule above the row. */
+    sep?: boolean;
     run: () => void;
+  }
+  /*
+   * The numbers behind the aliases (item 511): what each one resolved to on
+   * the CLI now, learned from turns (`modelSeen`), and each family's newest
+   * model by full id — the API's list when Settings already fetched it on a
+   * key, else the table shipped here; no call is made for the menu.
+   */
+  const cliNow = $derived(currentCliVersion(cli.status?.installed, app.connection?.agent?.version));
+  const newestIds = $derived(newestModels(app.modelLists["anthropic"]));
+  function aliasRow(a: string, cur: string): { detail: string; title: string } {
+    const v = aliasView(modelSeen.byAlias, a, cliNow);
+    const newest = v.current && newestIds.includes(v.current.id) ? ` — the newest ${displayName(v.current.id).split(" ")[0]}` : "";
+    const current = a === cur ? " · current" : "";
+    return { detail: `${v.detail}${current}`, title: `${v.title}${newest}` };
   }
   const modelRows = $derived.by((): MenuRow[] => {
     const rows: MenuRow[] = [];
     if (agentMode) {
       const cur = app.draft.agentModel.trim();
-      rows.push({ id: "default", label: "default", detail: "whatever the CLI defaults to", on: cur === "", run: () => void switchModel("") });
-      for (const a of AGENT_PILLS) {
-        rows.push({
-          id: a,
-          label: a,
-          detail: a === cur ? "current · the CLI resolves it" : undefined,
-          cap: agentKey(a),
-          on: cur === a,
-          run: () => void switchModel(a),
-        });
+      // ~~"whatever the CLI defaults to" / "current · the CLI resolves it"~~
+      // — item 511: the model each resolved to on this CLI, or not yet.
+      const dv = aliasRow("", cur);
+      rows.push({ id: "default", label: "default", detail: dv.detail, title: dv.title, on: cur === "", run: () => void switchModel("") });
+      // ~~One row per alias (`fable · Fable 5.1`), then each family's newest
+      // by full id unless an alias already shows it (511)~~ — item 518: one
+      // row per family, `Fable 5.2`, picking the full id, the alias noted
+      // when it lags; the alias's own row only while the chat is on it.
+      const full = familyRows(AGENT_PILLS, newestIds, modelSeen.byAlias, cliNow, cur);
+      let firstNewest = true;
+      for (const f of full) {
+        const sep = f.kind === "newest" && firstNewest;
+        if (f.kind === "newest") firstNewest = false;
+        rows.push({ id: f.key, label: f.label, detail: f.detail, title: f.title, cap: f.capAlias ? agentKey(f.capAlias) : null, on: f.on, sep, run: () => void switchModel(f.pick) });
       }
       // A full id typed into the rail's field: named here, changed there.
-      const other = cur !== "" && !AGENT_PILLS.includes(cur);
-      rows.push({ id: "other", label: other ? cur : "other…", detail: other ? "a full id — the rail's field" : "a full id, typed in the rail", on: other, run: openRail });
+      // ~~`!AGENT_PILLS.includes(cur)`~~ — and no newest row names it (511);
+      // no row at all is on (518).
+      const other = otherOnRows(cur, full);
+      rows.push({ id: "other", label: other ? cur : "other…", detail: other ? "a full id — the rail's field" : "a full id, typed in the rail", on: other, run: openRailOther });
     } else {
       models.forEach((m, i) =>
         rows.push({
@@ -2418,9 +2674,24 @@
    * the chat's cannot read the chat's prompt cache, so its first answer
    * pays to read the whole context: the row says so.
    */
-  const chatModelName = $derived(app.draft.agentModel.trim() || "default");
+  // Item 657 (his "idk why its like this w the full slug"): ~~the raw id,
+  // `chat's · claude-opus-5-5`~~ — the model's name, `Opus 5.5`, as the
+  // chat's own button reads (`modelChipLabel`); an alias stays as it is.
+  const chatModelName = $derived(app.draft.agentModel.trim() ? displayName(app.draft.agentModel) : "default");
   const chatEffortName = $derived(app.draft.agentEffort || `default · ${effortDefaultText}`);
-  const asideModelLabel = $derived(aside?.model ? aside.model : `chat's · ${chatModelName}`);
+  const asideModelLabel = $derived(aside?.model ? displayName(aside.model) : `chat's · ${chatModelName}`);
+  // Item 644: the family of the model this box sends to, live with the pickers (the chip's choice).
+  const family = $derived(
+    modelFamily(
+      composerModelId({
+        agentMode,
+        agentModel: app.draft.agentModel,
+        model: app.draft.model,
+        connected: app.connection?.model,
+        asideModel: aside?.model ?? null,
+      }),
+    ),
+  );
   const asideEffortLabel = $derived(
     aside && aside.effort != null ? aside.effort || "default" : `chat's · ${chatEffortName}`,
   );
@@ -2439,16 +2710,22 @@
     const rows: MenuRow[] = [
       { id: "chat", label: "the chat's", detail: `${chatModelName} · reads the chat's cache`, on: cur === null, run: () => pickAside("model", null) },
     ];
-    for (const m of AGENT_PILLS) {
+    // ~~One row per alias, its number after it (511)~~ — item 518: one row
+    // per family, as the chat's own menu; the row the chat's model is on
+    // says so.
+    const chatRow = familyRows(AGENT_PILLS, newestIds, modelSeen.byAlias, cliNow, app.draft.agentModel).find((f) => f.on)?.key;
+    const fams = familyRows(AGENT_PILLS, newestIds, modelSeen.byAlias, cliNow, cur ?? "");
+    for (const f of fams) {
       rows.push({
-        id: m,
-        label: m,
-        detail: m === chatModelName ? "the chat's model, picked for this aside" : "its own model — no cache from the chat",
-        on: cur === m,
-        run: () => pickAside("model", m),
+        id: f.key,
+        label: f.label,
+        title: f.title,
+        detail: `${f.detail.replace(/ · current.*$/, "")} · ${f.key === chatRow ? "the chat's model, picked for this aside" : "its own model — no cache from the chat"}`,
+        on: cur !== null && f.on,
+        run: () => pickAside("model", f.pick),
       });
     }
-    if (cur !== null && !AGENT_PILLS.includes(cur)) rows.push({ id: cur, label: cur, on: true, run: () => {} });
+    if (cur !== null && otherOnRows(cur, fams)) rows.push({ id: cur, label: cur, on: true, run: () => {} });
     return rows;
   });
   const asideEffortRows = $derived.by((): MenuRow[] => {
@@ -2466,7 +2743,12 @@
   });
   const boxPlaceholder = $derived(
     !aside
-      ? "Message…"
+      ? // The new-chat page's box (`floating`, Welcome) under Filament IV
+        // asks the mockup's question (f4-new.png, item 570); Classic keeps
+        // its words.
+        floating && !classic()
+        ? "What are we making?"
+        : "Message…"
       : aside.draft
         ? aside.quote
           ? "Ask about the passage… (↵ asks)"
@@ -2513,7 +2795,7 @@
     if (Number.isNaN(t)) return "earlier";
     const d = new Date(t);
     const sameDay = d.toDateString() === new Date().toDateString();
-    const hm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const hm = clockText(t); // 12-hour whatever the locale (item 611b; was "02:05 PM" / "14:05")
     return sameDay ? hm : `${d.toLocaleDateString([], { month: "short", day: "numeric" })} ${hm}`;
   }
 
@@ -2697,10 +2979,36 @@
    * still, whichever view is up — this chain only draws.
    */
   let now = $state(Date.now());
-  const cache = $derived(floating ? null : cacheState(app.events, now));
+  /*
+   * Keep-warm (backlog 582): the open chat's switch, beside the timer it
+   * extends. A ping's read restarts the cache's hour, so the timer counts
+   * from the later of the reply and the last ping.
+   */
+  const kwChat = $derived(floating ? null : app.activeSessionId);
+  const kw = $derived(kwChat ? (keepWarm.byChat[kwChat] ?? null) : null);
+  $effect(() => {
+    if (kwChat) void loadKeepWarm(kwChat);
+  });
+  async function flipKeepWarm(mode: "on" | "once" | "off") {
+    if (!kwChat) return;
+    const refused = await setKeepWarm(kwChat, mode);
+    if (refused) addToast(`Keep warm: ${refused}`);
+  }
+  // Item 643: right-click or hold the switch → 6 h / 12 h / 24 h for this chat.
+  let kwButton: HTMLElement | null = $state(null);
+  let kwHoldOpen = $state(false);
+  async function holdFor(hours: number) {
+    kwHoldOpen = false;
+    if (!kwChat) return;
+    const refused = await holdKeepWarm(kwChat, hours);
+    if (refused) addToast(`Keep warm: ${refused}`);
+  }
+  const cache = $derived(floating ? null : cacheState(app.events, now, touchedUntil(kw), asideReads(kwChat)));
+  /** Item 596: the same state drawn on the box's frame (`cacheLook.css`). */
+  const frame = $derived(cacheFrame(cache));
   $effect(() => {
     if (floating) return;
-    const warmUntil = cacheState(app.events, Date.now())?.warmUntil ?? null;
+    const warmUntil = cacheState(app.events, Date.now(), touchedUntil(kw), asideReads(kwChat))?.warmUntil ?? null;
     if (warmUntil == null) return;
     now = Date.now();
     let id: ReturnType<typeof setTimeout> | null = null;
@@ -2725,11 +3033,25 @@
    * has nothing left to lose.
    */
   const cacheBuilt = $derived(floating ? null : cacheBuiltWith(app.events));
-  const cacheChanges = $derived(cacheBuilt && cache?.warm ? cacheLoss(cacheBuilt.key, app.draft) : []);
+  // Item 601: and what the next turn carries beside the draft — the
+  // chat's declared kind then and now, and the API engine's resolved model.
+  const cacheChanges = $derived(
+    cacheBuilt && cache?.warm
+      ? cacheLoss(cacheBuilt.key, app.draft, {
+          kind: declaredKind(app.events),
+          builtKind: kindAtCache(app.events),
+          apiModel: app.connection && app.connection.engine !== "claude-code" ? app.connection.model : undefined,
+        })
+      : [],
+  );
   function restoreCache() {
-    if (!cacheBuilt || cacheChanges.length === 0) return;
+    if (!cacheBuilt || cacheChanges.length === 0 || !canRestore(cacheChanges)) return;
+    const engine = restoreEngine(cacheBuilt.key, cacheChanges);
     restoreCacheSettings(cacheBuilt.key, cacheChanges, app.draft);
-    void applyDraft();
+    // An engine switch back reconnects through `useEngine` (it drops the
+    // other engine's connection first); everything else through the draft.
+    if (engine === "claude-code" || engine === "provider") void useEngine(engine);
+    else void applyDraft();
   }
   const cacheShareTitle = "Share of the last request's prompt served from cache.";
   const cacheTitle = $derived.by(() => {
@@ -2738,7 +3060,12 @@
     if (!cache.warm) {
       return "The last turn's prompt cache has expired, so the next turn re-reads the whole history either way and editing it now costs nothing extra.";
     }
-    const what = `Time left on the last turn's prompt cache (${cache.ttl}), counted from when its request was sent: until it expires an edit to the history re-writes the cache, and after it the next turn pays for the whole history whether or not you edited it.`;
+    // Item 677: an aside's read restarted the clock; say so, and how much of the history it read.
+    const from =
+      cache.asideShare != null
+        ? `counted from the aside asked at ${new Date(cache.sentAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}, which read ${Math.round(cache.asideShare * 100)}% of the history from it and so refreshed that much`
+        : "counted from when its request was sent";
+    const what = `Time left on the last turn's prompt cache (${cache.ttl}), ${from}: until it expires an edit to the history re-writes the cache, and after it the next turn pays for the whole history whether or not you edited it.`;
     return engine === "claude-code"
       ? `${what} On this engine you are on the subscription, so "free" means an edit costs no more usage than an unedited turn would — whether cache reads are discounted against the plan's limit is not documented.`
       : what;
@@ -2753,6 +3080,9 @@
   class:compact
   class:dropping={dragDepth > 0}
   data-drop-box={aside ? "aside" : "main"}
+  data-drop-for={aside ? key : undefined}
+  data-composer-row={composerRow.value}
+  data-model-family={family}
   role="group"
   aria-label={aside ? "aside composer" : "message composer"}
   {ondragenter}
@@ -2776,8 +3106,14 @@
   {#if !aside && app.activeSessionId}
     <!-- The chat's preview (item 430): its dev server, up between messages. -->
     <PreviewChip chat={app.activeSessionId} />
+    <!-- Claude's browser (item 508): offered once it is live; opens only on his click. -->
+    <BrowserChip chat={app.activeSessionId} />
+    <!-- The message's usage cap (item 538): only while it runs under one. -->
+    <TurnCapChip plain={classic()} />
   {/if}
-  {#if composerShows("schedule", !!aside)}
+  <!-- Item 548: under Filament IV the scheduled message is drawn in the
+       transcript as his message (ScheduledBubble); Classic keeps the row. -->
+  {#if composerShows("schedule", !!aside) && !onWaitingPage && classic()}
     <ScheduledChip {key} onedit={scheduleEdited} />
   {/if}
   {#if boxQueue.length > 0}
@@ -2789,6 +3125,7 @@
         {/if}
       </div>
       {#each boxQueue as q, i (q.id)}
+        {#if classic()}
         <div class="queue-row" role="listitem" data-queue-id={q.id}>
           <span class="queue-n mono">{i + 1}</span>
           <span class="queue-text" use:tip={q.text} data-find-text={q.text}>{#if handoffHere && q.id === handoff.queuedId}<span class="ns-chip mono" use:tip={"Put here by Nightloom: the window crossed this chat's hand-off mark while you were away. × takes it back."}>wrap-up · queued while you were away</span> {/if}{firstLine(q.text) || "(no text)"}{#if q.attachments.length > 0} <span class="ns-chip mono">{q.attachments.length} {q.attachments.length === 1 ? "file" : "files"}</span>{/if}</span>
@@ -2801,14 +3138,42 @@
             <button class="remove" use:tip={"drop this message"} aria-label="drop queued message {i + 1}" onclick={() => void dropRow(q.id)}>×</button>
           {/if}
         </div>
+        {:else}
+          <!-- Items 548 + 549 (Filament IV): the whole text opens in the row
+               ("more"), never as a hover tip across the window; the actions
+               are icons with their names as tips. -->
+          {@const long = q.text.trim().includes("\n") || q.text.trim().length > 120}
+          <div class="queue-row fil" class:open={rowOpen[q.id]} role="listitem" data-queue-id={q.id}>
+            <span class="queue-n mono">{i + 1}</span>
+            <span class="queue-text" data-find-text={q.text}
+              >{#if handoffHere && q.id === handoff.queuedId}<span class="ns-chip mono" use:tip={"Put here by Nightloom: the window crossed this chat's hand-off mark while you were away. × takes it back."}>wrap-up · queued while you were away</span>
+              {/if}{#if rowOpen[q.id]}<span class="queue-whole">{q.text}</span>{:else}{firstLine(q.text) || "(no text)"}{/if}{#if q.attachments.length > 0}
+                <span class="ns-chip mono">{q.attachments.length} {q.attachments.length === 1 ? "file" : "files"}</span>{/if}</span
+            >
+            {#if long}
+              <button class="ns-link queue-more" type="button" aria-expanded={!!rowOpen[q.id]} onclick={() => (rowOpen[q.id] ? delete rowOpen[q.id] : (rowOpen[q.id] = true))}
+                >{rowOpen[q.id] ? "less" : "more"}</button
+              >
+            {/if}
+            {#if q.inject}{@const chip = injectChip(q.inject)}<span class="ns-chip mono" data-inject={chip.state} use:tip={chip.tip}>{chip.label}</span>{/if}
+            <span class="queue-acts">
+              {#if q.inject && q.inject.after === undefined && !q.inject.now}
+                <WaitAct icon="send" accent label="Send now" hint="stop the step Claude is in (a long command, say) and give it this message at once — as Claude Code's own send now does; the turn goes on" data-send-now="" onclick={() => void sendNowRow(key, q.id)} />
+              {/if}
+              {#if q.inject?.after === undefined}
+                <WaitAct icon="pencil" label="Take back" hint="back into the message box" onclick={() => void takeBack(q.id)} />
+                <WaitAct icon="x" label="Drop queued message {i + 1}" hint="do not send it" onclick={() => void dropRow(q.id)} />
+              {/if}
+            </span>
+          </div>
+        {/if}
       {/each}
     </div>
   {/if}
-  {#if aside === null}
-    <!-- Item 362: the veil and zone while a file is held over the chat,
-         and the landing at the drop; drawn on `body`. -->
-    <DropOverlay root={() => root} accept={(files) => void accept(files)} />
-  {/if}
+  <!-- Item 362: the veil and zone while a file is held over the chat,
+       and the landing at the drop; drawn on `body`. Item 674's follow-up:
+       an aside's box too, for a file held over its thread. -->
+  <DropOverlay root={() => root} accept={(files) => void accept(files)} region={aside ? key : ""} />
   {#if attachments.length > 0}
     <div class="attachments" in:rowIn>
       {#each attachments as a (a.id)}
@@ -2885,6 +3250,12 @@
       {/each}
     </div>
   {/if}
+  {#if lostPaste && lostPaste.key === key}
+    <div class="lost-paste" role="status">
+      <span class="lost-paste-text">{lostPaste.text}</span>
+      <button type="button" class="lost-paste-x" aria-label="Close this note" onclick={() => (lostPaste = null)}>×</button>
+    </div>
+  {/if}
   {#if handoffHere && handoff.stage === "due" && isFolded(app.activeSessionId, "due")}
     <div class="handoff handoff-min" role="status" aria-label="Hand-off notice, minimized">
       <span class="handoff-mark" aria-hidden="true"><Icon name="branch" size={13} /></span>
@@ -2948,7 +3319,7 @@
         {#if !wrapUpQueued}
           <button class="ns-btn accent small" disabled={app.busy || !wrapUpText.trim()} onclick={() => void sendWrapUpNow()}>Wrap up now</button>
         {/if}
-        <button class="ns-btn ghost small" use:tip={`No wrap-up; asked again past ${reAskPct}%`} onclick={() => { noteStay(app.activeSessionId, "due"); stayHere(); }}>Stay here</button>
+        <button class="ns-btn ghost small" use:tip={`No wrap-up; asked again past ${reAskPct}%`} onclick={() => { noteStay(app.activeSessionId); stayHere(); }}>Stay here</button>
         <button class="ns-btn ghost small" use:tip={"Fold this card to one line above the box"} onclick={() => fold(app.activeSessionId, "due")}>Minimize</button>
         {#if hasOwnMessage(app.activeSessionId)}
           <button class="ns-btn ghost small" use:tip={"Back to the Settings default for this chat"} onclick={() => clearMessage(app.activeSessionId)}>Reset the message</button>
@@ -2960,66 +3331,24 @@
     <div class="handoff" role="status">
       <div class="handoff-head"><span>Wrapping up — the model is finishing what is half-done, {#if threadAndHandoff}updating the thread's files and <code>HANDOFF.md</code>, committing{:else if threadHandoff}updating the thread's files{:else}writing <code>HANDOFF.md</code>, committing{/if}, and ending with the start prompt for the new chat.</span></div>
     </div>
-  {:else if handoffHere && handoff.stage === "wrapped" && isFolded(app.activeSessionId, "wrapped")}
-    <div class="handoff handoff-min" role="status" aria-label="Hand-off notice, minimized">
+  {:else if handoffHere && handoff.stage === "wrapped" && !handoff.startPrompt}
+    <!-- Item 506 (blocker 1660): the reply's next-chat card is the hand-off;
+         a wrap-up that wrote no prompt has no card to carry the button, so
+         this one line is the way on. ~~The wrapped card and its folded form:
+         a second text and a second Continue beside the reply's.~~ -->
+    <div class="handoff handoff-min" role="status" aria-label="The wrap-up wrote no next-chat prompt">
       <span class="handoff-mark" aria-hidden="true"><Icon name="branch" size={13} /></span>
-      <strong class="handoff-min-title">{threadAndHandoff ? "Thread and HANDOFF.md updated" : threadHandoff ? "Thread updated" : "HANDOFF.md written"}</strong>
-      <span class="mono handoff-fill">{fmtTokens(handoff.used)} of {fmtTokens(handoff.limit)} · {handoffPct}%</span>
+      <strong class="handoff-min-title">The wrap-up wrote no next-chat prompt</strong>
       <span class="spacer"></span>
-      <button class="ns-btn accent small" disabled={app.busy} onclick={() => void continueChat()}>Continue in a new chat</button>
-      <button class="ns-btn ghost small" use:tip={"Show the whole card again"} onclick={() => unfold(app.activeSessionId)}>Expand</button>
-    </div>
-  {:else if handoffHere && handoff.stage === "wrapped"}
-    <div class="handoff" role="status" aria-label="Hand-off done">
-      <div class="handoff-head">
-        <span class="handoff-mark" aria-hidden="true"><Icon name="branch" size={15} /></span>
-        <strong>{threadAndHandoff ? "Thread and HANDOFF.md updated" : threadHandoff ? "Thread updated" : "HANDOFF.md written"}</strong>
-        <span class="spacer"></span>
-        <span class="mono handoff-fill">{fmtTokens(handoff.used)} of {fmtTokens(handoff.limit)} · {handoffPct}%</span>
-      </div>
-      <p class="handoff-d">
-        Check the reply above. <strong>Continue in a new chat</strong> opens a linked chat in the same folder with
-        {#if handoff.startPrompt}{readOrderText.trim() ? "the read order below and then " : ""}the model's start prompt
-          in the box, not sent{:else if readOrderText.trim()}the read order below in the box, not sent — the reply had no
-          <code>&lt;handoff&gt;</code> prompt, so add what to do first{:else}an empty box — the reply had no
-          <code>&lt;handoff&gt;</code> prompt, so say what to read first{/if}. This chat stays readable.
-        {#if threadHandoff}The new chat opens on the same thread.{/if}
-      </p>
-      <ThreadPicker compact />
-      <!-- The read order (backlog 193): the fixed text above the model's
-           start prompt in the new chat's box; this chat's own copy, the
-           default in Settings → Subscription. -->
-      <textarea
-        class="handoff-msg"
-        rows="4"
-        autocorrect="off"
-        autocapitalize="off"
-        spellcheck="false"
-        aria-label="The read order the new chat opens with, for this chat"
-        placeholder="No read order — the new chat opens with the model's start prompt alone"
-        use:tip={"Put above the model's start prompt in the new chat's box. Edits are kept for this chat and the chats that continue it; the default is in Settings → Subscription."}
-        value={readOrderText}
-        oninput={(e) => {
-          noteActivity();
-          setReadOrder(app.activeSessionId, (e.currentTarget as HTMLTextAreaElement).value);
-        }}
-      ></textarea>
-      <div class="handoff-acts">
-        <button class="ns-btn accent small" disabled={app.busy} onclick={() => void continueChat()}>Continue in a new chat</button>
-        {#if hasOwnReadOrder(app.activeSessionId)}
-          <button class="ns-btn ghost small" use:tip={"Back to the Settings default for this chat"} onclick={() => clearReadOrder(app.activeSessionId)}>Reset the read order</button>
-        {/if}
-        <button class="ns-btn ghost small" use:tip={`Keep going here; asked again past ${reAskPct}%`} onclick={() => { noteStay(app.activeSessionId, "wrapped"); stayHere(); }}>Stay here</button>
-        <button class="ns-btn ghost small" use:tip={"Fold this card to one line above the box"} onclick={() => fold(app.activeSessionId, "wrapped")}>Minimize</button>
-        <span class="handoff-keys mono">stay past {reAskPct}% and the wrap-up is asked again</span>
-      </div>
+      <button class="ns-btn accent small" disabled={app.busy} use:tip={app.busy ? "A turn is running — continue when it ends" : "Open a linked chat with the read order in its box, not sent"} onclick={() => void continueChat()}>Continue in a new chat</button>
+      <button class="ns-btn ghost small" use:tip={`Keep going here; asked again past ${reAskPct}%`} onclick={() => { noteStay(app.activeSessionId); stayHere(); }}>Dismiss</button>
     </div>
   {/if}
   {#if clipOpen}
     <ClipPanel entries={clips.ring} index={clipIndex} onpick={pickClip} />
   {/if}
   {#if slashOpen}
-    <div class="slash" role="listbox" aria-label="Skills and slash commands">
+    <div class="slash hud-m" role="listbox" aria-label="Skills and slash commands" in:hudIn|global out:hudOut|global>
       {#if slashMatches.length === 0}
         <div class="slash-row dim">No skill or command starts with “{text.slice(1)}” — ↵ sends the text as typed</div>
       {:else}
@@ -3044,7 +3373,7 @@
   {#if mathShown}
     <TypedMathBar spans={mathSpans} onaccept={acceptMath} ondeny={denyMath} />
   {/if}
-  <div class="card">
+  <div class="card" data-cache={frame?.cache} data-cache-look={frame ? cacheLook.value : undefined} data-cache-losing={frame && cacheBuilt && cacheChanges.length > 0 ? "" : undefined} style={frame?.style}>
     <!-- No autocorrect, capitalisation or spell-marking on a message to a
          model: macOS was rewriting his words as he typed (2026-09-16). -->
     {#if ghost}
@@ -3087,7 +3416,7 @@
         pointerDown = false;
       }}
     >
-    {#if composerFormat.on}
+    {#if composerFormat.on || gridBox}
       <!-- Item 276: the same draft with its formatting drawn in place —
            math typeset, bold / italic / headings styled, the source back
            under the cursor. The text, the keys and the draft are the
@@ -3099,6 +3428,7 @@
         placeholder={app.connection ? boxPlaceholder : ""}
         disabled={boxIsLocked}
         {floating}
+        drawing={composerFormat.on ? "all" : "plain"}
         initialCaret={formatCaret}
         oninput={() => {
           noteActivity();
@@ -3158,9 +3488,13 @@
         hidden
         onchange={onpick}
       />
+      <!-- Item 607 (his "remove the word attach on the button so that it's
+           just like the plus icon thing"): under Filament the plus alone,
+           named by its tooltip and label; Classic keeps its word. -->
       <button
         class="ns-btn ghost small attach"
-        use:tip={"Attach images or PDFs"}
+        aria-label="Attach files"
+        use:tip={"Attach files"}
         disabled={!app.connection}
         onclick={() => picker?.click()}
       >
@@ -3188,7 +3522,7 @@
           <span class="pick-chev" aria-hidden="true"><Icon name="chev" size={11} /></span>
         </button>
         {#if menu === "model"}
-          {@render pickMenu(aside ? "This aside's model" : "Model", aside ? "the chat's unless picked here" : agentMode ? "an alias the CLI resolves" : `${models.length} in the picker · Settings picks which`)}
+          {@render pickMenu(aside ? "This aside's model" : "Model", aside ? "the chat's unless picked here" : agentMode ? "one row per family, its newest" : `${models.length} in the picker · Settings picks which`)}
         {/if}
       </span>
       <span class="pick-wrap">
@@ -3248,8 +3582,8 @@
       {#if handoffStayed}
         <button
           class="ns-btn ghost small act"
-          use:tip={`Bring back the hand-off card now; it asks by itself again past ${reAskPct}%`}
-          onclick={() => reopenHandoff(stayedFromWrapped(app.activeSessionId))}
+          use:tip={`Bring back the hand-off notice now; it asks by itself again past ${reAskPct}%`}
+          onclick={() => reopenHandoff()}
         ><Icon name="branch" size={12} /> Hand off</button>
       {/if}
       {#if shown}
@@ -3285,12 +3619,12 @@
       {:else if aside}
         <!-- The aside's Send (backlog 283): no schedule ▾, no council. -->
         <button
-          class="ns-btn accent send act"
+          class="ns-btn accent send act fil-btn fil-send"
           use:tip={asideSendTip}
           onclick={() => void submit()}
           disabled={!app.connection || asideBlock !== null || (!text.trim() && attachments.length === 0)}
         >
-          Send
+          <span class="fil-scan" aria-hidden="true"></span><FilamentMark kind="send" />Send
         </button>
       {:else}
         {#if app.connection?.engine === "claude-code" && app.events.length > 0}
@@ -3301,12 +3635,12 @@
                Not before the first turn: an empty chat has no context to
                ask (the Welcome screen showed it — his report, 2026-09-17). -->
           <button
-            class="ns-btn ghost small act"
+            class="ns-btn ghost small act fil-btn fil-ghost"
             use:tip={"Ask this of the chat without adding it to the chat: answered from what is already in context, no changes, recorded nowhere (Claude Code's /btw)"}
             disabled={!text.trim() && attachments.length === 0}
             onclick={() => void submitAside()}
           >
-            <span class="fold-word">Ask aside</span><span class="short-word">Aside</span>
+            <FilamentMark kind="aside" /><span class="fold-word">Ask aside</span><span class="short-word">Aside</span>
           </button>
         {/if}
         {#if app.connection?.engine === "claude-code"}
@@ -3314,7 +3648,7 @@
                and mode for this turn, then Send to the council. -->
           <span class="council-wrap act" bind:this={councilWrap}>
             <button
-              class="ns-btn ghost small"
+              class="ns-btn ghost small fil-btn fil-ghost"
               class:on={councilOpen}
               bind:this={councilBtn}
               use:tip={"Send this message to a council: several models answer it independently, then this chat's model chairs their answers"}
@@ -3324,7 +3658,7 @@
               onclick={() => (councilOpen = !councilOpen)}
             >
               <!-- Item 289: its icon alone at fold 3 and past. -->
-              <span class="council-ico" aria-hidden="true"><Icon name="agent" size={13} /></span><span class="council-word">Council</span>
+              <FilamentMark kind="council" /><span class="council-ico" aria-hidden="true"><Icon name="agent" size={13} /></span><span class="council-word">Council</span>
             </button>
             {#if councilOpen}
               <CouncilPopover
@@ -3343,56 +3677,22 @@
              New chat ▾ shape; the ▾ schedules the message instead. -->
         <span class="send-split act">
           <button
-            class="ns-btn accent send act"
-            use:tip={sendTip(!!app.connection, !text.trim() && attachments.length === 0, sendHeld()) +
-              (shown && Number(rowFold) >= 2 ? ` · ${shown.long}` : "")}
+            class="ns-btn accent send act fil-btn fil-send"
+            use:tip={withEstimate(sendTip(!!app.connection, !text.trim() && attachments.length === 0, sendHeld()))}
             onclick={() => void submit()}
+            class:sending
             disabled={!app.connection || sendHeld() || (!text.trim() && attachments.length === 0)}
           >
-            Send
-          </button><ScheduleMenu {key} {text} blocked={scheduleBlocked} onscheduled={scheduled} />
+            <span class="fil-scan" aria-hidden="true"></span><span class="fil-edge" aria-hidden="true"></span><FilamentMark kind="send" />Send
+          </button><ScheduleMenu {key} {text} {attachments} blocked={scheduleBlocked} onscheduled={scheduled} />
         </span>
       {/if}
     </div>
   </div>
-  {#if aside}
-    <!-- The aside's bottom row (backlog 283): its line — where it answers
-         from, or why Send waits — and the format toggle, the one bottom
-         chip that is about the box rather than the chat's transcript. -->
-    <div class="bottom-row aside-row">
-      <span class="aside-line" role="status">
-        {#if asideBlock === "not-open"}
-          Sends only while <em>{asideChatName}</em> is the open chat — an aside answers from its context.
-          <button class="ns-btn ghost small" onclick={() => asideOwner && void openContent({ kind: "chat", session: asideOwner }, "new")}>Open the chat</button>
-        {:else if asideBlock === "engine"}
-          Asides run on the Claude Code engine; the box keeps what is typed.
-        {:else if asideBusy}
-          {aside && asideWaiting(aside) ? "Waiting — one aside answers at a time; ↵ holds the next message." : "Answering — ↵ holds the next message for when it ends."}
-        {:else}
-          Answers from this chat's context; nothing here enters the chat.
-        {/if}
-      </span>
-      <span class="spacer"></span>
-      <button
-        class="ns-chip bottom-toggle"
-        class:on={composerFormat.on}
-        aria-pressed={composerFormat.on}
-        use:tip={composerFormat.on
-          ? "Formatting drawn in the box — $…$ math, **bold**, *italic*, # headings; the message sent is the text as typed. Click for the plain box"
-          : "Plain box — click to draw $…$ math, **bold**, *italic* and # headings in place as you type"}
-        onclick={flipFormat}
-      >
-        <span class="bottom-mark" aria-hidden="true">∑</span>format
-      </button>
-    </div>
-  {:else if !floating}
-    <!-- The bottom row (backlog 112, board 10's C): the two transcript
-         toggles (backlog 052) and the cache chip (063), under the box,
-         right-aligned as drawn. A click on any single block still
-         overrides its toggle; flipping the toggle clears those clicks.
-         Remembered across relaunch; thinking off and tools on is how the
-         transcript read before them. -->
-    <div class="bottom-row">
+  <!-- The two transcript toggles (backlog 052), one snippet since item 605:
+       the chat's bottom row and an aside's draw the same pair, as an
+       aside's answer has thinking and tool rows since item 403. -->
+  {#snippet transcriptToggles()}
       <button
         class="ns-chip bottom-toggle"
         class:on={transcript.thinking}
@@ -3419,6 +3719,49 @@
       >
         <span class="bottom-mark" aria-hidden="true">⚒</span>tools
       </button>
+  {/snippet}
+  {#if aside}
+    <!-- The aside's bottom row (backlog 283): its line — where it answers
+         from, or why Send waits — and the format toggle, the one bottom
+         chip that is about the box rather than the chat's transcript. -->
+    <div class="bottom-row aside-row">
+      <span class="aside-line" role="status">
+        {#if asideBlock === "not-open"}
+          Sends only while <em>{asideChatName}</em> is the open chat — an aside answers from its context.
+          <button class="ns-btn ghost small" onclick={() => asideOwner && void openContent({ kind: "chat", session: asideOwner }, "new")}>Open the chat</button>
+        {:else if asideBlock === "engine"}
+          Asides run on the Claude Code engine; the box keeps what is typed.
+        {:else if asideBusy}
+          {aside && asideWaiting(aside) ? "Waiting — one aside answers at a time; ↵ holds the next message." : "Answering — ↵ holds the next message for when it ends."}
+        {:else}
+          Answers from this chat's context; nothing here enters the chat.
+        {/if}
+      </span>
+      <span class="spacer"></span>
+      <!-- Item 605: the transcript toggles, before the format chip as in the
+           chat's row — Filament only: Classic keeps 1d4ca17's aside row. -->
+      {#if !classic()}{@render transcriptToggles()}{/if}
+      <button
+        class="ns-chip bottom-toggle"
+        class:on={composerFormat.on}
+        aria-pressed={composerFormat.on}
+        use:tip={composerFormat.on
+          ? "Formatting drawn in the box — $…$ math, **bold**, *italic*, # headings; the message sent is the text as typed. Click for the plain box"
+          : "Plain box — click to draw $…$ math, **bold**, *italic* and # headings in place as you type"}
+        onclick={flipFormat}
+      >
+        <span class="bottom-mark" aria-hidden="true">∑</span>format
+      </button>
+    </div>
+  {:else if !floating}
+    <!-- The bottom row (backlog 112, board 10's C): the two transcript
+         toggles (backlog 052) and the cache chip (063), under the box,
+         right-aligned as drawn. A click on any single block still
+         overrides its toggle; flipping the toggle clears those clicks.
+         Remembered across relaunch; thinking off and tools on is how the
+         transcript read before them. -->
+    <div class="bottom-row">
+      {@render transcriptToggles()}
       <!-- Item 276: formatting drawn in the box. Off is the plain box; the
            message sent is the text as typed either way. -->
       <button
@@ -3437,6 +3780,31 @@
            how long it stays warm, or `cold`. A chat whose last turn
            predates the timer's fields shows the share alone, and the
            title says why. Nothing before the first turn. -->
+      <!-- Keep-warm (backlog 582; item 608): the chat's switch beside its
+           cache timer, on by default (Settings → Subscription → Keeping
+           caches warm). Shown once the chat has a 1-hour cache to keep, or
+           whenever he switched it on himself — a chat on only by the
+           default shows it only with a 1-hour cache, so a 5-minute engine
+           never reads "on". The one-tap "until I'm back" chip is gone
+           (blocker 1844): with the default on, the switch covers it. A chat
+           already in that mode reads "On until your next message" and ends
+           at his send as before. -->
+      {#if kwChat && ((isOn(kw) && kw?.chosen !== false) || cache?.ttl === "1h")}
+        <button
+          class="ns-chip bottom-toggle keep-warm"
+          class:on={isOn(kw)}
+          class:keeping={isKeeping(kw, now)}
+          aria-pressed={isOn(kw)}
+          aria-haspopup="menu"
+          bind:this={kwButton}
+          use:tip={switchTitle(kw, now)}
+          use:holdPress={() => (kwHoldOpen = true)}
+          onclick={() => void flipKeepWarm(isOn(kw) ? "off" : "on")}
+        >
+          <span class="bottom-mark" aria-hidden="true">♨</span>{switchLabel(kw, now)}{#if kw?.hold_hours}<span class="keep-warm-hold">· {kw.hold_hours} h</span>{/if}
+        </button>
+        {#if kwHoldOpen && kwButton}<KeepWarmHold anchor={kwButton} status={kw} onpick={(h) => void holdFor(h)} onclose={() => (kwHoldOpen = false)} />{/if}
+      {/if}
       {#if cache && cacheBuilt && cacheChanges.length > 0}
         <!-- Backlog 408: a pending change would lose the warm cache; the
              click puts every changed setting back. -->
@@ -3445,7 +3813,7 @@
           use:tip={cacheLossTitle(cacheChanges, cacheBuilt.cachedTokens, cache.remainingMs)}
           onclick={restoreCache}
         >
-          <span class="losing-what">{cacheLossLine(cacheChanges)}</span><span class="bottom-cache-when">&nbsp;· <span class="restore-word">restore</span></span>
+          <span class="losing-what">{cacheLossLine(cacheChanges)}</span>{#if canRestore(cacheChanges)}<span class="bottom-cache-when">&nbsp;· <span class="restore-word">restore</span></span>{/if}
         </button>
       {:else if cached != null || cache}
         <div
@@ -3487,20 +3855,23 @@
      of markup and one set of keys. -->
 {#snippet pickMenu(head: string, sub: string)}
   <div
-    class="pick-menu"
+    class="pick-menu hud-m"
     role="menu"
     tabindex="-1"
     aria-label={head}
     bind:this={menuEl}
     use:floatMenu={{ anchor: menuButton() }}
+    in:hudIn|global={{ anchor: menuButton() }}
+    out:hudOut|global
     onkeydown={onMenuKey}
   >
     <div class="pick-head"><span>{head}</span><span class="pick-sub">{sub}</span></div>
     {#each menuRows as r (r.id)}
-      {#if r.id === "rail"}<div class="pick-sep"></div>{/if}
+      {#if r.id === "rail" || r.sep}<div class="pick-sep"></div>{/if}
       <button
         type="button"
         class="pick-row"
+        use:tip={r.title}
         class:on={r.on}
         role="menuitemradio"
         aria-checked={r.on ?? false}
@@ -3508,7 +3879,7 @@
         onclick={() => runRow(r)}
       >
         <span class="pick-row-label">{r.label}</span>
-        {#if r.detail}<span class="pick-row-detail">{r.detail}</span>{/if}
+        {#if r.detail}<span class="pick-row-detail">{classic() ? r.detail : r.detail.replace(/^·\s*/, "")}</span>{/if}
         {#if r.cap}<span class="pick-row-cap"><Kbd keys={r.cap} /></span>{/if}
       </button>
     {/each}
@@ -3516,6 +3887,12 @@
 {/snippet}
 
 <style>
+  /* The Classic layout (item 542): every rule item 525 changed is written
+     twice, in place — the Filament IV rule behind
+     `:global(:where(:root:not([data-layout="classic"])))`, then 1d4ca17's,
+     verbatim, behind `:global(:where([data-layout="classic"]))`. `:where()`
+     weighs nothing, so neither changes the other's cascade (app.css has the
+     same gate). */
   /* The council button's frame (backlog 149): the popover hangs off it. */
   .council-wrap {
     position: relative;
@@ -3536,7 +3913,31 @@
        instead, below. */
     flex: none;
   }
-  .pick-btn {
+  :global(:where(:root:not([data-layout="classic"]))) .pick-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    /* A drop-down is a button with a small arrow (Filament IV, item 525):
+       the control fill and edge, 28px, as `.ns-btn` in app.css. */
+    min-height: 28px;
+    padding: 0 10px;
+    border-radius: var(--r1);
+    border: 1px solid var(--line2);
+    background: var(--well);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    font-family: var(--sans);
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--ink);
+    white-space: nowrap;
+    cursor: pointer;
+    max-width: 240px;
+    min-width: 0;
+    transition:
+      background-color 120ms,
+      border-color 120ms;
+  }
+  :global(:where([data-layout="classic"])) .pick-btn {
     display: inline-flex;
     align-items: center;
     gap: 5px;
@@ -3552,11 +3953,21 @@
     max-width: 240px;
     min-width: 0;
   }
-  .pick-btn:hover:not(:disabled),
-  .pick-btn.open {
+  :global(:where(:root:not([data-layout="classic"]))) .pick-btn:hover:not(:disabled),
+:global(:where(:root:not([data-layout="classic"]))) .pick-btn.open {
+    background: var(--well2);
+    color: var(--ink);
+    border-color: var(--dim);
+  }
+  :global(:where([data-layout="classic"])) .pick-btn:hover:not(:disabled),
+:global(:where([data-layout="classic"])) .pick-btn.open {
     background: var(--well);
     color: var(--ink);
     border-color: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pick-btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
   }
   .pick-btn:disabled {
     opacity: 0.5;
@@ -3572,7 +3983,11 @@
   .pick-dot.unknown {
     background: var(--dim);
   }
-  .pick-k {
+  :global(:where(:root:not([data-layout="classic"]))) .pick-k {
+    color: var(--dim);
+    font-weight: 400;
+  }
+  :global(:where([data-layout="classic"])) .pick-k {
     color: var(--dim);
   }
   .pick-name {
@@ -3580,7 +3995,12 @@
     text-overflow: ellipsis;
     min-width: 0;
   }
-  .pick-chev {
+  :global(:where(:root:not([data-layout="classic"]))) .pick-chev {
+    display: inline-flex;
+    color: var(--ink2);
+    flex: none;
+  }
+  :global(:where([data-layout="classic"])) .pick-chev {
     display: inline-flex;
     color: var(--dim);
     flex: none;
@@ -3592,7 +4012,25 @@
   /* Placed by `use:floatMenu` (backlog 210): portalled to `body` and fixed
      by the button's rectangle, so the Welcome page's scrolling column can
      no longer cut it off; its top, left and max-height are set inline. */
-  .pick-menu {
+  :global(:where(:root:not([data-layout="classic"]))) .pick-menu {
+    position: fixed;
+    z-index: 80;
+    min-width: 230px;
+    max-width: 360px;
+    max-height: 60vh;
+    overflow-y: auto;
+    /* A menu is a card in front, with a real shadow under it. */
+    background: var(--raised);
+    border: 1px solid var(--line2);
+    border-radius: var(--r2);
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.6);
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    font-family: var(--sans);
+  }
+  :global(:where([data-layout="classic"])) .pick-menu {
     position: fixed;
     z-index: 80;
     min-width: 230px;
@@ -3609,7 +4047,20 @@
     gap: 1px;
     font-family: var(--sans);
   }
-  .pick-head {
+  :global(:where(:root:not([data-layout="classic"]))) .pick-head {
+    font-family: var(--mono);
+    font-weight: 500;
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink2);
+    padding: 5px 8px 3px;
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    white-space: nowrap;
+  }
+  :global(:where([data-layout="classic"])) .pick-head {
     font-size: 10.5px;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -3620,12 +4071,35 @@
     align-items: baseline;
     white-space: nowrap;
   }
-  .pick-sub {
+  :global(:where(:root:not([data-layout="classic"]))) .pick-sub {
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 400;
+    font-size: 10.5px;
+    color: var(--dim);
+  }
+  :global(:where([data-layout="classic"])) .pick-sub {
     text-transform: none;
     letter-spacing: 0;
     font-size: 11px;
   }
-  .pick-row {
+  :global(:where(:root:not([data-layout="classic"]))) .pick-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: var(--r1);
+    border: none;
+    background: transparent;
+    font-family: var(--sans);
+    font-size: 12.5px;
+    color: var(--ink2);
+    text-align: left;
+    white-space: nowrap;
+    cursor: pointer;
+    min-width: 0;
+  }
+  :global(:where([data-layout="classic"])) .pick-row {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -3641,19 +4115,31 @@
     cursor: pointer;
     min-width: 0;
   }
-  .pick-row:hover,
-  .pick-row:focus-visible {
+  :global(:where(:root:not([data-layout="classic"]))) .pick-row:hover,
+:global(:where(:root:not([data-layout="classic"]))) .pick-row:focus-visible {
+    background: var(--well);
+    color: var(--ink);
+    outline: none;
+  }
+  :global(:where([data-layout="classic"])) .pick-row:hover,
+:global(:where([data-layout="classic"])) .pick-row:focus-visible {
     background: var(--well);
     outline: none;
   }
-  .pick-row.on {
+  /* The chosen row is the control fill, never the accent block (the accent
+     block means "the main action"). */
+  :global(:where(:root:not([data-layout="classic"]))) .pick-row.on {
+    background: var(--well2);
+    color: var(--ink);
+    font-weight: 500;
+  }
+  :global(:where([data-layout="classic"])) .pick-row.on {
     background: var(--accent-soft);
     color: var(--accent-ink);
   }
+  /* The name never shrinks; the grey detail ellipsizes first (backlog 530). */
   .pick-row-label {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    min-width: 0;
+    flex: none;
   }
   .pick-row-detail {
     font-size: 11px;
@@ -3673,6 +4159,94 @@
     background: var(--line);
     margin: 4px 2px;
   }
+  /* Filament IV stage 6 (item 570, f4-menus.png): the head is a ruled
+     group title (the sub after the rule), a row with a detail is two
+     lines — the name, the grey detail under it — with its key cap at the
+     right, and the chosen row carries the accent tick. Menus rise in. */
+  :global(:where(:root:not([data-layout="classic"]))) .pick-head {
+    align-items: center;
+    padding: 6px 8px 6px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pick-head::after {
+    content: "";
+    order: 1;
+    flex: 1 1 12px;
+    min-width: 12px;
+    height: 1px;
+    background: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pick-sub {
+    order: 2;
+    font-family: var(--mono);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pick-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    column-gap: 10px;
+    row-gap: 1px;
+    padding: 6px 10px;
+    font-size: 13px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pick-row-label {
+    grid-column: 1;
+    grid-row: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pick-row-detail {
+    grid-column: 1;
+    grid-row: 2;
+    font-size: 11.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pick-row-cap {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    align-self: center;
+    margin: 0;
+    padding-left: 12px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pick-row::after {
+    content: "";
+    grid-column: 3;
+    grid-row: 1 / span 2;
+    align-self: center;
+    width: 12px;
+    font-size: 12px;
+    color: var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pick-row.on {
+    background: var(--well);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pick-row.on::after {
+    content: "✓";
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pick-row-cap :global(.kbd) {
+    border: none;
+    background: transparent;
+    padding: 0;
+    min-width: 0;
+    height: auto;
+    color: var(--dim);
+    font-size: 10.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pick-sep {
+    background: var(--line2);
+    margin: 4px 4px;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    :global(:where(:root:not([data-layout="classic"]))) .pick-menu {
+      animation: menu-rise 90ms ease-out;
+    }
+  }
+  @keyframes menu-rise {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+  }
 
   /* The bottom row (backlog 112, board 10's C): the card's width, the
      chips on the right. The toggles are the top bar's, styled as they
@@ -3687,32 +4261,107 @@
     flex-wrap: wrap;
     gap: 6px;
   }
-  .bottom-toggle {
+  /* A switch (Filament IV, item 525; `.ns-switch` in app.css): a pill with
+     a sliding dot, accent when on. The mark's glyph is the track: its
+     letter is hidden and the dot is drawn on it. */
+  :global(:where(:root:not([data-layout="classic"]))) .bottom-toggle {
+    cursor: pointer;
+    font: 500 11.5px var(--sans);
+    color: var(--ink2);
+    gap: 7px;
+    min-height: 24px;
+    padding: 0 9px 0 8px;
+    border-radius: 12px;
+    background: var(--raised);
+    text-transform: capitalize;
+  }
+  :global(:where([data-layout="classic"])) .bottom-toggle {
     cursor: pointer;
     font-family: var(--sans);
     color: var(--dim);
     gap: 5px;
   }
-  .bottom-mark {
+  :global(:where(:root:not([data-layout="classic"]))) .bottom-mark {
+    position: relative;
+    flex: none;
+    width: 20px;
+    height: 12px;
+    border-radius: 6px;
+    background: var(--well2);
+    font-size: 0;
+    color: transparent;
+    overflow: hidden;
+    transition: background-color 120ms;
+  }
+  :global(:where([data-layout="classic"])) .bottom-mark {
     font-size: 11px;
     opacity: 0.55;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .bottom-mark::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--dim);
+    transition:
+      left 120ms,
+      background-color 120ms;
   }
   .bottom-toggle.on {
     color: var(--ink);
   }
-  .bottom-toggle.on .bottom-mark {
+  :global(:where(:root:not([data-layout="classic"]))) .bottom-toggle.on .bottom-mark {
+    background: var(--accent);
+  }
+  :global(:where([data-layout="classic"])) .bottom-toggle.on .bottom-mark {
     color: var(--accent);
     opacity: 1;
   }
-  .bottom-toggle:hover {
+  :global(:where(:root:not([data-layout="classic"]))) .bottom-toggle.on .bottom-mark::after {
+    left: 10px;
+    background: var(--on-accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .bottom-toggle:hover {
+    border-color: var(--dim);
+    color: var(--ink);
+  }
+  :global(:where([data-layout="classic"])) .bottom-toggle:hover {
     border-color: var(--accent);
     color: var(--ink);
   }
-  .bottom-toggle:disabled,
-  .bottom-toggle:disabled:hover {
+  @media (prefers-reduced-motion: reduce) {
+    :global(:where(:root:not([data-layout="classic"]))) .bottom-mark,
+:global(:where(:root:not([data-layout="classic"]))) .bottom-mark::after,
+:global(:where(:root:not([data-layout="classic"]))) .pick-btn {
+      transition: none;
+    }
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .bottom-toggle:disabled,
+:global(:where(:root:not([data-layout="classic"]))) .bottom-toggle:disabled:hover {
+    cursor: default;
+    opacity: 0.5;
+    border-color: var(--line2);
+    color: var(--dim);
+  }
+  :global(:where([data-layout="classic"])) .bottom-toggle:disabled,
+:global(:where([data-layout="classic"])) .bottom-toggle:disabled:hover {
     cursor: default;
     opacity: 0.5;
     border-color: transparent;
+    color: var(--dim);
+  }
+  /* Keep-warm (582): the label is a clock time or a reason, never
+     capitalised like the one-word toggles. */
+  .bottom-toggle.keep-warm {
+    text-transform: none;
+    font-variant-numeric: tabular-nums;
+  }
+  /* Item 643: a held chat says so on the switch ("· 24 h"). */
+  .keep-warm-hold {
+    margin-left: 4px;
     color: var(--dim);
   }
   .bottom-cache {
@@ -3747,7 +4396,15 @@
     color: var(--dim);
   }
 
-  .composer {
+  :global(:where(:root:not([data-layout="classic"]))) .composer {
+    position: relative;
+    /* The lit level's dot ground goes on under the box (item 525), from
+       the top so it meets the transcript's, which is anchored to its foot. */
+    /* Item 680: the chat's dots, matching the transcript's above it. */
+    background: var(--chat-dots, none) left top / 24px 24px var(--paper);
+    padding: 12px 20px 22px;
+  }
+  :global(:where([data-layout="classic"])) .composer {
     position: relative;
     background: var(--paper);
     padding: 12px 20px 22px;
@@ -3772,6 +4429,14 @@
   .composer.aside {
     background: transparent;
     padding: 8px 0 0;
+  }
+  /* An aside's box is the aside's, not the object in front: no shadow, no
+     brackets. */
+  :global(:where(:root:not([data-layout="classic"]))) .composer.aside .card {
+    box-shadow: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .composer.aside .card::before {
+    display: none;
   }
   .composer.aside .card,
   .composer.aside .attachments,
@@ -3822,7 +4487,19 @@
   /* The queue tray: joined to the top of the card, dashed so it reads as
      "not sent yet" (backlog 089). Plain rows; the real design is the
      Fable board's. */
-  .queue {
+  :global(:where(:root:not([data-layout="classic"]))) .queue {
+    max-width: 760px;
+    margin: 0 auto 0.5rem;
+    border: 1px dashed var(--line2);
+    border-radius: var(--r2);
+    background: var(--sheet);
+    padding: 0.4rem 0.6rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    font-size: 13px;
+  }
+  :global(:where([data-layout="classic"])) .queue {
     max-width: 760px;
     margin: 0 auto 0.5rem;
     border: 1px dashed var(--line2);
@@ -3860,12 +4537,61 @@
     position: static;
     flex: none;
   }
+  /* Item 548: a tray row opened by "more" shows its whole text, wrapped. */
+  .queue-row.fil.open {
+    align-items: flex-start;
+  }
+  .queue-row.fil.open .queue-text {
+    white-space: normal;
+  }
+  .queue-whole {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .queue-more {
+    flex: none;
+    font-size: 12px;
+    color: var(--dim);
+  }
+  .queue-acts {
+    display: flex;
+    gap: 2px;
+    flex: none;
+  }
   .attachments {
     max-width: 760px;
     margin: 0 auto 0.5rem;
     display: flex;
     flex-wrap: wrap;
     gap: 0.4rem;
+  }
+  .lost-paste {
+    max-width: 760px;
+    margin: 0 auto 0.5rem;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    padding: 0.4rem 0.6rem;
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    font-size: 13px;
+    line-height: 1.4;
+  }
+  .lost-paste-text {
+    flex: 1;
+  }
+  .lost-paste-x {
+    background: none;
+    border: 0;
+    color: var(--dim);
+    cursor: pointer;
+    font-size: 15px;
+    line-height: 1;
+    padding: 0 0.15rem;
+  }
+  .lost-paste-x:hover {
+    color: var(--fg);
   }
   .attachment {
     display: flex;
@@ -3904,7 +4630,20 @@
   }
   /* A document has no thumbnail to show, so the chip carries its name — the
      one thing that tells three attachments apart. */
-  .file {
+  :global(:where(:root:not([data-layout="classic"]))) .file {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 0.2rem;
+    width: 7rem;
+    height: 4rem;
+    padding: 0 0.5rem;
+    border: 1px solid var(--line2);
+    border-radius: var(--r1);
+    background: var(--raised);
+    line-height: 1.2;
+  }
+  :global(:where([data-layout="classic"])) .file {
     display: flex;
     flex-direction: column;
     justify-content: center;
@@ -3984,7 +4723,22 @@
     border-color: var(--failed);
   }
   /* The mock-up's composer card: the text on top, the toolbar under it. */
-  .card {
+  :global(:where(:root:not([data-layout="classic"]))) .card {
+    max-width: 760px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    /* The one object in front of the transcript (Filament IV, item 525):
+       the raised fill, the control edge, one plain dark shadow under it. */
+    padding: 13px 14px 12px;
+    background: var(--raised);
+    border: 1px solid var(--line2);
+    border-radius: var(--r2);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    transition: border-color 0.12s;
+  }
+  :global(:where([data-layout="classic"])) .card {
     max-width: 760px;
     margin: 0 auto;
     display: flex;
@@ -3998,6 +4752,42 @@
   }
   .card:focus-within {
     border-color: var(--accent);
+  }
+  /* The lit level's brackets: four corner marks 6px outside the box, in the
+     accent (`--bracket`; transparent in calm and the classic palettes).
+     Eight 12 × 1.5px strokes drawn as backgrounds: nothing to lay out,
+     nothing that takes the pointer. */
+  :global(:where(:root:not([data-layout="classic"]))) .card::before {
+    content: "";
+    position: absolute;
+    inset: -7px;
+    pointer-events: none;
+    --tk: var(--bracket, transparent);
+    background:
+      linear-gradient(var(--tk), var(--tk)) 0 0 / 12px 1.5px no-repeat,
+      linear-gradient(var(--tk), var(--tk)) 0 0 / 1.5px 12px no-repeat,
+      linear-gradient(var(--tk), var(--tk)) 100% 0 / 12px 1.5px no-repeat,
+      linear-gradient(var(--tk), var(--tk)) 100% 0 / 1.5px 12px no-repeat,
+      linear-gradient(var(--tk), var(--tk)) 0 100% / 12px 1.5px no-repeat,
+      linear-gradient(var(--tk), var(--tk)) 0 100% / 1.5px 12px no-repeat,
+      linear-gradient(var(--tk), var(--tk)) 100% 100% / 12px 1.5px no-repeat,
+      linear-gradient(var(--tk), var(--tk)) 100% 100% / 1.5px 12px no-repeat;
+  }
+  /* The row's buttons are real buttons (Attach, Ask aside, Council, Queue):
+     the markup's `ghost` is the quiet button of other screens; here each has
+     the control fill and edge, 28px tall. */
+  :global(:where(:root:not([data-layout="classic"]))) .row .ns-btn.ghost {
+    min-height: 28px;
+    padding: 0 11px;
+    font-size: 12.5px;
+    background: var(--well);
+    border-color: var(--line2);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .row .ns-btn.ghost:hover:not(:disabled) {
+    background: var(--well2);
+    border-color: var(--dim);
   }
   .row {
     display: flex;
@@ -4023,6 +4813,17 @@
   }
   .council-ico {
     display: none;
+  }
+  /* Item 607: the attach button is the plus alone under Filament — a
+     28-px square, the row's button height, the icon centred. */
+  :global(:where(:root:not([data-layout="classic"]))) .attach .fold-word {
+    display: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .attach {
+    justify-content: center;
+    width: 28px;
+    min-height: 28px;
+    padding: 0;
   }
   .row:is([data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .fold-word,
   .row:is([data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .council-word {
@@ -4073,7 +4874,24 @@
   /* ~~The key hint (↵ to send · ⇧↵ newline)~~ — deleted 2026-09-22 on his
      word (nightshift backlog 177): it pushed Council and Send onto a second
      line; the Queue button says Enter queues during a turn. */
-  textarea {
+  :global(:where(:root:not([data-layout="classic"]))) textarea {
+    width: 100%;
+    background: transparent;
+    color: var(--ink);
+    caret-color: var(--accent);
+    border: none;
+    padding: 2px 0;
+    font-size: 15px;
+    font-family: inherit;
+    line-height: 1.5;
+    resize: none;
+    overflow-y: auto;
+    /* A message wraps; a sliver of horizontal overflow was drawing a full
+       10px scrollbar thumb across the box (his screenshot, 2026-09-16). */
+    overflow-x: hidden;
+    box-sizing: border-box;
+  }
+  :global(:where([data-layout="classic"])) textarea {
     width: 100%;
     background: transparent;
     color: var(--ink);
@@ -4121,14 +4939,29 @@
   textarea:disabled {
     opacity: 0.5;
   }
-  .send {
+  /* The main action: the one solid accent block in view, 32px tall. */
+  :global(:where(:root:not([data-layout="classic"]))) .send {
+    min-height: 32px;
+    padding: 0 16px;
+    font-size: 13px;
+  }
+  :global(:where([data-layout="classic"])) .send {
     padding: 6px 16px;
   }
   /* Item 398: the Stop in Send's place. "Send" in Send's weight, hidden,
      gives it Send's width and height; the square sits centred over it. */
-  .stop {
+  /* Filament IV's Stop: a button with a brighter edge and a red square. */
+  :global(:where(:root:not([data-layout="classic"]))) .stop {
+    position: relative;
+    font-weight: 600;
+    border-color: var(--ink2);
+  }
+  :global(:where([data-layout="classic"])) .stop {
     position: relative;
     font-weight: 500;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .stop:hover:not(:disabled) {
+    border-color: var(--ink);
   }
   .stop .stop-size {
     visibility: hidden;
@@ -4152,9 +4985,14 @@
     width: 0;
     overflow: hidden;
   }
-  /* 31 px: Send's height, measured in the 411 harness (30.9). */
-  .stop.shape-square,
-  .stop.shape-round {
+  /* ~~31 px~~ 32 px: Send's height since item 525 (the main action's). */
+  :global(:where(:root:not([data-layout="classic"]))) .stop.shape-square,
+:global(:where(:root:not([data-layout="classic"]))) .stop.shape-round {
+    width: 32px;
+    background: color-mix(in srgb, var(--failed) 16%, var(--well));
+  }
+  :global(:where([data-layout="classic"])) .stop.shape-square,
+:global(:where([data-layout="classic"])) .stop.shape-round {
     width: 31px;
     background: color-mix(in srgb, var(--failed) 16%, var(--sheet));
   }
@@ -4169,7 +5007,11 @@
     position: static;
     gap: 6px;
   }
-  .stop-word {
+  :global(:where(:root:not([data-layout="classic"]))) .stop-word {
+    font-size: 13px;
+    color: var(--ink);
+  }
+  :global(:where([data-layout="classic"])) .stop-word {
     font-size: 12.5px;
   }
   /* Item 466: the Stop pressed — sunk, dimmed, its square a spinner — held
@@ -4223,6 +5065,204 @@
     border-top-right-radius: 0;
     border-bottom-right-radius: 0;
   }
+  /* Item 606 (his pick, blocker 1827): Filament — Send a dark bulb with an
+     amber edge and a lit coil (FilamentMark), the ▾ its matching half; Ask
+     aside and Council carry the coil family. Filament IV only; Classic has
+     none of it (the spans below are `display: none` there). Idle: a steady
+     glow and nothing moves. Hover: brighter, wider glow and a scan line
+     crosses the bulb once. Press: a charge-and-release ring. Sending: the
+     coil's pulse loops and a bright point traces the edge. */
+  .fil-scan,
+  .fil-edge {
+    display: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send {
+    position: relative;
+    overflow: hidden;
+    gap: 6px;
+    padding: 0 14px 0 12px;
+    background: var(--term);
+    border-color: color-mix(in srgb, var(--accent) 70%, var(--line2));
+    color: var(--accent-ink);
+    box-shadow:
+      inset 0 0 10px color-mix(in srgb, var(--accent) 14%, transparent),
+      var(--glow-main);
+    transition:
+      background 140ms ease,
+      border-color 140ms ease,
+      box-shadow 180ms ease;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .send-split :global(.sched-caret) {
+    background: var(--term);
+    border-color: color-mix(in srgb, var(--accent) 70%, var(--line2));
+    border-left-color: color-mix(in srgb, var(--accent) 35%, var(--line2));
+    color: var(--accent-ink);
+    box-shadow:
+      inset 0 0 10px color-mix(in srgb, var(--accent) 14%, transparent),
+      var(--glow-main);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .send-split :global(.sched-caret:hover:not(:disabled)) {
+    background: color-mix(in srgb, var(--accent) 12%, var(--term));
+    border-color: var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .send-split :global(.sched-caret:disabled) {
+    box-shadow: none;
+    border-color: var(--line2);
+    color: var(--dim);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--accent) 12%, var(--term));
+    border-color: var(--accent);
+    color: #fff4dc;
+    box-shadow:
+      inset 0 0 12px color-mix(in srgb, var(--accent) 26%, transparent),
+      0 0 18px color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send:active:not(:disabled) {
+    background: color-mix(in srgb, var(--accent) 22%, var(--term));
+    border-color: var(--accent-ink);
+    transform: translateY(1px);
+    box-shadow:
+      inset 0 0 14px color-mix(in srgb, var(--accent) 40%, transparent),
+      0 0 22px color-mix(in srgb, var(--accent) 55%, transparent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send.sending {
+    border-color: var(--accent);
+    box-shadow:
+      inset 0 0 12px color-mix(in srgb, var(--accent) 30%, transparent),
+      0 0 18px color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send:disabled {
+    background: var(--term);
+    box-shadow: none;
+    border-color: color-mix(in srgb, var(--accent) 30%, var(--line2));
+    color: color-mix(in srgb, var(--accent-ink) 55%, var(--dim));
+    opacity: 1; /* app.css's 0.5 made the unlit bulb unreadable (2026-11-11) */
+  }
+  /* Calm (IV): no light — the bulb keeps its edge, without the halo. */
+  :global(:where([data-light="calm"])) .ns-btn.fil-send,
+  :global(:where([data-light="calm"])) .send-split :global(.sched-caret) {
+    box-shadow: none !important;
+  }
+  /* The scan line: a thin bright bar, parked off the left edge. */
+  :global(:where(:root:not([data-layout="classic"]))) .fil-scan {
+    display: block;
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 10px;
+    pointer-events: none;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      color-mix(in srgb, var(--accent-ink) 55%, transparent) 45%,
+      #fffaf0 50%,
+      color-mix(in srgb, var(--accent-ink) 55%, transparent) 55%,
+      transparent
+    );
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+  /* The edge trace: a ring the shape of the button's edge, lit by a
+     turning conic light (a bright point with an amber tail). */
+  :global(:where(:root:not([data-layout="classic"]))) .fil-edge {
+    display: block;
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1.5px;
+    pointer-events: none;
+    background: conic-gradient(
+      from var(--fil-a, 0deg),
+      transparent 0deg 230deg,
+      color-mix(in srgb, var(--accent) 80%, transparent) 320deg,
+      #fffaf0 352deg,
+      transparent 360deg
+    );
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    mask-composite: exclude;
+    opacity: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send.sending .fil-edge {
+    opacity: 1;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send:hover:not(:disabled) .fil-scan {
+      animation: fil-scan 0.6s ease-out 1 both;
+    }
+    :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send:active:not(:disabled) {
+      animation: fil-charge 0.32s ease-out 1;
+    }
+    :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send.sending .fil-edge {
+      animation: fil-edge 1s linear infinite;
+    }
+  }
+  /* Reduce motion: static glows only — sending is a full lit edge. */
+  @media (prefers-reduced-motion: reduce) {
+    :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send.sending .fil-edge {
+      background: color-mix(in srgb, var(--accent) 80%, transparent);
+    }
+  }
+  @keyframes fil-scan {
+    0% {
+      opacity: 0;
+      transform: translateX(-12px);
+    }
+    15% {
+      opacity: 0.9;
+    }
+    85% {
+      opacity: 0.9;
+    }
+    100% {
+      opacity: 0;
+      transform: translateX(var(--fil-scan-to, 120px));
+    }
+  }
+  @keyframes fil-charge {
+    0% {
+      box-shadow:
+        inset 0 0 4px color-mix(in srgb, var(--accent) 20%, transparent),
+        0 0 6px color-mix(in srgb, var(--accent) 30%, transparent);
+    }
+    45% {
+      box-shadow:
+        inset 0 0 18px color-mix(in srgb, var(--accent) 60%, transparent),
+        0 0 4px color-mix(in srgb, var(--accent) 40%, transparent);
+    }
+    100% {
+      box-shadow:
+        inset 0 0 14px color-mix(in srgb, var(--accent) 40%, transparent),
+        0 0 22px color-mix(in srgb, var(--accent) 55%, transparent);
+    }
+  }
+  /* The edge light's angle, registered so it turns smoothly (WebKit
+     16.4+); unregistered it would jump, which still reads as a trace. */
+  @property --fil-a {
+    syntax: "<angle>";
+    inherits: false;
+    initial-value: 0deg;
+  }
+  @keyframes fil-edge {
+    to {
+      --fil-a: 360deg;
+    }
+  }
+  /* Ask aside and Council: the coil before the word; Council's coil
+     replaces the agent icon (also its icon-only mark at fold 3+). */
+  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-ghost {
+    gap: 6px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-ghost .council-ico {
+    display: none !important;
+  }
   .hint {
     max-width: 760px;
     margin: 0.4rem auto 0;
@@ -4274,7 +5314,20 @@
      accent rule, a heading with the fill at the right, one line, the
      fields, the actions with the key strip). ~~one ruled row above the
      box~~ — the row is now the heading. */
-  .handoff {
+  :global(:where(:root:not([data-layout="classic"]))) .handoff {
+    max-width: 760px;
+    margin: 0 auto 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px 14px;
+    border: 1px solid var(--accent);
+    border-radius: var(--r2);
+    background: var(--raised);
+    font-size: 13px;
+    color: var(--ink2);
+  }
+  :global(:where([data-layout="classic"])) .handoff {
     max-width: 760px;
     margin: 0 auto 6px;
     display: flex;
@@ -4360,7 +5413,17 @@
     flex-wrap: wrap;
     font-size: 12.5px;
   }
-  .handoff-row input {
+  :global(:where(:root:not([data-layout="classic"]))) .handoff-row input {
+    width: 4rem;
+    font-family: var(--mono);
+    font-size: 12px;
+    background: var(--term);
+    color: var(--ink);
+    border: 1px solid var(--line2);
+    border-radius: var(--r1);
+    padding: 3px 6px;
+  }
+  :global(:where([data-layout="classic"])) .handoff-row input {
     width: 4rem;
     font-family: var(--mono);
     font-size: 12px;
@@ -4376,7 +5439,19 @@
   }
   /* The message: the composer's own field face, so it reads as the one
      thing here that is typed into. */
-  .handoff-msg {
+  :global(:where(:root:not([data-layout="classic"]))) .handoff-msg {
+    width: 100%;
+    background: var(--term);
+    color: var(--ink);
+    border: 1px solid var(--line2);
+    border-radius: var(--r1);
+    padding: 6px 8px;
+    font-size: 13px;
+    font-family: inherit;
+    line-height: 1.45;
+    resize: vertical;
+  }
+  :global(:where([data-layout="classic"])) .handoff-msg {
     width: 100%;
     background: var(--paper);
     color: var(--ink);
@@ -4405,7 +5480,17 @@
   }
 
   /* The `/` picker (backlog 077): a plain list joined to the card's top. */
-  .slash {
+  :global(:where(:root:not([data-layout="classic"]))) .slash {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--line2);
+    border-bottom: none;
+    border-radius: var(--r2) var(--r2) 0 0;
+    background: var(--raised);
+    max-height: 16rem;
+    overflow-y: auto;
+  }
+  :global(:where([data-layout="classic"])) .slash {
     display: flex;
     flex-direction: column;
     border: 1px solid var(--line);
@@ -4440,5 +5525,32 @@
     color: var(--dim);
     cursor: default;
     font-size: 11.5px;
+  }
+  /* Filament IV stage 6 (item 570): the picked row on the control fill
+     with the accent rule at its left; the key line under a rule, in mono. */
+  :global(:where(:root:not([data-layout="classic"]))) .slash {
+    padding: 4px;
+    gap: 1px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .slash-row {
+    border-radius: var(--r1);
+    padding: 6px 10px;
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .slash-row:hover:not(.dim) {
+    background: var(--well);
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .slash-row.on {
+    background: var(--well);
+    color: var(--ink);
+    box-shadow: inset 2px 0 0 var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .slash-row.dim:last-child:not(:first-child) {
+    border-top: 1px solid var(--line);
+    border-radius: 0;
+    margin-top: 3px;
+    font-family: var(--mono);
+    font-size: 10.5px;
   }
 </style>

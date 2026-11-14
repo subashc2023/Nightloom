@@ -210,3 +210,28 @@ describe("a chat goes to its own host", () => {
     expect(nextHeldFor([old], null)).toBeNull();
   });
 });
+
+describe("item 588: one link pairs both hosts", () => {
+  it("reads the Mac half from the fragment", async () => {
+    const { macFromHash } = await import("./hosts");
+    const h = `#token=${T2}&mac=${encodeURIComponent("https://nightloom-mac.tail0.ts.net:8642")}&mt=${T1}`;
+    expect(macFromHash(h)).toEqual({ base: "https://nightloom-mac.tail0.ts.net:8642", token: T1 });
+  });
+  it("is null without a Mac half or with a bad one", async () => {
+    const { macFromHash } = await import("./hosts");
+    expect(macFromHash(`#token=${T2}`)).toBeNull();
+    expect(macFromHash(`#token=${T2}&mac=ftp%3A%2F%2Fx&mt=${T1}`)).toBeNull();
+    expect(macFromHash(`#token=${T2}&mac=${encodeURIComponent(MAC)}&mt=nothex`)).toBeNull();
+  });
+  it("the old token reader still finds the away token in a two-host link", async () => {
+    const { tokenFromHash } = await import("./client");
+    expect(tokenFromHash(`#token=${T2}&mac=${encodeURIComponent(MAC)}&mt=${T1}`)).toBe(T2);
+  });
+  it("says which host and why", async () => {
+    const { whereLine } = await import("./hosts");
+    expect(whereLine("mac", true, [], both)).toMatch(/^Talking to the Mac/);
+    expect(whereLine("away", true, [{ role: "mac", base: MAC, why: "timeout" }], both)).toMatch(/away server — the Mac is not answering \(asleep, lid closed/);
+    expect(whereLine("away", true, [], { away: both.away })).toMatch(/not paired on this phone/);
+    expect(whereLine(null, false, [], both)).toBe("Not connected to either host yet.");
+  });
+});

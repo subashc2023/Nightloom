@@ -328,3 +328,40 @@ export function nextHeldFor<Q extends { host?: HostRole }>(queue: Q[], role: Hos
   if (!role) return null;
   return queue.find((q) => (q.host ?? "mac") === role) ?? null;
 }
+
+// ---- one link pairs both (item 588) ---------------------------------------------
+
+/**
+ * The second host a pairing link carries (item 588): the Settings → Phone
+ * QR opens the away server's page with its own token in `token=` and the
+ * Mac's address and token in `mac=` and `mt=`, so one scan pairs both and
+ * the one URL on his phone falls over by itself — the Mac while it
+ * answers, the away server while its lid is closed. Null when the link
+ * has no Mac half or it is malformed. Like the token, it rides the
+ * fragment, which never leaves the browser.
+ */
+export function macFromHash(hash: string): HostEntry | null {
+  const params = new URLSearchParams(hash.replace(/^#/, ""));
+  const base = params.get("mac");
+  const token = params.get("mt");
+  if (!base || !token) return null;
+  return validEntry({ base, token: token.toLowerCase() });
+}
+
+/**
+ * The page's plain sentence on which host it is talking to and why
+ * (item 588): the Hosts sheet's first line and the drawer's foot.
+ */
+export function whereLine(active: HostRole | null, online: boolean, tried: Tried[], hosts: Hosts): string {
+  if (!online || !active) return "Not connected to either host yet.";
+  if (active === "mac") return "Talking to the Mac — it is awake and answering, so chats run there with all its files.";
+  if (!hosts.mac) return "Talking to the away server — the Mac is not paired on this phone. Scan Settings → Phone's code on the Mac to pair both.";
+  const mac = tried.find((t) => t.role === "mac");
+  const why =
+    mac?.why === "blocked"
+      ? "this page cannot call the Mac's plain-HTTP address"
+      : mac?.why === "refused"
+        ? "the Mac refused this phone's token (scan its code again)"
+        : "the Mac is not answering (asleep, lid closed, or Tailscale off)";
+  return `Talking to the away server — ${why}. It works from the Mac's last copies and cannot touch the Mac's files; chats started here come to the Mac when it wakes. The page goes back to the Mac by itself once it answers.`;
+}

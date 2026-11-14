@@ -160,6 +160,13 @@ const MARK_FILE_INSTRUCTION: &str = " Each time you create a file or folder, cal
      document they asked for), \"self\" when it is your own working material; the user's \
      ones are listed for them in Nightloom.";
 
+/// `add_folder`'s line (nightshift item 613), present only when the tool is.
+const ADD_FOLDER_INSTRUCTION: &str = " When the user asks you to look in a folder on their \
+     computer outside the folders you can see (\"look in my ICS 46 folder\"), find its absolute \
+     path, call add_folder on it (ToolSearch mcp__nightloom__add_folder by that full name), \
+     and once it is added read it in the same turn; it stays in the chat's Folders list. \
+     scope project only when the user says every chat in the project should see it.";
+
 /// The last sentence of [`INSTRUCTIONS`], present only when the tool is: a
 /// server started for an incognito chat (`--no-remember`) must not tell the
 /// model to reach for a tool it does not serve.
@@ -205,12 +212,16 @@ const OWN_EFFECTS: &[(&str, Effect)] = &[
     ("notion_list_children", Effect::ReadOnly),
     ("send_file", Effect::Session),
     ("mark_file", Effect::Session),
+    // The message's usage cap (item 538): written to the chat's own ledger.
+    (crate::agent::budget::TOOL_NAME, Effect::Session),
     // Runs a command of the model's (nightshift item 430): what Bash is.
     ("preview", Effect::Mutating),
     // The note organisers (item 472), served with `--notes`.
     (crate::tools::notes::LIST_NAME, Effect::ReadOnly),
     (crate::tools::notes::FOLDER_NAME, Effect::Mutating),
     (crate::tools::notes::MOVE_NAME, Effect::Mutating),
+    // Widens what the chat may read (item 613): the card asks first.
+    (crate::tools::add_folder::NAME, Effect::Mutating),
 ];
 
 /// The effect of a call by the name the CLI reports it under: this
@@ -257,6 +268,12 @@ fn instructions_for(tools: &[Box<dyn Tool>]) -> String {
         .any(|t| t.def().name == crate::tools::mark_file::NAME)
     {
         out.push_str(MARK_FILE_INSTRUCTION);
+    }
+    if tools
+        .iter()
+        .any(|t| t.def().name == crate::tools::add_folder::NAME)
+    {
+        out.push_str(ADD_FOLDER_INSTRUCTION);
     }
     // Item 472: present only when the organisers are served.
     if tools
@@ -1077,6 +1094,21 @@ pub async fn serve(
     if let (Some(dir), None, true) = (&args.notes, &args.dream, args.remember) {
         tools.extend(crate::tools::notes::note_tools(dir.clone()));
     }
+    // `set_budget` (item 538): served when the desktop named the chat's
+    // directory, where the turn's budget ledger is — never to a dream.
+    if let (Some(dir), None) = (&args.budget_dir, &args.dream) {
+        tools.push(Box::new(crate::agent::budget::SetBudget::new(dir.clone())));
+        // `add_folder` (nightshift item 613): beside it, for a chat that
+        // writes — the grant is kept on the chat's log or the project's
+        // registry, which an incognito or ephemeral chat promised not to
+        // touch. The tool grants nothing itself: the card's answer does.
+        if args.remember && !args.incognito {
+            tools.push(Box::new(crate::tools::AddFolder::new(
+                dir.clone(),
+                args.root.clone(),
+            )));
+        }
+    }
     // `preview` (nightshift item 430): the desktop's socket, the chat and
     // its folder all named — never for a dream.
     if let (Some(sock), Some(chat), Some(root), None) =
@@ -1131,6 +1163,10 @@ pub struct ServeArgs {
     /// with it, and for a chat that writes, `list_notes`,
     /// `make_note_folder` and `move_notes` are served over that folder.
     pub notes: Option<PathBuf>,
+    /// The chat's directory (`--budget-dir <dir>`, item 538), where its
+    /// turn's budget ledger is: with it, `set_budget` is served. Rewritten
+    /// into the arguments before each turn (`agent::budget::with_budget_dir`).
+    pub budget_dir: Option<PathBuf>,
 }
 
 impl ServeArgs {
@@ -1146,6 +1182,7 @@ impl ServeArgs {
             preview_chat: None,
             rename: None,
             notes: None,
+            budget_dir: None,
         }
     }
 
@@ -1161,6 +1198,7 @@ impl ServeArgs {
             preview_chat: None,
             rename: None,
             notes: None,
+            budget_dir: None,
         }
     }
 }
@@ -1400,6 +1438,11 @@ pub fn parse_args(args: &[String]) -> Result<ServeArgs, String> {
                 .next()
                 .ok_or_else(|| "--notes needs the knowledge folder".to_string())?;
             out.notes = Some(PathBuf::from(dir));
+        } else if arg == "--budget-dir" {
+            let dir = it
+                .next()
+                .ok_or_else(|| "--budget-dir needs the chat's directory".to_string())?;
+            out.budget_dir = Some(PathBuf::from(dir));
         } else if arg == "--rename-note" {
             let json = it
                 .next()
@@ -1417,7 +1460,7 @@ pub fn parse_args(args: &[String]) -> Result<ServeArgs, String> {
             out.remember = false;
         } else {
             return Err(format!(
-                "unknown argument {arg:?}; the flags are --project <id>, --no-remember, --incognito, --ask, --root <dir>, --preview <socket>, --preview-chat <id>, --notes <dir> and --dream <json>"
+                "unknown argument {arg:?}; the flags are --project <id>, --no-remember, --incognito, --ask, --root <dir>, --preview <socket>, --preview-chat <id>, --notes <dir>, --budget-dir <dir> and --dream <json>"
             ));
         }
     }
@@ -2636,6 +2679,10 @@ mod tests {
             },
         )));
         served.extend(crate::tools::notes::note_tools(config.clone()));
+        served.push(Box::new(crate::agent::budget::SetBudget::new(
+            config.clone(),
+        )));
+        served.push(Box::new(crate::tools::AddFolder::new(config.clone(), None)));
         for tool in &served {
             let name = tool.def().name;
             assert_eq!(

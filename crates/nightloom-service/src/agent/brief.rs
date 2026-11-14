@@ -397,6 +397,67 @@ pub fn write_limits(dir: &Path, limits: &SubagentLimits) -> std::io::Result<()> 
     )
 }
 
+/// The one-time switch of blocker 1757 (his answer, 2026-11-10: "Yes,
+/// switch them"): every chat's [`LIMITS_FILE`] under `log_dir/ask/` whose
+/// `model` is `same` is rewritten to `choose`, the bytes of every other
+/// field left exactly as they were. A file that is not a JSON object, has
+/// another model, or cannot be read is left alone. Returns how many were
+/// switched. The window runs it once (its marker); it never runs again,
+/// so a chat he sets back to Same stays Same.
+pub fn switch_same_to_choose(log_dir: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(log_dir.join("ask")) else {
+        return 0;
+    };
+    let mut switched = 0;
+    for entry in entries.flatten() {
+        let path = entry.path().join(LIMITS_FILE);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if let Some(next) = same_to_choose(&text)
+            && std::fs::write(&path, next).is_ok()
+        {
+            switched += 1;
+        }
+    }
+    switched
+}
+
+/// The text of a limits file with its top-level `"model": "same"` made
+/// `"choose"`, or `None` when its model is not `same`. Only that value's
+/// bytes change (pure; [`switch_same_to_choose`]).
+fn same_to_choose(text: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    if v.get("model").and_then(|m| m.as_str()) != Some("same") {
+        return None;
+    }
+    // The key is a top-level one and the files hold no nested `model`
+    // (the struct has none), so the single `"model"` key is it.
+    const KEY: &str = "\"model\"";
+    const SAME: &str = "\"same\"";
+    let key = text.find(KEY)?;
+    if text[key + 1..].contains(KEY) {
+        return None;
+    }
+    let after = &text[key + KEY.len()..];
+    let colon = after.find(':')?;
+    if !after[..colon].trim().is_empty() {
+        return None;
+    }
+    let rest = &after[colon + 1..];
+    let value = rest.len() - rest.trim_start().len();
+    if !rest[value..].starts_with(SAME) {
+        return None;
+    }
+    let at = key + KEY.len() + colon + 1 + value;
+    let out = format!("{}\"choose\"{}", &text[..at], &text[at + SAME.len()..]);
+    // What is written reads back as the same limits with Choose.
+    let check: serde_json::Value = serde_json::from_str(&out).ok()?;
+    let mut want = v;
+    want["model"] = serde_json::Value::from("choose");
+    (check == want).then_some(out)
+}
+
 /// The chat's model, beside the limits, for `SubagentModel::Same` (257).
 pub const CHAT_MODEL_FILE: &str = "subagent-chat-model.txt";
 
@@ -513,11 +574,12 @@ fn reading_of(u: crate::plan_usage::PlanUsage) -> Option<WindowReading> {
 }
 
 /// `HH:MM` local for the reason, or "when it resets".
+/// `at 5:10 AM` — his 12-hour clock (item 611; was `at 05:10`).
 fn reset_words(resets_at: Option<i64>) -> String {
     match resets_at.and_then(|r| chrono::DateTime::from_timestamp(r, 0)) {
         Some(t) => {
             let local = t.with_timezone(&chrono::Local);
-            format!("at {}", local.format("%H:%M"))
+            format!("at {}", local.format("%-I:%M %p"))
         }
         None => "when the window resets".to_string(),
     }
@@ -614,9 +676,26 @@ pub fn usage_line(
     }
     if let Some(r) = reading {
         // A stop line switched off (backlog 253) is `NEVER_PCT`: not a line.
-        match b.map(|b| b.stop_at).filter(|s| *s > 0 && *s <= 100) {
-            Some(stop) => parts.push(format!("5-hour {}% (stop line {stop}%)", r.five_hour_pct)),
-            None => parts.push(format!("5-hour {}%", r.five_hour_pct)),
+        // A declared cap (538) is the line, named with its mode and who set it.
+        match (
+            b.and_then(|b| b.cap.as_ref()),
+            b.map(|b| b.stop_at).filter(|s| *s > 0 && *s <= 100),
+        ) {
+            (Some(cap), _) => parts.push(format!(
+                "5-hour {}% (cap {}%: {}, {})",
+                r.five_hour_pct,
+                cap.percent,
+                cap.mode.words(),
+                match cap.source.as_str() {
+                    "model" => "from your set_budget call",
+                    "user" => "set by Swaraag in the window",
+                    _ => "from his message",
+                }
+            )),
+            (None, Some(stop)) => {
+                parts.push(format!("5-hour {}% (stop line {stop}%)", r.five_hour_pct))
+            }
+            (None, None) => parts.push(format!("5-hour {}%", r.five_hour_pct)),
         }
     }
     if let Some(w) = week {
@@ -789,6 +868,31 @@ pub fn earlier_agents(transcript: &Path, skip: Option<&str>) -> Vec<EarlierAgent
     out
 }
 
+impl EarlierAgent {
+    /// Its cache still alive: a reusable agent's hour, anything else's
+    /// five minutes, since it last ran.
+    pub fn warm(&self, now_ms: i64) -> bool {
+        let ttl_min: i64 = if self.reusable { 60 } else { 5 };
+        now_ms - self.last_ms < ttl_min * 60_000
+    }
+
+    /// Worth continuing now (item 693): warm and not past retirement.
+    pub fn continuable(&self, now_ms: i64) -> bool {
+        self.warm(now_ms) && !self.context.is_some_and(|c| c > RETIRE_TOKENS)
+    }
+}
+
+/// The list beside a user message or a wake (item 693): only when one of
+/// them could be continued now — a list of cold helpers changes nothing
+/// there, and launches carry the full list anyway.
+pub fn continuable_agents_lines(transcript: &Path, now_ms: i64) -> Option<String> {
+    let agents = earlier_agents(transcript, None);
+    if !agents.iter().any(|a| a.continuable(now_ms)) {
+        return None;
+    }
+    earlier_agents_lines(&agents, now_ms)
+}
+
 /// The list as the launch's context: one line per agent, `None` when the
 /// chat has none yet.
 pub fn earlier_agents_lines(agents: &[EarlierAgent], now_ms: i64) -> Option<String> {
@@ -801,8 +905,7 @@ pub fn earlier_agents_lines(agents: &[EarlierAgent], now_ms: i64) -> Option<Stri
     );
     for a in agents {
         let mins = (now_ms - a.last_ms).max(0) / 60_000;
-        let ttl_min: i64 = if a.reusable { 60 } else { 5 };
-        let warm = now_ms - a.last_ms < ttl_min * 60_000;
+        let warm = a.warm(now_ms);
         let name = a
             .name
             .as_deref()
@@ -830,6 +933,240 @@ pub fn earlier_agents_lines(agents: &[EarlierAgent], now_ms: i64) -> Option<Stri
         ));
     }
     Some(out)
+}
+
+// ---- a helper's size and model (nightshift backlog 553 + 540, 2026-11-10) ----
+//
+// 553, his words: a chat "said it was estimating 500 to 700,000 tokens being
+// taken from one sub-agent ... I've never seen you do that because you
+// would instead budget differently". The orchestrator sizes each helper's
+// task by its context before launching it and splits one that would pass
+// the retire mark (practices §3). So every launch from a chat's main thread
+// states its estimated context on a line of the call, and the hook refuses
+// one with none or one past [`SPLIT_TOKENS`], telling the model to split.
+// 540 (blocker 1732, his answer): "Fable for the very hardest task, there
+// should be a reason for why Fable is being used" — under `Choose` the
+// hook makes Opus the floor and asks Fable for a written reason.
+
+/// The most context one helper's task may be planned at: under the retire
+/// mark ([`RETIRE_TOKENS`]) with room for the report (item 554: ~300k
+/// stands for Opus 5.5 and Fable 5.2 alike; "past ~250k, finish the step
+/// you are on and report").
+pub const SPLIT_TOKENS: u64 = 250_000;
+
+/// The line a launch states its size on, as the layers and refusals name it.
+pub const ESTIMATE_LABEL: &str = "Estimated context:";
+
+/// The line a Fable launch gives its reason on.
+pub const FABLE_LABEL: &str = "Why Fable:";
+
+/// The task text the model wrote, without the brief Nightloom prepends.
+fn own_text<'a>(input: &'a Value, field: &str) -> Option<&'a str> {
+    let t = input.get(field).and_then(Value::as_str)?;
+    Some(match t.find(BRIEF_CLOSE) {
+        Some(i) => &t[i + BRIEF_CLOSE.len()..],
+        None => t,
+    })
+}
+
+/// The token count a launch states for its helper's context, from a line
+/// of its `description` or `prompt` that names an estimate ("Estimated
+/// context: ~150k", "estimate 120–180k tokens", "500,000 to 700,000"):
+/// the largest figure on the first such line, so a range is judged by its
+/// top. `None` when no line names an estimate with a figure.
+pub fn stated_estimate(input: &Value) -> Option<u64> {
+    use std::sync::LazyLock;
+    static FIGURE: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"(?i)(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s*(k|m|thousand|million)?\b")
+            .expect("figure regex")
+    });
+    for f in ["description", "prompt"] {
+        let Some(text) = own_text(input, f) else {
+            continue;
+        };
+        for line in text.lines() {
+            if !line.to_ascii_lowercase().contains("estimat") {
+                continue;
+            }
+            let mut top: Option<u64> = None;
+            for c in FIGURE.captures_iter(line) {
+                let Ok(n) = c[1].replace(',', "").parse::<f64>() else {
+                    continue;
+                };
+                let unit = c.get(2).map(|m| m.as_str().to_ascii_lowercase());
+                let tokens = match unit.as_deref() {
+                    Some("k" | "thousand") => n * 1_000.0,
+                    Some("m" | "million") => n * 1_000_000.0,
+                    // A bare figure counts only as a whole token count
+                    // ("500,000"), never a percent or a step number.
+                    _ if n >= 1_000.0 => n,
+                    _ => continue,
+                } as u64;
+                top = Some(top.map_or(tokens, |t| t.max(tokens)));
+            }
+            if top.is_some() {
+                return top;
+            }
+        }
+    }
+    None
+}
+
+/// The refusal for a launch that states no size.
+pub fn estimate_missing_reason() -> String {
+    format!(
+        "Not launched: state this helper's estimated context first — a line in the prompt such \
+         as \"{ESTIMATE_LABEL} ~150k\" (the most context it will hold at its peak: its reads, \
+         searches and own output, not the tokens billed over the run; a fresh helper starts \
+         near 60–100k). Keep each helper's task under {}k; split a bigger one into pieces, each \
+         its own helper, launched in turn. Then launch again.",
+        SPLIT_TOKENS / 1000
+    )
+}
+
+/// The refusal for a launch planned past [`SPLIT_TOKENS`].
+pub fn estimate_split_reason(estimate: u64) -> String {
+    format!(
+        "Not launched: this helper is planned at ~{}k of context, past the {}k one helper may \
+         be planned at (helpers retire at {}k, where their judgement over a long transcript \
+         gets worse). Split the task into pieces of under {}k each — by sub-question, source \
+         or file set — and launch each as its own helper, a few at a time, with its own \
+         \"{ESTIMATE_LABEL}\" line. If a finished helper under {}k covers part of it, continue \
+         that one with SendMessage instead.",
+        (estimate + 500) / 1000,
+        SPLIT_TOKENS / 1000,
+        RETIRE_TOKENS / 1000,
+        SPLIT_TOKENS / 1000,
+        RETIRE_TOKENS / 1000
+    )
+}
+
+/// The size check on one launch, pure: `nested` is a subagent's own
+/// launch, whose brief does not carry the rule, so only a stated size past
+/// the mark refuses it.
+pub fn estimate_verdict(estimate: Option<u64>, nested: bool) -> Result<(), String> {
+    match estimate {
+        Some(e) if e > SPLIT_TOKENS => Err(estimate_split_reason(e)),
+        Some(_) => Ok(()),
+        None if nested => Ok(()),
+        None => Err(estimate_missing_reason()),
+    }
+}
+
+/// Whether the call's own text has a line carrying `label` (case aside)
+/// with something after it, or any of `also`.
+fn has_reason(input: &Value, label: &str, also: &[&str]) -> bool {
+    let label = label.to_ascii_lowercase();
+    ["description", "prompt"]
+        .iter()
+        .filter_map(|f| own_text(input, f))
+        .flat_map(str::lines)
+        .map(str::to_ascii_lowercase)
+        .any(|l| {
+            l.find(&label).is_some_and(|i| {
+                !l[i + label.len()..]
+                    .trim_matches(|c: char| c.is_whitespace() || c == '-' || c == '.' || c == ':')
+                    .is_empty()
+            }) || also.iter().any(|a| l.contains(a))
+        })
+}
+
+/// What `Choose` does with a launch's model (540): Opus is the floor, so a
+/// launch naming no model, or sonnet or haiku without "the user asked for"
+/// it, runs on opus (with `Some(note)` telling the model why); Fable needs
+/// a reason line or the launch is refused. A fork and a checkpoint run the
+/// chat's own model, as before.
+pub fn choose_model(input: &Value) -> Result<(SpawnModel, Option<String>), String> {
+    let kind = input.get("subagent_type").and_then(Value::as_str);
+    if matches!(kind, Some("fork")) || kind == Some(super::fork::CHECKPOINT_AGENT) {
+        return Ok((SpawnModel::Leave, None));
+    }
+    let asked = input
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::to_ascii_lowercase);
+    match asked.as_deref() {
+        None | Some("") | Some("inherit") => Ok((SpawnModel::Set("opus"), None)),
+        Some(m) if m.contains("opus") => Ok((SpawnModel::Leave, None)),
+        Some(m) if m.contains("fable") => {
+            if has_reason(input, FABLE_LABEL, &["fable because"]) {
+                Ok((SpawnModel::Leave, None))
+            } else {
+                Err(format!(
+                    "Not launched: Fable 5.2 is for the very hardest tasks only (a multi-file \
+                     systems build, or hard research that is a hard reasoning problem; never a \
+                     search, survey or read-and-summarise helper), and a Fable launch says why on \
+                     a line of its \
+                     prompt: \"{FABLE_LABEL} <the reason this task needs it>\". Add the line and \
+                     launch again, or launch it on opus (Opus 5.5), the default for everything \
+                     else."
+                ))
+            }
+        }
+        Some(m) if m.contains("sonnet") || m.contains("haiku") => {
+            if has_reason(input, "user asked for", &[]) {
+                Ok((SpawnModel::Leave, None))
+            } else {
+                Ok((
+                    SpawnModel::Set("opus"),
+                    Some(format!(
+                        "Nightloom ran this helper on opus, not {m}: no helper runs below Opus \
+                         5.5 unless the user asked for it in this chat (then say so on a line: \
+                         \"User asked for {m}\")."
+                    )),
+                ))
+            }
+        }
+        Some(_) => Ok((SpawnModel::Leave, None)),
+    }
+}
+
+/// How often a process sees its own context size: each time it crosses into
+/// another band of this width (553; item 554: neither Opus 5.5 nor Fable 5.2
+/// is told its context size, and Fable did far better when shown it).
+pub const CONTEXT_BAND: u64 = 50_000;
+
+/// Whether a process's context earns the usage line on this call, pure:
+/// `Some(band)` to show it and record `band` for the process. Due on
+/// crossing into a higher [`CONTEXT_BAND`], and on every call of a helper
+/// past [`SPLIT_TOKENS`] (the wrap-up note rides on it).
+pub fn context_due(last: Option<u64>, context: Option<u64>, subagent: bool) -> Option<u64> {
+    let c = context?;
+    let band = c / CONTEXT_BAND;
+    let crossed = band > last.unwrap_or(0);
+    (crossed || (subagent && c > SPLIT_TOKENS)).then_some(band.max(last.unwrap_or(0)))
+}
+
+/// What a helper past the split mark is told on every call (554's "past
+/// ~250k, finish the step you are on and report").
+pub fn context_wrap_note(context: u64) -> String {
+    let k = (context + 500) / 1000;
+    if context > RETIRE_TOKENS {
+        format!(
+            "Your context is {k}k, past the {}k retire mark: start nothing new. Finish the step \
+             you are on, make your written report current (what is done, what is left, \
+             precisely), and hand back now; a fresh helper takes what is left.",
+            RETIRE_TOKENS / 1000
+        )
+    } else {
+        format!(
+            "Your context is {k}k, past {}k: finish the step you are on, write up what you have \
+             and what is left, and report. Start no new line of work.",
+            SPLIT_TOKENS / 1000
+        )
+    }
+}
+
+/// The note on a SendMessage to a helper past the retire mark (553): its
+/// work stands, but new work goes to a fresh helper.
+pub fn retired_recipient_note(id: &str, context: u64) -> String {
+    format!(
+        "{id} is past retirement ({}k of context, over {}k): ask it only to finish the step it is \
+         on and report. Give new work to a fresh helper, briefed with its report's list of what \
+         is left, and have a fresh helper review its work before you rely on it.",
+        (context + 500) / 1000,
+        RETIRE_TOKENS / 1000
+    )
 }
 
 // ---- the per-message budget (nightshift backlog 165, pass 2, 2026-09-22) ----
@@ -900,6 +1237,42 @@ pub struct TurnBudget {
     /// spend crosses into a higher band.
     #[serde(default)]
     pub usage_shown: std::collections::BTreeMap<String, u8>,
+    /// The last [`CONTEXT_BAND`] of its own context each process was shown
+    /// (553), keyed as `usage_shown` is.
+    #[serde(default)]
+    pub context_shown: std::collections::BTreeMap<String, u64>,
+    /// The cap this message works under (item 538): declared by the model's
+    /// `set_budget` call, read from his message as a backstop, or corrected
+    /// by him in the window. `stop_at` is its percent while it is set.
+    #[serde(default)]
+    pub cap: Option<super::budget::Cap>,
+    /// He corrected the cap in the window this message (538): the model's
+    /// later `set_budget` calls change nothing.
+    #[serde(default)]
+    pub cap_locked: bool,
+    /// The wake thresholds already crossed this message (538): each wakes
+    /// the main agent once.
+    #[serde(default)]
+    pub wakes_fired: Vec<String>,
+    /// Wakes found on a helper's call, waiting for the main thread (538):
+    /// taken by the turn's drive loop when the main thread sits idle, or
+    /// by the main thread's own next call.
+    #[serde(default)]
+    pub wakes_pending: Vec<super::budget::Wake>,
+    /// The main thread's CLI transcript, as its hook calls name it (item
+    /// 693): where the drive loop finds the chat's earlier subagents to
+    /// list beside a wake it delivers.
+    #[serde(default)]
+    pub main_transcript: Option<PathBuf>,
+    /// How many calls each process has made under a wrap-up (538): the
+    /// first [`super::budget::WRAP_CALLS`] run with the wrap-up beside
+    /// them, the rest are refused. Keyed as `usage_shown` is.
+    #[serde(default)]
+    pub wrap_calls: std::collections::BTreeMap<String, u8>,
+    /// Each launch's expected cost, held until the reading catches up
+    /// (538, 537's fix 1); dropped when no helper runs.
+    #[serde(default)]
+    pub reserved: Vec<super::budget::Reservation>,
 }
 
 impl TurnBudget {
@@ -994,6 +1367,14 @@ pub fn start_turn_budget(
         holds: Vec::new(),
         wrap_at_ms: None,
         usage_shown: Default::default(),
+        context_shown: Default::default(),
+        cap: None,
+        cap_locked: false,
+        wakes_fired: Vec::new(),
+        wakes_pending: Vec::new(),
+        main_transcript: None,
+        wrap_calls: Default::default(),
+        reserved: Vec::new(),
     }
 }
 
@@ -1432,6 +1813,10 @@ pub enum CallVerdict {
     /// His *Wrap up*, not yet delivered: refuse this call with the
     /// instruction and mark the ledger (backlog 192).
     WrapUp(String),
+    /// Allowed under a wrap-up (item 538, 539 pieces 4 and 5): the call
+    /// runs with this note beside it, and counts against the process's
+    /// [`super::budget::WRAP_CALLS`]; past them its calls are refused.
+    Wrapping(String),
 }
 
 /// [`budget_verdict`] with his answer and his presence, pure. *Wrap up*
@@ -1449,10 +1834,41 @@ pub fn call_verdict(
     present: bool,
     subagent: bool,
 ) -> CallVerdict {
+    call_verdict_for(b, reading, ans, present, subagent, "")
+}
+
+/// [`call_verdict`] for the process `who` (keyed as `usage_shown` is).
+/// Since item 538 a helper is not refused at once where it used to be —
+/// at his *Wrap up*, past the stop line, past the message's share: its
+/// next [`super::budget::WRAP_CALLS`] calls run with the wrap-up beside
+/// them (`Wrapping`) so it can save its work, and only then are refused;
+/// under a mode-B cap the refusal names no usage figure. The chat's own
+/// thread gets the same grace past a cap declared for this message.
+pub fn call_verdict_for(
+    b: &TurnBudget,
+    reading: Option<WindowReading>,
+    ans: Option<&Answer>,
+    present: bool,
+    subagent: bool,
+    who: &str,
+) -> CallVerdict {
+    use super::budget;
     let wrapping = matches!(ans, Some(Answer::Wrap(_)));
+    let left = budget::wrap_left(b, who);
+    let hide = subagent && budget::hides_usage(b);
+    // A helper's grace: the wrap-up beside the call, then the refusal.
+    let graced = |after: String, pressed: bool| {
+        if left > 0 {
+            CallVerdict::Wrapping(budget::helper_wrap_note(left, pressed))
+        } else if hide {
+            CallVerdict::Deny(budget::helper_wrapped_reason())
+        } else {
+            CallVerdict::Deny(after)
+        }
+    };
     if let Some(Answer::Wrap(text)) = ans {
         if subagent {
-            return CallVerdict::Deny(wrap_up_subagent_reason());
+            return graced(wrap_up_subagent_reason(), true);
         }
         if b.wrap_at_ms.is_none() {
             return CallVerdict::WrapUp(wrap_up_reason(text));
@@ -1463,28 +1879,30 @@ pub fn call_verdict(
     };
     let mut overridden = false;
     if r.five_hour_pct >= b.stop_at {
+        let stop = || window_stop_all_reason(r.five_hour_pct, b.stop_at, r.resets_at);
         match ans {
             Some(Answer::Continue) => overridden = true,
             _ if wrapping => overridden = true,
-            None if present && !subagent => return CallVerdict::Hold,
-            _ => {
-                return CallVerdict::Deny(window_stop_all_reason(
-                    r.five_hour_pct,
-                    b.stop_at,
-                    r.resets_at,
-                ));
+            _ if subagent => return graced(stop(), false),
+            // Past a cap declared for this message, the chat's own thread
+            // saves its state under the same grace (538).
+            None if b.cap.is_some() && left > 0 => {
+                return CallVerdict::Wrapping(budget::main_at_cap_note(b, r.five_hour_pct, left));
             }
+            None if present => return CallVerdict::Hold,
+            _ => return CallVerdict::Deny(stop()),
         }
     }
     match share_verdict(b, r) {
         Ok(()) => CallVerdict::Allow { overridden },
+        Err(reason) if subagent => graced(reason, false),
         Err(reason) => CallVerdict::Deny(reason),
     }
 }
 
 /// Open the ledger locked, change it, write it back. `None` when there
 /// is no ledger or it cannot be locked or read.
-fn with_ledger<T>(dir: &Path, f: impl FnOnce(&mut TurnBudget) -> T) -> Option<T> {
+pub(super) fn with_ledger<T>(dir: &Path, f: impl FnOnce(&mut TurnBudget) -> T) -> Option<T> {
     use std::io::{Read as _, Seek as _, Write as _};
     let mut file = std::fs::OpenOptions::new()
         .read(true)
@@ -1623,6 +2041,7 @@ fn await_answer(
                         CallVerdict::Allow { overridden }
                     }
                     CallVerdict::Hold => CallVerdict::Hold,
+                    CallVerdict::Wrapping(note) => CallVerdict::Wrapping(note),
                 }
             })
             .unwrap_or_else(|| {
@@ -1661,18 +2080,75 @@ fn await_answer(
 /// since 192 it returns the held call's deadline (0 otherwise), a *Wrap
 /// up* is delivered here, and the Mac is looked at only past the line.
 #[allow(clippy::too_many_arguments)]
+/// The ledger takes a reading: it pins the start when none was on hand,
+/// and the latest is the newest reading seen, never an older one a slower
+/// hook brings in after a faster one.
+fn take_reading(b: &mut TurnBudget, reading: Option<WindowReading>) {
+    if let Some(r) = reading {
+        if b.start_pct.is_none() {
+            b.start_pct = Some(r.five_hour_pct);
+        }
+        if b.latest_at_ms.is_none_or(|t| r.sampled_at_ms >= t) {
+            b.latest_pct = Some(r.five_hour_pct);
+            b.latest_at_ms = Some(r.sampled_at_ms);
+            b.resets_at = r.resets_at.or(b.resets_at);
+        }
+    }
+}
+
+/// A user message arrived (nightshift 561): the ledger takes the reading,
+/// and the line shown with the message counts as `who`'s first showing —
+/// its band and its context band recorded, so the message's first tool
+/// call does not repeat it unless a band is crossed. No call is counted;
+/// no ledger, nothing recorded.
+fn note_prompt(dir: &Path, reading: Option<WindowReading>, who: &str, context: Option<u64>) {
+    use std::io::{Read as _, Seek as _, Write as _};
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(dir.join(TURN_BUDGET_FILE))
+    else {
+        return;
+    };
+    if file.lock().is_err() {
+        return;
+    }
+    let mut have = String::new();
+    let _ = file.read_to_string(&mut have);
+    let Ok(mut b) = serde_json::from_str::<TurnBudget>(&have) else {
+        return;
+    };
+    take_reading(&mut b, reading);
+    let band = b.spent_pct().map_or(0, |s| s / USAGE_BAND);
+    let last = b.usage_shown.get(who).copied().unwrap_or(0);
+    b.usage_shown.insert(who.to_string(), band.max(last));
+    if let Some(band) = context_due(b.context_shown.get(who).copied(), context, false) {
+        b.context_shown.insert(who.to_string(), band);
+    }
+    let _ = file.set_len(0);
+    let _ = file.seek(std::io::SeekFrom::Start(0));
+    let _ = file.write_all(
+        serde_json::to_string_pretty(&b)
+            .unwrap_or_default()
+            .as_bytes(),
+    );
+}
+
+// One call site; the nine are the hook's separate readings, kept flat rather than bundled for it.
+#[allow(clippy::too_many_arguments)]
 fn note_reading(
     dir: &Path,
     reading: Option<WindowReading>,
     subagent: bool,
     who: &str,
     spawn: bool,
+    context: Option<u64>,
     now_ms: i64,
     hold_ms: i64,
     senses: &Senses,
-) -> (CallVerdict, i64, i64, bool) {
+) -> (CallVerdict, i64, i64, bool, Option<String>) {
     use std::io::{Read as _, Seek as _, Write as _};
-    let allowed = (CallVerdict::Allow { overridden: false }, 0, 0, false);
+    let allowed = (CallVerdict::Allow { overridden: false }, 0, 0, false, None);
     let Ok(mut file) = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -1689,18 +2165,7 @@ fn note_reading(
         return allowed;
     };
     b.calls += 1;
-    if let Some(r) = reading {
-        if b.start_pct.is_none() {
-            b.start_pct = Some(r.five_hour_pct);
-        }
-        // The latest is the newest reading seen, never an older one a
-        // slower hook brings in after a faster one.
-        if b.latest_at_ms.is_none_or(|t| r.sampled_at_ms >= t) {
-            b.latest_pct = Some(r.five_hour_pct);
-            b.latest_at_ms = Some(r.sampled_at_ms);
-            b.resets_at = r.resets_at.or(b.resets_at);
-        }
-    }
+    take_reading(&mut b, reading);
     let past = reading.is_some_and(|r| r.five_hour_pct >= b.stop_at);
     let ans = answer_now(dir, &b, past, senses, now_ms);
     // His presence only matters for a call that would otherwise be held.
@@ -1708,10 +2173,15 @@ fn note_reading(
         && ans.is_none()
         && !subagent
         && is_present(read_presence(dir), senses.look(now_ms).0, now_ms);
-    let mut verdict = call_verdict(&b, reading, ans.as_ref(), present, subagent);
+    let mut verdict = call_verdict_for(&b, reading, ans.as_ref(), present, subagent, who);
     let mut deadline = 0;
     match &verdict {
         CallVerdict::Deny(reason) => b.stopped = Some(reason.clone()),
+        // One more of this process's calls under the wrap-up (538).
+        CallVerdict::Wrapping(_) => {
+            let n = b.wrap_calls.entry(who.to_string()).or_insert(0);
+            *n = n.saturating_add(1);
+        }
         CallVerdict::Hold => {
             deadline = now_ms + hold_ms;
             b.pending_since_ms.get_or_insert(now_ms);
@@ -1730,13 +2200,34 @@ fn note_reading(
     }
     // The usage line (backlog 249), judged on an allowed call only: a
     // refusal's own reason already carries the figures.
+    // Never on a helper's call under a mode-B cap (538): it is shown no
+    // usage figure at all.
+    let hide = subagent && super::budget::hides_usage(&b);
     let mut show = false;
     if matches!(verdict, CallVerdict::Allow { .. })
+        && !hide
         && let Some(band) = usage_due(&b, who, spawn)
     {
         b.usage_shown.insert(who.to_string(), band);
         show = true;
     }
+    // Its own context (553): each 50k band, and every call of a helper
+    // past the split mark.
+    if matches!(verdict, CallVerdict::Allow { .. })
+        && let Some(band) = context_due(b.context_shown.get(who).copied(), context, subagent)
+    {
+        b.context_shown.insert(who.to_string(), band);
+        show = true;
+    }
+    // The wakes this reading brings (538): the main thread's own call
+    // carries them — a call that runs — and a helper's leaves them in the
+    // ledger for the turn's drive loop.
+    let runs = matches!(
+        verdict,
+        CallVerdict::Allow { .. } | CallVerdict::Wrapping(_)
+    );
+    let wakes = super::budget::wakes_for_call(&mut b, reading, !subagent && runs, now_ms);
+    let wake = super::budget::wake_text(&wakes, None);
     let _ = file.set_len(0);
     let _ = file.seek(std::io::SeekFrom::Start(0));
     let _ = file.write_all(
@@ -1744,7 +2235,7 @@ fn note_reading(
             .unwrap_or_default()
             .as_bytes(),
     );
-    (verdict, b.started_at_ms, deadline, show)
+    (verdict, b.started_at_ms, deadline, show, wake)
 }
 
 /// The per-chat, per-day refusal.
@@ -1919,6 +2410,22 @@ pub fn hook_entry(hook: &[String], dir: &Path) -> Value {
     })
 }
 
+/// The CLI's hook event for a user message, before the model answers it.
+pub const PROMPT_EVENT: &str = "UserPromptSubmit";
+
+/// The `UserPromptSubmit` entry (nightshift 561): the same command as
+/// [`hook_entry`]'s — the hook tells the two events apart by its input's
+/// `hook_event_name` — so each new message brings a fresh usage line
+/// before the model answers, not only with its first tool call. No
+/// matcher: the event has none.
+pub fn prompt_hook_entry(hook: &[String], dir: &Path) -> Value {
+    let mut entry = hook_entry(hook, dir);
+    if let Value::Object(o) = &mut entry {
+        o.remove("matcher");
+    }
+    entry
+}
+
 /// Write the brief into `dir`, only when it differs from what is there —
 /// the hook may be reading at the same moment, and an unchanged file is
 /// not rewritten under it.
@@ -1936,6 +2443,9 @@ pub fn write(dir: &Path, text: &str) -> std::io::Result<()> {
 /// The fields of the hook's stdin line read here.
 #[derive(Debug, Deserialize)]
 struct HookInput {
+    /// `PreToolUse`, or [`PROMPT_EVENT`] for a user message (561).
+    #[serde(default)]
+    hook_event_name: String,
     #[serde(default)]
     tool_name: String,
     #[serde(default)]
@@ -1987,13 +2497,35 @@ pub fn decide(dir: &Path, stdin_json: &str) -> HookReply {
     // own process, so the one-a-minute rule lives in a stamp and a lock
     // in the temp directory (`plan_usage::read_fresh_shared`), and a hook
     // that finds the lock held reads the stamp rather than waiting ~12 s.
+    // Item 526: the re-run of a call a card was up for comes before the
+    // resume's first API reply, so the wire reading is as old as the wait
+    // and the refresh below would always run — 15 s of his Skip, measured.
+    // That call takes the reading there is instead; the resume's next call
+    // has the reply's fresh wire reading.
     let usage = if wire_fresh {
         crate::plan_usage::read()
+    } else if is_resumed_call(dir, stdin_json) {
+        crate::plan_usage::read_without_refresh()
     } else {
         crate::plan_usage::read_fresh_shared(std::time::Duration::from_secs(120))
     };
     let week = week_of(&usage, now_ms);
     decide_with_week(dir, stdin_json, reading_of(usage), week)
+}
+
+/// Whether this call is the one a card is waiting on in `dir` (item 522's
+/// `waiting.json`, on disk until its resume has run): the resume re-running
+/// a deferred call — a question, a plan, an approval, a browser card.
+fn is_resumed_call(dir: &Path, stdin_json: &str) -> bool {
+    let Some(id) = serde_json::from_str::<Value>(stdin_json)
+        .ok()
+        .and_then(|v| v.get("tool_use_id")?.as_str().map(String::from))
+    else {
+        return false;
+    };
+    super::ask::AskDir::new(dir)
+        .waiting()
+        .is_some_and(|w| w.call.id == id)
 }
 
 /// [`decide_with`] with the weekly figure too (backlog 249).
@@ -2015,7 +2547,7 @@ pub fn decide_with(dir: &Path, stdin_json: &str, gauge: Option<WindowReading>) -
 /// [`decide_with`] with the hold's length and poll interval passed in,
 /// so the suite holds for milliseconds rather than minutes — and (backlog
 /// 192) what the hook senses of the Mac, so it runs against a fixed one.
-fn decide_holding(
+pub(super) fn decide_holding(
     dir: &Path,
     stdin_json: &str,
     gauge: Option<WindowReading>,
@@ -2051,28 +2583,87 @@ fn decide_holding(
         input.session_id.as_deref().unwrap_or_default()
     };
     let spawn = is_spawn(&input.tool_name);
-    let (mut verdict, turn, deadline, show) =
-        note_reading(dir, reading, subagent, who, spawn, now_ms, hold_ms, senses);
+    // The calling process's own context (553): read on every call now, so
+    // a helper sees its size as it grows, not only at its first call.
+    let context = input
+        .transcript_path
+        .as_deref()
+        .and_then(|t| context_tokens(t, subagent.then_some(who)));
+    // A user message (561): the line before the model answers, from this
+    // message's reading — never only an older message's — recorded as its
+    // first showing. Nothing is refused here; the calls are judged as ever.
+    // The main thread's transcript, kept for the drive loop's wakes (693).
+    if !subagent && let Some(t) = input.transcript_path.as_deref() {
+        let known = read_turn_budget(dir).and_then(|b| b.main_transcript);
+        if known.as_deref() != Some(t) {
+            with_ledger(dir, |b| b.main_transcript = Some(t.to_path_buf()));
+        }
+    }
+    if input.hook_event_name == PROMPT_EVENT {
+        note_prompt(dir, reading, who, context);
+        let line = usage_line(read_turn_budget(dir).as_ref(), reading, week, context);
+        // A helper still warm beside his message (693): "go on", "another
+        // 25%" — the main agent can continue it rather than start afresh.
+        let earlier = (!subagent)
+            .then_some(input.transcript_path.as_deref())
+            .flatten()
+            .and_then(|t| continuable_agents_lines(t, now_ms));
+        let line = match (line, earlier) {
+            (Some(l), Some(e)) => Some(format!("{l}\n{e}")),
+            (l, e) => l.or(e),
+        };
+        let mut reply = HookReply::pass().with_context(line);
+        if let Some(o) = &mut reply.hook_specific_output {
+            o.hook_event_name = PROMPT_EVENT.into();
+        }
+        return reply;
+    }
+    let (mut verdict, turn, deadline, show, wake) = note_reading(
+        dir, reading, subagent, who, spawn, context, now_ms, hold_ms, senses,
+    );
+    // Under a mode-B cap a helper is shown no usage figure (538): not the
+    // line, not the weekly figure, not a refusal that quotes the window.
+    let hide = subagent
+        && read_turn_budget(dir)
+            .as_ref()
+            .is_some_and(super::budget::hides_usage);
+    let week = if hide { None } else { week };
     if verdict == CallVerdict::Hold
         && let Some(r) = reading
     {
         verdict = await_answer(dir, turn, deadline, r, subagent, poll_ms, senses);
     }
-    let overridden = match verdict {
+    let (overridden, wrap_note) = match verdict {
         CallVerdict::Deny(reason) | CallVerdict::WrapUp(reason) => {
             return HookReply::deny(with_week(reason, week));
         }
-        CallVerdict::Allow { overridden } => overridden,
-        CallVerdict::Hold => false,
+        CallVerdict::Allow { overridden } => (overridden, None),
+        // Runs under a wrap-up (538): the note rides the call.
+        CallVerdict::Wrapping(note) => (true, Some(note)),
+        CallVerdict::Hold => (false, None),
     };
+    // The cap is the main chat's to declare (538): a helper is shown no
+    // budget, and must not set one.
+    if subagent && input.tool_name == crate::mcp_server::mcp_name(super::budget::TOOL_NAME) {
+        return HookReply::deny(
+            "Not run: only the main chat sets the budget. Carry on with your task.".into(),
+        );
+    }
     // The usage line for this call, when due (backlog 249): read after the
     // verdict, so the ledger it quotes is the one this call just updated.
     let line = if show {
-        let context = input
-            .transcript_path
-            .as_deref()
-            .and_then(|t| context_tokens(t, subagent.then_some(who)));
-        let usage = usage_line(read_turn_budget(dir).as_ref(), reading, week, context);
+        let usage = if hide {
+            usage_line(None, None, None, context)
+        } else {
+            usage_line(read_turn_budget(dir).as_ref(), reading, week, context)
+        };
+        // A helper past the split mark is told to wrap up (553, 554).
+        let usage = match (usage, context) {
+            (Some(u), Some(c)) if subagent && c > SPLIT_TOKENS => {
+                Some(format!("{u}\n{}", context_wrap_note(c)))
+            }
+            (u, _) => u,
+        };
         // At a launch, the chat's earlier subagents (backlog 293 addition).
         let earlier = spawn
             .then_some(input.transcript_path.as_deref())
@@ -2087,6 +2678,26 @@ fn decide_holding(
     } else {
         None
     };
+    // A wake on the main thread carries the chat's helpers when one is
+    // still warm (693) — not on a launch that lists them already.
+    let wake = if wake.is_some() && !subagent && !(spawn && show) {
+        super::budget::with_earlier(
+            wake,
+            input
+                .transcript_path
+                .as_deref()
+                .and_then(|t| continuable_agents_lines(t, now_ms)),
+        )
+    } else {
+        wake
+    };
+    // The wrap-up and the wake (538) lead what the model reads beside the
+    // call; the usage line follows.
+    let line = [wrap_note.clone(), wake, line]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    let line = (!line.is_empty()).then(|| line.join("\n"));
     // His steering notes (backlog 295): whatever he queued for this
     // process — a subagent by its `agent_id`, the main thread under
     // `steer::MAIN` — goes with this call, once. Taken only on a call that
@@ -2101,7 +2712,33 @@ fn decide_holding(
         }
     };
     if !spawn {
+        // A message to a helper past retirement (553): let through, with
+        // the rule beside it — the message may be the one telling it to
+        // hand back.
+        let line = match (input.tool_name.as_str(), input.transcript_path.as_deref()) {
+            ("SendMessage", Some(t)) => {
+                let to = ["to", "recipient"]
+                    .iter()
+                    .find_map(|k| input.tool_input.get(*k).and_then(Value::as_str))
+                    .filter(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric()));
+                match to.and_then(|id| Some((id, context_tokens(t, Some(id))?))) {
+                    Some((id, c)) if c > RETIRE_TOKENS => {
+                        let note = retired_recipient_note(id, c);
+                        Some(line.map_or(note.clone(), |l| format!("{l}\n{note}")))
+                    }
+                    _ => line,
+                }
+            }
+            _ => line,
+        };
         return HookReply::pass().with_context(steered(line));
+    }
+    // Nor does a process under a wrap-up's grace (538): its helper would
+    // be stopped as it started.
+    if wrap_note.is_some() {
+        return HookReply::deny(
+            "Not run: no new subagents while the chat wraps up. Save your own work instead.".into(),
+        );
     }
     // A chat wrapping up starts nothing new (backlog 192).
     if read_turn_budget(dir).is_some_and(|b| b.wrap_at_ms.is_some() && b.started_at_ms == turn) {
@@ -2160,11 +2797,76 @@ fn decide_holding(
     } else {
         match window_verdict(&limits, reading) {
             Ok(cap) => cap,
+            Err(_) if hide => return HookReply::deny(super::budget::helper_launch_reason()),
             Err(reason) => return HookReply::deny(with_week(reason, week)),
         }
     };
+    // The helper's size (553), after the window (a stop says more) and
+    // before the turn's and the day's counts, so a refused launch uses
+    // neither up (a subagent's own launch was counted against its parent
+    // above; only one stated past the mark is refused here).
+    // A call with no string task is no launch the hook has an opinion on.
+    let task = input.tool_input.get("prompt").is_some_and(Value::is_string);
+    if task && let Err(reason) = estimate_verdict(stated_estimate(&input.tool_input), subagent) {
+        return HookReply::deny(reason);
+    }
+    // Its model under Choose (540): a Fable launch with no reason is
+    // refused before it counts, too.
+    let chosen = match limits.model {
+        SubagentModel::Choose if task => match choose_model(&input.tool_input) {
+            Ok(c) => Some(c),
+            Err(reason) => return HookReply::deny(reason),
+        },
+        _ => None,
+    };
+    // The launch's expected cost, held against the cap (538; 537's fix 1):
+    // under a "finish within" cap one that would not fit is refused, before
+    // the counts so it uses neither up; otherwise it is only held, which
+    // moves the wake earlier — and that wake, when this launch brings it,
+    // rides this very call.
+    let asked_model = input.tool_input.get("model").and_then(Value::as_str);
+    let alias = match chosen.as_ref().map_or_else(
+        || limits.model.for_spawn(asked_model, read_chat_alias(dir)),
+        |(pick, _)| *pick,
+    ) {
+        SpawnModel::Set(m) => Some(m),
+        SpawnModel::Leave => asked_model.and_then(agent_alias).or(read_chat_alias(dir)),
+        SpawnModel::Clear => read_chat_alias(dir),
+    };
+    let points = super::budget::points_for(alias);
+    let mut held = false;
+    let mut mode = None;
+    let mut launch_wake = None;
+    if task {
+        let claim = with_ledger(dir, |b| {
+            mode = b.cap.as_ref().map(|c| c.mode);
+            super::budget::claim_reservation(b, reading, points).map(|()| {
+                let wakes = super::budget::wakes_for_call(b, reading, !subagent, now_ms);
+                super::budget::wake_text(&wakes, None)
+            })
+        });
+        match claim {
+            Some(Ok(w)) => {
+                held = true;
+                launch_wake = w;
+            }
+            Some(Err(reason)) => return HookReply::deny(reason),
+            None => {}
+        }
+    }
+    let release = |held: bool| {
+        if held {
+            with_ledger(dir, |b| super::budget::release_reservation(b, points));
+        }
+    };
+    let line = match (launch_wake, line) {
+        (Some(w), Some(l)) => Some(format!("{w}\n{l}")),
+        (w, l) => w.or(l),
+    };
     if claim_spawn(dir, cap).is_err() {
+        release(held);
         return HookReply::deny(match reading {
+            Some(_) if hide => super::budget::helper_launch_reason(),
             Some(r) if cap < limits.per_turn => with_week(
                 slowed_cap_reason(cap, r.five_hour_pct, limits.slow_at),
                 week,
@@ -2175,6 +2877,7 @@ fn decide_holding(
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     // A day cap of zero is no cap (his answer to blocker 271).
     if limits.per_day > 0 && claim_day_spawn(dir, limits.per_day, &today).is_err() {
+        release(held);
         return HookReply::deny(day_cap_reason(limits.per_day));
     }
     let Value::Object(mut fields) = input.tool_input.clone() else {
@@ -2201,20 +2904,48 @@ fn decide_holding(
         return HookReply::deny(super::fork::report(&out));
     }
     let brief = std::fs::read_to_string(dir.join(BRIEF_FILE)).unwrap_or_default();
+    // What the helper is told of the budget (538, 539's table): under
+    // "work to the cap" nothing — the brief goes in without its pacing
+    // section; under "finish within" its share, in front of its task.
+    let brief = match mode {
+        Some(super::budget::BudgetMode::WorkToCapThenContinue) => {
+            super::budget::without_pacing(&brief)
+        }
+        _ => brief,
+    };
+    let share = (mode == Some(super::budget::BudgetMode::FinishWithin))
+        .then(|| super::budget::share_line(points));
     let mut changed = false;
-    if !brief.trim().is_empty()
-        && let Some(Value::String(prompt)) = fields.get("prompt")
+    if let Some(Value::String(prompt)) = fields.get("prompt")
         && !prompt.trim_start().starts_with(BRIEF_OPEN)
     {
-        let briefed = format!("{}\n\n{prompt}", brief.trim_end());
-        fields.insert("prompt".into(), Value::String(briefed));
-        changed = true;
+        let mut parts: Vec<&str> = Vec::new();
+        if !brief.trim().is_empty() {
+            parts.push(brief.trim_end());
+        }
+        if let Some(share) = &share {
+            parts.push(share);
+        }
+        if !parts.is_empty() {
+            parts.push(prompt);
+            let briefed = parts.join("\n\n");
+            fields.insert("prompt".into(), Value::String(briefed));
+            changed = true;
+        }
     }
     // The subagents' model (pass 2, blocker 280; 257, blocker 584): the
     // switch on the rail sets the spawn's `model` input, which the Agent
     // tool takes.
     let asked = fields.get("model").and_then(Value::as_str);
-    match limits.model.for_spawn(asked, read_chat_alias(dir)) {
+    let (pick, note) = match chosen {
+        Some((pick, note)) => (pick, note),
+        None => (limits.model.for_spawn(asked, read_chat_alias(dir)), None),
+    };
+    let line = match note {
+        Some(n) => Some(line.map_or(n.clone(), |l| format!("{l}\n{n}"))),
+        None => line,
+    };
+    match pick {
         SpawnModel::Leave => {}
         SpawnModel::Set(model) => {
             fields.insert("model".into(), Value::String(model.into()));
@@ -2252,6 +2983,46 @@ pub fn run_hook(args: &[String]) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// Blocker 1757: each chat on Same is switched to Choose, the bytes of
+    /// every other field untouched; Choose, Sonnet, an old `chat`, a broken
+    /// file and a chat with no file are left as they were.
+    #[test]
+    fn the_1757_switch_makes_same_choose_and_touches_nothing_else() {
+        let log = std::env::temp_dir().join(format!("nightloom-1757-{}", uuid::Uuid::new_v4()));
+        let ask = log.join("ask");
+        // As the real files are written: pretty, with u64::MAX for an off cap.
+        let same = "{\n  \"per_turn\": 18446744073709551615,\n  \"depth\": 2,\n  \"model\": \"same\",\n  \"off\": {\n    \"per_turn\": true\n  },\n  \"nested\": 2\n}";
+        let files = [
+            ("a", same.to_string()),
+            ("b", same.replace("\"same\"", "\"sonnet\"")),
+            ("c", same.replace("\"same\"", "\"choose\"")),
+            ("d", same.replace("\"same\"", "\"chat\"")),
+            ("e", "{ not json \"model\": \"same\"".to_string()),
+        ];
+        for (chat, text) in &files {
+            std::fs::create_dir_all(ask.join(chat)).unwrap();
+            std::fs::write(ask.join(chat).join(super::LIMITS_FILE), text).unwrap();
+        }
+        std::fs::create_dir_all(ask.join("f")).unwrap();
+        assert_eq!(super::switch_same_to_choose(&log), 1);
+        let read = |c: &str| std::fs::read_to_string(ask.join(c).join(super::LIMITS_FILE)).unwrap();
+        assert_eq!(read("a"), same.replace("\"same\"", "\"choose\""));
+        assert_eq!(
+            super::read_limits(&ask.join("a")).model,
+            super::SubagentModel::Choose
+        );
+        assert_eq!(super::read_limits(&ask.join("a")).depth, 2);
+        for (chat, text) in &files[1..] {
+            assert_eq!(&read(chat), text, "chat {chat} changed");
+        }
+        assert!(!ask.join("f").join(super::LIMITS_FILE).exists());
+        // Run again (it never is — the window's marker — but harmless): nothing.
+        assert_eq!(super::switch_same_to_choose(&log), 0);
+        // A log folder with no `ask` at all.
+        assert_eq!(super::switch_same_to_choose(&log.join("nowhere")), 0);
+        std::fs::remove_dir_all(&log).ok();
+    }
+
     #[test]
     fn the_seventh_spawn_of_a_turn_is_refused_and_a_new_turn_starts_over() {
         let dir = std::env::temp_dir().join(format!("nightloom-spawn-cap-{}", std::process::id()));
@@ -2262,7 +3033,7 @@ mod tests {
             "<nightloom-subagent-brief>x</nightloom-subagent-brief>",
         )
         .unwrap();
-        let call = r#"{"tool_name":"Agent","tool_input":{"prompt":"go"}}"#;
+        let call = r#"{"tool_name":"Agent","tool_input":{"prompt":"Estimated context: 100k\ngo"}}"#;
         for _ in 0..super::SPAWN_CAP {
             assert_eq!(super::decide_with(&dir, call, None).decision(), "allow");
         }
@@ -2271,6 +3042,34 @@ mod tests {
         assert!(r.reason().is_some_and(|s| s.contains("do it yourself")));
         super::reset_spawns(&dir);
         assert_eq!(super::decide_with(&dir, call, None).decision(), "allow");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Item 526: the call a card is waiting on is known as the resume's
+    /// re-run (so its hook skips the blocking `/usage` refresh); any other
+    /// call, torn input, or a directory with no wait is not.
+    #[test]
+    fn the_call_a_card_waits_on_is_the_resumed_one() {
+        let dir = std::env::temp_dir().join(format!("nightloom-526-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let call = |id: &str| format!(r#"{{"tool_name":"AskUserQuestion","tool_use_id":"{id}"}}"#);
+        assert!(!super::is_resumed_call(&dir, &call("t1")), "no wait");
+        let files = super::super::ask::AskDir::new(&dir);
+        files
+            .set_waiting(
+                Some("s-1"),
+                &super::super::ask::DeferredCall {
+                    id: "t1".into(),
+                    name: "AskUserQuestion".into(),
+                    input: serde_json::json!({}),
+                },
+            )
+            .unwrap();
+        assert!(super::is_resumed_call(&dir, &call("t1")));
+        assert!(!super::is_resumed_call(&dir, &call("t2")), "another call");
+        assert!(!super::is_resumed_call(&dir, "{not json"), "torn input");
+        files.clear_waiting();
+        assert!(!super::is_resumed_call(&dir, &call("t1")), "wait over");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2336,7 +3135,7 @@ mod tests {
             "<nightloom-subagent-brief>x</nightloom-subagent-brief>",
         )
         .unwrap();
-        let call = r#"{"tool_name":"Agent","tool_input":{"prompt":"go"}}"#;
+        let call = r#"{"tool_name":"Agent","tool_input":{"prompt":"Estimated context: 100k\ngo"}}"#;
         let gate = std::sync::Arc::new(std::sync::Barrier::new(14));
         let handles: Vec<_> = (0..14)
             .map(|_| {
@@ -2376,7 +3175,7 @@ mod tests {
     /// The parent's `Agent` call as the CLI handed it to the hook on
     /// 2026-09-17 (`152-evidence-2026-09-17/mb-hook.log`), the fields
     /// nothing here reads trimmed.
-    const STDIN: &str = r#"{"session_id":"0ec12560","cwd":"/tmp","hook_event_name":"PreToolUse","tool_name":"Agent","tool_input":{"description":"Check for code word in task","prompt":"Reply with the code word if your task text states one.","subagent_type":"general-purpose","model":"haiku","run_in_background":false},"tool_use_id":"toolu_01Bs4UKADSZoWWJ73dAkY3aG","permission_mode":"default"}"#;
+    const STDIN: &str = r#"{"session_id":"0ec12560","cwd":"/tmp","hook_event_name":"PreToolUse","tool_name":"Agent","tool_input":{"description":"Check for code word in task","prompt":"Estimated context: 20k; user asked for haiku. Reply with the code word if your task text states one.","subagent_type":"general-purpose","model":"haiku","run_in_background":false},"tool_use_id":"toolu_01Bs4UKADSZoWWJ73dAkY3aG","permission_mode":"default"}"#;
 
     fn preamble() -> SystemPrompt {
         let mut p = SystemPrompt::new();
@@ -2481,7 +3280,7 @@ mod tests {
         let prompt = updated["prompt"].as_str().unwrap();
         assert!(prompt.starts_with(BRIEF_OPEN), "{prompt}");
         assert!(
-            prompt.ends_with("\n\nReply with the code word if your task text states one."),
+            prompt.ends_with("\n\nEstimated context: 20k; user asked for haiku. Reply with the code word if your task text states one."),
             "{prompt}"
         );
         // The rest of the input rides along untouched.
@@ -2490,13 +3289,13 @@ mod tests {
         assert_eq!(updated["run_in_background"], false);
         // A second pass over the briefed task adds nothing.
         let again = STDIN.replace(
-            r#""prompt":"Reply with the code word if your task text states one.""#,
+            r#""prompt":"Estimated context: 20k; user asked for haiku. Reply with the code word if your task text states one.""#,
             &format!(r#""prompt":{}"#, Value::String(prompt.to_string())),
         );
         assert_eq!(decide(&dir, &again), HookReply::pass());
         // Torn input and a call with no string prompt: no opinion.
         assert_eq!(decide(&dir, "{not json"), HookReply::pass());
-        let no_prompt = STDIN.replace(r#""prompt":"Reply"#, r#""task":"Reply"#);
+        let no_prompt = STDIN.replace(r#""prompt":"Estimated"#, r#""task":"Estimated"#);
         assert_eq!(decide(&dir, &no_prompt), HookReply::pass());
         // The documented reply shape, key for key.
         let json = serde_json::to_string(&reply).unwrap();
@@ -2600,7 +3399,7 @@ mod tests {
             args.lines().collect::<Vec<_>>(),
             [
                 "-p",
-                "Reply with the code word if your task text states one.",
+                "Estimated context: 20k; user asked for haiku. Reply with the code word if your task text states one.",
                 "--resume",
                 "sess-1",
                 "--fork-session",
@@ -2938,9 +3737,18 @@ mod tests {
             super::call_verdict(&b, reading(90, 2), None, true, false),
             Hold
         );
+        // (Since item 538 a subagent past the line is not refused at once:
+        // its next calls run with the wrap-up beside them, then are refused.)
         assert!(matches!(
             super::call_verdict(&b, reading(90, 2), None, true, true),
-            Deny(_)
+            Wrapping(_)
+        ));
+        let mut used = b.clone();
+        used.wrap_calls
+            .insert(String::new(), super::super::budget::WRAP_CALLS);
+        assert!(matches!(
+            super::call_verdict(&used, reading(90, 2), None, true, true),
+            Deny(r) if r.contains("90%")
         ));
         // Under the line nothing changes: no hold, no override needed.
         assert_eq!(
@@ -2959,9 +3767,15 @@ mod tests {
                 "{v:?}"
             );
         }
-        // … a subagent's call is told to stop …
+        // … a subagent's call is told to wrap up, and runs (item 538; it was
+        // refused, which lost what it had not written down) — its first
+        // WRAP_CALLS calls, then refused as before …
         assert!(matches!(
             super::call_verdict(&b, reading(90, 2), Some(&wrap), true, true),
+            Wrapping(r) if r.contains("wrapping up") && r.contains("Wrap up")
+        ));
+        assert!(matches!(
+            super::call_verdict(&used, reading(90, 2), Some(&wrap), true, true),
             Deny(r) if r.contains("wrapping up")
         ));
         // … and once carried, the chat's calls go on past the line to write it.
@@ -3204,8 +4018,9 @@ mod tests {
 
     /// *Wrap up* (backlog 192) on a held call: the call is refused with his
     /// instruction, the model's next calls run (past the line) so it can
-    /// write the hand-off, a spawn is refused, a subagent is told to stop;
-    /// from the meter with nothing held, the next call carries it.
+    /// write the hand-off, a spawn is refused, a subagent is told to wrap
+    /// up and then stopped (538); from the meter with nothing held, the
+    /// next call carries it.
     #[test]
     fn wrap_up_is_carried_once_then_the_hand_off_may_be_written() {
         let dir = limits_dir("wrap");
@@ -3235,7 +4050,21 @@ mod tests {
         assert!(b.wrap_at_ms.is_some() && b.pending_since_ms.is_none() && b.holds.is_empty());
         assert_eq!(go(write, now + 2).decision(), "pass");
         assert_eq!(go(CALL, now + 3).decision(), "deny");
-        assert_eq!(go(sub, now + 4).decision(), "deny");
+        // A subagent (item 538): its next calls run with the wrap-up beside
+        // them so it can save its work — it was refused at once — and past
+        // WRAP_CALLS of them it is refused as before.
+        for n in 0..super::super::budget::WRAP_CALLS {
+            let r = go(sub, now + 4);
+            assert_ne!(r.decision(), "deny", "call {n}");
+            assert!(
+                r.additional_context()
+                    .is_some_and(|c| c.contains("Swaraag pressed Wrap up")),
+                "{r:?}"
+            );
+        }
+        let r = go(sub, now + 4);
+        assert_eq!(r.decision(), "deny");
+        assert!(r.reason().is_some_and(|c| c.contains("wrapping up")));
         // The next message: the wrap named the last one; nothing carries.
         std::thread::sleep(std::time::Duration::from_millis(2));
         super::begin_turn(&dir, &l, super::TurnPhase::Turn);
@@ -3355,7 +4184,7 @@ mod tests {
         .unwrap();
         let r = super::decide_with(
             &dir,
-            r#"{"tool_name":"Agent","tool_input":{"prompt":"go","model":"opus"}}"#,
+            r#"{"tool_name":"Agent","tool_input":{"prompt":"Estimated context: 100k\ngo","model":"opus"}}"#,
             None,
         );
         assert_eq!(r.decision(), "allow");
@@ -3369,7 +4198,7 @@ mod tests {
         // With the brief already on the prompt, the model alone changes the input.
         let r = super::decide_with(
             &dir,
-            r#"{"tool_name":"Agent","tool_input":{"prompt":"<nightloom-subagent-brief>x</nightloom-subagent-brief>\n\ngo"}}"#,
+            r#"{"tool_name":"Agent","tool_input":{"prompt":"<nightloom-subagent-brief>x</nightloom-subagent-brief>\n\nEstimated context: 100k\ngo"}}"#,
             None,
         );
         assert_eq!(r.decision(), "allow");
@@ -3429,7 +4258,7 @@ mod tests {
         };
         super::write_limits(&dir, &same).unwrap();
         super::write_chat_model(&dir, Some("claude-opus-5-5"));
-        let call = r#"{"tool_name":"Agent","tool_input":{"prompt":"<nightloom-subagent-brief>x</nightloom-subagent-brief>\n\ngo","model":"sonnet"}}"#;
+        let call = r#"{"tool_name":"Agent","tool_input":{"prompt":"<nightloom-subagent-brief>x</nightloom-subagent-brief>\n\nEstimated context: 100k\ngo","model":"sonnet"}}"#;
         let r = super::decide_with(&dir, call, None);
         assert_eq!(r.decision(), "allow");
         let out = r
@@ -3462,7 +4291,8 @@ mod tests {
         .unwrap();
         dir
     }
-    const CALL: &str = r#"{"tool_name":"Agent","tool_input":{"prompt":"go"}}"#;
+    const CALL: &str =
+        r#"{"tool_name":"Agent","tool_input":{"prompt":"Estimated context: 100k\ngo"}}"#;
 
     #[test]
     fn limits_round_trip_and_a_partial_file_keeps_the_defaults() {
@@ -3895,6 +4725,17 @@ mod tests {
             lines[3],
             "- a3: context <1k · last ran 30 min ago · 5 min cache, cold"
         );
+        // Item 693: beside a message or a wake only while one could be
+        // continued — a1 is warm and under 300k (a2 is past retirement).
+        assert!(agents[1].continuable(base_ms) && !agents[0].continuable(base_ms));
+        assert_eq!(
+            super::continuable_agents_lines(&main, base_ms).as_deref(),
+            Some(text.as_str())
+        );
+        assert_eq!(
+            super::continuable_agents_lines(&main, base_ms + 2 * 3_600_000),
+            None
+        );
         // The asker is not its own peer; none at all says nothing.
         assert!(
             super::earlier_agents(&main, Some("a2"))
@@ -4013,6 +4854,80 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Nightshift 561: a user message brings its own usage line before the
+    /// model answers (the `UserPromptSubmit` hook's `additionalContext`), and
+    /// that showing is the message's first, so its first tool call does not
+    /// repeat it; a band crossed later still shows. The next message's line
+    /// carries the new figure, not the old one.
+    #[test]
+    fn a_new_message_brings_a_fresh_usage_line_before_any_tool_call() {
+        let dir = limits_dir("usage-prompt");
+        let now = chrono::Utc::now().timestamp_millis();
+        let l = super::SubagentLimits::default();
+        super::write_limits(&dir, &l).unwrap();
+        super::write_usage(&dir, 40, Some(now / 1000 + 3600), now);
+        super::begin_turn(&dir, &l, super::TurnPhase::Turn);
+        let t = dir.join("sess.jsonl");
+        std::fs::write(
+            &t,
+            serde_json::json!({"type":"assistant","message":{"usage":{
+                "input_tokens":5,"cache_read_input_tokens":90_000,"cache_creation_input_tokens":5_000}}})
+            .to_string(),
+        )
+        .unwrap();
+        let prompt = serde_json::json!({"session_id":"s1","hook_event_name":"UserPromptSubmit",
+            "prompt":"how is the window?","transcript_path": t})
+        .to_string();
+        let r = super::decide_with_week(&dir, &prompt, reading(42, now + 1), Some(74));
+        assert_eq!(
+            r.additional_context(),
+            Some(
+                "Usage: this message 2% of its 35% budget · 5-hour 42% (stop line 85%) · week 74% · context 95k"
+            )
+        );
+        let wire = serde_json::to_value(&r).unwrap();
+        assert_eq!(
+            wire["hookSpecificOutput"]["hookEventName"],
+            "UserPromptSubmit"
+        );
+        assert!(
+            wire["hookSpecificOutput"]
+                .get("permissionDecision")
+                .is_none(),
+            "{wire}"
+        );
+        let b = super::read_turn_budget(&dir).unwrap();
+        assert_eq!(b.calls, 0, "a message is not a call");
+        assert_eq!(b.usage_shown.get("s1"), Some(&0));
+        // The message's first tool call, same band: no repeat.
+        let read = serde_json::json!({"session_id":"s1","hook_event_name":"PreToolUse",
+            "tool_name":"Read","tool_input":{"file_path":"/x"},"transcript_path": t})
+        .to_string();
+        let r = super::decide_with_week(&dir, &read, reading(43, now + 2), Some(74));
+        assert_eq!(r.decision(), "pass");
+        assert_eq!(r.additional_context(), None);
+        // A band crossed: the line again, on the call.
+        let r = super::decide_with_week(&dir, &read, reading(47, now + 3), Some(74));
+        assert!(
+            r.additional_context()
+                .is_some_and(|c| c.starts_with("Usage: this message 7%")),
+            "{:?}",
+            r.additional_context()
+        );
+        // The next message, hours on: its own figure before any call.
+        super::write_usage(&dir, 78, Some(now / 1000 + 3600), now + 4);
+        super::begin_turn(&dir, &l, super::TurnPhase::Turn);
+        let r = super::decide_with_week(&dir, &prompt, reading(78, now + 5), Some(74));
+        let c = r.additional_context().unwrap_or_default();
+        assert!(
+            c.starts_with("Usage: this message 0% of its 35% budget · 5-hour 78%"),
+            "{c}"
+        );
+        let r = super::decide_with_week(&dir, &read, reading(78, now + 6), Some(74));
+        assert_eq!(r.additional_context(), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Backlog 295: a note he queued for a running subagent rides that
     /// subagent's next allowed call as `additionalContext`, once; the
     /// parent's call does not take it, a refused call leaves it, and a
@@ -4070,5 +4985,304 @@ mod tests {
                 .contains("skip e2e")
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- 553 + 540: a helper's size and model ----
+
+    fn sized_dir(tag: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("nightloom-553-{tag}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn agent_call(input: serde_json::Value) -> String {
+        serde_json::json!({"tool_name": "Agent", "tool_input": input}).to_string()
+    }
+
+    /// The figures a launch can state its size in: the top of a range, a
+    /// thousands-separated count, millions; a line that names no estimate,
+    /// or figures too small to be token counts, is no estimate.
+    #[test]
+    fn a_stated_estimate_reads_the_top_of_its_line() {
+        use serde_json::json;
+        let est = |p: &str| super::stated_estimate(&json!({"prompt": p}));
+        assert_eq!(est("Estimated context: ~150k\nGo."), Some(150_000));
+        assert_eq!(est("go\nestimate 120–180k tokens"), Some(180_000));
+        assert_eq!(est("Estimated at 500k to 700k tokens"), Some(700_000));
+        assert_eq!(est("estimated 500,000 to 700,000 tokens"), Some(700_000));
+        assert_eq!(est("Estimate: 1.2M"), Some(1_200_000));
+        assert_eq!(est("Estimated context: 90 thousand"), Some(90_000));
+        assert_eq!(
+            est("Read 300k of logs, then report."),
+            None,
+            "no estimate named"
+        );
+        assert_eq!(
+            est("Estimate the 3 options in step 2"),
+            None,
+            "no token figure"
+        );
+        // The description counts too, and Nightloom's own brief never does.
+        assert_eq!(
+            super::stated_estimate(
+                &json!({"description": "Survey (estimate 80k)", "prompt": "go"})
+            ),
+            Some(80_000)
+        );
+        assert_eq!(
+            super::stated_estimate(&json!({
+                "prompt": "<nightloom-subagent-brief>Estimated context: 999k</nightloom-subagent-brief>\n\ngo"
+            })),
+            None
+        );
+    }
+
+    /// 553's definition of done, scripted: a helper estimated at 600k is
+    /// refused with an instruction to split it; the same work split into
+    /// pieces of ~150k launches; a launch with no estimate is refused and
+    /// told the line's form; a subagent's own launch, whose brief does not
+    /// carry the rule, is refused only past the mark.
+    #[test]
+    fn a_launch_past_the_split_mark_or_unsized_is_refused_and_told_to_split() {
+        use serde_json::json;
+        let dir = sized_dir("split");
+        let big = agent_call(json!({
+            "description": "School-year opportunities",
+            "prompt": "Estimated context: 500k to 600k tokens.\nSurvey everything."
+        }));
+        let r = super::decide_with(&dir, &big, None);
+        assert_eq!(r.decision(), "deny");
+        let why = r.reason().unwrap();
+        assert!(
+            why.contains("~600k") && why.contains("Split the task"),
+            "{why}"
+        );
+        assert!(why.contains("250k"), "{why}");
+        // Nothing was counted for the refused launch.
+        assert!(!dir.join(super::SPAWNS_FILE).exists());
+        for part in [
+            "clubs",
+            "campus jobs",
+            "fellowships",
+            "research assistant posts",
+        ] {
+            let piece = agent_call(json!({
+                "description": part,
+                "prompt": format!("Estimated context: ~150k\nSurvey {part}.")
+            }));
+            assert_eq!(
+                super::decide_with(&dir, &piece, None).decision(),
+                "allow",
+                "{part}"
+            );
+        }
+        let bare = agent_call(json!({"prompt": "Survey everything."}));
+        let r = super::decide_with(&dir, &bare, None);
+        assert_eq!(r.decision(), "deny");
+        assert!(
+            r.reason().unwrap().contains("Estimated context:"),
+            "{:?}",
+            r.reason()
+        );
+        // A subagent's own launch: unsized goes; past the mark does not.
+        let nested = |p: &str| {
+            json!({"tool_name": "Agent", "tool_input": {"prompt": p, "model": "opus"},
+                   "agent_id": "a1", "tool_use_id": "t1"})
+            .to_string()
+        };
+        assert_ne!(
+            super::decide_with(&dir, &nested("go"), None).decision(),
+            "deny"
+        );
+        assert_eq!(
+            super::decide_with(&dir, &nested("Estimated context: 400k\ngo"), None).decision(),
+            "deny"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 540 under Choose: no model named runs on opus; opus is left; fable
+    /// without a "Why Fable:" line is refused and with one is left; sonnet
+    /// is raised to opus with a note unless the user asked for it; a fork
+    /// keeps the chat's model. `Same` still pins the chat's.
+    #[test]
+    fn choose_makes_opus_the_floor_and_asks_fable_for_a_reason() {
+        use super::SpawnModel::*;
+        use serde_json::json;
+        let pick = |v: serde_json::Value| super::choose_model(&v);
+        assert_eq!(pick(json!({"prompt": "go"})), Ok((Set("opus"), None)));
+        assert_eq!(
+            pick(json!({"prompt": "go", "model": "opus"})),
+            Ok((Leave, None))
+        );
+        let refused = pick(json!({"prompt": "go", "model": "fable"})).unwrap_err();
+        assert!(refused.contains("Why Fable:"), "{refused}");
+        assert!(
+            pick(json!({"prompt": "Why Fable:", "model": "fable"})).is_err(),
+            "an empty reason"
+        );
+        assert_eq!(
+            pick(json!({"prompt": "Why Fable: a twelve-file systems build\ngo", "model": "fable"})),
+            Ok((Leave, None))
+        );
+        let (m, note) = pick(json!({"prompt": "go", "model": "sonnet"})).unwrap();
+        assert_eq!(m, Set("opus"));
+        assert!(note.unwrap().contains("unless the user asked"));
+        assert_eq!(
+            pick(json!({"prompt": "User asked for haiku\ngo", "model": "haiku"})),
+            Ok((Leave, None))
+        );
+        assert_eq!(
+            pick(json!({"prompt": "go", "subagent_type": "fork"})),
+            Ok((Leave, None))
+        );
+
+        // Through the hook: the rewrite and the refusal.
+        let dir = sized_dir("model");
+        let r = super::decide_with(
+            &dir,
+            &agent_call(json!({"prompt": "Estimated context: 100k\ngo"})),
+            None,
+        );
+        assert_eq!(r.decision(), "allow");
+        assert_eq!(r.updated_input().unwrap()["model"], "opus");
+        let r = super::decide_with(
+            &dir,
+            &agent_call(json!({"prompt": "Estimated context: 100k\ngo", "model": "fable"})),
+            None,
+        );
+        assert_eq!(r.decision(), "deny");
+        // The refused Fable launch took no count: only the first one did.
+        let spawns = std::fs::read_to_string(dir.join(super::SPAWNS_FILE)).unwrap_or_default();
+        assert_eq!(spawns.trim(), "1");
+        // Same pins the chat's model whatever was asked, as before.
+        let limits = super::SubagentLimits {
+            model: super::SubagentModel::Same,
+            ..Default::default()
+        };
+        super::write_limits(&dir, &limits).unwrap();
+        std::fs::write(dir.join(super::CHAT_MODEL_FILE), "claude-fable-5-2").unwrap();
+        let r = super::decide_with(
+            &dir,
+            &agent_call(json!({"prompt": "Estimated context: 100k\ngo", "model": "opus"})),
+            None,
+        );
+        assert_eq!(r.decision(), "allow");
+        assert_eq!(r.updated_input().unwrap()["model"], "fable");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 553: a process sees its own context each 50k band, and a helper past
+    /// 250k on every call; the main thread is not told to wrap up.
+    #[test]
+    fn a_helper_sees_its_context_grow_and_is_told_to_wrap_past_the_mark() {
+        use super::context_due as due;
+        assert_eq!(due(None, None, true), None);
+        assert_eq!(
+            due(None, Some(30_000), true),
+            None,
+            "band 0, first shown by usage_due"
+        );
+        assert_eq!(due(None, Some(60_000), true), Some(1));
+        assert_eq!(due(Some(1), Some(90_000), true), None);
+        assert_eq!(due(Some(1), Some(110_000), true), Some(2));
+        assert_eq!(
+            due(Some(5), Some(260_000), true),
+            Some(5),
+            "every call past 250k"
+        );
+        assert_eq!(
+            due(Some(5), Some(260_000), false),
+            None,
+            "the main thread: bands only"
+        );
+        assert!(super::context_wrap_note(260_000).contains("finish the step"));
+        assert!(super::context_wrap_note(320_000).contains("retire mark"));
+        assert!(super::retired_recipient_note("a1", 340_000).contains("fresh helper"));
+    }
+
+    /// 553 through the hook: a helper's transcript at 270k gets the usage
+    /// line with its context and the wrap-up note on an ordinary call; a
+    /// SendMessage to a helper past 300k carries the retirement note.
+    #[test]
+    fn the_hook_shows_a_helper_its_context_and_flags_a_retired_recipient() {
+        use serde_json::json;
+        let dir = sized_dir("ctx");
+        let t = dir.join("session.jsonl");
+        std::fs::write(&t, "").unwrap();
+        let subs = dir.join("session").join("subagents");
+        std::fs::create_dir_all(&subs).unwrap();
+        let usage = |n: u64| {
+            json!({"type": "assistant", "message": {"usage": {"input_tokens": 1,
+                "cache_read_input_tokens": n - 1, "cache_creation_input_tokens": 0}}})
+            .to_string()
+        };
+        std::fs::write(subs.join("agent-a1.jsonl"), usage(270_000)).unwrap();
+        std::fs::write(subs.join("agent-a2.jsonl"), usage(340_000)).unwrap();
+        // A turn's ledger, so the line has somewhere to be judged.
+        super::write_turn_budget(
+            &dir,
+            &super::TurnBudget {
+                started_at_ms: 1,
+                ..Default::default()
+            },
+        );
+        let call = |tool: &str, input: serde_json::Value, agent: Option<&str>| {
+            let mut v = json!({"tool_name": tool, "tool_input": input,
+                "transcript_path": t.to_string_lossy(), "tool_use_id": "t1", "session_id": "s"});
+            if let Some(a) = agent {
+                v["agent_id"] = json!(a);
+            }
+            v.to_string()
+        };
+        let read = call("Read", json!({"file_path": "/x"}), Some("a1"));
+        for _ in 0..2 {
+            let r = super::decide_with(&dir, &read, None);
+            let ctx = r.additional_context().unwrap_or_default().to_string();
+            assert!(
+                ctx.contains("context 270k") && ctx.contains("finish the step"),
+                "{ctx}"
+            );
+        }
+        let send = call(
+            "SendMessage",
+            json!({"to": "a2", "message": "one more"}),
+            None,
+        );
+        let ctx = super::decide_with(&dir, &send, None)
+            .additional_context()
+            .unwrap_or_default()
+            .to_string();
+        assert!(ctx.contains("a2 is past retirement (340k"), "{ctx}");
+        let send = call(
+            "SendMessage",
+            json!({"to": "a1", "message": "one more"}),
+            None,
+        );
+        let ctx = super::decide_with(&dir, &send, None)
+            .additional_context()
+            .unwrap_or_default()
+            .to_string();
+        assert!(!ctx.contains("past retirement"), "{ctx}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reset_words_reads_12_hour_am_pm_item_611() {
+        use chrono::TimeZone;
+        for (h, m, want) in [
+            (0, 5, "at 12:05 AM"),
+            (5, 10, "at 5:10 AM"),
+            (12, 0, "at 12:00 PM"),
+            (23, 30, "at 11:30 PM"),
+        ] {
+            let t = chrono::Local
+                .with_ymd_and_hms(2026, 11, 11, h, m, 0)
+                .single()
+                .expect("a local time");
+            assert_eq!(reset_words(Some(t.timestamp())), want);
+        }
+        assert_eq!(reset_words(None), "when the window resets");
     }
 }

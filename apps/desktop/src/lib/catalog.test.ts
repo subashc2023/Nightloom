@@ -356,7 +356,8 @@ describe("modelChipLabel (backlog 204)", () => {
     expect(chip("haiku", "claude-haiku-4-5-20251001")).toBe("haiku");
     expect(chip(" haiku ", "haiku")).toBe("haiku");
     expect(chip("", "claude-sonnet-5-20260801")).toBe("default");
-    expect(chip("claude-opus-5-5", "claude-opus-5-5")).toBe("claude-opus-5-5");
+    // ~~toBe("claude-opus-5-5")~~ — item 518: a full id by its model.
+    expect(chip("claude-opus-5-5", "claude-opus-5-5")).toBe("Opus 5.5");
   });
 
   it("names the connection's model on the provider engine, else the draft's", () => {

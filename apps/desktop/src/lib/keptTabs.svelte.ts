@@ -39,7 +39,10 @@ export function isKeptKind(c: TabContent): boolean {
     c.kind === "note" ||
     c.kind === "file" ||
     c.kind === "thread" ||
-    c.kind === "subagent"
+    c.kind === "subagent" ||
+    // Claude's browser (item 508): kept so its address draft, picture and
+    // notice survive a switch away; hidden, it stops watching.
+    c.kind === "browser"
   );
 }
 
@@ -103,12 +106,6 @@ export function keptIn(pane: Pane, active: Tab): Tab[] {
   );
   kept.set(pane.id, next);
   return next.map((e) => byId.get(e.id)!);
-}
-
-/** For the suite. */
-export function resetKept(): void {
-  kept.clear();
-  clock = 0;
 }
 
 /**

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hudIn, hudOut } from "./hudMenu";
   /**
    * The note's toolbar (item 498, his reference shot): text style, code,
    * table, image, checklist, Insert +, and at the end the Markdown switch.
@@ -149,7 +150,25 @@
     onmousedown={hold}
     onclick={() => toggleMenu("style")}
     onkeydown={(e) => openKeys(e, "style")}
-    {disabled}><Icon name="textstyle" size={16} /><span class="chev"><Icon name="chev" size={11} /></span></button
+    {disabled}><span class="ico"><Icon name="textstyle" size={16} /></span><span class="lbl">Style</span><span class="chev"><Icon name="chev" size={11} /></span></button
+  >
+  <!-- Item 565: Bold and Italic on the bar under Filament IV (f4-notes.png);
+       Classic reaches them in the Style menu, as before. -->
+  <button
+    class="tb fiv b"
+    aria-label="Bold"
+    use:tip={{ text: "Bold", keys: "⌘B" }}
+    onmousedown={hold}
+    onclick={() => run(toggleInline("bold"))}
+    {disabled}>B</button
+  >
+  <button
+    class="tb fiv i"
+    aria-label="Italic"
+    use:tip={{ text: "Italic", keys: "⌘I" }}
+    onmousedown={hold}
+    onclick={() => run(toggleInline("italic"))}
+    {disabled}>I</button
   >
   <button
     class="tb"
@@ -166,7 +185,7 @@
     use:tip={"Insert a table (3 columns, a header and two rows)"}
     onmousedown={hold}
     onclick={() => run(insertTable)}
-    {disabled}><Icon name="table" size={16} /></button
+    {disabled}><span class="ico"><Icon name="table" size={16} /></span><span class="lbl">Table</span></button
   >
   <button
     class="tb"
@@ -174,7 +193,7 @@
     use:tip={canImage ? "Insert an image: it is copied into attachments/ beside the note" : imageWhy}
     onmousedown={hold}
     onclick={choose}
-    disabled={disabled || !canImage}><Icon name="image" size={16} /></button
+    disabled={disabled || !canImage}><span class="ico"><Icon name="image" size={16} /></span><span class="lbl">Image</span></button
   >
   <button
     class="tb"
@@ -182,7 +201,7 @@
     use:tip={"Checklist: the selected lines become to-do items (again to undo them)"}
     onmousedown={hold}
     onclick={() => run(toggleChecklist)}
-    {disabled}><Icon name="checklist" size={16} /></button
+    {disabled}><span class="ico"><Icon name="checklist" size={16} /></span><span class="lbl">Checklist</span></button
   >
   <span class="vr"></span>
   <button
@@ -196,7 +215,7 @@
     onmousedown={hold}
     onclick={() => toggleMenu("insert")}
     onkeydown={(e) => openKeys(e, "insert")}
-    {disabled}><Icon name="plus" size={16} /><span class="chev"><Icon name="chev" size={11} /></span></button
+    {disabled}><span class="ico"><Icon name="plus" size={16} /></span><span class="lbl">Insert</span><span class="chev"><Icon name="chev" size={11} /></span></button
   >
   <span class="spacer"></span>
   <button
@@ -208,21 +227,24 @@
       : "Markdown: show and edit the note's raw Markdown, every mark visible"}
     onmousedown={hold}
     onclick={flip}
-    {disabled}><Icon name="markdown" size={15} /><span class="md-label">Markdown</span></button
+    {disabled}><span class="ico"><Icon name="markdown" size={15} /></span><i class="fiv sw" aria-hidden="true"></i><span class="md-label">Markdown</span></button
   >
   <input bind:this={picker} class="picker" type="file" accept="image/*" hidden onchange={onpick} />
 </div>
 
 {#if menu}
   <div
-    class="tb-menu"
+    class="tb-menu hud-m"
     role="menu"
+    in:hudIn|global
+    out:hudOut|global
     tabindex="-1"
     aria-label={menu === "style" ? "Text style" : "Insert"}
     bind:this={menuEl}
     use:floatMenu={{ anchor: menu === "style" ? styleBtn : insertBtn, align: "left" }}
     onkeydown={menuKeys}
   >
+    <p class="fiv cap" aria-hidden="true">{menu === "style" ? "Text style" : "Insert"}</p>
     {#if menu === "style"}
       {#each STYLES as s (s.style)}
         <button
@@ -412,5 +434,174 @@
     height: 1px;
     background: var(--line);
     margin: 4px 2px;
+  }
+
+  /* ---- Filament IV (item 565, stage 8; f4-notes.png, f4-notesmenus.png) ----
+     Words on the buttons, each a control in the shared grammar (fill, edge,
+     28px); Bold and Italic on the bar; the Markdown switch drawn as a
+     switch; the menus with a ruled capital title. The added words, B and
+     I, the switch and the title are hidden by the base rule, so Classic
+     looks as it did; the rest is behind the layout gate. */
+  .lbl,
+  .fiv {
+    display: none;
+  }
+  .ico {
+    display: inline-flex;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .lbl {
+    display: inline;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .fiv {
+    display: inline-flex;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .fiv.cap {
+    display: flex;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .toolbar {
+    gap: 6px;
+    padding: 0.5rem clamp(1.2rem, 4.5cqi, 2.6rem) 0.55rem;
+    background: var(--paper);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tb {
+    min-height: 28px;
+    padding: 3px 10px;
+    gap: 6px;
+    border: 1px solid var(--line2);
+    border-radius: var(--r1);
+    background: var(--well);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    color: var(--ink);
+    font-size: 12.5px;
+    font-weight: 500;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tb:hover:not(:disabled),
+  :global(:where(:root:not([data-layout="classic"]))) .tb.on {
+    background: var(--well2);
+    border-color: var(--dim);
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tb:has(.lbl) .ico {
+    display: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tb.b {
+    font-weight: 700;
+    min-width: 30px;
+    justify-content: center;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tb.i {
+    font-style: italic;
+    font-family: var(--serif, Georgia, serif);
+    min-width: 30px;
+    justify-content: center;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .vr {
+    height: 20px;
+    margin: 0 4px;
+    background: var(--line2);
+  }
+  /* Markdown: a switch, not a button (off: the knob left, grey). */
+  :global(:where(:root:not([data-layout="classic"]))) .tb.md {
+    border-radius: 999px;
+    padding: 3px 12px 3px 6px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tb.md .ico {
+    display: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .sw {
+    position: relative;
+    width: 26px;
+    height: 15px;
+    border-radius: 999px;
+    background: var(--paper);
+    border: 1px solid var(--line2);
+    flex: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .sw::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--dim);
+    transition: transform 120ms;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tb.md.on .sw {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tb.md.on .sw::after {
+    transform: translateX(11px);
+    background: var(--accent);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    :global(:where(:root:not([data-layout="classic"]))) .sw::after {
+      transition: none;
+    }
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tb-menu {
+    min-width: 15rem;
+    padding: 5px;
+    background: var(--raised);
+    border-radius: var(--r2);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    :global(:where(:root:not([data-layout="classic"]))) .tb-menu {
+      animation: tb-in 90ms ease-out;
+    }
+  }
+  @keyframes tb-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tb-menu .cap {
+    align-items: center;
+    gap: 8px;
+    margin: 6px 10px 6px;
+    font: 500 10px var(--mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tb-menu .cap::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tb-menu .it {
+    min-height: 30px;
+    border-radius: var(--r1);
+    color: var(--ink);
+    font-size: 13px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tb-menu .it:hover,
+  :global(:where(:root:not([data-layout="classic"]))) .tb-menu .it:focus-visible {
+    background: var(--well);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tb-menu .s-h1 {
+    font-size: 1.05rem;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tb-menu .s-h2 {
+    font-size: 0.95rem;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tb-menu .s-h3 {
+    font-size: 0.86rem;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tb-menu .sep {
+    background: var(--line2);
+  }
+  @container toolbar (max-width: 620px) {
+    :global(:where(:root:not([data-layout="classic"]))) .tb:has(.lbl) .ico {
+      display: inline-flex;
+    }
+    :global(:where(:root:not([data-layout="classic"]))) .tb .lbl {
+      display: none;
+    }
   }
 </style>

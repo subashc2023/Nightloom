@@ -16,8 +16,8 @@
  * Off (the default), the composer is the textarea it always was; this file
  * is not loaded into the box at all.
  */
-import { EditorSelection, EditorState, Prec, StateEffect, StateField, type Extension, type Range } from "@codemirror/state";
-import { Decoration, EditorView, WidgetType, drawSelection, keymap, type DecorationSet } from "@codemirror/view";
+import { EditorSelection, EditorState, Facet, Prec, StateEffect, StateField, type Extension, type Range } from "@codemirror/state";
+import { Decoration, EditorView, RectangleMarker, WidgetType, drawSelection, keymap, layer, type DecorationSet } from "@codemirror/view";
 import { LanguageSupport, ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import { markdownLanguage } from "@codemirror/lang-markdown";
 import { history, historyKeymap, insertNewline, isolateHistory, standardKeymap } from "@codemirror/commands";
@@ -26,6 +26,18 @@ import { LANGUAGES, segments } from "./codeHighlight";
 import { findMath, type MathSpan } from "./math";
 import { renderMathHtml, renderReply } from "./markdown";
 import { quoteLine, quoteNeedsRender, quoteRuns } from "./replyQuote.svelte";
+import { crossesLine } from "./emphasisLines";
+import { GridBackWidget, TableGridWidget, showGridSource, sourceShown, tableBlocks, tableGridSupport, tablePicked } from "./tableGrid";
+
+/**
+ * What the box draws (item 689): "all" with the Format switch on; "plain"
+ * for the plain box while it holds a table — the grid, and quote lines and
+ * code blocks as the plain box's layer (`BoxLayer.svelte`) draws them, the
+ * text round them left plain.
+ */
+export type BoxDrawing = "all" | "plain";
+export const boxDrawing = Facet.define<BoxDrawing, BoxDrawing>({ combine: (v) => v[v.length - 1] ?? "all" });
+const PLAIN_KINDS = new Set<LiveKind>(["table", "quote", "quote-render", "codeblock"]);
 
 /** Node types whose content is code: nothing inside is math or emphasis. */
 const CODE_NODES = new Set(["InlineCode", "FencedCode", "CodeBlock", "HTMLBlock", "CommentBlock"]);
@@ -111,7 +123,7 @@ export function composerMathOk(text: string, m: MathSpan): boolean {
 }
 
 /** What a stretch of the box is drawn as — the testable shape of the decorations. */
-export type LiveKind = "math" | "math-block" | "heading" | "strong" | "em" | "strike" | "code" | "codeblock" | "quote" | "quote-render";
+export type LiveKind = "math" | "math-block" | "heading" | "strong" | "em" | "strike" | "code" | "codeblock" | "quote" | "quote-render" | "table";
 export interface LiveSpan {
   kind: LiveKind;
   from: number;
@@ -179,6 +191,12 @@ export function liveSpans(state: EditorState): LiveSpan[] {
   });
   const inCode = (from: number, to: number) => code.some(([a, b]) => from < b && to > a);
 
+  // Item 689: a table is a grid unless he asked for its source; nothing
+  // inside a grid is drawn on its own.
+  const tables = tableBlocks(state).map((t) => ({ ...t, open: sourceShown(state, t.from) }));
+  const inGrid = (from: number, to: number) => tables.some((t) => !t.open && from < t.to && to > t.from);
+  for (const t of tables) out.push({ kind: "table", from: t.from, to: t.to, open: t.open });
+
   // Item 470 follow-up (2026-11-02): a quote with maths or Markdown is drawn
   // whole, typeset, as the plain box's layer draws it (`BoxLayer.svelte`),
   // and shows its source — every line with its bar — while the caret is on
@@ -237,6 +255,8 @@ export function liveSpans(state: EditorState): LiveSpan[] {
           if (inMath(from, to)) return false;
           if (name !== "Strikethrough" && intrawordStar(text, from, to)) return;
           if (strayMark(node.node, text)) return;
+          // Item 670: a run never crosses a line break (`emphasisLines.ts`).
+          if (crossesLine(text, from, to)) return;
           const kind = name === "Emphasis" ? "em" : name === "StrongEmphasis" ? "strong" : "strike";
           out.push({ kind, from, to, open: touches(state, from, to) });
           return;
@@ -263,7 +283,7 @@ export function liveSpans(state: EditorState): LiveSpan[] {
     }
   }
 
-  return out.sort((a, b) => a.from - b.from || a.to - b.to);
+  return out.filter((s) => s.kind === "table" || !inGrid(s.from, s.to)).sort((a, b) => a.from - b.from || a.to - b.to);
 }
 
 /**
@@ -418,8 +438,19 @@ export function composerDecorations(state: EditorState): DecorationSet {
     return found;
   };
 
+  const plain = state.facet(boxDrawing) === "plain";
   for (const s of liveSpans(state)) {
+    if (plain && !PLAIN_KINDS.has(s.kind)) continue;
     switch (s.kind) {
+      case "table": {
+        if (s.open) {
+          out.push(Decoration.widget({ widget: new GridBackWidget(s.from), side: 1 }).range(doc.lineAt(s.from).to));
+          break;
+        }
+        const widget = new TableGridWidget(doc.sliceString(s.from, s.to), tablePicked(state, s));
+        out.push(Decoration.replace({ widget, block: true }).range(s.from, s.to));
+        break;
+      }
       case "math": {
         if (s.open) {
           out.push(source.range(s.from, s.to));
@@ -525,11 +556,42 @@ export function composerDecorations(state: EditorState): DecorationSet {
 const livePreview = StateField.define<DecorationSet>({
   create: (state) => composerDecorations(state),
   update(value, tr) {
-    const refocus = tr.effects.some((e) => e.is(setFocused));
-    return tr.docChanged || tr.selection || refocus ? composerDecorations(tr.state) : value;
+    const refocus = tr.effects.some((e) => e.is(setFocused) || e.is(showGridSource));
+    return tr.docChanged || tr.selection || refocus || tr.reconfigured ? composerDecorations(tr.state) : value;
   },
   provide: (f) => EditorView.decorations.from(f),
 });
+
+/**
+ * Item 652 (his bug 2026-11-11: a double-clicked word in a code block showed
+ * no highlight). CodeMirror draws the selection in a layer *under* the text
+ * (`z-index: -1`), so a ground painted on the lines themselves — the code
+ * block's and inline code's `var(--well)` — covered it: the word was
+ * selected but nothing showed. The grounds are drawn here instead, as their
+ * own layer under the selection's (layers listed later sit lower), measured
+ * from the decorated elements so they keep the look they had on the lines.
+ */
+export const codeGrounds: Parameters<typeof layer>[0] = {
+  above: false,
+  class: "cm-ccodegrounds",
+  markers(view) {
+    const out: RectangleMarker[] = [];
+    const sc = view.scrollDOM;
+    const r0 = sc.getBoundingClientRect();
+    const left0 = r0.left - sc.scrollLeft * view.scaleX;
+    const top0 = r0.top - sc.scrollTop * view.scaleY;
+    for (const el of view.contentDOM.querySelectorAll(".cm-ccodeblock, .cm-ccode")) {
+      const cls = el.classList.contains("cm-ccodeblock") ? "cm-ccodeground" : "cm-ccodeground cm-ccodeground-inline";
+      for (const r of el.getClientRects()) {
+        if (r.width <= 0 || r.height <= 0) continue;
+        out.push(new RectangleMarker(cls, (r.left - left0) / view.scaleX, (r.top - top0) / view.scaleY, r.width / view.scaleX, r.height / view.scaleY));
+      }
+    }
+    return out;
+  },
+  update: (u) => u.docChanged || u.selectionSet || u.viewportChanged || u.geometryChanged || u.heightChanged,
+};
+export const codeGroundLayer = layer(codeGrounds);
 
 /**
  * The box's state for `text`, cursor at the end. The line separator is
@@ -551,8 +613,12 @@ export function composerState(
     extensions: [
       new LanguageSupport(markdownLanguage),
       ...(hasFocus === null ? [] : [focusField.init(() => hasFocus), focusChange]),
+      tableGridSupport(),
       livePreview,
       ...extensions,
+      // After the caller's `drawSelection` (in `composerKeymap`): a later
+      // layer sits lower, so the selection is drawn over the code grounds.
+      codeGroundLayer,
     ],
   });
 }
@@ -632,18 +698,20 @@ export const composerTheme = EditorView.theme({
   ".cm-cem": { fontStyle: "italic" },
   ".cm-cstrong": { fontWeight: "650" },
   ".cm-cstrike": { textDecoration: "line-through" },
+  // Item 652: the code grounds are drawn by `codeGroundLayer`, under the
+  // selection, not as these elements' own backgrounds, which covered it.
   ".cm-ccode": {
     fontFamily: "var(--mono)",
     fontSize: "0.88em",
-    background: "var(--well)",
     borderRadius: "4px",
     padding: "0.05em 0.25em",
   },
   ".cm-ccodeblock": {
     fontFamily: "var(--mono)",
     fontSize: "0.86em",
-    background: "var(--well)",
   },
+  "& > .cm-scroller > .cm-ccodegrounds .cm-ccodeground": { background: "var(--well)" },
+  "& > .cm-scroller > .cm-ccodegrounds .cm-ccodeground-inline": { borderRadius: "4px" },
   ".cm-cfence": { color: "var(--dim)" },
   ".cm-ccodelang": {
     float: "right",
@@ -677,6 +745,66 @@ export const composerTheme = EditorView.theme({
   },
   ".cm-cqrender p": { margin: "0" },
   ".cm-cqrender .katex-display": { margin: "0", padding: "0" },
+  // Item 689: a table drawn as a grid of cells (`tableGrid.ts`), the
+  // reply's table look (`.markdown th/td` in app.css) on the box's tokens.
+  ".cm-cgrid": {
+    margin: "4px 10px 4px 0",
+    border: "1px solid var(--line2)",
+    borderRadius: "8px",
+    overflow: "hidden",
+    background: "color-mix(in srgb, var(--sheet) 55%, transparent)",
+    whiteSpace: "normal",
+  },
+  ".cm-cgrid.cm-cgrid-picked": { outline: "2px solid var(--accent)", outlineOffset: "1px" },
+  ".cm-cgrid-scroll": { overflowX: "auto" },
+  ".cm-cgrid-table": { width: "100%", borderCollapse: "collapse", tableLayout: "fixed" },
+  ".cm-cgrid-table th, .cm-cgrid-table td": {
+    padding: "0",
+    verticalAlign: "top",
+    borderRight: "1px solid var(--line)",
+    borderBottom: "1px solid var(--line)",
+  },
+  ".cm-cgrid-table th:last-child, .cm-cgrid-table td:last-child": { borderRight: "none" },
+  ".cm-cgrid-table th": { background: "var(--panel)" },
+  ".cm-cgrid-cell": {
+    display: "block",
+    width: "100%",
+    boxSizing: "border-box",
+    margin: "0",
+    padding: "5px 8px",
+    border: "0",
+    outline: "none",
+    resize: "none",
+    overflow: "hidden",
+    background: "transparent",
+    color: "var(--ink)",
+    font: "inherit",
+    fontSize: "0.9em",
+    lineHeight: "1.4",
+    whiteSpace: "pre-wrap",
+    overflowWrap: "break-word",
+    caretColor: "var(--ink)",
+  },
+  "th .cm-cgrid-cell": { fontWeight: "620" },
+  ".cm-cgrid-cell:focus": {
+    background: "color-mix(in srgb, var(--accent) 9%, transparent)",
+    boxShadow: "inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 70%, transparent)",
+  },
+  ".cm-cgrid-bar": { display: "flex", gap: "2px", padding: "2px 4px", opacity: "0.75" },
+  ".cm-cgrid:hover .cm-cgrid-bar, .cm-cgrid:focus-within .cm-cgrid-bar": { opacity: "1" },
+  ".cm-cgrid-btn, .cm-cgrid-back": {
+    padding: "1px 7px",
+    border: "1px solid transparent",
+    borderRadius: "6px",
+    background: "transparent",
+    color: "var(--dim)",
+    font: "inherit",
+    fontSize: "0.72rem",
+    lineHeight: "1.5",
+    cursor: "pointer",
+  },
+  ".cm-cgrid-btn:hover, .cm-cgrid-back:hover": { color: "var(--ink)", borderColor: "var(--line2)" },
+  ".cm-cgrid-back": { marginLeft: "8px", borderColor: "var(--line2)" },
   ".cm-cmark": { color: "var(--dim)" },
   ".cm-cmathsrc": { fontFamily: "var(--mono)", fontSize: "0.9em", color: "var(--ink2)" },
   ".cm-nmath": { cursor: "pointer" },
@@ -845,6 +973,22 @@ export class LiveBoxHandle implements ComposerBox {
    *  overlapping, offsets into the text as it stands. */
   replaceRanges(changes: { from: number; to: number; insert: string }[]): void {
     this.view.dispatch({ changes, userEvent: "input", annotations: isolateHistory.of("full"), scrollIntoView: true });
+  }
+  /** Item 648: a code-block key's edit (`codeBlockKeys.ts`) — the change
+   *  and the selection after it, as typing, so it joins the box's undo
+   *  the way the keystroke would have. */
+  applyEdit(ed: { from: number; to: number; insert: string; anchor: number; head: number }): void {
+    const len = this.view.state.doc.length;
+    const from = Math.max(0, Math.min(ed.from, len));
+    const to = Math.max(from, Math.min(ed.to, len));
+    const after = len - (to - from) + ed.insert.length;
+    const clamp = (p: number) => Math.max(0, Math.min(p, after));
+    this.view.dispatch({
+      changes: from === to && ed.insert === "" ? [] : { from, to, insert: ed.insert },
+      selection: EditorSelection.range(clamp(ed.anchor), clamp(ed.head)),
+      userEvent: ed.insert === "" && to > from ? "delete.backward" : "input.type",
+      scrollIntoView: true,
+    });
   }
   getBoundingClientRect(): DOMRect {
     return this.view.dom.getBoundingClientRect();

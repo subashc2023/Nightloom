@@ -1,5 +1,6 @@
 <script lang="ts">
   import { isImeKey } from "./imeKey";
+  import { takeBlockKey } from "./codeBlockKeys";
   import { tip } from "./tip";
   import { copyText } from "./clipRing.svelte";
   import { arrive } from "./sendMotion";
@@ -19,8 +20,12 @@
     type Segment,
   } from "./state.svelte";
   import type { Attachment } from "./types";
-  import AssistantMessage from "./AssistantMessage.svelte";
-  import UserBubble from "./UserBubble.svelte";
+  // Item 542: 1d4ca17's message and bubble. Item 674 step 7: this thread
+  // is Classic's alone (blocker 1989; Filament draws an aside through
+  // `AsideTranscript`), so ~~its Filament branches (`AssistantMessage`,
+  // `UserBubble`)~~ went (2026-11-12).
+  import AssistantMessageClassic from "./AssistantMessageClassic.svelte";
+  import UserBubbleClassic from "./UserBubbleClassic.svelte";
   import Icon from "./Icon.svelte";
   import { scheduleAsideSave } from "./asides.svelte";
   import WaitingMoon from "./WaitingMoon.svelte";
@@ -53,6 +58,9 @@
    * exchanges above travel as text, and Rewind drops them).
    *
    * One card, panel and tab draw this; their frames differ, not the turns.
+   * ~~Under every layout~~ — under Classic only since item 674 step 7
+   * (2026-11-12): the pieces are `UserBubbleClassic` and
+   * `AssistantMessageClassic`; Filament's aside is `AsideTranscript`.
    *
    * Since item 403 (2026-10-20, his "practically the same as the main
    * chat") the turn is the chat's in motion too: the reply is drawn from
@@ -236,6 +244,9 @@
     // Item 322: the input method's keys (Enter committing a composition,
     // Esc cancelling one) are its own, never a send or a close.
     if (isImeKey(e)) return;
+    // Item 648: inside a ``` block, a code editor's keys (Enter keeps the
+    // indentation and never asks; ⌘Enter asks) — `codeBlockKeys.ts`.
+    if (takeBlockKey(e, e.currentTarget as HTMLTextAreaElement)) return;
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();
@@ -337,7 +348,7 @@
           </div>
         </div>
       {:else}
-        <UserBubble images={imagesOf(turn)} documents={docsOf(turn)} text={turn.question} keep={`fold:${foldChat}|${turn.seq}|bubble`} />
+        <UserBubbleClassic images={imagesOf(turn)} documents={docsOf(turn)} text={turn.question} keep={`fold:${foldChat}|${turn.seq}|bubble`} />
       {/if}
       {#if editing?.index !== i}
         <div class="aside-q-foot">
@@ -378,7 +389,7 @@
         <!-- Item 403: the chat's live reply, from the same segments: the
              thinking block's arrival, the activity rows, the working moon
              counting from the send. -->
-        <AssistantMessage
+        <AssistantMessageClassic
           {segs}
           streaming={turn === asking}
           since={turn === asking ? (turn.startedAt ?? null) : null}

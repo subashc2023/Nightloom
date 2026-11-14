@@ -341,4 +341,98 @@
     border-radius: 999px;
     padding: 0.1rem 0.45rem;
   }
+
+  /* Filament IV, stage 7 (item 571): Settings' grammar — the ruled mono
+     capital title, the selected row's accent bar, wells for the fields,
+     the shared button shapes. Behind the layout gate; Classic unchanged. */
+  :global(:where(:root:not([data-layout="classic"]))) .modal {
+    background: var(--raised);
+    border-color: var(--line2);
+    border-radius: 10px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .nav {
+    background: color-mix(in srgb, var(--sheet) 55%, var(--raised));
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .nav-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font: 500 10px var(--mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .nav-title::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .nav-item {
+    position: relative;
+    border-radius: var(--r1);
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .nav-item.active {
+    background: var(--well);
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .nav-item.active::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 6px;
+    bottom: 6px;
+    width: 3px;
+    border-radius: 2px;
+    background: var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .nav-add,
+  :global(:where(:root:not([data-layout="classic"]))) .close,
+  :global(:where(:root:not([data-layout="classic"]))) .foot button {
+    height: 28px;
+    border: 1px solid var(--line2);
+    border-radius: var(--r1);
+    background: var(--well);
+    color: var(--ink);
+    font: 500 13px var(--sans);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .nav-add:hover,
+  :global(:where(:root:not([data-layout="classic"]))) .close:hover,
+  :global(:where(:root:not([data-layout="classic"]))) .foot button:hover:not(:disabled) {
+    background: var(--well2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .foot .primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--on-accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .foot .primary:hover:not(:disabled) {
+    background: var(--accent-ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .foot .primary:disabled {
+    background: var(--well);
+    border-color: var(--line2);
+    color: var(--dim);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .name {
+    padding: 6px 12px;
+    font: 300 24px var(--sans);
+    background: var(--term);
+    border: 1px solid var(--line2);
+    border-radius: var(--r1);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) textarea {
+    background: var(--term);
+    border: 1px solid var(--line2);
+    border-radius: var(--r1);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .name:focus,
+  :global(:where(:root:not([data-layout="classic"]))) textarea:focus {
+    border-color: var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .draft {
+    font-family: var(--mono);
+    color: var(--accent-ink);
+  }
 </style>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hudIn, hudOut } from "./hudMenu";
   import { tip } from "./tip";
   import {
     app,
@@ -56,6 +57,7 @@
   import { openInboxSort } from "./inboxSort.svelte";
   import { INBOX } from "./inboxSort";
   import { placeMenu } from "./menuPlace";
+  import { classic } from "./layout.svelte";
   import {
     ancestorsOf,
     baseOf,
@@ -89,6 +91,19 @@
    * the question "where did I write that down" has two answers and a user
    * should be able to see both without choosing first.
    */
+
+  /**
+   * Item 565: a note row's tooltip. Classic keeps its rule (the path, while
+   * searching); under Filament IV the row is one line, so the first line,
+   * size and age it no longer shows move here (blocker 1770), the path
+   * first while searching.
+   */
+  function rowTip(n: { name: string; summary: string | null; bytes: number; modified: string }): string | undefined {
+    const path = searching && n.name.includes("/") ? n.name : undefined;
+    if (classic()) return path;
+    const facts = `${size(n.bytes)} · ${relativeTime(n.modified)}`;
+    return [path, n.summary, facts].filter(Boolean).join(" — ");
+  }
 
   /** Which section is being created in, or null when nothing is. */
   let creating = $state<NoteScope | null>(null);
@@ -937,7 +952,7 @@
               endContentDrag();
               endRowDrag();
             }}
-            use:tip={searching && n.name.includes("/") ? n.name : undefined}
+            use:tip={rowTip(n)}
           >
             <span class="line">
               {@render fileGlyph(fileIcon(n))}
@@ -1225,7 +1240,7 @@
     {@const m = menu}
     <button class="scrim" aria-label="Close" onclick={() => (menu = null)} oncontextmenu={(e) => { e.preventDefault(); menu = null; }}></button>
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div class="note-menu" role="menu" tabindex="-1" use:placeAt={{ x: m.x, y: m.y }} onkeydown={menuKeys}>
+    <div class="note-menu hud-m" role="menu" tabindex="-1" use:placeAt={{ x: m.x, y: m.y }} onkeydown={menuKeys} in:hudIn|global out:hudOut|global>
       {#if m.page === "main"}
         {#if !m.isFolder}
           <button role="menuitem" onclick={() => { menu = null; showNote(m.scope, m.path); }}>Open</button>
@@ -1279,8 +1294,10 @@
     <button class="scrim" aria-label="Close" onclick={() => (addMenu = null)} oncontextmenu={(e) => { e.preventDefault(); addMenu = null; }}></button>
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div
-      class="note-menu add-menu"
+      class="note-menu add-menu hud-m"
       role="menu"
+      in:hudIn|global
+      out:hudOut|global
       tabindex="-1"
       use:placeAt={{ x: a.x, y: a.y }}
       onkeydown={(e) => {
@@ -2025,5 +2042,295 @@
     margin: 4px 10px 6px;
     font-size: 12px;
     color: var(--dim);
+  }
+
+  /* ---- Filament IV (item 565, stage 8; f4-notes.png, f4-notesmenus.png) ----
+     Look only, and only under Filament IV: every rule below is behind the
+     layout gate, so Classic keeps the rules above untouched. Gated CSS
+     rather than a Classic copy because this panel holds work in progress
+     (a half-typed name, the find query, a move filter) that an unmount on
+     a layout switch would drop. `:where()` adds no specificity, so each
+     rule wins over its namesake above by coming later. */
+  :global(:where(:root:not([data-layout="classic"]))) .find-bar {
+    padding: 0.6rem 0.75rem 0.35rem;
+    background: var(--sheet);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .find {
+    min-height: 32px;
+    padding: 0.35rem 0.7rem;
+    font-size: 13px;
+    background: var(--paper);
+    border: 1px solid var(--line2);
+    border-radius: var(--r2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .find:focus {
+    border-color: var(--accent);
+  }
+  /* The section head: the ruled mono capital of the other lists (.ns-cap),
+     the rule running from the name to the count. */
+  :global(:where(:root:not([data-layout="classic"]))) .head {
+    gap: 8px;
+    padding: 0.85rem 0.35rem 0.45rem 0.75rem;
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .head::after {
+    content: "";
+    order: 2;
+    flex: 1;
+    height: 1px;
+    min-width: 12px;
+    background: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .title {
+    order: 1;
+    font: 500 10px var(--mono);
+    letter-spacing: 0.14em;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .chev {
+    order: 0;
+    color: var(--dim);
+    font-size: 0.55rem;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .count {
+    order: 3;
+    font: 400 11px var(--mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--dim);
+    opacity: 1;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .alias {
+    order: 4;
+    margin-left: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .head:hover .title {
+    color: var(--ink);
+  }
+  /* The always-loaded file: a card in front, one name and its hint. */
+  :global(:where(:root:not([data-layout="classic"]))) .item.pinned {
+    margin: 0 0.6rem 0.5rem;
+    border: 1px solid var(--line);
+    border-radius: var(--r2);
+    background: var(--raised);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .item.pinned .name {
+    font-family: var(--sans);
+    font-weight: 500;
+    font-size: 13px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .item.pinned .summary,
+  :global(:where(:root:not([data-layout="classic"]))) .item.pinned .meta {
+    padding-left: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .item.pinned .meta {
+    font-family: var(--mono);
+    font-size: 10.5px;
+  }
+  /* The New note row: the shared control grammar (fill, edge, 28px). */
+  :global(:where(:root:not([data-layout="classic"]))) .bar {
+    gap: 4px;
+    flex-wrap: wrap;
+    padding: 0 0.5rem 0.55rem;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .add,
+  :global(:where(:root:not([data-layout="classic"]))) .dream,
+  :global(:where(:root:not([data-layout="classic"]))) .folder,
+  :global(:where(:root:not([data-layout="classic"]))) .pick {
+    min-height: 28px;
+    padding: 3px 10px;
+    border: 1px solid var(--line2);
+    border-radius: var(--r1);
+    background: var(--well);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    font-size: 12.5px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .add {
+    flex: 1 0 auto;
+    padding: 3px 9px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .dream {
+    padding: 3px 7px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .folder {
+    padding: 3px 6px;
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .add:hover,
+  :global(:where(:root:not([data-layout="classic"]))) .dream:hover:not(:disabled),
+  :global(:where(:root:not([data-layout="classic"]))) .folder:hover,
+  :global(:where(:root:not([data-layout="classic"]))) .pick:hover {
+    background: var(--well2);
+    border-color: var(--dim);
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .folder.on {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .dream.running {
+    color: var(--signal);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .new-name {
+    background: var(--paper);
+    border-radius: var(--r1);
+    font-size: 13px;
+  }
+  /* The tree: one line per note, in the reading face; the open note is the
+     selected row with the amber bar at its left. A note's first line, size
+     and age are its tooltip (blocker 1770). */
+  :global(:where(:root:not([data-layout="classic"]))) .list {
+    gap: 0;
+    padding: 0 0.5rem 0.5rem;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .item {
+    border-radius: var(--r1);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .item:hover {
+    background: color-mix(in srgb, var(--well) 60%, transparent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .item.active {
+    background: var(--well);
+    box-shadow: inset 2px 0 0 var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .row {
+    padding: 0.32rem 0.6rem;
+    border-radius: var(--r1);
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .item.active .row,
+  :global(:where(:root:not([data-layout="classic"]))) .row:hover {
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .list .name {
+    font-family: var(--sans);
+    font-size: 13.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .list .row:not(.dir) .summary,
+  :global(:where(:root:not([data-layout="classic"]))) .list .row:not(.dir) .meta {
+    display: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .row.dir {
+    padding: 0.36rem 0.6rem 0.36rem 0.3rem;
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .row.dir .name {
+    font-weight: 500;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .glyph.dir,
+  :global(:where(:root:not([data-layout="classic"]))) .glyph.file.text {
+    display: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .glyph.file {
+    color: var(--dim);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .n {
+    font: 400 11px var(--mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--dim);
+    opacity: 1;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .caret {
+    color: var(--dim);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .plus {
+    border-radius: var(--r1);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .hint {
+    font-size: 12px;
+    color: var(--dim);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .delete {
+    border-radius: var(--r1);
+  }
+  /* The menus (f4-notesmenus.png): a card in front, rows of the reading
+     face, a ruled capital for a menu's title, Delete in red. */
+  :global(:where(:root:not([data-layout="classic"]))) .note-menu {
+    min-width: 220px;
+    padding: 5px;
+    background: var(--raised);
+    border: 1px solid var(--line2);
+    border-radius: var(--r2);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    :global(:where(:root:not([data-layout="classic"]))) .note-menu {
+      animation: nm-in 90ms ease-out;
+    }
+  }
+  @keyframes nm-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .note-menu button {
+    min-height: 30px;
+    padding: 5px 10px;
+    border-radius: var(--r1);
+    font-size: 13px;
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .note-menu button:hover,
+  :global(:where(:root:not([data-layout="classic"]))) .note-menu button:focus-visible {
+    background: var(--well);
+    outline: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .note-menu .danger {
+    color: var(--failed);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .note-menu .key {
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .note-menu .sep {
+    margin: 4px 4px;
+    background: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .note-menu .menu-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 6px 10px 6px;
+    font: 500 10px var(--mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .note-menu .menu-head::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .move-filter {
+    min-height: 30px;
+    margin: 2px 2px 6px;
+    font-size: 13px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .choice {
+    font-family: var(--sans);
+    font-size: 13px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .clash {
+    background: var(--raised);
+    border-radius: var(--r2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .clash-actions button {
+    min-height: 28px;
+    border-radius: var(--r1);
+    background: var(--well);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .clash-actions .clash-both {
+    background: var(--accent);
+    color: var(--paper);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .drop-toast {
+    background: var(--raised);
+    border-radius: var(--r2);
   }
 </style>

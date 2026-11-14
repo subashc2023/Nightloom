@@ -16,8 +16,10 @@
  * What a stored turn keeps: the question, the answer as he saw it (the
  * partial text stands in for one cut short), the error, the cancelled
  * mark. Not the `seq` (per launch; a loaded turn gets a negative one,
- * unique for the card's keyed list, which no live exchange has) and not
- * `cacheRead`. A turn still asking when the store
+ * unique for the card's keyed list, which no live exchange has) ~~and not
+ * `cacheRead`~~ — since item 605 (2026-11-11) the answer's tokens and cost
+ * estimate are kept, and `cacheRead` comes back from them, so the aside
+ * tab's top bar and column read the same after a relaunch. A turn still asking when the store
  * was written comes back as cancelled with what had arrived, or not at
  * all if nothing had: nothing can still be asking after a relaunch. ~~A
  * draft card (opened from a selection, nothing asked) is not kept.~~
@@ -45,7 +47,7 @@
  * (`isPrivateChat`), so a thread stored before this rule is dropped at the
  * next save once its chat is known to be private.
  */
-import type { Aside, AsideTurn } from "./state.svelte";
+import type { Aside, AsideTurn, Segment } from "./state.svelte";
 import type { ChatMode } from "./types";
 import type { AsideQuote } from "./asideQuote";
 import type { AsideAnchor } from "./asideCard";
@@ -93,15 +95,120 @@ export function resetPrivateChats(): void {
   privateChats.clear();
 }
 
+/** A reply's segment as the store keeps it (item 674 step 6): thinking and
+ *  calls trimmed past a size; a text segment as its length alone — its
+ *  words are the turn's `answer`, cut back out in order on load. */
+type StoredSeg =
+  | { k: "th"; text: string; ms?: number }
+  | { k: "rd" }
+  | { k: "tx"; n: number }
+  | { k: "tl"; id: string; name: string; input: unknown; result?: { content: string; is_error: boolean } };
+/** The most of a thinking block, a call's input (as JSON) and a call's
+ *  result the store keeps; `ASIDES_MAX_CHARS` still bounds the whole. */
+export const ASIDE_SEG_MAX = { thinking: 8000, input: 2000, result: 2000 } as const;
+const cutTo = (s: string, max: number): string => (s.length > max ? `${s.slice(0, max - 1)}…` : s);
+
+/** A turn's segments for the store, or null when its text says it all. */
+function storeSegs(segs: Segment[] | undefined, answer: string): StoredSeg[] | null {
+  if (!segs || !segs.some((x) => x.kind === "thinking" || x.kind === "tool" || x.kind === "redacted")) return null;
+  const out: StoredSeg[] = [];
+  let said = "";
+  for (const x of segs) {
+    if (x.kind === "thinking") {
+      if (!x.text) continue;
+      out.push({ k: "th", text: cutTo(x.text, ASIDE_SEG_MAX.thinking), ...(typeof x.ms === "number" ? { ms: x.ms } : {}) });
+    } else if (x.kind === "redacted") out.push({ k: "rd" });
+    else if (x.kind === "text") {
+      said += x.text;
+      out.push({ k: "tx", n: x.text.length });
+    } else if (x.kind === "tool") {
+      let input: unknown = x.call.input;
+      try {
+        if (JSON.stringify(input ?? null).length > ASIDE_SEG_MAX.input) input = {};
+      } catch {
+        input = {};
+      }
+      const r = x.call.result;
+      out.push({
+        k: "tl",
+        id: x.call.id,
+        name: x.call.name,
+        input,
+        ...(r ? { result: { content: cutTo(String(r.content ?? ""), ASIDE_SEG_MAX.result), is_error: r.is_error === true } } : {}),
+      });
+    }
+  }
+  // The text segments must be the answer, in order; else the answer goes
+  // after the rest as one segment on load (no lengths kept).
+  return said === answer ? out : [...out.filter((x) => x.k !== "tx")];
+}
+
+/** Stored segments back as a reply's (thinking closed; a call without a
+ *  result reads as it was left). Null: nothing usable — the turn is its text. */
+function loadSegs(v: unknown, answer: string): Segment[] | null {
+  if (!Array.isArray(v) || v.length === 0) return null;
+  const out: Segment[] = [];
+  let at = 0;
+  let texts = 0;
+  for (const raw of v) {
+    if (raw === null || typeof raw !== "object") continue;
+    const x = raw as Record<string, unknown>;
+    if (x.k === "th" && typeof x.text === "string")
+      out.push({ kind: "thinking", text: x.text, done: true, ...(typeof x.ms === "number" && Number.isFinite(x.ms) ? { ms: x.ms } : {}) });
+    else if (x.k === "rd") out.push({ kind: "redacted" });
+    else if (x.k === "tx" && typeof x.n === "number" && Number.isInteger(x.n) && x.n >= 0) {
+      texts++;
+      out.push({ kind: "text", text: answer.slice(at, at + x.n) });
+      at += x.n;
+    } else if (x.k === "tl" && typeof x.id === "string" && typeof x.name === "string") {
+      const r = x.result as Record<string, unknown> | undefined;
+      const result = r && typeof r === "object" && typeof r.content === "string" ? { content: r.content, is_error: r.is_error === true } : null;
+      out.push({ kind: "tool", call: { id: x.id, name: x.name, input: x.input ?? {}, result } } as Segment);
+    }
+  }
+  if (!out.some((x) => x.kind !== "text")) return null;
+  if (texts === 0 || at !== answer.length) {
+    // The lengths do not add up to the answer (or none were kept): the
+    // whole answer after the thinking and the calls.
+    const rest: Segment[] = out.filter((x) => x.kind !== "text");
+    if (answer) rest.push({ kind: "text", text: answer });
+    return rest;
+  }
+  return out;
+}
+
 interface StoredTurn {
   question: string;
   answer: string;
+  /** Item 674 step 6: the reply's thinking and calls, so they survive a
+   *  relaunch; absent on a text-only turn and on one stored before. */
+  segs?: StoredSeg[];
   error: string | null;
   cancelled: boolean;
   /** The chips the question carried (backlog 283): names and kinds only —
    *  the bytes stay in memory, under the store's cap. */
   files?: { kind: Attachment["kind"]; name: string; media_type: string }[];
   model?: string;
+  /** Item 605: the answer's tokens and cost estimate, so the aside tab's
+   *  bar and column read the same after a relaunch. */
+  usage?: { input_tokens: number; output_tokens: number; cache_read_tokens?: number };
+  /** Until item 675 the CLI's running total for the whole chat, not the
+   *  answer's cost: still read back (and written again, so nothing is
+   *  dropped), never summed. */
+  cost?: number;
+  /** Item 675: what the answer itself added, and the context it left. */
+  added?: number;
+  context?: number;
+  /** Item 674: the answer's plan-share estimate. */
+  plan?: { five_hour: number | null; seven_day: number | null; replies: number };
+  /** Item 639: when the answer ended (ISO) and how long it took, so the
+   *  column's This turn keeps its clock after a relaunch. */
+  at?: string;
+  ms?: number;
+  /** Item 677: when the aside's request went out and its newest round's
+   *  cache read, so its refresh of the chat's cache outlives a relaunch. */
+  readAt?: number;
+  roundRead?: number;
 }
 
 // ---- Backlog 283 (2026-10-02): the aside's composer is the chat's ----
@@ -171,6 +278,21 @@ function storeTurn(t: AsideTurn): StoredTurn | null {
   if (t.attachments && t.attachments.length > 0)
     out.files = t.attachments.map((x) => ({ kind: x.kind, name: x.name, media_type: x.media_type }));
   if (t.model) out.model = t.model;
+  if (t.usage) out.usage = { ...t.usage };
+  if (typeof t.cost === "number") out.cost = t.cost;
+  if (typeof t.added === "number") out.added = t.added;
+  if (typeof t.context === "number") out.context = t.context;
+  if (t.planEst) out.plan = { ...t.planEst };
+  if (t.at) out.at = t.at;
+  if (typeof t.readAt === "number" && typeof t.roundRead === "number") {
+    out.readAt = t.readAt;
+    out.roundRead = t.roundRead;
+  }
+  const end = t.at ? Date.parse(t.at) : NaN;
+  if (t.startedAt != null && Number.isFinite(end)) out.ms = Math.max(0, end - t.startedAt);
+  else if (typeof t.tookMs === "number") out.ms = t.tookMs;
+  const segs = storeSegs(t.segments, answer);
+  if (segs && segs.length > 0) out.segs = segs;
   return out;
 }
 
@@ -304,6 +426,37 @@ function loadAside(v: unknown): Aside | null {
       if (files.length > 0) turn.attachments = files;
     }
     if (typeof m.model === "string" && m.model) turn.model = m.model;
+    // Item 605: the figures the tab's bar and column read.
+    const u = m.usage as Record<string, unknown> | undefined;
+    if (u && typeof u === "object" && typeof u.input_tokens === "number" && typeof u.output_tokens === "number") {
+      turn.usage = { input_tokens: u.input_tokens, output_tokens: u.output_tokens };
+      if (typeof u.cache_read_tokens === "number") {
+        turn.usage.cache_read_tokens = u.cache_read_tokens;
+        turn.cacheRead = u.cache_read_tokens;
+      }
+    }
+    if (typeof m.cost === "number" && Number.isFinite(m.cost)) turn.cost = m.cost;
+    // Item 675: the answer's own cost and the context it left.
+    if (typeof m.added === "number" && Number.isFinite(m.added) && m.added >= 0) turn.added = m.added;
+    if (typeof m.context === "number" && Number.isFinite(m.context) && m.context >= 0) turn.context = m.context;
+    // Item 674: the plan-share estimate.
+    const pe = m.plan as { five_hour?: unknown; seven_day?: unknown; replies?: unknown } | null | undefined;
+    if (pe && typeof pe === "object" && typeof pe.replies === "number") {
+      const pct = (x: unknown) => (typeof x === "number" && Number.isFinite(x) ? x : null);
+      turn.planEst = { five_hour: pct(pe.five_hour), seven_day: pct(pe.seven_day), replies: pe.replies };
+    }
+    // Item 639: the answer's time and clock.
+    if (typeof m.at === "string" && Number.isFinite(Date.parse(m.at))) turn.at = m.at;
+    if (typeof m.ms === "number" && Number.isFinite(m.ms) && m.ms >= 0) turn.tookMs = m.ms;
+    // Item 677: the answer's read of the chat's cache.
+    if (typeof m.readAt === "number" && Number.isFinite(m.readAt) && typeof m.roundRead === "number" && m.roundRead >= 0) {
+      turn.readAt = m.readAt;
+      turn.roundRead = m.roundRead;
+    }
+    // Item 674 step 6: the thinking and calls; an older entry has none
+    // and reads as its text.
+    const segs = loadSegs(m.segs, turn.partial);
+    if (segs) turn.segments = segs;
     turns.push(turn);
   }
   const anchor = isAnchor(a.anchor) ? a.anchor : null;
@@ -414,8 +567,21 @@ export function cleanAsideName(v: unknown): string | null {
   if (typeof v !== "string") return null;
   const one = v.replace(/\s+/g, " ").trim();
   if (!one) return null;
-  return one.length > ASIDE_NAME_MAX ? one.slice(0, ASIDE_NAME_MAX) : one;
+  return cutWords(one, ASIDE_NAME_MAX);
 }
+
+/** `s` in at most `max` characters, cut after a whole word with an
+ *  ellipsis (items 673, 674: his title read cut mid-word, then ended
+ *  abruptly at the name's cap); a single word longer than half the limit
+ *  has no boundary to cut at. */
+function cutWords(s: string, max: number): string {
+  if (s.length <= max) return s;
+  const cut = s.slice(0, max - 1);
+  const sp = cut.lastIndexOf(" ");
+  return (sp > max * 0.5 ? cut.slice(0, sp) : cut).replace(/[\s,;:.—-]+$/, "") + "…";
+}
+/** A question or passage on one line, uncapped: the label's own `max` cuts it. */
+const oneLine = (v: unknown): string | null => (typeof v === "string" ? v.replace(/\s+/g, " ").trim() || null : null);
 
 /** What a thread is called: its name, else its first question, else a
  *  snippet of its passage, else "Aside". One line, at most `max` chars. */
@@ -425,8 +591,8 @@ export function asideLabel(
 ): string {
   const pick =
     cleanAsideName(a.name) ??
-    cleanAsideName(a.turns[0]?.question) ??
-    cleanAsideName(a.quote?.text) ??
+    oneLine(a.turns[0]?.question) ??
+    oneLine(a.quote?.text) ??
     "Aside";
-  return pick.length > max ? `${pick.slice(0, max - 1)}…` : pick;
+  return cutWords(pick, max);
 }

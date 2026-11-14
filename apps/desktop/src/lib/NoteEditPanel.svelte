@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tip } from "./tip";
   import { isImeKey } from "./imeKey";
+  import { clockText } from "./schedule";
   /**
    * The small chat on the right of a note (nightshift backlog 151): he says
    * what changed, a model edits the note's file to fit (the Edit tool, on
@@ -147,10 +148,10 @@
     return `${n} ${word}${n === 1 ? "" : "s"}`;
   }
 
-  /** "2:41 PM" — 12-hour. */
+  /** "2:41 PM" — 12-hour whatever the locale (item 611b; was the locale's own). */
   function clock(iso: string): string {
     const d = new Date(iso);
-    return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    return Number.isNaN(d.getTime()) ? "" : clockText(d.getTime());
   }
 
   /** The reply so far, for `{@html}`: escaped, in a paragraph, so the chat's
@@ -703,7 +704,7 @@
     height: 1.5px;
     transform-origin: left center;
     pointer-events: none;
-    background: color-mix(in srgb, var(--accent) 22%, transparent);
+    background: color-mix(in srgb, var(--motion-ink, var(--accent, #e0a458)) 22%, transparent);
     overflow: hidden;
   }
   .weft::after {
@@ -713,7 +714,7 @@
     bottom: 0;
     width: 28%;
     border-radius: 2px;
-    background: linear-gradient(90deg, transparent, var(--accent-ink, var(--accent)), transparent);
+    background: linear-gradient(90deg, transparent, var(--motion-ink-hi, var(--accent-ink, var(--accent))), transparent);
   }
   .undo {
     background: var(--well);
@@ -886,8 +887,8 @@
     height: 5px;
     margin: -2.5px 0 0 0;
     border-radius: 50% / 100%;
-    background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 10%, transparent), var(--accent-ink, var(--accent)));
-    box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 70%, transparent);
+    background: linear-gradient(90deg, color-mix(in srgb, var(--motion-ink, var(--accent, #e0a458)) 10%, transparent), var(--motion-ink-hi, var(--accent-ink, var(--accent))));
+    box-shadow: 0 0 8px color-mix(in srgb, var(--motion-ink, var(--accent, #e0a458)) 70%, transparent);
     opacity: 0;
     pointer-events: none;
     transition: opacity 260ms ease-out;
@@ -901,7 +902,11 @@
   }
   @media (prefers-reduced-motion: no-preference) {
     .said.markdown :global(.rm-w) {
-      display: inline-block;
+      /* Item 626: inline, not inline-block — an atomic inline is a line-break opportunity on both sides and trims
+         its edge spaces, so a word split across deltas wrapped mid-word and spacing slipped until the spans went.
+         The rise is `top` on a relative inline (a transform does not apply to an inline box). */
+      display: inline;
+      position: relative;
       animation:
         rm-rise 520ms cubic-bezier(0.2, 0.7, 0.2, 1) both,
         rm-weft-under 900ms ease-out both;

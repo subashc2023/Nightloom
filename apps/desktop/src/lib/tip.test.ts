@@ -176,7 +176,10 @@ describe("the top bar and the composer", () => {
     });
   }
   it("Composer's Send carries a tip (walk 2026-09-25: the disabled Send showed none)", () => {
-    expect(composerSrc).toMatch(/class="ns-btn accent send act"\s+use:tip=\{sendTip\(/);
+    expect(composerSrc).toMatch(/class="ns-btn accent send act[^"]*"\s+use:tip=\{(?:withEstimate\()?sendTip\(/);
+  });
+  it("Send's tip is never an object plus a string (his report 2026-11-11: \"[object Object]\")", () => {
+    expect(composerSrc).not.toMatch(/sendTip\([^)]*\)\)?\s*\+/);
   });
 });
 
@@ -219,7 +222,8 @@ describe("no native title= anywhere (171 pass 2)", () => {
     expect(mathSrc).not.toMatch(/\stitle="/);
     expect(mathSrc).toContain('data-tip="');
     expect(linksSrc).not.toMatch(/\stitle="/);
-    expect(linksSrc).toContain('data-tip="');
+    // ~~expect(linksSrc).toContain('data-tip="')~~ — 2026-11-11, item 622b: links.ts
+    // no longer builds HTML (its unused `renderNote` renderer was removed).
     expect(noteEditorSrc).not.toMatch(/\.title = /);
     expect(noteEditorSrc).toContain("el.dataset.tip = ");
   });

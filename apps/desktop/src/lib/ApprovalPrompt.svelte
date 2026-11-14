@@ -15,6 +15,7 @@
   import { recordAnswers } from "./askAnswers.svelte";
   import PlaywrightCard from "./PlaywrightCard.svelte";
   import { isPlaywright } from "./playwright";
+  import { trackCard } from "./waitingNotice.svelte";
 
   let { req }: { req: ApprovalRequest } = $props();
 
@@ -90,7 +91,7 @@
     if (route.enqueue) {
       // The composer's own key, so the held message shows in its queue
       // with a take-back, like one typed there.
-      enqueueMessage(draftKey(app.activeSessionId, app.project?.id, app.pendingMode), route.enqueue, []);
+      enqueueMessage(draftKey(app.activeSessionId, app.project?.id, app.pendingMode, app.pendingThread), route.enqueue, []);
     }
     void resolveApproval(req.id, req.name, decision, route.reason, answer, then, grant);
   }
@@ -102,6 +103,14 @@
   // call already has the grant, so the next read there asks nothing.
   const outside = $derived(kind === "call" && req.outside ? req.outside : null);
   const outsideLeaf = $derived(outside ? (outside.split(/[\\/]/).filter(Boolean).pop() ?? outside) : "");
+  // The model asking for a folder itself (nightshift item 613): the card
+  // says so, and *Allow* is the grant at the model's scope — so "Allow for
+  // this chat", which would promise every later call runs unasked, is not
+  // offered (the gate asks about each folder).
+  const addsFolder = $derived(kind === "call" && req.name === "mcp__nightloom__add_folder");
+  const folderScope = $derived(
+    addsFolder && (req.input as { scope?: unknown } | undefined)?.scope === "project" ? "project" : "chat",
+  );
   function allowAndGrant(scope: "chat" | "project") {
     if (!outside) return;
     decide("allow", undefined, undefined, undefined, { dir: outside, scope });
@@ -358,7 +367,8 @@
       placeholder="Note for the model — optional"
       aria-label="note for the model, optional"
     />
-    <span class="q" use:tip={NOTE_TIP[kind]} aria-label={NOTE_TIP[kind]} role="img">?</span>
+    <!-- Item 638: a button (the keyboard reaches it) whose click pins the pill. -->
+    <button type="button" class="q" use:tip={{ text: NOTE_TIP[kind], click: true }} aria-label={NOTE_TIP[kind]}>?</button>
   </div>
 {/snippet}
 
@@ -385,6 +395,7 @@
     class="ask qcard"
     class:folded
     bind:this={box}
+    use:trackCard={req.id}
     tabindex="-1"
     role="group"
     aria-label="the model asks {questions.length} question{questions.length === 1 ? '' : 's'}"
@@ -424,6 +435,7 @@
     class="ask"
     class:folded
     bind:this={box}
+    use:trackCard={req.id}
     tabindex="-1"
     role="group"
     aria-label="plan approval"
@@ -510,13 +522,21 @@
     class="ask"
     class:folded
     bind:this={box}
+    use:trackCard={req.id}
     tabindex="-1"
     role="group"
     aria-label="permission required to run {req.name}"
   >
     <div class="head">
       <span class="mark" aria-hidden="true">⚠</span>
-      <span>Run <code>{req.name}</code>?</span>
+      {#if addsFolder}
+        <span
+          >Let {folderScope === "project" ? "the project" : "this chat"} see <code>{outsideLeaf || req.name}</code
+          >?</span
+        >
+      {:else}
+        <span>Run <code>{req.name}</code>?</span>
+      {/if}
       <span class="effect">paused · waiting for you</span>
       <span class="sp"></span>
       {@render foldButton()}
@@ -568,11 +588,13 @@
       {/if}
       <div class="actions">
         <button class="ns-btn accent" onclick={() => decide("allow")}>Allow</button>
-        <button
-          class="ns-btn"
-          use:tip={`every later ${req.name} in this chat runs unasked`}
-          onclick={() => decide("always")}>Allow for this chat</button
-        >
+        {#if !addsFolder}
+          <button
+            class="ns-btn"
+            use:tip={`every later ${req.name} in this chat runs unasked`}
+            onclick={() => decide("always")}>Allow for this chat</button
+          >
+        {/if}
         <button class="ns-btn danger" bind:this={denyButton} onclick={() => decide("deny")}>Deny</button>
         <span class="keys">⏎ allow · esc deny · the note goes with either</span>
       </div>
@@ -582,6 +604,7 @@
 <div
   class="approval"
   bind:this={box}
+  use:trackCard={req.id}
   tabindex="-1"
   role="group"
   aria-label="permission required to run {req.name}"
@@ -929,10 +952,19 @@
   .note-row .q {
     position: absolute;
     right: 10px;
+    padding: 0;
+    background: none;
+    border: none;
+    font-family: inherit;
     font-size: 12px;
     color: var(--dim);
     cursor: help;
     user-select: none;
+  }
+  .note-row .q:hover,
+  .note-row .q:focus-visible {
+    outline: none;
+    color: var(--accent);
   }
   .ask .actions {
     align-items: center;

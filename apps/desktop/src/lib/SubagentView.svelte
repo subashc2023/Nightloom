@@ -35,6 +35,9 @@
   import { clock12 } from "./awaySettings";
   import { relayArrived, relays } from "./relay.svelte";
   import { keptOpen } from "./keptFolds.svelte";
+  import { classic } from "./layout.svelte";
+  import { briefDrag, briefHeight, briefKeyStep } from "./agentBrief";
+  import { briefOpen, briefStored, setBriefOpen, setBriefStored } from "./agentBrief.svelte";
 
   let { content }: { content: Extract<TabContent, { kind: "subagent" }> } = $props();
 
@@ -117,12 +120,75 @@
     }
   }
 
+  // Item 591 (Filament IV): the box grows with the note, to ~8 lines, then
+  // scrolls; re-measured when the draft changes from outside (a Take back).
+  function grow(node: HTMLTextAreaElement, _value: string) {
+    const fit = () => {
+      node.style.height = "auto";
+      node.style.height = `${Math.min(node.scrollHeight, 200)}px`;
+    };
+    fit();
+    return { update: fit };
+  }
+  // The hint under the box: one line, the whole explanation on the "?".
+  const hintShort = $derived(
+    live ? "Reaches it with its next tool call" : adopted ? "Goes to its own chat" : "It answers in a new chat that carries its run",
+  );
+  const hintLong = $derived(
+    live
+      ? "It is still running: what you send reaches it with its next tool call, and is marked here when it does. If it makes no further call, the note goes as your first question once it has finished."
+      : adopted
+        ? "Your questions go to its own chat, which carries its run; the main chat is not told."
+        : "Ask it something: it answers in a new chat that carries its whole run, and the main chat is not told.",
+  );
+
+  // Item 591 (Filament IV): the brief, a section with its own scroll and a
+  // drag handle on its bottom edge. Open and height are one setting for
+  // every agent tab (`agentBrief.svelte.ts`), kept across a relaunch.
+  let paneH = $state(0);
+  let briefBox = $state<HTMLDivElement | null>(null);
+  let dragH = $state<number | null>(null);
+  const shownH = $derived(dragH ?? briefHeight(briefStored(), paneH));
+  function gripDown(e: PointerEvent): void {
+    if (e.button !== 0 || !briefBox) return;
+    e.preventDefault();
+    const grip = e.currentTarget as HTMLElement;
+    const y0 = e.clientY;
+    const h0 = briefBox.getBoundingClientRect().height;
+    const content = briefBox.scrollHeight;
+    grip.setPointerCapture(e.pointerId);
+    const move = (m: PointerEvent) => (dragH = briefDrag(h0, m.clientY - y0, paneH, content));
+    const up = () => {
+      grip.removeEventListener("pointermove", move);
+      grip.removeEventListener("pointerup", up);
+      grip.removeEventListener("pointercancel", up);
+      if (dragH !== null) setBriefStored(dragH);
+      dragH = null;
+    };
+    grip.addEventListener("pointermove", move);
+    grip.addEventListener("pointerup", up);
+    grip.addEventListener("pointercancel", up);
+  }
+  function gripKey(e: KeyboardEvent): void {
+    if (!briefBox) return;
+    const next = briefKeyStep(e.key, e.shiftKey, briefBox.getBoundingClientRect().height, paneH, briefBox.scrollHeight);
+    if (next === null) return;
+    e.preventDefault();
+    setBriefStored(next);
+  }
+
   function callsOf(segs: Segment[]): number {
     return segs.reduce((n, s) => n + (s.kind === "tool" ? 1 + callsOf(s.call.children ?? []) : 0), 0);
   }
+  /** Item 564: a step's number in its list — calls and thinking, 1-based. */
+  function stepNo(segs: Segment[], k: number): number {
+    let n = 0;
+    for (let j = 0; j <= k; j++) if (segs[j].kind === "tool" || segs[j].kind === "thinking") n++;
+    return n;
+  }
 </script>
 
-<div class="sub-view">
+<div class="sub-view" bind:clientHeight={paneH}>
   {#if !row}
     <p class="note">
       This agent's chat has not been opened in this window since it
@@ -146,19 +212,53 @@
         {#if row.restored}<span>· from the log</span>{/if}
       </div>
     </header>
-    {#if row.prompt}
+    {#if row.prompt && classic()}
       <details class="task" use:keptOpen={{ key: `${foldBase}|task` }}>
         <summary>The task it was given{row.prompt.startsWith("<nightloom-subagent-brief>") ? " — the brief in front" : ""}</summary>
         <pre class="text">{row.prompt}</pre>
+      </details>
+    {:else if row.prompt}
+      <!-- Item 591 (Filament IV): open by default; its own scroll, ~240 px
+           to start (never over ~35% of the pane); the edge under it drags. -->
+      <details class="brief" open={briefOpen()} ontoggle={(e) => setBriefOpen(e.currentTarget.open)}>
+        <summary>
+          <span class="brief-chev" aria-hidden="true">▸</span>
+          <span class="brief-title">The task it was given{row.prompt.startsWith("<nightloom-subagent-brief>") ? " — the brief in front" : ""}</span>
+          <span class="brief-rule" aria-hidden="true"></span>
+          <span class="brief-size mono">{row.prompt.length.toLocaleString()} chars</span>
+        </summary>
+        <div class="brief-box" bind:this={briefBox} style:max-height="{shownH}px">
+          <pre class="brief-text">{row.prompt}</pre>
+        </div>
+        <!-- A focusable separator is ARIA's window-splitter pattern (arrows
+             resize it); svelte's check reads any separator as static. -->
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+        <div
+          class="brief-grip"
+          class:dragging={dragH !== null}
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="Resize the brief"
+          aria-valuenow={shownH}
+          tabindex="0"
+          use:tip={"Drag to resize · double-click for the starting size"}
+          onpointerdown={gripDown}
+          onkeydown={gripKey}
+          ondblclick={() => setBriefStored(0)}
+        ></div>
       </details>
     {/if}
     {#if row.segments.length === 0}
       <p class="note">{subagentRunning(row) ? "Nothing from it yet." : "It sent nothing back."}</p>
     {:else}
       {@render list(row.segments, 0, "")}
-      <p class="note small">{callsOf(row.segments)} call{callsOf(row.segments) === 1 ? "" : "s"} in all.</p>
+      {#if classic()}
+        <p class="note small">{callsOf(row.segments)} call{callsOf(row.segments) === 1 ? "" : "s"} in all.</p>
+      {:else}
+        <div class="calls-all mono"><span>{callsOf(row.segments)} call{callsOf(row.segments) === 1 ? "" : "s"} in all</span><span class="calls-rule" aria-hidden="true"></span></div>
+      {/if}
     {/if}
-    <section class="talk" aria-label="Talk to this agent">
+    <section class="talk" class:f4={!classic()} aria-label="Talk to this agent">
       {#if followUps.length > 0}
         <div class="follow">
           {#each followUps as f, k (k)}
@@ -197,36 +297,84 @@
           <button class="link" use:tip={"Put this note back in the box below"} onclick={() => takeBackNote(key, k)}>Take back</button>
         </div>
       {/each}
-      <p class="note small hint">
-        {#if live}
-          It is still running: what you send reaches it with its next tool call, and is marked here when it does.
-          If it makes no further call, the note goes as your first question once it has finished.
-          <label class="tell-main">
-            <input type="checkbox" checked={agentAsk.tellMain} onchange={(e) => setTellMain(e.currentTarget.checked)} />
-            Tell the main chat too
-          </label>
-        {:else if adopted}
-          Your questions go to its own chat, which carries its run; the main chat is not told.
-          <button class="link" onclick={() => adopted && openSession(adopted)}>Open that chat</button>
-        {:else}
-          Ask it something: it answers in a new chat that carries its whole run, and the main chat is not told.
-        {/if}
-      </p>
-      <div class="ask-row">
+      {#if classic()}
+        <p class="note small hint">
+          {#if live}
+            It is still running: what you send reaches it with its next tool call, and is marked here when it does.
+            If it makes no further call, the note goes as your first question once it has finished.
+            <label class="tell-main">
+              <input type="checkbox" checked={agentAsk.tellMain} onchange={(e) => setTellMain(e.currentTarget.checked)} />
+              Tell the main chat too
+            </label>
+          {:else if adopted}
+            Your questions go to its own chat, which carries its run; the main chat is not told.
+            <button class="link" onclick={() => adopted && openSession(adopted)}>Open that chat</button>
+          {:else}
+            Ask it something: it answers in a new chat that carries its whole run, and the main chat is not told.
+          {/if}
+        </p>
+        <div class="ask-row">
+          <textarea
+            class="ask"
+            rows="2"
+            placeholder={live ? "A note for it while it runs" : "Ask this agent"}
+            aria-label={live ? "A note for it while it runs" : "Ask this agent"}
+            value={agentAsk.drafts[key] ?? ""}
+            oninput={(e) => setAgentDraft(key, e.currentTarget.value)}
+            onkeydown={onKey}
+          ></textarea>
+          <button class="send" disabled={asking || !(agentAsk.drafts[key] ?? "").trim()} onclick={() => void ask()}>
+            {live ? "Send" : "Ask"}
+          </button>
+        </div>
+      {/if}
+    </section>
+    {#if !classic()}
+      <!-- Item 591 (Filament IV): one composer, the main chat's box —
+           the note, then a row: Tell main chat, the hint (the whole of it
+           on the "?"), Send. Pinned to the bottom of the tab as the main
+           box is. The half-typed note is `agentAsk.drafts` (kept). -->
+      <div class="ask-card" class:live>
         <textarea
-          class="ask"
-          rows="2"
+          class="ask-box"
+          rows="1"
+          use:grow={agentAsk.drafts[key] ?? ""}
+          autocorrect="off"
+          autocapitalize="off"
+          spellcheck="false"
           placeholder={live ? "A note for it while it runs" : "Ask this agent"}
           aria-label={live ? "A note for it while it runs" : "Ask this agent"}
           value={agentAsk.drafts[key] ?? ""}
           oninput={(e) => setAgentDraft(key, e.currentTarget.value)}
           onkeydown={onKey}
         ></textarea>
-        <button class="send" disabled={asking || !(agentAsk.drafts[key] ?? "").trim()} onclick={() => void ask()}>
-          {live ? "Send" : "Ask"}
-        </button>
+        <div class="ask-foot">
+          {#if live}
+            <button
+              type="button"
+              class="tell-chip"
+              class:on={agentAsk.tellMain}
+              aria-pressed={agentAsk.tellMain}
+              use:tip={agentAsk.tellMain
+                ? "The main chat is told about each note you send here — click to send to the agent alone"
+                : "Notes go to the agent alone — click to tell the main chat too"}
+              onclick={() => setTellMain(!agentAsk.tellMain)}
+            >
+              <span class="tell-mark" aria-hidden="true"></span>Tell main chat
+            </button>
+          {/if}
+          <span class="ask-hint">{hintShort}</span>
+          <button type="button" class="ask-why" aria-label={hintLong} use:tip={{ text: hintLong, click: true }}>?</button>
+          {#if !live && adopted}
+            <button class="link" onclick={() => adopted && openSession(adopted)}>Open that chat</button>
+          {/if}
+          <span class="ask-spacer"></span>
+          <button class="ns-btn accent ask-send" disabled={asking || !(agentAsk.drafts[key] ?? "").trim()} onclick={() => void ask()}>
+            {live ? "Send" : "Ask"}
+          </button>
+        </div>
       </div>
-    </section>
+    {/if}
   {/if}
 </div>
 
@@ -240,6 +388,10 @@
           use:keptOpen={{ key: `${foldBase}|call:${s.call.id}`, fallback: depth === 0 && !!s.call.result?.is_error }}
         >
           <summary>
+            <!-- Item 564: the trace's number and status mark; Filament IV only (hidden under Classic). -->
+            <span class="t-no" aria-hidden="true">{String(stepNo(segs, k)).padStart(2, "0")}</span>
+            <span class="t-st" class:t-done={!!s.call.result && !s.call.result.is_error && !s.call.denied} class:t-bad={!!s.call.result?.is_error || !!s.call.denied}
+              aria-hidden="true">{s.call.denied ? "⊘" : s.call.result ? (s.call.result.is_error ? "✕" : "✓") : "■"}</span>
             <span class="name" use:tip={s.call.name}>{shortToolName(s.call.name)}</span>
             <span class="arg">{toolInputSummary(s.call.input)}</span>
             <span class="size">
@@ -268,7 +420,7 @@
         {/if}
       {:else if s.kind === "thinking"}
         <details class="thought" use:keptOpen={{ key: `${foldBase}|thought:${path}:${k}` }}>
-          <summary>thought{s.ms != null ? ` · ${Math.round(s.ms / 1000)} s` : ""}</summary>
+          <summary><span class="t-no" aria-hidden="true">{String(stepNo(segs, k)).padStart(2, "0")}</span><span class="t-st t-done" aria-hidden="true">✓</span>thought{s.ms != null ? ` · ${Math.round(s.ms / 1000)} s` : ""}</summary>
           <pre class="text">{s.text}</pre>
         </details>
       {:else if s.kind === "redacted"}
@@ -358,6 +510,34 @@
   }
   .call.error .size {
     color: var(--error);
+  }
+  /* Item 564 (Filament IV stage 5): each step numbered with its status mark,
+     as the transcript's trace. Classic draws neither (its look, unchanged). */
+  .t-no {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    color: var(--dim);
+    flex: none;
+    margin-right: 8px;
+  }
+  .t-st {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--signal);
+    flex: none;
+    width: 12px;
+    margin-right: 6px;
+  }
+  .t-st.t-done {
+    color: var(--done);
+  }
+  .t-st.t-bad {
+    color: var(--failed);
+  }
+  :global([data-layout="classic"]) .t-no,
+  :global([data-layout="classic"]) .t-st {
+    display: none;
   }
   .body {
     margin: 6px 0 4px 12px;
@@ -503,5 +683,271 @@
     font-size: 13.5px;
     white-space: pre-wrap;
     word-break: break-word;
+  }
+  /* Item 591 (Filament IV only: the markup below is drawn only when Classic
+     is off, so Classic's look is the rules above, untouched). */
+  .brief {
+    margin: 4px 0 16px;
+  }
+  .brief summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    list-style: none;
+    font-size: 12.5px;
+    color: var(--ink2);
+    padding: 4px 0;
+  }
+  .brief summary::-webkit-details-marker {
+    display: none;
+  }
+  .brief-chev {
+    flex: none;
+    width: 10px;
+    text-align: center;
+    font-size: 12px;
+    line-height: 1;
+    color: var(--ink2);
+    transition: transform 120ms;
+  }
+  .brief[open] .brief-chev {
+    transform: rotate(90deg);
+  }
+  .brief-title {
+    flex: none;
+  }
+  .brief-rule,
+  .calls-rule {
+    flex: 1;
+    min-width: 12px;
+    height: 1px;
+    background: var(--line);
+  }
+  .brief-size {
+    flex: none;
+    font-size: 11px;
+    color: var(--dim);
+  }
+  .brief-box {
+    margin-top: 6px;
+    overflow: auto;
+    background: var(--well);
+    border: 1px solid var(--line);
+    border-bottom: none;
+    border-radius: var(--r1, 6px) var(--r1, 6px) 0 0;
+    overscroll-behavior: contain;
+  }
+  .brief-text {
+    margin: 0;
+    padding: 10px 12px;
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--ink2);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  /* The drag handle: the box's bottom edge, a short grip mark in its middle. */
+  .brief-grip {
+    position: relative;
+    height: 10px;
+    cursor: row-resize;
+    background: var(--well);
+    border: 1px solid var(--line);
+    border-top: 1px solid var(--line);
+    border-radius: 0 0 var(--r1, 6px) var(--r1, 6px);
+    touch-action: none;
+  }
+  .brief-grip::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 3px;
+    width: 32px;
+    height: 2px;
+    margin-left: -16px;
+    border-radius: 1px;
+    background: var(--line2);
+    transition: background-color 120ms;
+  }
+  .brief-grip:hover::after,
+  .brief-grip.dragging::after,
+  .brief-grip:focus-visible::after {
+    background: var(--accent);
+  }
+  .brief-grip:focus-visible {
+    outline: none;
+    border-color: var(--accent);
+  }
+  .calls-all {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 12px 0 0;
+    font-size: 11px;
+    color: var(--dim);
+    letter-spacing: 0.02em;
+  }
+  .talk.f4 {
+    margin-top: 10px;
+    padding-top: 0;
+    border-top: none;
+  }
+  .talk.f4:empty {
+    display: none;
+  }
+  /* The composer: the main chat's card (raised fill, control edge, one
+     shadow, the accent edge on focus), pinned to the tab's bottom. */
+  :global(:where(:root:not([data-layout="classic"]))) .sub-view {
+    padding-bottom: 16px;
+  }
+  .ask-card {
+    position: sticky;
+    bottom: 16px;
+    z-index: 2;
+    margin-top: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px 14px 10px;
+    background: var(--raised);
+    border: 1px solid var(--line2);
+    border-radius: var(--r2, 10px);
+    /* The second shadow is the page under it: what scrolls past below the
+       pinned card is hidden, as under the main box. 36px, not 17: WebKit
+       measures `bottom` from inside .sub-view's 16px padding, so the gap
+       under the pinned card is 32px there, plus rounding (rows showed through at zoom
+       1.5); past the scroller's edge the extra paper is never seen. */
+    box-shadow:
+      0 8px 24px rgba(0, 0, 0, 0.35),
+      0 36px 0 0 var(--paper);
+    transition: border-color 0.12s;
+  }
+  .ask-card:focus-within {
+    border-color: var(--accent);
+  }
+  .ask-box {
+    width: 100%;
+    min-height: 1.5em;
+    background: transparent;
+    color: var(--ink);
+    caret-color: var(--accent);
+    border: none;
+    padding: 2px 0;
+    font: inherit;
+    font-size: 14.5px;
+    line-height: 1.5;
+    resize: none;
+    overflow-y: auto;
+    overflow-x: hidden;
+    box-sizing: border-box;
+  }
+  .ask-box:focus {
+    outline: none;
+  }
+  .ask-box::placeholder {
+    color: var(--dim);
+  }
+  .ask-foot {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .ask-spacer {
+    flex: 1;
+  }
+  .ask-hint {
+    font-size: 12px;
+    color: var(--dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+  .ask-why {
+    flex: none;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border-radius: 50%;
+    border: 1px solid var(--line2);
+    background: transparent;
+    color: var(--dim);
+    font: 600 10.5px var(--sans);
+    line-height: 1;
+    cursor: help;
+  }
+  .ask-why:hover,
+  .ask-why:focus-visible {
+    color: var(--ink);
+    border-color: var(--dim);
+    outline: none;
+  }
+  .ask-send {
+    min-height: 32px;
+    padding: 0 16px;
+    font-size: 13px;
+  }
+  /* Tell main chat: the main box's bottom-row toggle — a chip with a
+     sliding dot, accent when on. */
+  .tell-chip {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 24px;
+    padding: 0 9px 0 8px;
+    border: 1px solid var(--line2);
+    border-radius: 12px;
+    background: var(--well);
+    color: var(--ink2);
+    font: 500 11.5px var(--sans);
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .tell-chip.on {
+    color: var(--ink);
+  }
+  .tell-chip:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  .tell-mark {
+    position: relative;
+    flex: none;
+    width: 20px;
+    height: 12px;
+    border-radius: 6px;
+    background: var(--well2);
+    transition: background-color 120ms;
+  }
+  .tell-mark::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--dim);
+    transition:
+      left 120ms,
+      background-color 120ms;
+  }
+  .tell-chip.on .tell-mark {
+    background: var(--accent);
+  }
+  .tell-chip.on .tell-mark::after {
+    left: 10px;
+    background: var(--on-accent);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .brief-chev,
+    .tell-mark,
+    .tell-mark::after {
+      transition: none;
+    }
   }
 </style>

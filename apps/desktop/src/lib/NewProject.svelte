@@ -499,4 +499,57 @@
     border-radius: 4px;
     padding: 0 0.3rem;
   }
+
+  /* Filament IV (item 563, stage 4): the page titles' type and the ruled
+     mono capitals of 521 §2, the shared corner and button values. Gated, so
+     the Classic layout (item 542) draws the rules above unchanged; a rule
+     here adds to them, never replaces their markup. */
+  :where(:root:not([data-layout="classic"])) header {
+    min-height: 44px;
+  }
+  :where(:root:not([data-layout="classic"])) .scope {
+    border: none;
+    padding: 0;
+    font: 500 10px var(--mono);
+    letter-spacing: 0.14em;
+    color: var(--ink2);
+  }
+  :where(:root:not([data-layout="classic"])) .title {
+    font: 300 15px var(--sans);
+    letter-spacing: -0.01em;
+  }
+  :where(:root:not([data-layout="classic"])) .ghost,
+  :where(:root:not([data-layout="classic"])) .save {
+    border-radius: var(--r1);
+    border-color: var(--line2);
+    background: var(--well);
+    color: var(--ink2);
+    min-height: 28px;
+  }
+  :where(:root:not([data-layout="classic"])) .save:not(:disabled) {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--on-accent);
+    font-weight: 600;
+  }
+  :where(:root:not([data-layout="classic"])) .ghost.revert {
+    background: transparent;
+    border-color: color-mix(in srgb, var(--failed) 55%, transparent);
+    color: var(--failed);
+  }
+  :where(:root:not([data-layout="classic"])) .lab {
+    font: 500 10px var(--mono);
+    letter-spacing: 0.14em;
+    color: var(--ink2);
+  }
+  :where(:root:not([data-layout="classic"])) .name {
+    font: 300 26px var(--sans);
+    letter-spacing: -0.01em;
+    border-bottom-color: var(--line2);
+  }
+  :where(:root:not([data-layout="classic"])) textarea {
+    border-radius: var(--r2);
+    border-color: var(--line2);
+    background: var(--raised);
+  }
 </style>

@@ -99,7 +99,12 @@ export type TabContent =
    *  clicked in the sidebar. Read-only (`ThreadView.svelte`); one tab per
    *  slug; `title` is the thread's name, for the strip. A workspace is a
    *  project's, so the slug is the open project's. */
-  | { kind: "thread"; slug: string; title?: string };
+  | { kind: "thread"; slug: string; title?: string }
+  /** Claude's browser for a chat (nightshift item 508): the live picture
+   *  of the Playwright browser the app keeps for `session` between its
+   *  messages, with his own clicks and keys passed to it
+   *  (`ClaudeBrowserView.svelte`). One tab per chat. */
+  | { kind: "browser"; session: string };
 
 export type TabKind = TabContent["kind"];
 
@@ -203,6 +208,10 @@ export function parseContentDrag(json: string | null | undefined): TabContent | 
         if (typeof t.slug !== "string" || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(t.slug)) return null;
         return typeof t.title === "string" ? { kind: "thread", slug: t.slug, title: t.title } : { kind: "thread", slug: t.slug };
       }
+      case "browser": {
+        const b = c as { session?: unknown };
+        return typeof b.session === "string" ? { kind: "browser", session: b.session } : null;
+      }
       case "web": {
         const w = c as { url?: unknown; title?: unknown };
         if (typeof w.url !== "string" || !isWebUrl(w.url)) return null;
@@ -280,6 +289,8 @@ export function sameContent(a: TabContent, b: TabContent): boolean {
     return a.session === b.session && a.toolUseId === b.toolUseId;
   }
   if (a.kind === "web" && b.kind === "web") return a.url === b.url;
+  // One browser tab per chat (item 508).
+  if (a.kind === "browser" && b.kind === "browser") return a.session === b.session;
   // One tab per file (backlog 161), whichever chat's card opened it.
   if (a.kind === "file" && b.kind === "file") return a.path === b.path;
   // One tab per thread (backlog 292), whatever name it was opened under.
@@ -692,7 +703,11 @@ export function dropChat(ws: Workspace, session: string): Closed[] {
   for (const t of allTabs(ws)) {
     const c = t.content;
     if (
-      (c.kind === "chat" || c.kind === "aside" || c.kind === "attachment" || c.kind === "subagent") &&
+      (c.kind === "chat" ||
+        c.kind === "aside" ||
+        c.kind === "attachment" ||
+        c.kind === "subagent" ||
+        c.kind === "browser") &&
       c.session === session
     ) {
       out.push(close(ws, t.id));
@@ -709,17 +724,6 @@ export function dropProject(ws: Workspace, id: string): Closed[] {
   const out: Closed[] = [];
   for (const t of allTabs(ws)) {
     if (t.content.kind === "project" && t.content.id === id) out.push(close(ws, t.id));
-  }
-  return out;
-}
-
-/** Drop every tab holding a note (a deleted note, a vault moved away). */
-export function dropNote(ws: Workspace, scope: NoteScope, name: string): Closed[] {
-  const out: Closed[] = [];
-  for (const t of allTabs(ws)) {
-    if (t.content.kind === "note" && t.content.scope === scope && t.content.name === name) {
-      out.push(close(ws, t.id));
-    }
   }
   return out;
 }
@@ -769,6 +773,10 @@ export function tabTitle(
       return baseName(content.path);
     case "thread":
       return `◇ ${content.title?.trim() || content.slug}`;
+    case "browser": {
+      const s = sessions.find((x) => x.id === content.session);
+      return `Claude's browser · ${chatLabel(s, content.session.slice(0, 8))}`;
+    }
     case "web": {
       if (content.title?.trim()) return content.title.trim();
       try {
@@ -819,6 +827,8 @@ export function tabGlyph(content: TabContent): IconName {
       return "branch";
     case "web":
       return "ext";
+    case "browser":
+      return "globe";
     case "chat":
       return "chat";
   }

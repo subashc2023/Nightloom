@@ -543,4 +543,37 @@
     border-radius: 50%;
     background: var(--accent);
   }
+
+  /* Item 567 (Filament IV stage 10): the bar as a Filament IV menu — the
+     card colour, square-ish corners, a light shadow; the field on the
+     code ground in mono, the count in mono. Filament IV only (item 542's
+     gate); Classic keeps the rules above. */
+  :global(:where(:root:not([data-layout="classic"]))) .find-bar {
+    gap: 3px;
+    padding: 5px;
+    background: var(--raised);
+    border-radius: var(--r2);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .find-field {
+    height: 28px;
+    box-sizing: border-box;
+    background: var(--term);
+    border-color: var(--line2);
+    border-radius: var(--r1);
+    font-family: var(--mono);
+    font-size: 12.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .find-count {
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .find-btn {
+    width: 26px;
+    height: 26px;
+    border-radius: var(--r1);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .find-btn:hover:not(:disabled) {
+    background: var(--well2);
+  }
 </style>

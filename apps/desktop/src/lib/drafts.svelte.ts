@@ -134,7 +134,7 @@ export interface QueuedMessage {
    *  turn's key, and — once the turn took it — where (`after`). A row with
    *  no `after` when the turn ends goes back to being an ordinary held
    *  message, sent as the next turn; nothing is lost. */
-  inject?: { id: string; turn: string; after?: string; now?: boolean };
+  inject?: { id: string; turn: string; after?: string; now?: boolean; reply?: boolean };
 }
 
 /**
@@ -173,10 +173,24 @@ const EMPTY: Draft = Object.freeze({
 /**
  * The pending chat's key: `new:<project id>:<kind>`, `unfiled` for no
  * project. A pending chat has a project and a kind before it has an id,
- * and the draft belongs to the chat it will make.
+ * and the draft belongs to the chat it will make. A pending chat in a
+ * thread (item 510) has a key of its own, `…:<kind>:thread:<slug>`: what is
+ * typed under a thread's + and under the plain New chat never mix, and the
+ * plain key is unchanged, so saved drafts stay where they are.
  */
-export function newDraftKey(projectId: string | null | undefined, mode: ChatMode = "normal"): string {
-  return `${NEW_DRAFT_PREFIX}${projectId ?? UNFILED}:${mode}`;
+export function newDraftKey(
+  projectId: string | null | undefined,
+  mode: ChatMode = "normal",
+  thread: string | null = null,
+): string {
+  const key = `${NEW_DRAFT_PREFIX}${projectId ?? UNFILED}:${mode}`;
+  return thread ? `${key}:thread:${thread}` : key;
+}
+
+/** Whether a pending chat in thread `slug` holds words or chips (item 510):
+ *  the mark on the thread's row. Every kind a thread can be bound in. */
+export function hasThreadDraft(projectId: string | null | undefined, slug: string): boolean {
+  return hasBoxDraft(newDraftKey(projectId, "normal", slug)) || hasBoxDraft(newDraftKey(projectId, "incognito", slug));
 }
 
 /** The open chat's id, or the pending chat's key while none is open. */
@@ -184,8 +198,9 @@ export function draftKey(
   activeSessionId: string | null,
   projectId: string | null | undefined = null,
   mode: ChatMode = "normal",
+  thread: string | null = null,
 ): string {
-  return activeSessionId ?? newDraftKey(projectId, mode);
+  return activeSessionId ?? newDraftKey(projectId, mode, thread);
 }
 
 function readQueue(v: unknown): QueuedMessage[] {
@@ -753,7 +768,7 @@ export function takeBackQueued(key: string, id?: number): QueuedMessage | null {
 }
 
 /** The row went into the running turn (backlog 328). */
-export function markInjected(key: string, qid: number, inject: { id: string; turn: string }): void {
+export function markInjected(key: string, qid: number, inject: { id: string; turn: string; reply?: boolean }): void {
   const q = drafts[key]?.queue.find((r) => r.id === qid);
   if (!q) return;
   q.inject = { ...inject };

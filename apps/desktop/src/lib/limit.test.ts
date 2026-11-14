@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { RESUME_MARGIN_MS, limitPauseFrom, pauseLabel, resumeDelayMs, resumeMessage } from "./limit";
+import { RESUME_MARGIN_MS, limitPauseFrom, pauseLabel, resetLabel, resumeDelayMs, resumeMessage } from "./limit";
+
+// Item 611b: the reset reads 12-hour AM/PM whatever the locale (was "02:05 PM" / "14:05").
+describe("resetLabel (item 611b)", () => {
+  const now = new Date(2026, 10, 11, 9, 0).getTime();
+  it("is 12-hour today and carries the date on another day", () => {
+    expect(resetLabel({ resetsAtMs: new Date(2026, 10, 11, 14, 5).getTime() }, now)).toBe("2:05 PM");
+    expect(resetLabel({ resetsAtMs: new Date(2026, 10, 12, 0, 5).getTime() }, now)).toMatch(/ 12:05 AM$/);
+    expect(resetLabel({ resetsAtMs: null }, now)).toBe("later");
+  });
+});
 
 // A turn paused by the usage limit (nightshift backlog 164, pass 1): the
 // mark, the reset, the one Resume that never runs into an exhausted

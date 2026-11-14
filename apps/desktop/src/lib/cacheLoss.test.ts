@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   cacheBuiltWith,
+  canRestore,
+  kindAtCache,
+  restoreEngine,
   cacheLoss,
   cacheLossLine,
   cacheLossTitle,
@@ -107,9 +110,89 @@ describe("cacheLoss", () => {
     expect(cacheLoss(key(), pending({ approval: false, agentPlan: true }))).toEqual([]);
   });
 
-  it("warns of nothing off the Claude Code engine (not measured, blocker 1517)", () => {
-    expect(cacheLoss(key(), pending({ engine: "provider", agentModel: "opus" }))).toEqual([]);
-    expect(cacheLoss(key({ engine: "provider" }), pending({ agentModel: "opus" }))).toEqual([]);
+  // ~~"warns of nothing off the Claude Code engine (not measured, blocker
+  // 1517)"~~ — superseded by item 601, 2026-11-10: an engine switch is
+  // named either way, and the API engine compares its model.
+});
+
+// Item 601: one test per setting that changes (or was checked not to
+// change) the cached prompt.
+describe("cacheLoss, every setting (item 601)", () => {
+  const api = (k: Partial<CacheKey> = {}) => key({ engine: "api", model: "claude-opus-5-5", ...k });
+
+  it("names an engine switch from Claude Code to the API, alone", () => {
+    expect(cacheLoss(key(), pending({ engine: "provider", agentModel: "opus" }))).toEqual([
+      { what: "engine", text: "engine Claude Code → API", whole: true },
+    ]);
+  });
+
+  it("names an engine switch from the API to Claude Code", () => {
+    expect(cacheLoss(api(), pending())).toEqual([{ what: "engine", text: "engine API → Claude Code", whole: true }]);
+  });
+
+  it("on the API engine names a model change, read from the connection", () => {
+    expect(cacheLoss(api(), pending({ engine: "provider" }), { apiModel: "claude-haiku-5-5" })).toEqual([
+      { what: "model", text: "model claude-opus-5-5 → claude-haiku-5-5", whole: true },
+    ]);
+    expect(cacheLoss(api(), pending({ engine: "provider" }), { apiModel: "claude-opus-5-5" })).toEqual([]);
+    // No connection yet: nothing to compare, nothing guessed.
+    expect(cacheLoss(api(), pending({ engine: "provider" }))).toEqual([]);
+  });
+
+  it("names a Chat switched to Claude Code (its tools now declared), not restorable", () => {
+    expect(cacheLoss(key(), pending(), { builtKind: "chat", kind: "build" })).toEqual([
+      { what: "kind", text: "Chat → Claude Code", whole: true, restorable: false },
+    ]);
+    // Claude Code → Chat keeps the declaration, so the cache (backlog 144).
+    expect(cacheLoss(key(), pending(), { builtKind: "build", kind: "build" })).toEqual([]);
+    expect(cacheLoss(key(), pending(), { builtKind: "chat", kind: "chat" })).toEqual([]);
+  });
+
+  it("checks the browser, connectors, fork mode and effort and finds them kept (measured, 408)", () => {
+    // None of these is a PendingSettings field the compare reads: adding
+    // them to the draft leaves the answer empty.
+    const d = { ...pending(), agentChrome: true, agentClaudeAi: true, agentForkMode: true, agentEffort: "max" };
+    expect(cacheLoss(key(), d)).toEqual([]);
+  });
+});
+
+describe("the chip with an unrestorable change (item 601)", () => {
+  it("says what cannot go back, and that nothing is left to click when that is all", () => {
+    const kind = cacheLoss(key(), pending(), { builtKind: "chat", kind: "build" });
+    expect(canRestore(kind)).toBe(false);
+    expect(cacheLossTitle(kind, 1000, 120_001 + 60_000)).toContain("Nothing to click");
+    expect(cacheLossTitle(kind, 1000, 180_000)).toContain("cannot be put back");
+    const both = cacheLoss(key(), pending({ tools: false }), { builtKind: "chat", kind: "build" });
+    expect(canRestore(both)).toBe(true);
+    expect(cacheLossTitle(both, 1000, 180_000)).toContain("Click to put it back");
+  });
+
+  it("restores the engine through the caller and the API model through the draft", () => {
+    const d = pending({ engine: "provider" });
+    const eng = cacheLoss(key(), d);
+    expect(restoreEngine(key(), eng)).toBe("claude-code");
+    restoreCacheSettings(key(), eng, d);
+    expect(d.engine).toBe("provider"); // left to useEngine
+    const k = key({ engine: "api", model: "claude-opus-5-5" });
+    expect(restoreEngine(k, cacheLoss(k, pending()))).toBe("provider");
+    const p = pending({ engine: "provider", model: "" });
+    const m = cacheLoss(k, p, { apiModel: "claude-haiku-5-5" });
+    expect(restoreEngine(k, m)).toBeNull();
+    restoreCacheSettings(k, m, p);
+    expect(p.model).toBe("claude-opus-5-5");
+    expect(p.agentModel).toBe("haiku");
+  });
+});
+
+describe("kindAtCache (item 601)", () => {
+  it("reads the declared kind the cache's reply was built under", () => {
+    const born = (kind: "chat" | "build"): SessionEvent => ({ event: "session_created", id: "s", at: AT, kind });
+    const events: SessionEvent[] = [born("chat"), { event: "user_message", text: "q", at: AT }, reply(key())];
+    expect(kindAtCache(events)).toBe("chat");
+    const switched = [...events, { event: "kind", kind: "build", at: AT } as SessionEvent];
+    expect(kindAtCache(switched)).toBe("chat");
+    expect(kindAtCache([born("build"), reply(key())])).toBe("build");
+    expect(kindAtCache([born("chat"), reply(null)])).toBeNull();
   });
 });
 
@@ -153,5 +236,57 @@ describe("restoreCacheSettings", () => {
     restoreCacheSettings(askKey, cacheLoss(askKey, off), off);
     expect(off).toMatchObject({ approval: true, agentAsk: true, agentPlan: false });
     expect(cacheLoss(askKey, off)).toEqual([]);
+  });
+});
+
+describe("cacheLoss, the API engine's Tools and thinking (item 635)", () => {
+  const api = (k: Partial<CacheKey> = {}) =>
+    key({ engine: "api", model: "claude-opus-5-5", tools_switch: true, thinking: "default", ...k });
+  const onApi = (p: Partial<PendingSettings> = {}) =>
+    pending({ engine: "provider", thinkingMode: "default", budget: 8000, ...p });
+
+  it("names the Tools switch turned off or on", () => {
+    expect(cacheLoss(api(), onApi({ tools: false }))).toEqual([{ what: "tools", text: "tools off", whole: true }]);
+    expect(cacheLoss(api({ tools_switch: false }), onApi())).toEqual([{ what: "tools", text: "tools on", whole: true }]);
+    expect(cacheLoss(api(), onApi())).toEqual([]);
+  });
+
+  it("names a thinking change, in words", () => {
+    expect(cacheLoss(api(), onApi({ thinkingMode: "effort-high" }))).toEqual([
+      { what: "thinking", text: "thinking default → high effort", whole: true },
+    ]);
+    expect(cacheLoss(api({ thinking: "budget=8000" }), onApi({ thinkingMode: "budget", budget: 4000 }))[0].text).toBe(
+      "thinking budget 8000 → budget 4000",
+    );
+    expect(cacheLoss(api({ thinking: "budget=8000" }), onApi({ thinkingMode: "budget", budget: 8000 }))).toEqual([]);
+  });
+
+  it("names both, beside a model change", () => {
+    const got = cacheLoss(api(), onApi({ tools: false, thinkingMode: "effort-low" }), { apiModel: "claude-haiku-5-5" });
+    expect(got.map((c) => c.what)).toEqual(["model"]);
+    const both = cacheLoss(api(), onApi({ tools: false, thinkingMode: "effort-low" }));
+    expect(both.map((c) => c.text)).toEqual(["tools off", "thinking default → low effort"]);
+    expect(cacheLossLine(both)).toBe("cache will be lost · tools off, thinking default → low effort");
+  });
+
+  it("warns of neither on a key logged before the fields", () => {
+    const old = key({ engine: "api", model: "claude-opus-5-5" });
+    expect(cacheLoss(old, onApi({ tools: false, thinkingMode: "effort-high" }))).toEqual([]);
+  });
+
+  it("does not compare thinking when the draft carries none", () => {
+    expect(cacheLoss(api({ thinking: "effort=high" }), pending({ engine: "provider" }))).toEqual([]);
+  });
+
+  it("puts both back with the chip", () => {
+    const k = api({ tools_switch: true, thinking: "budget=12000" });
+    const d = onApi({ tools: false, thinkingMode: "effort-high" });
+    restoreCacheSettings(k, cacheLoss(k, d), d);
+    expect(d).toMatchObject({ tools: true, thinkingMode: "budget", budget: 12000 });
+    expect(cacheLoss(k, d)).toEqual([]);
+    const e = api({ thinking: "effort=medium" });
+    const d2 = onApi({ thinkingMode: "default" });
+    restoreCacheSettings(e, cacheLoss(e, d2), d2);
+    expect(d2.thinkingMode).toBe("effort-medium");
   });
 });

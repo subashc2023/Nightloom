@@ -7,6 +7,7 @@
     redoLabel,
     reviewProposal,
     runMenuCommand,
+    switchModel,
     switchModelAt,
     toggleSidebar,
     undoLabel,
@@ -16,6 +17,10 @@
   import { toggleTranscriptPref, transcript } from "./transcriptPrefs.svelte";
   import { thinkingToggleDead } from "./activity";
   import { MODEL_KEYS, providerLabel } from "./catalog";
+  import { cli } from "./cliUpdate.svelte";
+  import { modelList } from "./modelList.svelte";
+  import { modelSeen } from "./modelSeen.svelte";
+  import { currentCliVersion, familyRows, newestModels } from "./modelSeen";
   import type { IconName } from "./icons";
   import Icon from "./Icon.svelte";
   import Kbd from "./Kbd.svelte";
@@ -128,20 +133,29 @@
     const agent = app.draft.engine === "claude-code";
     // Claude Code: the CLI's aliases on their letters. The API engine: the
     // picker's models on ⌘⇧1…9, every provider alike (2026-09-14).
+    // Item 511: each alias's number on the CLI now, as the composer's menu.
+    const cliNow = currentCliVersion(cli.status?.installed, app.connection?.agent?.version);
+    // ~~One row per alias on its letter, then each family's newest by full
+    // id unless an alias shows it (511)~~ — item 518: one row per family,
+    // as the composer's menu (`familyRows`): `Switch to Fable 5.2`, the
+    // alias noted when it lags, its own row only while the chat is on it.
+    const aliases = [...new Set([...MODEL_KEYS.map((k) => k.alias), ...modelList.models])];
+    const keyOf = (a: string | null) => {
+      const k = a ? MODEL_KEYS.find((m) => m.alias === a) : undefined;
+      return k ? `${mod}${shift}${k.key}` : "";
+    };
     const rows: Row[] = agent
-      ? MODEL_KEYS.map((k) => {
-          const current = app.draft.agentModel === k.alias;
-          return {
-            id: `model:${k.alias}`,
-            label: `Switch to ${k.alias}`,
-            meta: current ? "current" : "the CLI resolves it",
-            icon: current ? "check" : "chevr",
-            key: `${mod}${shift}${k.key}`,
-            group: "Model",
-            run: () => go(() => runMenuCommand(`model_${k.alias}`)),
-            current,
-          };
-        })
+      ? familyRows(aliases, newestModels(app.modelLists["anthropic"]), modelSeen.byAlias, cliNow, app.draft.agentModel).map((f) => ({
+          id: `model:${f.key}`,
+          label: `Switch to ${f.label}`,
+          // ~~current ? "current" : "the CLI resolves it"~~ (item 511)
+          meta: f.detail.replace(/^· /, ""),
+          icon: f.on ? "check" : "chevr",
+          key: keyOf(f.capAlias),
+          group: "Model",
+          run: () => go(() => void switchModel(f.pick)),
+          current: f.on,
+        }))
       : pickerModels().map((m, i) => {
           const current = app.draft.model === m;
           return {
@@ -486,6 +500,14 @@
     const g = rows[i].group;
     return i === 0 || rows[i - 1].group !== g ? g : null;
   }
+
+  /** How many rows the group starting at `i` holds (item 570: the count
+   *  after a Filament IV heading's rule). */
+  function groupSize(i: number): number {
+    let n = 0;
+    while (i + n < rows.length && rows[i + n].group === rows[i].group) n++;
+    return n;
+  }
 </script>
 
 <svelte:window onkeydown={onKey} />
@@ -511,7 +533,7 @@
       <div class="list">
         {#each rows as r, i (r.id)}
           {@const g = heading(i)}
-          {#if g}<div class="g">{g}</div>{/if}
+          {#if g}<div class="g">{g}<i class="g-rule"></i><span class="g-n">{groupSize(i)}</span></div>{/if}
           <button
             class="row"
             class:on={i === selected}
@@ -637,10 +659,10 @@
     width: 20px;
     flex: none;
   }
+  /* The name never shrinks; the grey meta ellipsizes first (backlog 530). */
   .lbl {
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    flex: none;
   }
   .chk {
     display: inline-flex;
@@ -652,7 +674,9 @@
     font-size: 11px;
     color: var(--dim);
     white-space: nowrap;
-    flex: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
   }
   .empty {
     padding: 14px;
@@ -677,5 +701,126 @@
   .trigger {
     margin-left: auto;
     font-family: var(--mono);
+  }
+  /* Item 570: the heading's rule and count are Filament IV's alone. */
+  .g-rule,
+  .g-n {
+    display: none;
+  }
+
+  /* Filament IV stage 6 (item 570, f4-palette.png). Every rule behind
+     `:where(:root:not([data-layout="classic"]))`, so Classic keeps the
+     rules above untouched: a card in front, the query in an accent-edged
+     well, ruled mono headings with their counts, two-line rows (the name,
+     the grey line under it) with the key at the right, flat key caps. */
+  :global(:where(:root:not([data-layout="classic"]))) .pal {
+    width: 600px;
+    background: var(--raised);
+    border-radius: var(--r2);
+    box-shadow: 0 22px 56px rgba(0, 0, 0, 0.6);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .q {
+    margin: 10px 10px 4px;
+    padding: 9px 12px;
+    border: 1px solid var(--accent);
+    border-radius: var(--r1);
+    background: var(--term);
+    color: var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .qt {
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .list {
+    padding: 0 6px 6px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .g {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 8px 5px;
+    font: 500 10px var(--mono);
+    letter-spacing: 0.14em;
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .g-rule {
+    display: block;
+    flex: 1;
+    height: 1px;
+    background: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .g-n {
+    display: inline;
+    letter-spacing: 0;
+    color: var(--dim);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .row {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr) auto auto;
+    column-gap: 10px;
+    row-gap: 1px;
+    align-items: center;
+    padding: 7px 8px;
+    border-radius: var(--r1);
+    font-size: 13.5px;
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .row.on {
+    background: var(--well);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .row > :global(.ns-ico) {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .nokey {
+    display: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .lbl {
+    grid-column: 2;
+    grid-row: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .m {
+    grid-column: 2;
+    grid-row: 2;
+    margin: 0;
+    font-family: var(--sans);
+    font-size: 11.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .chk {
+    grid-column: 3;
+    grid-row: 1 / span 2;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .row > :global(.kbd) {
+    grid-column: 4;
+    grid-row: 1 / span 2;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pal :global(.kbd) {
+    border: none;
+    background: transparent;
+    padding: 0;
+    min-width: 0;
+    height: auto;
+    color: var(--dim);
+    font-size: 11px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .empty {
+    padding: 14px 8px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .f {
+    padding: 9px 14px;
+    font-family: var(--mono);
+    font-size: 10.5px;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    :global(:where(:root:not([data-layout="classic"]))) .pal {
+      animation: pal-rise 90ms ease-out;
+    }
+  }
+  @keyframes pal-rise {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
   }
 </style>

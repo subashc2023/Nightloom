@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hudIn, hudOut } from "./hudMenu";
   import { tip } from "./tip";
   import * as api from "./api";
   import {
@@ -37,6 +38,7 @@
   import { floatMenu } from "./floatMenu";
   import { viewGet, viewSet } from "./viewState";
   import { splitExt, whoFoldKey } from "./noteHead";
+  import { exactTime, relativeTime } from "./time";
 
   /**
    * Which note the editor has loaded, as `scope:name`. A plain variable, not
@@ -86,6 +88,19 @@
   const dirty = $derived(text !== saved);
   const open = $derived(note ?? app.openNote);
   const isVault = $derived(open?.scope === "knowledge");
+  /**
+   * Item 565: the head's facts line under Filament IV (f4-notes.png) —
+   * when the note was last saved (from the notes list the panel already
+   * holds), its words, and whether what is on screen is saved. Classic
+   * hides the line by CSS.
+   */
+  const listed = $derived.by(() => {
+    const o = open;
+    if (!o) return null;
+    const list = o.scope === "knowledge" ? app.vault : o.scope === "project" ? app.notes : [];
+    return list.find((n) => n.name === o.name) ?? null;
+  });
+  const words = $derived(text.trim() === "" ? 0 : text.trim().split(/\s+/).length);
   /**
    * Proposal mode: the dream suggested a replacement for this fixed file,
    * and the pane shows it as a diff against the saved text instead of the
@@ -768,8 +783,10 @@
   </div>
   {#if moreOpen}
     <div
-      class="more-menu"
+      class="more-menu hud-m"
       role="menu"
+      in:hudIn|global
+      out:hudOut|global
       tabindex="-1"
       aria-label="More"
       bind:this={moreEl}
@@ -813,6 +830,13 @@
       <span class="scope" class:vault={isVault}>{open?.scope === "knowledge" ? "knowledge" : (open?.scope ?? "project")}</span>
       {#if reviewing}<span class="proposed" use:tip={"The dream proposed a replacement; nothing is applied until you Accept it (or open it in the editor and save)"}>proposed change</span>{/if}
       {#if open && parentOf(open.name)}<span class="folder-part">{parentOf(open.name)} /</span>{/if}
+      {#if !media && !reviewing}
+        <span class="facts" aria-label="About this note">
+          {#if listed}<span>edited {relativeTime(listed.modified)}</span>{/if}
+          <span>{words} {words === 1 ? "word" : "words"}</span>
+          <span class="state" class:unsaved={dirty}>{dirty ? "unsaved" : "saved"}</span>
+        </span>
+      {/if}
     </div>
     {#if renaming && open}
         <input
@@ -907,7 +931,7 @@
         <span class="label">why</span>
         <p>{reviewing.entry.proposal.why}</p>
         <span class="when">
-          proposed by the dream · {new Date(reviewing.entry.proposal.at).toLocaleString()}
+          proposed by the dream · {exactTime(reviewing.entry.proposal.at)}
           {#if app.proposals[reviewing.scope].length > 1}
             · {app.proposals[reviewing.scope].length - 1} older pending
           {/if}
@@ -1667,15 +1691,166 @@
     border-style: dashed;
     color: var(--dim);
   }
-  /* Emitted by the markdown renderer, so scoped styles cannot reach it. */
-  :global(.note .preview a.wikilink) {
-    color: var(--accent);
-    text-decoration: none;
-    border-bottom: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
-    cursor: pointer;
+
+  /* ---- Filament IV (item 565, stage 8; f4-notes.png) ----
+     Look only, behind the layout gate; Classic keeps the rules above. Gated
+     CSS, not a Classic copy: this view holds the note being typed, and an
+     unmount on a layout switch must never touch it. */
+  .facts {
+    display: none;
   }
-  :global(.note .preview a.wikilink.broken) {
+  :global(:where(:root:not([data-layout="classic"]))) .facts {
+    display: inline-flex;
+    gap: 0.9rem;
+    margin-left: 0.4rem;
+    font-variant-numeric: tabular-nums;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .facts .state {
+    color: var(--signal);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .facts .state.unsaved {
+    color: var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .toprow {
+    background: var(--paper);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .tools {
+    background: var(--raised);
+    border-color: var(--line2);
+    border-radius: var(--r2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .seg {
+    border-radius: var(--r1);
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .seg.on {
+    background: var(--well);
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .back {
+    font-size: 12.5px;
+    border-radius: var(--r1);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .scrolls,
+  :global(:where(:root:not([data-layout="classic"]))) .head {
+    background: var(--paper);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .overlay > .head {
+    background: transparent;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .head .folder {
+    font-size: 12px;
+  }
+  /* The title in the light reading face, as the page titles elsewhere. */
+  :global(:where(:root:not([data-layout="classic"]))) .name,
+  :global(:where(:root:not([data-layout="classic"]))) .rename.big {
+    font-family: var(--sans);
+    font-weight: 300;
+    font-size: clamp(1.7rem, 4.4cqi, 2.35rem);
+    letter-spacing: -0.005em;
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .name .ext {
+    font-family: var(--mono);
+    font-size: 0.42em;
+    font-weight: 400;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .scope {
+    font: 500 10px var(--mono);
+    letter-spacing: 0.14em;
+    border-radius: var(--r1);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .proposed {
+    font: 500 10px var(--mono);
+    letter-spacing: 0.14em;
+    border-radius: var(--r1);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .head hr {
+    border-top-color: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .who {
+    font-size: 12.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .more-menu {
+    background: var(--raised);
+    border-radius: var(--r2);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .more-menu .it {
+    min-height: 30px;
+    border-radius: var(--r1);
+    color: var(--ink);
+    font-size: 13px;
+  }
+  /* Links, both directions: ruled capital labels, chips in the control
+     grammar. */
+  :global(:where(:root:not([data-layout="classic"]))) .links {
+    background: var(--sheet);
+    border-top-color: var(--line);
+    padding: 0.5rem clamp(1.2rem, 4.5cqi, 2.6rem);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .label {
+    font: 500 10px var(--mono);
+    letter-spacing: 0.14em;
+    color: var(--ink2);
+    opacity: 1;
+    margin-right: 0.4rem;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .chip {
+    min-height: 24px;
+    border: 1px solid var(--line2);
+    border-radius: var(--r1);
+    background: var(--well);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 12px;
+    padding: 0.1rem 0.55rem;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .chip:hover {
+    background: var(--well2);
+    border-color: var(--accent);
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .chip.broken {
+    background: transparent;
+    border-style: dashed;
     color: var(--dim);
-    border-bottom-style: dashed;
+  }
+  /* The draft's Save and Revert: a card in front; Save the one amber block. */
+  :global(:where(:root:not([data-layout="classic"]))) .draftpill {
+    background: var(--raised);
+    border-radius: var(--r2);
+    font-size: 12.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .draftpill .save {
+    min-height: 28px;
+    border-radius: var(--r1);
+    font-size: 12.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .draftpill .revert {
+    border-radius: var(--r1);
+    font-size: 12.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .why,
+  :global(:where(:root:not([data-layout="classic"]))) .actions {
+    background: var(--sheet);
+    border-color: var(--line);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .accept,
+  :global(:where(:root:not([data-layout="classic"]))) .load,
+  :global(:where(:root:not([data-layout="classic"]))) .ghost {
+    min-height: 28px;
+    border-radius: var(--r1);
+    font-size: 12.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .load,
+  :global(:where(:root:not([data-layout="classic"]))) .ghost {
+    background: var(--well);
+    border-color: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ghost.revert {
+    border-color: color-mix(in srgb, var(--failed) 55%, var(--line2));
   }
 </style>

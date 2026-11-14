@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hudIn, hudOut } from "./hudMenu";
   /*
    * The chat's thread, in its top bar (nightshift backlog 281, 2026-10-02 —
    * his "put the threads feature somewhere … more visible": he could not
@@ -93,24 +94,25 @@
 
 {#if open && chip}
   <div
-    class="thread-card"
+    class="thread-card hud-m"
     role="dialog"
     aria-label="Research thread"
     bind:this={popEl}
     use:portal
+    in:hudIn|global
+    out:hudOut|global
     style="top: {pos.top}px; left: {pos.left}px; width: {WIDTH}px"
   >
-    {#if bound}
+    {#if bound && app.activeSessionId !== null}
       <button
         class="tc-new"
-        disabled={app.busy || app.connecting}
         use:tip={newInThreadTip(bound)}
         onclick={() => void newInThread()}
       >
         <span class="tc-plus" aria-hidden="true">+</span>
         <span class="tc-new-text">
           <span class="tc-new-name">New chat in this thread</span>
-          <span class="tc-new-line">read order in the box, unsent · no wrap-up</span>
+          <span class="tc-new-line">nothing created until you send · no wrap-up</span>
         </span>
       </button>
       <div class="tc-sep"></div>

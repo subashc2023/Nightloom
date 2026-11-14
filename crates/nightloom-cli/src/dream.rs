@@ -91,7 +91,7 @@ pub async fn run(args: DreamArgs) -> Result<()> {
                     .collect();
                 println!(
                     "{DIM}  {} · {source} · chat {chat} · {}:{RESET} {}",
-                    p.obs.at.format("%Y-%m-%d %H:%M"),
+                    crate::stamp12(&p.obs.at),
                     p.obs.kind.as_str(),
                     p.obs.text
                 );

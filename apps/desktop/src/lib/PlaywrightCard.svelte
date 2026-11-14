@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { trackCard } from "./waitingNotice.svelte";
   // Playwright's approval card (nightshift backlog 367, blocker 1413): "the
   // model wants to use playwright, and it gave this purpose as a reason",
   // with his three buttons. Shaped like the permission card above it in
@@ -30,7 +31,7 @@
     done = true;
     const route = routeNote(decision, note, PLAYWRIGHT_DECLINED);
     if (route.enqueue) {
-      enqueueMessage(draftKey(app.activeSessionId, app.project?.id, app.pendingMode), route.enqueue, []);
+      enqueueMessage(draftKey(app.activeSessionId, app.project?.id, app.pendingMode, app.pendingThread), route.enqueue, []);
     }
     void resolveApproval(req.id, req.name, decision, route.reason).then(() => {
       // The rail's per-chat switch follows "Allow for this chat".
@@ -50,7 +51,7 @@
   }
 </script>
 
-<div class="ask" bind:this={box} tabindex="-1" role="group" aria-label="Claude wants to use its own browser (Playwright)">
+<div class="ask" bind:this={box} use:trackCard={req.id} tabindex="-1" role="group" aria-label="Claude wants to use its own browser (Playwright)">
   <div class="head">
     <span class="mark" aria-hidden="true">◎</span>
     <span>Claude wants to use its own browser <span class="dim">(Playwright)</span></span>

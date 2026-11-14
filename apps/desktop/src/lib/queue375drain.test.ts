@@ -7,7 +7,7 @@ import * as $ from "svelte/internal/client";
 import { draftKey, drafts, enqueueMessage, readDraft } from "./drafts.svelte";
 import { app, openChatKey, takeQueued, turnOwnsKey } from "./state.svelte";
 import composerSrc from "./Composer.svelte?raw";
-import stateSrc from "./state.svelte?raw";
+import stateSrc from "./state/queue.svelte?raw"; // item 641: replyToPending moved here
 
 // Nightshift backlog 375 (his report, 2026-10-18), review: drive the
 // drain the way the composer runs it across the real switch. He queued a
@@ -112,6 +112,7 @@ describe("375: a queued message never reaches another chat (the drain, driven)",
   it("the composer and the turn use these rules", () => {
     expect(composerSrc).toContain("const q = takeQueued(key, aside !== null, from);");
     expect(composerSrc.match(/sendKey !== key \|\| sendKey !== liveKey\(\)/g)?.length).toBe(2);
-    expect(stateSrc).toMatch(/const turn = fg;\s*if \(!turn \|\| !app\.busy \|\| app\.parked\) return;[^]*?if \(!turnOwnsKey\(turn, key\)\) return;/);
+    // Item 536: each return now records why (`noteHand`); the guard is the same.
+    expect(stateSrc).toMatch(/const turn = fg;\s*if \(!turn\) return noteHand[^]*?if \(app\.parked\) return noteHand[^]*?if \(!turnOwnsKey\(turn, key\)\) return noteHand\(key, q\.id, "other-chat"\);/);
   });
 });

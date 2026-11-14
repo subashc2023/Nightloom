@@ -2,7 +2,8 @@
   import { tip } from "./tip";
   import * as api from "./api";
   import { app } from "./state.svelte";
-  import { lineView, type StillRunningSegment } from "./stillRunning";
+  import Icon from "./Icon.svelte";
+  import { lineView, stopNote, type StillRunningSegment } from "./stillRunning";
   import { openTasksOn } from "./tasksFocus.svelte";
 
   /**
@@ -12,6 +13,14 @@
    * question. Each name opens the Running-tasks panel on its row; Stop asks
    * the turn's subagents to stop (329's `stop_subagents`); the line reads
    * the subagent rows live, so it turns to done or stopped as they end.
+   *
+   * Item 593 (his "make the stop button like an icon and like put it to
+   * the left of the still working notice … and then sends a notice to the
+   * main agent"): under Filament the Stop is the stop icon before the dot,
+   * with a tooltip; Classic keeps its word at the right (one markup, each
+   * layout hides the other's button). The Stop also hands the main agent
+   * Nightloom's note (`stopNote`): who was stopped, what each had done,
+   * its work kept, the next move its own.
    */
   let { seg }: { seg: StillRunningSegment } = $props();
 
@@ -24,7 +33,8 @@
     // the line once the CLI reports the stop.
     stopping = true;
     try {
-      await api.stopSubagents(seg.turn);
+      const note = stopNote(view.names, app.subagents, Date.now());
+      await api.stopSubagents(seg.turn, app.activeSessionId, note);
     } catch {
       // The turn had already ended: its subagents with it.
     }
@@ -32,6 +42,16 @@
 </script>
 
 <div class="still {view.state}" role="status">
+  {#if view.state === "running" && seg.turn}
+    <button
+      class="ns-icon-btn stop-ico"
+      aria-label={view.names.length === 1 ? "Stop this subagent" : "Stop these subagents"}
+      use:tip={view.names.length === 1
+        ? "Stop this subagent — its work so far is kept, and the main agent is told so it decides what next"
+        : "Stop these subagents — their work so far is kept, and the main agent is told so it decides what next"}
+      onclick={() => void stop()}><Icon name="stop" size={11} /></button
+    >
+  {/if}
   <span class="dot" aria-hidden="true"></span>
   <span class="words">
     <span class="head">{view.head}</span>
@@ -114,5 +134,22 @@
   .stop {
     flex: none;
     align-self: center;
+  }
+  /* Item 593: the icon under Filament, the word under Classic. The icon's
+     20px box sits on the first line (19px at 12.5px × 1.5), so a wrapped
+     line keeps it at the top, beside the dot. */
+  .stop-ico {
+    width: 20px;
+    height: 20px;
+    align-self: flex-start;
+    margin: -0.5px -2px -0.5px -4px;
+  }
+  .stop-ico:hover,
+  .stop-ico:focus-visible {
+    color: var(--accent);
+  }
+  :global(:where([data-layout="classic"])) .stop-ico,
+  :global(:where(:root:not([data-layout="classic"]))) .stop {
+    display: none;
   }
 </style>

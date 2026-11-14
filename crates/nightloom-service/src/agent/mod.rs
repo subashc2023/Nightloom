@@ -29,7 +29,9 @@
 //! [`Provider`]: nightloom_core::Provider
 
 pub mod ask;
+mod bash_tail;
 pub mod brief;
+pub mod budget;
 pub mod cli_session;
 pub mod connectors;
 pub mod fork;
@@ -78,6 +80,10 @@ use tokio_util::sync::CancellationToken;
 /// as a new one. The grace is ten times the measured time to exit, for a
 /// slower machine; past it the kill below is the backstop it always was.
 const INTERRUPT_GRACE: Duration = Duration::from_secs(5);
+
+/// How often a running chat turn looks at its budget ledger for a wake
+/// (item 538): a file read under its lock, nothing when no wake waits.
+const BUDGET_TICK: Duration = Duration::from_secs(2);
 
 /// How long to keep reading after a kill (item 466, 2026-10-29): what the
 /// CLI wrote before it is already in the pipe; this is only the backstop
@@ -366,11 +372,16 @@ pub struct AgentSpec {
     /// the brief for the Agent hook. `None` is the defaults.
     pub subagent_limits: Option<brief::SubagentLimits>,
     /// `--max-turns <n>`: how many model rounds one turn may take. `None`
-    /// is the CLI's default (unbounded). An aside sends 2
-    /// ([`AgentSpec::aside`]): its answering round, plus one in case the
-    /// model read something first — measured, a turn that calls a tool
-    /// under `--max-turns 1` runs the tool and then ends `error_max_turns`
-    /// with no answer (nightshift `081-report-2026-09-16.md`, M4).
+    /// is the CLI's default (unbounded). An aside keeps the chat's own
+    /// value ([`AgentSpec::aside`]) — ~~2: its answering round, plus one
+    /// in case the model read something first~~ (until item 675,
+    /// 2026-11-12: two rounds ended an aside that thought, read two things
+    /// and answered in `error_max_turns`), ~~then 20~~ (removed 2026-11-12,
+    /// his "why is there a max turns on asides in the first place gang":
+    /// an aside runs like the main chat) — measured, a turn
+    /// that calls a tool under `--max-turns 1` runs the tool and then ends
+    /// `error_max_turns` with no answer (nightshift
+    /// `081-report-2026-09-16.md`, M4).
     pub max_turns: Option<u32>,
     /// Keep `ANTHROPIC_API_KEY` out of the child's environment.
     ///
@@ -492,6 +503,11 @@ pub struct AgentSpec {
     /// already allows it. `None` when the chat has no Playwright server in
     /// its `mcp_config` (not installed, or a spec that is not a chat's).
     pub playwright: Option<own_browser::PlaywrightGate>,
+    /// `add_folder`'s gate is registered for a process no card waits on —
+    /// an aside's or a checkpoint fork's (nightshift item 613): the hook
+    /// refuses its call in words instead of deferring it. The gate itself
+    /// rides the brief's directory and binary (`folder_gate_entry`).
+    pub folder_side: bool,
     /// An incognito chat (nightshift backlog 405): set by
     /// [`apply_incognito`](Self::apply_incognito), never directly. On, the
     /// CLI loads no setting file — so not his `~/.claude/CLAUDE.md`, his
@@ -572,11 +588,13 @@ fn ask_matcher_under_chat_policy(matcher: &str, browser: bool) -> String {
 /// Playwright's tools stay out too, as in [`ask::MATCHER`] (backlog 367).
 /// The preview's tool stays out too (item 430): the policy's own deny
 /// entry refuses it, and an Ask card for it would be backlog 147's bug.
-const ASK_MCP_LESS_BROWSER: &str = "mcp__(?!claude-in-chrome__|playwright__|nightloom__preview).*";
+const ASK_MCP_LESS_BROWSER: &str =
+    "mcp__(?!claude-in-chrome__|playwright__|nightloom__preview|nightloom__add_folder).*";
 
 /// The same without the Browser: every MCP tool but Playwright's and the
 /// preview's.
-const ASK_MCP_LESS_PREVIEW: &str = "mcp__(?!playwright__|nightloom__preview).*";
+const ASK_MCP_LESS_PREVIEW: &str =
+    "mcp__(?!playwright__|nightloom__preview|nightloom__add_folder).*";
 
 /// The deny hook's command line. Single-quoted for the POSIX shell the CLI
 /// runs hooks through on macOS and Linux. On Windows, `cmd.exe`'s `echo`
@@ -617,6 +635,12 @@ pub const BROWSER_UNDER_CHAT_POLICY_REASON: &str = "This chat is a Chat now: the
 /// What the model reads when the policy refuses a call — the hook's
 /// `permissionDecisionReason`, delivered as the tool's error result.
 pub const CHAT_POLICY_REASON: &str = "This chat is a Chat now: the shell, the file-editing tools, subagents and plans are withdrawn. Reads, search and the web remain.";
+
+/// What follows `add_folder`'s gate on its command line: it fails closed,
+/// as Playwright's does — a hook that could not run must not let a folder
+/// be asked for unseen (exit 2 blocks the call; the line goes to the model).
+pub const FOLDER_GATE_FAIL_CLOSED: &str =
+    "|| { echo 'The folder was not added: its approval check could not run.' >&2; exit 2; }";
 
 /// What the Ask position adds to the command line.
 ///
@@ -763,6 +787,32 @@ impl AskMode {
 pub const READ_ONLY_TOOLS: [&str; 5] = ["Read", "Glob", "Grep", "WebFetch", "WebSearch"];
 
 impl AgentSpec {
+    /// `add_folder`'s `PreToolUse` entry (nightshift item 613): this
+    /// binary's `--permission-hook` on the chat's directory — the one the
+    /// brief's hook and the server's `--budget-dir` already name — on
+    /// [`crate::tools::add_folder::GATE_MATCHER`], failing closed. `None`
+    /// before a turn has pointed the directory (no tool is served then).
+    pub fn folder_gate_entry(&self) -> Option<serde_json::Value> {
+        let brief = self.brief.as_ref()?;
+        let binary = brief.hook.first()?;
+        if brief.dir.as_os_str().is_empty() {
+            return None;
+        }
+        let mut words = vec![
+            ask::shell_quote(binary),
+            ask::shell_quote("--permission-hook"),
+            ask::shell_quote(&brief.dir.to_string_lossy()),
+        ];
+        if self.folder_side {
+            words.push(ask::shell_quote(own_browser::SIDE_ARG));
+        }
+        words.push(FOLDER_GATE_FAIL_CLOSED.to_string());
+        Some(serde_json::json!({
+            "matcher": crate::tools::add_folder::GATE_MATCHER,
+            "hooks": [{ "type": "command", "command": words.join(" ") }]
+        }))
+    }
+
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
         Self {
             binary: "claude".into(),
@@ -797,6 +847,7 @@ impl AgentSpec {
             claude_ai_blocked: Vec::new(),
             browser: false,
             playwright: None,
+            folder_side: false,
             incognito: false,
             denied_reads: Vec::new(),
             extra_args: Vec::new(),
@@ -938,6 +989,17 @@ impl AgentSpec {
         self.argv(Shape::Resume)
     }
 
+    /// A side process — an aside, a checkpoint fork — launches a browser
+    /// of its own, as before item 508: it must not act on the page the
+    /// chat's browser is on while the chat, or the user, is using it.
+    fn own_browser_for_side(&mut self) {
+        if let Some(cfg) = &self.mcp_config
+            && let Some(cfg) = own_browser::with_endpoint(cfg, None)
+        {
+            self.mcp_config = Some(cfg);
+        }
+    }
+
     /// The spec for an **aside** (2026-09-16, nightshift backlog 081): a
     /// side question answered from the chat's context, off the chat's
     /// warm cache, kept out of its history — what the CLI's interactive
@@ -953,8 +1015,9 @@ impl AgentSpec {
     /// 242; `--tools ""` read **0** and wrote 10,360; `plan` mode read 0
     /// and wrote 44,176. So an aside is not toolless — it is harmless:
     /// `dontAsk` refuses anything that would prompt, a read inside the
-    /// workspace may still happen, and `--max-turns 2` gives such a read
-    /// its answering round. `--fork-session` keeps the chat's session
+    /// workspace may still happen, and it has no `--max-turns` of its own
+    /// (2, then 20, until 2026-11-12): it takes the chat's, unbounded.
+    /// `--fork-session` keeps the chat's session
     /// untouched (the next real turn saw nothing of the aside, M2) and
     /// `--no-session-persistence` keeps the fork off the disk (no file
     /// appeared, M3's last row). The Ask position's hook is not
@@ -966,7 +1029,6 @@ impl AgentSpec {
         let mut spec = self.clone();
         spec.fork_session = true;
         spec.no_session_persistence = true;
-        spec.max_turns = Some(2);
         spec.permission_mode = Some("dontAsk".into());
         if let Some(ask) = &mut spec.ask {
             ask.mode = AskMode::Aside;
@@ -979,6 +1041,8 @@ impl AgentSpec {
         if let Some(pw) = &mut spec.playwright {
             pw.side = true;
         }
+        spec.folder_side = true;
+        spec.own_browser_for_side();
         Some(spec)
     }
 
@@ -999,6 +1063,17 @@ impl AgentSpec {
             let e = e.trim();
             spec.effort = (!e.is_empty()).then(|| e.to_string());
         }
+        Some(spec)
+    }
+
+    /// A keep-warm ping's spec (nightshift backlog 582; [`crate::keep_warm`]):
+    /// the aside's shape — a fork of the chat's session that keeps no file
+    /// of its own, everything that shapes the cached prefix as the chat has
+    /// it — held to one round, since it has nothing to answer. `None`
+    /// without a session to fork.
+    pub fn keep_warm_ping(&self) -> Option<AgentSpec> {
+        let mut spec = self.aside()?;
+        spec.max_turns = Some(1);
         Some(spec)
     }
 
@@ -1031,6 +1106,8 @@ impl AgentSpec {
         if let Some(pw) = &mut spec.playwright {
             pw.side = true;
         }
+        spec.folder_side = true;
+        spec.own_browser_for_side();
         if let Some(ask) = &mut spec.ask {
             if ask.mode.is_auto() {
                 // An Auto chat's fork stays on `auto`, as it ran before
@@ -1361,6 +1438,33 @@ impl AgentSpec {
                 if let serde_json::Value::Array(pre) = pre {
                     pre.push(brief::hook_entry(&brief.hook, &brief.dir));
                 }
+                // The same hook on each user message (nightshift 561): a
+                // fresh usage line before the model answers, so a reply
+                // written before any tool call does not quote an older
+                // message's figure.
+                let prompt = hooks
+                    .entry(brief::PROMPT_EVENT)
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+                if let serde_json::Value::Array(prompt) = prompt {
+                    prompt.push(brief::prompt_hook_entry(&brief.hook, &brief.dir));
+                }
+            }
+        }
+        // `add_folder`'s gate (nightshift item 613): its own entry in every
+        // position, as Playwright's is, and last of the entries — wherever
+        // the chat's directory is known (the tool is served there,
+        // `--budget-dir`).
+        if let Some(entry) = self.folder_gate_entry() {
+            let hooks = settings
+                .entry("hooks")
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+            if let serde_json::Value::Object(hooks) = hooks {
+                let pre = hooks
+                    .entry("PreToolUse")
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+                if let serde_json::Value::Array(pre) = pre {
+                    pre.push(entry);
+                }
             }
         }
         if !self.auto_memory {
@@ -1542,6 +1646,20 @@ impl PassSpec {
 /// A real resume prints its first line within a second or two (M2: 0.7 s).
 pub const SILENT_RESUME: Duration = Duration::from_secs(30);
 
+/// How long a turn whose main thread is idle may stay open after the plan's
+/// usage limit was seen on its stream (nightshift backlog 543a, his report
+/// of 2026-11-10 ~6:30 AM: "Three helpers are running … and then silence").
+/// The reply had ended with helpers running in the background, so the
+/// process — and the turn — were held open for them (329); the limit then
+/// stopped the helpers, nothing more came, and the turn sat there, neither
+/// running nor paused, until he sent a message that drew the 429 itself.
+/// The grace is for what the CLI still does on its own — a helper's
+/// notification, the main thread's wake and its own 429 `result`, which
+/// end the turn the ordinary way; past it Nightloom closes the turn, and
+/// the outcome carries the limit, so the window marks the chat paused at
+/// once and resumes it at the reset.
+pub const LIMIT_GRACE: Duration = Duration::from_secs(20);
+
 pub struct ClaudeCodeAgent {
     spec: AgentSpec,
     /// The model id the CLI last resolved [`AgentSpec::model`] to.
@@ -1577,6 +1695,8 @@ pub struct ClaudeCodeAgent {
     /// its feed is closed ([`SILENT_RESUME`]); a field so a test can
     /// shorten it.
     silent_resume: Duration,
+    /// [`LIMIT_GRACE`]; a field so a test can shorten it.
+    limit_grace: Duration,
     /// The next message's process, started while he types (item 256,
     /// [`warm`]); taken by [`Self::run_turn`] when it is the same command.
     warm: warm::WarmSlot,
@@ -1593,6 +1713,7 @@ impl ClaudeCodeAgent {
             chair: std::sync::Mutex::new(None),
             timing: None,
             silent_resume: SILENT_RESUME,
+            limit_grace: LIMIT_GRACE,
             warm: warm::WarmSlot::default(),
             inbox: inbox::Inbox::default(),
         }
@@ -1751,6 +1872,14 @@ impl ClaudeCodeAgent {
         {
             self.spec.mcp_config = Some(cfg);
         }
+        // The chat's budget ledger (item 538): Nightloom's own server is
+        // told the directory, so its `set_budget` writes this chat's ledger.
+        if self.spec.brief.is_some()
+            && let Some(cfg) = &self.spec.mcp_config
+            && let Some(cfg) = budget::with_budget_dir(cfg, &dir)
+        {
+            self.spec.mcp_config = Some(cfg);
+        }
         if let Some(brief) = &mut self.spec.brief {
             brief.dir = dir;
             let _ = brief::write(&brief.dir, &brief.text);
@@ -1758,6 +1887,22 @@ impl ClaudeCodeAgent {
             let _ = brief::write_limits(&brief.dir, &self.spec.subagent_limits.unwrap_or_default());
             // And the chat's model, for "always the chat's model" (257).
             brief::write_chat_model(&brief.dir, self.spec.model.as_deref());
+        }
+    }
+
+    /// Attach the chat's Playwright server to the browser the app owns for
+    /// it (nightshift item 508): `endpoint` is the app's socket for this
+    /// chat ([`crate::claude_browser::Browsers::endpoint`]), `None` a
+    /// browser of the server's own, as before. Called before each turn,
+    /// after [`Self::set_ask_dir`]; a no-op on a chat with no Playwright.
+    pub fn set_browser_endpoint(&mut self, endpoint: Option<&std::path::Path>) {
+        if self.spec.playwright.is_none() {
+            return;
+        }
+        if let Some(cfg) = &self.spec.mcp_config
+            && let Some(cfg) = own_browser::with_endpoint(cfg, endpoint)
+        {
+            self.spec.mcp_config = Some(cfg);
         }
     }
 
@@ -1851,6 +1996,13 @@ impl ClaudeCodeAgent {
                 &brief.dir,
                 &self.spec.subagent_limits.unwrap_or_default(),
                 chair.map_or(brief::TurnPhase::Turn, brief::TurnPhase::Chair),
+            );
+            // A cap his message states (item 538): the backstop, in the
+            // fresh ledger until the model's own `set_budget` replaces it.
+            budget::declare_from_message(
+                &brief.dir,
+                &input.text,
+                chrono::Utc::now().timestamp_millis(),
             );
         }
         let mut translator = match &self.refused {
@@ -2020,6 +2172,15 @@ impl ClaudeCodeAgent {
             None => (spec.resume_args(), Stdio::null()),
         };
         let key = warm::Key::of(spec, &args);
+        // The running cost this process restores (item 675): a resumed or
+        // forked process's `total_cost_usd` starts from its session's, and
+        // the outcome carries only what this process added. Read before
+        // the message goes in; a process that waited (`warm`) restored the
+        // same line — nothing writes the chat's transcript between turns.
+        let restored = spec
+            .resume
+            .as_deref()
+            .and_then(crate::session_figures::restored_cost);
         // Never for a deferred resume: a waiting process is one that has
         // not yet been given its message, which a resume has none of.
         let taken = if chat && piped && input.is_some() {
@@ -2127,6 +2288,25 @@ impl ClaudeCodeAgent {
         let silent = tokio::time::sleep(self.silent_resume);
         tokio::pin!(silent);
         let mut watch_silence = piped && input.is_none();
+        // The usage limit seen on the stream (543a): when, and whether the
+        // main thread is idle (its `result` read, no command begun since).
+        let mut limit_at: Option<tokio::time::Instant> = None;
+        let mut main_idle = false;
+        let mut limit_ended = false;
+        // The budget's wakes (item 538): the chat's ledger is looked at on
+        // a slow tick while the turn's stdin is open, and a wake a helper's
+        // call left there is written to a main thread that sits idle.
+        let budget_dir = inbox
+            .as_ref()
+            .and(spec.brief.as_ref())
+            .map(|b| b.dir.clone())
+            .filter(|d| !d.as_os_str().is_empty());
+        let mut budget_tick = tokio::time::interval(BUDGET_TICK);
+        budget_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // Item 633: the running Bash commands' passing text.
+        let mut bash_tails = bash_tail::BashTails::new();
+        let mut tail_tick = tokio::time::interval(bash_tail::TICK);
+        tail_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
             // A subagent's end the main thread was not told of (406): the
@@ -2146,6 +2326,78 @@ impl ClaudeCodeAgent {
                         .and_then(|i| i.fire_wake_at(std::time::Instant::now()))
                     {
                         on_event(TurnEvent::Woke { text: w.text, agents: w.agents });
+                    }
+                    continue;
+                }
+                _ = tokio::time::sleep_until(
+                    limit_at.unwrap_or_else(tokio::time::Instant::now) + self.limit_grace,
+                ), if limit_at.is_some() => {
+                    // Still working (a command of the main thread's runs):
+                    // it meets the limit itself and says so; look again.
+                    // Or a background command of its own runs (543c): a
+                    // build is not killed for the limit — its end wakes the
+                    // main thread, whose 429 ends the turn.
+                    let commands = inbox
+                        .as_ref()
+                        .is_some_and(|i| !i.commands_running().is_empty());
+                    if !main_idle || commands {
+                        limit_at = Some(tokio::time::Instant::now());
+                        continue;
+                    }
+                    // Idle, held open for helpers the limit has stopped:
+                    // nothing more will come. Closed as a Stop closes it,
+                    // so the CLI ends the turn in its session file.
+                    limit_ended = true;
+                    interrupted = true;
+                    break;
+                }
+                _ = budget_tick.tick(), if budget_dir.is_some() => {
+                    if let (Some(dir), Some(inbox)) = (&budget_dir, &inbox) {
+                        let helpers = inbox.agents();
+                        let idle = inbox.idle_with_agents();
+                        let dir = dir.clone();
+                        let now_ms = chrono::Utc::now().timestamp_millis();
+                        let running = !helpers.is_empty();
+                        let d = dir.clone();
+                        // The wakes, and the chat's helpers when one is
+                        // still warm (item 693), by the main transcript
+                        // the hook recorded.
+                        let (wakes, earlier) = tokio::task::spawn_blocking(move || {
+                            let wakes = budget::take_wakes(&d, now_ms, running, idle);
+                            let earlier = (!wakes.is_empty())
+                                .then(|| brief::read_turn_budget(&d).and_then(|b| b.main_transcript))
+                                .flatten()
+                                .and_then(|t| brief::continuable_agents_lines(&t, now_ms));
+                            (wakes, earlier)
+                        })
+                        .await
+                        .unwrap_or_default();
+                        if let Some(text) =
+                            budget::with_earlier(budget::wake_text(&wakes, Some(&helpers)), earlier)
+                        {
+                            if inbox.note_if_idle(&text) {
+                                let top = wakes.iter().max_by_key(|w| w.at_ms);
+                                on_event(TurnEvent::BudgetWake {
+                                    text,
+                                    kind: wakes
+                                        .iter()
+                                        .map(|w| w.kind.as_str().to_string())
+                                        .collect(),
+                                    pct: top.map(|w| w.pct),
+                                    cap: top.and_then(|w| w.cap),
+                                });
+                            } else {
+                                // Not idle after all: back for the main
+                                // thread's next call, or the next look.
+                                budget::put_back(&dir, wakes);
+                            }
+                        }
+                    }
+                    continue;
+                }
+                _ = tail_tick.tick(), if bash_tails.active() => {
+                    for (tool_use_id, lines) in bash_tails.poll() {
+                        on_event(TurnEvent::ToolOutput { tool_use_id, lines });
                     }
                     continue;
                 }
@@ -2169,13 +2421,15 @@ impl ClaudeCodeAgent {
             match next {
                 Ok(Some(line)) => {
                     any_line = true;
+                    // Item 658: by the `type` key, not the line's start.
+                    let kind = protocol::line_type(&line);
                     if !init_seen && line.contains(r#""subtype":"init""#) {
                         init_seen = true;
                         if let Some(t) = &timing {
                             t.mark(crate::turn_timing::Mark::Init);
                         }
                     }
-                    if !event_seen && line.contains(r#""type":"stream_event""#) {
+                    if !event_seen && kind == Some("stream_event") {
                         event_seen = true;
                         if let Some(t) = &timing {
                             t.mark(crate::turn_timing::Mark::FirstEvent);
@@ -2229,8 +2483,7 @@ impl ClaudeCodeAgent {
                     if let Some(inbox) = &inbox
                         && inbox.idle_with_agents()
                         && (line.contains(r#""subtype":"task_started""#)
-                            || (line.starts_with(r#"{"type":"user""#)
-                                && line.contains(r#""is_error":true"#)))
+                            || (kind == Some("user") && line.contains(r#""is_error":true"#)))
                         && let Some(dir) = spec.brief.as_ref().map(|b| b.dir.clone())
                         && !dir.as_os_str().is_empty()
                         && let Some(note) = steer::take(
@@ -2257,13 +2510,46 @@ impl ClaudeCodeAgent {
                             );
                         }
                     }
-                    if held_stdin.is_some() && line.starts_with(r#"{"type":"result""#) {
+                    if held_stdin.is_some() && kind == Some("result") {
                         held_stdin = None;
                     }
-                    for event in translator.push(&line) {
+                    if kind == Some("result") {
+                        main_idle = true;
+                    } else if main_idle
+                        && kind == Some("system")
+                        && line.contains(r#""subtype":"init""#)
+                    {
+                        main_idle = false;
+                    }
+                    let events = translator.push(&line);
+                    let (started, ended) = translator.take_bash();
+                    for (call, task) in started {
+                        let session = translator.session_id().unwrap_or_default().to_string();
+                        bash_tails.start(call, task, session);
+                    }
+                    for call in ended {
+                        bash_tails.end(&call);
+                    }
+                    if limit_at.is_none() && translator.limited() {
+                        limit_at = Some(tokio::time::Instant::now());
+                    }
+                    for event in events {
                         if let TurnEvent::ToolCall { name, .. } = &event {
                             last_call = Some(name.clone());
                             stopped = None;
+                        }
+                        // Item 656: a foreground Bash call's spool is looked
+                        // for from the call — its `task_started` comes ~3 s in.
+                        if let TurnEvent::ToolCall { id, name, input } = &event
+                            && name == "Bash"
+                            && input.get("run_in_background").and_then(|v| v.as_bool())
+                                != Some(true)
+                            && let Some(session) = translator.session_id()
+                        {
+                            bash_tails.call(id.clone(), session.to_string());
+                        }
+                        if let TurnEvent::ToolResult { tool_use_id, .. } = &event {
+                            bash_tails.end(tool_use_id);
                         }
                         if let TurnEvent::ToolResult {
                             name,
@@ -2327,7 +2613,7 @@ impl ClaudeCodeAgent {
                         // `wind_down`'s, in the background: read to the end
                         // of the stream, a Stop that had already worked
                         // took the whole grace and was then called a kill.
-                        let closed = line.starts_with(r#"{"type":"result""#);
+                        let closed = protocol::line_type(&line) == Some("result");
                         for event in translator.push(&line) {
                             on_event(event);
                         }
@@ -2375,6 +2661,7 @@ impl ClaudeCodeAgent {
         if interrupted {
             wind_down(child, stderr_task);
             let mut outcome = translator.finish();
+            outcome.cost_usd = crate::session_figures::own_cost(outcome.cost_usd, restored);
             // The CLI's `result` on an interrupt is `is_error: true` with
             // `subtype: "error_during_execution"` (`terminal_reason:
             // "aborted_tools"` or `"aborted_streaming"`); that is the
@@ -2386,12 +2673,19 @@ impl ClaudeCodeAgent {
             outcome
                 .notices
                 .retain(|n| n != "ended: error_during_execution");
-            outcome.notices.push(stop.into());
+            // 543a: not his Stop — the limit left the turn nothing to wait for.
+            outcome.notices.push(if limit_ended {
+                "paused — the plan's usage limit stopped the helpers this turn was waiting on"
+                    .into()
+            } else {
+                stop.into()
+            });
             return Ok(outcome);
         }
         let status = child.wait().await?;
         let stderr = stderr_task.await.unwrap_or_default();
         let mut outcome = translator.finish();
+        outcome.cost_usd = crate::session_figures::own_cost(outcome.cost_usd, restored);
 
         // A stream that ended before its `result` line (backlog 332): what
         // arrived is kept, and the reply says it was cut off and why,
@@ -3033,7 +3327,9 @@ mod tests {
             .collect();
         assert_eq!(
             asks,
-            ["WebFetch|WebSearch|mcp__(?!claude-in-chrome__|playwright__|nightloom__preview).*"],
+            [
+                "WebFetch|WebSearch|mcp__(?!claude-in-chrome__|playwright__|nightloom__preview|nightloom__add_folder).*"
+            ],
             "{pre:?}"
         );
         // Item 430: the preview is the policy's to refuse, not the Ask
@@ -3049,7 +3345,7 @@ mod tests {
         assert!(
             pre.iter()
                 .any(|e| e["matcher"]
-                    == "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview).*"),
+                    == "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview|nightloom__add_folder).*"),
             "{pre:?}"
         );
     }
@@ -3076,6 +3372,9 @@ mod tests {
         alts.iter().any(|alt| match alt.strip_suffix(".*") {
             Some(p) => match p.split_once("(?!") {
                 Some((head, negs)) => {
+                    // Several lookaheads in a row read as one alternation
+                    // (item 613's second one).
+                    let negs = negs.replace(")(?!", "|");
                     name.starts_with(head)
                         && !negs
                             .trim_end_matches(')')
@@ -3150,6 +3449,28 @@ mod tests {
             .position(|x| x == "--system-prompt-snapshot")
             .expect("the flag");
         assert_eq!(a[i + 1], "off");
+    }
+
+    /// Item 543's check 6: a chat bound to a research thread mid-chat is
+    /// resumed with the thread's layer on the flag **and** the snapshot off
+    /// — the pair `connect_agent` sets after `prompt_hold::resolve` takes
+    /// the Thread layer (the desktop's
+    /// `a_thread_bound_mid_chat_is_taken_now_and_turns_the_snapshot_off`).
+    /// With the snapshot on, the CLI would reuse the prompt recorded on the
+    /// conversation's first turn and the layer would never reach it (174).
+    #[test]
+    fn a_thread_bound_mid_chat_reaches_the_resumed_cli() {
+        let mut s = spec();
+        s.resume = Some("cli-session-1".into());
+        s.append_system_prompt = Some("preamble\n\nTHREAD alpha: start here".into());
+        s.system_prompt_snapshot_off = true;
+        let a = s.args("next message");
+        let at = |flag: &str| a.iter().position(|x| x == flag).map(|i| a[i + 1].clone());
+        assert_eq!(at("--resume").as_deref(), Some("cli-session-1"));
+        assert!(
+            at("--append-system-prompt").is_some_and(|p| p.contains("THREAD alpha: start here"))
+        );
+        assert_eq!(at("--system-prompt-snapshot").as_deref(), Some("off"));
     }
 
     #[test]
@@ -3487,7 +3808,6 @@ mod tests {
             ("--append-system-prompt", "preamble"),
             ("--permission-prompt-tool", ask::PROMPT_TOOL),
             ("--permission-mode", "dontAsk"),
-            ("--max-turns", "2"),
         ] {
             let i = a
                 .iter()
@@ -3498,6 +3818,8 @@ mod tests {
         for flag in ["--fork-session", "--no-session-persistence"] {
             assert!(a.iter().any(|x| x == flag), "{flag} in {a:?}");
         }
+        // No turn cap of its own (2026-11-12, his ask): it runs like main.
+        assert!(!a.iter().any(|x| x == "--max-turns"), "{a:?}");
         // No hook: a deferral would park the aside on a prompt (the
         // settings object may still carry the chat's other switches). And
         // the tools are untouched — `--tools ""` is what goes cold.
@@ -3724,7 +4046,7 @@ mod tests {
         // The preview's tool is out too (item 430): the policy refuses it.
         assert_eq!(
             narrowed,
-            "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview).*"
+            "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview|nightloom__add_folder).*"
         );
         for withdrawn in [
             "Bash",
@@ -3757,7 +4079,7 @@ mod tests {
         assert_eq!(pre.len(), 3, "{v}");
         assert_eq!(
             pre[0]["matcher"],
-            "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview).*"
+            "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview|nightloom__add_folder).*"
         );
         assert_eq!(pre[1]["matcher"], CHAT_POLICY_MATCHER);
         assert_eq!(pre[2]["matcher"], PREVIEW_TOOL_MATCHER);
@@ -4185,9 +4507,21 @@ mod tests {
         );
         let a = agent.spec().args("hi");
         assert_eq!(brief_entries(&a), 1);
-        assert_eq!(entries(&a).len(), 1, "no Ask hook in Auto");
+        // Beside it only `add_folder`'s own gate (item 613): no Ask hook.
+        assert_eq!(entries(&a).len(), 2, "no Ask hook in Auto");
+        assert_eq!(
+            entries(&a)[1]["matcher"],
+            crate::tools::add_folder::GATE_MATCHER
+        );
         let cmd = entries(&a)[0]["hooks"][0]["command"].clone();
         assert_eq!(cmd, format!("'hook' '--subagent-hook' '{}'", dir.display()));
+        // Nightshift 561: the same command on each user message, no matcher.
+        let i = a.iter().position(|x| x == "--settings").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
+        let prompt = v["hooks"][brief::PROMPT_EVENT].as_array().unwrap();
+        assert_eq!(prompt.len(), 1, "{prompt:?}");
+        assert!(prompt[0].get("matcher").is_none(), "{prompt:?}");
+        assert_eq!(prompt[0]["hooks"][0]["command"], cmd);
         // Ask position: beside the Ask hook's entry, the Ask one first.
         let mut s = asking(AskMode::Ask);
         s.brief = Some(brief.clone());
@@ -4195,9 +4529,10 @@ mod tests {
         agent.set_ask_dir(dir.clone());
         let a = agent.spec().args("hi");
         let e = entries(&a);
-        assert_eq!(e.len(), 2, "{e:?}");
+        assert_eq!(e.len(), 3, "{e:?}");
         assert_eq!(e[0]["matcher"], ask::MATCHER);
         assert_eq!(e[1]["matcher"], brief::BRIEF_MATCHER);
+        assert_eq!(e[2]["matcher"], crate::tools::add_folder::GATE_MATCHER);
         // The aside of that chat carries no hook at all.
         let mut s = asking(AskMode::Ask);
         s.brief = Some(brief.clone());
@@ -4218,8 +4553,8 @@ mod tests {
         assert_eq!(brief_entries(&a), 1);
         assert_eq!(
             entries(&a).len(),
-            3,
-            "the policy's own entry, the preview's deny (item 430) and the budget's"
+            4,
+            "the policy's own entry, the preview's deny (item 430), the budget's and add_folder's gate (613)"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -4350,6 +4685,77 @@ mod tests {
             ask::MATCHER,
             "mcp__playwright__browser_click"
         ));
+    }
+
+    fn with_brief(mut s: AgentSpec) -> AgentSpec {
+        s.brief = Some(brief::BriefSpec {
+            hook: vec!["/app/nl".into(), "--subagent-hook".into()],
+            dir: PathBuf::from("/logs/ask/chat-3"),
+            text: String::new(),
+        });
+        s
+    }
+
+    /// Item 613: `add_folder`'s gate is on the line in every position, as
+    /// this binary's permission hook on the chat's directory, and the only
+    /// permission entry that matches the tool — the Ask hook leaves it out.
+    /// A side process's gate carries `--side`; no directory, no gate.
+    #[test]
+    fn the_add_folder_gate_is_registered_in_every_position() {
+        let mut bypass = with_brief(spec());
+        bypass.permission_mode = Some("bypassPermissions".into());
+        let mut chat = with_brief(asking(AskMode::Ask));
+        chat.chat_policy = true;
+        chat.browser = true;
+        let mut chat_plain = with_brief(asking(AskMode::Ask));
+        chat_plain.chat_policy = true;
+        let positions = [
+            ("bypass", bypass),
+            ("auto", with_brief(asking(AskMode::Auto))),
+            ("ask", with_brief(asking(AskMode::Ask))),
+            ("plan", with_brief(asking(AskMode::Plan))),
+            ("chat policy, browser", chat),
+            ("chat policy", chat_plain),
+        ];
+        let tool = "mcp__nightloom__add_folder";
+        for (name, s) in positions {
+            let pre = pre_entries(&s);
+            let gates: Vec<&serde_json::Value> = pre
+                .iter()
+                .filter(|e| {
+                    let m = e["matcher"].as_str().unwrap_or("");
+                    let cmd = e["hooks"][0]["command"].as_str().unwrap_or("");
+                    regex_like_matches(m, tool) && cmd.contains("--permission-hook")
+                })
+                .collect();
+            assert_eq!(gates.len(), 1, "{name}: {pre:?}");
+            assert_eq!(gates[0]["matcher"], crate::tools::add_folder::GATE_MATCHER);
+            assert_eq!(
+                gates[0]["hooks"][0]["command"],
+                format!(
+                    "'/app/nl' '--permission-hook' '/logs/ask/chat-3' {FOLDER_GATE_FAIL_CLOSED}"
+                ),
+                "{name}"
+            );
+        }
+        let mut side = with_brief(asking(AskMode::Auto));
+        side.folder_side = true;
+        let entry = side.folder_gate_entry().unwrap();
+        assert!(
+            entry["hooks"][0]["command"]
+                .as_str()
+                .unwrap()
+                .contains("'--side'")
+        );
+        assert!(spec().folder_gate_entry().is_none());
+        let mut pointless = with_brief(spec());
+        if let Some(b) = &mut pointless.brief {
+            b.dir = PathBuf::new();
+        }
+        assert!(pointless.folder_gate_entry().is_none());
+        // Every other MCP tool still asks under Ask.
+        assert!(regex_like_matches(ask::MATCHER, "mcp__nightloom__remember"));
+        assert!(!regex_like_matches(ask::MATCHER, tool));
     }
 
     /// An aside and a checkpoint fork keep the gate but never defer
@@ -5176,18 +5582,24 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"num_turns":
     /// - `slow_ack`: it takes 3 s to write its `result` and exit (a CLI
     ///   whose abort waits on a stalled connection);
     /// - `lingers`: it writes its `result` at once but its process stays up
-    ///   8 s, holding stdout (an exit held up on the network);
+    ///   8 s, holding stdout (an exit held up on the network); `lingers_322`
+    ///   the same with 2.1.322's `result` line, `type` not first (658);
     /// - `ignores`: it ignores the interrupt (a stalled CLI);
     /// - `ignores_orphan`: as `ignores`, and a child it started holds its
     ///   pipes 8 s past the kill.
     #[cfg(unix)]
     fn stop_stand_in(kind: &str) -> String {
         let init = r#"printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"m","permissionMode":"auto","session_id":"stop-466"}'"#;
-        let result = r#"printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_streaming","num_turns":1,"session_id":"stop-466","stop_reason":null,"usage":{"input_tokens":0,"output_tokens":0}}'"#;
+        let result = if kind == "lingers_322" {
+            // Item 658: CLI 2.1.322's order, `type` not first.
+            r#"printf '%s\n' '{"duration_api_ms":0,"stop_reason":null,"session_id":"stop-466","usage":{"input_tokens":0,"output_tokens":0},"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_streaming","num_turns":1}'"#
+        } else {
+            r#"printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_streaming","num_turns":1,"session_id":"stop-466","stop_reason":null,"usage":{"input_tokens":0,"output_tokens":0}}'"#
+        };
         let on_int = match kind {
             "prompt" => "trap 'res; exit 0' INT",
             "slow_ack" => "trap 'sleep 3; res; exit 0' INT",
-            "lingers" => "trap 'res; sleep 8; exit 0' INT",
+            "lingers" | "lingers_322" => "trap 'res; sleep 8; exit 0' INT",
             // Ignores it, and a process it started holds its stdout and
             // stderr 8 s past its kill (an MCP server, a hook).
             "ignores_orphan" => "trap '' INT\nsleep 8 &",
@@ -5220,6 +5632,174 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"num_turns":
         (at.expect("stopped at init").elapsed(), outcome.notices)
     }
 
+    /// Item 543a (his report, 2026-11-10 ~6:30 AM): the reply ended with a
+    /// helper running in the background, the limit then rejected the
+    /// helper's request, and nothing more came — the turn sat open, neither
+    /// running nor paused. The stand-in is that stream: `init`, a helper's
+    /// `task_started`, the main `result`, a rejected `rate_limit_event`,
+    /// then silence with the process up. The turn now ends by itself after
+    /// the grace, carrying the limit and its reset, with the helper named.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_turn_idle_on_helpers_the_limit_stopped_ends_paused_by_itself() {
+        let dir = std::env::temp_dir().join(format!("nightloom-543-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let body = r#"res() { printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_streaming","num_turns":1,"session_id":"lim-543","stop_reason":null,"usage":{"input_tokens":0,"output_tokens":0}}'; }
+printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"m","permissionMode":"auto","session_id":"lim-543"}'
+printf '%s\n' '{"type":"system","subtype":"task_started","task_id":"a8bb","tool_use_id":"toolu_HELPER","description":"funding scan","task_type":"local_agent"}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"Three helpers are running.","session_id":"lim-543","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}'
+printf '%s\n' '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1794321000,"rateLimitType":"five_hour","overageStatus":"rejected","isUsingOverage":false}}'
+trap 'res; exit 0' INT
+sleep 30 >/dev/null 2>&1 & wait
+wait
+"#;
+        let mut s = AgentSpec::new(&dir);
+        s.binary = stand_in(&dir, body);
+        let mut agent = ClaudeCodeAgent::new(s);
+        agent.limit_grace = Duration::from_millis(300);
+        let cancel = CancellationToken::new();
+        let began = std::time::Instant::now();
+        let outcome = agent.run_turn("go", &cancel, &mut |_| {}).await.unwrap();
+        let took = began.elapsed();
+        assert!(took < Duration::from_secs(5), "the turn hung: {took:?}");
+        let hit = outcome.limit.expect("the limit is on the outcome");
+        assert_eq!(hit.resets_at, Some(1794321000));
+        assert_eq!(hit.window.as_deref(), Some("five_hour"));
+        assert!(!outcome.is_error);
+        assert_eq!(
+            outcome.notices,
+            vec![
+                "paused — the plan's usage limit stopped the helpers this turn was waiting on"
+                    .to_string()
+            ]
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Item 538 (539's missing piece): a main thread that sits idle while
+    /// its helper runs is woken when usage nears the message's cap. The
+    /// stand-in is that stream — `init`, a helper's `task_started`, the main
+    /// `result` — and then it reads one more line from stdin and ends. His
+    /// message states the cap (the backstop writes it), the chat's wire
+    /// reading is within five points of it, and the drive loop's look
+    /// writes Nightloom's line, once, naming the helper.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_idle_main_thread_is_woken_near_the_cap_while_helpers_run() {
+        let dir = std::env::temp_dir().join(format!("nightloom-538-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let got = dir.join("woke.txt");
+        let body = r#"read -r first
+printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"m","permissionMode":"auto","session_id":"cap-538"}'
+printf '%s\n' '{"type":"system","subtype":"task_started","task_id":"a8bb","tool_use_id":"toolu_HELPER","description":"funding scan","task_type":"local_agent"}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"A helper is running.","session_id":"cap-538","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}'
+read -r wake
+printf '%s\n' "$wake" > 'GOT'
+printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"m","permissionMode":"auto","session_id":"cap-538"}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"Told it to wrap up.","session_id":"cap-538","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}'
+"#
+        .replace("GOT", &got.to_string_lossy());
+        let mut s = AgentSpec::new(&dir);
+        s.binary = stand_in(&dir, &body);
+        s.brief = Some(BriefSpec {
+            hook: vec!["x".into()],
+            dir: dir.clone(),
+            text: "<nightloom-subagent-brief>b</nightloom-subagent-brief>".into(),
+        });
+        // Every limit off, as he runs: only the cap his message states binds.
+        let mut limits = brief::SubagentLimits::default();
+        limits.off.stop_at = true;
+        limits.off.budget_pct = true;
+        s.subagent_limits = Some(limits);
+        // The chat's own reading, stamped ahead so this machine's gauge
+        // never outranks it.
+        brief::write_usage(
+            &dir,
+            46,
+            None,
+            chrono::Utc::now().timestamp_millis() + 60_000,
+        );
+        let agent = ClaudeCodeAgent::new(s);
+        let cancel = CancellationToken::new();
+        let mut woke = Vec::new();
+        let began = std::time::Instant::now();
+        agent
+            .run_turn("use up to 50% of the 5h limit", &cancel, &mut |e| {
+                if let TurnEvent::BudgetWake {
+                    text,
+                    kind,
+                    pct,
+                    cap,
+                } = e
+                {
+                    woke.push((text, kind, pct, cap));
+                }
+            })
+            .await
+            .unwrap();
+        assert!(
+            began.elapsed() < Duration::from_secs(20),
+            "the turn hung: {:?}",
+            began.elapsed()
+        );
+        assert_eq!(woke.len(), 1, "{woke:?}");
+        let (text, kind, pct, cap) = &woke[0];
+        assert_eq!(
+            (kind.as_slice(), *pct, *cap),
+            (&["near".to_string()][..], Some(46), Some(50))
+        );
+        assert!(
+            text.starts_with("[Nightloom, not from Swaraag: usage is at 46%")
+                && text.contains("`a8bb` (\"funding scan\")")
+                && text.contains("SendMessage"),
+            "{text}"
+        );
+        // The line reached the process's stdin, as a user line.
+        let line = std::fs::read_to_string(&got).unwrap();
+        assert!(
+            line.contains(r#""type":"user""#) && line.contains("Nightloom, not from Swaraag"),
+            "{line}"
+        );
+        // Once: the ledger has it as fired, and nothing waits.
+        let b = brief::read_turn_budget(&dir).unwrap();
+        assert_eq!(
+            b.cap.as_ref().map(|c| (c.percent, c.source.as_str())),
+            Some((50, "message"))
+        );
+        assert!(b.wakes_fired.iter().any(|k| k == "near") && b.wakes_pending.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 543a: a turn that is still working when the limit is seen is not cut
+    /// short — the main thread's own 429 ends it the ordinary way. The
+    /// stand-in sleeps 0.9 s, off the 200 ms grace's re-arm grid: at exactly
+    /// 1 s its result raced the timer under load (blocker 1961).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_working_turn_is_not_closed_by_the_limit_grace() {
+        let dir = std::env::temp_dir().join(format!("nightloom-543b-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let body = r#"printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"m","permissionMode":"auto","session_id":"lim-543b"}'
+printf '%s\n' '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1794321000,"rateLimitType":"five_hour","overageStatus":"rejected","isUsingOverage":false}}'
+sleep 0.9
+printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"num_turns":1,"result":"limit","session_id":"lim-543b","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}'
+"#;
+        let mut s = AgentSpec::new(&dir);
+        s.binary = stand_in(&dir, body);
+        let mut agent = ClaudeCodeAgent::new(s);
+        agent.limit_grace = Duration::from_millis(200);
+        let cancel = CancellationToken::new();
+        let outcome = agent.run_turn("go", &cancel, &mut |_| {}).await.unwrap();
+        assert!(outcome.limit.is_some());
+        assert!(outcome.result_seen);
+        assert!(
+            !outcome.notices.iter().any(|n| n.starts_with("paused —")),
+            "{:?}",
+            outcome.notices
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// Item 466: a CLI that closes the turn on the interrupt but is slow to
     /// exit ends the Stop at its `result` line — not 5 s later, and not
     /// called a kill.
@@ -5245,6 +5825,303 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"num_turns":
             t < INTERRUPT_GRACE + KILLED_DRAIN + Duration::from_millis(700),
             "{t:?}"
         );
+    }
+
+    /// Item 656's stand-in: the lines CLI 2.1.322 printed for one 8-second
+    /// foreground `./tick.sh` run with the app's own flags (measured
+    /// 2026-11-11, `656-report-2026-11-11.md`), verbatim but for the ids, and
+    /// the spool written beside them as the CLI writes it — `task_started`
+    /// arrives ~3 s after the command started, the spool already has lines,
+    /// and it is deleted before `task_notification`. The turn goes through
+    /// the real read loop: the tail, its tick, the event.
+    #[cfg(unix)]
+    async fn bash_tail_turn(result_line: &str, announced: bool) -> Vec<TurnEvent> {
+        let tag = uuid::Uuid::new_v4().simple().to_string();
+        let dir = std::env::temp_dir().join(format!("nightloom-656-{tag}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let session = format!("s656-{tag}");
+        let task = format!("b656{}", &tag[..8]);
+        // Where the CLI keeps it: `/tmp/claude-<uid>/<cwd slug>/<session>/tasks/`.
+        let spool_root = std::path::PathBuf::from(format!("/tmp/claude-656t-{tag}"));
+        let tasks = spool_root.join("-cwd-slug").join(&session).join("tasks");
+        let spool = tasks.join(format!("{task}.output"));
+        let lines = [
+            format!(
+                r#"{{"type":"system","subtype":"init","cwd":"x","session_id":"{session}","tools":["Bash"],"mcp_servers":[],"model":"claude-haiku-5-5","permissionMode":"default"}}"#
+            ),
+            format!(
+                r#"{{"type":"assistant","message":{{"model":"claude-haiku-5-5","id":"msg_011CgxW3PeGLfahq5oDdNbmm","type":"message","role":"assistant","content":[{{"type":"tool_use","id":"toolu_656","name":"Bash","input":{{"command":"./tick.sh","description":"Run tick.sh in the foreground from the working directory","run_in_background":false}},"caller":{{"type":"direct"}}}}],"container":null,"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{{"input_tokens":2,"cache_creation_input_tokens":12252,"cache_read_input_tokens":24142,"output_tokens":17}}}},"parent_tool_use_id":null,"session_id":"{session}","uuid":"a0ec972d-bcca-4050-bf9d-ea2a4aa20a23"}}"#
+            ),
+            format!(
+                r#"{{"type":"system","subtype":"task_started","task_id":"{task}","run_id":"0mwd4gula-88b450f7","tool_use_id":"toolu_656","description":"Run tick.sh in the foreground from the working directory","is_backgrounded":false,"task_type":"local_bash","uuid":"f248cd06-05f2-4472-a088-384d9dbf23ae","session_id":"{session}"}}"#
+            ),
+            format!(
+                r#"{{"type":"system","subtype":"task_notification","task_id":"{task}","run_id":"0mwd4gula-88b450f7","tool_use_id":"toolu_656","status":"completed","output_file":"","summary":"Run tick.sh in the foreground from the working directory","uuid":"61e5eac5-3bde-4a8f-9de9-4493b9b5836e","session_id":"{session}"}}"#
+            ),
+            format!(
+                r#"{{"type":"user","message":{{"role":"user","content":[{{"tool_use_id":"toolu_656","type":"tool_result","content":"line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8","is_error":false}}]}},"parent_tool_use_id":null,"session_id":"{session}","uuid":"c6efa4b2-ff34-4ec9-831b-9aabafffe610"}}"#
+            ),
+            result_line.replace("SESSION", &session),
+        ];
+        for (i, l) in lines.iter().enumerate() {
+            // A command over before the CLI would announce it (< ~3 s):
+            // no `task_started`, no `task_notification`.
+            let l = if !announced && (i == 2 || i == 3) {
+                String::new()
+            } else {
+                format!("{l}\n")
+            };
+            std::fs::write(dir.join(format!("l{i}.json")), l).unwrap();
+        }
+        let d = dir.display();
+        let (t, s) = (tasks.display(), spool.display());
+        let body = format!(
+            r#"read -r line
+cat '{d}/l0.json' '{d}/l1.json'
+mkdir -p '{t}'; : > '{s}'
+for i in 1 2; do echo "line $i" >> '{s}'; sleep 0.4; done
+cat '{d}/l2.json'
+for i in 3 4 5 6 7 8; do echo "line $i" >> '{s}'; sleep 0.4; done
+rm -f '{s}'
+cat '{d}/l3.json' '{d}/l4.json' '{d}/l5.json'
+cat >/dev/null
+"#
+        );
+        let mut spec = AgentSpec::new(&dir);
+        spec.binary = stand_in(&dir, &body);
+        let agent = ClaudeCodeAgent::new(spec);
+        let cancel = CancellationToken::new();
+        let mut events = Vec::new();
+        let ended = {
+            let mut on_event = |e| events.push(e);
+            let run = agent.run_turn("run it", &cancel, &mut on_event);
+            tokio::time::timeout(Duration::from_secs(20), run).await
+        };
+        let _ = std::fs::remove_dir_all(&spool_root);
+        let _ = std::fs::remove_dir_all(&dir);
+        ended.expect("the turn ends").unwrap();
+        events
+    }
+
+    /// Item 656: the read loop turns the running command's spool into
+    /// `ToolOutput` events — after its `task_started`, before its result.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_running_foreground_bash_passes_its_spool_as_tool_output() {
+        let events = bash_tail_turn(
+            r#"{"type":"result","subtype":"success","is_error":false,"num_turns":2,"result":"done","session_id":"SESSION","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}"#,
+            true,
+        )
+        .await;
+        let outs: Vec<&Vec<String>> = events
+            .iter()
+            .filter_map(|e| match e {
+                TurnEvent::ToolOutput { tool_use_id, lines } if tool_use_id == "toolu_656" => {
+                    Some(lines)
+                }
+                _ => None,
+            })
+            .collect();
+        eprintln!("656 tool_output events: {outs:?}");
+        assert!(outs.len() >= 2, "{outs:?}");
+        // From the call, not from `task_started` (656): line 1 alone first.
+        assert_eq!(outs[0], &vec!["line 1".to_string()], "{outs:?}");
+        assert!(outs.iter().all(|l| l.len() <= bash_tail::LINES));
+        let last_out = events
+            .iter()
+            .rposition(|e| matches!(e, TurnEvent::ToolOutput { .. }))
+            .unwrap();
+        let result = events
+            .iter()
+            .position(|e| matches!(e, TurnEvent::ToolResult { .. }))
+            .unwrap();
+        assert!(last_out < result, "no passing text after the result");
+    }
+
+    /// Item 656: a command over before the CLI announces it (no
+    /// `task_started` at all — most commands) still passes its text.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_command_never_announced_still_passes_its_text() {
+        let events = bash_tail_turn(
+            r#"{"type":"result","subtype":"success","is_error":false,"num_turns":2,"result":"done","session_id":"SESSION","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}"#,
+            false,
+        )
+        .await;
+        assert!(
+            events.iter().any(|e| matches!(e, TurnEvent::ToolOutput { tool_use_id, .. } if tool_use_id == "toolu_656")),
+            "{events:?}"
+        );
+    }
+
+    /// Item 656 with the real CLI (`cargo test -p nightloom-service --lib
+    /// live_656 -- --ignored --nocapture`): one Haiku turn running a 3-line,
+    /// 1.5-second script — under the ~3 s the CLI waits before announcing a
+    /// command — allowed by one rule, nothing else. Prints the events.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore]
+    async fn live_656_a_short_command_passes_its_text_with_the_real_cli() {
+        let dir = std::env::temp_dir().join(format!("nightloom-656-live-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("tick.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nfor i in 1 2 3; do echo line $i; sleep 0.5; done\n",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut spec = AgentSpec::new(&dir);
+        spec.binary = "claude".into();
+        spec.model = Some("haiku".into());
+        spec.no_session_persistence = true;
+        spec.permission_mode = Some("default".into());
+        spec.allowed_tools = vec!["Bash(./tick.sh)".into()];
+        let agent = ClaudeCodeAgent::new(spec);
+        let cancel = CancellationToken::new();
+        let t0 = std::time::Instant::now();
+        let mut seen = Vec::new();
+        {
+            let mut on_event = |e: TurnEvent| match &e {
+                TurnEvent::ToolCall { name, .. } => {
+                    seen.push(format!("{:.2} call {name}", t0.elapsed().as_secs_f64()))
+                }
+                TurnEvent::ToolOutput { lines, .. } => seen.push(format!(
+                    "{:.2} output {lines:?}",
+                    t0.elapsed().as_secs_f64()
+                )),
+                TurnEvent::ToolResult { .. } => {
+                    seen.push(format!("{:.2} result", t0.elapsed().as_secs_f64()))
+                }
+                TurnEvent::ToolDenied { .. } => {
+                    seen.push(format!("{:.2} denied", t0.elapsed().as_secs_f64()))
+                }
+                _ => {}
+            };
+            agent
+                .run_turn(
+                    "Run exactly this Bash command in the foreground, then reply done: ./tick.sh",
+                    &cancel,
+                    &mut on_event,
+                )
+                .await
+                .unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        for s in &seen {
+            println!("656 live: {s}");
+        }
+        assert!(seen.iter().any(|s| s.contains("output")), "{seen:?}");
+    }
+
+    /// Item 656, found on the way: 2.1.322's `result` line no longer starts
+    /// with `"type"` (measured: `{"duration_api_ms":…,"type":"result",…}`).
+    /// The turn still ends on it, and the command still passes its text.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_result_line_whose_type_is_not_first_still_ends_the_turn() {
+        let events = bash_tail_turn(
+            r#"{"duration_api_ms":2219,"stop_reason":"end_turn","session_id":"SESSION","total_cost_usd":0.004,"usage":{"input_tokens":1,"output_tokens":1},"type":"result","subtype":"success","is_error":false,"num_turns":2,"result":"done"}"#,
+            true,
+        )
+        .await;
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, TurnEvent::ToolOutput { .. }))
+        );
+    }
+
+    /// Item 658: the Stop's drain ends at 2.1.322's `result` line too
+    /// (`type` not first), not at the kill 5 s later.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stop_ends_at_a_result_line_whose_type_is_not_first() {
+        let (t, notices) = time_stop("lingers_322").await;
+        assert!(t < Duration::from_secs(1), "{t:?}");
+        assert_eq!(
+            notices,
+            vec!["interrupted — Claude Code ended the turn".to_string()]
+        );
+    }
+
+    /// Item 658: a turn with attachments (stdin held, no inbox, 332) gets
+    /// its EOF at the `result` line in either key order, so a CLI that
+    /// reads its stdin to the end exits; before, 2.1.322's order held the
+    /// stdin open and the turn never ended.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_attachment_turn_closes_its_stdin_at_the_result_in_either_order() {
+        for result in [
+            r#"{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"ok","session_id":"att-658","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}"#,
+            r#"{"duration_api_ms":12,"stop_reason":"end_turn","session_id":"att-658","usage":{"input_tokens":1,"output_tokens":1},"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"ok"}"#,
+        ] {
+            let dir = std::env::temp_dir().join(format!("nightloom-658a-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let body = format!(
+                "read -r line\nprintf '%s\\n' '{{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"x\",\"tools\":[],\"mcp_servers\":[],\"model\":\"m\",\"permissionMode\":\"auto\",\"session_id\":\"att-658\"}}'\nprintf '%s\\n' '{result}'\ncat >/dev/null\nexit 0\n"
+            );
+            let mut s = AgentSpec::new(&dir);
+            s.binary = stand_in(&dir, &body);
+            let agent = ClaudeCodeAgent::new(s.clone());
+            let input = TurnInput {
+                text: "what colour".into(),
+                images: vec![nightloom_core::ImageInput {
+                    media_type: "image/png".into(),
+                    data: "AAAA".into(),
+                }],
+                documents: Vec::new(),
+            };
+            let cancel = CancellationToken::new();
+            let mut on_event = |_e: TurnEvent| {};
+            let run = agent.run_with(&s, input, &cancel, &mut on_event);
+            let outcome = tokio::time::timeout(Duration::from_secs(10), run)
+                .await
+                .expect("the stdin was closed at the result")
+                .unwrap();
+            assert!(outcome.result_seen, "{result}");
+            assert_eq!(outcome.session_id.as_deref(), Some("att-658"));
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    /// Item 658: 543a's turn (idle on helpers the limit stopped) with
+    /// 2.1.322's `result` line: the main thread is idle at it, so the turn
+    /// still ends paused by itself. (543a's own test is the old order.)
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_turn_idle_on_helpers_ends_paused_at_a_result_whose_type_is_not_first() {
+        let dir = std::env::temp_dir().join(format!("nightloom-658b-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let body = r#"res() { printf '%s\n' '{"duration_api_ms":0,"stop_reason":null,"session_id":"lim-658","usage":{"input_tokens":0,"output_tokens":0},"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_streaming","num_turns":1}'; }
+printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"m","permissionMode":"auto","session_id":"lim-658"}'
+printf '%s\n' '{"type":"system","subtype":"task_started","task_id":"a8bb","tool_use_id":"toolu_HELPER","description":"funding scan","task_type":"local_agent"}'
+printf '%s\n' '{"duration_api_ms":2219,"stop_reason":"end_turn","session_id":"lim-658","usage":{"input_tokens":1,"output_tokens":1},"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"Three helpers are running."}'
+printf '%s\n' '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1794321000,"rateLimitType":"five_hour","overageStatus":"rejected","isUsingOverage":false}}'
+trap 'res; exit 0' INT
+sleep 30 >/dev/null 2>&1 & wait
+wait
+"#;
+        let mut s = AgentSpec::new(&dir);
+        s.binary = stand_in(&dir, body);
+        let mut agent = ClaudeCodeAgent::new(s);
+        agent.limit_grace = Duration::from_millis(300);
+        let cancel = CancellationToken::new();
+        let began = std::time::Instant::now();
+        let outcome = agent.run_turn("go", &cancel, &mut |_| {}).await.unwrap();
+        let took = began.elapsed();
+        assert!(took < Duration::from_secs(5), "the turn hung: {took:?}");
+        let hit = outcome.limit.expect("the limit is on the outcome");
+        assert_eq!(hit.resets_at, Some(1794321000));
+        assert_eq!(
+            outcome.notices,
+            vec![
+                "paused — the plan's usage limit stopped the helpers this turn was waiting on"
+                    .to_string()
+            ]
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Item 466's measurement, printed (`--ignored --nocapture`).

@@ -14,6 +14,7 @@
   import { checkpointAction, editAction, loadDraft, rowCheckpoint, rowRemoval, saveDraft, type ChatAction, type Row, type TextPart, type ToolRow } from "./client";
   import { missingSentence } from "./hosts";
   import { plainPreview } from "./preview";
+  import { joinAttachNote, splitAttachNote } from "../lib/keep";
 
   interface Props {
     chat: string;
@@ -44,10 +45,14 @@
   let { chat, row, part = null, tool = null, rewind, fork, canAct, host = undefined, checkpoint = false, blocked, problem = null, onact, oncopy, onwhole, onclose }: Props = $props();
 
   /** What an Edit changes: his message, or one text block of a reply. */
-  const editTarget = $derived.by((): { index: number; block: number | null; text: string } | null => {
+  const editTarget = $derived.by((): { index: number; block: number | null; text: string; note?: string } | null => {
     if (tool) return null;
     if (part) return { index: part.index, block: part.block, text: part.text };
-    if (row.kind === "user") return { index: row.index, block: null, text: row.text };
+    // Item 515: his words in the box; the note for the CLI goes back on at Save.
+    if (row.kind === "user") {
+      const s = splitAttachNote(row.text);
+      return { index: row.index, block: null, text: s.said, note: s.note };
+    }
     if (row.kind === "assistant") {
       const live = row.parts.filter((p) => !p.removed);
       return live.length === 1 ? { index: live[0].index, block: live[0].block, text: live[0].text } : null;
@@ -66,7 +71,7 @@
   const heading = $derived(
     tool ? `${tool.name} call` : part ? "This part of the reply" : row.kind === "user" ? "Your message" : "The reply",
   );
-  const copyText = $derived(tool ? tool.summary : part ? part.text : row.kind === "note" ? row.text : row.text);
+  const copyText = $derived(tool ? tool.summary : part ? part.text : row.kind === "user" ? row.said : row.text);
   const dead = $derived(!canAct || blocked !== null);
   /** Where "Checkpoint here" points: helpers fork from after this
    *  message's exchange (the Mac's "fork from here" checkpoint). */
@@ -96,7 +101,7 @@
     const t = text.trim();
     if (!t) return;
     working = true;
-    const ok = await onact([editAction(editTarget.index, t, sendAfter ? "send" : "save", editTarget.block)], sendAfter ? "Sent as a fork" : "Saved", sendAfter);
+    const ok = await onact([editAction(editTarget.index, joinAttachNote(t, editTarget.note ?? ""), sendAfter ? "send" : "save", editTarget.block)], sendAfter ? "Sent as a fork" : "Saved", sendAfter);
     working = false;
     // A refusal keeps the editor open with his text, and the draft on disk.
     if (ok) {

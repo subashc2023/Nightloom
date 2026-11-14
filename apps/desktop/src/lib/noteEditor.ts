@@ -46,6 +46,7 @@ import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { findMath, type MathSpan } from "./math";
 import { toggleInline, toggleTaskAt, type Command } from "./noteFormat";
 import { renderMarkdown, renderMathHtml } from "./markdown";
+import { toggleComment } from "./codeBlockKeys";
 
 /** The same one-line `[[target|alias]]` shape `links.ts` parses. */
 const WIKILINK = /\[\[([^\[\]\n]{1,200})\]\]/g;
@@ -712,11 +713,30 @@ export function runCommand(view: EditorView, cmd: Command): boolean {
   return true;
 }
 
+/** Item 678: ⌘/ inside a fenced block comments its lines in the block's
+ *  language (`codeBlockKeys.ts`, as in the message boxes). The default
+ *  keymap's ⌘/ (`toggleComment`) reads the language from the parser, and
+ *  this markdown parser loads no code languages, so in a block it would
+ *  wrap lines in <!-- -->; outside a block it still runs (prose). */
+export function commentInBlock(v: EditorView): boolean {
+  const { anchor, head } = v.state.selection.main;
+  const ed = toggleComment(v.state.doc.toString(), Math.min(anchor, head), Math.max(anchor, head));
+  if (!ed) return false;
+  v.dispatch({
+    changes: { from: ed.from, to: ed.to, insert: ed.insert },
+    selection: EditorSelection.range(ed.anchor, ed.head),
+    userEvent: "input",
+    scrollIntoView: true,
+  });
+  return true;
+}
+
 /** ⌘B / ⌘I (item 498), ahead of the default keymap (whose ⌘I selects the
- *  enclosing syntax node). */
+ *  enclosing syntax node); ⌘/ in a code block (item 678). */
 const formatKeymap = keymap.of([
   { key: "Mod-b", run: (v) => (runCommand(v, toggleInline("bold")), true) },
   { key: "Mod-i", run: (v) => (runCommand(v, toggleInline("italic")), true) },
+  { key: "Mod-/", run: commentInBlock },
 ]);
 
 /** The view's extensions beyond `noteState`'s: editing, the theme, hooks. */

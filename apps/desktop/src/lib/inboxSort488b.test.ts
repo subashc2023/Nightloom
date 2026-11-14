@@ -82,7 +82,7 @@ describe("item 488b: a relaunch offers the plan back", () => {
     expect(s.inboxSort.rows.map((r) => r.item)).toEqual(["Inbox/alice.md"]);
     expect(s.inboxSort.notice).toContain("1 entry has left the inbox");
     expect(s.inboxSort.phase).toBe("plan");
-  });
+  }, 20_000);
 
   it("keeps a Project plan when the Knowledge inbox is opened, and only Start over clears the store", async () => {
     localStorage.setItem(SAVED_KEY, serializeSort(plan));

@@ -29,8 +29,14 @@ export type DropKind = "chat" | "main" | "box" | "none";
 /** The attribute a message box carries: `main` for the chat's composer,
  *  anything else for the other boxes. */
 export const BOX_ATTR = "data-drop-box";
-/** The attribute the region that takes a drop for the chat's box carries. */
+/** The attribute the region that takes a drop for the chat's box carries.
+ *  Its value (item 674's follow-up) names whose box takes it: "" the
+ *  chat's composer; an aside's draft key, that aside's box — so a file
+ *  dropped on an aside's thread joins the aside's next question. */
 export const CHAT_ATTR = "data-drop-chat";
+/** On a message box that takes a region's drops: the region's key
+ *  (item 674's follow-up), so the drop look marks the right box. */
+export const FOR_ATTR = "data-drop-for";
 /** A region inside the chat that takes no drop for the chat's box (an aside
  *  card: a file dropped on its thread is not for the main composer). Its
  *  own box inside it still takes its own drop. */
@@ -38,14 +44,26 @@ export const NONE_ATTR = "data-drop-none";
 
 type Hit = { closest(selector: string): Hit | null; getAttribute(name: string): string | null };
 
-export function dropKind(target: unknown): { kind: DropKind; box: Hit | null } {
+/**
+ * `region` (item 674's follow-up): whose box the drag is for — the drop
+ * region's key, or a box's `data-drop-for`; "" the chat's, null none. The
+ * nearest region wins: an aside card takes no drop for the chat
+ * (`data-drop-none`), but its own thread inside it is a region of its own.
+ */
+export function dropKind(target: unknown): { kind: DropKind; box: Hit | null; region: string | null } {
   const t = target as Hit | null;
-  if (!t || typeof t.closest !== "function") return { kind: "none", box: null };
+  if (!t || typeof t.closest !== "function") return { kind: "none", box: null, region: null };
   const box = t.closest(`[${BOX_ATTR}]`);
-  if (box) return { kind: box.getAttribute(BOX_ATTR) === "main" ? "main" : "box", box };
-  if (t.closest(`[${NONE_ATTR}]`)) return { kind: "none", box: null };
-  if (t.closest(`[${CHAT_ATTR}]`)) return { kind: "chat", box: null };
-  return { kind: "none", box: null };
+  if (box) {
+    const main = box.getAttribute(BOX_ATTR) === "main";
+    return { kind: main ? "main" : "box", box, region: main ? "" : box.getAttribute(FOR_ATTR) };
+  }
+  const none = t.closest(`[${NONE_ATTR}]`);
+  const chat = t.closest(`[${CHAT_ATTR}]`);
+  // A no-drop region inside the chat region is nearer; a chat region inside a no-drop one is.
+  if (none && (!chat || none.closest(`[${CHAT_ATTR}]`) === chat)) return { kind: "none", box: null, region: null };
+  if (chat) return { kind: "chat", box: null, region: chat.getAttribute(CHAT_ATTR) ?? "" };
+  return { kind: "none", box: null, region: null };
 }
 
 /** A drag carries files (not text, not a tab or a chat being moved). */

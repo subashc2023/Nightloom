@@ -37,6 +37,9 @@ export interface TurnSize {
   results?: number;
   /** The first user turn: the figure holds the system prompt too. */
   preamble?: boolean;
+  /** Item 674: an aside's first question — its figure holds the chat's
+   *  whole context the aside forked from (`exchangeSizes`). */
+  forked?: boolean;
 }
 
 /** Recorded, as opposed to the zeros an old log or a failed turn carries. */
@@ -125,7 +128,9 @@ export function sizeTitle(size: TurnSize, kind: "user" | "assistant", limit: num
   const of = limit ? ` — ${Math.round((size.tokens / limit) * 100)}% of the ${limit.toLocaleString()}-token window` : "";
   if (kind === "user") {
     return size.preamble
-      ? `${n} tokens: this message and the system prompt together — the log does not separate them${of}`
+      ? size.forked
+        ? `${n} tokens: this question and the chat's context the aside forked from together — they are not separated${of}`
+        : `${n} tokens: this message and the system prompt together — the log does not separate them${of}`
       : `${n} tokens this message added to the context${of}`;
   }
   const parts = [`${(size.out ?? 0).toLocaleString()} out`];
@@ -216,7 +221,9 @@ export function userFigure(
   const tokens = estimateTokens(text);
   if (tokens === 0) return null;
   const est = `About ${tokens.toLocaleString("en-US")} tokens: an estimate of this message's text (characters ÷ ${CHARS_PER_TOKEN}), attachments not counted.`;
-  const why = size?.preamble
+  const why = size?.forked
+    ? ` The exact figure, ${size.tokens.toLocaleString("en-US")} tokens, holds the chat's context the aside forked from too — they are not separated.`
+    : size?.preamble
     ? ` The log's exact figure, ${size.tokens.toLocaleString("en-US")} tokens, holds the system prompt too — it does not separate them.`
     : " The exact figure comes from the reply's usage, and the log has none for this message: no reply yet, its usage not recorded, or the context shrank between the two replies.";
   return { label: `~${fmtTokens(tokens)} tokens`, title: est + why, tokens, exact: false };

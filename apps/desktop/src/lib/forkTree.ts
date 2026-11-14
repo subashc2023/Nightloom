@@ -2,9 +2,12 @@
  * Forks under the chat they came from (nightshift backlog 207).
  *
  * A chat carries a parent when its creation line has `forked_from`: an
- * edit-and-send fork (`fork_session`, backlog 062) or a chat that continues
+ * edit-and-send fork (`fork_session`, backlog 062). ~~or a chat that continues
  * a full one after a hand-off (`continue_session`, `reason: "handoff"`,
- * backlog 086). Such a chat is listed under its origin, indented, behind a
+ * backlog 086)~~ — item 509 (his report, 2026-11-05): a hand-off's new chat
+ * is not a fork, it holds nothing of the old one, so it is a top-level row;
+ * the old chat stays named by its "continued from" line. A fork is listed
+ * under its origin, indented, behind a
  * disclosure control on the origin's row, closed by default; which origins
  * are open is remembered across launches.
  *
@@ -45,8 +48,8 @@ export function originsOf(sessions: SessionMeta[]): Map<string, string> {
     const seen = new Set<string>([s.id]);
     let cyclic = false;
     for (;;) {
-      const pid = cur.forked_from?.session;
-      const parent = pid ? byId.get(pid) : undefined;
+      const from = cur.forked_from;
+      const parent = from && from.reason !== "handoff" ? byId.get(from.session) : undefined;
       if (!parent) break;
       if (seen.has(parent.id)) {
         cyclic = true;

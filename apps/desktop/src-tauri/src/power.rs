@@ -133,6 +133,17 @@ impl Holder {
         }
     }
 
+    /// The Settings switch (backlog 535): the schedule clock holds the
+    /// Mac awake for a message due soon only when he keeps it awake for
+    /// turns.
+    pub fn keep_awake(&self) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .prefs
+            .keep_awake
+    }
+
     /// How many guards are alive.
     #[cfg(test)]
     pub fn held(&self) -> usize {

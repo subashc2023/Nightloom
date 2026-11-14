@@ -42,6 +42,7 @@
  */
 
 import type { Engine } from "./catalog";
+import { aliasView, type SeenModels } from "./modelSeen";
 
 /** The CLI's five levels, as `claude --help` 2.1.263 lists them. */
 export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
@@ -73,6 +74,17 @@ const API_DOC = "https://platform.claude.com/docs/en/build-with-claude/effort";
  */
 export const EFFORT_DEFAULTS: Record<Engine, Record<string, EffortFacts>> = {
   "claude-code": {
+    // 2026-11-11 (item 659): code.claude.com/docs/en/model-config, "Resolution order" step 5:
+    // "Fable 5.2, Opus 5.5, Sonnet 5.5, and Haiku 5.5 default to `medium`" — and a top-level
+    // `effortLevel` in user settings does not apply to Opus 5.5 or later models.
+    // ~~`fable-5-2` sits after `fable-5-1` on purpose: the CLI's `fable` alias still means 5.1
+    // (blocker 1692)~~ (struck 2026-11-11, item 660): model-config "Version history" says
+    // "v2.1.321 | `fable` resolves to Fable 5.2", and the installed CLI is 2.1.322, so `fable-5-2`
+    // now comes first. A bare alias resolves to the first key of its family.
+    "opus-5-5": { default: "medium", levels: ALL, source: CLI_DOC },
+    "sonnet-5-5": { default: "medium", levels: ALL, source: CLI_DOC },
+    "haiku-5-5": { default: "medium", levels: ALL, source: CLI_DOC },
+    "fable-5-2": { default: "medium", levels: ALL, source: CLI_DOC },
     "fable-5-1": { default: "high", levels: ALL, source: CLI_DOC },
     "fable-5": { default: "high", levels: ALL, source: CLI_DOC },
     "opus-5": { default: "high", levels: ALL, source: CLI_DOC },
@@ -88,6 +100,12 @@ export const EFFORT_DEFAULTS: Record<Engine, Record<string, EffortFacts>> = {
     "haiku-4-5": { default: null, levels: NONE, source: CLI_DOC },
   },
   provider: {
+    // 2026-11-11 (item 659): effort defaults to `high` on every current model except
+    // Opus 5.5 and Haiku 5.5, whose default is `medium` (platform docs, effort page).
+    "opus-5-5": { default: "medium", levels: ALL, source: API_DOC },
+    "sonnet-5-5": { default: "high", levels: ALL, source: API_DOC },
+    "haiku-5-5": { default: "medium", levels: ALL, source: API_DOC },
+    "fable-5-2": { default: "high", levels: ALL, source: API_DOC },
     "fable-5-1": { default: "high", levels: ALL, source: API_DOC },
     "fable-5": { default: "high", levels: ALL, source: API_DOC },
     "opus-5": { default: "high", levels: ALL, source: API_DOC },
@@ -110,12 +128,21 @@ export const EFFORT_DEFAULTS: Record<Engine, Record<string, EffortFacts>> = {
  */
 export function effortFamily(engine: Engine, model: string): string | null {
   const table = EFFORT_DEFAULTS[engine];
-  const m = model.trim().toLowerCase().replace(/^claude-/, "");
+  // A context tag (`[1m]`, as in `opus[1m]` or `claude-opus-5-5[1m]`) names the same model with a
+  // longer window, so the same effort row (item 666).
+  const m = model
+    .trim()
+    .toLowerCase()
+    .replace(/\[[^\]]*\]$/, "")
+    .replace(/^claude-/, "");
   if (!m) return null;
   // A full id or a dated snapshot: the longest family key it starts with,
   // so `fable-5-1` is not read as `fable-5`.
   const exact = Object.keys(table)
-    .filter((k) => m === k || m.startsWith(k + "-"))
+    // Only a dated snapshot suffix counts (`-20260115`, `-2026-01-15`): a newer release
+    // in the family (`opus-5-5` under `opus-5`) is a different model with its own default,
+    // and must read `?` until its row is added (item 659: Opus 5.5 inherited Opus 5's `high`).
+    .filter((k) => m === k || (m.startsWith(k + "-") && /^-\d{4}-?\d{2}-?\d{2}$/.test(m.slice(k.length))))
     .sort((a, b) => b.length - a.length)[0];
   if (exact) return exact;
   // A bare alias: the first (newest) key of that family.
@@ -137,4 +164,17 @@ export function effortDefaultLabel(engine: Engine, model: string): string {
   const f = effortDefault(engine, model);
   if (!f) return "?";
   return f.default ?? "none";
+}
+
+/**
+ * The model id to look the default up by (item 666): what the CLI actually ran for an alias,
+ * not the table's row order. A full id is itself. An alias — or `""`, the CLI's own default —
+ * whose `modelSeen` record (item 511) holds for the CLI now reads as the id that turn reported,
+ * so `fable` on a CLI where it means Fable 5.2 reads 5.2's row whatever order the rows are in.
+ * Before the first turn on this CLI (no record, or one from an earlier CLI version, since an
+ * update can move an alias) it is the alias itself, and {@link effortFamily}'s newest-first rule
+ * applies as before.
+ */
+export function effortModel(model: string, seen: SeenModels, cliNow: string | null): string {
+  return aliasView(seen, model, cliNow).current?.id ?? model;
 }

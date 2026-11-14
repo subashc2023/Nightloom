@@ -513,9 +513,15 @@ describe("clockOf — the Start field's and the chip's time", () => {
   it("is the local clock time, with 'tomorrow' when the day differs", () => {
     const now = new Date(2026, 8, 12, 0, 40); // 2026-09-12 00:40 local
     const later = new Date(2026, 8, 12, 5, 12).getTime();
-    expect(clockOf(later, now)).toBe("at 05:12");
+    expect(clockOf(later, now)).toBe("at 5:12 AM");
     const next = new Date(2026, 8, 13, 0, 5).getTime();
-    expect(clockOf(next, now)).toBe("at 00:05 tomorrow");
+    expect(clockOf(next, now)).toBe("at 12:05 AM tomorrow");
+  });
+  it("reads 12-hour AM/PM, never 24-hour (item 611)", () => {
+    const now = new Date(2026, 8, 12, 9, 0);
+    expect(clockOf(new Date(2026, 8, 12, 12, 0).getTime(), now)).toBe("at 12:00 PM");
+    expect(clockOf(new Date(2026, 8, 12, 23, 30).getTime(), now)).toBe("at 11:30 PM");
+    expect(clockOf(new Date(2026, 8, 15, 17, 5).getTime(), now)).toBe("at 5:05 PM Sep 15");
   });
 });
 

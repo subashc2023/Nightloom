@@ -115,6 +115,6 @@ describe("Refresh now refreshes both tabs (backlog 153, kept by 206)", () => {
 
   it("says when nothing has been read yet", () => {
     expect(readStamp(null)).toBe("not read yet");
-    expect(readStamp(at)).toMatch(/^read /);
+    expect(readStamp(at)).toBe("read 2:05 PM"); // item 611b: 12-hour, no leading zero
   });
 });

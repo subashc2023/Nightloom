@@ -537,6 +537,7 @@ export function closeShell(id: number): void {
   sinks.delete(id);
   pending.delete(id);
   captures.delete(id);
+  continuedTo.delete(id);
   dropLive(id);
   // A view-only tab has no pty to close.
   // Gone with its pane (a project switch) it is still wanted on the way back.
@@ -629,14 +630,14 @@ export function dropLabel(pane: string): string {
 }
 
 /** A click on an exited tab restarts the shell in the same folder (12c),
- *  in the same slot of the same strip. */
-export async function restartShell(id: number): Promise<void> {
+ *  in the same slot of the same strip. Resolves with the new shell's id. */
+export async function restartShell(id: number): Promise<number | null> {
   const i = term.shells.findIndex((s) => s.id === id);
-  if (i < 0) return;
+  if (i < 0) return null;
   const old = term.shells[i];
   if (!old.exit) {
     selectShell(id);
-    return;
+    return null;
   }
   const pane = old.pane ?? "";
   try {
@@ -654,8 +655,88 @@ export async function restartShell(id: number): Promise<void> {
     const dock = term.docks[pane];
     if (dock) dock.active = row.id;
     requestFocus(pane);
+    return row.id;
   } catch (e) {
     addToast(`Could not restart the shell: ${String(e)}`);
+    return null;
+  }
+}
+
+/** Keys typed into an ended tab while its new shell opens, by the ended id. */
+const continuing = new Map<number, string[]>();
+/** A block's ended tab → the shell opened beside it, for the keys after. */
+const continuedTo = new Map<number, number>();
+
+/** What `terminal_write` says when the program has ended (terminal.rs
+ *  `GONE`): the keys are carried to a new shell, not toasted (529). */
+export const SHELL_GONE = "the shell's terminal is gone";
+
+/** How long a write that found the pty dead waits for its exit event. */
+const EXIT_WAIT_MS = 2000;
+
+async function exited(id: number): Promise<ShellRow | undefined> {
+  const t0 = Date.now();
+  for (;;) {
+    const row = term.shells.find((s) => s.id === id);
+    if (!row || row.exit || Date.now() - t0 >= EXIT_WAIT_MS) return row;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
+
+/**
+ * Keys typed into a tab whose shell has ended (backlog 529: he typed after
+ * a `cd` block and got "the shell's terminal is gone"). A plain shell's tab
+ * restarts in place, as its click does; a block's tab keeps its output and
+ * a new shell opens beside it, in the folder the block ended in (the
+ * block's own when it left no record). Every key goes to the new shell, in
+ * order, the first included — also when it was the write that found the
+ * pty dead before the exit event came (`SHELL_GONE`); keys typed into the
+ * block's tab later go to the same shell while it lives.
+ */
+export async function continueEnded(id: number, data: string): Promise<void> {
+  const held = continuing.get(id);
+  if (held) {
+    held.push(data);
+    return;
+  }
+  const keys = [data];
+  continuing.set(id, keys);
+  try {
+    const old = await exited(id);
+    if (!old || old.agentChat) return;
+    if (!old.exit) {
+      addToast(`${old.title}: ${SHELL_GONE}`);
+      return;
+    }
+    let to: number | null = null;
+    const before = continuedTo.get(id);
+    const next = before !== undefined ? term.shells.find((s) => s.id === before && !s.exit) : undefined;
+    if (next) {
+      to = next.id;
+      selectShell(to);
+    } else if (!old.run) to = await restartShell(id);
+    else {
+      const pane = old.pane ?? "";
+      const cwd = (await api.terminalRunCwd(id).catch(() => null)) ?? old.cwd;
+      try {
+        const grid = firstGrid(pane);
+        const info = await api.terminalOpen(cwd, grid.cols, grid.rows);
+        const row: ShellRow = { ...info, title: info.shell, exit: null, pane };
+        const i = term.shells.findIndex((s) => s.id === id);
+        term.shells.splice(i < 0 ? term.shells.length : i + 1, 0, row);
+        const dock = term.docks[pane];
+        if (dock) dock.active = row.id;
+        requestFocus(pane);
+        to = row.id;
+        continuedTo.set(id, to);
+      } catch (e) {
+        addToast(`Could not open a shell: ${String(e)}`);
+      }
+    }
+    // `keys` grows while these are awaited; the loop reads its length.
+    if (to !== null) for (const k of keys) await api.terminalWrite(to, k).catch(() => {});
+  } finally {
+    continuing.delete(id);
   }
 }
 

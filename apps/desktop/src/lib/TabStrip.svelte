@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hudIn, hudOut } from "./hudMenu";
   import { tip } from "./tip";
   import {
     activateTab,
@@ -19,6 +20,7 @@
   import { draggedShell } from "./terminal.svelte";
   import Icon from "./Icon.svelte";
   import { tabIn, tabOut } from "./tabMotion";
+  import { TabFreeze } from "./tabFreeze";
   import TabChooser from "./TabChooser.svelte";
   import RunningBadge from "./RunningBadge.svelte";
   import { isMac } from "./platform";
@@ -75,7 +77,7 @@
       return app.noteDrafts[noteDraftKey(c.scope, c.name)] !== undefined;
     }
     if (c.kind !== "chat") return false;
-    return hasBoxDraft(c.session ?? newDraftKey(app.project?.id, app.pendingMode));
+    return hasBoxDraft(c.session ?? newDraftKey(app.project?.id, app.pendingMode, app.pendingThread));
   }
 
   /** The chat's turn runs, or waits on him. ~~Only the live tab can~~ —
@@ -147,6 +149,20 @@
    *  nothing is over it. */
   let dropAt = $state<number | null>(null);
   let stripEl = $state<HTMLElement | null>(null);
+
+  // ---- item 603: closing tabs as Chrome does (`tabFreeze.ts`) ----
+  // A close from the strip holds every tab at the width it had, so the next
+  // close button slides in under the pointer; the strip re-fits when the
+  // pointer leaves it or rests a few seconds. ⌘W (pointer elsewhere) does not
+  // freeze: nothing is under the pointer to keep in place.
+  let frozenW = $state<number | null>(null);
+  const freeze = new TabFreeze((w) => (frozenW = w));
+  $effect(() => () => freeze.thaw());
+  function closeFromStrip(e: MouseEvent, t: tabs.Tab): void {
+    const el = (e.currentTarget as Element | null)?.closest<HTMLElement>(".tab");
+    freeze.closed(el?.getBoundingClientRect().width ?? 0);
+    void closeTab(t.id);
+  }
 
   // ---- a tab dragged: pointer events (nightshift backlog 195) ----
   //
@@ -383,6 +399,8 @@
   ondragover={onDragOver}
   ondragleave={onDragLeave}
   ondrop={onDrop}
+  onpointermove={() => freeze.moved()}
+  onpointerleave={() => freeze.thaw()}
 >
   {#each pane.tabs as t, i (t.id)}
     {@const favicon = t.content.kind === "web" ? web.live[webLabel(t.id)]?.favicon : undefined}
@@ -399,6 +417,7 @@
       tabindex="0"
       aria-selected={pane.active === t.id}
       data-tab={t.id}
+      style:flex={frozenW !== null ? `0 0 ${frozenW}px` : undefined}
       in:tabIn
       out:tabOut
       use:tip={hint(t)}
@@ -412,7 +431,7 @@
       }}
       onauxclick={(e) => {
         // The middle button closes, as in every browser.
-        if (e.button === 1) void closeTab(t.id);
+        if (e.button === 1) closeFromStrip(e, t);
       }}
       oncontextmenu={(e) => openMenu(e, t)}
     >
@@ -440,13 +459,16 @@
         />
       {:else}
         {@const f = fork(t)}
+        <!-- Item 534: the state dot before the title, as the mockup's live
+             tab — the signal while a turn runs, the accent while it waits
+             on him. -->
+        {#if needsYou(t)}
+          <span class="dot needs" use:tip={"Waiting on you"}></span>
+        {:else if running(t)}
+          <span class="dot run" use:tip={"A turn is running"}></span>
+        {/if}
         {#if f}<span class="fork" role="img" aria-label={f.tip} use:tip={f.tip}>{FORK_GLYPH}</span>{/if}
         <span class="name">{title(t)}</span>
-      {/if}
-      {#if needsYou(t)}
-        <span class="dot needs" use:tip={"Waiting on you"}></span>
-      {:else if running(t)}
-        <span class="dot run" use:tip={"A turn is running"}></span>
       {/if}
       {#if draft(t)}<span class="mark" role="img" aria-label="has a draft" use:tip={"has a draft"}></span>{/if}
       <button
@@ -456,7 +478,7 @@
         tabindex="-1"
         onclick={(e) => {
           e.stopPropagation();
-          void closeTab(t.id);
+          closeFromStrip(e, t);
         }}
       >
         <Icon name="x" size={10} />
@@ -506,7 +528,7 @@
 {#if menuFor}
   {@const t = pane.tabs.find((x) => x.id === menuFor)}
   <button class="tab-scrim" aria-label="Close" onclick={() => (menuFor = null)} oncontextmenu={(e) => { e.preventDefault(); menuFor = null; }}></button>
-  <div class="tab-menu" role="menu" use:placeTabMenu={menuAt}>
+  <div class="tab-menu hud-m" role="menu" use:placeTabMenu={menuAt} in:hudIn|global out:hudOut|global>
     <button role="menuitem" onclick={() => menuAct((x) => void closeTab(x.id))}>Close</button>
     <button role="menuitem" disabled={pane.tabs.length < 2} onclick={() => menuAct((x) => closeOthers(x.id))}>Close others</button>
     {#if other}
@@ -524,14 +546,19 @@
 {/if}
 
 <style>
+  /* Item 534 (Filament IV): the strip is a panel; tabs are flat cells
+     ruled at their right, the active one cut into the ground below with
+     the accent along its top. */
   .tab-strip {
     display: flex;
     align-items: stretch;
-    gap: 2px;
-    height: 36px;
-    padding: 4px 8px 0;
-    background: var(--paper);
-    border-bottom: 1px solid var(--line);
+    gap: 0;
+    height: 38px;
+    padding: 0;
+    background: var(--sheet);
+    /* The strip's foot rule as an inset shadow, under its children: the
+       active tab's ground paints over it, so the tab opens into the page. */
+    box-shadow: inset 0 -1px 0 var(--line);
     overflow-x: auto;
     overflow-y: hidden;
     scrollbar-width: none;
@@ -545,30 +572,38 @@
     position: relative;
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 0 8px 0 10px;
-    max-width: 200px;
+    gap: 8px;
+    padding: 0 10px 0 14px;
+    max-width: 240px;
     min-width: 0;
-    flex: 0 1 auto;
-    border-radius: 6px 6px 0 0;
+    /* Item 603: one width for every tab, as Chrome's — a share of the strip
+       up to 240 px, not the title's length. A close from the strip holds
+       it (`frozenW`, inline) until the pointer leaves. */
+    flex: 1 1 0;
+    border-right: 1px solid var(--line);
     color: var(--dim);
     font-size: 12.5px;
     cursor: default;
     user-select: none;
-    border-top: 2px solid transparent;
   }
   .tab:hover {
-    background: var(--well);
+    background: var(--raised);
     color: var(--ink2);
   }
   .tab.active {
-    background: var(--sheet);
+    background: var(--paper);
     color: var(--ink);
-    box-shadow: 0 0 0 1px var(--line);
   }
   /* The accent rule on the focused pane's active tab (board 9d). */
-  .tab-strip.focused .tab.active {
-    border-top-color: var(--accent);
+  .tab-strip.focused .tab.active::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    height: 2px;
+    background: var(--accent);
+    pointer-events: none;
   }
   .tab.dragging {
     opacity: 0.4;
@@ -611,26 +646,31 @@
     border-radius: 3px;
     outline: none;
   }
+  /* ~~Running in the accent, pulsing; waiting in the live blue~~ — item
+     534, the colour rule of Filament IV: blue is Claude working, amber is
+     his. The running dot is lit in IV+ (`--glow-live`) and pulses only
+     with motion allowed. */
   .dot {
-    width: 6px;
-    height: 6px;
+    width: 7px;
+    height: 7px;
     border-radius: 50%;
     flex-shrink: 0;
   }
   .dot.run {
-    background: var(--accent);
-    animation: tab-pulse 1.2s ease-in-out infinite;
+    background: var(--signal);
+    box-shadow: var(--glow-live);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .dot.run {
+      animation: tab-pulse 1.6s ease-in-out infinite;
+    }
   }
   .dot.needs {
-    background: var(--live);
+    background: var(--accent);
   }
   @keyframes tab-pulse {
-    0%,
-    100% {
-      opacity: 1;
-    }
     50% {
-      opacity: 0.3;
+      opacity: 0.45;
     }
   }
   /* The draft mark (backlog 221, blocker 480 answered "hollow ring sounds
@@ -659,6 +699,10 @@
     cursor: pointer;
     opacity: 0;
     flex-shrink: 0;
+    /* Item 603: at the tab's right edge whatever the title's length, so
+       every tab's × sits at the same place in its tab — the one that
+       slides in under the pointer is under it. */
+    margin-left: auto;
   }
   .tab:hover .close,
   .tab.active .close {
@@ -672,11 +716,11 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 26px;
-    height: 26px;
-    margin: 3px 0 0 2px;
+    width: 28px;
+    height: 28px;
+    margin: 5px 0 0 6px;
     border: none;
-    border-radius: 6px;
+    border-radius: var(--r1);
     background: transparent;
     color: var(--dim);
     padding: 0;
@@ -697,9 +741,9 @@
     height: 32px;
     padding: 0 10px;
     box-sizing: border-box;
-    border-radius: 6px 6px 0 0;
+    border-radius: 0;
     border-top: 2px solid var(--accent);
-    background: var(--sheet);
+    background: var(--paper);
     color: var(--ink);
     font-size: 12.5px;
     box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);

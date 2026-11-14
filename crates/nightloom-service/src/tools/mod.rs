@@ -21,6 +21,7 @@
 //! proves it: there is no root for the network, so they are gated by their
 //! `Effect` instead — see [`web`].
 
+pub mod add_folder;
 mod chats;
 mod compact;
 mod files;
@@ -36,6 +37,7 @@ mod task;
 mod todo;
 mod web;
 
+pub use add_folder::AddFolder;
 pub use chats::{ChatDir, ChatDirs, ReadChat, SearchChats};
 pub use compact::{CompactContext, CompactSignal};
 pub use mark_file::MarkFile;

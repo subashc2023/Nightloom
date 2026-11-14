@@ -54,6 +54,28 @@ pub(super) enum Line {
     Unknown,
 }
 
+/// A line's top-level `type`, wherever the key sits (item 658): 2.1.322's
+/// `result` line starts `{"duration_api_ms":…`, so a test of the line's
+/// prefix misses it, and a substring test also matches a `type` nested in
+/// it. The CLI's usual `{"type":"…"` start is read without a parse — this
+/// runs on every line; any other order is parsed once, every other value
+/// skipped unbuilt.
+pub(super) fn line_type(line: &str) -> Option<&str> {
+    let line = line.trim_start();
+    if let Some(rest) = line.strip_prefix(r#"{"type":""#)
+        && let Some(end) = rest.find('"')
+        && !rest[..end].contains('\\')
+    {
+        return Some(&rest[..end]);
+    }
+    #[derive(Deserialize)]
+    struct Head<'a> {
+        #[serde(rename = "type", borrow)]
+        kind: Option<&'a str>,
+    }
+    serde_json::from_str::<Head>(line).ok()?.kind
+}
+
 /// One MCP server as the init line lists it: `{"name": "openalex",
 /// "status": "pending"}` — measured statuses `connected`, `pending`,
 /// `needs-auth`; the headless reference also allows `failed` with an
@@ -321,6 +343,14 @@ pub(super) enum Block {
 pub(super) enum StreamEv {
     #[serde(rename = "content_block_delta")]
     ContentBlockDelta { delta: Delta },
+    /// A round opens (nightshift backlog 590). Read for its usage alone:
+    /// the prompt side is final here — the whole request this round sent —
+    /// which is the exact anchor of the live context reading.
+    #[serde(rename = "message_start")]
+    MessageStart {
+        #[serde(default)]
+        message: StartHead,
+    },
     /// A block opens. Read only for its type: a text block that follows
     /// text with nothing between (two rounds' replies, as a background
     /// subagent's report makes) is a new paragraph, not a continuation —
@@ -342,6 +372,13 @@ pub(super) enum StreamEv {
     Other,
 }
 
+/// The head of a `message_start`: its usage alone (backlog 590).
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct StartHead {
+    #[serde(default)]
+    pub usage: Option<RawUsage>,
+}
+
 /// The head of a `content_block_start`: its type alone (`text`,
 /// `thinking`, `tool_use`, …).
 #[derive(Debug, Default, Deserialize)]
@@ -357,9 +394,17 @@ pub(super) enum Delta {
     Text { text: String },
     #[serde(rename = "thinking_delta")]
     Thinking { thinking: String },
-    /// `signature_delta` and `input_json_delta` land here. Neither is
-    /// needed: signatures are Claude Code's to replay into its own session,
-    /// and tool arguments arrive already assembled on the `assistant` line.
+    /// A tool call's arguments as they stream. Read only for their length
+    /// (backlog 590: the live context estimate) — the arguments themselves
+    /// arrive already assembled on the `assistant` line.
+    #[serde(rename = "input_json_delta")]
+    InputJson {
+        #[serde(default)]
+        partial_json: String,
+    },
+    /// `signature_delta` lands here: signatures are Claude Code's to replay
+    /// into its own session. ~~And `input_json_delta`~~ (read for its length
+    /// since 2026-11-10, backlog 590).
     #[serde(other)]
     Other,
 }
@@ -653,4 +698,29 @@ pub(crate) fn user_content(
         })
     }));
     content
+}
+
+#[cfg(test)]
+mod tests {
+    use super::line_type;
+
+    /// Item 658: the `type` key read wherever it sits — the CLI's usual
+    /// order, 2.1.322's `result` order, and never a `type` nested deeper.
+    #[test]
+    fn a_lines_type_is_read_wherever_the_key_sits() {
+        let old = r#"{"type":"result","subtype":"success","is_error":false,"num_turns":2,"result":"done"}"#;
+        let new = r#"{"duration_api_ms":2219,"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1},"type":"result","subtype":"success","is_error":false,"num_turns":2,"result":"done"}"#;
+        assert_eq!(line_type(old), Some("result"));
+        assert_eq!(line_type(new), Some("result"));
+        // A nested `type` first, the line's own after it.
+        let nested = r#"{"message":{"content":[{"type":"result"}]},"type":"assistant","parent_tool_use_id":null}"#;
+        assert_eq!(line_type(nested), Some("assistant"));
+        // Nested only: no type of its own.
+        assert_eq!(line_type(r#"{"event":{"type":"result"}}"#), None);
+        assert_eq!(line_type("  {\"type\":\"user\",\"x\":1}\r"), Some("user"));
+        assert_eq!(line_type("not json"), None);
+        assert_eq!(line_type(""), None);
+        // An escape in the value: not one of the CLI's types, read as none.
+        assert_eq!(line_type("{\"type\":\"res\\u0075lt\"}"), None);
+    }
 }

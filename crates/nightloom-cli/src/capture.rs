@@ -209,7 +209,7 @@ fn report(
             let chat: String = obs.chat.as_deref().unwrap_or("—").chars().take(8).collect();
             println!(
                 "{DIM}  {} · {source} · chat {chat} · {}:{RESET} {}",
-                obs.at.format("%Y-%m-%d %H:%M"),
+                crate::stamp12(&obs.at),
                 obs.kind.as_str(),
                 obs.text
             );

@@ -115,6 +115,10 @@ const WRITE_QUEUE_BYTES: usize = 256 * 1024;
 /// program has not read its input for a while.
 const NOT_READING: &str = "the program is not reading its input";
 
+/// A write to a shell whose program has ended (backlog 529): the window
+/// takes it as the tab's end and carries the keys to a new shell.
+const GONE: &str = "the shell's terminal is gone";
+
 /// How often the title thread asks which process group has the terminal.
 /// The thread is unix-only (`spawn_title_watch`), so off unix this is dead
 /// and the Windows job's clippy runs with `-D warnings` (review D, 2026-09-17).
@@ -224,6 +228,9 @@ struct Shell {
     /// Set when the window closed the shell, so the reader's EOF does not
     /// also report an exit the window never asked to hear about.
     closed: Arc<AtomicBool>,
+    /// A block's record of the folder it ended in (backlog 529), removed
+    /// when it is read or the tab closes.
+    run_cwd: Option<PathBuf>,
 }
 
 /// The output's flow control: bytes sent and not yet acknowledged, and
@@ -317,13 +324,30 @@ impl Terminals {
             })
             .map_err(|e| format!("could not open a pty: {e}"))?;
         let mut cmd = CommandBuilder::new_default_prog();
+        let mut run_cwd = None;
         if let Some(block) = command {
             // Login and interactive, as a tab he opened himself: `-l` for
             // the PATH a Finder-launched app does not have, `-i` for his
             // aliases and a job-control terminal, so ⌃C reaches the block.
-            cmd = CommandBuilder::new(cmd.get_shell());
+            let shell = cmd.get_shell();
+            cmd = CommandBuilder::new(&shell);
             cmd.arg(if cfg!(windows) { "/C" } else { "-lic" });
-            cmd.arg(block);
+            // The folder the block ends in (backlog 529): typing into the
+            // ended tab opens a shell there (`terminal_run_cwd`). Written
+            // by POSIX shells only (`recorded_block`); any other `$SHELL`
+            // runs the block as it is, and the block's starting folder is
+            // used. The exit code is the block's, unchanged.
+            match recorded_block(&shell, block) {
+                Some(text) if cfg!(unix) => {
+                    let file = run_cwd_file();
+                    cmd.env(RUN_CWD_VAR, &file);
+                    cmd.arg(text);
+                    run_cwd = Some(file);
+                }
+                _ => {
+                    cmd.arg(block);
+                }
+            }
         }
         cmd.cwd(&dir);
         // xterm.js speaks xterm; without this a login shell inherits
@@ -401,6 +425,7 @@ impl Terminals {
                     flow,
                     child,
                     closed,
+                    run_cwd,
                 },
             );
         Ok(ShellInfo {
@@ -417,6 +442,21 @@ impl Terminals {
     fn write(&self, id: u32, data: &str) -> Result<(), String> {
         let shells = self.shells.lock().unwrap_or_else(|p| p.into_inner());
         let shell = shells.get(&id).ok_or("no such shell")?;
+        // The program has ended and its exit is on the way to the window:
+        // the keys come back rather than vanish into a dead pty, so the
+        // first one typed reaches the next shell (backlog 529). A held
+        // lock is the reader waiting on the child at EOF: ended too.
+        // `try_wait` keeps the status for the reader's own `wait`.
+        let ended = match shell.child.try_lock() {
+            Ok(mut child) => matches!(child.try_wait(), Ok(Some(_))),
+            Err(std::sync::TryLockError::WouldBlock) => true,
+            Err(std::sync::TryLockError::Poisoned(p)) => {
+                matches!(p.into_inner().try_wait(), Ok(Some(_)))
+            }
+        };
+        if ended {
+            return Err(GONE.to_string());
+        }
         let n = data.len();
         if n == 0 {
             return Ok(());
@@ -437,7 +477,7 @@ impl Terminals {
             // The writer thread ended: the pty is gone under it.
             Err(TrySendError::Disconnected(_)) => {
                 shell.queued.fetch_sub(n, Ordering::AcqRel);
-                Err("the shell's terminal is gone".to_string())
+                Err(GONE.to_string())
             }
         }
     }
@@ -474,6 +514,9 @@ impl Terminals {
             .remove(&id);
         if let Some(shell) = shell {
             shell.closed.store(true, Ordering::Relaxed);
+            if let Some(file) = &shell.run_cwd {
+                let _ = std::fs::remove_file(file);
+            }
             let mut child = shell.child.lock().unwrap_or_else(|p| p.into_inner());
             let _ = child.kill();
             let _ = child.wait();
@@ -482,8 +525,10 @@ impl Terminals {
         }
     }
 
-    /// The open shells' ids, for a window that reloads (dev) and for the
-    /// tests.
+    /// The open shells' ids, for the tests. (~~and for a window that
+    /// reloads (dev)~~ — 2026-11-11, item 622b: the `terminal_list` command
+    /// that served the window was removed; no window called it.)
+    #[cfg(test)]
     fn ids(&self) -> Vec<u32> {
         let mut ids: Vec<u32> = self
             .shells
@@ -782,6 +827,76 @@ pub async fn terminal_run(
     terminals.open(Arc::new(WindowSink(app)), &cwd, cols, rows, Some(&command))
 }
 
+/// The variable a block's shell finds its folder record's path in.
+const RUN_CWD_VAR: &str = "NIGHTLOOM_RUN_CWD";
+
+/// A fresh path for a block's folder record (backlog 529), unique in this
+/// process (every `Terminals` counts its ids from 1; the tests hold many).
+fn run_cwd_file() -> PathBuf {
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed) + 1;
+    std::env::temp_dir().join(format!("nightloom-run-{}-{n}.cwd", std::process::id()))
+}
+
+/// The block as the shell is handed it, so it leaves the folder it ended
+/// in at `$NIGHTLOOM_RUN_CWD` (backlog 529); `None` for a shell this is
+/// not written for (fish, nu, Windows), which runs the block unchanged.
+/// The record is written on every change of folder, so a block that
+/// never leaves its own folder writes none, and the caller falls back to
+/// that folder.
+///
+/// - **zsh**: a `chpwd` hook, added to his own (`chpwd_functions`). It
+///   leaves the run exactly as it was — zsh still `exec`s the block's last
+///   command, so a block killed by a signal still reads "ended by SIGx",
+///   and a block that `exit`s still leaves its record. A `cd` in a
+///   subshell (`(cd x; make)`) is not the block's folder and is skipped.
+/// - **sh, bash, dash, ksh, mksh**: an `EXIT` trap. The exit code is
+///   unchanged, but the shell no longer `exec`s a one-command block, so a
+///   one-command block killed by a signal reads `exit 128+n` rather than
+///   "ended by SIGn" (as a block of several commands already did); a
+///   block that sets its own `EXIT` trap leaves no record.
+///
+/// `\pwd`: the builtin, past any alias of his.
+fn recorded_block(shell: &str, block: &str) -> Option<String> {
+    let name = shell.rsplit('/').next().unwrap_or(shell);
+    let head = match name {
+        "zsh" => {
+            "__nl_cwd() { (( ZSH_SUBSHELL )) || \\pwd >\"$NIGHTLOOM_RUN_CWD\" 2>/dev/null; }; chpwd_functions+=(__nl_cwd)"
+        }
+        "sh" | "bash" | "dash" | "ksh" | "mksh" => {
+            "trap '\\pwd >\"$NIGHTLOOM_RUN_CWD\" 2>/dev/null' EXIT"
+        }
+        _ => return None,
+    };
+    Some(format!("{head}\n{block}"))
+}
+
+impl Terminals {
+    /// The folder an ended block's shell was in, once (the record is
+    /// removed on read); `None` when it left none, the folder is gone, or
+    /// the id is not a block's (backlog 529).
+    fn take_run_cwd(&self, id: u32) -> Option<String> {
+        let path = {
+            let shells = self.shells.lock().unwrap_or_else(|p| p.into_inner());
+            shells.get(&id)?.run_cwd.clone()?
+        };
+        let text = std::fs::read_to_string(&path).ok();
+        let _ = std::fs::remove_file(&path);
+        let dir = text?.trim_end_matches('\n').to_string();
+        PathBuf::from(&dir).is_dir().then_some(dir)
+    }
+}
+
+/// The folder an ended block's shell was in, once; `None` when it left
+/// none (backlog 529: typing into the ended tab opens a shell there).
+#[tauri::command]
+pub async fn terminal_run_cwd(
+    terminals: State<'_, Terminals>,
+    id: u32,
+) -> Result<Option<String>, String> {
+    Ok(terminals.take_run_cwd(id))
+}
+
 /// Keystrokes (and pastes) to the shell, as the text xterm.js produced.
 /// Queued, never waited on: `Err(NOT_READING)` when the queue is full.
 #[tauri::command]
@@ -818,12 +933,6 @@ pub fn terminal_resize(
 pub async fn terminal_close(terminals: State<'_, Terminals>, id: u32) -> Result<(), String> {
     terminals.close(id);
     Ok(())
-}
-
-/// The ids still open, for the tests and for a window that reloads.
-#[tauri::command]
-pub fn terminal_list(terminals: State<'_, Terminals>) -> Vec<u32> {
-    terminals.ids()
 }
 
 #[cfg(all(test, unix))]
@@ -932,6 +1041,116 @@ mod tests {
         t.write(info.id, "\u{3}").unwrap();
         let (_, code, signal) = until_exit(&rx);
         assert!(code != Some(0) || signal.is_some(), "{code:?} {signal:?}");
+    }
+
+    /// Backlog 529: a block's exit code is its own, and the folder it
+    /// ended in is recorded once (read, then gone); a block that stays
+    /// put records where it started.
+    #[test]
+    fn a_run_block_records_the_folder_it_ended_in_and_keeps_its_code() {
+        let dir = std::env::temp_dir().join(format!("nightloom-run529-{}", std::process::id()));
+        let sub = dir.join("deeper");
+        std::fs::create_dir_all(&sub).unwrap();
+        let same = |a: &str, b: &std::path::Path| {
+            std::fs::canonicalize(a).unwrap() == std::fs::canonicalize(b).unwrap()
+        };
+        let t = Terminals::default();
+        let (info, rx) = run_sh(&t, &dir, "cd deeper; echo IN; exit 3");
+        let (out, code, signal) = until_exit(&rx);
+        assert!(out.contains("IN"), "{out:?}");
+        assert_eq!((code, signal), (Some(3), None));
+        let ended = t.take_run_cwd(info.id).expect("the folder it ended in");
+        assert!(same(&ended, &sub), "{ended}");
+        assert_eq!(t.take_run_cwd(info.id), None, "read once");
+        let (info, rx) = run_sh(&t, &dir, "false");
+        let (_, code, _) = until_exit(&rx);
+        assert_eq!(code, Some(1));
+        let ended = t.take_run_cwd(info.id).expect("its own folder");
+        assert!(same(&ended, &dir), "{ended}");
+        // A plain shell keeps no record; closing a block's tab removes its.
+        let (plain, _rx) = open_sh(&t, &dir);
+        assert_eq!(t.take_run_cwd(plain.id), None);
+        t.close(plain.id);
+        let (info, rx) = run_sh(&t, &dir, "cd deeper");
+        until_exit(&rx);
+        let file = t.shells.lock().unwrap()[&info.id].run_cwd.clone().unwrap();
+        assert!(file.exists());
+        t.close(info.id);
+        assert!(!file.exists());
+    }
+
+    /// Backlog 529 under zsh, his shell: the hook leaves the status
+    /// exactly as the bare block's — signal included, since zsh still
+    /// `exec`s the last command — and a subshell's `cd` is not recorded.
+    #[cfg(unix)]
+    #[test]
+    fn the_zsh_record_leaves_the_status_as_it_was() {
+        use std::os::unix::process::ExitStatusExt;
+        if !std::path::Path::new("/bin/zsh").exists() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("nightloom-run529z-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("deeper")).unwrap();
+        let record = dir.join("record");
+        for (block, folder) in [
+            ("cd deeper; exit 3", Some("deeper")),
+            ("cd deeper; false", Some("deeper")),
+            ("cd deeper; sh -c 'kill -TERM $$'", Some("deeper")),
+            ("sh -c 'kill -INT $$'", None),
+            ("(cd deeper); true", None),
+        ] {
+            let _ = std::fs::remove_file(&record);
+            let run = |text: &str| {
+                std::process::Command::new("/bin/zsh")
+                    .args(["-f", "-c", text])
+                    .current_dir(&dir)
+                    .env(RUN_CWD_VAR, &record)
+                    .output()
+                    .unwrap()
+                    .status
+            };
+            let bare = run(block);
+            let _ = std::fs::remove_file(&record);
+            let wrapped = run(&recorded_block("/bin/zsh", block).unwrap());
+            assert_eq!(
+                (bare.code(), bare.signal()),
+                (wrapped.code(), wrapped.signal()),
+                "{block}"
+            );
+            let got = std::fs::read_to_string(&record).ok();
+            match folder {
+                Some(f) => {
+                    let got = got.unwrap_or_else(|| panic!("no record for {block}"));
+                    assert_eq!(
+                        std::fs::canonicalize(got.trim_end()).unwrap(),
+                        std::fs::canonicalize(dir.join(f)).unwrap(),
+                        "{block}"
+                    );
+                }
+                None => assert_eq!(got, None, "{block}"),
+            }
+        }
+        assert_eq!(recorded_block("/opt/homebrew/bin/fish", "cd x"), None);
+    }
+
+    /// Backlog 529: a key typed after the program ended comes back as an
+    /// error instead of vanishing into the dead pty — the window carries
+    /// it to the next shell — and the exit still reports its own code.
+    #[test]
+    fn a_write_after_the_shell_ended_is_refused_and_its_code_still_reported() {
+        let t = Terminals::default();
+        let (info, rx) = open_sh(&t, &std::env::temp_dir());
+        t.write(info.id, "exit 7\n").unwrap();
+        wait_until(|| t.write(info.id, "").is_err(), "the write to fail");
+        assert_eq!(t.write(info.id, "l"), Err(GONE.to_string()));
+        let exit = loop {
+            match rx.recv_timeout(PATIENCE).expect("the shell's exit") {
+                Outgoing::Exit { id, code, signal } => break (id, code, signal),
+                _ => continue,
+            }
+        };
+        assert_eq!(exit, (info.id, Some(7), None));
+        t.close(info.id);
     }
 
     const PATIENCE: Duration = Duration::from_secs(10);

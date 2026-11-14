@@ -157,10 +157,15 @@ impl nightloom_core::tool::Tool for PromptTool {
 /// ([`super::own_browser::PlaywrightGate`]): the CLI runs every matching
 /// entry, in parallel, and two hooks on one call would race for its
 /// one-shot decision file.
-pub const MATCHER: &str = "Bash|Write|Edit|MultiEdit|NotebookEdit|WebFetch|WebSearch|AskUserQuestion|ExitPlanMode|EnterWorktree|ExitWorktree|CronCreate|CronDelete|ScheduleWakeup|mcp__(?!playwright__).*";
+///
+/// `add_folder` (nightshift item 613) is left out the same way, by a second
+/// lookahead rather than a `|` inside the first — the Chat policy splits
+/// this matcher on `|` ([`super::ask_matcher_under_chat_policy`]): its gate
+/// is its own entry in every position (`AgentSpec::folder_gate`).
+pub const MATCHER: &str = "Bash|Write|Edit|MultiEdit|NotebookEdit|WebFetch|WebSearch|AskUserQuestion|ExitPlanMode|EnterWorktree|ExitWorktree|CronCreate|CronDelete|ScheduleWakeup|mcp__(?!playwright__)(?!nightloom__add_folder).*";
 
 /// [`MATCHER`]'s MCP alternative, as a word (the Chat policy narrows it).
-pub const MCP_ALTERNATIVE: &str = "mcp__(?!playwright__).*";
+pub const MCP_ALTERNATIVE: &str = "mcp__(?!playwright__)(?!nightloom__add_folder).*";
 
 /// The plan tool's name, as the CLI reports it in `deferred_tool_use`.
 pub const EXIT_PLAN_TOOL: &str = "ExitPlanMode";
@@ -310,6 +315,40 @@ pub enum Answer {
     AllowForChat { updated_input: Option<Value> },
     /// Refuse it; the reason is what the model reads.
     Deny { reason: String },
+    /// He sent a message instead of answering (nightshift item 522,
+    /// 2026-11-09): the call is refused with his words as the reason
+    /// ([`reply_reason`]), so the model reads them in the call's result and
+    /// goes on — what Claude's own desktop app does. `id` is the window's
+    /// id for the queued row, when it has one: the turn reports the message
+    /// as delivered under it once the refusal has landed, and the log keeps
+    /// it as his message.
+    Reply { id: Option<String>, text: String },
+}
+
+/// What the model reads when he replied instead of answering (item 522).
+pub fn reply_reason(text: &str) -> String {
+    format!(
+        "The user did not answer this; they replied with a message instead. Read it, then carry on from it — do not ask the same thing again unless it still matters. Their message: {}",
+        text.trim()
+    )
+}
+
+/// The refusal a call left waiting by a closed app gets at the chat's next
+/// message (item 522): nobody can answer a card that is gone.
+pub const CLOSED_WHILE_WAITING: &str = "Nightloom was closed before the user answered this, so it was not run. Their next message follows; go by it, and ask again only if it still matters.";
+
+/// The file that names the call a card is waiting on ([`AskDir::set_waiting`]).
+pub const WAITING_FILE: &str = "waiting.json";
+
+/// The deferred call a card is up for, with the session it is pending in
+/// (item 522): on disk for as long as the card waits and its resume runs,
+/// so a launch after a quit mid-wait can refuse it instead of meeting it
+/// again with nobody's answer.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Waiting {
+    #[serde(default)]
+    pub session: Option<String>,
+    pub call: DeferredCall,
 }
 
 /// A folder granted from the approval card (backlog 143, pass 2): the
@@ -456,6 +495,12 @@ impl AskDir {
                 updated_input: None,
                 reason: Some(reason.clone()),
             },
+            Answer::Reply { text, .. } => Decision {
+                tool_use_id: call.id.clone(),
+                decision: "deny".into(),
+                updated_input: None,
+                reason: Some(reply_reason(text)),
+            },
         };
         write_atomic(
             &self.dir.join(DECISION_FILE),
@@ -506,6 +551,17 @@ impl AskDir {
                     reason: Some(reason),
                 }
             }
+            // His message instead of an answer (item 522): refused for the
+            // reply, as a Deny is, in his words.
+            Answer::Reply { text, .. } => {
+                self.set_playwright_reply(Some("deny"))?;
+                Decision {
+                    tool_use_id: call.id.clone(),
+                    decision: "deny".into(),
+                    updated_input: None,
+                    reason: Some(reply_reason(text)),
+                }
+            }
         };
         write_atomic(
             &self.dir.join(DECISION_FILE),
@@ -539,6 +595,27 @@ impl AskDir {
         std::fs::create_dir_all(&self.dir)?;
         rules.playwright_reply = word.map(str::to_string);
         write_atomic(&self.dir.join(RULES_FILE), &serde_json::to_vec(&rules)?)
+    }
+
+    /// Who holds Claude's browser (nightshift item 508): `true` once the
+    /// user took it over in the tab, `false` when he gives it back or the
+    /// browser ends. Its own file ([`HOLD_FILE`]) beside the rules, written
+    /// by the app alone, so it never races the rules' writers.
+    pub fn set_held_by_user(&self, held: bool) -> std::io::Result<()> {
+        let path = self.dir.join(HOLD_FILE);
+        if !held {
+            return match std::fs::remove_file(&path) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+                _ => Ok(()),
+            };
+        }
+        std::fs::create_dir_all(&self.dir)?;
+        write_atomic(&path, br#"{"held_by":"user"}"#)
+    }
+
+    /// Whether the user holds Claude's browser (item 508).
+    pub fn held_by_user(&self) -> bool {
+        held_by_user(&self.dir)
     }
 
     /// The reply ended: *Allow once* and *Deny* stop applying (backlog
@@ -584,6 +661,61 @@ impl AskDir {
             .unwrap_or(SUBAGENTS_AUTO_DEFAULT)
     }
 
+    /// A card is up for `call` (item 522): remembered on disk until its
+    /// resume has run ([`Self::clear_waiting`]).
+    pub fn set_waiting(&self, session: Option<&str>, call: &DeferredCall) -> std::io::Result<()> {
+        std::fs::create_dir_all(&self.dir)?;
+        let w = Waiting {
+            session: session.map(String::from),
+            call: call.clone(),
+        };
+        write_atomic(&self.dir.join(WAITING_FILE), &serde_json::to_vec(&w)?)
+    }
+
+    /// The call a card was last waiting on, if its turn never finished
+    /// with it — the app was closed, or crashed, while it waited.
+    pub fn waiting(&self) -> Option<Waiting> {
+        let bytes = std::fs::read(self.dir.join(WAITING_FILE)).ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+
+    /// The wait is over: answered and resumed, or let go by a Stop.
+    pub fn clear_waiting(&self) {
+        let _ = std::fs::remove_file(self.dir.join(WAITING_FILE));
+    }
+
+    /// Whether an answer is on disk for the call `id`, unread.
+    pub fn has_decision_for(&self, id: &str) -> bool {
+        std::fs::read(self.dir.join(DECISION_FILE))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Decision>(&b).ok())
+            .is_some_and(|d| d.tool_use_id == id)
+    }
+
+    /// A card left waiting by a closed app (item 522), settled before the
+    /// chat's next message runs: the call is refused on disk — unless his
+    /// answer already is — for that turn's hook to deliver, and returned
+    /// so the turn can open with its result. `resume` is the session the
+    /// next process will resume; a call pending in any other session will
+    /// never be asked about again and is only forgotten.
+    pub fn settle_waiting(&self, resume: Option<&str>) -> Option<DeferredCall> {
+        let w = self.waiting()?;
+        self.clear_waiting();
+        if w.session.is_none() || w.session.as_deref() != resume {
+            return None;
+        }
+        if !self.has_decision_for(&w.call.id) {
+            self.write(
+                &w.call,
+                &Answer::Deny {
+                    reason: CLOSED_WHILE_WAITING.into(),
+                },
+            )
+            .ok()?;
+        }
+        Some(w.call)
+    }
+
     /// Drop a decision nobody resumed with — a Stop while the prompt was
     /// up — so it cannot answer a later call that happens to reuse nothing.
     /// (Ids never repeat, so this is tidiness; the one-shot read is the
@@ -591,6 +723,18 @@ impl AskDir {
     pub fn clear_decision(&self) {
         let _ = std::fs::remove_file(self.dir.join(DECISION_FILE));
     }
+}
+
+/// Who holds Claude's browser, in the chat's ask directory (nightshift
+/// item 508): `{"held_by":"user"}` while he has taken it over; absent, the
+/// model holds it.
+pub const HOLD_FILE: &str = "browser-hold.json";
+
+fn held_by_user(dir: &Path) -> bool {
+    std::fs::read(dir.join(HOLD_FILE))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .is_some_and(|v| v["held_by"] == "user")
 }
 
 fn read_rules(dir: &Path) -> Rules {
@@ -625,6 +769,13 @@ struct HookInput {
     /// a top-level call's line has no such field.
     #[serde(default)]
     agent_id: Option<String>,
+    /// The call's input — read for `add_folder`'s path (item 613).
+    #[serde(default)]
+    tool_input: Value,
+    /// The process's working folder, on every line the CLI sends (the
+    /// hooks doc's common fields) — `add_folder` inside it needs no card.
+    #[serde(default)]
+    cwd: String,
 }
 
 /// The hook's reply, as the CLI reads it. `None` inside is the empty
@@ -798,6 +949,11 @@ pub fn decide_in(dir: &Path, stdin_json: &str, side: bool) -> HookReply {
         // CLI's own flow decide is the conservative reading.
         Err(_) => return HookReply::new("ask"),
     };
+    // `add_folder`'s own gate (item 613), in every position, before any
+    // rule: a standing allow must never grant a folder he did not see.
+    if input.tool_name == crate::mcp_server::mcp_name(crate::tools::add_folder::NAME) {
+        return decide_add_folder(dir, &input, side);
+    }
     // Playwright's own gate (backlog 367), in every position: its own
     // rules, before any of the Ask position's.
     if super::own_browser::is_playwright(&input.tool_name) {
@@ -811,6 +967,13 @@ pub fn decide_in(dir: &Path, stdin_json: &str, side: bool) -> HookReply {
     }
     let rules = read_rules(dir);
     if rules.allow.contains(&input.tool_name) {
+        return HookReply::allow(None);
+    }
+    // The message's usage cap (item 538) is the model's to declare: it
+    // writes only this chat's own budget ledger, and a card for it would
+    // park the turn on a question he already answered in his message. A
+    // subagent's call is refused by the brief hook, whose deny wins.
+    if input.tool_name == crate::mcp_server::mcp_name(super::budget::TOOL_NAME) {
         return HookReply::allow(None);
     }
     if input.agent_id.as_deref().is_some_and(|id| !id.is_empty()) {
@@ -851,14 +1014,76 @@ pub fn decide_in(dir: &Path, stdin_json: &str, side: bool) -> HookReply {
     }
 }
 
-/// A Playwright call (backlog 367). Order: this very call's answer
+/// An `add_folder` call (nightshift item 613), in order: this call's own
+/// answer (consumed); a subagent's or a side process's call refused in
+/// words (no card can wait on either); a path that is not a folder refused
+/// with the reason; a folder inside the process's working folder allowed,
+/// since it is readable already; anything else deferred for the card. The
+/// chat's rules are never read: *Allow for this chat* on one folder is
+/// not a grant of the next.
+fn decide_add_folder(dir: &Path, input: &HookInput, side: bool) -> HookReply {
+    use crate::tools::add_folder::{SIDE_REFUSED, SUBAGENT_REFUSED, inside, requested_dir};
+    let path = dir.join(DECISION_FILE);
+    let decision: Option<Decision> = std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok());
+    if let Some(d) = decision
+        && d.tool_use_id == input.tool_use_id
+    {
+        let _ = std::fs::remove_file(&path);
+        return if d.decision == "allow" {
+            HookReply::allow(None)
+        } else {
+            HookReply::deny(
+                d.reason
+                    .filter(|r| !r.trim().is_empty())
+                    .unwrap_or_else(|| "The user did not add this folder.".into()),
+            )
+        };
+    }
+    if input.agent_id.as_deref().is_some_and(|id| !id.is_empty()) {
+        return HookReply::deny(SUBAGENT_REFUSED.into());
+    }
+    if side {
+        return HookReply::deny(SIDE_REFUSED.into());
+    }
+    let folder = match requested_dir(&input.tool_input) {
+        Ok(f) => f,
+        Err(e) => return HookReply::deny(e),
+    };
+    let cwd = PathBuf::from(input.cwd.trim());
+    if cwd.has_root() && inside(&folder, &[cwd]) {
+        return HookReply::allow(None);
+    }
+    HookReply::defer()
+}
+
+/// A Playwright call (backlog 367). First of all the hold (nightshift item
+/// 508): while the user has taken Claude's browser over, every call is
+/// refused in the contract's words, whoever makes it and whatever the chat
+/// allows — a call already running is past this hook and finishes. Then,
+/// in order: this very call's answer
 /// (consumed — first, so a refusal written by a Stop is delivered even to
 /// a chat allowed since), the chat's switch, the reply's answer, then a
-/// call no card can wait on is refused in words, and anything else defers
-/// for the card.
+/// side process's call is refused in words, a subagent's follows *Subagents
+/// run on auto* (his yes, nightshift blocker 1658: a subagent's calls are the
+/// parent's, and no card can wait on one), and anything else defers for the
+/// card. A *Deny* for this reply stops a subagent too.
 fn decide_playwright(dir: &Path, input: &HookInput, side: bool) -> HookReply {
-    use super::own_browser::{DECLINED, SIDE_REFUSED, SUBAGENT_REFUSED};
+    use super::own_browser::{DECLINED, HELD_BY_USER, SIDE_REFUSED, SUBAGENT_REFUSED};
     let path = dir.join(DECISION_FILE);
+    if held_by_user(dir) {
+        // This call's own answer, if a card left one, is spent: the model
+        // is told to wait, and a later call asks or runs by the rules.
+        if std::fs::read(&path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Decision>(&b).ok())
+            .is_some_and(|d| d.tool_use_id == input.tool_use_id)
+        {
+            let _ = std::fs::remove_file(&path);
+        }
+        return HookReply::deny(HELD_BY_USER.into());
+    }
     let decision: Option<Decision> = std::fs::read(&path)
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok());
@@ -885,11 +1110,15 @@ fn decide_playwright(dir: &Path, input: &HookInput, side: bool) -> HookReply {
         Some("deny") => return HookReply::deny(DECLINED.into()),
         _ => {}
     }
-    if input.agent_id.as_deref().is_some_and(|id| !id.is_empty()) {
-        return HookReply::deny(SUBAGENT_REFUSED.into());
-    }
     if side {
         return HookReply::deny(SIDE_REFUSED.into());
+    }
+    if input.agent_id.as_deref().is_some_and(|id| !id.is_empty()) {
+        return if rules.subagents_auto.unwrap_or(SUBAGENTS_AUTO_DEFAULT) {
+            HookReply::allow(None)
+        } else {
+            HookReply::deny(SUBAGENT_REFUSED.into())
+        };
     }
     HookReply::defer()
 }
@@ -1174,22 +1403,36 @@ mod tests {
         );
     }
 
-    /// A call no card can wait on is never deferred: a subagent's, and a
-    /// side process's (an aside, a checkpoint fork). Allowed ones run.
+    /// A subagent's call is never deferred: it runs on *Subagents run on
+    /// auto* (blocker 1658), is refused with that switch off, and a *Deny*
+    /// for this reply stops it either way.
     #[test]
-    fn a_subagent_or_side_call_is_refused_unless_already_allowed() {
+    fn a_subagents_call_follows_the_auto_switch_and_a_deny() {
         let dir = scratch();
+        let ask = AskDir::new(&dir);
         let r = decide(&dir, &pw_stdin("t1", "bypassPermissions", Some("a1")));
+        assert_eq!(r.decision(), "allow");
+        ask.set_subagents_auto(false).unwrap();
+        let r = decide(&dir, &pw_stdin("t2", "default", Some("a1")));
         assert_eq!((r.decision(), r.reason()), ("deny", Some(SUBAGENT_REFUSED)));
+        ask.set_subagents_auto(true).unwrap();
+        ask.set_playwright_reply(Some("deny")).unwrap();
+        let r = decide(&dir, &pw_stdin("t3", "auto", Some("a1")));
+        assert_eq!((r.decision(), r.reason()), ("deny", Some(DECLINED)));
+    }
+
+    /// A side process's call (an aside, a checkpoint fork) is never
+    /// deferred, and a subagent inside one is refused too. Allowed ones run.
+    #[test]
+    fn a_side_call_is_refused_unless_already_allowed() {
+        let dir = scratch();
+        let r = decide_in(&dir, &pw_stdin("t0", "auto", Some("a1")), true);
+        assert_eq!((r.decision(), r.reason()), ("deny", Some(SIDE_REFUSED)));
         let r = decide_in(&dir, &pw_stdin("t1", "dontAsk", None), true);
         assert_eq!((r.decision(), r.reason()), ("deny", Some(SIDE_REFUSED)));
         AskDir::new(&dir)
             .set_playwright_reply(Some("allow"))
             .unwrap();
-        assert_eq!(
-            decide(&dir, &pw_stdin("t2", "auto", Some("a1"))).decision(),
-            "allow"
-        );
         assert_eq!(
             decide_in(&dir, &pw_stdin("t2", "auto", None), true).decision(),
             "allow"
@@ -1217,6 +1460,55 @@ mod tests {
         );
         assert_eq!(
             decide(&dir, &pw_stdin("t2", "auto", None)).decision(),
+            "allow"
+        );
+    }
+
+    /// The hold (nightshift item 508): while the user has taken the browser
+    /// over, every Playwright call is refused in the contract's exact
+    /// words — the main conversation's, a subagent's, a side process's, in
+    /// a chat that allows Playwright and in one that never did — and the
+    /// rules are untouched, so giving it back restores what was.
+    #[test]
+    fn a_held_browser_refuses_every_playwright_call_in_the_contracts_words() {
+        const WORDS: &str = "The user has taken over the browser. Wait for them to give it back; do not retry until they say so.";
+        assert_eq!(crate::agent::own_browser::HELD_BY_USER, WORDS);
+        let dir = scratch();
+        let ask = AskDir::new(&dir);
+        assert!(!ask.held_by_user());
+        ask.set_playwright_chat(true).unwrap();
+        assert_eq!(
+            decide(&dir, &pw_stdin("h0", "auto", None)).decision(),
+            "allow"
+        );
+        ask.set_held_by_user(true).unwrap();
+        assert!(ask.held_by_user());
+        for (stdin, side) in [
+            (pw_stdin("h1", "auto", None), false),
+            (pw_stdin("h2", "bypassPermissions", None), false),
+            (pw_stdin("h3", "default", Some("agent-1")), false),
+            (pw_stdin("h4", "auto", None), true),
+        ] {
+            let r = decide_in(&dir, &stdin, side);
+            assert_eq!(r.decision(), "deny");
+            assert_eq!(r.reason(), Some(WORDS));
+        }
+        // A card's allow for this very call does not beat the hold either.
+        ask.write(&pw_call("h5"), &allow_once()).unwrap();
+        let r = decide(&dir, &pw_stdin("h5", "default", None));
+        assert_eq!((r.decision(), r.reason()), ("deny", Some(WORDS)));
+        // Only Playwright is held: another tool is judged as before.
+        let other = json!({"hook_event_name": "PreToolUse", "tool_name": "Bash",
+            "tool_input": {"command": "ls"}, "tool_use_id": "b1", "permission_mode": "default"})
+        .to_string();
+        assert_ne!(decide(&dir, &other).reason(), Some(WORDS));
+        // Given back: the chat's switch applies again, and it is still on.
+        ask.set_held_by_user(false).unwrap();
+        ask.set_held_by_user(false).unwrap();
+        assert!(!ask.held_by_user());
+        assert!(ask.playwright_chat());
+        assert_eq!(
+            decide(&dir, &pw_stdin("h6", "auto", None)).decision(),
             "allow"
         );
     }
@@ -1743,5 +2035,170 @@ mod tests {
         assert_eq!(outside_folder(&json!({"command": "ls /"}), &trees), None);
         std::fs::remove_dir_all(&outside).unwrap();
         std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    /// Item 522: his message in place of an answer is a refusal whose
+    /// reason is his words — for a question and for a Playwright card.
+    #[test]
+    fn a_reply_is_written_as_a_refusal_in_his_words() {
+        let dir = scratch();
+        let files = AskDir::new(&dir);
+        files
+            .write(
+                &call(),
+                &Answer::Reply {
+                    id: Some("row-1".into()),
+                    text: "  wait — nothing is decided yet  ".into(),
+                },
+            )
+            .unwrap();
+        let text = std::fs::read_to_string(dir.join(DECISION_FILE)).unwrap();
+        assert!(text.contains(r#""decision":"deny""#), "{text}");
+        assert!(text.contains("replied with a message instead"), "{text}");
+        assert!(
+            text.contains("Their message: wait — nothing is decided yet\""),
+            "{text}"
+        );
+        assert!(
+            !text.contains("row-1"),
+            "the window's id is not the hook's business: {text}"
+        );
+
+        let pw = pw_call("toolu_pw");
+        files
+            .write(
+                &pw,
+                &Answer::Reply {
+                    id: None,
+                    text: "use the other tab".into(),
+                },
+            )
+            .unwrap();
+        let text = std::fs::read_to_string(dir.join(DECISION_FILE)).unwrap();
+        assert!(
+            text.contains("toolu_pw") && text.contains("use the other tab"),
+            "{text}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Item 522: the wait on disk, and what a launch after a quit does
+    /// with it — refuse the call for the session the chat resumes, keep an
+    /// answer already written, forget a call pending in another session.
+    #[test]
+    fn a_wait_left_on_disk_is_refused_once_for_the_session_it_is_pending_in() {
+        let dir = scratch();
+        let files = AskDir::new(&dir);
+        assert!(
+            files.settle_waiting(Some("s-1")).is_none(),
+            "nothing waiting"
+        );
+
+        files.set_waiting(Some("s-1"), &call()).unwrap();
+        assert_eq!(files.waiting().map(|w| w.call), Some(call()));
+        assert_eq!(files.settle_waiting(Some("s-1")), Some(call()));
+        assert!(files.waiting().is_none(), "settled once");
+        let text = std::fs::read_to_string(dir.join(DECISION_FILE)).unwrap();
+        assert!(
+            text.contains(r#""decision":"deny""#) && text.contains("was closed before"),
+            "{text}"
+        );
+        assert!(files.settle_waiting(Some("s-1")).is_none());
+
+        // His answer was already written when the app closed: it stands.
+        files.clear_decision();
+        files.set_waiting(Some("s-1"), &call()).unwrap();
+        files
+            .write(
+                &call(),
+                &Answer::Deny {
+                    reason: "his own words".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(files.settle_waiting(Some("s-1")), Some(call()));
+        let text = std::fs::read_to_string(dir.join(DECISION_FILE)).unwrap();
+        assert!(text.contains("his own words"), "{text}");
+
+        // Pending in a session the chat no longer resumes: forgotten, nothing written.
+        files.clear_decision();
+        files.set_waiting(Some("s-old"), &call()).unwrap();
+        assert!(files.settle_waiting(Some("s-new")).is_none());
+        assert!(files.waiting().is_none());
+        assert!(!dir.join(DECISION_FILE).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `add_folder`'s gate (item 613): a folder inside the working folder
+    /// runs unasked, one outside defers for the card, a path that is not a
+    /// folder is refused in words, a subagent's and a side process's call
+    /// are refused, a standing allow is never read, and the card's answer
+    /// is read once.
+    #[test]
+    fn add_folder_defers_outside_the_working_folder_only() {
+        let dir = scratch();
+        let project = scratch();
+        let outside = scratch();
+        std::fs::create_dir_all(project.join("hw1")).unwrap();
+        let line = |path: &std::path::Path, extra: &str| {
+            format!(
+                r#"{{"cwd":"{}","hook_event_name":"PreToolUse","tool_name":"mcp__nightloom__add_folder","tool_input":{{"path":"{}"}},"tool_use_id":"t613","permission_mode":"auto"{extra}}}"#,
+                project.display(),
+                path.display()
+            )
+        };
+        assert_eq!(
+            decide(&dir, &line(&project.join("hw1"), "")).decision(),
+            "allow"
+        );
+        assert_eq!(decide(&dir, &line(&outside, "")), HookReply::defer());
+        let missing = decide(&dir, &line(&outside.join("nope"), ""));
+        assert_eq!(missing.decision(), "deny");
+        assert!(missing.reason().unwrap().contains("not a folder"));
+        let sub = decide(&dir, &line(&outside, r#","agent_id":"h1""#));
+        assert_eq!(sub.decision(), "deny");
+        assert_eq!(
+            decide_in(&dir, &line(&outside, ""), true).decision(),
+            "deny"
+        );
+        // A rule for the tool is not a grant of the next folder.
+        std::fs::write(
+            dir.join(RULES_FILE),
+            r#"{"allow":["mcp__nightloom__add_folder"]}"#,
+        )
+        .unwrap();
+        assert_eq!(decide(&dir, &line(&outside, "")), HookReply::defer());
+        let c = DeferredCall {
+            id: "t613".into(),
+            name: "mcp__nightloom__add_folder".into(),
+            input: json!({"path": outside.to_string_lossy()}),
+        };
+        AskDir::new(&dir)
+            .write(
+                &c,
+                &Answer::Allow {
+                    updated_input: None,
+                    plan_then: None,
+                    grant: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(decide(&dir, &line(&outside, "")).decision(), "allow");
+        assert_eq!(decide(&dir, &line(&outside, "")), HookReply::defer());
+        for d in [dir, project, outside] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    /// The Ask hook leaves `add_folder` to its own gate, so the two never
+    /// race for one decision file.
+    #[test]
+    fn the_ask_matcher_leaves_add_folder_out() {
+        assert!(MCP_ALTERNATIVE.contains("(?!nightloom__add_folder)"));
+        assert!(MATCHER.ends_with(MCP_ALTERNATIVE));
+        assert!(
+            !MCP_ALTERNATIVE.contains('|'),
+            "the Chat policy splits on |"
+        );
     }
 }

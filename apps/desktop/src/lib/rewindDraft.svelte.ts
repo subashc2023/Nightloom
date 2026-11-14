@@ -101,8 +101,11 @@ export function rewoundRuns(
 
 /** Asks the composer to take focus with the caret at the end, after a
  *  rewind filled it. */
-export const composerFocus = $state<{ seq: number }>({ seq: 0 });
+export const composerFocus = $state<{ seq: number; key?: string }>({ seq: 0 });
 
-export function requestComposerFocus(): void {
+/** `key` (item 674's follow-up): the drafts entry whose box takes it — an
+ *  aside's box too; absent, the chat's composer, as before. */
+export function requestComposerFocus(key?: string): void {
+  composerFocus.key = key;
   composerFocus.seq += 1;
 }

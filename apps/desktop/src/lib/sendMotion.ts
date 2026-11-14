@@ -64,6 +64,8 @@ export function launch(channel: string, el: Element | null | undefined, at: numb
   const pl = parseFloat(cs.paddingLeft) || 0;
   const pt = parseFloat(cs.paddingTop) || 0;
   pending = { channel, at, x: r.left + pl, y: r.top + pt, w: Math.max(0, r.width - 2 * pl), h: r.height };
+  // Item 563: a send from the new-chat page also takes its dial along.
+  if (channel === "chat") departDial(at);
 }
 
 /** A fresh launch is waiting on this channel (not consumed). */
@@ -250,8 +252,8 @@ function threadOf(): { svg: SVGSVGElement; path: SVGPathElement; grad: SVGLinear
   ]) {
     const stop = document.createElementNS(SVG, "stop");
     stop.setAttribute("offset", off);
-    stop.setAttribute("stop-color", "var(--accent, #e0a458)");
-    stop.style.stopColor = "var(--accent, #e0a458)";
+    stop.setAttribute("stop-color", "var(--motion-ink, var(--accent, #e0a458))");
+    stop.style.stopColor = "var(--motion-ink, var(--accent, #e0a458))";
     stop.setAttribute("stop-opacity", op);
     grad.appendChild(stop);
   }
@@ -351,7 +353,7 @@ export function fly(node: HTMLElement, bubble: HTMLElement, l: Launch, hold: num
     bubble.style.boxShadow =
       f.ring === null
         ? ""
-        : `0 0 0 ${(1 + 9 * easeOutCubic(f.ring)).toFixed(2)}px color-mix(in srgb, var(--accent, #e0a458) ${Math.round(38 * (1 - f.ring))}%, transparent)`;
+        : `0 0 0 ${(1 + 9 * easeOutCubic(f.ring)).toFixed(2)}px color-mix(in srgb, var(--motion-ink, var(--accent, #e0a458)) ${Math.round(38 * (1 - f.ring))}%, transparent)`;
     return f.done;
   };
   if (hold !== null) {
@@ -439,4 +441,215 @@ export function arrive(node: HTMLElement, params: ArriveParams) {
       cancel?.();
     },
   };
+}
+
+// ---- the dial's move (item 563, Filament IV stage 4) ----------------------
+
+/**
+ * The first send from the new-chat page (521 report §2, Motion: "the dial
+ * shrinks from 330 px to 104 px and moves to the right column over about
+ * 400 ms … one transform on one element"). The page registers its dial with
+ * `use:departs`; a `launch("chat")` while one is registered copies it — a
+ * fixed ghost at the dial's place, so the page unmounting under it does not
+ * matter — and waits for two things: the page's dial to leave the document
+ * (the send landed: the page gives way to the transcript), and the right
+ * column's dial to appear (`[data-dial-dock]`, else the column's `.dial-at
+ * .dial`). Then the ghost flies onto it, scaling, and cross-fades into it.
+ *
+ * The page's dial still there after `LAUNCH_TTL_MS` (the send failed, or
+ * went to the queue) → the ghost is dropped unseen. No column (a narrow
+ * window, the aside panel, Classic) → the ghost shrinks a little where it
+ * is and fades. Reduced motion → nothing; the column's dial is simply there.
+ * The right column slides in from the right on the same timeline (item
+ * 563's leftover: transform and opacity on `[data-rail-col]`, cleared at the
+ * end), and the flight aims at where the column's dial will be once the slide
+ * is done, so the ghost lands on it.
+ * The timeline is `dialFrameAt(ms)`, pure; `window.__dialMotionHold = ms`
+ * holds an instant for the harness.
+ */
+export const DIAL_MS = 400;
+/** When the ghost starts handing over to the column's own dial (share of DIAL_MS). */
+export const DIAL_FADE_FROM = 0.7;
+
+export interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface DialFrame {
+  /** The ghost's translation from where it started, px, and its scale. */
+  dx: number;
+  dy: number;
+  scale: number;
+  ghost: number;
+  /** The column's dial's opacity; null when there is no target. */
+  target: number | null;
+  /**
+   * Item 563 (521 §2 Motion, "while the column slides in"): how much of the
+   * right column's width it still sits to the right of its place, 1 → 0 on
+   * the dial's own easing (one timeline), and its opacity. 0 / 1 with no target.
+   */
+  slide: number;
+  colOpacity: number;
+  done: boolean;
+}
+
+/** The dial's move at `ms`: centre to centre, scaled to the target's width. */
+export function dialFrameAt(ms: number, from: Rect, to: Rect | null): DialFrame {
+  const t = clamp01(ms / DIAL_MS);
+  const e = easeOutCubic(t);
+  const fade = smooth(DIAL_FADE_FROM, 1, t);
+  if (!to) {
+    return { dx: 0, dy: 0, scale: lerp(1, 0.86, e), ghost: 1 - smooth(0.2, 1, t), target: null, slide: 0, colOpacity: 1, done: t >= 1 };
+  }
+  const fcx = from.x + from.w / 2;
+  const fcy = from.y + from.h / 2;
+  const tcx = to.x + to.w / 2;
+  const tcy = to.y + to.h / 2;
+  const s = from.w > 0 ? to.w / from.w : 1;
+  return {
+    dx: lerp(0, tcx - fcx, e),
+    // y leads, as the bubble's flight does: the path bows.
+    dy: lerp(0, tcy - fcy, easeOutQuart(t)),
+    scale: lerp(1, s, e),
+    ghost: 1 - fade,
+    target: fade,
+    slide: 1 - e,
+    colOpacity: lerp(0.35, 1, smooth(0, 0.6, t)),
+    done: t >= 1,
+  };
+}
+
+let departing: HTMLElement | null = null;
+
+/** The new-chat page's dial: the element a first send carries to the column. */
+export function departs(node: HTMLElement) {
+  departing = node;
+  return {
+    destroy: () => {
+      if (departing === node) departing = null;
+    },
+  };
+}
+
+function rectOf(el: Element): Rect {
+  const r = el.getBoundingClientRect();
+  return { x: r.left, y: r.top, w: r.width, h: r.height };
+}
+
+function dockOf(): HTMLElement | null {
+  if (typeof document === "undefined") return null;
+  const el =
+    document.querySelector<HTMLElement>("[data-dial-dock] .dial") ??
+    document.querySelector<HTMLElement>("[data-dial-dock]") ??
+    document.querySelector<HTMLElement>(".dial-at .dial");
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  return r.width > 0 && r.height > 0 ? el : null;
+}
+
+let dialCancel: (() => void) | null = null;
+
+function departDial(at: number): void {
+  const src = departing;
+  if (!src || !src.isConnected || typeof document === "undefined" || reducedMotion()) return;
+  dialCancel?.();
+  const from = rectOf(src);
+  if (from.w <= 0 || from.h <= 0) return;
+  const ghost = src.cloneNode(true) as HTMLElement;
+  // A cloned canvas is blank: copy the motion layer's pixels (item 581's DialMotion) so the ghost carries them.
+  const srcCanvases = src.querySelectorAll("canvas");
+  ghost.querySelectorAll("canvas").forEach((c, i) => {
+    const from = srcCanvases[i];
+    if (!from || !from.width) return;
+    c.width = from.width;
+    c.height = from.height;
+    try {
+      c.getContext("2d")?.drawImage(from, 0, 0);
+    } catch {
+      /* a tainted or lost context: the ghost flies without that layer */
+    }
+  });
+  ghost.setAttribute("aria-hidden", "true");
+  ghost.removeAttribute("role");
+  Object.assign(ghost.style, {
+    position: "fixed",
+    left: `${from.x}px`,
+    top: `${from.y}px`,
+    width: `${from.w}px`,
+    height: `${from.h}px`,
+    margin: "0",
+    zIndex: "60",
+    pointerEvents: "none",
+    transformOrigin: "50% 50%",
+    visibility: "hidden",
+  });
+  document.body.appendChild(ghost);
+
+  let raf = 0;
+  let target: HTMLElement | null = null;
+  /** Item 563: the right column, slid in on the dial's timeline; `slid` is the offset painted last, px. */
+  let col: HTMLElement | null = null;
+  let slid = 0;
+  let started = -1;
+  const w = window as unknown as { __dialMotionHold?: number };
+  const end = () => {
+    if (raf) cancelAnimationFrame(raf);
+    raf = 0;
+    ghost.remove();
+    if (target) target.style.opacity = "";
+    if (col) {
+      col.style.transform = "";
+      col.style.opacity = "";
+    }
+    if (dialCancel === end) dialCancel = null;
+  };
+  dialCancel = end;
+  const paint = (f: DialFrame) => {
+    ghost.style.visibility = "visible";
+    ghost.style.transform = `translate(${f.dx}px, ${f.dy}px) scale(${f.scale})`;
+    ghost.style.opacity = String(f.ghost);
+    if (target && f.target != null) target.style.opacity = String(f.target);
+    if (col) {
+      slid = f.slide * col.offsetWidth;
+      col.style.transform = slid > 0.01 ? `translateX(${slid}px)` : "";
+      col.style.opacity = f.colOpacity < 1 ? String(f.colOpacity) : "";
+    }
+  };
+  const step = (ts: number) => {
+    raf = 0;
+    const t = now();
+    if (started < 0) {
+      // Waiting: the page must give way (the send landed) before anything moves.
+      if (src.isConnected) {
+        if (t - at > LAUNCH_TTL_MS) return end();
+        raf = requestAnimationFrame(step);
+        return;
+      }
+      target = dockOf();
+      // The column mounts with the transcript, in the same flush; one more
+      // frame's grace for its layout.
+      if (!target && t - at < 120) {
+        raf = requestAnimationFrame(step);
+        return;
+      }
+      col = target?.closest<HTMLElement>("[data-rail-col]") ?? null;
+      started = ts;
+    }
+    const hold = typeof w.__dialMotionHold === "number" ? w.__dialMotionHold : null;
+    const ms = hold ?? ts - started;
+    // The target is re-measured every frame: the column may still be settling.
+    // Item 563: less the slide painted last frame, so the flight lands where the
+    // column's dial will be when the slide ends (a transform moves no layout).
+    let to = target ? rectOf(target) : null;
+    if (to && slid) to = { ...to, x: to.x - slid };
+    const f = dialFrameAt(ms, from, to);
+    paint(f);
+    if (hold != null) return; // held for the harness; left on the page
+    if (f.done) return end();
+    raf = requestAnimationFrame(step);
+  };
+  raf = requestAnimationFrame(step);
 }

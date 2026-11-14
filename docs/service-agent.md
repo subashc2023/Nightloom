@@ -1117,7 +1117,9 @@ What happens instead lives in the desktop (`handoff.svelte.ts`,
 "The context-full hand-off"): at each turn's end the gauge's fill is
 compared to the chat's threshold (70% by default); past it the next message
 carries a wrap-up asking the model to write `HANDOFF.md` in the project and
-stop; when that turn ends the composer offers *Continue in a new chat* —
+stop; when that turn ends ~~the composer offers *Continue in a new chat*~~
+(item 506: the reply's next-chat card offers *Continue with this prompt*,
+which also sends; `docs/desktop-ui.md`, "One hand-off surface") —
 asked, not automatic (nightshift blocker 092's default) — which opens a
 fresh chat in the same folder, linked to this one (`ForkedFrom` with
 `reason: "handoff"`, `Session::continued_from`), no CLI conversation to
@@ -1166,6 +1168,8 @@ list (34 → 56 in the measurement), so the next turn re-writes the prefix once.
 
 ## Playwright: Claude's own browser behind a card (2026-10-15, nightshift backlog 367)
 
+**Subagents, since 2026-11-05 (blocker 1658):** a subagent's call runs unasked on *Subagents run on auto*, is refused with that switch off, and stops on a *Deny* for the reply; a side process's call stays refused unless already allowed (`ask::decide_playwright`).
+
 Every Claude Code chat gets Microsoft's Playwright MCP server (`@playwright/mcp`
 0.0.83, pinned) in the `--mcp-config` JSON beside Nightloom's own, driving
 **WebKit** headless with an in-memory profile — never Chrome
@@ -1194,10 +1198,67 @@ ends), **Allow for this chat** (`playwright_chat: true`, the rail's per-chat
 *Playwright for this chat* switch, `playwright_for_chat`), **Deny** ("The
 user declined Playwright for now.", and `playwright_reply: "deny"` so the
 reply does not raise a card per retry). The turn clears `playwright_reply`
-as it starts and as it ends (`agent_turn::ReplyEnd`). A subagent's, an
+as it starts and as it ends (`agent_turn::ReplyEnd`). ~~A subagent's, an
+aside's~~ (2026-11-05: a subagent's is the note at this section's head) An
 aside's or a fork's call (`--side`) is never deferred: it runs if already
 allowed, else is refused in words; an ephemeral chat's gate is an `echo`
 deny. The phone draws the same card. The API engine is out of scope.
+
+## Claude's browser, owned by the app (2026-11-09, nightshift item 508)
+
+~~The browser lives and dies with each message's Playwright server~~
+(until 2026-11-09): in the desktop app a chat's browser is now the app's, kept
+between messages, so it can be watched and used in a tab (blocker 1666, option
+A2; logins in memory only). `nightloom serve` and the CLI are unchanged: there
+the server still launches its own (`--headless --isolated`).
+
+**How.** The chat's Playwright server is given `--endpoint <socket>` in place
+of `--headless --isolated` (`own_browser::with_endpoint`, set before each turn
+and each prewarm by `claude_browser::point` after `set_ask_dir`). The socket is
+the app's own, one per chat (`/tmp/nightloom-<uid>/cb-<app pid>-<hash>.sock`,
+`claude_browser::Browsers::endpoint`), and binding it starts nothing. The MCP
+server connects only when a Playwright call actually runs — after the
+permission hook allowed it; measured, none at `initialize` or `tools/list` —
+and that first connection starts the helper
+(`crates/nightloom-service/assets/claude-browser-helper.js`, written to
+`<install>/nightloom-claude-browser-helper.js`, run by the install's node):
+one headless WebKit, one 1280×800 context, no profile on disk, bound with
+Playwright's public `browser.bind`. Each connection is then copied byte for
+byte to the browser's own socket. So: a chat that never uses Playwright starts
+nothing; every later `claude -p` of the chat, and its subagents (they share
+the process's MCP server), reach the same browser, page and logins. The tool
+list is byte-identical either way (25 tools, 20,286 characters; test
+`the_tool_list_is_the_same_with_an_endpoint`). An aside or a checkpoint fork
+keeps a browser of its own (`AgentSpec::own_browser_for_side`).
+
+**It ends** with the chat's delete, the app's quit (`on_exit`; a watchdog in
+the helper's process group covers a crash), or 30 minutes with no message
+attached and no tab watching (`Browsers::sweep_idle`). An idle end keeps the
+socket: the next call starts a fresh browser, logged in to nothing.
+
+**The window** (contract: nightshift `notes/runner-design/508-interface-2026-11-09.md`):
+commands `claude_browser_status`, `_watch`, `_input`, `_nav`, `_hold`, all by
+the chat's id; events `claude-browser-frame` (base64 JPEG, only while a tab
+watches; frames never reach the model), `claude-browser-status`,
+`claude-browser-dialog`.
+
+**The hold.** His first click, key, wheel or text in the tab — or the address
+line — takes the browser; a bare pointer move never does. It is
+`browser-hold.json` (`{"held_by":"user"}`) in the chat's ask directory, beside
+`rules.json`, and `ask::decide_playwright` checks it before anything else:
+every Playwright call, from any position, is denied with "The user has taken
+over the browser. Wait for them to give it back; do not retry until they say
+so." A call already running finishes. Give back removes the file; so does the
+browser's end, so the model is never locked out of a browser that is gone.
+
+**Dialogs.** The helper answers a page's dialog itself (accept; empty prompt;
+no file) only when nobody else will — he holds the browser, or no message is
+attached — and otherwise leaves it to the model's `browser_handle_dialog`.
+
+**Never Chrome.** WebKit only; no channel, no `devtools` capability, none of
+Playwright's viewer apps (they can fall through to Google Chrome). Test
+`nothing_ever_configures_chrome_or_the_devtools_capability` fails if either
+server shape or the helper names one.
 
 ## What `--append-system-prompt` carries
 

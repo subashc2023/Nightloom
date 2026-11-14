@@ -187,4 +187,51 @@
     gap: 8px;
     justify-content: flex-end;
   }
+
+  /* Filament IV stage 6 (item 570): the dialog is a card in front with a
+     ruled head — the title in the light sans, not the serif — the facts'
+     keys as mono capitals, Cancel and the action on the right. Behind
+     `:where(:root:not([data-layout="classic"]))`; Classic's rules above. */
+  :global(:where(:root:not([data-layout="classic"]))) .dialog {
+    background: var(--raised);
+    border-radius: var(--r2);
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.65);
+    padding: 20px 22px 18px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .head {
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) h2 {
+    font-family: var(--sans);
+    font-weight: 400;
+    font-size: 19px;
+    letter-spacing: -0.005em;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .facts .ns-k {
+    font: 500 10px var(--mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink2);
+    padding-top: 4px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .actions {
+    padding-top: 12px;
+    border-top: 1px solid var(--line);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .stat {
+    background: var(--term);
+    border-radius: var(--r1);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    :global(:where(:root:not([data-layout="classic"]))) .dialog {
+      animation: dialog-rise 90ms ease-out;
+    }
+  }
+  @keyframes dialog-rise {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+  }
 </style>

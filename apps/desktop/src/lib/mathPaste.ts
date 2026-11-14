@@ -409,6 +409,26 @@ export function mathPasteText(html: string): string | null {
  * Null when the HTML gave neither math nor any `<img>` text, and on any
  * failure, so the paste goes in as it always did.
  */
+/**
+ * Item 684 (his ask, 2026-11-12: "if i try to copy this table then put it into textbox it actually copies
+ * the table … so that i can fill values in"): HTML holding a `<table>` as text with each table a Markdown
+ * table — header row, `|---|` rule, every row, empty cells kept as blanks — and anything around it as
+ * the walk below writes it (math still as TeX). Null when there is no table, or on any failure.
+ */
+export function tablePasteText(html: string): string | null {
+  if (!html || !/<table[\s>]/i.test(html)) return null;
+  try {
+    return convert(html, undefined, true);
+  } catch {
+    return null;
+  }
+}
+
+/** A cell's text for a Markdown table: one line, `|` escaped. */
+function mdCell(s: string): string {
+  return s.replace(/\s+/g, " ").trim().replace(/\|/g, "\\|");
+}
+
 export function htmlPasteText(html: string, onImage: (img: El) => string | null): string | null {
   if (!html) return null;
   try {
@@ -418,7 +438,7 @@ export function htmlPasteText(html: string, onImage: (img: El) => string | null)
   }
 }
 
-function convert(html: string, onImage?: (img: El) => string | null): string | null {
+function convert(html: string, onImage?: (img: El) => string | null, tables = false): string | null {
   const root = parseHtml(html);
   // MathJax v2 pairs: frame id `MathJax-Element-3-Frame` ↔ script id `MathJax-Element-3`.
   const scripts = new Map<string, El>();
@@ -441,6 +461,7 @@ function convert(html: string, onImage?: (img: El) => string | null): string | n
   };
   let found = 0;
   let images = 0; // item 382: `<img>`s that put text in
+  let tablesFound = 0; // item 684
   let glue = false; // the last thing written was inline math: a word after it needs a space
   const nl = (n: 1 | 2) => {
     if (!last()) return;
@@ -523,6 +544,40 @@ function convert(html: string, onImage?: (img: El) => string | null): string | n
         nl(1);
         continue;
       }
+      if (tables && c.tag === "table") {
+        // Item 684: rows in document order (thead, tbody, tfoot, or bare `tr`s), each cell written by
+        // this same walk (so math in a cell is TeX), then laid out as a Markdown table.
+        const rows: El[] = [];
+        const gather = (e: El) => {
+          for (const k of kids(e)) {
+            if (k.tag === "tr") rows.push(k);
+            else if (k.tag !== "table") gather(k);
+          }
+        };
+        gather(c);
+        const grid = rows.map((r) =>
+          kids(r)
+            .filter((k) => k.tag === "td" || k.tag === "th")
+            .map((cell) => {
+              const mark = parts.length;
+              glue = false;
+              walk(cell, false);
+              return mdCell(parts.splice(mark).join(""));
+            }),
+        );
+        const width = Math.max(0, ...grid.map((r) => r.length));
+        if (width === 0) continue;
+        tablesFound++;
+        const line = (r: string[]) =>
+          "| " + Array.from({ length: width }, (_, i) => r[i] ?? "").join(" | ") + " |";
+        nl(2);
+        put(line(grid[0]));
+        put("\n|" + "---|".repeat(width));
+        for (const r of grid.slice(1)) put("\n" + line(r));
+        nl(2);
+        glue = false;
+        continue;
+      }
       const block = PARA.has(c.tag) ? 2 : LINE.has(c.tag) ? 1 : 0;
       if (block) nl(block);
       if (c.tag === "li") {
@@ -550,7 +605,7 @@ function convert(html: string, onImage?: (img: El) => string | null): string | n
     }
   };
   walk(root, false);
-  if (found === 0 && images === 0) return null;
+  if (found === 0 && images === 0 && tablesFound === 0) return null;
   return parts
     .join("")
     .split("\n")

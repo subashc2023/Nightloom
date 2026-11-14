@@ -1,0 +1,25 @@
+<!doctype html>
+<!-- Item 671 proof: one frame of the real Horizon shader (makeRenderer from newChatShader.ts) at a forced local hour, drawn in
+     the new-chat area of a 1440 x 900 capture of the real page (backdrop and text overlay from the 669/671 design pages, kept
+     out of git in sky671-assets/, see the local .git/info/exclude). ?hr=<0-24>&t=<s>; ?bench=1 measures frame cost at 1x (noisy, see sky671bench.ts); ?bench=2 the shader's own work (item 671 cost pass).
+     Served by vite on a spare port and snapped with nightshift-code bin/snap (WebKit). -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      body { margin: 0; background: #0b0d10; }
+      #stage { position: relative; width: 1440px; height: 900px; overflow: hidden; }
+      #stage img, #stage canvas { position: absolute; left: 0; top: 0; }
+      #stage img { width: 1440px; height: 900px; }
+      #cap { position: fixed; bottom: 0; left: 0; right: 0; z-index: 9; font: 12px/1.5 ui-monospace, monospace; color: #e9edf2; background: rgba(0,0,0,.75); padding: 4px 8px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <div id="stage"><img alt="" src="./sky671-assets/ground.png" /><canvas></canvas><img alt="" src="./sky671-assets/overlay.png" /></div>
+    <div id="cap">running…</div>
+    <script>
+      window.addEventListener("error", (e) => (document.getElementById("cap").textContent = "error: " + e.message));
+    </script>
+    <script type="module" src="./sky671.ts"></script>
+  </body>
+</html>

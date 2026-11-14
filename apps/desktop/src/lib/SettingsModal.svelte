@@ -15,12 +15,49 @@
 
 <script lang="ts">
   import { tip } from "./tip";
+  import { hourLabel } from "./nightshiftFace";
   import { setLinkPref, web as webTabs } from "./webtabs.svelte";
   import { STOP_SHAPES } from "./stopButton";
   import { setStopShape, stopPref } from "./stopShape.svelte";
+  // Item 542: the layout, Filament IV or Classic (the look before item 525).
+  import { LAYOUTS, classic, layout, setLayout } from "./layout.svelte";
+  // Filament IV's accent and instrument light (item 571, stage 7).
+  import { ACCENTS, LIGHTS, look, setAccent, setLight, applyLook } from "./settings/look.svelte";
+  // Item 629/630: the new-chat layout and the motion colour, their own choices.
+  import { NEW_CHATS, MOTION_INKS, setNewChat, setMotionInk } from "./settings/look.svelte";
+  // Item 631: a slide when a segmented choice changes, one style for Settings.
+  import { pickMotion as pickSlide } from "./settings/pickMotion";
+  import { COMPOSER_ROWS, composerRow, setComposerRow } from "./composerRow.svelte";
+  import { CACHE_LOOKS, cacheLook, setCacheLook } from "./cacheLook.svelte";
+  // Item 589: the running step's motion in the turn trace.
+  import { STEP_MOTIONS, stepMotion, setStepMotion, type StepMotion } from "./stepMotion.svelte";
+  import StepMotionPreview from "./StepMotionPreview.svelte";
+  // Item 632 (agent E, wave 5): the new-chat page's background.
+  import { GROUND_STYLES, GROUND_MENU } from "./newChatGround";
+  import { groundPick, setGroundPick } from "./newChatGroundPick.svelte";
+  import GroundPreview from "./GroundPreview.svelte";
+  // End item 632.
+  // Item 640: Settings offers Horizon, Radar and Default (Weft); a stored look
+  // no longer offered shows as one more card, the earlier pick, until he picks.
+  const groundCards = $derived.by(() => {
+    if (GROUND_MENU.some((g) => g.id === groundPick.value)) return GROUND_MENU;
+    const old = GROUND_STYLES.find((g) => g.id === groundPick.value);
+    return old ? [...GROUND_MENU, { ...old, name: `${old.name} (earlier pick)` }] : GROUND_MENU;
+  });
+  // Item 617 (own block): Reply text — Line reveal or Word rise.
+  import { REPLY_LOOKS, replyLook, setReplyLook } from "./replyLook.svelte";
+  // End item 617.
+  import ContextDial from "./ContextDial.svelte";
+  import { planDials, surfaceShares, paceLine, weekGone, resetsWhen } from "./settingsUsage";
+  /** The Layout choice: the layout, then the accent again (no accent is stamped under Classic). */
+  function pickLayout(l: (typeof LAYOUTS)[number]["id"]): void {
+    setLayout(l);
+    applyLook();
+  }
   import {
     app,
     applyDraft,
+    scheduleApply, // item 612: the Binary row (Subscription → Updates)
     currentModelId,
     fetchModels,
     openChatInstructions,
@@ -40,8 +77,22 @@
     PALETTES,
     subagentRules,
     setDefaultRules,
+    addToast,
   } from "./state.svelte";
   import * as api from "./api";
+  /** A palette's name: "A" is Jarvis under Filament IV (item 628, his name
+   *  for it; was "Filament IV", the layout's name too — labels only, the
+   *  stored id stays "A"), and 1d4ca17's charcoal & amber under Classic
+   *  (item 542; blocker 1700). */
+  function paletteName(id: string): string {
+    if (id === "A" && !classic()) return "Jarvis";
+    return PALETTES.find((p) => p.id === id)?.name ?? id;
+  }
+  /** Item 630: a classic palette's own accent, the word after "&" in its name ("copper"). */
+  function paletteAccent(id: string): string {
+    const n = PALETTES.find((p) => p.id === id)?.name ?? "";
+    return n.split("&")[1]?.trim() ?? "its own";
+  }
   import { DEFAULT_USAGE_LIMITS, parseLimit } from "./autoPass";
   import {
     TRANSCRIPT_FONTS,
@@ -82,6 +133,7 @@
     type AwayStatus,
     type SelfTest,
   } from "./awaySettings";
+  import { maskedLink, phoneLine, phoneWanted } from "./phoneSettings";
   import {
     MAX_SEATS as COUNCIL_MAX_SEATS,
     MIN_SEATS as COUNCIL_MIN_SEATS,
@@ -90,7 +142,7 @@
     type CouncilMode,
     type CouncilPrefs,
   } from "./council";
-  import { relativeTime } from "./time";
+  import { exactTime, relativeTime } from "./time";
   import { dreamEngineRows, dreamModelPills, dreamSentence } from "./dreamRows";
   import { chatName, loadNotifyPrefs, notifyUsageRefreshed, saveNotifyPrefs, type NotifyPrefs } from "./notify";
   import {
@@ -108,6 +160,24 @@
   import { checkCli, cli, curatedAnthropic, setAutoUpdate } from "./cliUpdate.svelte";
   import { cliNoticeDetail } from "./cliUpdate";
   import CliUpdateActions from "./CliUpdateActions.svelte";
+  import SettingsGroup from "./settings/SettingsGroup.svelte";
+  import SettingRow from "./settings/SettingRow.svelte";
+  import {
+    CONTROLS as SUB_CONTROLS,
+    GROUPS as SUB_GROUPS,
+    controlMatches,
+    filterWords,
+    handoffSummary,
+    matchCount,
+    matchingControls,
+    modelsSummary,
+    subagentsSummary,
+    updatesSummary,
+    cacheSummary,
+    type GroupId as SubGroupId,
+  } from "./settings/subscriptionPane";
+  import { keepWarm, loadKeepWarmDefault, setKeepWarmDefault } from "./keepWarm.svelte";
+  import { paneFilter, setPaneFilter } from "./settings/paneState.svelte";
   import {
     WRAP_UP,
     clearDefaultReadOrder,
@@ -187,6 +257,17 @@
     previewArrival(style);
   }
   onDestroy(() => Object.values(stopPreview).forEach((f) => f?.()));
+  // Item 610: the Thinking motion's previews loop on their own (the trace's
+  // CSS); Preview, or picking one, starts that card's loop over.
+  let motionRun = $state<Partial<Record<StepMotion, number>>>({});
+  const motionStill = reducedMotion();
+  function replayStepMotion(m: StepMotion) {
+    motionRun[m] = (motionRun[m] ?? 0) + 1;
+  }
+  function pickStepMotion(m: StepMotion) {
+    setStepMotion(m);
+    replayStepMotion(m);
+  }
 
   // The rewind and delete picks (396 + 397 pass 2, his yes 2026-10-19,
   // default A for both). Each choice card holds a small thread; Preview
@@ -527,8 +608,14 @@
   // figure from each, so both are read whichever tab is open.
   $effect(() => {
     if (selected === USAGE_PANE || selected === COST_PANE) {
-      void refreshUsage();
-      void refreshPlanUsage().then(() => (planReadAt = new Date()));
+      // Untracked (item 571): `refreshPlanUsage` reads `app.planUsage`
+      // before its first await and then writes it, so a tracked call made
+      // this effect its own trigger — the plan was re-read without end
+      // while either tab was open (the 571 harness froze on it).
+      untrack(() => {
+        void refreshUsage();
+        void refreshPlanUsage().then(() => (planReadAt = new Date()));
+      });
     }
   });
   // The button: run the collector now rather than wait for its six-hourly
@@ -603,7 +690,7 @@
   function resetsAt(iso: string | null): string {
     if (!iso) return "reset time unknown";
     const d = new Date(iso);
-    return Number.isNaN(d.getTime()) ? "reset time unknown" : `resets ${d.toLocaleString()}`;
+    return Number.isNaN(d.getTime()) ? "reset time unknown" : `resets ${exactTime(d)}`;
   }
 
   function size(bytes: number): string {
@@ -797,6 +884,13 @@
       remotePort = String(remote.port);
     } catch (e) {
       remoteError = String(e);
+      // Item 588: a start that failed leaves the switch on (waiting for
+      // Tailscale); read the card again so it says so.
+      try {
+        remote = await api.remoteStatus();
+      } catch {
+        // The error above already says what went wrong.
+      }
     } finally {
       remoteBusy = false;
     }
@@ -922,6 +1016,56 @@
     if (!handoffChat) return;
     setHandoffThreshold(handoffChat, 0);
     reconsiderHandoff(handoffChat);
+  }
+
+  // The Subscription pane, grouped and searchable (nightshift backlog 546):
+  // the filter's text, which controls it keeps, and each folded group's
+  // one-line summary. The inventory is `settings/subscriptionPane.ts`.
+  const subFilter = $derived(paneFilter("subscription"));
+  const subFiltering = $derived(filterWords(subFilter).length > 0);
+  function subShown(id: string): boolean {
+    const c = SUB_CONTROLS.find((x) => x.id === id);
+    return !c || controlMatches(c, subFilter);
+  }
+  function subMatches(g: SubGroupId): number {
+    return matchingControls(g, subFilter).length;
+  }
+  function subTitle(g: SubGroupId): string {
+    return SUB_GROUPS.find((x) => x.id === g)?.title ?? g;
+  }
+  function onSubFilterKey(e: KeyboardEvent): void {
+    if (e.key === "Escape" && subFilter) {
+      e.stopPropagation();
+      setPaneFilter("subscription", "");
+    }
+  }
+  const subSummaries = $derived({
+    handoff: handoffSummary({
+      pct: handoffDefaultPct,
+      capK: handoffCapK,
+      chatPct: handoffChat ? handoffChatPct : null,
+      chatOwn: handoffChatOwn,
+      messageEdited: hasOwnDefaultMessage(),
+      readOrderEdited: hasOwnDefaultReadOrder(),
+    }),
+    models: modelsSummary(modelList.models, modelList.awayDefault),
+    subagents: subagentsSummary(subagentRules.store.default),
+    updates: updatesSummary({
+      installed: cli.status?.installed ?? null,
+      latest: cli.status?.latest ?? null,
+      behind: !!cli.status?.behind,
+      auto: cli.prefs.auto,
+      layersAtCold: app.layerPrefs.autoAtCold,
+    }),
+    cache: cacheSummary(keepWarm.defaultOn),
+  });
+  // Item 608: the keep-warm default, read once the pane opens.
+  $effect(() => {
+    void loadKeepWarmDefault();
+  });
+  async function flipKeepWarmDefault(on: boolean): Promise<void> {
+    const refused = await setKeepWarmDefault(on);
+    if (refused) addToast(`Keep warm: ${refused}`);
   }
 
   /** Turn a whole family on or off in one write rather than one per chip. */
@@ -1233,7 +1377,8 @@
   </section>
 {/snippet}
 
-<div class="modal">
+<!-- Item 631: every radio group in Settings moves when its pick changes (`settings/pickMotion.ts`). -->
+<div class="modal" use:pickSlide>
   <nav class="nav" bind:this={navEl}>
     <div class="nav-h">Settings</div>
     <!-- Usage & Cost (nightshift backlog 206): one category, two tabs —
@@ -1357,7 +1502,7 @@
     >
       <span class="nav-label">Palette</span>
       <!-- The palette's name, not its letter: "B" read as a key (backlog 109). -->
-      <span class="st">{PALETTES.find((p) => p.id === app.palette)?.name ?? app.palette}</span>
+      <span class="st">{paletteName(app.palette)}</span>
     </button>
     <button
       class="nav-item"
@@ -1377,7 +1522,7 @@
       <span class="nav-label">Phone</span>
       <span class="st">
         <span class="dot" class:ok={!!remote?.on}></span>
-        {remote?.on ? "on" : "off"}
+        {remote?.on ? "on" : phoneWanted(remote) ? "waiting" : "off"}
       </span>
     </button>
     <button
@@ -1401,13 +1546,56 @@
         <h2 class="pane-title">Palette</h2>
         <span class="slug">{app.palette}</span>
         <span class="spacer"></span>
-        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
       </div>
-      <p class="note">
-        Four dark palettes. Surfaces and the accent change; the colours that
-        mean something — done, partial, failed, live, added, removed — are the
-        same in all four. Applies at once, everywhere, and is remembered.
-      </p>
+      <!-- The layout (item 542): Filament IV, or Classic — every screen as
+           it was before item 525, kept so a Filament IV bug never blocks
+           his work. One switch; applies at once; remembered. -->
+      <section class="card" data-layout-pick>
+        <div class="ch"><span class="t">Layout</span></div>
+        <p class="note small">
+          Classic puts every screen back the way it was before Jarvis —
+          the chat, the composer, the sidebar, the tabs, the top bar, the
+          terminal strip — with its four palettes (A is charcoal &amp; amber
+          again). Applies at once and is remembered; switch back any time.
+        </p>
+        <div class="type-rows">
+          <div class="type-row">
+            <span class="type-label">Layout</span>
+            <div class="seg" role="radiogroup" aria-label="Layout">
+              {#each LAYOUTS as l (l.id)}
+                <button
+                  class:on={layout.value === l.id}
+                  role="radio"
+                  aria-checked={layout.value === l.id}
+                  use:tip={l.note}
+                  onclick={() => pickLayout(l.id)}
+                >{l.name}</button>
+              {/each}
+            </div>
+          </div>
+        </div>
+      </section>
+      <!-- ==== Item 629/630 (agent C, wave 5): each control says what it
+           changes and changes only that. Palette first (colours), then
+           Jarvis's accent, the light, and the two choices that used to
+           ride on the palette and the light: the new-chat page's layout
+           and the motion colour. Classic's note and order are as before
+           (its f4-only cards are hidden). ==== -->
+      {#if classic()}
+        <p class="note">
+          Four dark palettes. Surfaces and the accent change; the colours that
+          mean something — done, partial, failed, live, added, removed — are the
+          same in all four. Applies at once, everywhere, and is remembered.
+        </p>
+      {:else}
+        <p class="note" data-palette-note>
+          <b>Palette</b> sets colours and nothing else: the surfaces, the ink and
+          the accent. Jarvis has its own status colours; the other three share
+          one set. The layout, the light, the new-chat page and the motion
+          colour below are their own choices. Applies at once and is remembered.
+        </p>
+      {/if}
       <div class="swatches" role="radiogroup" aria-label="Palette">
         {#each PALETTES as p (p.id)}
           <button
@@ -1415,7 +1603,7 @@
             class:on={app.palette === p.id}
             role="radio"
             aria-checked={app.palette === p.id}
-            data-palette={p.id}
+            data-palette={p.id === "A" && classic() ? "classic-A" : p.id}
             onclick={() => setPalette(p.id)}
           >
             <span class="swatch-paper">
@@ -1424,10 +1612,129 @@
                 <span class="swatch-accent"></span>
               </span>
             </span>
-            <span class="swatch-name"><b>{p.id}</b> {p.name}</span>
+            <span class="swatch-name"><b>{p.id}</b> {paletteName(p.id)}</span>
           </button>
         {/each}
       </div>
+      <!-- Filament IV's own choices (item 571; f4-settings-appearance.png):
+           the accent and the instrument light. Not drawn
+           under Classic, whose palettes carry their own accent and no
+           light. The hand-off line lives only in Subscription → Hand-off (his ask 2026-11-10: one place for one setting).
+           Item 630: Accent is Jarvis's alone — B, C and D carry their own
+           accent in their name — so under them the card says so and its
+           choices rest (picking one there used to change nothing). -->
+      <section class="card f4-only" aria-label="Accent" data-accent-card>
+        <div class="ch"><span class="t">Accent</span><span class="dim small">Jarvis palette only</span></div>
+        {#if app.palette === "A"}
+          <p class="note small">The colour of what you press — buttons, Send, the selected row, the brackets. It does not change the motion colour (below).</p>
+        {:else}
+          <p class="note small" data-accent-own>{paletteName(app.palette)} carries its own accent, {paletteAccent(app.palette)}. Pick Jarvis (A) above to choose one here.</p>
+        {/if}
+        <div class="pick3" class:rests={app.palette !== "A"} role="radiogroup" aria-label="Accent">
+          {#each ACCENTS as a (a.id)}
+            <button class="pick" class:on={look.accent === a.id} role="radio" aria-checked={look.accent === a.id} disabled={app.palette !== "A"} onclick={() => setAccent(a.id)}>
+              <span class="pick-h"><i class="radio" aria-hidden="true"></i>{a.name}</span>
+              <span class="pick-n">{a.note}</span>
+              <span class="pick-sw" aria-hidden="true"><i style:background={a.swatch}></i><i class="sig"></i><i class="ctl"></i></span>
+            </button>
+          {/each}
+        </div>
+      </section>
+      <section class="card f4-only" aria-label="Instrument light">
+        <div class="ch"><span class="t">Instrument light</span><span class="dim small">every palette</span></div>
+        <div class="pick2" role="radiogroup" aria-label="Instrument light">
+          {#each LIGHTS as l (l.id)}
+            <button class="pick" class:on={look.light === l.id} role="radio" aria-checked={look.light === l.id} onclick={() => setLight(l.id)}>
+              <span class="pick-h"><i class="radio" aria-hidden="true"></i>{l.name}</span>
+              <span class="pick-n">{l.note}</span>
+            </button>
+          {/each}
+        </div>
+      </section>
+      <!-- Item 630 (his "I like both of those designs, and those should be
+           both choices"): the new-chat page's layout, once Calm's and B/C/D's
+           side effect. -->
+      <section class="card f4-only" aria-label="New-chat page">
+        <div class="ch"><span class="t">New-chat page</span></div>
+        <div class="pick2" role="radiogroup" aria-label="New-chat page">
+          {#each NEW_CHATS as n (n.id)}
+            <button class="pick" class:on={look.newChat === n.id} role="radio" aria-checked={look.newChat === n.id} onclick={() => setNewChat(n.id)}>
+              <span class="pick-h"><i class="radio" aria-hidden="true"></i>{n.name}</span>
+              <span class="pick-n">{n.note}</span>
+            </button>
+          {/each}
+        </div>
+      </section>
+      <!-- Item 630 + 627: what flies (the send thread, the rewind's strike,
+           the notes card's shuttle, the trace's motion) — once palette A's
+           cyan and B/C/D's accent, now a choice; each option is the current
+           palette's own colour, so it follows the palette and the accent. -->
+      <section class="card f4-only" aria-label="Motion colour">
+        <div class="ch"><span class="t">Motion colour</span></div>
+        <p class="note small">The colour of what moves: the send thread, the rewind's strike, the notes card's shuttle, the running step in the trace. Each option is the current palette's own colour.</p>
+        <div class="type-rows">
+          <div class="type-row">
+            <span class="type-label">Colour</span>
+            <div class="seg" role="radiogroup" aria-label="Motion colour">
+              {#each MOTION_INKS as m (m.id)}
+                <button
+                  class:on={look.motionInk === m.id}
+                  role="radio"
+                  aria-checked={look.motionInk === m.id}
+                  use:tip={m.note}
+                  onclick={() => setMotionInk(m.id)}
+                ><i class="ink-dot {m.id}" aria-hidden="true"></i>{m.name}</button>
+              {/each}
+            </div>
+          </div>
+        </div>
+      </section>
+      <!-- Item 618b (his pick, blocker 1845): the look of the composer's
+           row — every control on the bar beside Send, and the box. Each
+           choice previews itself: a small box drawn with the real rules
+           (src/composerRow.css), its own choice stamped on it; the lit
+           Council is how a control looks under the pointer. -->
+      <section class="card f4-only" aria-label="Composer row">
+        <div class="ch"><span class="t">Composer row</span></div>
+        <div class="pick2 crow-picks" role="radiogroup" aria-label="Composer row">
+          {#each COMPOSER_ROWS as r (r.id)}
+            <button class="pick" class:on={composerRow.value === r.id} role="radio" aria-checked={composerRow.value === r.id} onclick={() => setComposerRow(r.id)}>
+              <span class="pick-h"><i class="radio" aria-hidden="true"></i>{r.name}</span>
+              <span class="pick-n">{r.note}</span>
+              <span class="composer crow-pv" data-composer-row={r.id} aria-hidden="true">
+                <span class="card">
+                  <span class="pv-text">Ask anything…</span>
+                  <span class="row">
+                    <span class="ns-btn ghost small attach"><Icon name="plus" /></span>
+                    <span class="pick-btn"><span class="pick-dot"></span><span class="pick-name">Opus 5.5</span></span>
+                    <span class="pv-gap"></span>
+                    <span class="ns-btn ghost small open">Council</span>
+                    <span class="pv-send">Send</span>
+                  </span>
+                </span>
+                <span class="bottom-row">
+                  <span class="ns-chip bottom-toggle"><span class="bottom-mark"></span>thinking</span>
+                  <span class="ns-chip bottom-toggle on"><span class="bottom-mark"></span>tools</span>
+                </span>
+              </span>
+            </button>
+          {/each}
+        </div>
+      </section>
+      <!-- Item 596 (his idea, 2026-11-10): the chat's prompt cache drawn on
+           the message box's frame, warm → cold; the agent's pick is the
+           default (blocker 1898). -->
+      <section class="card f4-only" aria-label="Cache on the box">
+        <div class="ch"><span class="t">Cache on the box</span></div>
+        <div class="pick2" role="radiogroup" aria-label="Cache on the box">
+          {#each CACHE_LOOKS as c (c.id)}
+            <button class="pick" class:on={cacheLook.value === c.id} role="radio" aria-checked={cacheLook.value === c.id} onclick={() => setCacheLook(c.id)}>
+              <span class="pick-h"><i class="radio" aria-hidden="true"></i>{c.name}</span>
+              <span class="pick-n">{c.note}</span>
+            </button>
+          {/each}
+        </div>
+      </section>
 
       <!-- The transcript's type (nightshift backlog 051). No sample card:
            the change lands in the open transcript behind this pane, which
@@ -1516,6 +1823,7 @@
             <div class="seg" role="radiogroup" aria-label="Stop button shape">
               {#each STOP_SHAPES as sh (sh.id)}
                 <button
+                  class="stop-choice"
                   class:on={stopPref.shape === sh.id}
                   role="radio"
                   aria-checked={stopPref.shape === sh.id}
@@ -1644,7 +1952,7 @@
       <div class="pane-head">
         <h2 class="pane-title">Animations</h2>
         <span class="spacer"></span>
-        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
       </div>
       <p class="note">
         How things arrive and leave in the transcript. Each choice applies to
@@ -1680,6 +1988,66 @@
             </div>
           {/each}
         </div>
+        <!-- Item 610 (his ask 2026-11-10: "put it in like the thinking block
+             section with animations"): the Thinking motion (589, moved here
+             from its own card by 609) joins this card under its own
+             sub-heading — arrival above, the motion while it thinks below.
+             Each choice's stage is the real reply running that motion
+             (StepMotionPreview); Preview starts its loop over. Filament IV
+             only, as before (Classic's trace has no running motion). -->
+        {#if !classic()}
+          <div class="f4-only motion-sub">
+            <div class="sub-h">While it thinks</div>
+            <p class="note small">
+              How the running step moves while the model works: the light on its thread, its mark and the bar's head.
+              {#if motionStill}Reduce motion is on in macOS, so the step holds still.{/if}
+            </p>
+            <div class="anims three motion-picks" role="radiogroup" aria-label="Thinking motion">
+              {#each STEP_MOTIONS as m (m.id)}
+                <div class="anim" class:on={stepMotion.value === m.id}>
+                  <button
+                    class="anim-pick"
+                    role="radio"
+                    aria-checked={stepMotion.value === m.id}
+                    onclick={() => pickStepMotion(m.id)}
+                  >
+                    <span class="anim-name">{m.name}</span>
+                    <span class="anim-blurb">{m.note}</span>
+                  </button>
+                  <div class="anim-stage motion-stage" aria-hidden="true">
+                    <StepMotionPreview motion={m.id} run={motionRun[m.id] ?? 0} />
+                  </div>
+                  <div class="anim-foot">
+                    <button class="ns-btn ghost small" onclick={() => replayStepMotion(m.id)}>Preview</button>
+                    {#if stepMotion.value === m.id}<span class="anim-on">In use</span>{/if}
+                  </div>
+                </div>
+              {/each}
+            </div>
+          </div>
+          <!-- Item 617 (own block): how a reply's text arrives while it streams. Filament IV only (Classic keeps the word rise). -->
+          <div class="f4-only motion-sub">
+            <div class="sub-h">Reply text</div>
+            <p class="note small">
+              How a reply's words show while it streams.
+              {#if motionStill}Reduce motion is on in macOS, so the text shows as it arrives.{/if}
+            </p>
+            <div class="anims motion-picks" role="radiogroup" aria-label="Reply text">
+              {#each REPLY_LOOKS as l (l.id)}
+                <div class="anim" class:on={replyLook.value === l.id}>
+                  <button class="anim-pick" role="radio" aria-checked={replyLook.value === l.id} onclick={() => setReplyLook(l.id)}>
+                    <span class="anim-name">{l.name}</span>
+                    <span class="anim-blurb">{l.note}</span>
+                  </button>
+                  <div class="anim-foot">
+                    {#if replyLook.value === l.id}<span class="anim-on">In use</span>{/if}
+                  </div>
+                </div>
+              {/each}
+            </div>
+          </div>
+          <!-- End item 617. -->
+        {/if}
       </section>
       {#each MOTION_KINDS as mk (mk.kind)}
         <section class="card">
@@ -1728,6 +2096,34 @@
           </div>
         </section>
       {/each}
+      <!-- Item 632 (agent E, wave 5; his ask 2026-11-11: "something more
+           interesting in the background"): the new-chat page's ground, each
+           look looping on its card. Filament only — Classic's new-chat page
+           has its own. Under Reduce motion the page keeps the still dots. -->
+      {#if !classic()}
+        <section class="card">
+          <div class="ch"><span class="t">New-chat background</span></div>
+          <p class="note small">
+            What moves behind the wheel on the new-chat page.
+            {#if motionStill}Reduce motion is on in macOS, so Horizon and Radar hold one still pose and Default keeps the still dots.{/if}
+          </p>
+          <div class="anims three" role="radiogroup" aria-label="New-chat background">
+            {#each groundCards as g (g.id)}
+              <div class="anim" class:on={groundPick.value === g.id}>
+                <button class="anim-pick" role="radio" aria-checked={groundPick.value === g.id} onclick={() => setGroundPick(g.id)}>
+                  <span class="anim-name">{g.name}</span>
+                  <span class="anim-blurb">{g.note}</span>
+                </button>
+                <GroundPreview look={g.id} />
+                <div class="anim-foot">
+                  {#if groundPick.value === g.id}<span class="anim-on">In use</span>{/if}
+                </div>
+              </div>
+            {/each}
+          </div>
+        </section>
+      {/if}
+      <!-- End item 632. -->
     </div>
   {:else if selected === "remote"}
     <!-- The phone page over the tailnet (nightshift backlog 091, Shape B):
@@ -1738,10 +2134,32 @@
     <div class="pane">
       <div class="pane-head">
         <h2 class="pane-title">Phone</h2>
-        <span class="slug">{remote?.on ? `on · ${remote.address}:${remote.port}` : "off"}</span>
+        <span class="slug">{remote?.on ? `on · ${remote.address}:${remote.port}` : phoneWanted(remote) ? "on · waiting for Tailscale" : "off"}</span>
         <span class="spacer"></span>
-        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
       </div>
+      <!-- Item 588: one switch, one sentence, one code. The code opens the
+           away server's page with both hosts paired, so the phone uses
+           this Mac while it answers and the away server with the lid
+           closed; the switch stays on across relaunches. -->
+      <section class="card">
+        <label class="dream-auto phone-switch">
+          <input
+            type="checkbox"
+            checked={phoneWanted(remote)}
+            disabled={remoteBusy}
+            onchange={(e) => remoteToggle(e.currentTarget.checked)}
+          />
+          <span>Phone Nightloom</span>
+        </label>
+        <p class="note small">{phoneLine(remote)}</p>
+        {#if remoteError}<p class="error">{remoteError}</p>{/if}
+        {#if phoneWanted(remote) && remote?.phone_qr_svg}
+          <div class="remote-qr">{@html remote.phone_qr_svg}</div>
+          <p class="note small remote-mono">{maskedLink(remote.phone_url)}</p>
+        {/if}
+      </section>
+
       <p class="note">
         Nightloom on your phone, over Tailscale: the open project's chats, a
         chat's transcript as it streams, Send, Stop, and the approval cards.
@@ -1750,16 +2168,7 @@
       </p>
 
       <section class="card">
-        <div class="ch"><span class="t">Listener</span></div>
-        <label class="dream-auto">
-          <input
-            type="checkbox"
-            checked={!!remote?.on}
-            disabled={remoteBusy}
-            onchange={(e) => remoteToggle(e.currentTarget.checked)}
-          />
-          <span>On — serve the phone page</span>
-        </label>
+        <div class="ch"><span class="t">This Mac's listener</span></div>
         <label class="handoff-row">
           <span>Port</span>
           <input
@@ -1782,7 +2191,6 @@
           />
           <span>Keep the Mac awake while remote is on (needs Palette → Sleep's first switch; a closed lid on battery still sleeps it)</span>
         </label>
-        {#if remoteError}<p class="error">{remoteError}</p>{/if}
         <div class="remote-actions">
           <button class="ns-btn" disabled={selfTesting || !remote?.on} onclick={() => void runSelfTest()}>
             {selfTesting ? "Testing…" : "Test from this Mac"}
@@ -1796,7 +2204,7 @@
       </section>
 
       <section class="card">
-        <div class="ch"><span class="t">Token</span></div>
+        <div class="ch"><span class="t">This Mac's own code</span></div>
         <p class="note small">
           The phone's key. Scan the code with the camera — Safari opens the
           page with the token in it, once — or paste the text into the page.
@@ -1836,7 +2244,7 @@
         <h2 class="pane-title">Away server</h2>
         <span class="slug">{awayHeadline(away)}</span>
         <span class="spacer"></span>
-        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
       </div>
       <p class="note">
         A copy of Nightloom on a server, for when the Mac is asleep. While
@@ -1905,213 +2313,294 @@
     </div>
   {:else if selected === "claude-code"}
     <!-- The Claude Code engine's pane (nightshift backlog 086 pass 2,
-         blocker 120): the hand-off's defaults. A chat overrides both on
-         the composer's notice; this is what every chat starts from. -->
-    <div class="pane">
+         blocker 120; grouped and searchable since backlog 546, 2026-11-10:
+         "i always get lost in all of the diff settings in there"). Four
+         folded groups, each header saying what it is set to; the filter
+         narrows to matching controls; each long explanation is behind the
+         "?" beside its control. Every control and binding is as it was. -->
+    <div class="pane sub-pane">
       <div class="pane-head">
         <h2 class="pane-title">Subscription</h2>
         <span class="slug">the engine on your Claude plan — its defaults</span>
         <span class="spacer"></span>
-        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
       </div>
-      <p class="note">
-        What a chat on this engine does when its context window fills. The CLI's
-        own auto-compact is off on this engine; instead, past the mark below,
-        the composer shows a notice with <em>Wrap up now</em>, which sends the
-        message below as a turn of its own — the model finishes what is
-        half-done, writes <code>HANDOFF.md</code>, and ends with a start prompt
-        that a linked new chat opens with, never sent by itself.
-      </p>
 
-      <section class="card">
-        <div class="ch"><span class="t">Models</span>
-          <span class="spacer"></span>
-          <button
-            class="ns-btn ghost small"
-            use:tip={"Back to the built-in aliases: fable, opus, sonnet, haiku"}
-            onclick={() => setModelList([])}>Reset to built-in</button
-          >
-        </div>
-        <p class="note small">
-          What every model picker on this engine offers — the rail, the
-          composer's chip, the council, and the phone — in this order. An
-          alias (<code>sonnet</code>) follows the CLI to the newest model of
-          its family; a full id (<code>claude-sonnet-5-5</code>) stays put.
-          A model released after this build: add its id here.
-        </p>
-        <ul class="model-list">
-          {#each modelList.models as m, i (m)}
-            <li class="model-row">
-              <code>{m}</code>
-              <span class="spacer"></span>
-              <button class="ns-btn ghost small" aria-label="Move {m} up" disabled={i === 0} onclick={() => setModelList(moveModel(modelList.models, m, -1))}>↑</button>
-              <button class="ns-btn ghost small" aria-label="Move {m} down" disabled={i === modelList.models.length - 1} onclick={() => setModelList(moveModel(modelList.models, m, 1))}>↓</button>
-              <button class="ns-btn ghost small" aria-label="Remove {m}" disabled={modelList.models.length === 1} onclick={() => setModelList(removeModel(modelList.models, m))}><Icon name="trash" size={12} /></button>
-            </li>
-          {/each}
-        </ul>
-        <div class="model-row">
-          <input
-            class="model-add"
-            type="text"
-            autocorrect="off"
-            autocapitalize="off"
-            spellcheck="false"
-            placeholder="an alias or a full id, e.g. claude-sonnet-5-5"
-            aria-label="A model to add"
-            bind:value={newModelId}
-            onkeydown={(e) => e.key === "Enter" && addModelId()}
-          />
-          <button class="ns-btn ghost small" disabled={!newModelId.trim()} onclick={addModelId}><Icon name="plus" size={12} /> Add</button>
-        </div>
-        <label class="handoff-row">
-          <span>Away server's default</span>
-          <select
-            value={modelList.awayDefault ?? ""}
-            aria-label="The away server's default model"
-            onchange={(e) => setModelList(modelList.models, e.currentTarget.value || null)}
-          >
-            <option value="">the server's own (its --model)</option>
-            {#each modelList.models as m (m)}
-              <option value={m}>{m}</option>
-            {/each}
-            {#if modelList.awayDefault && !modelList.models.includes(modelList.awayDefault)}
-              <option value={modelList.awayDefault}>{modelList.awayDefault}</option>
+      <div class="sub-filter">
+        <Icon name="search" size={13} />
+        <input
+          type="text"
+          autocorrect="off"
+          autocapitalize="off"
+          spellcheck="false"
+          placeholder="Find a setting — hand-off, model, update…"
+          aria-label="Find a Subscription setting"
+          value={subFilter}
+          oninput={(e) => setPaneFilter("subscription", e.currentTarget.value)}
+          onkeydown={onSubFilterKey}
+        />
+        {#if subFiltering}
+          <span class="sub-count">{matchCount(subFilter)} of {SUB_CONTROLS.length}</span>
+          <button class="sub-clear" aria-label="Clear the filter" use:tip={"Clear (esc)"} onclick={() => setPaneFilter("subscription", "")}><Icon name="x" size={12} /></button>
+        {/if}
+      </div>
+      {#if subFiltering && matchCount(subFilter) === 0}
+        <p class="note small">No setting here matches “{subFilter}”.</p>
+      {/if}
+
+      <SettingsGroup fold="subscription/handoff" title={subTitle("handoff")} summary={subSummaries.handoff} filtering={subFiltering} matches={subMatches("handoff")}>
+        <SettingRow fold="subscription/handoff-default" shown={subShown("handoff-default")}>
+          {#snippet label()}<span>Hand off every chat at</span>{/snippet}
+          {#snippet control()}
+            <label class="sub-num">
+              <input
+                type="number"
+                min="1"
+                max="100"
+                step="1"
+                value={handoffDefaultPct}
+                aria-label="Hand-off threshold, percent of the context window, for every chat"
+                onchange={(e) => setHandoffDefaultPct((e.currentTarget as HTMLInputElement).value)}
+              />
+              <span>% of the window</span>
+            </label>
+          {/snippet}
+          {#snippet help()}
+            For every chat without a mark of its own (70% to begin with). What a
+            chat on this engine does when its context window fills: the CLI's
+            own auto-compact is off on this engine; instead, past the mark, the
+            composer shows a notice with <em>Wrap up now</em>, which sends the
+            wrap-up message as a turn of its own — the model finishes what is
+            half-done, writes <code>HANDOFF.md</code>, and ends with a start prompt
+            that a linked new chat opens with, never sent by itself.
+          {/snippet}
+        </SettingRow>
+        <SettingRow fold="subscription/handoff-cap" shown={subShown("handoff-cap")}>
+          {#snippet label()}<span>or at</span>{/snippet}
+          {#snippet control()}
+            <label class="sub-num">
+              <input
+                type="number"
+                min="0"
+                step="10"
+                value={handoffCapK}
+                aria-label="Hand-off token cap, thousands of tokens, for every chat without a mark of its own"
+                onchange={(e) => setHandoffCapK((e.currentTarget as HTMLInputElement).value)}
+              />
+              <span>k tokens, whichever first</span>
+            </label>
+          {/snippet}
+          {#snippet help()}
+            300k to begin with, the practices' stop point: 140k on a 200k
+            window, 300k on a 1M one; 0 for no cap. A chat's own mark is not
+            capped.
+          {/snippet}
+        </SettingRow>
+        <SettingRow fold="subscription/handoff-chat" shown={subShown("handoff-chat")}>
+          {#snippet label()}
+            {#if handoffChat}
+              <span>This chat, <em>{handoffChatName}</em>, at</span>
+            {:else}
+              <span class="dim">This chat — open a chat to give it a mark of its own</span>
             {/if}
-          </select>
-        </label>
-        <p class="note small">
-          What a turn on the away server runs on when the phone's rail names
-          no model. The server reads this file from the copy the Mac's sync
-          sends; until one arrives it uses the model it was deployed with.
-        </p>
-        {#if modelList.error}<p class="note small">{modelList.error}</p>{/if}
-      </section>
+          {/snippet}
+          {#snippet control()}
+            {#if handoffChat}
+              <label class="sub-num">
+                <input
+                  type="number"
+                  min="1"
+                  max="100"
+                  step="1"
+                  value={handoffChatPct}
+                  aria-label="Hand-off threshold, percent of the context window, for the open chat"
+                  onchange={(e) => setHandoffChatPct((e.currentTarget as HTMLInputElement).value)}
+                />
+                <span>%{handoffChatOwn ? " — its own" : " — the default"}</span>
+              </label>
+              {#if handoffChatOwn}
+                <button class="ns-btn ghost small" onclick={clearHandoffChatPct}>Use the default</button>
+              {/if}
+            {/if}
+          {/snippet}
+          {#snippet help()}
+            The open chat's own mark, set here any time. At 100 it asks only
+            when the window is full. <em>Use the default</em> drops the
+            chat's own mark.
+          {/snippet}
+        </SettingRow>
+        <SettingRow fold="subscription/handoff-away" shown={subShown("handoff-away")}>
+          {#snippet label()}<span>When you are away</span>{/snippet}
+          {#snippet control()}<span class="sub-val">queued by itself</span>{/snippet}
+          {#snippet help()}
+            Away from the chat — nothing sent or typed for a minute and the
+            window not in front — when the mark is crossed, the wrap-up is put
+            in the composer's queue and goes when the turn ends; the queue's ×
+            takes it back. With you present, only the notice shows.
+          {/snippet}
+        </SettingRow>
+        <SettingRow fold="subscription/handoff-message" shown={subShown("handoff-message")} stack>
+          {#snippet label()}
+            <span>The wrap-up message</span>
+            <span class="sub-tag">{hasOwnDefaultMessage() ? "edited" : "built-in"}</span>
+          {/snippet}
+          {#snippet control()}
+            <textarea
+              class="handoff-msg"
+              rows="9"
+              autocorrect="off"
+              autocapitalize="off"
+              spellcheck="false"
+              aria-label="The default wrap-up message"
+              value={handoffDefaultMessage()}
+              oninput={(e) => setHandoffDefaultMessage((e.currentTarget as HTMLTextAreaElement).value)}
+            ></textarea>
+            {#if hasOwnDefaultMessage()}
+              <div class="sub-actions"><button class="ns-btn ghost small" onclick={() => setHandoffDefaultMessage("")}>Reset to default</button></div>
+            {/if}
+          {/snippet}
+          {#snippet help()}
+            What <em>Wrap up now</em> sends, as typed. Keep the ask for a prompt between
+            <code>&lt;handoff&gt;</code> and <code>&lt;/handoff&gt;</code>: that is what the new chat's first message
+            is read out of, shown as a card with <em>Continue with this prompt</em> (a fenced <code>start-prompt</code> block still works); without one the chat box offers an unsent new chat with the read order alone. A chat can edit its
+            own copy on the notice without changing this.
+            {#if hasOwnDefaultMessage()}<em>Edited; Reset to default restores the built-in text (a box left empty reads as the built-in after a relaunch).</em>{:else}<em>The built-in text ({WRAP_UP.length} characters).</em>{/if}
+          {/snippet}
+        </SettingRow>
+        <!-- The read order (nightshift backlog 193; item 520): the new chat's
+             box text when the wrap-up reply wrote no prompt. -->
+        <SettingRow fold="subscription/handoff-readorder" shown={subShown("handoff-readorder")} stack>
+          {#snippet label()}
+            <span>The read order</span>
+            <span class="sub-tag">{hasOwnDefaultReadOrder() ? "edited" : "built-in"}</span>
+          {/snippet}
+          {#snippet control()}
+            <textarea
+              class="handoff-msg"
+              rows="6"
+              autocorrect="off"
+              autocapitalize="off"
+              spellcheck="false"
+              aria-label="The default read order a continued chat opens with"
+              placeholder="No read order — a continued chat opens with the model's start prompt alone"
+              value={defaultReadOrder()}
+              oninput={(e) => setDefaultReadOrder((e.currentTarget as HTMLTextAreaElement).value)}
+            ></textarea>
+            {#if hasOwnDefaultReadOrder()}
+              <div class="sub-actions"><button class="ns-btn ghost small" onclick={clearDefaultReadOrder}>Reset to default</button></div>
+            {/if}
+          {/snippet}
+          {#snippet help()}
+            Used only when a wrap-up reply wrote no prompt: the new chat's box
+            opens with this text, unsent. When there is a prompt, <em>Continue
+            with this prompt</em> sends the prompt alone — the wrap-up asks the
+            model to open it with what to read. A copy a chat already has of its
+            own stays with it and the chats that continue it.
+            {#if hasOwnDefaultReadOrder()}<em>Edited; Reset to default restores the built-in read order.</em>{:else}<em>The built-in read order: the newest HANDOFF.md section, then the two indexes.</em>{/if}
+          {/snippet}
+        </SettingRow>
+      </SettingsGroup>
+
+      <SettingsGroup fold="subscription/models" title={subTitle("models")} summary={subSummaries.models} filtering={subFiltering} matches={subMatches("models")}>
+        <SettingRow fold="subscription/models-list" shown={subShown("models-list")} stack>
+          {#snippet label()}<span>Model list</span>{/snippet}
+          {#snippet control()}
+            <ul class="model-list">
+              {#each modelList.models as m, i (m)}
+                <li class="model-row">
+                  <code>{m}</code>
+                  <span class="spacer"></span>
+                  <button class="ns-btn ghost small" aria-label="Move {m} up" disabled={i === 0} onclick={() => setModelList(moveModel(modelList.models, m, -1))}>↑</button>
+                  <button class="ns-btn ghost small" aria-label="Move {m} down" disabled={i === modelList.models.length - 1} onclick={() => setModelList(moveModel(modelList.models, m, 1))}>↓</button>
+                  <button class="ns-btn ghost small" aria-label="Remove {m}" disabled={modelList.models.length === 1} onclick={() => setModelList(removeModel(modelList.models, m))}><Icon name="trash" size={12} /></button>
+                </li>
+              {/each}
+            </ul>
+            <div class="sub-actions">
+              <button
+                class="ns-btn ghost small"
+                use:tip={"Back to the built-in aliases: fable, opus, sonnet, haiku"}
+                onclick={() => setModelList([])}>Reset to built-in</button
+              >
+            </div>
+          {/snippet}
+          {#snippet help()}
+            What every model picker on this engine offers — the rail, the
+            composer's chip, the council, and the phone — in this order. An
+            alias (<code>sonnet</code>) follows the CLI to the newest model of
+            its family; a full id (<code>claude-sonnet-5-5</code>) stays put.
+            A model released after this build: add its id below.
+          {/snippet}
+        </SettingRow>
+        <SettingRow fold="subscription/models-add" shown={subShown("models-add")} stack>
+          {#snippet label()}<span>Add a model</span>{/snippet}
+          {#snippet control()}
+            <div class="model-row">
+              <input
+                class="model-add"
+                type="text"
+                autocorrect="off"
+                autocapitalize="off"
+                spellcheck="false"
+                placeholder="an alias or a full id, e.g. claude-sonnet-5-5"
+                aria-label="A model to add"
+                bind:value={newModelId}
+                onkeydown={(e) => e.key === "Enter" && addModelId()}
+              />
+              <button class="ns-btn ghost small" disabled={!newModelId.trim()} onclick={addModelId}><Icon name="plus" size={12} /> Add</button>
+            </div>
+          {/snippet}
+        </SettingRow>
+        <SettingRow fold="subscription/models-away" shown={subShown("models-away")}>
+          {#snippet label()}<span>Away server's default</span>{/snippet}
+          {#snippet control()}
+            <select
+              value={modelList.awayDefault ?? ""}
+              aria-label="The away server's default model"
+              onchange={(e) => setModelList(modelList.models, e.currentTarget.value || null)}
+            >
+              <option value="">the server's own (its --model)</option>
+              {#each modelList.models as m (m)}
+                <option value={m}>{m}</option>
+              {/each}
+              {#if modelList.awayDefault && !modelList.models.includes(modelList.awayDefault)}
+                <option value={modelList.awayDefault}>{modelList.awayDefault}</option>
+              {/if}
+            </select>
+          {/snippet}
+          {#snippet help()}
+            What a turn on the away server runs on when the phone's rail names
+            no model. The server reads this file from the copy the Mac's sync
+            sends; until one arrives it uses the model it was deployed with.
+          {/snippet}
+          {#if modelList.error}<p class="note small">{modelList.error}</p>{/if}
+        </SettingRow>
+      </SettingsGroup>
 
       <!-- His subagent rules in words, the default (nightshift backlog
            291): what a chat with no rules of its own states in its
            subagent rules layer. Saved as he types. -->
-      <section class="card">
-        <div class="ch"><span class="t">Subagent rules</span></div>
-        <p class="note small">
-          Your rules for subagents in plain words, for every chat that has
-          none of its own (a chat's own are in the rail, under Subagent rules).
-          They reach the model beside the exact limits, which Nightloom enforces
-          whatever the words say.
-        </p>
-        <textarea
-          class="rules-default"
-          rows="5"
-          placeholder="e.g. At most two subagents at once. Only for broad searches or long research; do bounded tasks yourself."
-          aria-label="Default subagent rules"
-          value={subagentRules.store.default}
-          oninput={(e) => setDefaultRules((e.currentTarget as HTMLTextAreaElement).value)}
-        ></textarea>
-      </section>
-
-      <section class="card">
-        <div class="ch"><span class="t">Hand-off</span></div>
-        <label class="handoff-row">
-          <span>Hand off at</span>
-          <input
-            type="number"
-            min="1"
-            max="100"
-            step="1"
-            value={handoffDefaultPct}
-            aria-label="Hand-off threshold, percent of the context window, for every chat"
-            onchange={(e) => setHandoffDefaultPct((e.currentTarget as HTMLInputElement).value)}
-          />
-          <span>% of the window, for every chat without a mark of its own (70% to begin with)</span>
-        </label>
-        <label class="handoff-row">
-          <span>or at</span>
-          <input
-            type="number"
-            min="0"
-            step="10"
-            value={handoffCapK}
-            aria-label="Hand-off token cap, thousands of tokens, for every chat without a mark of its own"
-            onchange={(e) => setHandoffCapK((e.currentTarget as HTMLInputElement).value)}
-          />
-          <span>k tokens, whichever comes first (300k to begin with, the practices' stop point: 140k on a 200k window, 300k on a 1M one; 0 for no cap). A chat's own mark is not capped.</span>
-        </label>
-        {#if handoffChat}
-          <label class="handoff-row">
-            <span>This chat, <em>{handoffChatName}</em>, at</span>
-            <input
-              type="number"
-              min="1"
-              max="100"
-              step="1"
-              value={handoffChatPct}
-              aria-label="Hand-off threshold, percent of the context window, for the open chat"
-              onchange={(e) => setHandoffChatPct((e.currentTarget as HTMLInputElement).value)}
-            />
-            <span>%{handoffChatOwn ? " — its own mark" : " — the default"}; at 100 it asks only when the window is full</span>
-            {#if handoffChatOwn}
-              <button class="ns-btn ghost small" onclick={clearHandoffChatPct}>Use the default</button>
-            {/if}
-          </label>
-        {:else}
-          <p class="note small">Open a chat to give it a mark of its own.</p>
-        {/if}
-        <p class="note small">
-          Away from the chat — nothing sent or typed for a minute and the
-          window not in front — when the mark is crossed, the wrap-up is put
-          in the composer's queue and goes when the turn ends; the queue's ×
-          takes it back. With you present, only the notice shows.
-        </p>
-        <div class="ch"><span class="t">The wrap-up message</span>
-          <span class="spacer"></span>
-          {#if hasOwnDefaultMessage()}
-            <button class="ns-btn ghost small" onclick={() => setHandoffDefaultMessage("")}>Reset to default</button>
-          {/if}
-        </div>
-        <textarea
-          class="handoff-msg"
-          rows="9"
-          autocorrect="off"
-          autocapitalize="off"
-          spellcheck="false"
-          aria-label="The default wrap-up message"
-          value={handoffDefaultMessage()}
-          oninput={(e) => setHandoffDefaultMessage((e.currentTarget as HTMLTextAreaElement).value)}
-        ></textarea>
-        <p class="note small">
-          Sent as typed. Keep the ask for a prompt between
-          <code>&lt;handoff&gt;</code> and <code>&lt;/handoff&gt;</code>: that is what the new chat's first message
-          is read out of (a fenced <code>start-prompt</code> block still works); without one its box opens with the read order alone. A chat can edit its
-          own copy on the notice without changing this.
-          {#if hasOwnDefaultMessage()}<em>Edited; Reset to default restores the built-in text (a box left empty reads as the built-in after a relaunch).</em>{:else}<em>The built-in text ({WRAP_UP.length} characters).</em>{/if}
-        </p>
-        <!-- The read order (nightshift backlog 193): the fixed prompt above
-             the model's start prompt in the continued chat's box. -->
-        <div class="ch"><span class="t">The read order</span>
-          <span class="spacer"></span>
-          {#if hasOwnDefaultReadOrder()}
-            <button class="ns-btn ghost small" onclick={clearDefaultReadOrder}>Reset to default</button>
-          {/if}
-        </div>
-        <textarea
-          class="handoff-msg"
-          rows="6"
-          autocorrect="off"
-          autocapitalize="off"
-          spellcheck="false"
-          aria-label="The default read order a continued chat opens with"
-          placeholder="No read order — a continued chat opens with the model's start prompt alone"
-          value={defaultReadOrder()}
-          oninput={(e) => setDefaultReadOrder((e.currentTarget as HTMLTextAreaElement).value)}
-        ></textarea>
-        <p class="note small">
-          What a continued chat's box opens with, above the model's start
-          prompt — both in the box, editable, not sent. Left empty, it stays
-          empty. A chat can edit its own copy on the hand-off card, and the
-          chats that continue it keep that copy.
-          {#if hasOwnDefaultReadOrder()}<em>Edited; Reset to default restores the built-in read order.</em>{:else}<em>The built-in read order: the newest HANDOFF.md section, then the two indexes.</em>{/if}
-        </p>
-      </section>
+      <SettingsGroup fold="subscription/subagents" title={subTitle("subagents")} summary={subSummaries.subagents} filtering={subFiltering} matches={subMatches("subagents")}>
+        <SettingRow fold="subscription/subagents-default" shown={subShown("subagents-default")} stack>
+          {#snippet label()}<span>For every chat with none of its own</span>{/snippet}
+          {#snippet control()}
+            <textarea
+              class="rules-default"
+              rows="5"
+              placeholder="e.g. At most two subagents at once. Only for broad searches or long research; do bounded tasks yourself."
+              aria-label="Default subagent rules"
+              value={subagentRules.store.default}
+              oninput={(e) => setDefaultRules((e.currentTarget as HTMLTextAreaElement).value)}
+            ></textarea>
+          {/snippet}
+          {#snippet help()}
+            Your rules for subagents in plain words, for every chat that has
+            none of its own (a chat's own are in the rail, under Subagent rules).
+            They reach the model beside the exact limits, which Nightloom enforces
+            whatever the words say. Saved as you type.
+          {/snippet}
+        </SettingRow>
+      </SettingsGroup>
 
       <!-- (The Sleep card of backlog 101 stood here from 086 pass 2 until
            2026-09-25; it moved to Appearance → Palette, under
@@ -2120,67 +2609,135 @@
       <!-- Claude Code's version (nightshift backlog 182): the check the
            bell's notice comes from, the same Update / Now… buttons, and
            the switch that updates by itself at a cold moment. -->
-      <section class="card">
-        <div class="ch">
-          <span class="t">Claude Code version</span>
-          <span class="spacer"></span>
-          <button
-            class="ns-btn ghost small"
-            disabled={cli.checking || cli.updating}
-            use:tip={"claude --version against the release feed — no tokens"}
-            onclick={() => void checkCli(true)}>{cli.checking ? "Checking…" : "Check now"}</button
-          >
-        </div>
-        {#if cli.status}
-          <p class="note small">
-            Installed <strong>{cli.status.installed ?? "unknown"}</strong>{" "}
-            {#if cli.status.latest}· newest on the {cli.status.channel} channel <strong>{cli.status.latest}</strong>{" "}{/if}
-            · checked {relativeTime(cli.status.checked_at)}{cli.status.latest && !cli.status.behind ? " — up to date" : ""}.
-          </p>
-          <p class="note small remote-mono">{cli.status.binary}</p>
-          {#if cli.status.error}<p class="note small">{cli.status.error}</p>{/if}
-          {#if cli.status.updates_disabled}
-            <p class="note small">Updates are switched off for the CLI ({cli.status.updates_disabled}), so Nightloom offers none.</p>
-          {:else if cli.status.behind}
-            <p class="note small">{cliNoticeDetail(cli.status, curatedAnthropic())}</p>
+      <SettingsGroup fold="subscription/updates" title={subTitle("updates")} summary={subSummaries.updates} filtering={subFiltering} matches={subMatches("updates")}>
+        <SettingRow fold="subscription/updates-cli" shown={subShown("updates-cli")}>
+          {#snippet label()}
+            <span>Claude Code
+              {#if cli.status}<strong class="sub-mono">{cli.status.installed ?? "unknown"}</strong>{/if}
+            </span>
+          {/snippet}
+          {#snippet control()}
+            <button
+              class="ns-btn ghost small"
+              disabled={cli.checking || cli.updating}
+              use:tip={"claude --version against the release feed — no tokens"}
+              onclick={() => void checkCli(true)}>{cli.checking ? "Checking…" : "Check now"}</button
+            >
+          {/snippet}
+          {#if cli.status}
+            <p class="note small">
+              Installed <strong>{cli.status.installed ?? "unknown"}</strong>{" "}
+              {#if cli.status.latest}· newest on the {cli.status.channel} channel <strong>{cli.status.latest}</strong>{" "}{/if}
+              · checked {relativeTime(cli.status.checked_at)}{cli.status.latest && !cli.status.behind ? " — up to date" : ""}.
+            </p>
+            <p class="note small remote-mono">{cli.status.binary}</p>
+            {#if cli.status.error}<p class="note small">{cli.status.error}</p>{/if}
+            {#if cli.status.updates_disabled}
+              <p class="note small">Updates are switched off for the CLI ({cli.status.updates_disabled}), so Nightloom offers none.</p>
+            {:else if cli.status.behind}
+              <p class="note small">{cliNoticeDetail(cli.status, curatedAnthropic())}</p>
+            {/if}
+          {:else}
+            <p class="note small">{cli.error ?? "Not checked yet — the first check runs shortly after launch, then every six hours."}</p>
           {/if}
-        {:else}
-          <p class="note small">{cli.error ?? "Not checked yet — the first check runs shortly after launch, then every six hours."}</p>
-        {/if}
-        <CliUpdateActions />
-        <label class="dream-auto cli-auto">
-          <input type="checkbox" checked={cli.prefs.auto} onchange={(e) => setAutoUpdate(e.currentTarget.checked)} />
-          <span>Keep Claude Code up to date</span>
-        </label>
-        <p class="note small">
-          Off (the default): a newer release shows in the bell and here, and
-          waits for your Update. On: Nightloom runs <code>claude update</code>
-          by itself at the first cold moment after a release — no turn
-          running and every open chat's cache expired, so no chat pays a
-          cache rewrite for it. Never during a turn or a Nightshift run. The
-          CLI's own background updater (<code>autoUpdates</code> in
-          <code>~/.claude.json</code>) is left as you set it.
-        </p>
+          <CliUpdateActions />
+          {#if cli.result}
+            <details class="cli-out">
+              <summary>The last update's output</summary>
+              <pre>{cli.result.output || "(none)"}</pre>
+            </details>
+          {/if}
+        </SettingRow>
+        <!-- Item 612 (agent F, wave 5) — begin: the CLI's binary, moved here
+             from the Model tab under Filament ("wtf is binary bro"); Classic's
+             rail keeps its own field too. The same draft field, applied the
+             same way (a reconnect on the Claude Code engine). -->
+        <SettingRow fold="subscription/updates-binary" shown={subShown("updates-binary")}>
+          {#snippet label()}<span>Claude Code binary</span>{/snippet}
+          {#snippet control()}
+            <input
+              autocorrect="off"
+              autocapitalize="off"
+              spellcheck="false"
+              type="text"
+              class="cli-binary"
+              placeholder="claude"
+              aria-label="Claude Code binary"
+              bind:value={app.draft.agentBinary}
+              onchange={() => {
+                if (app.draft.engine === "claude-code") scheduleApply();
+              }}
+            />
+          {/snippet}
+          {#snippet help()}
+            Which <code>claude</code> program Nightloom runs. Leave it empty — it is
+            looked for on your PATH, then in ~/.local/bin, /opt/homebrew/bin and
+            /usr/local/bin. Only give a full path if you installed it somewhere else.
+          {/snippet}
+        </SettingRow>
+        <!-- Item 612 — end. -->
+        <SettingRow fold="subscription/updates-auto" shown={subShown("updates-auto")}>
+          {#snippet label()}
+            <label class="dream-auto cli-auto">
+              <input type="checkbox" checked={cli.prefs.auto} onchange={(e) => setAutoUpdate(e.currentTarget.checked)} />
+              <span>Keep Claude Code up to date</span>
+            </label>
+          {/snippet}
+          {#snippet help()}
+            Off (the default): a newer release shows in the bell and here, and
+            waits for your Update. On: Nightloom runs <code>claude update</code>
+            by itself at the first cold moment after a release — no turn
+            running and every open chat's cache expired, so no chat pays a
+            cache rewrite for it. Never during a turn or a Nightshift run. The
+            CLI's own background updater (<code>autoUpdates</code> in
+            <code>~/.claude.json</code>) is left as you set it.
+          {/snippet}
+        </SettingRow>
         <!-- Nightshift backlog 174: a changed memory or instructions file. -->
-        <label class="dream-auto cli-auto">
-          <input type="checkbox" checked={app.layerPrefs.autoAtCold} onchange={(e) => setAutoLayers(e.currentTarget.checked)} />
-          <span>Give running chats a changed memory or instructions file at their next cold moment</span>
-        </label>
-        <p class="note small">
-          On (the default): a chat keeps the text it started with while its
-          cache is warm, and takes the new file with its first message after
-          the cache timer reads cold — the moment the prefix is rewritten
-          anyway. Off: the Context page marks the layer <em>newer version
-          exists</em> and waits for your Update. Either way <em>Update now</em>
-          and <em>Keep this version</em> are on the mark.
-        </p>
-        {#if cli.result}
-          <details class="cli-out">
-            <summary>The last update's output</summary>
-            <pre>{cli.result.output || "(none)"}</pre>
-          </details>
-        {/if}
-      </section>
+        <SettingRow fold="subscription/updates-layers" shown={subShown("updates-layers")}>
+          {#snippet label()}
+            <label class="dream-auto cli-auto">
+              <input type="checkbox" checked={app.layerPrefs.autoAtCold} onchange={(e) => setAutoLayers(e.currentTarget.checked)} />
+              <span>Give running chats a changed memory or instructions file at their next cold moment</span>
+            </label>
+          {/snippet}
+          {#snippet help()}
+            On (the default): a chat keeps the text it started with while its
+            cache is warm, and takes the new file with its first message after
+            the cache timer reads cold — the moment the prefix is rewritten
+            anyway. Off: the Context page marks the layer <em>newer version
+            exists</em> and waits for your Update. Either way <em>Update now</em>
+            and <em>Keep this version</em> are on the mark.
+          {/snippet}
+        </SettingRow>
+      </SettingsGroup>
+      <!-- Item 608: keep-warm is automatic — on by default for every chat. -->
+      <SettingsGroup fold="subscription/cache" title={subTitle("cache")} summary={subSummaries.cache} filtering={subFiltering} matches={subMatches("cache")}>
+        <SettingRow fold="subscription/cache-keepwarm" shown={subShown("cache-keepwarm")}>
+          {#snippet label()}
+            <label class="dream-auto cli-auto">
+              <input
+                type="checkbox"
+                aria-label="Keep chats' caches warm automatically"
+                checked={keepWarm.defaultOn ?? true}
+                disabled={keepWarm.defaultOn === null}
+                onchange={(e) => void flipKeepWarmDefault(e.currentTarget.checked)}
+              />
+              <span>Keep chats' caches warm automatically</span>
+            </label>
+          {/snippet}
+          {#snippet help()}
+            On (the default): every chat whose cache is the 1-hour kind and
+            holds 50k tokens or more gets a small hidden request every 55
+            minutes after its last reply, for up to 6 hours, so your next
+            message reads the context from the cache instead of paying to
+            rebuild it. It stops when you send (the reply starts it again),
+            close the chat's tab or delete the chat. The ♨ switch under the
+            message box turns one chat off, or on while this is off; that
+            choice is kept for the chat.
+          {/snippet}
+        </SettingRow>
+      </SettingsGroup>
     </div>
   {:else if selected === USAGE_PANE || selected === COST_PANE}
     <!-- Usage & Cost (nightshift backlog 206, 2026-09-25): two tabs under
@@ -2203,7 +2760,7 @@
           use:tip={"Run the collector now (python3 ~/.claude/usage-ledger.py update), reread the ledger, the plan's two windows and the provider credits"}
           onclick={() => void refreshUsageNow()}
         >{usageRefreshing ? "Refreshing…" : "Refresh now"}</button>
-        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
       </div>
       {#if usageRefreshNote}
         <p class="note small">{usageRefreshNote}</p>
@@ -2217,6 +2774,7 @@
         the Cost tab.
       </p>
 
+      {#if classic()}
       <section class="card">
         <div class="ch"><span class="t">Plan</span><span class="dim small">account-wide · every surface · {readStamp(planReadAt)}</span></div>
         {#if plan && plan.five_hour != null}
@@ -2304,6 +2862,89 @@
             <div class="key-status">No surfaces snapshot yet — the collector records one when the desktop app has fetched its usage page.</div>
           {/if}
         </section>
+      {/if}
+      {:else}
+        <!-- Filament IV (item 571; f4-settings-usage.png): the plan's two
+             windows as dials beside their rows, the weekly cap of one model,
+             then the week by where it went. The same readings as Classic's
+             Plan and Surfaces cards; the ledger holds no per-day series, so
+             the week is one bar, not seven (blocker 1778). -->
+        {@const dials = planDials(plan)}
+        {@const sf = usage?.available ? usage.surfaces : null}
+        <section class="u4" aria-label="Plan">
+          {#if dials.length}
+            <div class="u4-dials">
+              {#each dials as d (d.key)}
+                <ContextDial size={128} stroke={6} pad={16} minor={40} major={4} share={d.share} value={d.value} unit={d.unit} label="{d.label}: {d.value} used" />
+              {/each}
+            </div>
+          {/if}
+          <div class="u4-rows">
+            {#if plan && plan.five_hour != null}
+              <div class="u4-row">
+                <span class="u4-l">5-hour window<small>{resetsWhen(plan.five_hour_resets_at) ?? "Reset time unknown"}</small></span>
+                <b>{pct(plan.five_hour)}</b>
+              </div>
+              <div class="u4-row">
+                <span class="u4-l">This week<small>{resetsWhen(plan.seven_day_resets_at) ?? "Reset time unknown"}{#if paceLine(plan.seven_day, weekGone(plan.seven_day_resets_at))}{" · " + paceLine(plan.seven_day, weekGone(plan.seven_day_resets_at))}{/if}</small></span>
+                <b>{pct(plan.seven_day)}</b>
+              </div>
+            {:else}
+              <div class="u4-row">
+                <span class="u4-l">No plan sample yet<small>The Claude app's usage page, the CLI's <code>/usage</code>, or a Claude Code turn's rate-limit event fills this.</small></span>
+              </div>
+            {/if}
+            {#if sf?.weekly_scoped_model}
+              <div class="u4-row">
+                <span class="u4-l">{sf.weekly_scoped_model} cap<small>Its own weekly limit</small></span>
+                <b>{pct(sf.weekly_scoped_pct)}</b>
+              </div>
+            {/if}
+          </div>
+        </section>
+        {#if plan && plan.five_hour != null}
+          <p class="note small">From {planWhere}, {planAge}{plan.stale ? " — stale: past 20 minutes, may be behind" : ""}; refreshed at each turn end. Account-wide, every surface · {readStamp(planReadAt)}.</p>
+        {/if}
+        {#if !usage}
+          <p class="note small">Reading the ledger…</p>
+        {:else if !usage.available}
+          <section class="card">
+            <div class="ch"><span class="t">No ledger yet</span></div>
+            <div class="key-status">{usage.reason}</div>
+            <p class="note small">
+              The collector is <code>{usage.collector}</code>, run every six hours by
+              a LaunchAgent; nothing in Nightloom writes these files. Run
+              <code>python3 {usage.collector} update --all</code> once and this
+              tab fills.
+            </p>
+          </section>
+        {:else}
+          <section class="card">
+            <div class="ch"><span class="t">The last 7 days, by where it was spent</span></div>
+            {#if sf}
+              {@const parts = surfaceShares(sf)}
+              <div class="u4-week" role="img" aria-label="Share of the weekly limit by surface: {parts.map((p) => `${p.label} ${p.pct}%`).join(', ')}">
+                {#each parts as p (p.key)}
+                  <span class="u4-seg {p.key}" style:width="{Math.min(100, p.pct)}%"></span>
+                {/each}
+              </div>
+              <div class="u4-scale" aria-hidden="true"><span>0</span><span>25%</span><span>50%</span><span>75%</span><span>100%</span></div>
+              <div class="u4-legend">
+                {#each parts as p (p.key)}
+                  <span><i class="u4-seg {p.key}"></i>{p.label} {p.pct}%</span>
+                {/each}
+                <span class="u4-all">All models {pct(sf.weekly_all_pct)} of the weekly cap</span>
+              </div>
+              <p class="note small">
+                Shares of the weekly rate limit — cost-weighted, rounded to whole
+                numbers, not dollars — from the desktop app's own usage response.
+                Window from {sf.window_started_at.replace("T", " ")} UTC · snapshot {sf.as_of.replace("T", " ")} UTC.
+              </p>
+            {:else}
+              <div class="key-status">No surfaces snapshot yet — the collector records one when the desktop app has fetched its usage page.</div>
+            {/if}
+          </section>
+        {/if}
       {/if}
       {:else}
       <p class="note">
@@ -2416,7 +3057,7 @@
             <code class="path">{usage.dir}</code>
             <br />
             {usage.first_date} → {usage.last_date}{usage.updated_at
-              ? `, last updated ${relativeTime(usage.updated_at)} (${new Date(usage.updated_at).toLocaleString()})`
+              ? `, last updated ${relativeTime(usage.updated_at)} (${exactTime(usage.updated_at)})`
               : ""}.
           </div>
           <p class="note small">
@@ -2437,7 +3078,7 @@
         <h2 class="pane-title">Council</h2>
         <span class="slug">several models answer one message; this chat's model chairs</span>
         <span class="spacer"></span>
-        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
       </div>
       <p class="note">
         The <em>Council</em> button beside Send (Claude Code engine) sends one
@@ -2539,7 +3180,7 @@
         <h2 class="pane-title">Projects folder</h2>
         <span class="slug">new projects go in</span>
         <span class="spacer"></span>
-        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
       </div>
       <p class="note">
         Where <em>New project…</em> makes a folder: <code>&lt;this folder&gt;/&lt;name&gt;</code>,
@@ -2591,7 +3232,7 @@
         <h2 class="pane-title">Knowledge base</h2>
         <span class="slug">{app.knowledge?.alias ?? "@kb"}</span>
         <span class="spacer"></span>
-        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
       </div>
       <p class="note">
         Your own notes, kept across every project and available in every
@@ -2647,7 +3288,7 @@
           A dream pass consolidates the memory inbox into the vault — the
           Dream button in the Notes panel runs one by hand. Switched on here,
           one also runs at every hand-off — a turn that writes HANDOFF.md, or
-          Continue in a new chat — and after a compaction, the moments a chat
+          continuing in a new chat — and after a compaction, the moments a chat
           is finished as far as memory is concerned. A capture pass runs first,
           reading the chats since the last one into the inbox, on the same
           engine (the Claude Code engine bills the subscription). When there
@@ -2787,7 +3428,7 @@
             onchange={(e) => setDailyPrefs({ ...app.centre.daily, hour: Number(e.currentTarget.value) })}
           >
             {#each Array.from({ length: 24 }, (_, h) => h) as h (h)}
-              <option value={String(h)}>{String(h).padStart(2, "0")}:00</option>
+              <option value={String(h)}>{hourLabel(h)}</option>
             {/each}
           </select>
         </label>
@@ -2808,7 +3449,7 @@
             {app.centre.dailyRunning ? "Running…" : "Run the daily pass now"}
           </button>
           <span class="dim small">
-            {#if app.centre.dailyLast}last: {app.centre.dailyLast}{:else if app.centre.lastDaily}last ran {new Date(app.centre.lastDaily).toLocaleString()}{:else}never run{/if}
+            {#if app.centre.dailyLast}last: {app.centre.dailyLast}{:else if app.centre.lastDaily}last ran {exactTime(app.centre.lastDaily)}{:else}never run{/if}
           </span>
         </div>
       </section>
@@ -2819,7 +3460,7 @@
         <h2 class="pane-title">Model instructions</h2>
         <span class="slug">~/.nightloom/models</span>
         <span class="spacer"></span>
-        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
       </div>
       <p class="note">
         A file per model, read whole into the system prompt of a chat on that
@@ -2971,7 +3612,7 @@
         <h2 class="pane-title">{searchSel.label}</h2>
         <span class="slug">{searchSel.env_key}</span>
         <span class="spacer"></span>
-        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
       </div>
       <p class="note">
         A key here turns on <code>web_search</code>. Every backend with a key is
@@ -3008,7 +3649,7 @@
           />
           Show in the model picker
         </label>
-        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
       </div>
       {#if PROVIDER_NOTES[provider.kind]}
         <p class="note">{PROVIDER_NOTES[provider.kind]}</p>
@@ -4320,6 +4961,18 @@
   .stop-swatch.wide {
     width: 32px;
   }
+  /* Item 576 (his "labels are kinda screwed up here", 2026-11-10): the
+     swatch sat on the text's baseline nudged by `vertical-align: -3px`,
+     so each name rode ~5 px above its icon — under Filament IV and Classic
+     alike (measured: label centre 4.88 px / 5.06 px above the icon's). A
+     bug, so fixed under both: the choice is a flex row centring both. */
+  .seg button.stop-choice {
+    display: inline-flex;
+    align-items: center;
+  }
+  .stop-choice .stop-swatch {
+    vertical-align: middle;
+  }
   .anim-pick::after {
     content: "";
     position: absolute;
@@ -4418,6 +5071,32 @@
   .msg-stage {
     gap: 10px;
   }
+  /* Item 610: the Thinking motion inside the Thinking block card — a
+     sub-heading under the arrival choices, then three stages, each the real
+     reply running its motion (StepMotionPreview), clipped to the stage. */
+  .motion-sub {
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 10px;
+  }
+  .sub-h {
+    font: 500 10px var(--mono);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--dim);
+  }
+  /* A trace row needs ~240 px to read ("01 ■ Thinking" and its thread), so
+     at a narrow pane (150 % zoom) the three fall to two columns, then one. */
+  .anims.three.motion-picks {
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  }
+  .motion-stage {
+    gap: 0;
+    height: 104px;
+    padding: 8px 10px;
+    overflow: hidden;
+    justify-content: flex-start;
+  }
   .mini-view {
     height: 112px;
     overflow: hidden;
@@ -4485,4 +5164,797 @@
     line-height: 1.4;
     font-family: inherit;
   }
+
+  /* Settings → Subscription, grouped (nightshift backlog 546): the filter,
+     the number fields beside their labels, the edited/built-in tags. */
+  .sub-pane {
+    gap: 10px;
+  }
+  .sub-filter {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 10px;
+    height: 34px;
+    border: 1px solid var(--line2);
+    border-radius: var(--r2, 8px);
+    background: var(--term);
+    color: var(--dim);
+    flex: none;
+    margin: 2px 0 6px;
+  }
+  .sub-filter:focus-within {
+    border-color: var(--accent);
+  }
+  .sub-filter input {
+    all: unset;
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+    color: var(--ink);
+  }
+  .sub-filter input::placeholder {
+    color: var(--dim);
+  }
+  .sub-count {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+  .sub-clear {
+    all: unset;
+    display: inline-flex;
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 4px;
+  }
+  .sub-clear:hover {
+    color: var(--ink);
+    background: var(--well);
+  }
+  .sub-num {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 6px;
+    font-size: 12.5px;
+    color: var(--ink2);
+  }
+  .sub-num input {
+    width: 4.2rem;
+    font-family: var(--mono);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    background: var(--term);
+    color: var(--ink);
+    border: 1px solid var(--line2);
+    border-radius: 6px;
+    padding: 4px 6px;
+    text-align: right;
+  }
+  .sub-num input:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  .sub-tag {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--dim);
+    border: 1px solid var(--line2);
+    border-radius: 4px;
+    padding: 1px 5px;
+  }
+  .sub-val {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--ink2);
+  }
+  .sub-mono {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 500;
+    margin-left: 4px;
+  }
+  .sub-actions {
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  /* Item 618b: the Composer row previews — a small box with an Attach, a
+     model picker, a lit Council and two switches, wearing the real rules
+     (src/composerRow.css keys on the preview's own data-composer-row).
+     Only the bases those rules build on are drawn here (in Composer they
+     are Composer's own), at :where specificity so the real rules win; spans,
+     not buttons, inside the pick button. Kept above stage 7's section: the
+     card is f4-only, so Classic never draws these. */
+  .crow-pv {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: auto;
+    padding: 12px 10px 4px;
+    border-radius: var(--r2);
+    /* A strip of the dot ground behind, so the glass has something to show. */
+    background: radial-gradient(circle, color-mix(in srgb, var(--ink) 12%, transparent) 1px, transparent 1.4px) 0 0 / 10px 10px, var(--paper);
+    pointer-events: none;
+  }
+  .crow-pv .card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 9px 10px 8px;
+    background: var(--raised);
+    border: 1px solid var(--line2);
+    border-radius: var(--r2);
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.3);
+  }
+  :global(:where(.crow-pv) .pv-text) {
+    font-size: 12px;
+    color: var(--dim);
+  }
+  :global(:where(.crow-pv) .row) {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  :global(:where(.crow-pv) .pv-gap) {
+    flex: 1;
+  }
+  :global(:where(.crow-pv) .ns-btn.small.attach) {
+    padding: 0 7px;
+  }
+  :global(:where(.crow-pv) .pick-btn) {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 26px;
+    padding: 0 9px;
+    border-radius: var(--r1);
+    border: 1px solid var(--line2);
+    background: var(--well);
+    font: 500 12px var(--sans);
+    color: var(--ink);
+    white-space: nowrap;
+  }
+  :global(:where(.crow-pv) .pick-dot) {
+    flex: none;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--done);
+  }
+  :global(:where(.crow-pv) .pv-send) {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    height: 26px;
+    padding: 0 10px;
+    font: 500 12px var(--sans);
+    color: var(--accent-ink);
+    border-radius: var(--r1);
+    background: var(--term);
+    border: 1px solid color-mix(in srgb, var(--accent) 60%, var(--line2));
+    box-shadow: inset 0 0 8px color-mix(in srgb, var(--accent) 35%, transparent);
+  }
+  :global(:where(.crow-pv) .bottom-row) {
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+  :global(:where(.crow-pv) .ns-chip.bottom-toggle) {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 22px;
+    padding: 0 9px 0 8px;
+    border-radius: 12px;
+    background: var(--raised);
+    font: 500 11px var(--sans);
+    color: var(--ink2);
+    text-transform: capitalize;
+  }
+  :global(:where(.crow-pv) .bottom-mark) {
+    position: relative;
+    flex: none;
+    width: 20px;
+    height: 12px;
+    border-radius: 6px;
+    background: var(--well2);
+    overflow: hidden;
+  }
+  :global(:where(.crow-pv) .bottom-mark::after) {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--dim);
+  }
+  :global(:where(.crow-pv) .bottom-toggle.on .bottom-mark) {
+    background: var(--accent);
+  }
+  :global(:where(.crow-pv) .bottom-toggle.on .bottom-mark::after) {
+    left: 10px;
+    background: var(--on-accent);
+  }
+  /* ---- Filament IV, stage 7 (item 571; 521 report §2 and §5,
+     f4-settings-*.png). Every rule below is behind the layout gate
+     (`:where()`, zero specificity), so Classic draws exactly as before;
+     the two base rules hide what only Filament IV shows. Ruled mono
+     capitals for group and section titles, the selected row's accent bar,
+     light page titles, sections without boxes, choices as cards, the
+     Usage dials. ---- */
+  .f4-only,
+  .done4 {
+    display: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .f4-only {
+    display: flex;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .modal {
+    background: var(--raised);
+    border-color: var(--line2);
+    border-radius: 10px;
+    grid-template-columns: 15rem 1fr;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .nav {
+    background: color-mix(in srgb, var(--sheet) 55%, var(--raised));
+    padding: 22px 12px 14px;
+    gap: 1px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .nav-h {
+    font-family: var(--sans);
+    font-weight: 300;
+    font-size: 24px;
+    letter-spacing: 0;
+    padding: 0 10px 12px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .nav-title {
+    justify-content: flex-start;
+    gap: 8px;
+    padding: 16px 10px 6px;
+    font: 500 10px var(--mono);
+    letter-spacing: 0.14em;
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .nav-title::after {
+    content: "";
+    order: 1;
+    flex: 1;
+    height: 1px;
+    background: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .nav-title :global(.kbd) {
+    order: 2;
+    letter-spacing: 0;
+    font-family: var(--mono);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .nav-item {
+    position: relative;
+    font-size: 14px;
+    padding: 7px 10px 7px 12px;
+    border-radius: var(--r1);
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .nav-item:hover {
+    background: color-mix(in srgb, var(--well) 60%, transparent);
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .nav-item.active {
+    background: var(--well);
+    box-shadow: none;
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .nav-item.active::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 6px;
+    bottom: 6px;
+    width: 3px;
+    border-radius: 2px;
+    background: var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .st {
+    font-size: 10.5px;
+    font-variant-numeric: tabular-nums;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .dot {
+    opacity: 0.45;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .dot.ok,
+  :global(:where(:root:not([data-layout="classic"]))) .dot.env {
+    opacity: 1;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .nav-foot {
+    padding: 8px 10px 0;
+    font-family: var(--mono);
+    font-size: 10.5px;
+  }
+
+  :global(:where(:root:not([data-layout="classic"]))) .pane {
+    padding: 26px 34px 30px;
+    gap: 16px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pane-head {
+    align-items: center;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pane-title {
+    font-family: var(--sans);
+    font-weight: 300;
+    font-size: 30px;
+    line-height: 1.15;
+    letter-spacing: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .slug {
+    align-self: center;
+    font-size: 11.5px;
+    font-variant-numeric: tabular-nums;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .close {
+    width: auto;
+    height: 28px;
+    padding: 0 10px;
+    gap: 8px;
+    border: 1px solid var(--line2);
+    border-radius: var(--r1);
+    background: var(--well);
+    color: var(--ink);
+    font: 500 13px var(--sans);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .close:hover {
+    background: var(--well2);
+    border-color: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .close > :global(svg) {
+    display: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .done4 {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .done4 kbd {
+    font: 400 11px var(--mono);
+    color: var(--dim);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .note {
+    color: var(--ink2);
+    font-size: 13.5px;
+    line-height: 1.5;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .note.small {
+    color: var(--dim);
+    font-size: 12.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pane-head + .note {
+    font-size: 14.5px;
+    margin-top: -4px;
+  }
+
+  /* Sections: no box; the title is a ruled mono capital (`.ns-cap`'s grammar). */
+  :global(:where(:root:not([data-layout="classic"]))) .card {
+    background: none;
+    border: none;
+    border-radius: 0;
+    padding: 0;
+    margin-top: 8px;
+    gap: 12px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .card .ch .t {
+    flex: 1 1 auto;
+    gap: 8px;
+    font: 500 10.5px var(--mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .card .ch .t::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    min-width: 24px;
+    background: var(--line2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .key-status {
+    color: var(--ink);
+    font-size: 13.5px;
+    line-height: 1.5;
+  }
+
+  /* Controls: wells with a line2 edge, r1 corners; the on choice amber. */
+  :global(:where(:root:not([data-layout="classic"]))) input[type="text"],
+  :global(:where(:root:not([data-layout="classic"]))) .kf input[type="password"],
+  :global(:where(:root:not([data-layout="classic"]))) select,
+  :global(:where(:root:not([data-layout="classic"]))) textarea {
+    background: var(--term);
+    border: 1px solid var(--line2);
+    border-radius: var(--r1);
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .sub-filter input {
+    background: none;
+    border: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) select {
+    background: var(--well);
+    height: 30px;
+    padding: 0 8px;
+    font-size: 13px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) input:focus,
+  :global(:where(:root:not([data-layout="classic"]))) select:focus,
+  :global(:where(:root:not([data-layout="classic"]))) textarea:focus {
+    border-color: var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .seg {
+    gap: 4px;
+    padding: 0;
+    border: none;
+    background: none;
+    border-radius: 0;
+    flex-wrap: wrap;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .seg button {
+    height: 30px;
+    padding: 0 13px;
+    border: 1px solid var(--line2);
+    border-radius: var(--r1);
+    background: var(--well);
+    color: var(--ink2);
+    font-size: 13px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .seg button:hover {
+    background: var(--well2);
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .seg button.on {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--ink);
+    box-shadow: inset 0 0 0 1px var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .type-rows {
+    gap: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .type-row {
+    padding: 10px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .type-row:last-child {
+    border-bottom: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .type-label {
+    color: var(--ink);
+    font-size: 14px;
+  }
+  /* A plain checkbox row reads as a switch, as in the mockup's Details rows:
+     the same input (keyboard, label click, disabled) drawn as a track and knob. */
+  :global(:where(:root:not([data-layout="classic"]))) .dream-auto {
+    justify-content: space-between;
+    flex-direction: row-reverse;
+    gap: 16px;
+    padding: 9px 0;
+    border-bottom: 1px solid var(--line);
+    font-size: 14px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .dream-auto > span {
+    flex: 1;
+    min-width: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .dream-auto > input[type="checkbox"] {
+    appearance: none;
+    -webkit-appearance: none;
+    flex: none;
+    margin: 0;
+    width: 34px;
+    height: 20px;
+    border-radius: 10px;
+    background: var(--well2);
+    border: 1px solid var(--line2);
+    position: relative;
+    cursor: pointer;
+    transition: background-color 120ms;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .dream-auto > input[type="checkbox"]::after {
+    content: "";
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--dim);
+    transition: left 120ms, background-color 120ms;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .dream-auto > input[type="checkbox"]:checked {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .dream-auto > input[type="checkbox"]:checked::after {
+    left: 17px;
+    background: var(--on-accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .dream-auto > input[type="checkbox"]:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .dream-auto > input[type="checkbox"]:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .sw:checked::after {
+    background: var(--on-accent);
+    box-shadow: none;
+  }
+
+  /* Tables and lists: one bordered box (r2), a header row, ruled rows. */
+  :global(:where(:root:not([data-layout="classic"]))) .usage-table {
+    border: 1px solid var(--line2);
+    border-radius: var(--r2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .usage-table th,
+  :global(:where(:root:not([data-layout="classic"]))) .usage-table td {
+    padding: 9px 12px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .usage-table th {
+    background: color-mix(in srgb, var(--well) 50%, transparent);
+    color: var(--ink2);
+    font-family: var(--sans);
+    font-size: 12.5px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .usage-table tbody tr:last-child td {
+    border-bottom: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .usage-bar {
+    background: var(--well);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .mrows,
+  :global(:where(:root:not([data-layout="classic"]))) .mfiles {
+    border: 1px solid var(--line2);
+    border-radius: var(--r2);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .mr {
+    border-radius: 0;
+    padding: 9px 12px;
+    font-size: 13.5px;
+    border-bottom: 1px solid var(--line);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .mr:nth-child(even) {
+    background: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .cb {
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    background: var(--term);
+  }
+
+  /* Palette swatches (the four classic palettes, A = Filament IV). */
+  :global(:where(:root:not([data-layout="classic"]))) .swatch {
+    border-color: var(--line2);
+    border-radius: var(--r2);
+    background: var(--raised);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .swatch.on {
+    box-shadow: inset 0 0 0 1px var(--accent);
+  }
+
+  /* Appearance: the accent and light choices as cards (f4-settings-appearance.png). */
+  .pick3,
+  .pick2 {
+    display: grid;
+    gap: 12px;
+  }
+  .pick3 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .pick2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .pick {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 14px 16px 16px;
+    border: 1px solid var(--line2);
+    border-radius: var(--r2);
+    background: transparent;
+    color: var(--ink);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .pick:hover {
+    background: color-mix(in srgb, var(--well) 40%, transparent);
+  }
+  .pick.on {
+    border-color: var(--accent);
+    box-shadow: inset 0 0 0 1px var(--accent);
+  }
+  .pick:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .pick-h {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 15px;
+    font-weight: 500;
+  }
+  .radio {
+    flex: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 1.5px solid var(--dim);
+    box-sizing: border-box;
+  }
+  .pick.on .radio {
+    border: 4px solid var(--accent);
+    background: var(--on-accent);
+  }
+  .pick-n {
+    font-size: 13.5px;
+    line-height: 1.45;
+    color: var(--ink2);
+  }
+  .pick-sw {
+    display: grid;
+    grid-template-columns: 3fr 1fr 1fr;
+    gap: 6px;
+    margin-top: auto;
+    padding-top: 4px;
+  }
+  .pick-sw i {
+    height: 30px;
+    border-radius: 3px;
+  }
+  .pick-sw i.sig {
+    background: var(--signal);
+  }
+  .pick-sw i.ctl {
+    background: var(--well);
+  }
+  .u4-l {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 15px;
+    color: var(--ink);
+  }
+  .u4-l small {
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--ink2);
+  }
+
+  /* Usage (f4-settings-usage.png): the two windows as dials, their rows beside. */
+  .u4 {
+    display: flex;
+    align-items: center;
+    gap: 28px;
+    flex-wrap: wrap;
+    flex: none;
+  }
+  .u4-dials {
+    display: flex;
+    gap: 18px;
+    flex: none;
+  }
+  .u4-dials :global(.dial .n) {
+    font-size: 30px;
+    font-weight: 400;
+  }
+  .u4-dials :global(.dial .u) {
+    font-size: 11.5px;
+  }
+  .u4-rows {
+    flex: 1 1 16rem;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .u4-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 11px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .u4-row:last-child {
+    border-bottom: none;
+  }
+  .u4-row > b {
+    flex: none;
+    font: 600 16px var(--sans);
+    font-variant-numeric: tabular-nums;
+    color: var(--ink);
+  }
+  .u4-week {
+    display: flex;
+    height: 28px;
+    border-radius: 3px;
+    background: var(--well);
+    overflow: hidden;
+  }
+  .u4-seg {
+    display: block;
+    height: 100%;
+  }
+  .u4-seg.claude_code {
+    background: var(--accent);
+  }
+  .u4-seg.chat {
+    background: var(--signal);
+  }
+  .u4-seg.cowork {
+    background: var(--done);
+  }
+  .u4-seg.other {
+    background: var(--dim);
+  }
+  .u4-scale {
+    display: flex;
+    justify-content: space-between;
+    margin-top: -6px;
+    font: 400 10.5px var(--mono);
+    color: var(--dim);
+  }
+  .u4-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 18px;
+    font-size: 13.5px;
+    color: var(--ink);
+  }
+  .u4-legend > span {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .u4-legend i.u4-seg {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+  }
+  .u4-legend .u4-all {
+    color: var(--ink2);
+    margin-left: auto;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    :global(:where(:root:not([data-layout="classic"]))) .dream-auto > input[type="checkbox"],
+    :global(:where(:root:not([data-layout="classic"]))) .dream-auto > input[type="checkbox"]::after {
+      transition: none;
+    }
+  }
+  /* ==== Item 629/630 (agent C, wave 5): Appearance's own choices. ==== */
+  /* Accent under B/C/D: the choices rest, the note says why. */
+  :global(:where(:root:not([data-layout="classic"]))) .pick3.rests .pick {
+    opacity: 0.45;
+    cursor: default;
+  }
+  /* Motion colour: a dot of the colour each option is, on this palette. */
+  :global(:where(:root:not([data-layout="classic"]))) .ink-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-right: 7px;
+    border-radius: 50%;
+    vertical-align: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ink-dot.live {
+    background: var(--signal);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .ink-dot.accent {
+    background: var(--accent);
+  }
+  /* ==== end item 629/630 ==== */
 </style>

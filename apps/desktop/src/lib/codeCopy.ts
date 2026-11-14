@@ -57,9 +57,25 @@ function runCommand(pre: Element, root: Element): string | null {
 }
 
 /**
+ * Item 636: whether marked drew any text after `pre` — in its parents, up to
+ * `root`. A fence marked has closed and gone past is whole: later text cannot
+ * reopen it. Read from the DOM (marked's own verdict), never from a scan of
+ * the source, which 503 review 10 found has gaps. Text, not elements, so the
+ * motion's shuttle (empty, aria-hidden) never counts.
+ */
+function drawnAfter(pre: Element, root: Element): boolean {
+  for (let el: Element | null = pre; el && el !== root; el = el.parentElement) {
+    const kids = Array.from(el.parentElement?.childNodes ?? []);
+    for (const n of kids.slice(kids.indexOf(el) + 1)) if ((n.textContent ?? "").trim()) return true;
+  }
+  return false;
+}
+
+/**
  * Run beside Copy on a shell block, once it is whole: only the last `pre` can
  * be the fence the reply is still in, so that one waits while the reply
- * streams, or if it was cut off inside it. A block that no longer qualifies
+ * streams until marked draws text after it (item 636: before, it waited for
+ * the turn's end), or if the reply was cut off inside it. A block that no longer qualifies
  * loses its button: `liveHtml` re-uses a `pre` for whatever comes next at its
  * place. `read` is the reply as it stands, so a click goes by what is drawn
  * then, never by what was when the button was made.
@@ -67,7 +83,8 @@ function runCommand(pre: Element, root: Element): string | null {
 export function addRunButtons(root: HTMLElement, read: () => RunBlocks | null | undefined): void {
   const run = read();
   const all = Array.from(root.querySelectorAll("pre"));
-  const open = !!run && (run.streaming || endsInOpenFence(run.text));
+  const last = all[all.length - 1];
+  const open = !!run && ((run.streaming && !(last && drawnAfter(last, root))) || endsInOpenFence(run.text));
   all.forEach((pre, i) => {
     const have = pre.querySelector(":scope > .code-run");
     if (!run?.onRun || (open && i === all.length - 1) || runCommand(pre, root) === null) {

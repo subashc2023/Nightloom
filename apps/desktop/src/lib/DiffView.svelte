@@ -250,4 +250,39 @@
     color: var(--live);
     background: var(--well);
   }
+
+  /* Item 567 (Filament IV stage 10): the strip a panel band, the open file
+     on the card colour under its amber rule; the lines on the code ground
+     with a ruled gutter; a hunk's header in the secondary text, not the
+     signal blue (blue is for what runs, 521 §2). Filament IV only (item
+     542's gate); Classic keeps the rules above. */
+  :global(:where(:root:not([data-layout="classic"]))) .filestrip {
+    background: var(--sheet);
+    border-bottom-color: var(--line);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .file.on {
+    background: var(--raised);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .file:hover {
+    background: var(--well);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .cols {
+    background: var(--sheet);
+    padding: 5px 12px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .scroll {
+    background: var(--term);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .cell .no {
+    margin-right: 10px;
+    border-right: 1px solid var(--line);
+    opacity: 1;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .cell.hunk {
+    color: var(--ink2);
+    background: var(--sheet);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .cell.pad {
+    background: repeating-linear-gradient(45deg, transparent 0 4px, var(--line) 4px 5px);
+  }
 </style>

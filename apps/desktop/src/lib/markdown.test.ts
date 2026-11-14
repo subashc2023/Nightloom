@@ -1,10 +1,19 @@
 import { Marked } from "marked";
 import { describe, expect, it } from "vitest";
-import { markdownOptions } from "./markdown";
+import { markdownOptions, SANITIZE } from "./markdown";
 
 // renderMarkdown sanitises through DOMPurify, which needs a DOM this
 // environment lacks; its marked options are what changed (nightshift 300 A32).
 const parse = (src: string, breaks?: boolean) => new Marked().parse(src, markdownOptions(breaks === undefined ? {} : { breaks })) as string;
+
+describe("SANITIZE (505)", () => {
+  it("drops a <style> element, whose CSS would reach the whole window", () => {
+    expect(SANITIZE.FORBID_TAGS).toContain("style");
+  });
+  it("keeps KaTeX's MathML", () => {
+    expect(SANITIZE.ADD_TAGS).toEqual(["semantics", "annotation"]);
+  });
+});
 
 describe("markdownOptions (300 A32)", () => {
   it("keeps the desktop's default: a single newline joins the paragraph", () => {

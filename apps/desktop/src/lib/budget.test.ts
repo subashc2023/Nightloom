@@ -53,6 +53,11 @@ describe("the budget meter", () => {
     expect(card?.detail).toBe("the window is at 90% · this message has spent 20% of its 35%");
     expect(stopCard(ledger())).toBeNull();
     expect(stopCard(null)).toBeNull();
+    // Item 611b: the reset reads 12-hour AM/PM, no leading zero.
+    const resetsAt = new Date(2026, 10, 11, 14, 5).getTime() / 1000;
+    expect(stopCard(ledger({ latest_pct: 90, start_pct: 70, pending_since_ms: 5, resets_at: resetsAt }))?.detail).toContain(
+      "it resets at 2:05 PM",
+    );
     const over = ledger({ latest_pct: 90, start_pct: 70, override_at_ms: 6 });
     expect(budgetChip(over)).toBe("past 85% on your word · spent 20% of 35%");
     expect(budgetTitle(over)).toContain("Continue anyway");

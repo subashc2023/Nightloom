@@ -84,13 +84,13 @@ describe("Make main (item 299)", () => {
     expect(canMakeMain(list, top, "f")).toBe(false);
   });
 
-  it("keeps an original's place under the hand-off continuation it was edited in", () => {
+  it("keeps a hand-off continuation's top-level row when a version of it is made main (509)", () => {
     const list = [meta("f", "o"), meta("o", "p", 5, null, "handoff"), meta("p")];
     const map = makeMain(list, {}, "f")!;
     expect(map).toEqual({ o: "f" });
     const rows = sidebarRows(sidebarSessions(list, map), new Set(["p"]));
-    expect(ids(rows)).toEqual(["p", "-f"]);
-    expect(rows[1].meta.forked_from?.session).toBe("p");
+    expect(ids(rows)).toEqual(["f", "p"]);
+    expect(rows[0].meta.forked_from?.session).toBe("p");
   });
 
   it("puts the original back by Make main on it (a hidden version)", () => {

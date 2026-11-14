@@ -23,6 +23,8 @@
   import { renderMarkdown } from "./markdown";
   import { tip } from "./tip";
   import Icon from "./Icon.svelte";
+  import FilamentMark from "./FilamentMark.svelte";
+  import { classic } from "./layout.svelte";
   import ThreadPicker from "./ThreadPicker.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
 
@@ -30,11 +32,16 @@
     aside,
     part,
     open,
+    twin = false,
   }: {
     aside: Aside;
     part: "button" | "panel";
     /** The aside's chat is the open one. */
     open: boolean;
+    /** Item 673 (C1 Twin): the button sits in the aside tab's card, as a
+     *  composer row button carrying the Ask-aside coil (FilamentMark,
+     *  Filament only; Classic keeps the `think` icon). */
+    twin?: boolean;
   } = $props();
 
   const fold = $derived(aside.fold ?? null);
@@ -66,7 +73,10 @@
 {#if part === "button"}
   {#if shown}
     <button
-      class="ns-btn ghost small fold-btn"
+      class="ns-btn small fold-btn"
+      class:fil-btn={twin}
+      class:fil-ghost={twin}
+      class:aside-fold={twin}
       disabled={blocked !== null}
       use:tip={blocked
         ? FOLD_BLOCK_TEXT[blocked]
@@ -74,7 +84,8 @@
             ? `Fold this aside into ◇ ${bound}: one turn here writes a summary (your words verbatim, with pointers); you review it, then Nightloom appends it to the thread's log.md`
             : "Fold this aside into a research thread — this chat has none yet, so you pick one first") +
           (warning ? `\n${warning}` : "")}
-      onclick={() => void startFold(aside)}><Icon name="think" size={11} /> Fold into thread</button
+      onclick={() => void startFold(aside)}
+      >{#if twin && !classic()}<FilamentMark kind="aside" />{:else}<Icon name="think" size={11} />{/if} Fold into thread</button
     >
   {/if}
 {:else if fold}

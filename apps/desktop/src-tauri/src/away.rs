@@ -186,6 +186,20 @@ async fn status_of(app: &AppHandle) -> AwayStatus {
     }
 }
 
+/// The away server's origin and its token, for the phone's one link
+/// (item 588: Settings → Phone shows a code that opens the away server's
+/// page and pairs both hosts). `None` while sync is off or the token file
+/// is missing. Reads `away.json`; this module stays its only writer.
+pub fn phone_host() -> Option<(String, String)> {
+    let url = read_saved().url;
+    let base = url.trim().trim_end_matches('/').to_string();
+    if base.is_empty() {
+        return None;
+    }
+    let token = sync::read_away_token(&config()?)?;
+    Some((base, token))
+}
+
 /// Manage the state and start the loop. Called once from `setup`, after
 /// `AppState` is managed.
 pub fn start(app: &AppHandle) {

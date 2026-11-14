@@ -275,6 +275,15 @@ pub fn resolve(fresh: &SystemPrompt, hold: Option<&Hold>, has_cli: bool, ask: &A
             prompt: fresh.clone(),
             hold: Hold {
                 segments: layers,
+                // A conversation with no hold on file (a chat begun before
+                // item 174, or one whose hold was lost): what its CLI
+                // recorded on its first turn is unknown, so the snapshot
+                // goes off and the CLI renders the prompt from the flag —
+                // with it on, the fresh text never reached the resumed
+                // chat (measured, nightshift `535m-report-2026-11-10.md`:
+                // a thread bound to such a chat never reached it). A chat
+                // with no conversation yet records this prompt itself.
+                snapshot_off: hold.is_none() && has_cli,
                 ..Hold::default()
             },
             pending: Vec::new(),
@@ -417,8 +426,37 @@ mod tests {
         p
     }
 
+    /// The hold a chat's first turn wrote: connected on New chat, no
+    /// conversation yet (~~`has_cli: true`~~ — since 543's check 6 that
+    /// case turns the snapshot off, and is tested on its own below).
     fn held(memory: &str) -> Hold {
-        resolve(&prompt(memory), None, true, &Ask::default()).hold
+        resolve(&prompt(memory), None, false, &Ask::default()).hold
+    }
+
+    /// 543's check 6, the case measured in `535m-report-2026-11-10.md`: a
+    /// chat with a CLI conversation and no hold on file takes the fresh
+    /// prompt whole — and now with the snapshot off, so it reaches the CLI.
+    #[test]
+    fn a_conversation_with_no_hold_takes_the_fresh_prompt_with_the_snapshot_off() {
+        let mut fresh = prompt("m");
+        fresh.push(Segment::new(
+            SegmentKind::Thread,
+            "alpha",
+            "THREAD alpha: start here",
+        ));
+        let r = resolve(&fresh, None, true, &Ask::default());
+        assert!(flat(&r).contains("THREAD alpha: start here"));
+        assert!(r.hold.snapshot_off);
+        assert!(r.pending.is_empty());
+        // It stays off on the next connect, when the hold is on file.
+        let again = resolve(&fresh, Some(&r.hold), true, &Ask::default());
+        assert!(again.hold.snapshot_off);
+        // A New chat (no conversation yet) records the prompt itself.
+        assert!(
+            !resolve(&fresh, None, false, &Ask::default())
+                .hold
+                .snapshot_off
+        );
     }
 
     fn json(h: &Hold) -> serde_json::Value {
@@ -568,6 +606,51 @@ mod tests {
         let r = resolve(&prompt("old"), Some(&hold), true, &Ask::default());
         assert!(r.pending.is_empty());
         assert!(r.hold.kept.is_empty());
+    }
+
+    /// Item 543's check 6 (his question, 2026-11-10 ~1:15 AM: does a chat
+    /// added to a thread mid-chat know it?). The chat ran unbound, so its
+    /// hold names no thread; `set_chat_thread` writes the binding and the
+    /// reconnect builds a prompt with the thread's layer. `main.rs`
+    /// `thread_rebound` sees the names differ and asks for the Thread layer
+    /// now — warm cache or not — and taking it turns the CLI's prompt
+    /// snapshot off, without which a resumed chat keeps the prompt it
+    /// recorded on its first turn (item 174). The args half is
+    /// `a_thread_bound_mid_chat_reaches_the_resumed_cli` in the service.
+    #[test]
+    fn a_thread_bound_mid_chat_is_taken_now_and_turns_the_snapshot_off() {
+        let hold = held("m");
+        assert!(!hold.snapshot_off);
+        let mut fresh = prompt("m");
+        fresh.push(Segment::new(
+            SegmentKind::Thread,
+            "alpha",
+            "THREAD alpha: start here",
+        ));
+        let name = |segs: &[Segment]| {
+            segs.iter()
+                .find(|s| s.kind == SegmentKind::Thread)
+                .map(|s| s.name.clone())
+        };
+        // `thread_rebound`'s rule, on the same inputs.
+        assert_ne!(name(&hold.segments), name(fresh.segments()));
+        let warm = Ask {
+            cold: false,
+            auto: true,
+            now: vec![SegmentKind::Thread],
+        };
+        let r = resolve(&fresh, Some(&hold), true, &warm);
+        assert!(flat(&r).contains("THREAD alpha: start here"));
+        assert!(r.hold.snapshot_off);
+        assert!(r.pending.is_empty());
+        // Without the ask (the rebound not noticed) a warm chat would hold it back.
+        let quiet = Ask {
+            cold: false,
+            auto: true,
+            now: Vec::new(),
+        };
+        let r = resolve(&fresh, Some(&hold), true, &quiet);
+        assert!(!flat(&r).contains("THREAD alpha: start here"));
     }
 
     #[test]
