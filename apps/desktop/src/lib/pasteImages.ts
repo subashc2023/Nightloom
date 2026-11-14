@@ -260,14 +260,20 @@ export type PreparedImage =
  * be attached already reading its reason in the text. The text is what goes
  * in the box; the images are what become chips, in order.
  */
-export function preparePaste(paste: ImagePaste, cap: number): { text: string; images: PreparedImage[]; failed: number[] } {
+export function preparePaste(
+  paste: ImagePaste,
+  cap: number,
+): { text: string; images: PreparedImage[]; failed: number[]; whys: string[] } {
   let text = paste.text;
   const images: PreparedImage[] = [];
   const failed: number[] = [];
+  // Item 687: each lost image's reason, for the note under the chips.
+  const whys: string[] = [];
   // Images lost so far: each later one moves down this many.
   let lost = 0;
   const fail = (n: number, why?: string) => {
     failed.push(n);
+    whys.push(failedMarker(why));
     text = replaceMarker(text, n, failedMarker(why));
     lost++;
   };
@@ -284,7 +290,24 @@ export function preparePaste(paste: ImagePaste, cap: number): { text: string; im
     } else if (/^https?:\/\//i.test(img.src)) images.push({ n: keep(img.n), url: img.src });
     else fail(img.n, unreachable(img.src));
   }
-  return { text, images, failed };
+  return { text, images, failed, whys };
+}
+
+/**
+ * Item 687 (his bug, 2026-11-13: a Gradescope paste attached 2 of its 10
+ * images, both logos; the 8 lost ones said so only in markers deep in the
+ * text and a toast he missed): the note that stays under the chips. `whys`
+ * are the lost images' markers (`[image: could not be fetched (…)]`); one
+ * reason shared by all is spelled out, several are pointed at.
+ */
+export function lostImagesNote(lost: number, total: number, whys: string[]): string {
+  if (lost <= 0) return "";
+  const reasons = [...new Set(whys.map((w) => /^\[image: (.*)\]$/s.exec(w)?.[1] ?? w))];
+  const head =
+    lost === total
+      ? `${lost === 1 ? "The image" : `All ${lost} images`} from the paste ${lost === 1 ? "was" : "were"} not attached`
+      : `${lost} of the ${total} images from the paste ${lost === 1 ? "was" : "were"} not attached`;
+  return reasons.length === 1 ? `${head}: ${reasons[0]}.` : `${head}; each one's place in the text says why.`;
 }
 
 const TOO_BIG = "could not be attached (over the image size limit)";
@@ -312,6 +335,9 @@ export interface PasteImageEffects {
   toast: (msg: string) => void;
   /** How long a fetch may wait before it counts as lost (FETCH_LIMIT_MS). */
   limitMs?: number;
+  /** Item 687: once every image has settled, how many were lost of how
+   *  many, and their markers (`lostImagesNote`). */
+  lostNote?: (lost: number, total: number, whys: string[]) => void;
 }
 
 /**
@@ -320,8 +346,14 @@ export interface PasteImageEffects {
  * are the numbers `preparePaste` already marked, for the one toast. The
  * promise settles when every fetch has.
  */
-export function attachPastedImages(images: PreparedImage[], failed: number[], fx: PasteImageEffects): Promise<void> {
+export function attachPastedImages(
+  images: PreparedImage[],
+  failed: number[],
+  fx: PasteImageEffects,
+  failedWhys: string[] = [],
+): Promise<void> {
   const lost = failed.slice();
+  const whys = failedWhys.slice();
   const jobs: Promise<void>[] = [];
   for (const img of images) {
     const name = `image ${img.n}`;
@@ -339,6 +371,7 @@ export function attachPastedImages(images: PreparedImage[], failed: number[], fx
       if (settled) return;
       settled = true;
       lost.push(img.n);
+      whys.push(failedMarker(why));
       // Its number now (an earlier loss may have moved it down); a chip he
       // removed meanwhile is his own edit and is left as he made it.
       const chip = fx.chips().find((c) => c.id === id);
@@ -386,6 +419,7 @@ export function attachPastedImages(images: PreparedImage[], failed: number[], fx
   }
   return Promise.all(jobs).then(() => {
     if (lost.length === 0) return;
+    fx.lostNote?.(lost.length, images.length + failed.length, whys);
     fx.toast(
       lost.length === 1
         ? "An image from the paste could not be attached; its place in the text says so"

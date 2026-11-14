@@ -725,6 +725,13 @@ export function makeRenderer(gl: WebGLRenderingContext, look: ShaderLook): Rende
   };
 }
 
+/** Item 687: the share of the way to the dial's new place and size covered in
+ *  `dt` seconds (time constant 0.25 s). */
+export const DIAL_EASE_S = 0.25;
+export function dialEase(dt: number): number {
+  return dt <= 0 ? 0 : 1 - Math.exp(-dt / DIAL_EASE_S);
+}
+
 /** Text boxes in `host`'s box (CSS px, [x0, y0, x1, y1]), largest first, at most MAX_RECTS. */
 export function veilRects(host: HTMLElement, selector: string): number[][] {
   if (!selector) return [];
@@ -806,13 +813,28 @@ export function shaderGround(
     };
     fr.colours = shaderColours(parse(read("var(--signal)"), JARVIS_SIG), parse(read("var(--accent)"), [255, 180, 84]));
   }
-  function readOrigin() {
+  // Item 687 (his bug, 2026-11-13): the dial's place and size as laid out;
+  // the drawn ones ease toward them in the loop (`easeToDial`), so a dial
+  // that changes size (the box growing, a bar above it) moves the sea
+  // smoothly instead of zooming it in a frame.
+  const dial = { x: 0, y: 0, r: MOCK_R };
+  function readOrigin(snap = true) {
     const o = originOf();
-    fr.origin = o ? { x: o.x, y: o.y } : { x: fr.w / 2, y: fr.h / 2 };
-    fr.r = o?.r ?? MOCK_R;
+    dial.x = o ? o.x : fr.w / 2;
+    dial.y = o ? o.y : fr.h / 2;
+    dial.r = o?.r ?? MOCK_R;
+    if (snap) {
+      fr.origin = { x: dial.x, y: dial.y };
+      fr.r = dial.r;
+    }
   }
-  function readLayout() {
-    readOrigin();
+  function easeToDial(dt: number) {
+    const k = dialEase(dt);
+    fr.origin = { x: fr.origin.x + (dial.x - fr.origin.x) * k, y: fr.origin.y + (dial.y - fr.origin.y) * k };
+    fr.r += (dial.r - fr.r) * k;
+  }
+  function readLayout(snap = true) {
+    readOrigin(snap);
     fr.rects = veilRects(host, opts.veil ?? "");
   }
   function context(): WebGLRenderingContext | null {
@@ -860,10 +882,15 @@ export function shaderGround(
     // frame (two rects); the veils every frame for the first second, then
     // every 30.
     frames++;
-    if (frames <= 60 || frames % 30 === 0) readLayout();
-    else readOrigin();
+    // The first second follows the settling dial exactly (item 668); after
+    // it, a change of the dial's size or place is eased (item 687).
+    const settling = frames <= 60;
+    if (settling || frames % 30 === 0) readLayout(settling);
+    else readOrigin(false);
     // Real time between frames (capped, so a stall or a hidden spell does not jump the response).
-    sea.tick(lastFrame ? Math.min(0.1, Math.max(0, (t - lastFrame) / 1000)) : 0);
+    const dt = lastFrame ? Math.min(0.1, Math.max(0, (t - lastFrame) / 1000)) : 0;
+    if (!settling) easeToDial(dt);
+    sea.tick(dt);
     // Eased (τ 2 s) even after a hidden spell or sleep, so the sky drifts to the new hour instead of snapping.
     hour = easeHour(hour, clockHour(), lastFrame ? Math.min(0.1, Math.max(0, (t - lastFrame) / 1000)) : 0);
     lastFrame = t;

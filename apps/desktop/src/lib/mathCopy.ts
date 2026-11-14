@@ -180,7 +180,11 @@ export function mathSelection(sel: Selection | null): { text: string; html: stri
  */
 function tableRangeHtml(range: Range): string {
   const anc = range.commonAncestorContainer;
-  const inTable = (anc instanceof Element ? anc : anc.parentElement)?.closest("table");
+  const at = anc instanceof Element ? anc : anc.parentElement;
+  // Item 688 (his bug, 2026-11-13): text inside one cell copies as that
+  // text, not as the cell's row under the header.
+  if (at?.closest("td, th")) return "";
+  const inTable = at?.closest("table");
   if (inTable) {
     const rows = Array.from(inTable.rows);
     const keep = rows.filter((r, i) => i === 0 || range.intersectsNode(r));

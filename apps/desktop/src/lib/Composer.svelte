@@ -61,7 +61,7 @@
   import { isMac } from "./platform";
   import { BoxHistory, editKind, historyInput, historyKey } from "./boxHistory";
   import TypedMathBar from "./TypedMathBar.svelte";
-  import { applyTypedMath, findTypedMath, wrapTypedMath, type TypedMathSpan } from "./typedMath";
+  import { applyTypedMath, findTypedMath, rebaseTypedMath, wrapTypedMath, type TypedMathSpan } from "./typedMath";
   import { clearDenied, deniedFor, denyTypedMath, typedMathPrefs } from "./typedMathPrefs.svelte";
   import {
     RE_ASK,
@@ -195,7 +195,7 @@
     type ConvertTag,
   } from "./pastedText.svelte";
   import { pasteSteps, textPastePlan } from "./textPaste";
-  import { attachPastedImages, fetchPasteImage, htmlImagePaste, preparePaste, rasterize, type ImagePaste } from "./pasteImages";
+  import { attachPastedImages, fetchPasteImage, htmlImagePaste, lostImagesNote, preparePaste, rasterize, type ImagePaste } from "./pasteImages";
   import { launch } from "./sendMotion";
   import { composerConnectHint, launch as launchState } from "./launch.svelte";
   import { insertQuote, replyRequest, takeReply } from "./replyQuote.svelte";
@@ -523,6 +523,7 @@
    */
   function afterSend(k: string): void {
     sentSinceDrag.sent(k);
+    if (lostPaste?.key === k) lostPaste = null;
     requestAnimationFrame(autogrow);
   }
 
@@ -906,6 +907,8 @@
   let mathSpans = $state<TypedMathSpan[]>([]);
   let mathTimer: ReturnType<typeof setTimeout> | null = null;
   let mathKey = untrack(() => key);
+  /** Item 687: the text the offers' offsets are into, so an edit moves them. */
+  let mathPrev = "";
   $effect(() => {
     const t = text;
     const k = key;
@@ -929,8 +932,13 @@
       if (!t) clearDenied(k);
       return;
     }
-    if (mathSpans.length && mathSpans.some((s) => t.slice(s.from, s.to) !== s.src))
-      mathSpans = mathSpans.filter((s) => t.slice(s.from, s.to) === s.src);
+    // Item 687: moved with the edit, not dropped — typing above a formula
+    // no longer hides the bar until the pause (the page jumped per key).
+    if (mathSpans.length) {
+      const moved = rebaseTypedMath(mathPrev, t, mathSpans);
+      if (moved !== mathSpans) mathSpans = moved;
+    }
+    mathPrev = t;
     mathTimer = setTimeout(findMathNow, MATH_PAUSE_MS);
   }
   function findMathNow(): void {
@@ -941,6 +949,7 @@
       return;
     }
     const d = deniedFor(key);
+    mathPrev = text;
     mathSpans = findTypedMath(text).filter((s) => !d.has(s.src));
   }
   /** Wrap `one` (or every offered formula) as `$…$` (`$$…$$` for a whole line): one undo step. */
@@ -975,6 +984,7 @@
       });
     }
     const d = deniedFor(key);
+    mathPrev = next;
     mathSpans = findTypedMath(next).filter((s) => !d.has(s.src));
     ta.focus();
   }
@@ -1534,6 +1544,12 @@
   /** Item 382: the paste's text with its markers at the caret (as a math
    *  paste goes in), then its images as chips in marker order, under the
    *  key of the moment of the paste. */
+  /** Item 687: the paste's lost images, said under the chips until he
+   *  closes it, sends, or empties the box (a toast alone was missed). */
+  let lostPaste = $state<{ key: string; text: string } | null>(null);
+  $effect(() => {
+    if (lostPaste && lostPaste.key === key && !text) untrack(() => (lostPaste = null));
+  });
   function pasteWithImages(paste: ImagePaste): void {
     const chatKey = key;
     const ready = preparePaste(paste, MAX_IMAGE_BASE64);
@@ -1559,7 +1575,8 @@
       record: (chip) => recordImage("pasted", chip),
       cap: MAX_IMAGE_BASE64,
       toast: (m) => addToast(m),
-    });
+      lostNote: (n, total, whys) => (lostPaste = { key: chatKey, text: lostImagesNote(n, total, whys) }),
+    }, ready.whys);
   }
 
   /** Item 648: a code-block key's edit, in either box. The textarea's is a
@@ -3186,6 +3203,12 @@
       {/each}
     </div>
   {/if}
+  {#if lostPaste && lostPaste.key === key}
+    <div class="lost-paste" role="status">
+      <span class="lost-paste-text">{lostPaste.text}</span>
+      <button type="button" class="lost-paste-x" aria-label="Close this note" onclick={() => (lostPaste = null)}>×</button>
+    </div>
+  {/if}
   {#if handoffHere && handoff.stage === "due" && isFolded(app.activeSessionId, "due")}
     <div class="handoff handoff-min" role="status" aria-label="Hand-off notice, minimized">
       <span class="handoff-mark" aria-hidden="true"><Icon name="branch" size={13} /></span>
@@ -4493,6 +4516,34 @@
     display: flex;
     flex-wrap: wrap;
     gap: 0.4rem;
+  }
+  .lost-paste {
+    max-width: 760px;
+    margin: 0 auto 0.5rem;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    padding: 0.4rem 0.6rem;
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    font-size: 13px;
+    line-height: 1.4;
+  }
+  .lost-paste-text {
+    flex: 1;
+  }
+  .lost-paste-x {
+    background: none;
+    border: 0;
+    color: var(--dim);
+    cursor: pointer;
+    font-size: 15px;
+    line-height: 1;
+    padding: 0 0.15rem;
+  }
+  .lost-paste-x:hover {
+    color: var(--fg);
   }
   .attachment {
     display: flex;

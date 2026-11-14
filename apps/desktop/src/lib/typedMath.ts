@@ -125,6 +125,9 @@ function protectedRanges(text: string): [number, number][] {
   // Item 490: a list marker at the start of a line ("4.", "2)", "-") is the
   // list's, never a formula's: "O(1)⏎4." once ran together as `O(1) 4`.
   add(/^[ \t]*(\d{1,3}[.)]|[-*+•])(?=[ \t]|$)/gm);
+  // Item 688 (his bug, 2026-11-13): a Markdown table row is the table's —
+  // its cell pipes read as absolute value (`| 3.2 |` offered as |3.2|).
+  add(/^[ \t]*\|.*\|[ \t]*$/gm);
   return out;
 }
 
@@ -700,4 +703,36 @@ export function applyTypedMath(text: string, spans: TypedMathSpan[], caret = tex
     shift += rep.length - (s.to - s.from);
   }
   return { text: out + text.slice(k), caret: c };
+}
+
+/**
+ * Item 687 (his bug, 2026-11-13): the offers carried through one edit of the
+ * draft (`prev` → `next`: a key, a paste, a cut). Spans before the edit stay,
+ * spans after it move by its length, spans it touched are dropped. Until now
+ * every span after a key typed above it was dropped, so typing at the top of
+ * a draft with maths further down hid the bar on each key and brought it back
+ * after the pause — the column changed height per key, and the new-chat
+ * dial and its Horizon zoomed out and in with it. Returns `spans` itself when
+ * nothing moved.
+ */
+export function rebaseTypedMath(prev: string, next: string, spans: TypedMathSpan[]): TypedMathSpan[] {
+  if (prev === next || spans.length === 0) return spans;
+  const max = Math.min(prev.length, next.length);
+  let p = 0;
+  while (p < max && prev.charCodeAt(p) === next.charCodeAt(p)) p++;
+  let s = 0;
+  while (s < max - p && prev.charCodeAt(prev.length - 1 - s) === next.charCodeAt(next.length - 1 - s)) s++;
+  const end = prev.length - s;
+  const d = next.length - prev.length;
+  const out: TypedMathSpan[] = [];
+  let same = true;
+  for (const sp of spans) {
+    let m: TypedMathSpan | null = null;
+    if (sp.to <= p) m = sp;
+    else if (sp.from >= end) m = d === 0 ? sp : { ...sp, from: sp.from + d, to: sp.to + d };
+    if (m && next.slice(m.from, m.to) === m.src) out.push(m);
+    else m = null;
+    if (m !== sp) same = false;
+  }
+  return same ? spans : out;
 }
