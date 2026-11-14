@@ -123,9 +123,13 @@
     flex: none;
     white-space: nowrap;
   }
+  /* Item 687: one row whatever the count — five rows of offers squeezed
+     the new-chat dial; the rest scroll sideways. */
   .tm-list {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: thin;
     gap: 4px 10px;
     margin: 0;
     padding: 0;
@@ -133,6 +137,7 @@
     min-width: 0;
   }
   .tm-item {
+    flex: none;
     position: relative;
     display: inline-flex;
     align-items: center;

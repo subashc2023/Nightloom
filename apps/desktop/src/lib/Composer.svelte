@@ -904,6 +904,8 @@
    * draft (`typedMathPrefs.svelte.ts`). The rules: `typedMath.ts`.
    */
   const MATH_PAUSE_MS = 600;
+  /** Item 687: a paste this long is not scanned for typed maths. */
+  const PASTE_NO_MATH = 200;
   let mathSpans = $state<TypedMathSpan[]>([]);
   let mathTimer: ReturnType<typeof setTimeout> | null = null;
   let mathKey = untrack(() => key);
@@ -1601,6 +1603,10 @@
    *  undo step, as a plain paste would be. */
   function pasteMath(raw: string): void {
     if (!ta) return;
+    // Item 687 (his bug, 2026-11-13): the bar is for maths he types. A long
+    // paste (a homework page's MIPS code: `$t0`, `i=0`) filled it with five
+    // rows of offers; its spans are not offered in this draft.
+    if (raw.length >= PASTE_NO_MATH) denyTypedMath(key, findTypedMath(raw).map((s) => s.src));
     if (ta instanceof LiveBoxHandle) {
       ta.pasteText(raw);
       return;

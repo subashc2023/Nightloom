@@ -69,3 +69,13 @@ describe("typed maths skips Markdown table rows", () => {
     expect(findTypedMath(t).length).toBeGreaterThan(0);
   });
 });
+
+// Item 687 follow-up: MIPS registers are not offered as open formulas.
+describe("typed maths skips MIPS registers", () => {
+  it("offers nothing on a line of MIPS", () => {
+    expect(findTypedMath("addi $t0, $t0, 1\njr $ra").filter((s) => /\$/.test(s.src))).toEqual([]);
+  });
+  it("still offers a closed formula", () => {
+    expect(findTypedMath("the area is $s^2").length).toBeGreaterThan(0);
+  });
+});

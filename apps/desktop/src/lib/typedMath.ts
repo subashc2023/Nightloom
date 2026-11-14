@@ -128,6 +128,8 @@ function protectedRanges(text: string): [number, number][] {
   // Item 688 (his bug, 2026-11-13): a Markdown table row is the table's —
   // its cell pipes read as absolute value (`| 3.2 |` offered as |3.2|).
   add(/^[ \t]*\|.*\|[ \t]*$/gm);
+  // Item 687: a MIPS register (`$t0,`, `$ra`) is code, not a formula left open.
+  add(/\$(zero|at|v[01]|a[0-3]|t\d|s\d|k[01]|gp|sp|fp|ra)(?=[\s,)?;:]|$)/gm);
   return out;
 }
 
@@ -649,6 +651,8 @@ export function findTypedMath(text: string): TypedMathSpan[] {
  * three or more letters but a LaTeX command or a function name), and that
  * KaTeX renders.
  */
+const MIPS_REG = /^\$(zero|at|v[01]|a[0-3]|t\d|s\d|k[01]|gp|sp|fp|ra)(?=[\s,)?;:]|$)/;
+
 function findUnclosedDollar(text: string, prot: [number, number][]): TypedMathSpan[] {
   if (!text.includes("$")) return [];
   const out: TypedMathSpan[] = [];
@@ -664,6 +668,8 @@ function findUnclosedDollar(text: string, prot: [number, number][]): TypedMathSp
         tail &&
         tail.length <= 40 &&
         !/^[\s\d]/.test(tail) &&
+        // Item 687: `jr $ra` — a MIPS register, not a formula left open.
+        !MIPS_REG.test("$" + tail) &&
         words.every((w) => w.startsWith("\\") || FUNCS.has(w)) &&
         !prot.some(([a, b]) => a <= at && at < b && !text.slice(a, b).startsWith("$")) &&
         rendersAsTex(tail)
