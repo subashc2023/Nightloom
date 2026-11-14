@@ -1170,6 +1170,35 @@ let turnTarget: { chat: string; project: string | null } | null = null;
  *  review's 535-1): set and read with `turnTarget`. `busyHere` true: the
  *  chat is still on screen but a turn started in it meanwhile. */
 let turnElsewhere: ((busyHere: boolean) => Promise<unknown>) | null = null;
+/** Item 691: the edited message `sendEdit` draws in the fork the moment it
+ *  opens — at `at`, the fork's last event — so the chat is never blank
+ *  while the send is still on its way to its own push (Claude Code's
+ *  `layersBeforeTurn` may reconnect a cold chat first: seconds). A fork of
+ *  "before message 1" has no message at all, and App.svelte drew the new
+ *  chat page for that gap. The send's push takes it (`pushSent`); a send
+ *  that never pushed has it taken back by `sendEdit`. */
+let editEcho: { chat: string; at: number; text: string } | null = null;
+/** True when the open chat's last event is still the echo `echo`. */
+function echoStands(echo: { chat: string; at: number; text: string }): boolean {
+  const there = app.events[echo.at];
+  return (
+    echo.chat === app.activeSessionId &&
+    echo.at === app.events.length - 1 &&
+    there?.event === "user_message" &&
+    there.text === echo.text
+  );
+}
+/** Draw the message a send is starting: in the echo's place when it is
+ *  this send's own (same chat, still last, same words), else at the end. */
+function pushSent(message: SessionEvent & { event: "user_message" }): void {
+  const echo = editEcho;
+  editEcho = null;
+  if (echo !== null && message.text === echo.text && echoStands(echo)) {
+    app.events[echo.at] = message;
+    return;
+  }
+  app.events.push(message);
+}
 /** The chats a turn is starting in on screen (535f, 535-1): from the top
  *  of `sendAgent` — which `sendInChat`'s on-screen path reaches with no
  *  await between — until the turn is the window's (`app.busy`) or has
@@ -2125,7 +2154,7 @@ export async function send(
   // The model and engine this turn runs on (backlog 205).
   const choice = choiceOf(app.draft);
   app.error = null;
-  app.events.push({
+  pushSent({
     event: "user_message",
     text,
     // Mirror the backend's omission rather than logging an empty array, so the
@@ -2254,7 +2283,7 @@ async function sendAgent(
   // (nightshift backlog 094).
   const pendingKey = pendingChatKey();
   app.error = null;
-  app.events.push({
+  pushSent({
     event: "user_message",
     text,
     // Same omission as `send`: the backend logs no key for an empty list,
@@ -3057,7 +3086,22 @@ export async function sendEdit(
       sendInFork(fork, mark.project, text, images, documents, files);
       return true;
     }
-    app.events = res.events;
+    // Item 691: the fork opens with the edited message already in its
+    // place — as the send will draw it — so the chat stays drawn (a fork of
+    // "before message 1" is otherwise blank, the new chat page, until the
+    // send's own push after its reconnect). The send takes it (`pushSent`).
+    app.events = [
+      ...res.events,
+      {
+        event: "user_message",
+        text,
+        ...(images.length > 0 ? { images } : {}),
+        ...(documents.length > 0 ? { documents } : {}),
+        at: new Date().toISOString(),
+        ...(files.length > 0 ? { sending_files: files.map((f) => f.name) } : {}),
+      },
+    ];
+    editEcho = { chat: res.session, at: res.events.length, text };
     // The fork starts with no asides; the parent keeps its own (backlog 203).
     switchAside(res.session);
     app.activeSessionId = res.session;
@@ -3078,6 +3122,17 @@ export async function sendEdit(
       else sendInFork(fork, mark.project, text, images, documents, files);
     };
   }
-  await send(text, images, documents, null, files);
+  const echo = editEcho;
+  try {
+    await send(text, images, documents, null, files);
+  } finally {
+    // A send that never pushed (its guard, a failed layer step, the words
+    // queued or sent off screen): the echo is not a message the model got,
+    // so it goes — the words are wherever that path put them.
+    if (echo !== null && editEcho === echo) {
+      editEcho = null;
+      if (echoStands(echo)) app.events.splice(echo.at, 1);
+    }
+  }
   return true;
 }
