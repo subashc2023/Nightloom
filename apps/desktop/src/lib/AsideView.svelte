@@ -22,6 +22,9 @@
   // `AsideThread` and this view's own scroller (blocker 1989).
   import AsideTranscript from "./AsideTranscript.svelte";
   import { classic } from "./layout.svelte";
+  // Item 685: the header card folds to one line down the thread.
+  import { foldAnimates, nextFold } from "./asideHeadFold";
+  import { reducedMotion } from "./sendMotion";
 
   /**
    * An aside thread as a tab of its own (nightshift backlog 130 part 2,
@@ -108,6 +111,57 @@
     });
   });
 
+  // Item 685 (his "when I scroll down, it automatically has an animation
+  // to become like a one-line thing … once I scroll up to the top … re-get
+  // into this format"): Jarvis's header card folds to a strip — the title,
+  // Fold into thread, Close — past 48 px down the thread and unfolds under
+  // 16 px (`asideHeadFold.ts`). The band in the layout is the strip's
+  // height and the full card lies over the thread's head, whose room
+  // (`room` below, the transcript's `lead`) is the card's extra height, so
+  // a fold moves nothing in the thread. The fold is read from the
+  // scroller's own place, so on coming back it follows the place put back.
+  let folded = $state(false);
+  let animate = $state(false);
+  let headFull = $state(0);
+  let fullEl = $state<HTMLDivElement | null>(null);
+  let bodyEl = $state<HTMLDivElement | null>(null);
+  let lastInput = -Infinity;
+  let held = false;
+  // Renaming keeps the full card, where the name's field is.
+  const showFolded = $derived(folded && !naming);
+  function readFold(top: number): void {
+    const next = nextFold(folded, top);
+    if (next === folded) return;
+    animate = foldAnimates(reducedMotion(), held, performance.now() - lastInput);
+    folded = next;
+  }
+  function bodyScrolled(e: Event): void {
+    const t = e.target;
+    if (t instanceof HTMLElement && t.classList.contains("transcript")) readFold(t.scrollTop);
+  }
+  const touched = () => (lastInput = performance.now());
+  // The card's full height, for its room in the thread and its unfold.
+  $effect(() => {
+    const el = fullEl;
+    if (!el) return;
+    headFull = el.offsetHeight;
+    const ro = new ResizeObserver(() => (headFull = el.offsetHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  });
+  // The place put back (another thread, or the tab shown again): the fold
+  // follows it at once, without the animation.
+  $effect(() => {
+    void (aside?.uid ?? aside?.id);
+    const body = bodyEl;
+    if (!body) return;
+    const id = requestAnimationFrame(() => {
+      const t = body.querySelector<HTMLElement>(".transcript");
+      if (t) untrack(() => readFold(t.scrollTop));
+    });
+    return () => cancelAnimationFrame(id);
+  });
+
   // ~~The tab's own box (`AsideBox`, `asideComposer`), `submitAsk` /
   // `submitFollowUp`~~ — the chat's composer since backlog 283 (`Composer`
   // with `aside`): the same box for the first question and every
@@ -115,7 +169,8 @@
   // chat that is not the open one and says to open it, as before.
 </script>
 
-<div class="aside-view" role="note" aria-label="aside, not part of the chat">
+<svelte:window onpointerup={() => (held = false)} onpointercancel={() => (held = false)} />
+<div class="aside-view" role="note" aria-label="aside, not part of the chat" style:--head-full={`${headFull}px`}>
   {#if classic()}
     <!-- Classic keeps round 1's Kicker strip as built (item 673 round 2). -->
     <!-- Item 673 (pick A, Kicker): the aside's own strip under the top bar —
@@ -188,8 +243,15 @@
          the title (wraps on whole words), the quoted passage (two lines; a
          click shows all of it), then the composer's row: the about pill,
          Fold into thread with the Ask-aside coil, Close. -->
-    <header class="aside-head twin">
-      <div class="aside-head-in">
+    <!-- Item 685: folded, the card is one line (the strip below); the band
+         keeps the strip's height in the layout either way. -->
+    <header class="aside-head twin" class:folded={showFolded} class:instant={!animate}>
+      <div
+        class="aside-head-in"
+        style:height={showFolded ? "var(--strip-h)" : headFull ? `${headFull}px` : null}
+      >
+       <div class="aside-head-clip">
+        <div class="aside-head-full" bind:this={fullEl} inert={showFolded} aria-hidden={showFolded}>
         <div class="aside-head-row">
           <span class="aside-kick">Aside</span>
           <span class="aside-view-of" use:tip={`An aside of “${chatName}”: answered from that chat's context, never part of it`}
@@ -258,9 +320,36 @@
             >
           {/if}
         </div>
+        </div>
+        <!-- Item 685: the one line — the aside's title, then Fold into
+             thread and Close as compact buttons. -->
+        <div class="aside-head-strip" inert={!showFolded} aria-hidden={!showFolded}>
+          <span class="aside-strip-mark" aria-hidden="true"></span>
+          {#if aside}
+            <span class="aside-strip-title" class:unnamed={!aside.name} use:tip={`${asideLabel(aside, 120)} — an aside of “${chatName}”`}
+              >{asideLabel(aside, 120)}</span
+            >
+          {/if}
+          <span class="spacer"></span>
+          {#if aside}
+            <AsideFoldPanel {aside} part="button" {open} twin />
+            <button
+              class="ns-btn ghost small aside-view-close"
+              use:tip={asking
+                ? "Stop the answer, move this aside to the chat's Past list, and go back to the chat"
+                : "Close this aside — it moves to the chat's Past list, reopenable — and go back to the chat"}
+              onclick={() => closeAsideToChat(session, aside, myTab)}><Icon name="x" size={12} /> Close</button
+            >
+          {/if}
+        </div>
+       </div>
       </div>
     </header>
   {/if}
+  {#snippet room()}
+    <!-- Item 685: the room the full card takes over the thread's head. -->
+    <div class="aside-head-room" aria-hidden="true"></div>
+  {/snippet}
   {#snippet quoted()}
     {#if aside?.quote}
       <blockquote class="aside-view-quote" use:tip={"The passage he highlighted, sent with the question exactly as selected"}>{@html renderReply(aside.quote.text)}</blockquote>
@@ -292,11 +381,26 @@
     <!-- Item 674: the chat's own transcript — its dot ground, rail, ⌄,
          reading place, tools — given this thread; the frame is positioned
          as the chat's `.content` is, for the ground's canvas and the ⌄. -->
-    <div class="aside-view-body">
+    <!-- Item 685: the fold reads the thread's scroller (a scroll does not
+         bubble, so it is caught on its way down) and his input, to animate
+         only what he moved. -->
+    <div
+      class="aside-view-body"
+      bind:this={bodyEl}
+      onscrollcapture={bodyScrolled}
+      onwheelcapture={touched}
+      ontouchmovecapture={touched}
+      onkeydowncapture={touched}
+      onpointerdowncapture={() => {
+        touched();
+        held = true;
+      }}
+    >
       <!-- Item 673 C1: the quoted passage is in the header card now, so the
-           transcript gets no `lead` (Classic still leads with it). -->
+           transcript gets no quote as its `lead` (Classic still leads with
+           it); since item 685 its lead is the card's room. -->
       {#key aside.uid ?? aside.id}
-        <AsideTranscript {aside} {open} owner={session} frame="full" scrollKey={asideScrollKey(session, aside.id)} />
+        <AsideTranscript {aside} {open} owner={session} frame="full" scrollKey={asideScrollKey(session, aside.id)} lead={room} />
       {/key}
     </div>
   {/if}
@@ -329,6 +433,8 @@
     --aside-edge: color-mix(in srgb, var(--accent) 50%, var(--line2));
     --aside-well: color-mix(in srgb, var(--sheet) 94%, var(--accent));
     --user-bubble-bg: color-mix(in srgb, var(--aside-tint) 86%, var(--ink));
+    /* Item 685: the folded header's one line (inside its border). */
+    --strip-h: 38px;
     background: var(--aside-tint);
     box-shadow: inset 3px 0 0 var(--aside-edge);
     flex: 1;
@@ -533,17 +639,158 @@
     background: transparent;
     box-shadow: none;
     border-bottom: none;
-    /* 12 px under the card: room for the brackets (7 px outside it). */
-    padding: 18px 20px 12px;
+    /* ~~12 px under the card: room for the brackets (7 px outside it).
+       `padding: 18px 20px 12px`~~ — item 685: the band in the layout is
+       the folded strip's (8 px over and under it, room for the brackets);
+       the full card lies over the thread's head from 18 px down, 12 px
+       above the thread's room's end (`.aside-head-room`). */
+    padding: 0;
+    position: relative;
+    z-index: 3;
+    height: calc(var(--strip-h) + 18px);
+  }
+  /* What the card covers: the aside's ground, so the thread scrolling
+     under the card's margins never shows through. Clear of the accent edge
+     (left) and of the scrollbar (right). */
+  .aside-head.twin::after {
+    content: "";
+    position: absolute;
+    z-index: -1;
+    top: 0;
+    left: 3px;
+    right: 12px;
+    height: calc(var(--head-full) + 32px);
+    background: var(--aside-tint);
+    pointer-events: none;
+    transition: height 240ms cubic-bezier(0.2, 0.7, 0.2, 1);
+  }
+  .aside-head.twin.folded::after {
+    height: 100%;
   }
   .twin .aside-head-in {
-    position: relative;
-    gap: 8px;
-    padding: 13px 14px 12px;
+    position: absolute;
+    top: 18px;
+    left: 20px;
+    right: 20px;
+    margin: 0 auto;
+    gap: 0;
     background: var(--raised);
     border: 1px solid var(--line2);
     border-radius: var(--r2);
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    transition:
+      top 240ms cubic-bezier(0.2, 0.7, 0.2, 1),
+      height 240ms cubic-bezier(0.2, 0.7, 0.2, 1);
+  }
+  .twin.folded .aside-head-in {
+    top: 8px;
+  }
+  .aside-head-clip {
+    position: relative;
+    height: 100%;
+    overflow: hidden;
+    border-radius: inherit;
+  }
+  /* The full card's content (673's padding, 13/14/12). */
+  .aside-head-full {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 13px 14px 12px;
+    transition: opacity 160ms ease 80ms;
+  }
+  .twin.folded .aside-head-full {
+    opacity: 0;
+    transition-delay: 0ms;
+  }
+  /* Item 685: the one line, over the card's top; it fades in as the card
+     closes on it, and out before the card opens again. */
+  .aside-head-strip {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: var(--strip-h);
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 6px 0 14px;
+    opacity: 0;
+    transition: opacity 140ms ease;
+  }
+  .twin.folded .aside-head-strip {
+    opacity: 1;
+    transition-delay: 90ms;
+  }
+  .aside-strip-mark {
+    flex: none;
+    width: 6px;
+    height: 6px;
+    margin-right: 2px;
+    transform: rotate(45deg);
+    background: var(--accent);
+    box-shadow: var(--glow-accent, none);
+  }
+  .aside-strip-title {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--ink);
+  }
+  .aside-strip-title.unnamed {
+    color: var(--ink2);
+    font-weight: 500;
+  }
+  .aside-head-strip .spacer {
+    flex: 1 1 0;
+    min-width: 4px;
+  }
+  .aside-head-strip > :global(.ns-btn) {
+    flex-shrink: 0;
+  }
+  /* Fold, compact: the full card's button (below) a size down. */
+  .aside-head-strip :global(.ns-btn.aside-fold) {
+    min-height: 26px;
+    padding: 0 9px;
+    gap: 5px;
+    font-size: 12px;
+    background: var(--well);
+    border-color: var(--line2);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    color: var(--ink);
+  }
+  .aside-head-strip :global(.ns-btn.aside-fold:hover:not(:disabled)) {
+    background: var(--well2);
+    border-color: var(--dim);
+  }
+  /* The room the full card takes over the thread's head: the card's extra
+     height over the strip's band (full band = card + 32 px; the strip's =
+     strip + 18 px), less the column's gap after it — so the thread starts
+     where it did under 673's card, and a fold moves none of it. */
+  .aside-head-room {
+    flex: none;
+    height: max(0px, calc(var(--head-full) - var(--strip-h) + 14px));
+    margin-bottom: -26px;
+  }
+  /* A place put back swaps at once; so does all of it under Reduce motion. */
+  .aside-head.instant::after,
+  .aside-head.instant .aside-head-in,
+  .aside-head.instant .aside-head-full,
+  .aside-head.instant .aside-head-strip {
+    transition: none;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .aside-head.twin::after,
+    .twin .aside-head-in,
+    .aside-head-full,
+    .aside-head-strip {
+      transition: none;
+    }
   }
   /* The composer card's brackets, verbatim (Composer.svelte ~4657):
      transparent in Calm (`--bracket`). */

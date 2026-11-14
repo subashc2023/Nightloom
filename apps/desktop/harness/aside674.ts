@@ -333,6 +333,53 @@ async function drive(): Promise<void> {
       await settle(600);
       say(`after the drop: aside box chips ${readDraft(k).attachments.length} (${readDraft(k).attachments.map((x) => x.name).join(", ")}) · chat box chips ${readDraft("chat-a").attachments.length}`);
     }
+  } else if (act === "fold" || act === "at") {
+    // Item 685: the header card folds down the thread. `do=at&at=<px>`
+    // leaves the thread there (for a shot); `do=fold` measures that the
+    // thread's first visible line under the band does not move when the
+    // card folds and unfolds, and the hysteresis between 16 and 48 px.
+    const head = $(".aside-head")!;
+    const band = () => head.getBoundingClientRect().bottom;
+    const lines = () => $$(".user-turn, .assistant p, .assistant li", t);
+    const firstBelow = () => lines().find((el) => el.getBoundingClientRect().bottom > band() + 2) ?? null;
+    const state = () =>
+      `${head.classList.contains("folded") ? "folded" : "full"} (card ${Math.round($(".aside-head-in", head)!.getBoundingClientRect().height)} px, band ${Math.round(head.getBoundingClientRect().height)} px)`;
+    if (act === "at") {
+      t.scrollTop = Number(q.get("at") ?? 200);
+      await settle(500);
+      say(`at ${Math.round(t.scrollTop)}: ${state()}`);
+    } else {
+      const to = (px: number) => {
+        t.scrollTop = px;
+        // Read in the same task: the scroll has moved the thread, the fold
+        // (its scroll event) has not run yet.
+        const el = firstBelow();
+        return { el, y: el?.getBoundingClientRect().top ?? NaN };
+      };
+      const after = async (el: HTMLElement | null) => {
+        await settle(500);
+        return el?.getBoundingClientRect().top ?? NaN;
+      };
+      say(`start: scroll ${Math.round(t.scrollTop)} · ${state()}`);
+      const d = to(120);
+      const y1 = await after(d.el);
+      say(
+        `fold at 120: first line under the band y ${d.y.toFixed(1)} before the fold → ${y1.toFixed(1)} after (Δ ${(y1 - d.y).toFixed(1)}) · ${state()} · "${d.el?.textContent?.trim().slice(0, 40)}"`,
+      );
+      t.scrollTop = 30;
+      await settle(300);
+      say(`back to 30 (between 16 and 48): ${state()}`);
+      const u = to(8);
+      const y2 = await after(u.el);
+      say(`unfold at 8: first line under the band y ${u.y.toFixed(1)} → ${y2.toFixed(1)} (Δ ${(y2 - u.y).toFixed(1)}) · ${state()}`);
+      t.scrollTop = 40;
+      await settle(300);
+      say(`down to 40 (between): ${state()}`);
+      t.scrollTop = 0;
+      await settle(500);
+      const first = $(".user-turn", t)!.getBoundingClientRect().top - $(".aside-head-in", head)!.getBoundingClientRect().bottom;
+      say(`at the top: ${state()} · the first question starts ${first.toFixed(1)} px under the full card's edge`);
+    }
   } else if (act === "shrink") {
     // The card's room shrinks (a shorter window, another card above the
     // composer): a view at the foot stays at the foot (item 233).

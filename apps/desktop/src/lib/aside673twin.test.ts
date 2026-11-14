@@ -20,7 +20,8 @@ const rule = (sel: string): string => {
 describe("673 C1 Twin: the aside tab's header card", () => {
   it("Classic keeps the Kicker strip; Filament draws the twin card", () => {
     const c = viewSrc.indexOf("{#if classic()}\n    <!-- Classic keeps round 1's Kicker strip");
-    const t = viewSrc.indexOf('<header class="aside-head twin">');
+    // Item 685: the header carries its fold classes after the class.
+    const t = viewSrc.indexOf('<header class="aside-head twin"');
     expect(c).toBeGreaterThan(-1);
     expect(t).toBeGreaterThan(c);
     expect(viewSrc.slice(c, t)).toMatch(/<header class="aside-head">/);
@@ -28,7 +29,8 @@ describe("673 C1 Twin: the aside tab's header card", () => {
 
   it("the card is the composer card's box", () => {
     const r = rule(".twin .aside-head-in");
-    expect(r).toMatch(/padding: 13px 14px 12px;/);
+    // Item 685: the padding moved to the full card's content (the card holds it and the strip).
+    expect(rule(".aside-head-full")).toMatch(/padding: 13px 14px 12px;/);
     expect(r).toMatch(/background: var\(--raised\);/);
     expect(r).toMatch(/border: 1px solid var\(--line2\);/);
     expect(r).toMatch(/border-radius: var\(--r2\);/);
@@ -36,12 +38,14 @@ describe("673 C1 Twin: the aside tab's header card", () => {
     expect(rule(".twin .aside-head-in::before")).toMatch(/--tk: var\(--bracket, transparent\);/);
   });
 
-  it("the quote is in the card, two lines until clicked; the Filament transcript has no lead", () => {
-    const t = viewSrc.slice(viewSrc.indexOf('<header class="aside-head twin">'), viewSrc.indexOf("</header>", viewSrc.indexOf('<header class="aside-head twin">')));
+  it("the quote is in the card, two lines until clicked; the Filament transcript's lead is not the quote", () => {
+    const t = viewSrc.slice(viewSrc.indexOf('<header class="aside-head twin"'), viewSrc.indexOf("</header>", viewSrc.indexOf('<header class="aside-head twin"')));
     expect(t).toMatch(/class="aside-head-quote"[\s\S]*class:open=\{quoteOpen\}/);
     expect(rule(".aside-head-quote")).toMatch(/-webkit-line-clamp: 2;/);
     expect(viewSrc).toMatch(/<AsideTranscript \{aside\} \{open\} owner=\{session\} frame="full" scrollKey=\{[^}]*\}[^/]*\/>/);
-    expect(viewSrc).not.toMatch(/<AsideTranscript[^>]*lead=/);
+    // ~~no `lead=` at all~~ — item 685: the lead is the card's room, never the quote.
+    expect(viewSrc).not.toMatch(/<AsideTranscript[^>]*lead=\{quoted\}/);
+    expect(viewSrc).toMatch(/<AsideTranscript[^>]*lead=\{room\}/);
     // Classic still leads its own thread with the passage.
     expect(viewSrc).toMatch(/\{@render quoted\(\)\}/);
   });
