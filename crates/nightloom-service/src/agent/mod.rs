@@ -2296,6 +2296,9 @@ impl ClaudeCodeAgent {
         // Why the read loop ended early, when it did (backlog 332).
         let mut read_error: Option<String> = None;
         let mut any_line = false;
+        // Main-thread prose drawn this turn (item 723): a reply that ends
+        // with none, but a `result` text, draws that text at the end.
+        let mut main_text = false;
         // A deferred resume with nothing written (374): if it prints
         // nothing at all, the session held no deferred call — close the
         // feed so the CLI exits rather than waiting on stdin for ever.
@@ -2575,6 +2578,9 @@ impl ClaudeCodeAgent {
                         {
                             stopped = Some(name.clone());
                         }
+                        if matches!(&event, TurnEvent::TextDelta { text } if !text.is_empty()) {
+                            main_text = true;
+                        }
                         if !text_seen && matches!(event, TurnEvent::TextDelta { .. }) {
                             text_seen = true;
                             if let Some(t) = &timing {
@@ -2709,6 +2715,47 @@ impl ClaudeCodeAgent {
             outcome.notices.push(format!("cut off — {reason}"));
             outcome.cut_off = Some(reason);
         }
+        // Item 723: a reply that arrived whole — the CLI's streamed request
+        // failed and it retried without streaming — is drawn from its
+        // `assistant` line by the translator, and said once. The backstop:
+        // a turn that drew no prose but whose `result` names a reply draws
+        // that, so an "ok" turn never ends with nothing on screen.
+        let plain_end = outcome.result_seen
+            && !outcome.is_error
+            && outcome.api_error.is_none()
+            && outcome.limit.is_none()
+            && outcome.deferred.is_none();
+        if outcome.whole_rounds > 0 {
+            outcome.notices.push(WHOLE_REPLY_NOTICE.into());
+        }
+        if plain_end && !main_text && !outcome.text.trim().is_empty() {
+            on_event(TurnEvent::TextDelta {
+                text: outcome.text.clone(),
+            });
+            outcome.notices.push(RESULT_ONLY_NOTICE.into());
+        }
+        // The process line on the timing log (item 723): whether the
+        // `result` came, how many streamed events and the exit. Never
+        // stderr (blocker 2006): the timing log carries no paths; the
+        // turn's error message still shows it.
+        if let Some(t) = &timing {
+            t.set_process(process_note(
+                outcome.result_seen,
+                outcome.stream_events,
+                &status.to_string(),
+            ));
+        }
+        // A process that printed nothing at all for a message (item 723)
+        // is a failure whatever its exit: an "ok" with nothing drawn and
+        // nothing said is what he saw. A deferred resume printing nothing
+        // is the session holding no deferred call (374), and is not this.
+        if !any_line && input.is_some() {
+            return Err(AgentError::Failed {
+                binary: spec.binary.clone(),
+                status: format!("{status}, and printed nothing"),
+                stderr,
+            });
+        }
         // An API error the CLI ended the turn with (backlog 202) is said
         // out loud; the stop reason in the log carries it too.
         if let Some(e) = &outcome.api_error
@@ -2761,6 +2808,26 @@ fn delivered_after(
 /// completion".
 fn is_aborted(content: &str, is_error: bool) -> bool {
     is_error && content.to_ascii_lowercase().contains("aborted")
+}
+
+/// The notice on a reply that arrived whole rather than streamed (item 723).
+pub const WHOLE_REPLY_NOTICE: &str = "reply arrived in one piece — Claude Code's streamed request failed and it retried without streaming";
+
+/// The notice on a reply drawn from the `result` line alone (item 723):
+/// nothing of it arrived as prose before the turn ended.
+pub const RESULT_ONLY_NOTICE: &str =
+    "reply drawn from Claude Code's final result — none of it arrived while it ran";
+
+/// The timing line's process part (item 723): `result seen` or `no
+/// result`, the streamed events and the exit. Stderr stays out (blocker
+/// 2006): it may hold a path, which the timing log promises never to carry.
+fn process_note(result_seen: bool, events: u32, status: &str) -> String {
+    let result = if result_seen {
+        "result seen"
+    } else {
+        "no result"
+    };
+    format!("{result}, {events} stream events, {status}")
 }
 
 /// Why a reply ended before its `result` line (backlog 332), in his words.
@@ -5518,6 +5585,103 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns"
         assert!(outcome.result_seen);
         assert!(outcome.cut_off.is_none());
         assert_eq!(outcome.usage.output_tokens, 4);
+    }
+
+    /// Item 723 with a stand-in for the CLI's non-streaming fallback (his
+    /// chat 8e2f20a1): `init`, a retry, the reply as one whole `assistant`
+    /// line with no `stream_event`, the `result`. The reply is drawn, once,
+    /// and the turn says it came in one piece; the timing line names the
+    /// result, the zero events and the exit.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_reply_that_came_whole_is_drawn_and_said() {
+        use crate::turn_timing::{self, TurnTiming};
+        let dir = std::env::temp_dir().join(format!("nightloom-723a-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = AgentSpec::new(&dir);
+        s.binary = stand_in(
+            &dir,
+            r##"printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"m","permissionMode":"auto","session_id":"w-1"}'
+printf '%s\n' '{"type":"system","subtype":"api_retry","attempt":1,"max_retries":10,"retry_delay_ms":500,"error_status":529,"error":"overloaded"}'
+printf '%s\n' '{"type":"assistant","message":{"id":"msg_w","model":"m","role":"assistant","content":[{"type":"text","text":"ok"}]},"parent_tool_use_id":null,"session_id":"w-1"}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"ok","session_id":"w-1","stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":4}}'
+"##,
+        );
+        let mut agent = ClaudeCodeAgent::new(s);
+        let timing = TurnTiming::begin(turn_timing::SERVE, None, None);
+        agent.set_timing(Some(timing.clone()));
+        let cancel = CancellationToken::new();
+        let mut text = String::new();
+        let outcome = agent
+            .run_turn("go", &cancel, &mut |e| {
+                if let TurnEvent::TextDelta { text: t } = e {
+                    text.push_str(&t);
+                }
+            })
+            .await
+            .unwrap();
+        assert_eq!(text, "ok");
+        assert!(outcome.result_seen);
+        assert_eq!(outcome.stream_events, 0);
+        assert!(
+            outcome.notices.iter().any(|n| n == WHOLE_REPLY_NOTICE),
+            "{:?}",
+            outcome.notices
+        );
+        assert!(!outcome.notices.iter().any(|n| n == RESULT_ONLY_NOTICE));
+        let note = timing.stages().process.expect("the process part");
+        assert!(
+            note.starts_with("result seen, 0 stream events, exit"),
+            "{note}"
+        );
+    }
+
+    /// Item 723's backstop: a turn that drew no prose at all but whose
+    /// `result` names a reply draws the `result` text, and says so.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_reply_only_in_the_result_is_drawn() {
+        let dir = std::env::temp_dir().join(format!("nightloom-723b-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = AgentSpec::new(&dir);
+        s.binary = stand_in(
+            &dir,
+            r##"printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"m","permissionMode":"auto","session_id":"w-2"}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"only here","session_id":"w-2","stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":4}}'
+"##,
+        );
+        let agent = ClaudeCodeAgent::new(s);
+        let cancel = CancellationToken::new();
+        let mut text = String::new();
+        let outcome = agent
+            .run_turn("go", &cancel, &mut |e| {
+                if let TurnEvent::TextDelta { text: t } = e {
+                    text.push_str(&t);
+                }
+            })
+            .await
+            .unwrap();
+        assert_eq!(text, "only here");
+        assert!(outcome.notices.iter().any(|n| n == RESULT_ONLY_NOTICE));
+    }
+
+    /// Item 723: a process that prints nothing for a message and exits 0
+    /// is a failure with its stderr, never a silent "ok".
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_process_that_prints_nothing_is_an_error() {
+        let dir = std::env::temp_dir().join(format!("nightloom-723c-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = AgentSpec::new(&dir);
+        s.binary = stand_in(&dir, "read -r line\necho 'went quiet' >&2\nexit 0\n");
+        let agent = ClaudeCodeAgent::new(s);
+        let cancel = CancellationToken::new();
+        let err = agent
+            .run_turn("go", &cancel, &mut |_| {})
+            .await
+            .expect_err("printed nothing");
+        let msg = err.to_string();
+        assert!(msg.contains("printed nothing"), "{msg}");
     }
 
     /// A turn the API's content filter stopped (backlog 202; the synthetic

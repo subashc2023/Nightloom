@@ -927,7 +927,9 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns"
             assert!(l.contains("sent -") && l.contains("painted -"), "{l}");
             assert!(l.trim_end().ends_with("; ok"), "{l}");
             // Nothing was warmed in this test: each turn spawned its own.
-            assert!(l.contains("ms; spawn cold; ok"), "{l}");
+            assert!(l.contains("ms; spawn cold; "), "{l}");
+            // Item 723: how the process ended, before the outcome.
+            assert!(l.contains("; result seen, 1 stream events, exit "), "{l}");
         }
         for s in &stages {
             let order = [
