@@ -1865,7 +1865,14 @@
                   role="radio"
                   aria-checked={stopPref.shape === sh.id}
                   onclick={() => setStopShape(sh.id)}
-                ><span class="stop-swatch {sh.id}" aria-hidden="true">{#if sh.id === "labelled"}<i></i>Stop{:else}<i></i>{/if}</span>{sh.name}</button>
+                ><!-- Item 716 part 4: the composer's own Stop, its markup under its own rules
+                     (src/composerControls.css), at its real size; ~~a small drawing (stop-swatch)~~.
+                     A span inside the choice button; pointing at it runs its hover as in a chat. -->
+                  <span class="composer stop-pv" aria-hidden="true"
+                    ><span class="ns-btn danger send stop shape-{sh.id}"
+                      ><span class="stop-size">Send</span><span class="stop-ico"><Icon name="stop" size={sh.id === "wide" ? 16 : 12} />{#if sh.id === "labelled"}<span class="stop-word">Stop</span>{/if}</span></span
+                    ></span
+                  >{sh.name}</button>
               {/each}
             </div>
           </div>
@@ -5007,40 +5014,13 @@
   }
   /* Backlog 412: the whole card picks, not only its name and blurb — the
      pick's ::after stretches over the stage and the foot; Preview sits above it. */
-  /* Item 411: each Stop shape drawn small in its own choice. */
-  .stop-swatch {
+  /* Item 411: each Stop shape ~~drawn small~~ in its own choice — since item 716
+     part 4 the composer's real Stop (src/composerControls.css draws it; the
+     stop-swatch drawing and its rules are gone), at its real size. */
+  .stop-pv {
     display: inline-flex;
     align-items: center;
-    justify-content: center;
-    gap: 3px;
-    height: 16px;
-    min-width: 16px;
-    margin-right: 6px;
-    vertical-align: -3px;
-    border: 1px solid #7a3d3f;
-    border-radius: 3px;
-    color: var(--failed);
-    font-size: 9px;
-    box-sizing: border-box;
-  }
-  .stop-swatch i {
-    width: 6px;
-    height: 6px;
-    border-radius: 1px;
-    background: currentColor;
-  }
-  .stop-swatch.square,
-  .stop-swatch.round {
-    background: color-mix(in srgb, var(--failed) 16%, var(--sheet));
-  }
-  .stop-swatch.round {
-    border-radius: 50%;
-  }
-  .stop-swatch.labelled {
-    padding: 0 4px;
-  }
-  .stop-swatch.wide {
-    width: 32px;
+    margin-right: 8px;
   }
   /* Item 576 (his "labels are kinda screwed up here", 2026-11-10): the
      swatch sat on the text's baseline nudged by `vertical-align: -3px`,
@@ -5050,9 +5030,10 @@
   .seg button.stop-choice {
     display: inline-flex;
     align-items: center;
-  }
-  .stop-choice .stop-swatch {
-    vertical-align: middle;
+    /* Item 716 part 4: the real Stop is 32 px high (Classic ~31), past Jarvis's 30-px choice;
+       the choice grows round it, a 4-px margin on three sides. */
+    height: auto;
+    padding: 4px 13px 4px 4px;
   }
   .anim-pick::after {
     content: "";
