@@ -51,7 +51,7 @@
   } from "./cache";
   import { cacheEstimate, lastReply, ratesFromPrice } from "./cacheCost";
   import { cacheRatesOf, loadCacheRates } from "./cacheRates.svelte";
-  import { holdPress, isKeeping, isOn, switchLabel, switchTitle, touchedUntil } from "./keepWarm";
+  import { handedOffOff, holdPress, isKeeping, isOn, switchLabel, switchTitle, touchedUntil } from "./keepWarm";
   import { holdKeepWarm, keepWarm, loadKeepWarm, setKeepWarm } from "./keepWarm.svelte";
   import KeepWarmHold from "./KeepWarmHold.svelte";
   import { HIDDEN_THINKING_TITLE, thinkingToggleDead } from "./activity";
@@ -3884,7 +3884,8 @@
            (blocker 1844): with the default on, the switch covers it. A chat
            already in that mode reads "On until your next message" and ends
            at his send as before. -->
-      {#if kwChat && ((isOn(kw) && kw?.chosen !== false) || cache?.ttl === "1h")}
+      <!-- Item 728: a chat whose hand-off switched it off says so, cache or not. -->
+      {#if kwChat && ((isOn(kw) && kw?.chosen !== false) || cache?.ttl === "1h" || handedOffOff(kw))}
         <button
           class="ns-chip bottom-toggle keep-warm"
           class:on={isOn(kw)}
@@ -4454,6 +4455,11 @@
   .bottom-toggle.keep-warm {
     text-transform: none;
     font-variant-numeric: tabular-nums;
+    /* Item 728: a reason longer than a narrow row ("off — chat handed
+       off" at 390 wide) wraps inside the chip, never runs off its left. */
+    max-width: 100%;
+    white-space: normal;
+    text-align: left;
   }
   /* Item 643: a held chat says so on the switch ("· 24 h"). */
   .keep-warm-hold {

@@ -6,7 +6,8 @@
  */
 
 export type KeepWarmMode = "off" | "on" | "once";
-export type KeepWarmWhy = "off" | "noreply" | "small" | "notonehour" | "cap" | "cold" | "missed" | "busy";
+/** `handedoff` (item 728): off because the chat was handed off, once. */
+export type KeepWarmWhy = "off" | "handedoff" | "noreply" | "small" | "notonehour" | "cap" | "cold" | "missed" | "busy";
 
 export interface KeepWarmStatus {
   chat: string;
@@ -56,6 +57,15 @@ function span(ms: number): string {
 
 const k = (n: number): string => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
 
+/** Item 728: the words for a switch the chat's hand-off turned off. */
+const HANDED_OFF = "off — chat handed off";
+
+/** Item 728: the switch is off because the chat was handed off (the
+ *  backend switches it off once at the hand-off; his on clears it). */
+export function handedOffOff(s: KeepWarmStatus | null | undefined): boolean {
+  return !!s && s.mode === "off" && s.why === "handedoff";
+}
+
 /** Whether the switch is on in either form. */
 export function isOn(s: KeepWarmStatus | null | undefined): boolean {
   return !!s && s.mode !== "off";
@@ -89,6 +99,7 @@ export function idleWords(s: KeepWarmStatus): string | null {
 /** The switch's label: `keep warm` off, `warm until 11:40 PM` while it
  *  runs, `keep warm · <why not>` on but idle. */
 export function switchLabel(s: KeepWarmStatus | null | undefined, now: number): string {
+  if (handedOffOff(s)) return `keep warm · ${HANDED_OFF}`;
   if (!s || s.mode === "off") return "keep warm";
   if (isKeeping(s, now)) return `warm until ${clockTime(s.warm_until_ms as number)}`;
   const idle = idleWords(s);
@@ -110,6 +121,7 @@ export function spentWords(s: KeepWarmStatus): string {
  *  spend, here~~ (cut 2026-11-15; `spentWords` and `holdWords` stay for the
  *  other places that say them). */
 export function switchTitle(s: KeepWarmStatus | null | undefined, now: number): string {
+  if (handedOffOff(s)) return `Keep warm ${HANDED_OFF}. Click to switch on;${HOLD_HINT}`;
   if (!s || s.mode === "off") return `Keep warm off${offShort(s)}. Click to switch on;${HOLD_HINT}`;
   const once = s.mode === "once" ? " until your next message" : "";
   const state = isKeeping(s, now)
