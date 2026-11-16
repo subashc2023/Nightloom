@@ -97,6 +97,14 @@
     border: 1px solid var(--line2);
     border-radius: 12px;
     background: var(--sheet);
+    container-type: inline-size;
+  }
+  /* A narrow column (390): Jarvis's tracked uppercase header clipped to "NEEDS YO" beside the button;
+     tighter tracking keeps it whole on one line (Classic's header is sentence case and already fits). */
+  @container (max-width: 400px) {
+    :global(:where(:root:not([data-layout="classic"]))) .turn-ask :global(.aq-one) {
+      letter-spacing: 0.04em;
+    }
   }
   .turn-ask.sending {
     opacity: 0.6;
@@ -111,6 +119,8 @@
     background: var(--accent-soft);
     color: var(--accent-ink);
     cursor: pointer;
+    white-space: nowrap;
+    flex: none;
   }
   .ta-send:disabled {
     opacity: 0.45;
