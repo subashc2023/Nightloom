@@ -70,11 +70,15 @@ export function windowFor(from: number, target: number, margin = 2): number {
  * drawn. A card about a passage on a turn outside the window was taken
  * for one whose passage cannot be found and stacked above the composer —
  * every old aside in a long chat, each squeezed to its head. A composer
- * aside (no anchor) and a card he moved (fixed to the window) never wait.
+ * aside (no anchor) never waits. ~~Nor does a card he moved (fixed to the
+ * window).~~ (struck 2026-11-16, item 734: a moved card is kept from its
+ * passage now and scrolls with it, so it waits for its turn as an unmoved
+ * one does; only one kept from the column's top, which has no passage to
+ * wait for, never waits.)
  */
 export function cardWaits(
-  aside: { anchor: { turn: number } | null; moved?: unknown },
+  aside: { anchor: { turn: number } | null; moved?: { from?: string } | null },
   drawn: (turn: number) => boolean,
 ): boolean {
-  return !!aside.anchor && !aside.moved && !drawn(aside.anchor.turn);
+  return !!aside.anchor && aside.moved?.from !== "column" && !drawn(aside.anchor.turn);
 }

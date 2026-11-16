@@ -16,6 +16,7 @@
   } from "./state.svelte";
   import type { TabContent } from "./tabs";
   import { outcome, startMove } from "./floatingMove";
+  import { landMoved, placeMoved } from "./asideMove";
   import type { Zone } from "./floatingMove";
   import { tick, untrack } from "svelte";
   import { asideSendJumps } from "./sendScroll";
@@ -69,8 +70,11 @@
    * Moving it (backlog 156, 2026-09-22 — his "move it around the screen
    * freely"): the floating card's head moves the card by pointer
    * (`floatingMove.ts`), anywhere, and it stays where it is let go — a
-   * nudge of a few pixels included — fixed to the window, the passage
-   * still marked. Only near a tab strip (a tab of its own), the window's
+   * nudge of a few pixels included — ~~fixed to the window~~ (struck
+   * 2026-11-16, item 734: fixed, it stopped scrolling with the chat) kept
+   * in the chat column beside its passage and scrolling with the text as
+   * an unmoved card does (`asideMove.ts`), the passage still marked. While
+   * the pointer holds it, it is drawn over the window so a zone can light. Only near a tab strip (a tab of its own), the window's
    * right edge (the side panel) or its left edge (beside) does a zone
    * light, and a release there does what the old drop did. Escape during
    * a move puts it back where the move began; *back* in the head, or a
@@ -93,6 +97,10 @@
     front = true,
     footBottom = null,
     footCount = 1,
+    frame = null,
+    viewport = null,
+    passageTop = null,
+    frameWidth = 0,
   }: {
     aside: Aside;
     placement: Placement | null;
@@ -106,6 +114,15 @@
      *  and how many share the stack's room. */
     footBottom?: number | null;
     footCount?: number;
+    /** Item 734: the chat column the card is drawn in (the transcript's
+     *  `inner`) and its scrolled viewport; a drop is kept in the column's
+     *  px. Null for the panel's card, which does not move. */
+    frame?: HTMLElement | null;
+    viewport?: HTMLElement | null;
+    /** The passage's top in the column's px (null: none, or not found),
+     *  and the column's width, as `AsideLayer` measured them. */
+    passageTop?: number | null;
+    frameWidth?: number;
   } = $props();
 
   let root = $state<HTMLElement | null>(null);
@@ -143,7 +160,13 @@
    *  go. The zone the pointer is over, lit while it is. */
   let dragPos = $state<{ left: number; top: number } | null>(null);
   let zone = $state<Zone | null>(null);
-  const moved = $derived(panel ? null : (aside.moved ?? null));
+  // Item 734: where a moved card is drawn, in the column's px (null while
+  // its passage cannot be found — it goes home until it can).
+  const moved = $derived(
+    panel || !aside.moved
+      ? null
+      : placeMoved(aside.moved, frameWidth > 0 ? frameWidth : aside.moved.width, passageTop),
+  );
   const pos = $derived(dragPos ?? moved);
   /** Whatever may change the card's room, so the box measures again. */
 
@@ -187,7 +210,17 @@
     if (!session) return;
     const o = outcome(z);
     if (o.kind === "stay") {
-      a.moved = { left: p.left, top: p.top, width };
+      // Item 734: kept in the chat column's px, so it scrolls with the text.
+      const f = frame?.getBoundingClientRect();
+      if (!f) return;
+      const v = viewport?.getBoundingClientRect() ?? { top: 0, bottom: window.innerHeight };
+      a.moved = landMoved(
+        p,
+        width,
+        { left: f.left, top: f.top, width: f.width, height: f.height },
+        { top: v.top, bottom: v.bottom },
+        a.anchor ? passageTop : null,
+      );
       return;
     }
     // Snapped: the card's next home is under its passage again.
@@ -385,9 +418,13 @@
   style:top={pos ? `${pos.top}px` : placement ? `${placement.top}px` : undefined}
   style:left={pos ? `${pos.left}px` : placement ? `${placement.left}px` : undefined}
   style:width={moved ? `${moved.width}px` : placement ? `${placement.width}px` : undefined}
-  style:max-height={pos
-    ? `min(${placement ? `${placement.maxHeight}px` : "50vh"}, calc(100vh - ${pos.top + 8}px))`
-    : placement
+  style:max-height={dragPos
+    ? `min(${placement ? `${placement.maxHeight}px` : "50vh"}, calc(100vh - ${dragPos.top + 8}px))`
+    : moved
+      ? placement
+        ? `${placement.maxHeight}px`
+        : "50vh"
+      : placement
       ? `${placement.maxHeight}px`
       : !panel && footCount > 1
         ? `max(200px, calc(60vh / ${footCount}))`
@@ -657,13 +694,18 @@
     user-select: none;
     -webkit-user-select: none;
   }
-  /* Moved (backlog 156): fixed to the window, out of the column's flow,
-     over the panes and their strips. */
+  /* Moved (backlog 156): ~~fixed to the window, out of the column's flow,
+     over the panes and their strips~~ (struck 2026-11-16, item 734) — in
+     the column, placed in its px as an unmoved card is, so it scrolls with
+     the text; over the window only while the pointer holds it. */
   .aside-card.moved {
-    position: fixed;
+    position: absolute;
     bottom: auto;
     z-index: 15;
     animation: none;
+  }
+  .aside-card.moved.holding {
+    position: fixed;
   }
   .aside-card.holding {
     box-shadow: 0 14px 40px rgba(0, 0, 0, 0.4);

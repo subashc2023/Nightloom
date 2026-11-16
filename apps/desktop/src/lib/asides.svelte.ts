@@ -110,6 +110,8 @@ if (typeof window !== "undefined") {
         void a.model;
         void a.effort;
         void a.uid;
+        // Item 734: where he moved the card, written with the thread.
+        void a.moved;
         for (const t of a.turns) {
           void t.partial;
           void t.answer;
