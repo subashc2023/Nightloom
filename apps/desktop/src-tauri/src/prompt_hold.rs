@@ -1026,3 +1026,8 @@ mod tests {
         assert!(!log_warm(&Session::new(), now));
     }
 }
+
+/// Item 727's "fixed by 725" cases, through the hold (their own file).
+#[cfg(test)]
+#[path = "prompt_hold_727_tests.rs"]
+mod cache_hold_727_tests;

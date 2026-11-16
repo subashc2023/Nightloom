@@ -102,12 +102,6 @@ fn assert_holds(before: &AgentSpec, after: &AgentSpec, what: &str) {
     }
 }
 
-fn set_mtime(path: &Path, secs_ago: u64) {
-    let t = std::time::SystemTime::now() - std::time::Duration::from_secs(secs_ago);
-    let f = std::fs::File::options().write(true).open(path).unwrap();
-    f.set_modified(t).unwrap();
-}
-
 #[test]
 fn fnv_is_the_published_function() {
     assert_eq!(fnv64(""), "cbf29ce484222325");
@@ -154,92 +148,12 @@ fn the_print_holds_when_nothing_changed_and_time_passes() {
     assert_holds(&a, &b, "time passing");
 }
 
-#[test]
-#[ignore = "fixed by 725 (nightshift backlog 725: the notes listing rides the cached prefix)"]
-fn the_print_holds_when_a_note_grows() {
-    let (ws, notes) = project("grows");
-    let a = spec_for(&ws, &notes, Some("poc"));
-    let log = notes.join("threads/poc/log.md");
-    let mut text = std::fs::read_to_string(&log).unwrap();
-    text.push_str(&"- another line of the log\n".repeat(60));
-    std::fs::write(&log, text).unwrap();
-    let b = spec_for(&ws, &notes, Some("poc"));
-    assert_holds(&a, &b, "a note written (size)");
-}
-
-#[test]
-#[ignore = "fixed by 725 (nightshift backlog 725: the notes listing is sorted by mtime, so a rewrite re-orders it)"]
-fn the_print_holds_when_a_note_is_rewritten_at_its_size() {
-    let (ws, notes) = project("same-size");
-    let a = spec_for(&ws, &notes, Some("poc"));
-    std::fs::write(notes.join("ideas.md"), "# Ideas\n\nSome IDEAS.\n").unwrap();
-    let b = spec_for(&ws, &notes, Some("poc"));
-    assert_holds(&a, &b, "a note rewritten at its size (mtime)");
-}
-
-#[test]
-#[ignore = "fixed by 725 (nightshift backlog 725: the notes listing rides the cached prefix)"]
-fn the_print_holds_when_the_listing_order_changes() {
-    let (ws, notes) = project("order");
-    for (i, f) in [
-        "plan.md",
-        "ideas.md",
-        "threads/poc/thread.md",
-        "threads/poc/log.md",
-    ]
-    .iter()
-    .enumerate()
-    {
-        set_mtime(&notes.join(f), 1000 + 100 * i as u64);
-    }
-    let a = spec_for(&ws, &notes, Some("poc"));
-    // The oldest note becomes the newest: any listing by recency re-orders.
-    set_mtime(&notes.join("threads/poc/log.md"), 0);
-    let b = spec_for(&ws, &notes, Some("poc"));
-    assert_holds(&a, &b, "a note touched (order)");
-}
-
-#[test]
-#[ignore = "fixed by 725 (nightshift backlog 725: the notes listing rides the cached prefix)"]
-fn the_print_holds_when_a_new_note_is_written() {
-    let (ws, notes) = project("new-file");
-    let a = spec_for(&ws, &notes, Some("poc"));
-    std::fs::write(notes.join("findings.md"), "# Findings\n\nOne.\n").unwrap();
-    let b = spec_for(&ws, &notes, Some("poc"));
-    assert_holds(&a, &b, "a new note");
-}
-
-#[test]
-#[ignore = "fixed by 725 (nightshift backlog 725: the thread's open questions ride the cached prefix)"]
-fn the_print_holds_when_the_threads_open_questions_change() {
-    let (ws, notes) = project("questions");
-    let a = spec_for(&ws, &notes, Some("poc"));
-    let file = notes.join("threads/poc/thread.md");
-    let text = std::fs::read_to_string(&file)
-        .unwrap()
-        .replace("1. Q-29: is vignette 2 overdue?\n2. Q-30", "1. Q-30");
-    std::fs::write(&file, text).unwrap();
-    let b = spec_for(&ws, &notes, Some("poc"));
-    assert_holds(&a, &b, "the thread's open questions");
-}
-
-#[test]
-#[ignore = "fixed by 725 (nightshift backlog 725: one chat's notes bust every chat's prefix in the project)"]
-fn the_print_holds_when_a_second_chat_in_the_project_writes_notes() {
-    let (ws, notes) = project("second-chat");
-    // Chat A, bound to the thread, as it was built; chat B, in the same
-    // project, writes the thread's log and a new note; A is built again
-    // (a reconnect, the app's start) and pings or sends.
-    let a = spec_for(&ws, &notes, Some("poc"));
-    let _b = spec_for(&ws, &notes, None);
-    let log = notes.join("threads/poc/log.md");
-    let mut text = std::fs::read_to_string(&log).unwrap();
-    text.push_str(&"- chat B was here\n".repeat(40));
-    std::fs::write(&log, text).unwrap();
-    std::fs::write(notes.join("b-notes.md"), "# B\n\nB's note.\n").unwrap();
-    let a_again = spec_for(&ws, &notes, Some("poc"));
-    assert_holds(&a, &a_again, "a second chat writing notes");
-}
+// The six cases a note's write moves (size, mtime order, a new note, the
+// thread's open questions, a second chat's writes) were `#[ignore = "fixed
+// by 725"]` here: built straight from `agent_prompt_with`, with no hold,
+// they can never pass, since 725's fix is the connect's hold. They run
+// through the hold in the desktop crate, `prompt_hold_727_tests.rs`, with
+// a cold-connect control showing the print does move without it.
 
 #[test]
 fn the_print_holds_for_a_ping_an_aside_and_a_rewind() {
