@@ -3,6 +3,7 @@
    * The needs-you badge (nightshift item 753): beside the running badge on the tab strip (over every view),
    * shown while something waits on him or is ready for review; a click opens the Needs-you view.
    */
+  import { untrack } from "svelte";
   import { tip } from "./tip";
   import { app } from "./state.svelte";
   import { needsNow, refreshBoard } from "./needsBoard.svelte";
@@ -18,7 +19,7 @@
   );
   // The blockers and shipped items are files: read now, then every five minutes.
   $effect(() => {
-    void refreshBoard();
+    untrack(() => void refreshBoard());
     const t = setInterval(() => void refreshBoard(), 300_000);
     return () => clearInterval(t);
   });

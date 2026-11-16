@@ -9,6 +9,7 @@
    * Kept across closing and reopening: the folded groups, the scroll, and every half-typed reply (the
    * drafts survive a restart; only sending one clears it).
    */
+  import { untrack } from "svelte";
   import { tip } from "./tip";
   import { app } from "./state.svelte";
   import { openRun } from "./state/running.svelte";
@@ -20,8 +21,9 @@
   const groups = $derived(groupNeeds(needsNow()));
   let listEl = $state<HTMLElement | null>(null);
 
+  // Once per opening: untracked, or the read of `needs.loading` inside makes each refresh's end start the next.
   $effect(() => {
-    void refreshBoard(true);
+    untrack(() => void refreshBoard(true));
   });
   // The scroll he left it at (the rows are there at mount; the files' rows arrive after and sit below).
   $effect(() => {
