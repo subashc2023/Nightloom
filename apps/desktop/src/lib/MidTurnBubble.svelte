@@ -12,6 +12,7 @@
   import { fly, launchAt, reducedMotion, takeLaunch } from "./sendMotion";
   import { handoff } from "./handoff.svelte";
   import { app } from "./state.svelte";
+  import { interruptLit, mainNow } from "./interruptLit";
   import { readDraft } from "./drafts.svelte";
   import {
     bubblePlan,
@@ -29,11 +30,14 @@
     offersChoice,
     offersReply,
     offersSendNow,
+    offersInterrupt,
+    interruptSend,
+    interruptTip,
+    SLIP_TIP,
     pendingLabel,
     pendingState,
     sendAsReply,
     sendNow,
-    sendNowTip,
   } from "./pendingBubble.svelte";
   import type { QueuedMessage } from "./drafts.svelte";
 
@@ -88,6 +92,19 @@
   const plan = $derived(row && st ? bubblePlan(chatKey, row.id) : null);
   let confirming = $state(false);
   let working = $state(false);
+  /**
+   * Item 720: whether *Interrupt and send* is the better option now — the
+   * main agent is writing its answer (no gap before the turn ends), or
+   * this row has waited {@link NO_GAP_MS} with no gap. Dimmed otherwise.
+   */
+  const shownAt = Date.now();
+  let clock = $state(Date.now());
+  $effect(() => {
+    if (!pending) return;
+    const t = setInterval(() => (clock = Date.now()), 5000);
+    return () => clearInterval(t);
+  });
+  const lit = $derived(pending ? interruptLit(mainNow(app.live?.segments), clock - shownAt) : null);
 
   const images = $derived((row?.attachments ?? []).filter((a: Attachment) => a.kind === "image" && a.data).map((a) => ({ media_type: a.media_type, data: a.data! })));
   const documents = $derived(
@@ -260,7 +277,7 @@
             icon="send"
             accent
             label="Send now"
-            hint={sendNowTip(plan.plan, plan.why)}
+            hint={SLIP_TIP}
             data-mt="send-now"
             data-plan={plan.plan}
             disabled={working}
@@ -269,6 +286,23 @@
               void run(() => sendNow(chatKey, row!.id));
             }}
           />
+        {/if}
+        {#if !held && !aside && plan && offersInterrupt(st, plan.plan)}
+          <span class="mt-interrupt" class:dim={!lit} data-lit={lit ?? "no"}>
+            <WaitAct
+              icon="stop"
+              accent={!!lit}
+              label="Interrupt and send"
+              hint={interruptTip(plan.plan, plan.why, lit)}
+              data-mt="interrupt"
+              data-plan={plan.plan}
+              disabled={working}
+              onclick={() => {
+                lift();
+                void run(() => interruptSend(chatKey, row!.id));
+              }}
+            />
+          </span>
         {/if}
         {#if !held && !aside && offersChoice(st, arrive)}
           <WaitAct
@@ -323,8 +357,21 @@
             data-mt="send-now"
             data-plan={plan.plan}
             disabled={working}
-            use:tip={sendNowTip(plan.plan, plan.why)}
+            use:tip={SLIP_TIP}
             onclick={() => void run(() => sendNow(chatKey, row!.id))}>Send now</button
+          >
+        {/if}
+        {#if plan && offersInterrupt(st, plan.plan)}
+          <button
+            class="ns-btn small"
+            class:ghost={!lit}
+            class:dim={!lit}
+            data-mt="interrupt"
+            data-plan={plan.plan}
+            data-lit={lit ?? "no"}
+            disabled={working}
+            use:tip={interruptTip(plan.plan, plan.why, lit)}
+            onclick={() => void run(() => interruptSend(chatKey, row!.id))}>Interrupt and send</button
           >
         {/if}
         {#if offersChoice(st, arrive)}
@@ -404,6 +451,21 @@
     justify-content: flex-end;
     align-items: center;
     gap: 6px;
+  }
+  /* Item 720: Interrupt and send is always there, dimmed while a gap is
+     coming and lit (the accent) when none is. Still pressable when dim. */
+  .mt-interrupt {
+    display: inline-flex;
+  }
+  .mt-interrupt.dim,
+  .ns-btn.dim {
+    opacity: 0.45;
+  }
+  .mt-interrupt.dim:hover,
+  .mt-interrupt.dim:focus-within,
+  .ns-btn.dim:hover,
+  .ns-btn.dim:focus-visible {
+    opacity: 0.85;
   }
   .mt-ask {
     font-size: 12px;

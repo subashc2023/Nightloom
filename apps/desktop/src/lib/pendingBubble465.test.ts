@@ -31,7 +31,7 @@ describe("where a pending message stands", () => {
 
   it("after Let it arrive: no choice left, still not sent", () => {
     expect(offersChoice("next-step", true)).toBe(false);
-    expect(pendingLabel("next-step", true)).toBe("not sent yet — Claude reads it at its next step");
+    expect(pendingLabel("next-step", true)).toBe("not sent yet — waiting for a gap: Claude reads it at its next step");
   });
 
   it("sending now, and a row the turn cannot take (provider engine, files): no Send now", () => {
