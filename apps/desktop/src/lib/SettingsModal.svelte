@@ -49,6 +49,7 @@
   });
   // Item 617 (own block): Reply text — Line reveal or Word rise.
   import { REPLY_LOOKS, replyLook, setReplyLook } from "./replyLook.svelte";
+  import ThinkingArrivalSample from "./ThinkingArrivalSample.svelte"; // Item 716 part 5: the real thinking block.
   import ReplyLookDemo from "./ReplyLookDemo.svelte"; // Item 716: the looping demo of each look.
   // End item 617.
   import ContextDial from "./ContextDial.svelte";
@@ -252,7 +253,8 @@
   function previewArrival(style: ArrivalStyle) {
     stopPreview[style]?.();
     delete stopPreview[style];
-    const node = arrivalBlock[style];
+    // Item 716 part 5: the look plays on the real block's `.activity`, the node a reply's own arrival plays on.
+    const node = arrivalBlock[style]?.querySelector<HTMLElement>(".activity") ?? null;
     if (!node) return;
     stopPreview[style] = playArrival(node, reducedMotion() ? "fade" : style, 0, null, arrivalFrom[style] ?? null);
   }
@@ -2019,10 +2021,8 @@
                 <span class="anim-blurb">{s.blurb}</span>
               </button>
               <div class="anim-stage" aria-hidden="true">
-                <div class="anim-block" bind:this={arrivalBlock[s.id]}>
-                  <span class="anim-label">Thinking</span>
-                  <span class="anim-text">The cache key hashes the lockfile and the toolchain file…</span>
-                </div>
+                <!-- Item 716 part 5: the real reply's thinking block, ~~a stand-in drawing (anim-block)~~. -->
+                <div class="arr-host" bind:this={arrivalBlock[s.id]}><ThinkingArrivalSample /></div>
                 <div class="anim-composer" bind:this={arrivalFrom[s.id]}></div>
               </div>
               <div class="anim-foot">
@@ -5093,25 +5093,10 @@
     background: var(--sheet);
     border: 1px solid var(--line);
   }
-  .anim-block {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    padding: 7px 10px;
-    border-radius: 8px;
-    border: 1px solid var(--line2);
-    background: var(--paper);
-  }
-  .anim-label {
-    font-size: 11.5px;
-    color: var(--ink2);
-  }
-  .anim-text {
-    font-size: 11.5px;
-    color: var(--dim);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  /* Item 716 part 5: ~~.anim-block / .anim-label / .anim-text, the stand-in block~~ — the stage
+     holds the real reply's thinking block now (ThinkingArrivalSample), clipped to it. */
+  .arr-host {
+    min-height: 0;
   }
   .anim-composer {
     height: 22px;
