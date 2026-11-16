@@ -8,6 +8,9 @@
 //!   this host's key.
 //! - `POST /push/unsubscribe` — `{endpoint}`: the off switch.
 //! - `POST /push/seen` — `{chat}`: he opened it; it stops counting.
+//! - `GET /push/feed` — item 741: the last thing that happened in each
+//!   chat he has not opened since (the phone's home screen), newest first;
+//!   kept with or without a subscribed phone.
 //! - `POST /push/test` — one push that says push works.
 //! - `POST /push/key` — the away server only: the Mac hands over its key so
 //!   both hosts sign with one (a phone holds one subscription, tied to one
@@ -35,6 +38,7 @@ pub(super) fn router() -> Router<Arc<Shared>> {
         .route("/push/subscribe", post(subscribe))
         .route("/push/unsubscribe", post(unsubscribe))
         .route("/push/seen", post(seen))
+        .route("/push/feed", get(feed))
         .route("/push/test", post(test))
         .route("/push/key", post(key))
 }
@@ -95,6 +99,19 @@ async fn seen(State(shared): State<Arc<Shared>>, Json(req): Json<Seen>) -> Respo
     };
     p.seen(&req.chat);
     answer(p.status())
+}
+
+/// `GET /push/feed`'s body.
+#[derive(serde::Serialize, Deserialize, Debug, PartialEq, Eq)]
+pub struct Feed {
+    pub rows: Vec<crate::push::FeedRow>,
+}
+
+async fn feed(State(shared): State<Arc<Shared>>) -> Response {
+    match push(&shared) {
+        Some(p) => answer(Ok::<_, String>(Feed { rows: p.feed() })),
+        None => no_push(),
+    }
 }
 
 async fn test(State(shared): State<Arc<Shared>>) -> Response {
@@ -339,6 +356,54 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r.json::<Status>().await.unwrap().subscriptions, 0);
+        server.stop().await;
+    }
+
+    /// Item 741: the feed holds the last note per chat with no phone
+    /// subscribed, newest first; opening the chat (or a note sent while he
+    /// is at the Mac) drops its row.
+    #[tokio::test]
+    async fn the_feed_lists_each_chats_last_note_until_he_opens_it() {
+        let (server, push, _) = up("mac", true).await;
+        let push = push.unwrap();
+        let base = format!("http://{}/api", server.addr());
+        let c = client();
+        let note = |chat: &str, what, at_the_mac| crate::push::Note {
+            what,
+            chat: Some(chat.into()),
+            label: Some(format!("Chat {chat}")),
+            project: Some("p1".into()),
+            at_the_mac,
+        };
+        use crate::push::What;
+        push.notify(note("c1", What::Question, false)).await;
+        push.notify(note("c2", What::Done, false)).await;
+        push.notify(note("c1", What::Done, false)).await;
+        push.notify(note("c3", What::Approval, false)).await;
+        let get_feed = || async {
+            c.get(format!("{base}/push/feed"))
+                .bearer_auth(TOKEN)
+                .send()
+                .await
+                .unwrap()
+                .json::<super::Feed>()
+                .await
+                .unwrap()
+        };
+        let f = get_feed().await;
+        assert_eq!(f.rows.len(), 3);
+        let c1 = f.rows.iter().find(|r| r.chat == "c1").unwrap();
+        assert_eq!(c1.what, What::Done);
+        assert_eq!(c1.label.as_deref(), Some("Chat c1"));
+        assert_eq!(c1.project.as_deref(), Some("p1"));
+        assert!(f.rows.windows(2).all(|w| w[0].at >= w[1].at));
+        push.seen("c2");
+        push.notify(note("c3", What::Done, true)).await;
+        let f = get_feed().await;
+        assert_eq!(
+            f.rows.iter().map(|r| r.chat.as_str()).collect::<Vec<_>>(),
+            vec!["c1"]
+        );
         server.stop().await;
     }
 

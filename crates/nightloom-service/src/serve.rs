@@ -448,9 +448,8 @@ impl ServeHost {
     /// the name is read from the chat list and the sends go out in a task.
     /// The away server cannot know he is at the Mac, so it always sends.
     fn push_note(&self, what: crate::push::What, chat: &str, project: Option<&str>) {
-        if !self.push.any() {
-            return;
-        }
+        // (Item 741: `notify` is reached with no phone subscribed too — it
+        // keeps the home screen's feed row and then sends nothing.)
         let Some(me) = self.me.upgrade() else {
             return;
         };
