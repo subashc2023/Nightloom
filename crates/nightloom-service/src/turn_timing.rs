@@ -101,7 +101,7 @@ pub struct Stages {
     /// How long the waiting process had run when the turn took it (ms).
     pub warm_age: Option<u64>,
     /// How the process ended (item 723): `result seen` or `no result`,
-    /// the streamed events, the exit and stderr's last line.
+    /// the streamed events and the exit — never stderr (blocker 2006).
     pub process: Option<String>,
 }
 

@@ -2735,13 +2735,14 @@ impl ClaudeCodeAgent {
             outcome.notices.push(RESULT_ONLY_NOTICE.into());
         }
         // The process line on the timing log (item 723): whether the
-        // `result` came, how many streamed events, the exit and stderr.
+        // `result` came, how many streamed events and the exit. Never
+        // stderr (blocker 2006): the timing log carries no paths; the
+        // turn's error message still shows it.
         if let Some(t) = &timing {
             t.set_process(process_note(
                 outcome.result_seen,
                 outcome.stream_events,
                 &status.to_string(),
-                &stderr,
             ));
         }
         // A process that printed nothing at all for a message (item 723)
@@ -2818,20 +2819,15 @@ pub const RESULT_ONLY_NOTICE: &str =
     "reply drawn from Claude Code's final result — none of it arrived while it ran";
 
 /// The timing line's process part (item 723): `result seen` or `no
-/// result`, the streamed events, the exit, and a non-empty stderr's last
-/// line, cut short — the CLI's own words, never his.
-fn process_note(result_seen: bool, events: u32, status: &str, stderr: &str) -> String {
+/// result`, the streamed events and the exit. Stderr stays out (blocker
+/// 2006): it may hold a path, which the timing log promises never to carry.
+fn process_note(result_seen: bool, events: u32, status: &str) -> String {
     let result = if result_seen {
         "result seen"
     } else {
         "no result"
     };
-    let mut note = format!("{result}, {events} stream events, {status}");
-    if let Some(last) = stderr.lines().rev().map(str::trim).find(|l| !l.is_empty()) {
-        let cut: String = last.chars().take(160).collect();
-        note.push_str(&format!(", stderr: {cut}"));
-    }
-    note
+    format!("{result}, {events} stream events, {status}")
 }
 
 /// Why a reply ended before its `result` line (backlog 332), in his words.
