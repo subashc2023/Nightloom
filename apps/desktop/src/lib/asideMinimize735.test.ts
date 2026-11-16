@@ -139,12 +139,15 @@ describe("735: kept across a chat switch and a relaunch", () => {
 
 describe("735: the card's markup", () => {
   it("has a minimize control in the head of a main-chat card, not the panel's", () => {
-    expect(cardSrc).toMatch(/\{#if !panel\}\s*<!-- Item 735: minimize[\s\S]*?onclick=\{\(\) => minimizeAside\(aside\)\}/);
+    expect(cardSrc).toMatch(/\{#if !panel\}\s*<!-- Item 735: minimize[\s\S]*?onclick=\{\(\) => minimizeMoving\(\)\}/);
+    // Item 755: through the fold motion, which still calls minimizeAside.
+    expect(cardSrc).toMatch(/function minimizeMoving\(\)[\s\S]*?minimizeAside\(aside\)/);
   });
   it("draws the one line with its first words and the dot, and opens on click or Enter", () => {
     expect(cardSrc).toMatch(/asideLabel\(aside, 40\)/);
     expect(cardSrc).toMatch(/class="aside-mini-dot"/);
-    expect(cardSrc).toMatch(/onclick=\{\(\) => expandAside\(aside\)\}/);
+    expect(cardSrc).toMatch(/onclick=\{\(\) => expandMoving\(\)\}/);
+    expect(cardSrc).toMatch(/function expandMoving\(\)[\s\S]*?expandAside\(aside\)/);
     expect(cardSrc).toMatch(/e\.key !== "Enter" && e\.key !== " "/);
   });
   it("styles it for both looks", () => {

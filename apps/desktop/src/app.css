@@ -535,6 +535,77 @@ button {
   overflow-wrap: anywhere;
 }
 
+/* Item 756: the card minimizes to one line (handoffButton.ts `syncMinimize`):
+   a – button at the head's right, and, minimized, the line alone — a
+   "Hand-off" tag, the goal, an *open* cue. The card's parts are hidden, not
+   removed, so the goal and ticks are there when it opens. */
+.markdown .handoff-card {
+  position: relative;
+}
+.markdown .handoff-card > .handoff-min {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  min-width: 22px;
+  padding: 0 6px;
+  line-height: 20px;
+}
+.markdown .handoff-card.handoff-minimized {
+  padding-top: 0;
+  padding-bottom: 0;
+}
+.markdown .handoff-card.handoff-minimized > :not(.handoff-mini) {
+  display: none;
+}
+.markdown .handoff-card > .handoff-mini[hidden],
+.markdown .handoff-card > .handoff-min[hidden] {
+  display: none;
+}
+.markdown .handoff-mini {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0.35em 0.3em;
+  font-size: 0.8rem;
+  line-height: 20px;
+  cursor: pointer;
+  user-select: none;
+}
+.markdown .handoff-mini:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.markdown .handoff-mini-tag {
+  flex: none;
+  font-weight: 600;
+  color: var(--accent-ink);
+}
+.markdown .handoff-mini-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+}
+.markdown .handoff-mini-open {
+  flex: none;
+  color: var(--dim);
+}
+.markdown .handoff-mini:hover .handoff-mini-open {
+  color: var(--accent-ink);
+}
+/* Jarvis: the tag in small mono capitals, as an aside's minimized line has it. */
+:where(:root:not([data-layout="classic"])) .markdown .handoff-mini-tag {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
 /* Item 506: under the prompt, the folded read order and the button that
    sends both (handoffButton.ts). A legacy `start-prompt` block, with no card,
    has the same row after it. */
