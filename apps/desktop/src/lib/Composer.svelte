@@ -164,7 +164,12 @@
     ranKey,
     takeBackQueued,
     updateAttachment,
+    removeComment,
+    setCommentNote,
   } from "./drafts.svelte";
+  import ConfirmDialog from "./ConfirmDialog.svelte";
+  import { chipLabel, shownQuote, commentLabel, commentsMessage, commentWhere, type PassageComment } from "./passageComments";
+  import { commentRequest, takeCommentFocus } from "./commentRequest.svelte";
   import type { Attachment } from "./types";
   import { chipStep, isChipTag } from "./chipSteps";
   // Scheduled send (backlog 224): the ▾ beside Send and the chip above.
@@ -311,6 +316,42 @@
   });
   const draft = $derived(readDraft(key));
   const text = $derived(draft.text);
+  /*
+   * Item 754: comments on passages — chips over the chat's box, each a
+   * passage he highlighted and his words about it (`passageComments.ts`).
+   * Part of the draft, so they outlive a switch, a reload and a quit;
+   * Send (and Queue, and the council) sends them with the box's text as
+   * one message. The aside's box has none.
+   */
+  const comments = $derived<PassageComment[]>(aside ? [] : (draft.comments ?? []));
+  /** Nothing to send: no words, no chip, no comment. */
+  const boxEmpty = $derived(!text.trim() && draft.attachments.length === 0 && comments.length === 0);
+  /** The chip whose comment line is open (view state). */
+  let openComment = $state<number | null>(null);
+  const openC = $derived(comments.find((c) => c.id === openComment) ?? null);
+  let commentTa = $state<HTMLTextAreaElement | null>(null);
+  const DROP_DIALOG = { title: "Discard this comment?" } as const;
+  /** The chip × asked about; its confirm is showing while set. */
+  let dropAsk = $state<PassageComment | null>(null);
+  $effect(() => {
+    void commentRequest.id;
+    if (aside) return;
+    const id = untrack(() => takeCommentFocus(key));
+    if (!id) return;
+    openComment = id;
+    void tick().then(() => commentTa?.focus());
+  });
+  function closeComment(): void {
+    openComment = null;
+    ta?.focus();
+  }
+  function confirmDropComment(): void {
+    const c = dropAsk;
+    dropAsk = null;
+    if (!c) return;
+    if (openComment === c.id) openComment = null;
+    removeComment(key, c.id);
+  }
 
   /*
    * The aside's composer (backlog 283). Its words were the thread's
@@ -2286,11 +2327,12 @@
    *  where the turn is; the message goes here when it ends. */
   async function enqueue(): Promise<void> {
     const t = text.trim();
-    if (!t && attachments.length === 0) return;
+    if (!t && attachments.length === 0 && comments.length === 0) return;
     // A held message carries finished chips only (item 277).
     if (!(await conversionsDone(key))) return;
-    const held = enqueueMessage(key, readDraft(key).text, readDraft(key).attachments.slice());
-    clearDraft(key);
+    // Item 754: the comments go with it, as one message.
+    const held = enqueueMessage(key, commentsMessage(readDraft(key).comments, readDraft(key).text), readDraft(key).attachments.slice());
+    clearDraft(key, true);
     if (aside) {
       afterSend(key);
       return;
@@ -2444,7 +2486,7 @@
   }
   async function submitNow() {
     const t = text.trim();
-    const empty = !t && attachments.length === 0;
+    const empty = !t && attachments.length === 0 && comments.length === 0;
     if (empty || !app.connection) return;
     // Item 694: a plain turn does not take the held passage; Send drops it.
     dropHeld(key);
@@ -2471,11 +2513,12 @@
     if (sendKey !== key || sendKey !== liveKey() || !app.connection || app.busy) return;
     if (filesBlocked(attachments)) return;
     const pending = attachments.slice();
-    const typed = text;
+    // Item 754: each comment's passage quoted with his words, then the box's.
+    const typed = commentsMessage(comments, text);
     // Where the words were, for the send motion (backlog 194): measured
     // before the box clears.
     launch("chat", boxElement(ta));
-    clearDraft(key);
+    clearDraft(key, true);
     afterSend(key);
     await dispatch(typed, pending);
   }
@@ -2493,17 +2536,17 @@
   async function submitCouncil(prefs: CouncilPrefs) {
     councilOpen = false;
     const t = text.trim();
-    if ((!t && attachments.length === 0) || !app.connection || app.busy || sendHeld()) return;
+    if ((!t && attachments.length === 0 && comments.length === 0) || !app.connection || app.busy || sendHeld()) return;
     const sendKey = key;
     if (!(await conversionsDone(sendKey))) return;
     if (sendKey !== key || sendKey !== liveKey() || !app.connection || app.busy) return;
     if (filesBlocked(attachments)) return;
     noteActivity();
     const pending = attachments.slice();
-    const typed = text;
+    const typed = commentsMessage(comments, text);
     recordText("sent", typed);
     launch("chat", boxElement(ta));
-    clearDraft(key);
+    clearDraft(key, true);
     afterSend(key);
     await dispatch(typed, pending, false, prefs);
   }
@@ -3453,6 +3496,82 @@
   {#if mathShown}
     <TypedMathBar spans={mathSpans} onaccept={acceptMath} ondeny={denyMath} />
   {/if}
+  {#if comments.length > 0}
+    <!-- Item 754: his comments on passages; each chip opens its comment
+         line, × asks first, Send sends them all with the box's words. -->
+    <div class="comments-wrap" class:plain={classic()} data-passage-comments>
+      <div class="comment-chips">
+        <span class="comment-k">{comments.length === 1 ? "1 comment" : `${comments.length} comments`}</span>
+        {#each comments as c (c.id)}
+          <span class="comment-chip" class:open={openComment === c.id} data-comment={c.id}>
+            <button
+              type="button"
+              class="comment-open"
+              aria-expanded={openComment === c.id}
+              use:tip={`A comment on a passage from ${commentWhere(c)} — click to ${openComment === c.id ? "close" : "write or change"} it. Send sends every comment with what is in the box, as one message.`}
+              onmousedown={(e) => e.preventDefault()}
+              onclick={() => {
+                if (openComment === c.id) closeComment();
+                else {
+                  openComment = c.id;
+                  void tick().then(() => commentTa?.focus());
+                }
+              }}
+            >
+              {#if !classic()}<Icon name="pencil" size={11} />{/if}
+              <span class="comment-q">“{chipLabel(c)}”</span>
+              {#if c.note.trim()}<span class="comment-n">{commentLabel(c.note, 28)}</span>{/if}
+            </button>
+            <button
+              type="button"
+              class="held-x"
+              aria-label="Discard this comment"
+              onmousedown={(e) => e.preventDefault()}
+              onclick={() => (dropAsk = c)}><Icon name="x" size={11} /></button
+            >
+          </span>
+        {/each}
+      </div>
+      {#if openC}
+        {@const oc = openC}
+        <div class="comment-edit">
+          <div class="comment-quote" use:tip={`From ${commentWhere(oc)}`}>{shownQuote(oc)}</div>
+          <textarea
+            bind:this={commentTa}
+            class="comment-ta"
+            rows="2"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+            placeholder="Your comment on this passage — ↵ done, ⇧↵ new line"
+            value={oc.note}
+            oninput={(e) => setCommentNote(key, oc.id, e.currentTarget.value)}
+            onkeydown={(e) => {
+              if ((e.key === "Enter" && !e.shiftKey && !e.isComposing) || e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation();
+                closeComment();
+              }
+            }}
+          ></textarea>
+        </div>
+      {/if}
+    </div>
+  {/if}
+  {#if dropAsk}
+    <!-- The dialog's own title prop, spread (tip.test bars title= here). -->
+    <ConfirmDialog
+      {...DROP_DIALOG}
+      lead="The passage and what you wrote about it leave the box. Your other comments and the box's words stay."
+      facts={[
+        ["passage", `“${chipLabel(dropAsk, 60)}”`],
+        ["comment", dropAsk.note.trim() ? commentLabel(dropAsk.note, 60) : "(none written)"],
+      ]}
+      confirmLabel="Discard"
+      onconfirm={confirmDropComment}
+      onclose={() => (dropAsk = null)}
+    />
+  {/if}
   {#if held}
     <!-- Item 694: the passage his Ask aside is about; × drops it. -->
     <div class="held-wrap" class:plain={classic()} data-held-passage>
@@ -3696,7 +3815,7 @@
           class="ns-btn ghost small act"
           use:tip={aside ? "Hold this message; it goes when this answer ends" : "Hold this message; it goes when the turn ends"}
           onclick={enqueue}
-          disabled={!text.trim() && attachments.length === 0}>Queue</button
+          disabled={boxEmpty}>Queue</button
         >
         <!-- Item 411: its shape is his pick in Settings → Appearance (square
              unless he picks another); `wide` is item 398's, below.
@@ -3722,7 +3841,7 @@
           class="ns-btn accent send act fil-btn fil-send"
           use:tip={asideSendTip}
           onclick={() => void submit()}
-          disabled={!app.connection || asideBlock !== null || (!text.trim() && attachments.length === 0)}
+          disabled={!app.connection || asideBlock !== null || boxEmpty}
         >
           <span class="fil-scan" aria-hidden="true"></span><FilamentMark kind="send" />Send
         </button>
@@ -3737,7 +3856,7 @@
           <button
             class="ns-btn ghost small act fil-btn fil-ghost"
             use:tip={"Ask this of the chat without adding it to the chat: answered from what is already in context, no changes, recorded nowhere (Claude Code's /btw)"}
-            disabled={!text.trim() && attachments.length === 0}
+            disabled={boxEmpty}
             onclick={() => void submitAside()}
           >
             <FilamentMark kind="aside" /><span class="fold-word">Ask aside</span><span class="short-word">Aside</span>
@@ -3763,7 +3882,7 @@
             {#if councilOpen}
               <CouncilPopover
                 anchor={councilBtn}
-                disabled={!app.connection || sendHeld() || (!text.trim() && attachments.length === 0)}
+                disabled={!app.connection || sendHeld() || boxEmpty}
                 onsend={(p) => void submitCouncil(p)}
                 onclose={() => {
                   councilOpen = false;
@@ -3778,10 +3897,10 @@
         <span class="send-split act">
           <button
             class="ns-btn accent send act fil-btn fil-send"
-            use:tip={withEstimate(sendTip(!!app.connection, !text.trim() && attachments.length === 0, sendHeld()))}
+            use:tip={withEstimate(sendTip(!!app.connection, boxEmpty, sendHeld()))}
             onclick={() => void submit()}
             class:sending
-            disabled={!app.connection || sendHeld() || (!text.trim() && attachments.length === 0)}
+            disabled={!app.connection || sendHeld() || boxEmpty}
           >
             <span class="fil-scan" aria-hidden="true"></span><span class="fil-edge" aria-hidden="true"></span><FilamentMark kind="send" />Send
           </button><ScheduleMenu {key} {text} {attachments} blocked={scheduleBlocked} onscheduled={scheduled} />
@@ -4956,6 +5075,127 @@
      over its first line; the card is the positioning frame. */
   .card {
     position: relative;
+  }
+  /* Item 754: comments on passages — a row of chips over the box (the
+     held chip's pill), and the open one's comment line under them. */
+  .comments-wrap {
+    max-width: 760px;
+    margin: 0 auto 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .comment-chips {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+  .comment-k {
+    font: 10.5px var(--mono);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--dim);
+    flex: none;
+  }
+  .comment-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+    max-width: 100%;
+    padding: 2px 4px 2px 9px;
+    background: var(--raised);
+    border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line2));
+    border-radius: 999px;
+    font-size: 12px;
+    color: var(--ink2);
+    white-space: nowrap;
+  }
+  .comment-chip.open {
+    border-color: var(--accent);
+  }
+  .comment-open {
+    all: unset;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    cursor: pointer;
+  }
+  .comment-open:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+    outline-offset: 1px;
+    border-radius: 999px;
+  }
+  .comment-open :global(.ns-ico) {
+    color: var(--accent);
+    flex: none;
+  }
+  .comment-q {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--ink);
+  }
+  .comment-n {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--dim);
+  }
+  .comment-n::before {
+    content: "— ";
+  }
+  .comment-edit {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 10px;
+    background: var(--raised);
+    border: 1px solid var(--line2);
+    border-left: 2px solid var(--accent);
+    border-radius: var(--r1, 6px);
+  }
+  .comment-quote {
+    font-size: 12px;
+    color: var(--ink2);
+    white-space: pre-wrap;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    -webkit-box-orient: vertical;
+  }
+  .comment-ta {
+    all: unset;
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 2.6em;
+    font: inherit;
+    font-size: 13px;
+    line-height: 1.4;
+    color: var(--ink);
+    white-space: pre-wrap;
+    field-sizing: content;
+    max-height: 9em;
+    overflow-y: auto;
+  }
+  .comment-ta::placeholder {
+    color: var(--dim);
+  }
+  .plain .comment-chip {
+    border-color: var(--line2);
+    border-radius: var(--r1, 4px);
+    background: transparent;
+  }
+  .plain .comment-chip.open {
+    border-color: var(--ink2);
+  }
+  .plain .comment-edit {
+    border-left-color: var(--line2);
+    background: transparent;
   }
   /* Item 694: the held passage's chip, above the box — the cap chip's
      pill (TurnCapChip), the passage in the accent's tint under Jarvis;
