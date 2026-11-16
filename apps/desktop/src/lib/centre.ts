@@ -8,7 +8,7 @@
  * pass; `NotificationCentre.svelte` draws the list. Nothing here touches
  * the store, so every rule below is pinned by `centre.test.ts`.
  */
-import type { AppliedNotice, BuildStamp, CliStatus, DreamCommit, NightshiftRow, ProjectRef, ProposalNotice } from "./types";
+import type { AppliedNotice, BuildStamp, CliStatus, DreamCommit, MemoryCommit, NightshiftRow, ProjectRef, ProposalNotice } from "./types";
 import { cliNoticeDetail, cliNoticeId, cliNoticeTitle, offersUpdate } from "./cliUpdate";
 
 // ---- the daily switch ----
@@ -115,7 +115,7 @@ export const RECENT_PASS_MS = 12 * 60 * 60 * 1000;
 
 // ---- the notices ----
 
-export type NoticeKind = "proposal" | "dream" | "morning" | "blocker" | "release" | "cli";
+export type NoticeKind = "proposal" | "dream" | "memory" | "morning" | "blocker" | "release" | "cli";
 
 /** One row of the panel. `id` is stable for as long as the thing it names
  *  is unchanged, which is what "dismissed" is keyed on. */
@@ -136,24 +136,29 @@ export interface Notice {
   applied?: AppliedNotice;
   /** The version check, for a `cli` notice (nightshift backlog 182). */
   cli?: CliStatus;
+  /** The change, for a `memory` notice (item 751). */
+  memory?: MemoryCommit;
 }
 
 export const KIND_LABEL: Record<NoticeKind, string> = {
   proposal: "Proposals",
   dream: "Notes changed by a dream",
+  memory: "Claude Code's memory changed",
   morning: "Morning pages",
   blocker: "Blockers",
   release: "Releases",
   cli: "Claude Code",
 };
 
-export const KIND_ORDER: NoticeKind[] = ["proposal", "dream", "morning", "blocker", "release", "cli"];
+export const KIND_ORDER: NoticeKind[] = ["proposal", "dream", "memory", "morning", "blocker", "release", "cli"];
 
 export interface NoticeSources {
   proposals: ProposalNotice[];
   commits: DreamCommit[];
   /** The dream's `AGENTS.md` writes no commit carries (backlog 344). */
   applied?: AppliedNotice[];
+  /** Changes to Claude Code's own memory folders (item 751). */
+  memory?: MemoryCommit[];
   /** Every registered project's row; those without a contract contribute nothing. */
   rows: NightshiftRow[];
   /** Morning pages opened, by project id (the Nightshift `read` map). */
@@ -174,6 +179,20 @@ export interface NoticeSources {
  *  `AGENTS.md` (backlog 344) — the row that gets *Open in editor*. */
 export function isInstructionsFile(c: DreamCommit, path: string): boolean {
   return c.project !== null && path === "AGENTS.md";
+}
+
+/** "Claude Code's memory changed: 2 notes in nightshift-code" (item 751). */
+export function memoryNoticeTitle(m: MemoryCommit): string {
+  const n = m.files.length;
+  const where = m.places.length > 0 ? ` in ${m.places.join(", ")}` : "";
+  return `Claude Code's memory changed: ${n} note${n === 1 ? "" : "s"}${where}`;
+}
+
+/** A memory file's path without the CLI's folder name (`-Users-…/x.md` →
+ *  `x.md`): the folder is already in the title. */
+export function memoryFileName(path: string): string {
+  const i = path.indexOf("/");
+  return i >= 0 ? path.slice(i + 1) : path;
 }
 
 export function proposalNoticeId(p: ProposalNotice): string {
@@ -236,6 +255,18 @@ export function buildNotices(s: NoticeSources): Notice[] {
       applied: a,
     });
   }
+  for (const m of s.memory ?? []) {
+    const n = m.files.length;
+    out.push({
+      kind: "memory",
+      id: `memory:${m.hash}`,
+      title: memoryNoticeTitle(m),
+      detail: m.files.map((f) => memoryFileName(f.path)).join(", ") || `${n} files`,
+      at: m.at,
+      project: null,
+      memory: m,
+    });
+  }
   for (const r of s.rows) {
     const info = r.nightshift;
     if (!info) continue;
@@ -290,7 +321,7 @@ export function buildNotices(s: NoticeSources): Notice[] {
 
 /** How many of each kind, for the panel's headings and the bell's count. */
 export function countsOf(notices: Notice[]): Record<NoticeKind, number> {
-  const c: Record<NoticeKind, number> = { proposal: 0, dream: 0, morning: 0, blocker: 0, release: 0, cli: 0 };
+  const c: Record<NoticeKind, number> = { proposal: 0, dream: 0, memory: 0, morning: 0, blocker: 0, release: 0, cli: 0 };
   for (const n of notices) c[n.kind]++;
   return c;
 }

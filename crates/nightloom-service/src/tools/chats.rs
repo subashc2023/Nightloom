@@ -127,7 +127,9 @@ const SEARCH_DESC: &str = "Find which of the user's other chats are about someth
      and before (YYYY-MM-DD) keep only turns from that range; with them and no query, it \
      lists the chats active in the range instead, newest first — for questions like 'what \
      did we do yesterday'. speaker counts only the user's words or only the assistant's. scope is the open project's chats by default; all searches every \
-     project and the unfiled chats; chain searches only this chat's hand-off chain — the chats \
+     project and the unfiled chats, and the Claude Code sessions the user ran outside Nightloom \
+     (the terminal, the Claude desktop app, VS Code), whose lines are labelled [Claude Code, \
+     outside Nightloom] and whose titles say where each ran; chain searches only this chat's hand-off chain — the chats \
      it continues from (each started from the one before when it filled up) and any that \
      continue it, which are one long conversation cut into pieces — with no recency discount, \
      each line labelled by how many hand-offs back it is; give session to search the chain of \
@@ -393,7 +395,16 @@ fn covered(dirs: &ChatDirs, scope: Scope) -> (Vec<(&Path, Option<String>)>, Stri
                 .iter()
                 .map(|d| (d.dir.as_path(), Some(d.name.clone())))
                 .collect(),
-            "every project's chats and the unfiled ones".to_string(),
+            if dirs
+                .all
+                .iter()
+                .any(|d| d.name == crate::outside::OUTSIDE_NAME)
+            {
+                "every project's chats, the unfiled ones and Claude Code sessions outside Nightloom"
+                    .to_string()
+            } else {
+                "every project's chats and the unfiled ones".to_string()
+            },
         ),
         // Never reached: a chain is walked by `search_chain`, which finds
         // its own directory.

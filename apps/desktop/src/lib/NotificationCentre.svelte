@@ -23,7 +23,7 @@
     revertDreamFile,
     runDailyPass,
   } from "./state.svelte";
-  import { KIND_LABEL, KIND_ORDER, countsOf, isInstructionsFile, type Notice, type NoticeKind } from "./centre";
+  import { KIND_LABEL, KIND_ORDER, countsOf, isInstructionsFile, memoryFileName, type Notice, type NoticeKind } from "./centre";
   import { relativeTime } from "./time";
   import { hourLabel } from "./nightshiftFace";
   import DiffView from "./DiffView.svelte";
@@ -102,7 +102,7 @@
   });
 
   async function showDiff(n: Notice) {
-    if (!n.commit && !n.applied) return;
+    if (!n.commit && !n.applied && !n.memory) return;
     if (shown === n.id) {
       shown = null;
       return;
@@ -112,9 +112,11 @@
     diffError = null;
     diffLoading = true;
     try {
-      diff = n.commit
-        ? await api.centreDreamDiff(n.commit.repo, n.commit.hash)
-        : await api.centreAppliedDiff(n.applied!.project?.id ?? null, n.applied!.entry.id);
+      diff = n.memory
+        ? await api.centreClaudeMemoryDiff(n.memory.hash)
+        : n.commit
+          ? await api.centreDreamDiff(n.commit.repo, n.commit.hash)
+          : await api.centreAppliedDiff(n.applied!.project?.id ?? null, n.applied!.entry.id);
     } catch (e) {
       diffError = String(e);
     } finally {
@@ -204,7 +206,7 @@
                 <div class="centre-actions">
                   {#if n.kind === "proposal"}
                     <button class="ns-btn small" onclick={() => void openNotice(n)}>Review the diff</button>
-                  {:else if n.kind === "dream"}
+                  {:else if n.kind === "dream" || n.kind === "memory"}
                     <button class="ns-btn small" onclick={() => void showDiff(n)}>{shown === n.id ? "Hide the diff" : "Show the diff"}</button>
                   {:else if n.kind === "morning"}
                     <button class="ns-btn small" onclick={() => void openNotice(n)}>Read it</button>
@@ -234,6 +236,22 @@
                   </div>
                   <div class="centre-diff">
                     <DiffView text={diff} loading={diffLoading} error={diffError} leftLabel="before the dream" rightLabel="after" />
+                  </div>
+                {/if}
+                {#if n.kind === "memory" && shown === n.id && n.memory}
+                  <!-- Claude Code's own memory (item 751): Nightloom keeps a
+                       copy and never writes his files, so no Revert here. -->
+                  <div class="centre-files">
+                    {#each n.memory.files as f (f.path)}
+                      <div class="centre-file">
+                        <span class="mono centre-path" use:tip={f.path}>{memoryFileName(f.path)}</span>
+                        <span class="centre-pm"><span class="plus">+{f.added}</span> <span class="minus">−{f.removed}</span></span>
+                      </div>
+                    {/each}
+                  </div>
+                  <div class="centre-detail">A copy Nightloom keeps; it never edits Claude Code's memory files.</div>
+                  <div class="centre-diff">
+                    <DiffView text={diff} loading={diffLoading} error={diffError} leftLabel="before" rightLabel="after" />
                   </div>
                 {/if}
                 {#if n.kind === "dream" && shown === n.id && n.commit}

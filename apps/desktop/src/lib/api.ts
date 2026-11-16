@@ -59,6 +59,8 @@ import type {
   ProposalScope,
   ProviderInfo,
   DreamCommit,
+  MemoryCommit,
+  OutsideSync,
   AppliedNotice,
   BuildStamp,
   TidyOutcome,
@@ -1890,6 +1892,23 @@ export function centreProposals(): Promise<ProposalNotice[]> {
 /** The newest dream commits per folder, with the files each touched. */
 export function centreDreamCommits(limit?: number): Promise<DreamCommit[]> {
   return invoke("centre_dream_commits", { limit });
+}
+
+/** Version Claude Code's memory folders and list the newest changes
+ *  (item 751): his files are read, never written. */
+export function centreClaudeMemory(limit?: number): Promise<MemoryCommit[]> {
+  return invoke("centre_claude_memory", { limit });
+}
+
+/** One Claude Code memory change's patch, whole or for one file. */
+export function centreClaudeMemoryDiff(hash: string, file?: string): Promise<string> {
+  return invoke("centre_claude_memory_diff", { hash, file });
+}
+
+/** Mirror Claude Code sessions Nightloom did not start, said-only, so
+ *  search_chats and capture read them (item 751). */
+export function outsideSync(): Promise<OutsideSync> {
+  return invoke("outside_sync");
 }
 
 /** One dream commit's patch, whole or for one file. */

@@ -451,6 +451,16 @@ passes both as a `ChatDirs { active, all: Vec<ChatDir { name, dir }> }`, taken
 at connect time like the rest of `ChatSpec`. An empty search names its scope,
 for the reason `grep`'s does.
 
+**Claude Code sessions outside Nightloom (item 751, 2026-11-16).** `all` also
+covers the sessions he ran in the terminal, the Claude desktop app or VS Code,
+once the desktop has mirrored them (`outside.rs`, [service-data.md](service-data.md)
+"Claude Code outside Nightloom"): the mirror is one more `ChatDir`, named
+`Claude Code, outside Nightloom`, so each hit is tagged `[Claude Code, outside
+Nightloom]` and its title ends with where it ran (`· Claude Code desktop app,
+Nightloom/nightshift-code`). Both shells list it — `capture::session_dirs` for
+the MCP server, `connect.rs` for the provider engine — only when the folder
+exists, and the header of an `all` search names it.
+
 **`scope: chain` (item 737, 2026-11-16).** His question: "all the chats that are
 technically a part of the same chat except arbitrarily split up by 300k handoff
 checkpoints". A chat that continues another has `forked_from { session, reason:
