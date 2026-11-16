@@ -85,6 +85,17 @@ describe("item 689: a Markdown table ⇄ the grid", () => {
     expect(px[0]).toBeLessThan(px[1]);
   });
 
+  it("column widths: whole pixels never wider than the box, so no scroll bar for a pixel (689 check)", () => {
+    const values = gridValues(parseTable(Q3)!);
+    for (let w = 300; w <= 900; w += 7) {
+      const px = columnPx(values, w);
+      expect(px.every((x) => Number.isInteger(x))).toBe(true);
+      expect(px.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(w);
+      expect(px.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(w - 1);
+    }
+    expect(columnPx([["Op", "Cost", "Why"], ["Op 1", "O(n)", "x"]], 648).reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(648);
+  });
+
   it("hasTable: a pipe line then a rule; not a setext heading, not a pipe in prose", () => {
     expect(hasTable(Q3)).toBe(true);
     expect(hasTable("Before\n\n" + Q3 + "\n\nafter")).toBe(true);
