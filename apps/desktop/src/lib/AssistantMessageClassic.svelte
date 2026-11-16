@@ -64,6 +64,8 @@
     type SubagentRow,
   } from "./state.svelte";
   import { agentCallContent, agentRowLine, isAgentCall } from "./subagentRows";
+  // Item 718: a helper row says whether it is a new helper or a continued one.
+  import { helperMark } from "./helperMark";
   import type { TabContent } from "./tabs";
   import ApprovalPrompt from "./ApprovalPrompt.svelte";
   import AskAnswered from "./AskAnswered.svelte";
@@ -774,6 +776,7 @@
               {@const running = streaming && !seg.call.result && !seg.call.denied}
               {@const bornW = births.of(ids[i] || `tool:${i}`, streaming, !running)}
               {@const editDiff = editDiffOf(seg.call.name, seg.call.input)}
+              {@const hm = helperMark(seg.call, app.subagents, app.activeSessionId, streaming)}
               {@const shell = isShellCall(seg.call.name)}
               {@const remnant = !running && shell && passingEnded(seg.call.id)}
               <div class="row-wrap tool" class:rm-born={bornW} class:rm-finished={bornW && !running} class:bash-pass={(running && shell) || remnant}>
@@ -804,7 +807,11 @@
                 >
                   <span class="ico">{#if icon}<Icon name={icon} size={13} />{:else}⚒{/if}</span>
                   <span class="name" use:tip={seg.call.name}>{shortToolName(seg.call.name)}</span>
-                  <span class="arg">{toolInputSummary(seg.call.input)}</span>
+                  <span class="arg"
+                    >{#if hm}<span class="hm" class:cont={hm.kind === "continued"} use:tip={hm.title} data-testid="helper-mark" data-kind={hm.kind}
+                        >{#if hm.kind === "continued"}<span class="hm-g" aria-hidden="true">↻</span>{/if}{hm.label}</span
+                      >{/if}{toolInputSummary(seg.call.input)}</span
+                  >
                   <span class="size" use:tip={agentRow ? `${seg.call.name} call · ${toolResultSummary(seg.call, streaming)}` : undefined}
                     >{agentRow ? agentRowLine(agentRow) : toolResultSummary(seg.call, streaming)}</span
                   >
@@ -1412,6 +1419,30 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  /* Item 718: new vs continued helper, in Classic's quiet chrome: a small
+     outlined tag, the accent for a new helper, dim and dashed with a turn
+     glyph for one continued. */
+  .hm {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    margin-right: 6px;
+    padding: 0 5px;
+    height: 15px;
+    vertical-align: 1px;
+    font: 500 9.5px/1 var(--sans);
+    color: var(--accent, var(--text));
+    border: 1px solid color-mix(in srgb, var(--accent, var(--text)) 45%, transparent);
+    border-radius: 7px;
+  }
+  .hm.cont {
+    color: var(--dim);
+    border-style: dashed;
+    border-color: color-mix(in srgb, var(--dim) 60%, transparent);
+  }
+  .hm-g {
+    font-size: 10px;
   }
   /* The summary's first line (board 6, `thought · summary`): prose, not
      an argument, so the interface face in italic. */
