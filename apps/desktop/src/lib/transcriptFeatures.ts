@@ -69,6 +69,7 @@ export const TRANSCRIPT_FEATURES: Record<string, Where> = {
   "keep-warm notice": mainOnly("the chat's cache; the aside rides it"),
   "connect error card, error banner": mainOnly("the chat's connection; an aside's error is a note under its exchange, in the same look"),
   "continued-from line": mainOnly("a chat's lineage"),
+  "session-cut notice (item 703), resumed": mainOnly("an aside runs no subagents to cut"),
   "queued / stalled notice, one aside at a time": asideOnly,
   "stopped-here mark, error under an exchange": asideOnly,
   "quoted passage at the head, Fold into thread at the end": asideOnly,
@@ -93,6 +94,7 @@ export const TRANSCRIPT_PIECES: Record<string, Where> = {
   ApprovalPrompt: TRANSCRIPT_FEATURES["approval prompts, answer hand-back"]!,
   AskHandBack: TRANSCRIPT_FEATURES["approval prompts, answer hand-back"]!,
   BudgetStopCard: TRANSCRIPT_FEATURES["budget stop card"]!,
+  SessionCutNotice: TRANSCRIPT_FEATURES["session-cut notice (item 703), resumed"]!,
 };
 
 /**
@@ -101,7 +103,7 @@ export const TRANSCRIPT_PIECES: Record<string, Where> = {
  * it in `TRANSCRIPT_FEATURES`, then update the count.
  */
 export const KIND_GUARDS = {
-  isChat: 14,
+  isChat: 15,
   inPane: 8,
   inAside: 7,
   "src.chatActions": 10,
