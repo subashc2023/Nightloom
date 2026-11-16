@@ -229,6 +229,7 @@ import {
   handoff,
   hasOwnMessage,
   message,
+  wrapUpToSend,
   noteActivity,
   noteAgentTurnEnd,
   noteFill,
@@ -268,7 +269,9 @@ describe("noteFill and the queue", () => {
     const q = readDraft("chat-a").queue;
     expect(q).toHaveLength(1);
     expect(q[0].id).toBe(handoff.queuedId);
-    expect(q[0].text).toBe(message("chat-a"));
+    // Item 747: the queued wrap-up is the message with the fixed sections under it.
+    expect(q[0].text).toBe(wrapUpToSend("chat-a"));
+    expect(q[0].text.startsWith(message("chat-a"))).toBe(true);
     // A later reading, still away, queues nothing more.
     noteFill("chat-a", 80, 100, true);
     expect(readDraft("chat-a").queue).toHaveLength(1);
