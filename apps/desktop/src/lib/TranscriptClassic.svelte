@@ -75,6 +75,10 @@
   import { continuedFlags } from "./runs";
   import { samePassage, selectionText, type AsideQuote } from "./asideQuote";
   import { pillParts, requestReply } from "./replyQuote.svelte";
+  import { addComment } from "./drafts.svelte";
+  import { requestCommentFocus } from "./commentRequest.svelte";
+  import type { CommentSource } from "./passageComments";
+  import { diffPassage } from "./diffPassage";
   // Item 694: a passage that gives way to the message box is held there.
   import { dropHeld, focusIsMainBox, holdPassage } from "./heldPassage.svelte";
   import { PREFERRED_CARD_HEIGHT, chooseSide, offsetsOf, type AsideAnchor } from "./asideCard";
@@ -2142,7 +2146,10 @@
   // was free (no KeyA in `App.svelte`'s tables, no such accelerator in
   // the native menu — grepped 2026-09-16).
   const PILL_HEIGHT = 30;
-  let asidePill = $state<{ quote: AsideQuote; top: number; left: number } | null>(null);
+  let asidePill = $state<{ quote: AsideQuote; top: number; left: number; source: CommentSource } | null>(null);
+  /** Item 754: the pill's *Comment* — the chat's own transcript only (an
+   *  aside card's thread and a pane have none), any engine, mid-turn too. */
+  const PLAN_TURN = -1;
   // ~~A turn starting, or the engine changing, takes the pill down without
   // waiting for the next selection change.~~ Since backlog 215
   // (2026-09-25) the pill also carries *Reply*, which works on any engine
@@ -2153,6 +2160,7 @@
   // as the composer's own aside box already allowed. A pane still offers
   // no pill (piece 5).
   const canAsk = $derived(onClaudeCode && chat === undefined);
+  const canComment = $derived(!inPane);
 
   // Per turn index, the message's 1-based place among the live messages
   // of its kind — "your 3rd reply" in the framing. Rewound and removed
@@ -2179,7 +2187,9 @@
     // Item 481: an aside card's thread has its own Reply (`AsideThread`).
     if (prose.closest(".aside-thread")) return null;
     const turnEl = prose.closest<HTMLElement>("[data-turn]");
-    if (!turnEl) return null;
+    // Item 754: a plan card waiting at the foot (not inside a turn) is a
+    // passage too, for Reply and Comment.
+    if (!turnEl) return prose.closest("[data-plan-text]") ? { turn: PLAN_TURN, prose, role: "assistant" } : null;
     const turn = Number(turnEl.dataset.turn);
     if (!Number.isFinite(turn)) return null;
     return { turn, prose, role: prose.classList.contains("user-text") ? "user" : "assistant" };
@@ -2194,7 +2204,7 @@
     const b = proseEnd(sel.focusNode);
     if (!samePassage(a, b) || !a) return null;
     const item = items.find((it) => it.index === a.turn);
-    if (!item || item.superseded || item.removed || item.kind === "compaction") return null;
+    if (a.turn !== PLAN_TURN && (!item || item.superseded || item.removed || item.kind === "compaction")) return null;
     // Not `sel.toString()`: a rendered equation reads as its layout, and
     // the model would get that (his report, 2026-09-17); `selectionText`
     // quotes each equation as its `$…$` source instead.
@@ -2234,6 +2244,19 @@
     if (!p) {
       holdIfIntoBox();
       asidePill = null;
+      // Item 754: a selection inside one diff offers Comment alone.
+      const d = canComment ? diffPassage(document.getSelection(), viewport) : null;
+      if (d) {
+        const r = d.range.getBoundingClientRect();
+        const vp = viewport.getBoundingClientRect();
+        if ((r.width === 0 && r.height === 0) || r.bottom < vp.top || r.top > vp.bottom) return;
+        const top =
+          r.top - PILL_HEIGHT - 4 >= vp.top
+            ? r.top - PILL_HEIGHT - 4
+            : Math.max(vp.top + 4, Math.min(r.bottom + 4, vp.bottom - PILL_HEIGHT - 4));
+        const left = Math.min(Math.max(r.left + r.width / 2, vp.left + 60), vp.right - 60);
+        asidePill = { quote: { text: d.text, role: "assistant", ordinal: 0 }, top, left, source: "diff" };
+      }
       return;
     }
     const r = p.range.getBoundingClientRect();
@@ -2257,9 +2280,16 @@
     const top = above
       ? r.top - PILL_HEIGHT - 4
       : Math.max(vp.top + 4, Math.min(r.bottom + 4, vp.bottom - PILL_HEIGHT - 4));
-    // 110: half the pill's width with both of its buttons (backlog 215).
-    const left = Math.min(Math.max(r.left + r.width / 2, vp.left + 110), vp.right - 110);
-    asidePill = { quote: p.quote, top, left };
+    // 110: half the pill's width with both of its buttons (backlog 215);
+    // 150 with Comment beside them (item 754).
+    const half = canComment ? 150 : 110;
+    const left = Math.min(Math.max(r.left + r.width / 2, vp.left + half), vp.right - half);
+    const source: CommentSource = p.prose.closest("[data-plan-text]")
+      ? "plan"
+      : p.quote.role === "user"
+        ? "message"
+        : "reply";
+    asidePill = { quote: p.quote, top, left, source };
   }
 
   /** Item 694: the passage the pill shows, kept so that when the
@@ -2294,7 +2324,7 @@
    *  is nothing to confirm. */
   function askAboutSelection(): void {
     const pill = asidePill;
-    if (!pill || !canAsk) return;
+    if (!pill || !canAsk || pill.source === "diff") return;
     const anchor = anchorOfSelection();
     document.getSelection()?.removeAllRanges();
     asidePill = null;
@@ -2306,9 +2336,23 @@
 
   /** Reply (backlog 215): the passage to the composer as a quote at its
    *  caret (`replyQuote.svelte.ts`; the composer inserts it). */
+  /** Comment (item 754): the passage becomes a comment chip over the
+   *  chat's box, its comment line open with the caret in it
+   *  (`passageComments.ts`); the selection goes, the view stays. */
+  function commentOnSelection(): void {
+    const pill = asidePill;
+    if (!pill || !canComment) return;
+    document.getSelection()?.removeAllRanges();
+    asidePill = null;
+    const k = chatBoxKey();
+    const ordinal = pill.source === "plan" ? 0 : pill.quote.ordinal;
+    const id = addComment(k, pill.quote.text, pill.source, ordinal);
+    requestCommentFocus(k, id);
+  }
+
   function replyToSelection(): void {
     const pill = asidePill;
-    if (!pill) return;
+    if (!pill || pill.source === "diff") return;
     document.getSelection()?.removeAllRanges();
     asidePill = null;
     requestReply(pill.quote.text);
@@ -3088,7 +3132,7 @@
 <!-- The Ask aside pill over a selection (backlog 107), with Reply beside
      it since backlog 215. Mousedown is swallowed on both so the click
      keeps the selection it is about. -->
-{#if asidePill}
+{#if asidePill && asidePill.source !== "diff"}
   <!-- One outline since item 223 (his ask: "part of the same view"),
        a thin divider between the two; Reply alone when asking aside is
        not offered (`pillParts`). -->
@@ -3116,6 +3160,29 @@
         </button>
       {/if}
     {/each}
+    {#if canComment}
+      <span class="pill-div" aria-hidden="true"></span>
+      <button
+        class="pill-btn"
+        use:tip={"Comment: keep this passage as a comment chip over the message box and write what you think of it; Send sends every comment, each passage quoted, as one message"}
+        onmousedown={(e) => e.preventDefault()}
+        onclick={commentOnSelection}
+      >
+        Comment
+      </button>
+    {/if}
+  </div>
+{:else if asidePill}
+  <!-- Item 754: over a diff, Comment alone (Ask aside and Reply are for prose). -->
+  <div class="aside-pill" style:top="{asidePill.top}px" style:left="{asidePill.left}px">
+    <button
+      class="pill-btn"
+      use:tip={"Comment: keep these diff lines as a comment chip over the message box and write what you think of them; Send sends every comment as one message"}
+      onmousedown={(e) => e.preventDefault()}
+      onclick={commentOnSelection}
+    >
+      Comment
+    </button>
   </div>
 {/if}
 

@@ -464,7 +464,9 @@
         {#if plan !== null}
           <!-- The plan is model text, in the transcript's face; the rule
                under it keeps it from reading as part of the form. -->
-          <div class="planv">
+          <!-- data-plan-text (item 754): the transcript's selection pill
+               offers Reply and Comment on a passage of the plan. -->
+          <div class="planv" data-plan-text>
             <div class="markdown">{@html renderMarkdown(plan)}</div>
           </div>
         {:else}
