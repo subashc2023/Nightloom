@@ -21,6 +21,8 @@ export interface Reading {
   ok: boolean;
   /** Something is wrong (not connected, the folder is missing). */
   warn: boolean;
+  /** More for the hover (item 714: where the Model's window came from). */
+  title?: string;
 }
 
 export interface ReadingsInput {
@@ -33,6 +35,10 @@ export interface ReadingsInput {
   cliVersion: string | null;
   model: string | null;
   limit: number | null;
+  /** Where `limit` came from when no turn reported it (item 714): the
+   *  model it is of, named, and the source in full for the hover. */
+  windowName?: string | null;
+  windowFrom?: string | null;
   project: { root: string | null; exists: boolean } | null;
   notes: number;
   vault: number;
@@ -176,7 +182,14 @@ export function readings(i: ReadingsInput): Reading[] {
       label: "Model",
       short: m,
       value: m,
-      sub: i.limit ? `${shortTokens(i.limit)} window · cache cold` : "window unknown",
+      // ~~"window unknown" whenever no turn had reported one~~ (item 714): the
+      // alias's known model gives it, and the line names that source.
+      sub: i.limit
+        ? `${shortTokens(i.limit)} window${i.windowName ? ` · ${i.windowName}` : ""} · cache cold`
+        : "window unknown until the first turn",
+      ...(i.limit && i.windowFrom
+        ? { title: `The ${shortTokens(i.limit)} window is Nightloom's limits table's figure for ${i.windowFrom}; the first turn's own report replaces it.` }
+        : {}),
       ok: false,
       warn: false,
     });

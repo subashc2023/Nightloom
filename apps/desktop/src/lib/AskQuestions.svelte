@@ -7,8 +7,9 @@
   // follows the scroll. Drawn by the desktop card (ApprovalPrompt) and the phone's card (Remote); each host
   // keeps its own note, Answer and Skip, and owns `picks`/`others`.
   import type { Snippet } from "svelte";
+  import { tip } from "./tip";
   import type { AskQuestion } from "./types";
-  import { hasPreviews, isAnswered, keyPick, previewOption, spyIndex } from "./askQuestions";
+  import { hasPreviews, isAnswered, keyPick, previewOption, spyIndex, type OptionNotes } from "./askQuestions";
 
   let {
     questions,
@@ -17,6 +18,8 @@
     others,
     ontoggle,
     onother,
+    notes = {},
+    onnote,
     folded = false,
     tail,
   }: {
@@ -26,6 +29,10 @@
     others: Record<number, string>;
     ontoggle: (i: number, label: string, multi: boolean) => void;
     onother: (i: number, value: string) => void;
+    /** Item 712: his comment on each option, question → label → text; the host owns it and sends it with
+     *  the answer. Without `onnote` the options have no comment control. */
+    notes?: Record<number, OptionNotes>;
+    onnote?: (i: number, label: string, value: string) => void;
     folded?: boolean;
     tail?: Snippet;
   } = $props();
@@ -37,6 +44,25 @@
   let strip = $state<HTMLDivElement | null>(null);
   const secs: (HTMLElement | null)[] = $state([]);
   const otherEls: (HTMLTextAreaElement | null)[] = $state([]);
+  // Item 712: which options' comment fields are open (`i:label`); one with text in it stays open.
+  let noteOpen = $state<Record<string, boolean>>({});
+  const noteKey = (i: number, label: string) => `${i}:${label}`;
+  const noteOf = (i: number, label: string) => notes[i]?.[label] ?? "";
+
+  function toggleNote(i: number, label: string) {
+    const k = noteKey(i, label);
+    const open = !(noteOpen[k] || noteOf(i, label).trim() !== "");
+    noteOpen[k] = open;
+    if (open) queueMicrotask(() => document.getElementById(`${idBase}-q${i}-n-${label}`)?.focus());
+  }
+
+  /** Typing a comment picks its option: the comment is about that answer. */
+  function typeNote(i: number, label: string, multi: boolean, el: HTMLTextAreaElement) {
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+    if (el.value.trim() !== "" && !(picks[i] ?? []).includes(label)) ontoggle(i, label, multi);
+    onnote?.(i, label, el.value);
+  }
 
   // The box that scrolls the questions: the desktop card once it reaches its cap, else the transcript (or
   // the phone's page) — the nearest ancestor that scrolls.
@@ -207,8 +233,46 @@
                   <span class="aq-ol">{o.label}</span>
                   {#if o.description}<span class="aq-od">{o.description}</span>{/if}
                 </span>
+                {#if onnote}
+                  {@const has = noteOf(i, o.label).trim() !== ""}
+                  <button
+                    type="button"
+                    class="aq-cb"
+                    class:has
+                    aria-label="comment on {o.label}"
+                    aria-expanded={!!noteOpen[noteKey(i, o.label)] || has}
+                    use:tip={has ? "Your comment goes with this answer" : "Add a comment to this option — it goes with the answer"}
+                    onclick={(e) => {
+                      e.preventDefault();
+                      toggleNote(i, o.label);
+                    }}
+                    ><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"
+                      ><path
+                        d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.4"
+                        stroke-linejoin="round"
+                      /></svg
+                    ></button
+                  >
+                {/if}
                 <kbd class="aq-k" aria-hidden="true">{k + 1}</kbd>
               </label>
+              {#if onnote && (noteOpen[noteKey(i, o.label)] || noteOf(i, o.label).trim() !== "")}
+                <div class="aq-cm" class:on>
+                  <textarea
+                    class="aq-cmin"
+                    id="{idBase}-q{i}-n-{o.label}"
+                    rows="1"
+                    value={noteOf(i, o.label)}
+                    oninput={(e) => typeNote(i, o.label, multi, e.currentTarget)}
+                    placeholder="A comment on “{o.label}” — goes with the answer"
+                    aria-label="comment on {o.label}"
+                    autocomplete="off"
+                  ></textarea>
+                </div>
+              {/if}
             {/each}
             <label class="aq-opt aq-other" class:on={typed}>
               <span class="aq-mk" class:sq={multi} aria-hidden="true"
@@ -510,6 +574,70 @@
     padding: 0 5px;
     margin-top: 2px;
   }
+  /* Item 712: a comment on an option — a quiet bubble beside its number key, lit when it holds a comment;
+     the field opens under the option, indented to its text. */
+  .aq-cb {
+    flex: none;
+    display: inline-grid;
+    place-items: center;
+    width: 22px;
+    height: 20px;
+    margin-top: 0;
+    padding: 0;
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: var(--dim);
+    opacity: 0.55;
+    cursor: pointer;
+  }
+  .aq-opt:hover .aq-cb,
+  .aq-cb:focus-visible,
+  .aq-cb[aria-expanded="true"] {
+    opacity: 1;
+  }
+  .aq-cb:hover {
+    color: var(--ink);
+    border-color: var(--line);
+  }
+  .aq-cb.has {
+    color: var(--accent);
+    opacity: 1;
+  }
+  .aq-cb:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 0;
+  }
+  .aq-cm {
+    padding: 0 8px 6px 37px;
+    margin-top: -4px;
+  }
+  .aq-cmin {
+    display: block;
+    resize: none;
+    overflow: hidden;
+    width: 100%;
+    box-sizing: border-box;
+    background: transparent;
+    border: 0;
+    border-left: 2px solid var(--line2);
+    border-radius: 0;
+    padding: 2px 0 2px 8px;
+    font-family: var(--sans);
+    font-size: 13px;
+    line-height: 1.4;
+    color: var(--ink2, var(--ink));
+  }
+  .aq-cm.on .aq-cmin {
+    border-left-color: var(--accent);
+  }
+  .aq-cmin::placeholder {
+    color: var(--dim);
+  }
+  .aq-cmin:focus {
+    outline: none;
+    border-left-color: var(--accent);
+  }
   .aq-other {
     cursor: text;
   }
@@ -600,5 +728,49 @@
     .aq-mk {
       margin-top: 0;
     }
+  }
+  /* Item 713: Jarvis's face for the questions — mono capital heads (tabs, the
+     "1 · STORE" line, "Claude asks"), the lit tab's amber underline with the
+     accent glow, the Next a Jarvis control. Classic keeps the rules above. */
+  :global(:where(:root:not([data-layout="classic"]))) .aq-tab {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aq-tab.on {
+    color: var(--accent-ink, var(--ink));
+    box-shadow: 0 1px 0 0 var(--accent), 0 3px 6px -3px var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aq-h,
+  :global(:where(:root:not([data-layout="classic"]))) .aq-one {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--dim);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aq-any {
+    font-family: var(--mono);
+    letter-spacing: 0.08em;
+    color: var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aq-opt.on {
+    box-shadow: inset 2px 0 0 var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aq-next {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    min-height: 28px;
+    border-radius: var(--r1);
+    border: 1px solid var(--line2);
+    background: var(--well);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aq-next:hover {
+    border-color: var(--accent);
   }
 </style>

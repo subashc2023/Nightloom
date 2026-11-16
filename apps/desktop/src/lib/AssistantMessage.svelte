@@ -61,6 +61,8 @@
     type SubagentRow,
   } from "./state.svelte";
   import { agentCallContent, agentRowLine, isAgentCall } from "./subagentRows";
+  // Item 718: a helper row says whether it is a new helper or a continued one.
+  import { helperMark } from "./helperMark";
   import type { TabContent } from "./tabs";
   import ApprovalPrompt from "./ApprovalPrompt.svelte";
   import AskAnswered from "./AskAnswered.svelte";
@@ -887,7 +889,7 @@
           <div class="arow static" class:error={!c.call.denied && errorWeight(c.call.result) === "hard"}
             class:soft={!c.call.denied && errorWeight(c.call.result) === "soft"} class:sub-pass={childRun || childRem}>
             <!-- Item 649: a subagent's command passes its output too. -->
-            {#if childRun || childRem}<BashPassing id={c.call.id} ended={childRem} />{/if}
+            {#if childRun || childRem}<BashPassing id={c.call.id} ended={childRem} input={c.call.input} />{/if}
             <span class="ico">{#if icon}<Icon name={icon} size={13} />{:else}⚒{/if}</span>
             <span class="name" use:tip={c.call.name}>{shortToolName(c.call.name)}</span>
             <span class="arg">{toolInputSummary(c.call.input)}</span>
@@ -1048,6 +1050,7 @@
               {@const running = streaming && !seg.call.result && !seg.call.denied}
               {@const bornW = births.of(ids[i] || `tool:${i}`, streaming, !running)}
               {@const editDiff = editDiffOf(seg.call.name, seg.call.input)}
+              {@const hm = helperMark(seg.call, app.subagents, app.activeSessionId, streaming)}
               {@const kind = toolKind(seg.call.name)}
               {@const remnant = !running && kind === "shell" && passingEnded(seg.call.id)}
               <div class="row-wrap tool" class:running class:rm-born={bornW} class:rm-finished={bornW && !running}
@@ -1055,9 +1058,9 @@
                 use:stepRamp={rampTool(seg.call.id, bornW, running)}>
                 {#if running}{@render stepLive(kind, false)}{/if}
                 <!-- Item 633: the command's real output passing behind the row. -->
-                {#if running && kind === "shell"}<BashPassing id={seg.call.id} />{/if}
+                {#if running && kind === "shell"}<BashPassing id={seg.call.id} input={seg.call.input} />{/if}
                 <!-- Item 649: and its last lines a moment after it ends, fading. -->
-                {#if remnant}<BashPassing id={seg.call.id} ended />{/if}
+                {#if remnant}<BashPassing id={seg.call.id} ended input={seg.call.input} />{/if}
                 <!-- An Agent call's row is a drag source (backlog 160): its
                      subagent's transcript as a tab, dropped on a strip or a
                      pane's half — live while it runs (guess pass 2026-09-25,
@@ -1081,7 +1084,11 @@
                 >
                   {@render stepHead(i, running ? "running" : seg.call.denied ? "denied" : bad ? "error" : soft ? "soft" : "done", kind)}
                   <span class="name" use:tip={seg.call.name}>{shortToolName(seg.call.name)}</span>
-                  <span class="arg">{toolInputSummary(seg.call.input)}</span>
+                  <span class="arg"
+                    >{#if hm}<span class="hm" class:cont={hm.kind === "continued"} use:tip={hm.title} data-testid="helper-mark" data-kind={hm.kind}
+                        >{#if hm.kind === "continued"}<span class="hm-g" aria-hidden="true">↻</span>{/if}{hm.label}</span
+                      >{/if}{toolInputSummary(seg.call.input)}</span
+                  >
                   {@render stepBar(i, running ? "running" : bad ? "error" : soft ? "soft" : "done", running ? helperContext(seg.call) : null)}
                   <span class="size" use:tip={agentRow ? `${seg.call.name} call · ${toolResultSummary(seg.call, streaming)}` : undefined}
                     >{agentRow ? agentRowLine(agentRow) : running && stepMs(i) !== null ? `running ${fmtSecs(stepMs(i)!)}` : toolResultSummary(seg.call, streaming)}</span
@@ -1955,6 +1962,33 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  /* Item 718: new vs continued helper — Jarvis's reticle ink: a hairline
+     bracket box in the signal colour for a new helper, dashed with a turn
+     glyph for one continued. Mono caps, before the argument. */
+  .hm {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    margin-right: 6px;
+    padding: 0 4px;
+    height: 14px;
+    vertical-align: 1px;
+    font: 600 8.5px/1 var(--mono);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--signal);
+    border: 1px solid color-mix(in srgb, var(--signal) 55%, transparent);
+    border-radius: 2px;
+    background: color-mix(in srgb, var(--signal) 10%, transparent);
+  }
+  .hm.cont {
+    border-style: dashed;
+    background: none;
+  }
+  .hm-g {
+    font-size: 9.5px;
+    letter-spacing: 0;
   }
   /* The summary's first line (board 6, `thought · summary`): prose, not
      an argument, so the interface face in italic. */

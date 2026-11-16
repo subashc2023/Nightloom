@@ -270,6 +270,8 @@
   });
   let picks = $state<Record<number, string[]>>({});
   let others = $state<Record<number, string>>({});
+  // Item 712: his comment on each option, sent with a picked one (`Label (note: …)`).
+  let notes = $state<Record<number, Record<string, string>>>({});
 
   function toggle(i: number, label: string, multi: boolean) {
     const cur = picks[i] ?? [];
@@ -289,7 +291,7 @@
   );
 
   function answerQuestions() {
-    const payload = buildAnswer(req.input, questions, picks, others) as { answers: Record<string, string> };
+    const payload = buildAnswer(req.input, questions, picks, others, notes) as { answers: Record<string, string> };
     // Kept by call id for the answered table under the call (354).
     recordAnswers(req.id, answeredRows(questions, payload.answers));
     decide("allow", payload);
@@ -408,6 +410,8 @@
       {others}
       ontoggle={toggle}
       onother={(i, v) => (others[i] = v)}
+      {notes}
+      onnote={(i, label, v) => (notes[i] = { ...(notes[i] ?? {}), [label]: v })}
       {folded}
     >
       {#snippet tail()}
@@ -1026,6 +1030,19 @@
     --aq-stick: 0px;
     --aq-strip-margin: 0 -14px;
     --aq-strip-pad: 4px 10px 0 14px;
+  }
+  /* Item 713: the question card in Jarvis — the composer's measures (8 px
+     corner, the raised surface), its lit edge (the accent border with
+     `--glow-main`), and the chat's dot ground behind the questions. The
+     tokens are empty under calm, so calm draws the plain card; Classic
+     keeps the rules above. */
+  :global(:where(:root:not([data-layout="classic"]))) .ask.qcard {
+    border-radius: var(--r2);
+    background-color: var(--raised);
+    background-image: var(--chat-dots, none);
+    background-size: 18px 18px;
+    box-shadow: var(--glow-main, none);
+    --aq-bg: var(--raised);
   }
   .ask.qcard.folded {
     padding: 0 14px;

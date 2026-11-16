@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import passingSrc from "./BashPassing.svelte?raw";
 
+// Item 721: the mask moved from the whole box to its output part (`.out`), so the command's head is not faded.
 const rule = passingSrc.slice(passingSrc.indexOf("  .passing {"), passingSrc.indexOf("  .pl {"));
 
 describe("the passing text can be seen (656)", () => {
