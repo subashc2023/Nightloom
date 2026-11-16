@@ -5723,6 +5723,7 @@
     font-family: var(--mono);
     font-size: 10.5px;
   }
-  /* Item 702: the whole folded bar expands on click. */
+
+  /* Item 702: the whole folded bar expands on click (both layouts). */
   .handoff-min-open { cursor: pointer; }
 </style>
