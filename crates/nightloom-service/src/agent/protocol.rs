@@ -377,6 +377,10 @@ pub(super) enum StreamEv {
 pub(super) struct StartHead {
     #[serde(default)]
     pub usage: Option<RawUsage>,
+    /// The round's message id (item 723): the `assistant` line carrying
+    /// the same id was streamed, so its text already arrived as deltas.
+    #[serde(default)]
+    pub id: Option<String>,
 }
 
 /// The head of a `content_block_start`: its type alone (`text`,

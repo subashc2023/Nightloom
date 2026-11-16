@@ -100,6 +100,9 @@ pub struct Stages {
     pub warm: Option<bool>,
     /// How long the waiting process had run when the turn took it (ms).
     pub warm_age: Option<u64>,
+    /// How the process ended (item 723): `result seen` or `no result`,
+    /// the streamed events, the exit and stderr's last line.
+    pub process: Option<String>,
 }
 
 impl Stages {
@@ -151,7 +154,11 @@ pub fn line(host: &str, chat: &str, stages: &Stages, outcome: &str) -> String {
         (Some(false), _) => "; spawn cold".into(),
         (None, _) => String::new(),
     };
-    format!("turn {host} chat {chat}: from {from}; {parts} ms{spawn}; {outcome}")
+    let process = match &stages.process {
+        Some(p) => format!("; {p}"),
+        None => String::new(),
+    };
+    format!("turn {host} chat {chat}: from {from}; {parts} ms{spawn}{process}; {outcome}")
 }
 
 /// Milliseconds since the epoch: the one clock the window (`Date.now()`)
@@ -200,6 +207,7 @@ struct Inner {
     written: bool,
     warm: Option<bool>,
     warm_age: Option<u64>,
+    process: Option<String>,
 }
 
 /// One turn's marks, shared by the command, the turn and the agent.
@@ -234,6 +242,7 @@ impl TurnTiming {
                 written: false,
                 warm: None,
                 warm_age: None,
+                process: None,
             }),
         });
         t.mark(Mark::Entered);
@@ -285,6 +294,12 @@ impl TurnTiming {
         }
     }
 
+    /// How the turn's process ended (item 723); the last call wins — a
+    /// turn that resumes runs a second process, and its end is the turn's.
+    pub fn set_process(&self, note: String) {
+        self.lock().process = Some(note);
+    }
+
     pub fn set_chat(&self, chat: &str) {
         self.lock().chat = chat.to_string();
     }
@@ -308,6 +323,7 @@ impl TurnTiming {
             end: inner.end.as_ref().map(|e| e.0),
             warm: inner.warm,
             warm_age: inner.warm_age,
+            process: inner.process.clone(),
         }
     }
 
@@ -438,6 +454,7 @@ mod tests {
             end: Some(3200),
             warm: Some(true),
             warm_age: None,
+            process: None,
         };
         assert_eq!(
             line(DESKTOP, "c-1", &s, "ok"),
@@ -456,6 +473,14 @@ mod tests {
             ..s.clone()
         };
         assert!(line(DESKTOP, "c-1", &aged, "ok").ends_with("ms; spawn warm, 412 ms old; ok"));
+        // Item 723: how the process ended, before the outcome.
+        let ended = Stages {
+            process: Some("result seen, 0 stream events, exit status: 0".into()),
+            ..aged.clone()
+        };
+        assert!(line(DESKTOP, "c-1", &ended, "ok").ends_with(
+            "ms; spawn warm, 412 ms old; result seen, 0 stream events, exit status: 0; ok"
+        ));
     }
 
     #[test]

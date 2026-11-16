@@ -91,6 +91,14 @@ pub struct AgentOutcome {
     /// Why the reply ended before its `result` line (backlog 332), set by
     /// the driver: the text that arrived is kept, and this says so.
     pub cut_off: Option<String>,
+    /// `stream_event` lines read (item 723): zero on a turn whose every
+    /// round came whole — the CLI's non-streaming fallback after its
+    /// streamed request failed.
+    pub stream_events: u32,
+    /// Main-thread rounds whose text arrived whole on their `assistant`
+    /// line, with no `message_start` for them (item 723), and so were
+    /// emitted from it.
+    pub whole_rounds: u32,
 }
 
 /// The usage limit that stopped a turn (nightshift backlog 164).
@@ -185,6 +193,15 @@ pub struct Translator {
     text_break: bool,
     /// The live context reading (backlog 590).
     live: LiveContext,
+    /// The rounds that streamed, by the id their `message_start` named
+    /// (item 723): an `assistant` line for any other id came whole.
+    streamed: HashSet<String>,
+    /// `stream_event` lines since the last main-thread `assistant` or
+    /// `user` line (item 723), where the rounds have no ids to go by.
+    events_since_line: u32,
+    /// The whole rounds counted in `whole_rounds`, once per id: the CLI
+    /// writes one `assistant` line per block, each with the round's id.
+    whole_ids: HashSet<String>,
 }
 
 /// The context a reply has built so far, as the stream lets it be known
@@ -446,13 +463,37 @@ impl Translator {
             return Vec::new();
         };
         match parsed {
-            Line::StreamEvent { event } => self.stream_event(event),
+            Line::StreamEvent { event } => {
+                self.outcome.stream_events += 1;
+                self.events_since_line += 1;
+                self.stream_event(event)
+            }
             Line::Assistant(t) => {
                 self.limit_on(&t);
                 self.api_error_on(&t);
-                self.blocks(t.message, t.parent_tool_use_id)
+                let whole = self.came_whole(&t);
+                if whole
+                    && t.message
+                        .content
+                        .iter()
+                        .any(|b| matches!(b, Block::Text { text } if !text.is_empty()))
+                    && self
+                        .whole_ids
+                        .insert(t.message.id.clone().unwrap_or_default())
+                {
+                    self.outcome.whole_rounds += 1;
+                }
+                if t.parent_tool_use_id.is_none() {
+                    self.events_since_line = 0;
+                }
+                self.blocks(t.message, t.parent_tool_use_id, whole)
             }
-            Line::User(t) => self.blocks(t.message, t.parent_tool_use_id),
+            Line::User(t) => {
+                if t.parent_tool_use_id.is_none() {
+                    self.events_since_line = 0;
+                }
+                self.blocks(t.message, t.parent_tool_use_id, false)
+            }
             Line::System(s) => self.system(s),
             Line::Result(r) => self.result(r),
             Line::RateLimitEvent { rate_limit_info } => {
@@ -568,6 +609,24 @@ impl Translator {
         self.subagents.entry(id.to_string()).or_default()
     }
 
+    /// Main-thread prose, as a delta or a whole round's block (item 723):
+    /// led by a paragraph break when a new block follows prose, and fed to
+    /// the live reading.
+    fn prose(&mut self, text: String) -> Vec<TurnEvent> {
+        if text.is_empty() {
+            return vec![TurnEvent::TextDelta { text }];
+        }
+        let text = match (std::mem::take(&mut self.text_break), self.prose_tail) {
+            (true, Some(tail)) => paragraph_break(tail, &text) + &text,
+            _ => text,
+        };
+        self.prose_tail = text.chars().last();
+        let live = self.live.grow(Streamed::Prose, text.chars().count());
+        std::iter::once(TurnEvent::TextDelta { text })
+            .chain(live)
+            .collect()
+    }
+
     fn stream_event(&mut self, event: StreamEv) -> Vec<TurnEvent> {
         match event {
             StreamEv::ContentBlockStart { content_block } => {
@@ -577,20 +636,7 @@ impl Translator {
                 Vec::new()
             }
             StreamEv::ContentBlockDelta { delta } => match delta {
-                Delta::Text { text } => {
-                    if text.is_empty() {
-                        return vec![TurnEvent::TextDelta { text }];
-                    }
-                    let text = match (std::mem::take(&mut self.text_break), self.prose_tail) {
-                        (true, Some(tail)) => paragraph_break(tail, &text) + &text,
-                        _ => text,
-                    };
-                    self.prose_tail = text.chars().last();
-                    let live = self.live.grow(Streamed::Prose, text.chars().count());
-                    std::iter::once(TurnEvent::TextDelta { text })
-                        .chain(live)
-                        .collect()
-                }
+                Delta::Text { text } => self.prose(text),
                 Delta::Thinking { thinking } => {
                     self.prose_tail = None;
                     self.text_break = false;
@@ -607,10 +653,16 @@ impl Translator {
                 Delta::Other => Vec::new(),
             },
             // Backlog 590: the round's prompt, exact — the live reading's anchor.
-            StreamEv::MessageStart { message } => match message.usage {
-                Some(raw) => vec![self.live.exact(raw.to_usage().input_tokens)],
-                None => Vec::new(),
-            },
+            StreamEv::MessageStart { message } => {
+                // Item 723: this round streams; its `assistant` line repeats it.
+                if let Some(id) = message.id {
+                    self.streamed.insert(id);
+                }
+                match message.usage {
+                    Some(raw) => vec![self.live.exact(raw.to_usage().input_tokens)],
+                    None => Vec::new(),
+                }
+            }
             // One per API call, so this is the round's accounting rather
             // than a running total — which is exactly what a context gauge
             // wants and what `TurnEvent::Usage` documents itself as.
@@ -641,7 +693,14 @@ impl Translator {
     /// name, which no provider accepts on replay. The child's text and
     /// thinking are emitted here too — a nested line is their only copy
     /// (`protocol::Block::Text`); a top-level line's are still dropped.
-    fn blocks(&mut self, message: ApiMessage, nested: Option<String>) -> Vec<TurnEvent> {
+    /// `whole` (item 723): a main-thread round with no deltas before it,
+    /// whose text and thinking are emitted here, as a child's are.
+    fn blocks(
+        &mut self,
+        message: ApiMessage,
+        nested: Option<String>,
+        whole: bool,
+    ) -> Vec<TurnEvent> {
         let mut out = Vec::new();
         let mut live = Vec::new();
         // A child's round, once per message id (backlog 152): the status
@@ -689,6 +748,21 @@ impl Translator {
                     }
                 }
                 Block::RedactedThinking => TurnEvent::RedactedThinking,
+                // Item 723: a main-thread round that came whole — its line
+                // is the reply's only copy, drawn as prose would have been.
+                Block::Text { text } if whole && !text.is_empty() => {
+                    if self.prose_tail.is_some() {
+                        self.text_break = true;
+                    }
+                    out.extend(self.prose(text));
+                    continue;
+                }
+                Block::Thinking { thinking } if whole && !thinking.is_empty() => {
+                    self.prose_tail = None;
+                    self.text_break = false;
+                    out.push(TurnEvent::ThinkingDelta { text: thinking });
+                    continue;
+                }
                 Block::Text { text } if nested.is_some() && !text.is_empty() => {
                     TurnEvent::TextDelta { text }
                 }
@@ -933,6 +1007,43 @@ impl Translator {
                     }
                 }
             }
+        }
+    }
+
+    /// Whether a main-thread `assistant` line's text came whole, with no
+    /// deltas before it (item 723): the CLI's streamed request failed and
+    /// it retried without streaming ("Error streaming, falling back to
+    /// non-streaming mode", 2.1.325), so the only copy of the reply is
+    /// this line. Measured on his chat 8e2f20a1 (2026-11-15): four API
+    /// requests, the last at half the `max_tokens`, no `stream_event` at
+    /// all, and "ok" never drawn. Not the CLI's own sentences — an API
+    /// error or the limit, which [`Self::api_error_on`] and
+    /// [`Self::limit_on`] already say as notices.
+    fn came_whole(&self, t: &TurnLine) -> bool {
+        if t.parent_tool_use_id.is_some()
+            || t.is_api_error_message
+            || t.error.is_some()
+            || t.api_error_status.is_some()
+            || t.message.model.as_deref() == Some("<synthetic>")
+        {
+            return false;
+        }
+        let limit = t
+            .message
+            .content
+            .iter()
+            .any(|b| matches!(b, Block::Text { text } if text.starts_with(LIMIT_TEXT_PREFIX)));
+        if limit {
+            return false;
+        }
+        // By id where the stream named its rounds; else (a stream with no
+        // ids on its `message_start`s, or none at all) by whether any
+        // event came since the last main-thread line — the CLI writes each
+        // block's line after that block's deltas, and a whole round's
+        // after none.
+        match &t.message.id {
+            Some(id) if !self.streamed.is_empty() => !self.streamed.contains(id),
+            _ => self.events_since_line == 0,
         }
     }
 
@@ -1215,11 +1326,15 @@ mod tests {
         assert!(matches!(&events[2], TurnEvent::Subagent { event, .. }
             if matches!(&**event, TurnEvent::TextDelta { text } if text == "## Project Summary\n\nTiny.")));
         // The main thread's calls keep their plain, unwrapped names, and
-        // its text blocks are still left to the deltas.
+        // its text blocks are still left to the deltas. ~~A text line with
+        // no delta before it was dropped too~~ — 2026-11-16 (item 723):
+        // that is a round the CLI fetched without streaming and is drawn
+        // from its line, so here its delta comes first, as on the wire.
         const TOP_TEXT: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]},"parent_tool_use_id":null}"#;
-        let (top, _) = drive(&[TOOL_USE, TOP_TEXT]);
-        assert_eq!(top.len(), 1, "{top:?}");
+        let (top, _) = drive(&[TOOL_USE, TEXT, TOP_TEXT]);
+        assert_eq!(top.len(), 2, "{top:?}");
         assert!(matches!(&top[0], TurnEvent::ToolCall { name, .. } if name == "Read"));
+        assert!(matches!(&top[1], TurnEvent::TextDelta { text } if text == "hello"));
         // The wire shape the window reads.
         let json = serde_json::to_string(&events[2]).unwrap();
         assert!(json.contains(r#""type":"subagent""#), "{json}");
@@ -2172,5 +2287,94 @@ mod tests {
             json,
             r#"{"type":"tool_output","tool_use_id":"toolu_FG","lines":["tick 3"]}"#
         );
+    }
+
+    /// Item 723: a round the CLI fetched without streaming — its streamed
+    /// request failed and it retried — arrives as one `assistant` line with
+    /// no `stream_event` before it (his chat 8e2f20a1, 2026-11-15: "ok",
+    /// never drawn). Its text is the reply's only copy and is emitted.
+    #[test]
+    fn a_round_that_came_whole_is_drawn_from_its_line() {
+        const WHOLE: &str = r#"{"type":"assistant","message":{"id":"msg_011Ch6E5","model":"claude-fable-5-2","role":"assistant","content":[{"type":"text","text":"ok"}]},"parent_tool_use_id":null,"session_id":"s"}"#;
+        const DONE: &str = r#"{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"ok","session_id":"s","usage":{"input_tokens":3,"output_tokens":4}}"#;
+        let (events, outcome) = drive(&[INIT, WHOLE, DONE]);
+        let text: String = events
+            .iter()
+            .filter_map(|e| match e {
+                TurnEvent::TextDelta { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, "ok");
+        assert_eq!(outcome.stream_events, 0);
+        assert_eq!(outcome.whole_rounds, 1);
+    }
+
+    /// Item 723: a streamed round's line repeats what its deltas drew, and
+    /// stays dropped — by its `message_start` id, and with no ids at all by
+    /// the deltas that came before it.
+    #[test]
+    fn a_streamed_rounds_line_is_still_dropped() {
+        const START: &str = r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_s","usage":{"input_tokens":3,"output_tokens":1}}}}"#;
+        const LINE: &str = r#"{"type":"assistant","message":{"id":"msg_s","model":"m","role":"assistant","content":[{"type":"text","text":"hello"}]},"parent_tool_use_id":null}"#;
+        let count = |events: &[TurnEvent]| {
+            events
+                .iter()
+                .filter(|e| matches!(e, TurnEvent::TextDelta { .. }))
+                .count()
+        };
+        let (events, outcome) = drive(&[INIT, START, TEXT, LINE, MSG_DELTA, RESULT]);
+        assert_eq!(count(&events), 1);
+        assert_eq!(outcome.whole_rounds, 0);
+        let (events, outcome) = drive(&[INIT, TEXT, ASSISTANT_TEXT, MSG_DELTA, RESULT]);
+        assert_eq!(count(&events), 1);
+        assert_eq!(outcome.whole_rounds, 0);
+    }
+
+    /// Item 723: a streamed round, a tool call, then a round that came
+    /// whole: the second is drawn, as a paragraph after the first.
+    #[test]
+    fn a_whole_round_after_a_streamed_one_is_drawn() {
+        const START: &str = r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":3,"output_tokens":1}}}}"#;
+        const LINE1: &str = r#"{"type":"assistant","message":{"id":"msg_1","model":"m","role":"assistant","content":[{"type":"text","text":"hello"}]},"parent_tool_use_id":null}"#;
+        const CALL: &str = r#"{"type":"assistant","message":{"id":"msg_1","model":"m","role":"assistant","content":[{"type":"tool_use","id":"toolu_012V","name":"Read","input":{}}]},"parent_tool_use_id":null}"#;
+        const LINE2: &str = r#"{"type":"assistant","message":{"id":"msg_2","model":"m","role":"assistant","content":[{"type":"text","text":"done"}]},"parent_tool_use_id":null}"#;
+        let (events, outcome) = drive(&[
+            INIT,
+            START,
+            TEXT,
+            LINE1,
+            CALL,
+            MSG_DELTA,
+            TOOL_RESULT_ERR,
+            LINE2,
+            RESULT,
+        ]);
+        let text: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                TurnEvent::TextDelta { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, ["hello", "done"]);
+        assert_eq!(outcome.whole_rounds, 1);
+    }
+
+    /// Item 723: the CLI's own sentences on a whole line — an API error,
+    /// the limit — stay notices, never drawn as the reply.
+    #[test]
+    fn an_api_error_line_is_not_drawn_as_a_whole_round() {
+        const ERR: &str = r#"{"type":"assistant","message":{"id":"e1","model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"API Error: 500 boom"}]},"parent_tool_use_id":null,"isApiErrorMessage":true}"#;
+        const LIMIT: &str = r#"{"type":"assistant","message":{"id":"e2","model":"m","role":"assistant","content":[{"type":"text","text":"You've hit your session limit"}]},"parent_tool_use_id":null}"#;
+        let (events, outcome) = drive(&[INIT, ERR, LIMIT]);
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, TurnEvent::TextDelta { .. })),
+            "{events:?}"
+        );
+        assert_eq!(outcome.whole_rounds, 0);
+        assert!(outcome.api_error.is_some());
     }
 }

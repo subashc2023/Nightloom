@@ -284,6 +284,39 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns"
         }
     }
 
+    /// Item 723: a process taken while it is still starting — the real
+    /// CLI needs ~1.2 s; the one in his chat 8e2f20a1 was 838 ms old — gets
+    /// its message and the turn reads every event it prints. The stand-in
+    /// starts for 1.2 s before it reads stdin, and is taken at once.
+    #[tokio::test]
+    async fn a_process_taken_while_still_starting_streams_its_reply() {
+        use crate::agent::ClaudeCodeAgent;
+        use crate::turn_timing::{self, TurnTiming};
+        let dir = scratch();
+        let body = format!("sleep 1.2\n{READS_THEN_ANSWERS}");
+        let mut agent = ClaudeCodeAgent::new(spec_with(&dir, &body));
+        assert!(agent.prewarm().unwrap());
+        let timing = TurnTiming::begin(turn_timing::SERVE, None, None);
+        agent.set_timing(Some(timing.clone()));
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut text = String::new();
+        let out = agent
+            .run_turn("hello", &cancel, &mut |e| {
+                if let crate::TurnEvent::TextDelta { text: t } = e {
+                    text.push_str(&t);
+                }
+            })
+            .await
+            .unwrap();
+        agent.set_timing(None);
+        let s = timing.stages();
+        assert_eq!(s.warm, Some(true));
+        assert!(s.warm_age.unwrap() < 1000, "{:?}", s.warm_age);
+        assert!(s.first_event.is_some() && s.first_text.is_some());
+        assert_eq!(text, "hi");
+        assert_eq!(out.stream_events, 1);
+    }
+
     /// Blocker 1240: the window asks for the next process the moment a
     /// turn ends, after `follow_on` has adopted the turn's session id. That
     /// process is the next turn's exact command, so the next turn takes it.
