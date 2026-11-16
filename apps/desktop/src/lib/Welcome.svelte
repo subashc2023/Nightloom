@@ -334,6 +334,7 @@
       cliVersion: app.connection?.agent?.version ?? null,
       model: app.connection?.model ?? null,
       limit,
+      windowName: app.connection?.windowName ?? null,
       windowFrom: app.connection?.windowFrom ?? null,
       project: app.project ? { root: app.project.root ?? null, exists: app.project.exists } : null,
       notes: app.project ? app.notes.length : 0,
@@ -507,7 +508,7 @@
               style:top="{o.y - 8}px"
               style:left={o.side === "r" ? `${mid + o.at}px` : undefined}
               style:right={o.side === "l" ? `${mid + o.at}px` : undefined}
-              use:tipAction={actTip[o.key]}
+              use:tipAction={o.r.title ? `${actTip[o.key]}\n${o.r.title}` : actTip[o.key]}
               onclick={() => act(o.r)}
             >
               <span class="ro-k">{o.r.label}</span>
@@ -609,7 +610,7 @@
       {#if row.length > 0}
         <div class="ready" aria-label="What is ready" bind:clientHeight={rowH}>
           {#each row as r (r.key)}
-            <button class="rd" class:warn={r.warn} use:tipAction={`${r.value} — ${r.sub}`} onclick={() => act(r)}>
+            <button class="rd" class:warn={r.warn} use:tipAction={`${r.value} — ${r.sub}${r.title ? `\n${r.title}` : ""}`} onclick={() => act(r)}>
               <span class="rd-k">{r.label}</span>
               <span class="rd-v">{#if r.ok}<i>✓</i>{/if}{r.short}</span>
             </button>

@@ -576,4 +576,5 @@ async function fillKnownWindow(conn: NonNullable<typeof app.connection>, alias: 
   if (w == null || app.connection !== conn || conn.contextLimit != null) return;
   conn.contextLimit = w;
   conn.windowFrom = pick.from;
+  conn.windowName = pick.name;
 }

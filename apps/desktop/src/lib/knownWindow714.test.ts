@@ -13,11 +13,12 @@ const seen: SeenModels = {
 
 describe("item 714: a new chat's window before its first turn", () => {
   it("reads the alias's model as the CLI now resolves it", () => {
-    expect(windowModelFor(seen, "fable", "2.1.321")).toEqual({ id: "claude-fable-5-1", from: "fable → Fable 5.1 on CLI 2.1.321" });
+    expect(windowModelFor(seen, "fable", "2.1.321")).toEqual({ id: "claude-fable-5-1", name: "Fable 5.1", from: "fable → Fable 5.1 on CLI 2.1.321" });
   });
   it("names an earlier CLI's resolution as such", () => {
     expect(windowModelFor(seen, "opus", "2.1.321")).toEqual({
       id: "claude-opus-5-5",
+      name: "Opus 5.5",
       from: "opus → Opus 5.5 on CLI 2.1.300, not yet run on 2.1.321",
     });
   });
@@ -28,6 +29,7 @@ describe("item 714: a new chat's window before its first turn", () => {
   it("falls back to the family's newest listed model, named, when the alias never ran", () => {
     expect(windowModelFor({}, "fable", "2.1.321")).toEqual({
       id: "claude-fable-5-2",
+      name: "Fable 5.2",
       from: "Fable 5.2, the newest listed; fable not run yet",
     });
     expect(windowModelFor({}, "opus[1m]", null)?.id).toBe("claude-opus-5-5");
@@ -40,13 +42,17 @@ describe("item 714: a new chat's window before its first turn", () => {
   it("the Model read-out shows the window and its source", () => {
     const base = { engine: "claude-code", provider: "Anthropic", connected: true, connecting: false, subscription: true, cliVersion: "2.1.321", model: "fable", project: null, notes: 0, vault: 0, chats: 0, plan: null, nightshift: null } as const;
     const m = (i: Partial<ReadingsInput>) => readings({ ...base, limit: null, ...i } as ReadingsInput).find((r) => r.key === "model")!;
-    expect(m({ limit: 1_000_000, windowFrom: "fable → Fable 5.1 on CLI 2.1.321" }).sub).toBe("1M window (fable → Fable 5.1 on CLI 2.1.321) · cache cold");
+    const lit = m({ limit: 1_000_000, windowName: "Fable 5.1", windowFrom: "fable → Fable 5.1 on CLI 2.1.321" });
+    expect(lit.sub).toBe("1M window · Fable 5.1 · cache cold");
+    expect(lit.title).toBe("The 1M window is Nightloom's limits table's figure for fable → Fable 5.1 on CLI 2.1.321; the first turn's own report replaces it.");
     expect(m({ limit: 1_000_000 }).sub).toBe("1M window · cache cold");
+    expect(m({ limit: 1_000_000 }).title).toBeUndefined();
     expect(m({}).sub).toBe("window unknown until the first turn");
   });
   it("is wired: the connect fills it, the page passes its source", () => {
     expect(connSrc).toMatch(/contextLimit == null\) void fillKnownWindow\(/);
     expect(connSrc).toMatch(/api\.contextLimits\("anthropic", \[pick\.id\]\)/);
-    expect(welcomeSrc).toMatch(/windowFrom: app\.connection\?\.windowFrom/);
+    expect(welcomeSrc).toMatch(/windowName: app\.connection\?\.windowName/);
+    expect(connSrc).toContain("conn.windowName = pick.name;");
   });
 });

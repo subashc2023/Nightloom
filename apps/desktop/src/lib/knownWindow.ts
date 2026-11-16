@@ -24,7 +24,9 @@ import { NEWEST, displayName, familyOf, isFullId, type SeenModels } from "./mode
 export interface WindowModel {
   /** The full id the window is looked up for. */
   id: string;
-  /** The source, short enough for the read-out's mono line. */
+  /** The model's name, for the read-out's mono line (`Fable 5.1`). */
+  name: string;
+  /** The source in full, for the hover. */
   from: string;
 }
 
@@ -38,11 +40,11 @@ export function windowModelFor(seen: SeenModels, alias: string, cliNow: string |
     const same = cliNow === null || r.cliVersion === cliNow;
     const on = r.cliVersion ? ` on CLI ${r.cliVersion}` : "";
     const now = same ? "" : `, not yet run on ${cliNow}`;
-    return { id: r.id, from: `${name} → ${displayName(r.id)}${on}${now}` };
+    return { id: r.id, name: displayName(r.id), from: `${name} → ${displayName(r.id)}${on}${now}` };
   }
   if (!a) return null;
   const fam = a.toLowerCase().replace(/\[[^\]]*\]$/, "");
   const newest = NEWEST.find((id) => familyOf(id) === fam);
   if (!newest) return null;
-  return { id: newest, from: `${displayName(newest)}, the newest listed; ${a} not run yet` };
+  return { id: newest, name: displayName(newest), from: `${displayName(newest)}, the newest listed; ${a} not run yet` };
 }

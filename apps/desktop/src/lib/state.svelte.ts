@@ -300,6 +300,8 @@ export interface Connection {
    *  (item 714): the alias's learned model, named (`knownWindow.ts`).
    *  Absent when the backend knew it; cleared by a turn's own report. */
   windowFrom?: string | null;
+  /** The model that window is of, named (`Fable 5.1`), beside `windowFrom`. */
+  windowName?: string | null;
   /** Per-MTok rates for the connected model; null when unpriced. */
   price: Price | null;
   /** MCP servers for this workspace, including ones that failed to start. */
@@ -2385,6 +2387,7 @@ async function sendAgent(
     if (app.connection && res.context_limit != null) {
       app.connection.contextLimit = res.context_limit;
       app.connection.windowFrom = null;
+      app.connection.windowName = null;
     }
     if (app.connection && res.model) app.connection.model = res.model;
     // The folder entrance's two halves (backlog 143, pass 2): a grant the
