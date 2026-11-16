@@ -74,6 +74,7 @@ import { deliveredNotice } from "./midTurn";
 import { answerLanded, clearHandBack, handedHow, noteAnswered } from "./handBack.svelte";
 import { recordRelay } from "./relay.svelte";
 import { closeRunningRows, rowsOf } from "./subagentRows";
+import { recordTurnEnd } from "./sessionCut.svelte";
 import { lineText, lineView, matchTasks, type StillRunningSegment } from "./stillRunning";
 import { applyRetry, clearRetry, markRetryStopping, turnNotices, type RetrySegment } from "./retryLine";
 import { pressStop, releaseStop, type StopClock } from "./stopState";
@@ -1949,6 +1950,8 @@ export async function runInChat(
   if (refused && !refusedTo) requeueFront(id, q);
   settleInjected(turn.key, delivered);
   injectLater.delete(turn.key);
+  // Item 703: what the end cut, as the screen's turn marks it.
+  recordTurnEnd(id, rowsOf(app.subagents, id));
   closeRunningRows(app.subagents, id);
   if (turn.detached) {
     if (refused) {
@@ -2398,7 +2401,10 @@ async function sendAgent(
     injectLater.delete(turn.key);
     // The turn's process is gone (backlog 331): whatever of its subagents
     // the CLI never reported finished ran inside it, and is not running.
-    closeRunningRows(app.subagents, turn.chat ?? (turn.detached ? null : app.activeSessionId));
+    // Item 703: marked first, so the transcript says what the end cut.
+    const ranChat = turn.chat ?? (turn.detached ? null : app.activeSessionId);
+    recordTurnEnd(ranChat, rowsOf(app.subagents, ranChat));
+    closeRunningRows(app.subagents, ranChat);
     if (turn.chat === null) closeRunningRows(app.subagents, null);
     // The window's timing marks, if no paint sent them (item 256).
     turnClock.ended(turn.key);

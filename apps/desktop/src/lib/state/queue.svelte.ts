@@ -4,6 +4,8 @@ import { draftKey, clearInjected, queueAfterTurn, ranKey, shiftQueue, requeueFro
 import { midTurnWire, sendNowToast, type SendNowResult } from "../midTurn";
 import { carriesAlone, FOLLOWS, pendingFor, type ReplyResult } from "../askReply";
 import type { Attachment } from "../types";
+import { rowsOf } from "../subagentRows";
+import { besideAgentsToast, runningAgents } from "../sessionCut";
 import { app, fg, turnWasStopped, cancelTurn, resolveApproval, addToast } from "../state.svelte";
 
 /** The "still running" asks already toasted (backlog 329), by turn and tasks. */
@@ -329,10 +331,34 @@ export async function stopAndSendRow(key: string, qid: number): Promise<"stoppin
   return "stopping";
 }
 
+/** Send now while agents run (item 703): handed in without a stop, or
+ *  held; `sent` when the turn has it, `none` when held. */
+async function sendBesideAgents(key: string, qid: number, plan: SendNowPlan, agents: string[]): Promise<SendNowResult | "none"> {
+  if (plan === "hand") {
+    const q = readDraft(key).queue.find((r) => r.id === qid);
+    if (!q) return "delivered";
+    await injectIntoTurn(key, q);
+  }
+  const row = readDraft(key).queue.find((r) => r.id === qid);
+  if (!row || row.inject?.after !== undefined) return "delivered";
+  if (row.inject?.reply) return "sent";
+  addToast(besideAgentsToast(agents, row.inject ? "handed" : "held"));
+  return row.inject ? "sent" : "none";
+}
+
 /** *Send now* on a pending row, whichever way it can go (item 536). */
 export async function sendNowAny(key: string, qid: number): Promise<SendNowResult | "stopping" | "none"> {
   const plan = sendNowPlan(key, qid);
   if (plan === "none" || plan === "reply") return "none";
+  // Item 703: never a stop while this chat's agents run — they run in the
+  // turn's process and end with it (2026-11-15, e1f2156b: Send now took
+  // Stop + send and the process ended). Nor Claude Code's own send now,
+  // which aborts the step the main agent is in: unmeasured with agents
+  // running, so not risked. The row goes in plain (Claude reads it at its
+  // next step — at once while only the agents run, 374) or is held for
+  // the turn's end, and a toast says which.
+  const agents = runningAgents(rowsOf(app.subagents, fg?.chat ?? app.activeSessionId));
+  if (agents.length > 0) return sendBesideAgents(key, qid, plan, agents);
   if (plan === "now") {
     const r = await sendNowRow(key, qid, false);
     return r === "not_running" ? stopAndSendRow(key, qid) : r;

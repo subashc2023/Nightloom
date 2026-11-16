@@ -21,6 +21,8 @@ import type { Aside } from "./state.svelte";
 import * as tabs from "./tabs";
 import { ASIDES_OPEN_KEY, loadOpen, saveOpen, toggled } from "./forkTree";
 import { asideTick } from "./asides.svelte";
+import { blankAside, blankDraft, dismissAside } from "./state/asides.svelte";
+import { reopenPast } from "./asideHistory.svelte";
 import { asideLabel } from "./asides";
 
 export const asidesShown = $state({
@@ -62,6 +64,42 @@ export function asideTabOf(session: string, id: number): tabs.Tab | undefined {
   return tabs
     .allTabs(app.tabs)
     .find((t) => t.content.kind === "aside" && t.content.session === session && asideTabThread(t.content) === id);
+}
+
+/**
+ * An aside tab whose thread is gone, given one (item 704, his "i jus
+ * opened an aside and this shit was empty"): a thread closed by any way
+ * but this tab's own Close (its card's ×, the sidebar, a fold) leaves the
+ * tab naming nothing, and it drew a blank page. Now the tab names an
+ * empty aside of its chat (`blankAside`), its box ready. Only for the
+ * open chat (an aside forks the open chat); the thread id, or null when
+ * nothing was missing or nothing could be made.
+ */
+export function refillAsideTab(tabId: string): number | null {
+  const t = tabs.tabById(app.tabs, tabId);
+  if (!t || t.content.kind !== "aside") return null;
+  const session = t.content.session;
+  if (session !== app.activeSessionId) return null;
+  if (asideOf(session, asideTabThread(t.content) ?? null)) return null;
+  const a = blankAside();
+  if (!a) return null;
+  t.content = { kind: "aside", session, thread: a.id };
+  return a.id;
+}
+
+/** The chat's past thread `key` back, into this tab (item 704: the tab
+ *  whose thread was closed offers it again); the empty aside it showed
+ *  meanwhile goes. False when it could not be reopened. */
+export function reopenIntoTab(tabId: string, key: string): boolean {
+  const t = tabs.tabById(app.tabs, tabId);
+  if (!t || t.content.kind !== "aside") return false;
+  const session = t.content.session;
+  const was = asideOf(session, asideTabThread(t.content) ?? null);
+  const a = reopenPast(key);
+  if (!a) return false;
+  t.content = { kind: "aside", session, thread: a.id };
+  if (was && blankDraft(was)) dismissAside(was);
+  return true;
 }
 
 /** Show a thread in a tab: the one already showing it, else a new tab

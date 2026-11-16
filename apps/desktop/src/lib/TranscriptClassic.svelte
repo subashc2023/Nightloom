@@ -1,4 +1,8 @@
 <script lang="ts">
+  // Item 703: where a turn's end cut running agents.
+  import SessionCutNotice from "./SessionCutNotice.svelte";
+  import { placeCuts } from "./sessionCut";
+  import { cutsFor } from "./sessionCut.svelte";
   import { tip } from "./tip";
   import { rewoundRuns } from "./rewindDraft.svelte";
   // Every Copy button goes through the in-app clipboard ring (backlog 173).
@@ -454,6 +458,14 @@
     }
     return out;
   });
+  // Item 703: each cut before his first message after it (the next turn's
+  // start, so "resumed"), else at the end of the thread.
+  const cutPlaces = $derived(
+    placeCuts(
+      cutsFor(chatId),
+      items.flatMap((it, i) => (it.kind === "user" ? [{ index: i, at: it.at }] : [])),
+    ),
+  );
 
   // ~~`findCallIn`~~ moved to `subagent.ts` with the placing (backlog 330).
   /** The assistant messages already projected, newest first — a
@@ -2388,6 +2400,7 @@
       </div>
     {/if}
     {#each items as item, i (i)}
+      {#if i >= drawFrom && cutPlaces.before.has(i)}<SessionCutNotice cuts={cutPlaces.before.get(i) ?? []} resumed />{/if}
       <!-- Item 482: only the render window is drawn. -->
       {#if i < drawFrom}{:else if item.superseded}
         {#if rewound[i] !== null}
@@ -2890,6 +2903,7 @@
     <!-- `shown` is the live turn, or its ghost for the moment between the
          turn's end and the re-synced log (backlog 131), so the reply never
          leaves the DOM under a reader. -->
+    {#if cutPlaces.tail.length > 0}<SessionCutNotice cuts={cutPlaces.tail} resumed={false} />{/if}
     {#if shown}
       <!-- Item 359: the live reply's anchor for its rib on the rail. One
            flex item, as the reply alone was; nothing styles it. -->
