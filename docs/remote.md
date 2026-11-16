@@ -70,7 +70,9 @@ carries it as `Authorization: Bearer …`; a missing or wrong one is a 401
 page is not secret.
 
 It reaches the phone through the page's own URL: the QR in Settings →
-Remote encodes `http://<address>:<port>/#token=<token>`. The token rides
+Remote encodes `https://<machine>.<tailnet>.ts.net:<port>/#token=<token>`
+when HTTPS is set up (the certificate is for that name, not the address;
+item 246), else `http://<address>:<port>/#token=<token>`. The token rides
 the fragment, which never leaves the browser — not in a request, not in a
 referer — and the page moves it into local storage and strips it from the
 address bar the moment it loads. The event stream is read with `fetch`
@@ -115,7 +117,8 @@ token*.
    switch **On**. The card shows the bound address and port (read-only),
    a QR code, and the token as text (Show).
 2. On the iPhone: Tailscale open and connected. Camera → point at the QR →
-   tap the link → Safari opens `http://100.x.y.z:8642/`. The chat list of
+   tap the link → Safari opens the QR's address (`https://<machine>.<tailnet>.ts.net:8642/`
+   with HTTPS, else `http://100.x.y.z:8642/`). The chat list of
    the open project appears, the open chat marked. The address bar no
    longer shows `#token`.
 3. Share → **Add to Home Screen** → open it from there: full screen, no
@@ -200,8 +203,13 @@ sentence a Shortcut can speak or show.
 
 **The two Shortcuts, built by hand** (Shortcuts cannot be shipped as a
 file signed for someone else's iPhone, so this is the recipe). The
-address is the one under the QR in Settings → Remote
-(`http://100.x.y.z:8642`); the token is from **Show the token** there.
+address is the one in the QR's link in Settings → Remote — with HTTPS
+on, `https://<machine>.<tailnet>.ts.net:8642` (**the name, not the 100.x
+address**: the certificate is for the name, so `https://100.x.y.z` fails
+its check and `http://` gets no answer from an HTTPS listener — both
+measured 2026-11-16 on the installed build: `http` no reply, `https` to
+the address 401 with no token). Below, `<base>` is that address. The
+token is from **Show the token** there.
 Paste it into the header field only — never into a note or a message.
 
 *Send to Nightloom*
@@ -211,7 +219,7 @@ Paste it into the header field only — never into a note or a message.
 3. Optional, for a named chat: add **Ask for Input** (Text, prompt "Which
    chat? Leave empty for the last one"), or put a fixed name in the body
    below instead.
-4. Add **Get Contents of URL**: URL `http://100.x.y.z:8642/api/shortcut/send`;
+4. Add **Get Contents of URL**: URL `<base>/api/shortcut/send`;
    Method **POST**; Headers: `Authorization` = `Bearer <token>`; Request
    Body **JSON**: `text` = *Dictated Text*, and `chat` = *Provided Input*
    (or a fixed name, or leave the `chat` field out).
@@ -219,7 +227,7 @@ Paste it into the header field only — never into a note or a message.
 
 *What's running*
 1. New Shortcut "What's running in Nightloom".
-2. **Get Contents of URL**: `http://100.x.y.z:8642/api/shortcut/running`,
+2. **Get Contents of URL**: `<base>/api/shortcut/running`,
    Method **GET**, the same `Authorization` header.
 3. **Speak Text** with *Contents of URL*.
 
