@@ -2750,15 +2750,53 @@ pub fn decide(dir: &Path, stdin_json: &str) -> HookReply {
     // and the refresh below would always run — 15 s of his Skip, measured.
     // That call takes the reading there is instead; the resume's next call
     // has the reply's fresh wire reading.
-    let usage = if wire_fresh {
-        crate::plan_usage::read()
-    } else if is_resumed_call(dir, stdin_json) {
-        crate::plan_usage::read_without_refresh()
-    } else {
-        crate::plan_usage::read_fresh_shared(std::time::Duration::from_secs(120))
+    // Item 722: his message's own hook (`UserPromptSubmit`) never runs it
+    // either. The CLI sends nothing to the model until this hook returns,
+    // and after any pause of two minutes the wire reading is stale — so
+    // nearly every message waited on a whole `/usage` run (11.3 s and
+    // 22.0 s measured in his session 53146e33, 2026-11-16) before its
+    // first request. The line shows the reading there is; the window asks
+    // for a fresh one as he starts typing (`plan_usage::refresh_soon`),
+    // and the first reply brings the wire's own.
+    let usage = match usage_source(wire_fresh, || {
+        is_prompt_event(stdin_json) || is_resumed_call(dir, stdin_json)
+    }) {
+        UsageSource::Files => crate::plan_usage::read(),
+        UsageSource::NoRefresh => crate::plan_usage::read_without_refresh(),
+        UsageSource::Refresh => {
+            crate::plan_usage::read_fresh_shared(std::time::Duration::from_secs(120))
+        }
     };
     let week = week_of(&usage, now_ms);
     decide_with_week(dir, stdin_json, reading_of(usage), week)
+}
+
+/// Where [`decide`] takes the plan's reading from.
+#[derive(Debug, PartialEq, Eq)]
+enum UsageSource {
+    /// The files as they are: the chat's wire reading is fresh and wins.
+    Files,
+    /// The files or the last refresh's stamp, never a `/usage` run: a
+    /// call that must not wait on one.
+    NoRefresh,
+    /// A `/usage` run when the files are stale (shared, once a minute).
+    Refresh,
+}
+
+/// `must_not_wait` is asked only when the wire reading is stale.
+fn usage_source(wire_fresh: bool, must_not_wait: impl FnOnce() -> bool) -> UsageSource {
+    if wire_fresh {
+        UsageSource::Files
+    } else if must_not_wait() {
+        UsageSource::NoRefresh
+    } else {
+        UsageSource::Refresh
+    }
+}
+
+/// Whether the hook's input is a user message's ([`PROMPT_EVENT`]).
+fn is_prompt_event(stdin_json: &str) -> bool {
+    serde_json::from_str::<HookInput>(stdin_json).is_ok_and(|i| i.hook_event_name == PROMPT_EVENT)
 }
 
 /// Whether this call is the one a card is waiting on in `dir` (item 522's
@@ -3274,6 +3312,54 @@ pub fn run_hook(args: &[String]) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// Item 722: his message's hook never waits on a `/usage` run — the
+    /// CLI holds the model's first request until the hook returns. A tool
+    /// call's hook with a stale wire reading still refreshes, as before.
+    #[test]
+    fn a_user_message_never_waits_on_a_usage_refresh() {
+        use super::{UsageSource, is_prompt_event, usage_source};
+        let prompt = r#"{"session_id":"s1","hook_event_name":"UserPromptSubmit","prompt":"hi"}"#;
+        let call = r#"{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{}}"#;
+        assert!(is_prompt_event(prompt));
+        assert!(!is_prompt_event(call));
+        assert!(!is_prompt_event("not json"));
+        let source = |fresh, json: &str| usage_source(fresh, || is_prompt_event(json));
+        assert_eq!(source(false, prompt), UsageSource::NoRefresh);
+        assert_eq!(source(false, call), UsageSource::Refresh);
+        assert_eq!(source(true, prompt), UsageSource::Files);
+        assert_eq!(source(true, call), UsageSource::Files);
+    }
+
+    /// Item 722's measurement with the real CLI and his real usage files
+    /// (`cargo test -p nightloom-service --lib measure_the_prompt_hook --
+    /// --ignored --nocapture`): what a user message's hook waited on
+    /// before (a `/usage` run whenever the reading was stale — forced
+    /// here with a zero max age; no model call) against the hook now, in
+    /// a scratch chat directory with no wire reading. Prints only times.
+    #[test]
+    #[ignore]
+    fn measure_the_prompt_hook_against_a_usage_refresh() {
+        let dir = std::env::temp_dir().join(format!("nightloom-722-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let prompt = r#"{"session_id":"s1","hook_event_name":"UserPromptSubmit","prompt":"hi"}"#;
+        for round in 0..3 {
+            let t = std::time::Instant::now();
+            let reply = super::decide(&dir, prompt);
+            let now = t.elapsed();
+            let has_line = serde_json::to_string(&reply).is_ok_and(|s| s.contains("Usage:"));
+            println!(
+                "722 row {round}: hook now {} ms (usage line: {has_line})",
+                now.as_millis()
+            );
+        }
+        let t = std::time::Instant::now();
+        let _ = crate::plan_usage::read_fresh_shared(std::time::Duration::ZERO);
+        println!(
+            "722 before: the refresh the hook ran when stale took {} ms",
+            t.elapsed().as_millis()
+        );
+    }
+
     /// Blocker 1757: each chat on Same is switched to Choose, the bytes of
     /// every other field untouched; Choose, Sonnet, an old `chat`, a broken
     /// file and a chat with no file are left as they were.

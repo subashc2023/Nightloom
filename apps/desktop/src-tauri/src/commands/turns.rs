@@ -609,6 +609,10 @@ pub(crate) async fn prewarm_agent(
         // the same command the turn would spawn.
         claude_browser::point(Some(&*browsers), &mut agent, &dir);
     }
+    // Item 722: and a fresh usage reading, off to the side, so his
+    // message's own hook shows one without running `/usage` in front of
+    // the model's first request.
+    nightloom_service::plan_usage::refresh_soon();
     agent.prewarm().map_err(|e| e.to_string())
 }
 

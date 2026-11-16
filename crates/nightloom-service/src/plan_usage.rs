@@ -495,6 +495,41 @@ pub fn read_without_refresh() -> PlanUsage {
     with_sample(read_stamp(&stamp_path()), read(), now_ms)
 }
 
+/// How often [`refresh_soon`] may start a run of its own.
+pub const SOON_MIN_GAP: std::time::Duration = std::time::Duration::from_secs(180);
+static LAST_SOON: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
+/// Whether a background refresh is due: none yet, or the last one at
+/// least [`SOON_MIN_GAP`] ago.
+fn soon_due(last: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    last.is_none_or(|at| now.duration_since(at) >= SOON_MIN_GAP)
+}
+
+/// A fresh reading asked for off to the side (item 722): the window calls
+/// this as he starts a draft and as a turn ends, so the reading his next
+/// message's hook shows is seconds old without that hook running
+/// `/usage` itself — which held every message's first request for the
+/// run's ~12 s. On its own thread, [`read_fresh_shared`]'s lock and
+/// stamp as for any other process; at most one per [`SOON_MIN_GAP`] from
+/// here, since a long draft asks every few seconds. `true` when a thread
+/// was started.
+pub fn refresh_soon() -> bool {
+    let now = std::time::Instant::now();
+    {
+        let mut last = LAST_SOON.lock().unwrap_or_else(|e| e.into_inner());
+        if !soon_due(*last, now) {
+            return false;
+        }
+        *last = Some(now);
+    }
+    std::thread::Builder::new()
+        .name("usage-refresh".into())
+        .spawn(|| {
+            let _ = read_fresh_shared(std::time::Duration::from_secs(120));
+        })
+        .is_ok()
+}
+
 fn home() -> Option<PathBuf> {
     std::env::var("HOME")
         .ok()
@@ -646,6 +681,20 @@ mod scoped_tests {
 
 #[cfg(test)]
 mod tests {
+    /// Item 722: the window's background refresh starts at most one run
+    /// per [`super::SOON_MIN_GAP`], however often a draft asks.
+    #[test]
+    fn a_background_refresh_is_due_once_per_gap() {
+        let now = std::time::Instant::now();
+        assert!(super::soon_due(None, now));
+        assert!(!super::soon_due(Some(now), now));
+        assert!(!super::soon_due(
+            Some(now),
+            now + super::SOON_MIN_GAP - std::time::Duration::from_secs(1)
+        ));
+        assert!(super::soon_due(Some(now), now + super::SOON_MIN_GAP));
+    }
+
     /// Item 323 review: a reading sampled before a reply ended is not fresh
     /// enough for that reply's end, however young; one after it is.
     #[test]
