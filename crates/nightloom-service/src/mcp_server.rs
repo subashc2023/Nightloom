@@ -1073,6 +1073,18 @@ pub async fn serve(
             args.current_chat().as_deref(),
         )?,
     };
+    // A chat that continues another after a hand-off is told where the
+    // rest of its conversation is (item 749), beside the tools' own words.
+    let note = match (&args.dream, args.current_chat()) {
+        (None, Some(chat)) if !args.incognito => {
+            let dir = match args.project.as_deref() {
+                Some(id) => config.join(PROJECTS_DIR).join(id).join(SESSIONS_DIR),
+                None => config.join(capture::UNFILED).join(SESSIONS_DIR),
+            };
+            crate::tools::handoff_note(&dir, &chat)
+        }
+        _ => None,
+    };
     // An incognito chat's server (backlog 405): nothing that reads his
     // chats, his memory or his Notion.
     if args.incognito {
@@ -1136,7 +1148,7 @@ pub async fn serve(
             root.clone(),
         )));
     }
-    serve_tools(tools, reader, writer).await;
+    serve_tools_noted(tools, note, reader, writer).await;
     Ok(())
 }
 
@@ -1290,6 +1302,18 @@ pub async fn serve_tools(
     reader: impl AsyncRead + Send + Unpin + 'static,
     writer: impl AsyncWrite + Send + Unpin + 'static,
 ) {
+    serve_tools_noted(tools, None, reader, writer).await;
+}
+
+/// [`serve_tools`] with a sentence for this chat added to `initialize`'s
+/// instructions (item 749: the hand-off note).
+pub async fn serve_tools_noted(
+    tools: Vec<Box<dyn Tool>>,
+    note: Option<String>,
+    reader: impl AsyncRead + Send + Unpin + 'static,
+    writer: impl AsyncWrite + Send + Unpin + 'static,
+) {
+    let note: Arc<str> = note.unwrap_or_default().into();
     let tools: Arc<Vec<Box<dyn Tool>>> = Arc::new(tools);
     let writer: SharedWriter = Arc::new(tokio::sync::Mutex::new(Box::new(writer)));
     // One token for the life of the server, never cancelled: the CLI ends a
@@ -1328,10 +1352,11 @@ pub async fn serve_tools(
         };
         let method = method.to_string();
         let tools = Arc::clone(&tools);
+        let note = Arc::clone(&note);
         let writer = Arc::clone(&writer);
         let cancel = cancel.clone();
         in_flight.spawn(async move {
-            let reply = match handle(&tools, &method, params, &cancel).await {
+            let reply = match handle(&tools, &note, &method, params, &cancel).await {
                 Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
                 Err((code, message)) => json!({
                     "jsonrpc": "2.0",
@@ -1355,6 +1380,7 @@ pub async fn serve_tools(
 /// could not serve at all, as distinct from a tool that ran and failed.
 async fn handle(
     tools: &[Box<dyn Tool>],
+    note: &str,
     method: &str,
     params: Value,
     cancel: &CancellationToken,
@@ -1374,7 +1400,7 @@ async fn handle(
                 "protocolVersion": version,
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": SERVER_NAME, "version": env!("CARGO_PKG_VERSION") },
-                "instructions": instructions_for(tools),
+                "instructions": format!("{}{note}", instructions_for(tools)),
             }))
         }
         // Answerable by every peer regardless of capabilities, and a host

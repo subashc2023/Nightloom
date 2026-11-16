@@ -42,8 +42,9 @@ pub(crate) const INDEX_FILE: &str = ".index.json";
 /// Bumped whenever [`Indexed`] or the tokeniser changes. An older file is
 /// rebuilt rather than migrated: it is derived data. 2 since the chat mode
 /// (2026-09-15): a record written without it would count an incognito
-/// chat's words, which is the one thing the index must not do.
-const INDEX_VERSION: u32 = 2;
+/// chat's words, which is the one thing the index must not do. 3 since the
+/// counts are per turn (item 749, 2026-11-16).
+const INDEX_VERSION: u32 = 3;
 
 /// How many times a word in the title counts, against once in the body. The
 /// title answered three of ten questions on its own in the substring
@@ -139,42 +140,142 @@ fn singular(term: String) -> String {
     t
 }
 
+/// One turn of a chat (item 749): a user message and the replies until the
+/// next one — the unit LongMemEval (a benchmark of questions over long
+/// multi-session chat histories, Wu et al., ICLR 2025) found retrieval should
+/// score, rather than a whole session. Counts by speaker, so a search can ask
+/// for only what the user said, or only what the model did.
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub(crate) struct Turn {
+    /// When the turn began (its first message), in Unix seconds.
+    at: i64,
+    /// `(term id, count)`, sorted by id: the user's words, then the
+    /// replies'. Ids index the chat's own `terms`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    u: Vec<(u32, u32)>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    a: Vec<(u32, u32)>,
+    /// How many words each side said.
+    #[serde(default)]
+    ul: u32,
+    #[serde(default)]
+    al: u32,
+}
+
+/// Which side of the conversation a search counts (item 749).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Speaker {
+    User,
+    Assistant,
+}
+
+fn bump(counts: &mut Vec<(u32, u32)>, id: u32) {
+    match counts.binary_search_by_key(&id, |(t, _)| *t) {
+        Ok(i) => counts[i].1 += 1,
+        Err(i) => counts.insert(i, (id, 1)),
+    }
+}
+
+fn count_of(counts: &[(u32, u32)], id: u32) -> u32 {
+    counts
+        .binary_search_by_key(&id, |(t, _)| *t)
+        .map_or(0, |i| counts[i].1)
+}
+
+impl Turn {
+    pub(crate) fn at(&self) -> DateTime<Utc> {
+        DateTime::from_timestamp(self.at, 0).unwrap_or_default()
+    }
+
+    fn tf(&self, id: u32, speaker: Option<Speaker>) -> u32 {
+        match speaker {
+            Some(Speaker::User) => count_of(&self.u, id),
+            Some(Speaker::Assistant) => count_of(&self.a, id),
+            None => count_of(&self.u, id) + count_of(&self.a, id),
+        }
+    }
+
+    fn len(&self, speaker: Option<Speaker>) -> u32 {
+        match speaker {
+            Some(Speaker::User) => self.ul,
+            Some(Speaker::Assistant) => self.al,
+            None => self.ul + self.al,
+        }
+    }
+
+    /// Every term id the turn says, each once.
+    fn ids(&self) -> impl Iterator<Item = u32> + '_ {
+        let mut u = self.u.iter().map(|(t, _)| *t).peekable();
+        let mut a = self.a.iter().map(|(t, _)| *t).peekable();
+        std::iter::from_fn(move || match (u.peek().copied(), a.peek().copied()) {
+            (Some(x), Some(y)) if x == y => {
+                u.next();
+                a.next()
+            }
+            (Some(x), Some(y)) if x < y => u.next(),
+            (Some(_), Some(_)) => a.next(),
+            (Some(_), None) => u.next(),
+            (None, Some(_)) => a.next(),
+            (None, None) => None,
+        })
+    }
+}
+
 /// One log's term counts, plus what they were derived from.
+///
+/// ~~One bag of words per chat~~ — per turn since item 749 (2026-11-16):
+/// whole-chat scoring under-ranks the chat that discussed a topic for five
+/// turns out of five hundred, which is every chat once hand-offs made them
+/// long. The title is no longer counted into the bag; it is read off the
+/// summary when ranking and adds [`TITLE_WEIGHT`] to every turn's count.
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Indexed {
     /// Size and mtime of the log when this was taken; any disagreement with
     /// the file falls through to re-reading it, as in the listing.
     size: u64,
     modified: DateTime<Utc>,
-    /// How much of the log `tf` accounts for, always at a line boundary.
+    /// How much of the log the turns account for, always at a line boundary.
     bytes: u64,
-    /// Terms in the chat, the title counted [`TITLE_WEIGHT`] times.
-    len: u32,
-    tf: HashMap<String, u32>,
+    /// The chat's words, each with the id its turns count it under.
+    terms: HashMap<String, u32>,
+    turns: Vec<Turn>,
     /// The listing fields, folded from the same events, so a result line
     /// can be labelled the way the sidebar labels it without a second read.
     summary: Summarizing,
 }
 
 impl Indexed {
-    fn add(&mut self, text: &str, weight: u32) {
-        for term in tokenize(text) {
-            *self.tf.entry(term).or_default() += weight;
-            self.len += weight;
+    fn empty(size: u64, modified: DateTime<Utc>) -> Self {
+        Indexed {
+            size,
+            modified,
+            bytes: 0,
+            terms: HashMap::new(),
+            turns: Vec::new(),
+            summary: Summarizing::default(),
         }
     }
 
-    /// The title is latest-wins, so a rename has to take the old name's
-    /// words back out before the new one's go in.
-    fn remove(&mut self, text: &str, weight: u32) {
+    fn add(&mut self, text: &str, user: bool, at: DateTime<Utc>) {
+        // A user message opens a turn; a reply joins the open one, or
+        // opens the first when a chat starts with the model speaking.
+        if user || self.turns.is_empty() {
+            self.turns.push(Turn {
+                at: at.timestamp(),
+                ..Turn::default()
+            });
+        }
+        let turn = self.turns.last_mut().expect("pushed above");
         for term in tokenize(text) {
-            if let Some(n) = self.tf.get_mut(&term) {
-                *n = n.saturating_sub(weight);
-                if *n == 0 {
-                    self.tf.remove(&term);
-                }
+            let next = self.terms.len() as u32;
+            let id = *self.terms.entry(term).or_insert(next);
+            if user {
+                bump(&mut turn.u, id);
+                turn.ul += 1;
+            } else {
+                bump(&mut turn.a, id);
+                turn.al += 1;
             }
-            self.len = self.len.saturating_sub(weight);
         }
     }
 
@@ -187,9 +288,6 @@ impl Indexed {
     }
 
     fn saw(&mut self, event: &SessionEvent) {
-        // The name this record was counted under, taken before the listing
-        // fields move on: a rename has to take the old name's words out.
-        let old_title = self.summary.title.clone();
         // The listing fields first: the creation event is what says whether
         // anything after it may be counted at all.
         if let Some(p) = peek_at(event) {
@@ -198,16 +296,30 @@ impl Indexed {
         if self.unread() {
             return;
         }
-        if let Some(s) = said(event) {
-            if s.conversation {
-                self.add(&s.text, 1);
-            } else {
-                if let Some(old) = old_title {
-                    self.remove(&old, TITLE_WEIGHT);
-                }
-                self.add(&s.text, TITLE_WEIGHT);
-            }
+        if let Some(s) = said(event)
+            && s.conversation
+        {
+            self.add(&s.text, s.who == "you", s.at);
         }
+    }
+
+    /// The title's words, as the ranking counts them.
+    fn title_terms(&self) -> Vec<String> {
+        self.summary
+            .title
+            .as_deref()
+            .map(tokenize)
+            .unwrap_or_default()
+    }
+
+    /// How many turns the chat has.
+    pub(crate) fn turn_count(&self) -> usize {
+        self.turns.len()
+    }
+
+    /// When turn `i` began.
+    pub(crate) fn turn_at(&self, i: usize) -> Option<DateTime<Utc>> {
+        self.turns.get(i).map(Turn::at)
     }
 
     /// The chat this one continues after a hand-off (item 737): the
@@ -220,6 +332,23 @@ impl Indexed {
             .as_ref()
             .filter(|f| f.reason.as_deref() == Some("handoff"))
             .map(|f| f.session.as_str())
+    }
+
+    /// Every turn's count of `term`, plus [`TITLE_WEIGHT`] when the name
+    /// says it — the whole-chat count the tests pin.
+    #[cfg(test)]
+    fn count(&self, term: &str) -> u32 {
+        let body: u32 = self
+            .terms
+            .get(term)
+            .map_or(0, |&id| self.turns.iter().map(|t| t.tf(id, None)).sum());
+        let named = self.title_terms().iter().filter(|t| *t == term).count() as u32;
+        body + named * TITLE_WEIGHT
+    }
+
+    #[cfg(test)]
+    fn body_len(&self) -> u32 {
+        self.turns.iter().map(|t| t.len(None)).sum()
     }
 
     /// The chat's id: what the log says it is, else the file's name.
@@ -275,9 +404,10 @@ fn fold_terms(path: &Path, from: u64, mut acc: Indexed) -> Result<(Indexed, u64)
 #[derive(Serialize, Deserialize)]
 pub struct ChatIndex {
     version: u32,
-    /// How many logs, the mean of their `len`, and how many logs each term
-    /// appears in — recomputed from `logs` whenever one changes and kept so
-    /// a load that changed nothing does not walk every term again.
+    /// How many turns, their mean length, and how many turns each term
+    /// appears in (item 749: turns are BM25's documents now, not chats) —
+    /// recomputed from `logs` whenever one changes and kept so a load that
+    /// changed nothing does not walk every term again.
     n: u32,
     avg_len: f64,
     df: HashMap<String, u32>,
@@ -293,7 +423,54 @@ pub(crate) struct Ranked<'a> {
     pub(crate) path: PathBuf,
     pub(crate) log: &'a Indexed,
     pub(crate) score: f64,
+    /// The turn that scored best (an index into the chat's turns), and how
+    /// many of its turns matched at all (item 749).
+    pub(crate) turn: usize,
+    pub(crate) matched: usize,
 }
+
+/// What a ranking is limited to (items 737, 749). The default is the whole
+/// directory, both speakers, any date, with the recency prior.
+#[derive(Clone, Copy)]
+pub(crate) struct Filter<'a> {
+    /// Only these logs (file names) — a hand-off chain.
+    pub(crate) only: Option<&'a std::collections::BTreeSet<String>>,
+    pub(crate) recency_prior: bool,
+    /// Turns that began at or after `after` and before `before`.
+    pub(crate) after: Option<DateTime<Utc>>,
+    pub(crate) before: Option<DateTime<Utc>>,
+    pub(crate) speaker: Option<Speaker>,
+}
+
+impl Default for Filter<'_> {
+    fn default() -> Self {
+        Filter {
+            only: None,
+            recency_prior: true,
+            after: None,
+            before: None,
+            speaker: None,
+        }
+    }
+}
+
+impl Filter<'_> {
+    fn admits(&self, name: &str) -> bool {
+        self.only.is_none_or(|o| o.contains(name))
+    }
+
+    fn in_range(&self, turn: &Turn) -> bool {
+        let at = turn.at;
+        self.after.is_none_or(|a| at >= a.timestamp())
+            && self.before.is_none_or(|b| at < b.timestamp())
+    }
+}
+
+/// How a chat's turn scores make its score (item 749): its best turn, plus
+/// a damped share of its next two — a chat that came back to a topic three
+/// times beats one that touched it once by a margin, never by a multiple.
+const SECOND_TURN: f64 = 0.5;
+const THIRD_TURN: f64 = 0.25;
 
 impl ChatIndex {
     /// The index as written, or nothing for a file that is missing,
@@ -327,21 +504,33 @@ impl ChatIndex {
         self.logs.values().filter(|l| !l.unread())
     }
 
-    /// The corpus statistics, from the admitted records.
+    /// The corpus statistics, from the admitted records' turns.
     fn recount(&mut self) {
-        self.n = self.admitted().count() as u32;
-        let total: u64 = self.admitted().map(|l| u64::from(l.len)).sum();
-        self.avg_len = if self.n == 0 {
-            0.0
-        } else {
-            total as f64 / f64::from(self.n)
-        };
-        let mut df = HashMap::new();
+        let mut n: u32 = 0;
+        let mut total: u64 = 0;
+        let mut by_id: HashMap<u32, u32> = HashMap::new();
+        let mut df: HashMap<String, u32> = HashMap::new();
         for log in self.admitted() {
-            for term in log.tf.keys() {
-                *df.entry(term.clone()).or_default() += 1;
+            by_id.clear();
+            for turn in &log.turns {
+                n += 1;
+                total += u64::from(turn.ul + turn.al);
+                for id in turn.ids() {
+                    *by_id.entry(id).or_default() += 1;
+                }
+            }
+            for (term, id) in &log.terms {
+                if let Some(&k) = by_id.get(id) {
+                    *df.entry(term.clone()).or_default() += k;
+                }
             }
         }
+        self.n = n;
+        self.avg_len = if n == 0 {
+            0.0
+        } else {
+            total as f64 / f64::from(n)
+        };
         self.df = df;
     }
 
@@ -395,14 +584,7 @@ impl ChatIndex {
                 }
                 _ => {
                     changed = true;
-                    let fresh = Indexed {
-                        size: len,
-                        modified,
-                        bytes: 0,
-                        len: 0,
-                        tf: HashMap::new(),
-                        summary: Summarizing::default(),
-                    };
+                    let fresh = Indexed::empty(len, modified);
                     let Some((acc, bytes)) = skip_deleted(fold_terms(&path, 0, fresh))? else {
                         continue;
                     };
@@ -441,24 +623,29 @@ impl ChatIndex {
     /// newest first, so two chats that say the same thing equally come back
     /// in the order the sidebar would show them.
     ///
-    /// The score is BM25: for each query term, how rare it is across the
-    /// corpus times how often this chat says it, the latter saturating so a
-    /// chat that says a word fifty times is not fifty times more about it
-    /// than one that says it five, and discounted for a long chat, which
-    /// says every word more. A chat with no term in common scores nothing
-    /// and is not returned.
+    /// The score is BM25 over turns (item 749): for each query term, how
+    /// rare it is across every turn in the directory times how often the
+    /// turn says it, the latter saturating so a turn that says a word fifty
+    /// times is not fifty times more about it than one that says it five,
+    /// and discounted for a long turn, which says every word more. A word
+    /// in the chat's name counts [`TITLE_WEIGHT`] times in every turn. A
+    /// chat scores its best turn plus [`SECOND_TURN`] and [`THIRD_TURN`] of
+    /// its next two; one with no term in common scores nothing and is not
+    /// returned.
+    #[cfg(test)]
     pub(crate) fn rank(&self, query: &str, limit: usize) -> (Vec<Ranked<'_>>, usize) {
         self.rank_at(query, limit, Utc::now())
     }
 
     /// `rank` with the clock injected, so a test can age a chat.
+    #[cfg(test)]
     pub(crate) fn rank_at(
         &self,
         query: &str,
         limit: usize,
         now: DateTime<Utc>,
     ) -> (Vec<Ranked<'_>>, usize) {
-        self.rank_among(query, limit, now, None, true)
+        self.rank_among(query, limit, now, Filter::default())
     }
 
     /// Every record, by file name — what a walk over the hand-off links
@@ -472,63 +659,124 @@ impl ChatIndex {
         self.dir.join(name)
     }
 
-    /// `rank_at` over only the logs named in `only` (file names), when
-    /// given, and with the recency prior on or off. The corpus statistics
-    /// stay the directory's: a word is as rare as the whole directory says,
-    /// whichever chats are being ranked. Off for a hand-off chain (item
-    /// 737): its chats are one conversation cut up, and the prior would
-    /// bury the earlier pieces it exists to reach.
+    /// `rank_at` under a [`Filter`]. The corpus statistics stay the
+    /// directory's whatever is filtered: a word is as rare as the whole
+    /// directory says. The recency prior is off for a hand-off chain (item
+    /// 737): its chats are one conversation cut up, and the prior would bury
+    /// the earlier pieces it exists to reach.
     pub(crate) fn rank_among(
         &self,
         query: &str,
         limit: usize,
         now: DateTime<Utc>,
-        only: Option<&std::collections::BTreeSet<String>>,
-        recency_prior: bool,
+        filter: Filter<'_>,
     ) -> (Vec<Ranked<'_>>, usize) {
         let mut terms = tokenize(query);
         terms.sort();
         terms.dedup();
-        let mut scores: HashMap<&str, f64> = HashMap::new();
-        for term in &terms {
-            let Some(&df) = self.df.get(term) else {
-                continue;
-            };
-            let idf =
-                (1.0 + (f64::from(self.n) - f64::from(df) + 0.5) / (f64::from(df) + 0.5)).ln();
-            for (name, log) in &self.logs {
-                if only.is_some_and(|o| !o.contains(name)) {
-                    continue;
-                }
-                let Some(&tf) = log.tf.get(term) else {
-                    continue;
-                };
-                let tf = f64::from(tf);
-                let norm = 1.0 - B + B * f64::from(log.len) / self.avg_len.max(1.0);
-                *scores.entry(name).or_default() += idf * tf * (K1 + 1.0) / (tf + K1 * norm);
-            }
-        }
-        let mut hits: Vec<Ranked<'_>> = scores
-            .into_iter()
-            .map(|(name, score)| {
-                let log = &self.logs[name];
-                // BM25 says how much a chat is about the words; the recency
-                // prior says how likely it is the chat he means. Age is
-                // measured from the log's last write — a chat he is still
-                // adding to is current however old its first message.
-                let age_days = (now - log.modified).num_seconds().max(0) as f64 / 86_400.0;
-                let recency = if recency_prior {
-                    1.0 / (1.0 + age_days / RECENCY_HALF_LIFE_DAYS)
-                } else {
-                    1.0
-                };
-                Ranked {
-                    path: self.dir.join(name),
-                    log,
-                    score: score * recency,
-                }
+        // Each term's weight across the corpus. A term no turn says can
+        // still be in a name; it is then as rare as a word one turn says.
+        let idf: Vec<(&str, f64)> = terms
+            .iter()
+            .map(|t| {
+                let df = f64::from(self.df.get(t).copied().unwrap_or(0).max(1));
+                let n = f64::from(self.n.max(1));
+                (
+                    t.as_str(),
+                    (1.0 + (n - df + 0.5) / (df + 0.5)).ln().max(0.0),
+                )
             })
             .collect();
+        let avg = self.avg_len.max(1.0);
+        let mut hits = Vec::new();
+        for (name, log) in &self.logs {
+            if log.unread() || !filter.admits(name) {
+                continue;
+            }
+            let title = log.title_terms();
+            // The query's terms this chat has at all, by id, and whether the
+            // name says each: a chat with neither is skipped unread.
+            let mut any = false;
+            let ids: Vec<(Option<u32>, bool, f64)> = idf
+                .iter()
+                .map(|(t, w)| {
+                    let id = log.terms.get(*t).copied();
+                    let named = title.iter().any(|x| x == t);
+                    any |= id.is_some() || named;
+                    (id, named, *w)
+                })
+                .collect();
+            if !any {
+                continue;
+            }
+            let score_of = |turn: &Turn| -> f64 {
+                let norm = 1.0 - B + B * f64::from(turn.len(filter.speaker)) / avg;
+                ids.iter()
+                    .map(|(id, named, w)| {
+                        let tf = id.map_or(0, |id| turn.tf(id, filter.speaker))
+                            + if *named { TITLE_WEIGHT } else { 0 };
+                        if tf == 0 {
+                            return 0.0;
+                        }
+                        let tf = f64::from(tf);
+                        w * tf * (K1 + 1.0) / (tf + K1 * norm)
+                    })
+                    .sum()
+            };
+            // The best three turns in range, and how many matched.
+            let mut top = [(0.0f64, 0usize); 3];
+            let mut matched = 0;
+            let mut seen_in_range = false;
+            for (i, turn) in log.turns.iter().enumerate() {
+                if !filter.in_range(turn) {
+                    continue;
+                }
+                seen_in_range = true;
+                let sc = score_of(turn);
+                if sc <= 0.0 {
+                    continue;
+                }
+                matched += 1;
+                if sc > top[0].0 {
+                    top = [(sc, i), top[0], top[1]];
+                } else if sc > top[1].0 {
+                    top = [top[0], (sc, i), top[1]];
+                } else if sc > top[2].0 {
+                    top[2] = (sc, i);
+                }
+            }
+            // A named chat with no turn yet (or none that says the words)
+            // still answers a query for its name, as one empty turn would —
+            // but not under a date range none of its turns falls in.
+            if matched == 0 {
+                let unbounded = filter.after.is_none() && filter.before.is_none();
+                if !(unbounded || seen_in_range) || !ids.iter().any(|(_, named, _)| *named) {
+                    continue;
+                }
+                top[0] = (score_of(&Turn::default()), 0);
+                if top[0].0 <= 0.0 {
+                    continue;
+                }
+            }
+            let score = top[0].0 + SECOND_TURN * top[1].0 + THIRD_TURN * top[2].0;
+            // BM25 says how much a chat is about the words; the recency
+            // prior says how likely it is the chat he means. Age is
+            // measured from the log's last write — a chat he is still
+            // adding to is current however old its first message.
+            let recency = if filter.recency_prior {
+                let age_days = (now - log.modified).num_seconds().max(0) as f64 / 86_400.0;
+                1.0 / (1.0 + age_days / RECENCY_HALF_LIFE_DAYS)
+            } else {
+                1.0
+            };
+            hits.push(Ranked {
+                path: self.dir.join(name),
+                log,
+                score: score * recency,
+                turn: top[0].1,
+                matched,
+            });
+        }
         hits.sort_by(|a, b| {
             b.score
                 .total_cmp(&a.score)
@@ -537,6 +785,45 @@ impl ChatIndex {
         let total = hits.len();
         hits.truncate(limit);
         (hits, total)
+    }
+
+    /// Chats with turns in a date range, newest turn first, for browsing
+    /// by date with no words (item 749: "what did we do yesterday" has no
+    /// keywords). Each with how many of its turns fall in the range and the
+    /// first of them.
+    pub(crate) fn browse(
+        &self,
+        limit: usize,
+        filter: Filter<'_>,
+    ) -> (Vec<(PathBuf, &Indexed, usize, usize)>, usize) {
+        let mut rows = Vec::new();
+        for (name, log) in &self.logs {
+            if log.unread() || !filter.admits(name) {
+                continue;
+            }
+            let inside: Vec<usize> = (0..log.turns.len())
+                .filter(|&i| filter.in_range(&log.turns[i]))
+                .collect();
+            let (Some(&first), Some(&last)) = (inside.first(), inside.last()) else {
+                continue;
+            };
+            rows.push((
+                log.turns[last].at,
+                self.dir.join(name),
+                log,
+                inside.len(),
+                first,
+            ));
+        }
+        rows.sort_by_key(|r| std::cmp::Reverse(r.0));
+        let total = rows.len();
+        rows.truncate(limit);
+        (
+            rows.into_iter()
+                .map(|(_, p, l, n, f)| (p, l, n, f))
+                .collect(),
+            total,
+        )
     }
 }
 
@@ -647,8 +934,8 @@ mod tests {
         assert_eq!(index.n, 2);
         let rec = record(&index, &a);
         // Once in the question, once in the reply, three times for the name.
-        assert_eq!(rec.tf["rewind"], 2);
-        assert_eq!(rec.tf["rewinding"], TITLE_WEIGHT);
+        assert_eq!(rec.count("rewind"), 2);
+        assert_eq!(rec.count("rewinding"), TITLE_WEIGHT);
         assert_eq!(rec.id(&dir.join(format!("{a}.jsonl"))), a);
         assert_eq!(index.df["rewind"], 1);
         assert_eq!(index.df["an"], 1);
@@ -672,8 +959,8 @@ mod tests {
         let before = ChatIndex::load_or_build(&dir).unwrap();
         let (len, bytes) = {
             let r = record(&before, &id);
-            assert_eq!(r.tf["aaaaaaaa"], 1);
-            (r.len, r.bytes)
+            assert_eq!(r.count("aaaaaaaa"), 1);
+            (r.body_len(), r.bytes)
         };
         assert_eq!(bytes, fs::metadata(&path).unwrap().len());
 
@@ -688,18 +975,18 @@ mod tests {
 
         let after = ChatIndex::load_or_build(&dir).unwrap();
         let r = record(&after, &id);
-        assert!(r.len > len, "the appended turn was missed");
-        assert_eq!(r.tf["zebra"], 1);
+        assert!(r.body_len() > len, "the appended turn was missed");
+        assert_eq!(r.count("zebra"), 1);
         assert_eq!(
-            r.tf.get("aaaaaaaa"),
-            Some(&1),
+            Some(r.count("aaaaaaaa")).filter(|n| *n > 0),
+            Some(1),
             "the prefix was re-read, so nothing was saved"
         );
-        assert!(!r.tf.contains_key("bbbbbbbb"));
+        assert!(!(r.count("bbbbbbbb") > 0));
 
         fs::remove_file(dir.join(INDEX_FILE)).unwrap();
         let rebuilt = ChatIndex::load_or_build(&dir).unwrap();
-        assert!(record(&rebuilt, &id).tf.contains_key("bbbbbbbb"));
+        assert!((record(&rebuilt, &id).count("bbbbbbbb") > 0));
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -712,14 +999,14 @@ mod tests {
         let id = logged(&dir, "Parsnips", "a question", "a reply", "");
         let path = dir.join(format!("{id}.jsonl"));
         let first = ChatIndex::load_or_build(&dir).unwrap();
-        assert_eq!(record(&first, &id).tf["parsnip"], TITLE_WEIGHT);
+        assert_eq!(record(&first, &id).count("parsnip"), TITLE_WEIGHT);
 
         Session::load(&path).unwrap().record_title("Turnips");
         let second = ChatIndex::load_or_build(&dir).unwrap();
         let r = record(&second, &id);
-        assert!(!r.tf.contains_key("parsnip"));
-        assert_eq!(r.tf["turnip"], TITLE_WEIGHT);
-        assert_eq!(r.len, first.logs[&format!("{id}.jsonl")].len);
+        assert!(!(r.count("parsnip") > 0));
+        assert_eq!(r.count("turnip"), TITLE_WEIGHT);
+        assert_eq!(r.body_len(), first.logs[&format!("{id}.jsonl")].body_len());
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -755,8 +1042,8 @@ mod tests {
             assert_eq!(index.n, 1, "{pass}");
             assert!(!index.df.contains_key("xylophone"), "{pass}");
             let rec = record(&index, &inc.id);
-            assert!(rec.tf.is_empty(), "{pass}: {:?}", rec.tf);
-            assert_eq!(rec.len, 0, "{pass}");
+            assert!(rec.terms.is_empty() && rec.turns.is_empty(), "{pass}");
+            assert_eq!(rec.body_len(), 0, "{pass}");
             let (hits, total) = index.rank("xylophone", 10);
             assert!(hits.is_empty() && total == 0, "{pass}");
             let (hits, _) = index.rank("rewind", 10);
@@ -766,7 +1053,7 @@ mod tests {
         // Grows from its offset, like any log, and still counts nothing.
         inc.record_user("more about the xylophone");
         let index = ChatIndex::load_or_build(&dir).unwrap();
-        assert!(record(&index, &inc.id).tf.is_empty());
+        assert!(record(&index, &inc.id).terms.is_empty());
         assert_eq!(index.n, 1);
         fs::remove_dir_all(&dir).ok();
     }

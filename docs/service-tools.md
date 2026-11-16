@@ -465,6 +465,38 @@ engine's server learns that from the `--preview-chat` / `--budget-dir` the
 desktop already passes before every turn (`ServeArgs::current_chat`); the API
 engine's in-process tools are built before a session exists and need `session`.
 
+**Per turn, dates, speaker, neighbours (item 749, 2026-11-16).** ~~A chat's BM25
+score over its whole bag of words~~ — since 749 the index keeps each chat's
+counts **per turn** (a user message and the replies until the next; one opened
+by a reply when a chat starts with the model) and **per speaker**, with the
+turn's start time (`store/index.rs` `Turn`; index version 3). BM25's documents
+are turns: idf from how many turns in the directory say a word, length
+normalised by the mean turn. A chat scores its best turn plus ½ of its second
+and ¼ of its third (`SECOND_TURN`, `THIRD_TURN`), times the recency prior as
+before; a word in the title adds 3 to every turn's count. Why: LongMemEval
+(500 questions over long multi-session chat histories, Wu et al., ICLR 2025)
+found the turn ("round") the better unit, and whole-chat scoring under-ranked a
+long chat that discussed something in five turns of five hundred — the case
+hand-off chains made common. No embeddings: three outside results agree
+lexical search is enough for history an agent searches iteratively
+(`notes/runner-design/736-survey-B3-2026-11-16.md` §3). A result line now ends
+`turn k of N (date) · excerpt`, the excerpt taken from that turn.
+`search_chats` takes `after` / `before` (`YYYY-MM-DD`, local days; `after`
+inclusive, `before` exclusive) — only turns in the range count — and `speaker`
+(`user` | `assistant`). With a range and no `query` it **browses by date**: the
+chats with turns in the range, newest first, each with how many turns fall in it
+and the first one's opening. `read_chat` takes `turn` (the number on a result
+line) and `neighbours` (default 1, at most 5) and returns only those turns.
+**The hand-off note:** a chat that continues another is told so in the MCP
+server's `initialize` instructions (`tools::handoff_note`): search the chain
+with `scope: chain`, or send a subagent to `read_chat` the earlier chat, so its
+text does not fill this window. Constant for the chat's life, so it costs no
+cache miss after its first turn; nothing changes for other chats.
+**Measured** (`recall_set_over_the_real_corpora` over copies of five projects;
+report `notes/runner-design/wave-c-search-report-2026-11-16.md`): the 14
+known-item questions went from 6 to 12 at rank 1; the 2026-09-14 ten from 6 to
+8 in the top five.
+
 **Shape.** A search returns one line per chat, best first, at most `limit`
 (default 10, clamped to 25): short id · title · date last active · score ·
 excerpt around the first of the query's words the chat says, the sidebar's

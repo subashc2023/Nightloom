@@ -36,7 +36,7 @@ use nightloom_core::tool::{CancellationToken, Effect, Tool};
 use serde_json::{Value, json};
 
 use super::blocking;
-use crate::store::index::{self, ChatIndex};
+use crate::store::index::{self, ChatIndex, Filter, Speaker};
 use crate::store::{self, SessionMatch, StoreError};
 
 /// Where the chats live, for the two tools to look through.
@@ -99,6 +99,9 @@ impl ChatDirs {
 const DEFAULT_LIMIT: usize = 10;
 const MAX_LIMIT: usize = 25;
 const DEFAULT_WINDOW: usize = 6000;
+/// Turns either side of the one `read_chat` is asked for (item 749).
+const DEFAULT_NEIGHBOURS: usize = 1;
+const MAX_NEIGHBOURS: usize = 5;
 const MAX_WINDOW: usize = 20000;
 /// A title in a result line. Longer than a sidebar row's, since here the
 /// name is what the model will cite.
@@ -117,9 +120,13 @@ const SEARCH_DESC: &str = "Find which of the user's other chats are about someth
      means is almost always near the top; an old chat is never dropped, only lower, so when \
      they say it was a while ago read further down the list. Use a few distinctive words rather than a sentence: \
      every word you add that the chat did not say dilutes the ranking, and word order does not \
-     matter. Returns one line per chat, best first: short id, title, date last active, score, \
-     and an excerpt around the first of your words it says. Then call read_chat with the id to \
-     read around the passage. scope is the open project's chats by default; all searches every \
+     matter. Scored per turn (a user message and its replies), so a long chat that discussed \
+     it in a few turns ranks by those turns. Returns one line per chat, best first: short id, \
+     title, date last active, score, the best turn's number and date, and an excerpt from that \
+     turn. Then call read_chat with the id and that turn to read it with its neighbours. after \
+     and before (YYYY-MM-DD) keep only turns from that range; with them and no query, it \
+     lists the chats active in the range instead, newest first — for questions like 'what \
+     did we do yesterday'. speaker counts only the user's words or only the assistant's. scope is the open project's chats by default; all searches every \
      project and the unfiled chats; chain searches only this chat's hand-off chain — the chats \
      it continues from (each started from the one before when it filled up) and any that \
      continue it, which are one long conversation cut into pieces — with no recency discount, \
@@ -130,7 +137,9 @@ const SEARCH_DESC: &str = "Find which of the user's other chats are about someth
 const READ_DESC: &str = "Read part of one of the user's other chats, found with search_chats. \
      session is the short id from a result line. With query, returns a window of the \
      conversation centred on the first message containing it; without, the start of the \
-     conversation. Each message is prefixed user: or assistant: with its date; tool results are \
+     conversation. With turn (the number on a search_chats line), only that turn and \
+     neighbours turns either side of it (default 1), so a hit deep in a long chat is read in \
+     its context. Each message is prefixed user: or assistant: with its date; tool results are \
      never included. max_chars bounds the window (default 6000, at most 20000) — ask for more \
      only when the passage is long, and call again with a different query rather than paging \
      through a whole chat. The first line names the chat's title and date: cite both when you \
@@ -190,7 +199,20 @@ impl Tool for SearchChats {
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "A few distinctive words the chat would have said; case-insensitive, any order."
+                        "description": "A few distinctive words the chat would have said; case-insensitive, any order. May be omitted when after or before is given, to list the chats active then."
+                    },
+                    "after": {
+                        "type": "string",
+                        "description": "YYYY-MM-DD: only turns on or after this day (local time)."
+                    },
+                    "before": {
+                        "type": "string",
+                        "description": "YYYY-MM-DD: only turns before this day (local time)."
+                    },
+                    "speaker": {
+                        "type": "string",
+                        "enum": ["user", "assistant"],
+                        "description": "Count only what the user said, or only what the assistant said."
                     },
                     "scope": {
                         "type": "string",
@@ -206,7 +228,7 @@ impl Tool for SearchChats {
                         "description": "How many chats to return, best first. Default 10, at most 25."
                     }
                 },
-                "required": ["query"]
+                "required": []
             }),
         }
     }
@@ -218,15 +240,38 @@ impl Tool for SearchChats {
     /// beside the spec. The first build of a directory's index reads every
     /// log once, the way the substring scan used to on every call.
     async fn call(&self, input: Value, _cancel: &CancellationToken) -> Result<String, String> {
+        let after = day(&input["after"], "after")?;
+        let before = day(&input["before"], "before")?;
+        let speaker = match input["speaker"].as_str() {
+            None => None,
+            Some("user") => Some(Speaker::User),
+            Some("assistant") => Some(Speaker::Assistant),
+            Some(other) => {
+                return Err(format!("speaker must be user or assistant (got {other:?})"));
+            }
+        };
         let query = input["query"]
             .as_str()
             .map(str::trim)
             .filter(|q| !q.is_empty())
-            .ok_or_else(|| {
-                "missing required argument: query — give a short distinctive phrase to look for"
-                    .to_string()
-            })?
-            .to_string();
+            .map(str::to_string);
+        let query = match query {
+            Some(q) => q,
+            // Browsing by date needs no words.
+            None if after.is_some() || before.is_some() => String::new(),
+            None => {
+                return Err(
+                    "missing required argument: query — give a short distinctive phrase to \
+                     look for, or after/before (YYYY-MM-DD) to list the chats active then"
+                        .to_string(),
+                );
+            }
+        };
+        let opts = Opts {
+            after,
+            before,
+            speaker,
+        };
         let scope = match input["scope"].as_str() {
             None | Some("project") => Scope::Project,
             Some("all") => Scope::All,
@@ -252,12 +297,78 @@ impl Tool for SearchChats {
         if scope == Scope::Chain {
             let current = self.current.clone();
             return blocking(move || {
-                search_chain(&dirs, &query, session.as_deref(), current.as_deref(), limit)
+                search_chain(
+                    &dirs,
+                    &query,
+                    session.as_deref(),
+                    current.as_deref(),
+                    limit,
+                    opts,
+                )
             })
             .await;
         }
-        blocking(move || search(&dirs, &query, scope, limit)).await
+        blocking(move || search(&dirs, &query, scope, limit, opts)).await
     }
+}
+
+/// The search's limits beyond its words (item 749).
+#[derive(Clone, Copy, Default, Debug)]
+struct Opts {
+    after: Option<DateTime<Utc>>,
+    before: Option<DateTime<Utc>>,
+    speaker: Option<Speaker>,
+}
+
+impl Opts {
+    fn filter<'a>(&self, only: Option<&'a std::collections::BTreeSet<String>>) -> Filter<'a> {
+        Filter {
+            only,
+            recency_prior: only.is_none(),
+            after: self.after,
+            before: self.before,
+            speaker: self.speaker,
+        }
+    }
+
+    /// What the header says about the limits, or nothing.
+    fn said(&self) -> String {
+        let mut out = String::new();
+        if let Some(a) = self.after {
+            out.push_str(&format!(
+                " from {}",
+                a.with_timezone(&chrono::Local).format("%Y-%m-%d")
+            ));
+        }
+        if let Some(b) = self.before {
+            out.push_str(&format!(
+                " before {}",
+                b.with_timezone(&chrono::Local).format("%Y-%m-%d")
+            ));
+        }
+        match self.speaker {
+            Some(Speaker::User) => out.push_str(", the user's words only"),
+            Some(Speaker::Assistant) => out.push_str(", the assistant's words only"),
+            None => {}
+        }
+        out
+    }
+}
+
+/// A `YYYY-MM-DD` argument as the start of that day, local time.
+fn day(v: &Value, name: &str) -> Result<Option<DateTime<Utc>>, String> {
+    let Some(text) = v.as_str().map(str::trim).filter(|t| !t.is_empty()) else {
+        return Ok(None);
+    };
+    let date = chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d")
+        .map_err(|_| format!("{name} must be a date as YYYY-MM-DD (got {text:?})"))?;
+    let midnight = date.and_hms_opt(0, 0, 0).expect("midnight exists");
+    Ok(Some(
+        midnight
+            .and_local_timezone(chrono::Local)
+            .earliest()
+            .map_or_else(|| midnight.and_utc(), |t| t.with_timezone(&Utc)),
+    ))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -310,9 +421,19 @@ fn nothing(where_: &str, query: &str, scope: Scope) -> String {
 /// date on the way. A query the index has no term for — a lone symbol, a
 /// single letter, an emoji — cannot be ranked and goes to the substring
 /// scan instead, newest first, which is what the tool did before it had an
-/// index; the header says which happened.
-fn search(dirs: &ChatDirs, query: &str, scope: Scope, limit: usize) -> Result<String, String> {
+/// index; the header says which happened. No query with a date range is a
+/// browse by date (item 749).
+fn search(
+    dirs: &ChatDirs,
+    query: &str,
+    scope: Scope,
+    limit: usize,
+    opts: Opts,
+) -> Result<String, String> {
     let (covered, where_) = covered(dirs, scope);
+    if query.is_empty() {
+        return browse(&covered, &where_, limit, opts, None);
+    }
     let words = index::tokenize(query);
     if words.is_empty() {
         return substring(&covered, &where_, query, scope, limit);
@@ -322,17 +443,10 @@ fn search(dirs: &ChatDirs, query: &str, scope: Scope, limit: usize) -> Result<St
     let mut total = 0;
     for (dir, project) in &covered {
         let index = ChatIndex::load_or_build(dir).map_err(|e| e.to_string())?;
-        let (ranked, found) = index.rank(query, limit);
+        let (ranked, found) = index.rank_among(query, limit, Utc::now(), opts.filter(None));
         total += found;
         for r in ranked {
-            hits.push(Hit {
-                id: r.log.id(&r.path),
-                title: r.log.label(&r.path, TITLE_WIDTH),
-                modified: r.log.modified(),
-                path: r.path,
-                score: r.score,
-                project: project.clone(),
-            });
+            hits.push(Hit::of(&r, project.clone(), None));
         }
     }
     // Across directories the scores are merged as they are. Each index has
@@ -342,19 +456,22 @@ fn search(dirs: &ChatDirs, query: &str, scope: Scope, limit: usize) -> Result<St
     // every directory's statistics that nothing has asked for yet.
     hits.sort_by(|a, b| {
         b.score
-            .total_cmp(&a.score)
+            .unwrap_or(0.0)
+            .total_cmp(&a.score.unwrap_or(0.0))
             .then_with(|| b.modified.cmp(&a.modified))
     });
     hits.truncate(limit);
 
     if hits.is_empty() {
-        return Ok(nothing(&where_, query, scope));
+        return Ok(nothing(&format!("{where_}{}", opts.said()), query, scope));
     }
     let shown = hits.len();
     let mut out = format!(
-        "{total} chat{} in {where_} mention {query:?}{}, best first. Lines are: id · title · \
-         last active · score · excerpt. Call read_chat with an id to read around a passage.\n",
+        "{total} chat{} in {where_}{} mention {query:?}{}, best first. Lines are: id · title · \
+         last active · score · best turn · excerpt from it. Call read_chat with an id and \
+         that turn to read it with its neighbours.\n",
         if total == 1 { "" } else { "s" },
+        opts.said(),
         if shown < total {
             format!("; the best {shown}")
         } else {
@@ -362,29 +479,79 @@ fn search(dirs: &ChatDirs, query: &str, scope: Scope, limit: usize) -> Result<St
         },
     );
     for hit in &hits {
-        // Gone between the ranking and the read: a row that is going away,
-        // as in `store::list`, not a failed search.
-        let Some(excerpt) = excerpt(&hit.path, hit.modified, &words) else {
-            continue;
-        };
-        out.push_str(&format!(
-            "{} · {}{} · {} · {:.1} · {}\n",
-            short_id(&hit.id),
-            hit.project
-                .as_deref()
-                .map(|p| format!("[{p}] "))
-                .unwrap_or_default(),
-            if hit.title.is_empty() {
-                "(untitled)"
-            } else {
-                &hit.title
-            },
-            hit.modified.format("%Y-%m-%d"),
-            hit.score,
-            excerpt,
-        ));
+        hit.line(&mut out, &words, opts);
     }
     Ok(out)
+}
+
+/// Each chain chat's label by file name (item 737).
+type ChainPlaces = std::collections::HashMap<String, String>;
+
+/// The chats with turns in a date range, newest first (item 749), for a
+/// question with no words in it: "what did we do yesterday".
+fn browse(
+    covered: &[(&Path, Option<String>)],
+    where_: &str,
+    limit: usize,
+    opts: Opts,
+    chain: Option<(&std::collections::BTreeSet<String>, &ChainPlaces)>,
+) -> Result<String, String> {
+    let mut hits = Vec::new();
+    let mut total = 0;
+    for (dir, project) in covered {
+        let index = ChatIndex::load_or_build(dir).map_err(|e| e.to_string())?;
+        let (found, n) = index.browse(limit, opts.filter(chain.map(|c| c.0)));
+        total += n;
+        for (path, log, inside, first) in found {
+            let place = chain.and_then(|c| file_name(&path).and_then(|f| c.1.get(&f).cloned()));
+            hits.push((
+                log.turn_at(first).unwrap_or_else(|| log.modified()),
+                Hit {
+                    id: log.id(&path),
+                    title: log.label(&path, TITLE_WIDTH),
+                    modified: log.modified(),
+                    score: None,
+                    in_range: inside,
+                    project: project.clone(),
+                    place,
+                    turn: first,
+                    turns: log.turn_count(),
+                    turn_at: log.turn_at(first),
+                    path,
+                },
+            ));
+        }
+    }
+    // Newest activity in the range first, across directories too.
+    hits.sort_by(|a, b| b.1.modified.cmp(&a.1.modified).then(b.0.cmp(&a.0)));
+    hits.truncate(limit);
+    if hits.is_empty() {
+        return Ok(format!(
+            "no chats in {where_} have turns{}. Try a wider range.",
+            opts.said()
+        ));
+    }
+    let shown = hits.len();
+    let mut out = format!(
+        "{total} chat{} in {where_} have turns{}{}, newest first. Lines are: id · title · last \
+         active · turns in the range · the first of them · its opening. Call read_chat with an \
+         id and that turn to read it with its neighbours.\n",
+        if total == 1 { "" } else { "s" },
+        opts.said(),
+        if shown < total {
+            format!("; the newest {shown}")
+        } else {
+            String::new()
+        },
+    );
+    for (_, hit) in &hits {
+        hit.line(&mut out, &[], opts);
+    }
+    Ok(out)
+}
+
+fn file_name(path: &Path) -> Option<String> {
+    path.file_name().map(|n| n.to_string_lossy().into_owned())
 }
 
 /// A chat's place in a hand-off chain: 0 for the chat the walk started
@@ -466,6 +633,7 @@ fn search_chain(
     session: Option<&str>,
     current: Option<&str>,
     limit: usize,
+    opts: Opts,
 ) -> Result<String, String> {
     let Some(start) = session.or(current) else {
         return Err(
@@ -487,10 +655,7 @@ fn search_chain(
         .unwrap_or_default();
     let from_current = current == Some(stem.as_str());
     let dir = path.parent().unwrap_or(Path::new("."));
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let name = file_name(&path).unwrap_or_default();
     let index = ChatIndex::load_or_build(dir).map_err(|e| e.to_string())?;
     let chain = chain_of(&index, &name);
     let back = chain.iter().filter(|(_, s)| *s < 0).count();
@@ -505,6 +670,15 @@ fn search_chain(
             chain.len()
         ),
     };
+    let only: std::collections::BTreeSet<String> = chain.iter().map(|(n, _)| n.clone()).collect();
+    let places: ChainPlaces = chain
+        .iter()
+        .map(|(n, s)| (n.clone(), chain_label(*s, from_current)))
+        .collect();
+    if query.is_empty() {
+        drop(index);
+        return browse(&[(dir, None)], &where_, limit, opts, Some((&only, &places)));
+    }
     let words = index::tokenize(query);
     if words.is_empty() {
         return Err(
@@ -512,100 +686,190 @@ fn search_chain(
                 .to_string(),
         );
     }
-    let only: std::collections::BTreeSet<String> = chain.iter().map(|(n, _)| n.clone()).collect();
-    let steps: std::collections::HashMap<&str, i32> =
-        chain.iter().map(|(n, s)| (n.as_str(), *s)).collect();
-    let (ranked, total) = index.rank_among(query, limit, Utc::now(), Some(&only), false);
+    let (ranked, total) = index.rank_among(query, limit, Utc::now(), opts.filter(Some(&only)));
     if ranked.is_empty() {
         return Ok(format!(
-            "no chat in {where_} mentions {query:?}. Try different or fewer words, or scope: \
-             project for the other chats."
+            "no chat in {where_}{} mentions {query:?}. Try different or fewer words, or scope: \
+             project for the other chats.",
+            opts.said()
         ));
     }
     let shown = ranked.len();
     let mut out = format!(
-        "{total} chat{} in {where_} mention {query:?}{}, best first, with no recency discount. \
-         Lines are: id · [place in the chain] title · last active · score · excerpt. Call \
-         read_chat with an id to read around a passage.\n",
+        "{total} chat{} in {where_}{} mention {query:?}{}, best first, with no recency discount. \
+         Lines are: id · [place in the chain] title · last active · score · best turn · excerpt \
+         from it. Call read_chat with an id and that turn to read it with its neighbours.\n",
         if total == 1 { "" } else { "s" },
+        opts.said(),
         if shown < total {
             format!("; the best {shown}")
         } else {
             String::new()
         },
     );
-    for r in ranked {
-        let Some(excerpt) = excerpt(&r.path, r.log.modified(), &words) else {
-            continue;
-        };
-        let fname = r
-            .path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let title = r.log.label(&r.path, TITLE_WIDTH);
-        out.push_str(&format!(
-            "{} · [{}] {} · {} · {:.1} · {}\n",
-            short_id(&r.log.id(&r.path)),
-            chain_label(
-                steps.get(fname.as_str()).copied().unwrap_or(0),
-                from_current
-            ),
-            if title.is_empty() {
-                "(untitled)"
-            } else {
-                &title
-            },
-            r.log.modified().format("%Y-%m-%d"),
-            r.score,
-            excerpt,
-        ));
+    for r in &ranked {
+        let place = file_name(&r.path).and_then(|f| places.get(&f).cloned());
+        Hit::of(r, None, place).line(&mut out, &words, opts);
     }
     Ok(out)
 }
 
-/// One ranked chat, owned, so the index it came out of can be dropped.
+/// One chat in a result, owned, so the index it came out of can be dropped.
 struct Hit {
     id: String,
     title: String,
     modified: DateTime<Utc>,
     path: PathBuf,
-    score: f64,
+    /// The ranking's score; `None` in a browse by date.
+    score: Option<f64>,
+    /// In a browse, how many of its turns fall in the range.
+    in_range: usize,
     project: Option<String>,
+    /// Its place in a hand-off chain.
+    place: Option<String>,
+    /// The best turn (or, browsing, the first in range), of how many.
+    turn: usize,
+    turns: usize,
+    turn_at: Option<DateTime<Utc>>,
 }
 
-/// Text around the first of the query's words a chat says, prefixed with
-/// who said it — the first version's excerpt, made from one scan of the
-/// chat the index chose. The index keeps counts and not positions, so this
+impl Hit {
+    fn of(r: &index::Ranked<'_>, project: Option<String>, place: Option<String>) -> Hit {
+        Hit {
+            id: r.log.id(&r.path),
+            title: r.log.label(&r.path, TITLE_WIDTH),
+            modified: r.log.modified(),
+            path: r.path.clone(),
+            score: Some(r.score),
+            in_range: r.matched,
+            project,
+            place,
+            turn: r.turn,
+            turns: r.log.turn_count(),
+            turn_at: r.log.turn_at(r.turn),
+        }
+    }
+
+    /// The result line. A log gone between the ranking and the read is a
+    /// row that is going away, as in `store::list`, not a failed search.
+    fn line(&self, out: &mut String, words: &[String], opts: Opts) {
+        let Some(excerpt) = turn_excerpt(&self.path, self.modified, self.turn, words, opts.speaker)
+        else {
+            return;
+        };
+        out.push_str(&format!(
+            "{} · {}{}{} · {} · {} · turn {} of {}{} · {}\n",
+            short_id(&self.id),
+            self.project
+                .as_deref()
+                .map(|p| format!("[{p}] "))
+                .unwrap_or_default(),
+            self.place
+                .as_deref()
+                .map(|p| format!("[{p}] "))
+                .unwrap_or_default(),
+            if self.title.is_empty() {
+                "(untitled)"
+            } else {
+                &self.title
+            },
+            self.modified.format("%Y-%m-%d"),
+            match self.score {
+                Some(score) => format!("{score:.2}"),
+                None => format!(
+                    "{} turn{}",
+                    self.in_range,
+                    if self.in_range == 1 { "" } else { "s" }
+                ),
+            },
+            self.turn + 1,
+            self.turns.max(1),
+            self.turn_at
+                .map(|t| format!(" ({})", t.format("%Y-%m-%d")))
+                .unwrap_or_default(),
+            excerpt,
+        ));
+    }
+}
+
+/// Each conversational message of a log with its turn's index, numbered as
+/// the index numbers them (item 749): a user message opens a turn, and a
+/// reply before any user message opens the first.
+fn turns_of(events: &[nightloom_core::SessionEvent]) -> Vec<(usize, store::Said<'_>)> {
+    let mut turn: Option<usize> = None;
+    events
+        .iter()
+        .filter_map(store::said)
+        .filter(|s| s.conversation)
+        .map(|s| {
+            if s.who == "you" || turn.is_none() {
+                turn = Some(turn.map_or(0, |t| t + 1));
+            }
+            (turn.unwrap_or(0), s)
+        })
+        .collect()
+}
+
+/// Text from turn `turn` around the first of the query's words it says,
+/// prefixed with who said it — on the speaker's side only when the search
+/// was limited to one. The index keeps counts and not positions, so this
 /// is the read that shows *why* a chat ranked. When no word is found as a
 /// substring — the ranking matched on the title alone, which the line
-/// already shows — the chat's opening stands in, so the row still says
-/// what the chat is. `None` for a log that could not be read.
-fn excerpt(path: &Path, modified: DateTime<Utc>, words: &[String]) -> Option<String> {
+/// already shows — the turn's opening stands in, then the chat's. `None`
+/// for a log that could not be read.
+fn turn_excerpt(
+    path: &Path,
+    modified: DateTime<Utc>,
+    turn: usize,
+    words: &[String],
+    speaker: Option<Speaker>,
+) -> Option<String> {
     let (_, events) = store::scan(path, modified).ok()?;
+    let side = |who: &str| match speaker {
+        Some(Speaker::User) => who == "you",
+        Some(Speaker::Assistant) => who == "model",
+        None => true,
+    };
+    let said = turns_of(&events);
     let mut opening = None;
-    for said in events.iter().filter_map(store::said) {
-        if !said.conversation || said.text.trim().is_empty() {
+    for (t, s) in said
+        .iter()
+        .filter(|(t, s)| *t == turn && !s.text.trim().is_empty())
+    {
+        let _ = t;
+        if !side(s.who) {
             continue;
         }
         if let Some(at) = words
             .iter()
-            .filter_map(|w| store::find_fold(&said.text, w))
+            .filter_map(|w| store::find_fold(&s.text, w))
             .min()
         {
             return Some(relabel(&format!(
                 "{}: {}",
-                said.who,
-                store::excerpt_around(&said.text, at, store::EXCERPT_WIDTH)
+                s.who,
+                store::excerpt_around(&s.text, at, store::EXCERPT_WIDTH)
             )));
         }
         opening.get_or_insert_with(|| {
             relabel(&format!(
                 "{}: {}",
-                said.who,
-                store::excerpt_around(&said.text, 0, store::EXCERPT_WIDTH)
+                s.who,
+                store::excerpt_around(&s.text, 0, store::EXCERPT_WIDTH)
             ))
         });
+    }
+    if opening.is_none() {
+        opening = said
+            .iter()
+            .find(|(_, s)| !s.text.trim().is_empty())
+            .map(|(_, s)| {
+                relabel(&format!(
+                    "{}: {}",
+                    s.who,
+                    store::excerpt_around(&s.text, 0, store::EXCERPT_WIDTH)
+                ))
+            });
     }
     Some(opening.unwrap_or_default())
 }
@@ -676,6 +940,42 @@ fn substring(
     Ok(out)
 }
 
+/// What the server tells a chat that continues another (item 749): that
+/// an earlier chat holds what came before, and how to reach it without
+/// filling this one — `scope: chain`, or a subagent sent to read it. `None`
+/// for a chat that is not a hand-off's continuation, or not found in `dir`.
+pub fn handoff_note(dir: &Path, current: &str) -> Option<String> {
+    use std::io::BufRead;
+    if !store::is_log_id(current) {
+        return None;
+    }
+    let path = store::find_by_prefix(dir, current).ok()?;
+    let mut first = String::new();
+    std::io::BufReader::new(fs::File::open(path).ok()?)
+        .read_line(&mut first)
+        .ok()?;
+    let nightloom_core::SessionEvent::SessionCreated {
+        forked_from: Some(from),
+        ..
+    } = serde_json::from_str(first.trim_end()).ok()?
+    else {
+        return None;
+    };
+    if from.reason.as_deref() != Some("handoff") {
+        return None;
+    }
+    Some(format!(
+        " This chat continues an earlier one (chat {}) that was handed off when its context \
+         filled, and that one may continue others: they are one conversation cut into pieces. \
+         When the user refers to something from before this chat, search them with \
+         search_chats scope chain before asking; to go through the earlier chat in depth, send \
+         a subagent to read it with read_chat (session {}) and report what matters, so its \
+         text does not fill this window.",
+        short_id(&from.session),
+        short_id(&from.session),
+    ))
+}
+
 /// The first eight characters of a session id: unique in practice, and what
 /// the sidebar shows. `read_chat` resolves it as a prefix, so a longer one
 /// works too.
@@ -731,6 +1031,14 @@ impl Tool for ReadChat {
                     "max_chars": {
                         "type": "integer",
                         "description": "Size of the window in characters. Default 6000, at most 20000."
+                    },
+                    "turn": {
+                        "type": "integer",
+                        "description": "The turn number from a search_chats line: read that turn and its neighbours."
+                    },
+                    "neighbours": {
+                        "type": "integer",
+                        "description": "With turn: how many turns before and after it to include. Default 1, at most 5."
                     }
                 },
                 "required": ["session"]
@@ -757,8 +1065,17 @@ impl Tool for ReadChat {
             .as_u64()
             .map_or(DEFAULT_WINDOW, |n| n as usize)
             .clamp(1, MAX_WINDOW);
+        // 1-based as the search line prints it; 0 reads as the first.
+        let turns = input["turn"].as_u64().map(|t| {
+            let at = (t as usize).saturating_sub(1);
+            let n = input["neighbours"]
+                .as_u64()
+                .map_or(DEFAULT_NEIGHBOURS, |n| n as usize)
+                .min(MAX_NEIGHBOURS);
+            (at.saturating_sub(n), at + n)
+        });
         let dirs = self.dirs.clone();
-        blocking(move || read(&dirs, &session, query.as_deref(), max_chars)).await
+        blocking(move || read(&dirs, &session, query.as_deref(), max_chars, turns)).await
     }
 }
 
@@ -811,6 +1128,7 @@ fn read(
     prefix: &str,
     query: Option<&str>,
     max_chars: usize,
+    turns: Option<(usize, usize)>,
 ) -> Result<String, String> {
     let path = resolve(dirs, prefix)?;
     // Refused by id as well as hidden from search: a model that has the id
@@ -832,10 +1150,13 @@ fn read(
     // The same filter as the search, minus the title, which goes in the
     // header. A reply that was nothing but tool calls has no text and is
     // skipped rather than printed as an empty `assistant:` line.
-    let messages: Vec<Message> = events
-        .iter()
-        .filter_map(store::said)
-        .filter(|s| s.conversation && !s.text.trim().is_empty())
+    let numbered = turns_of(&events);
+    let total_turns = numbered.last().map_or(0, |(t, _)| t + 1);
+    let messages: Vec<Message> = numbered
+        .into_iter()
+        .filter(|(t, _)| turns.is_none_or(|(a, b)| (a..=b).contains(t)))
+        .map(|(_, s)| s)
+        .filter(|s| !s.text.trim().is_empty())
         .map(|s| Message {
             head: format!("{} ({})", role(s.who), s.at.format("%Y-%m-%d %H:%M")),
             text: s.text.trim().to_string(),
@@ -847,13 +1168,25 @@ fn read(
         t => t,
     };
     let mut out = format!(
-        "chat {} · {title} · last active {} · {} messages\n\n",
+        "chat {} · {title} · last active {} · {} messages{}\n\n",
         short_id(&summary.id),
         modified.format("%Y-%m-%d"),
         messages.len(),
+        match turns {
+            Some((a, b)) => format!(
+                " · turns {}–{} of {total_turns}",
+                a + 1,
+                (b + 1).min(total_turns.max(1))
+            ),
+            None => String::new(),
+        },
     );
     if messages.is_empty() {
-        out.push_str("(nothing was said in this chat)\n");
+        out.push_str(if turns.is_some() {
+            "(nothing was said in those turns)\n"
+        } else {
+            "(nothing was said in this chat)\n"
+        });
         return Ok(out);
     }
 
@@ -1362,6 +1695,182 @@ mod tests {
         assert!(out.contains(&short_id(&first.id)), "{out}");
     }
 
+    /// A chat of turns, each `(day, user, reply)`, its messages dated to
+    /// noon UTC on that day by rewriting the log the engine wrote.
+    fn dated(dir: &Path, title: &str, turns: &[(&str, &str, &str)]) -> String {
+        let mut s = Session::with_log(dir).unwrap();
+        for (_, user, reply) in turns {
+            s.record_user(*user);
+            s.record_assistant(
+                "m",
+                vec![ContentBlock::Text {
+                    text: (*reply).into(),
+                }],
+                Some("end_turn".into()),
+                Usage::default(),
+            );
+        }
+        s.record_title(title);
+        let path = dir.join(format!("{}.jsonl", s.id));
+        let mut k = 0usize;
+        let mut day = "";
+        let body: Vec<String> = fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(|l| {
+                let mut v: Value = serde_json::from_str(l).unwrap();
+                match v["event"].as_str() {
+                    Some("user_message") => {
+                        day = turns[k].0;
+                        k += 1;
+                        v["at"] = json!(format!("{day}T12:00:00Z"));
+                    }
+                    Some("assistant_message") => v["at"] = json!(format!("{day}T12:00:00Z")),
+                    _ => {}
+                }
+                v.to_string()
+            })
+            .collect();
+        fs::write(&path, body.join("\n") + "\n").unwrap();
+        s.id.clone()
+    }
+
+    /// Item 749: a long chat that discussed something in one turn of many
+    /// outranks a short one that says a word in passing, and its line
+    /// names that turn and quotes it.
+    #[tokio::test]
+    async fn a_long_chat_ranks_by_its_best_turn_and_names_it() {
+        let (dirs, _) = dirs_for("chats-turns");
+        let filler = "we talked about the weather and the garden and the bus timetable";
+        let mut long: Vec<(&str, &str, &str)> = vec![("2026-11-01", filler, filler); 40];
+        long[20] = (
+            "2026-11-01",
+            "the kestrel nesting boxes need moving",
+            "move the kestrel nesting boxes east",
+        );
+        let deep = dated(&dirs.active, "Long one", &long);
+        let passing = format!("{filler} kestrel {filler} nesting {filler}");
+        let short = dated(&dirs.active, "Short one", &[("2026-11-01", &passing, "ok")]);
+        let out = call(
+            &SearchChats::new(dirs.clone()),
+            json!({"query": "kestrel nesting"}),
+        )
+        .await
+        .unwrap();
+        let lines: Vec<&str> = out.lines().skip(1).collect();
+        assert!(lines[0].starts_with(&short_id(&deep)), "{out}");
+        assert!(lines[0].contains("turn 21 of 40 (2026-11-01)"), "{out}");
+        assert!(
+            lines[0].contains("user: the kestrel nesting boxes"),
+            "{out}"
+        );
+        assert!(lines[1].starts_with(&short_id(&short)), "{out}");
+
+        // read_chat reads that turn with its neighbours and nothing else.
+        let read = ReadChat::new(dirs.clone());
+        let out = call(
+            &read,
+            json!({"session": short_id(&deep), "turn": 21, "neighbours": 1}),
+        )
+        .await
+        .unwrap();
+        assert!(out.contains("turns 20–22 of 40"), "{out}");
+        assert!(out.contains("kestrel nesting boxes need moving"), "{out}");
+        assert_eq!(out.matches("user (").count(), 3, "{out}");
+    }
+
+    /// Item 749: after/before keep only turns from the range; no query with
+    /// a range browses by date; speaker counts one side only.
+    #[tokio::test]
+    async fn dates_speaker_and_browsing_by_date() {
+        let (dirs, _) = dirs_for("chats-dates");
+        let early = dated(
+            &dirs.active,
+            "Early",
+            &[("2026-10-01", "the heron survey", "noted the heron")],
+        );
+        let both = dated(
+            &dirs.active,
+            "Both",
+            &[
+                ("2026-10-02", "something else entirely", "fine"),
+                ("2026-10-20", "the heron again", "yes the heron"),
+            ],
+        );
+        let told = dated(
+            &dirs.active,
+            "Told",
+            &[("2026-10-21", "what bird was it", "it was a heron")],
+        );
+        let tool = SearchChats::new(dirs.clone());
+        let out = call(&tool, json!({"query": "heron", "after": "2026-10-15"}))
+            .await
+            .unwrap();
+        assert!(out.contains(" from 2026-10-15"), "{out}");
+        assert!(!out.contains(&short_id(&early)), "{out}");
+        assert!(out.contains(&short_id(&both)), "{out}");
+        let out = call(&tool, json!({"query": "heron", "before": "2026-10-15"}))
+            .await
+            .unwrap();
+        assert!(out.contains(&short_id(&early)), "{out}");
+        assert!(!out.contains(&short_id(&both)), "{out}");
+
+        let out = call(&tool, json!({"query": "heron", "speaker": "user"}))
+            .await
+            .unwrap();
+        assert!(
+            !out.contains(&short_id(&told)),
+            "only the reply said it: {out}"
+        );
+        let out = call(&tool, json!({"query": "heron", "speaker": "assistant"}))
+            .await
+            .unwrap();
+        assert!(out.contains("assistant: it was a heron"), "{out}");
+
+        // Browse: no query, a range — newest activity first, with a count.
+        let out = call(
+            &tool,
+            json!({"after": "2026-10-02", "before": "2026-10-21"}),
+        )
+        .await
+        .unwrap();
+        assert!(
+            out.starts_with("1 chat in the chats of Active have turns"),
+            "{out}"
+        );
+        assert!(
+            out.contains(&short_id(&both)) && out.contains(" · 2 turns · "),
+            "{out}"
+        );
+        let err = call(&tool, json!({})).await.unwrap_err();
+        assert!(err.contains("after/before"), "{err}");
+        let err = call(&tool, json!({"query": "heron", "after": "15 Oct"}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("YYYY-MM-DD"), "{err}");
+    }
+
+    /// Item 749: the server's note for a chat that continues another.
+    #[test]
+    fn a_handed_off_chat_is_told_where_the_rest_is() {
+        let (dirs, _) = dirs_for("chats-note");
+        let mut first = Session::with_log(&dirs.active).unwrap();
+        first.record_user("hello");
+        let mut next = first.continued_from(&dirs.active).unwrap();
+        next.record_user("again");
+        let note = handoff_note(&dirs.active, &next.id).unwrap();
+        assert!(
+            note.contains(&format!("chat {}", short_id(&first.id))),
+            "{note}"
+        );
+        assert!(
+            note.contains("scope chain") && note.contains("subagent"),
+            "{note}"
+        );
+        assert_eq!(handoff_note(&dirs.active, &first.id), None);
+        assert_eq!(handoff_note(&dirs.active, "nope"), None);
+    }
+
     // ---- measurements, on the real corpora; `--ignored --nocapture` --------
 
     /// From `$HOME` rather than `config_dir()`, which `test_dir` repoints at
@@ -1451,6 +1960,119 @@ mod tests {
                 "{name} ({logs} logs, {} indexed): cold build {cold} ms; warm load {warm:?} ms; \
                  rank {ranks:?} (query, chats matched, µs); file {size} bytes",
                 built.len()
+            );
+        }
+    }
+
+    /// Item 749's recall check, over copies of the real corpora (never the
+    /// live directories: an index of another version written there would
+    /// cost the running app a rebuild). `NIGHTLOOM_RECALL_ROOT` holds
+    /// `<project id>/sessions/` copies; `NIGHTLOOM_RECALL_SET` is the JSON
+    /// `bin/recall_set.py` writes. Prints rank of the expected chat only —
+    /// no excerpt, no query text — through the tool's own output, so the
+    /// same test measures any ranker. Then the 2026-09-14 ten questions,
+    /// by title, in Value Generalization.
+    #[test]
+    #[ignore]
+    fn recall_set_over_the_real_corpora() {
+        let (Some(root), Some(set)) = (
+            std::env::var_os("NIGHTLOOM_RECALL_ROOT").map(PathBuf::from),
+            std::env::var_os("NIGHTLOOM_RECALL_SET").map(PathBuf::from),
+        ) else {
+            println!("set NIGHTLOOM_RECALL_ROOT and NIGHTLOOM_RECALL_SET");
+            return;
+        };
+        let rank_of = |out: &str, id: &str| -> Option<usize> {
+            out.lines()
+                .skip(1)
+                .position(|l| l.starts_with(&short_id(id)))
+                .map(|i| i + 1)
+        };
+        let qs: Vec<Value> = serde_json::from_slice(&fs::read(set).unwrap()).unwrap();
+        let (mut top1, mut top5, mut found) = (0, 0, 0);
+        for (i, q) in qs.iter().enumerate() {
+            let dir = root.join(q["project"].as_str().unwrap()).join("sessions");
+            let dirs = ChatDirs {
+                active: dir.clone(),
+                all: vec![ChatDir {
+                    name: "p".into(),
+                    dir: dir.clone(),
+                }],
+            };
+            let query = q["query"].as_str().unwrap();
+            let expected = q["expected"].as_str().unwrap();
+            let t = std::time::Instant::now();
+            let out = match q["from"].as_str() {
+                Some(from) => {
+                    search_chain(&dirs, query, None, Some(from), MAX_LIMIT, Opts::default())
+                }
+                None => search(&dirs, query, Scope::Project, MAX_LIMIT, Opts::default()),
+            }
+            .unwrap();
+            let ms = t.elapsed().as_millis();
+            let r = rank_of(&out, expected);
+            let project_rank = q["from"].as_str().map(|_| {
+                rank_of(
+                    &search(&dirs, query, Scope::Project, MAX_LIMIT, Opts::default()).unwrap(),
+                    expected,
+                )
+            });
+            found += usize::from(r.is_some());
+            top1 += usize::from(r == Some(1));
+            top5 += usize::from(r.is_some_and(|r| r <= 5));
+            println!(
+                "Q{:02} {} turn {}/{}{}: rank {}{} ({ms} ms)",
+                i + 1,
+                q["corpus"].as_str().unwrap(),
+                q["turn"],
+                q["turns"],
+                if q["from"].is_string() {
+                    " [chain]"
+                } else {
+                    ""
+                },
+                r.map_or("miss".to_string(), |r| r.to_string()),
+                project_rank
+                    .map(|p| format!(
+                        ", project scope {}",
+                        p.map_or("miss".to_string(), |r| r.to_string())
+                    ))
+                    .unwrap_or_default(),
+            );
+        }
+        println!(
+            "recall set: {} questions; rank 1: {top1}; top 5: {top5}; in top {MAX_LIMIT}: {found}",
+            qs.len()
+        );
+
+        let dir = root
+            .join("513c3418-df79-48f9-976d-cdae760ee6cc")
+            .join("sessions");
+        let dirs = ChatDirs {
+            active: dir.clone(),
+            all: Vec::new(),
+        };
+        for (query, title) in [
+            ("legal neg", "Stuart 4"),
+            ("rational choice", "Value Gen 8"),
+            ("luck surface", "Value Gen 12"),
+            ("lesswrong", "LessWrong post"),
+            ("experimental design", "Value Gen 11"),
+            ("competitor", "Stuart 3"),
+            ("reading list", "Value Gen Reading List"),
+            ("revealing ip", "revealing IP"),
+            ("moral uncertainty", "moral uncertainty"),
+            ("resume", "Stuart Armstrong collaboration"),
+        ] {
+            let out = search(&dirs, query, Scope::Project, MAX_LIMIT, Opts::default()).unwrap();
+            let r = out
+                .lines()
+                .skip(1)
+                .position(|l| l.split(" · ").nth(1).is_some_and(|t| t.contains(title)))
+                .map(|i| i + 1);
+            println!(
+                "sept-14 {query:?} → {title:?}: rank {}",
+                r.map_or("miss".to_string(), |r| r.to_string())
             );
         }
     }
