@@ -118,6 +118,8 @@
   import ChangesSheet from "./ChangesSheet.svelte";
   import { changesLine, turnChanges } from "./turnChanges";
   import ChatMenu from "./ChatMenu.svelte";
+  import RulesSheet from "./RulesSheet.svelte";
+  import { asideKey, type RuleForm } from "./rules";
   import { chatSheetSub, fitVisual } from "./sheetLayout";
   import Hosts from "./Hosts.svelte";
   import { PLAYWRIGHT_BUTTONS, PLAYWRIGHT_DECLINED, playwrightAction } from "../lib/playwright";
@@ -315,7 +317,19 @@
     | "nightshift"
     | "speech"
     | "changes"
+    | "rules"
   >(null);
+  /** Item 743: the rule form he left open in the rules sheet, by chat
+   *  (`""` with no chat open) — kept while the page lives, so a dismissed
+   *  sheet reopens on the same half-made rule. */
+  let ruleForms = $state<Record<string, RuleForm | null>>({});
+  function openRules() {
+    sheet = "rules";
+    sheetTall = true;
+  }
+  /** Item 743: calls he answered "Not now — carry on", by chat, so the
+   *  card that returns says it is the one he set aside. */
+  let setAside = $state<Record<string, string[]>>({});
   /** Item 742: the reply whose Changes sheet is open (chat + its first
    *  event), and per reply the file he was on and the files opened to
    *  every line — kept while the page lives, so reopening lands there. */
@@ -2713,7 +2727,7 @@
 
   async function answer(
     req: ApprovalRequest,
-    decision: "allow" | "always" | "deny",
+    decision: "allow" | "always" | "deny" | "later",
     answerPayload?: unknown,
     then?: "ask" | "auto",
     fallback?: string,
@@ -2729,6 +2743,12 @@
     else if (otherState) otherState = { ...otherState, pending: otherState.pending.filter((p) => p.id !== req.id) };
     try {
       await via.approve({ id: req.id, name: req.name, decision, reason, answer: answerPayload, then });
+      // Item 743: set aside is remembered until the same call is answered.
+      const chat = chatId ?? "";
+      const key = asideKey(req.name, req.input);
+      const rest = (setAside[chat] ?? []).filter((k) => k !== key);
+      setAside = { ...setAside, [chat]: decision === "later" ? [...rest, key] : rest };
+      if (decision === "later") note("Set aside — it asks again when the rest is done");
       if (decision !== "deny" && text) hold(text);
     } catch (e) {
       fail(e);
@@ -3192,9 +3212,15 @@
                   onclick={() => answer(req, b.decision, undefined, undefined, PLAYWRIGHT_DECLINED)}>{b.label}</button
                 >
               {/each}
+              {#if hasFeature(chatState ?? remote, "later")}
+                <button class="btn" data-act="later" onclick={() => answer(req, "later")}>Not now — carry on</button>
+              {/if}
             </div>
           {:else}
             <div class="card-head">Allow <b>{req.name}</b>?</div>
+            {#if (setAside[chatId ?? ""] ?? []).includes(asideKey(req.name, req.input))}
+              <p class="card-note" data-aside-back>Back again — you set this aside earlier.</p>
+            {/if}
             <div class="args">
               {#each fields(req.input) as f (f.key)}
                 <div class="arg"><span class="key">{f.key}</span><pre>{f.value}</pre></div>
@@ -3206,6 +3232,18 @@
               <button class="btn" onclick={() => answer(req, "always")}>Allow for this chat</button>
               <button class="btn danger" onclick={() => answer(req, "deny")}>Deny</button>
             </div>
+            <!-- 743: set it aside — the turn does the rest and asks again at the end; and the rules in force. -->
+            <div class="actions later-row">
+              {#if hasFeature(chatState ?? remote, "later")}
+                <button class="btn" data-act="later" onclick={() => answer(req, "later")}>Not now — carry on</button>
+              {/if}
+              {#if hasFeature(chatState ?? remote, "rules")}
+                <button class="btn quiet" data-act="rules" onclick={openRules}>Rules</button>
+              {/if}
+            </div>
+            {#if hasFeature(chatState ?? remote, "later")}
+              <p class="card-note">Not now: Claude does the rest of the task without this, then asks you again at the end.</p>
+            {/if}
           {/if}
         </section>
       {/each}
@@ -3544,6 +3582,7 @@
             onkind={switchKind}
             oncompact={() => (sheet = "compact")}
             oncontext={() => (closeSheet(), (contextOn = true))}
+            onrules={openRules}
             onstop={stop}
             ondelete={() => (sheet = "delete")}
           />
@@ -3610,6 +3649,24 @@
             onstop={stopAside}
             oncopy={copy}
           />
+        {:else if sheet === "rules"}
+          {@const key = chatId ?? ""}
+          {@const via = sameHost ? client : chatClient}
+          {#key key}
+            <RulesSheet
+              title={chatId ? title : null}
+              where={hostWord}
+              missing={!via
+                ? `${HostWord} is unreachable.`
+                : hasFeature(chatState ?? remote, "rules")
+                  ? null
+                  : missingSentence((chatState ?? remote).host, "This Mac's Nightloom is older than the phone page: update it to see and change approval rules from here.")}
+              load={() => via!.rules(chatId, chatProject)}
+              save={(edit) => via!.editRules(chatId, chatProject, edit)}
+              form={ruleForms[key] ?? null}
+              onform={(f) => (ruleForms = { ...ruleForms, [key]: f })}
+            />
+          {/key}
         {:else if sheet === "changes" && changesKey}
           {@const key = changesKey}
           <ChangesSheet
@@ -4673,6 +4730,14 @@
   .btn.danger {
     color: var(--failed);
     border-color: color-mix(in srgb, var(--failed) 45%, transparent);
+  }
+  /* 743: the card's second row — Not now grows, Rules stays a word. */
+  .later-row .btn:first-child {
+    flex: 1;
+  }
+  .btn.quiet {
+    border-color: transparent;
+    color: var(--dim);
   }
 
   /* ---- the dock: toast, queue, composer ---- */

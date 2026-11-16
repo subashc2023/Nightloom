@@ -1156,7 +1156,9 @@ export interface ApprovalRequest {
   reason?: string;
 }
 
-export type ApprovalDecision = "allow" | "always" | "deny";
+/** `later` is "Not now — carry on" (nightshift item 743): the call is set
+ *  aside, the turn does the rest and asks again at the end. */
+export type ApprovalDecision = "allow" | "always" | "deny" | "later";
 
 /** The approval card's folder grant (backlog 143, pass 2): the folder and
  *  who keeps it — the chat's log, or the project's registry. */

@@ -33,6 +33,7 @@ pub mod api;
 pub mod nightshift_routes;
 mod push_routes;
 pub mod resent;
+mod rules_routes;
 mod shortcut_routes;
 pub mod sync_routes;
 pub mod tailnet;
@@ -216,7 +217,9 @@ pub struct SendReply {
 }
 
 /// An answer to one approval prompt: the desktop's `approve_call` arguments
-/// by another road. `decision` is `allow`, `always` or `deny`; `answer` is
+/// by another road. `decision` is `allow`, `always`, `deny`, or `later`
+/// ("Not now — carry on", item 743: a host that takes it names the `later`
+/// feature); `answer` is
 /// a question form's or a plan's updated input; `then` is the plan card's
 /// `ask` or `auto`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -321,6 +324,18 @@ pub trait Host: Send + Sync + 'static {
     /// [`Push::seen`]: crate::push::Push::seen
     fn push(&self) -> Option<Arc<crate::push::Push>> {
         None
+    }
+    /// The ask directory of `chat` (in `project`, when named) — where its
+    /// approval rules live (item 743, [`rules_routes`]). The directory need
+    /// not exist yet: a chat that never asked has none until a rule is
+    /// made. A host that serves the `rules` feature answers this.
+    async fn ask_dir(
+        &self,
+        project: Option<&str>,
+        chat: &str,
+    ) -> Result<std::path::PathBuf, String> {
+        let _ = (project, chat);
+        Err(NOT_AVAILABLE.into())
     }
     /// A fresh subscriber to the event relay.
     fn events(&self) -> broadcast::Receiver<Event>;
@@ -761,6 +776,7 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/sent-files/{id}/{name}", get(sent_file))
         .merge(nightshift_routes::router())
         .merge(push_routes::router())
+        .merge(rules_routes::router())
         // Item 744: Siri / Action Button Shortcuts (plain-text answers).
         .merge(shortcut_routes::router())
         .merge(sync_routes::router(shared.host.sync()))
