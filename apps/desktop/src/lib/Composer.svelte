@@ -200,6 +200,9 @@
   import { launch } from "./sendMotion";
   import { composerConnectHint, launch as launchState } from "./launch.svelte";
   import { insertQuote, replyRequest, takeReply } from "./replyQuote.svelte";
+  // Item 694: the passage highlighted before he came to the box.
+  import { boxAsideArgs, dropHeld, heldFor, heldLabel } from "./heldPassage.svelte";
+  import { quoteLabel } from "./asideQuote";
   import { composerFocus } from "./rewindDraft.svelte";
   import { CaretKeeper, clampSel, mayAutoFocus } from "./composerCaret";
   import { ScrollHold } from "./boxPlace";
@@ -281,6 +284,25 @@
    * `send`). Sending clears the entry, and nothing else does.
    */
   const key = $derived(aside ? asideDraftKey(aside) : draftKey(app.activeSessionId, app.project?.id, app.pendingMode, app.pendingThread));
+  /*
+   * Item 694: the passage he highlighted before clicking into the box (the
+   * transcript holds it as the selection gives way to the box,
+   * `heldPassage.svelte.ts`). Shown as a chip and taken by Ask aside only
+   * while the box's Ask aside is offered: the chat's box, the Claude Code
+   * engine, a chat with a turn in it.
+   */
+  const held = $derived(!aside && app.connection?.engine === "claude-code" && app.events.length > 0 ? heldFor(key) : null);
+  // Never carried to another chat: switching chat (or the box going) drops it.
+  $effect(() => {
+    if (aside) return;
+    const k = key;
+    return () => dropHeld(k);
+  });
+  // The chat's turn starting drops it: the turn did not take it.
+  $effect(() => {
+    if (aside || !app.busy) return;
+    untrack(() => dropHeld(key));
+  });
   const draft = $derived(readDraft(key));
   const text = $derived(draft.text);
 
@@ -1435,6 +1457,20 @@
       dismissOffer();
       return;
     }
+    // Item 694: Esc in an empty box drops the held passage; the aside
+    // chord (⌘⇧A, the pill's) asks about it from the box.
+    if (held && e.key === "Escape" && !text && !composing && !e.isComposing && e.keyCode !== 229) {
+      e.preventDefault();
+      e.stopPropagation();
+      dropHeld(key);
+      return;
+    }
+    if (held && (isMac ? e.metaKey : e.ctrlKey) && e.shiftKey && !e.altKey && e.code === "KeyA") {
+      e.preventDefault();
+      e.stopPropagation();
+      if (text.trim() || attachments.length > 0) void submitAside();
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       void submit();
@@ -2303,11 +2339,14 @@
     if (!(await conversionsDone(sendKey))) return;
     if (sendKey !== key || app.busy) return;
     const chips = attachments.map((c) => $state.snapshot(c) as Attachment);
+    // Item 694: about the passage the box holds, anchored to it, as the
+    // pill's Ask aside would ask; none held, about nothing, as before.
+    const { quote, anchor } = held ? boxAsideArgs(sendKey) : { quote: null, anchor: null };
     // The words fly from the box into the aside's card (backlog 194).
     launch("aside", boxElement(ta));
     clearDraft(key);
     afterSend(key);
-    await askAside(t, null, null, { attachments: chips });
+    await askAside(t, quote, null, { attachments: chips, anchor });
   }
 
   /*
@@ -2395,6 +2434,8 @@
     const t = text.trim();
     const empty = !t && attachments.length === 0;
     if (empty || !app.connection) return;
+    // Item 694: a plain turn does not take the held passage; Send drops it.
+    dropHeld(key);
     // A send is presence, for the hand-off's away rule.
     noteActivity();
     // What he sent — or queued behind the running turn — is in the ⌘⇧V
@@ -3372,6 +3413,26 @@
   {/if}
   {#if mathShown}
     <TypedMathBar spans={mathSpans} onaccept={acceptMath} ondeny={denyMath} />
+  {/if}
+  {#if held}
+    <!-- Item 694: the passage his Ask aside is about; × drops it. -->
+    <div class="held-wrap" class:plain={classic()} data-held-passage>
+      <span
+        class="held-chip"
+        use:tip={`Ask aside asks about this passage from ${quoteLabel(held.quote, "card")}, as the selection's Ask aside does. Send does not take it; × or Esc in an empty box drops it.`}
+      >
+        {#if !classic()}<FilamentMark kind="aside" />{/if}
+        <span class="held-k">About:</span>
+        <span class="held-q">“{heldLabel(held.quote)}”</span>
+        <button
+          type="button"
+          class="held-x"
+          aria-label="Do not ask about this passage"
+          onmousedown={(e) => e.preventDefault()}
+          onclick={() => dropHeld(key)}><Icon name="x" size={11} /></button
+        >
+      </span>
+    </div>
   {/if}
   <div class="card" data-cache={frame?.cache} data-cache-look={frame ? cacheLook.value : undefined} data-cache-losing={frame && cacheBuilt && cacheChanges.length > 0 ? "" : undefined} style={frame?.style}>
     <!-- No autocorrect, capitalisation or spell-marking on a message to a
@@ -5273,6 +5334,68 @@
      over its first line; the card is the positioning frame. */
   .card {
     position: relative;
+  }
+  /* Item 694: the held passage's chip, above the box — the cap chip's
+     pill (TurnCapChip), the passage in the accent's tint under Jarvis;
+     Classic's flat chip. */
+  .held-wrap {
+    max-width: 760px;
+    margin: 0 auto 8px;
+    display: flex;
+  }
+  .held-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    max-width: 100%;
+    padding: 3px 4px 3px 9px;
+    background: var(--raised);
+    border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line2));
+    border-radius: 999px;
+    font-size: 12px;
+    color: var(--ink2);
+    white-space: nowrap;
+  }
+  .held-chip :global(.fil-svg) {
+    color: var(--accent);
+  }
+  .held-k {
+    font: 10.5px var(--mono);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--dim);
+    flex: none;
+  }
+  .held-q {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--ink);
+  }
+  .held-x {
+    all: unset;
+    flex: none;
+    display: inline-grid;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 999px;
+    color: var(--dim);
+    cursor: pointer;
+  }
+  .held-x:hover {
+    color: var(--ink);
+    background: var(--well);
+  }
+  .held-x:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+    outline-offset: 1px;
+  }
+  .plain .held-chip {
+    border-color: var(--line2);
+    border-radius: var(--r1, 4px);
+    background: transparent;
   }
   .ghost-line {
     position: absolute;

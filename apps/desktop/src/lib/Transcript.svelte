@@ -66,6 +66,8 @@
   import { continuedFlags } from "./runs";
   import { samePassage, selectionText, type AsideQuote } from "./asideQuote";
   import { pillParts, requestReply } from "./replyQuote.svelte";
+  // Item 694: a passage that gives way to the message box is held there.
+  import { dropHeld, focusIsMainBox, holdPassage } from "./heldPassage.svelte";
   import { PREFERRED_CARD_HEIGHT, chooseSide, offsetsOf, type AsideAnchor } from "./asideCard";
   import { isMac } from "./platform";
   import { fmtShare, shareOf, turnSizes, userFigure } from "./tokens";
@@ -94,6 +96,7 @@
     stashEdit,
     takeEdit,
     updateAttachment,
+    draftKey,
   } from "./drafts.svelte";
   import { acceptFiles, conversionJobs, filesBlocked, MAX_IMAGE_BASE64, splitChips, trackPending } from "./attachFiles.svelte";
   import { placeOf, putPlace, trackPlace, type BoxPlace } from "./boxPlace";
@@ -2333,6 +2336,7 @@
     }
     const p = passageOf(document.getSelection());
     if (!p) {
+      holdIfIntoBox();
       asidePill = null;
       return;
     }
@@ -2341,9 +2345,15 @@
     // No rectangle, or one scrolled wholly out of the viewport: no pill —
     // it would float over text it is not about.
     if ((r.width === 0 && r.height === 0) || r.bottom < vp.top || r.top > vp.bottom) {
+      shownPassage = null;
       asidePill = null;
       return;
     }
+    // Item 694: a new passage replaces the one the box holds, and is the
+    // one held if it gives way to the box in turn (a copy of its range:
+    // the selection's own moves with the selection).
+    if (canAsk) dropHeld(chatBoxKey());
+    shownPassage = { ...p, range: p.range.cloneRange() };
     // Above the selection, or below it when the top is off the viewport
     // (then no lower than the viewport's foot); centred on it, kept
     // inside the viewport's width.
@@ -2354,6 +2364,24 @@
     // 110: half the pill's width with both of its buttons (backlog 215).
     const left = Math.min(Math.max(r.left + r.width / 2, vp.left + 110), vp.right - 110);
     asidePill = { quote: p.quote, top, left };
+  }
+
+  /** Item 694: the passage the pill shows, kept so that when the
+   *  selection gives way because the focus went into this chat's message
+   *  box (a click there, or a key the box takes), the box can hold it —
+   *  its quote and its anchor, read now, while the text is still there —
+   *  and its own Ask aside asks about it, as the pill's would. */
+  let shownPassage: { quote: AsideQuote; range: Range; turn: number; prose: Element } | null = null;
+  /** The open chat's message box, as the composer keys its draft. */
+  function chatBoxKey(): string {
+    return draftKey(app.activeSessionId, app.project?.id, app.pendingMode, app.pendingThread);
+  }
+  function holdIfIntoBox(): void {
+    const last = shownPassage;
+    shownPassage = null;
+    if (!last || !asidePill || !canAsk) return;
+    if (!focusIsMainBox(document.activeElement)) return;
+    holdPassage(chatBoxKey(), last.quote, anchorOf(last));
   }
 
   /** The anchor for the selection the pill is over, read at the click —
