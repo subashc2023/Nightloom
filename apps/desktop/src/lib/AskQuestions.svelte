@@ -728,4 +728,48 @@
       margin-top: 0;
     }
   }
+  /* Item 713: Jarvis's face for the questions — mono capital heads (tabs, the
+     "1 · STORE" line, "Claude asks"), the lit tab's amber underline with the
+     accent glow, the Next a Jarvis control. Classic keeps the rules above. */
+  :global(:where(:root:not([data-layout="classic"]))) .aq-tab {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aq-tab.on {
+    color: var(--accent-ink, var(--ink));
+    box-shadow: 0 1px 0 0 var(--accent), 0 3px 6px -3px var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aq-h,
+  :global(:where(:root:not([data-layout="classic"]))) .aq-one {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--dim);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aq-any {
+    font-family: var(--mono);
+    letter-spacing: 0.08em;
+    color: var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aq-opt.on {
+    box-shadow: inset 2px 0 0 var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aq-next {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    min-height: 28px;
+    border-radius: var(--r1);
+    border: 1px solid var(--line2);
+    background: var(--well);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    color: var(--ink);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aq-next:hover {
+    border-color: var(--accent);
+  }
 </style>

@@ -1031,6 +1031,19 @@
     --aq-strip-margin: 0 -14px;
     --aq-strip-pad: 4px 10px 0 14px;
   }
+  /* Item 713: the question card in Jarvis — the composer's measures (8 px
+     corner, the raised surface), its lit edge (the accent border with
+     `--glow-main`), and the chat's dot ground behind the questions. The
+     tokens are empty under calm, so calm draws the plain card; Classic
+     keeps the rules above. */
+  :global(:where(:root:not([data-layout="classic"]))) .ask.qcard {
+    border-radius: var(--r2);
+    background-color: var(--raised);
+    background-image: var(--chat-dots, none);
+    background-size: 18px 18px;
+    box-shadow: var(--glow-main, none);
+    --aq-bg: var(--raised);
+  }
   .ask.qcard.folded {
     padding: 0 14px;
     --aq-strip-pad: 2px 10px 2px 14px;
