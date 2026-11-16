@@ -49,6 +49,7 @@
   });
   // Item 617 (own block): Reply text — Line reveal or Word rise.
   import { REPLY_LOOKS, replyLook, setReplyLook } from "./replyLook.svelte";
+  import ThinkingArrivalSample from "./ThinkingArrivalSample.svelte"; // Item 716 part 5: the real thinking block.
   import ReplyLookDemo from "./ReplyLookDemo.svelte"; // Item 716: the looping demo of each look.
   // End item 617.
   import ContextDial from "./ContextDial.svelte";
@@ -252,7 +253,8 @@
   function previewArrival(style: ArrivalStyle) {
     stopPreview[style]?.();
     delete stopPreview[style];
-    const node = arrivalBlock[style];
+    // Item 716 part 5: the look plays on the real block's `.activity`, the node a reply's own arrival plays on.
+    const node = arrivalBlock[style]?.querySelector<HTMLElement>(".activity") ?? null;
     if (!node) return;
     stopPreview[style] = playArrival(node, reducedMotion() ? "fade" : style, 0, null, arrivalFrom[style] ?? null);
   }
@@ -1865,7 +1867,14 @@
                   role="radio"
                   aria-checked={stopPref.shape === sh.id}
                   onclick={() => setStopShape(sh.id)}
-                ><span class="stop-swatch {sh.id}" aria-hidden="true">{#if sh.id === "labelled"}<i></i>Stop{:else}<i></i>{/if}</span>{sh.name}</button>
+                ><!-- Item 716 part 4: the composer's own Stop, its markup under its own rules
+                     (src/composerControls.css), at its real size; ~~a small drawing (stop-swatch)~~.
+                     A span inside the choice button; pointing at it runs its hover as in a chat. -->
+                  <span class="composer stop-pv" aria-hidden="true"
+                    ><span class="ns-btn danger send stop shape-{sh.id}"
+                      ><span class="stop-size">Send</span><span class="stop-ico"><Icon name="stop" size={sh.id === "wide" ? 16 : 12} />{#if sh.id === "labelled"}<span class="stop-word">Stop</span>{/if}</span></span
+                    ></span
+                  >{sh.name}</button>
               {/each}
             </div>
           </div>
@@ -2012,10 +2021,8 @@
                 <span class="anim-blurb">{s.blurb}</span>
               </button>
               <div class="anim-stage" aria-hidden="true">
-                <div class="anim-block" bind:this={arrivalBlock[s.id]}>
-                  <span class="anim-label">Thinking</span>
-                  <span class="anim-text">The cache key hashes the lockfile and the toolchain file…</span>
-                </div>
+                <!-- Item 716 part 5: the real reply's thinking block, ~~a stand-in drawing (anim-block)~~. -->
+                <div class="arr-host" bind:this={arrivalBlock[s.id]}><ThinkingArrivalSample /></div>
                 <div class="anim-composer" bind:this={arrivalFrom[s.id]}></div>
               </div>
               <div class="anim-foot">
@@ -5007,40 +5014,13 @@
   }
   /* Backlog 412: the whole card picks, not only its name and blurb — the
      pick's ::after stretches over the stage and the foot; Preview sits above it. */
-  /* Item 411: each Stop shape drawn small in its own choice. */
-  .stop-swatch {
+  /* Item 411: each Stop shape ~~drawn small~~ in its own choice — since item 716
+     part 4 the composer's real Stop (src/composerControls.css draws it; the
+     stop-swatch drawing and its rules are gone), at its real size. */
+  .stop-pv {
     display: inline-flex;
     align-items: center;
-    justify-content: center;
-    gap: 3px;
-    height: 16px;
-    min-width: 16px;
-    margin-right: 6px;
-    vertical-align: -3px;
-    border: 1px solid #7a3d3f;
-    border-radius: 3px;
-    color: var(--failed);
-    font-size: 9px;
-    box-sizing: border-box;
-  }
-  .stop-swatch i {
-    width: 6px;
-    height: 6px;
-    border-radius: 1px;
-    background: currentColor;
-  }
-  .stop-swatch.square,
-  .stop-swatch.round {
-    background: color-mix(in srgb, var(--failed) 16%, var(--sheet));
-  }
-  .stop-swatch.round {
-    border-radius: 50%;
-  }
-  .stop-swatch.labelled {
-    padding: 0 4px;
-  }
-  .stop-swatch.wide {
-    width: 32px;
+    margin-right: 8px;
   }
   /* Item 576 (his "labels are kinda screwed up here", 2026-11-10): the
      swatch sat on the text's baseline nudged by `vertical-align: -3px`,
@@ -5050,9 +5030,10 @@
   .seg button.stop-choice {
     display: inline-flex;
     align-items: center;
-  }
-  .stop-choice .stop-swatch {
-    vertical-align: middle;
+    /* Item 716 part 4: the real Stop is 32 px high (Classic ~31), past Jarvis's 30-px choice;
+       the choice grows round it, a 4-px margin on three sides. */
+    height: auto;
+    padding: 4px 13px 4px 4px;
   }
   .anim-pick::after {
     content: "";
@@ -5112,25 +5093,10 @@
     background: var(--sheet);
     border: 1px solid var(--line);
   }
-  .anim-block {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    padding: 7px 10px;
-    border-radius: 8px;
-    border: 1px solid var(--line2);
-    background: var(--paper);
-  }
-  .anim-label {
-    font-size: 11.5px;
-    color: var(--ink2);
-  }
-  .anim-text {
-    font-size: 11.5px;
-    color: var(--dim);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  /* Item 716 part 5: ~~.anim-block / .anim-label / .anim-text, the stand-in block~~ — the stage
+     holds the real reply's thinking block now (ThinkingArrivalSample), clipped to it. */
+  .arr-host {
+    min-height: 0;
   }
   .anim-composer {
     height: 22px;

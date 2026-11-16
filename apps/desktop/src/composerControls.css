@@ -262,6 +262,104 @@
   padding: 6px 16px;
 }
 
+/* ---- the Stop in Send's place (Composer.svelte, before item 716 part 4: lines 4959–5054) ---- */
+/* Item 398: the Stop in Send's place. "Send" in Send's weight, hidden,
+   gives it Send's width and height; the square sits centred over it. */
+/* Filament IV's Stop: a button with a brighter edge and a red square. */
+:where(:root:not([data-layout="classic"])) .composer .stop {
+  position: relative;
+  font-weight: 600;
+  border-color: var(--ink2);
+}
+:where([data-layout="classic"]) .composer .stop {
+  position: relative;
+  font-weight: 500;
+}
+:where(:root:not([data-layout="classic"])) .composer .stop:hover:not(:disabled) {
+  border-color: var(--ink);
+}
+.composer .stop .stop-size {
+  visibility: hidden;
+}
+.composer .stop .stop-ico {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+/* Item 411 (blocker 1524): the compact shapes keep the hidden "Send" for
+   Send's height only, at no width; the button is as wide as it is high. */
+.composer .stop:not(.shape-wide) {
+  padding-left: 0;
+  padding-right: 0;
+  justify-content: center;
+}
+.composer .stop:not(.shape-wide) .stop-size {
+  display: inline-block;
+  width: 0;
+  overflow: hidden;
+}
+/* ~~31 px~~ 32 px: Send's height since item 525 (the main action's). */
+:where(:root:not([data-layout="classic"])) .composer .stop.shape-square,
+:where(:root:not([data-layout="classic"])) .composer .stop.shape-round {
+  width: 32px;
+  background: color-mix(in srgb, var(--failed) 16%, var(--well));
+}
+:where([data-layout="classic"]) .composer .stop.shape-square,
+:where([data-layout="classic"]) .composer .stop.shape-round {
+  width: 31px;
+  background: color-mix(in srgb, var(--failed) 16%, var(--sheet));
+}
+.composer .stop.shape-round {
+  border-radius: 50%;
+}
+.composer .stop.shape-labelled {
+  padding-left: 12px;
+  padding-right: 12px;
+}
+.composer .stop.shape-labelled .stop-ico {
+  position: static;
+  gap: 6px;
+}
+:where(:root:not([data-layout="classic"])) .composer .stop-word {
+  font-size: 13px;
+  color: var(--ink);
+}
+:where([data-layout="classic"]) .composer .stop-word {
+  font-size: 12.5px;
+}
+/* Item 466: the Stop pressed — sunk, dimmed, its square a spinner — held
+   until the turn has ended. */
+.composer .stop.stopping {
+  transform: scale(0.92);
+  opacity: 0.6;
+  box-shadow: inset 0 1px 3px color-mix(in srgb, #000 35%, transparent);
+  cursor: progress;
+}
+.composer .stop.shape-labelled.stopping .stop-ico {
+  gap: 6px;
+}
+.composer .stop-spin {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 1.6px solid currentColor;
+  border-right-color: transparent;
+  animation: stop-spin 0.8s linear infinite;
+  flex: none;
+}
+@keyframes stop-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .composer .stop-spin {
+    animation-duration: 2.4s;
+  }
+}
+
 /* ---- Send's split and the Jarvis Send / Ask aside / Council (Composer.svelte, before item 716: lines 5173–5379) ---- */
 /* Send's split (backlog 224): the ▾ carries the right-hand corners. */
 .composer .send-split {
