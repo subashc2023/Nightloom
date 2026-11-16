@@ -401,3 +401,114 @@ fn the_contact_claim_is_generic_unless_a_file_names_one() {
     std::fs::write(dir.join("subject"), "someone").unwrap();
     assert_eq!(p.subject(), DEFAULT_SUBJECT);
 }
+
+/// A local listener for the two review tests below: `GET /api/push` names a
+/// key that is not the Mac's, `POST /api/push/key` and `POST /send` answer
+/// with a redirect to `/hit`, and `/hit` counts who followed one.
+async fn redirector() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+    use axum::http::{StatusCode, header};
+    use axum::routing::{any, get, post};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let hits = Arc::new(AtomicUsize::new(0));
+    let counted = hits.clone();
+    let other = Vapid::from_pkcs8(&Vapid::generate().unwrap())
+        .unwrap()
+        .public_key();
+    let to_hit = || async { (StatusCode::TEMPORARY_REDIRECT, [(header::LOCATION, "/hit")]) };
+    let app = axum::Router::new()
+        .route(
+            "/api/push",
+            get(move || {
+                let key = other.clone();
+                async move {
+                    axum::Json(Status {
+                        key,
+                        subscriptions: 0,
+                        waiting: 0,
+                    })
+                }
+            }),
+        )
+        .route("/api/push/key", post(to_hit))
+        .route("/send", post(to_hit))
+        .route(
+            "/hit",
+            any(move || {
+                counted.fetch_add(1, Ordering::SeqCst);
+                async { "followed" }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    (base, hits)
+}
+
+/// 739 review L1: a push service's redirect is not followed — the send
+/// reports the 307 and nothing reaches its `Location`.
+#[tokio::test]
+async fn the_sender_follows_no_redirect() {
+    let (base, hits) = redirector().await;
+    let https = Https(client().unwrap());
+    let status = https
+        .post(&format!("{base}/send"), "vapid t=x, k=y", "", vec![1, 2, 3])
+        .await
+        .unwrap();
+    assert_eq!(status, 307);
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+/// 739 review L1: the key hand-off follows no redirect either — a 307 to
+/// the key's POST is refused, and its body (the private key) reaches no
+/// `Location`.
+#[tokio::test]
+async fn the_key_hand_off_follows_no_redirect() {
+    let (base, hits) = redirector().await;
+    let (mac, _, _) = push("hand-redirect");
+    let e = hand_key_to_away(&mac, &base, "token").await.unwrap_err();
+    assert!(e.contains("307"), "{e}");
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+/// 739 review L2: the key travels over HTTPS, the tailnet or loopback only.
+#[tokio::test]
+async fn the_key_goes_only_over_https_or_the_tailnet() {
+    for ok in [
+        "https://away.example.com",
+        "https://203.0.113.9:8443",
+        "http://100.64.0.1:8642",
+        "http://100.101.102.103",
+        "http://100.127.255.254",
+        "http://away.tail1234.ts.net:8642",
+        "http://AWAY.TAIL1234.TS.NET",
+        "http://127.0.0.1:8642",
+        "http://localhost:8642",
+        "http://[::1]:8642",
+    ] {
+        assert!(key_may_go_to(ok), "{ok}");
+    }
+    for no in [
+        "http://away.example.com",
+        "http://203.0.113.9:8642",
+        "http://100.63.255.255",
+        "http://100.128.0.1",
+        "http://192.168.1.20:8642",
+        "http://ts.net.example.com",
+        "http://[fd7a:115c:a1e0::1]",
+        "ftp://100.64.0.1",
+        "not a url",
+        "",
+    ] {
+        assert!(!key_may_go_to(no), "{no}");
+    }
+    // Refused before any request: a TEST-NET address would only time out.
+    let (mac, _, _) = push("hand-plain-http");
+    assert_eq!(
+        hand_key_to_away(&mac, "http://192.0.2.1:8642", "token")
+            .await
+            .unwrap_err(),
+        KEY_NEEDS_A_SAFE_ROAD
+    );
+}

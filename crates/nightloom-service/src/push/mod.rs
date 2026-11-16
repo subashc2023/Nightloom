@@ -244,10 +244,7 @@ impl Push {
     /// Push state under `dir` (`<home>/remote/push`). Nothing is read or
     /// made until a phone asks.
     pub fn open(dir: PathBuf, role: &'static str) -> Arc<Self> {
-        let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .unwrap_or_default();
+        let http = client().unwrap_or_default();
         Self::with_transport(dir, role, Arc::new(Https(http)))
     }
 
@@ -593,11 +590,11 @@ impl Push {
 /// it already or has no push (an older build: 404 or 501).
 pub async fn hand_key_to_away(push: &Push, base: &str, token: &str) -> Result<bool, String> {
     let base = base.trim().trim_end_matches('/');
+    if !key_may_go_to(base) {
+        return Err(KEY_NEEDS_A_SAFE_ROAD.into());
+    }
     let mine = push.public_key()?;
-    let http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let http = client()?;
     let unreachable = |_| "the away server did not answer about push".to_string();
     let r = http
         .get(format!("{base}/api/push"))
@@ -632,6 +629,50 @@ pub async fn hand_key_to_away(push: &Push, base: &str, token: &str) -> Result<bo
         ));
     }
     Ok(true)
+}
+
+/// The HTTP client both push requests use: ten seconds, and no redirect
+/// followed (739 review L1). A push service's 3xx would otherwise carry
+/// the send past the endpoint allow-list, and a 307 or 308 to the key
+/// hand-off would re-post its body — the private key — to the `Location`.
+fn client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+/// What [`hand_key_to_away`] answers for an address the key may not travel
+/// to (739 review L2).
+pub const KEY_NEEDS_A_SAFE_ROAD: &str =
+    "the push key goes to the away server only over https or the tailnet";
+
+/// Whether the private key may be sent to `base` (739 review L2): HTTPS;
+/// or plain HTTP inside the tailnet — a `100.64.0.0/10` address or a
+/// `*.ts.net` name, whose leg WireGuard encrypts — or to this machine
+/// itself (loopback). Never plain HTTP across another network.
+fn key_may_go_to(base: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(base) else {
+        return false;
+    };
+    match url.scheme() {
+        "https" => true,
+        "http" => {
+            let Some(host) = url.host_str() else {
+                return false;
+            };
+            let host = host.trim_start_matches('[').trim_end_matches(']');
+            match host.parse::<std::net::IpAddr>() {
+                Ok(ip) => crate::remote::tailnet::is_tailnet(ip) || ip.is_loopback(),
+                Err(_) => {
+                    let host = host.to_ascii_lowercase();
+                    host.ends_with(".ts.net") || host == "localhost"
+                }
+            }
+        }
+        _ => false,
+    }
 }
 
 /// The push services a subscription may point at: Apple's (every iPhone),
