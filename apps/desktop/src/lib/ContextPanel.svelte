@@ -267,6 +267,12 @@
       engines: "both",
     },
     {
+      kind: "practices",
+      label: "Practices",
+      gloss: "How you work, in every chat — ~/.claude/practices/nightloom-chat.md: files as memory, strike-don't-delete, provenance, hand off past ~300k. Off for every chat in Settings → Model instructions; left out where the folder's CLAUDE.md already imports practices.md.",
+      engines: "both",
+    },
+    {
       kind: "project_instructions",
       label: "Project instructions",
       gloss: "The project's AGENTS.md — every one between the drive's root and the workspace, outermost first.",

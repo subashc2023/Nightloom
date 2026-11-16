@@ -111,6 +111,14 @@ pub struct PromptConfig {
     /// than memory (one kind of chat, every model), still refined by the
     /// folder's rules on the engine where a Chat has a folder to speak of.
     pub chat_instructions: bool,
+    /// Include the practices layer — `~/.claude/practices/nightloom-chat.md`,
+    /// how the user works, for every chat (nightshift item 738). A switch,
+    /// like the Chat instructions: the shells set it from the preamble and
+    /// his Settings switch ([`practices_layer_on`]), and the Claude Code
+    /// shell leaves it off where the folder's `CLAUDE.md` already imports
+    /// the full practices file ([`practices_imported`]). Off by default, so
+    /// an eval or a test reads nothing from the home folder unasked.
+    pub practices: bool,
     /// The project this chat belongs to, if any: its name and the shared
     /// notes directory to index.
     ///
@@ -158,6 +166,7 @@ impl Default for PromptConfig {
             user_memory: true,
             model: None,
             chat_instructions: false,
+            practices: false,
             project: None,
             knowledge: None,
             thread: None,
@@ -188,6 +197,7 @@ impl PromptConfig {
                 SegmentKind::UserMemory => self.user_memory = false,
                 SegmentKind::ModelInstructions => self.model = None,
                 SegmentKind::ChatInstructions => self.chat_instructions = false,
+                SegmentKind::Practices => self.practices = false,
                 SegmentKind::ProjectInstructions => self.project_instructions = false,
                 SegmentKind::ProjectNotes => self.project = None,
                 SegmentKind::Knowledge => self.knowledge = None,
@@ -264,6 +274,13 @@ pub fn assemble(config: &PromptConfig) -> SystemPrompt {
         if let Some(seg) = seg {
             prompt.push(seg);
         }
+    }
+    // How he works, for every chat (item 738): after the user's own texts,
+    // before the project's rules, which refine it.
+    if config.practices
+        && let Some(seg) = practices_segment()
+    {
+        prompt.push(seg);
     }
     if config.project_instructions {
         match config.edits.get(&SegmentKind::ProjectInstructions) {
@@ -1240,6 +1257,7 @@ pub fn layer_source(kind: SegmentKind, model: Option<&str>, cwd: &Path) -> Optio
             read_capped(&model_instruction_path(model)?)
         }
         SegmentKind::ChatInstructions => read_capped(&chat_instruction_path()?),
+        SegmentKind::Practices => read_capped(&practices_path()?),
         SegmentKind::ProjectInstructions => {
             let mut bodies: Vec<String> = Vec::new();
             for dir in cwd.ancestors() {
@@ -1408,6 +1426,106 @@ pub fn chat_dir() -> Option<PathBuf> {
     Some(dir)
 }
 
+/// The practices layer's file, under the practices folder.
+const PRACTICES_DIR: &str = "practices";
+const PRACTICES_FILE: &str = "nightloom-chat.md";
+/// His Settings switch for the layer, in the config dir: `{"on": false}`
+/// turns it off for every chat; no file is on.
+const PRACTICES_SWITCH_FILE: &str = "practices-layer.json";
+
+/// How he works, for every chat (nightshift item 738): his practices
+/// file's chat-sized layer, `~/.claude/practices/nightloom-chat.md`.
+///
+/// Read from the practices folder rather than copied into the config dir:
+/// that repo owns the text and keeps it in step with practices.md
+/// (`bin/chatlayer.py check`), so a copy would drift where nothing checks
+/// it. A missing or empty file emits nothing — a machine without the
+/// practices repo costs no prompt. Not editable per chat: the file is
+/// re-worded in its repo, not in a chat.
+pub fn practices_segment() -> Option<Segment> {
+    let content = read_capped(&practices_path()?)?;
+    if content.trim().is_empty() {
+        return None;
+    }
+    Some(practices_segment_from(&content))
+}
+
+/// The practices segment around a given body. One function for the file
+/// and the tests so the wrapper cannot drift.
+pub fn practices_segment_from(body: &str) -> Segment {
+    let content = truncate(body.trim().to_string());
+    Segment::new(
+        SegmentKind::Practices,
+        "practices",
+        format!("<practices>\n{content}\n</practices>"),
+    )
+}
+
+/// Where [`practices_segment`] reads from: `~/.claude/practices/nightloom-chat.md`.
+pub fn practices_path() -> Option<PathBuf> {
+    Some(
+        crate::usage::claude_dir()?
+            .join(PRACTICES_DIR)
+            .join(PRACTICES_FILE),
+    )
+}
+
+/// His Settings switch for the practices layer (item 738): on unless the
+/// config dir's switch file says `"on": false`.
+pub fn practices_layer_on() -> bool {
+    crate::project::config_dir().is_none_or(|dir| practices_layer_on_in(&dir))
+}
+
+/// [`practices_layer_on`] against a given config dir.
+pub fn practices_layer_on_in(dir: &Path) -> bool {
+    std::fs::read_to_string(dir.join(PRACTICES_SWITCH_FILE))
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| v.get("on").and_then(serde_json::Value::as_bool))
+        .unwrap_or(true)
+}
+
+/// Record his Settings switch for the practices layer in `dir`.
+pub fn save_practices_layer(dir: &Path, on: bool) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    std::fs::write(
+        dir.join(PRACTICES_SWITCH_FILE),
+        serde_json::json!({ "on": on }).to_string(),
+    )
+}
+
+/// Whether Claude Code, run in `cwd`, already loads the full practices
+/// file: an `@…/practices/practices.md` import line in `~/.claude/CLAUDE.md`
+/// or in a `CLAUDE.md` / `CLAUDE.local.md` of `cwd` or a folder above it.
+/// There the chat-sized layer would be a second, shorter copy of rules the
+/// model already reads, so the Claude Code shell leaves it out. Direct
+/// imports only: a practices file reached through a chain of imports is
+/// not seen, and the layer is sent (a duplicate, never a gap).
+pub fn practices_imported(cwd: &Path) -> bool {
+    let home = crate::usage::claude_dir().map(|d| d.join("CLAUDE.md"));
+    practices_imported_in(cwd, home.as_deref())
+}
+
+/// [`practices_imported`] with the user-level file given.
+pub fn practices_imported_in(cwd: &Path, user_file: Option<&Path>) -> bool {
+    let imports = |path: &Path| {
+        std::fs::read_to_string(path).is_ok_and(|text| {
+            text.lines().any(|l| {
+                let l = l.trim();
+                l.starts_with('@') && l.contains("practices/practices.md")
+            })
+        })
+    };
+    if user_file.is_some_and(imports) {
+        return true;
+    }
+    cwd.ancestors().any(|dir| {
+        ["CLAUDE.md", "CLAUDE.local.md"]
+            .iter()
+            .any(|name| imports(&dir.join(name)))
+    })
+}
+
 /// An index of the project's shared notes — the state every conversation in
 /// this project starts from.
 ///
@@ -1463,8 +1581,9 @@ pub fn project_notes_segment(project: &ProjectContext) -> Segment {
          Worth writing down: a task list that outlives one conversation, a decision and \
          why it was made, a map of something that took real work to figure out. Not worth \
          writing down: anything already obvious from the code, or a summary of what you \
-         just said. Revise a stale note rather than adding a second one beside it — a \
-         wrong note costs more than a missing one.\n"
+         just said. Correct a stale note in that note, not in a second note beside it: \
+         strike the old claim through with the date and put the new claim next to it — \
+         a wrong note costs more than a missing one.\n"
     ));
     if notes.is_empty() {
         text.push_str(
@@ -1884,6 +2003,7 @@ mod tests {
             user_memory: false,
             model: None,
             chat_instructions: false,
+            practices: false,
             project: None,
             knowledge: None,
             thread: None,
@@ -3916,6 +4036,103 @@ As of now — the front.
                 && text.contains("past 285k"),
             "{text}"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ---- the practices layer (item 738) ----
+
+    /// After the user's own texts and before the project's rules, in the
+    /// ladder every view and the prompt hold order by.
+    #[test]
+    fn the_practices_layer_sits_between_the_chat_and_the_project() {
+        let at = |k| SegmentKind::LAYERS.iter().position(|x| *x == k).unwrap();
+        assert_eq!(
+            at(SegmentKind::Practices),
+            at(SegmentKind::ChatInstructions) + 1
+        );
+        assert!(at(SegmentKind::Practices) < at(SegmentKind::ProjectInstructions));
+        assert!(!SegmentKind::EDITABLE.contains(&SegmentKind::Practices));
+    }
+
+    #[test]
+    fn the_practices_segment_wraps_the_file_and_switches_off() {
+        let seg = practices_segment_from("- **Rule one.**\n");
+        assert_eq!(seg.kind, SegmentKind::Practices);
+        assert_eq!(seg.text, "<practices>\n- **Rule one.**\n</practices>");
+        let config = PromptConfig {
+            practices: true,
+            ..bare(temp_dir("practices-off"))
+        };
+        assert!(!config.clone().without(&[SegmentKind::Practices]).practices);
+        // Off by default: an eval reads nothing from the home folder.
+        assert!(!PromptConfig::default().practices);
+        // Off assembles nothing of it, whatever the file says.
+        let off = assemble(&config.without(&[SegmentKind::Practices]));
+        assert!(
+            off.segments()
+                .iter()
+                .all(|s| s.kind != SegmentKind::Practices)
+        );
+    }
+
+    #[test]
+    fn the_settings_switch_is_on_until_turned_off() {
+        let dir = temp_dir("practices-switch");
+        assert!(practices_layer_on_in(&dir), "no file is on");
+        save_practices_layer(&dir, false).unwrap();
+        assert!(!practices_layer_on_in(&dir));
+        save_practices_layer(&dir, true).unwrap();
+        assert!(practices_layer_on_in(&dir));
+        std::fs::write(dir.join(PRACTICES_SWITCH_FILE), "not json").unwrap();
+        assert!(practices_layer_on_in(&dir), "unreadable is the default");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A folder whose CLAUDE.md imports practices.md already gives the
+    /// model the full rules: the chat-sized copy is left out there.
+    #[test]
+    fn a_folder_that_imports_practices_is_seen() {
+        let root = temp_dir("practices-import");
+        let inner = root.join("a").join("b");
+        std::fs::create_dir_all(&inner).unwrap();
+        let user = root.join("user-CLAUDE.md");
+        std::fs::write(&user, "# mine\n").unwrap();
+        assert!(!practices_imported_in(&inner, Some(&user)));
+        // A mention in prose is not an import.
+        std::fs::write(root.join("CLAUDE.md"), "see practices/practices.md\n").unwrap();
+        assert!(!practices_imported_in(&inner, Some(&user)));
+        std::fs::write(
+            root.join("a").join("CLAUDE.md"),
+            "# Project\n\n@~/.claude/practices/practices.md\n",
+        )
+        .unwrap();
+        assert!(practices_imported_in(&inner, Some(&user)));
+        assert!(
+            !practices_imported_in(&root, Some(&user)),
+            "only from cwd up"
+        );
+        std::fs::write(&user, "@~/.claude/practices/practices.md\n").unwrap();
+        assert!(practices_imported_in(&root, Some(&user)));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The notes index no longer tells the model to overwrite a stale
+    /// claim: it says to strike it with the date (item 738, his supersede
+    /// rule).
+    #[test]
+    fn the_notes_index_says_strike_with_a_date() {
+        let dir = temp_dir("strike-note");
+        let seg = project_notes_segment(&ProjectContext {
+            name: "P".into(),
+            notes_dir: dir.join(".agents"),
+        });
+        assert!(
+            seg.text
+                .contains("strike the old claim through with the date"),
+            "{}",
+            seg.text
+        );
+        assert!(!seg.text.contains("Revise a stale note rather than"));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

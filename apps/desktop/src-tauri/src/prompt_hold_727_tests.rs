@@ -82,6 +82,7 @@ impl Chat {
                 user_memory: false,
                 model: None,
                 chat_instructions: false,
+                practices: false,
                 project: Some(ProjectContext {
                     name: "Proof".into(),
                     notes_dir: self.notes.clone(),

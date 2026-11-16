@@ -1763,6 +1763,20 @@ export function chatInstructionsPath(): Promise<string | null> {
   return invoke("chat_instructions_path");
 }
 
+/** The practices layer (nightshift item 738): his switch for every chat,
+ *  and the file's path and size (`bytes` null when there is no file). */
+export interface PracticesLayer {
+  on: boolean;
+  path: string | null;
+  bytes: number | null;
+}
+export function practicesLayer(): Promise<PracticesLayer> {
+  return invoke("practices_layer");
+}
+export function setPracticesLayer(on: boolean): Promise<PracticesLayer> {
+  return invoke("set_practices_layer", { on });
+}
+
 // ---- the knowledge base ----
 
 /** Where the vault is; null on a machine with no user config directory. */

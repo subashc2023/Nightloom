@@ -531,6 +531,40 @@ pub(crate) fn chat_instructions_path() -> Option<String> {
     nightloom_service::prompt::chat_instruction_path().map(|p| p.display().to_string())
 }
 
+/// The practices layer as Settings shows it (nightshift item 738): his
+/// switch, the file's path and its size (`None` when there is no file).
+#[derive(serde::Serialize)]
+pub(crate) struct PracticesLayer {
+    on: bool,
+    path: Option<String>,
+    bytes: Option<u64>,
+}
+
+/// The practices layer's switch and file, for its Settings card.
+#[tauri::command]
+pub(crate) fn practices_layer() -> PracticesLayer {
+    let path = nightloom_service::prompt::practices_path();
+    PracticesLayer {
+        on: nightloom_service::prompt::practices_layer_on(),
+        bytes: path
+            .as_deref()
+            .and_then(|p| std::fs::metadata(p).ok())
+            .map(|m| m.len()),
+        path: path.map(|p| p.display().to_string()),
+    }
+}
+
+/// His Settings switch for the practices layer: kept in the config dir and
+/// read at every connect, so a running chat takes it the way it takes a
+/// changed file — at its next cold moment, never by breaking a warm cache.
+#[tauri::command]
+pub(crate) fn set_practices_layer(on: bool) -> Result<PracticesLayer, String> {
+    let dir = nightloom_service::project::config_dir()
+        .ok_or_else(|| "no config directory to keep the setting in".to_string())?;
+    nightloom_service::prompt::save_practices_layer(&dir, on).map_err(|e| e.to_string())?;
+    Ok(practices_layer())
+}
+
 /// Point the vault at a folder, or back at the default with `None`.
 ///
 /// **Moves nothing.** Both directories are left exactly as they are, which is

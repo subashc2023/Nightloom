@@ -333,6 +333,13 @@ pub(crate) async fn connect_agent_body(
         // declaration (backlog 144): the layer is in the prompt, and
         // a switch must not rewrite the prompt.
         chat_instructions: preamble && declared == ChatKind::Chat,
+        // How he works, for every chat (nightshift item 738): on the
+        // preamble and his Settings switch — and not where the CLI already
+        // reads the full practices file through the folder's CLAUDE.md
+        // (safe mode reads no CLAUDE.md, so there it is always sent).
+        practices: preamble
+            && nightloom_service::prompt::practices_layer_on()
+            && (spec.safe_mode || !nightloom_service::prompt::practices_imported(&workspace)),
         project: preamble
             .then(|| {
                 seen.map(|p| ProjectContext {

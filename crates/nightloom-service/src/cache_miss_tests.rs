@@ -51,6 +51,7 @@ fn spec_for(ws: &Path, notes: &Path, thread: Option<&str>) -> AgentSpec {
             user_memory: false,
             model: None,
             chat_instructions: false,
+            practices: false,
             project: Some(ProjectContext {
                 name: "Proof".into(),
                 notes_dir: notes.to_path_buf(),
