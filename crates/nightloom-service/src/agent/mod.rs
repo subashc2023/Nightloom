@@ -2176,7 +2176,22 @@ impl ClaudeCodeAgent {
             .is_some_and(|i| !i.images.is_empty() || !i.documents.is_empty());
         // The chat's deferred resume (no input) goes on stdin too (374):
         // the stdin shape with nothing written resumes the deferred call.
-        let piped = attached || (chat && input.as_ref().is_none_or(|i| warm::suits_stdin(&i.text)));
+        //
+        // A side process that resumes the chat's session — a keep-warm
+        // ping, an aside, a council seat — takes the stdin shape as well
+        // (item 732): the CLI words its Bash tool differently for a prompt
+        // on argv (a 600000 ms background default against a turn's
+        // 1800000, measured in 725's capture), which breaks the cached
+        // prefix right after the system prompt, so every aside rebuilt the
+        // chat. It still takes its one message and the EOF at its `result`
+        // (`held_stdin` below), so it exits after one reply; a waiting
+        // process stays the chat's own (`taken`); a session-less one-shot
+        // keeps argv, as it shares no cache.
+        let piped = attached
+            || match &input {
+                Some(i) => (chat || spec.resume.is_some()) && warm::suits_stdin(&i.text),
+                None => chat,
+            };
         let (args, stdin) = match &input {
             _ if piped => (spec.stdin_args(), Stdio::piped()),
             // Null rather than inherited: with a terminal on the other end
@@ -5123,6 +5138,168 @@ cat >/dev/null
             "{args:?}"
         );
         assert!(!inbox.is_open(), "closed at the result");
+    }
+
+    /// Item 732's stand-in: records its argv and the one stdin line (empty
+    /// when stdin is null), prints an init and a result, then reads stdin
+    /// to its EOF — so a process whose stdin is never closed hangs, and the
+    /// caller's timeout says so. Returns `(argv, stdin line)`.
+    #[cfg(unix)]
+    async fn shape_of_732<F, Fut>(resume: Option<&str>, run: F) -> (Vec<String>, String)
+    where
+        F: FnOnce(AgentSpec) -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        let dir = std::env::temp_dir().join(format!("nightloom-732-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (argv, stdin) = (dir.join("argv"), dir.join("stdin"));
+        let body = format!(
+            r##"printf '%s\n' "$@" > '{argv}'
+line=''
+read -r line
+printf '%s' "$line" > '{stdin}'
+printf '%s\n' '{{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"m","permissionMode":"dontAsk","session_id":"s-732"}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"ok","session_id":"s-732","stop_reason":"end_turn","usage":{{"input_tokens":1,"output_tokens":1}}}}'
+cat >/dev/null
+exit 0
+"##,
+            argv = argv.display(),
+            stdin = stdin.display()
+        );
+        let mut s = AgentSpec::new(&dir);
+        s.binary = stand_in(&dir, &body);
+        s.resume = resume.map(str::to_string);
+        tokio::time::timeout(std::time::Duration::from_secs(10), run(s))
+            .await
+            .expect("the process ended after its one reply");
+        let args = std::fs::read_to_string(&argv).unwrap();
+        let line = std::fs::read_to_string(&stdin).unwrap_or_default();
+        (args.lines().map(str::to_string).collect(), line)
+    }
+
+    #[cfg(unix)]
+    fn on_stdin_732(args: &[String], line: &str, text: &str) {
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "--input-format" && w[1] == "stream-json"),
+            "{args:?}"
+        );
+        assert!(!args.iter().any(|a| a == text), "prompt on argv: {args:?}");
+        assert!(line.contains("\"type\":\"user\""), "{line}");
+        assert!(line.contains(&text[..20.min(text.len())]), "{line}");
+    }
+
+    /// Item 732: an aside on a chat with a session sends its question on
+    /// stdin, as the chat's turn does (725's capture: the argv shape words
+    /// the Bash tool differently and misses the chat's cache), and still
+    /// ends after its one reply.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_aside_sends_its_question_on_stdin_like_a_turn() {
+        let text = "what did we decide about the bar";
+        let (args, line) = shape_of_732(Some("s-732"), |s| async move {
+            let agent = ClaudeCodeAgent::new(s);
+            let cancel = CancellationToken::new();
+            let out = agent
+                .ask_aside(text.into(), None, None, None, &cancel, &mut |_| {})
+                .await
+                .expect("a session to ask beside")
+                .unwrap();
+            assert!(out.result_seen);
+        })
+        .await;
+        on_stdin_732(&args, &line, text);
+        assert!(args.iter().any(|a| a == "--fork-session"), "{args:?}");
+    }
+
+    /// Item 732: a keep-warm ping goes on stdin too, held to one round.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_keep_warm_ping_sends_its_prompt_on_stdin_like_a_turn() {
+        let (args, line) = shape_of_732(Some("s-732"), |s| async move {
+            let cancel = CancellationToken::new();
+            let out = crate::keep_warm::ping(&s, &cancel).await.unwrap();
+            assert!(out.error.is_none(), "{:?}", out.error);
+        })
+        .await;
+        on_stdin_732(&args, &line, crate::keep_warm::PING_PROMPT);
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "--max-turns" && w[1] == "1"),
+            "{args:?}"
+        );
+    }
+
+    /// Item 732: a council seat forked from the chat's session goes on
+    /// stdin too.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_forked_council_seat_sends_its_prompt_on_stdin_like_a_turn() {
+        let text = "seat prompt: weigh the two designs";
+        let (args, line) = shape_of_732(Some("s-732"), |s| async move {
+            let seat = crate::council::seat_spec(&s, &crate::council::Seat::subscription("opus"));
+            let agent = ClaudeCodeAgent::new(s);
+            let cancel = CancellationToken::new();
+            let out = agent
+                .run_with(&seat, text, &cancel, &mut |_| {})
+                .await
+                .unwrap();
+            assert!(out.result_seen);
+        })
+        .await;
+        on_stdin_732(&args, &line, text);
+        assert!(args.iter().any(|a| a == "--fork-session"), "{args:?}");
+    }
+
+    /// Item 732: the chat's own turn keeps the stdin shape it had.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_chat_turn_still_sends_its_text_on_stdin() {
+        let text = "the chat's own turn text";
+        let (args, line) = shape_of_732(Some("s-732"), |s| async move {
+            let agent = ClaudeCodeAgent::new(s);
+            let cancel = CancellationToken::new();
+            agent.run_turn(text, &cancel, &mut |_| {}).await.unwrap();
+        })
+        .await;
+        on_stdin_732(&args, &line, text);
+        assert!(!args.iter().any(|a| a == "--fork-session"), "{args:?}");
+    }
+
+    /// Item 732: a one-shot with no session to share a cache with keeps the
+    /// prompt on argv and a null stdin, and a slash command on a side
+    /// process stays on argv (`warm::suits_stdin`), as before.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_session_less_one_shot_and_a_slash_command_keep_argv() {
+        let text = "one-shot with no session";
+        let (args, line) = shape_of_732(None, |s| async move {
+            let agent = ClaudeCodeAgent::new(s.clone());
+            let cancel = CancellationToken::new();
+            agent
+                .run_with(&s, text, &cancel, &mut |_| {})
+                .await
+                .unwrap();
+        })
+        .await;
+        assert_eq!(args.get(1).map(String::as_str), Some(text), "{args:?}");
+        assert!(!args.iter().any(|a| a == "--input-format"), "{args:?}");
+        assert!(line.is_empty(), "{line}");
+
+        let slash = "/context";
+        let (args, line) = shape_of_732(Some("s-732"), |s| async move {
+            let agent = ClaudeCodeAgent::new(s);
+            let cancel = CancellationToken::new();
+            agent
+                .ask_aside(slash.into(), None, None, None, &cancel, &mut |_| {})
+                .await
+                .unwrap()
+                .unwrap();
+        })
+        .await;
+        assert_eq!(args.get(1).map(String::as_str), Some(slash), "{args:?}");
+        assert!(!args.iter().any(|a| a == "--input-format"), "{args:?}");
+        assert!(line.is_empty(), "{line}");
     }
 
     /// 374 review: a deferred resume of a session that holds no deferred
