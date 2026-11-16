@@ -451,6 +451,20 @@ passes both as a `ChatDirs { active, all: Vec<ChatDir { name, dir }> }`, taken
 at connect time like the rest of `ChatSpec`. An empty search names its scope,
 for the reason `grep`'s does.
 
+**`scope: chain` (item 737, 2026-11-16).** His question: "all the chats that are
+technically a part of the same chat except arbitrarily split up by 300k handoff
+checkpoints". A chat that continues another has `forked_from { session, reason:
+"handoff" }` on its creation line (`Session::continued_from`); `chain_of` walks
+those links back from the starting chat and forward through every chat that
+continues it, within the starting chat's directory, and the search ranks only
+those chats — **with no recency prior**, since the chain is one conversation and
+the prior would bury the pieces the scope exists to reach. Each line carries its
+place: `[this chat]`, `[1 hand-off back]`, `[2 hand-offs back]`, `[1 hand-off on]`.
+It starts from `session` when given, else from the chat asking: the Claude Code
+engine's server learns that from the `--preview-chat` / `--budget-dir` the
+desktop already passes before every turn (`ServeArgs::current_chat`); the API
+engine's in-process tools are built before a session exists and need `session`.
+
 **Shape.** A search returns one line per chat, best first, at most `limit`
 (default 10, clamped to 25): short id · title · date last active · score ·
 excerpt around the first of the query's words the chat says, the sidebar's

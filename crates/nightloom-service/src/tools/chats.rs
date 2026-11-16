@@ -120,8 +120,12 @@ const SEARCH_DESC: &str = "Find which of the user's other chats are about someth
      matter. Returns one line per chat, best first: short id, title, date last active, score, \
      and an excerpt around the first of your words it says. Then call read_chat with the id to \
      read around the passage. scope is the open project's chats by default; all searches every \
-     project and the unfiled chats. When you use something you found, cite the chat by its \
-     title and date.";
+     project and the unfiled chats; chain searches only this chat's hand-off chain — the chats \
+     it continues from (each started from the one before when it filled up) and any that \
+     continue it, which are one long conversation cut into pieces — with no recency discount, \
+     each line labelled by how many hand-offs back it is; give session to search the chain of \
+     another chat instead. When you use something you found, cite the chat by its title and \
+     date.";
 
 const READ_DESC: &str = "Read part of one of the user's other chats, found with search_chats. \
      session is the short id from a result line. With query, returns a window of the \
@@ -135,11 +139,25 @@ const READ_DESC: &str = "Read part of one of the user's other chats, found with 
 /// The `search_chats` tool.
 pub struct SearchChats {
     dirs: ChatDirs,
+    /// The chat asking, when the shell knows it (item 737): where
+    /// `scope: chain` starts when the model names no chat. The Claude Code
+    /// engine's server is told it before every turn; the in-process tools
+    /// are built before a session exists and go without.
+    current: Option<String>,
 }
 
 impl SearchChats {
     pub fn new(dirs: ChatDirs) -> Self {
-        Self { dirs }
+        Self {
+            dirs,
+            current: None,
+        }
+    }
+
+    /// The same tool, knowing which chat is asking.
+    pub fn in_chat(mut self, current: Option<String>) -> Self {
+        self.current = current.filter(|c| store::is_log_id(c));
+        self
     }
 }
 
@@ -176,8 +194,12 @@ impl Tool for SearchChats {
                     },
                     "scope": {
                         "type": "string",
-                        "enum": ["project", "all"],
-                        "description": "project (default): the open project's chats. all: every project and the unfiled chats."
+                        "enum": ["project", "all", "chain"],
+                        "description": "project (default): the open project's chats. all: every project and the unfiled chats. chain: this chat's hand-off chain only — the earlier chats it continues and any later ones."
+                    },
+                    "session": {
+                        "type": "string",
+                        "description": "With scope chain: a chat id (or the short id from a result line) whose chain to search, instead of this chat's."
                     },
                     "limit": {
                         "type": "integer",
@@ -208,10 +230,18 @@ impl Tool for SearchChats {
         let scope = match input["scope"].as_str() {
             None | Some("project") => Scope::Project,
             Some("all") => Scope::All,
+            Some("chain") => Scope::Chain,
             Some(other) => {
-                return Err(format!("scope must be project or all (got {other:?})"));
+                return Err(format!(
+                    "scope must be project, all or chain (got {other:?})"
+                ));
             }
         };
+        let session = input["session"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
         // Clamped rather than refused: a model that asks for fifty wants
         // "many", and a page is the most it can usefully read.
         let limit = input["limit"]
@@ -219,6 +249,13 @@ impl Tool for SearchChats {
             .map_or(DEFAULT_LIMIT, |n| n as usize)
             .clamp(1, MAX_LIMIT);
         let dirs = self.dirs.clone();
+        if scope == Scope::Chain {
+            let current = self.current.clone();
+            return blocking(move || {
+                search_chain(&dirs, &query, session.as_deref(), current.as_deref(), limit)
+            })
+            .await;
+        }
         blocking(move || search(&dirs, &query, scope, limit)).await
     }
 }
@@ -227,6 +264,8 @@ impl Tool for SearchChats {
 enum Scope {
     Project,
     All,
+    /// One chat's hand-off chain (item 737).
+    Chain,
 }
 
 /// The directories a scope covers, each with the name a hit from it carries
@@ -245,6 +284,9 @@ fn covered(dirs: &ChatDirs, scope: Scope) -> (Vec<(&Path, Option<String>)>, Stri
                 .collect(),
             "every project's chats and the unfiled ones".to_string(),
         ),
+        // Never reached: a chain is walked by `search_chain`, which finds
+        // its own directory.
+        Scope::Chain => (Vec::new(), "this chat's hand-off chain".to_string()),
     }
 }
 
@@ -339,6 +381,183 @@ fn search(dirs: &ChatDirs, query: &str, scope: Scope, limit: usize) -> Result<St
             },
             hit.modified.format("%Y-%m-%d"),
             hit.score,
+            excerpt,
+        ));
+    }
+    Ok(out)
+}
+
+/// A chat's place in a hand-off chain: 0 for the chat the walk started
+/// from, -n for n hand-offs before it, +n for n after.
+fn chain_label(steps: i32, from_current: bool) -> String {
+    match steps {
+        0 if from_current => "this chat".to_string(),
+        0 => "the chat named".to_string(),
+        -1 => "1 hand-off back".to_string(),
+        1 => "1 hand-off on".to_string(),
+        n if n < 0 => format!("{} hand-offs back", -n),
+        n => format!("{n} hand-offs on"),
+    }
+}
+
+/// The hand-off chain through the chat in `name`, as file names with their
+/// steps from it: back through each chat's `forked_from` while its reason
+/// is `handoff`, and on through every chat that continues one of these.
+/// Within one directory: a hand-off starts the next chat beside the full
+/// one (`Session::continued_from`). A link to a chat that is gone, or a
+/// loop in damaged logs, ends the walk there.
+fn chain_of(index: &ChatIndex, name: &str) -> Vec<(String, i32)> {
+    use std::collections::{BTreeMap, HashSet};
+    let mut by_id: BTreeMap<String, (String, Option<String>)> = BTreeMap::new();
+    for (n, rec) in index.records() {
+        by_id.insert(
+            rec.id(&index.path_of(n)),
+            (n.to_string(), rec.handoff_parent().map(str::to_string)),
+        );
+    }
+    let mut children: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (id, (_, parent)) in &by_id {
+        if let Some(p) = parent {
+            children.entry(p.as_str()).or_default().push(id.as_str());
+        }
+    }
+    let Some(start) = by_id
+        .iter()
+        .find(|(_, (n, _))| n == name)
+        .map(|(id, _)| id.clone())
+    else {
+        return vec![(name.to_string(), 0)];
+    };
+    let mut seen: HashSet<String> = HashSet::from([start.clone()]);
+    let mut out = vec![(name.to_string(), 0)];
+    let mut at = start.clone();
+    let mut steps = 0;
+    while let Some(parent) = by_id.get(&at).and_then(|(_, p)| p.clone()) {
+        let Some((pname, _)) = by_id.get(&parent) else {
+            break;
+        };
+        if !seen.insert(parent.clone()) {
+            break;
+        }
+        steps -= 1;
+        out.push((pname.clone(), steps));
+        at = parent;
+    }
+    let mut frontier = vec![(start, 0)];
+    while let Some((id, steps)) = frontier.pop() {
+        for child in children.get(id.as_str()).into_iter().flatten() {
+            if seen.insert(child.to_string()) {
+                out.push((by_id[*child].0.clone(), steps + 1));
+                frontier.push((child.to_string(), steps + 1));
+            }
+        }
+    }
+    out
+}
+
+/// `search_chats` with `scope: chain` (item 737, his question: "all the
+/// chats that are technically a part of the same chat except arbitrarily
+/// split up by 300k handoff checkpoints"): ranked as the other scopes are,
+/// over only the chain's chats and without the recency prior, each line
+/// labelled with its place in the chain.
+fn search_chain(
+    dirs: &ChatDirs,
+    query: &str,
+    session: Option<&str>,
+    current: Option<&str>,
+    limit: usize,
+) -> Result<String, String> {
+    let Some(start) = session.or(current) else {
+        return Err(
+            "scope chain needs a chat to start from, and this engine does not say which \
+             chat is asking: give session (a chat id, or the short id from a search_chats line)"
+                .to_string(),
+        );
+    };
+    let path = resolve(dirs, start)?;
+    if store::mode_of(&path).unread_by_others() {
+        return Err(format!(
+            "that chat is incognito: it was started so that no other chat can read it, \
+             and this one cannot ({start:?})"
+        ));
+    }
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let from_current = current == Some(stem.as_str());
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let index = ChatIndex::load_or_build(dir).map_err(|e| e.to_string())?;
+    let chain = chain_of(&index, &name);
+    let back = chain.iter().filter(|(_, s)| *s < 0).count();
+    let on = chain.iter().filter(|(_, s)| *s > 0).count();
+    let where_ = match (back, on) {
+        (0, 0) => format!(
+            "{} chat alone (it has no hand-offs either way)",
+            if from_current { "this" } else { "that" }
+        ),
+        _ => format!(
+            "the hand-off chain of {} chats ({back} before it, {on} after)",
+            chain.len()
+        ),
+    };
+    let words = index::tokenize(query);
+    if words.is_empty() {
+        return Err(
+            "scope chain ranks by words, and this query has none: use a few distinctive words"
+                .to_string(),
+        );
+    }
+    let only: std::collections::BTreeSet<String> = chain.iter().map(|(n, _)| n.clone()).collect();
+    let steps: std::collections::HashMap<&str, i32> =
+        chain.iter().map(|(n, s)| (n.as_str(), *s)).collect();
+    let (ranked, total) = index.rank_among(query, limit, Utc::now(), Some(&only), false);
+    if ranked.is_empty() {
+        return Ok(format!(
+            "no chat in {where_} mentions {query:?}. Try different or fewer words, or scope: \
+             project for the other chats."
+        ));
+    }
+    let shown = ranked.len();
+    let mut out = format!(
+        "{total} chat{} in {where_} mention {query:?}{}, best first, with no recency discount. \
+         Lines are: id · [place in the chain] title · last active · score · excerpt. Call \
+         read_chat with an id to read around a passage.\n",
+        if total == 1 { "" } else { "s" },
+        if shown < total {
+            format!("; the best {shown}")
+        } else {
+            String::new()
+        },
+    );
+    for r in ranked {
+        let Some(excerpt) = excerpt(&r.path, r.log.modified(), &words) else {
+            continue;
+        };
+        let fname = r
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let title = r.log.label(&r.path, TITLE_WIDTH);
+        out.push_str(&format!(
+            "{} · [{}] {} · {} · {:.1} · {}\n",
+            short_id(&r.log.id(&r.path)),
+            chain_label(
+                steps.get(fname.as_str()).copied().unwrap_or(0),
+                from_current
+            ),
+            if title.is_empty() {
+                "(untitled)"
+            } else {
+                &title
+            },
+            r.log.modified().format("%Y-%m-%d"),
+            r.score,
             excerpt,
         ));
     }
@@ -896,7 +1115,7 @@ mod tests {
         let err = call(&tool, json!({"query": "needle", "scope": "everywhere"}))
             .await
             .unwrap_err();
-        assert!(err.contains("project or all"), "{err}");
+        assert!(err.contains("project, all or chain"), "{err}");
     }
 
     /// Searching never looks at tool output, and neither does reading.
@@ -1050,6 +1269,97 @@ mod tests {
             .await
             .unwrap();
         assert!(out.contains("an ordinary question"), "{out}");
+    }
+
+    /// Item 737: `scope: chain` searches the chats a hand-off chain is cut
+    /// into and nothing else, labels each by its place, and drops the
+    /// recency prior; it starts from the chat asking, or from `session`.
+    #[tokio::test]
+    async fn chain_scope_follows_the_hand_offs_and_labels_each_chat() {
+        let (dirs, _) = dirs_for("chats-chain");
+        let say = |s: &mut Session, user: &str, title: &str| {
+            s.record_user(user);
+            s.record_assistant(
+                "m",
+                vec![ContentBlock::Text {
+                    text: "noted".into(),
+                }],
+                Some("end_turn".into()),
+                Usage::default(),
+            );
+            s.record_title(title);
+        };
+        let mut first = Session::with_log(&dirs.active).unwrap();
+        say(
+            &mut first,
+            "the pelican migration plan, in detail",
+            "Part one",
+        );
+        let mut second = first.continued_from(&dirs.active).unwrap();
+        say(&mut second, "now the otters", "Part two");
+        let mut third = second.continued_from(&dirs.active).unwrap();
+        say(&mut third, "and the finale", "Part three");
+        // Old, so a recency prior would have buried it under the newer
+        // outsider in project scope.
+        age(&dirs.active, &first.id, Duration::from_secs(120 * 86_400));
+        let outsider = logged(&dirs.active, "Pelicans", "pelican pelican", "yes", "");
+
+        let tool = SearchChats::new(dirs.clone()).in_chat(Some(third.id.clone()));
+        let out = call(&tool, json!({"query": "pelican", "scope": "chain"}))
+            .await
+            .unwrap();
+        assert!(
+            out.starts_with("1 chat in the hand-off chain of 3 chats (2 before it, 0 after)"),
+            "{out}"
+        );
+        assert!(out.contains("no recency discount"), "{out}");
+        let lines: Vec<&str> = out.lines().skip(1).collect();
+        assert_eq!(lines.len(), 1, "{out}");
+        assert!(lines[0].starts_with(&short_id(&first.id)), "{out}");
+        assert!(lines[0].contains("[2 hand-offs back] Part one"), "{out}");
+        assert!(!out.contains(&short_id(&outsider)), "{out}");
+
+        let out = call(&tool, json!({"query": "finale", "scope": "chain"}))
+            .await
+            .unwrap();
+        assert!(out.contains("[this chat] Part three"), "{out}");
+
+        // From a named chat, forward: the later pieces are "on".
+        let plain = SearchChats::new(dirs.clone());
+        let out = call(
+            &plain,
+            json!({"query": "otters", "scope": "chain", "session": short_id(&first.id)}),
+        )
+        .await
+        .unwrap();
+        assert!(out.contains("(0 before it, 2 after)"), "{out}");
+        assert!(out.contains("[1 hand-off on] Part two"), "{out}");
+
+        // Nothing to start from.
+        let err = call(&plain, json!({"query": "pelican", "scope": "chain"}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("give session"), "{err}");
+
+        // A chat with no hand-offs is searched alone, and says so.
+        let out = call(
+            &plain,
+            json!({"query": "pelican", "scope": "chain", "session": short_id(&outsider)}),
+        )
+        .await
+        .unwrap();
+        assert!(out.contains("that chat alone"), "{out}");
+
+        // Project scope is unchanged: both, the outsider first.
+        let out = call(&plain, json!({"query": "pelican"})).await.unwrap();
+        assert!(
+            out.lines()
+                .nth(1)
+                .unwrap()
+                .starts_with(&short_id(&outsider)),
+            "{out}"
+        );
+        assert!(out.contains(&short_id(&first.id)), "{out}");
     }
 
     // ---- measurements, on the real corpora; `--ignored --nocapture` --------

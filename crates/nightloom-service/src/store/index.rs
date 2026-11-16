@@ -210,6 +210,18 @@ impl Indexed {
         }
     }
 
+    /// The chat this one continues after a hand-off (item 737): the
+    /// creation line's `forked_from` when its reason is `handoff`, else
+    /// `None` — an edit-and-send fork shares its parent's opening and is
+    /// not a continuation of it.
+    pub(crate) fn handoff_parent(&self) -> Option<&str> {
+        self.summary
+            .forked_from
+            .as_ref()
+            .filter(|f| f.reason.as_deref() == Some("handoff"))
+            .map(|f| f.session.as_str())
+    }
+
     /// The chat's id: what the log says it is, else the file's name.
     pub(crate) fn id(&self, path: &Path) -> String {
         self.summary.summary(path, self.modified).id
@@ -446,6 +458,34 @@ impl ChatIndex {
         limit: usize,
         now: DateTime<Utc>,
     ) -> (Vec<Ranked<'_>>, usize) {
+        self.rank_among(query, limit, now, None, true)
+    }
+
+    /// Every record, by file name — what a walk over the hand-off links
+    /// (item 737) needs: each chat's id and the chat it continues.
+    pub(crate) fn records(&self) -> impl Iterator<Item = (&str, &Indexed)> {
+        self.logs.iter().map(|(n, l)| (n.as_str(), l))
+    }
+
+    /// Where a record's log is.
+    pub(crate) fn path_of(&self, name: &str) -> PathBuf {
+        self.dir.join(name)
+    }
+
+    /// `rank_at` over only the logs named in `only` (file names), when
+    /// given, and with the recency prior on or off. The corpus statistics
+    /// stay the directory's: a word is as rare as the whole directory says,
+    /// whichever chats are being ranked. Off for a hand-off chain (item
+    /// 737): its chats are one conversation cut up, and the prior would
+    /// bury the earlier pieces it exists to reach.
+    pub(crate) fn rank_among(
+        &self,
+        query: &str,
+        limit: usize,
+        now: DateTime<Utc>,
+        only: Option<&std::collections::BTreeSet<String>>,
+        recency_prior: bool,
+    ) -> (Vec<Ranked<'_>>, usize) {
         let mut terms = tokenize(query);
         terms.sort();
         terms.dedup();
@@ -457,6 +497,9 @@ impl ChatIndex {
             let idf =
                 (1.0 + (f64::from(self.n) - f64::from(df) + 0.5) / (f64::from(df) + 0.5)).ln();
             for (name, log) in &self.logs {
+                if only.is_some_and(|o| !o.contains(name)) {
+                    continue;
+                }
                 let Some(&tf) = log.tf.get(term) else {
                     continue;
                 };
@@ -474,7 +517,11 @@ impl ChatIndex {
                 // measured from the log's last write — a chat he is still
                 // adding to is current however old its first message.
                 let age_days = (now - log.modified).num_seconds().max(0) as f64 / 86_400.0;
-                let recency = 1.0 / (1.0 + age_days / RECENCY_HALF_LIFE_DAYS);
+                let recency = if recency_prior {
+                    1.0 / (1.0 + age_days / RECENCY_HALF_LIFE_DAYS)
+                } else {
+                    1.0
+                };
                 Ranked {
                     path: self.dir.join(name),
                     log,

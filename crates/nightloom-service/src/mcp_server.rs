@@ -312,6 +312,17 @@ pub fn tools_in(
     project_id: Option<&str>,
     remember: bool,
 ) -> Result<Vec<Box<dyn Tool>>, String> {
+    tools_in_chat(config, project_id, remember, None)
+}
+
+/// [`tools_in`] for a named chat (item 737): `current` is the chat asking,
+/// where `search_chats`' `scope: chain` starts when the model names none.
+pub fn tools_in_chat(
+    config: &Path,
+    project_id: Option<&str>,
+    remember: bool,
+    current: Option<&str>,
+) -> Result<Vec<Box<dyn Tool>>, String> {
     let all: Vec<ChatDir> = capture::session_dirs(config)
         .into_iter()
         .map(|d| ChatDir {
@@ -345,7 +356,7 @@ pub fn tools_in(
     };
     let chats = ChatDirs { active, all };
     let mut tools: Vec<Box<dyn Tool>> = vec![
-        Box::new(SearchChats::new(chats.clone())),
+        Box::new(SearchChats::new(chats.clone()).in_chat(current.map(str::to_string))),
         Box::new(ReadChat::new(chats)),
     ];
     if remember {
@@ -1055,7 +1066,12 @@ pub async fn serve(
     }
     let mut tools = match &args.dream {
         Some(dream) => dream_tools(dream),
-        None => tools_in(&config, args.project.as_deref(), args.remember)?,
+        None => tools_in_chat(
+            &config,
+            args.project.as_deref(),
+            args.remember,
+            args.current_chat().as_deref(),
+        )?,
     };
     // An incognito chat's server (backlog 405): nothing that reads his
     // chats, his memory or his Notion.
@@ -1122,6 +1138,24 @@ pub async fn serve(
     }
     serve_tools(tools, reader, writer).await;
     Ok(())
+}
+
+impl ServeArgs {
+    /// The chat this server is for, when the desktop said (item 737): the
+    /// `--preview-chat` it names before every turn, else the last part of
+    /// the `--budget-dir` (`<logs>/ask/<chat id>`). `None` from a server
+    /// run by hand, or for a dream.
+    pub fn current_chat(&self) -> Option<String> {
+        self.preview_chat
+            .clone()
+            .or_else(|| {
+                self.budget_dir
+                    .as_ref()
+                    .and_then(|d| d.file_name())
+                    .map(|n| n.to_string_lossy().into_owned())
+            })
+            .filter(|c| crate::store::is_log_id(c))
+    }
 }
 
 /// What a server is started with, from either binary's argument parsing.
@@ -2275,6 +2309,28 @@ mod tests {
         }
         assert!(vault.join("people/alice.md").is_file());
         assert!(!vault.join("alice.md").exists());
+    }
+
+    /// Item 737: the chat a server is for, from what the desktop already
+    /// passes — the preview's chat, else the ask directory's name.
+    #[test]
+    fn the_current_chat_comes_from_the_preview_chat_or_the_budget_dir() {
+        let args = |s: &[&str]| s.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+        let of = |a: &[&str]| parse_args(&args(a)).unwrap().current_chat();
+        assert_eq!(of(&[]), None);
+        assert_eq!(
+            of(&["--preview", "/s.sock", "--preview-chat", "c-1"]).as_deref(),
+            Some("c-1")
+        );
+        assert_eq!(
+            of(&["--budget-dir", "/logs/ask/c-2"]).as_deref(),
+            Some("c-2")
+        );
+        assert_eq!(
+            of(&["--budget-dir", "/logs/ask/c-2", "--preview-chat", "c-1"]).as_deref(),
+            Some("c-1")
+        );
+        assert_eq!(of(&["--budget-dir", "/logs/ask/.."]), None);
     }
 
     #[test]
