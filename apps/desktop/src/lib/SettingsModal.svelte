@@ -29,6 +29,7 @@
   import { pickMotion as pickSlide } from "./settings/pickMotion";
   import { COMPOSER_ROWS, composerRow, setComposerRow } from "./composerRow.svelte";
   import { CACHE_LOOKS, cacheLook, setCacheLook } from "./cacheLook.svelte";
+  import CacheLookPreview from "./CacheLookPreview.svelte";
   // Item 589: the running step's motion in the turn trace.
   import { STEP_MOTIONS, stepMotion, setStepMotion, type StepMotion } from "./stepMotion.svelte";
   import StepMotionPreview from "./StepMotionPreview.svelte";
@@ -1733,6 +1734,8 @@
             <button class="pick" class:on={cacheLook.value === c.id} role="radio" aria-checked={cacheLook.value === c.id} onclick={() => setCacheLook(c.id)}>
               <span class="pick-h"><i class="radio" aria-hidden="true"></i>{c.name}</span>
               <span class="pick-n">{c.note}</span>
+              <!-- Item 716: the look live on a small real box, over a sped-up hour. -->
+              <CacheLookPreview look={c.id} />
             </button>
           {/each}
         </div>
