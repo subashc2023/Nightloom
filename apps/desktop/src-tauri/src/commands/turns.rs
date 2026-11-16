@@ -381,6 +381,12 @@ pub(crate) async fn send_agent(
     // Subagent rules changed while the cache is warm (nightshift backlog
     // 293): the new rules ride after this message, on the wire only.
     let wire_note = holds.take_rules_note(&chat_id).await;
+    // The notes index, Start here or vault index moved since the chat's
+    // held text (item 725): what moved rides after the message too.
+    let wire_note = match (wire_note, holds.take_layer_note(&chat_id).await) {
+        (Some(a), Some(b)) => Some(format!("{a}\n\n{b}")),
+        (a, b) => a.or(b),
+    };
     // The chat's preview ended since the model last heard (item 445): it
     // is told now, on the wire, rather than by failing tool calls.
     let wire_note = preview::with_ended_note(&app, ask_dir.as_deref(), wire_note);
