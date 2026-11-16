@@ -98,6 +98,10 @@ export const DEFAULT_THRESHOLD = 0.7;
 export const DEFAULT_CAP_TOKENS = 300_000;
 /** Past this a chat that chose *Stay here* is asked the wrap-up again. */
 export const RE_ASK = 0.85;
+
+/** Item 702: how far (a share of the window) an ordinary reading must fall
+ *  under the mark before a shown notice goes — 10k on a 1M window. */
+export const UNDER_MARGIN = 0.01;
 /** No send and no keystroke for this long, and he counts as away (blocker 120). */
 export const AWAY_MS = 60_000;
 /** No keyboard or mouse input on the Mac for this long, and he counts as
@@ -224,12 +228,17 @@ export function nextStage(
   fill: number,
   threshold: number,
   dismissedAt: number,
+  /** Item 702: a rewind's reading compares at the mark itself; any other
+   *  reading must fall `UNDER_MARGIN` under it before the notice goes. */
+  exact = false,
 ): HandoffStage {
   if (stage === "wrapping") return "wrapped";
   // Item 390 (his bug, 2026-10-18): a fill back under the mark — a rewind
   // took turns off — puts the notice away; it was kept up whatever the
-  // fill did after.
-  if ((stage === "due" || stage === "wrapped") && fill < threshold) return "idle";
+  // fill did after. Item 702 (his bug, 2026-11-15): ~~at the mark exactly~~
+  // a 300k reading then a 299k one flashed the notice up and away; only a
+  // rewind uses the exact mark now.
+  if ((stage === "due" || stage === "wrapped") && fill < threshold - (exact ? 0 : UNDER_MARGIN)) return "idle";
   if (stage === "due" || stage === "wrapped") return stage;
   if (fill < threshold) return "idle";
   if (dismissedAt > 0 && (fill < RE_ASK || fill <= dismissedAt)) return "idle";
@@ -397,6 +406,8 @@ export function noteFill(
   events: SessionEvent[] | null = null,
   /** This reading is a turn's end (544); a log is given only at one. */
   atEnd: boolean = events !== null,
+  /** Item 702: a rewind's reading — compared at the mark exactly. */
+  exact = false,
 ): void {
   if (handoff.chat !== chat) {
     // Another chat's reading: this one's stage goes under its id and the
@@ -428,11 +439,11 @@ export function noteFill(
   // Item 390: under the mark, a *Stay here* is forgotten, so the next
   // crossing asks afresh; a wrap-up queued for the crossing goes.
   const at = markDue(chat, limit);
-  if (fill < at) {
+  if (fill < at - (exact ? 0 : UNDER_MARGIN)) {
     handoff.dismissedAt = 0;
     if (before === "due") dropAutoQueued();
   }
-  const after = nextStage(before, fill, at, handoff.dismissedAt);
+  const after = nextStage(before, fill, at, handoff.dismissedAt, exact);
   handoff.stage = after;
   if (before === "wrapping" && after === "wrapped") {
     handoff.startPrompt = events ? extractStartPrompt(lastReplyText(events)) : null;
@@ -458,7 +469,7 @@ export function noteFill(
  *  mark does not queue the wrap-up. */
 export function noteRewound(chat: string | null, used: number | null, limit: number | null): void {
   if (handoff.chat !== chat || handoff.stage === "wrapping") return;
-  noteFill(chat, used, limit, false);
+  noteFill(chat, used, limit, false, null, false, true);
 }
 
 /** Called at the end of every agent turn with the gauge's pair and the log. */

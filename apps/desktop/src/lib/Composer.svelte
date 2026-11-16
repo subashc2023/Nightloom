@@ -109,6 +109,8 @@
   import { keepStateOf, revealKept } from "./keep.svelte";
   import { menuInterceptors, asideReads } from "./state.svelte";
   import { declaredKind, useEngine } from "./state.svelte";
+  import { openSession } from "./state.svelte";
+  import { handoffChildren } from "./chatList";
   import { bubbledRows, registerSendHeld } from "./pendingBubble.svelte";
   import WaitAct from "./WaitAct.svelte";
   import {
@@ -785,6 +787,11 @@
    * the chat the state is about, and only on the Claude Code engine, which
    * is the one that fills.
    */
+  // Item 702 (his ask, 2026-11-15): a chat already handed off says so here,
+  // on its own page, instead of a red "past hand-off" on its sidebar row.
+  const handedNext = $derived(
+    !aside && app.activeSessionId ? handoffChildren(app.sessions ?? []).get(app.activeSessionId) ?? null : null,
+  );
   const handoffHere = $derived(
     composerShows("handoff", !!aside) &&
       app.connection?.engine === "claude-code" &&
@@ -3297,8 +3304,19 @@
       <button type="button" class="lost-paste-x" aria-label="Close this note" onclick={() => (lostPaste = null)}>×</button>
     </div>
   {/if}
-  {#if handoffHere && handoff.stage === "due" && isFolded(app.activeSessionId, "due")}
-    <div class="handoff handoff-min" role="status" aria-label="Hand-off notice, minimized">
+  <!-- Item 702: the notice waits for the turn to be idle, never mid-turn or mid-send. -->
+  {#if handedNext}
+    <div class="handoff handoff-min" role="status" aria-label="This chat was handed off">
+      <span class="handoff-mark" aria-hidden="true"><Icon name="branch" size={13} /></span>
+      <strong class="handoff-min-title">Handed off — this chat continues in “{handedNext.title ?? handedNext.first_user ?? "the next chat"}”</strong>
+      <span class="spacer"></span>
+      <button class="ns-btn accent small" onclick={() => void openSession(handedNext.id)}>Open it</button>
+    </div>
+  {/if}
+  {#if !handedNext && handoffHere && handoff.stage === "due" && !busy && isFolded(app.activeSessionId, "due")}
+    <!-- Item 702 (his ask, 2026-11-15): a click anywhere on the bar expands it, not just Expand; its buttons keep their own clicks. -->
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
+    <div class="handoff handoff-min handoff-min-open" role="status" aria-label="Hand-off notice, minimized — click to expand" onclick={(e) => { if (!(e.target as HTMLElement).closest("button")) unfold(app.activeSessionId); }}>
       <span class="handoff-mark" aria-hidden="true"><Icon name="branch" size={13} /></span>
       <strong class="handoff-min-title">Context {handoffPct}% — past this chat's {handoffThresholdPct}%{handoffMarkTokens ? ` (${fmtTokens(handoffMarkTokens)})` : ""} hand-off mark</strong>
       <span class="mono handoff-fill">{fmtTokens(handoff.used)} of {fmtTokens(handoff.limit)} · {handoffPct}%</span>
@@ -3306,7 +3324,7 @@
       {#if !wrapUpQueued}<button class="ns-btn accent small" disabled={app.busy || !wrapUpText.trim()} onclick={() => void sendWrapUpNow()}>Wrap up now</button>{/if}
       <button class="ns-btn ghost small" use:tip={"Show the whole card again"} onclick={() => unfold(app.activeSessionId)}>Expand</button>
     </div>
-  {:else if handoffHere && handoff.stage === "due"}
+  {:else if !handedNext && handoffHere && handoff.stage === "due" && !busy}
     <!-- The notice (backlog 086 pass 2, blocker 120): the board's hand-off
          card — accent rule, a heading with the fill, one line of what
          happens, the two things he can change for this chat, the actions.
@@ -5676,4 +5694,6 @@
     font-family: var(--mono);
     font-size: 10.5px;
   }
+  /* Item 702: the whole folded bar expands on click. */
+  .handoff-min-open { cursor: pointer; }
 </style>
