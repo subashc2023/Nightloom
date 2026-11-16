@@ -3299,7 +3299,9 @@
   {/if}
   <!-- Item 702: the notice waits for the turn to be idle, never mid-turn or mid-send. -->
   {#if handoffHere && handoff.stage === "due" && !busy && isFolded(app.activeSessionId, "due")}
-    <div class="handoff handoff-min" role="status" aria-label="Hand-off notice, minimized">
+    <!-- Item 702 (his ask, 2026-11-15): a click anywhere on the bar expands it, not just Expand; its buttons keep their own clicks. -->
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
+    <div class="handoff handoff-min handoff-min-open" role="status" aria-label="Hand-off notice, minimized — click to expand" onclick={(e) => { if (!(e.target as HTMLElement).closest("button")) unfold(app.activeSessionId); }}>
       <span class="handoff-mark" aria-hidden="true"><Icon name="branch" size={13} /></span>
       <strong class="handoff-min-title">Context {handoffPct}% — past this chat's {handoffThresholdPct}%{handoffMarkTokens ? ` (${fmtTokens(handoffMarkTokens)})` : ""} hand-off mark</strong>
       <span class="mono handoff-fill">{fmtTokens(handoff.used)} of {fmtTokens(handoff.limit)} · {handoffPct}%</span>
@@ -5677,4 +5679,6 @@
     font-family: var(--mono);
     font-size: 10.5px;
   }
+  /* Item 702: the whole folded bar expands on click. */
+  .handoff-min-open { cursor: pointer; }
 </style>
