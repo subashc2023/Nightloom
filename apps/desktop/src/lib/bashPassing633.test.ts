@@ -30,8 +30,9 @@ describe("the passing-text store", () => {
 
 describe("the row", () => {
   it("draws the passing text on a running shell row only, in the modern trace", () => {
-    expect(messageSrc).toContain('{#if running && kind === "shell"}<BashPassing id={seg.call.id} />{/if}');
-    expect(classicSrc).not.toContain("BashPassing");
+    expect(messageSrc).toContain('{#if running && kind === "shell"}<BashPassing id={seg.call.id} input={seg.call.input} />{/if}');
+    // ~~Classic draws none~~ (item 721, 2026-11-16: Classic too, headed by the command's first line).
+    expect(classicSrc).toContain("{#if running && shell}<BashPassing id={seg.call.id} input={seg.call.input} />{/if}");
   });
 
   it("is Combo's and Reticle's, never Sweep's, and behind the row", () => {

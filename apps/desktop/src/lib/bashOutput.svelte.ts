@@ -94,3 +94,19 @@ export function passingEvent(ev: { type: string; tool_use_id?: string; lines?: s
   else if (ev.type === "tool_denied") endPassing(ev.tool_use_id ?? "");
   return false;
 }
+
+/**
+ * The head of a running command's passing text (item 721), from the call's
+ * input (or the command itself): its first line,
+ * as `$ cargo test -p x`, and ` …` when more lines follow; the row's CSS
+ * cuts a long one with an ellipsis. Null for no command (nothing invented).
+ */
+export function commandHead(input: unknown): string | null {
+  const command = input && typeof input === "object" ? (input as { command?: unknown }).command : input;
+  if (typeof command !== "string") return null;
+  const lines = command.replace(/\r\n?/g, "\n").split("\n");
+  const i = lines.findIndex((l) => l.trim() !== "");
+  if (i < 0) return null;
+  const more = lines.slice(i + 1).some((l) => l.trim() !== "");
+  return `$ ${lines[i].trim()}${more ? " …" : ""}`;
+}

@@ -887,7 +887,7 @@
           <div class="arow static" class:error={!c.call.denied && errorWeight(c.call.result) === "hard"}
             class:soft={!c.call.denied && errorWeight(c.call.result) === "soft"} class:sub-pass={childRun || childRem}>
             <!-- Item 649: a subagent's command passes its output too. -->
-            {#if childRun || childRem}<BashPassing id={c.call.id} ended={childRem} />{/if}
+            {#if childRun || childRem}<BashPassing id={c.call.id} ended={childRem} input={c.call.input} />{/if}
             <span class="ico">{#if icon}<Icon name={icon} size={13} />{:else}⚒{/if}</span>
             <span class="name" use:tip={c.call.name}>{shortToolName(c.call.name)}</span>
             <span class="arg">{toolInputSummary(c.call.input)}</span>
@@ -1055,9 +1055,9 @@
                 use:stepRamp={rampTool(seg.call.id, bornW, running)}>
                 {#if running}{@render stepLive(kind, false)}{/if}
                 <!-- Item 633: the command's real output passing behind the row. -->
-                {#if running && kind === "shell"}<BashPassing id={seg.call.id} />{/if}
+                {#if running && kind === "shell"}<BashPassing id={seg.call.id} input={seg.call.input} />{/if}
                 <!-- Item 649: and its last lines a moment after it ends, fading. -->
-                {#if remnant}<BashPassing id={seg.call.id} ended />{/if}
+                {#if remnant}<BashPassing id={seg.call.id} ended input={seg.call.input} />{/if}
                 <!-- An Agent call's row is a drag source (backlog 160): its
                      subagent's transcript as a tab, dropped on a strip or a
                      pane's half — live while it runs (guess pass 2026-09-25,
