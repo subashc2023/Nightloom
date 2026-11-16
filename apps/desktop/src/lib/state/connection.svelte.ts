@@ -9,6 +9,10 @@ import { chatIsCold } from "../promptVersions";
 import { CONNECT_DEADLINE_MS, withDeadline } from "../deadline";
 import type { PromptLayer, ProviderInfo } from "../types";
 import { refreshPlanUsage } from "./usage.svelte";
+import { cli } from "../cliUpdate.svelte";
+import { currentCliVersion } from "../modelSeen";
+import { modelSeen } from "../modelSeen.svelte";
+import { windowModelFor } from "../knownWindow";
 import { app } from "../state.svelte";
 
 /** A provider the backend can actually construct a client for right now. */
@@ -384,6 +388,9 @@ export async function applyAgentDraft(updateNow: PromptLayer[] = [], take = true
       agent: res.agent ?? null,
       folders: res.folders ?? [],
     };
+    // The window before any turn reports it (item 714): from the model the
+    // alias is known to name, looked up in the same limits table.
+    if (app.connection.contextLimit == null) void fillKnownWindow(app.connection, d.agentModel, res.agent?.version ?? null);
     // Whether Claude Code is signed in (backlog 409), for the engine chip:
     // a local `claude auth status`, zero tokens, not awaited.
     void probeAuth(res.agent?.binary ?? null);
@@ -555,4 +562,18 @@ export async function fetchModels(kind: string, force = false): Promise<void> {
 export function setPrefs(mutate: (p: CatalogPrefs) => void): void {
   mutate(app.prefs);
   savePrefs(JSON.parse(JSON.stringify(app.prefs)) as CatalogPrefs);
+}
+
+/**
+ * Fill a Claude Code connection's unknown window from the model its alias
+ * is known to name (item 714). Only while this connection is still the
+ * app's and nothing — a turn's report — has filled it meanwhile.
+ */
+async function fillKnownWindow(conn: NonNullable<typeof app.connection>, alias: string, atConnect: string | null): Promise<void> {
+  const pick = windowModelFor(modelSeen.byAlias, alias, currentCliVersion(cli.status?.installed, atConnect));
+  if (!pick) return;
+  const [w] = await api.contextLimits("anthropic", [pick.id]).catch(() => [null]);
+  if (w == null || app.connection !== conn || conn.contextLimit != null) return;
+  conn.contextLimit = w;
+  conn.windowFrom = pick.from;
 }

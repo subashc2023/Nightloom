@@ -334,6 +334,7 @@
       cliVersion: app.connection?.agent?.version ?? null,
       model: app.connection?.model ?? null,
       limit,
+      windowFrom: app.connection?.windowFrom ?? null,
       project: app.project ? { root: app.project.root ?? null, exists: app.project.exists } : null,
       notes: app.project ? app.notes.length : 0,
       vault: app.vault.length,

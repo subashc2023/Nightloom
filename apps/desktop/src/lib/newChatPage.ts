@@ -33,6 +33,8 @@ export interface ReadingsInput {
   cliVersion: string | null;
   model: string | null;
   limit: number | null;
+  /** Where `limit` came from when no turn reported it (item 714). */
+  windowFrom?: string | null;
   project: { root: string | null; exists: boolean } | null;
   notes: number;
   vault: number;
@@ -176,7 +178,11 @@ export function readings(i: ReadingsInput): Reading[] {
       label: "Model",
       short: m,
       value: m,
-      sub: i.limit ? `${shortTokens(i.limit)} window · cache cold` : "window unknown",
+      // ~~"window unknown" whenever no turn had reported one~~ (item 714): the
+      // alias's known model gives it, and the line names that source.
+      sub: i.limit
+        ? `${shortTokens(i.limit)} window${i.windowFrom ? ` (${i.windowFrom})` : ""} · cache cold`
+        : "window unknown until the first turn",
       ok: false,
       warn: false,
     });
