@@ -271,6 +271,12 @@ pub(crate) async fn send_agent(
     {
         return Err("the chat named is not the chat locked — nothing was sent".to_string());
     }
+    // The log is the truth of what the chat may do (item 746's review):
+    // an agent made from a spec built before its kind changed, or for the
+    // chat on screen (a read-only job's chat made from the newest
+    // connection's spec by a prewarm or an open), is held to the Chat
+    // policy here, at the one place every turn passes.
+    agent.hold_to_kind_policy(session.kind(), session.declared_kind());
     // A background send's log folder is its chat's, not the open project's (1467).
     let log_dir = match (&chat, session.log_path().and_then(|p| p.parent())) {
         (Some(_), Some(dir)) => dir.to_path_buf(),

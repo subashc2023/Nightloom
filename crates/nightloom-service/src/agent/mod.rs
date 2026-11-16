@@ -1783,6 +1783,24 @@ impl ClaudeCodeAgent {
         &self.spec
     }
 
+    /// Hold this agent to the Chat policy when the chat's log says it is a
+    /// Chat over a Claude Code declaration (`kind` / `declared`, as
+    /// [`AgentSpec::apply_kind_policy`]) and the spec it was made from
+    /// does not (nightshift item 746's review): a spec built for another
+    /// chat, or before the log's kind changed, must never run a read-only
+    /// chat's turn with the writers. Only ever tightens; `true` when it
+    /// changed the spec. A process kept warm under the old spec is not
+    /// used — its command differs (the hook rides `--settings`).
+    pub fn hold_to_kind_policy(&mut self, kind: ChatKind, declared: ChatKind) -> bool {
+        let want = kind == ChatKind::Chat && declared == ChatKind::Build;
+        if want && !self.spec.chat_policy {
+            self.spec.chat_policy = true;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Adopt the session the last turn opened, so the next one continues it.
     /// A fork asked for by [`Self::fork_on_next_turn`] is done once the CLI
     /// has named the new session: the next turn resumes *that*, plainly.

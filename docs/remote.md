@@ -179,6 +179,35 @@ HTTP link, the row says why it cannot be turned on.
   `public/remote/push-sw.js`; the Mac's triggers are `notify.ts` →
   the `push_note` command, the away server's are in `serve.rs`.
 
+## Recurring jobs (item 746, 2026-11-16)
+
+A job repeats one message on a schedule in its own chat. Make one from the
+drawer → **Jobs** → New job, or type "repeat every morning: check CI and
+tell me what failed" in any chat (the form opens filled; nothing is sent).
+
+- The list shows each job's schedule, next run (12-hour, on the phone's
+  clock when it was saved), last result with the reply's first lines, and
+  what the run cost of the weekly limit. Pause / Resume and Run now act at
+  once; Delete asks first and moves the job to `trash.json` (its chat stays).
+- **Read-only until he approves its plan.** The job's chat is a Claude Code
+  chat held to the Chat policy (reads, search, the web; no shell, no file
+  edits, no subagents). "Approve its plan…" lets later runs write; changing
+  the message takes the approval back. On the Mac the policy is set on the
+  chat's log, on the spec its run is made from (`agents.rs`
+  `reserve_for_job`), and again at the turn's start from the log
+  (`hold_to_kind_policy` in `send_agent`), so no other connection's spec can
+  run it with the writers.
+- A run is a turn like any other: item 739's push says "<job> — Finished".
+- The Mac runs a job only while the phone listener is on, on the Claude
+  Code engine, with the job's project open; otherwise the row says
+  "Waiting — …" and it retries each minute.
+- Routes, behind the bearer: `GET/POST /api/jobs`, `POST/DELETE
+  /api/jobs/{id}`, `POST /api/jobs/{id}/run`; feature `jobs`. Store:
+  `<home>/remote/jobs/jobs.json` (0600).
+- Code: `crates/nightloom-service/src/jobs/`, `remote/job_routes.rs`,
+  `apps/desktop/src-tauri/src/jobs.rs`, `remoteHandlers.ts` (`runJob`),
+  `src/remote/jobs.ts`, `JobsSheet.svelte`.
+
 ## Siri and the Action Button (item 744, 2026-11-16)
 
 Two routes are shaped for Apple's Shortcuts app, so a Shortcut — run by

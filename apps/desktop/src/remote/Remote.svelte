@@ -1215,6 +1215,10 @@
       case "newproject":
         openNewProject();
         break;
+      case "jobs":
+        // Item 746: tall, as the drawer opens it; the form's draft comes back by itself.
+        if (hasFeature(remote, "jobs")) openJobs();
+        break;
       case "notes":
         // The place goes in with the opening: the sheet reads it once, as it mounts.
         await openNotes(null, r.notesPid, r.notes);
