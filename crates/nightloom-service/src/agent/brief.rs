@@ -1319,8 +1319,8 @@ pub const STOPS_FILE: &str = "subagent-stops.txt";
 /// The one notice a helper gets on its first call past [`STOP_TOKENS`].
 pub fn stop_notice(context: u64) -> String {
     format!(
-        "[Nightloom] Past ~{}k of context (you are at {}k): finish the step you are on, then \
-         report, saying what is left.",
+        "[Nightloom] Past ~{}k of context (you are at {}k): if you are a step or two from done, \
+         finish; otherwise finish the step you are on, then report, saying what is left.",
         STOP_TOKENS / 1000,
         (context + 500) / 1000
     )
@@ -5737,8 +5737,8 @@ mod tests {
         let c = ctx(super::decide_with(&dir, &read, None));
         assert!(
             c.contains(
-                "Past ~285k of context (you are at 290k): finish the step you are on, then \
-                 report, saying what is left."
+                "Past ~285k of context (you are at 290k): if you are a step or two from done, \
+                 finish; otherwise finish the step you are on, then report, saying what is left."
             ),
             "{c}"
         );

@@ -822,7 +822,8 @@ pub fn subagent_rules_body(rules: &SubagentRules<'_>) -> String {
         "- The estimate is for Nightloom's check and your planning, and is removed before the \
          helper sees the task; do not write budgets or tool-call caps into a helper's task — say \
          what done looks like and what to skip. Nightloom itself tells a helper past 285k to \
-         finish its step and report, and tells you when it has.\n",
+         finish if a step or two from done, else finish its step and report what is left, and \
+         tells you when it has.\n",
     );
     out.push_str(match l.model {
         SubagentModel::Choose => {
