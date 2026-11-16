@@ -200,6 +200,7 @@
   import { onDestroy, tick, untrack } from "svelte";
   import { isMac } from "./platform";
   import Icon from "./Icon.svelte";
+  import FilamentMark from "./FilamentMark.svelte"; // Item 716: the real controls in the Composer row previews.
   import CopyButton from "./CopyButton.svelte";
   import { COPIED_MS } from "./copyIcon";
   import Kbd from "./Kbd.svelte";
@@ -1705,19 +1706,23 @@
               <span class="pick-h"><i class="radio" aria-hidden="true"></i>{r.name}</span>
               <span class="pick-n">{r.note}</span>
               <span class="composer crow-pv" data-composer-row={r.id} aria-hidden="true">
+                <!-- Item 716: the composer's own controls — its markup, under its own rules
+                     (src/composerControls.css, lifted out of Composer.svelte) and this
+                     row's (composerRow.css). Spans, not buttons, inside the pick button;
+                     pointing at one runs its hover as in a chat (Send's scan line). -->
                 <span class="card">
                   <span class="pv-text">Ask anything…</span>
                   <span class="row">
                     <span class="ns-btn ghost small attach"><Icon name="plus" /></span>
-                    <span class="pick-btn"><span class="pick-dot"></span><span class="pick-name">Opus 5.5</span></span>
+                    <span class="pick-wrap"><span class="pick-btn"><span class="pick-dot"></span><span class="pick-name">Opus 5.5</span><span class="pick-chev"><Icon name="chev" size={11} /></span></span></span>
                     <span class="pv-gap"></span>
-                    <span class="ns-btn ghost small open">Council</span>
-                    <span class="pv-send">Send</span>
+                    <span class="council-wrap"><span class="ns-btn ghost small fil-btn fil-ghost"><FilamentMark kind="council" /><span class="council-ico"><Icon name="agent" size={13} /></span><span class="council-word">Council</span></span></span>
+                    <span class="send-split"><span class="ns-btn accent send fil-btn fil-send"><span class="fil-scan"></span><span class="fil-edge"></span><FilamentMark kind="send" />Send</span><span class="ns-btn accent sched-caret">▾</span></span>
                   </span>
                 </span>
                 <span class="bottom-row">
-                  <span class="ns-chip bottom-toggle"><span class="bottom-mark"></span>thinking</span>
-                  <span class="ns-chip bottom-toggle on"><span class="bottom-mark"></span>tools</span>
+                  <span class="ns-chip bottom-toggle"><span class="bottom-mark">✦</span>thinking</span>
+                  <span class="ns-chip bottom-toggle on"><span class="bottom-mark">⚒</span>tools</span>
                 </span>
               </span>
             </button>
@@ -5286,7 +5291,8 @@
     border-radius: var(--r2);
     /* A strip of the dot ground behind, so the glass has something to show. */
     background: radial-gradient(circle, color-mix(in srgb, var(--ink) 12%, transparent) 1px, transparent 1.4px) 0 0 / 10px 10px, var(--paper);
-    pointer-events: none;
+    /* Item 716: ~~pointer-events: none~~ — the pointer reaches the controls, so their hover runs;
+       a click still lands on the card's pick (it bubbles to the button). */
   }
   .crow-pv .card {
     position: relative;
@@ -5307,88 +5313,32 @@
     display: flex;
     align-items: center;
     gap: 6px;
+    /* Item 716: as the composer's row does when narrow, what does not fit drops to a second line. */
+    flex-wrap: wrap;
+  }
+  /* Item 716: the controls are drawn at their real size, so each choice takes the pane's width
+     (two to a row, the row ran ~66 px past a 333-px card — measured in the wave D harness). */
+  .pick2.crow-picks {
+    grid-template-columns: minmax(0, 1fr);
   }
   :global(:where(.crow-pv) .pv-gap) {
     flex: 1;
-  }
-  :global(:where(.crow-pv) .ns-btn.small.attach) {
-    padding: 0 7px;
-  }
-  :global(:where(.crow-pv) .pick-btn) {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    min-height: 26px;
-    padding: 0 9px;
-    border-radius: var(--r1);
-    border: 1px solid var(--line2);
-    background: var(--well);
-    font: 500 12px var(--sans);
-    color: var(--ink);
-    white-space: nowrap;
-  }
-  :global(:where(.crow-pv) .pick-dot) {
-    flex: none;
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--done);
-  }
-  :global(:where(.crow-pv) .pv-send) {
-    flex: none;
-    display: inline-flex;
-    align-items: center;
-    height: 26px;
-    padding: 0 10px;
-    font: 500 12px var(--sans);
-    color: var(--accent-ink);
-    border-radius: var(--r1);
-    background: var(--term);
-    border: 1px solid color-mix(in srgb, var(--accent) 60%, var(--line2));
-    box-shadow: inset 0 0 8px color-mix(in srgb, var(--accent) 35%, transparent);
   }
   :global(:where(.crow-pv) .bottom-row) {
     display: flex;
     justify-content: flex-end;
     gap: 6px;
   }
-  :global(:where(.crow-pv) .ns-chip.bottom-toggle) {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    min-height: 22px;
-    padding: 0 9px 0 8px;
-    border-radius: 12px;
-    background: var(--raised);
-    font: 500 11px var(--sans);
-    color: var(--ink2);
-    text-transform: capitalize;
-  }
-  :global(:where(.crow-pv) .bottom-mark) {
-    position: relative;
-    flex: none;
-    width: 20px;
-    height: 12px;
-    border-radius: 6px;
-    background: var(--well2);
-    overflow: hidden;
-  }
-  :global(:where(.crow-pv) .bottom-mark::after) {
-    content: "";
-    position: absolute;
-    top: 2px;
-    left: 2px;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--dim);
-  }
-  :global(:where(.crow-pv) .bottom-toggle.on .bottom-mark) {
-    background: var(--accent);
-  }
-  :global(:where(.crow-pv) .bottom-toggle.on .bottom-mark::after) {
-    left: 10px;
-    background: var(--on-accent);
+  /* Item 716: Attach, the picker, Council, Send and the switches are the composer's own now
+     (src/composerControls.css); ~~their stand-ins here (pick-btn, pick-dot, pv-send, the
+     switch)~~ are gone. Send's ▾ keeps ScheduleMenu's split-half base, which lives in that
+     component (its .sched-caret rule, verbatim). */
+  .crow-pv .sched-caret {
+    padding: 6px 7px;
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+    border-left: 1px solid rgba(0, 0, 0, 0.18);
+    margin-left: -1px;
   }
   /* ---- Filament IV, stage 7 (item 571; 521 report §2 and §5,
      f4-settings-*.png). Every rule below is behind the layout gate

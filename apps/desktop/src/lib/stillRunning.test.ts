@@ -178,10 +178,13 @@ describe("592: no sideways scroll in the transcript", () => {
 });
 
 describe("607: the attach buttons are the plus alone under Filament", () => {
-  it("named by tooltip and label, the word hidden outside Classic", () => {
+  it("named by tooltip and label, the word hidden outside Classic", async () => {
     expect(composerSrc).toContain('aria-label="Attach files"');
     expect(composerSrc).toContain('use:tip={"Attach files"}');
-    expect(composerSrc).toMatch(/:global\(:where\(:root:not\(\[data-layout="classic"\]\)\)\) \.attach \.fold-word \{\s*display: none;/);
+    // Item 716: the rule moved to src/composerControls.css, re-rooted on `.composer`.
+    const fs = (await import(/* @vite-ignore */ "node:" + "fs")) as { readFileSync(u: URL, enc: string): string };
+    const controlsCss = fs.readFileSync(new URL("../composerControls.css", import.meta.url), "utf8");
+    expect(controlsCss).toMatch(/:where\(:root:not\(\[data-layout="classic"\]\)\) \.composer \.attach \.fold-word \{\s*display: none;/);
     expect(editAttachSrc).toContain('aria-label="Attach files"');
     expect(editAttachSrc).toMatch(/:global\(:where\(:root:not\(\[data-layout="classic"\]\)\)\) \.attach-word \{\s*display: none;/);
   });

@@ -14,6 +14,9 @@ import "@fontsource/ibm-plex-sans/latin-500.css";
 import "@fontsource/ibm-plex-sans/latin-600.css";
 import "@fontsource/ibm-plex-mono/latin-400.css";
 import "@fontsource/ibm-plex-mono/latin-500.css";
+// Item 716: the composer's controls, lifted out of Composer.svelte so Settings' previews can
+// draw them; before app.css, where the scoped rules sat in the bundle, so app.css keeps its ties.
+import "./composerControls.css";
 import "./app.css";
 // Item 618b: the composer row's looks, after app.css (the designs harness's order, so app.css never wins a tie).
 import "./composerRow.css";
