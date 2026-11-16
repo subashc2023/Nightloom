@@ -273,6 +273,9 @@ interface StoredAside {
   /** Item 734: where he moved the card, in the chat column's px
    *  (`asideMove.ts`), so a relaunch puts it back there. */
   moved?: AsideMoved;
+  /** Item 735: minimized to one line, and an answer landed since. */
+  minimized?: true;
+  newReply?: true;
 }
 
 function storeTurn(t: AsideTurn): StoredTurn | null {
@@ -347,6 +350,10 @@ function storeAside(a: Aside): StoredAside | null {
   if (typeof a.effort === "string") out.effort = a.effort.trim().slice(0, 80);
   const moved = a.moved ? cleanMoved(a.moved) : null;
   if (moved) out.moved = moved;
+  if (a.minimized) {
+    out.minimized = true;
+    if (a.newReply) out.newReply = true;
+  }
   return out;
 }
 
@@ -478,6 +485,11 @@ function loadAside(v: unknown): Aside | null {
     // Item 734: where he moved the card; one kept from a passage needs it.
     const moved = cleanMoved(a.moved);
     if (moved && (moved.from === "column" || anchor)) x.moved = moved;
+    // Item 735: minimized, and its dot.
+    if (a.minimized === true) {
+      x.minimized = true;
+      if (a.newReply === true) x.newReply = true;
+    }
     return x;
   };
   if (a.draft === true) {

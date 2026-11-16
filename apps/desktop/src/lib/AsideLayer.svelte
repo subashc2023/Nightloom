@@ -78,7 +78,8 @@
     return app.asidePanelThread ?? app.asides[app.asides.length - 1]?.id ?? null;
   });
   /** The newest open card claims a stray Escape (one Escape, one card). */
-  const frontId = $derived([...shown].reverse().find((a) => !a.folded)?.id ?? null);
+  // Item 735: nor a minimized one — a stray Escape never closes a line.
+  const frontId = $derived([...shown].reverse().find((a) => !a.folded && !a.minimized)?.id ?? null);
 
   let cards = $state<Record<number, AsideCard | null>>({});
   let placements = $state<Record<number, Placement | null>>({});
@@ -216,6 +217,7 @@
       void a.draft;
       void a.folded;
       void a.moved;
+      void a.minimized;
     }
     void shown;
     void besideId;

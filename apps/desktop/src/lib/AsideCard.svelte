@@ -17,6 +17,8 @@
   import type { TabContent } from "./tabs";
   import { outcome, startMove } from "./floatingMove";
   import { landMoved, placeMoved } from "./asideMove";
+  import { expandAside, minimizeAside } from "./state/asides.svelte";
+  import { asideLabel } from "./asides";
   import type { Zone } from "./floatingMove";
   import { tick, untrack } from "svelte";
   import { asideSendJumps } from "./sendScroll";
@@ -137,6 +139,9 @@
   /** Another aside is answering first (blocker 317): one at a time. */
   const waiting = $derived(asideWaiting(aside));
   const folded = $derived(!panel && aside.folded === true);
+  /** Item 735: minimized to one line (never in the panel). */
+  const minimized = $derived(!panel && aside.minimized === true);
+  const miniLabel = $derived(asideLabel(aside, 40));
   const last = $derived(aside.turns[aside.turns.length - 1] ?? null);
   /** The chat the thread belongs to: the panel's, else the open one. */
   const owner = $derived(panel ? session : app.activeSessionId);
@@ -353,6 +358,9 @@
     if (root?.querySelector('[role="dialog"][aria-modal="true"]')) return;
     e.preventDefault();
     e.stopPropagation();
+    // Item 735: a minimized line is not closed by Escape (nothing on it
+    // says it would); the key still never reaches the window.
+    if (minimized) return;
     // The discard question is up (backlog 228): Escape answers it "keep".
     if (app.asideDiscard !== null) {
       app.asideDiscard = null;
@@ -407,6 +415,7 @@
   class:floating={placement !== null}
   class:foot={placement === null && !panel}
   class:folded
+  class:minimized
   class:panel
   class:above={placement?.side === "above"}
   class:moved={pos !== null}
@@ -417,8 +426,10 @@
   bind:this={root}
   style:top={pos ? `${pos.top}px` : placement ? `${placement.top}px` : undefined}
   style:left={pos ? `${pos.left}px` : placement ? `${placement.left}px` : undefined}
-  style:width={moved ? `${moved.width}px` : placement ? `${placement.width}px` : undefined}
-  style:max-height={dragPos
+  style:width={minimized ? undefined : moved ? `${moved.width}px` : placement ? `${placement.width}px` : undefined}
+  style:max-height={minimized
+    ? undefined
+    : dragPos
     ? `min(${placement ? `${placement.maxHeight}px` : "50vh"}, calc(100vh - ${dragPos.top + 8}px))`
     : moved
       ? placement
@@ -432,6 +443,37 @@
   style:bottom={!pos && !placement && !panel && footBottom !== null ? `${footBottom}px` : undefined}
   onkeydown={cardKeys}
 >
+  {#if minimized}
+  <!-- Item 735 (blocker 2008): minimized, the card is this one line — its
+       first words, and a dot when an answer landed since. A click opens it
+       where it is; its line still moves by pointer (a move is not a click,
+       `startMove` swallows it). -->
+  <div
+    class="aside-mini"
+    class:movable
+    role="button"
+    tabindex="0"
+    aria-label={`Aside: ${miniLabel}${aside.newReply ? " — new reply" : ""}. Open it`}
+    use:tip={aside.newReply ? "A new reply landed — click to open the aside" : "Click to open the aside"}
+    onpointerdown={headDown}
+    onmousedown={headMouseDown}
+    onclick={() => expandAside(aside)}
+    onkeydown={(e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      expandAside(aside);
+    }}
+  >
+    <span class="aside-mini-tag" aria-hidden="true">aside</span>
+    <span class="aside-mini-label">{miniLabel}</span>
+    {#if asking}
+      <span class="aside-mini-state mono">{waiting ? "waiting" : "asking…"}</span>
+    {/if}
+    {#if aside.newReply}
+      <span class="aside-mini-dot" aria-hidden="true"></span>
+    {/if}
+  </div>
+  {:else}
   <!-- The strip's click is a pointer convenience; the keyboard has the
        *open* button a folded head carries. -->
   <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
@@ -487,6 +529,15 @@
     {#if folded}
       <button class="ns-btn ghost small" use:tip={"Open this card again (the oldest other open card folds)"} onclick={() => unfoldAside(aside)}
         >open</button
+      >
+    {/if}
+    {#if !panel}
+      <!-- Item 735: minimize to one line, in place. -->
+      <button
+        class="ns-btn ghost small aside-card-min"
+        aria-label="Minimize the aside"
+        use:tip={"Minimize to one line — click it to open again"}
+        onclick={() => minimizeAside(aside)}>–</button
       >
     {/if}
     {#if moved}
@@ -566,6 +617,7 @@
     <Composer {aside} asideChat={owner} compact={!panel} />
   </div>
   {/if}
+  {/if}
 </div>
 
 {#if zone}<MoveZone {zone} />{/if}
@@ -630,6 +682,58 @@
   .aside-card.folded .aside-card-head {
     border-bottom: none;
     cursor: pointer;
+  }
+  /* Minimized (item 735): one line in its place — the card's own frame
+     around a row of its first words; Classic draws it plain, Jarvis as a
+     pill (below). */
+  .aside-card.minimized {
+    width: max-content;
+    max-width: min(340px, 100%);
+    max-height: none;
+    overflow: hidden;
+  }
+  .aside-card.foot.minimized {
+    width: max-content;
+  }
+  .aside-mini {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    padding: 4px 10px;
+    font-size: 12px;
+    line-height: 18px;
+    color: var(--ink);
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .aside-mini:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  .aside-mini-tag {
+    flex-shrink: 0;
+    color: var(--dim);
+    font-size: 11px;
+  }
+  .aside-mini-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .aside-mini-state {
+    flex-shrink: 0;
+    color: var(--dim);
+    font-size: 11px;
+  }
+  .aside-mini-dot {
+    flex-shrink: 0;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
   }
   @keyframes aside-card-in {
     from {
@@ -833,6 +937,25 @@
   }
   :global(:where(:root:not([data-layout="classic"]))) .aside-card.panel .aside-card-head {
     border-radius: 0;
+  }
+  /* Item 735, Jarvis: the minimized line is a pill — the aside's tint and
+     dashed edge, its tag in small mono capitals, the dot lit. */
+  :global(:where(:root:not([data-layout="classic"]))) .aside-card.minimized {
+    border-radius: 999px;
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.28);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aside-mini {
+    padding: 5px 12px 5px 10px;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aside-mini-tag {
+    font-family: var(--mono, ui-monospace, monospace);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aside-mini-dot {
+    box-shadow: 0 0 6px var(--accent);
   }
   :global(:where(:root:not([data-layout="classic"]))) .aside-card.folded .aside-card-head {
     border-radius: var(--r2);
