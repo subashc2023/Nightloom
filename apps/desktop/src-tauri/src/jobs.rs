@@ -53,7 +53,10 @@ fn make_chat(dir: &std::path::Path, title: String, want: ChatKind) -> Result<Str
         Session::start(dir, ChatMode::Normal, ChatKind::Build).map_err(|e| e.to_string())?;
     session.record_title_by(title, nightloom_core::TitleBy::User);
     hold(&mut session, want);
-    Ok(session.id.clone())
+    let path = session.log_path().map(std::path::Path::to_path_buf);
+    drop(session);
+    let path = path.ok_or_else(|| nightloom_service::jobs::UNHELD.to_string())?;
+    nightloom_service::jobs::hold_kind_on_disk(&path, want)
 }
 
 pub(crate) async fn prepare(state: &AppState, prep: Prep) -> Result<String, String> {
@@ -83,13 +86,10 @@ pub(crate) async fn prepare(state: &AppState, prep: Prep) -> Result<String, Stri
                     .map_err(|_| "its chat is running a turn".to_string())?;
                 hold(&mut open, want);
             } else {
+                // Written, then read back from the file (the review's away
+                // finding: a log that refuses the write must not run).
                 let path = dir.join(format!("{chat}.jsonl"));
-                blocking(move || -> Result<(), String> {
-                    let mut session = Session::load(path).map_err(|e| e.to_string())?;
-                    hold(&mut session, want);
-                    Ok(())
-                })
-                .await?;
+                blocking(move || nightloom_service::jobs::hold_kind_on_disk(&path, want)).await?;
             }
             chat
         }

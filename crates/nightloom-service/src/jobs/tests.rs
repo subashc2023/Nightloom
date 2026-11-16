@@ -572,3 +572,40 @@ async fn the_routes_list_make_change_and_delete_a_job_and_name_the_feature() {
         .unwrap();
     assert_eq!(again.status(), 409);
 }
+
+/// Item 746's review: a log that refuses the write (0444, as the Mac's
+/// take-down leaves it) is not reported held — the run waits.
+#[cfg(unix)]
+#[test]
+fn a_kind_that_does_not_reach_the_file_is_not_held() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("nightloom-holdkind-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let s = nightloom_core::Session::start(
+        &dir,
+        nightloom_core::ChatMode::Normal,
+        nightloom_core::ChatKind::Build,
+    )
+    .unwrap();
+    let path = s.log_path().unwrap().to_path_buf();
+    let id = s.id.clone();
+    drop(s);
+    assert_eq!(hold_kind_on_disk(&path, kind_for(true)).unwrap(), id);
+    assert_eq!(
+        nightloom_core::Session::load(&path).unwrap().kind(),
+        nightloom_core::ChatKind::Chat
+    );
+    assert_eq!(hold_kind_on_disk(&path, kind_for(false)).unwrap(), id);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+    assert_eq!(
+        hold_kind_on_disk(&path, kind_for(true)).unwrap_err(),
+        UNHELD
+    );
+    assert_eq!(
+        nightloom_core::Session::load(&path).unwrap().kind(),
+        nightloom_core::ChatKind::Build,
+        "still writable-kind on disk"
+    );
+    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644));
+    let _ = std::fs::remove_dir_all(&dir);
+}

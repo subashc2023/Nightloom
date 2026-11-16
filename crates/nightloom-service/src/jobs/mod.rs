@@ -453,6 +453,41 @@ pub struct JobPatch {
     pub offset_min: Option<i32>,
 }
 
+/// What a job's chat may do, as its log says it (item 746): a Chat over
+/// its Claude Code declaration while the job is read-only, Claude Code once
+/// its plan is approved.
+pub fn kind_for(read_only: bool) -> nightloom_core::ChatKind {
+    if read_only {
+        nightloom_core::ChatKind::Chat
+    } else {
+        nightloom_core::ChatKind::Build
+    }
+}
+
+/// Put `want` on the job chat's log at `path`, then read the file back
+/// (item 746's review): a log that cannot be written — the Mac took the
+/// chat down (0444), or the disk refused — swallows the write
+/// (`Session::record` seals the log rather than fail), and the run would
+/// read the old kind and run with the writers. `Err` then: the job waits.
+/// The chat's id on success.
+pub fn hold_kind_on_disk(path: &Path, want: nightloom_core::ChatKind) -> Result<String, String> {
+    let mut session = nightloom_core::Session::load(path).map_err(|e| e.to_string())?;
+    if session.kind() != want {
+        crate::chat_ops::set_kind(&mut session, want, None);
+    }
+    let id = session.id.clone();
+    drop(session);
+    let back = nightloom_core::Session::load(path).map_err(|e| e.to_string())?;
+    if back.kind() == want {
+        Ok(id)
+    } else {
+        Err(UNHELD.into())
+    }
+}
+
+/// Why a run waits when its chat's kind could not be written.
+pub const UNHELD: &str = "its chat's log could not be changed, so its read-only hold could not be set; it tries again in a minute";
+
 /// What a host is asked before a run ([`Host::job_prepare`]): the job's
 /// chat exists (made in `project`, named `title`, when `chat` is `None`
 /// or gone) and is read-only or not as `read_only` says.
