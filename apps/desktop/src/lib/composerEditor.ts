@@ -27,6 +27,7 @@ import { findMath, type MathSpan } from "./math";
 import { renderMathHtml, renderReply } from "./markdown";
 import { quoteLine, quoteNeedsRender, quoteRuns } from "./replyQuote.svelte";
 import { crossesLine } from "./emphasisLines";
+import { findBoxLinks, openHint } from "./boxLinks";
 import { GridBackWidget, TableGridWidget, showGridSource, sourceShown, tableBlocks, tableGridSupport, tablePicked } from "./tableGrid";
 
 /**
@@ -37,7 +38,7 @@ import { GridBackWidget, TableGridWidget, showGridSource, sourceShown, tableBloc
  */
 export type BoxDrawing = "all" | "plain";
 export const boxDrawing = Facet.define<BoxDrawing, BoxDrawing>({ combine: (v) => v[v.length - 1] ?? "all" });
-const PLAIN_KINDS = new Set<LiveKind>(["table", "quote", "quote-render", "codeblock"]);
+const PLAIN_KINDS = new Set<LiveKind>(["table", "quote", "quote-render", "codeblock", "link"]);
 
 /** Node types whose content is code: nothing inside is math or emphasis. */
 const CODE_NODES = new Set(["InlineCode", "FencedCode", "CodeBlock", "HTMLBlock", "CommentBlock"]);
@@ -123,7 +124,7 @@ export function composerMathOk(text: string, m: MathSpan): boolean {
 }
 
 /** What a stretch of the box is drawn as — the testable shape of the decorations. */
-export type LiveKind = "math" | "math-block" | "heading" | "strong" | "em" | "strike" | "code" | "codeblock" | "quote" | "quote-render" | "table";
+export type LiveKind = "math" | "math-block" | "heading" | "strong" | "em" | "strike" | "code" | "codeblock" | "quote" | "quote-render" | "table" | "link";
 export interface LiveSpan {
   kind: LiveKind;
   from: number;
@@ -132,6 +133,8 @@ export interface LiveSpan {
   level?: number;
   /** The source is showing because the cursor or selection is in it. */
   open: boolean;
+  /** Item 696: where a link opens. */
+  href?: string;
 }
 
 /**
@@ -271,6 +274,14 @@ export function liveSpans(state: EditorState): LiveSpan[] {
       }
     },
   });
+
+  // Item 696: links (a bare URL, a `[text](url)`), in the link colour,
+  // Format on and off; never inside code (`boxLinks.ts`), a formula or a
+  // typeset quote. Drawn over the source, which stays as typed.
+  for (const l of findBoxLinks(text)) {
+    if (inMath(l.from, l.to) || inRendered(l.from, l.to)) continue;
+    out.push({ kind: "link", from: l.from, to: l.to, href: l.href, open: false });
+  }
 
   // Quote lines as the plain box's layer draws them (item 223): the same
   // per-line rule, so a quote looks the same with the toggle on or off.
@@ -541,6 +552,10 @@ export function composerDecorations(state: EditorState): DecorationSet {
         );
         break;
       }
+      case "link": {
+        out.push(Decoration.mark({ class: "cm-clink", attributes: { "data-href": s.href ?? "" } }).range(s.from, s.to));
+        break;
+      }
       case "quote": {
         out.push(Decoration.line({ class: "cm-cquote" }).range(s.from));
         const q = quoteLine(doc.sliceString(s.from, s.to));
@@ -651,6 +666,61 @@ export function composerKeymap(): Extension {
   ];
 }
 
+/**
+ * Item 696: ⌘-click (Ctrl elsewhere) on a drawn link opens it through
+ * `open` (the app's link route); a plain click is CodeMirror's and places
+ * the caret (blocker 1994). Over a link the box says how to open it; with
+ * ⌘ held it shows the pointer. Before CodeMirror's own mousedown, which
+ * would take ⌘-click as "add a cursor".
+ */
+export function boxLinkClicks(open: (href: string) => void, mac: boolean): Extension {
+  let over: HTMLElement | null = null;
+  const linkOf = (t: EventTarget | null) => (t instanceof Element ? t.closest<HTMLElement>(".cm-clink[data-href]") : null);
+  const mark = (view: EditorView, mod: boolean) => {
+    for (const el of view.dom.querySelectorAll(".cm-clink-hot")) el.classList.remove("cm-clink-hot");
+    const href = over?.dataset.href;
+    if (href && mod) {
+      for (const el of view.dom.querySelectorAll<HTMLElement>(".cm-clink[data-href]")) {
+        if (el.dataset.href === href) el.classList.add("cm-clink-hot");
+      }
+    }
+    view.dom.classList.toggle("cm-modlink", !!href && mod);
+    if (href) view.dom.setAttribute("title", openHint(mac));
+    else view.dom.removeAttribute("title");
+  };
+  const modOf = (e: MouseEvent | KeyboardEvent) => (mac ? e.metaKey : e.ctrlKey);
+  return Prec.highest(
+    EditorView.domEventHandlers({
+      mousedown(e) {
+        if (e.button !== 0 || !modOf(e)) return false;
+        const href = linkOf(e.target)?.dataset.href;
+        if (!href) return false;
+        e.preventDefault();
+        open(href);
+        return true;
+      },
+      mousemove(e, view) {
+        over = linkOf(e.target);
+        mark(view, modOf(e));
+        return false;
+      },
+      mouseleave(_e, view) {
+        over = null;
+        mark(view, false);
+        return false;
+      },
+      keydown(e, view) {
+        if (over && (e.key === "Meta" || e.key === "Control")) mark(view, true);
+        return false;
+      },
+      keyup(e, view) {
+        if (over && (e.key === "Meta" || e.key === "Control")) mark(view, false);
+        return false;
+      },
+    }),
+  );
+}
+
 /** The theme: the plain box's face, size and padding, and modest headings. */
 export const composerTheme = EditorView.theme({
   "&": {
@@ -695,6 +765,16 @@ export const composerTheme = EditorView.theme({
   ".cm-ch3": { fontSize: "1.07em" },
   ".cm-ch4, .cm-ch5": { fontSize: "1em" },
   ".cm-ch6": { fontSize: "1em", color: "var(--dim)" },
+  // Item 696: a link, as the plain box's layer draws one (`BoxLayer.svelte`
+  // `.lk`); with ⌘ held over it, the pointer and a full underline.
+  ".cm-clink": {
+    color: "var(--accent)",
+    textDecoration: "underline",
+    textDecorationColor: "color-mix(in srgb, var(--accent) 35%, transparent)",
+    textUnderlineOffset: "2px",
+  },
+  "&.cm-modlink .cm-clink-hot": { cursor: "pointer", textDecorationColor: "var(--accent)" },
+  "&.cm-modlink .cm-content": { cursor: "pointer" },
   ".cm-cem": { fontStyle: "italic" },
   ".cm-cstrong": { fontWeight: "650" },
   ".cm-cstrike": { textDecoration: "line-through" },
