@@ -193,6 +193,10 @@ export interface AgentTurnResult {
   /** The CLI's estimate of what this turn would have cost on the API. Not a
    *  bill: nothing here is charged per token under a subscription. */
   cost_usd: number | null;
+  /** Item 699: `cost_usd`'s share of the plan at the fitted rates, for the
+   *  cache-miss toast; null before the fit has enough replies. Absent from
+   *  an older backend. */
+  plan_est?: { five_hour: number | null; seven_day: number | null; replies: number } | null;
   rounds: number | null;
   /** Present only on an OAuth run, which makes it the one honest signal that
    *  the turn was billed to the plan and not to a key. */
@@ -1472,6 +1476,11 @@ export interface AsideResult {
   /** The newest round's cache read (item 677): the share of the chat's
    *  prefix the aside found warm (`cache_read` sums the rounds). */
   round_read?: number;
+  /** Item 699: the first round's cache read and write — the miss test's
+   *  (a later round reads back what the first wrote). Null when no round
+   *  reported; absent from an older backend. */
+  first_read?: number | null;
+  first_write?: number | null;
   /** Item 674: the answer's share of the plan, estimated from `cost_usd`
    *  at the rates fitted over lone chat replies; null before the fit has
    *  enough replies. Absent from an older backend. */

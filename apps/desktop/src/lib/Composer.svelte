@@ -49,6 +49,8 @@
     remainingText,
     restoreCacheSettings,
   } from "./cache";
+  import { cacheEstimate, lastReply, ratesFromPrice } from "./cacheCost";
+  import { cacheRatesOf, loadCacheRates } from "./cacheRates.svelte";
   import { holdPress, isKeeping, isOn, switchLabel, switchTitle, touchedUntil } from "./keepWarm";
   import { holdKeepWarm, keepWarm, loadKeepWarm, setKeepWarm } from "./keepWarm.svelte";
   import KeepWarmHold from "./KeepWarmHold.svelte";
@@ -3045,6 +3047,20 @@
     if (refused) addToast(`Keep warm: ${refused}`);
   }
   const cache = $derived(floating ? null : cacheState(app.events, now, touchedUntil(kw), asideReads(kwChat)));
+  /**
+   * Item 699: what the next send costs at API prices — the history read
+   * back while warm, all of it written once cold — at the newest reply's
+   * model's rates (Claude Code: `usage-rates.json` or the ping fit; the
+   * API engine: the connection's price). Null with no rates: no figure.
+   */
+  const lastModel = $derived(floating || !cache ? null : (lastReply(app.events)?.model ?? null));
+  const onClaudeCode = $derived(app.connection?.engine === "claude-code");
+  $effect(() => {
+    if (lastModel && onClaudeCode) void loadCacheRates(lastModel);
+  });
+  const nextEst = $derived(
+    cache ? cacheEstimate(app.events, onClaudeCode ? cacheRatesOf(lastModel) : ratesFromPrice(app.connection?.price), cache.warm) : null,
+  );
   /** Item 596: the same state drawn on the box's frame (`cacheLook.css`). */
   const frame = $derived(cacheFrame(cache));
   $effect(() => {
@@ -3881,11 +3897,12 @@
           class="ns-chip mono bottom-cache"
           class:cold={cache ? !cache.warm : false}
           use:tip={cache
-            ? `${cacheShareTitle} ${cacheTitle}`
+            ? `${cacheShareTitle} ${cacheTitle}${nextEst ? `\n\n${nextEst.title}` : ""}`
             : `${cacheShareTitle} No timer for this chat: its last turn was made before the cache lifetime was recorded (2026-09-15); the next turn will show one.`}
         >
           {#if cached != null}{Math.round(cached * 100)}% cached{:else}cache{/if}{#if cache}
             <span class="bottom-cache-when" aria-label={cacheLine(cache)}>· {remainingText(cache.remainingMs) ?? "cold"}</span>
+            {#if nextEst}<span class="bottom-cache-next">· {nextEst.line}</span>{/if}
           {/if}
         </div>
       {/if}
@@ -4455,6 +4472,18 @@
   /* Only the timer half dims when cold; the share is still a fact. */
   .bottom-cache.cold .bottom-cache-when {
     color: var(--dim);
+  }
+  /* Item 699: the next send's price, quieter than the timer; dropped on a
+     phone-width window, where the row has no room (the tooltip keeps it). */
+  .bottom-cache-next {
+    margin-left: 4px;
+    color: var(--dim);
+    white-space: nowrap;
+  }
+  @media (max-width: 560px) {
+    .bottom-cache-next {
+      display: none;
+    }
   }
 
   :global(:where(:root:not([data-layout="classic"]))) .composer {

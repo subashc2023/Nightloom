@@ -1657,6 +1657,7 @@ fn main() {
             commands::usage::turn_budget,
             commands::usage::set_turn_cap,
             commands::usage::turn_usage,
+            commands::usage::cache_rates,
             commands::usage::note_presence,
             commands::usage::budget_override,
             commands::steer::steer_subagent,

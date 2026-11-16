@@ -119,6 +119,11 @@ pub(crate) struct AgentTurn {
     context_limit: Option<u64>,
     /// The CLI's own client-side estimate, and **not** a bill.
     cost_usd: Option<f64>,
+    /// `cost_usd`'s share of the plan at the fitted rates (item 699): the
+    /// cache-miss toast says it at the turn's end, before the turn's
+    /// `turn-usage.jsonl` line (written at the next reading) exists.
+    /// `None` before the fit has enough replies, or with no cost.
+    plan_est: Option<nightloom_service::turn_usage::Estimate>,
     /// Assistant turns the CLI took internally, tool rounds included.
     rounds: Option<u32>,
     /// The plan window. Present only on an OAuth run, which makes it the one
@@ -412,6 +417,7 @@ pub(crate) async fn send_agent(
                 model: None,
                 context_limit: None,
                 cost_usd: None,
+                plan_est: None,
                 rounds: None,
                 plan: None,
                 limit: None,
@@ -483,6 +489,7 @@ pub(crate) async fn send_agent(
         model: outcome.model,
         context_limit,
         cost_usd: outcome.cost_usd,
+        plan_est: nightloom_service::turn_usage::estimate_cost(outcome.cost_usd),
         rounds: outcome.rounds,
         plan: outcome.rate_limit,
         limit: outcome.limit,
