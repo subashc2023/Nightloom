@@ -12,8 +12,8 @@
  */
 
 /** How long a still pointer holds the frozen widths after the last close.
- * Item 701 (2026-11-15): 3 s was too long — his "like 1.5s shorter". */
-export const TAB_FREEZE_IDLE_MS = 1500;
+ * Item 701 (2026-11-15): 3 s was too long — his "like 1.5s shorter", then "Make it 2 seconds actually". */
+export const TAB_FREEZE_IDLE_MS = 2000;
 
 export class TabFreeze {
   /** The width every tab is held at, in px; null when the strip fits itself. */
