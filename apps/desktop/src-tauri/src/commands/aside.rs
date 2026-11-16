@@ -279,6 +279,36 @@ pub(crate) async fn ask_aside(
     {
         keep_warm::aside_read(&app, chat, sent_ms, round_read);
     }
+    // Item 727: the aside's prefix print and the cache-miss check, against
+    // the chat's newest reply. Its log is read without waiting: busy (a
+    // turn took the chat meanwhile) skips the check, never the answer.
+    if !outcome.is_error
+        && !cancel.is_cancelled()
+        && let Some(first) = outcome.first_round
+        && let Ok(open) = target.try_lock()
+        && let Some(session) = open.as_ref()
+        && let Some(fork) = agent.spec().aside_with(model.as_deref(), effort.as_deref())
+    {
+        use nightloom_service::cache_miss;
+        let dir = cache_miss::ask_dir_of(session);
+        if let Some(d) = &dir {
+            cache_miss::record_print_quiet(d, cache_miss::Kind::Aside, sent_ms, &fork);
+        }
+        let spec = agent.spec();
+        let other = fork.model != spec.model || fork.effort != spec.effort;
+        if let Some(req) = cache_miss::aside_request(
+            session,
+            dir.as_deref(),
+            &spec.workspace,
+            spec.resume.as_deref(),
+            sent_ms,
+            first.cache_read_tokens.unwrap_or(0),
+            outcome.cost_usd,
+            other,
+        ) {
+            tauri::async_runtime::spawn_blocking(move || cache_miss::check(&req));
+        }
+    }
     Ok(AsideResult {
         answer: if answer.trim().is_empty() {
             outcome.text

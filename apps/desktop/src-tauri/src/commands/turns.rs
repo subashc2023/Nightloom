@@ -389,6 +389,17 @@ pub(crate) async fn send_agent(
     // The chat's preview ended since the model last heard (item 445): it
     // is told now, on the wire, rather than by failing tool calls.
     let wire_note = preview::with_ended_note(&app, ask_dir.as_deref(), wire_note);
+    // The cache-miss check (item 727): this request's prefix print, and
+    // how many replies the log held before it, for the check at its end.
+    let miss_before = nightloom_service::cache_miss::assistant_count(session);
+    if let Some(dir) = &ask_dir {
+        nightloom_service::cache_miss::record_print_quiet(
+            dir,
+            nightloom_service::cache_miss::Kind::Turn,
+            keep_warm::now(),
+            agent.spec(),
+        );
+    }
     let env = DesktopTurnEnv {
         app: &app,
         state: &state,
@@ -455,6 +466,22 @@ pub(crate) async fn send_agent(
     // (582) — not from a turn paused on his answer or by the plan's limit.
     if outcome.deferred.is_none() && outcome.limit.is_none() {
         keep_warm::replied(&app, session, agent.spec(), ask_dir.as_deref());
+    }
+    // Item 727: a first round that read under 80% of the context it
+    // resumed, neither expired nor chosen, is logged to cache-miss.jsonl —
+    // off the turn's path (it reads the CLI's session file).
+    if !outcome.is_error
+        && !cancel.is_cancelled()
+        && let Some(req) = nightloom_service::cache_miss::turn_request(
+            session,
+            miss_before,
+            ask_dir.as_deref(),
+            &agent.spec().workspace,
+            crate::resume_of(session).as_deref(),
+            outcome.cost_usd,
+        )
+    {
+        tauri::async_runtime::spawn_blocking(move || nightloom_service::cache_miss::check(&req));
     }
     // The reads the CLI refused outside the trees (backlog 143, pass 2):
     // each folder once, for the rail to offer the grant after the fact.
