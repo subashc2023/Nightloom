@@ -115,6 +115,15 @@ export interface Aside {
   /** Folded to its head row (blocker 318): past `MAX_OPEN_ASIDES` open
    *  cards the oldest fold; a click on the strip opens it again. */
   folded?: boolean;
+  /** Minimized by his click (item 735, blocker 2008): the card in the
+   *  main chat is one small line — its first words — until he clicks it
+   *  open again, in the same place. Unlike `folded` (the crowd rule's),
+   *  his to set; written with the thread, so a chat switch and a relaunch
+   *  keep it. */
+  minimized?: boolean;
+  /** An answer landed while minimized (item 735): the line carries a dot
+   *  until he opens it. Written with the thread. */
+  newReply?: boolean;
   /** The highlighted passage the thread is about, if any. */
   quote: AsideQuote | null;
   /** Opened from a selection and not yet asked: the card is the question box. */
@@ -324,7 +333,8 @@ function openAsideThread(a: Aside): Aside {
 function foldCrowd(keep: Aside | null): void {
   const list = app.asides;
   const idx = keep ? list.indexOf(keep) : -1;
-  for (const i of foldTheOldest(list.map((a) => a.folded === true), idx < 0 ? null : idx, MAX_OPEN_ASIDES)) {
+  // Item 735: a minimized card takes no room, so it is not one of the open.
+  for (const i of foldTheOldest(list.map((a) => a.folded === true || a.minimized === true), idx < 0 ? null : idx, MAX_OPEN_ASIDES)) {
     list[i]!.folded = true;
   }
 }
@@ -334,6 +344,37 @@ function foldCrowd(keep: Aside | null): void {
 export function unfoldAside(a: Aside): void {
   a.folded = false;
   foldCrowd(a);
+}
+
+/** Item 735: his minimize click — the card becomes one line in place.
+ *  Nothing in it is dropped: the box's text lives in the drafts store and
+ *  the thread itself, not in the card. */
+export function minimizeAside(a: Aside): void {
+  a.minimized = true;
+}
+
+/** Item 735: the line clicked — the card opens again where it was, the
+ *  new-reply dot cleared; the oldest other open card folds if that makes
+ *  one too many (blocker 318's rule). */
+export function expandAside(a: Aside): void {
+  a.minimized = false;
+  a.newReply = false;
+  a.folded = false;
+  foldCrowd(a);
+}
+
+/** Item 735: an answer (or its error) landed on the turn `seq`: a
+ *  minimized thread's line gets its dot — in the open chat or a stashed
+ *  one. */
+export function noteAsideReply(seq: number): void {
+  const lists = [app.asides, ...asideStash.values()];
+  for (const list of lists) {
+    const a = list.find((x) => x.turns.some((t) => t.seq === seq));
+    if (a) {
+      if (a.minimized) a.newReply = true;
+      return;
+    }
+  }
 }
 
 /** `app.aside`, the front thread, kept equal to the newest of `app.asides`
@@ -397,6 +438,7 @@ async function runAside(turn: AsideTurn, sent: string, thread: Aside | null = nu
       t.roundRead = res.round_read;
     }
     t.at = new Date().toISOString();
+    noteAsideReply(turn.seq);
     // Item 699: its first round read under 80% of that — what the miss cost.
     if (!res.is_error && res.first_read != null) {
       const miss = missToastFor({
@@ -411,7 +453,10 @@ async function runAside(turn: AsideTurn, sent: string, thread: Aside | null = nu
     }
   } catch (e) {
     const t = live();
-    if (t && !t.cancelled) t.error = String(e);
+    if (t && !t.cancelled) {
+      t.error = String(e);
+      noteAsideReply(turn.seq);
+    }
   }
 }
 

@@ -112,6 +112,9 @@ if (typeof window !== "undefined") {
         void a.uid;
         // Item 734: where he moved the card, written with the thread.
         void a.moved;
+        // Item 735: minimized, and its new-reply dot.
+        void a.minimized;
+        void a.newReply;
         for (const t of a.turns) {
           void t.partial;
           void t.answer;
