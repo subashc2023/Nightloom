@@ -2246,6 +2246,30 @@ here asks the model to judge; all of it is read from the chat's log
   *Continue in a new chat* send no carry; what a shell command *wrote* is not
   attributed to a file beyond the path being named in the command.
 
+**Every hand-off is logged for scoring (nightshift item 757, 2026-11-16).**
+`<config>/logs/handoffs.jsonl` (`~/.nightloom/logs/`, or under
+`NIGHTLOOM_HOME`), one JSON object per line, built in the window
+(`handoffLog.ts`) and appended and stamped (`at`) by `handoff_log.rs`:
+
+- **`kind: "handoff"`** when a next chat opens from a hand-off, by any of the
+  three routes — `route: "card"` (*Continue with this prompt*, with the carry),
+  `"box"` (the no-prompt line or the phone: the text goes in the box) and
+  `"unattended"` (the hand-off made while he is away). It holds both chats,
+  the goal and where it came from (`goal_from`: the card's field, the
+  prompt's own line, none), the first message as sent, his ticked messages
+  word for word, the unticked ones by id, date, word count and quoted share
+  only (their text was not carried, so it is not logged), the list built from
+  the tool calls uncapped with the card's caps beside it, the fixed-sections
+  check (`missing`) and the wrap-up's cost.
+- **`kind: "next_turn"`**, one for each of the first 30 turns of a chat whose
+  log opens with a `handoff` fork, at each turn's end (open chat, provider and
+  background turns alike): files edited, read and named in shell commands,
+  commits, tool-call count. The last turn logged is kept per chat in
+  `viewState`, so a relaunch does not log a turn twice.
+
+Nothing is sent anywhere; a line that cannot be written is dropped. The
+reader is `nightshift-code/bin/handoffscore.py`.
+
 **The read order (nightshift backlog 193, 2026-09-25).** *Continue in a new
 chat* now fills the new chat's box with a fixed prompt — the read order —
 and under it the model's `start-prompt` block (`firstMessage` in

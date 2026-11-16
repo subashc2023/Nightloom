@@ -65,6 +65,8 @@ mod event_guard;
 /// (nightshift backlog 161).
 mod filetab;
 mod for_you;
+/// Every hand-off and its next chat's first turns, logged for scoring (nightshift item 757).
+mod handoff_log;
 /// The notes Inbox's Sort inbox (nightshift backlog 488).
 mod inbox_sort;
 // The keep-warm clock (backlog 582).
@@ -1694,6 +1696,7 @@ fn main() {
             commands::notes::mark_applied,
             commands::notes::knowledge_info,
             startup_log::startup_mark,
+            handoff_log::handoff_log,
             commands::notes::model_instructions_dir,
             commands::notes::chat_instructions_path,
             commands::notes::practices_layer,

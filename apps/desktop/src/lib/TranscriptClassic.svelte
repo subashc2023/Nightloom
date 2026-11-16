@@ -42,7 +42,7 @@
   import { scheduledFor } from "./scheduled.svelte";
   import type { Segment } from "./state.svelte";
   import { asideReads } from "./state.svelte";
-  import { continuableReply, continuedFromReply, nextChatMessage, type NextChat } from "./handoffButton";
+  import { cardLog, continuableReply, continuedFromReply, nextChatMessage, type NextChat } from "./handoffButton";
   import { carryFor } from "./handoffCarryFor";
   import { pushUndo } from "./state/edits.svelte";
   import { checkpointLine, checkpointOwner } from "./checkpoint";
@@ -558,8 +558,11 @@
       blocked: app.busy ? "A turn is running — continue when it ends" : null,
       // ~~`reply.prompt`~~ — item 747: the goal as the card's field has it, the
       // prompt, his ticked messages, the artifact list; read at the click.
-      onContinue: () =>
-        void continueWithPrompt(from, reply.index, nextChatMessage({ chat: from, index: reply.index, prompt: reply.prompt, carry })),
+      // Item 757: and what it carried goes to the hand-off log (`cardLog`).
+      onContinue: () => {
+        const n = { chat: from, index: reply.index, prompt: reply.prompt, carry };
+        void continueWithPrompt(from, reply.index, nextChatMessage(n), cardLog(n));
+      },
       // Item 756: a minimize (or restore) of the card is on the chat's undo stack, so ⌘Z opens it again.
       onFold: (minimized, undo, redo) =>
         void pushUndo(from, {
