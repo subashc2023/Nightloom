@@ -36,7 +36,7 @@
   let root = $state<HTMLDivElement | null>(null);
   let strip = $state<HTMLDivElement | null>(null);
   const secs: (HTMLElement | null)[] = $state([]);
-  const otherEls: (HTMLInputElement | null)[] = $state([]);
+  const otherEls: (HTMLTextAreaElement | null)[] = $state([]);
 
   // The box that scrolls the questions: the desktop card once it reaches its cap, else the transcript (or
   // the phone's page) — the nearest ancestor that scrolls.
@@ -86,19 +86,20 @@
       const y = box.scrollTop + sec.getBoundingClientRect().top - top - sh - 6;
       box.scrollTo({ top: Math.max(0, y), behavior: reduced() ? "auto" : "smooth" });
     }
-    const first = sec?.querySelector<HTMLInputElement>("input.aq-in, input.aq-otherin");
+    const first = sec?.querySelector<HTMLInputElement | HTMLTextAreaElement>("input.aq-in, textarea.aq-otherin");
     first?.focus({ preventScroll: true });
   }
 
   function onKey(e: KeyboardEvent, i: number) {
     const q = questions[i];
     const t = e.target as HTMLElement;
-    const typing = t instanceof HTMLInputElement && t.type === "text";
+    // Item 711: Other is a wrapping textarea now; Enter still never types a newline.
+    const typing = t instanceof HTMLTextAreaElement || (t instanceof HTMLInputElement && t.type === "text");
     if (typing) {
       // Enter in Other moves on, as Next does; it never answers (the card's Answer is a deliberate click).
-      if (e.key === "Enter" && !e.isComposing && many && i < questions.length - 1) {
+      if (e.key === "Enter" && !e.isComposing) {
         e.preventDefault();
-        go(i + 1);
+        if (many && i < questions.length - 1) go(i + 1);
       }
       return;
     }
@@ -215,16 +216,22 @@
               >
               <span class="aq-ot">
                 {#if typed}<span class="aq-od">Other</span>{/if}
-                <input
+                <!-- Item 711 (his bug, 2026-11-15): wraps line by line and grows, ~~one line scrolling sideways~~. -->
+                <textarea
                   class="aq-otherin"
-                  type="text"
+                  rows="1"
                   value={others[i] ?? ""}
-                  oninput={(e) => onother(i, e.currentTarget.value)}
+                  oninput={(e) => {
+                    const el = e.currentTarget;
+                    el.style.height = "auto";
+                    el.style.height = `${el.scrollHeight}px`;
+                    onother(i, el.value);
+                  }}
                   bind:this={otherEls[i]}
                   placeholder="Other — type an answer"
                   aria-label="other answer"
                   autocomplete="off"
-                />
+                ></textarea>
               </span>
               <kbd class="aq-k" aria-hidden="true">{q.options.length + 1}</kbd>
             </label>
@@ -507,6 +514,9 @@
     cursor: text;
   }
   .aq-otherin {
+    display: block;
+    resize: none;
+    overflow: hidden;
     width: 100%;
     box-sizing: border-box;
     background: transparent;
