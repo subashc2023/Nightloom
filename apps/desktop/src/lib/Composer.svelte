@@ -3297,7 +3297,8 @@
       <button type="button" class="lost-paste-x" aria-label="Close this note" onclick={() => (lostPaste = null)}>×</button>
     </div>
   {/if}
-  {#if handoffHere && handoff.stage === "due" && isFolded(app.activeSessionId, "due")}
+  <!-- Item 702: the notice waits for the turn to be idle, never mid-turn or mid-send. -->
+  {#if handoffHere && handoff.stage === "due" && !busy && isFolded(app.activeSessionId, "due")}
     <div class="handoff handoff-min" role="status" aria-label="Hand-off notice, minimized">
       <span class="handoff-mark" aria-hidden="true"><Icon name="branch" size={13} /></span>
       <strong class="handoff-min-title">Context {handoffPct}% — past this chat's {handoffThresholdPct}%{handoffMarkTokens ? ` (${fmtTokens(handoffMarkTokens)})` : ""} hand-off mark</strong>
@@ -3306,7 +3307,7 @@
       {#if !wrapUpQueued}<button class="ns-btn accent small" disabled={app.busy || !wrapUpText.trim()} onclick={() => void sendWrapUpNow()}>Wrap up now</button>{/if}
       <button class="ns-btn ghost small" use:tip={"Show the whole card again"} onclick={() => unfold(app.activeSessionId)}>Expand</button>
     </div>
-  {:else if handoffHere && handoff.stage === "due"}
+  {:else if handoffHere && handoff.stage === "due" && !busy}
     <!-- The notice (backlog 086 pass 2, blocker 120): the board's hand-off
          card — accent rule, a heading with the fill, one line of what
          happens, the two things he can change for this chat, the actions.

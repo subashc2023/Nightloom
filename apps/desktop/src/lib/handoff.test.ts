@@ -608,3 +608,17 @@ describe("the code chat's close", () => {
     expect(i("<handoff>")).toBeLessThan(i("Then stop"));
   });
 });
+
+// Item 702: no flicker at the line.
+import { UNDER_MARGIN as M702 } from "./handoff.svelte";
+describe("702: a shown notice keeps up near the mark", () => {
+  it("stays due half a margin under the mark", () => {
+    expect(nextStage("due", 0.3 - M702 / 2, 0.3, 0)).toBe("due");
+  });
+  it("goes when a reading falls past the margin", () => {
+    expect(nextStage("due", 0.3 - M702 * 1.5, 0.3, 0)).toBe("idle");
+  });
+  it("a rewind compares at the mark exactly", () => {
+    expect(nextStage("due", 0.299, 0.3, 0, true)).toBe("idle");
+  });
+});
