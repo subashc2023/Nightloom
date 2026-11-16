@@ -46,6 +46,9 @@ export interface NextChat {
    *  messages, the artifact list, the cost; absent, the prompt goes alone. */
   carry?: Carry | null;
   onContinue: () => void;
+  /** Item 756: a minimize or a restore done on the card, with its inverse,
+   *  for the chat's undo stack (⌘Z restores what a minimize folded). */
+  onFold?: (minimized: boolean, undo: () => void, redo: () => void) => void;
 }
 
 // ---- item 747: the goal he typed and the messages he ticked, per card ----
@@ -88,6 +91,42 @@ export function setCarryTick(chat: string, index: number, id: string, on: boolea
   const ticks = carryTicks(chat, index);
   ticks[id] = on;
   viewSet(`${carryKey(chat, index)}|ticks`, JSON.stringify(ticks), "");
+}
+
+// ---- item 756: the card minimized to one line ----
+//
+// Kept on disk (`viewState`) like the goal: a card he folded stays folded
+// across a scroll, a chat switch and a relaunch (practices §7). Folding hides
+// the card's parts and drops none of them: the goal and ticks are on disk
+// already, and the fields stay in the page, hidden.
+
+/** The class on a card minimized to its one line. */
+export const MINIMIZED_CLASS = "handoff-minimized";
+/** The – button in the card's head, and the one line a minimized card shows;
+ *  `liveHtml` has no counterpart for either. */
+export const MIN_CLASS = "handoff-min";
+export const MINI_CLASS = "handoff-mini";
+
+function minKey(chat: string, index: number): string {
+  return `${carryKey(chat, index)}|min`;
+}
+
+export function cardMinimized(chat: string, index: number): boolean {
+  return viewGet(minKey(chat, index), false);
+}
+
+export function setCardMinimized(chat: string, index: number, on: boolean): void {
+  viewSet(minKey(chat, index), on, false);
+}
+
+/** What the one line says: the goal as the card's field has it, else the
+ *  prompt's first line without its "Goal:" lead. */
+export function miniText(next: Pick<NextChat, "chat" | "index" | "prompt" | "carry">): string {
+  const typed = carryGoal(next.chat, next.index);
+  const goal = (typed ?? next.carry?.goal ?? "").trim();
+  if (goal) return goal;
+  const first = next.prompt.split("\n").find((l) => l.trim()) ?? "";
+  return first.replace(/^\s*goal\s*:\s*/i, "").trim();
 }
 
 /** What *Continue with this prompt* sends for this card: the prompt alone
@@ -330,6 +369,93 @@ function goRow(next: NextChat, read: () => NextChat | null | undefined): HTMLEle
   return row;
 }
 
+/** The card's key attribute, so an undo finds the card it folded wherever it is drawn now. */
+const CARD_KEY = "handoffKey";
+
+/** Show a card minimized or whole: only classes and `hidden`, so nothing in it is dropped. */
+function paintCard(card: HTMLElement, on: boolean): void {
+  card.classList.toggle(MINIMIZED_CLASS, on);
+  const line = card.querySelector<HTMLElement>(`:scope > .${MINI_CLASS}`);
+  const btn = card.querySelector<HTMLElement>(`:scope > .${MIN_CLASS}`);
+  if (line && line.hidden === on) line.hidden = !on;
+  if (btn && btn.hidden !== on) btn.hidden = on;
+}
+
+/** Item 756: minimize or restore the card of `chat`'s reply `index`, wherever it is drawn. */
+export function foldCard(chat: string, index: number, on: boolean): void {
+  setCardMinimized(chat, index, on);
+  const key = `${chat}|${index}`;
+  for (const card of Array.from(document.querySelectorAll<HTMLElement>(".handoff-card"))) {
+    if (card.dataset[CARD_KEY] === key) paintCard(card, on);
+  }
+}
+
+/** His click (or Enter) on the – button or the one line: fold, move the focus to
+ *  what stands now, and hand the inverse to the chat's undo stack. */
+function clickFold(card: HTMLElement, read: () => NextChat | null | undefined, on: boolean): void {
+  const now = read();
+  if (!now || cardMinimized(now.chat, now.index) === on) return;
+  const { chat, index } = now;
+  foldCard(chat, index, on);
+  card.querySelector<HTMLElement>(`:scope > .${on ? MINI_CLASS : MIN_CLASS}`)?.focus({ preventScroll: true });
+  now.onFold?.(
+    on,
+    () => foldCard(chat, index, !on),
+    () => foldCard(chat, index, on),
+  );
+}
+
+/** Item 756: the – button in the card's head and the one line it folds to. */
+function syncMinimize(card: HTMLElement, next: NextChat, read: () => NextChat | null | undefined): void {
+  card.dataset[CARD_KEY] = `${next.chat}|${next.index}`;
+  let btn = card.querySelector<HTMLButtonElement>(`:scope > button.${MIN_CLASS}`);
+  if (!btn) {
+    btn = el("button", `ns-btn ghost small ${MIN_CLASS}`, "\u2013");
+    btn.type = "button";
+    btn.setAttribute("aria-label", "Minimize the hand-off card");
+    btn.title = "Minimize to one line \u2014 click the line, or \u2318Z, to open it again";
+    const b = btn;
+    b.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      clickFold(card, read, true);
+    });
+    card.prepend(b);
+  }
+  let line = card.querySelector<HTMLElement>(`:scope > div.${MINI_CLASS}`);
+  if (!line) {
+    line = el("div", MINI_CLASS);
+    line.setAttribute("role", "button");
+    line.tabIndex = 0;
+    line.title = "Open the hand-off card again";
+    line.append(el("span", "handoff-mini-tag", "Hand-off"), el("span", "handoff-mini-text"), el("span", "handoff-mini-open", "open"));
+    line.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      clickFold(card, read, false);
+    });
+    line.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      clickFold(card, read, false);
+    });
+    card.prepend(line);
+  }
+  const text = miniText(next);
+  const span = line.querySelector<HTMLElement>(".handoff-mini-text");
+  if (span && span.textContent !== text) span.textContent = text;
+  const label = `Hand-off card, minimized: ${text}. Open it`;
+  if (line.getAttribute("aria-label") !== label) line.setAttribute("aria-label", label);
+  paintCard(card, cardMinimized(next.chat, next.index));
+}
+
+/** A card that no longer holds the controls loses item 756's parts too. */
+function clearMinimize(card: Element): void {
+  for (const n of Array.from(card.querySelectorAll(`:scope > .${MIN_CLASS}, :scope > .${MINI_CLASS}`))) n.remove();
+  card.classList.remove(MINIMIZED_CLASS);
+  if (card instanceof HTMLElement) delete card.dataset[CARD_KEY];
+}
+
 /**
  * The controls under the card that holds the prompt, or under a legacy
  * `start-prompt` block; anything else loses them, since `liveHtml` re-uses
@@ -349,12 +475,15 @@ export function addContinueControls(root: HTMLElement, read: () => NextChat | nu
     if (after && have.previousElementSibling === after && !row) row = have;
     else have.remove();
   }
+  const card = after?.parentElement?.classList.contains("handoff-card") ? after.parentElement : null;
+  for (const c of Array.from(root.querySelectorAll(".handoff-card"))) if (c !== card || !next) clearMinimize(c);
   if (!next || !after) return;
   if (!row) {
     row = goRow(next, read);
     after.after(row);
   }
   syncCarry(row, next, read);
+  if (card) syncMinimize(card, next, read);
   const details = row.querySelector<HTMLDetailsElement>(":scope > details.handoff-order");
   const body = row.querySelector(":scope > .handoff-order > .handoff-order-text");
   const b = row.querySelector<HTMLButtonElement>(":scope > button.handoff-continue");

@@ -40,6 +40,7 @@
   import { asideReads } from "./state.svelte";
   import { continuableReply, continuedFromReply, nextChatMessage, type NextChat } from "./handoffButton";
   import { carryFor } from "./handoffCarryFor";
+  import { pushUndo } from "./state/edits.svelte";
   import { checkpointLine, checkpointOwner } from "./checkpoint";
   import {
     REMOVED_PLACEHOLDER,
@@ -580,6 +581,13 @@
       // prompt, his ticked messages, the artifact list; read at the click.
       onContinue: () =>
         void continueWithPrompt(from, reply.index, nextChatMessage({ chat: from, index: reply.index, prompt: reply.prompt, carry })),
+      // Item 756: a minimize (or restore) of the card is on the chat's undo stack, so ⌘Z opens it again.
+      onFold: (minimized, undo, redo) =>
+        void pushUndo(from, {
+          label: minimized ? "hand-off card minimize" : "hand-off card restore",
+          undo: async () => undo(),
+          redo: async () => redo(),
+        }),
     };
   });
 
