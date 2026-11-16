@@ -817,6 +817,14 @@ pub fn subagent_rules_body(rules: &SubagentRules<'_>) -> String {
          ~150k\"); one with none, or past 250k, is refused: split it into helpers of under \
          250k each.\n",
     );
+    // Backlog 707: helpers anchored on the caps they were given.
+    out.push_str(
+        "- The estimate is for Nightloom's check and your planning, and is removed before the \
+         helper sees the task; do not write budgets or tool-call caps into a helper's task — say \
+         what done looks like and what to skip. Nightloom itself tells a helper past 285k to \
+         finish if a step or two from done, else finish its step and report what is left, and \
+         tells you when it has.\n",
+    );
     out.push_str(match l.model {
         SubagentModel::Choose => {
             "- Subagents' model: yours to choose on each launch, within the user's rule: opus by \
@@ -3901,6 +3909,13 @@ As of now — the front.
             "{text}"
         );
         assert!(text.contains("refused: split it"), "{text}");
+        // 707: no budgets in a helper's task; Nightloom's own 285k stop.
+        assert!(
+            text.contains("removed before the helper sees the task")
+                && text.contains("do not write budgets or tool-call caps")
+                && text.contains("past 285k"),
+            "{text}"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 }
