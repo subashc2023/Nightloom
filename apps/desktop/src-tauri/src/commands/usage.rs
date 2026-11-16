@@ -411,6 +411,39 @@ pub(crate) async fn turn_usage(
         .map_err(|e| format!("reading the reply usage failed: {e}"))
 }
 
+/// The read and write rates the composer's `next ≈ $…` estimate prices
+/// the chat's context at (item 699): `usage-rates.json`'s row for the
+/// model, else a fit to the CLI's own reported cost of this project's
+/// keep-warm pings on it (`usage::fit_cache_rates`). `None` when neither
+/// can say — the chip then shows no figure rather than a guess. Reads
+/// only; on the blocking pool, since it opens every chat's ping file.
+#[tauri::command]
+pub(crate) async fn cache_rates(
+    state: State<'_, AppState>,
+    model: String,
+) -> Result<Option<nightloom_service::usage::CacheRates>, String> {
+    let ask = state.log_dir().await.join("ask");
+    tokio::task::spawn_blocking(move || {
+        use nightloom_service::usage;
+        let rates = usage::claude_dir().and_then(|d| usage::load_rates_in(&d).ok());
+        if let Some(r) = rates
+            .as_ref()
+            .and_then(|r| usage::table_cache_rates(r, &model))
+        {
+            return Some(r);
+        }
+        let mut pings = Vec::new();
+        if let Ok(chats) = std::fs::read_dir(&ask) {
+            for c in chats.flatten() {
+                pings.extend(nightloom_service::keep_warm::read_pings(&c.path()));
+            }
+        }
+        usage::cache_rates_with(None, &pings, &model)
+    })
+    .await
+    .map_err(|e| format!("reading the cache rates failed: {e}"))
+}
+
 /// The plan's figure refreshed through the CLI's print-mode `/usage` when
 /// the files are over a minute old (nightshift backlog 166, blocker 264):
 /// exact, zero tokens, ~12 s. The front end calls it every five minutes

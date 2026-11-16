@@ -33,6 +33,11 @@ pub(crate) struct AsideResult {
     /// The newest round's cache read (item 677): the share of the chat's
     /// prefix found warm, which `cache_read` (summed) overcounts.
     round_read: u64,
+    /// The first round's cache read and write (item 699): the miss test
+    /// reads the first, since a later round reads back what it wrote.
+    /// `None` when no round reported.
+    first_read: Option<u64>,
+    first_write: Option<u64>,
     /// The answer's share of the plan, estimated from `cost_usd` at the
     /// rates fitted over lone chat replies (item 674): an aside takes no
     /// readings of its own. `None` before the fit has enough replies.
@@ -292,6 +297,12 @@ pub(crate) async fn ask_aside(
         context_tokens: outcome.last_round.map(|u| u.input_tokens + u.output_tokens),
         sent_ms,
         round_read,
+        first_read: outcome
+            .first_round
+            .map(|u| u.cache_read_tokens.unwrap_or(0)),
+        first_write: outcome
+            .first_round
+            .map(|u| u.cache_write_tokens.unwrap_or(0)),
     })
 }
 

@@ -14,6 +14,8 @@ import { pdfFileName, pdfRoute } from "../attachKinds";
 import type { Attachment, AsideSendOptions, TurnEvent } from "../types";
 import { type Segment, app, closeThinking, applyToSegments } from "../state.svelte";
 import { limitPauseFrom, type LimitPause } from "../limit";
+import { addToast } from "./toasts.svelte";
+import { lastPrompt, missToastFor } from "../cacheCost";
 
 /** One exchange of the open chat's aside (backlog 081; streamed since
  *  backlog 128; a thread of them since backlog 130) — see `app.aside`. */
@@ -349,6 +351,9 @@ export function asideWaiting(a: Aside | null): boolean {
  */
 async function runAside(turn: AsideTurn, sent: string, thread: Aside | null = null, chips: Attachment[] = []): Promise<void> {
   const live = () => findAsideTurn(turn.seq);
+  // Item 699: the context the aside resumes — it forks the chat's session,
+  // so the newest live reply's prompt; 0 (no toast) before the first.
+  const resumed = lastPrompt(app.events);
   try {
     const res = await api.askAside(sent, turn.seq, asideWire(thread, chips));
     const t = live();
@@ -376,6 +381,18 @@ async function runAside(turn: AsideTurn, sent: string, thread: Aside | null = nu
       t.roundRead = res.round_read;
     }
     t.at = new Date().toISOString();
+    // Item 699: its first round read under 80% of that — what the miss cost.
+    if (!res.is_error && res.first_read != null) {
+      const miss = missToastFor({
+        what: "aside",
+        read: res.first_read,
+        context: resumed,
+        written: res.first_write ?? 0,
+        costUsd: res.cost_usd,
+        est: res.plan_est,
+      });
+      if (miss) addToast(miss);
+    }
   } catch (e) {
     const t = live();
     if (t && !t.cancelled) t.error = String(e);

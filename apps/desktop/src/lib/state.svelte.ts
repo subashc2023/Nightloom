@@ -172,6 +172,7 @@ import { loadLastProject, saveLastProject, loadDreamPrefs, loadPalette, loadLayo
 import { runMenuCommand, menuInterceptors, providerPills, switchProvider, toggleEngine, pickerModels, switchModel, switchModelAt, loadContextLimits } from "./state/menu.svelte";
 import { rewindTo, setAsideRewound, keepRewound } from "./state/rewind.svelte";
 import { addToast, TOAST_MS, ACTION_TOAST_MS, dismissToast, runToastAction } from "./state/toasts.svelte";
+import { turnMissToast } from "./cacheCost";
 import { inViewLane } from "./viewLane";
 export { TOAST_MS, ACTION_TOAST_MS, addToast, dismissToast, runToastAction };
 export { rewindTo, setAsideRewound, keepRewound };
@@ -2286,6 +2287,10 @@ async function sendAgent(
   // (nightshift backlog 094).
   const pendingKey = pendingChatKey();
   app.error = null;
+  // Item 699: the replies the log holds now — the turn's first round is
+  // the next one, whose read the cache-miss toast tests at the turn's end.
+  const repliesBefore = app.events.reduce((n, e) => n + (e.event === "assistant_message" ? 1 : 0), 0);
+  const missChat = app.activeSessionId;
   pushSent({
     event: "user_message",
     text,
@@ -2441,6 +2446,13 @@ async function sendAgent(
     if (limitRes) {
       const ran = browsed ? ranIn : app.activeSessionId;
       noteTurnLimit(ran, limitRes, homeFor(ran), browsed ? parkedReply : lastReplyText(app.events));
+    }
+    // Item 699: the turn's first round read under 80% of the context it
+    // resumed — say what the miss cost. Only with the turn's own chat in
+    // view (its log is the one read), never on a chat's first turn.
+    if (limitRes && !browsed && missChat && app.activeSessionId === missChat) {
+      const miss = turnMissToast(app.events, repliesBefore, limitRes.cost_usd, limitRes.plan_est);
+      if (miss) addToast(miss);
     }
     // The meter's final figure, now that the chat exists and the hook's
     // last write is in (backlog 165, pass 2).

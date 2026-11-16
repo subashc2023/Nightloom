@@ -1226,6 +1226,13 @@ export function setTurnCap(session: string, capPercent: number | null, mode: Cap
   return invoke("set_turn_cap", { session, capPercent, mode });
 }
 
+/** The read and write rates the composer's `next ≈ $…` estimate prices
+ *  the chat's context at (item 699); null when neither `usage-rates.json`
+ *  nor the project's keep-warm pings can say. */
+export function cacheRates(model: string): Promise<import("./cacheCost").CacheRatesWire | null> {
+  return invoke("cache_rates", { model });
+}
+
 /** Each reply's share of the plan's windows (item 323): the chat's
  *  `turn-usage.jsonl`, one line per turn, oldest first. */
 export function turnUsage(session: string): Promise<TurnUsageLine[]> {

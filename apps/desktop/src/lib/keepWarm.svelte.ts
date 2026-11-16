@@ -7,6 +7,35 @@
 import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
 import type { KeepWarmMode, KeepWarmStatus } from "./keepWarm";
+import { app } from "./state.svelte";
+import { addToast } from "./state/toasts.svelte";
+import { missToastFor, type PlanEst } from "./cacheCost";
+
+/** One ping's read and spend (item 699, the backend's `keep-warm-ping`). */
+export interface PingHeard {
+  chat: string;
+  sent_ms: number;
+  context: number;
+  cache_read: number;
+  cache_write: number;
+  cost_usd: number | null;
+  plan_est: PlanEst | null;
+  model: string | null;
+}
+
+/** The cache-miss toast for a ping (item 699), or null on a hit. The chat
+ *  is named: a ping runs in whichever chat is held, on screen or not. */
+export function pingMissToast(p: PingHeard, chatName: string | null): string | null {
+  return missToastFor({
+    what: "ping",
+    chat: chatName,
+    read: p.cache_read,
+    context: p.context,
+    written: p.cache_write,
+    costUsd: p.cost_usd,
+    est: p.plan_est,
+  });
+}
 
 export const keepWarm = $state<{ byChat: Record<string, KeepWarmStatus>; defaultOn: boolean | null }>({
   byChat: {},
@@ -25,6 +54,14 @@ export function watchKeepWarm(): void {
   }).catch(() => {
     listening = false;
   });
+  // Item 699: a ping that missed the cache says what it cost.
+  void listen<PingHeard>("keep-warm-ping", (e) => {
+    const p = e.payload;
+    if (!p?.chat) return;
+    const name = app.sessions.find((s) => s.id === p.chat)?.title ?? null;
+    const text = pingMissToast(p, name);
+    if (text) addToast(text);
+  }).catch(() => {});
 }
 
 /** Read a chat's status (a chat just shown). Quiet on failure: the
