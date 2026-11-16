@@ -236,6 +236,9 @@ let asideSeq = 0;
  */
 export interface AsideAsk {
   attachments?: Attachment[];
+  /** Where a new card about `quote` opens (item 694): the message box's
+   *  held passage brings the anchor the pill's Ask aside would have. */
+  anchor?: AsideAnchor | null;
 }
 export async function askAside(
   question: string,
@@ -278,7 +281,7 @@ export async function askAside(
     own.turns.push(turn);
     thread = own;
   } else {
-    thread = openAsideThread({ id: nextAsideId(), quote, draft: false, turns: [turn], anchor: null });
+    thread = openAsideThread({ id: nextAsideId(), quote, draft: false, turns: [turn], anchor: quote ? (ask.anchor ?? null) : null });
   }
   await runAside(turn, sent, thread, chips);
 }
