@@ -38,7 +38,7 @@ mod todo;
 mod web;
 
 pub use add_folder::AddFolder;
-pub use chats::{ChatDir, ChatDirs, ReadChat, SearchChats};
+pub use chats::{ChatDir, ChatDirs, ReadChat, SearchChats, handoff_note};
 pub use compact::{CompactContext, CompactSignal};
 pub use mark_file::MarkFile;
 pub use remember::Remember;
