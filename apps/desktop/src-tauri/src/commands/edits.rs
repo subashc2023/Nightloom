@@ -352,7 +352,10 @@ pub(crate) async fn fork_session(
 /// *Continue in a new chat* card. Nothing is summarised here in
 /// Nightloom's words; the hand-off is the model's file.
 #[tauri::command]
-pub(crate) async fn continue_session(state: State<'_, AppState>) -> Result<MessageEdit, String> {
+pub(crate) async fn continue_session(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<MessageEdit, String> {
     let target = state.chats.target();
     let mut agent_guard = lock_agent_at(&state, &target).await;
     let log_dir = state.log_dir().await;
@@ -361,6 +364,12 @@ pub(crate) async fn continue_session(state: State<'_, AppState>) -> Result<Messa
         .as_ref()
         .ok_or_else(|| "no active session".to_string())?;
     let next = chat_ops::continue_from(parent, &log_dir, agent_guard.as_mut())?;
+    // Item 728: the chat just handed off stops keeping its cache warm, once.
+    crate::keep_warm::handed_off(
+        &app,
+        &parent.id,
+        &crate::keep_warm::ask_dir(parent, &log_dir),
+    );
     let events = next.events().to_vec();
     let id = next.id.clone();
     // The new chat is held and focused; the parent's lock goes with the
@@ -385,6 +394,7 @@ pub(crate) async fn continue_session(state: State<'_, AppState>) -> Result<Messa
 /// and its project is not the open one.
 #[tauri::command]
 pub(crate) async fn continue_chat(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     chat: String,
     project: Option<String>,
@@ -405,6 +415,8 @@ pub(crate) async fn continue_chat(
     };
     let next = chat_ops::continue_from(parent, &dir, None)?;
     let id = next.id.clone();
+    let parent_id = parent.id.clone();
+    let parent_ask = crate::keep_warm::ask_dir(parent, &dir);
     drop(guard);
     if !state.agents.reserve_like(&chat, &id) && project != active {
         // Nothing to run it on off screen; the log just made is empty and
@@ -415,6 +427,8 @@ pub(crate) async fn continue_chat(
         return Err("its project is not open".to_string());
     }
     state.chats.hold(next);
+    // Item 728: the chat just handed off stops keeping its cache warm, once.
+    crate::keep_warm::handed_off(&app, &parent_id, &parent_ask);
     Ok(id)
 }
 

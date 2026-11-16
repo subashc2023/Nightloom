@@ -5,6 +5,7 @@ import {
   POINTS_PER_PING,
   capOf,
   clockTime,
+  handedOffOff,
   holdPress,
   holdRows,
   holdWords,
@@ -23,6 +24,7 @@ import {
 } from "./keepWarm";
 import type { SessionEvent } from "./types";
 import noticeSrc from "./KeepWarmNotice.svelte?raw";
+import composerSrc from "./Composer.svelte?raw";
 
 const HOUR = 3_600_000;
 const MIN = 60_000;
@@ -238,5 +240,37 @@ describe("the keep-warm row is a toggle (item 681)", () => {
     expect(noticeSrc).toContain("await setKeepWarm(chat, mode)");
     // Motion only without Reduce motion.
     expect(noticeSrc).toMatch(/@media \(prefers-reduced-motion: no-preference\) \{\s*\.kw-knob \{\s*transition/);
+  });
+});
+
+describe("keep warm off at a hand-off (item 728)", () => {
+  const handed = (over: Partial<KeepWarmStatus> = {}) =>
+    status({ mode: "off", scheduled: false, why: "handedoff", chosen: true, default_on: true, next_ping_ms: null, ...over });
+
+  it("says the hand-off turned it off, on the chip and in its tooltip", () => {
+    expect(handedOffOff(handed())).toBe(true);
+    expect(switchLabel(handed(), T0)).toBe("keep warm · off — chat handed off");
+    const title = switchTitle(handed(), T0);
+    expect(title).toBe("Keep warm off — chat handed off. Click to switch on; right-click to hold it 12 h or 24 h.");
+    expect(title.length).toBeLessThan(140);
+    // A click switches it on, as on any off chip.
+    expect(isOn(handed())).toBe(false);
+  });
+
+  it("reads as his on once he switches it back on, and leaves other chats alone", () => {
+    const back = status({ chosen: true, default_on: true, scheduled: false, why: "noreply", next_ping_ms: null });
+    expect(handedOffOff(back)).toBe(false);
+    expect(switchLabel(back, T0)).toBe("keep warm · starts after the next reply");
+    // His own off, and a chat never handed off, read as before.
+    const his = status({ mode: "off", scheduled: false, why: "off", chosen: true, default_on: true });
+    expect(handedOffOff(his)).toBe(false);
+    expect(switchLabel(his, T0)).toBe("keep warm");
+    expect(switchTitle(his, T0)).toContain("Keep warm off for this chat.");
+    expect(handedOffOff(status())).toBe(false);
+    expect(handedOffOff(null)).toBe(false);
+  });
+
+  it("shows the chip for a handed-off chat with no cache reading (the one Composer, both layouts)", () => {
+    expect(composerSrc).toContain("|| handedOffOff(kw))}");
   });
 });

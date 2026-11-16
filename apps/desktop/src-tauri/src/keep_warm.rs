@@ -210,6 +210,31 @@ pub fn aside_read(app: &AppHandle, chat: &str, sent_ms: i64, cache_read: u64) {
     }
 }
 
+/// Item 728: chat `chat` was handed off — a next chat now continues it.
+/// The first time only, its keep-warm switches off (a scheduled ping is
+/// cancelled) and the chip says why; a later hand-off of the same chat,
+/// after he switched it back on, does nothing. `dir` is [`ask_dir`]'s.
+pub fn handed_off(app: &AppHandle, chat: &str, dir: &Path) {
+    let Some(holder) = app.try_state::<Holder>() else {
+        return;
+    };
+    let now = now_ms();
+    if holder.0.handed_off(chat, dir, now) {
+        emit(app, &holder.0.status(chat, Some(dir), &policy(), now));
+    }
+}
+
+/// A chat's keep-warm folder, as [`held_chat`] finds it: `ask/<id>`
+/// beside the chat's log, else under `log_dir`.
+pub fn ask_dir(session: &Session, log_dir: &Path) -> std::path::PathBuf {
+    session
+        .log_path()
+        .and_then(|p| p.parent())
+        .unwrap_or(log_dir)
+        .join("ask")
+        .join(&session.id)
+}
+
 /// Now, unix ms — for a caller outside this file (an aside's send).
 pub fn now() -> i64 {
     now_ms()

@@ -98,6 +98,10 @@ pub const HOLD_FILE: &str = "keep-warm-hold.json";
 /// The longer caps a chat can be held for, in hours; the default is the
 /// policy's cap (6 h).
 pub const HOLD_HOURS: [u32; 2] = [12, 24];
+/// Item 728: the hand-off has switched this chat's keep-warm off once,
+/// beside [`MODE_FILE`]: `{"ms": …}`. Its presence is the "once": a later
+/// hand-off signal on the chat does nothing, so his switch back on stays.
+pub const HANDOFF_FILE: &str = "keep-warm-handoff.json";
 /// A test-only interval in seconds (a measurement, a dev run): read from
 /// the environment, never from the shipped defaults.
 pub const TEST_EVERY_ENV: &str = "NIGHTLOOM_KEEP_WARM_EVERY_S";
@@ -245,6 +249,10 @@ pub enum Why {
     Missed,
     /// The chat's own turn is running; the ping waits for it.
     Busy,
+    /// Item 728: the switch is off because the chat was handed off (the
+    /// next chat continues it); he can switch it back on.
+    #[serde(rename = "handedoff")]
+    HandedOff,
 }
 
 /// What the schedule says at `now`.
@@ -384,6 +392,32 @@ struct ModeFile {
     mode: Mode,
     #[serde(default)]
     set_ms: i64,
+    /// Item 728: this off was the hand-off's, not his.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    handoff: bool,
+}
+
+/// Whether the chat's switch, as its folder holds it, is the hand-off's
+/// off (item 728).
+fn read_off_by_handoff(dir: &Path) -> bool {
+    std::fs::read_to_string(dir.join(MODE_FILE))
+        .ok()
+        .and_then(|t| serde_json::from_str::<ModeFile>(&t).ok())
+        .is_some_and(|f| f.handoff && f.mode == Mode::Off)
+}
+
+/// Whether a hand-off has already switched the chat off once (item 728).
+pub fn handed_off_once(dir: &Path) -> bool {
+    dir.join(HANDOFF_FILE).exists()
+}
+
+fn write_handoff_mark(dir: &Path, now: i64) {
+    let path = dir.join(HANDOFF_FILE);
+    let _ = std::fs::create_dir_all(dir);
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, format!("{{\"ms\":{now}}}")).is_ok() {
+        let _ = std::fs::rename(&tmp, path);
+    }
 }
 
 /// His own choice for the chat, as its folder holds it; `None` when he
@@ -476,10 +510,19 @@ fn clear_hold(dir: &Path) {
 }
 
 fn write_mode(dir: &Path, mode: Mode, now: i64) {
+    write_mode_by(dir, mode, now, false);
+}
+
+fn write_mode_by(dir: &Path, mode: Mode, now: i64, handoff: bool) {
     let path = dir.join(MODE_FILE);
     let _ = std::fs::create_dir_all(dir);
     let tmp = path.with_extension("json.tmp");
-    let text = serde_json::to_string(&ModeFile { mode, set_ms: now }).unwrap_or_default();
+    let text = serde_json::to_string(&ModeFile {
+        mode,
+        set_ms: now,
+        handoff,
+    })
+    .unwrap_or_default();
     if std::fs::write(&tmp, text).is_ok() {
         let _ = std::fs::rename(&tmp, path);
     }
@@ -589,6 +632,8 @@ struct Entry {
     spent: Spent,
     /// His "hold longer" for the chat (item 643), as on disk.
     hold: Option<Hold>,
+    /// Item 728: the switch is off because the chat was handed off.
+    off_by_handoff: bool,
 }
 
 impl Entry {
@@ -600,6 +645,7 @@ impl Entry {
         Self {
             chosen: read_choice(dir),
             hold: read_hold(dir),
+            off_by_handoff: read_off_by_handoff(dir),
             dir: dir.to_path_buf(),
             spec: None,
             reply: None,
@@ -624,6 +670,7 @@ impl Entry {
             flying: None,
             spent: Spent::default(),
             hold: None,
+            off_by_handoff: false,
         }
     }
 
@@ -663,6 +710,7 @@ impl Entry {
     /// "Until I'm back" was answered (or its tab closed): back to off —
     /// his off when the default is on, the default's off otherwise.
     fn end_once(&mut self, default: Mode, now: i64) {
+        self.off_by_handoff = false;
         if default == Mode::Off {
             self.chosen = None;
             clear_choice(&self.dir);
@@ -740,6 +788,7 @@ impl Registry {
         e.dir = dir.to_path_buf();
         e.chosen = Some(mode);
         e.missed = false;
+        e.off_by_handoff = false;
         write_mode(dir, mode, now);
         if mode == Mode::Off {
             if let Some(c) = e.flying.take() {
@@ -1049,6 +1098,40 @@ impl Registry {
         true
     }
 
+    /// Item 728: chat `chat` was handed off — a next chat continues it.
+    /// The first time only, its keep-warm switches off (a ping scheduled
+    /// or in flight is cancelled, a hold goes with it) and the off is
+    /// marked as the hand-off's; a mark on disk makes every later call a
+    /// no-op, so his switch back on stays on. A chat already off is left
+    /// as it is (the mark is still written). `true` when the switch
+    /// changed.
+    pub fn handed_off(&self, chat: &str, dir: &Path, now: i64) -> bool {
+        if handed_off_once(dir) {
+            return false;
+        }
+        write_handoff_mark(dir, now);
+        let default = self.default_mode();
+        let mut inner = self.inner();
+        let e = inner
+            .entry(chat.to_string())
+            .or_insert_with(|| Entry::load(dir));
+        e.dir = dir.to_path_buf();
+        if e.mode(default) == Mode::Off {
+            return false;
+        }
+        if let Some(c) = e.flying.take() {
+            c.cancel();
+        }
+        if e.hold.take().is_some() {
+            clear_hold(dir);
+        }
+        e.chosen = Some(Mode::Off);
+        e.missed = false;
+        e.off_by_handoff = true;
+        write_mode_by(dir, Mode::Off, now, true);
+        true
+    }
+
     /// The chat's status. A chat this run has not seen is read from `dir`.
     pub fn status(&self, chat: &str, dir: Option<&Path>, policy: &Policy, now: i64) -> Status {
         let default = self.default_mode();
@@ -1087,6 +1170,7 @@ impl Registry {
                 Step::Idle(_) => None,
             },
             why: match s {
+                Step::Idle(Why::Off) if !flying && e.off_by_handoff => Some(Why::HandedOff),
                 Step::Idle(w) if !flying => Some(w),
                 _ => None,
             },
@@ -1419,6 +1503,64 @@ mod tests {
         assert_eq!(again.status("d", Some(&d2), &p, 0).mode, Mode::On);
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&d2);
+    }
+
+    /// Item 728: a hand-off switches the chat's keep-warm off once and
+    /// says so; his switch back on stays on through a second hand-off
+    /// signal and a restart; a chat not handed off is untouched.
+    #[test]
+    fn a_hand_off_switches_keep_warm_off_once_and_his_on_stays() {
+        let dir = scratch("handoff");
+        let other = scratch("handoff-other");
+        let reg = Registry::default();
+        let p = Policy::default();
+        reg.replied("c", &dir, &spec(), Some(reply(100_000)));
+        reg.replied("o", &other, &spec(), Some(reply(100_000)));
+        assert!(reg.status("c", Some(&dir), &p, 10 * MIN).scheduled);
+        // The hand-off: off, the reason said, the scheduled ping gone.
+        assert!(reg.handed_off("c", &dir, 10 * MIN));
+        let st = reg.status("c", Some(&dir), &p, 10 * MIN);
+        assert_eq!((st.mode, st.chosen, st.scheduled), (Mode::Off, true, false));
+        assert_eq!(st.why, Some(Why::HandedOff));
+        assert!(handed_off_once(&dir));
+        let due = reg.due(&p, 55 * MIN, |_| false);
+        assert_eq!(
+            due.iter().map(|j| j.chat.as_str()).collect::<Vec<_>>(),
+            vec!["o"]
+        );
+        // The chat not handed off is untouched.
+        let so = reg.status("o", Some(&other), &p, 55 * MIN);
+        assert_eq!((so.mode, so.chosen), (Mode::On, false));
+        assert!(!handed_off_once(&other));
+        // The reason outlives a restart; the default (608) does not undo it.
+        let again = Registry::default();
+        let st = again.status("c", Some(&dir), &p, 0);
+        assert_eq!((st.mode, st.why), (Mode::Off, Some(Why::HandedOff)));
+        // He switches it back on: on, and a second hand-off signal does nothing.
+        again.set_mode("c", &dir, Mode::On, None, 20 * MIN);
+        assert!(!again.handed_off("c", &dir, 30 * MIN));
+        let st = again.status("c", Some(&dir), &p, 30 * MIN);
+        assert_eq!((st.mode, st.why), (Mode::On, Some(Why::NoReply)));
+        // Through a restart too.
+        let third = Registry::default();
+        assert!(!third.handed_off("c", &dir, 40 * MIN));
+        assert_eq!(third.status("c", Some(&dir), &p, 40 * MIN).mode, Mode::On);
+        // His own off later is his, not the hand-off's.
+        third.set_mode("c", &dir, Mode::Off, None, 50 * MIN);
+        assert_eq!(
+            third.status("c", Some(&dir), &p, 50 * MIN).why,
+            Some(Why::Off)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&other);
+
+        // A chat already off at its hand-off keeps its off, unchanged.
+        let off = scratch("handoff-off");
+        let reg = Registry::default();
+        reg.set_mode("c", &off, Mode::Off, None, 0);
+        assert!(!reg.handed_off("c", &off, MIN));
+        assert_eq!(reg.status("c", Some(&off), &p, MIN).why, Some(Why::Off));
+        let _ = std::fs::remove_dir_all(&off);
     }
 
     /// Item 608: the Settings default switched off: chats without a
