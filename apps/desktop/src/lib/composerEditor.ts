@@ -831,13 +831,18 @@ export const composerTheme = EditorView.theme({
     margin: "4px 10px 4px 0",
     border: "1px solid var(--line2)",
     borderRadius: "8px",
-    overflow: "hidden",
+    // Item 689 check: `clip`, not `hidden` — `hidden` made the grid a scroll
+    // container, and the bar's `sticky` below would stick to it, not the box.
+    overflow: "clip",
     background: "color-mix(in srgb, var(--sheet) 55%, transparent)",
     whiteSpace: "normal",
   },
   ".cm-cgrid.cm-cgrid-picked": { outline: "2px solid var(--accent)", outlineOffset: "1px" },
   ".cm-cgrid-scroll": { overflowX: "auto" },
-  ".cm-cgrid-table": { width: "100%", borderCollapse: "collapse", tableLayout: "fixed" },
+  // Separate borders at no spacing look the same (each cell draws only its
+  // right and bottom edge); collapsed ones made the table 1px wider than its
+  // scroll area, which drew a 10px scroll bar under every grid (689 check).
+  ".cm-cgrid-table": { width: "100%", borderCollapse: "separate", borderSpacing: "0", tableLayout: "fixed" },
   ".cm-cgrid-table th, .cm-cgrid-table td": {
     padding: "0",
     verticalAlign: "top",
@@ -864,14 +869,32 @@ export const composerTheme = EditorView.theme({
     whiteSpace: "pre-wrap",
     overflowWrap: "break-word",
     caretColor: "var(--ink)",
+    // A cell scrolled into view (`focusCell`, Tab, a click) lands above the
+    // pinned bar (~25px), not under it (689 check).
+    scrollMarginBottom: "28px",
   },
   "th .cm-cgrid-cell": { fontWeight: "620" },
   ".cm-cgrid-cell:focus": {
     background: "color-mix(in srgb, var(--accent) 9%, transparent)",
     boxShadow: "inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 70%, transparent)",
   },
-  ".cm-cgrid-bar": { display: "flex", gap: "2px", padding: "2px 4px", opacity: "0.75" },
-  ".cm-cgrid:hover .cm-cgrid-bar, .cm-cgrid:focus-within .cm-cgrid-bar": { opacity: "1" },
+  // Item 689 check: the bar is pinned to the box's foot while any of the grid
+  // is in view, so a grid taller than the box (or one not scrolled to its
+  // end) never hides + Row / Markdown / Delete table under the edge. Opaque
+  // (the header's fill) so the rows scroll under it; the dimming moved to the
+  // buttons, as the bar's own opacity would let the rows show through.
+  ".cm-cgrid-bar": {
+    position: "sticky",
+    bottom: "0",
+    zIndex: "1",
+    display: "flex",
+    gap: "2px",
+    padding: "2px 4px",
+    background: "var(--panel)",
+    boxShadow: "0 -1px 0 var(--line)",
+  },
+  ".cm-cgrid-bar > *": { opacity: "0.75" },
+  ".cm-cgrid:hover .cm-cgrid-bar > *, .cm-cgrid:focus-within .cm-cgrid-bar > *": { opacity: "1" },
   ".cm-cgrid-btn, .cm-cgrid-back": {
     padding: "1px 7px",
     border: "1px solid transparent",

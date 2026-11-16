@@ -211,5 +211,20 @@ export function columnPx(values: string[][], width: number, charPx = 8, pad = 20
     const total = room.reduce((a, b) => a + b, 0);
     if (total > 0) px = px.map((w, i) => w - (room[i] / total) * Math.min(over, total));
   }
-  return px.map((w) => Math.round(w));
+  // Whole pixels that never add up to more than the box (689 check): rounding
+  // each share made the table 1px wider than its scroll area, which drew a
+  // 10px scroll bar under the grid. Floors, then the pixels left over go to
+  // the largest remainders. A table wider than the box (the header floors
+  // alone overflow) keeps its overflow and scrolls sideways as before.
+  const sum = px.reduce((a, b) => a + b, 0);
+  if (sum > width) return px.map((w) => Math.round(w));
+  const out = px.map((w) => Math.floor(w));
+  let left = Math.floor(width) - out.reduce((a, b) => a + b, 0);
+  const order = px.map((w, i) => [w - Math.floor(w), i]).sort((a, b) => b[0] - a[0]);
+  for (const [frac, i] of order) {
+    if (left <= 0 || frac <= 0) break;
+    out[i] += 1;
+    left -= 1;
+  }
+  return out;
 }
