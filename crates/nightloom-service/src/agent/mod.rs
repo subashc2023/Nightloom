@@ -1290,6 +1290,20 @@ impl AgentSpec {
         // the last one given (measured 2026-09-16, `auto_memory`'s doc), so
         // the Ask hook and the memory switch share a JSON object.
         let mut settings = serde_json::Map::new();
+        // Claude Code's built-in chart plugin off, in every shape (nightshift
+        // items 697 + 698, measured on CLI 2.1.325): `cc-plugin-easel` adds
+        // "If a tool named mcp__easel__chart is available…" to the system
+        // prompt's environment section only when its hook module has loaded
+        // in time — a race, so the same chat's prompt differed between runs
+        // (1 of 7 replays of one chat's argv), and every flip rewrote the
+        // whole context past the tools (a turn, a keep-warm ping or an aside
+        // read 12,781 and wrote 270k). Nightloom draws no CLI charts, so
+        // nothing is lost. Both spellings: the plugin's own name and its
+        // short alias.
+        settings.insert(
+            "enabledPlugins".into(),
+            serde_json::json!({ "cc-plugin-easel@builtin": false, "easel@builtin": false }),
+        );
         if let Some(ask) = &self.ask {
             // Under the Chat policy the Ask hook pauses only what the
             // policy leaves (backlog 147): a call both hooks match would
@@ -3161,6 +3175,49 @@ mod tests {
         AgentSpec::new("/work")
     }
 
+    /// Since items 697 + 698 every `--settings` carries the chart plugin's
+    /// off switch: "nothing else to set" is now a JSON with that key alone.
+    fn settings_hold_only_the_plugin_switch(a: &[String]) -> bool {
+        let Some(i) = a.iter().position(|x| x == "--settings") else {
+            return false;
+        };
+        let s: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
+        s.as_object()
+            .is_some_and(|o| o.len() == 1 && o.contains_key("enabledPlugins"))
+    }
+
+    /// Items 697 + 698: the CLI's chart plugin is off in every shape that
+    /// reads the chat's cache — the turn, the stdin turn, the aside, the
+    /// keep-warm ping, the checkpoint fork — so its racy prompt line can
+    /// never make one shape's prefix differ from another's.
+    #[test]
+    fn the_cli_chart_plugin_is_off_in_every_shape() {
+        let plugins_of = |a: &[String]| -> serde_json::Value {
+            let i = a
+                .iter()
+                .position(|x| x == "--settings")
+                .expect("--settings");
+            let s: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
+            s["enabledPlugins"].clone()
+        };
+        let want = serde_json::json!({ "cc-plugin-easel@builtin": false, "easel@builtin": false });
+        let mut chat = spec();
+        chat.resume = Some("parent-1".into());
+        chat.fork_mode = true;
+        assert_eq!(plugins_of(&spec().args("hi")), want);
+        assert_eq!(plugins_of(&chat.args("hi")), want);
+        assert_eq!(plugins_of(&chat.stdin_args()), want);
+        assert_eq!(plugins_of(&chat.aside().unwrap().args("q")), want);
+        assert_eq!(plugins_of(&chat.keep_warm_ping().unwrap().args("q")), want);
+        assert_eq!(plugins_of(&chat.checkpoint_fork().unwrap().args("t")), want);
+        // The --settings the turn and its side shapes send differ only in
+        // what a side process must not run (hooks), never in this key.
+        assert_eq!(
+            plugins_of(&chat.args("hi")),
+            plugins_of(&chat.aside().unwrap().args("q"))
+        );
+    }
+
     /// Backlog 235: every spec starts with his claude.ai connectors off —
     /// the CLI's switch in the environment, on the turn and on the
     /// checkpoint fork alike, and no tool rule on argv. On drops the
@@ -4027,7 +4084,7 @@ mod tests {
             s.fork_mode = false;
             s.apply_kind_policy(kind, declared);
             assert!(!s.chat_policy, "{kind:?} over {declared:?}");
-            assert!(!s.args("hi").iter().any(|x| x == "--settings"));
+            assert!(settings_hold_only_the_plugin_switch(&s.args("hi")));
         }
         // The matcher itself is JavaScript's (a negative lookahead the
         // `regex` crate cannot compile); the CLI was measured reading it —
@@ -4299,7 +4356,7 @@ mod tests {
         // default and rides the same JSON, is off.
         let mut plain = spec();
         plain.fork_mode = false;
-        assert!(!plain.args("hi").iter().any(|x| x == "--settings"));
+        assert!(settings_hold_only_the_plugin_switch(&plain.args("hi")));
     }
 
     /// Backlog 435: every process Nightloom starts carries `NIGHTLOOM=1` —
@@ -4353,7 +4410,7 @@ mod tests {
         off.fork_mode = false;
         let a = off.args("hi");
         assert!(!a.iter().any(|x| x == "--agents"), "{a:?}");
-        assert!(!a.iter().any(|x| x == "--settings"), "{a:?}");
+        assert!(settings_hold_only_the_plugin_switch(&a), "{a:?}");
         assert!(
             !off.env_set()
                 .iter()
