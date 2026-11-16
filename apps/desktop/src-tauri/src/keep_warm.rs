@@ -16,6 +16,7 @@
 use crate::AppState;
 use nightloom_core::Session;
 use nightloom_service::agent::AgentSpec;
+use nightloom_service::cache_miss;
 use nightloom_service::keep_warm::{self, Mode, Policy, Registry, Status};
 use std::path::Path;
 use std::sync::Arc;
@@ -121,6 +122,10 @@ fn tick(app: &AppHandle) {
         tauri::async_runtime::spawn(async move {
             let sent = now_ms();
             emit(&app, &holder.0.status(&job.chat, None, &policy(), sent));
+            // Item 727: the ping's prefix print, for the cache-miss check.
+            if let Some(fork) = job.spec.keep_warm_ping() {
+                cache_miss::record_print_quiet(&job.dir, cache_miss::Kind::Ping, sent, &fork);
+            }
             let result = keep_warm::ping(&job.spec, &job.cancel).await;
             crate::wake::log(
                 "keep-warm",
@@ -160,6 +165,23 @@ fn tick(app: &AppHandle) {
                         model: r.model.clone(),
                     },
                 );
+                // Item 727: an unexplained miss goes to cache-miss.jsonl,
+                // off this task (it reads the parent's session file).
+                let req = cache_miss::Request {
+                    kind: cache_miss::Kind::Ping,
+                    chat: job.chat.clone(),
+                    project: cache_miss::project_of(&job.dir),
+                    at_ms: sent,
+                    read: r.cache_read,
+                    context: job.context,
+                    last_ms: Some(job.last_ms),
+                    one_hour: job.one_hour,
+                    cost_usd: r.cost_usd,
+                    chosen: None,
+                    cli_file: cache_miss::cli_file(&job.spec.workspace, job.spec.resume.as_deref()),
+                    ask_dir: Some(job.dir.clone()),
+                };
+                tauri::async_runtime::spawn_blocking(move || cache_miss::check(&req));
             }
             holder.0.done(&job, sent, result);
             tell(&app, &holder, &job.chat);

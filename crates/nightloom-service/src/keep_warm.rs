@@ -571,6 +571,15 @@ pub struct Job {
     pub spec: AgentSpec,
     pub cancel: CancellationToken,
     pub context: u64,
+    /// The chat's folder (`<log dir>/ask/<chat>/`), for the cache-miss
+    /// check's prefix print (item 727, [`crate::cache_miss`]).
+    pub dir: PathBuf,
+    /// The chat's previous request that read its cache — the reply's send,
+    /// or a later ping or aside that hit — unix ms (item 727: the gap a
+    /// miss is judged expired by).
+    pub last_ms: i64,
+    /// The reply's cache is the 1-hour kind (it always is when a ping runs).
+    pub one_hour: bool,
 }
 
 struct Entry {
@@ -976,6 +985,9 @@ impl Registry {
                 spec: spec.clone(),
                 cancel,
                 context: reply.context,
+                dir: e.dir.clone(),
+                last_ms: e.last_read().unwrap_or(reply.sent_ms).max(reply.sent_ms),
+                one_hour: reply.one_hour,
             });
         }
         jobs
