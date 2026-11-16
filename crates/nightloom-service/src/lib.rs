@@ -31,6 +31,7 @@ pub mod incognito;
 pub mod keep;
 pub mod keep_warm;
 pub mod knowledge;
+pub mod layer_note;
 pub mod mcp_server;
 pub mod memory_where;
 pub mod model_list;

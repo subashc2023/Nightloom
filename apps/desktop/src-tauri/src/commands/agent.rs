@@ -316,42 +316,53 @@ pub(crate) async fn connect_agent_body(
     } else {
         false
     };
-    let prompt = nightloom_service::agent_prompt_with(
-        &PromptConfig {
-            identity: false,
-            environment: false,
-            project_instructions: preamble,
-            user_memory: preamble,
-            // By the alias the rail sent (`opus`, `sonnet`), not the dated id
-            // the CLI resolves it to: that arrives with the first turn, after
-            // this prompt is built once for the session. So on this engine
-            // the file is named after the alias, and a chat on the CLI's
-            // default model (no alias) reads none.
-            model: preamble.then(|| spec.model.clone()).flatten(),
-            // The Chat instructions ride the preamble switch like the
-            // model's file (nightshift backlog 102); appended after the
-            // CLI's own prompt, which stays underneath a Chat. By the
-            // declaration (backlog 144): the layer is in the prompt, and
-            // a switch must not rewrite the prompt.
-            chat_instructions: preamble && declared == ChatKind::Chat,
-            project: preamble
-                .then(|| {
-                    seen.map(|p| ProjectContext {
-                        name: p.name.clone(),
-                        notes_dir: p.notes_dir(),
-                    })
+    let config = PromptConfig {
+        identity: false,
+        environment: false,
+        project_instructions: preamble,
+        user_memory: preamble,
+        // By the alias the rail sent (`opus`, `sonnet`), not the dated id
+        // the CLI resolves it to: that arrives with the first turn, after
+        // this prompt is built once for the session. So on this engine
+        // the file is named after the alias, and a chat on the CLI's
+        // default model (no alias) reads none.
+        model: preamble.then(|| spec.model.clone()).flatten(),
+        // The Chat instructions ride the preamble switch like the
+        // model's file (nightshift backlog 102); appended after the
+        // CLI's own prompt, which stays underneath a Chat. By the
+        // declaration (backlog 144): the layer is in the prompt, and
+        // a switch must not rewrite the prompt.
+        chat_instructions: preamble && declared == ChatKind::Chat,
+        project: preamble
+            .then(|| {
+                seen.map(|p| ProjectContext {
+                    name: p.name.clone(),
+                    notes_dir: p.notes_dir(),
                 })
-                .flatten(),
-            knowledge: knowledge.map(|dir| KnowledgeContext { dir }),
-            // The thread layer (backlog 271), on the preamble switch.
-            thread: preamble
-                .then(|| thread_context(seen, open.thread.as_deref()))
-                .flatten(),
-            cwd: workspace.clone(),
-            custom: None,
-            edits: edits.clone(),
-        }
-        .without(&off),
+            })
+            .flatten(),
+        knowledge: knowledge.map(|dir| KnowledgeContext { dir }),
+        // The thread layer (backlog 271), on the preamble switch.
+        thread: preamble
+            .then(|| thread_context(seen, open.thread.as_deref()))
+            .flatten(),
+        cwd: workspace.clone(),
+        custom: None,
+        edits: edits.clone(),
+    }
+    .without(&off);
+    // Where the volatile layers are read from for each message's note
+    // (item 725): a layer with the chat's own text does not follow its file.
+    let sources = nightloom_service::layer_note::LayerSources {
+        project: config.project.clone(),
+        thread: config
+            .thread
+            .clone()
+            .filter(|_| !edits.contains_key(&SegmentKind::Thread)),
+        knowledge: config.knowledge.clone(),
+    };
+    let prompt = nightloom_service::agent_prompt_with(
+        &config,
         system.as_deref(),
         nightloom_service::EngineLayers {
             engine_note: !off.contains(&SegmentKind::EngineNote),
@@ -397,7 +408,11 @@ pub(crate) async fn connect_agent_body(
             held.as_ref(),
             has_cli,
             &prompt_hold::Ask {
-                cold: cold.unwrap_or(true),
+                // The window's timer reads the events it has, which during a
+                // switch may not be this chat's (item 725: a 13-minute-old
+                // 1-hour cache taken as cold); the chat's own log wins
+                // when it says warm.
+                cold: cold.unwrap_or(true) && !open.log_warm,
                 auto: auto_layers.unwrap_or(true),
                 // A layer he switched off or gave its own text is his
                 // click already: taken now, like *Update now*.
@@ -434,6 +449,7 @@ pub(crate) async fn connect_agent_body(
             rules_note: r.rules_note,
         };
         *holds.file.lock().await = file;
+        *holds.sources.lock().await = sources;
         r.prompt
     };
     spec.append_system_prompt = prompt.render_flat();
@@ -819,6 +835,10 @@ pub(crate) struct OpenChat {
     pub(crate) hold_id: Option<String>,
     /// Whether the chat has a Claude Code session already.
     pub(crate) has_cli: bool,
+    /// The chat's own log says its cache is warm now (item 725,
+    /// `prompt_hold::log_warm`): a connect does not take a changed layer
+    /// then, whatever the window's timer read.
+    pub(crate) log_warm: bool,
     /// The Claude Code session to `--resume`.
     pub(crate) resume: Option<String>,
 }
@@ -857,6 +877,9 @@ pub(crate) fn open_chat_of(
         chat,
         hold_id,
         has_cli,
+        log_warm: session.is_some_and(|s| {
+            crate::prompt_hold::log_warm(s, chrono::Utc::now().timestamp_millis())
+        }),
         resume: session.and_then(resume_of),
     }
 }
