@@ -38,7 +38,7 @@
     resolveFolded,
     shortToolName,
     thinkingHidden,
-    workingLabel,
+    waitingLabel,
   } from "./activity";
   import type { IconName } from "./icons";
   import { fmtShare, fmtTokens, shareOf, sizeTitle, type TurnSize } from "./tokens";
@@ -82,6 +82,8 @@
   import { namesImage } from "./toolImages.svelte";
   import SignedOutNotice from "./SignedOutNotice.svelte";
   import StillRunningLine from "./StillRunningLine.svelte";
+  import { errorWeight, retriedAfter, softLine } from "./errorWeight";
+  import { waitingOn } from "./stillRunning";
   import MidTurnBubble from "./MidTurnBubble.svelte";
   import RetryLine from "./RetryLine.svelte";
   // The streaming motion (backlog 342, his pick of 338: "Loom + fade-in").
@@ -334,6 +336,12 @@
     if (folds) keptSet(foldKey(folds, id), encodeOverride(o), "");
     else local[id] = o;
   }
+  /** Item 700: whether a soft error's box is open (folded by default),
+   *  read by its own key — `overrides` holds the rows' and blocks' only. */
+  function softOpen(key: string): boolean {
+    const o = folds ? decodeOverride(keptGet(foldKey(folds, key), "")) : local[key];
+    return o?.open === true;
+  }
   /** A native fold's kept key (a subagent group, a removed block), or null. */
   function detailsKey(id: string): string | null {
     return folds ? foldKey(folds, id) : null;
@@ -436,7 +444,11 @@
     const t = setInterval(() => (now = Date.now()), 100);
     return () => clearInterval(t);
   });
-  const working = $derived(workingLabel(now - (since ?? startedAt)));
+  // Item 700: the main reply has ended and the turn waits only on its
+  // background agents — the line says so (`waiting on 2 agents · 2 min 58 s`)
+  // and a light runs round the trace block's edge until the turn moves.
+  const waitAgents = $derived(streaming ? waitingOn(segs, app.subagents) : null);
+  const working = $derived(waitingLabel(waitAgents, now - (since ?? startedAt)));
 
   // ---- The turn trace (item 564, Filament IV stage 5) ----------------------
   // Each step (a thinking block, a call) is a numbered row with a status mark
@@ -774,11 +786,11 @@
 
 <!-- Item 564: a trace row's number and status mark (done ✓, running ■,
      error ✕, denied ⊘), as in the mockup: no tool icon, the name says it. -->
-{#snippet stepHead(i: number, st: "done" | "running" | "error" | "denied", kind: StepKind | null = null)}
+{#snippet stepHead(i: number, st: "done" | "running" | "error" | "soft" | "denied", kind: StepKind | null = null)}
   <span class="no" aria-hidden="true">{String(stepNo[i]).padStart(2, "0")}</span>
   <!-- Item 616: a running step's mark under Combo and Reticle is a small
        live instrument per kind (.st-ico); Sweep keeps the ■ (.st-sq). -->
-  <span class="st st-{st}" aria-label={st}>{#if st === "done"}✓{:else if st === "running"}<span class="st-sq">■</span>{#if kind}<span class="st-ico k-{kind}" aria-hidden="true">{@render markIcon(kind)}</span>{/if}{:else if st === "error"}✕{:else}⊘{/if}</span>
+  <span class="st st-{st}" aria-label={st}>{#if st === "done"}✓{:else if st === "running"}<span class="st-sq">■</span>{#if kind}<span class="st-ico k-{kind}" aria-hidden="true">{@render markIcon(kind)}</span>{/if}{:else if st === "error"}✕{:else if st === "soft"}↻{:else}⊘{/if}</span>
 {/snippet}
 <!-- Item 616: Reticle's instruments (616-demo/combo.html, card A): two
      counter-turning rings round a beating core (thinking), a page with a
@@ -800,8 +812,19 @@
     <svg viewBox="0 0 18 18"><circle class="ring r1" cx="9" cy="9" r="7" /><circle class="core" cx="9" cy="9" r="2" /></svg>
   {/if}
 {/snippet}
+<!-- Item 700: a soft error's box — the harness's "not run, redo it"
+     notice — folds to one amber line; a click opens the notice whole. Its
+     open state is kept with the row's (the overrides, by the call's id). -->
+{#snippet softBox(id: string, content: string, retried: boolean)}
+  {@const key = `soft:${id}`}
+  {@const boxOpen = softOpen(key)}
+  <button class="tool-result soft soft-line" class:open={boxOpen} aria-expanded={boxOpen}
+    use:tip={boxOpen ? "Fold the notice to one line" : "Show the notice whole"}
+    onclick={() => setOverride(key, { open: !boxOpen, rev: transcript.rev.tool })}
+    >{#if boxOpen}<span class="soft-full">{content}</span>{:else}<span class="soft-sum">{softLine(content, retried)}</span>{/if}</button>
+{/snippet}
 <!-- Item 564: the step's bar — its place in the turn — on a hairline track. -->
-{#snippet stepBar(i: number, st: "done" | "running" | "error", ctx: number | null = null)}
+{#snippet stepBar(i: number, st: "done" | "running" | "error" | "soft", ctx: number | null = null)}
   {@const b = barFor(i)}
   <span class="tbar" class:has-ctx={ctx !== null} use:tip={barTitle(i)}>
     {#if b}<i class="tbar-{st}" style:left="{b.left * 100}%" style:width="{b.width * 100}%"></i>{/if}
@@ -861,7 +884,8 @@
           {@const childShell = toolKind(c.call.name) === "shell"}
           {@const childRun = childShell && streaming && !c.call.result && !c.call.denied}
           {@const childRem = childShell && !childRun && passingEnded(c.call.id)}
-          <div class="arow static" class:error={!!c.call.result?.is_error} class:sub-pass={childRun || childRem}>
+          <div class="arow static" class:error={!c.call.denied && errorWeight(c.call.result) === "hard"}
+            class:soft={!c.call.denied && errorWeight(c.call.result) === "soft"} class:sub-pass={childRun || childRem}>
             <!-- Item 649: a subagent's command passes its output too. -->
             {#if childRun || childRem}<BashPassing id={c.call.id} ended={childRem} />{/if}
             <span class="ico">{#if icon}<Icon name={icon} size={13} />{:else}⚒{/if}</span>
@@ -933,7 +957,12 @@
            numbered steps, a status mark, a bar for each step's place in the
            turn, and a foot that says how many steps and how long, with the
            fold. Bars only where the window timed the steps (this session). -->
-      <div class="activity trace" class:live={streaming} class:timed={isTimed} data-motion={motion ?? stepMotion.value} use:thinkingArrival={blockArrival(g.rows)}>
+      <div class="activity trace" class:live={streaming} class:timed={isTimed} class:waiting={last && waitAgents !== null} data-motion={motion ?? stepMotion.value} use:thinkingArrival={blockArrival(g.rows)}>
+        {#if last && waitAgents !== null}
+          <!-- Item 700: the trace's edge light, round the whole block, while the
+               turn waits on its agents (Combo's light on a running row, 616). -->
+          <svg class="wait-edge" aria-hidden="true"><rect class="e-tail" width="100%" height="100%" rx="8" pathLength="100" /><rect class="e-head" width="100%" height="100%" rx="8" pathLength="100" /></svg>
+        {/if}
         {#if !folded}
           {#each g.rows as { seg, i } (ids[i] || i)}
             {#if seg.kind === "thinking"}
@@ -1009,7 +1038,11 @@
               </div>
             {:else if seg.kind === "tool"}
               {@const open = isOpen(i, seg)}
-              {@const bad = !!seg.call.result?.is_error || !!seg.call.denied}
+              <!-- Item 700: an error's weight — soft (amber) for the harness's
+                   "not run, redo it" notice, hard (red) for a real failure. -->
+              {@const weight = seg.call.denied ? null : errorWeight(seg.call.result)}
+              {@const soft = weight === "soft"}
+              {@const bad = weight === "hard" || !!seg.call.denied}
               {@const agentTab = agentTabOf(seg.call)}
               {@const agentRow = agentTab ? rowOf(seg.call.id) : null}
               {@const running = streaming && !seg.call.result && !seg.call.denied}
@@ -1032,6 +1065,7 @@
                 <button
                   class="arow"
                   class:error={bad}
+                  class:soft
                   class:agent-drag={!!agentTab}
                   aria-expanded={open}
                   use:tip={agentTab
@@ -1045,10 +1079,10 @@
                   onpointerdown={(e) => press(e, i, seg)}
                   onclick={(e) => keyClick(e, i, seg)}
                 >
-                  {@render stepHead(i, running ? "running" : seg.call.denied ? "denied" : bad ? "error" : "done", kind)}
+                  {@render stepHead(i, running ? "running" : seg.call.denied ? "denied" : bad ? "error" : soft ? "soft" : "done", kind)}
                   <span class="name" use:tip={seg.call.name}>{shortToolName(seg.call.name)}</span>
                   <span class="arg">{toolInputSummary(seg.call.input)}</span>
-                  {@render stepBar(i, running ? "running" : bad ? "error" : "done", running ? helperContext(seg.call) : null)}
+                  {@render stepBar(i, running ? "running" : bad ? "error" : soft ? "soft" : "done", running ? helperContext(seg.call) : null)}
                   <span class="size" use:tip={agentRow ? `${seg.call.name} call · ${toolResultSummary(seg.call, streaming)}` : undefined}
                     >{agentRow ? agentRowLine(agentRow) : running && stepMs(i) !== null ? `running ${fmtSecs(stepMs(i)!)}` : toolResultSummary(seg.call, streaming)}</span
                   >
@@ -1086,10 +1120,12 @@
                         ? `: ${seg.call.result.content}`
                         : "."}
                     </div>
+                  {:else if soft}
+                    {@render softBox(seg.call.id, seg.call.result!.content, retriedAfter(segs, i))}
                   {:else if seg.call.result}
                     <pre
                       class="tool-result"
-                      class:error={seg.call.result.is_error}>{seg.call.result.content}</pre>
+                      class:error={bad}>{seg.call.result.content}</pre>
                   {/if}
                 {/if}
                 <!-- Outside the collapse: a call parked at the gate needs its prompt
@@ -1170,7 +1206,7 @@
           {/each}
         {/if}
         {#if last}
-          <div class="working" role="status" aria-label={working}>
+          <div class="working" class:waiting={waitAgents !== null} role="status" aria-label={working}>
             <span class="roll" aria-hidden="true"><Icon name="moon" size={20} /></span>
             <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
             <span class="working-text">{working}</span>
@@ -1247,7 +1283,7 @@
               <span class="tool-line">{toolSummary(seg.call, false)}</span>
             </div>
             {#if seg.call.result}
-              <pre class="tool-result" class:error={seg.call.result.is_error}>{seg.call.result.content}</pre>
+              <pre class="tool-result" class:error={errorWeight(seg.call.result) === "hard"} class:soft={errorWeight(seg.call.result) === "soft"}>{seg.call.result.content}</pre>
             {/if}
           {:else}
             <div class="removed-body">{seg.text}</div>
@@ -1278,7 +1314,7 @@
     {/if}
   {/each}
   {#if moonAlone}
-    <div class="working" role="status" aria-label={working}>
+    <div class="working" class:waiting={waitAgents !== null} role="status" aria-label={working}>
       <span class="roll" aria-hidden="true"><Icon name="moon" size={28} /></span>
       <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
       <span class="working-text">{working}</span>
@@ -1577,6 +1613,46 @@
   .activity.live {
     border-color: color-mix(in srgb, var(--signal) 40%, var(--line2));
   }
+  /* Item 700: waiting on background agents — a calm light round the
+     block's edge: the trace's own edge light (616's Combo, signal tail and
+     white-hot head), the length of the whole outline, one lap in 6 s. Under
+     reduced motion it holds still as a faint full edge. */
+  .activity.trace.waiting {
+    position: relative;
+  }
+  .wait-edge {
+    position: absolute;
+    inset: -1px;
+    width: calc(100% + 2px);
+    height: calc(100% + 2px);
+    overflow: visible;
+    pointer-events: none;
+    z-index: 1;
+  }
+  .wait-edge rect {
+    fill: none;
+    stroke-linecap: round;
+    stroke-dashoffset: 30;
+  }
+  .wait-edge .e-tail {
+    stroke: color-mix(in srgb, var(--signal) 65%, transparent);
+    stroke-width: 1.2;
+    stroke-dasharray: 18 82;
+  }
+  .wait-edge .e-head {
+    stroke: var(--mo-hot);
+    stroke-width: 1.5;
+    stroke-dasharray: 0 15 3 82;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .wait-edge .e-tail {
+      stroke-dasharray: none;
+      stroke: color-mix(in srgb, var(--signal) 45%, transparent);
+    }
+    .wait-edge .e-head {
+      display: none;
+    }
+  }
   /* The running call (blue is Claude working): its result column in the
      signal colour and, in the lit level, a soft wash across the row. */
   .row-wrap.tool.running {
@@ -1738,6 +1814,9 @@
   .st-denied {
     color: var(--failed);
   }
+  .st-soft {
+    color: var(--partial);
+  }
   .trace .name {
     font-size: 13px;
   }
@@ -1782,6 +1861,9 @@
   }
   .tbar > i.tbar-error {
     background: var(--failed);
+  }
+  .tbar > i.tbar-soft {
+    background: var(--partial);
   }
   .trace .size {
     font-size: 11.5px;
@@ -1893,6 +1975,10 @@
   .arow.error .arg,
   .arow.error .size {
     color: var(--failed);
+  }
+  .arow.soft .arg,
+  .arow.soft .size {
+    color: var(--partial);
   }
   .row-wrap {
     display: flex;
@@ -3290,6 +3376,38 @@
     background: var(--failed-soft);
     border-color: var(--failed);
   }
+  /* Item 700: the soft weight — amber, folded to one line by default. */
+  .tool-result.soft {
+    color: var(--partial);
+    background: var(--partial-soft);
+    border-color: color-mix(in srgb, var(--partial) 60%, transparent);
+  }
+  .soft-line {
+    display: block;
+    width: auto;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+    text-align: left;
+    font: inherit;
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    cursor: pointer;
+  }
+  .soft-line:not(.open) {
+    padding-top: 0.25rem;
+    padding-bottom: 0.25rem;
+  }
+  /* One line, cut with an ellipsis, and no width of its own: `width: 0`
+     with `min-width: 100%` keeps the line from widening the trace. */
+  .soft-sum {
+    display: block;
+    width: 0;
+    min-width: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
   /* A notice row (a compaction, a crossing): the board's ruled amber mono
      (Handoff.dc.html) — a rule either side, the words between. */
   .notice {
@@ -3437,5 +3555,22 @@
     display: block;
     height: 100%;
     background: var(--accent);
+  }
+  /* Item 700: the waiting edge light's lap (kept at the end of the
+     sheet: the first no-preference block is the reply motion's own). The
+     same lap as 616's mo-edge: the dash moved by its offset. */
+  @media (prefers-reduced-motion: no-preference) {
+    .wait-edge rect {
+      animation: wait-edge 6s linear infinite;
+    }
+  }
+  /* The same lap as 616's mo-edge: the dash moved by its offset. */
+  @keyframes wait-edge {
+    from {
+      stroke-dashoffset: 100;
+    }
+    to {
+      stroke-dashoffset: 0;
+    }
   }
 </style>

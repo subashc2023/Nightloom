@@ -115,7 +115,7 @@ describe("activitySummary", () => {
   it("counts the screenshot as three calls and three thinking", () => {
     const g = groupSegments(screenshot, segmentIds(screenshot))[0];
     if (g.kind !== "activity") throw new Error("expected a block");
-    expect(countActivity(g.rows)).toEqual({ tools: 3, thinking: 3, errors: 0, denied: 0 });
+    expect(countActivity(g.rows)).toEqual({ tools: 3, thinking: 3, errors: 0, denied: 0, notRun: 0 });
     expect(activitySummary(g.rows)).toBe("3 tool calls · 3 thinking");
     expect(activitySummary(g.rows, true)).toBe("3 tool calls · 3 thinking · working");
   });

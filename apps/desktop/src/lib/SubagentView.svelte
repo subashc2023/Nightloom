@@ -38,6 +38,7 @@
   import { classic } from "./layout.svelte";
   import { briefDrag, briefHeight, briefKeyStep } from "./agentBrief";
   import { briefOpen, briefStored, setBriefOpen, setBriefStored } from "./agentBrief.svelte";
+  import { errorWeight, softLine } from "./errorWeight";
 
   let { content }: { content: Extract<TabContent, { kind: "subagent" }> } = $props();
 
@@ -382,28 +383,32 @@
   <div class="segs" style:margin-left="{depth * 14}px">
     {#each segs as s, k (k)}
       {#if s.kind === "tool"}
+        <!-- Item 700: soft (amber, folded) for a "not run, redo it" notice; hard (red, open) for a real failure. -->
+        {@const w = s.call.denied ? null : errorWeight(s.call.result)}
         <details
           class="call"
-          class:error={!!s.call.result?.is_error}
-          use:keptOpen={{ key: `${foldBase}|call:${s.call.id}`, fallback: depth === 0 && !!s.call.result?.is_error }}
+          class:error={w === "hard"}
+          class:soft={w === "soft"}
+          use:keptOpen={{ key: `${foldBase}|call:${s.call.id}`, fallback: depth === 0 && w === "hard" }}
         >
           <summary>
             <!-- Item 564: the trace's number and status mark; Filament IV only (hidden under Classic). -->
             <span class="t-no" aria-hidden="true">{String(stepNo(segs, k)).padStart(2, "0")}</span>
-            <span class="t-st" class:t-done={!!s.call.result && !s.call.result.is_error && !s.call.denied} class:t-bad={!!s.call.result?.is_error || !!s.call.denied}
-              aria-hidden="true">{s.call.denied ? "⊘" : s.call.result ? (s.call.result.is_error ? "✕" : "✓") : "■"}</span>
+            <span class="t-st" class:t-done={!!s.call.result && !s.call.result.is_error && !s.call.denied} class:t-bad={w === "hard" || !!s.call.denied}
+              class:t-soft={w === "soft"}
+              aria-hidden="true">{s.call.denied ? "⊘" : s.call.result ? (w === "hard" ? "✕" : w === "soft" ? "↻" : "✓") : "■"}</span>
             <span class="name" use:tip={s.call.name}>{shortToolName(s.call.name)}</span>
             <span class="arg">{toolInputSummary(s.call.input)}</span>
             <span class="size">
-              {#if s.call.denied}refused{:else if s.call.result}{s.call.result.is_error ? "error · " : ""}{s.call.result.content.length.toLocaleString()} chars{:else}running{/if}
+              {#if s.call.denied}refused{:else if s.call.result}{w === "hard" ? "error · " : w === "soft" ? "not run · " : ""}{s.call.result.content.length.toLocaleString()} chars{:else}running{/if}
             </span>
           </summary>
           <div class="body">
             <div class="label">input</div>
             <pre class="text">{compactJson(s.call.input)}</pre>
             {#if s.call.result}
-              <div class="label">{s.call.result.is_error ? "error" : "result"}</div>
-              <pre class="text">{s.call.result.content}</pre>
+              <div class="label">{w === "hard" ? "error" : w === "soft" ? softLine(s.call.result.content, false) : "result"}</div>
+              <pre class="text" class:soft-text={w === "soft"}>{s.call.result.content}</pre>
             {/if}
           </div>
         </details>
@@ -511,6 +516,14 @@
   .call.error .size {
     color: var(--error);
   }
+  .call.soft .size,
+  .call.soft .body .label {
+    color: var(--partial);
+  }
+  .text.soft-text {
+    color: var(--partial);
+    background: var(--partial-soft);
+  }
   /* Item 564 (Filament IV stage 5): each step numbered with its status mark,
      as the transcript's trace. Classic draws neither (its look, unchanged). */
   .t-no {
@@ -534,6 +547,9 @@
   }
   .t-st.t-bad {
     color: var(--failed);
+  }
+  .t-st.t-soft {
+    color: var(--partial);
   }
   :global([data-layout="classic"]) .t-no,
   :global([data-layout="classic"]) .t-st {

@@ -556,7 +556,7 @@
         {#if toolsLine}
           <div class="kv tools"><span>Tools</span><b>{toolsLine}</b></div>
           {#if marks.length > 1}<div class="tks" aria-hidden="true">
-            {#each marks as m, i (i)}<i class:r={!m.done} class:e={m.error}></i>{/each}
+            {#each marks as m, i (i)}<i class:r={!m.done} class:e={m.error} class:s={!!m.soft}></i>{/each}
           </div>{/if}
         {/if}
       </section>
@@ -1078,6 +1078,10 @@
   }
   .tks i.e {
     background: var(--failed, var(--hot));
+  }
+  /* Item 700: a call the harness did not run — amber, not a failure. */
+  .tks i.s {
+    background: var(--partial);
   }
   @media (prefers-reduced-motion: no-preference) {
     .bar i {

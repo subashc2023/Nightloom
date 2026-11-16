@@ -36,7 +36,7 @@
     resolveFolded,
     shortToolName,
     thinkingHidden,
-    workingLabel,
+    waitingLabel,
   } from "./activity";
   import type { IconName } from "./icons";
   import { fmtShare, fmtTokens, shareOf, sizeTitle, type TurnSize } from "./tokens";
@@ -80,6 +80,8 @@
   import { namesImage } from "./toolImages.svelte";
   import SignedOutNotice from "./SignedOutNotice.svelte";
   import StillRunningLine from "./StillRunningLine.svelte";
+  import { errorWeight, retriedAfter, softLine } from "./errorWeight";
+  import { waitingOn } from "./stillRunning";
   import MidTurnBubble from "./MidTurnBubble.svelte";
   import RetryLine from "./RetryLine.svelte";
   // The streaming motion (backlog 342, his pick of 338: "Loom + fade-in").
@@ -310,6 +312,12 @@
     if (folds) keptSet(foldKey(folds, id), encodeOverride(o), "");
     else local[id] = o;
   }
+  /** Item 700: whether a soft error's box is open (folded by default),
+   *  read by its own key — `overrides` holds the rows' and blocks' only. */
+  function softOpen(key: string): boolean {
+    const o = folds ? decodeOverride(keptGet(foldKey(folds, key), "")) : local[key];
+    return o?.open === true;
+  }
   /** A native fold's kept key (a subagent group, a removed block), or null. */
   function detailsKey(id: string): string | null {
     return folds ? foldKey(folds, id) : null;
@@ -402,7 +410,11 @@
     const t = setInterval(() => (now = Date.now()), 1000);
     return () => clearInterval(t);
   });
-  const working = $derived(workingLabel(now - (since ?? startedAt)));
+  // Item 700: waiting only on background agents, the line says so. Classic
+  // takes the label alone — no edge light (its blocks carry no motion of
+  // that kind; the weft is its only running light).
+  const waitAgents = $derived(streaming ? waitingOn(segs, app.subagents) : null);
+  const working = $derived(waitingLabel(waitAgents, now - (since ?? startedAt)));
   // Rows born live (first seen after this message's first render, mid-turn)
   // get the needle and the weft (backlog 342); a reply drawn again keeps its
   // finished rows still.
@@ -583,6 +595,15 @@
   }
 </script>
 
+<!-- Item 700: a soft error's box folds to one amber line; a click opens it whole. -->
+{#snippet softBox(id: string, content: string, retried: boolean)}
+  {@const key = `soft:${id}`}
+  {@const boxOpen = softOpen(key)}
+  <button class="tool-result soft soft-line" class:open={boxOpen} aria-expanded={boxOpen}
+    use:tip={boxOpen ? "Fold the notice to one line" : "Show the notice whole"}
+    onclick={() => setOverride(key, { open: !boxOpen, rev: transcript.rev.tool })}
+    >{#if boxOpen}<span class="soft-full">{content}</span>{:else}<span class="soft-sum">{softLine(content, retried)}</span>{/if}</button>
+{/snippet}
 {#snippet subagent(children: Segment[], parent: string)}
   {@const calls = children.filter((c) => c.kind === "tool").length}
   {@const names = children
@@ -608,7 +629,8 @@
         {#if c.kind === "tool"}
           {@const icon = toolIcon(c.call.name)}
           {@const childDiff = editDiffOf(c.call.name, c.call.input)}
-          <div class="arow static" class:error={!!c.call.result?.is_error}>
+          <div class="arow static" class:error={!c.call.denied && errorWeight(c.call.result) === "hard"}
+            class:soft={!c.call.denied && errorWeight(c.call.result) === "soft"}>
             <span class="ico">{#if icon}<Icon name={icon} size={13} />{:else}⚒{/if}</span>
             <span class="name" use:tip={c.call.name}>{shortToolName(c.call.name)}</span>
             <span class="arg">{toolInputSummary(c.call.input)}</span>
@@ -733,7 +755,10 @@
               </div>
             {:else if seg.kind === "tool"}
               {@const open = isOpen(i, seg)}
-              {@const bad = !!seg.call.result?.is_error || !!seg.call.denied}
+              <!-- Item 700: soft (amber) for a "not run, redo it" notice, hard (red) for a real failure. -->
+              {@const weight = seg.call.denied ? null : errorWeight(seg.call.result)}
+              {@const soft = weight === "soft"}
+              {@const bad = weight === "hard" || !!seg.call.denied}
               {@const icon = toolIcon(seg.call.name)}
               {@const agentTab = agentTabOf(seg.call)}
               {@const agentRow = agentTab ? rowOf(seg.call.id) : null}
@@ -748,6 +773,7 @@
                 <button
                   class="arow"
                   class:error={bad}
+                  class:soft
                   class:agent-drag={!!agentTab}
                   aria-expanded={open}
                   use:tip={agentTab
@@ -798,10 +824,12 @@
                         ? `: ${seg.call.result.content}`
                         : "."}
                     </div>
+                  {:else if soft}
+                    {@render softBox(seg.call.id, seg.call.result!.content, retriedAfter(segs, i))}
                   {:else if seg.call.result}
                     <pre
                       class="tool-result"
-                      class:error={seg.call.result.is_error}>{seg.call.result.content}</pre>
+                      class:error={bad}>{seg.call.result.content}</pre>
                   {/if}
                 {/if}
                 <!-- Outside the collapse: a call parked at the gate needs its prompt
@@ -944,7 +972,7 @@
               <span class="tool-line">{toolSummary(seg.call, false)}</span>
             </div>
             {#if seg.call.result}
-              <pre class="tool-result" class:error={seg.call.result.is_error}>{seg.call.result.content}</pre>
+              <pre class="tool-result" class:error={errorWeight(seg.call.result) === "hard"} class:soft={errorWeight(seg.call.result) === "soft"}>{seg.call.result.content}</pre>
             {/if}
           {:else}
             <div class="removed-body">{seg.text}</div>
@@ -1390,6 +1418,11 @@
   .arow.error .size {
     color: var(--failed);
   }
+  .arow.soft .arg,
+  .arow.soft .size,
+  .arow.soft .ico {
+    color: var(--partial);
+  }
   .row-wrap {
     display: flex;
     flex-direction: column;
@@ -1798,6 +1831,38 @@
     color: var(--failed);
     background: var(--failed-soft);
     border-color: var(--failed);
+  }
+  /* Item 700: the soft weight — amber, folded to one line by default. */
+  .tool-result.soft {
+    color: var(--partial);
+    background: var(--partial-soft);
+    border-color: color-mix(in srgb, var(--partial) 60%, transparent);
+  }
+  .soft-line {
+    display: block;
+    width: auto;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+    text-align: left;
+    font: inherit;
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    cursor: pointer;
+  }
+  .soft-line:not(.open) {
+    padding-top: 0.25rem;
+    padding-bottom: 0.25rem;
+  }
+  /* One line, cut with an ellipsis, and no width of its own: `width: 0`
+     with `min-width: 100%` keeps the line from widening the trace. */
+  .soft-sum {
+    display: block;
+    width: 0;
+    min-width: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   /* A notice row (a compaction, a crossing): the board's ruled amber mono
      (Handoff.dc.html) — a rule either side, the words between. */

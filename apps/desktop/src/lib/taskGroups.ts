@@ -20,12 +20,17 @@
  */
 import type { SubagentRow } from "./state.svelte";
 
+/** Item 700: the status `subagentRows` gives an Agent call the harness did not run. */
+export const SOFT_STATUS = "not run";
+
 /** A row's state as the page draws it. */
-export type RowState = "running" | "done" | "failed";
+/** Item 700: `soft` is an Agent call the harness did not run (`not run`) — amber, not a failure. */
+export type RowState = "running" | "done" | "failed" | "soft";
 
 export function rowState(r: Pick<SubagentRow, "status">): RowState {
   if (r.status === "running") return "running";
   if (r.status === "completed") return "done";
+  if (r.status === SOFT_STATUS) return "soft";
   return "failed";
 }
 
@@ -33,7 +38,7 @@ export function rowState(r: Pick<SubagentRow, "status">): RowState {
  *  (`failed`, `no result`, `launched`). */
 export function stateLabel(r: Pick<SubagentRow, "status">): string {
   const s = rowState(r);
-  return s === "failed" ? r.status || "failed" : s;
+  return s === "failed" ? r.status || "failed" : s === "soft" ? SOFT_STATUS : s;
 }
 
 export interface SendBlock<R> {

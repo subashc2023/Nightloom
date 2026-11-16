@@ -36,7 +36,7 @@
     const t = setInterval(() => (now = Date.now()), 1000);
     return () => clearInterval(t);
   });
-  const STATE_WORD = { running: "running", done: "done", failed: "failed" } as const;
+  const STATE_WORD = { running: "running", done: "done", failed: "failed", soft: "not run" } as const;
   /** The kinds worth their room on the row; a plain subagent's type (often long) stays in its tip. */
   const SHOWN_KINDS = new Set(["background", "aside", "council seat"]);
 </script>
@@ -229,6 +229,9 @@
   }
   .thelp li.failed i {
     background: var(--error);
+  }
+  .thelp li.soft i {
+    background: var(--partial);
   }
   .thelp .hl {
     flex: 1;
