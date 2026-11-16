@@ -231,9 +231,11 @@ export async function notifyTurnEnd(args: {
   prefs?: NotifyPrefs;
   /** Item 739: the chat the turn ran in, for the phone's push; absent
    *  (a caller that is not a chat's turn) and no push is sent. */
-  phone?: { chat: string | null; project: string | null; limit: boolean; cliError: boolean };
+  phone?: { chat: string | null; project: string | null; limit: boolean; cliError: boolean; stopped?: boolean };
 }): Promise<void> {
-  if (args.phone) pushToPhone(pushWhatForEnd({ error: args.error, cliError: args.phone.cliError, limit: args.phone.limit }), args.phone.chat, args.chat, args.phone.project);
+  // 739 review L5: a turn he stopped himself is not news to him (the away
+  // server skips a cancelled turn the same way).
+  if (args.phone && !args.phone.stopped) pushToPhone(pushWhatForEnd({ error: args.error, cliError: args.phone.cliError, limit: args.phone.limit }), args.phone.chat, args.chat, args.phone.project);
   const prefs = args.prefs ?? loadNotifyPrefs();
   if (!prefs.turnEnd || windowFocused()) return;
   try {

@@ -42,6 +42,12 @@ describe("the window hands the phone its push", () => {
     expect(banner).not.toHaveBeenCalled();
   });
 
+  it("not for a turn he stopped himself (739 review L5)", async () => {
+    await notifyTurnEnd({ chat: "Fix the tab drag", segs: [], outTokens: 10, elapsedMs: 1000, error: null, prefs: off, phone: { chat: "c1", project: "p1", limit: false, cliError: false, stopped: true } });
+    await notifyTurnEnd({ chat: "Fix the tab drag", segs: [], outTokens: 10, elapsedMs: 1000, error: "cancelled", prefs: off, phone: { chat: "c1", project: "p1", limit: false, cliError: false, stopped: true } });
+    expect(pushed).not.toHaveBeenCalled();
+  });
+
   it("not for an end that is no chat's turn", async () => {
     await notifyTurnEnd({ chat: "x", segs: [], outTokens: null, elapsedMs: null, error: null, prefs: off });
     expect(pushed).not.toHaveBeenCalled();
