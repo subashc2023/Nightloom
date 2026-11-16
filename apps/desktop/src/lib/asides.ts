@@ -53,6 +53,8 @@ import type { AsideQuote } from "./asideQuote";
 import type { AsideAnchor } from "./asideCard";
 import { loadFold, loadFoldRecords, storedFold, type AsideFold, type FoldRecord } from "./asideFold";
 import type { Attachment } from "./types";
+import type { AsideMoved } from "./state/asides.svelte";
+import { cleanMoved } from "./asideMove";
 
 export const ASIDES_KEY = "nightloom.asides";
 let loadedSeq = 0;
@@ -268,6 +270,9 @@ interface StoredAside {
   uid?: string;
   model?: string;
   effort?: string;
+  /** Item 734: where he moved the card, in the chat column's px
+   *  (`asideMove.ts`), so a relaunch puts it back there. */
+  moved?: AsideMoved;
 }
 
 function storeTurn(t: AsideTurn): StoredTurn | null {
@@ -340,6 +345,8 @@ function storeAside(a: Aside): StoredAside | null {
   const model = cleanPick(a.model);
   if (model !== null) out.model = model;
   if (typeof a.effort === "string") out.effort = a.effort.trim().slice(0, 80);
+  const moved = a.moved ? cleanMoved(a.moved) : null;
+  if (moved) out.moved = moved;
   return out;
 }
 
@@ -468,6 +475,9 @@ function loadAside(v: unknown): Aside | null {
     const m = cleanPick(a.model);
     if (m !== null) x.model = m;
     if (typeof a.effort === "string") x.effort = a.effort.trim().slice(0, 80);
+    // Item 734: where he moved the card; one kept from a passage needs it.
+    const moved = cleanMoved(a.moved);
+    if (moved && (moved.from === "column" || anchor)) x.moved = moved;
     return x;
   };
   if (a.draft === true) {

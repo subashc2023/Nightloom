@@ -98,6 +98,14 @@ export interface AsideTurn {
   heardAt?: number;
 }
 
+/** A moved card's place (item 734), in the chat column's px — `asideMove.ts`. */
+export interface AsideMoved {
+  left: number;
+  top: number;
+  width: number;
+  from: "passage" | "column";
+}
+
 /** The open chat's aside (backlog 081, the passage form backlog 107) — see
  *  `app.aside`. */
 export interface Aside {
@@ -119,10 +127,18 @@ export interface Aside {
    *  aside, which has no passage; the card then sits above the composer
    *  (blocker 225). */
   anchor: AsideAnchor | null;
-  /** Where he moved the floating card, in window px (backlog 156): kept
+  /** ~~Where he moved the floating card, in window px (backlog 156): kept
    *  while the thread is open, never saved — a relaunch puts the card back
-   *  under its passage. Absent or null: the card is at its home. */
-  moved?: { left: number; top: number; width: number } | null;
+   *  under its passage.~~ (struck 2026-11-16, item 734: in window px the
+   *  card was fixed to the screen and stopped scrolling with the chat.)
+   *  Where he moved the card, in the chat column's own px (item 734), so it
+   *  scrolls with the text as an unmoved card does: `left` from the
+   *  column's left edge; `top` from the passage's top when `from` is
+   *  "passage" (it follows its passage through reflows and turns drawn
+   *  above), else from the column's content top. Written with the thread,
+   *  so a chat switch and a relaunch keep it (`asides.ts`). Absent or
+   *  null: the card is at its home. See `asideMove.ts`. */
+  moved?: AsideMoved | null;
   /** Text typed in the thread's box and not yet sent (backlog 228): the
    *  question in a draft's box, or the follow-up under an answered
    *  thread — the two never show at once. Kept here, not in the card, so

@@ -71,8 +71,13 @@ describe("an aside card on an undrawn turn (item 484)", () => {
   it("shows once its turn is drawn", () => {
     expect(cardWaits({ anchor: { turn: 522 } }, drawn)).toBe(false);
   });
-  it("never waits for a composer aside or a card he moved", () => {
+  // Item 734 (2026-11-16): a card he moved scrolls with its passage now, so
+  // it waits for the turn too; one kept from the column's top never waits.
+  it("never waits for a composer aside or a card kept from the column's top", () => {
     expect(cardWaits({ anchor: null }, drawn)).toBe(false);
-    expect(cardWaits({ anchor: { turn: 22 }, moved: { left: 1, top: 1, width: 300 } }, drawn)).toBe(false);
+    expect(cardWaits({ anchor: { turn: 22 }, moved: { from: "column" } }, drawn)).toBe(false);
+  });
+  it("a card moved off its passage waits for the passage's turn (item 734)", () => {
+    expect(cardWaits({ anchor: { turn: 22 }, moved: { from: "passage" } }, drawn)).toBe(true);
   });
 });
