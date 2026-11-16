@@ -113,6 +113,8 @@
   import NightshiftSheet from "./NightshiftSheet.svelte";
   import AsideSheet from "./AsideSheet.svelte";
   import CouncilSheet from "./CouncilSheet.svelte";
+  import ChangesSheet from "./ChangesSheet.svelte";
+  import { changesLine, turnChanges } from "./turnChanges";
   import ChatMenu from "./ChatMenu.svelte";
   import { chatSheetSub, fitVisual } from "./sheetLayout";
   import Hosts from "./Hosts.svelte";
@@ -298,7 +300,24 @@
     | "compact"
     | "nightshift"
     | "speech"
+    | "changes"
   >(null);
+  /** Item 742: the reply whose Changes sheet is open (chat + its first
+   *  event), and per reply the file he was on and the files opened to
+   *  every line — kept while the page lives, so reopening lands there. */
+  let changesKey = $state<string | null>(null);
+  let changesAt = $state<Record<string, number>>({});
+  let changesAll = $state<Record<string, string[]>>({});
+  const changesFiles = $derived.by(() => {
+    if (sheet !== "changes" || !changesKey) return [];
+    const r = rows.find((x) => x.kind === "assistant" && `${chatId}:${x.indexes[0]}` === changesKey);
+    return r && r.kind === "assistant" ? turnChanges(r.tools) : [];
+  });
+  function openChanges(key: string) {
+    changesKey = key;
+    sheet = "changes";
+    sheetTall = true;
+  }
   // ---- wave 2C: notes, asides, council, new project, search, gestures ----
   /** The notes sheet opens on this note (a search hit), else its list. */
   let notesStart = $state<{ scope: NoteScope; name: string } | null>(null);
@@ -3007,6 +3026,7 @@
             </div>
           </div>
         {:else if r.kind === "assistant"}
+          {@const changed = turnChanges(r.tools)}
           <div class="turn reply" data-row={i} class:enter={i >= enterFrom && !still} class:removed={r.removed} use:press={() => openMenu(r)}>
             <!-- 300 A2: words and calls in the order they happened. -->
             {#each r.seq as s, k (s.kind === "text" ? `${s.part.index}.${s.part.block}` : `t${k}.${s.tools[0]?.id}`)}
@@ -3018,6 +3038,15 @@
               {/if}
             {/each}
             {@render sentChips(sentOf(r.tools))}
+            {#if changed.length > 0}
+              <!-- Item 742: what the reply changed, a file a page. -->
+              <button class="changes-row" data-changes onclick={() => openChanges(`${chatId}:${r.indexes[0]}`)}>
+                <span class="changes-word">Changes</span>
+                <span class="changes-sum">{changesLine(changed)}</span>
+                <span class="spacer"></span>
+                {@render icon("chev")}
+              </button>
+            {/if}
             {#if r.removed}<div class="stamp">removed from the context — long-press to restore</div>
             {:else}{@const line = replyLine(events, r, sizes)}{#if line}<div class="stamp reply-line">{line}</div>{/if}{/if}
           </div>
@@ -3553,6 +3582,15 @@
             onstop={stopAside}
             oncopy={copy}
           />
+        {:else if sheet === "changes" && changesKey}
+          {@const key = changesKey}
+          <ChangesSheet
+            files={changesFiles}
+            at={changesAt[key] ?? 0}
+            all={new Set(changesAll[key] ?? [])}
+            onpage={(i) => (changesAt = { ...changesAt, [key]: i })}
+            onall={(path) => (changesAll = { ...changesAll, [key]: [...(changesAll[key] ?? []), path] })}
+          />
         {:else if sheet === "council"}
           <CouncilSheet
             available={hasFeature(remote, "council") && chatId !== null}
@@ -4069,6 +4107,40 @@
   }
   /* A file a reply sent (backlog 343): the attachment chip, tapped to
      fetch it. */
+  /* Item 742: the reply's Changes row — a chip like a sent file's. */
+  .changes-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    margin: 6px 0 2px;
+    padding: 9px 12px;
+    border: 1px solid var(--line2, var(--line));
+    border-radius: 10px;
+    background: var(--sheet, var(--bg));
+    color: var(--ink);
+    font: inherit;
+    font-size: 14px;
+    text-align: left;
+  }
+  .changes-word {
+    font-weight: 600;
+    flex: none;
+  }
+  .changes-sum {
+    color: var(--dim);
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .changes-row .spacer {
+    flex: 1;
+  }
   .sent-files {
     display: flex;
     flex-direction: column;
