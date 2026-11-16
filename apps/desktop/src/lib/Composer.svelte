@@ -3995,15 +3995,7 @@
      verbatim, behind `:global(:where([data-layout="classic"]))`. `:where()`
      weighs nothing, so neither changes the other's cascade (app.css has the
      same gate). */
-  /* The council button's frame (backlog 149): the popover hangs off it. */
-  .council-wrap {
-    position: relative;
-    display: inline-flex;
-    flex: none;
-  }
-  .council-wrap .ns-btn.on {
-    color: var(--accent-ink);
-  }
+  /* Item 716: the council button's frame — moved, verbatim and re-rooted on `.composer`, to src/composerControls.css. */
   /* The in-box pickers (backlog 112, board 10's A): small text buttons
      beside Attach, a menu above each. `.pick-wrap` is the menu's frame. */
   .pick-wrap {
@@ -4015,102 +4007,7 @@
        instead, below. */
     flex: none;
   }
-  :global(:where(:root:not([data-layout="classic"]))) .pick-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    /* A drop-down is a button with a small arrow (Filament IV, item 525):
-       the control fill and edge, 28px, as `.ns-btn` in app.css. */
-    min-height: 28px;
-    padding: 0 10px;
-    border-radius: var(--r1);
-    border: 1px solid var(--line2);
-    background: var(--well);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
-    font-family: var(--sans);
-    font-size: 12.5px;
-    font-weight: 500;
-    color: var(--ink);
-    white-space: nowrap;
-    cursor: pointer;
-    max-width: 240px;
-    min-width: 0;
-    transition:
-      background-color 120ms,
-      border-color 120ms;
-  }
-  :global(:where([data-layout="classic"])) .pick-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 3px 8px;
-    border-radius: 6px;
-    border: 1px solid transparent;
-    background: transparent;
-    font-family: var(--sans);
-    font-size: 12px;
-    color: var(--ink2);
-    white-space: nowrap;
-    cursor: pointer;
-    max-width: 240px;
-    min-width: 0;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .pick-btn:hover:not(:disabled),
-:global(:where(:root:not([data-layout="classic"]))) .pick-btn.open {
-    background: var(--well2);
-    color: var(--ink);
-    border-color: var(--dim);
-  }
-  :global(:where([data-layout="classic"])) .pick-btn:hover:not(:disabled),
-:global(:where([data-layout="classic"])) .pick-btn.open {
-    background: var(--well);
-    color: var(--ink);
-    border-color: var(--line2);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .pick-btn:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
-  }
-  .pick-btn:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-  .pick-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--done);
-    flex: none;
-  }
-  .pick-dot.unknown {
-    background: var(--dim);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .pick-k {
-    color: var(--dim);
-    font-weight: 400;
-  }
-  :global(:where([data-layout="classic"])) .pick-k {
-    color: var(--dim);
-  }
-  .pick-name {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    min-width: 0;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .pick-chev {
-    display: inline-flex;
-    color: var(--ink2);
-    flex: none;
-  }
-  :global(:where([data-layout="classic"])) .pick-chev {
-    display: inline-flex;
-    color: var(--dim);
-    flex: none;
-  }
-  .pick-chev :global(svg) {
-    width: 11px;
-    height: 11px;
-  }
+  /* Item 716: the model / effort / drafts pickers — moved, verbatim and re-rooted on `.composer`, to src/composerControls.css. */
   /* Placed by `use:floatMenu` (backlog 210): portalled to `body` and fixed
      by the button's rectangle, so the Welcome page's scrolling column can
      no longer cut it off; its top, left and max-height are set inline. */
@@ -4363,98 +4260,7 @@
     flex-wrap: wrap;
     gap: 6px;
   }
-  /* A switch (Filament IV, item 525; `.ns-switch` in app.css): a pill with
-     a sliding dot, accent when on. The mark's glyph is the track: its
-     letter is hidden and the dot is drawn on it. */
-  :global(:where(:root:not([data-layout="classic"]))) .bottom-toggle {
-    cursor: pointer;
-    font: 500 11.5px var(--sans);
-    color: var(--ink2);
-    gap: 7px;
-    min-height: 24px;
-    padding: 0 9px 0 8px;
-    border-radius: 12px;
-    background: var(--raised);
-    text-transform: capitalize;
-  }
-  :global(:where([data-layout="classic"])) .bottom-toggle {
-    cursor: pointer;
-    font-family: var(--sans);
-    color: var(--dim);
-    gap: 5px;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .bottom-mark {
-    position: relative;
-    flex: none;
-    width: 20px;
-    height: 12px;
-    border-radius: 6px;
-    background: var(--well2);
-    font-size: 0;
-    color: transparent;
-    overflow: hidden;
-    transition: background-color 120ms;
-  }
-  :global(:where([data-layout="classic"])) .bottom-mark {
-    font-size: 11px;
-    opacity: 0.55;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .bottom-mark::after {
-    content: "";
-    position: absolute;
-    top: 2px;
-    left: 2px;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--dim);
-    transition:
-      left 120ms,
-      background-color 120ms;
-  }
-  .bottom-toggle.on {
-    color: var(--ink);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .bottom-toggle.on .bottom-mark {
-    background: var(--accent);
-  }
-  :global(:where([data-layout="classic"])) .bottom-toggle.on .bottom-mark {
-    color: var(--accent);
-    opacity: 1;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .bottom-toggle.on .bottom-mark::after {
-    left: 10px;
-    background: var(--on-accent);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .bottom-toggle:hover {
-    border-color: var(--dim);
-    color: var(--ink);
-  }
-  :global(:where([data-layout="classic"])) .bottom-toggle:hover {
-    border-color: var(--accent);
-    color: var(--ink);
-  }
-  @media (prefers-reduced-motion: reduce) {
-    :global(:where(:root:not([data-layout="classic"]))) .bottom-mark,
-:global(:where(:root:not([data-layout="classic"]))) .bottom-mark::after,
-:global(:where(:root:not([data-layout="classic"]))) .pick-btn {
-      transition: none;
-    }
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .bottom-toggle:disabled,
-:global(:where(:root:not([data-layout="classic"]))) .bottom-toggle:disabled:hover {
-    cursor: default;
-    opacity: 0.5;
-    border-color: var(--line2);
-    color: var(--dim);
-  }
-  :global(:where([data-layout="classic"])) .bottom-toggle:disabled,
-:global(:where([data-layout="classic"])) .bottom-toggle:disabled:hover {
-    cursor: default;
-    opacity: 0.5;
-    border-color: transparent;
-    color: var(--dim);
-  }
+  /* Item 716: the bottom row's switches — moved, verbatim and re-rooted on `.composer`, to src/composerControls.css. */
   /* Keep-warm (582): the label is a clock time or a reason, never
      capitalised like the one-word toggles. */
   .bottom-toggle.keep-warm {
@@ -4892,22 +4698,7 @@
       linear-gradient(var(--tk), var(--tk)) 100% 100% / 12px 1.5px no-repeat,
       linear-gradient(var(--tk), var(--tk)) 100% 100% / 1.5px 12px no-repeat;
   }
-  /* The row's buttons are real buttons (Attach, Ask aside, Council, Queue):
-     the markup's `ghost` is the quiet button of other screens; here each has
-     the control fill and edge, 28px tall. */
-  :global(:where(:root:not([data-layout="classic"]))) .row .ns-btn.ghost {
-    min-height: 28px;
-    padding: 0 11px;
-    font-size: 12.5px;
-    background: var(--well);
-    border-color: var(--line2);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
-    color: var(--ink);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .row .ns-btn.ghost:hover:not(:disabled) {
-    background: var(--well2);
-    border-color: var(--dim);
-  }
+  /* Item 716: the row's ghost buttons — moved, verbatim and re-rooted on `.composer`, to src/composerControls.css. */
   .row {
     display: flex;
     align-items: center;
@@ -4930,20 +4721,7 @@
   .row:is([data-fold="2"], [data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .draft-tokens {
     display: none;
   }
-  .council-ico {
-    display: none;
-  }
-  /* Item 607: the attach button is the plus alone under Filament — a
-     28-px square, the row's button height, the icon centred. */
-  :global(:where(:root:not([data-layout="classic"]))) .attach .fold-word {
-    display: none;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .attach {
-    justify-content: center;
-    width: 28px;
-    min-height: 28px;
-    padding: 0;
-  }
+  /* Item 716: Council's icon and the Attach square — moved, verbatim and re-rooted on `.composer`, to src/composerControls.css. */
   .row:is([data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .fold-word,
   .row:is([data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .council-word {
     display: none;
@@ -5058,15 +4836,7 @@
   textarea:disabled {
     opacity: 0.5;
   }
-  /* The main action: the one solid accent block in view, 32px tall. */
-  :global(:where(:root:not([data-layout="classic"]))) .send {
-    min-height: 32px;
-    padding: 0 16px;
-    font-size: 13px;
-  }
-  :global(:where([data-layout="classic"])) .send {
-    padding: 6px 16px;
-  }
+  /* Item 716: Send's size — moved, verbatim and re-rooted on `.composer`, to src/composerControls.css. */
   /* Item 398: the Stop in Send's place. "Send" in Send's weight, hidden,
      gives it Send's width and height; the square sits centred over it. */
   /* Filament IV's Stop: a button with a brighter edge and a red square. */
@@ -5175,213 +4945,7 @@
     flex: 1 1 0;
     text-align: right;
   }
-  /* Send's split (backlog 224): the ▾ carries the right-hand corners. */
-  .send-split {
-    display: inline-flex;
-    align-items: stretch;
-  }
-  .send-split .send {
-    border-top-right-radius: 0;
-    border-bottom-right-radius: 0;
-  }
-  /* Item 606 (his pick, blocker 1827): Filament — Send a dark bulb with an
-     amber edge and a lit coil (FilamentMark), the ▾ its matching half; Ask
-     aside and Council carry the coil family. Filament IV only; Classic has
-     none of it (the spans below are `display: none` there). Idle: a steady
-     glow and nothing moves. Hover: brighter, wider glow and a scan line
-     crosses the bulb once. Press: a charge-and-release ring. Sending: the
-     coil's pulse loops and a bright point traces the edge. */
-  .fil-scan,
-  .fil-edge {
-    display: none;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send {
-    position: relative;
-    overflow: hidden;
-    gap: 6px;
-    padding: 0 14px 0 12px;
-    background: var(--term);
-    border-color: color-mix(in srgb, var(--accent) 70%, var(--line2));
-    color: var(--accent-ink);
-    box-shadow:
-      inset 0 0 10px color-mix(in srgb, var(--accent) 14%, transparent),
-      var(--glow-main);
-    transition:
-      background 140ms ease,
-      border-color 140ms ease,
-      box-shadow 180ms ease;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .send-split :global(.sched-caret) {
-    background: var(--term);
-    border-color: color-mix(in srgb, var(--accent) 70%, var(--line2));
-    border-left-color: color-mix(in srgb, var(--accent) 35%, var(--line2));
-    color: var(--accent-ink);
-    box-shadow:
-      inset 0 0 10px color-mix(in srgb, var(--accent) 14%, transparent),
-      var(--glow-main);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .send-split :global(.sched-caret:hover:not(:disabled)) {
-    background: color-mix(in srgb, var(--accent) 12%, var(--term));
-    border-color: var(--accent);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .send-split :global(.sched-caret:disabled) {
-    box-shadow: none;
-    border-color: var(--line2);
-    color: var(--dim);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--accent) 12%, var(--term));
-    border-color: var(--accent);
-    color: #fff4dc;
-    box-shadow:
-      inset 0 0 12px color-mix(in srgb, var(--accent) 26%, transparent),
-      0 0 18px color-mix(in srgb, var(--accent) 45%, transparent);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send:active:not(:disabled) {
-    background: color-mix(in srgb, var(--accent) 22%, var(--term));
-    border-color: var(--accent-ink);
-    transform: translateY(1px);
-    box-shadow:
-      inset 0 0 14px color-mix(in srgb, var(--accent) 40%, transparent),
-      0 0 22px color-mix(in srgb, var(--accent) 55%, transparent);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send.sending {
-    border-color: var(--accent);
-    box-shadow:
-      inset 0 0 12px color-mix(in srgb, var(--accent) 30%, transparent),
-      0 0 18px color-mix(in srgb, var(--accent) 45%, transparent);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send:disabled {
-    background: var(--term);
-    box-shadow: none;
-    border-color: color-mix(in srgb, var(--accent) 30%, var(--line2));
-    color: color-mix(in srgb, var(--accent-ink) 55%, var(--dim));
-    opacity: 1; /* app.css's 0.5 made the unlit bulb unreadable (2026-11-11) */
-  }
-  /* Calm (IV): no light — the bulb keeps its edge, without the halo. */
-  :global(:where([data-light="calm"])) .ns-btn.fil-send,
-  :global(:where([data-light="calm"])) .send-split :global(.sched-caret) {
-    box-shadow: none !important;
-  }
-  /* The scan line: a thin bright bar, parked off the left edge. */
-  :global(:where(:root:not([data-layout="classic"]))) .fil-scan {
-    display: block;
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    left: 0;
-    width: 10px;
-    pointer-events: none;
-    background: linear-gradient(
-      90deg,
-      transparent,
-      color-mix(in srgb, var(--accent-ink) 55%, transparent) 45%,
-      #fffaf0 50%,
-      color-mix(in srgb, var(--accent-ink) 55%, transparent) 55%,
-      transparent
-    );
-    opacity: 0;
-    transform: translateX(-12px);
-  }
-  /* The edge trace: a ring the shape of the button's edge, lit by a
-     turning conic light (a bright point with an amber tail). */
-  :global(:where(:root:not([data-layout="classic"]))) .fil-edge {
-    display: block;
-    position: absolute;
-    inset: 0;
-    border-radius: inherit;
-    padding: 1.5px;
-    pointer-events: none;
-    background: conic-gradient(
-      from var(--fil-a, 0deg),
-      transparent 0deg 230deg,
-      color-mix(in srgb, var(--accent) 80%, transparent) 320deg,
-      #fffaf0 352deg,
-      transparent 360deg
-    );
-    -webkit-mask:
-      linear-gradient(#000 0 0) content-box,
-      linear-gradient(#000 0 0);
-    -webkit-mask-composite: xor;
-    mask:
-      linear-gradient(#000 0 0) content-box,
-      linear-gradient(#000 0 0);
-    mask-composite: exclude;
-    opacity: 0;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send.sending .fil-edge {
-    opacity: 1;
-  }
-  @media (prefers-reduced-motion: no-preference) {
-    :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send:hover:not(:disabled) .fil-scan {
-      animation: fil-scan 0.6s ease-out 1 both;
-    }
-    :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send:active:not(:disabled) {
-      animation: fil-charge 0.32s ease-out 1;
-    }
-    :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send.sending .fil-edge {
-      animation: fil-edge 1s linear infinite;
-    }
-  }
-  /* Reduce motion: static glows only — sending is a full lit edge. */
-  @media (prefers-reduced-motion: reduce) {
-    :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send.sending .fil-edge {
-      background: color-mix(in srgb, var(--accent) 80%, transparent);
-    }
-  }
-  @keyframes fil-scan {
-    0% {
-      opacity: 0;
-      transform: translateX(-12px);
-    }
-    15% {
-      opacity: 0.9;
-    }
-    85% {
-      opacity: 0.9;
-    }
-    100% {
-      opacity: 0;
-      transform: translateX(var(--fil-scan-to, 120px));
-    }
-  }
-  @keyframes fil-charge {
-    0% {
-      box-shadow:
-        inset 0 0 4px color-mix(in srgb, var(--accent) 20%, transparent),
-        0 0 6px color-mix(in srgb, var(--accent) 30%, transparent);
-    }
-    45% {
-      box-shadow:
-        inset 0 0 18px color-mix(in srgb, var(--accent) 60%, transparent),
-        0 0 4px color-mix(in srgb, var(--accent) 40%, transparent);
-    }
-    100% {
-      box-shadow:
-        inset 0 0 14px color-mix(in srgb, var(--accent) 40%, transparent),
-        0 0 22px color-mix(in srgb, var(--accent) 55%, transparent);
-    }
-  }
-  /* The edge light's angle, registered so it turns smoothly (WebKit
-     16.4+); unregistered it would jump, which still reads as a trace. */
-  @property --fil-a {
-    syntax: "<angle>";
-    inherits: false;
-    initial-value: 0deg;
-  }
-  @keyframes fil-edge {
-    to {
-      --fil-a: 360deg;
-    }
-  }
-  /* Ask aside and Council: the coil before the word; Council's coil
-     replaces the agent icon (also its icon-only mark at fold 3+). */
-  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-ghost {
-    gap: 6px;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-ghost .council-ico {
-    display: none !important;
-  }
+  /* Item 716: Send's split and the Jarvis Send / Ask aside / Council — moved, verbatim and re-rooted on `.composer`, to src/composerControls.css. */
   .hint {
     max-width: 760px;
     margin: 0.4rem auto 0;
