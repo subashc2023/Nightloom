@@ -499,6 +499,7 @@ pub fn layer_name(kind: SegmentKind) -> &'static str {
         SegmentKind::UserMemory => "Memory",
         SegmentKind::ModelInstructions => "Model instructions",
         SegmentKind::ChatInstructions => "Chat instructions",
+        SegmentKind::Practices => "Practices",
         SegmentKind::ProjectInstructions => "Project instructions",
         SegmentKind::ProjectNotes => "Notes index",
         SegmentKind::Thread => "Thread",

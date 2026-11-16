@@ -101,6 +101,8 @@ const LAYER_ORDER: PromptLayer[] = [
   "environment",
   "user_memory",
   "model_instructions",
+  "chat_instructions",
+  "practices",
   "project_instructions",
   "project_notes",
   "thread",

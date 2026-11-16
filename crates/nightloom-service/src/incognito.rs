@@ -285,6 +285,7 @@ mod tests {
             user_memory: false,
             model: None,
             chat_instructions: false,
+            practices: false,
             project: Some(ProjectContext {
                 name: "Secret Project Name".into(),
                 notes_dir: notes.clone(),
@@ -327,6 +328,7 @@ mod tests {
             user_memory: false,
             model: None,
             chat_instructions: false,
+            practices: false,
             project: None,
             knowledge: None,
             thread: None,
@@ -418,6 +420,7 @@ mod tests {
                 user_memory: true,
                 model: Some("haiku".into()),
                 chat_instructions: false,
+                practices: false,
                 project: Some(ProjectContext {
                     name: p.name.clone(),
                     notes_dir: p.notes_dir(),

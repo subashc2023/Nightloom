@@ -1696,6 +1696,8 @@ fn main() {
             startup_log::startup_mark,
             commands::notes::model_instructions_dir,
             commands::notes::chat_instructions_path,
+            commands::notes::practices_layer,
+            commands::notes::set_practices_layer,
             commands::notes::set_knowledge_dir,
             commands::notes::knowledge_graph,
             commands::memory::dream_status,

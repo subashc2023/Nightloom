@@ -81,6 +81,7 @@
     { kind: "user_memory", label: "Memory", gloss: "How you want the model to behave, everywhere — your ~/.nightloom/AGENTS.md.", engines: "both", editable: true },
     { kind: "model_instructions", label: "Model instructions", gloss: "How you want this one model to behave — its own file under ~/.nightloom/models.", engines: "both", editable: true },
     { kind: "chat_instructions", label: "Chat instructions", gloss: "How a Chat talks — ~/.nightloom/CHAT.md, read by chats of the Chat kind only.", engines: "both", editable: true },
+    { kind: "practices", label: "Practices", gloss: "How you work, in every chat — ~/.claude/practices/nightloom-chat.md. Switched for every chat in the Mac's Settings.", engines: "both", editable: false },
     { kind: "project_instructions", label: "Project instructions", gloss: "The project's AGENTS.md — every one between the drive's root and the workspace, outermost first.", engines: "both", editable: true },
     { kind: "project_notes", label: "Notes index", gloss: "The project's shared notes, by name. The contents are read on demand.", engines: "both", editable: false },
     { kind: "thread", label: "Thread", gloss: "The bound research thread's Start here; the rest is read on demand. Bound on the Mac.", engines: "both", editable: true },

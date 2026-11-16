@@ -828,6 +828,12 @@ impl ServeHost {
                 user_memory: memory,
                 model: spec.model.clone(),
                 chat_instructions: declared == ChatKind::Chat,
+                // The practices layer (item 738), on the Mac's terms: his
+                // Settings switch, and not where the CLI reads the full
+                // practices file through the folder's CLAUDE.md — so the
+                // turn here sends the prefix the desktop's would.
+                practices: crate::prompt::practices_layer_on()
+                    && (spec.safe_mode || !crate::prompt::practices_imported(workspace)),
                 project: project.map(|p| crate::ProjectContext {
                     name: p.name.clone(),
                     notes_dir: p.notes_dir(),

@@ -452,6 +452,32 @@
   $effect(() => {
     if (selected === "models") void refreshChatFile();
   });
+  /**
+   * The practices layer (nightshift item 738): how he works, in every chat,
+   * from `~/.claude/practices/nightloom-chat.md`. One switch for all chats,
+   * kept by the backend and read at each connect — a running chat takes a
+   * flip at its next cold moment, like a changed file.
+   */
+  let practices = $state<api.PracticesLayer | null>(null);
+  async function refreshPractices() {
+    try {
+      practices = await api.practicesLayer();
+    } catch {
+      practices = null;
+    }
+  }
+  void refreshPractices();
+  $effect(() => {
+    if (selected === "models") void refreshPractices();
+  });
+  async function flipPractices(on: boolean): Promise<void> {
+    try {
+      practices = await api.setPracticesLayer(on);
+    } catch (e) {
+      addToast(`Practices: ${e}`);
+      void refreshPractices();
+    }
+  }
   /** The model the "+ add" control names: the rail's, by the same rule the
    *  popover's pencil uses. */
   const addModel = $derived(currentModelId());
@@ -3545,6 +3571,48 @@
           >
             {(chatBytes ?? 0) > 0 ? "Edit" : "Create"}
           </button>
+        </div>
+      </section>
+
+      <!-- The practices layer (nightshift item 738): how he works, in every
+           chat — one switch for all of them. The file is his practices
+           repo's, re-worded there, so this card switches it and names it;
+           it does not edit it. -->
+      <section class="card">
+        <div class="ch"><span class="t">Practices</span></div>
+        <p class="note small">
+          How you work, in every chat: write findings to files, strike an old
+          claim with a date instead of deleting it, tag where a claim came
+          from, hand off past ~300k. Read from your practices folder, after
+          the Chat instructions and before the project's rules, on both
+          engines. Left out of a Claude Code chat whose folder's
+          <code>CLAUDE.md</code> already imports the full
+          <code>practices.md</code>. A running chat takes a change at its next
+          cold moment.
+        </p>
+        <div class="kf pick-row">
+          <label class="dream-auto cli-auto">
+            <input
+              type="checkbox"
+              aria-label="Give every chat the practices layer"
+              checked={practices?.on ?? true}
+              disabled={practices === null}
+              onchange={(e) => void flipPractices(e.currentTarget.checked)}
+            />
+            <span>Give every chat the practices layer</span>
+          </label>
+        </div>
+        <div class="kf pick-row">
+          <span class="dot" class:ok={(practices?.bytes ?? 0) > 0}></span>
+          <span class="key-status pick-st">
+            {#if practices === null || practices.path === null}
+              No home folder to read it from.
+            {:else if (practices.bytes ?? 0) > 0}
+              <code>{practices.path}</code> · {size(practices.bytes ?? 0)}
+            {:else}
+              No file at <code>{practices.path}</code> — the layer sends nothing.
+            {/if}
+          </span>
         </div>
       </section>
 

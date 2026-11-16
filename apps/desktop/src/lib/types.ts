@@ -1647,6 +1647,9 @@ export type PromptLayer =
   /** How a Chat talks — `~/.nightloom/CHAT.md`, read into a chat of the
    *  Chat kind and no other (nightshift backlog 102). Both engines. */
   | "chat_instructions"
+  /** How he works, for every chat — `~/.claude/practices/nightloom-chat.md`
+   *  (nightshift item 738). Both engines; one Settings switch for all. */
+  | "practices"
   | "project_instructions"
   | "project_notes"
   /** The bound research thread's `## Start here` (nightshift backlog 271).

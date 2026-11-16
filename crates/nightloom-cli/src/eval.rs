@@ -135,6 +135,7 @@ fn build_chat(
         // No kinds on the CLI: an eval is a build chat, and the Chat file
         // is the developer's own too.
         chat_instructions: false,
+        practices: false,
         cwd: workspace.to_path_buf(),
         custom: None,
         // A chat's own text for a layer is read from a chat's log, which the

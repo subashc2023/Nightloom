@@ -214,6 +214,9 @@ pub(crate) fn build_chat(
         // By the declaration, not the policy (backlog 144): the layer is
         // in the system prompt, and a switch must not rewrite that.
         chat_instructions: spec.preamble && spec.declared_kind == ChatKind::Chat,
+        // How he works, for every chat (nightshift item 738): on the
+        // preamble and his Settings switch.
+        practices: spec.preamble && nightloom_service::prompt::practices_layer_on(),
         // Gated on the preamble like every other discovered layer: `--bare`
         // and its desktop equivalent mean "nothing but what I typed".
         project: spec.preamble.then(|| spec.project.clone()).flatten(),
