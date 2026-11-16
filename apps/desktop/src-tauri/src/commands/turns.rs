@@ -821,6 +821,9 @@ pub(crate) fn approve_call(
                     .filter(|r| !r.trim().is_empty())
                     .unwrap_or_else(|| "the user declined this call".into()),
             },
+            // "Not now — carry on" (item 743): set aside, asked again at
+            // the end of the reply.
+            "later" => Answer::Later,
             other => return Err(format!("unknown decision: {other}")),
         };
         // Nothing took it (item 522): the turn let go of the call between
@@ -849,6 +852,11 @@ pub(crate) fn approve_call(
                 .filter(|r| !r.trim().is_empty())
                 .unwrap_or_else(|| "the user declined this call".into()),
         ),
+        // "Not now — carry on" (item 743) on the built-in engine: a refusal
+        // is a tool result and the turn goes on, so the same words do the
+        // same job — the model does the rest and calls again, and that call
+        // asks again.
+        "later" => Decision::Deny(nightloom_service::agent::ask::LATER_REASON.to_string()),
         other => return Err(format!("unknown decision: {other}")),
     };
     state.gate.resolve(&id, decision);

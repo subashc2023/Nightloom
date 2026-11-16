@@ -1955,6 +1955,8 @@ impl Host for ServeHost {
                     .filter(|r| !r.trim().is_empty())
                     .unwrap_or_else(|| "the user declined this call".into()),
             },
+            // "Not now — carry on" (item 743).
+            "later" => Answer::Later,
             other => return Err(format!("unknown decision: {other}")),
         };
         lock(&self.pending).remove(&req.id);
@@ -2223,6 +2225,11 @@ impl Host for ServeHost {
         Some(self.push.clone())
     }
 
+    async fn ask_dir(&self, project: Option<&str>, chat: &str) -> Result<PathBuf, String> {
+        let (_, path) = self.chat_in(project, chat)?;
+        crate::approval_rules::ask_dir_of_log(&path)
+    }
+
     async fn limit_pause(&self) -> Option<crate::remote::api::LimitPause> {
         let p = lock(&self.pause).clone()?;
         let resume_at = lock(&self.resume)
@@ -2287,6 +2294,9 @@ impl Host for ServeHost {
             // capture; `nightshift` the listener names itself.
             feature::BUDGET,
             feature::RESUME_LIMIT,
+            // Item 743: the rules sheet, and "Not now — carry on".
+            feature::RULES,
+            feature::LATER,
         ]
         .into_iter()
         .map(String::from)
@@ -2847,8 +2857,58 @@ esac
                 "notes_project",
                 "budget",
                 "resume_limit",
+                "rules",
+                "later",
                 "push"
             ])
+        );
+
+        // Item 743: the rules routes, over the chat's own folder — an add
+        // lists back, a rule that could never fire is a 409 with the reason,
+        // and the remove empties the list.
+        let rules = format!("{base}/api/rules?chat={chat}");
+        let listed = get(&c, rules.clone(), &token).await;
+        assert_eq!(listed["chat"], true);
+        let (status, body) = post(
+            &c,
+            rules.clone(),
+            &token,
+            serde_json::json!({"op": "add", "scope": "chat", "action": "block", "tool": "Bash", "text": "sudo"}),
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        let added: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(added["rules"][0]["action"], "block");
+        assert_eq!(added["rules"][0]["scope"], "chat");
+        let id = added["rules"][0]["id"].as_str().unwrap().to_string();
+        let (status, body) = post(
+            &c,
+            rules.clone(),
+            &token,
+            serde_json::json!({"op": "add", "scope": "chat", "action": "allow", "tool": "Read"}),
+        )
+        .await;
+        assert_eq!(status, 409);
+        assert!(
+            body.contains("not a tool Nightloom is asked about"),
+            "{body}"
+        );
+        let (status, body) = post(
+            &c,
+            rules.clone(),
+            &token,
+            serde_json::json!({"op": "remove", "id": id}),
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        let left = get(&c, rules, &token).await;
+        assert!(
+            left["rules"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|r| r["scope"] != "chat"),
+            "{left}"
         );
 
         // Each in-place action: the log equals the shared function's.

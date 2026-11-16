@@ -242,6 +242,41 @@ the Tailscale app so it connects by itself), or the call fails with "could
 not connect". *Unmeasured in this build:* the Lock Screen run on his
 iPhone — the routes are tested on loopback only.
 
+## Approval rules and "Not now — carry on" (item 743, 2026-11-16)
+
+- **Rules.** The chat's ⋯ sheet → More → *Approval rules* (and *Rules* on an
+  approval card) lists what is in force for the chat and for every chat on
+  the host, in the order it decides — **block, then ask, then allow** — with
+  the built-in defaults under it. A rule names a tool (`Bash`, `Write`,
+  `mcp__github__*`) and, optionally, text the call must name (Bash's command,
+  a file tool's path, WebFetch's address). Tap a rule to change it; Remove
+  asks first and says what those calls do next. "Allow for this chat" from a
+  card lists here as an allow rule and can be removed.
+- **An allow on Bash is narrow on purpose:** the command must *start* with
+  the text and be one plain command — anything chained (`&&`, `;`, a pipe, a
+  redirect, `$(…)`) still asks. Ask and block rules match the text anywhere.
+- **Where they apply:** chats on Ask or Plan, on the Claude Code engine — the
+  hook that reads them is registered only there. On Auto, Claude Code's
+  classifier decides and no rule is consulted. Rules cannot name the model's
+  questions, plans, Playwright (its own switch) or `add_folder` (always a
+  card), nor a tool the hook is never asked about (`Read`, `Grep`).
+- **Files:** `<home>/approval-rules.json` (every chat) and
+  `<the chat's ask folder>/approval-rules.json`; the hook
+  (`--permission-hook`) reads both on every call, so a change applies to the
+  next call of a running turn.
+- **Not now — carry on** on a call's card (hosts naming the `later` feature):
+  the call is refused once with words telling the model it is set aside —
+  do the rest, then make the same call again as the last step — so the card
+  returns at the end. If the reply ends without that call coming back, the
+  turn says so in a notice; it did not run. Measured before it was built
+  (nightshift `notes/runner-design/743-measure/`).
+- Routes, behind the bearer: `GET /api/rules?chat=&project=`,
+  `POST /api/rules?chat=&project=` (`{op: add|change|remove, …}`);
+  `POST /api/approve` takes `decision: "later"`.
+- Code: `crates/nightloom-service/src/approval_rules.rs` (store, matcher,
+  listing), `agent/ask.rs` (`decide_under`, `Answer::Later`),
+  `remote/rules_routes.rs`, `src/remote/rules.ts`, `RulesSheet.svelte`.
+
 ## What is not here (yet)
 
 Attachments, folder pickers, settings, Nightshift's blockers and morning

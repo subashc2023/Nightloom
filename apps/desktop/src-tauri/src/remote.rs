@@ -669,6 +669,33 @@ impl Host for DesktopHost {
         self.push.clone()
     }
 
+    /// Item 743: `<the chat's log folder>/ask/<log stem>`, as `send_agent`
+    /// names it — found by the chat's id in the project the phone names.
+    async fn ask_dir(
+        &self,
+        project: Option<&str>,
+        chat: &str,
+    ) -> Result<std::path::PathBuf, String> {
+        // The project the phone names, then the open one, then no project:
+        // the phone's id for "no project" is not one this host knows.
+        let state = self.state_of();
+        let mut dirs = Vec::new();
+        if let Ok(dir) = self.dir_of(project).await {
+            dirs.push(dir);
+        }
+        dirs.push(state.log_dir().await);
+        dirs.push(state.default_log_dir.clone());
+        let id = chat.to_string();
+        crate::blocking(move || -> Result<std::path::PathBuf, String> {
+            let path = dirs
+                .iter()
+                .find_map(|dir| store::find_by_prefix(dir, &id).ok())
+                .ok_or_else(|| format!("no chat {id}"))?;
+            nightloom_service::approval_rules::ask_dir_of_log(&path)
+        })
+        .await
+    }
+
     fn voice(&self) -> Option<Arc<nightloom_service::voice::Engine>> {
         let mut slot = self.voice.lock().unwrap_or_else(|p| p.into_inner());
         if slot.is_none() {
@@ -942,7 +969,7 @@ const RAIL_WAIT: Duration = Duration::from_secs(30);
 /// What this host serves of §4 (item 246 design), for `/api/state`'s
 /// `features`: the phone greys out what a host lacks. (`nightshift` the
 /// listener adds itself, while a project has it.)
-pub const FEATURES: [&str; 22] = [
+pub const FEATURES: [&str; 24] = [
     "act",
     "context",
     "layers",
@@ -969,6 +996,9 @@ pub const FEATURES: [&str; 22] = [
     "checkpoint",
     "budget",
     "resume_limit",
+    // Item 743: `/api/rules`, and `decision: "later"` on `/api/approve`.
+    "rules",
+    "later",
 ];
 
 /// The phone's note deletes go here, never gone (the never-lose-work

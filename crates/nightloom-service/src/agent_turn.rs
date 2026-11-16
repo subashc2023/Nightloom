@@ -408,12 +408,18 @@ async fn turn_body(
     // carries its own process's cost, and a turn that paused on a question
     // spans several.
     let mut spent_before: Option<f64> = None;
+    // Calls he answered "Not now — carry on" (item 743) that have not come
+    // back yet. The model is told to make the call again at the end; one
+    // that never returns is said at the turn's end, never silently lost.
+    let mut set_aside: Vec<crate::agent::DeferredCall> = Vec::new();
     while let Ok(outcome) = &result
         && let Some(call) = outcome.deferred.clone()
     {
         let Some(dir) = ask_dir.clone() else {
             break;
         };
+        // The same call again is the one set aside, back for its answer.
+        set_aside.retain(|c| !(c.name == call.name && c.input == call.input));
         let session_id = outcome.session_id.clone();
         let ask_files = AskDir::new(dir);
         // On disk while the card waits (item 522): a launch after a quit
@@ -528,6 +534,9 @@ async fn turn_body(
         if let Some(id) = &session_id {
             agent.set_resume(Some(id.clone()));
         }
+        if matches!(answer, Answer::Later) {
+            set_aside.push(call.clone());
+        }
         if let Answer::Allow {
             grant: Some(grant), ..
         } = &answer
@@ -610,6 +619,16 @@ async fn turn_body(
     }
 
     agent.set_timing(None);
+
+    // Set aside and never asked again (item 743): the call did not run, and
+    // he is told so rather than left to assume the card will return.
+    if let Ok(o) = &mut result
+        && !cancel.is_cancelled()
+    {
+        for c in &set_aside {
+            o.notices.push(set_aside_notice(&c.name));
+        }
+    }
 
     // The council's blocks (backlog 149), whichever way the chair ended.
     if let Some((request, results)) = &council_run {
@@ -1556,6 +1575,13 @@ printf '%s\n' '{{"type":"result","subtype":"success","stop_reason":"tool_deferre
         );
         let _ = std::fs::remove_dir_all(&root);
     }
+}
+
+/// The turn's notice for a call he set aside that did not come back.
+pub fn set_aside_notice(tool: &str) -> String {
+    format!(
+        "You set {tool} aside and the reply ended without that same call coming back, so it did not run. Ask for it when you want it."
+    )
 }
 
 #[cfg(test)]

@@ -10,6 +10,7 @@
 pub mod agent;
 pub mod agent_turn;
 pub mod approval;
+pub mod approval_rules;
 pub mod attach;
 pub mod cache_miss;
 pub mod capture;
