@@ -3195,7 +3195,7 @@
           <span class="queue-text" use:tip={q.text} data-find-text={q.text}>{#if handoffHere && q.id === handoff.queuedId}<span class="ns-chip mono" use:tip={"Put here by Nightloom: the window crossed this chat's hand-off mark while you were away. × takes it back."}>wrap-up · queued while you were away</span> {/if}{firstLine(q.text) || "(no text)"}{#if q.attachments.length > 0} <span class="ns-chip mono">{q.attachments.length} {q.attachments.length === 1 ? "file" : "files"}</span>{/if}</span>
           {#if q.inject}{@const chip = injectChip(q.inject)}<span class="ns-chip mono" data-inject={chip.state} use:tip={chip.tip}>{chip.label}</span>{/if}
           {#if q.inject && q.inject.after === undefined && !q.inject.now}
-            <button class="ns-btn ghost small" data-send-now use:tip={"Stop the step Claude is in (a long command, say) and give it this message at once — as Claude Code's own send now does. The turn goes on."} onclick={() => void sendNowRow(key, q.id)}>send now</button>
+            <button class="ns-btn ghost small" data-send-now use:tip={"Interrupt and send: stop what Claude is doing (a long answer, a long command) and give it this message at once — as Claude Code's own send now does. The reply so far stays and the turn goes on. Left alone, the message slips in at Claude's next gap."} onclick={() => void sendNowRow(key, q.id)}>interrupt and send</button>
           {/if}
           {#if q.inject?.after === undefined}
             <button class="ns-btn ghost small" use:tip={"Back into the message box"} onclick={() => void takeBack(q.id)}>take back</button>
@@ -3222,7 +3222,7 @@
             {#if q.inject}{@const chip = injectChip(q.inject)}<span class="ns-chip mono" data-inject={chip.state} use:tip={chip.tip}>{chip.label}</span>{/if}
             <span class="queue-acts">
               {#if q.inject && q.inject.after === undefined && !q.inject.now}
-                <WaitAct icon="send" accent label="Send now" hint="stop the step Claude is in (a long command, say) and give it this message at once — as Claude Code's own send now does; the turn goes on" data-send-now="" onclick={() => void sendNowRow(key, q.id)} />
+                <WaitAct icon="stop" label="Interrupt and send" hint="stop what Claude is doing (a long answer, a long command) and give it this message at once — as Claude Code's own send now does; the reply so far stays and the turn goes on. Left alone, the message slips in at Claude's next gap" data-send-now="" onclick={() => void sendNowRow(key, q.id)} />
               {/if}
               {#if q.inject?.after === undefined}
                 <WaitAct icon="pencil" label="Take back" hint="back into the message box" onclick={() => void takeBack(q.id)} />

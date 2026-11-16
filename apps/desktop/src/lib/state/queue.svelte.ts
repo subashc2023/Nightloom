@@ -6,6 +6,7 @@ import { carriesAlone, FOLLOWS, pendingFor, type ReplyResult } from "../askReply
 import type { Attachment } from "../types";
 import { rowsOf } from "../subagentRows";
 import { besideAgentsToast, runningAgents } from "../sessionCut";
+import { mainNow } from "../interruptLit";
 import { app, fg, turnWasStopped, cancelTurn, resolveApproval, addToast } from "../state.svelte";
 
 /** The "still running" asks already toasted (backlog 329), by turn and tasks. */
@@ -346,7 +347,40 @@ async function sendBesideAgents(key: string, qid: number, plan: SendNowPlan, age
   return row.inject ? "sent" : "none";
 }
 
-/** *Send now* on a pending row, whichever way it can go (item 536). */
+/**
+ * *Send now* since item 720 (his "the default should be slip"): the row
+ * slips into the running turn — handed in, read at Claude's next gap —
+ * and nothing is ever stopped. `sent` when the turn holds it, `delivered`
+ * when it already took it, `none` when it cannot go in (it waits for the
+ * turn's end, and its bubble says why).
+ */
+export async function slipRow(key: string, qid: number): Promise<"sent" | "delivered" | "none"> {
+  const q = readDraft(key).queue.find((r) => r.id === qid);
+  if (!q) return "delivered";
+  if (q.inject) return q.inject.after !== undefined ? "delivered" : "sent";
+  const plan = sendNowPlan(key, qid);
+  if (plan !== "hand") return "none";
+  await injectIntoTurn(key, q);
+  const after = readDraft(key).queue.find((r) => r.id === qid);
+  if (!after) return "delivered";
+  return after.inject ? "sent" : "none";
+}
+
+/** Whether the main thread is writing its answer now (item 720): then
+ *  nothing it waits on is aborted by Claude Code's own send now, and
+ *  any agents running are background ones. */
+function mainIsWriting(): boolean {
+  return mainNow(app.live?.segments) === "writing";
+}
+
+/**
+ * *Interrupt and send* on a pending row, whichever way it can go (item
+ * 536's *Send now*, renamed by item 720): Claude Code's own send now
+ * (`priority: "now"`) in the running process — measured to cut a long
+ * answer, keep what was written, keep the process and leave background
+ * agents running — and Stop + send only for a row the running turn
+ * cannot take at all (the provider engine, a file chip, no inbox).
+ */
 export async function sendNowAny(key: string, qid: number): Promise<SendNowResult | "stopping" | "none"> {
   const plan = sendNowPlan(key, qid);
   if (plan === "none" || plan === "reply") return "none";
@@ -357,8 +391,26 @@ export async function sendNowAny(key: string, qid: number): Promise<SendNowResul
   // running, so not risked. The row goes in plain (Claude reads it at its
   // next step — at once while only the agents run, 374) or is held for
   // the turn's end, and a toast says which.
+  // Item 720 (measured on 2.1.325): while the main agent is *writing*,
+  // Claude Code's own send now cuts the answer and a background agent
+  // runs on — so then it goes, in the process, never by a stop.
   const agents = runningAgents(rowsOf(app.subagents, fg?.chat ?? app.activeSessionId));
-  if (agents.length > 0) return sendBesideAgents(key, qid, plan, agents);
+  if (agents.length > 0) {
+    if (!mainIsWriting() || plan === "stop") return sendBesideAgents(key, qid, plan, agents);
+    if (plan === "hand") {
+      const q = readDraft(key).queue.find((r) => r.id === qid);
+      if (!q) return "delivered";
+      await injectIntoTurn(key, q);
+    }
+    const row = readDraft(key).queue.find((r) => r.id === qid);
+    if (!row || row.inject?.after !== undefined) return "delivered";
+    if (row.inject?.reply) return "sent";
+    if (!row.inject) return sendBesideAgents(key, qid, "none", agents);
+    const r = await sendNowRow(key, qid, false);
+    // Never the Stop fallback beside agents: it stays handed in.
+    if (r === "not_running") addToast(besideAgentsToast(agents, "handed"));
+    return r === "not_running" ? "sent" : r;
+  }
   if (plan === "now") {
     const r = await sendNowRow(key, qid, false);
     return r === "not_running" ? stopAndSendRow(key, qid) : r;

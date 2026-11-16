@@ -80,10 +80,11 @@ export function injectChip(inj: { after?: string; now?: boolean }): { state: "de
   if (inj.now)
     return {
       state: "now",
-      label: "going now · asked to stop the current step",
-      tip: "Send now: Claude Code is asked to stop the step it is in and read this at once; if it does not, it goes at the next step. Take back works until then.",
+      label: "going now · asked to stop and read it",
+      tip: "Interrupt and send: Claude Code is asked to stop what it is doing and read this at once; if it does not, it goes at the next step. Take back works until then.",
     };
-  return { state: "sent", label: "goes at Claude's next step", tip: "Handed to the running turn: Claude reads it at its next step. Take back works until then." };
+  // Item 720: slipped in — it waits for a gap, and says so.
+  return { state: "sent", label: "waiting for a gap", tip: "Handed to the running turn: Claude reads it at its next gap (after the step it is in). Take back works until then." };
 }
 
 /**

@@ -26,7 +26,8 @@ const api = await import("./api");
 const { drafts, enqueueMessage, readDraft } = await import("./drafts.svelte");
 const st = await import("./state.svelte");
 const { app, injectIntoTurn, openChatKey, send } = st;
-const { sendNow } = await import("./pendingBubble.svelte");
+// Item 720: 703's Send now is Interrupt and send now; Send now itself only slips a row in.
+const { interruptSend: sendNow } = await import("./pendingBubble.svelte");
 
 const CHAT = "chat-703";
 const sendAgent = vi.mocked(api.sendAgent);
