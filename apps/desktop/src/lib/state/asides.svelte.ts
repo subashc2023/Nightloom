@@ -558,6 +558,24 @@ export function draftAside(quote: AsideQuote, anchor: AsideAnchor | null = null)
 }
 
 /**
+ * An empty aside of the open chat, its box ready (item 704): what an
+ * aside tab whose thread is gone shows instead of a blank page. A draft
+ * with no passage — asked in place, as a passage's draft is — that the
+ * store does not keep and no card shows while it holds nothing of his
+ * (`blankDraft`). Null with no chat open or off the Claude Code engine.
+ */
+export function blankAside(): Aside | null {
+  if (app.activeSessionId === null || app.connection?.engine !== "claude-code") return null;
+  return openAsideThread({ id: nextAsideId(), quote: null, draft: true, turns: [], anchor: null });
+}
+
+/** A thread holding nothing of his (item 704): a draft with no passage,
+ *  no exchange and an empty box — `blankAside`'s, drawn only in its tab. */
+export function blankDraft(a: Aside): boolean {
+  return a.draft && a.quote === null && a.turns.length === 0 && !asideHasDraft(a);
+}
+
+/**
  * The card's ×. An aside still `asking…` is cancelled on the backend too
  * (whole-project review F13, `cancel_aside`): before this it was only
  * hidden, and the CLI ran its `--max-turns 2` out behind the card.

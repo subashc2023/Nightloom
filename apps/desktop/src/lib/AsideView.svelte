@@ -12,7 +12,9 @@
   import { asideScrollKey, putBack, recallScroll, rememberScroll, returnEntry } from "./scroll.svelte";
   import { asideLabel } from "./asides";
   import { renameAside } from "./asides.svelte";
-  import { closeAsideToChat } from "./asideSidebar.svelte";
+  import { closeAsideToChat, refillAsideTab, reopenIntoTab } from "./asideSidebar.svelte";
+  import { blankDraft } from "./state/asides.svelte";
+  import { pastOf } from "./asideHistory.svelte";
   import AsideNameEdit from "./AsideNameEdit.svelte";
   import AsideFoldPanel from "./AsideFoldPanel.svelte";
   import * as tabs from "./tabs";
@@ -64,6 +66,27 @@
           (asideTabThread(t.content) ?? null) === (thread ?? null),
       )?.id ?? null,
   );
+  // Item 704: a tab whose thread is gone (closed by its card's ×, the
+  // sidebar or a fold — anything but this tab's Close) drew a blank page:
+  // the hint lay under the Jarvis card and there was no box. It now gets an
+  // empty aside of its chat at once, box and all, and offers the thread it
+  // lost (the one it last showed, by its uid, else the chat's newest past
+  // one) back from the Past list.
+  let shownUid = $state<string | null>(null);
+  $effect(() => {
+    const u = aside?.uid ?? null;
+    if (u && aside && !blankDraft(aside)) untrack(() => (shownUid = u));
+  });
+  $effect(() => {
+    if (aside || !open || !myTab) return;
+    const id = myTab;
+    untrack(() => refillAsideTab(id));
+  });
+  const lost = $derived.by(() => {
+    if (!aside || !blankDraft(aside)) return null;
+    const past = pastOf(session);
+    return past.find((p) => shownUid !== null && p.thread.uid === shownUid) ?? past[past.length - 1] ?? null;
+  });
   let naming = $state(false);
   // Item 673 C1: the card's quote, folded to two lines until clicked.
   let quoteOpen = $state(false);
@@ -356,11 +379,20 @@
     {/if}
   {/snippet}
   {#if !aside}
+    <!-- Item 704: with the card's room, so the hint is not under it; the
+         open chat's tab is given an empty aside at once (the effect above),
+         so this shows only for a chat that is not the open one. -->
     <div class="aside-view-scroll">
       <div class="aside-view-col">
+        {#if !classic()}{@render room()}{/if}
         <p class="aside-view-hint">
-          No aside on this chat. Ask one from the composer's <em>Ask aside</em>, or highlight a passage in the
-          transcript.
+          {#if open}
+            No aside on this chat. Ask one from the composer's <em>Ask aside</em>, or highlight a passage in the
+            transcript.
+          {:else}
+            This aside is closed or not open now. Open “{chatName}” to ask a new one here
+            {#if pastOf(session).length > 0}, or reopen it from the chat's past asides{/if}.
+          {/if}
         </p>
       </div>
     </div>
@@ -416,6 +448,15 @@
          it. -->
     <div class="aside-view-foot">
       <div class="aside-view-foot-inner">
+        {#if lost && myTab}
+          <!-- Item 704: the thread this tab lost, a click away. -->
+          {@const tabId = myTab}
+          {@const key = lost.key}
+          <p class="aside-view-lost">
+            The aside this tab showed was closed — it is in the chat's past asides.
+            <button class="ns-btn aside-view-reopen" onclick={() => reopenIntoTab(tabId, key)}>Reopen it</button>
+          </p>
+        {/if}
         <!-- Since backlog 283 the chat's composer, in the aside's frame. -->
         <Composer {aside} asideChat={session} takeFocus />
       </div>
@@ -898,6 +939,16 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
+  }
+  /* Item 704: the lost thread's line above the box. */
+  .aside-view-lost {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 0 0 8px;
+    color: var(--dim);
+    font-size: 12.5px;
   }
   .aside-view-hint {
     margin: 0;

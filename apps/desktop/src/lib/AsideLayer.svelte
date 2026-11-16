@@ -2,6 +2,7 @@
   import { onDestroy, tick, untrack } from "svelte";
   import { app, asideInTab, unfoldAside } from "./state.svelte";
   import type { Aside } from "./state.svelte";
+  import { blankDraft } from "./state/asides.svelte";
   import AsideCard from "./AsideCard.svelte";
   import AsidesList from "./AsidesList.svelte";
   import { cardWaits } from "./transcriptWindow.svelte";
@@ -67,7 +68,9 @@
   const waitsForTurn = (a: Aside) => cardWaits(a, drawn);
   /** The cards drawn here: every open thread not in a tab or the panel,
    *  and not waiting for its turn to be drawn. */
-  const shown = $derived(app.asides.filter((a) => !asideInTab(session, a.id) && !waitsForTurn(a)));
+  // Item 704: an empty aside made for a tab whose thread was gone holds
+  // nothing of his — no card for it once that tab closes.
+  const shown = $derived(app.asides.filter((a) => !asideInTab(session, a.id) && !waitsForTurn(a) && !blankDraft(a)));
   /** The thread the side panel shows beside this chat, if any. */
   const besideId = $derived.by(() => {
     if (session === null || app.asidePanel !== session) return null;
