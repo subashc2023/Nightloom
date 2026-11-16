@@ -20,6 +20,7 @@ import { artifactsSummary, artifactsText, composeFirstMessage, costText, emptyAr
 import { keptGet, keptSet } from "./keptFolds.svelte";
 import { viewGet, viewSet } from "./viewState";
 import { hasHiddenChars } from "./shellRun";
+import { foldMotion } from "./foldMotion";
 import type { SessionMeta } from "./types";
 
 export const CONTINUE_LABEL = "Continue with this prompt";
@@ -386,7 +387,8 @@ export function foldCard(chat: string, index: number, on: boolean): void {
   setCardMinimized(chat, index, on);
   const key = `${chat}|${index}`;
   for (const card of Array.from(document.querySelectorAll<HTMLElement>(".handoff-card"))) {
-    if (card.dataset[CARD_KEY] === key) paintCard(card, on);
+    // Item 755: the same short motion an aside's card folds with.
+    if (card.dataset[CARD_KEY] === key) void foldMotion(card, () => paintCard(card, on));
   }
 }
 
