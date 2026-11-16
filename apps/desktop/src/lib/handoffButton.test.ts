@@ -181,3 +181,36 @@ describe("506: staying is sending here", () => {
     expect(handoff.stage).toBe("due");
   });
 });
+
+describe("747: what the card's button sends", () => {
+  it("the prompt alone without a carry; with one, his goal and ticks as the card holds them", async () => {
+    const { nextChatMessage, carryGoal, setCarryGoal, carryTicks, setCarryTick } = await import("./handoffButton");
+    const { buildCarry, parseCarried } = await import("./handoffCarry");
+    expect(nextChatMessage({ chat: "c747", index: 4, prompt: card })).toBe(card);
+    const events: SessionEvent[] = [
+      { event: "session_created", id: "c747", at: "2026-11-16T12:00:00Z" },
+      { event: "user_message", text: "stop suggesting rebases", at: "2026-11-16T12:01:00Z" },
+      { event: "assistant_message", model: "m", blocks: [{ type: "text", text: "ok" }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 }, at: "2026-11-16T12:02:00Z" },
+      { event: "user_message", text: "hand off", at: "2026-11-16T12:03:00Z" },
+      { event: "assistant_message", model: "m", blocks: [{ type: "text", text: `<handoff>\nGoal: fix the parser\n\n${card}\n</handoff>` }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 }, at: "2026-11-16T12:04:00Z" },
+    ];
+    const prompt = `Goal: fix the parser\n\n${card}`;
+    const carry = buildCarry({ events, live: events.map(() => true), reply: 4, prompt });
+    const next = { chat: "c747", index: 4, prompt, carry };
+    // Untouched: the prompt's own goal, nothing ticked — the prompt as the model wrote it.
+    expect(carryGoal("c747", 4)).toBeNull();
+    expect(nextChatMessage(next)).toBe(prompt);
+    setCarryGoal("c747", 4, "fix the parser, then 705");
+    setCarryTick("c747", 4, "m1", true);
+    expect(carryTicks("c747", 4)).toEqual({ m1: true });
+    const sent = nextChatMessage(next);
+    expect(sent.startsWith(`Goal: fix the parser, then 705\n\n${card}`)).toBe(true);
+    expect(parseCarried(sent).map((m) => m.text)).toEqual(["stop suggesting rebases"]);
+    // Another reply's card has its own goal and ticks.
+    expect(carryGoal("c747", 9)).toBeNull();
+    expect(carryTicks("c747", 9)).toEqual({});
+    setCarryGoal("c747", 4, null);
+    setCarryTick("c747", 4, "m1", false);
+    expect(nextChatMessage(next)).toBe(prompt);
+  });
+});

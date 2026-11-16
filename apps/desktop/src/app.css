@@ -569,6 +569,140 @@ button {
   flex: none;
 }
 
+/* Item 747: above the button, what the hand-off carries besides the prompt
+   (handoffButton.ts `carryBlock`): the goal field, his messages the hand-off
+   does not quote (tickable), the list built from the tool calls, the section
+   check, the cost. One column, the card's own text size. */
+.markdown .handoff-go .handoff-carry {
+  flex: 1 1 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line2);
+  color: var(--dim);
+}
+.markdown .handoff-carry .handoff-goal {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.markdown .handoff-carry .handoff-goal-label {
+  flex: none;
+  font-weight: 600;
+  color: var(--accent-ink);
+}
+.markdown .handoff-carry .handoff-goal-input {
+  flex: 1 1 0;
+  min-width: 0;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--ink);
+  border: 1px solid var(--line2);
+  padding: 4px 8px;
+}
+:where(:root:not([data-layout="classic"])) .markdown .handoff-carry .handoff-goal-input {
+  background: var(--term);
+  border-radius: var(--r1);
+}
+:where([data-layout="classic"]) .markdown .handoff-carry .handoff-goal-input {
+  background: var(--paper);
+  border-radius: 6px;
+}
+.markdown .handoff-carry .handoff-goal-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.markdown .handoff-carry .handoff-goal-input:disabled {
+  opacity: 0.6;
+}
+.markdown .handoff-carry details > summary {
+  cursor: pointer;
+  line-height: 1.5;
+  user-select: none;
+}
+.markdown .handoff-carry .handoff-his-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+  max-height: 260px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.markdown .handoff-carry .handoff-his-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.markdown .handoff-carry .handoff-his-row:hover {
+  background: var(--accent-soft);
+}
+.markdown .handoff-carry .handoff-his-row input {
+  flex: none;
+  margin: 3px 0 0;
+  accent-color: var(--accent);
+}
+.markdown .handoff-carry .handoff-his-body {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.markdown .handoff-carry .handoff-his-when {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  color: var(--dim);
+}
+.markdown .handoff-carry .handoff-his-text {
+  color: var(--ink);
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.markdown .handoff-carry .handoff-his-text.clamped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+}
+.markdown .handoff-carry .handoff-his-more {
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 0.72rem;
+  color: var(--accent-ink);
+  cursor: pointer;
+}
+.markdown .handoff-carry .handoff-made-text {
+  margin-top: 4px;
+  max-height: 260px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  line-height: 1.5;
+}
+.markdown .handoff-carry .handoff-line {
+  line-height: 1.5;
+}
+.markdown .handoff-carry .handoff-warn {
+  color: var(--warn, var(--accent-ink));
+}
+.markdown .handoff-carry .handoff-cost {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+}
+
 .markdown blockquote {
   margin: 0.6em 0;
   padding: 0.1em 0 0.1em 0.9em;

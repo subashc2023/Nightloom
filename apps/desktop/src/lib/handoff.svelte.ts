@@ -76,6 +76,14 @@
  *    window, 300k on a 1M one (`mark`). A chat's own percent is his explicit
  *    choice and is not capped.
  *
+ * 9. **What a hand-off carries** (item 747, 2026-11-16, from item 736's
+ *    survey): the wrap-up goes out with the fixed sections under it
+ *    (`wrapUpToSend`, `handoffCarry.ts` `sectionsAddendum`) and the goal he
+ *    typed on the notice; the reply's card then shows the goal as a field,
+ *    lists his messages the hand-off does not quote (tickable, carried word
+ *    for word), the files, commits, subagent reports and items read from the
+ *    tool calls, and what the wrap-up cost (`handoffButton.ts`).
+ *
  * The stage machine is pure (`nextStage`, `autoQueues`, `isAway`,
  * `extractStartPrompt`) so it can be tested without a window: the running
  * app could not be driven the day it was built.
@@ -84,6 +92,7 @@ import type { SessionEvent } from "./types";
 import { dropQueued, enqueueMessage } from "./drafts.svelte";
 import { windowFocused } from "./notify";
 import { extractHandoff, HANDOFF_ASK } from "./handoffTag";
+import { wrapUpWithSections } from "./handoffCarry";
 
 export type HandoffStage = "idle" | "due" | "wrapping" | "wrapped";
 
@@ -455,7 +464,8 @@ export function noteFill(
     crossing ||
     (atEnd && before === "due" && queuesAtTurnEnd(after, away, handoff.dismissedAt, handoff.queuedId, isUnattended(chat)))
   ) {
-    const text = message(chat);
+    // ~~`message(chat)`~~ — item 747: with the fixed sections and his goal.
+    const text = wrapUpToSend(chat);
     if (text.trim()) {
       handoff.queuedId = enqueueMessage(chat, text, []).id;
       // What follows — the wrap-up, the next chat — runs without him (544).
@@ -579,6 +589,8 @@ export function resetHandoff(): void {
   // Item 506: the button can leave a chat with the wrap-up still queued.
   dropAutoQueued();
   if (handoff.chat !== null) stages.delete(handoff.chat);
+  // Item 747: its goal went out with the wrap-up; the next chat has it.
+  setGoal(handoff.chat, "");
   handoff.chat = null;
   handoff.stage = "idle";
   handoff.fill = 0;
@@ -598,6 +610,7 @@ export function leaveHandoff(chat: string | null): void {
   const kept = chat === null ? undefined : stages.get(chat);
   if (chat && kept?.queuedId) dropQueued(chat, kept.queuedId);
   if (chat) stages.delete(chat);
+  setGoal(chat, "");
 }
 
 // ---- the preferences: the threshold and the message, global and per chat ----
@@ -624,6 +637,8 @@ export interface Stored {
   perThread: Record<string, number>;
   /** A project's own mark (545), by project id (`UNFILED` for none). */
   perProject: Record<string, number>;
+  /** Item 747: the goal he typed on a chat's notice, for its next chat. */
+  goals: Record<string, string>;
 }
 
 /**
@@ -731,6 +746,7 @@ export function parseStored(raw: string | null): Stored {
         readOrder: isString(p.readOrder) ? p.readOrder : null,
         readOrders: readMap(p.readOrders, isString),
         cap: typeof p.cap === "number" && Number.isFinite(p.cap) && p.cap >= 0 ? p.cap : DEFAULT_CAP_TOKENS,
+        goals: readMap(p.goals, isText),
       };
     }
   } catch {
@@ -746,6 +762,7 @@ export function parseStored(raw: string | null): Stored {
     readOrder: null,
     readOrders: {},
     cap: DEFAULT_CAP_TOKENS,
+    goals: {},
   };
 }
 
@@ -1043,6 +1060,38 @@ export function setDefaultMessage(text: string): void {
  *  research wrap-up (backlog 271), else the Settings default. */
 export function message(chat: string | null): string {
   return pickText(chat ? stored.messages[chat] : undefined, threadMessage(chat), defaultMessage());
+}
+
+// ---- item 747: the goal for the next chat, and the wrap-up as sent ----
+
+/** The goal he typed on this chat's notice; "" when none. */
+export function goal(chat: string | null): string {
+  return (chat && stored.goals[chat]) || "";
+}
+
+/** Keep the goal as he types it; a blank clears it. Kept on disk with the
+ *  other hand-off choices, so a relaunch mid-thought does not lose it. */
+export function setGoal(chat: string | null, text: string): void {
+  if (!chat) return;
+  if (text.trim()) stored.goals[chat] = text;
+  else delete stored.goals[chat];
+  save();
+}
+
+/** Whether this chat's wrap-up writes a HANDOFF.md section: every chat but a
+ *  thread chat in a project that keeps none (its memory is the thread). */
+export function writesHandoffFile(chat: string | null): boolean {
+  return !threadFor(chat) || codeProjectFor(chat);
+}
+
+/**
+ * The wrap-up as it is sent for this chat: `message(chat)` — the one he can
+ * edit — then the fixed sections Nightloom adds under any wrap-up, then his
+ * goal. The notice shows the added part under the message box, so all that
+ * is sent is on screen (blocker 1659's rule).
+ */
+export function wrapUpToSend(chat: string | null, text: string = message(chat)): string {
+  return wrapUpWithSections(text, goal(chat), writesHandoffFile(chat));
 }
 
 /** Whether the chat has a wrap-up of its own. */

@@ -76,6 +76,7 @@
     hasOwnMessage,
     hasOwnThreshold,
     message,
+    wrapUpToSend,
     noteActivity,
     noteFill,
     queueHold,
@@ -100,6 +101,7 @@
   import { composerModelId, modelFamily } from "./modelFamily";
   import { cacheFrame, cacheLook } from "./cacheLook.svelte";
   import ThreadPicker from "./ThreadPicker.svelte";
+  import HandoffGoal from "./HandoffGoal.svelte";
   import { chatThread, refreshThreadFlags, injectIntoTurn, sendNowRow, openChatKey, takeQueued, takeStopSend, frontQueued, stopSendFor } from "./state.svelte";
   import { injectChip, queueHeadLabel } from "./midTurn";
   import { rowsOf } from "./subagentRows";
@@ -878,7 +880,8 @@
     const chat = app.activeSessionId;
     // Item 285: with open asides, their picker first; each ticked aside's
     // summary rides in (log.md for a bound chat, the message otherwise).
-    const text = wrapUpText;
+    // ~~`wrapUpText`~~ — item 747: with the fixed sections and his goal, as the notice shows.
+    const text = wrapUpToSend(chat, wrapUpText);
     await requestWrapUp(chat, async (extra) => {
       if (app.busy || !app.connection || app.activeSessionId !== chat) {
         addToast("The wrap-up did not go — the chat was busy or no longer open; press Wrap up now again");
@@ -3390,6 +3393,8 @@
           setMessage(app.activeSessionId, (e.currentTarget as HTMLTextAreaElement).value);
         }}
       ></textarea>
+      <!-- Item 747: the goal for the next chat, and what Nightloom adds under the message. -->
+      <HandoffGoal chat={app.activeSessionId} />
       <div class="handoff-acts">
         {#if !wrapUpQueued}
           <button class="ns-btn accent small" disabled={app.busy || !wrapUpText.trim()} onclick={() => void sendWrapUpNow()}>Wrap up now</button>

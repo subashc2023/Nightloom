@@ -42,7 +42,8 @@
   import { scheduledFor } from "./scheduled.svelte";
   import type { Segment } from "./state.svelte";
   import { asideReads } from "./state.svelte";
-  import { continuableReply, continuedFromReply, type NextChat } from "./handoffButton";
+  import { continuableReply, continuedFromReply, nextChatMessage, type NextChat } from "./handoffButton";
+  import { carryFor } from "./handoffCarryFor";
   import { checkpointLine, checkpointOwner } from "./checkpoint";
   import { pauseLabel, resetLabel, resumeDelayMs } from "./limit";
   import {
@@ -539,15 +540,21 @@
     if (inPane || !from) return null;
     const reply = continuableReply(items.map((it) => ({ ...it, segs: it.kind === "assistant" ? it.segs : undefined })));
     if (!reply) return null;
+    // Item 747: what the card adds to the prompt, read from this chat's log.
+    const carry = carryFor(from, evs, reply.index, reply.prompt);
     return {
       chat: from,
       index: reply.index,
       prompt: reply.prompt,
+      carry,
       // Item 520: nothing goes above the prompt, so the card shows no read order.
       readOrder: "",
       used: continuedThisRun(from, reply.index) || continuedFromReply(app.sessions, from, reply.index),
       blocked: app.busy ? "A turn is running — continue when it ends" : null,
-      onContinue: () => void continueWithPrompt(from, reply.index, reply.prompt),
+      // ~~`reply.prompt`~~ — item 747: the goal as the card's field has it, the
+      // prompt, his ticked messages, the artifact list; read at the click.
+      onContinue: () =>
+        void continueWithPrompt(from, reply.index, nextChatMessage({ chat: from, index: reply.index, prompt: reply.prompt, carry })),
     };
   });
 
