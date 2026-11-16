@@ -69,8 +69,12 @@
     plan: "Keep planning — the note is why; the model reads it and plans again. Approve — the plan starts; the note is sent as your next message when that turn ends.",
   } as const;
 
+  // Item 743 (blocker 2029's default): the phone card's set-aside, on the Mac
+  // too, with the phone's note as its hover text.
+  const LATER_TIP = "Not now: Claude does the rest of the task without this, then asks you again at the end.";
+
   function decide(
-    decision: "allow" | "always" | "deny",
+    decision: "allow" | "always" | "deny" | "later",
     answer?: unknown,
     then?: "ask" | "auto",
     fallback?: string,
@@ -602,6 +606,8 @@
           >
         {/if}
         <button class="ns-btn danger" bind:this={denyButton} onclick={() => decide("deny")}>Deny</button>
+        <!-- Item 743: the phone card's "Not now — carry on", same words, the `later` reply the window takes. -->
+        <button class="ns-btn" data-act="later" use:tip={LATER_TIP} onclick={() => decide("later")}>Not now — carry on</button>
         <span class="keys">⏎ allow · esc deny · the note goes with either</span>
       </div>
     {/if}
@@ -638,6 +644,7 @@
     <button class="btn deny" bind:this={denyButton} onclick={onDeny}>
       {denying ? "Deny" : "Deny…"}
     </button>
+    <button class="btn" data-act="later" use:tip={LATER_TIP} onclick={() => decide("later")}>Not now — carry on</button>
   </div>
 
   {#if denying}
