@@ -1681,11 +1681,16 @@ export function questionAnswer(
   input: unknown,
   picks: Record<number, string[]>,
   others: Record<number, string>,
+  notes: Record<number, Record<string, string>> = {},
 ): unknown {
   const qs = (input as { questions?: { question: string }[] } | null)?.questions ?? [];
   const answers: Record<string, string> = {};
   qs.forEach((q, i) => {
-    const chosen = [...(picks[i] ?? [])];
+    // Item 712: a picked option carries his comment, `Label (note: …)`, as the desktop's `withNote`.
+    const chosen = (picks[i] ?? []).map((l) => {
+      const n = (notes[i]?.[l] ?? "").replace(/\s+/g, " ").trim();
+      return n ? `${l} (note: ${n})` : l;
+    });
     const other = (others[i] ?? "").trim();
     if (other) chosen.push(other);
     answers[q.question] = chosen.join(", ");

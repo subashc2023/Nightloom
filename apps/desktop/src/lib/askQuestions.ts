@@ -23,9 +23,24 @@ export function isAnswered(picks: string[] | undefined, other: string | undefine
   return (picks?.length ?? 0) > 0 || (other ?? "").trim() !== "";
 }
 
-/** One question's answer as the CLI takes it: the picked labels, then Other as typed, joined with ", ". */
-export function answerText(picks: string[] | undefined, other: string | undefined): string {
-  const chosen = [...(picks ?? [])];
+/** One question's comments (item 712): option label → what he typed beside it. */
+export type OptionNotes = Record<string, string>;
+
+/**
+ * A picked option with his comment on it (item 712), as the model reads it in the answer:
+ * `Label (note: his words)`. The comment is folded to one line; an empty one leaves the label alone.
+ */
+export function withNote(label: string, note: string | undefined): string {
+  const n = (note ?? "").replace(/\s+/g, " ").trim();
+  return n ? `${label} (note: ${n})` : label;
+}
+
+/**
+ * One question's answer as the CLI takes it: the picked labels (each with his comment, if any), then Other
+ * as typed, joined with ", ". A comment on an option he did not pick is not sent.
+ */
+export function answerText(picks: string[] | undefined, other: string | undefined, notes?: OptionNotes): string {
+  const chosen = (picks ?? []).map((l) => withNote(l, notes?.[l]));
   const o = (other ?? "").trim();
   if (o) chosen.push(o);
   return chosen.join(", ");
@@ -40,10 +55,11 @@ export function buildAnswer(
   questions: AskQuestion[],
   picks: Record<number, string[]>,
   others: Record<number, string>,
+  notes: Record<number, OptionNotes> = {},
 ): unknown {
   const answers: Record<string, string> = {};
   questions.forEach((q, i) => {
-    answers[q.question] = answerText(picks[i], others[i]);
+    answers[q.question] = answerText(picks[i], others[i], notes[i]);
   });
   return { ...(input as object), answers };
 }
@@ -92,11 +108,18 @@ export function answerParts(answer: string, labels: string[]): string[] {
   let rest = answer;
   for (;;) {
     const hit = labels
-      .filter((l) => l !== "" && (rest === l || rest.startsWith(l + ", ")))
+      .filter((l) => l !== "" && (rest === l || rest.startsWith(l + ", ") || rest.startsWith(l + " (note: ")))
       .sort((a, b) => b.length - a.length)[0];
     if (hit === undefined) break;
-    parts.push(hit);
-    rest = rest === hit ? "" : rest.slice(hit.length + 2);
+    let len = hit.length;
+    // Item 712: `Label (note: …)` stays one chip — up to the ")" that ends the answer or comes before ", ".
+    if (rest.startsWith(hit + " (note: ")) {
+      const end = rest.endsWith(")") && !rest.includes("), ", hit.length) ? rest.length : rest.indexOf("), ", hit.length) + 1;
+      if (end <= 0) break;
+      len = end;
+    }
+    parts.push(rest.slice(0, len));
+    rest = rest.length === len ? "" : rest.slice(len + 2);
   }
   if (rest !== "") parts.push(rest);
   return parts;

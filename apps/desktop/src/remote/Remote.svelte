@@ -2667,6 +2667,8 @@
   let notes = $state<Record<string, string>>({});
   let picks = $state<Record<string, Record<number, string[]>>>({});
   let others = $state<Record<string, Record<number, string>>>({});
+  // Item 712: his comment on each option, by call, question, label.
+  let optNotes = $state<Record<string, Record<number, Record<string, string>>>>({});
   let planThen = $state<Record<string, "ask" | "auto">>({});
 
   async function answer(
@@ -3100,10 +3102,13 @@
               others={others[req.id] ?? {}}
               ontoggle={(i, label, multi) => toggle(req.id, i, label, multi)}
               onother={(i, v) => (others = { ...others, [req.id]: { ...(others[req.id] ?? {}), [i]: v } })}
+              notes={optNotes[req.id] ?? {}}
+              onnote={(i, label, v) =>
+                (optNotes = { ...optNotes, [req.id]: { ...(optNotes[req.id] ?? {}), [i]: { ...(optNotes[req.id]?.[i] ?? {}), [label]: v } } })}
             />
             <input type="text" placeholder="A note (goes as your next message)" bind:value={notes[req.id]} />
             <div class="actions">
-              <button class="btn accent" disabled={!answered(req)} onclick={() => answer(req, "allow", questionAnswer(req.input, picks[req.id] ?? {}, others[req.id] ?? {}))}>Answer</button>
+              <button class="btn accent" disabled={!answered(req)} onclick={() => answer(req, "allow", questionAnswer(req.input, picks[req.id] ?? {}, others[req.id] ?? {}, optNotes[req.id] ?? {}))}>Answer</button>
               <button class="btn" onclick={() => answer(req, "deny", undefined, undefined, "the user skipped the question")}>Skip</button>
             </div>
           {:else if kind === "plan"}

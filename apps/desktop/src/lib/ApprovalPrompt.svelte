@@ -270,6 +270,8 @@
   });
   let picks = $state<Record<number, string[]>>({});
   let others = $state<Record<number, string>>({});
+  // Item 712: his comment on each option, sent with a picked one (`Label (note: …)`).
+  let notes = $state<Record<number, Record<string, string>>>({});
 
   function toggle(i: number, label: string, multi: boolean) {
     const cur = picks[i] ?? [];
@@ -289,7 +291,7 @@
   );
 
   function answerQuestions() {
-    const payload = buildAnswer(req.input, questions, picks, others) as { answers: Record<string, string> };
+    const payload = buildAnswer(req.input, questions, picks, others, notes) as { answers: Record<string, string> };
     // Kept by call id for the answered table under the call (354).
     recordAnswers(req.id, answeredRows(questions, payload.answers));
     decide("allow", payload);
@@ -408,6 +410,8 @@
       {others}
       ontoggle={toggle}
       onother={(i, v) => (others[i] = v)}
+      {notes}
+      onnote={(i, label, v) => (notes[i] = { ...(notes[i] ?? {}), [label]: v })}
       {folded}
     >
       {#snippet tail()}
