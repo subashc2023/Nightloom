@@ -29,6 +29,7 @@
   import { pickMotion as pickSlide } from "./settings/pickMotion";
   import { COMPOSER_ROWS, composerRow, setComposerRow } from "./composerRow.svelte";
   import { CACHE_LOOKS, cacheLook, setCacheLook } from "./cacheLook.svelte";
+  import CacheLookPreview from "./CacheLookPreview.svelte";
   // Item 589: the running step's motion in the turn trace.
   import { STEP_MOTIONS, stepMotion, setStepMotion, type StepMotion } from "./stepMotion.svelte";
   import StepMotionPreview from "./StepMotionPreview.svelte";
@@ -36,6 +37,8 @@
   import { GROUND_STYLES, GROUND_MENU } from "./newChatGround";
   import { groundPick, setGroundPick } from "./newChatGroundPick.svelte";
   import GroundPreview from "./GroundPreview.svelte";
+  import { wholeCardPicks } from "./settings/wholeCard";
+  import { tabPlace } from "./tabPlace"; // Item 715: the view keeps its scroll across close and reopen.
   // End item 632.
   // Item 640: Settings offers Horizon, Radar and Default (Weft); a stored look
   // no longer offered shows as one more card, the earlier pick, until he picks.
@@ -1379,7 +1382,7 @@
 
 <!-- Item 631: every radio group in Settings moves when its pick changes (`settings/pickMotion.ts`). -->
 <div class="modal" use:pickSlide>
-  <nav class="nav" bind:this={navEl}>
+  <nav class="nav" bind:this={navEl} use:tabPlace={"settings:nav"}>
     <div class="nav-h">Settings</div>
     <!-- Usage & Cost (nightshift backlog 206): one category, two tabs —
          what the plan has left, then what it would have cost. 153 had made
@@ -1541,7 +1544,7 @@
   </nav>
 
   {#if selected === "appearance"}
-    <div class="pane">
+    <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
         <h2 class="pane-title">Palette</h2>
         <span class="slug">{app.palette}</span>
@@ -1731,6 +1734,8 @@
             <button class="pick" class:on={cacheLook.value === c.id} role="radio" aria-checked={cacheLook.value === c.id} onclick={() => setCacheLook(c.id)}>
               <span class="pick-h"><i class="radio" aria-hidden="true"></i>{c.name}</span>
               <span class="pick-n">{c.note}</span>
+              <!-- Item 716: the look live on a small real box, over a sped-up hour. -->
+              <CacheLookPreview look={c.id} />
             </button>
           {/each}
         </div>
@@ -1948,7 +1953,7 @@
          "put both A and B as two diff options for the thinking block's
          animation"). One card per animated moment; the rewind and the
          delete (396, 397) join as cards of their own below this one. -->
-    <div class="pane">
+    <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
         <h2 class="pane-title">Animations</h2>
         <span class="spacer"></span>
@@ -1964,7 +1969,7 @@
         <p class="note small">How a reply's thinking block comes in when the model starts thinking.</p>
         <div class="anims" role="radiogroup" aria-label="Thinking block arrival">
           {#each OFFERED_STYLES as s (s.id)}
-            <div class="anim" class:on={arrival === s.id}>
+            <div class="anim" use:wholeCardPicks class:on={arrival === s.id}>
               <button
                 class="anim-pick"
                 role="radio"
@@ -2004,7 +2009,7 @@
             </p>
             <div class="anims three motion-picks" role="radiogroup" aria-label="Thinking motion">
               {#each STEP_MOTIONS as m (m.id)}
-                <div class="anim" class:on={stepMotion.value === m.id}>
+                <div class="anim" use:wholeCardPicks class:on={stepMotion.value === m.id}>
                   <button
                     class="anim-pick"
                     role="radio"
@@ -2034,7 +2039,7 @@
             </p>
             <div class="anims motion-picks" role="radiogroup" aria-label="Reply text">
               {#each REPLY_LOOKS as l (l.id)}
-                <div class="anim" class:on={replyLook.value === l.id}>
+                <div class="anim" use:wholeCardPicks class:on={replyLook.value === l.id}>
                   <button class="anim-pick" role="radio" aria-checked={replyLook.value === l.id} onclick={() => setReplyLook(l.id)}>
                     <span class="anim-name">{l.name}</span>
                     <span class="anim-blurb">{l.note}</span>
@@ -2057,7 +2062,7 @@
             {#each OFFERED_MOTIONS[mk.kind] as s (s.id)}
               {@const key = `${mk.kind}:${s.id}`}
               {@const done = !!motionDone[key]}
-              <div class="anim" class:on={motionPick[mk.kind] === s.id}>
+              <div class="anim" use:wholeCardPicks class:on={motionPick[mk.kind] === s.id}>
                 <button
                   class="anim-pick"
                   role="radio"
@@ -2109,7 +2114,7 @@
           </p>
           <div class="anims three" role="radiogroup" aria-label="New-chat background">
             {#each groundCards as g (g.id)}
-              <div class="anim" class:on={groundPick.value === g.id}>
+              <div class="anim" use:wholeCardPicks class:on={groundPick.value === g.id}>
                 <button class="anim-pick" role="radio" aria-checked={groundPick.value === g.id} onclick={() => setGroundPick(g.id)}>
                   <span class="anim-name">{g.name}</span>
                   <span class="anim-blurb">{g.note}</span>
@@ -2131,7 +2136,7 @@
          and nothing else (blocker 105's default — no LAN, no 0.0.0.0, no
          option), off by default. The token is the phone's key: shown as a
          QR the camera opens and as text for a paste. -->
-    <div class="pane">
+    <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
         <h2 class="pane-title">Phone</h2>
         <span class="slug">{remote?.on ? `on · ${remote.address}:${remote.port}` : phoneWanted(remote) ? "on · waiting for Tailscale" : "off"}</span>
@@ -2239,7 +2244,7 @@
          Mac sleeps. The Mac sends copies up — memory, the vault, and the
          projects marked below — and takes the chats started there back
          down. The token is read from a file by the app and never shown. -->
-    <div class="pane">
+    <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
         <h2 class="pane-title">Away server</h2>
         <span class="slug">{awayHeadline(away)}</span>
@@ -2747,7 +2752,7 @@
          ledger. Refresh now sits on both and re-reads all of it (153's
          second half; the 116 banner opens Usage); each card says when it
          was read. -->
-    <div class="pane">
+    <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
         <h2 class="pane-title">{selected === USAGE_PANE ? "Usage" : "Cost"}</h2>
         <span class="slug"
@@ -3073,7 +3078,7 @@
   {:else if selected === "council"}
     <!-- The council's pane (nightshift backlog 149): the default roster
          and mode, and the table of recent council turns. -->
-    <div class="pane">
+    <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
         <h2 class="pane-title">Council</h2>
         <span class="slug">several models answer one message; this chat's model chairs</span>
@@ -3175,7 +3180,7 @@
       </section>
     </div>
   {:else if selected === "projects"}
-    <div class="pane">
+    <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
         <h2 class="pane-title">Projects folder</h2>
         <span class="slug">new projects go in</span>
@@ -3227,7 +3232,7 @@
       </section>
     </div>
   {:else if selected === "knowledge"}
-    <div class="pane">
+    <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
         <h2 class="pane-title">Knowledge base</h2>
         <span class="slug">{app.knowledge?.alias ?? "@kb"}</span>
@@ -3455,7 +3460,7 @@
       </section>
     </div>
   {:else if selected === "models"}
-    <div class="pane">
+    <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
         <h2 class="pane-title">Model instructions</h2>
         <span class="slug">~/.nightloom/models</span>
@@ -3607,7 +3612,7 @@
       </section>
     </div>
   {:else if searchSel}
-    <div class="pane">
+    <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
         <h2 class="pane-title">{searchSel.label}</h2>
         <span class="slug">{searchSel.env_key}</span>
@@ -3635,7 +3640,7 @@
   {:else if provider}
     {@const state = keyState(provider)}
     {@const keyFirst = provider.key_source === null}
-    <div class="pane">
+    <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
         <h2 class="pane-title">{providerLabel(provider.kind)}</h2>
         <span class="slug">{provider.kind}</span>
@@ -4985,6 +4990,10 @@
   }
   .anim:hover {
     border-color: var(--dim);
+  }
+  /* Item 719: the card itself picks (settings/wholeCard.ts), so all of it says so. */
+  .anim {
+    cursor: pointer;
   }
   .anim.on {
     border-color: var(--accent);

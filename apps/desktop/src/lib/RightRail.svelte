@@ -1,5 +1,6 @@
 <script lang="ts">
   import ProviderRail from "./ProviderRail.svelte";
+  import { tabPlace } from "./tabPlace"; // Item 715: the view keeps its scroll across close and reopen.
   import TaskPanel from "./TaskPanel.svelte";
   import ContextDial from "./ContextDial.svelte";
   import DialMotion from "./DialMotion.svelte";
@@ -317,7 +318,7 @@
   </aside>
 {:else if column}
   <!-- Item 563: data-rail-col — the first send from the new-chat page slides this column in (sendMotion.ts departDial). -->
-  <aside class="col" data-rail-col aria-label="Context, plan use, this turn and tasks">
+  <aside class="col" data-rail-col aria-label="Context, plan use, this turn and tasks" use:tabPlace={"rail:col:" + (aside ? "aside" : "chat")}>
     <section>
       <h4>Context <span class="hr"><span>{modelShort(af?.model ?? aside?.model ?? app.connection?.model)}</span>{@render foldButton(false)}</span></h4>
       <div class="dial-at" data-dial-dock>
@@ -569,7 +570,7 @@
     {/if}
   </aside>
 {:else}
-  <aside class="rail">
+  <aside class="rail" use:tabPlace={`rail:pop:${aside ? "aside" : tab}`}>
     <div class="tabs" role="tablist">
       <!-- Item 657: an aside's card (its chip's) has no Tasks — the to-do list is the chat's session's, as in 605's column. -->
       {#each aside ? TABS.filter((t) => t.id !== "tasks") : TABS as t (t.id)}

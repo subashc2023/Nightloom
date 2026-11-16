@@ -1,5 +1,6 @@
 <script lang="ts">
   import ProviderRail from "./ProviderRail.svelte";
+  import { tabPlace } from "./tabPlace"; // Item 715: the view keeps its scroll across close and reopen.
   import TaskPanel from "./TaskPanel.svelte";
   import { currentTodos } from "./state.svelte";
 
@@ -23,7 +24,7 @@
   ];
 </script>
 
-<aside class="rail">
+<aside class="rail" use:tabPlace={`rail:pop:classic:${tab}`}>
   <div class="tabs" role="tablist">
     {#each TABS as t (t.id)}
       <button

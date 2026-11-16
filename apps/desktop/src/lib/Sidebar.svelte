@@ -1538,7 +1538,7 @@
   {:else if app.leftTab === "notes"}
     <NotesPanel />
   {:else}
-    <div class="ns-scroll">
+    <div class="ns-scroll" use:tabPlace={`nightshift-side:${app.project?.id ?? "none"}`}>
       {#if !app.project}
         <p class="hint">Open a project to use Nightshift — the page shows the project in the top-left chip.</p>
         <div class="ns-card open-card">

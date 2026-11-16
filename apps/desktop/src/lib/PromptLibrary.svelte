@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tip } from "./tip";
+  import { tabPlace } from "./tabPlace"; // Item 715: the view keeps its scroll across close and reopen.
   import { app, closePrompts, deletePrompt, storePrompt, usePrompt } from "./state.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
 
@@ -97,7 +98,7 @@
 <svelte:window {onkeydown} />
 
 <div class="modal">
-  <nav class="nav">
+  <nav class="nav" use:tabPlace={"prompts:nav"}>
     <div class="nav-title">Prompts</div>
     {#each app.prompts as p (p.id)}
       <button
