@@ -668,6 +668,9 @@ async fn turn_body(
             // After the turn: an id from a run that failed to start is a
             // handle to nothing.
             if let Some(id) = &outcome.session_id {
+                // A new CLI session (the CLI's own fork on an edit, or a
+                // hand-off's first turn) keeps the chat's helpers (item 710).
+                crate::chat_ops::carry_subagents_after_turn(session, &agent.spec().workspace, id);
                 session.record_agent_session(AGENT, id);
             }
             if !granted_to_chat.is_empty() {
