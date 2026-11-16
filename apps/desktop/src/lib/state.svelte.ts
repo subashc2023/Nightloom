@@ -1806,6 +1806,8 @@ function endBackground(t: TurnCtx, failed: string | null, res: AgentTurnResult |
     ranIn: id,
     error: failed,
     cliError: res?.is_error === true,
+    limit: !!res?.limit,
+    stopped: t.stopped === true,
   });
   addToast(backgroundEndToast(name, failed));
   for (const n of turnNotices(res?.notices ?? [], t.stopped === true)) addToast(n);

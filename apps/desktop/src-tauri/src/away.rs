@@ -300,6 +300,12 @@ async fn pass(app: &AppHandle, away: &Away, url: &str, pull_too: bool) -> Result
     .await?;
     let pushed = push::send(&client, outgoing, skipped).await?;
     away.update(|s| s.last_push = Some(Utc::now()));
+    // Item 739: the away server signs its pushes with the Mac's key (a
+    // phone holds one subscription, tied to one key). Best effort — a
+    // server from before push, or one that does not answer, fails no pass.
+    if let Some(p) = crate::remote::push_state(app) {
+        let _ = nightloom_service::push::hand_key_to_away(&p, url, &token).await;
+    }
     let mut summary = format!(
         "{} file{} up to date, {} sent",
         pushed.files,

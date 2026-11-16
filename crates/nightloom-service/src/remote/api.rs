@@ -77,6 +77,11 @@ pub mod feature {
     pub const CHECKPOINT: &str = "checkpoint";
     pub const BUDGET: &str = "budget";
     pub const RESUME_LIMIT: &str = "resume_limit";
+    /// `/api/push…` (item 739): the key, Subscribe, the off switch. The
+    /// listener lists it itself, only while the host has push
+    /// ([`super::super::Host::push`]); a host never names it, and it is
+    /// not in [`ALL`].
+    pub const PUSH: &str = "push";
     /// Every name, for a host that serves the lot and for tests.
     pub const ALL: &[&str] = &[
         ACT,

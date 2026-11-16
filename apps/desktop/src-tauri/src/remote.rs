@@ -121,7 +121,15 @@ pub struct DesktopHost {
     /// The Nightshift projects as last detected, and when (detection
     /// reads every project's folder; `/api/state` asks on every poll).
     nightshift: Mutex<Option<(std::time::Instant, Vec<NightshiftProject>)>>,
+    /// Push to the phone (item 739): the key, the subscriptions and the
+    /// sender, under `~/.nightloom/remote/push/`. `None` with no home.
+    push: Option<Arc<nightloom_service::push::Push>>,
 }
+
+/// He is "at the Mac" (item 739) while its keyboard, mouse or trackpad was
+/// touched this recently: no push goes to the phone then — the Mac's own
+/// banner and the window say it.
+const AT_THE_MAC: Duration = Duration::from_secs(120);
 
 /// The window's `remote-window-state` payload.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -164,6 +172,12 @@ impl DesktopHost {
             claimed: Mutex::new(std::collections::HashSet::new()),
             window: Mutex::new(WindowState::default()),
             nightshift: Mutex::new(None),
+            push: nightloom_service::project::config_dir().map(|home| {
+                nightloom_service::push::Push::open(
+                    nightloom_service::push::Push::dir_under(&home),
+                    "mac",
+                )
+            }),
         })
     }
 
@@ -651,6 +665,10 @@ impl Host for DesktopHost {
     /// kept with its idle reaper; looked for again while it is absent, so
     /// running the setup script needs no relaunch. Finding it starts no
     /// program — the socket's `hello` does (`Engine::warm`).
+    fn push(&self) -> Option<Arc<nightloom_service::push::Push>> {
+        self.push.clone()
+    }
+
     fn voice(&self) -> Option<Arc<nightloom_service::voice::Engine>> {
         let mut slot = self.voice.lock().unwrap_or_else(|p| p.into_inner());
         if slot.is_none() {
@@ -1820,6 +1838,42 @@ pub fn remote_sent(remote: State<'_, Remote>, id: u64, queued: bool, error: Opti
         None => Ok(Handed::Sent),
     };
     remote.host.answer(id, outcome);
+}
+
+/// The window's word that something happened in a chat the phone should
+/// hear of (item 739): a turn ended, failed or was paused by the plan's
+/// limit; an approval or a question waits. The window knows the chat's
+/// name and how the turn ended (`notify.ts`); this decides whether he is
+/// at the Mac — no push then — and sends. Nothing of the reply is passed
+/// in, so nothing of it can go out. Returns at once; the sends run on.
+#[tauri::command]
+pub fn push_note(
+    remote: State<'_, Remote>,
+    what: nightloom_service::push::What,
+    chat: Option<String>,
+    label: Option<String>,
+    project: Option<String>,
+) {
+    let Some(push) = remote.host.push.clone() else {
+        return;
+    };
+    let at_the_mac = crate::wake::idle_seconds().is_some_and(|s| s < AT_THE_MAC.as_secs_f64());
+    tauri::async_runtime::spawn(async move {
+        push.notify(nightloom_service::push::Note {
+            what,
+            chat,
+            label,
+            project,
+            at_the_mac,
+        })
+        .await;
+    });
+}
+
+/// The Mac's push state, for the away pass to hand its key to the away
+/// server (`away.rs`); `None` with no home folder.
+pub fn push_state(app: &AppHandle) -> Option<Arc<nightloom_service::push::Push>> {
+    app.try_state::<Remote>()?.host.push.clone()
 }
 
 /// The window, just before it starts a turn for a phone's call `id`: is

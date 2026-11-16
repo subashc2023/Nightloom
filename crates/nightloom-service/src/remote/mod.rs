@@ -31,6 +31,7 @@
 
 pub mod api;
 pub mod nightshift_routes;
+mod push_routes;
 pub mod resent;
 pub mod sync_routes;
 pub mod tailnet;
@@ -308,6 +309,16 @@ pub trait Host: Send + Sync + 'static {
     /// `/api/sync/*` routes ([`sync_routes`], item 268 step 3). `None` —
     /// the desktop — serves none of them.
     fn sync(&self) -> Option<Arc<crate::sync::SyncServer>> {
+        None
+    }
+    /// This host's push state (item 739, [`crate::push`]): the key, the
+    /// phones subscribed, the sender. `None` — the default — and every
+    /// `/api/push` route answers [`NOT_AVAILABLE`]. The listener tells it
+    /// when the phone opens, answers or writes in a chat ([`Push::seen`]);
+    /// the host tells it when a turn ends or a card waits.
+    ///
+    /// [`Push::seen`]: crate::push::Push::seen
+    fn push(&self) -> Option<Arc<crate::push::Push>> {
         None
     }
     /// A fresh subscriber to the event relay.
@@ -748,6 +759,7 @@ fn router(shared: Arc<Shared>) -> Router {
         // A file a reply sent (nightshift backlog 343): the chip's tap.
         .route("/sent-files/{id}/{name}", get(sent_file))
         .merge(nightshift_routes::router())
+        .merge(push_routes::router())
         .merge(sync_routes::router(shared.host.sync()))
         // An explicit fallback so the bearer layer below covers a miss
         // too: without one an unknown `/api` path fell through to the
@@ -771,6 +783,10 @@ fn router(shared: Arc<Shared>) -> Router {
         // links are not used; no token, like the page.
         .route("/apple-touch-icon.png", get(touch_icon))
         .route("/apple-touch-icon-precomposed.png", get(touch_icon))
+        // 739: the push service worker, at the root so its scope is the
+        // whole page (a worker under `/remote/` could only control that
+        // path); no token, like the page — it holds none and reads none.
+        .route("/push-sw.js", get(push_worker))
         // Outside the bearer layer: the socket's first frame carries the
         // token (a browser WebSocket cannot send the header), checked
         // before any audio is read (voice_ws.rs).
@@ -883,6 +899,11 @@ async fn state(State(shared): State<Arc<Shared>>) -> Json<StateReply> {
     features.retain(|f| f != api::feature::NIGHTSHIFT);
     if !shared.host.nightshift_roots().await.is_empty() {
         features.push(api::feature::NIGHTSHIFT.to_string());
+    }
+    // 739: named by the listener too, only while the host has push.
+    features.retain(|f| f != api::feature::PUSH);
+    if shared.host.push().is_some() {
+        features.push(api::feature::PUSH.to_string());
     }
     Json(StateReply {
         state,
@@ -1004,7 +1025,11 @@ async fn open(
 
 async fn transcript(State(shared): State<Arc<Shared>>, Path(id): Path<String>) -> Response {
     match shared.host.transcript(None, &id).await {
-        Ok(events) => Json(events).into_response(),
+        Ok(events) => {
+            // 739: the phone read it, so it no longer waits on him.
+            seen_on_phone(&shared, &id);
+            Json(events).into_response()
+        }
         Err(e) => (StatusCode::NOT_FOUND, e).into_response(),
     }
 }
@@ -1071,7 +1096,10 @@ async fn project_transcript(
     Path((pid, id)): Path<(String, String)>,
 ) -> Response {
     match shared.host.transcript(Some(&pid), &id).await {
-        Ok(events) => Json(events).into_response(),
+        Ok(events) => {
+            seen_on_phone(&shared, &id);
+            Json(events).into_response()
+        }
         Err(e) => (StatusCode::NOT_FOUND, e).into_response(),
     }
 }
@@ -1114,6 +1142,9 @@ async fn send_impl(
         return again;
     }
     let outcome = shared.host.send_with(chat, req).await;
+    if let (Ok(_), Some(chat)) = (&outcome, chat) {
+        seen_on_phone(shared, chat);
+    }
     shared.sends.settle("send", nonce.as_deref(), &outcome);
     match outcome {
         // Accepted, not done: the turn runs on the Mac and its progress
@@ -1424,6 +1455,21 @@ async fn touch_icon(State(shared): State<Arc<Shared>>) -> Response {
     serve_asset(&shared, TOUCH_ICON, false)
 }
 
+/// The push service worker (739): `public/remote/push-sw.js`, served from
+/// the root. `serve_asset` marks a `remote/` file `no-cache`, so a new
+/// build's worker is picked up at the page's next open.
+async fn push_worker(State(shared): State<Arc<Shared>>) -> Response {
+    serve_asset(&shared, "remote/push-sw.js", false)
+}
+
+/// 739: the phone opened or wrote in `chat` — it stops counting toward the
+/// badge. Nothing when the host has no push.
+fn seen_on_phone(shared: &Shared, chat: &str) {
+    if let Some(p) = shared.host.push() {
+        p.seen(chat);
+    }
+}
+
 /// The 180 px Home Screen icon (321).
 const TOUCH_ICON: &str = "remote/apple-touch-icon.png";
 
@@ -1434,6 +1480,8 @@ const TOUCH_ICON: &str = "remote/apple-touch-icon.png";
 fn type_by_name(path: &str) -> Option<&'static str> {
     match path.rsplit('.').next()? {
         "webmanifest" => Some("application/manifest+json"),
+        // 739: a service worker registers only as a script type.
+        "js" => Some("text/javascript"),
         "png" => Some("image/png"),
         _ => None,
     }
