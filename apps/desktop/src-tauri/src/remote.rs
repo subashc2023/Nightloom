@@ -124,7 +124,13 @@ pub struct DesktopHost {
     /// Push to the phone (item 739): the key, the subscriptions and the
     /// sender, under `~/.nightloom/remote/push/`. `None` with no home.
     push: Option<Arc<nightloom_service::push::Push>>,
+    /// The recurring jobs (item 746), kept under the home like the push
+    /// state; `None` with no home folder.
+    jobs: Option<Arc<nightloom_service::jobs::Jobs>>,
 }
+
+/// How long a job's run waits for the window to say it started.
+const JOB_WAIT: Duration = Duration::from_secs(10);
 
 /// He is "at the Mac" (item 739) while its keyboard, mouse or trackpad was
 /// touched this recently: no push goes to the phone then — the Mac's own
@@ -177,6 +183,9 @@ impl DesktopHost {
                     nightloom_service::push::Push::dir_under(&home),
                     "mac",
                 )
+            }),
+            jobs: nightloom_service::project::config_dir().map(|home| {
+                nightloom_service::jobs::Jobs::open(nightloom_service::jobs::Jobs::dir_under(&home))
             }),
         })
     }
@@ -694,6 +703,33 @@ impl Host for DesktopHost {
             nightloom_service::approval_rules::ask_dir_of_log(&path)
         })
         .await
+    }
+
+    fn jobs(&self) -> Option<Arc<nightloom_service::jobs::Jobs>> {
+        self.jobs.clone()
+    }
+
+    /// The job's chat and the agent its run will use (item 746, `jobs.rs`).
+    async fn job_prepare(&self, prep: nightloom_service::jobs::Prep) -> Result<String, String> {
+        crate::jobs::prepare(&self.state_of(), prep).await
+    }
+
+    /// The run: the window's off-screen send into the job's chat
+    /// (`remote-job`), so the chat on his screen stays where it is — not
+    /// `remote-send`, which opens the chat it names.
+    async fn job_send(
+        &self,
+        project: Option<&str>,
+        chat: &str,
+        text: &str,
+    ) -> Result<Handed, String> {
+        let body = serde_json::json!({ "chat": chat, "project": project, "text": text });
+        match self.call("remote-job", body, JOB_WAIT).await {
+            // Claimed and answered late: the turn is starting.
+            Ok(_) => Ok(Handed::Sent),
+            Err(e) if e == STARTED_LATE => Ok(Handed::Sent),
+            Err(e) => Err(e),
+        }
     }
 
     fn voice(&self) -> Option<Arc<nightloom_service::voice::Engine>> {

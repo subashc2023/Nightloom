@@ -87,6 +87,10 @@ pub mod feature {
     /// `POST /api/approve` takes `decision: "later"` (item 743): "Not now
     /// — carry on".
     pub const LATER: &str = "later";
+    /// `/api/jobs…` (item 746): recurring jobs. Listed by the listener
+    /// itself, only while the host has jobs ([`super::super::Host::jobs`]);
+    /// not in [`ALL`].
+    pub const JOBS: &str = "jobs";
     /// Every name, for a host that serves the lot and for tests.
     pub const ALL: &[&str] = &[
         ACT,

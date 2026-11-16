@@ -76,7 +76,7 @@ describe("atRisk and unkeptText (item 302)", () => {
 
 describe("keptSheet (item 302)", () => {
   it("keeps the sheets that reopen on their own", () => {
-    for (const s of ["chat", "project", "rail", "running", "notes", "aside", "council", "newproject", "hosts", "nightshift"]) expect(keptSheet(s)).toBe(s);
+    for (const s of ["chat", "project", "rail", "running", "notes", "aside", "council", "newproject", "hosts", "nightshift", "jobs"]) expect(keptSheet(s)).toBe(s);
   });
   it("brings the message menu, rename and the confirmations back as the chat menu", () => {
     for (const s of ["message", "rename", "delete", "compact"]) expect(keptSheet(s)).toBe("chat");

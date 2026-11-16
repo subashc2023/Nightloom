@@ -5,6 +5,7 @@
  * while the Mac is unreachable. Nothing here touches the DOM, so all of it
  * is under `client.test.ts`; `Remote.svelte` is the screen over it.
  */
+import type { Job, JobPatch, JobsReply, NewJob } from "./jobs";
 import type { ApprovalRequest, DocumentInput, ImageInput, SessionEvent, TurnEvent } from "../lib/types";
 import type { RuleEdit, RulesListing } from "./rules";
 import type { SubagentLimits } from "../lib/catalog";
@@ -836,6 +837,29 @@ export class Client {
 
   async usage(): Promise<Usage> {
     return (await this.call("/usage")).json();
+  }
+
+  // ---- item 746: recurring jobs (`jobs.ts`, `JobsSheet.svelte`) ----
+
+  async jobs(): Promise<JobsReply> {
+    return (await this.call("/jobs")).json();
+  }
+
+  /** A 400 is the host's sentence for a schedule it cannot read. */
+  async jobNew(req: NewJob): Promise<Job> {
+    return (await this.call("/jobs", { method: "POST", body: JSON.stringify(req) })).json();
+  }
+
+  async jobPatch(id: string, patch: JobPatch): Promise<Job> {
+    return (await this.call(`/jobs/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify(patch) })).json();
+  }
+
+  async jobRun(id: string): Promise<Job> {
+    return (await this.call(`/jobs/${encodeURIComponent(id)}/run`, { method: "POST" })).json();
+  }
+
+  async jobDelete(id: string): Promise<void> {
+    await this.call(`/jobs/${encodeURIComponent(id)}`, { method: "DELETE" });
   }
 
   // ---- wave 2B's patch note (246w2-patch-p2b-to-p2c, ~4:15 AM) ----

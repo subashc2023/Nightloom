@@ -74,6 +74,8 @@ import {
   switchChatKind,
   useEngine,
   useProject,
+  chatRuns,
+  sendInChat,
 } from "./state.svelte";
 import { EDITABLE_LAYERS } from "./types";
 import { MAX_SEATS, MIN_SEATS, type CouncilPrefs, type CouncilRequest } from "./council";
@@ -923,6 +925,41 @@ export async function runSend(p: RemoteSendPayload): Promise<"sent" | "queued"> 
   return remoteSend(p.chat, p.text, images, documents, council, p.spoken === true);
 }
 
+// ---- a recurring job's run (item 746) ----
+
+/** How long a refusal "before anything was sent" may take to arrive. */
+const JOB_REFUSAL_MS = 2500;
+
+/**
+ * A job's run: its message into its own chat, off screen (`sendInChat`,
+ * backlog 535) — the chat and project on his screen do not change, unlike
+ * a phone's send, which opens the chat it names. The backend made the chat
+ * and kept its agent's spec, held to the job's read-only policy, before
+ * this (`jobs.rs`). Answers once the turn is on its way; a refusal before
+ * anything was sent is thrown, and the job tries again in a minute.
+ */
+export async function runJob(p: { id?: number; chat: string; project: string | null; text: string }): Promise<{ status: "sent" }> {
+  if (app.connection?.engine !== "claude-code") throw new Error("jobs run on the Claude Code engine — connect it on the Mac");
+  if (chatRuns(p.chat)) throw new Error("its chat is still running a turn");
+  await api.canSendInChat(p.chat, p.project);
+  await mustClaim(p.id);
+  const name = app.projects.find((x) => x.id === p.project)?.name ?? null;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve({ status: "sent" });
+    }, JOB_REFUSAL_MS);
+    sendInChat(p.chat, { id: p.project, name }, p.text, [], (why) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new Error(why || "the Mac could not start the run"));
+    });
+  });
+}
+
 // ---- the listeners ----
 
 type Chatted = { id: number; chat: string; project?: string | null };
@@ -961,6 +998,11 @@ export async function installRemoteHandlers(): Promise<void> {
     });
   });
   await listen("remote-renamed", () => void refreshSessions());
+  // Item 746: a recurring job's run, off screen in its own chat.
+  await listen<{ id: number; chat: string; project?: string | null; text: string }>("remote-job", (e) => {
+    const { id, chat, project, text } = e.payload;
+    void answer(id, () => runJob({ id, chat, project: project ?? null, text }));
+  });
   // Item 246, wave 1: every answered call.
   await listen<Chatted & { action: ChatAction }>("remote-act", (e) => {
     const { id, chat, project, action } = e.payload;

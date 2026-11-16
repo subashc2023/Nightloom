@@ -31,6 +31,7 @@ pub mod history;
 pub mod import;
 pub mod inbox_sort;
 pub mod incognito;
+pub mod jobs;
 pub mod keep;
 pub mod keep_warm;
 pub mod knowledge;
