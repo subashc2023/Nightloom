@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tip } from "./tip";
+  import { tabPlace } from "./tabPlace"; // Item 715: the view keeps its scroll across close and reopen.
   // Every Copy button goes through the in-app clipboard ring (backlog 173).
   import { copyText } from "./clipRing.svelte";
   import * as api from "./api";
@@ -921,7 +922,7 @@
 
   <div class="find-scope">
   <FindBar bind:this={finder} scoped prepare={prepareFind} onclosed={findClosed} />
-  <div class="pane">
+  <div class="pane" use:tabPlace={"context:" + chatKey}>
     {#if !app.connection}
       <p class="note">Not connected.</p>
     {:else if error}

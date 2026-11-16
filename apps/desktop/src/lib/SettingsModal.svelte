@@ -37,6 +37,7 @@
   import { groundPick, setGroundPick } from "./newChatGroundPick.svelte";
   import GroundPreview from "./GroundPreview.svelte";
   import { wholeCardPicks } from "./settings/wholeCard";
+  import { tabPlace } from "./tabPlace"; // Item 715: the view keeps its scroll across close and reopen.
   // End item 632.
   // Item 640: Settings offers Horizon, Radar and Default (Weft); a stored look
   // no longer offered shows as one more card, the earlier pick, until he picks.
@@ -1380,7 +1381,7 @@
 
 <!-- Item 631: every radio group in Settings moves when its pick changes (`settings/pickMotion.ts`). -->
 <div class="modal" use:pickSlide>
-  <nav class="nav" bind:this={navEl}>
+  <nav class="nav" bind:this={navEl} use:tabPlace={"settings:nav"}>
     <div class="nav-h">Settings</div>
     <!-- Usage & Cost (nightshift backlog 206): one category, two tabs —
          what the plan has left, then what it would have cost. 153 had made
@@ -1542,7 +1543,7 @@
   </nav>
 
   {#if selected === "appearance"}
-    <div class="pane">
+    <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
         <h2 class="pane-title">Palette</h2>
         <span class="slug">{app.palette}</span>
@@ -1949,7 +1950,7 @@
          "put both A and B as two diff options for the thinking block's
          animation"). One card per animated moment; the rewind and the
          delete (396, 397) join as cards of their own below this one. -->
-    <div class="pane">
+    <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
         <h2 class="pane-title">Animations</h2>
         <span class="spacer"></span>
@@ -2132,7 +2133,7 @@
          and nothing else (blocker 105's default — no LAN, no 0.0.0.0, no
          option), off by default. The token is the phone's key: shown as a
          QR the camera opens and as text for a paste. -->
-    <div class="pane">
+    <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
         <h2 class="pane-title">Phone</h2>
         <span class="slug">{remote?.on ? `on · ${remote.address}:${remote.port}` : phoneWanted(remote) ? "on · waiting for Tailscale" : "off"}</span>
@@ -2240,7 +2241,7 @@
          Mac sleeps. The Mac sends copies up — memory, the vault, and the
          projects marked below — and takes the chats started there back
          down. The token is read from a file by the app and never shown. -->
-    <div class="pane">
+    <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
         <h2 class="pane-title">Away server</h2>
         <span class="slug">{awayHeadline(away)}</span>
@@ -2748,7 +2749,7 @@
          ledger. Refresh now sits on both and re-reads all of it (153's
          second half; the 116 banner opens Usage); each card says when it
          was read. -->
-    <div class="pane">
+    <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
         <h2 class="pane-title">{selected === USAGE_PANE ? "Usage" : "Cost"}</h2>
         <span class="slug"
@@ -3074,7 +3075,7 @@
   {:else if selected === "council"}
     <!-- The council's pane (nightshift backlog 149): the default roster
          and mode, and the table of recent council turns. -->
-    <div class="pane">
+    <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
         <h2 class="pane-title">Council</h2>
         <span class="slug">several models answer one message; this chat's model chairs</span>
@@ -3176,7 +3177,7 @@
       </section>
     </div>
   {:else if selected === "projects"}
-    <div class="pane">
+    <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
         <h2 class="pane-title">Projects folder</h2>
         <span class="slug">new projects go in</span>
@@ -3228,7 +3229,7 @@
       </section>
     </div>
   {:else if selected === "knowledge"}
-    <div class="pane">
+    <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
         <h2 class="pane-title">Knowledge base</h2>
         <span class="slug">{app.knowledge?.alias ?? "@kb"}</span>
@@ -3456,7 +3457,7 @@
       </section>
     </div>
   {:else if selected === "models"}
-    <div class="pane">
+    <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
         <h2 class="pane-title">Model instructions</h2>
         <span class="slug">~/.nightloom/models</span>
@@ -3608,7 +3609,7 @@
       </section>
     </div>
   {:else if searchSel}
-    <div class="pane">
+    <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
         <h2 class="pane-title">{searchSel.label}</h2>
         <span class="slug">{searchSel.env_key}</span>
@@ -3636,7 +3637,7 @@
   {:else if provider}
     {@const state = keyState(provider)}
     {@const keyFirst = provider.key_source === null}
-    <div class="pane">
+    <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
         <h2 class="pane-title">{providerLabel(provider.kind)}</h2>
         <span class="slug">{provider.kind}</span>
