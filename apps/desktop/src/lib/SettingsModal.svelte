@@ -36,6 +36,7 @@
   import { GROUND_STYLES, GROUND_MENU } from "./newChatGround";
   import { groundPick, setGroundPick } from "./newChatGroundPick.svelte";
   import GroundPreview from "./GroundPreview.svelte";
+  import { wholeCardPicks } from "./settings/wholeCard";
   // End item 632.
   // Item 640: Settings offers Horizon, Radar and Default (Weft); a stored look
   // no longer offered shows as one more card, the earlier pick, until he picks.
@@ -1964,7 +1965,7 @@
         <p class="note small">How a reply's thinking block comes in when the model starts thinking.</p>
         <div class="anims" role="radiogroup" aria-label="Thinking block arrival">
           {#each OFFERED_STYLES as s (s.id)}
-            <div class="anim" class:on={arrival === s.id}>
+            <div class="anim" use:wholeCardPicks class:on={arrival === s.id}>
               <button
                 class="anim-pick"
                 role="radio"
@@ -2004,7 +2005,7 @@
             </p>
             <div class="anims three motion-picks" role="radiogroup" aria-label="Thinking motion">
               {#each STEP_MOTIONS as m (m.id)}
-                <div class="anim" class:on={stepMotion.value === m.id}>
+                <div class="anim" use:wholeCardPicks class:on={stepMotion.value === m.id}>
                   <button
                     class="anim-pick"
                     role="radio"
@@ -2034,7 +2035,7 @@
             </p>
             <div class="anims motion-picks" role="radiogroup" aria-label="Reply text">
               {#each REPLY_LOOKS as l (l.id)}
-                <div class="anim" class:on={replyLook.value === l.id}>
+                <div class="anim" use:wholeCardPicks class:on={replyLook.value === l.id}>
                   <button class="anim-pick" role="radio" aria-checked={replyLook.value === l.id} onclick={() => setReplyLook(l.id)}>
                     <span class="anim-name">{l.name}</span>
                     <span class="anim-blurb">{l.note}</span>
@@ -2057,7 +2058,7 @@
             {#each OFFERED_MOTIONS[mk.kind] as s (s.id)}
               {@const key = `${mk.kind}:${s.id}`}
               {@const done = !!motionDone[key]}
-              <div class="anim" class:on={motionPick[mk.kind] === s.id}>
+              <div class="anim" use:wholeCardPicks class:on={motionPick[mk.kind] === s.id}>
                 <button
                   class="anim-pick"
                   role="radio"
@@ -2109,7 +2110,7 @@
           </p>
           <div class="anims three" role="radiogroup" aria-label="New-chat background">
             {#each groundCards as g (g.id)}
-              <div class="anim" class:on={groundPick.value === g.id}>
+              <div class="anim" use:wholeCardPicks class:on={groundPick.value === g.id}>
                 <button class="anim-pick" role="radio" aria-checked={groundPick.value === g.id} onclick={() => setGroundPick(g.id)}>
                   <span class="anim-name">{g.name}</span>
                   <span class="anim-blurb">{g.note}</span>
@@ -4985,6 +4986,10 @@
   }
   .anim:hover {
     border-color: var(--dim);
+  }
+  /* Item 719: the card itself picks (settings/wholeCard.ts), so all of it says so. */
+  .anim {
+    cursor: pointer;
   }
   .anim.on {
     border-color: var(--accent);
