@@ -15,7 +15,9 @@
   import { onMount, untrack } from "svelte";
   import { Compartment, EditorSelection, Prec, type Extension } from "@codemirror/state";
   import { EditorView, placeholder as placeholderExt } from "@codemirror/view";
-  import { boxDrawing, composerKeymap, composerState, composerTheme, LiveBoxHandle, type BoxDrawing, type ComposerBox } from "./composerEditor";
+  import { isMac } from "./platform";
+  import { routeLink } from "./webtabs.svelte";
+  import { boxDrawing, boxLinkClicks, composerKeymap, composerState, composerTheme, LiveBoxHandle, type BoxDrawing, type ComposerBox } from "./composerEditor";
 
   interface Props {
     value: string;
@@ -74,6 +76,8 @@
         autocapitalize: "off",
       }),
       composerTheme,
+      // Item 696: ⌘-click on a drawn link opens it as a reply's link opens.
+      boxLinkClicks((href) => routeLink(href, false), isMac),
       draws.of(boxDrawing.of(untrack(() => drawing))),
       editable.of(EditorView.editable.of(!disabled)),
       hint.of(placeholder ? placeholderExt(placeholder) : []),
