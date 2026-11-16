@@ -176,6 +176,64 @@ HTTP link, the row says why it cannot be turned on.
   `public/remote/push-sw.js`; the Mac's triggers are `notify.ts` →
   the `push_note` command, the away server's are in `serve.rs`.
 
+## Siri and the Action Button (item 744, 2026-11-16)
+
+Two routes are shaped for Apple's Shortcuts app, so a Shortcut — run by
+"Hey Siri", the Action Button, a Lock Screen control or the Shortcuts
+widget — can talk to Nightloom without opening the page. Both are under
+`/api`, behind the same bearer token, and answer **plain text**: one
+sentence a Shortcut can speak or show.
+
+- `POST /api/shortcut/send` — JSON `{ "text": "…", "chat": "…" }`, `chat`
+  optional. With no `chat`, the message goes to **the last chat**: the one
+  open on the Mac, else the one written in most recently. With a name, the
+  most recent chat whose name matches, ignoring case — an exact match
+  first, then one that starts with it, then one that contains it. Answers
+  `202` with "Sent to Scorer review." or "Queued in Scorer review; it goes
+  when the running turn ends."; `404` "No chat is called “budget”."; `409`
+  with the Mac's sentence when it refused (no engine, busy elsewhere);
+  `400` for an empty message. The message is the Mac window's own send,
+  exactly as a typed one.
+- `GET /api/shortcut/running` — "Nothing is running.", or "2 chats are
+  running: Scorer review, 4 minutes in, waiting on 1 approval; Signup
+  flow, under a minute in."
+
+**The two Shortcuts, built by hand** (Shortcuts cannot be shipped as a
+file signed for someone else's iPhone, so this is the recipe). The
+address is the one under the QR in Settings → Remote
+(`http://100.x.y.z:8642`); the token is from **Show the token** there.
+Paste it into the header field only — never into a note or a message.
+
+*Send to Nightloom*
+1. Shortcuts → **+** → name it "Tell Nightloom" (the name is what Siri
+   hears).
+2. Add **Dictate Text** (Stop Listening: After Pause).
+3. Optional, for a named chat: add **Ask for Input** (Text, prompt "Which
+   chat? Leave empty for the last one"), or put a fixed name in the body
+   below instead.
+4. Add **Get Contents of URL**: URL `http://100.x.y.z:8642/api/shortcut/send`;
+   Method **POST**; Headers: `Authorization` = `Bearer <token>`; Request
+   Body **JSON**: `text` = *Dictated Text*, and `chat` = *Provided Input*
+   (or a fixed name, or leave the `chat` field out).
+5. Add **Speak Text** with *Contents of URL* (or **Show Result**).
+
+*What's running*
+1. New Shortcut "What's running in Nightloom".
+2. **Get Contents of URL**: `http://100.x.y.z:8642/api/shortcut/running`,
+   Method **GET**, the same `Authorization` header.
+3. **Speak Text** with *Contents of URL*.
+
+**Action Button and Lock Screen:** Settings → Action Button → Shortcut →
+pick "Tell Nightloom"; a Lock Screen control: long-press the Lock Screen →
+Customize → Lock Screen → a control slot → Shortcut. Siri runs either by
+its name. Whether iOS asks for Face ID first on the Lock Screen depends on
+the actions (not checked here: these three — dictate, fetch a URL, speak —
+touch no personal data, which is what usually triggers the ask). The
+phone must be on the tailnet (Tailscale's VPN on, or **VPN On Demand** in
+the Tailscale app so it connects by itself), or the call fails with "could
+not connect". *Unmeasured in this build:* the Lock Screen run on his
+iPhone — the routes are tested on loopback only.
+
 ## What is not here (yet)
 
 Attachments, folder pickers, settings, Nightshift's blockers and morning
@@ -187,7 +245,8 @@ items.
 
 - `crates/nightloom-service/src/remote/` — the axum server over a `Host`
   trait (`mod.rs`), the tailnet address (`tailnet.rs`), the token and QR
-  (`token.rs`). Tests bind loopback under `cfg(test)` only.
+  (`token.rs`), the Shortcuts routes (`shortcut_routes.rs`, item 744).
+  Tests bind loopback under `cfg(test)` only.
 - `apps/desktop/src-tauri/src/remote.rs` — `DesktopHost`, the relay, the
   managed `Remote` state, the five commands (`remote_status`, `remote_start`,
   `remote_stop`, `remote_set_keep_awake`, `remote_token`).

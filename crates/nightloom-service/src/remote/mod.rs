@@ -33,6 +33,7 @@ pub mod api;
 pub mod nightshift_routes;
 mod push_routes;
 pub mod resent;
+mod shortcut_routes;
 pub mod sync_routes;
 pub mod tailnet;
 pub mod token;
@@ -760,6 +761,8 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/sent-files/{id}/{name}", get(sent_file))
         .merge(nightshift_routes::router())
         .merge(push_routes::router())
+        // Item 744: Siri / Action Button Shortcuts (plain-text answers).
+        .merge(shortcut_routes::router())
         .merge(sync_routes::router(shared.host.sync()))
         // An explicit fallback so the bearer layer below covers a miss
         // too: without one an unknown `/api` path fell through to the
@@ -2522,6 +2525,69 @@ mod tests {
             1,
             "{started:?}"
         );
+        server.stop().await;
+    }
+
+    /// Item 744: the Shortcut routes — behind the token, a send by name or
+    /// to the open chat with a sentence back, and "what is running" spoken.
+    #[tokio::test]
+    async fn shortcut_routes_send_by_name_and_say_what_runs() {
+        let (server, host, _tx, token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let r = c
+            .post(format!("{base}/api/shortcut/send"))
+            .json(&serde_json::json!({ "text": "hi" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 401, "the token is required");
+        let r = c
+            .post(format!("{base}/api/shortcut/send"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({ "text": "dictated", "chat": "FIRST" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 202);
+        assert_eq!(r.text().await.unwrap(), "Sent to first.");
+        let r = c
+            .post(format!("{base}/api/shortcut/send"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({ "text": "queue me please" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 202);
+        assert!(r.text().await.unwrap().starts_with("Queued in first"));
+        let r = c
+            .post(format!("{base}/api/shortcut/send"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({ "text": "x", "chat": "budget" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 404);
+        let sent = host.sent.lock().unwrap().clone();
+        assert!(
+            sent.contains(&(Some("abc".into()), "dictated".into())),
+            "{sent:?}"
+        );
+        let r = c
+            .get(format!("{base}/api/shortcut/running"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        assert!(
+            r.headers()[reqwest::header::CONTENT_TYPE]
+                .to_str()
+                .unwrap()
+                .starts_with("text/plain")
+        );
+        let said = r.text().await.unwrap();
+        assert!(said.starts_with("1 chat is running: first, "), "{said}");
         server.stop().await;
     }
 
