@@ -14,6 +14,7 @@
  */
 import type { Segment, ToolCallView } from "./state.svelte";
 import { compactJson } from "./toolinput";
+import { errorWeight } from "./errorWeight";
 
 const KEY = "nightloom.transcript";
 
@@ -316,7 +317,9 @@ export function toolResultSummary(call: ToolCallView, streaming: boolean): strin
   if (call.denied) return "denied";
   if (!call.result) return streaming ? "running" : "no result";
   const size = `${call.result.content.length.toLocaleString()} chars`;
-  return call.result.is_error ? `error · ${size}` : size;
+  // Item 700: a "not run, redo it" notice is not an error he need read as one.
+  const w = errorWeight(call.result);
+  return w === "hard" ? `error · ${size}` : w === "soft" ? `not run · ${size}` : size;
 }
 
 /** The whole one-line form: `name · summary · result`. */

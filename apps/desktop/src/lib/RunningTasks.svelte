@@ -684,6 +684,13 @@
   .row.failed .dot {
     background: var(--failed);
   }
+  /* Item 700: an Agent call the harness did not run — amber, not a failure. */
+  .row.soft .state {
+    color: var(--partial);
+  }
+  .row.soft .dot {
+    background: var(--partial);
+  }
   .name {
     display: flex;
     align-items: baseline;

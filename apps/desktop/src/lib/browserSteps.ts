@@ -7,6 +7,7 @@
  * carry no clock, so a step is numbered, not timed.
  */
 import { isPlaywright, playwrightAction } from "./playwright";
+import { errorWeight } from "./errorWeight";
 
 export interface BrowserStep {
   id: string;
@@ -14,12 +15,13 @@ export interface BrowserStep {
   n: number;
   tool: string;
   target: string | null;
-  state: "running" | "done" | "failed";
+  /** Item 700: `soft` — the harness did not run it ("not run, redo it"). */
+  state: "running" | "done" | "failed" | "soft";
 }
 
 interface ToolLike {
   kind: string;
-  call?: { id: string; name: string; input: unknown; result: { is_error: boolean } | null; denied?: boolean };
+  call?: { id: string; name: string; input: unknown; result: { is_error: boolean; content?: string } | null; denied?: boolean };
 }
 
 /** The turn's browser calls, the last `max` of them, and how many there
@@ -36,7 +38,7 @@ export function browserSteps(segments: readonly ToolLike[] | null | undefined, m
       n: all.length + 1,
       tool,
       target,
-      state: r === null ? "running" : r.is_error || s.call.denied ? "failed" : "done",
+      state: r === null ? "running" : s.call.denied ? "failed" : errorWeight({ is_error: r.is_error, content: r.content ?? "" }) === "soft" ? "soft" : r.is_error ? "failed" : "done",
     });
   }
   return { steps: all.slice(Math.max(0, all.length - max)), total: all.length };

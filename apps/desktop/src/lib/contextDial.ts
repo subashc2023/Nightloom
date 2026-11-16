@@ -12,6 +12,8 @@
  * figure in the middle (drawn by the component, not here).
  */
 
+import { errorWeight } from "./errorWeight";
+
 export interface DialInput {
   /** Track diameter in px (the mockup's right column: 104). */
   size: number;
@@ -169,20 +171,28 @@ export const WEEK_HOT = 0.85;
 /** One tool call of the turn, as the column counts it. */
 export interface ToolMark {
   done: boolean;
+  /** A real failure (item 700: hard only). */
   error: boolean;
+  /** Item 700: the harness did not run it ("not run, redo it") — amber. */
+  soft?: boolean;
 }
 
 /**
  * This turn's tool calls, in order, from the live reply's segments (or the
  * last reply's when idle): done means a result came back.
  */
-export function toolMarks(segments: readonly { kind: string; call?: { result: { is_error: boolean } | null } }[]): ToolMark[] {
+export function toolMarks(segments: readonly { kind: string; call?: { result: { is_error: boolean; content?: string } | null } }[]): ToolMark[] {
   const out: ToolMark[] = [];
   for (const s of segments) {
     if (s.kind !== "tool" || !s.call) continue;
-    out.push({ done: s.call.result != null, error: !!s.call.result?.is_error });
+    out.push(markOf(s.call.result != null, s.call.result));
   }
   return out;
+}
+
+function markOf(done: boolean, r: { is_error?: boolean; content?: unknown } | null | undefined): ToolMark {
+  const w = r ? errorWeight({ is_error: !!r.is_error, content: typeof r.content === "string" ? r.content : "" }) : null;
+  return w === "soft" ? { done, error: false, soft: true } : { done, error: w === "hard" };
 }
 
 /** `3 done · 1 running`, `4 done`, `1 running`; null with no calls. */
@@ -217,9 +227,9 @@ type LogEvent =
       event: "assistant_message";
       at: string;
       usage?: { input_tokens: number; output_tokens: number; cache_read_tokens?: number } | null;
-      blocks: readonly { type: string; id?: string; tool_use_id?: string; is_error?: boolean }[];
+      blocks: readonly { type: string; id?: string; tool_use_id?: string; is_error?: boolean; content?: unknown }[];
     }
-  | { event: "tool_result"; tool_use_id: string; is_error?: boolean }
+  | { event: "tool_result"; tool_use_id: string; is_error?: boolean; content?: string }
   | { event: string };
 
 /**
@@ -238,7 +248,7 @@ export function lastLoggedTurn(events: readonly LogEvent[]): LoggedTurn | null {
   if (from < 0) return null;
   const startedAt = Date.parse((events[from] as { at: string }).at);
   const ids: string[] = [];
-  const results = new Map<string, boolean>();
+  const results = new Map<string, { is_error?: boolean; content?: unknown }>();
   let endedAt: number | null = null;
   let usage: LoggedTurn["usage"] = null;
   for (let i = from + 1; i < events.length; i++) {
@@ -250,17 +260,17 @@ export function lastLoggedTurn(events: readonly LogEvent[]): LoggedTurn | null {
       if (a.usage && (a.usage.input_tokens > 0 || a.usage.output_tokens > 0)) usage = a.usage;
       for (const b of a.blocks ?? []) {
         if (b.type === "tool_use" && b.id) ids.push(b.id);
-        else if (b.type === "tool_result" && b.tool_use_id) results.set(b.tool_use_id, !!b.is_error);
+        else if (b.type === "tool_result" && b.tool_use_id) results.set(b.tool_use_id, b);
       }
     } else if (e.event === "tool_result") {
       const r = e as Extract<LogEvent, { event: "tool_result" }>;
-      results.set(r.tool_use_id, !!r.is_error);
+      results.set(r.tool_use_id, r);
     }
   }
   return {
     startedAt: Number.isFinite(startedAt) ? startedAt : null,
     endedAt,
-    tools: ids.map((id) => ({ done: results.has(id), error: results.get(id) ?? false })),
+    tools: ids.map((id) => markOf(results.has(id), results.get(id))),
     usage,
   };
 }

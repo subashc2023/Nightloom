@@ -11,6 +11,7 @@ import type { SessionEvent } from "./types";
 import { shortToolName } from "./activity";
 import { parseSubagentBlock } from "./subagent";
 import { stripAnsi } from "./shellRun";
+import { errorWeight } from "./errorWeight";
 
 /** The calls that run a command: Claude Code's, the API engine's `bash`. */
 const SHELL_TOOLS = new Set(["Bash", "bash", "PowerShell"]);
@@ -28,7 +29,10 @@ export interface AgentCommand {
   command: string;
   /** Null while it runs. */
   output: string | null;
+  /** A real failure (item 700: hard only). */
   error: boolean;
+  /** Item 700: the harness did not run it ("not run, redo it") — amber. */
+  soft?: boolean;
   /** The subagent that ran it. */
   agent: string | null;
   /** Its background id, when the call left it running. */
@@ -92,7 +96,7 @@ class Rows {
     const owner = bgId ? this.bg.get(bgId) : undefined;
     const content = c.result?.content ?? "";
     if (owner) {
-      if (c.result) owner.later.push({ output: content, error: c.result.is_error });
+      if (c.result) owner.later.push({ output: content, error: errorWeight(c.result) === "hard" });
       this.byId.set(c.id, owner);
       return;
     }
@@ -100,7 +104,8 @@ class Rows {
       id: c.id,
       command: `(${name}${bgId ? ` ${bgId}` : ""})`,
       output: c.result ? content : null,
-      error: !!c.result?.is_error,
+      error: errorWeight(c.result) === "hard",
+      soft: errorWeight(c.result) === "soft",
       agent,
       background: null,
       later: [],
@@ -111,7 +116,8 @@ class Rows {
 
   private settle(row: AgentCommand, c: Call): void {
     row.output = c.result?.content ?? "";
-    row.error = !!c.result?.is_error;
+    row.error = errorWeight(c.result) === "hard";
+    row.soft = errorWeight(c.result) === "soft";
     row.background = backgroundId(c.input, c.result?.content);
     if (row.background) this.bg.set(row.background, row);
   }
@@ -182,6 +188,7 @@ export function runningOf(rows: readonly AgentCommand[]): AgentCommand[] {
 
 const DIM = "\x1b[2m";
 const RED = "\x1b[31m";
+const YELLOW = "\x1b[33m";
 const BOLD = "\x1b[1m";
 const OFF = "\x1b[0m";
 
@@ -205,9 +212,11 @@ export function commandsText(rows: readonly AgentCommand[], turnRunning: boolean
       continue;
     }
     const text = stripAnsi(r.output).trimEnd();
-    if (text) out.push(`${r.error ? RED : ""}${text}${r.error ? OFF : ""}\n`);
+    const ink = r.error ? RED : r.soft ? YELLOW : "";
+    if (text) out.push(`${ink}${text}${ink ? OFF : ""}\n`);
     if (r.firstLineOnly) out.push(`${DIM}[first line only: a subagent's output is not kept whole]${OFF}\n`);
     if (r.error) out.push(`${RED}✗ failed${OFF}\n`);
+    else if (r.soft) out.push(`${YELLOW}↻ not run${OFF}\n`);
     if (r.background) out.push(`${DIM}[left running in the background: ${stripAnsi(r.background)}]${OFF}\n`);
     for (const l of r.later) {
       out.push(`${DIM}── later output ──${OFF}\n`);

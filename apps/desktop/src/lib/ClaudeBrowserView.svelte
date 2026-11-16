@@ -471,7 +471,8 @@
           <b class="st-tool">{st.tool}</b>
           <span class="st-target"
             >{st.target ?? ""}{#if st.state === "running"}<span class="st-state">{st.target ? " · " : ""}running</span
-              >{:else if st.state === "failed"}<span class="st-state">{st.target ? " · " : ""}failed</span>{/if}</span
+              >{:else if st.state === "failed"}<span class="st-state">{st.target ? " · " : ""}failed</span
+              >{:else if st.state === "soft"}<span class="st-state">{st.target ? " · " : ""}not run</span>{/if}</span
           >
         </li>
       {/each}
@@ -797,5 +798,8 @@
   }
   .cb-step[data-state="failed"] .st-state {
     color: var(--failed);
+  }
+  .cb-step[data-state="soft"] .st-state {
+    color: var(--partial);
   }
 </style>
