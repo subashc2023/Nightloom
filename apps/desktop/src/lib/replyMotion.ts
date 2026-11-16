@@ -720,7 +720,9 @@ export function replyMotion(root: HTMLElement, streaming: boolean) {
 
   function start(): void {
     if (obs || motionOff()) return;
-    look = currentReplyLook();
+    // Item 716: Settings' Reply text demo pins each card's look on its root; a reply takes the setting.
+    const pinned = root.dataset.replyLook;
+    look = pinned ? parseReplyLook(pinned) : currentReplyLook();
     // What is on screen already stays as it is.
     const onScreen = root.matches(MD) ? [root] : Array.from(root.querySelectorAll<HTMLElement>(MD));
     onScreen.forEach((el) => {

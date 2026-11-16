@@ -49,6 +49,7 @@
   });
   // Item 617 (own block): Reply text — Line reveal or Word rise.
   import { REPLY_LOOKS, replyLook, setReplyLook } from "./replyLook.svelte";
+  import ReplyLookDemo from "./ReplyLookDemo.svelte"; // Item 716: the looping demo of each look.
   // End item 617.
   import ContextDial from "./ContextDial.svelte";
   import { planDials, surfaceShares, paceLine, weekGone, resetsWhen } from "./settingsUsage";
@@ -2049,6 +2050,8 @@
                     <span class="anim-name">{l.name}</span>
                     <span class="anim-blurb">{l.note}</span>
                   </button>
+                  <!-- Item 716: a sample reply streaming in this look, looping (the real motion). -->
+                  <div class="anim-stage rl-stage" aria-hidden="true"><ReplyLookDemo look={l.id} /></div>
                   <div class="anim-foot">
                     {#if replyLook.value === l.id}<span class="anim-on">In use</span>{/if}
                   </div>
@@ -5318,6 +5321,13 @@
   }
   /* Item 716: the controls are drawn at their real size, so each choice takes the pane's width
      (two to a row, the row ran ~66 px past a 333-px card — measured in the wave D harness). */
+  /* Item 716: the Reply text demo's stage holds just the sample reply. */
+  .anim-stage.rl-stage {
+    gap: 0;
+    padding: 0;
+    background: none;
+    border: 0;
+  }
   .pick2.crow-picks {
     grid-template-columns: minmax(0, 1fr);
   }
