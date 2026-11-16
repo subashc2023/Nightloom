@@ -394,6 +394,8 @@ pub struct ServeHost {
     /// Push to the phone (item 739): the key, the subscriptions and the
     /// sender, under `<home>/remote/push/`.
     push: Arc<crate::push::Push>,
+    /// The recurring jobs (item 746), kept under the home like the push state.
+    jobs: Arc<crate::jobs::Jobs>,
 }
 
 /// How long the voice programs stay up with no one talking.
@@ -431,6 +433,7 @@ impl ServeHost {
                 pause_gen: std::sync::atomic::AtomicU64::new(1),
                 voice: Mutex::new(None),
                 push: crate::push::Push::open(crate::push::Push::dir_under(&cfg.home), "away"),
+                jobs: crate::jobs::Jobs::open(crate::jobs::Jobs::dir_under(&cfg.home)),
                 cfg,
             }
         })
@@ -2223,6 +2226,41 @@ impl Host for ServeHost {
         Some(self.push.clone())
     }
 
+    fn jobs(&self) -> Option<Arc<crate::jobs::Jobs>> {
+        Some(self.jobs.clone())
+    }
+
+    /// The job's chat (item 746): its log, made as a Claude Code chat in
+    /// the job's project when it has none, and the Chat policy on it while
+    /// the job is read-only — each turn here reads the kind back from the
+    /// log (`apply_kind_policy`), so the run that follows is held to it.
+    async fn job_prepare(&self, prep: crate::jobs::Prep) -> Result<String, String> {
+        let project = self.project(prep.project.as_deref())?;
+        let want = if prep.read_only {
+            ChatKind::Chat
+        } else {
+            ChatKind::Build
+        };
+        if let Some(chat) = &prep.chat
+            && let Ok(path) = self.find_chat(project.as_ref(), chat)
+        {
+            let _held = self.hold(chat)?;
+            let mut session = Session::load(&path).map_err(|e| e.to_string())?;
+            if session.kind() != want {
+                chat_ops::set_kind(&mut session, want, None);
+            }
+            return Ok(session.id.clone());
+        }
+        let dir = self.log_dir(project.as_ref());
+        let mut session =
+            Session::start(dir, ChatMode::Normal, ChatKind::Build).map_err(|e| e.to_string())?;
+        session.record_title_by(prep.title, TitleBy::User);
+        if prep.read_only {
+            chat_ops::set_kind(&mut session, ChatKind::Chat, None);
+        }
+        Ok(session.id.clone())
+    }
+
     async fn limit_pause(&self) -> Option<crate::remote::api::LimitPause> {
         let p = lock(&self.pause).clone()?;
         let resume_at = lock(&self.resume)
@@ -2847,7 +2885,9 @@ esac
                 "notes_project",
                 "budget",
                 "resume_limit",
-                "push"
+                "push",
+                // 746: named by the listener while the host has jobs.
+                "jobs"
             ])
         );
 

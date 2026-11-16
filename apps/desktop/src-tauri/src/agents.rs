@@ -257,6 +257,64 @@ impl Agents {
         }
     }
 
+    /// Keep for a job's chat the spec its next run goes on (item 746),
+    /// held to the job's own policy: `read_only` sets the Chat policy (the
+    /// hook that refuses the shell, the file-editing tools and subagents),
+    /// whatever the chat on screen may do. The spec is the newest
+    /// connection's when the job's project is the open one and that
+    /// connection runs in the project's folder (`workspace`; `None` — the
+    /// unfiled chats — is not checked), else the one the chat already has
+    /// (its own idle agent's, or one kept before). An idle agent it has
+    /// under the other policy, or of an older connection, is dropped so
+    /// the run makes a new one from what is kept here. `Err` is why the
+    /// run must wait.
+    pub fn reserve_for_job(
+        &self,
+        chat: &str,
+        read_only: bool,
+        project_open: bool,
+        workspace: Option<&std::path::Path>,
+    ) -> Result<(), String> {
+        let mut inner = self.inner();
+        let generation = inner.generation;
+        let own = match inner.per_chat.get(chat) {
+            Some(e) => match e.slot.try_lock() {
+                Ok(agent) => Some((e.generation == generation, agent.spec().clone())),
+                Err(_) => return Err("its chat is running a turn".into()),
+            },
+            None => None,
+        };
+        let had = match own {
+            Some((true, spec)) if spec.chat_policy == read_only => return Ok(()),
+            Some((_, spec)) => {
+                inner.per_chat.remove(chat);
+                Some(spec)
+            }
+            None => inner.reserved.get(chat).cloned(),
+        };
+        let newest = inner
+            .spec
+            .clone()
+            .filter(|s| project_open && workspace.is_none_or(|w| s.workspace == w));
+        let mut spec = match newest.or(had) {
+            Some(spec) => spec,
+            None if inner.spec.is_none() => {
+                return Err("Claude Code is not connected on the Mac".into());
+            }
+            None if !project_open => {
+                return Err("its project is not open on the Mac — the job runs when it is".into());
+            }
+            None => {
+                return Err(
+                    "the chat open on the Mac does not run in the job's project folder — the job runs when a Claude Code chat of its project is open".into(),
+                );
+            }
+        };
+        spec.chat_policy = read_only;
+        inner.reserved.insert(chat.to_string(), spec);
+        Ok(())
+    }
+
     /// Let `chat`'s kept spec go (its scheduled message left or was
     /// cancelled).
     pub fn release(&self, chat: &str) {

@@ -67,6 +67,8 @@ mod filetab;
 mod for_you;
 /// The notes Inbox's Sort inbox (nightshift backlog 488).
 mod inbox_sort;
+// Recurring jobs' part on the Mac (item 746).
+mod jobs;
 // The keep-warm clock (backlog 582).
 mod keep_warm;
 /// A `.tex` tab's rendered PDF (nightshift backlog 381).

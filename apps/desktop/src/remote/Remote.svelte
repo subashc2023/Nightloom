@@ -107,6 +107,8 @@
   import { browserEnv, pushHost, refreshPush, supportHere, syncBadge, watchPushTaps } from "./push";
   import ContextSheet from "./ContextSheet.svelte";
   import RunningSheet from "./RunningSheet.svelte";
+  import JobsSheet from "./JobsSheet.svelte";
+  import { parseRepeat } from "./jobs";
   import UsageLine from "./UsageLine.svelte";
   import MicButton from "./voice/MicButton.svelte";
   // Item 334: the speech test panel, behind a link in the Hosts sheet.
@@ -305,6 +307,7 @@
     | "message"
     | "rail"
     | "running"
+    | "jobs"
     | "delete"
     | "notes"
     | "aside"
@@ -1540,6 +1543,13 @@
   async function sendNow() {
     const text = draft.trim();
     if (!text || readOnly) return;
+    // Item 746: "repeat every morning: …" is a job, not a message — the
+    // form opens filled, and his words stay in the box until he saves it.
+    const repeat = hasFeature(remote, "jobs") && sameHost ? parseRepeat(text) : null;
+    if (repeat) {
+      openJobs(repeat);
+      return;
+    }
     if (chatId === null) {
       await sendNew(text);
       return;
@@ -2176,6 +2186,16 @@
     drawer = false;
     sheet = "running";
     await refreshRunning();
+  }
+
+  /** Item 746: "repeat every …" read from the composer, for the Jobs
+   *  sheet's form; null when the sheet was opened from the drawer. */
+  let jobPrefill = $state<{ every: string; text: string } | null>(null);
+  function openJobs(prefill: { every: string; text: string } | null = null) {
+    drawer = false;
+    jobPrefill = prefill;
+    sheet = "jobs";
+    sheetTall = true;
   }
 
   async function refreshRunning() {
@@ -3370,6 +3390,9 @@
           {#if hasFeature(remote, "running")}
             <button class="new-row quiet" onclick={openRunning}>{@render icon("pulse")} Running tasks</button>
           {/if}
+          {#if hasFeature(remote, "jobs")}
+            <button class="new-row quiet" data-act="jobs" onclick={() => openJobs()}>{@render icon("pulse")} Jobs</button>
+          {/if}
           {#if hasFeature(remote, "notes")}
             <button class="new-row quiet" onclick={() => openNotes()}>{@render icon("note")} Notes</button>
           {/if}
@@ -3672,6 +3695,17 @@
           <button class="speech-link" data-act="speech-test" onclick={() => ((sheet = "speech"), (sheetTall = true))}>Speech test</button>
         {:else if sheet === "speech"}
           <SpeechTest onclose={closeSheet} />
+        {:else if sheet === "jobs" && client}
+          <JobsSheet
+            api={client}
+            prefill={jobPrefill}
+            project={(chatProject ?? activePid) || null}
+            projectName={projects.find((p) => p.id === ((chatProject ?? activePid) || null))?.name ?? null}
+            fromChat={chatId}
+            where={hostName(active ?? "mac")}
+            onmade={() => setDraft("")}
+            onopen={(id, project) => ((sheet = null), void openChat(id, project ?? projectOf(id)))}
+          />
         {:else if sheet === "running"}
           <RunningSheet
             {running}

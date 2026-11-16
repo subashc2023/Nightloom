@@ -82,6 +82,10 @@ pub mod feature {
     /// ([`super::super::Host::push`]); a host never names it, and it is
     /// not in [`ALL`].
     pub const PUSH: &str = "push";
+    /// `/api/jobs…` (item 746): recurring jobs. Listed by the listener
+    /// itself, only while the host has jobs ([`super::super::Host::jobs`]);
+    /// not in [`ALL`].
+    pub const JOBS: &str = "jobs";
     /// Every name, for a host that serves the lot and for tests.
     pub const ALL: &[&str] = &[
         ACT,

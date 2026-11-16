@@ -30,6 +30,7 @@
 //! headers yet (they need `tailscale serve` in front of the port; later).
 
 pub mod api;
+mod job_routes;
 pub mod nightshift_routes;
 mod push_routes;
 pub mod resent;
@@ -321,6 +322,38 @@ pub trait Host: Send + Sync + 'static {
     /// [`Push::seen`]: crate::push::Push::seen
     fn push(&self) -> Option<Arc<crate::push::Push>> {
         None
+    }
+    /// This host's recurring jobs (item 746, [`crate::jobs`]): the store
+    /// the `/api/jobs` routes read and write, and what the listener's
+    /// clock ticks. `None` — the default — and every `/api/jobs` route
+    /// answers [`NOT_AVAILABLE`].
+    fn jobs(&self) -> Option<Arc<crate::jobs::Jobs>> {
+        None
+    }
+    /// Before a job's run (item 746): its chat exists — made in the job's
+    /// project and named for it when the job has none yet — and is
+    /// read-only (the Chat policy over a Claude Code chat) or not, as the
+    /// job says now. Answers the chat's id. `Err` is why the run waits.
+    async fn job_prepare(&self, _prep: crate::jobs::Prep) -> Result<String, String> {
+        Err(NOT_AVAILABLE.into())
+    }
+    /// A job's run: `text` into its chat, wherever the host's screen is.
+    /// The default is a send that names the chat's project.
+    async fn job_send(
+        &self,
+        project: Option<&str>,
+        chat: &str,
+        text: &str,
+    ) -> Result<Handed, String> {
+        self.send_with(
+            Some(chat),
+            SendRequest {
+                text: text.to_string(),
+                project: project.map(str::to_string),
+                ..Default::default()
+            },
+        )
+        .await
     }
     /// A fresh subscriber to the event relay.
     fn events(&self) -> broadcast::Receiver<Event>;
@@ -627,6 +660,10 @@ impl Server {
             .map_err(|source| Error::Bind { addr, source })?;
         let (tx, rx) = oneshot::channel();
         let closing = tokio_util::sync::CancellationToken::new();
+        // The jobs' clock (item 746) lives and ends with the listener.
+        if let Some(jobs) = host.jobs() {
+            tokio::spawn(crate::jobs::run_loop(jobs, host.clone(), closing.clone()));
+        }
         let app = router(Arc::new(Shared {
             host,
             token: token.clone(),
@@ -761,6 +798,7 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/sent-files/{id}/{name}", get(sent_file))
         .merge(nightshift_routes::router())
         .merge(push_routes::router())
+        .merge(job_routes::router())
         // Item 744: Siri / Action Button Shortcuts (plain-text answers).
         .merge(shortcut_routes::router())
         .merge(sync_routes::router(shared.host.sync()))
@@ -907,6 +945,11 @@ async fn state(State(shared): State<Arc<Shared>>) -> Json<StateReply> {
     features.retain(|f| f != api::feature::PUSH);
     if shared.host.push().is_some() {
         features.push(api::feature::PUSH.to_string());
+    }
+    // 746: the same for the jobs.
+    features.retain(|f| f != api::feature::JOBS);
+    if shared.host.jobs().is_some() {
+        features.push(api::feature::JOBS.to_string());
     }
     Json(StateReply {
         state,
