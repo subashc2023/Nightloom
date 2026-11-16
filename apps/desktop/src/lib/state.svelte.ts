@@ -3,6 +3,7 @@ import { passingEvent } from "./bashOutput.svelte";
 import { isShellCall as isShellForPassing } from "./agentCommands";
 import { tick, untrack } from "svelte";
 import { noteThreadHandoff, takeThreadHandoff } from "./threadHandoff.svelte";
+import { noteHandoffOpened, noteNextTurns, type HandoffOpened } from "./handoffLog";
 import { switchSameToChoose } from "./subagentSwitch";
 import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
@@ -1394,6 +1395,8 @@ export async function continueChat(): Promise<void> {
     const opened = await openContinuation(from, !!start);
     const first = start ? firstMessage("", start) : firstMessage(readOrder(from), null);
     if (first) setDraftText(opened, first);
+    // Item 757: logged for scoring, as put in the box.
+    noteHandoffOpened({ route: "box", from, index: null, to: opened, sent: first ?? "" });
     if (!start) {
       handoff.noStartPromptChat = opened;
       addToast(
@@ -1459,7 +1462,12 @@ export function continuedThisRun(chat: string, index: number): boolean {
  * for this button only. Needs no wrap-up: the card is enough. A send that
  * fails, or cannot go, leaves the text in the new chat's box.
  */
-export async function continueWithPrompt(from: string, index: number, prompt: string): Promise<void> {
+export async function continueWithPrompt(
+  from: string,
+  index: number,
+  prompt: string,
+  log: Pick<HandoffOpened, "route" | "carry" | "goal" | "ticks"> = { route: "card" },
+): Promise<void> {
   if (continuing) return;
   if (app.busy || app.activeSessionId !== from) {
     addToast("A turn is running — continue when it ends");
@@ -1478,6 +1486,8 @@ export async function continueWithPrompt(from: string, index: number, prompt: st
       return;
     }
     continuedHere[`${from}|${index}`] = true;
+    // Item 757: what the hand-off carried, logged for scoring.
+    noteHandoffOpened({ ...log, from, index, to: opened, sent: text });
     leaveNote();
     void refreshSessions();
     if (!app.connection || app.busy) {
@@ -1820,6 +1830,8 @@ function endBackground(t: TurnCtx, failed: string | null, res: AgentTurnResult |
     // (the open project's threads only).
     if (b) noteThreadHandoff(id, b.events);
   }
+  // Item 757: a hand-off's next chat logs its first turns' file use, in any project.
+  if (b) noteNextTurns(id, b.events, liveFlags(b.events));
   if (t.provider) {
     // A provider turn's end (A4 review, 2026-09-29) does what the
     // screen's provider end does — ~~the plan meter and the Claude Code
@@ -2219,6 +2231,8 @@ export async function send(
   await settleTurnView(pendingKey, turn.chat, choice);
   // Item 464: a thread chat's `<handoff>` prompt is kept on its thread.
   if (!app.parked) noteThreadHandoff(app.activeSessionId, app.events);
+  // Item 757: a hand-off's next chat logs its first turns' file use.
+  if (!app.parked) noteNextTurns(app.activeSessionId, app.events, liveFlags(app.events));
   void refreshSessions();
   // The turn may have written to the docspace, and the sidebar showing a
   // note the model just left is the visible half of "shared knowledge".
@@ -2490,6 +2504,8 @@ async function sendAgent(
     );
     // Item 464: a thread chat's `<handoff>` prompt is kept on its thread.
     if (!browsed) noteThreadHandoff(app.activeSessionId, app.events);
+    // Item 757: a hand-off's next chat logs its first turns' file use.
+    if (!browsed) noteNextTurns(app.activeSessionId, app.events, liveFlags(app.events));
     // A turn that wrote HANDOFF.md is a hand-off (item 278).
     if (!browsed && turnWroteHandoff(app.events)) maybeHandoffPass();
     // Last, once the turn is fully over: was it sleep that ended it

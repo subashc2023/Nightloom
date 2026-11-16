@@ -22,6 +22,7 @@ import { viewGet, viewSet } from "./viewState";
 import { hasHiddenChars } from "./shellRun";
 import { foldMotion } from "./foldMotion";
 import type { SessionMeta } from "./types";
+import type { HandoffOpened } from "./handoffLog";
 
 export const CONTINUE_LABEL = "Continue with this prompt";
 export const CONTINUED_LABEL = "Continued";
@@ -135,6 +136,12 @@ export function miniText(next: Pick<NextChat, "chat" | "index" | "prompt" | "car
 export function nextChatMessage(next: Pick<NextChat, "chat" | "index" | "prompt" | "carry">): string {
   if (!next.carry) return next.prompt;
   return composeFirstMessage(next.carry, carryGoal(next.chat, next.index), carryTicks(next.chat, next.index));
+}
+
+/** Item 757: what the hand-off log records for this card's *Continue* — the
+ *  carry, and his goal and ticks as the click reads them. */
+export function cardLog(next: Pick<NextChat, "chat" | "index" | "carry">): Pick<HandoffOpened, "route" | "carry" | "goal" | "ticks"> {
+  return { route: "card", carry: next.carry ?? null, goal: carryGoal(next.chat, next.index), ticks: carryTicks(next.chat, next.index) };
 }
 
 /** A reply as `Transcript` holds it, as much as this asks of it. */

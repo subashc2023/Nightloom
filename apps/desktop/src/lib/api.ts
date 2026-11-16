@@ -1789,6 +1789,12 @@ export function startupMark(step: string, ms: number, detail?: string): Promise<
   return invoke("startup_mark", { step, ms, detail });
 }
 
+/** One line of `<config>/logs/handoffs.jsonl` (item 757): a hand-off, or one
+ *  of its next chat's first turns (`handoffLog.ts` builds it). */
+export function logHandoff(record: Record<string, unknown>): Promise<null> {
+  return invoke("handoff_log", { record });
+}
+
 /**
  * Point the vault at a folder, or back at the default with `null`.
  *
