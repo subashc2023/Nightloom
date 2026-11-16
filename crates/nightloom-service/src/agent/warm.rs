@@ -93,6 +93,88 @@ impl Key {
     }
 }
 
+impl Key {
+    /// What differs between this key and `other`, as names only (item
+    /// 722's timing line carries no value and no path): the flag each
+    /// differing argument belongs to, `cwd`, `env`, `binary`. At most
+    /// four, in argument order.
+    pub fn differs_in(&self, other: &Key) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut note = |name: String| {
+            if !out.contains(&name) {
+                out.push(name);
+            }
+        };
+        if self.binary != other.binary {
+            note("binary".into());
+        }
+        if self.cwd != other.cwd {
+            note("cwd".into());
+        }
+        if self.env_set != other.env_set || self.env_removed != other.env_removed {
+            note("env".into());
+        }
+        // The flag an argument belongs to: itself, or the nearest one
+        // before it.
+        let flag_at = |args: &[String], i: usize| {
+            args[..=i.min(args.len().saturating_sub(1))]
+                .iter()
+                .rev()
+                .find(|a| a.starts_with("--"))
+                .cloned()
+                .unwrap_or_else(|| "argument".into())
+        };
+        let n = self.args.len().max(other.args.len());
+        for i in 0..n {
+            if self.args.get(i) == other.args.get(i) {
+                continue;
+            }
+            // Named from the longer list: there the first difference is
+            // the flag the other lacks.
+            let args = if other.args.len() > self.args.len() {
+                &other.args
+            } else {
+                &self.args
+            };
+            note(flag_at(args, i));
+            // One flag added or dropped shifts every argument after it:
+            // the first difference is the one worth naming.
+            if self.args.len() != other.args.len() {
+                break;
+            }
+        }
+        out.truncate(4);
+        out
+    }
+}
+
+/// Why a turn found no waiting process to take (item 722), for its
+/// timing line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Miss {
+    /// Nothing was waiting, and why not: `none asked for`, `aged out`,
+    /// `none started since the last one was taken`.
+    Nothing(&'static str),
+    /// One was waiting for another command; what differed, by name.
+    OtherCommand(Vec<String>),
+    /// The waiting process had exited.
+    Exited,
+    /// It was past [`MAX_AGE`] and its timer had not yet run.
+    TooOld,
+}
+
+impl std::fmt::Display for Miss {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Miss::Nothing(why) => f.write_str(why),
+            Miss::OtherCommand(names) if names.is_empty() => f.write_str("another command"),
+            Miss::OtherCommand(names) => write!(f, "another command ({})", names.join(", ")),
+            Miss::Exited => f.write_str("exited"),
+            Miss::TooOld => f.write_str("too old"),
+        }
+    }
+}
+
 struct Warm {
     child: Child,
     key: Key,
@@ -105,6 +187,8 @@ struct Warm {
 struct Inner {
     warm: Option<Warm>,
     fills: u64,
+    /// Why `warm` is empty, when something emptied it (item 722).
+    gone: Option<&'static str>,
 }
 
 /// An agent's one waiting process, if any. Dropping the slot (the agent
@@ -132,6 +216,7 @@ impl WarmSlot {
         inner.warm = None;
         let child = key.command(Stdio::piped()).spawn()?;
         inner.fills += 1;
+        inner.gone = None;
         let n = inner.fills;
         inner.warm = Some(Warm {
             child,
@@ -148,6 +233,7 @@ impl WarmSlot {
                     let mut inner = slot.lock().unwrap_or_else(|p| p.into_inner());
                     if inner.warm.as_ref().is_some_and(|w| w.n == n) {
                         inner.warm = None;
+                        inner.gone = Some("aged out");
                     }
                 }
             });
@@ -160,10 +246,30 @@ impl WarmSlot {
     /// one younger than the CLI's start-up is still starting); any other
     /// is killed.
     pub fn take(&self, key: &Key) -> Option<(Child, Duration)> {
-        let mut w = self.lock().warm.take()?;
+        self.take_or_why(key).ok()
+    }
+
+    /// [`Self::take`], saying why when there was none to take (item 722).
+    pub fn take_or_why(&self, key: &Key) -> Result<(Child, Duration), Miss> {
+        let mut inner = self.lock();
+        let Some(mut w) = inner.warm.take() else {
+            return Err(Miss::Nothing(inner.gone.unwrap_or("none asked for")));
+        };
         let age = w.born.elapsed();
-        (w.key == *key && age < MAX_AGE && matches!(w.child.try_wait(), Ok(None)))
-            .then_some((w.child, age))
+        if w.key != *key {
+            inner.gone = Some("killed for another command");
+            return Err(Miss::OtherCommand(key.differs_in(&w.key)));
+        }
+        if !matches!(w.child.try_wait(), Ok(None)) {
+            inner.gone = Some("exited");
+            return Err(Miss::Exited);
+        }
+        if age >= MAX_AGE {
+            inner.gone = Some("aged out");
+            return Err(Miss::TooOld);
+        }
+        inner.gone = Some("none started since the last one was taken");
+        Ok((w.child, age))
     }
 
     /// Whether the waiting process has exited (tests).
@@ -230,6 +336,56 @@ mod tests {
         assert!(age < MAX_AGE);
         assert!(child.id().is_some());
         assert!(!slot.waiting());
+    }
+
+    /// Item 722: a cold turn's line says why nothing was taken — never
+    /// asked, taken already, another command (the flag by name, no
+    /// value), or exited.
+    #[tokio::test]
+    async fn a_miss_says_why() {
+        let dir = scratch();
+        let spec = spec_with(&dir, "read line\n");
+        let slot = WarmSlot::default();
+        let key = Key::of(&spec, &spec.stdin_args());
+        assert_eq!(
+            slot.take_or_why(&key).unwrap_err().to_string(),
+            "none asked for"
+        );
+        slot.fill(key.clone()).unwrap();
+        let mut other = spec.clone();
+        other.model = Some("haiku".into());
+        let other_key = Key::of(&other, &other.stdin_args());
+        assert_eq!(
+            slot.take_or_why(&other_key).unwrap_err().to_string(),
+            "another command (--model)"
+        );
+        assert_eq!(
+            slot.take_or_why(&key).unwrap_err().to_string(),
+            "killed for another command"
+        );
+        slot.fill(key.clone()).unwrap();
+        assert!(slot.take_or_why(&key).is_ok());
+        assert_eq!(
+            slot.take_or_why(&key).unwrap_err().to_string(),
+            "none started since the last one was taken"
+        );
+        // A changed value names its flag; a changed folder is `cwd`.
+        let mut resumed = spec.clone();
+        resumed.resume = Some("s-1".into());
+        let mut again = spec.clone();
+        again.resume = Some("s-2".into());
+        assert_eq!(
+            Key::of(&resumed, &resumed.stdin_args())
+                .differs_in(&Key::of(&again, &again.stdin_args())),
+            vec!["--resume".to_string()]
+        );
+        let mut moved = spec.clone();
+        moved.workspace = dir.join("elsewhere");
+        assert!(
+            key.differs_in(&Key::of(&moved, &moved.stdin_args()))
+                .contains(&"cwd".to_string())
+        );
+        assert!(key.differs_in(&key.clone()).is_empty());
     }
 
     #[tokio::test]

@@ -2212,10 +2212,13 @@ impl ClaudeCodeAgent {
             .and_then(crate::session_figures::restored_cost);
         // Never for a deferred resume: a waiting process is one that has
         // not yet been given its message, which a resume has none of.
-        let taken = if chat && piped && input.is_some() {
-            self.warm.take(&key)
+        let (taken, warm_miss) = if chat && piped && input.is_some() {
+            match self.warm.take_or_why(&key) {
+                Ok(t) => (Some(t), None),
+                Err(why) => (None, Some(why.to_string())),
+            }
         } else {
-            None
+            (None, None)
         };
         let warm_start = taken.is_some();
         let warm_age = taken.as_ref().map(|(_, age)| *age);
@@ -2238,6 +2241,10 @@ impl ClaudeCodeAgent {
             t.set_warm(warm_start);
             if let Some(age) = warm_age {
                 t.set_warm_age(age);
+            }
+            // Item 722: a cold turn says why it found nothing to take.
+            if let Some(why) = warm_miss {
+                t.set_warm_miss(why);
             }
         }
         let mut init_seen = timing.is_none();
