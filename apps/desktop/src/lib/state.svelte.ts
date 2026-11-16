@@ -157,7 +157,7 @@ import { showNightshift, syncNightshiftProject, refreshNightshiftRow, loadNights
 import { showNote, showGraph, leaveNote, currentModelId, followToolMoves, reviewProposal, noteDraftKey, closeNote, openModelInstructions, CHAT_INSTRUCTIONS_FILE, openChatInstructions, saveNote, deleteNote, moveNoteTo, followNoteMove, onNoteMove, movedNoteName, newNoteFolder, deleteNoteFolder, mirrorDraft, stageProposal, acceptProposal, unstageProposal, dismissProposal } from "./state/notes.svelte";
 import { reflectTabs, frontOpenChat, tabOpening, showContentOf, newTab, closeTab, stepTab, splitActiveTab, dropNoteTabs, flushTabs, shownContent, openContent, dropContent, focusPane, moveTab, splitTab, registerTerminalHooks, flushNewProject, startContentDrag, endContentDrag, droppedContent } from "./state/tabs.svelte";
 import { history, chatScope, undo, redo, inTextField, editAttachments, sendInFork, contextUsed, undoLabel, redoLabel, syncUndoMenu, saveEdit, removeTurn, restoreTurn, removeBlock, restoreBlock, saveReplyEdit, editContextItems, renameSession, sessionCost, roundCost, cacheHitRate } from "./state/edits.svelte";
-import { refreshDreamStatus, refreshCaptureStatus, maybeAutoDream, maybeHandoffPass, refreshCentre, maybeDailyPass, startDailyClock, passTargetFor, runCapture, saveMemoryFromChat, stopCapture, runDream, stopDream, centreCount, dismissNotice, openNotice, revertDreamFile, revertApplied, openInstructions, setDailyPrefs, runDailyPass, type AutoPassKind } from "./state/passes.svelte";
+import { refreshDreamStatus, refreshCaptureStatus, maybeAutoDream, maybeHandoffPass, refreshCentre, maybeDailyPass, startDailyClock, startMemoryClock, passTargetFor, runCapture, saveMemoryFromChat, stopCapture, runDream, stopDream, centreCount, dismissNotice, openNotice, revertDreamFile, revertApplied, openInstructions, setDailyPrefs, runDailyPass, type AutoPassKind } from "./state/passes.svelte";
 import { refreshPlanUsage, readPlanAtReplyEnd, planUsageFromTurn, readTurnBudget, readCheckpoint, startBudgetPoll, ensureBudgetPoll, startPlanUsageClock, PLAN_USAGE_LIVE_EVERY_MS, TURN_BUDGET_EVERY_MS, setCheckpoint } from "./state/usage.svelte";
 import { refreshProjects, refreshNotes, refreshKnowledge, refreshProjectsFolder, useProject, openProjectFolder, showNewProject, importFromClaude, restoreTabs, refreshProposals, useProjectsFolder, useKnowledgeDir, offerPracticesClaudeMd, closeNewProject, discardNewProject, pickNewProjectFolder, resolveNewProjectPath, createNewProject, renameProject, forgetProject, revealFolder, tabsOwner } from "./state/projects.svelte";
 import { layersBeforeTurn, refreshLayerVersions, updateLayerNow, chooseLayerVersion, setAutoLayers, promptLayersOff, sameLayers, setPromptLayer, promptLayerEdits, sameEdits, setPromptLayerText, promoteLayerText, syncPromptLayers, retryConnect } from "./state/layers.svelte";
@@ -968,6 +968,8 @@ export async function init(): Promise<void> {
   // Claude Code's version (nightshift backlog 182): a check shortly after
   // launch and every six hours; an Update waits for a cold moment.
   startCliClock();
+  // Claude Code's memory and its sessions outside Nightloom (item 751).
+  startMemoryClock();
   // The Refresh-now banner's click (nightshift backlog 116): Rust has
   // already brought the window forward; this opens Settings on Usage.
   await listen("usage-banner-clicked", () => {
