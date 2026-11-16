@@ -103,6 +103,8 @@
   import { badgeOf, extOf, looksLikeText, MAX_TEXT_BYTES, notebookText, routeOf } from "../lib/attachKinds";
   import MessageMenu from "./MessageMenu.svelte";
   import RailSheet from "./RailSheet.svelte";
+  import PushRow from "./PushRow.svelte";
+  import { browserEnv, pushHost, refreshPush, supportHere, syncBadge, watchPushTaps } from "./push";
   import ContextSheet from "./ContextSheet.svelte";
   import RunningSheet from "./RunningSheet.svelte";
   import UsageLine from "./UsageLine.svelte";
@@ -197,6 +199,18 @@
     for (const r of paired) out[r] = new Client(hosts[r]!.token, hosts[r]!.base === origin ? "" : hosts[r]!.base);
     return out;
   });
+  /** Item 739: every paired host's push routes (`push.ts`). */
+  const pushHosts = $derived(paired.map((r) => pushHost(r, { token: hosts[r]!.token, base: hosts[r]!.base === origin ? "" : hosts[r]!.base })));
+  /** Item 739, at the page's open and each time it is shown again: hand
+   *  the subscription to the hosts again if he turned push on here (a key
+   *  the away server took since, a host paired since), and set the icon's
+   *  badge from their counts. Asks nothing; nothing where push is not on. */
+  function pushCatchUp(refresh: boolean) {
+    if (supportHere() !== "ok" || pushHosts.length === 0) return;
+    const env = browserEnv();
+    if (!env.remembered()) return;
+    void (refresh ? refreshPush(env, pushHosts) : Promise.resolve(null)).then(() => syncBadge(env, pushHosts)).catch(() => {});
+  }
   /** The active host's client. */
   const client = $derived(active ? (clients[active] ?? null) : null);
   /** `online` while the event stream is open; `off` after every paired
@@ -1004,6 +1018,12 @@
       else start(fromHash);
     } else if (paired.length > 0) void streamLoop();
     pollLoop();
+    // Item 739: a notification tapped while the page is alive opens its
+    // chat here (a cold start opens it by the place in the URL).
+    watchPushTaps((t) => {
+      if (client) void openChat(t.chat, t.project, t.host && clients[t.host] ? t.host : active);
+    });
+    pushCatchUp(true);
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "hidden") {
         // Let the stream go while out of sight (A34); the loop waits.
@@ -1017,6 +1037,7 @@
       failures = 0;
       if (wake) wake();
       if (client) void everything();
+      pushCatchUp(false);
     });
     // Leaving or going into the back-forward cache: the stream goes too.
     window.addEventListener("pagehide", () => abort?.abort());
@@ -3536,6 +3557,8 @@
           />
         {:else if sheet === "rail"}
           <RailSheet {rail} problem={railProblem} busy={remote.busy} onpatch={patchRail} {look} onlook={setLook} />
+          <!-- Item 739: this phone's notifications, under its look. -->
+          <PushRow hosts={pushHosts} />
         {:else if sheet === "notes" && client}
           <NotesSheet {client} where={hostName(active ?? "mac")} host={remote.host} available={hasFeature(remote, "notes")} start={notesStart} onnote={note} ontall={(t) => (sheetTall = t)} project={notesPid} projectLabel={notesPid === null ? null : notesPid === NO_PROJECT ? "No project" : (projects.find((x) => x.id === notesPid)?.name ?? null)} resume={notesResume} onview={(v) => (notesPlace = v)} />
         {:else if sheet === "nightshift" && client}

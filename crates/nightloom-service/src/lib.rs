@@ -45,6 +45,7 @@ pub mod preview;
 pub mod project;
 pub mod prompt;
 pub mod proposal;
+pub mod push;
 pub mod rail_store;
 pub mod remote;
 pub mod serve;

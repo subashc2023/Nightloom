@@ -1737,6 +1737,7 @@ fn main() {
             remote::remote_sent,
             remote::remote_done,
             remote::remote_claim,
+            remote::push_note,
             remote::remote_self_test,
             away::away_status,
             away::away_set_url,

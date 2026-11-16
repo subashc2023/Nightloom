@@ -140,6 +140,29 @@ export function turnEndBody(
   return parts.length > 0 ? parts.join(" · ") : "done";
 }
 
+/** What the phone's push says of a turn's end (item 739): paused by the
+ *  plan's limit before failed, failed before finished. */
+export function pushWhatForEnd(t: { error: string | null; cliError?: boolean; limit?: boolean }): api.PushWhat {
+  return t.limit ? "limit" : t.error || t.cliError ? "failed" : "done";
+}
+
+/** What it says of a waiting call: a question form and a plan are answers
+ *  he writes; the rest an Allow or a Deny. */
+export function pushWhatForCall(req: Pick<ApprovalRequest, "name">): api.PushWhat {
+  return req.name === "AskUserQuestion" || req.name === "ExitPlanMode" ? "question" : "approval";
+}
+
+/** Hand the phone's push to the backend (item 739). Apart from the banner's
+ *  two rules — the window's focus and the Settings switches are about the
+ *  Mac's own banner; whether he is at the Mac is the backend's to judge. */
+function pushToPhone(what: api.PushWhat, chat: string | null, label: string, project: string | null): void {
+  try {
+    void api.pushNote(what, chat, label, project).catch(() => {});
+  } catch {
+    // Outside the app (a test, a harness): nothing to tell.
+  }
+}
+
 /** `<chat> — Run Bash?`; a question and a plan by what they are. */
 export function needsYouTitle(chat: string, req: Pick<ApprovalRequest, "name">): string {
   const what =
@@ -206,7 +229,11 @@ export async function notifyTurnEnd(args: {
   error: string | null;
   handoffFill?: number | null;
   prefs?: NotifyPrefs;
+  /** Item 739: the chat the turn ran in, for the phone's push; absent
+   *  (a caller that is not a chat's turn) and no push is sent. */
+  phone?: { chat: string | null; project: string | null; limit: boolean; cliError: boolean };
 }): Promise<void> {
+  if (args.phone) pushToPhone(pushWhatForEnd({ error: args.error, cliError: args.phone.cliError, limit: args.phone.limit }), args.phone.chat, args.chat, args.phone.project);
   const prefs = args.prefs ?? loadNotifyPrefs();
   if (!prefs.turnEnd || windowFocused()) return;
   try {
@@ -229,6 +256,8 @@ const HELD_MAX = 32;
 /** Post the needs-you banner, on the same terms — except that a call the
  *  focused window received is held for `postHeldNeedsYou`. */
 export async function notifyNeedsYou(chat: string, req: ApprovalRequest, prefs?: NotifyPrefs): Promise<void> {
+  // Item 739: the phone hears of every waiting call (unless he is at the Mac).
+  pushToPhone(pushWhatForCall(req), req.chat ?? null, chat, null);
   const p = prefs ?? loadNotifyPrefs();
   if (!p.needsYou) return;
   if (windowFocused()) {

@@ -391,6 +391,9 @@ pub struct ServeHost {
     /// the first ask, as the desktop's host does; `None` until
     /// `bin/voice-setup.sh` has run there.
     voice: Mutex<Option<Arc<crate::voice::Engine>>>,
+    /// Push to the phone (item 739): the key, the subscriptions and the
+    /// sender, under `<home>/remote/push/`.
+    push: Arc<crate::push::Push>,
 }
 
 /// How long the voice programs stay up with no one talking.
@@ -414,7 +417,6 @@ impl ServeHost {
             );
             Self {
                 me: me.clone(),
-                cfg,
                 registry: Mutex::new(registry),
                 active_project: Mutex::new(None),
                 active_chat: Mutex::new(None),
@@ -428,6 +430,8 @@ impl ServeHost {
                 resume: Mutex::new(None),
                 pause_gen: std::sync::atomic::AtomicU64::new(1),
                 voice: Mutex::new(None),
+                push: crate::push::Push::open(crate::push::Push::dir_under(&cfg.home), "away"),
+                cfg,
             }
         })
     }
@@ -436,6 +440,36 @@ impl ServeHost {
         let _ = self.tx.send(Event {
             name: name.into(),
             payload,
+        });
+    }
+
+    /// Tell the subscribed phones what happened in `chat` (item 739): its
+    /// name and the state, nothing of the reply. Off the caller's path —
+    /// the name is read from the chat list and the sends go out in a task.
+    /// The away server cannot know he is at the Mac, so it always sends.
+    fn push_note(&self, what: crate::push::What, chat: &str, project: Option<&str>) {
+        if !self.push.any() {
+            return;
+        }
+        let Some(me) = self.me.upgrade() else {
+            return;
+        };
+        let (chat, project) = (chat.to_string(), project.map(str::to_string));
+        tokio::spawn(async move {
+            let label = Host::chats(&*me, project.as_deref())
+                .await
+                .ok()
+                .and_then(|rows| rows.into_iter().find(|r| r.id == chat))
+                .map(|r| r.label);
+            me.push
+                .notify(crate::push::Note {
+                    what,
+                    chat: Some(chat),
+                    label,
+                    project,
+                    at_the_mac: false,
+                })
+                .await;
         });
     }
 
@@ -958,17 +992,33 @@ impl ServeHost {
             &env,
         )
         .await;
+        // 739: the phone is told how the turn ended — unless he stopped
+        // it, or it only paused on a card (that card's own push stands).
+        let project_id = project.as_ref().map(|p| p.id.as_str());
         match end {
             Ok(AgentTurnEnd::Done { outcome, .. }) => {
                 for n in outcome.notices {
                     env.notice(n);
+                }
+                let ended = match (&outcome.limit, &outcome.deferred) {
+                    (Some(_), _) => Some(crate::push::What::Limit),
+                    (None, Some(_)) => None,
+                    (None, None) => Some(crate::push::What::Done),
+                };
+                if let Some(what) = ended.filter(|_| !cancel.is_cancelled()) {
+                    self.push_note(what, &chat_id, project_id);
                 }
                 self.after_turn(&chat_id, outcome.limit);
             }
             Ok(AgentTurnEnd::StoppedInCouncil) => {
                 env.notice("stopped during the council's seats; no chair ran".into());
             }
-            Err(e) => env.notice(format!("the turn failed: {e}")),
+            Err(e) => {
+                if !cancel.is_cancelled() {
+                    self.push_note(crate::push::What::Failed, &chat_id, project_id);
+                }
+                env.notice(format!("the turn failed: {e}"))
+            }
         }
     }
 
@@ -1606,6 +1656,14 @@ impl TurnEnv for ServeEnv<'_> {
         if let Ok(v) = serde_json::to_value(prompt) {
             lock(&self.host.pending).insert(prompt.id.to_string(), v.clone());
             self.host.emit("tool-approval", v.to_string());
+            // 739: a card waits on him.
+            if let Some(chat) = prompt.chat {
+                self.host.push_note(
+                    crate::push::What::for_prompt(prompt.name),
+                    chat,
+                    self.project.as_deref(),
+                );
+            }
         }
     }
 
@@ -2153,6 +2211,10 @@ impl Host for ServeHost {
 
     fn kind(&self) -> &'static str {
         "serve"
+    }
+
+    fn push(&self) -> Option<Arc<crate::push::Push>> {
+        Some(self.push.clone())
     }
 
     async fn limit_pause(&self) -> Option<crate::remote::api::LimitPause> {
@@ -2778,7 +2840,8 @@ esac
                 "notes",
                 "notes_project",
                 "budget",
-                "resume_limit"
+                "resume_limit",
+                "push"
             ])
         );
 

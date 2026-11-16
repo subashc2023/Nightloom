@@ -402,6 +402,7 @@ export function notifyTurnEnded(error: string | null): void {
     ranIn,
     error,
     cliError: app.agentTurn?.is_error === true,
+    limit: !!app.agentTurn?.limit,
   });
 }
 
@@ -415,6 +416,8 @@ export function notifyEnd(t: {
   ranIn: string | null;
   error: string | null;
   cliError: boolean;
+  /** The plan's limit paused the turn (item 739: the phone's push says so). */
+  limit?: boolean;
 }): void {
   const sent = [...t.events].reverse().find((e) => e.event === "user_message");
   const since = sent?.event === "user_message" ? Date.parse(sent.at) : NaN;
@@ -430,5 +433,6 @@ export function notifyEnd(t: {
     elapsedMs: Number.isNaN(since) ? null : Date.now() - since,
     error: t.error,
     handoffFill: wrapUp ? handoff.fill : null,
+    phone: { chat: t.ranIn, project: homeFor(t.ranIn).id, limit: t.limit === true, cliError: t.cliError },
   });
 }

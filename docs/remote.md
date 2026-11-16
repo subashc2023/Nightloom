@@ -150,10 +150,36 @@ It spawns the assertion only when the Sleep card's own "keep the Mac
 awake while a turn runs" switch is on — the holder's rule, unchanged
 (blocker 175). A closed lid on battery still sleeps the Mac either way.
 
+## Push notifications (item 739, 2026-11-16)
+
+The Home Screen app can be sent real pushes (iOS 16.4+; the HTTPS link).
+Settings sheet → **Notifications on this phone** is the Subscribe switch,
+its off switch and "Send a test notification"; in Safari, or on the plain
+HTTP link, the row says why it cannot be turned on.
+
+- A push says the chat's name and its state — Finished, Failed, Paused by
+  the usage limit, Waiting for your approval, Has a question for you — and
+  nothing of the reply (blocker 2011). A tap opens that chat; the icon's
+  badge is the number of chats waiting on him.
+- None is sent while the Mac's keyboard or trackpad was touched in the last
+  two minutes. The away server cannot know that and always sends.
+- Routes, all behind the bearer: `GET /api/push`, `POST /api/push/subscribe`,
+  `/unsubscribe`, `/seen`, `/test`, and `/key` (away server only). The
+  worker is `/push-sw.js` (no fetch handler, no cache, no token).
+- Files, per host, mode 0600 under `<home>/remote/push/`: `vapid.pk8` (the
+  signing key, made once) and `subscriptions.json`. The Mac's sync pass
+  hands its key to the away server so both sign with one — a phone holds
+  one subscription, tied to one key. An optional `subject` file holds the
+  VAPID contact (`mailto:` or `https:`); the default names nobody.
+- Code: `crates/nightloom-service/src/push/` (crypto on `ring`, store,
+  sender), `remote/push_routes.rs`, `src/remote/push.ts`, `PushRow.svelte`,
+  `public/remote/push-sw.js`; the Mac's triggers are `notify.ts` →
+  the `push_note` command, the away server's are in `serve.rs`.
+
 ## What is not here (yet)
 
 Attachments, folder pickers, settings, Nightshift's blockers and morning
-page, notes; push notifications; Tailscale identity headers (`tailscale
+page, notes (this list is stale; the phone-page audit item rewrites it); Tailscale identity headers (`tailscale
 serve` in front of the port; later). Shape A and Shape C are separate
 items.
 
