@@ -1063,6 +1063,10 @@ export interface ToolRow {
   textAt?: number;
   /** The file a `send_file` call sent (backlog 343): its chip. */
   sent?: SentFile;
+  /** A file-editing call's input (item 742: the reply's Changes row), kept
+   *  only for the calls `editDiffOf` reads; `turnChanges.ts` turns it into
+   *  a diff when the row is drawn. */
+  input?: unknown;
 }
 
 /** The files a reply's calls sent, in order (backlog 343). */
@@ -1144,6 +1148,14 @@ export function toolSummary(name: string, input: unknown): string {
   return s.length > 120 ? s.slice(0, 117) + "…" : s;
 }
 
+/** Item 742: the tools whose input is a diff (`editDiffOf`'s names). */
+const EDIT_TOOLS = new Set(["Edit", "MultiEdit", "Write", "edit_file", "write_file"]);
+
+/** `{ input }` for a file-editing call, else nothing — spread into a row. */
+export function editInput(name: string, input: unknown): { input?: unknown } {
+  return EDIT_TOOLS.has(name) ? { input } : {};
+}
+
 function findTool(rows: ToolRow[], id: string): ToolRow | null {
   for (const r of rows) {
     if (r.id === id) return r;
@@ -1167,7 +1179,7 @@ export function foldTurnEvent(live: LiveTurn, ev: TurnEvent): LiveTurn {
       return {
         ...live,
         retry: null,
-        tools: [...live.tools, { id: ev.id, name: ev.name, summary: toolSummary(ev.name, ev.input), ok: null, children: [], textAt: live.text.length }],
+        tools: [...live.tools, { id: ev.id, name: ev.name, summary: toolSummary(ev.name, ev.input), ok: null, children: [], textAt: live.text.length, ...editInput(ev.name, ev.input) }],
       };
     case "tool_result": {
       const tools = structuredClone(live.tools);
@@ -1425,6 +1437,7 @@ export function transcriptRows(events: SessionEvent[]): Row[] {
               index: i,
               block: n,
               removed: whole || !!gone?.has(n),
+              ...editInput(b.name, b.input),
             };
             tools.push(row);
             pushSeg(seq, { kind: "tools", tools: [row] });
