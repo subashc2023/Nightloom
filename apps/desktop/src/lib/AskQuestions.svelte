@@ -7,6 +7,7 @@
   // follows the scroll. Drawn by the desktop card (ApprovalPrompt) and the phone's card (Remote); each host
   // keeps its own note, Answer and Skip, and owns `picks`/`others`.
   import type { Snippet } from "svelte";
+  import { tip } from "./tip";
   import type { AskQuestion } from "./types";
   import { hasPreviews, isAnswered, keyPick, previewOption, spyIndex, type OptionNotes } from "./askQuestions";
 
@@ -240,7 +241,7 @@
                     class:has
                     aria-label="comment on {o.label}"
                     aria-expanded={!!noteOpen[noteKey(i, o.label)] || has}
-                    title={has ? "Your comment goes with this answer" : "Add a comment to this option — it goes with the answer"}
+                    use:tip={has ? "Your comment goes with this answer" : "Add a comment to this option — it goes with the answer"}
                     onclick={(e) => {
                       e.preventDefault();
                       toggleNote(i, o.label);
