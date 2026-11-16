@@ -1764,6 +1764,7 @@ fn main() {
             nightshift::nightshift_set_order,
             nightshift::nightshift_blockers,
             nightshift::nightshift_answer_blocker,
+            nightshift::ask_file_answer,
             nightshift::nightshift_shifts,
             nightshift::nightshift_shift,
             nightshift::nightshift_shift_log,

@@ -20,6 +20,7 @@
     onother,
     notes = {},
     onnote,
+    onquick,
     folded = false,
     tail,
   }: {
@@ -33,6 +34,9 @@
      *  the answer. Without `onnote` the options have no comment control. */
     notes?: Record<number, OptionNotes>;
     onnote?: (i: number, label: string, value: string) => void;
+    /** Item 753: the turn-end card. A click on an option answers at once — the option is picked (with
+     *  his comment on it, if any) and the host sends; Enter on a picked option or in Other sends too. */
+    onquick?: (i: number) => void;
     folded?: boolean;
     tail?: Snippet;
   } = $props();
@@ -126,10 +130,16 @@
       if (e.key === "Enter" && !e.isComposing) {
         e.preventDefault();
         if (many && i < questions.length - 1) go(i + 1);
+        else if (onquick && !e.shiftKey && isAnswered(picks[i], others[i])) onquick(i);
       }
       return;
     }
     if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (onquick && e.key === "Enter" && isAnswered(picks[i], others[i])) {
+      e.preventDefault();
+      onquick(i);
+      return;
+    }
     const p = keyPick(e.key, q.options.length);
     if (!p) return;
     e.preventDefault();
@@ -211,9 +221,18 @@
           <div class="aq-opts" role={multi ? "group" : "radiogroup"} aria-labelledby="{idBase}-q{i}-t">
             {#each q.options as o, k (o.label)}
               {@const on = (picks[i] ?? []).includes(o.label)}
+              <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
               <label
                 class="aq-opt"
                 class:on
+                class:quick={!!onquick}
+                onclick={(e) => {
+                  // Item 753: on the turn-end card a click answers (the comment button is its own control).
+                  if (!onquick || (e.target as HTMLElement).closest(".aq-cb")) return;
+                  e.preventDefault();
+                  if (!on) ontoggle(i, o.label, multi);
+                  onquick(i);
+                }}
                 onmouseenter={() => (hover[i] = o.label)}
                 onmouseleave={() => (hover[i] = null)}
               >
@@ -495,6 +514,14 @@
     cursor: pointer;
     min-width: 0;
     transition: background 0.12s;
+  }
+  /* Item 753: on the turn-end card an option is a button — a click answers. */
+  .aq-opt.quick {
+    border: 1px solid var(--line2);
+    margin-bottom: 5px;
+  }
+  .aq-opt.quick:hover {
+    border-color: var(--accent-ink);
   }
   .aq-opt:hover {
     background: var(--well);

@@ -697,6 +697,8 @@ export const app = $state({
   turnSeq: 0,
   /** The Running-tasks popover under the top bar's agents chip. */
   showTasks: false,
+  /** Item 753: the Needs-you view is open. */
+  showNeeds: false,
   /** Bumped to send the chat on screen's transcript to its foot, where the
    *  running turn is (backlog 309's jump from the running list). */
   toLatest: 0,

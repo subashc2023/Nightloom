@@ -393,6 +393,26 @@ pub async fn nightshift_answer_blocker(
     blocking(move || blockers::answer_blocker(&root.root, &id, &answer)).await
 }
 
+/// File a question he answered on a chat's turn-end card as an answered
+/// blocker in his words (item 753): in the project's Nightshift root, else
+/// in its folder's `blockers/` when it keeps one. `None` — and nothing
+/// written — for a project with neither, or with no folder.
+#[tauri::command]
+pub async fn ask_file_answer(
+    state: State<'_, AppState>,
+    project_id: String,
+    ask: blockers::AnsweredAsk,
+) -> Result<Option<Blocker>, String> {
+    let Ok((_, workspace)) = workspace_of(&state, &project_id).await else {
+        return Ok(None);
+    };
+    blocking(move || match blockers::filing_root(&workspace) {
+        Some(root) => blockers::file_answered(&root, &ask).map(Some),
+        None => Ok(None),
+    })
+    .await
+}
+
 // ---- shifts ----
 
 #[tauri::command]

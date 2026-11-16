@@ -21,6 +21,29 @@ import { toolInputSummary } from "./transcriptPrefs.svelte";
 import { fmtTokens } from "./tokens";
 import * as api from "./api";
 import { nameLine } from "./chatLabel";
+import { extractAsk } from "./askTag";
+
+/** A chat's turn ended (item 753): what the Needs-you view keeps of it. */
+export interface TurnEnded {
+  chat: string | null;
+  name: string;
+  project: string | null;
+  /** The turn's words, for the question it may have ended on. */
+  text: string;
+  failed: boolean;
+  stopped: boolean;
+}
+/** Who hears of a turn's end (the Needs-you store registers itself; a set,
+ *  so this file needs nothing of the app's state). */
+export const turnEndListeners = new Set<(e: TurnEnded) => void>();
+
+/** The words of a turn's segments, in order. */
+export function turnText(segs: Segment[]): string {
+  return segs
+    .map((s) => (s.kind === "text" ? s.text : ""))
+    .filter(Boolean)
+    .join("\n\n");
+}
 
 export interface NotifyPrefs {
   /** A turn finished while the window was in the background. */
@@ -142,8 +165,9 @@ export function turnEndBody(
 
 /** What the phone's push says of a turn's end (item 739): paused by the
  *  plan's limit before failed, failed before finished. */
-export function pushWhatForEnd(t: { error: string | null; cliError?: boolean; limit?: boolean }): api.PushWhat {
-  return t.limit ? "limit" : t.error || t.cliError ? "failed" : "done";
+export function pushWhatForEnd(t: { error: string | null; cliError?: boolean; limit?: boolean; ask?: boolean }): api.PushWhat {
+  // Item 753: a turn that ended on a question for him is a question, not a finish.
+  return t.limit ? "limit" : t.error || t.cliError ? "failed" : t.ask ? "question" : "done";
 }
 
 /** What it says of a waiting call: a question form and a plan are answers
@@ -235,7 +259,19 @@ export async function notifyTurnEnd(args: {
 }): Promise<void> {
   // 739 review L5: a turn he stopped himself is not news to him (the away
   // server skips a cancelled turn the same way).
-  if (args.phone && !args.phone.stopped) pushToPhone(pushWhatForEnd({ error: args.error, cliError: args.phone.cliError, limit: args.phone.limit }), args.phone.chat, args.chat, args.phone.project);
+  const text = args.phone ? turnText(args.segs) : "";
+  const failed = !!args.error || !!args.phone?.cliError;
+  if (args.phone) {
+    const ended: TurnEnded = { chat: args.phone.chat, name: args.chat, project: args.phone.project, text, failed, stopped: !!args.phone.stopped };
+    for (const hear of turnEndListeners) {
+      try {
+        hear(ended);
+      } catch {
+        // A listener's trouble is not the turn's.
+      }
+    }
+  }
+  if (args.phone && !args.phone.stopped) pushToPhone(pushWhatForEnd({ error: args.error, cliError: args.phone.cliError, limit: args.phone.limit, ask: !failed && extractAsk(text) !== null }), args.phone.chat, args.chat, args.phone.project);
   const prefs = args.prefs ?? loadNotifyPrefs();
   if (!prefs.turnEnd || windowFocused()) return;
   try {

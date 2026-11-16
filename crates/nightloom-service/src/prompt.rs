@@ -64,6 +64,8 @@ When tools are available, use them to check rather than guessing, and say plainl
 
 A command for the user to run themselves goes in its own ```bash block, one command per block: the desktop app gives that block a Run button and sends you its output.
 
+When a turn has to end on a question for the user, ask one, as the last thing in the reply, between a line holding only <ask> and a line holding only </ask>: the question in full sentences, then one or two answers, each on its own line starting with \"- \", your default first; Nightloom shows it as a card whose buttons send the answer.
+
 Whenever you write a prompt for the next chat (a hand-off), put it between a line holding only <handoff> and a line holding only </handoff> — plain prose, no code fence, no [brackets] or placeholders; Nightloom shows it as a card with a button that starts the next chat with it.";
 
 /// The instruction file honoured in every directory on the walk, and in the
@@ -1000,6 +1002,9 @@ fn engine_note_segment(knowledge: Option<&KnowledgeContext>) -> Segment {
     text.push_str(RUN_BLOCK_NOTE);
     // Item 583: the tag rule rode only in Nightloom's own wrap-up message,
     // so a hand-off he asked for in words came back as a fenced block.
+    // Item 753: a turn-end question is one tagged block, drawn as a card.
+    text.push(' ');
+    text.push_str(ASK_NOTE);
     text.push(' ');
     text.push_str(HANDOFF_NOTE);
     text.push_str("\n</engine-note>");
@@ -1025,6 +1030,16 @@ pub const CONTINUE_LATER_NOTE: &str = "To be continued later without the user �
 pub const RUN_BLOCK_NOTE: &str = "A command for the user to run themselves goes in its own \
      ```bash block, one command per block: the desktop app gives that block a Run button and \
      sends you its output.";
+
+/// How a turn-end question is written (nightshift item 753, 2026-11-16): one
+/// tagged block, last in the reply, which the desktop and the phone draw as
+/// a card with a button per answer (`apps/desktop/src/lib/askTag.ts`); a
+/// click sends the answer and files it as an answered blocker. Beside the
+/// hand-off rule in every chat's engine note and the API engine's identity.
+pub const ASK_NOTE: &str = "When a turn has to end on a question for the user, ask one, as the \
+     last thing in the reply, between a line holding only <ask> and a line holding only </ask>: the \
+     question in full sentences, then one or two answers, each on its own line starting with \"- \", \
+     your default first; Nightloom shows it as a card whose buttons send the answer.";
 
 /// Where a prompt for the next chat goes (nightshift item 583, 2026-11-10):
 /// the wrap-up's own sentence (`HANDOFF_ASK`, `apps/desktop/src/lib/handoffTag.ts`)
@@ -1072,7 +1087,7 @@ fn incognito_engine_note_segment() -> Segment {
          tool mcp__nightloom__fetch_page (ToolSearch it by that full name). For the whole \
          text of a page use fetch_page (WebFetch summarises and truncates); if fetch_page \
          reports a JavaScript shell or returns only a title, use WebFetch on that URL instead \
-         of retrying. {INCOGNITO_NOTE} {CITE_NOTE} {RUN_BLOCK_NOTE} {HANDOFF_NOTE}\n</engine-note>"
+         of retrying. {INCOGNITO_NOTE} {CITE_NOTE} {RUN_BLOCK_NOTE} {ASK_NOTE} {HANDOFF_NOTE}\n</engine-note>"
     );
     Segment::new(SegmentKind::EngineNote, "engine-note", text)
 }
@@ -3243,6 +3258,20 @@ As of now — the front.
         }
         // Short: its size shows on the new-chat dial.
         assert!(HANDOFF_NOTE.split_whitespace().count() <= 60);
+    }
+
+    /// Item 753: every chat is told how a turn-end question is written — the
+    /// engine notes and the API engine's identity carry the same sentence.
+    #[test]
+    fn every_chat_is_told_how_to_end_a_turn_on_a_question() {
+        assert!(
+            ASK_NOTE.contains("between a line holding only <ask> and a line holding only </ask>")
+        );
+        assert!(DEFAULT_IDENTITY.contains(ASK_NOTE), "{DEFAULT_IDENTITY}");
+        for seg in [engine_note_segment(None), incognito_engine_note_segment()] {
+            assert!(seg.text.contains(ASK_NOTE), "{}", seg.text);
+        }
+        assert!(ASK_NOTE.split_whitespace().count() <= 70);
     }
 
     /// Nightshift 573: under `Choose`, both layers name gathering — search,

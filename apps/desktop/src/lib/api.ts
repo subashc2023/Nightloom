@@ -2003,6 +2003,23 @@ export function nightshiftBlockers(projectId: string): Promise<BlockerList> {
   return invoke("nightshift_blockers", { projectId });
 }
 
+/** A question a chat's turn ended on, and his answer to it (item 753). */
+export interface AnsweredAsk {
+  question: string;
+  answer: string;
+  options: string[];
+  chat: string;
+  /** "2026-11-16 9:05 AM". */
+  when: string;
+}
+
+/** File it as an answered blocker in his words, in the project's Nightshift
+ *  root or its `blockers/` folder; null (nothing written) for a project
+ *  with neither. */
+export function askFileAnswer(projectId: string, ask: AnsweredAsk): Promise<{ id: string; file: string } | null> {
+  return invoke("ask_file_answer", { projectId, ask });
+}
+
 /**
  * Write `## Answer` and flip `status` to `answered` — the two edits the
  * contract gives the GUI. Refused while a shift is live.

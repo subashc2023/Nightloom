@@ -1533,3 +1533,29 @@ button,
   -webkit-user-select: none;
   user-select: none;
 }
+
+/* Item 753: a reply's `<ask>` block (askTag.ts) — the turn's question, as a
+   quiet box; the card that answers it is drawn under the transcript while
+   it waits (TurnAsk.svelte). */
+.nl-ask {
+  margin: 12px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--line2);
+  border-left: 3px solid var(--accent-ink);
+  border-radius: 8px;
+}
+.nl-ask-h {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.nl-ask .nl-ask-q {
+  margin: 4px 0 0;
+}
+.nl-ask .nl-ask-o {
+  margin: 6px 0 0;
+  padding-left: 1.2em;
+  color: var(--ink2);
+}

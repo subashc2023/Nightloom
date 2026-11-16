@@ -93,6 +93,8 @@ export const TRANSCRIPT_PIECES: Record<string, Where> = {
   AsideLayer: TRANSCRIPT_FEATURES["ask aside on a selection, aside cards"]!,
   ApprovalPrompt: TRANSCRIPT_FEATURES["approval prompts, answer hand-back"]!,
   AskHandBack: TRANSCRIPT_FEATURES["approval prompts, answer hand-back"]!,
+  // Item 753: the turn-end question's card sits with the waiting calls' cards, in the chat only.
+  TurnAskHost: TRANSCRIPT_FEATURES["approval prompts, answer hand-back"]!,
   BudgetStopCard: TRANSCRIPT_FEATURES["budget stop card"]!,
   SessionCutNotice: TRANSCRIPT_FEATURES["session-cut notice (item 703), resumed"]!,
 };
@@ -103,7 +105,7 @@ export const TRANSCRIPT_PIECES: Record<string, Where> = {
  * it in `TRANSCRIPT_FEATURES`, then update the count.
  */
 export const KIND_GUARDS = {
-  isChat: 15,
+  isChat: 16,
   inPane: 8,
   inAside: 7,
   "src.chatActions": 10,
