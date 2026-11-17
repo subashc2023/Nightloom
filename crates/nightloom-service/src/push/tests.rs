@@ -260,6 +260,7 @@ fn a_push_says_the_chat_and_its_state_and_nothing_else() {
         (What::Failed, "Failed"),
         (What::Limit, "Paused by the usage limit"),
         (What::Question, "Has a question for you"),
+        (What::Changes, "Wants to make changes — approve it?"),
     ] {
         n.what = w;
         let v: serde_json::Value = serde_json::from_str(&p.payload(&n, 0)).unwrap();

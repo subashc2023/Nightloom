@@ -173,3 +173,32 @@ mod tests {
         assert!(!is_id("a.jsonl"));
     }
 }
+
+/// The job whose chat `chat` is (item 780), for the approval card under
+/// the Mac's chat: `None` for any other chat.
+#[tauri::command]
+pub fn job_for_chat(app: AppHandle, chat: String) -> Option<nightloom_service::jobs::JobView> {
+    crate::remote::jobs_store(&app)?
+        .list()
+        .into_iter()
+        .find(|j| j.job.chat.as_deref() == Some(chat.as_str()))
+}
+
+/// An answer on the Mac's card (item 780), as the phone's `/api/jobs/{id}`
+/// takes it: `approve` "once", "always" or "ask" (take back), or
+/// `dismiss_wanted` (Keep read-only).
+#[tauri::command]
+pub fn job_answer(
+    app: AppHandle,
+    id: String,
+    patch: nightloom_service::jobs::JobPatch,
+) -> Result<nightloom_service::jobs::JobView, String> {
+    let jobs = crate::remote::jobs_store(&app).ok_or("this Mac keeps no jobs")?;
+    // Only the approval: the card changes nothing else of the job.
+    let patch = nightloom_service::jobs::JobPatch {
+        approve: patch.approve,
+        dismiss_wanted: patch.dismiss_wanted,
+        ..Default::default()
+    };
+    jobs.patch(&id, patch, chrono::Utc::now())
+}

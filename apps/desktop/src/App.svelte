@@ -83,6 +83,9 @@
   import PromptLibrary from "./lib/PromptLibrary.svelte";
   import Transcript from "./lib/Transcript.svelte";
   import Composer from "./lib/Composer.svelte";
+  import JobChatCard from "./remote/JobChatCard.svelte";
+  import { invoke } from "@tauri-apps/api/core";
+  import type { Job } from "./remote/jobs";
   import NoteView from "./lib/NoteView.svelte";
   import GraphView from "./lib/GraphView.svelte";
   import Welcome from "./lib/Welcome.svelte";
@@ -902,6 +905,17 @@
                 {#if focused}<FindBar bind:this={findBar} />{/if}
               </div>
               {#if !blank || waiting}
+                <!-- Item 780: a recurring job's chat carries its approval card. -->
+                {#if app.activeSessionId}
+                  <div class="job-card-dock">
+                    <JobChatCard
+                      chat={app.activeSessionId}
+                      where="its project"
+                      load={(chat) => invoke<Job | null>("job_for_chat", { chat })}
+                      send={(id, patch) => invoke("job_answer", { id, patch })}
+                    />
+                  </div>
+                {/if}
                 <Composer />
               {/if}
             {:else if t.content.kind === "chat" && t.content.session !== null}
@@ -1103,6 +1117,14 @@
 </div>
 
 <style>
+  /* Item 780: the job's approval card, the composer card's width. */
+  .job-card-dock {
+    max-width: 760px;
+    width: 100%;
+    box-sizing: border-box;
+    margin: 0 auto;
+    padding: 0 16px;
+  }
   .shell {
     display: flex;
     flex-direction: column;

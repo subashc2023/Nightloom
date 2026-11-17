@@ -16,6 +16,10 @@ libc = "0.2"
 tokio-util.workspace = true
 thiserror.workspace = true
 chrono.workspace = true
+# Recurring jobs keep a real time zone (nightshift item 780): 8:00 AM stays
+# 8:00 AM across daylight saving. Already in the lock (another crate's); reads
+# the system's zoneinfo.
+jiff = "0.2"
 async-trait.workspace = true
 regex.workspace = true
 globset.workspace = true

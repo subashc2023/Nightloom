@@ -433,7 +433,10 @@ impl ServeHost {
                 pause_gen: std::sync::atomic::AtomicU64::new(1),
                 voice: Mutex::new(None),
                 push: crate::push::Push::open(crate::push::Push::dir_under(&cfg.home), "away"),
-                jobs: crate::jobs::Jobs::open(crate::jobs::Jobs::dir_under(&cfg.home)),
+                // Item 780: no zone from this host's clock (UTC), which
+                // would pin a London phone's job to UTC; the phone names
+                // its own zone on its next look at the list.
+                jobs: crate::jobs::Jobs::open_in(crate::jobs::Jobs::dir_under(&cfg.home), None),
                 cfg,
             }
         })
