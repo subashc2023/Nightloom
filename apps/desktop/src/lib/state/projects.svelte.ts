@@ -7,6 +7,7 @@ import { canDetach } from "../browse";
 import * as tabs from "../tabs";
 import { loadSavedWorkspaces, rebuild } from "../tabsStore";
 import type { ProjectInfo, NewProjectPath } from "../types";
+import { isHome } from "../home";
 import { switchAside } from "./asides.svelte";
 import { syncNightshiftProject } from "./nightshift.svelte";
 import { leaveNote } from "./notes.svelte";
@@ -462,6 +463,11 @@ export async function renameProject(id: string, name: string): Promise<void> {
  * says so — a "remove" next to a folder full of work has to be unambiguous.
  */
 export async function forgetProject(id: string): Promise<void> {
+  // Item 763: Home is pinned and cannot leave the list.
+  if (isHome(app.projects.find((p) => p.id === id))) {
+    addToast("Home stays in the list — it is where the morning scan and the feed live.");
+    return;
+  }
   const wasOpen = app.project?.id === id;
   try {
     await api.forgetProject(id);

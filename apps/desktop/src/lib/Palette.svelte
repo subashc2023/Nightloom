@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { homeFirst } from "./home";
   import { browseFree, canLeaveProject } from "./state.svelte";
   import {
     app,
@@ -70,7 +71,7 @@
   }
 
   const projectRows = $derived.by((): Row[] => {
-    const rows: Row[] = app.projects.map((p, i) => ({
+    const rows: Row[] = homeFirst(app.projects).map((p, i) => ({
       id: `p:${p.id}`,
       label: p.name,
       meta: `${p.chats} chat${p.chats === 1 ? "" : "s"} · ${p.notes} note${p.notes === 1 ? "" : "s"}${p.exists ? "" : " · folder missing"}`,

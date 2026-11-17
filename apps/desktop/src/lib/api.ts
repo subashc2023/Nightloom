@@ -88,6 +88,7 @@ import type { ForYouRow } from "./forYou";
 import type { PriorExchange } from "./noteEdit";
 import type { TurnUsageLine } from "./replyUsage";
 import { cleanPassage, shownText } from "./keep";
+import type { HomeFeed, HomeInfo } from "./home";
 
 // All backend errors reject with a plain string.
 
@@ -2284,4 +2285,23 @@ export function remoteToken(regenerate: boolean): Promise<RemoteStatus> {
  *  the chat's turn, or not taken and why. */
 export function remoteSent(id: number, queued: boolean, error: string | null): Promise<null> {
   return invoke("remote_sent", { id, queued, error });
+}
+
+// ---- Home (nightshift item 763) ----
+
+/** Home's project, today's chat, its folder, brief and scan time. */
+export function homeInfo(): Promise<HomeInfo> {
+  return invoke("home_info");
+}
+/** Home's feed, newest first, and when he last marked it seen. */
+export function homeFeed(limit?: number): Promise<HomeFeed> {
+  return invoke("home_feed", limit === undefined ? {} : { limit });
+}
+/** Mark the feed seen now; the new seen time. */
+export function homeMarkSeen(): Promise<string> {
+  return invoke("home_mark_seen");
+}
+/** Save his standing brief for Home. */
+export function homeSaveBrief(text: string): Promise<null> {
+  return invoke("home_save_brief", { text });
 }

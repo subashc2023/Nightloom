@@ -100,6 +100,7 @@
   import NotesPanel from "./NotesPanel.svelte";
   import SearchPanel from "./SearchPanel.svelte";
   import ProjectMenu from "./ProjectMenu.svelte";
+  import HomeRow from "./HomeRow.svelte";
   import Icon from "./Icon.svelte";
   import DisableDialog from "./DisableDialog.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
@@ -1063,6 +1064,8 @@
   ondragovercapture={onAsideDragOver}
   ondragleavecapture={onAsideDragLeave}
 >
+  <!-- Item 763 (H1): Home, pinned first above the projects. -->
+  <HomeRow />
   <div class="project">
     <button
       class="chip"

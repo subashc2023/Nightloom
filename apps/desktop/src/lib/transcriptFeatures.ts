@@ -98,6 +98,10 @@ export const TRANSCRIPT_PIECES: Record<string, Where> = {
   TurnAskHost: TRANSCRIPT_FEATURES["approval prompts, answer hand-back"]!,
   BudgetStopCard: TRANSCRIPT_FEATURES["budget stop card"]!,
   SessionCutNotice: TRANSCRIPT_FEATURES["session-cut notice (item 703), resumed"]!,
+  // Item 763 (H3): the date and hand-off dividers and the scan card are drawn from the events, so an
+  // aside's thread gets its date lines too (it has no hand-offs or scans to draw).
+  ChatDividers: shared,
+  ScanCard: shared,
 };
 
 /**

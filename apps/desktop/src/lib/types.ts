@@ -365,6 +365,9 @@ export interface ProjectInfo {
    *  (backlog 102): a New chat in it is a Chat though it has a folder.
    *  Absent on an older shape. */
   unfiled?: boolean;
+  /** What made the project, when something did (item 763): `nightloom:home`
+   *  is Home, pinned first and never removed. Absent on an older shape. */
+  source?: string | null;
 }
 
 /** One extra folder as the rail and the Context popover show it (backlog 143). */
@@ -1437,6 +1440,12 @@ export type SessionEvent =
       at: string;
     }
   | { event: "compaction"; summary: string; at: string }
+  // Item 763 (H3, blocker 2021's answer): the chat handed off in place — the
+  // model starts fresh from `brief` while he keeps scrolling one chat. Drawn
+  // as a divider where it sits; `context` is the size it left at.
+  | { event: "hand_off"; brief: string; context: number; reason: "soft" | "hard"; at: string }
+  // The chat's automatic hand-off thresholds: metadata, never drawn.
+  | { event: "auto_hand_off"; soft: number; hard: number; at: string }
   // A log entry the backend could not read: an event from a newer build, or a
   // line the disk damaged. It holds its index so that `rewind` and `elide`,
   // which address events by position, still point where they were aimed. There

@@ -1,6 +1,9 @@
 <script lang="ts">
   // Item 703: where a turn's end cut running agents.
   import SessionCutNotice from "./SessionCutNotice.svelte";
+  import ChatDividers from "./ChatDividers.svelte";
+  import ScanCard from "./ScanCard.svelte";
+  import { handOffsOf, isScanMessage, placeDividers } from "./home";
   import { placeCuts } from "./sessionCut";
   import { cutsFor } from "./sessionCut.svelte";
   import { tip } from "./tip";
@@ -490,6 +493,17 @@
     placeCuts(
       isChat ? cutsFor(chatId) : [],
       items.flatMap((it, i) => (it.kind === "user" ? [{ index: i, at: it.at }] : [])),
+    ),
+  );
+  // Item 763 (H3): one continuous chat — a date line where two messages'
+  // local days differ, a hand-off line where the chat handed off in place.
+  const dividerPlaces = $derived(
+    placeDividers(
+      items.map((it) => ({
+        index: it.index,
+        at: it.superseded ? null : it.kind === "user" ? it.at : it.kind === "assistant" ? it.footer.at : null,
+      })),
+      handOffsOf(evs),
     ),
   );
 
@@ -2595,6 +2609,7 @@
       </div>
     {/if}
     {#each items as item, i (i)}
+      {#if i >= drawFrom && dividerPlaces.before.has(i)}<ChatDividers dividers={dividerPlaces.before.get(i) ?? []} foldKey={(ix) => turnFold(ix, "hand_off")} />{/if}
       {#if i >= drawFrom && cutPlaces.before.has(i)}<SessionCutNotice cuts={cutPlaces.before.get(i) ?? []} resumed />{/if}
       <!-- Item 482: only the render window is drawn. -->
       {#if i < drawFrom}{:else if item.superseded}
@@ -2606,6 +2621,13 @@
             {rewound[i] === 1 ? "1 message rewound" : `${rewound[i]} messages rewound`}
           </div>
         {/if}
+      {:else if item.kind === "user" && !item.removed && editing?.index !== item.index && isScanMessage(item.text)}
+        <!-- Item 763 (H3): the morning scan as a card, its facts folded. -->
+        <div class="scan-turn" data-turn={item.index}>
+          <ScanCard text={item.text} at={item.at} foldKey={turnFold(item.index, "scan")} />
+          {@render notes(item.index)}
+        </div>
+        {#if item.index === warmNoticeIndex && chatId}<KeepWarmNotice chat={chatId} />{/if}
       {:else if item.kind === "user"}
         <div
           class="user-turn"
@@ -3124,6 +3146,7 @@
          turn's end and the re-synced log (backlog 131), so the reply never
          leaves the DOM under a reader. -->
     {#if cutPlaces.tail.length > 0}<SessionCutNotice cuts={cutPlaces.tail} resumed={false} />{/if}
+    {#if dividerPlaces.tail.length > 0}<ChatDividers dividers={dividerPlaces.tail} foldKey={(ix) => turnFold(ix, "hand_off")} />{/if}
     {#if shown}
       <!-- Item 359: the live reply's anchor for its rib on the rail. One
            flex item, as the reply alone was; nothing styles it. -->
