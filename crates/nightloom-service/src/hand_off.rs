@@ -129,6 +129,14 @@ pub fn fresh_start(session: &Session) -> Option<u64> {
     })
 }
 
+/// Whether the chat has a live in-place hand-off at all.
+fn handed_off(session: &Session) -> bool {
+    session
+        .live_events()
+        .iter()
+        .any(|(_, e)| matches!(e, SessionEvent::HandOff { .. }))
+}
+
 /// Every hand-off's sizes, one JSON line each, in the chat's `ask/<id>`
 /// folder (item 811; item 810 and 811's measuring half read it).
 pub const HAND_OFFS_FILE: &str = "hand-offs.jsonl";
@@ -403,10 +411,19 @@ pub fn hand_off_if_due(
     if session.pending_hand_off().is_some() {
         return None;
     }
+    // Merge round S: a chat handed off with no reply since (its first turn
+    // on the fresh agent session failed or was stopped after the session
+    // began, so no brief is pending) has nothing new to hand off — the
+    // newest reply is the one the last hand-off already measured, and
+    // reading it would hand the chat off a second time.
+    let start = match fresh_start(session) {
+        Some(start) => start,
+        None if handed_off(session) => return None,
+        None => 0,
+    };
     let (context, last_at) = session.last_reply_context()?;
     let pings = crate::cache_miss::ask_dir_of(session);
     let cold = cold_at(session, pings.as_deref()).unwrap_or(last_at);
-    let start = fresh_start(session).unwrap_or(0);
     let reason = due(marks, start, context, last_at, cold, now)?;
     let text = brief_in(session, skip_prefix, logs);
     if let Some(dir) = &pings {
@@ -690,6 +707,44 @@ mod tests {
             Some(Reason::Hard)
         );
         assert_eq!(read_hand_offs(&ask).len(), 2);
+    }
+
+    /// Merge round S: a turn that dies after the fresh agent session began
+    /// but before any reply leaves no brief pending and no reply since the
+    /// hand-off; the next message must not hand the chat off a second time
+    /// off the reply the first hand-off already measured — soft or hard.
+    #[test]
+    fn a_failed_first_turn_after_a_hand_off_is_not_handed_off_again() {
+        let dir = scratch();
+        let mut s = Session::start(&dir, ChatMode::Normal, ChatKind::Build).unwrap();
+        s.set_auto_hand_off(SOFT_TOKENS, HARD_TOKENS);
+        let sent = Utc::now();
+        s.record_user_message("go", vec![], vec![], false);
+        timed_reply(&mut s, 20_000, sent - Duration::minutes(1));
+        timed_reply(&mut s, HARD_TOKENS + 5_000, sent);
+        let cold = sent + Duration::hours(2);
+        assert_eq!(
+            hand_off_if_due(&mut s, cold, None, None),
+            Some(Reason::Hard)
+        );
+        // The turn starts its fresh agent session, then fails: no reply.
+        s.record_user_message("next", vec![], vec![], false);
+        s.record_agent_session("claude-code", "s-2");
+        assert!(s.pending_hand_off().is_none());
+        assert_eq!(
+            hand_off_if_due(&mut s, cold + Duration::hours(2), None, None),
+            None,
+            "no second hand-off"
+        );
+        let ask = crate::cache_miss::ask_dir_of(&s).unwrap();
+        assert_eq!(read_hand_offs(&ask).len(), 1);
+        // Once a reply lands, the chat is measured from it again.
+        timed_reply(&mut s, 30_000, cold);
+        timed_reply(&mut s, 150_000, cold);
+        assert_eq!(
+            hand_off_if_due(&mut s, cold + Duration::hours(4), None, None),
+            Some(Reason::Soft)
+        );
     }
 
     /// Item 811: the fresh start is read off the log, so a relaunch (the
