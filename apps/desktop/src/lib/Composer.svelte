@@ -3290,11 +3290,17 @@
         ? cacheLossTitle(cacheChanges, cacheBuilt.cachedTokens, cache.remainingMs, nextEst?.cold)
         : "Prompt layers changed since the cache was built\nThe Context page puts them back";
     }
+    // Post-install 16c8e01: `<words> changed · next ≈ …` and the click
+    // clause with "(the cache is warm for 40 min)" each wrapped (3 drawn
+    // lines, measured). The bar's face names the change and the chip the
+    // time left, so the tip keeps the price and the click.
     const click =
       cacheChanges.length > 0
-        ? cacheLossTitle(cacheChanges, cacheBuilt.cachedTokens, cache.remainingMs).split("\n")[1]
+        ? cacheLossTitle(cacheChanges, cacheBuilt.cachedTokens, cache.remainingMs)
+            .split("\n")[1]
+            .replace(/ \(the cache is warm for [^)]*\)/, "")
         : "The Context page puts them back";
-    return `${lossWords.join(", ")} changed · ${changeCost.line}\n${click}`;
+    return `${changeCost.line.charAt(0).toUpperCase()}${changeCost.line.slice(1)}\n${click}`;
   });
   function restoreCache() {
     if (!cacheBuilt || cacheChanges.length === 0 || !canRestore(cacheChanges)) return;
