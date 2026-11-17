@@ -318,6 +318,9 @@ pub fn check(tool: &str, text: &str) -> Result<(), String> {
     if tool == crate::mcp_server::mcp_name(crate::tools::add_folder::NAME) {
         return Err("Adding a folder always shows its card; a rule cannot answer it.".into());
     }
+    if tool == crate::mcp_server::mcp_name(crate::secret::TOOL_NAME) {
+        return Err("Asking for a secret always shows its card; a rule cannot answer it.".into());
+    }
     if tool.starts_with("mcp__") {
         return Ok(());
     }
@@ -762,6 +765,7 @@ mod tests {
             ("ExitPlanMode", "always come to you"),
             ("mcp__playwright__browser_click", "its own switch"),
             ("mcp__nightloom__add_folder", "always shows its card"),
+            ("mcp__nightloom__request_secret", "always shows its card"),
             ("Ba*", "Only a connector's tools"),
             ("", "Name the tool"),
         ] {

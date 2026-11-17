@@ -162,10 +162,11 @@ impl nightloom_core::tool::Tool for PromptTool {
 /// lookahead rather than a `|` inside the first — the Chat policy splits
 /// this matcher on `|` ([`super::ask_matcher_under_chat_policy`]): its gate
 /// is its own entry in every position (`AgentSpec::folder_gate`).
-pub const MATCHER: &str = "Bash|Write|Edit|MultiEdit|NotebookEdit|WebFetch|WebSearch|AskUserQuestion|ExitPlanMode|EnterWorktree|ExitWorktree|CronCreate|CronDelete|ScheduleWakeup|mcp__(?!playwright__)(?!nightloom__add_folder).*";
+pub const MATCHER: &str = "Bash|Write|Edit|MultiEdit|NotebookEdit|WebFetch|WebSearch|AskUserQuestion|ExitPlanMode|EnterWorktree|ExitWorktree|CronCreate|CronDelete|ScheduleWakeup|mcp__(?!playwright__)(?!nightloom__add_folder)(?!nightloom__request_secret).*";
 
 /// [`MATCHER`]'s MCP alternative, as a word (the Chat policy narrows it).
-pub const MCP_ALTERNATIVE: &str = "mcp__(?!playwright__)(?!nightloom__add_folder).*";
+pub const MCP_ALTERNATIVE: &str =
+    "mcp__(?!playwright__)(?!nightloom__add_folder)(?!nightloom__request_secret).*";
 
 /// The plan tool's name, as the CLI reports it in `deferred_tool_use`.
 pub const EXIT_PLAN_TOOL: &str = "ExitPlanMode";
@@ -1041,6 +1042,11 @@ pub fn decide_under(dir: &Path, home: Option<&Path>, stdin_json: &str, side: boo
     if input.tool_name == crate::mcp_server::mcp_name(crate::tools::add_folder::NAME) {
         return decide_add_folder(dir, &input, side);
     }
+    // `request_secret`'s own gate (item 766), the same way: no rule may
+    // answer a card that asks him to type a secret.
+    if input.tool_name == crate::mcp_server::mcp_name(crate::secret::TOOL_NAME) {
+        return decide_request_secret(dir, &input, side);
+    }
     // Playwright's own gate (backlog 367), in every position: its own
     // rules, before any of the Ask position's.
     if super::own_browser::is_playwright(&input.tool_name) {
@@ -1271,6 +1277,42 @@ fn decide_add_folder(dir: &Path, input: &HookInput, side: bool) -> HookReply {
     let cwd = PathBuf::from(input.cwd.trim());
     if cwd.has_root() && inside(&folder, &[cwd]) {
         return HookReply::allow(None);
+    }
+    HookReply::defer()
+}
+
+/// A `request_secret` call (item 766), in order: this call's own answer
+/// (consumed); a subagent's or a side process's call refused in words; a
+/// name that cannot be used refused with the reason; anything else
+/// deferred for the card. The chat's rules are never read.
+fn decide_request_secret(dir: &Path, input: &HookInput, side: bool) -> HookReply {
+    use crate::secret::{DECLINED, SIDE_REFUSED, SUBAGENT_REFUSED, requested_name};
+    let path = dir.join(DECISION_FILE);
+    let decision: Option<Decision> = std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok());
+    if let Some(d) = decision
+        && d.tool_use_id == input.tool_use_id
+    {
+        let _ = std::fs::remove_file(&path);
+        return if d.decision == "allow" {
+            HookReply::allow(None)
+        } else {
+            HookReply::deny(
+                d.reason
+                    .filter(|r| !r.trim().is_empty())
+                    .unwrap_or_else(|| DECLINED.into()),
+            )
+        };
+    }
+    if input.agent_id.as_deref().is_some_and(|id| !id.is_empty()) {
+        return HookReply::deny(SUBAGENT_REFUSED.into());
+    }
+    if side {
+        return HookReply::deny(SIDE_REFUSED.into());
+    }
+    if let Err(e) = requested_name(&input.tool_input) {
+        return HookReply::deny(e);
     }
     HookReply::defer()
 }

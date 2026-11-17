@@ -787,6 +787,17 @@ pub(crate) fn cancel(state: State<'_, AppState>, chat: Option<String>) {
     state.ask.abandon_all();
 }
 
+/// Keep a secret he typed on a `request_secret` card (nightshift item
+/// 766), before the card's Allow: the value goes to its one private file
+/// and nowhere else — this command logs nothing and its error names
+/// nothing of the value. The turn reads it back when the Allow arrives.
+#[tauri::command]
+pub(crate) fn store_secret(chat: String, name: String, value: String) -> Result<(), String> {
+    nightloom_service::secret::Store::default()
+        .put(&chat, &name, &value)
+        .map(|_| ())
+}
+
 /// Answer one `tool-approval` prompt.
 ///
 /// `decision` is "allow", "always" or "deny"; a `reason` on a denial is

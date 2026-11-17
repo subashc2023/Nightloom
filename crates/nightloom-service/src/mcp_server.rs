@@ -228,6 +228,8 @@ const OWN_EFFECTS: &[(&str, Effect)] = &[
     (crate::tools::notes::MOVE_NAME, Effect::Mutating),
     // Widens what the chat may read (item 613): the card asks first.
     (crate::tools::add_folder::NAME, Effect::Mutating),
+    // Brings a secret he types into the chat (item 766): the card asks first.
+    (crate::secret::TOOL_NAME, Effect::Mutating),
 ];
 
 /// The effect of a call by the name the CLI reports it under: this
@@ -286,6 +288,13 @@ fn instructions_for(tools: &[Box<dyn Tool>]) -> String {
         .any(|t| t.def().name == crate::tools::add_folder::NAME)
     {
         out.push_str(ADD_FOLDER_INSTRUCTION);
+    }
+    // Item 766: present only when the tool is served.
+    if tools
+        .iter()
+        .any(|t| t.def().name == crate::secret::TOOL_NAME)
+    {
+        out.push_str(crate::secret::INSTRUCTION);
     }
     // Item 472: present only when the organisers are served.
     if tools
@@ -1168,6 +1177,10 @@ pub async fn serve(
                 args.root.clone(),
             )));
         }
+        // `request_secret` (item 766): wherever the chat's directory is
+        // named, incognito included — the value never reaches any record,
+        // so a chat that writes nothing loses nothing by having it.
+        tools.push(Box::new(crate::secret::RequestSecret::new(dir.clone())));
     }
     // `preview` (nightshift item 430): the desktop's socket, the chat and
     // its folder all named — never for a dream.
@@ -2799,6 +2812,7 @@ mod tests {
             config.clone(),
         )));
         served.push(Box::new(crate::tools::AddFolder::new(config.clone(), None)));
+        served.push(Box::new(crate::secret::RequestSecret::new(config.clone())));
         crate::chain::ensure(&config, "c").unwrap();
         served.extend(crate::chain::tools(&config, Some("c")));
         for tool in &served {

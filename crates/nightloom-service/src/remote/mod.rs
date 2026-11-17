@@ -859,6 +859,7 @@ fn router(shared: Arc<Shared>) -> Router {
             post(send_active).layer(DefaultBodyLimit::max(SEND_BODY_LIMIT)),
         )
         .route("/approve", post(approve))
+        .route("/secret", post(store_secret))
         .route("/cancel", post(cancel))
         .route("/chats/{id}/cancel", post(cancel_chat))
         .route("/events", get(events))
@@ -1328,6 +1329,24 @@ async fn approve(State(shared): State<Arc<Shared>>, Json(req): Json<ApproveReque
     match shared.host.approve(req).await {
         Ok(()) => StatusCode::OK.into_response(),
         Err(e) => bad(e),
+    }
+}
+
+/// A secret he typed on the phone's `request_secret` card (nightshift
+/// item 766), sent before the card's Allow: kept in its one private file
+/// on this host, where the turn runs. The body is never logged or echoed;
+/// an error names nothing of the value.
+#[derive(Deserialize)]
+struct SecretRequest {
+    chat: String,
+    name: String,
+    value: String,
+}
+
+async fn store_secret(Json(req): Json<SecretRequest>) -> Response {
+    match crate::secret::Store::default().put(&req.chat, &req.name, &req.value) {
+        Ok(_) => StatusCode::OK.into_response(),
+        Err(e) => bad(format!("not kept: {e}")),
     }
 }
 
@@ -2994,6 +3013,33 @@ mod tests {
             assert_eq!(approved[0].reason.as_deref(), Some("not now"));
             assert!(approved[0].answer.is_none());
         }
+
+        // Item 766: the phone's secret card keeps the value on this host,
+        // and an unusable name is refused without it.
+        let chat = format!("remote-766-{}", uuid::Uuid::new_v4());
+        let r = c
+            .post(format!("{base}/api/secret"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({"chat": chat, "name": "API_KEY", "value": "fake-766-phone-value"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        let store = crate::secret::Store::default();
+        assert_eq!(
+            store.get(&chat, "API_KEY").map(|s| s.value().to_string()),
+            Some("fake-766-phone-value".to_string())
+        );
+        store.forget_chat(&chat);
+        let r = c
+            .post(format!("{base}/api/secret"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({"chat": chat, "name": "no good", "value": "fake-766-phone-value"}))
+            .send()
+            .await
+            .unwrap();
+        assert_ne!(r.status(), 200);
+        assert!(!r.text().await.unwrap().contains("fake-766"));
 
         let r = c
             .post(format!("{base}/api/cancel"))

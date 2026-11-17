@@ -1260,6 +1260,41 @@ Playwright's viewer apps (they can fall through to Google Chrome). Test
 `nothing_ever_configures_chrome_or_the_devtools_capability` fails if either
 server shape or the helper names one.
 
+## The secret-request card (2026-11-17, nightshift item 766)
+
+A chat that needs a token, a password or a key calls
+`mcp__nightloom__request_secret` (`secret.rs`) with a `name`
+(GITHUB_TOKEN-shaped) and a `why`; it never passes a value. The call has
+its own `PreToolUse` gate in every position, beside `add_folder`'s
+(`AgentSpec::secret_gate_entry`, failing closed; the Ask hook's `mcp__`
+alternative leaves it out so two hooks never race for one decision file):
+a subagent's or a side process's call is refused in words, a bad name is
+refused with the reason, anything else defers for the card. No rule can
+answer it (`approval_rules::check`).
+
+**The value's one road**: the card (`SecretCard.svelte`, the phone's card in
+`Remote.svelte`) sends it to the host's store first — the `store_secret`
+command, or `POST /api/secret` from the phone — and only then answers a
+bare Allow. `secret::Store` keeps it at `$TMPDIR/nightloom-secrets/<chat>/<NAME>`,
+folders `0700`, the file `0600`, swept after a day (at launch, before every
+turn, on every store). On the Allow the turn reads it back, notes the
+*path* in `<ask dir>/secrets-stored.json`, and the resumed tool answers
+with that path and how to read it inside a command (`"$(cat '<path>')"`).
+An Allow with nothing stored is his refusal.
+
+**Everything that could echo it is scrubbed** (`secret::Scrub`, shared by
+the turn's agent, recorder and end, loaded from the store at the turn's
+start): each raw line the CLI prints (JSON-escaped and raw forms), the bash
+tails, each block the recorder logs (whole blocks, so a value split across
+deltas is caught), the text deltas the window and the phone are sent
+(`DeltaHold` holds back a delta's end that could be a value's start), the
+turn's final text, and at the turn's end the CLI's own session file and
+everything under its `<session>/` folder. Values under six characters are
+not scrubbed (they would garble ordinary text). `Secret`'s `Debug` hides
+the value. Not covered, by design: the model reads a command's output in
+its own context, and the CLI's background-output files under its temp
+folder are not rewritten. The check: `secret_766_tests.rs`.
+
 ## What `--append-system-prompt` carries
 
 Three parts, in this order, joined by blank lines (`prompt::agent_prompt`

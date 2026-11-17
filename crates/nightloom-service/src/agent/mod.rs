@@ -629,13 +629,12 @@ fn ask_mcp_less(browser: bool) -> String {
 /// Playwright's tools stay out too, as in [`ask::MATCHER`] (backlog 367).
 /// The preview's tool stays out too (item 430): the policy's own deny
 /// entry refuses it, and an Ask card for it would be backlog 147's bug.
-const ASK_MCP_LESS_BROWSER: &str =
-    "mcp__(?!claude-in-chrome__|playwright__|nightloom__preview|nightloom__add_folder).*";
+const ASK_MCP_LESS_BROWSER: &str = "mcp__(?!claude-in-chrome__|playwright__|nightloom__preview|nightloom__add_folder|nightloom__request_secret).*";
 
 /// The same without the Browser: every MCP tool but Playwright's and the
 /// preview's.
 const ASK_MCP_LESS_PREVIEW: &str =
-    "mcp__(?!playwright__|nightloom__preview|nightloom__add_folder).*";
+    "mcp__(?!playwright__|nightloom__preview|nightloom__add_folder|nightloom__request_secret).*";
 
 /// The deny hook's command line. Single-quoted for the POSIX shell the CLI
 /// runs hooks through on macOS and Linux. On Windows, `cmd.exe`'s `echo`
@@ -682,6 +681,11 @@ pub const CHAT_POLICY_REASON: &str = "This chat is a Chat now: the shell, the fi
 /// be asked for unseen (exit 2 blocks the call; the line goes to the model).
 pub const FOLDER_GATE_FAIL_CLOSED: &str =
     "|| { echo 'The folder was not added: its approval check could not run.' >&2; exit 2; }";
+
+/// What follows `request_secret`'s gate (item 766): fails closed, so a
+/// hook that could not run never lets the call through unasked.
+pub const SECRET_GATE_FAIL_CLOSED: &str =
+    "|| { echo 'Nothing was asked: the secret card could not be shown.' >&2; exit 2; }";
 
 /// What the Ask position adds to the command line.
 ///
@@ -841,6 +845,20 @@ impl AgentSpec {
     /// [`crate::tools::add_folder::GATE_MATCHER`], failing closed. `None`
     /// before a turn has pointed the directory (no tool is served then).
     pub fn folder_gate_entry(&self) -> Option<serde_json::Value> {
+        self.own_gate_entry(
+            crate::tools::add_folder::GATE_MATCHER,
+            FOLDER_GATE_FAIL_CLOSED,
+        )
+    }
+
+    /// `request_secret`'s `PreToolUse` entry (item 766): the same hook on
+    /// the same directory as [`folder_gate_entry`](Self::folder_gate_entry),
+    /// on [`crate::secret::GATE_MATCHER`], failing closed.
+    pub fn secret_gate_entry(&self) -> Option<serde_json::Value> {
+        self.own_gate_entry(crate::secret::GATE_MATCHER, SECRET_GATE_FAIL_CLOSED)
+    }
+
+    fn own_gate_entry(&self, matcher: &str, fail_closed: &str) -> Option<serde_json::Value> {
         let brief = self.brief.as_ref()?;
         let binary = brief.hook.first()?;
         if brief.dir.as_os_str().is_empty() {
@@ -854,9 +872,9 @@ impl AgentSpec {
         if self.folder_side {
             words.push(ask::shell_quote(own_browser::SIDE_ARG));
         }
-        words.push(FOLDER_GATE_FAIL_CLOSED.to_string());
+        words.push(fail_closed.to_string());
         Some(serde_json::json!({
-            "matcher": crate::tools::add_folder::GATE_MATCHER,
+            "matcher": matcher,
             "hooks": [{ "type": "command", "command": words.join(" ") }]
         }))
     }
@@ -1696,7 +1714,11 @@ impl AgentSpec {
         // position, as Playwright's is, and last of the entries — wherever
         // the chat's directory is known (the tool is served there,
         // `--budget-dir`).
-        if let Some(entry) = self.folder_gate_entry() {
+        // `request_secret`'s gate (item 766) beside it, the same way.
+        for entry in [self.folder_gate_entry(), self.secret_gate_entry()]
+            .into_iter()
+            .flatten()
+        {
             let hooks = settings
                 .entry("hooks")
                 .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
@@ -1944,6 +1966,9 @@ pub struct ClaudeCodeAgent {
     warm: warm::WarmSlot,
     /// Messages he sends into the running turn (backlog 328, [`inbox`]).
     inbox: inbox::Inbox,
+    /// The secrets he typed on a card for this chat (item 766): every
+    /// line the CLI prints is scrubbed of them before anything reads it.
+    scrub: crate::secret::Scrub,
 }
 
 impl ClaudeCodeAgent {
@@ -1958,6 +1983,7 @@ impl ClaudeCodeAgent {
             limit_grace: LIMIT_GRACE,
             warm: warm::WarmSlot::default(),
             inbox: inbox::Inbox::default(),
+            scrub: crate::secret::Scrub::default(),
         }
     }
 
@@ -2087,6 +2113,12 @@ impl ClaudeCodeAgent {
     /// sent twice. The shell rebuilds `add_dirs` from the project and the
     /// log at every connect, so this holds until then and the record
     /// takes over.
+    /// The list of secrets to scrub from this agent's lines (item 766): the
+    /// turn's own, shared with its recorder.
+    pub fn set_scrub(&mut self, scrub: crate::secret::Scrub) {
+        self.scrub = scrub;
+    }
+
     pub fn grant_dir(&mut self, dir: PathBuf) {
         // Never a folder an incognito chat may not read (backlog 405).
         if self.spec.denied_reads.iter().any(|d| dir.starts_with(d)) {
@@ -2690,6 +2722,11 @@ impl ClaudeCodeAgent {
                 }
                 _ = tail_tick.tick(), if bash_tails.active() => {
                     for (tool_use_id, lines) in bash_tails.poll() {
+                        let lines = if self.scrub.is_empty() {
+                            lines
+                        } else {
+                            lines.iter().map(|l| self.scrub.text(l)).collect()
+                        };
                         on_event(TurnEvent::ToolOutput { tool_use_id, lines });
                     }
                     continue;
@@ -2714,6 +2751,12 @@ impl ClaudeCodeAgent {
             match next {
                 Ok(Some(line)) => {
                     any_line = true;
+                    // Item 766: no secret he typed reaches anything below.
+                    let line = if self.scrub.is_empty() {
+                        line
+                    } else {
+                        self.scrub.json_line(&line)
+                    };
                     // Item 658: by the `type` key, not the line's start.
                     let kind = protocol::line_type(&line);
                     if !init_seen && line.contains(r#""subtype":"init""#) {
@@ -3782,7 +3825,7 @@ mod tests {
         assert_eq!(
             asks,
             [format!(
-                "WebFetch|WebSearch|mcp__(?!claude-in-chrome__|playwright__|nightloom__preview|nightloom__add_folder|{}).*",
+                "WebFetch|WebSearch|mcp__(?!claude-in-chrome__|playwright__|nightloom__preview|nightloom__add_folder|nightloom__request_secret|{}).*",
                 connector_writes::ASK_EXCLUSION_WITH_CARD
             )],
             "{pre:?}"
@@ -3803,7 +3846,7 @@ mod tests {
             pre.iter()
                 .any(|e| e["matcher"]
                     == format!(
-                        "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview|nightloom__add_folder|{}).*",
+                        "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview|nightloom__add_folder|nightloom__request_secret|{}).*",
                         connector_writes::ASK_EXCLUSION_WITH_CARD
                     )),
             "{pre:?}"
@@ -4575,7 +4618,7 @@ mod tests {
         assert_eq!(
             narrowed,
             format!(
-                "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview|nightloom__add_folder|{}).*",
+                "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview|nightloom__add_folder|nightloom__request_secret|{}).*",
                 connector_writes::ASK_EXCLUSION_WITH_CARD
             )
         );
@@ -5040,12 +5083,14 @@ mod tests {
         );
         let a = agent.spec().args("hi");
         assert_eq!(brief_entries(&a), 1);
-        // Beside it only `add_folder`'s own gate (item 613): no Ask hook.
-        assert_eq!(entries(&a).len(), 2, "no Ask hook in Auto");
+        // Beside it only `add_folder`'s and `request_secret`'s own gates
+        // (items 613, 766): no Ask hook.
+        assert_eq!(entries(&a).len(), 3, "no Ask hook in Auto");
         assert_eq!(
             entries(&a)[1]["matcher"],
             crate::tools::add_folder::GATE_MATCHER
         );
+        assert_eq!(entries(&a)[2]["matcher"], crate::secret::GATE_MATCHER);
         let cmd = entries(&a)[0]["hooks"][0]["command"].clone();
         assert_eq!(cmd, format!("'hook' '--subagent-hook' '{}'", dir.display()));
         // Nightshift 561: the same command on each user message, no matcher.
@@ -5062,10 +5107,11 @@ mod tests {
         agent.set_ask_dir(dir.clone());
         let a = agent.spec().args("hi");
         let e = entries(&a);
-        assert_eq!(e.len(), 3, "{e:?}");
+        assert_eq!(e.len(), 4, "{e:?}");
         assert_eq!(e[0]["matcher"], ask::MATCHER);
         assert_eq!(e[1]["matcher"], brief::BRIEF_MATCHER);
         assert_eq!(e[2]["matcher"], crate::tools::add_folder::GATE_MATCHER);
+        assert_eq!(e[3]["matcher"], crate::secret::GATE_MATCHER);
         // The aside of that chat carries no hook at all.
         let mut s = asking(AskMode::Ask);
         s.brief = Some(brief.clone());
@@ -5086,8 +5132,8 @@ mod tests {
         assert_eq!(brief_entries(&a), 1);
         assert_eq!(
             entries(&a).len(),
-            5,
-            "the policy's own entry, the preview's deny (item 430), the connector writes' (759), the budget's and add_folder's gate (613)"
+            6,
+            "the policy's own entry, the preview's deny (item 430), the connector writes' (759), the budget's, add_folder's gate (613) and request_secret's (766)"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -455,6 +455,17 @@ async fn turn_body(
     let mut recorder = Recorder::new(session, seed);
     // What a change would lose this turn's cache to (backlog 408).
     recorder.key_cache_from(agent.spec());
+    // Item 766: the secrets he typed on a card for this chat — every line
+    // the CLI prints and every block logged is scrubbed of them, and the
+    // CLI's own files at the turn's end. Values past their day go first.
+    let secrets = crate::secret::Store::default();
+    secrets.sweep(crate::secret::LIFETIME);
+    let scrub = crate::secret::Scrub::default();
+    for s in secrets.all(chat_id) {
+        scrub.add(s);
+    }
+    recorder.scrub_with(scrub.clone());
+    agent.set_scrub(scrub.clone());
     // The first text handed to the window (or the phone) — item 256.
     let mut emitted = false;
     // The model's words before a call, for Playwright's card (backlog 367).
@@ -470,11 +481,20 @@ async fn turn_body(
             .map(|h| h.0.clone())
             .unwrap_or_else(|_| cancel.clone())
     };
+    // Item 766: what the window and the phone see, a value split across
+    // deltas held until it is whole and replaced.
+    let mut live = crate::secret::DeltaHold::new(scrub.clone());
     let mut on_event = |e: TurnEvent| {
         if let Ok(mut r) = reason.lock() {
             r.push(&e);
         }
-        env.event(chat_id, &e);
+        if scrub.is_empty() {
+            env.event(chat_id, &e);
+        } else {
+            for shown in live.pass(&e) {
+                env.event(chat_id, &shown);
+            }
+        }
         if !emitted && matches!(e, TurnEvent::TextDelta { .. }) {
             emitted = true;
             timing.mark(Mark::Emitted);
@@ -559,18 +579,25 @@ async fn turn_body(
             // says so).
             let folder_ask = (call.name == crate::mcp_server::mcp_name(add_folder::NAME))
                 .then(|| add_folder::requested_dir(&call.input));
+            // `request_secret` (item 766): a name that cannot be used is
+            // refused here; any other asks him on its card.
+            let secret_ask = (call.name == crate::mcp_server::mcp_name(crate::secret::TOOL_NAME))
+                .then(|| crate::secret::requested_name(&call.input));
             let trees = agent_trees(agent);
-            let preanswer = match &folder_ask {
-                Some(Err(e)) => Some(Answer::Deny { reason: e.clone() }),
-                Some(Ok(d)) if add_folder::inside(d, &trees) => {
-                    let _ = add_folder::note_granted(ask_files.path(), d, add_folder::ALREADY);
-                    Some(Answer::Allow {
-                        updated_input: None,
-                        plan_then: None,
-                        grant: None,
-                    })
-                }
-                _ => None,
+            let preanswer = match (&folder_ask, &secret_ask) {
+                (_, Some(Err(e))) => Some(Answer::Deny { reason: e.clone() }),
+                (folder_ask, _) => match folder_ask {
+                    Some(Err(e)) => Some(Answer::Deny { reason: e.clone() }),
+                    Some(Ok(d)) if add_folder::inside(d, &trees) => {
+                        let _ = add_folder::note_granted(ask_files.path(), d, add_folder::ALREADY);
+                        Some(Answer::Allow {
+                            updated_input: None,
+                            plan_then: None,
+                            grant: None,
+                        })
+                    }
+                    _ => None,
+                },
             };
             let answered_here = preanswer.is_some();
             let mut aside: Option<Aside> = None;
@@ -609,6 +636,7 @@ async fn turn_body(
                 // question, a plan and a folder are answers only he can give.
                 let times = (!back
                     && folder_ask.is_none()
+                    && secret_ask.is_none()
                     && crate::push::What::for_prompt(&call.name) == crate::push::What::Approval)
                     .then(|| ask.times());
                 env.approval(&ApprovalPrompt {
@@ -699,6 +727,39 @@ async fn turn_body(
                             scope: GrantScope::parse(add_folder::requested_scope(&call.input))
                                 .unwrap_or(GrantScope::Chat),
                         }),
+                    })
+                }
+                (_, a) => a,
+            };
+            // His *Allow* on a secret card (item 766) counts only when his
+            // value reached the store first (the card's `store_secret`, the
+            // phone's `/api/secret`): the tool is told the path, and the
+            // value joins the scrub. An Allow with nothing stored is his
+            // refusal. Never a standing rule: each secret is its own card.
+            let answer = match (&secret_ask, answer) {
+                (Some(Ok(name)), Some(Answer::Allow { .. } | Answer::AllowForChat { .. })) => {
+                    Some(match secrets.get(chat_id, name) {
+                        Some(value) => {
+                            let path = secrets.path(chat_id, name);
+                            match crate::secret::note_stored(ask_files.path(), name, &path) {
+                                Ok(()) => {
+                                    scrub.add(value);
+                                    Answer::Allow {
+                                        updated_input: None,
+                                        plan_then: None,
+                                        grant: None,
+                                    }
+                                }
+                                Err(e) => Answer::Deny {
+                                    reason: format!(
+                                        "Not stored: Nightloom could not note it ({e})."
+                                    ),
+                                },
+                            }
+                        }
+                        None => Answer::Deny {
+                            reason: crate::secret::DECLINED.into(),
+                        },
                     })
                 }
                 (_, a) => a,
@@ -972,6 +1033,10 @@ async fn turn_body(
     }
     if let Ok(o) = &mut result {
         o.notices.extend(council_notices);
+        // Item 766: the reply's text as the window and the hand-off read it.
+        if !scrub.is_empty() {
+            o.text = scrub.text(&o.text);
+        }
         if let Some(before) = spent_before {
             o.cost_usd = Some(before + o.cost_usd.unwrap_or(0.0));
         }
@@ -996,6 +1061,16 @@ async fn turn_body(
                 (_, false, None) => "end_turn".to_string(),
             };
             recorder.finish(Some(&reason));
+            // Item 766: the CLI's own record of the session, now its last
+            // process has exited — rewritten only where a value is in it.
+            if !scrub.is_empty()
+                && let Some(id) = &outcome.session_id
+                && let Some(projects) = crate::agent::cli_session::projects_dir()
+                && let Ok(file) =
+                    crate::agent::cli_session::find(&projects, &agent.spec().workspace, id)
+            {
+                crate::secret::scrub_cli_files(&scrub, &file);
+            }
             // Stopped or failed before a word (backlog 361): say so.
             if cancel.is_cancelled() {
                 record_unanswered(session, outcome.model.clone().unwrap_or(seed_model), None);

@@ -14,6 +14,7 @@ import type { WireView } from "../lib/types";
 import type { CacheRatesWire } from "../lib/cachePrice";
 import type { ContextReply, LayerChange } from "./ContextSheet.svelte";
 import { isCouncilBlock } from "../lib/council";
+import { isSecretRequest } from "../lib/secret";
 import { parseSubagentBlock } from "../lib/subagent";
 import { cleanPassage, shownText, splitAttachNote } from "../lib/keep";
 import { isSendFile, parseSentFile, sentFileRoute, type SentFile } from "../lib/sentFiles";
@@ -1174,6 +1175,12 @@ export class Client {
     await this.call("/approve", { method: "POST", body: JSON.stringify(req) });
   }
 
+  /** Keep a secret typed on the phone's `request_secret` card (item 766) on
+   *  this host, before the card's Allow. The body goes nowhere else. */
+  async storeSecret(chat: string, name: string, value: string): Promise<void> {
+    await this.call("/secret", { method: "POST", body: JSON.stringify({ chat, name, value }) });
+  }
+
   /** Stop `chat`'s turn — the chat this page shows, which need not be the
    *  one on the Mac's screen (backlog 159, A3) — or the Mac's open chat's
    *  when `null`. */
@@ -1880,8 +1887,10 @@ export function newQueued(
 // ---- the cards --------------------------------------------------------------
 
 /** The card a prompt draws, by the tool the CLI paused on. */
-export function cardKind(req: ApprovalRequest): "question" | "plan" | "playwright" | "stuck" | "call" {
+export function cardKind(req: ApprovalRequest): "question" | "plan" | "playwright" | "stuck" | "secret" | "call" {
   if (req.name === "AskUserQuestion") return "question";
+  // Item 766: the chat asks for a secret — typed on the card, never in the chat.
+  if (isSecretRequest(req.name)) return "secret";
   // Item 784: the runaway guard paused a run — Continue or Stop.
   if (isStuck(req.name)) return "stuck";
   // Playwright, Claude's own browser (backlog 367): the desktop's card,

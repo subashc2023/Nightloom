@@ -471,6 +471,14 @@ export function setSearchKey(backend: string, key: string): Promise<null> {
 }
 
 /**
+ * Keep a secret he typed on a `request_secret` card (nightshift item 766),
+ * before the card's Allow. The value goes to the host's private store only.
+ */
+export function storeSecret(chat: string, name: string, value: string): Promise<null> {
+  return invoke("store_secret", { chat, name, value });
+}
+
+/**
  * Answer one `tool-approval` prompt. `reason` is handed to the model
  * verbatim on a denial, which is what lets it try something else instead of
  * repeating the call; it is ignored for the other decisions. `answer` is the
