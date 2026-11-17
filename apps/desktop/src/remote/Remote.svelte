@@ -131,6 +131,8 @@
   import Hosts from "./Hosts.svelte";
   import { PLAYWRIGHT_BUTTONS, PLAYWRIGHT_DECLINED, playwrightAction } from "../lib/playwright";
   import { stuckView } from "../lib/stuck";
+  import { SECRET_DECLINED } from "../lib/secret";
+  import SecretAsk from "./SecretAsk.svelte";
   // Item 300 (wave 8B F1): the drawer follows the finger; Recents and Projects.
   import { dragAxis, drawerX, fingerSpeed, settleOpen } from "./client";
   import { UNFILED, lastActive as chatWhen, projectSummaries, recentRows } from "./recents";
@@ -2882,6 +2884,19 @@
 
   // ---- the cards --------------------------------------------------------------
   let notes = $state<Record<string, string>>({});
+  // Item 766: the secret card's value is the card's own (`SecretAsk`); kept
+  // on the chat's host, then a bare Allow.
+  async function useSecret(req: ApprovalRequest, name: string, value: string): Promise<string | null> {
+    const via = sameHost ? client : chatClient;
+    if (!value || !via) return "Not connected to the computer running this chat.";
+    try {
+      await via.storeSecret(req.chat ?? chatId ?? "", name, value);
+    } catch (e) {
+      return `Not kept: ${String(e).replace(/^Error:\s*/, "")}`;
+    }
+    await answer(req, "allow");
+    return null;
+  }
   let picks = $state<Record<string, Record<number, string[]>>>({});
   let others = $state<Record<string, Record<number, string>>>({});
   // Item 712: his comment on each option, by call, question, label.
@@ -3387,6 +3402,13 @@
               <button class="btn accent" onclick={() => answer(req, "allow", req.input, planThen[req.id] ?? "ask")}>Approve</button>
               <button class="btn" onclick={() => answer(req, "deny", undefined, undefined, KEEP_PLANNING)}>Keep planning</button>
             </div>
+          {:else if kind === "secret"}
+            <!-- 766: the chat asks for a secret; typed here, never in the chat. -->
+            <SecretAsk
+              input={req.input}
+              onuse={(name, value) => useSecret(req, name, value)}
+              ondecline={() => void answer(req, "deny", undefined, undefined, SECRET_DECLINED)}
+            />
           {:else if kind === "stuck"}
             <!-- 784: a run nobody watched repeated itself and was paused; the Mac's card. -->
             {@const sv = stuckView(req.input, req.reason)}

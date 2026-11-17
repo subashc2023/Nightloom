@@ -21,6 +21,8 @@
   // Item 784: the runaway guard's card.
   import StuckCard from "./StuckCard.svelte";
   import { isStuck } from "./stuck";
+  import SecretCard from "./SecretCard.svelte";
+  import { isSecretRequest } from "./secret";
   import { trackCard } from "./waitingNotice.svelte";
 
   let { req }: { req: ApprovalRequest } = $props();
@@ -405,6 +407,9 @@
 {#if isStuck(req.name)}
   <!-- 784: a run nobody watched repeated itself; Continue or Stop. -->
   <StuckCard {req} />
+{:else if deferred && isSecretRequest(req.name)}
+  <!-- 766: the chat asks for a secret; typed here, never in the chat. -->
+  <SecretCard {req} />
 {:else if deferred && isPlaywright(req.name)}
   <!-- Playwright, Claude's own browser (backlog 367): its own card. -->
   <PlaywrightCard {req} />

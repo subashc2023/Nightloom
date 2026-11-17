@@ -185,6 +185,8 @@ pub struct Recorder<'a> {
     /// its cache (nightshift backlog 408), written on every assistant
     /// message it records. `None` until the turn sets it.
     cache_key: Option<CacheKey>,
+    /// Item 766: the secrets kept out of every block written.
+    scrub: crate::secret::Scrub,
 }
 
 /// The cache-relevant settings of a Claude Code spawn (nightshift backlog
@@ -222,7 +224,15 @@ impl<'a> Recorder<'a> {
             wrote: false,
             subagents: Vec::new(),
             cache_key: None,
+            scrub: crate::secret::Scrub::default(),
         }
+    }
+
+    /// The secrets to keep out of the log (item 766): every block this
+    /// recorder writes is scrubbed of them — the whole text, not the
+    /// deltas, so a value split across two deltas is caught.
+    pub fn scrub_with(&mut self, scrub: crate::secret::Scrub) {
+        self.scrub = scrub;
     }
 
     /// The settings the turn was spawned with (nightshift backlog 408),
@@ -287,12 +297,13 @@ impl<'a> Recorder<'a> {
                 // message before it is complete.
                 self.flush_assistant(Some("tool_use"));
                 self.open.retain(|(id, _)| id != tool_use_id);
-                self.session.record_tool_result(&ContentBlock::ToolResult {
-                    tool_use_id: tool_use_id.clone(),
-                    name: name.clone(),
-                    content: clip(content),
-                    is_error: *is_error,
-                });
+                self.session
+                    .record_tool_result(&self.scrub.block(ContentBlock::ToolResult {
+                        tool_use_id: tool_use_id.clone(),
+                        name: name.clone(),
+                        content: clip(content),
+                        is_error: *is_error,
+                    }));
                 self.wrote = true;
                 // The next round cannot have been sent before this result
                 // was in; the last result of the round is the bound kept.
@@ -461,7 +472,10 @@ impl<'a> Recorder<'a> {
         if self.blocks.is_empty() {
             return;
         }
-        let blocks = std::mem::take(&mut self.blocks);
+        let blocks: Vec<ContentBlock> = std::mem::take(&mut self.blocks)
+            .into_iter()
+            .map(|b| self.scrub.block(b))
+            .collect();
         self.session.record_assistant_keyed(
             self.model.clone(),
             blocks,

@@ -212,6 +212,12 @@ pub(crate) async fn ask_aside(
     let agent = agent_guard
         .as_ref()
         .ok_or_else(|| "not connected".to_string())?;
+    // Item 766 (merge round T review): the secrets he typed for this chat
+    // are scrubbed from the aside too, even before the chat's first turn
+    // since launch has loaded them.
+    if let Some(chat) = target.id() {
+        agent.learn_secrets(chat);
+    }
     // Awake while the aside runs (nightshift backlog 101).
     let _awake = power.acquire();
     *state.cancel.lock().unwrap() = cancel.clone();
