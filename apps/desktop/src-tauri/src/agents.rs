@@ -587,20 +587,13 @@ mod tests {
     }
 
     /// Item 759, the Mac's half: the held job's agent refuses connector
-    /// writes in its `--settings`; the open chat's writer agent does not.
+    /// writes; the open chat's writer agent does not.
     #[tokio::test]
     async fn a_read_only_jobs_agent_refuses_connector_writes() {
-        let denies = |slot: &Slot| -> bool {
-            let a = slot.try_lock().unwrap().spec().args("hi");
-            let Some(i) = a.iter().position(|x| x == "--settings") else {
-                return false;
-            };
-            let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
-            v["hooks"]["PreToolUse"].as_array().is_some_and(|pre| {
-                pre.iter()
-                    .any(|e| e["matcher"] == nightloom_service::agent::connector_writes::MATCHER)
-            })
-        };
+        // `refuses_mcp_writers` is what registers the connector-writes
+        // deny in `--settings` (the service crate's tests read the JSON).
+        let denies =
+            |slot: &Slot| -> bool { slot.try_lock().unwrap().spec().refuses_mcp_writers() };
         let agents = Agents::default();
         agents.connect(agent("open"), Some("job"));
         assert!(!denies(&ready(agents.slot(Some("job")))));
