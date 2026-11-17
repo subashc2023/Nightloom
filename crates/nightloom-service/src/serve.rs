@@ -733,6 +733,16 @@ impl ServeHost {
         }
         spec.apply_kind(declared);
         spec.apply_kind_policy(session.kind(), declared);
+        // Item 804: a read-only chat of Home's gets his connectors, less
+        // the ones he turned off for Home — only one that refuses the
+        // connectors' writers, so there is no write path through them.
+        if spec.refuses_mcp_writers() {
+            crate::home::reach::apply(
+                project.map(|p| p.source.as_deref()),
+                Some(&self.cfg.home),
+                &mut spec,
+            );
+        }
         if !spec.no_session_persistence
             && let Some((agent, id)) = session.agent_session()
             && agent == AGENT
@@ -2414,6 +2424,17 @@ impl Host for ServeHost {
     /// The job goes on in a new chat of its own instead.
     async fn job_prepare(&self, prep: crate::jobs::Prep) -> Result<String, String> {
         let project = self.project(prep.project.as_deref())?;
+        // 804's review: Home's scan reads the accounts of the last
+        // connector check — checked again here when old or missing (no
+        // model request; a failure keeps the last good list).
+        if prep.connectors && prep.read_only {
+            let home = self.cfg.home.clone();
+            let bin = PathBuf::from(crate::resolve_binary(&self.cfg.binary));
+            let _ = tokio::task::spawn_blocking(move || {
+                crate::home::reach::refresh_if_stale(&home, &bin, chrono::Utc::now())
+            })
+            .await;
+        }
         let want = crate::jobs::kind_for(prep.read_only);
         if let Some(chat) = &prep.chat
             && let Ok(path) = self.find_chat(project.as_ref(), chat)
@@ -4623,6 +4644,7 @@ mod job_hold_tests {
             read_only,
             auto_hand_off: None,
             model: None,
+            connectors: false,
         }
     }
 

@@ -114,6 +114,24 @@ pub(crate) async fn prepare(state: &AppState, prep: Prep) -> Result<String, Stri
     if let Some((model, effort)) = &prep.model {
         state.agents.pick_for_job(&id, model, effort)?;
     }
+    // Item 804: Home's scan reads his mail and calendars — its chat gets
+    // his connectors, less the ones he turned off for Home.
+    if prep.connectors && prep.read_only {
+        let config = nightloom_service::project::config_dir();
+        // 804's review: the list of accounts the scan reads, checked again
+        // when old or missing (no model request; a failure keeps the last).
+        if let Some(c) = config.clone() {
+            let bin = crate::commands::cli::cli_binary(None);
+            let _ = tokio::task::spawn_blocking(move || {
+                nightloom_service::home::reach::refresh_if_stale(&c, &bin, chrono::Utc::now())
+            })
+            .await;
+        }
+        let off = config
+            .map(|c| nightloom_service::home::reach::off(&c))
+            .unwrap_or_default();
+        state.agents.connectors_for_job(&id, off)?;
+    }
     Ok(id)
 }
 

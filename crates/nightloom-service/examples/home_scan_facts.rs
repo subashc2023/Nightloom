@@ -18,5 +18,9 @@ fn main() {
             .collect();
     let facts =
         nightloom_service::home::collect(&config, &jobs.list(), &projects, chrono::Utc::now());
-    print!("{}", nightloom_service::home::scan_message(&facts));
+    let accounts = !nightloom_service::home::reach::scan_accounts(&config).is_empty();
+    print!(
+        "{}",
+        nightloom_service::home::scan_message(&facts, accounts)
+    );
 }

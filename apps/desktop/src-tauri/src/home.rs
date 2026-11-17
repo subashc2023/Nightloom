@@ -94,3 +94,53 @@ pub(crate) fn home_save_brief(text: String) -> Result<(), String> {
     let config = project::config_dir().ok_or("no Nightloom home")?;
     home::save_brief(&config, &text)
 }
+
+/// Item 804: what Home can reach — every connector of the last check as a
+/// row (per account), what macOS keeps that Home does not read, and when
+/// the check ran.
+#[derive(Serialize)]
+pub(crate) struct HomeReach {
+    checked_at: Option<String>,
+    error: Option<String>,
+    accounts: Vec<home::reach::Account>,
+    locals: Vec<home::reach::Local>,
+}
+
+fn reach_of(config: &std::path::Path) -> HomeReach {
+    let reach = home::reach::load(config);
+    HomeReach {
+        checked_at: reach.checked_at.map(|t| t.to_rfc3339()),
+        error: reach.error,
+        accounts: home::reach::accounts(config),
+        locals: home::reach::locals(),
+    }
+}
+
+/// The last check's rows; no request, nothing run.
+#[tauri::command]
+pub(crate) fn home_reach() -> Result<HomeReach, String> {
+    let config = project::config_dir().ok_or("no Nightloom home")?;
+    Ok(reach_of(&config))
+}
+
+/// Ask Claude Code what it reaches now (`claude mcp list`: no model
+/// request, up to a minute and a half), keep it, and return the rows.
+#[tauri::command]
+pub(crate) async fn home_reach_check(binary: Option<String>) -> Result<HomeReach, String> {
+    let config = project::config_dir().ok_or("no Nightloom home")?;
+    let bin = crate::commands::cli::cli_binary(binary);
+    tokio::task::spawn_blocking(move || {
+        home::reach::check(&config, &bin, chrono::Utc::now());
+        reach_of(&config)
+    })
+    .await
+    .map_err(|e| format!("the check did not finish: {e}"))
+}
+
+/// Turn one of his connectors on or off for Home; the rows after.
+#[tauri::command]
+pub(crate) fn home_reach_set(connector: String, on: bool) -> Result<HomeReach, String> {
+    let config = project::config_dir().ok_or("no Nightloom home")?;
+    home::reach::set_on(&config, &connector, on)?;
+    Ok(reach_of(&config))
+}

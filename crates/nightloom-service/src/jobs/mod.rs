@@ -682,6 +682,10 @@ pub struct Prep {
     /// The model and effort the run must use, `(model, effort)` (item
     /// 763: Home's scan, blocker 2041); `None` leaves the host's choice.
     pub model: Option<(String, String)>,
+    /// The run's chat gets his claude.ai connectors (item 804: Home's
+    /// scan reads mail and calendars; the chat is held read-only, so a
+    /// connector action that writes is refused).
+    pub connectors: bool,
 }
 
 /// A title from the message when he gave none: its first line, cut.
@@ -908,9 +912,9 @@ impl Jobs {
 
     /// The morning scan's message (item 763): [`crate::home::SCAN_LINE`]
     /// and the facts collected now.
-    fn scan_text(&self, now: DateTime<Utc>) -> String {
+    fn scan_text(&self, now: DateTime<Utc>, read_only: bool) -> String {
         let Some(config) = self.config_dir() else {
-            return crate::home::scan_message("(no Nightloom home)");
+            return crate::home::scan_message("(no Nightloom home)", false);
         };
         let projects: Vec<(String, Option<PathBuf>)> = crate::project::Registry::load_in(&config)
             .projects()
@@ -919,7 +923,13 @@ impl Jobs {
             .map(|p| (p.name, p.workspace))
             .collect();
         let facts = crate::home::collect(&config, &self.list(), &projects, now);
-        crate::home::scan_message(&facts)
+        // Item 804: with accounts to read, the turn reads their mail and
+        // calendars with the connectors' read tools.
+        // Only a read-only run gets the connectors (804's review: an
+        // approved, writable scan is sent without them, so it is not told
+        // to read accounts it cannot reach).
+        let accounts = read_only && !crate::home::reach::scan_accounts(&config).is_empty();
+        crate::home::scan_message(&facts, accounts)
     }
 
     /// Item 763: the built-in morning scan in Home's project `project`,
@@ -1321,6 +1331,7 @@ impl Jobs {
                         crate::home::EFFORT.to_string(),
                     )
                 }),
+                connectors: job.id == crate::home::SCAN_JOB_ID,
             })
             .await
         {
@@ -1332,7 +1343,7 @@ impl Jobs {
         // Item 763: the morning scan's message is its line plus the facts
         // collected now, in code.
         let text = if job.id == crate::home::SCAN_JOB_ID {
-            self.scan_text(now)
+            self.scan_text(now, !job.writable())
         } else {
             job.text.clone()
         };
