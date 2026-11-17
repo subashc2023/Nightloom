@@ -242,6 +242,16 @@ impl MacAway {
 
 /// The away server's claim on its stand-in copy of a Mac job.
 pub fn away_claim(home: &Path, job: &Job, due: DateTime<Utc>, now: DateTime<Utc>) -> Claim {
+    // The Mac already took it: no need to wait out its silence.
+    if let Some(l) = read_leases(home).get(&job.id)
+        && l.due >= due
+        && l.by != AWAY
+    {
+        return Claim::Taken {
+            by: l.by.clone(),
+            at: l.at,
+        };
+    }
     if !away_may_claim(mac_last_seen(home), due, now) {
         return Claim::Wait;
     }

@@ -254,7 +254,8 @@ async fn a_push_writes_only_under_mirror_sends_only_changes_and_nothing_unmarked
     assert!(!new.is_empty());
     for p in &new {
         assert!(
-            p.starts_with(MIRROR_DIR),
+            // Item 781: the server's own note of when the Mac last spoke.
+            p.starts_with(MIRROR_DIR) || p.as_path() == std::path::Path::new("sync/mac-seen.json"),
             "written outside mirror/: {}",
             p.display()
         );

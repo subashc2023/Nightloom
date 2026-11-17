@@ -12,6 +12,10 @@
 //! the lock is taken and the runner exits at once: the app's own clock
 //! runs the jobs.
 //!
+//! **An approval mid-run** cannot be answered (the runner has no listener;
+//! the phone reaches the Mac through the app), so such a run is ended and
+//! recorded as having no reply; the job runs again at its next time.
+//!
 //! **The app opened mid-run:** the app finds the runner holding the home,
 //! asks it to yield ([`ask_to_yield`]), says so in a note that closes
 //! itself, and opens once the lock is free. The runner starts nothing new
@@ -114,6 +118,12 @@ pub async fn run(
             jobs.tick(host.as_ref(), now()).await;
         }
         ticks += 1;
+        // Nobody can answer an approval here (the runner has no listener;
+        // the phone reaches the Mac only through the app): a run that
+        // stopped on one is ended, not left to hold the home for hours.
+        if jobs.any_running() && !host.state().await.pending.is_empty() {
+            let _ = host.cancel(None).await;
+        }
         if !jobs.any_running() && (yielding || !due_now(&jobs_dir, now())) {
             break;
         }

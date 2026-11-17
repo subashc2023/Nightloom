@@ -11,8 +11,10 @@
 //! times), hence the lead.
 //!
 //! [`workflow`] writes the file from the job list: each run's knock time in
-//! UTC over the next two weeks, so a daylight-saving change inside them
-//! knocks at both hours. Nothing of a job but its times goes in the file —
+//! UTC over the next year, so a job on his clock is knocked at both of its
+//! UTC hours (summer and winter) and the file does not go stale at a
+//! daylight-saving change — one knock a day lands an hour off and costs
+//! the machine's ten idle minutes. Nothing of a job but its times goes in the file —
 //! the repository may be public.
 
 use chrono::{DateTime, Datelike, Duration, Timelike, Utc};
@@ -21,8 +23,8 @@ use super::Job;
 
 /// How long before a run the knock comes.
 pub const LEAD_MINUTES: i64 = 15;
-/// How far ahead the times are read.
-pub const HORIZON_DAYS: i64 = 14;
+/// How far ahead the times are read: a year, both sides of daylight saving.
+pub const HORIZON_DAYS: i64 = 366;
 /// The page the knock asks for: the phone page, which needs no token; the
 /// query marks it as a knock so the server counts it as being used.
 pub const KNOCK_PATH: &str = "/?wake=job";
@@ -142,12 +144,15 @@ mod tests {
         v.job
     }
 
-    /// 8:00 AM in Los Angeles is 16:00 UTC in winter: knocked at 15:45.
+    /// 8:00 AM in Los Angeles is 16:00 UTC in winter (knocked at 15:45) and
+    /// 15:00 in summer (14:45); a UTC job has one line.
     #[test]
     fn a_morning_job_is_knocked_a_quarter_hour_early_in_utc() {
         let now = "2026-11-17T12:00:00Z".parse().unwrap();
         let j = job("every day at 8am", "America/Los_Angeles");
-        assert_eq!(crons(&[j.clone()], now), vec!["45 15 * * *"]);
+        assert_eq!(crons(std::slice::from_ref(&j), now), vec!["45 14,15 * * *"]);
+        let u = job("every day at 8am", "UTC");
+        assert_eq!(crons(&[u], now), vec!["45 7 * * *"]);
         let mut paused = j;
         paused.paused = true;
         assert!(crons(&[paused], now).is_empty());
@@ -158,10 +163,7 @@ mod tests {
     fn a_daylight_saving_change_knocks_at_both_hours() {
         let now = "2027-03-05T12:00:00Z".parse().unwrap();
         let j = job("every day at 8am", "America/Los_Angeles");
-        let lines = crons(&[j], now);
-        assert_eq!(lines.len(), 2, "{lines:?}");
-        assert!(lines.iter().any(|l| l.starts_with("45 15 ")));
-        assert!(lines.iter().any(|l| l.starts_with("45 14 ")));
+        assert_eq!(crons(&[j], now), vec!["45 14,15 * * *"]);
     }
 
     #[test]
@@ -182,7 +184,7 @@ mod tests {
         j.title = "Private title".into();
         j.text = "private message".into();
         let f = workflow("https://example.fly.dev/", &[j], now);
-        assert!(f.contains("- cron: \"45 15 * * *\""), "{f}");
+        assert!(f.contains("- cron: \"45 14,15 * * *\""), "{f}");
         assert!(f.contains("https://example.fly.dev/?wake=job"));
         assert!(!f.contains("Private") && !f.contains("private message"));
         assert!(f.contains("permissions: {}"));

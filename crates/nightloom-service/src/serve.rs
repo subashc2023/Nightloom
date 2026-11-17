@@ -177,6 +177,30 @@ pub fn desktop_running() -> bool {
         .is_ok_and(|s| s.success())
 }
 
+/// `NIGHTLOOM_SERVE_IDLE_EXIT_MIN`: on the away server (item 781), `serve`
+/// exits by itself after this many quiet minutes, so Fly's proxy need not
+/// stop the machine — the proxy counts open connections, and a job's run
+/// has none, so its auto-stop would cut a running job (`deploy/fly.toml`).
+pub const IDLE_EXIT_ENV: &str = "NIGHTLOOM_SERVE_IDLE_EXIT_MIN";
+/// A job due within this keeps the server up (the knock comes 15 minutes
+/// early; GitHub may be late or early by a few).
+pub const KEEP_UP_AHEAD_MINUTES: i64 = 20;
+
+/// Whether `serve` may exit now: no turn running, no job running or due
+/// soon ([`crate::jobs::Jobs::keeps_up`]), and nobody has used it for
+/// `idle` since it started or was last used. Pure.
+pub fn idle_exit_due(
+    started: chrono::DateTime<chrono::Utc>,
+    last_used: Option<chrono::DateTime<chrono::Utc>>,
+    now: chrono::DateTime<chrono::Utc>,
+    idle: chrono::Duration,
+    busy: bool,
+    jobs_keep_up: bool,
+) -> bool {
+    let quiet_since = last_used.map_or(started, |u| u.max(started));
+    !busy && !jobs_keep_up && now - quiet_since >= idle
+}
+
 /// How `serve` runs its turns.
 #[derive(Debug, Clone)]
 pub struct ServeConfig {

@@ -878,7 +878,37 @@ fn router(shared: Arc<Shared>) -> Router {
         // before any audio is read (voice_ws.rs).
         .route("/api/voice", get(voice_ws::voice))
         .nest("/api", api)
+        .layer(middleware::from_fn(mark_used))
         .with_state(shared)
+}
+
+/// When this listener was last used, in Unix seconds (0: not yet) — item
+/// 781: `nightloom serve --idle-exit` on the away server stops itself
+/// after a quiet spell. One listener per `serve` process.
+static LAST_USED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// When the listener was last used: any request but a bare `GET /`, which
+/// is Fly's health check (the knock asks for `/?wake=job`).
+pub fn last_used() -> Option<chrono::DateTime<chrono::Utc>> {
+    match LAST_USED.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => None,
+        s => chrono::DateTime::from_timestamp(s, 0),
+    }
+}
+
+/// Whether a request counts as use (item 781). Pure.
+pub fn counts_as_use(path: &str, query: Option<&str>) -> bool {
+    path != "/" || query.is_some_and(|q| !q.is_empty())
+}
+
+async fn mark_used(req: Request, next: Next) -> Response {
+    if counts_as_use(req.uri().path(), req.uri().query()) {
+        LAST_USED.store(
+            chrono::Utc::now().timestamp(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+    next.run(req).await
 }
 
 /// Cross-origin calls to `/api` (wave 3, A1; blocker 740, its default

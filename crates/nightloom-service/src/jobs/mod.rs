@@ -944,7 +944,12 @@ impl Jobs {
 
     /// Every job, soonest next run first (paused ones last).
     pub fn list(&self) -> Vec<JobView> {
-        let mut jobs: Vec<Job> = self.lock().iter().filter(|j| !j.stand_in).cloned().collect();
+        let mut jobs: Vec<Job> = self
+            .lock()
+            .iter()
+            .filter(|j| !j.stand_in)
+            .cloned()
+            .collect();
         jobs.sort_by_key(|j| (j.paused, j.next_run));
         jobs.into_iter().map(JobView::from).collect()
     }
@@ -1190,15 +1195,15 @@ impl Jobs {
                 continue;
             } else if job.run_now && !job.stand_in {
                 self.start(host, &job, now).await;
-            } else if !job.paused
-                && job.next_run <= now
-                && job.retry_at.is_none_or(|at| at <= now)
+            } else if !job.paused && job.next_run <= now && job.retry_at.is_none_or(|at| at <= now)
             {
                 // Item 781: one holder per run, the Mac or the away server.
                 match host.job_claim(&job, job.next_run, now).await {
                     crate::sync::lease::Claim::Granted => self.start(host, &job, now).await,
                     crate::sync::lease::Claim::Wait => {}
-                    crate::sync::lease::Claim::Taken { by, .. } => self.ran_elsewhere(&job, &by, now),
+                    crate::sync::lease::Claim::Taken { by, .. } => {
+                        self.ran_elsewhere(&job, &by, now)
+                    }
                 }
             }
         }
