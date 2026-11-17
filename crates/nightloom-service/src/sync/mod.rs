@@ -25,6 +25,7 @@
 //! is [`push::send`] and [`pull::run`] over [`Client`].
 
 pub mod fork;
+pub mod lease;
 pub mod manifest;
 pub mod mirror;
 pub mod pull;

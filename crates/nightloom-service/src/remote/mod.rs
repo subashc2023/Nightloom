@@ -358,6 +358,22 @@ pub trait Host: Send + Sync + 'static {
     fn at_the_mac(&self) -> bool {
         false
     }
+    /// Item 781: may this host run job `job`'s run due at `due`? The
+    /// default — a host with no away server — always may. The Mac asks the
+    /// away server's lease for a job of a project marked "available away";
+    /// the away server claims its stand-in copies itself
+    /// ([`crate::sync::lease`]).
+    async fn job_claim(
+        &self,
+        _job: &crate::jobs::Job,
+        _due: chrono::DateTime<chrono::Utc>,
+        _now: chrono::DateTime<chrono::Utc>,
+    ) -> crate::sync::lease::Claim {
+        crate::sync::lease::Claim::Granted
+    }
+    /// Item 781: before each tick of the jobs' clock (the away server takes
+    /// the Mac's latest list of away jobs here).
+    async fn before_tick(&self, _jobs: &crate::jobs::Jobs) {}
     /// Before a job's run (item 746): its chat exists — made in the job's
     /// project and named for it when the job has none yet — and is
     /// read-only (the Chat policy over a Claude Code chat) or not, as the
