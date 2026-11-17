@@ -771,6 +771,13 @@ pub enum AskMode {
     /// hook — a question from a side process has no card waiting for it,
     /// so it falls to the prompt tool, which refuses in words.
     AutoFork,
+    /// An aside or keep-warm ping of a Plan chat (nightshift item 774,
+    /// blocker 2037, 2026-11-16): `plan` still, so it edits nothing, the
+    /// prompt tool named (the prefix), and no Ask hook, as [`Self::Aside`]
+    /// — a deferral would park it on a card nobody's turn waits for.
+    /// `plan` and not `dontAsk` because on Opus 5.5 (CLI 2.1.326) the two
+    /// send different Bash tool text ([`AgentSpec::side_permission_mode`]).
+    PlanAside,
 }
 
 impl AskMode {
@@ -778,7 +785,7 @@ impl AskMode {
     pub fn permission_mode(self) -> &'static str {
         match self {
             Self::Ask => "default",
-            Self::Plan => "plan",
+            Self::Plan | Self::PlanAside => "plan",
             Self::ExitingToAuto | Self::Auto | Self::AutoFork => "auto",
             Self::Aside => "dontAsk",
         }
@@ -797,7 +804,7 @@ impl AskMode {
             Self::ExitingToAuto => ask::EXIT_PLAN_MATCHER,
             Self::Auto => ask::AUTO_MATCHER,
             // Never registered; see the variants.
-            Self::Aside | Self::AutoFork => "",
+            Self::Aside | Self::AutoFork | Self::PlanAside => "",
         }
     }
 }
@@ -1086,16 +1093,32 @@ impl AgentSpec {
         // wrote it all (cache-miss.jsonl, 5:43 PM). On Fable 5.2 the two
         // modes sent the same text. ~~An aside of an Auto chat is `dontAsk`
         // (backlog 294)~~ — superseded by this measurement.
-        let auto = spec.ask.as_ref().is_some_and(|a| a.mode.is_auto());
-        if !auto {
-            spec.permission_mode = Some("dontAsk".into());
-        }
-        if let Some(ask) = &mut spec.ask {
-            ask.mode = if auto {
-                AskMode::AutoFork
-            } else {
-                AskMode::Aside
-            };
+        // The same measurement covers the other chats (item 774, blocker
+        // 2037, his yes 2026-11-16): a Plan chat's aside runs in `plan`
+        // ([`AskMode::PlanAside`]); a chat without the Ask hook keeps
+        // `dontAsk` when it runs in `default`/`dontAsk`, and takes `plan`
+        // when it runs in `auto` or `bypassPermissions` (approval off) —
+        // the read-only mode of the chat's class, which can do nothing the
+        // chat could not ([`Self::side_permission_mode`]).
+        match spec.ask.as_ref().map(|a| a.mode) {
+            Some(mode) => {
+                let side = match mode {
+                    // ExitingToAuto runs `auto` too (its one resume).
+                    AskMode::Auto | AskMode::AutoFork | AskMode::ExitingToAuto => AskMode::AutoFork,
+                    AskMode::Plan | AskMode::PlanAside => AskMode::PlanAside,
+                    AskMode::Ask | AskMode::Aside => AskMode::Aside,
+                };
+                if side == AskMode::Aside {
+                    spec.permission_mode = Some("dontAsk".into());
+                }
+                if let Some(ask) = &mut spec.ask {
+                    ask.mode = side;
+                }
+            }
+            None => {
+                spec.permission_mode =
+                    Some(Self::side_permission_mode(self.permission_mode.as_deref()).into());
+            }
         }
         // No brief either: the aside is one question on the warm cache,
         // and its settings carry no hook (the test below pins that).
@@ -1135,10 +1158,39 @@ impl AgentSpec {
     /// of its own, everything that shapes the cached prefix as the chat has
     /// it — held to one round, since it has nothing to answer. `None`
     /// without a session to fork.
+    ///
+    /// A chat without the Ask hook that runs in `auto` or
+    /// `bypassPermissions` (approval off) pings in its own mode, not the
+    /// aside's `plan` (item 774, blocker 2037): the same tool text, no
+    /// plan-mode reminder on the one-word prompt, and one round of a fixed
+    /// prompt can do nothing the chat could not.
     pub fn keep_warm_ping(&self) -> Option<AgentSpec> {
         let mut spec = self.aside()?;
         spec.max_turns = Some(1);
+        if self.ask.is_none()
+            && let Some(mode @ ("auto" | "bypassPermissions")) = self.permission_mode.as_deref()
+        {
+            spec.permission_mode = Some(mode.into());
+        }
         Some(spec)
+    }
+
+    /// The permission mode an aside of a chat without the Ask hook runs
+    /// in, given the chat's (item 774, blocker 2037). Measured 2026-11-16,
+    /// CLI 2.1.326, requests captured against a closed local port (no
+    /// model call; nightshift `2037-asidemodes-report-2026-11-16.md`): on
+    /// Opus 5.5 `default` and `dontAsk` send one tool text, `auto`, `plan`
+    /// and `bypassPermissions` another (the Bash description), the system
+    /// prompt the same in all five; on Fable 5.2 all five send the same.
+    /// So a chat in the second class gets `plan`, the class's mode that
+    /// edits nothing; every other chat — the CLI's default included, and
+    /// any mode not measured — keeps `dontAsk`, which refuses anything
+    /// that would prompt.
+    pub fn side_permission_mode(chat: Option<&str>) -> &'static str {
+        match chat {
+            Some("auto" | "bypassPermissions" | "plan") => "plan",
+            _ => "dontAsk",
+        }
     }
 
     /// The spec for a **checkpoint fork** (nightshift backlog 104, pass 3;
@@ -1398,7 +1450,7 @@ impl AgentSpec {
             } else {
                 ask.mode.matcher().to_string()
             };
-            if ask.mode != AskMode::Aside
+            if !matches!(ask.mode, AskMode::Aside | AskMode::PlanAside)
                 && !matcher.is_empty()
                 && let Ok(serde_json::Value::Object(hook)) = serde_json::from_str::<serde_json::Value>(
                     &ask::settings_json_matching(&ask.hook, &ask.dir, &matcher),
@@ -4138,7 +4190,9 @@ mod tests {
             ("--mcp-config", "{\"mcpServers\":{}}"),
             ("--append-system-prompt", "preamble"),
             ("--permission-prompt-tool", ask::PROMPT_TOOL),
-            ("--permission-mode", "dontAsk"),
+            // ~~`dontAsk`~~ — a Plan chat's aside stays in `plan` (item
+            // 774, blocker 2037, 2026-11-16): the chat's tool text on Opus.
+            ("--permission-mode", "plan"),
         ] {
             let i = a
                 .iter()
@@ -5375,6 +5429,77 @@ mod tests {
             tool_text_class(&mode_of(&s.args("turn")))
         );
         assert!(pre_tool_use(&a).is_empty());
+    }
+
+    /// The CLI's mode for a command line: its flag, or the CLI's own
+    /// default when none is sent.
+    fn mode_or_default(a: &[String]) -> String {
+        match a.iter().position(|x| x == "--permission-mode") {
+            Some(i) => a[i + 1].clone(),
+            None => "default".into(),
+        }
+    }
+
+    /// Every chat mode's aside and keep-warm ping sit in the chat's
+    /// measured tool-text class (item 774, blocker 2037, 2026-11-16), carry
+    /// no Ask hook, and can do nothing the chat could not: a Plan chat's in
+    /// `plan`; an approval-off chat's aside in `plan` and its ping in
+    /// `bypassPermissions`; an Ask chat's and a default one's in `dontAsk`.
+    #[test]
+    fn every_chat_modes_aside_and_ping_stay_in_the_chats_tool_class() {
+        // (chat, the aside's mode, the ping's mode)
+        let mut chats: Vec<(AgentSpec, &str, &str)> = Vec::new();
+        for (mode, side) in [
+            (AskMode::Ask, "dontAsk"),
+            (AskMode::Plan, "plan"),
+            (AskMode::Auto, "auto"),
+            (AskMode::ExitingToAuto, "auto"),
+        ] {
+            chats.push((asking(mode), side, side));
+        }
+        for (mode, aside, ping) in [
+            (None, "dontAsk", "dontAsk"),
+            (Some("default"), "dontAsk", "dontAsk"),
+            (Some("dontAsk"), "dontAsk", "dontAsk"),
+            (Some("auto"), "plan", "auto"),
+            (Some("bypassPermissions"), "plan", "bypassPermissions"),
+        ] {
+            let mut s = spec();
+            s.permission_mode = mode.map(Into::into);
+            chats.push((s, aside, ping));
+        }
+        for (mut s, aside_mode, ping_mode) in chats {
+            s.resume = Some("sess-1".into());
+            let chat = s.args("turn");
+            let class = tool_text_class(&mode_or_default(&chat));
+            let aside = s.aside().unwrap();
+            let ping = s.keep_warm_ping().unwrap();
+            for (side, want, what) in [(&aside, aside_mode, "aside"), (&ping, ping_mode, "ping")] {
+                let a = side.args("q");
+                assert_eq!(mode_of(&a), want, "{what} of {chat:?}");
+                assert_eq!(tool_text_class(&mode_of(&a)), class, "{what} of {chat:?}");
+                let entries = pre_tool_use(&a);
+                assert!(
+                    !entries.iter().any(|(_, c)| c.contains("--permission-hook")),
+                    "{what}: {entries:?}"
+                );
+                // The prompt tool is named exactly when the chat names it.
+                assert_eq!(
+                    a.iter().any(|x| x == "--permission-prompt-tool"),
+                    s.ask.is_some(),
+                    "{what}: {a:?}"
+                );
+            }
+            assert_eq!(ping.max_turns, Some(1));
+            assert_eq!(aside.max_turns, s.max_turns);
+        }
+        // A Plan chat's side process is the PlanAside position, not Plan:
+        // nothing to approve, so `planning()` is off on it.
+        let mut s = asking(AskMode::Plan);
+        s.resume = Some("sess-1".into());
+        let side = s.aside().unwrap();
+        assert_eq!(side.ask.as_ref().unwrap().mode, AskMode::PlanAside);
+        assert!(!ClaudeCodeAgent::new(side).planning());
     }
 
     /// A checkpoint fork of an Auto chat stays on `auto` (as before 294),
