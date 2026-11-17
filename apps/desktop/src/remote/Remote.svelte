@@ -123,7 +123,7 @@
   import { changesLine, turnChanges } from "./turnChanges";
   import ChatMenu from "./ChatMenu.svelte";
   import RulesSheet from "./RulesSheet.svelte";
-  import { asideKey, type RuleForm } from "./rules";
+  import { asideKey, connectorWords, type RuleForm } from "./rules";
   import { chatSheetSub, fitVisual } from "./sheetLayout";
   import Hosts from "./Hosts.svelte";
   import { PLAYWRIGHT_BUTTONS, PLAYWRIGHT_DECLINED, playwrightAction } from "../lib/playwright";
@@ -796,6 +796,31 @@
           if (!remote.pending.some((p) => p.id === req.id)) remote = { ...remote, pending: [...remote.pending, req] };
         } catch {
           // A payload the phone cannot read is one it cannot answer.
+        }
+        break;
+      }
+      case "approval-nudge": {
+        // 783: nobody answered. A set-aside takes the card down and is
+        // remembered, so the card that returns says so.
+        try {
+          const n: { id: string; name?: string; stage: "remind" | "set_aside" | "unattended" } = JSON.parse(data);
+          if (n.stage === "unattended") {
+            // 783's finish: a read-only chat's card in a run nobody was
+            // there for — never shown; the reply's end lists it.
+            remote = { ...remote, pending: remote.pending.filter((p) => p.id !== n.id) };
+            note("Nobody was here to approve it, so it was set aside and did not run");
+          } else if (n.stage === "set_aside") {
+            const req = remote.pending.find((p) => p.id === n.id);
+            if (req) {
+              remote = { ...remote, pending: remote.pending.filter((p) => p.id !== n.id) };
+              const chat = req.chat ?? chatId ?? "";
+              const key = asideKey(req.name, req.input);
+              setAside = { ...setAside, [chat]: [...(setAside[chat] ?? []).filter((k) => k !== key), key] };
+            }
+            note("No answer, so it was set aside — it asks again when the rest is done");
+          }
+        } catch {
+          // Unreadable: the card stays, and answering it says it has gone.
         }
         break;
       }
@@ -3258,9 +3283,18 @@
               {/if}
             </div>
           {:else}
-            <div class="card-head">Allow <b>{req.name}</b>?</div>
-            {#if (setAside[chatId ?? ""] ?? []).includes(asideKey(req.name, req.input))}
-              <p class="card-note" data-aside-back>Back again — you set this aside earlier.</p>
+            <!-- 783: a read-only chat's own cards — a connector action that is not a plain read, and remember as a proposal. -->
+            {#if req.kind === "remember"}
+              <div class="card-head" data-card-kind="remember">Remember this?</div>
+              <p class="card-note">This chat is read-only, so Claude asks before it adds to your memory.</p>
+            {:else if req.kind === "connector"}
+              <div class="card-head" data-card-kind="connector">Let <b>{connectorWords(req.name)}</b> run?</div>
+              <p class="card-note">This chat is read-only, and this connector action's name does not say whether it only reads or also changes something.</p>
+            {:else}
+              <div class="card-head">Allow <b>{req.name}</b>?</div>
+            {/if}
+            {#if req.back || (setAside[chatId ?? ""] ?? []).includes(asideKey(req.name, req.input))}
+              <p class="card-note" data-aside-back>Back again — this was set aside earlier. It waits for you now.</p>
             {/if}
             <div class="args">
               {#each fields(req.input) as f (f.key)}
@@ -3269,10 +3303,22 @@
             </div>
             <input type="text" placeholder="A note (the reason, if denied)" bind:value={notes[req.id]} />
             <div class="actions">
-              <button class="btn accent" onclick={() => answer(req, "allow")}>Allow</button>
-              <button class="btn" onclick={() => answer(req, "always")}>Allow for this chat</button>
-              <button class="btn danger" onclick={() => answer(req, "deny")}>Deny</button>
+              {#if req.kind === "remember"}
+                <button class="btn accent" data-act="allow" onclick={() => answer(req, "allow")}>Remember it</button>
+                <button class="btn danger" data-act="deny" onclick={() => answer(req, "deny")}>Don’t</button>
+              {:else if req.kind === "connector"}
+                <button class="btn accent" data-act="allow" onclick={() => answer(req, "allow")}>Allow once</button>
+                <button class="btn" data-act="always" onclick={() => answer(req, "always")}>Allow always</button>
+                <button class="btn danger" data-act="deny" onclick={() => answer(req, "deny")}>Deny</button>
+              {:else}
+                <button class="btn accent" onclick={() => answer(req, "allow")}>Allow</button>
+                <button class="btn" onclick={() => answer(req, "always")}>Allow for this chat</button>
+                <button class="btn danger" onclick={() => answer(req, "deny")}>Deny</button>
+              {/if}
             </div>
+            {#if req.kind === "connector"}
+              <p class="card-note">Allow always: it runs without asking in every read-only chat, on the Mac and Away. Take it back under Rules.</p>
+            {/if}
             <!-- 743: set it aside — the turn does the rest and asks again at the end; and the rules in force. -->
             <div class="actions later-row">
               {#if hasFeature(chatState ?? remote, "later")}

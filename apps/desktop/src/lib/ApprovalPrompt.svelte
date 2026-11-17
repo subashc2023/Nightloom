@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { connectorWords } from "../remote/rules";
   import { tip } from "./tip";
   import { tick, untrack } from "svelte";
   import { app, resolveApproval } from "./state.svelte";
@@ -73,6 +74,8 @@
 
   // Item 743 (blocker 2029's default): the phone card's set-aside, on the Mac
   // too, with the phone's note as its hover text.
+  // Item 783: the read-only chat's connector card.
+  const ALWAYS_READ_TIP = "Runs without asking in every read-only chat, Mac and Away.\nTake it back in Approval rules on the phone.";
   const LATER_TIP = "Not now: Claude does the rest of the task without this, then asks you again at the end.";
 
   function decide(
@@ -551,10 +554,16 @@
           >Let {folderScope === "project" ? "the project" : "this chat"} see <code>{outsideLeaf || req.name}</code
           >?</span
         >
+      {:else if req.kind === "remember"}
+        <!-- Item 783: a read-only chat proposes a memory; he approves it. -->
+        <span data-card-kind="remember">Remember this?</span>
+      {:else if req.kind === "connector"}
+        <!-- Item 783: a connector action that is not a plain read, in a read-only chat. -->
+        <span data-card-kind="connector">Let <code>{connectorWords(req.name)}</code> run?</span>
       {:else}
         <span>Run <code>{req.name}</code>?</span>
       {/if}
-      <span class="effect">paused · waiting for you</span>
+      <span class="effect">{req.back ? "set aside earlier · waiting for you" : "paused · waiting for you"}</span>
       <span class="sp"></span>
       {@render foldButton()}
     </div>
@@ -603,9 +612,22 @@
           </div>
         </div>
       {/if}
+      {#if req.kind}
+        <div class="arg">
+          <div class="why open" data-card-note>
+            {req.kind === "remember"
+              ? "This chat is read-only, so Claude asks before it adds to your memory."
+              : "This chat is read-only, and this connector action's name does not say whether it only reads or also changes something."}
+          </div>
+        </div>
+      {/if}
       <div class="actions">
-        <button class="ns-btn accent" onclick={() => decide("allow")}>Allow</button>
-        {#if !addsFolder}
+        <button class="ns-btn accent" data-act="allow" onclick={() => decide("allow")}
+          >{req.kind === "remember" ? "Remember it" : req.kind === "connector" ? "Allow once" : "Allow"}</button
+        >
+        {#if req.kind === "connector"}
+          <button class="ns-btn" data-act="always" use:tip={ALWAYS_READ_TIP} onclick={() => decide("always")}>Allow always</button>
+        {:else if !addsFolder && req.kind !== "remember"}
           <button
             class="ns-btn"
             use:tip={`every later ${req.name} in this chat runs unasked`}

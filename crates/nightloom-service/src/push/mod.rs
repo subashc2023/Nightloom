@@ -82,6 +82,15 @@ pub enum What {
     /// A recurring job's read-only run wanted to make changes (item 780):
     /// its approval card waits.
     Changes,
+    /// The approval is still waiting, two and a half minutes on (item
+    /// 783): the second push, in case the first went unseen.
+    Reminder,
+    /// Nobody answered: the call was set aside (not run) and is asked
+    /// again when the rest of the reply is done (item 783).
+    SetAside,
+    /// A read-only chat's card in a run nobody was there for (item 783's
+    /// finish): set aside at once, not run, listed at the run's end.
+    Unattended,
 }
 
 impl What {
@@ -94,6 +103,9 @@ impl What {
             What::Approval => "Waiting for your approval",
             What::Question => "Has a question for you",
             What::Changes => "Wants to make changes — approve it?",
+            What::Reminder => "Still waiting for your approval",
+            What::SetAside => "No answer, so it was set aside — it asks again at the end",
+            What::Unattended => "Needed your approval while you were away — set aside, not run",
         }
     }
 
@@ -581,7 +593,14 @@ impl Push {
         serde_json::json!({
             "title": title,
             "body": note.what.words(),
-            "tag": note.chat.as_deref().unwrap_or("nightloom"),
+            // The reminder and the set-aside are notifications of their
+            // own (item 783): under the chat's tag they would replace the
+            // first one silently, which is the push he already missed.
+            "tag": match (note.what, note.chat.as_deref()) {
+                (What::Reminder, Some(c)) => format!("{c}:again"),
+                (What::SetAside | What::Unattended, Some(c)) => format!("{c}:aside"),
+                (_, c) => c.unwrap_or("nightloom").to_string(),
+            },
             "chat": note.chat,
             "project": note.project,
             "host": self.role,

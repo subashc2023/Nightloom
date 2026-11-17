@@ -1249,6 +1249,24 @@ export interface ApprovalRequest {
   /** The model's text just before the call — Playwright's card shows it as
    *  the reason (nightshift backlog 367). Only on a Playwright call. */
   reason?: string;
+  /** A read-only chat's own card (nightshift item 783): `connector` — an
+   *  action that is not a plain read: Allow once / Allow always / Deny,
+   *  where always adds it to what read-only chats may run; `remember` — a
+   *  proposal to add to his memory. Absent: the ordinary card. */
+  kind?: "connector" | "remember";
+  /** Set aside earlier in this reply and back for its answer (743, 783). */
+  back?: boolean;
+}
+
+/** An unanswered card's `approval-nudge` (item 783): the reminder is due,
+ *  or the call was set aside and its card goes. */
+export interface ApprovalNudge {
+  id: string;
+  name: string;
+  chat?: string;
+  /** `unattended` (783's finish): a read-only chat's card in a run nobody
+   *  was there for — never shown, set aside at once, listed at the end. */
+  stage: "remind" | "set_aside" | "unattended";
 }
 
 /** `later` is "Not now — carry on" (nightshift item 743): the call is set

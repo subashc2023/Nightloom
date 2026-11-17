@@ -318,6 +318,17 @@ async fn pass(app: &AppHandle, away: &Away, url: &str, pull_too: bool) -> Result
     if !pushed.skipped.is_empty() {
         summary.push_str(&format!(", {} could not be read", pushed.skipped.len()));
     }
+    // Item 783: the approval rules for every chat are one set on both
+    // hosts. Best effort, like the key — a server from before this, or one
+    // that does not answer, fails no pass; the rules sync on the next.
+    match nightloom_service::approval_rules::shared::sync(&client, &config).await {
+        Ok(done) if done.notes > 0 => summary.push_str(&format!(
+            ", approval rules in step ({} changed on both — see Approval rules)",
+            done.notes
+        )),
+        Ok(_) => summary.push_str(", approval rules in step"),
+        Err(_) => summary.push_str(", approval rules not synced this time"),
+    }
     if !pull_too {
         return Ok(summary);
     }

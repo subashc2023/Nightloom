@@ -59,9 +59,11 @@ const RELAY_CAPACITY: usize = 256;
 /// out under the same name, re-shaped by [`aside_delta_event`].
 /// `pass-event` (wave 5) is the window's word on a dream or a capture the
 /// phone started: `{kind, state: started|done|failed, text}`.
-const RELAYED: [&str; 5] = [
+const RELAYED: [&str; 6] = [
     "turn-event",
     "tool-approval",
+    // 783: an unanswered card's reminder and set-aside.
+    "approval-nudge",
     "turn-notice",
     "aside-event",
     "pass-event",
@@ -205,6 +207,21 @@ impl DesktopHost {
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
                         .insert(id.to_string(), v.clone());
+                }
+                // 783: a card set aside for want of an answer is no longer
+                // one a phone that opens later should be shown.
+                if name == "approval-nudge"
+                    && let Ok(v) = serde_json::from_str::<serde_json::Value>(ev.payload())
+                    && matches!(
+                        v.get("stage").and_then(|s| s.as_str()),
+                        Some("set_aside" | "unattended")
+                    )
+                    && let Some(id) = v.get("id").and_then(|i| i.as_str())
+                {
+                    host.seen
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .remove(id);
                 }
                 // No subscriber is not an error: nothing is listening until
                 // a phone opens the stream.
@@ -1947,6 +1964,17 @@ pub fn push_note(
 /// here and a tick there never save over each other. `None` with no home.
 pub fn jobs_store(app: &AppHandle) -> Option<Arc<nightloom_service::jobs::Jobs>> {
     app.try_state::<Remote>()?.host.jobs.clone()
+}
+
+/// Nobody to answer a card on the Mac (item 783's finish): no input at
+/// the Mac for [`AT_THE_MAC`] and no phone page connected to the relay.
+/// An idle time it cannot read counts as someone there: the card waits.
+pub fn nobody_here(app: &AppHandle) -> bool {
+    let at_the_mac = !crate::wake::idle_seconds().is_some_and(|s| s >= AT_THE_MAC.as_secs_f64());
+    let phone = app
+        .try_state::<Remote>()
+        .is_some_and(|r| r.host.tx.receiver_count() > 0);
+    !at_the_mac && !phone
 }
 
 /// The Mac's push state, for the away pass to hand its key to the away

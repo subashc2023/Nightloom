@@ -1,6 +1,8 @@
 //! Approval rules he can see and change (nightshift item 743): **allow**,
 //! **ask** and **block**, by tool and by what the call names, for one chat or
-//! for every chat on this host.
+//! for every chat — on the Mac and the away server alike (item 783: the
+//! every-chat rules are one set, exchanged by [`shared`] in the Mac's sync
+//! pass).
 //!
 //! The Ask position's hook ([`crate::agent::ask`]) decided a call three ways
 //! before this — a tool granted by "Allow for this chat", the subagent
@@ -72,6 +74,26 @@ pub const TEXT_MAX: usize = 300;
 /// "Allow for this chat" list ([`crate::agent::ask::AskDir::allowed`]).
 const GRANT_PREFIX: &str = "grant:";
 
+/// The id prefix of a row that is a connector tool allowed for good in
+/// read-only chats ([`Store::reads`], item 783).
+const READ_PREFIX: &str = "read:";
+
+/// Whether he allowed `tool` for good in read-only chats (item 783).
+pub fn is_read(home: Option<&Path>, tool: &str) -> bool {
+    home.is_some_and(|dir| read(dir).reads.iter().any(|t| t == tool))
+}
+
+/// "Allow always" on a read-only chat's connector card: `tool` joins the
+/// reads, on this host now and on the other at the next sync.
+pub fn allow_read(home: &Path, tool: &str) -> Result<(), String> {
+    let mut store = read(home);
+    if store.reads.iter().any(|t| t == tool) {
+        return Ok(());
+    }
+    store.reads.push(tool.to_string());
+    write(home, &store)
+}
+
 /// What a matching rule does with a call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -107,13 +129,22 @@ pub struct Rule {
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
-struct Store {
+pub(crate) struct Store {
     #[serde(default)]
-    rules: Vec<Rule>,
+    pub(crate) rules: Vec<Rule>,
     /// The next id's number: never reused, so a removed rule's id cannot
     /// come back naming another rule under a sheet that is still open.
     #[serde(default)]
-    next: u64,
+    pub(crate) next: u64,
+    /// Connector tools he allowed for good from a read-only chat's card
+    /// (item 783, blocker 2033): they count as reads there. Only in the
+    /// every-chat file; shared between the hosts like its rules.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) reads: Vec<String>,
+    /// What a sync had to say (item 783): a rule both hosts changed, kept
+    /// twice. Shown above the list until he dismisses it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) notes: Vec<String>,
 }
 
 /// Where the two files live. Either may be absent: a host with no config
@@ -137,14 +168,14 @@ pub fn ask_dir_of_log(log: &Path) -> Result<PathBuf, String> {
     }
 }
 
-fn read(dir: &Path) -> Store {
+pub(crate) fn read(dir: &Path) -> Store {
     std::fs::read(dir.join(FILE))
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default()
 }
 
-fn write(dir: &Path, store: &Store) -> Result<(), String> {
+pub(crate) fn write(dir: &Path, store: &Store) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let path = dir.join(FILE);
     let tmp = dir.join(format!("{FILE}.tmp"));
@@ -314,10 +345,12 @@ pub struct Row {
     pub action: Action,
     pub tool: String,
     pub text: String,
-    /// `all` (every chat on this host) or `chat`.
+    /// `all` (every chat, on both hosts) or `chat`.
     pub scope: &'static str,
-    /// `rule`, or `grant` — the card's "Allow for this chat", which lives
-    /// in the chat's own list and reads here as an allow rule.
+    /// `rule`; `grant` — the card's "Allow for this chat", which lives
+    /// in the chat's own list and reads here as an allow rule; or `read`
+    /// — a connector tool he allowed for good in read-only chats (item
+    /// 783), which lists as an allow and can only be removed.
     pub source: &'static str,
 }
 
@@ -328,6 +361,10 @@ pub struct Listing {
     pub rules: Vec<Row>,
     /// What happens to a call no rule names, in sentences. Fixed.
     pub defaults: Vec<&'static str>,
+    /// What the last sync between the Mac and the away server had to say
+    /// (item 783): empty unless both changed the same rule.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
     /// The tools the add form offers by name.
     pub tools: Vec<&'static str>,
     /// Whether a chat was named — the sheet offers "this chat" only then.
@@ -338,10 +375,11 @@ pub struct Listing {
 }
 
 /// What is in force when no rule names a call.
-pub const DEFAULTS: [&str; 4] = [
+pub const DEFAULTS: [&str; 5] = [
     "Ask: commands (Bash), file edits (Write, Edit, MultiEdit, NotebookEdit), the web (WebFetch, WebSearch), worktrees, schedules, and every connector tool.",
     "Allow: reading and searching inside the chat's folders.",
     "Block: reading outside the chat's folders, until you add the folder.",
+    "In a read-only chat: connector actions that send, create, change or delete are refused; one whose name says neither read nor write asks you first (Allow once, Allow always, Deny), and so does remembering something.",
     "These are read while a chat is on Ask or Plan. On Auto, Claude Code decides each call itself and no rule here is consulted.",
 ];
 
@@ -371,8 +409,19 @@ pub fn list(places: &Places) -> Listing {
             source: "grant",
         }));
     }
+    let mut notes = Vec::new();
     if let Some(dir) = &places.all {
-        rules.extend(read(dir).rules.into_iter().map(|r| row(r, "all")));
+        let store = shared::migrated(dir);
+        rules.extend(store.rules.into_iter().map(|r| row(r, "all")));
+        rules.extend(store.reads.into_iter().map(|tool| Row {
+            id: format!("{READ_PREFIX}{tool}"),
+            action: Action::Allow,
+            tool,
+            text: String::new(),
+            scope: "all",
+            source: "read",
+        }));
+        notes = store.notes;
     }
     // Stable: within an action the chat's stay before every chat's.
     rules.sort_by_key(|r| match r.action {
@@ -383,6 +432,7 @@ pub fn list(places: &Places) -> Listing {
     Listing {
         rules,
         defaults: DEFAULTS.to_vec(),
+        notes,
         tools: TOOLS.to_vec(),
         chat: places.chat.is_some(),
         subagents_auto: places
@@ -415,8 +465,12 @@ pub enum Edit {
     Remove {
         id: String,
     },
+    /// The sync's notes were read: clear them.
+    Dismiss,
 }
 
+const READ_FIXED: &str =
+    "This one only says the action may run in read-only chats. Remove it to be asked again.";
 const NO_CHAT: &str = "Open a chat to make a rule for one chat.";
 const NO_HOME: &str = "This host has no settings folder to keep a rule for every chat.";
 const GONE: &str = "That rule is no longer there.";
@@ -452,8 +506,15 @@ fn add_to(
         return Ok(());
     }
     store.next += 1;
+    // An every-chat rule's id is unique across hosts (item 783): the Mac's
+    // third rule and the away server's third are different rules.
+    let id = if prefix == "a" {
+        shared::new_id()
+    } else {
+        format!("{prefix}{}", store.next)
+    };
     store.rules.push(Rule {
-        id: format!("{prefix}{}", store.next),
+        id,
         action,
         tool,
         text,
@@ -491,6 +552,9 @@ pub fn edit(places: &Places, change: Edit) -> Result<Listing, String> {
             tool,
             text,
         } => {
+            if id.starts_with(READ_PREFIX) {
+                return Err(READ_FIXED.into());
+            }
             let (action, tool, text) = parsed(&action, &tool, &text)?;
             if let Some(granted) = id.strip_prefix(GRANT_PREFIX) {
                 // An "Allow for this chat" changed: it leaves the chat's
@@ -512,8 +576,26 @@ pub fn edit(places: &Places, change: Edit) -> Result<Listing, String> {
                 write(dir, &store)?;
             }
         }
+        Edit::Dismiss => {
+            if let Some(dir) = places.all.as_deref() {
+                let mut store = read(dir);
+                if !store.notes.is_empty() {
+                    store.notes.clear();
+                    write(dir, &store)?;
+                }
+            }
+        }
         Edit::Remove { id } => {
-            if let Some(granted) = id.strip_prefix(GRANT_PREFIX) {
+            if let Some(tool) = id.strip_prefix(READ_PREFIX) {
+                let dir = dir_of(places, "all")?;
+                let mut store = read(dir);
+                let before = store.reads.len();
+                store.reads.retain(|t| t != tool);
+                if store.reads.len() == before {
+                    return Err(GONE.into());
+                }
+                write(dir, &store)?;
+            } else if let Some(granted) = id.strip_prefix(GRANT_PREFIX) {
                 let dir = dir_of(places, "chat")?;
                 crate::agent::ask::AskDir::new(dir)
                     .disallow_tool(granted)
@@ -532,6 +614,8 @@ pub fn edit(places: &Places, change: Edit) -> Result<Listing, String> {
     }
     Ok(list(places))
 }
+
+pub mod shared;
 
 #[cfg(test)]
 mod tests {

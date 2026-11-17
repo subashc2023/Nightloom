@@ -327,3 +327,31 @@ items.
   a second Vite entry of the same build.
 - `src/lib/state.svelte.ts` (`init`) — the three `remote-*` listeners;
   `SettingsModal.svelte` — the Remote card.
+
+
+## Approval follow-ups (nightshift item 783)
+
+- **One rule set for both hosts.** The every-chat rules (`approval-rules.json` in the config directory) are the same
+  on the Mac and the away server: the Mac's sync pass (`away.rs`) merges the two three-way against the last synced
+  set (`approval-rules.synced.json`, Mac only) over `GET`/`PUT /api/sync/rules`
+  (`approval_rules/shared.rs`). A rule both hosts changed is kept twice and the sheet says so (`notes`, dismissed
+  with `{op: "dismiss"}`). Every-chat rule ids are `a-<uuid>`; older `a<n>` ids are replaced on first list or sync.
+- **Read-only chats ask instead of refusing.** Where the Ask hook is registered, a connector action that is not a
+  known read, and Nightloom's `remember`, go to the hook with `--read-only` (`ask::decide_read_only`,
+  `connector_writes::CARD_MATCHER`) and defer: `tool-approval` carries `kind: "connector" | "remember"`. On a
+  `connector` card `decision: "always"` adds the tool to the every-chat file's `reads` (listed as `source: "read"`,
+  removable as `read:<tool>`); on `remember` it is a plain allow. A **known write** — a verb on
+  `connector_writes::WRITE_VERBS` (send, reply, forward, trash, delete, create, update, label, upload, share, move…)
+  — is still refused there (`KNOWN_WRITES_MATCHER`, with Nightloom's own note writes); only a verb on neither list
+  gets the card.
+- **Unattended runs never wait on a read-only card.** When nobody is there (`TurnEnv::unattended`: on the away server
+  no subscriber to the event stream; on the Mac no input for 2 minutes and no phone connected), such a card is never
+  shown: `approval-nudge {stage: "unattended"}` and a push go out, the call is refused with
+  `ask::UNATTENDED_REASON` (never run, not to be made again this run), and the reply's end lists it — so a job
+  finishes and frees the away server's one turn.
+- **Unanswered approvals** (`ask::APPROVAL_TIMES`): the card's push at 0:00, `approval-nudge {stage: "remind"}` and
+  a second push at 2:30, `{stage: "set_aside"}` at 3:30 — the call is refused with `ask::AUTO_LATER_REASON` (never
+  run), its card withdrawn, a short push sent; the same call comes back at the reply's end with `back: true` and then
+  waits without a timer. Questions, plans and folder cards are never timed. A set-aside writes only that call's
+  refusal (`AskDir::write_set_aside`) — never Playwright's answer for the reply, so the call that comes back gets its
+  card.

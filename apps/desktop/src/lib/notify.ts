@@ -311,6 +311,12 @@ export async function notifyNeedsYou(chat: string, req: ApprovalRequest, prefs?:
   }
 }
 
+/** Item 783: an unanswered card's second push (2:30) and its set-aside
+ *  (3:30), to the phone — whether he is at the Mac is the backend's to judge. */
+export function notifyNudge(chat: string, n: { chat?: string; stage: "remind" | "set_aside" | "unattended" }): void {
+  pushToPhone(n.stage === "remind" ? "reminder" : n.stage, n.chat ?? null, chat, null);
+}
+
 /**
  * The window just went behind (`away.svelte.ts`'s `onAway`): post the held
  * banner of each call that still waits — `stillWaiting` asks the state, so

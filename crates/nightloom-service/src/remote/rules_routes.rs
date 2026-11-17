@@ -12,6 +12,11 @@
 //!   with the listing after it. A refusal is 409 with the sentence the
 //!   sheet shows; nothing is written then.
 //!
+//! - `GET` / `PUT /sync/rules` (item 783) — the every-chat set as the
+//!   other host exchanges it ([`crate::approval_rules::shared`]): the Mac's
+//!   sync pass reads the away server's, merges, and writes it back; a
+//!   write against a set that changed meanwhile is 409.
+//!
 //! The host's part is one lookup — the chat's ask directory
 //! ([`super::Host::ask_dir`]); the files are read and written here, so the
 //! Mac and the away server cannot drift. Behind the bearer check like
@@ -21,7 +26,7 @@
 use std::sync::Arc;
 
 use axum::extract::{RawQuery, State};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 
@@ -30,17 +35,52 @@ use super::{Shared, answer, refused};
 use crate::approval_rules::{self, Edit, Listing, Places};
 
 pub(super) fn router() -> Router<Arc<Shared>> {
-    Router::new().route("/rules", get(listing).post(change))
+    Router::new()
+        .route("/rules", get(listing).post(change))
+        .route("/sync/rules", get(shared_get).put(shared_put))
 }
 
-/// The two files' places for this request, or the host's refusal.
-async fn places(shared: &Shared, query: Option<&str>) -> Result<Places, String> {
-    if !shared
+fn served(shared: &Shared) -> bool {
+    shared
         .host
         .features()
         .iter()
         .any(|f| f.as_str() == feature::RULES)
-    {
+}
+
+async fn shared_get(State(shared): State<Arc<Shared>>) -> Response {
+    let Some(home) = served(&shared).then(|| shared.host.rules_home()).flatten() else {
+        return refused(NOT_AVAILABLE.into());
+    };
+    answer(
+        tokio::task::spawn_blocking(move || approval_rules::shared::get(&home))
+            .await
+            .map_err(|e| e.to_string()),
+    )
+}
+
+async fn shared_put(
+    State(shared): State<Arc<Shared>>,
+    Json(put): Json<approval_rules::shared::Put>,
+) -> Response {
+    let Some(home) = served(&shared).then(|| shared.host.rules_home()).flatten() else {
+        return refused(NOT_AVAILABLE.into());
+    };
+    let done = tokio::task::spawn_blocking(move || approval_rules::shared::put(&home, &put))
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|r| r);
+    match done {
+        Err(e) if e == approval_rules::shared::CHANGED => {
+            (axum::http::StatusCode::CONFLICT, e).into_response()
+        }
+        other => answer(other),
+    }
+}
+
+/// The two files' places for this request, or the host's refusal.
+async fn places(shared: &Shared, query: Option<&str>) -> Result<Places, String> {
+    if !served(shared) {
         return Err(NOT_AVAILABLE.into());
     }
     let chat = query_param(query, "chat").filter(|c| !c.trim().is_empty());
@@ -50,7 +90,7 @@ async fn places(shared: &Shared, query: Option<&str>) -> Result<Places, String> 
         None => None,
     };
     Ok(Places {
-        all: crate::project::config_dir(),
+        all: shared.host.rules_home(),
         chat,
     })
 }

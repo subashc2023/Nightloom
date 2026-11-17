@@ -617,7 +617,10 @@ fn ask_mcp_less(browser: bool) -> String {
         ASK_MCP_LESS_PREVIEW
     };
     let head = base.strip_suffix(").*").expect("a lookahead and .*");
-    format!("{head}|{}).*", connector_writes::ASK_EXCLUSION)
+    // With `remember` (item 783): this matcher is only ever the Ask hook's,
+    // and wherever that hook is registered the read-only chat's asking
+    // entry decides `remember` and the connector actions.
+    format!("{head}|{}).*", connector_writes::ASK_EXCLUSION_WITH_CARD)
 }
 
 /// The Ask hook's `mcp__` alternative under the Chat policy with the
@@ -1532,10 +1535,33 @@ impl AgentSpec {
                         }
                     })
                     .to_string();
-                    pre.push(serde_json::json!({
-                        "matcher": connector_writes::MATCHER,
-                        "hooks": [{ "type": "command", "command": chat_policy_command(&reply) }]
-                    }));
+                    // Where a card can show (the Ask hook is there and this
+                    // is not an aside), a connector action that is not a
+                    // known read asks him instead, and so does `remember`
+                    // (item 783, blockers 2033 and 2032); Nightloom's own
+                    // note writes stay refused. Elsewhere the refusal
+                    // stands as it was.
+                    match &self.ask {
+                        Some(ask)
+                            if !matches!(ask.mode, AskMode::Aside | AskMode::PlanAside)
+                                && !ask.dir.as_os_str().is_empty() =>
+                        {
+                            pre.push(serde_json::json!({
+                                "matcher": connector_writes::KNOWN_WRITES_MATCHER,
+                                "hooks": [{ "type": "command", "command": chat_policy_command(&reply) }]
+                            }));
+                            pre.push(ask::hook_entry(
+                                &ask.hook,
+                                &ask.dir,
+                                connector_writes::CARD_MATCHER,
+                                &[ask::READ_ONLY_ARG],
+                            ));
+                        }
+                        _ => pre.push(serde_json::json!({
+                            "matcher": connector_writes::MATCHER,
+                            "hooks": [{ "type": "command", "command": chat_policy_command(&reply) }]
+                        })),
+                    }
                 }
             }
         }
@@ -3702,20 +3728,24 @@ mod tests {
                     && *m != BROWSER_TOOLS_MATCHER
                     && *m != PREVIEW_TOOL_MATCHER
                     && *m != connector_writes::MATCHER
+                    && *m != connector_writes::KNOWN_WRITES_MATCHER
+                    && *m != connector_writes::CARD_MATCHER
             })
             .collect();
         assert_eq!(
             asks,
             [format!(
                 "WebFetch|WebSearch|mcp__(?!claude-in-chrome__|playwright__|nightloom__preview|nightloom__add_folder|{}).*",
-                connector_writes::ASK_EXCLUSION
+                connector_writes::ASK_EXCLUSION_WITH_CARD
             )],
             "{pre:?}"
         );
         // Item 430: the preview is the policy's to refuse, not the Ask
         // card's; the rest of Nightloom's server still asks.
         assert!(!regex_like_matches(asks[0], "mcp__nightloom__preview"));
-        assert!(regex_like_matches(asks[0], "mcp__nightloom__remember"));
+        // (Item 783: `remember` is the read-only entry's to ask about.)
+        assert!(asks[0].contains("nightloom__remember$"));
+        assert!(regex_like_matches(asks[0], "mcp__nightloom__send_file"));
         assert!(regex_like_matches(
             PREVIEW_TOOL_MATCHER,
             "mcp__nightloom__preview"
@@ -3727,7 +3757,7 @@ mod tests {
                 .any(|e| e["matcher"]
                     == format!(
                         "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview|nightloom__add_folder|{}).*",
-                        connector_writes::ASK_EXCLUSION
+                        connector_writes::ASK_EXCLUSION_WITH_CARD
                     )),
             "{pre:?}"
         );
@@ -4392,7 +4422,7 @@ mod tests {
         let i = a.iter().position(|x| x == "--settings").unwrap();
         let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
         let pre = v["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq!(pre.len(), 4, "{v}");
+        assert_eq!(pre.len(), 5, "{v}");
         // Narrowed beside the policy (backlog 147): see the next test.
         assert_eq!(
             pre[0]["matcher"],
@@ -4400,7 +4430,16 @@ mod tests {
         );
         assert_eq!(pre[1]["matcher"], CHAT_POLICY_MATCHER);
         assert_eq!(pre[2]["matcher"], PREVIEW_TOOL_MATCHER);
-        assert_eq!(pre[3]["matcher"], connector_writes::MATCHER);
+        // Item 783: with the Ask hook there, Nightloom's own note writes
+        // stay refused and the connector actions (and `remember`) ask.
+        assert_eq!(pre[3]["matcher"], connector_writes::KNOWN_WRITES_MATCHER);
+        assert_eq!(pre[4]["matcher"], connector_writes::CARD_MATCHER);
+        assert!(
+            pre[4]["hooks"][0]["command"]
+                .as_str()
+                .unwrap()
+                .contains(ask::READ_ONLY_ARG)
+        );
         assert_eq!(v["autoMemoryEnabled"], false);
 
         // The other pairings: nothing to refuse. (A born Chat, Chat over
@@ -4490,7 +4529,7 @@ mod tests {
             narrowed,
             format!(
                 "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview|nightloom__add_folder|{}).*",
-                connector_writes::ASK_EXCLUSION
+                connector_writes::ASK_EXCLUSION_WITH_CARD
             )
         );
         for withdrawn in [
@@ -4521,21 +4560,24 @@ mod tests {
         let i = a.iter().position(|x| x == "--settings").unwrap();
         let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
         let pre = v["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq!(pre.len(), 4, "{v}");
+        assert_eq!(pre.len(), 5, "{v}");
         assert_eq!(pre[0]["matcher"], narrowed);
         assert_eq!(pre[1]["matcher"], CHAT_POLICY_MATCHER);
         assert_eq!(pre[2]["matcher"], PREVIEW_TOOL_MATCHER);
-        assert_eq!(pre[3]["matcher"], connector_writes::MATCHER);
+        // Item 783: the connector actions and `remember` ask.
+        assert_eq!(pre[3]["matcher"], connector_writes::KNOWN_WRITES_MATCHER);
+        assert_eq!(pre[4]["matcher"], connector_writes::CARD_MATCHER);
         // The one resume that leaves plan mode: only the deny is registered.
         s.ask.as_mut().unwrap().mode = AskMode::ExitingToAuto;
         let a = s.args("hi");
         let i = a.iter().position(|x| x == "--settings").unwrap();
         let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
         let pre = v["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq!(pre.len(), 3, "{v}");
+        assert_eq!(pre.len(), 4, "{v}");
         assert_eq!(pre[0]["matcher"], CHAT_POLICY_MATCHER);
         assert_eq!(pre[1]["matcher"], PREVIEW_TOOL_MATCHER);
-        assert_eq!(pre[2]["matcher"], connector_writes::MATCHER);
+        assert_eq!(pre[2]["matcher"], connector_writes::KNOWN_WRITES_MATCHER);
+        assert_eq!(pre[3]["matcher"], connector_writes::CARD_MATCHER);
         // Without the policy, the matcher is untouched.
         let mut plain = spec();
         plain.ask = s.ask.clone();
@@ -5530,8 +5572,13 @@ mod tests {
         let mut s = asking(AskMode::Auto);
         s.apply_kind_policy(ChatKind::Chat, ChatKind::Build);
         let entries = pre_tool_use(&s.args("hi"));
+        // (Item 783: the one hook entry there is the read-only chat's own,
+        // on the connector actions and `remember` — never the question.)
         assert!(
-            !entries.iter().any(|(_, c)| c.contains("--permission-hook")),
+            entries
+                .iter()
+                .filter(|(_, c)| c.contains("--permission-hook"))
+                .all(|(m, c)| m == connector_writes::CARD_MATCHER && c.contains(ask::READ_ONLY_ARG)),
             "{entries:?}"
         );
         assert!(!entries.iter().any(|(m, _)| m == ask::PLAN_TOOLS_MATCHER));

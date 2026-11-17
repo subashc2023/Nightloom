@@ -1678,6 +1678,36 @@ impl TurnEnv for ServeEnv<'_> {
         }
     }
 
+    fn nudge(&self, nudge: &crate::agent_turn::ApprovalNudge<'_>) {
+        use crate::agent::ask::Nudge;
+        // 783: nobody answered. The reminder is a second push; a set-aside
+        // takes the card off the phone and says so.
+        if matches!(nudge.stage, Nudge::SetAside | Nudge::Unattended) {
+            lock(&self.host.pending).remove(nudge.id);
+        }
+        if let Ok(p) = serde_json::to_string(nudge) {
+            self.host.emit("approval-nudge", p);
+        }
+        if let Some(chat) = nudge.chat {
+            self.host.push_note(
+                match nudge.stage {
+                    Nudge::Remind => crate::push::What::Reminder,
+                    Nudge::SetAside => crate::push::What::SetAside,
+                    Nudge::Unattended => crate::push::What::Unattended,
+                },
+                chat,
+                self.project.as_deref(),
+            );
+        }
+    }
+
+    /// Item 783's finish: nobody has the phone page open (no subscriber
+    /// to the event stream, the voice socket included), so nobody can
+    /// answer a card here — a job's run at night, most often.
+    fn unattended(&self) -> bool {
+        self.host.tx.receiver_count() == 0
+    }
+
     async fn grant_to_project(&self, dir: &Path) -> ProjectGrant {
         let Some(id) = &self.project else {
             return ProjectGrant::NoProject;
@@ -2961,6 +2991,100 @@ esac
                 .all(|r| r["scope"] != "chat"),
             "{left}"
         );
+
+        // Item 783: a rule for every chat, added through the away server's
+        // API, is on the Mac after the Mac's sync pass — in its list, and
+        // binding there (the hook, handed the Mac's home, refuses the call).
+        let (status, body) = post(
+            &c,
+            format!("{base}/api/rules"),
+            &token,
+            serde_json::json!({"op": "add", "scope": "all", "action": "block", "tool": "Bash", "text": "terraform destroy"}),
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        let mac_home = root.join("mac-home");
+        std::fs::create_dir_all(&mac_home).unwrap();
+        let mac_chat = mac_home.join("sessions/ask/chat-on-the-mac");
+        let call = serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "terraform destroy -auto-approve"},
+            "tool_use_id": "toolu_783",
+            "permission_mode": "default",
+        })
+        .to_string();
+        // Before the sync the Mac knows nothing of it: the call would ask.
+        let before = crate::agent::ask::decide_under(&mac_chat, Some(&mac_home), &call, false);
+        assert_eq!(before.decision(), "defer");
+        // A rule of the Mac's own goes the other way in the same pass.
+        crate::approval_rules::edit(
+            &crate::approval_rules::Places {
+                all: Some(mac_home.clone()),
+                chat: None,
+            },
+            crate::approval_rules::Edit::Add {
+                scope: "all".into(),
+                action: "ask".into(),
+                tool: "WebFetch".into(),
+                text: "pastebin".into(),
+            },
+        )
+        .unwrap();
+        let sync_client = crate::sync::Client::new(&base, &token).unwrap();
+        let synced = crate::approval_rules::shared::sync(&sync_client, &mac_home)
+            .await
+            .unwrap();
+        assert_eq!(synced.rules, 2);
+        let on_mac = crate::approval_rules::list(&crate::approval_rules::Places {
+            all: Some(mac_home.clone()),
+            chat: Some(mac_chat.clone()),
+        });
+        assert!(
+            on_mac.rules.iter().any(|r| r.scope == "all"
+                && r.action == crate::approval_rules::Action::Block
+                && r.tool == "Bash"
+                && r.text == "terraform destroy"),
+            "{:?}",
+            on_mac.rules
+        );
+        let after = crate::agent::ask::decide_under(&mac_chat, Some(&mac_home), &call, false);
+        assert_eq!(after.decision(), "deny");
+        assert!(
+            after
+                .reason()
+                .unwrap()
+                .contains("A rule the user set blocks")
+        );
+        // And the Mac's rule is on the away server, by the same ids.
+        let away = get(&c, format!("{base}/api/rules"), &token).await;
+        let ids = |v: &serde_json::Value| {
+            let mut ids: Vec<String> = v
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["id"].as_str().unwrap().to_string())
+                .collect();
+            ids.sort();
+            ids
+        };
+        let mac_ids = {
+            let mut v: Vec<String> = on_mac.rules.iter().map(|r| r.id.clone()).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(ids(&away["rules"]), mac_ids, "{away}");
+        // Left as it was found for the rest of this test.
+        for id in mac_ids {
+            let (status, body) = post(
+                &c,
+                format!("{base}/api/rules"),
+                &token,
+                serde_json::json!({"op": "remove", "id": id}),
+            )
+            .await;
+            assert_eq!(status, 200, "{body}");
+        }
 
         // Each in-place action: the log equals the shared function's.
         type Op = Box<dyn Fn(&mut Session)>;

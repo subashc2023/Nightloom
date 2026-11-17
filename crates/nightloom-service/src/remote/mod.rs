@@ -326,6 +326,12 @@ pub trait Host: Send + Sync + 'static {
     fn push(&self) -> Option<Arc<crate::push::Push>> {
         None
     }
+    /// Where this host keeps the rules for every chat (item 783): the
+    /// config directory, which is also where the hook reads them. A test's
+    /// host names a folder of its own.
+    fn rules_home(&self) -> Option<std::path::PathBuf> {
+        crate::project::config_dir()
+    }
     /// The ask directory of `chat` (in `project`, when named) — where its
     /// approval rules live (item 743, [`rules_routes`]). The directory need
     /// not exist yet: a chat that never asked has none until a rule is

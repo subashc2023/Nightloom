@@ -58,6 +58,101 @@ macro_rules! write_body {
     };
 }
 
+/// The verbs a known writer starts with (item 783's finish, the parent's
+/// decision on the builder's open point): a connector action under one of
+/// these is refused in a read-only chat as before 759's card, never asked
+/// about — the card is for a verb on neither list. From the connectors his
+/// sessions list (Gmail, Drive, Calendar, Docs, Sheets, Claude Docs,
+/// Notion, scheduled tasks, the IDE; `inferred` for the rest).
+macro_rules! write_verbs {
+    () => {
+        "send|reply|forward|trash|untrash|delete|remove|create|update|edit|modify|patch|set|add|append|insert|write|upload|share|unshare|move|copy|duplicate|rename|label|unlabel|apply|mark|unmark|archive|unarchive|respond|accept|decline|invite|cancel|schedule|book|run|execute|exec|post|publish|submit|batch|export|import|clear|empty|purge|merge|close|reopen|assign|comment|approve|reject|pay|transfer|purchase|buy|order|subscribe|unsubscribe|restore|save|draft|sync|start|stop|enable|disable|grant|revoke|lock|unlock|pin|unpin|star|unstar|snooze|resolve|complete|replace|put|push|deploy|install|uninstall|kill|reset|toggle"
+    };
+}
+
+/// What follows `mcp__` in a known connector write: Nightloom's named
+/// writes, or another server's tool that is not a read ([`write_body`]'s
+/// rule) and whose name starts with one of [`WRITE_VERBS`] (after one
+/// optional product word, as the reads).
+macro_rules! known_write_body {
+    () => {
+        concat!(
+            "nightloom__(?:",
+            nightloom_writes!(),
+            ")$|(?!nightloom__|claude-in-chrome__|playwright__)(?:(?!__).)+__(?!(?:[a-z0-9]+-)?(?:",
+            read_verbs!(),
+            ")(?:[_A-Z-]|$))(?:[a-z0-9]+-)?(?:",
+            write_verbs!(),
+            ")(?:[_A-Z-]|$)"
+        )
+    };
+}
+
+/// What follows `mcp__` in a call a read-only chat *asks him about*
+/// instead of refusing (item 783): a connector action that is neither a
+/// known read nor a known write (blocker 2033), and Nightloom's `remember`
+/// (blocker 2032).
+macro_rules! card_body {
+    () => {
+        concat!(
+            "nightloom__remember$|(?!nightloom__|claude-in-chrome__|playwright__)(?:(?!__).)+__(?!(?:[a-z0-9]+-)?(?:",
+            read_verbs!(),
+            ")(?:[_A-Z-]|$))(?!(?:[a-z0-9]+-)?(?:",
+            write_verbs!(),
+            ")(?:[_A-Z-]|$))"
+        )
+    };
+}
+
+/// Nightloom's `remember`, by its own name.
+pub const REMEMBER: &str = "remember";
+
+/// The matcher of the read-only chat's asking entry (item 783): the hook
+/// with [`super::ask::READ_ONLY_ARG`] decides these — a card, not a
+/// refusal. Registered only where a card can show (a chat with the Ask
+/// hook); elsewhere [`MATCHER`]'s refusal stands as before.
+pub const CARD_MATCHER: &str = concat!("^mcp__(?:", card_body!(), ".*)");
+
+/// The known writes — Nightloom's own and every connector action under a
+/// write verb — refused in a read-only chat whether or not a card can
+/// show: the part of [`MATCHER`] [`CARD_MATCHER`] does not take.
+pub const KNOWN_WRITES_MATCHER: &str = concat!("^mcp__(?:", known_write_body!(), ".*)");
+
+/// [`ASK_EXCLUSION`] with `remember` — what the Ask hook's own `mcp__`
+/// alternative leaves out where [`CARD_MATCHER`] is registered, so one
+/// call never meets two deciders.
+pub const ASK_EXCLUSION_WITH_CARD: &str = concat!("nightloom__remember$|", write_body!());
+
+/// The write verbs, as words.
+pub const WRITE_VERBS: &str = write_verbs!();
+
+/// Whether `name` is a known write — [`KNOWN_WRITES_MATCHER`] in Rust:
+/// Nightloom's own, or a connector action that is not a read and starts
+/// with a write verb.
+pub fn known_write(name: &str) -> bool {
+    if !writes(name) {
+        return false;
+    }
+    let Some(rest) = name.strip_prefix("mcp__") else {
+        return false;
+    };
+    if rest.starts_with("nightloom__") {
+        return true;
+    }
+    let Some(i) = rest.find("__") else {
+        return false;
+    };
+    let tool = &rest[i + 2..];
+    starts_with(WRITE_VERBS, tool)
+        || product_word(tool).is_some_and(|t| starts_with(WRITE_VERBS, t))
+}
+
+/// Whether a read-only chat asks about `name` by verb — neither a read
+/// nor a known write (the same rule as [`CARD_MATCHER`], `remember` aside).
+pub fn asks(name: &str) -> bool {
+    writes(name) && !known_write(name)
+}
+
 /// The read verbs, as words.
 pub const READ_VERBS: &str = read_verbs!();
 
@@ -106,7 +201,13 @@ fn product_word(tool: &str) -> Option<&str> {
 }
 
 fn starts_with_read(tool: &str) -> bool {
-    READ_VERBS.split('|').any(|v| {
+    starts_with(READ_VERBS, tool)
+}
+
+/// Whether `tool` starts with one of `verbs` (`|`-joined) as a whole word:
+/// followed by `_`, `-`, a capital or the end.
+fn starts_with(verbs: &str, tool: &str) -> bool {
+    verbs.split('|').any(|v| {
         tool.strip_prefix(v).is_some_and(|after| {
             after.is_empty()
                 || after.starts_with(['_', '-'])
@@ -433,6 +534,80 @@ mod tests {
             // The Ask hook's `mcp__` alternative leaves out exactly the
             // refused ones (non-MCP names never match it).
             assert_eq!(asks, name.starts_with("mcp__") && !w, "ask on {name}");
+        }
+    }
+
+    /// Item 783's finish: every write the table names is a *known* write
+    /// (refused in a read-only chat as before), and only a verb on neither
+    /// list — `frobnicate` — is asked about. A product word in front does
+    /// not hide either, and a read verb wins over a write word after it.
+    #[test]
+    fn known_writers_are_refused_and_only_a_verb_on_neither_list_is_asked_about() {
+        for (family, name, class) in TABLE {
+            let unknown = *family == "Unknown verb";
+            let w = *class == Class::Write;
+            assert_eq!(known_write(name), w && !unknown, "known write: {name}");
+            assert_eq!(asks(name), unknown, "asks: {name}");
+        }
+        for name in [
+            "mcp__claude_ai_Acme__inspect_record",
+            "mcp__claude_ai_Acme__frobnicate",
+            "mcp__claude_ai_Acme__settle",
+            "mcp__claude_ai_Acme__reports",
+        ] {
+            assert!(asks(name) && !known_write(name), "{name}");
+        }
+        for name in [
+            "mcp__claude_ai_Acme__send_invoice",
+            "mcp__claude_ai_Acme__acme-delete-thing",
+            "mcp__claude_ai_Acme__uploadFile",
+            "mcp__claude_ai_Acme__move",
+        ] {
+            assert!(known_write(name) && !asks(name), "{name}");
+        }
+        // A read stays a read: `update-search_x` reads (product word, read verb).
+        assert!(!writes("mcp__claude_ai_Acme__update-search_x"));
+        assert!(!known_write("mcp__claude_ai_Acme__update-search_x"));
+    }
+
+    /// [`KNOWN_WRITES_MATCHER`] and [`CARD_MATCHER`] in JavaScript, as the
+    /// CLI reads them: they agree with [`known_write`] and [`asks`] on the
+    /// whole table and a few more, and never both match one call.
+    #[test]
+    fn the_known_writes_and_card_patterns_agree_with_rust_in_javascript() {
+        let mut names: Vec<&str> = TABLE.iter().map(|(_, n, _)| *n).collect();
+        names.extend([
+            "mcp__claude_ai_Acme__inspect_record",
+            "mcp__claude_ai_Acme__acme-delete-thing",
+            "mcp__claude_ai_Acme__uploadFile",
+            "mcp__claude_ai_Acme__update-search_x",
+            "mcp__claude_ai_Acme__settle",
+        ]);
+        let script = format!(
+            "const k=new RegExp({k});const c=new RegExp({c});const n={n};\
+             console.log(JSON.stringify(n.map(x=>[k.test(x),c.test(x)])));",
+            k = serde_json::to_string(KNOWN_WRITES_MATCHER).unwrap(),
+            c = serde_json::to_string(CARD_MATCHER).unwrap(),
+            n = serde_json::to_string(&names).unwrap(),
+        );
+        let out = match std::process::Command::new("node")
+            .arg("-e")
+            .arg(&script)
+            .output()
+        {
+            Ok(o) if o.status.success() => o,
+            Ok(o) => panic!("node failed: {}", String::from_utf8_lossy(&o.stderr)),
+            Err(e) => {
+                eprintln!("SKIPPED: node not runnable here ({e})");
+                return;
+            }
+        };
+        let got: Vec<(bool, bool)> = serde_json::from_slice(&out.stdout).unwrap();
+        for (name, (refused, card)) in names.iter().zip(got) {
+            assert_eq!(refused, known_write(name), "known writes on {name}");
+            let remember = *name == "mcp__nightloom__remember";
+            assert_eq!(card, asks(name) || remember, "card on {name}");
+            assert!(!(refused && card), "both on {name}");
         }
     }
 
