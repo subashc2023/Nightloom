@@ -120,9 +120,13 @@ export function spentWords(s: KeepWarmStatus): string {
  *  Subscription → Keeping caches warm. ~~The whole rule, his numbers and the
  *  spend, here~~ (cut 2026-11-15; `spentWords` and `holdWords` stay for the
  *  other places that say them). */
-export function switchTitle(s: KeepWarmStatus | null | undefined, now: number): string {
-  if (handedOffOff(s)) return `Keep warm ${HANDED_OFF}. Click to switch on;${HOLD_HINT}`;
-  if (!s || s.mode === "off") return `Keep warm off${offShort(s)}. Click to switch on;${HOLD_HINT}`;
+export function switchTitle(s: KeepWarmStatus | null | undefined, now: number, coldUsd?: number | null): string {
+  // Item 776: two lines, the state then what a click does; the price of
+  // letting it go cold where he decides to keep it — off or idle. While it
+  // is keeping, the state line is full and the chip beside shows the price.
+  const cold = coldUsd != null && !isKeeping(s, now) ? ` · cold ≈ $${coldUsd.toFixed(2)}` : "";
+  if (handedOffOff(s)) return `Keep warm ${HANDED_OFF}${cold}.\nClick to switch on;${HOLD_HINT}`;
+  if (!s || s.mode === "off") return `Keep warm off${offShort(s)}${cold}.\nClick to switch on;${HOLD_HINT}`;
   const once = s.mode === "once" ? " until your next message" : "";
   const state = isKeeping(s, now)
     ? `Warm${once} until ${clockTime(s.warm_until_ms as number)}` +
@@ -131,7 +135,7 @@ export function switchTitle(s: KeepWarmStatus | null | undefined, now: number): 
   const held = s.hold_hours != null ? ` · held ${s.hold_hours} h` : "";
   const p = s.spent;
   const pings = p.pings > 0 ? ` · ${p.pings} ping${p.pings === 1 ? "" : "s"} so far` : "";
-  return `${state}${held}${pings}. Click to switch off;${HOLD_HINT}`;
+  return `${state}${held}${pings}${cold}.\nClick to switch off;${HOLD_HINT}`;
 }
 
 /** Whose off it is, in a few words (item 608's distinction, shortened). */
@@ -143,7 +147,7 @@ function offShort(s: KeepWarmStatus | null | undefined): string {
 }
 
 /** Item 643: how to find the hold, at the end of every tooltip. */
-const HOLD_HINT = " right-click to hold it 12 h or 24 h.";
+const HOLD_HINT = " right-click to hold 12 or 24 h.";
 
 /** One ping ≈ 0.02 points of the 5-hour window: item 643's figure from
  *  item 541's numbers (`notes/runner-design/541-report-2026-11-10.md` in

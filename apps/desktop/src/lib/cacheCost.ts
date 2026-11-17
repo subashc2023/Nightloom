@@ -246,16 +246,23 @@ export function nextLine(usdNext: number): string {
   return `next ≈ ${usd(usdNext)}`;
 }
 
-/** The chip's tooltip for the estimate: both prices, and what they are. */
+/** The chip's estimate while warm, both prices on its face (item 776, his
+ *  "im tryna figure out how much itll cost if i left the cache go cold.
+ *  why isnt that information readily available"): `next ≈ $0.37 · cold ≈
+ *  $4.32`; cold, the one price: `next ≈ $4.32`. */
+export function chipNextLine(c: { warm: number; cold: number }, warm: boolean): string {
+  return warm ? `${nextLine(c.warm)} · cold ≈ ${usd(c.cold)}` : nextLine(c.cold);
+}
+
+/** The estimate's tooltip line (item 776, his "biggest yapfest ever"): one
+ *  short line, numbers first. ~~The context size, both rates per MTok,
+ *  where the rates came from and the plan caveat~~ (cut 2026-11-16; the
+ *  rates' source stays in `ChipRates.from` for whoever needs it). */
 export function nextTitle(usage: Usage, r: ChipRates, warm: boolean): string {
   const c = nextSendCost(usage, r);
-  const ctx = (usage.input_tokens + usage.output_tokens).toLocaleString("en-US");
-  return (
-    `Next send, estimated at API prices for this chat's ${ctx}-token context: ` +
-    `≈ ${usd(c.warm)} while the cache is warm (the history read back at $${r.read.toFixed(2)}/MTok, the last reply written at $${r.write.toFixed(2)}/MTok), ` +
-    `≈ ${usd(c.cold)} once it is cold (all of it written at $${r.write.toFixed(2)}/MTok) — now ${warm ? "warm" : "cold"}. ` +
-    `Rates from ${r.from}. An API-price estimate, not a bill: on the Max plan nothing is charged per token.`
-  );
+  return warm
+    ? `Next send ≈ ${usd(c.warm)} · cold ≈ ${usd(c.cold)} (API price)`
+    : `Cache cold · next send ≈ ${usd(c.cold)} (API price)`;
 }
 
 /** The chip's estimate for the open chat (item 699): its line and its
@@ -264,12 +271,12 @@ export function cacheEstimate(
   events: SessionEvent[],
   rates: ChipRates | null | undefined,
   warm: boolean,
-): { line: string; title: string; usd: number } | null {
+): { line: string; title: string; usd: number; warm: number; cold: number } | null {
   const last = lastReply(events);
   if (!last || !rates) return null;
   const c = nextSendCost(last.usage, rates);
   const n = warm ? c.warm : c.cold;
-  return { line: nextLine(n), title: nextTitle(last.usage, rates, warm), usd: n };
+  return { line: chipNextLine(c, warm), title: nextTitle(last.usage, rates, warm), usd: n, warm: c.warm, cold: c.cold };
 }
 
 /** The toast on the crossing to cold (item 605), with what the next send

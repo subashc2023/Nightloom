@@ -770,11 +770,11 @@
               class:partial={!spend.complete}
               use:tip={spend.agent
                 ? spend.complete
-                  ? "This chat's cost so far at API prices: Claude Code's own running estimate, subagents and rewound replies included — not a bill under a subscription"
-                  : "At least this much: Claude Code could not price one of the models this chat ran on"
+                  ? "This chat's cost so far at API prices (Claude Code's estimate, subagents and rewinds in)"
+                  : "At least this much · one of this chat's models has no price"
                 : spend.complete
-                  ? "Session cost so far, summed from each exchange at the price in force when it ran"
-                  : "At least this much: some exchanges ran on a model with no verified price"}
+                  ? "Session cost so far, each exchange at its price then"
+                  : "At least this much · some exchanges ran on a model with no verified price"}
               >{spend.complete ? "" : "at least "}{spend.text}</span
             >
           </span>

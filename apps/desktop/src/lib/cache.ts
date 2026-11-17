@@ -356,19 +356,16 @@ export function cacheLossLine(changes: CacheChange[]): string {
   return `cache will be lost · ${changes.map((c) => c.text).join(", ")}`;
 }
 
-/** Its tooltip: what changed, what the next turn would re-send, and what
- *  a click does. */
-export function cacheLossTitle(changes: CacheChange[], cachedTokens: number, remainingMs: number): string {
+/** Its tooltip: what changed and what the next send re-sends, then what a
+ *  click does — two short lines (item 776); `resendUsd`, when the rates
+ *  are in, is that re-send's API price. */
+export function cacheLossTitle(changes: CacheChange[], cachedTokens: number, remainingMs: number, resendUsd?: number | null): string {
   const n = cachedTokens.toLocaleString("en-US");
   const whole = changes.some((c) => c.whole);
   const left = remainingText(remainingMs);
-  const resend = whole
-    ? `the next turn re-sends the ${n} tokens this chat's cache holds at full price instead of reading them back`
-    : `the next turn re-sends up to ${n} of the tokens this chat's cache holds (the conversation after the system prompt) at full price`;
-  return (
-    `Changed since this chat's cache was built: ${changes.map((c) => c.text).join(", ")} — ${resend}. ` +
-    clickClause(changes, left)
-  );
+  const price = resendUsd != null ? ` (${whole ? "" : "up to "}≈ $${resendUsd.toFixed(2)})` : "";
+  const resend = whole ? `next send re-sends the ${n} tokens at full price` : `next send re-sends up to ${n} tokens at full price`;
+  return `${changes.map((c) => c.text).join(", ")} changed · ${resend}${price}\n${clickClause(changes, left)}`;
 }
 
 /** Whether a click on the chip puts anything back (item 601). */

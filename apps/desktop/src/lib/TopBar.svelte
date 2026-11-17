@@ -942,15 +942,15 @@
               class:partial={!spend.complete}
               use:tip={aside
                 ? spend.complete
-                  ? "What this aside has added on top of the chat: each answer's own cost at API prices (the CLI's estimate) — not a bill under a subscription"
-                  : "At least this much on top of the chat: some answers kept no cost of their own (none came, or they were answered before Nov 12)"
+                  ? "What this aside added over the chat, at API prices (the CLI's estimate)"
+                  : "At least this much over the chat · some answers kept no cost (none came, or before Nov 12)"
                 : spend.agent
                   ? spend.complete
-                    ? "This chat's cost so far at API prices: Claude Code's own running estimate, subagents and rewound replies included — not a bill under a subscription"
-                    : "At least this much: Claude Code could not price one of the models this chat ran on"
+                    ? "This chat's cost so far at API prices (Claude Code's estimate, subagents and rewinds in)"
+                    : "At least this much · one of this chat's models has no price"
                   : spend.complete
-                    ? "Session cost so far, summed from each exchange at the price in force when it ran"
-                    : "At least this much: some exchanges ran on a model with no verified price"}
+                    ? "Session cost so far, each exchange at its price then"
+                    : "At least this much · some exchanges ran on a model with no verified price"}
               >{spend.complete ? "" : "at least "}{spend.text}</span
             >
           </span>

@@ -107,19 +107,25 @@ describe("item 699: the next send's estimate", () => {
     expect(nextSendCost(last, rates).warm).toBeCloseTo((250_000 * 0.2 + 20_000 * 16) / 1e6, 9); // $0.37
     expect(usd(nextSendCost(last, rates).warm)).toBe("$0.37");
   });
-  it("the tooltip gives both prices and says it is an estimate, not a bill", () => {
-    const t = nextTitle(last, rates, true);
-    expect(t).toContain("≈ $0.37 while the cache is warm");
-    expect(t).toContain("≈ $4.32 once it is cold");
-    expect(t).toContain("not a bill");
-    expect(t).toContain("12 keep-warm pings");
+  // Item 776 (his "biggest yapfest ever"): one short line, numbers first; no rates, no fit source, no plan caveat.
+  it("the tooltip is one short line with both prices", () => {
+    expect(nextTitle(last, rates, true)).toBe("Next send ≈ $0.37 · cold ≈ $4.32 (API price)");
+    expect(nextTitle(last, rates, false)).toBe("Cache cold · next send ≈ $4.32 (API price)");
+    for (const w of [true, false]) {
+      const t = nextTitle(last, rates, w);
+      expect(t).not.toContain("MTok");
+      expect(t).not.toContain("keep-warm pings");
+      expect(t.length).toBeLessThan(60);
+    }
   });
   it("the API engine's price, a missing cache rate read as the input rate", () => {
     expect(ratesFromPrice({ input: 3, cache_read: null, cache_write: 3.75 })).toMatchObject({ read: 3, write: 3.75 });
   });
   it("the chip's line: warm and cold, and none without rates", () => {
     const events = [user(), reply(last)];
-    expect(cacheEstimate(events, rates, true)?.line).toBe("next ≈ $0.37");
+    // Item 776 (his "how much itll cost if i left the cache go cold"): the cold price on the warm chip's face.
+    expect(cacheEstimate(events, rates, true)?.line).toBe("next ≈ $0.37 · cold ≈ $4.32");
+    expect(cacheEstimate(events, rates, true)?.cold).toBeCloseTo(4.32, 6);
     expect(cacheEstimate(events, rates, false)?.line).toBe("next ≈ $4.32");
     expect(cacheEstimate(events, null, false)).toBeNull();
   });
