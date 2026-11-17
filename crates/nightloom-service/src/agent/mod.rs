@@ -2389,18 +2389,54 @@ impl ClaudeCodeAgent {
         on_event: &mut (dyn FnMut(TurnEvent) + Send),
     ) -> Option<Result<AgentOutcome, AgentError>> {
         let spec = self.spec.aside_with(model, effort)?;
-        Some(
-            self.drive_as(
+        // Item 766 (merge round T review, 2026-11-17): the aside's card is
+        // a live view like the window's — its deltas are held and scrubbed
+        // as the turn's are, and its final text too. Before, the caller
+        // joined the raw deltas into the answer it showed and kept.
+        let mut hold = crate::secret::DeltaHold::new(self.scrub.clone());
+        let mut held = |e: TurnEvent| {
+            for shown in hold.pass(&e) {
+                on_event(shown);
+            }
+        };
+        let out = self
+            .drive_as(
                 &spec,
                 Some(input),
                 Translator::new(),
                 false,
                 timing,
                 cancel,
-                on_event,
+                &mut held,
             )
-            .await,
-        )
+            .await;
+        for shown in hold.finish() {
+            on_event(shown);
+        }
+        Some(out.map(|o| self.scrubbed(o)))
+    }
+
+    /// An outcome with its final text scrubbed (item 766).
+    fn scrubbed(&self, mut outcome: AgentOutcome) -> AgentOutcome {
+        if !self.scrub.is_empty() {
+            outcome.text = self.scrub.text(&outcome.text);
+        }
+        outcome
+    }
+
+    /// Learn the secrets he typed on a card for `chat` (item 766), for a
+    /// run outside a turn — an aside asked before the chat's first turn
+    /// since launch, when no turn has loaded them yet. Values already
+    /// known are not added twice.
+    pub fn learn_secrets(&self, chat: &str) {
+        self.learn_secrets_from(&crate::secret::Store::default(), chat);
+    }
+
+    /// [`learn_secrets`](Self::learn_secrets) from a named store.
+    pub fn learn_secrets_from(&self, store: &crate::secret::Store, chat: &str) {
+        for s in store.all(chat) {
+            self.scrub.add(s);
+        }
     }
 
     /// One turn under a spec the caller shaped — a council seat
@@ -2416,14 +2452,27 @@ impl ClaudeCodeAgent {
         cancel: &CancellationToken,
         on_event: &mut (dyn FnMut(TurnEvent) + Send),
     ) -> Result<AgentOutcome, AgentError> {
-        self.drive(
-            spec,
-            Some(input.into()),
-            Translator::new(),
-            cancel,
-            on_event,
-        )
-        .await
+        // Item 766 (merge round T review): a seat's deltas are a live view
+        // too — held and scrubbed as the turn's and an aside's are.
+        let mut hold = crate::secret::DeltaHold::new(self.scrub.clone());
+        let mut held = |e: TurnEvent| {
+            for shown in hold.pass(&e) {
+                on_event(shown);
+            }
+        };
+        let out = self
+            .drive(
+                spec,
+                Some(input.into()),
+                Translator::new(),
+                cancel,
+                &mut held,
+            )
+            .await;
+        for shown in hold.finish() {
+            on_event(shown);
+        }
+        out.map(|o| self.scrubbed(o))
     }
 
     /// One CLI process, whichever shape: a prompt on argv, attachments on

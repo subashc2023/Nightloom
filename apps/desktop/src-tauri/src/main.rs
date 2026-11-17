@@ -1433,6 +1433,13 @@ fn main() {
         .setup(|app| {
             // Item 766: secrets typed on a card live a day at most.
             nightloom_service::secret::Store::default().sweep(nightloom_service::secret::LIFETIME);
+            // And every ten minutes while the app is open (merge round T
+            // review): an idle app ran no sweep, so a value outlived its day.
+            nightloom_service::secret::keep_swept(
+                nightloom_service::secret::Store::default(),
+                nightloom_service::secret::LIFETIME,
+                std::time::Duration::from_secs(600),
+            );
             // Item 808: Home's scan and the phone read the Mac's own stores
             // through this reader (status only until he allows one).
             mac_sources::install();

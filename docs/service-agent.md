@@ -1291,7 +1291,14 @@ deltas is caught), the text deltas the window and the phone are sent
 turn's final text, and at the turn's end the CLI's own session file and
 everything under its `<session>/` folder. Values under six characters are
 not scrubbed (they would garble ordinary text). `Secret`'s `Debug` hides
-the value. Not covered, by design: the model reads a command's output in
+the value. Since the merge-round-T review (2026-11-17): thinking deltas are
+held as prose is; an aside's and a council seat's deltas and final text go
+through the same hold (`ask_aside`, `run_with`; the aside's caller loads
+the chat's values with `learn_secrets`); the browser card's reason is
+scrubbed; a value pasted with spaces around it is scrubbed trimmed too; a
+rewritten CLI file keeps its `0600` mode; a failed turn's session file is
+scrubbed by the id it resumed; and the store is swept every ten minutes
+while the app is open (`keep_swept`). Not covered, by design: the model reads a command's output in
 its own context, and the CLI's background-output files under its temp
 folder are not rewritten. The check: `secret_766_tests.rs`.
 

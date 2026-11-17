@@ -650,9 +650,14 @@ async fn turn_body(
                     effect: crate::mcp_server::effect_of(&call.name),
                     outside,
                     chat: Some(chat_id),
+                    // Scrubbed (merge round T review, 2026-11-17): the
+                    // tracker joins the deltas as they arrived, so a value
+                    // the stream split in two was whole again here, on the
+                    // card the window and the phone draw.
                     reason: crate::agent::own_browser::is_playwright(&call.name)
                         .then(|| reason.lock().ok().and_then(|r| r.reason()))
-                        .flatten(),
+                        .flatten()
+                        .map(|r| scrub.text(&r)),
                 });
                 let nudge = |stage| {
                     env.nudge(&ApprovalNudge {
@@ -1018,6 +1023,12 @@ async fn turn_body(
         }
     }
 
+    // Item 766: the stream has ended — the end of the last delta that was
+    // held in case a value followed is shown now (merge round T review).
+    for shown in live.finish() {
+        env.event(chat_id, &shown);
+    }
+
     // The council's blocks (backlog 149), whichever way the chair ended.
     if let Some((request, results)) = &council_run {
         for r in results {
@@ -1063,13 +1074,14 @@ async fn turn_body(
             recorder.finish(Some(&reason));
             // Item 766: the CLI's own record of the session, now its last
             // process has exited — rewritten only where a value is in it.
-            if !scrub.is_empty()
-                && let Some(id) = &outcome.session_id
-                && let Some(projects) = crate::agent::cli_session::projects_dir()
-                && let Ok(file) =
-                    crate::agent::cli_session::find(&projects, &agent.spec().workspace, id)
+            // A process that ended before naming its session (stopped
+            // early) wrote to the one it resumed (merge round T review).
+            if let Some(id) = outcome
+                .session_id
+                .as_deref()
+                .or(agent.spec().resume.as_deref())
             {
-                crate::secret::scrub_cli_files(&scrub, &file);
+                crate::secret::scrub_cli_session(&scrub, &agent.spec().workspace, id);
             }
             // Stopped or failed before a word (backlog 361): say so.
             if cancel.is_cancelled() {
@@ -1157,7 +1169,15 @@ async fn turn_body(
             // Whatever streamed before the failure is still what happened;
             // `finish` closes the calls a killed round left open.
             recorder.finish(Some("error"));
-            let why = e.to_string();
+            // Item 766: a turn that failed still wrote the CLI's session
+            // file up to there — scrubbed as a finished turn's is, or a
+            // value a command printed before the failure stayed in it past
+            // its day, when nothing knows it any more (merge round T).
+            if let Some(id) = agent.spec().resume.as_deref() {
+                crate::secret::scrub_cli_session(&scrub, &agent.spec().workspace, id);
+            }
+            // The failure's own words (the CLI's stderr tail), scrubbed.
+            let why = scrub.text(&e.to_string());
             if cancel.is_cancelled() {
                 record_unanswered(session, seed_model, None);
             } else if crate::cli_auth::is_sign_in_failure(None, None, &why) {

@@ -295,3 +295,208 @@ fn the_cli_session_file_and_its_helpers_are_scrubbed_of_the_value() {
     assert!(hits.is_empty(), "{hits:?}");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+// ---- merge round T review, 2026-11-17 ----
+
+/// A stand-in `claude` for an aside or a seat: it repeats the value in its
+/// thinking and in its prose, each split across two deltas, and in its
+/// result.
+fn repeating_stand_in(root: &Path) -> String {
+    let (head, tail) = FAKE.split_at(9);
+    let body = format!(
+        r##"#!/bin/sh
+read line
+printf '%s\n' '{{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"claude-haiku-4-5","permissionMode":"default","session_id":"s-766a"}}'
+printf '%s\n' '{{"type":"stream_event","event":{{"type":"content_block_delta","index":0,"delta":{{"type":"thinking_delta","thinking":"the file says {head}"}}}},"parent_tool_use_id":null,"session_id":"s-766a"}}'
+printf '%s\n' '{{"type":"stream_event","event":{{"type":"content_block_delta","index":0,"delta":{{"type":"thinking_delta","thinking":"{tail} then"}}}},"parent_tool_use_id":null,"session_id":"s-766a"}}'
+printf '%s\n' '{{"type":"stream_event","event":{{"type":"content_block_delta","index":1,"delta":{{"type":"text_delta","text":"The token is {head}"}}}},"parent_tool_use_id":null,"session_id":"s-766a"}}'
+printf '%s\n' '{{"type":"stream_event","event":{{"type":"content_block_delta","index":1,"delta":{{"type":"text_delta","text":"{tail}"}}}},"parent_tool_use_id":null,"session_id":"s-766a"}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"The token is {fake}","session_id":"s-766a","stop_reason":"end_turn","usage":{{"input_tokens":3,"output_tokens":2}}}}'
+cat >/dev/null
+exit 0
+"##,
+        fake = FAKE,
+    );
+    let path = root.join("claude-repeating");
+    std::fs::write(&path, body).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+/// An aside and a council seat are live views too: what their cards are
+/// sent, joined as the cards join it, and their final text never hold a
+/// value — even one learned for an agent no turn has run on since launch.
+#[tokio::test]
+async fn an_aside_and_a_seat_never_show_or_return_the_value() {
+    let root = std::env::temp_dir().join(format!("nightloom-766-aside-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    let store = Store::at(root.join("store"));
+    store.put("chat-a", "GITHUB_TOKEN", FAKE).unwrap();
+    let mut spec = AgentSpec::new(&root);
+    spec.binary = repeating_stand_in(&root);
+    spec.resume = Some("s-766".into());
+    let agent = ClaudeCodeAgent::new(spec.clone());
+    // No turn has run: the aside's caller loads the chat's values.
+    agent.learn_secrets_from(&store, "chat-a");
+    let cancel = CancellationToken::new();
+
+    for seat in [false, true] {
+        let (mut said, mut thought) = (String::new(), String::new());
+        let mut sink = |e: TurnEvent| {
+            let wire = serde_json::to_string(&e).unwrap();
+            assert!(!wire.contains(FAKE), "sent: {wire}");
+            match e {
+                TurnEvent::TextDelta { text } => said.push_str(&text),
+                TurnEvent::ThinkingDelta { text } => thought.push_str(&text),
+                _ => {}
+            }
+        };
+        let out = if seat {
+            agent
+                .run_with(&spec, "what is the token", &cancel, &mut sink)
+                .await
+                .unwrap()
+        } else {
+            agent
+                .ask_aside(
+                    "what is the token".into(),
+                    None,
+                    None,
+                    None,
+                    &cancel,
+                    &mut sink,
+                )
+                .await
+                .expect("a session to ask beside")
+                .unwrap()
+        };
+        assert_eq!(said, "The token is [secret GITHUB_TOKEN]", "seat {seat}");
+        assert_eq!(
+            thought, "the file says [secret GITHUB_TOKEN] then",
+            "seat {seat}"
+        );
+        assert_eq!(
+            out.text, "The token is [secret GITHUB_TOKEN]",
+            "seat {seat}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A stand-in `claude` that writes the value in its prose, split across
+/// two deltas, and then calls Claude's own browser — whose card quotes
+/// the model's words before the call.
+fn browser_stand_in(root: &Path) -> String {
+    let (head, tail) = FAKE.split_at(9);
+    let body = format!(
+        r##"#!/bin/sh
+D="{d}"
+printf '%s\n' '{{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"claude-haiku-4-5","permissionMode":"default","session_id":"s-766b"}}'
+if [ ! -f "$D/asked" ]; then
+  touch "$D/asked"
+  printf '%s\n' '{{"type":"stream_event","event":{{"type":"content_block_delta","index":0,"delta":{{"type":"text_delta","text":"I will sign in with {head}"}}}},"parent_tool_use_id":null,"session_id":"s-766b"}}'
+  printf '%s\n' '{{"type":"stream_event","event":{{"type":"content_block_delta","index":0,"delta":{{"type":"text_delta","text":"{tail} now"}}}},"parent_tool_use_id":null,"session_id":"s-766b"}}'
+  printf '%s\n' '{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"toolu_p","name":"mcp__playwright__browser_click","input":{{"element":"Sign in"}}}}]}},"parent_tool_use_id":null}}'
+  printf '%s\n' '{{"type":"result","subtype":"success","stop_reason":"tool_deferred","terminal_reason":"tool_deferred","is_error":false,"num_turns":1,"result":"","permission_denials":[],"session_id":"s-766b","deferred_tool_use":{{"id":"toolu_p","name":"mcp__playwright__browser_click","input":{{"element":"Sign in"}}}}}}'
+  exit 0
+fi
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns":2,"result":"ok","session_id":"s-766b","stop_reason":"end_turn","usage":{{"input_tokens":3,"output_tokens":2}}}}'
+"##,
+        d = root.display(),
+    );
+    let path = root.join("claude-browser");
+    std::fs::write(&path, body).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+/// The window for the check below: it keeps each card's reason and
+/// declines the call.
+struct ReasonEnv {
+    ask: Arc<AskGate>,
+    reasons: Mutex<Vec<Option<String>>>,
+    sent: Mutex<Vec<String>>,
+}
+
+#[async_trait::async_trait]
+impl TurnEnv for ReasonEnv {
+    fn event(&self, _chat: &str, event: &TurnEvent) {
+        self.sent
+            .lock()
+            .unwrap()
+            .push(serde_json::to_string(event).unwrap());
+    }
+    fn notice(&self, _text: String) {}
+    fn approval(&self, prompt: &ApprovalPrompt<'_>) {
+        self.reasons.lock().unwrap().push(prompt.reason.clone());
+        let (ask, id) = (self.ask.clone(), prompt.id.to_string());
+        tokio::spawn(async move {
+            ask.answer(
+                &id,
+                Answer::Deny {
+                    reason: "not now".into(),
+                },
+            );
+        });
+    }
+    async fn grant_to_project(&self, _dir: &Path) -> ProjectGrant {
+        ProjectGrant::NoProject
+    }
+}
+
+/// The browser card's reason is the model's words joined from the deltas
+/// as they arrived; a value the stream split in two is whole again there,
+/// and must be scrubbed before the window and the phone draw the card.
+#[tokio::test]
+async fn the_browser_cards_reason_never_holds_a_value_split_across_deltas() {
+    let root = std::env::temp_dir().join(format!("nightloom-766-reason-{}", uuid::Uuid::new_v4()));
+    let logs = root.join("sessions");
+    std::fs::create_dir_all(&logs).unwrap();
+    let mut session = Session::start(&logs, ChatMode::Normal, ChatKind::Build).unwrap();
+    let chat = session.id.clone();
+    // He typed it on a card earlier in this chat (the turn loads it).
+    Store::default().put(&chat, "GITHUB_TOKEN", FAKE).unwrap();
+    let ask_dir = logs.join("ask").join(&session.id);
+    let mut spec = AgentSpec::new(&root);
+    spec.binary = browser_stand_in(&root);
+    let mut agent = ClaudeCodeAgent::new(spec);
+    agent.set_ask_dir(ask_dir.clone());
+    let ask = Arc::new(AskGate::new());
+    let env = ReasonEnv {
+        ask: ask.clone(),
+        reasons: Mutex::default(),
+        sent: Mutex::default(),
+    };
+    let cancel = CancellationToken::new();
+    let end = run_agent_turn(
+        AgentTurnRun {
+            agent: &mut agent,
+            session: &mut session,
+            chat_id: &chat,
+            input: TurnInput::from("sign in"),
+            spoken: false,
+            wire_note: None,
+            council: None,
+            cancel: &cancel,
+            ask_dir: Some(ask_dir.clone()),
+            ask: &ask,
+        },
+        &env,
+    )
+    .await;
+    Store::default().forget_chat(&chat);
+    assert!(end.is_ok(), "{:?}", end.err());
+    let reasons = env.reasons.lock().unwrap().clone();
+    assert_eq!(reasons.len(), 1, "{reasons:?}");
+    let reason = reasons[0].clone().expect("the card quotes the model");
+    assert!(!reason.contains(FAKE), "{reason}");
+    assert_eq!(reason, "I will sign in with [secret GITHUB_TOKEN] now");
+    for s in env.sent.lock().unwrap().iter() {
+        assert!(!s.contains(FAKE), "sent: {s}");
+    }
+    let (_, hits) = hits_under(&logs, FAKE);
+    assert!(hits.is_empty(), "{hits:?}");
+    let _ = std::fs::remove_dir_all(&root);
+}

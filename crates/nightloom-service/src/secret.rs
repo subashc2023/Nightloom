@@ -345,7 +345,22 @@ impl std::fmt::Debug for Scrub {
 }
 
 impl Scrub {
+    /// Add a value — and, when he pasted it with spaces or a line break
+    /// around it, the value without them too: a program that trims it
+    /// (a header, a URL) would otherwise print a form the scrub never
+    /// matches (merge round T review, 2026-11-17).
     pub fn add(&self, secret: Secret) {
+        let trimmed = secret.value.trim();
+        if trimmed != secret.value {
+            self.add_one(Secret {
+                name: secret.name.clone(),
+                value: trimmed.to_string(),
+            });
+        }
+        self.add_one(secret);
+    }
+
+    fn add_one(&self, secret: Secret) {
         if secret.value.chars().count() < SCRUB_MIN {
             return;
         }
@@ -478,15 +493,23 @@ impl Scrub {
     }
 }
 
-/// The live view's side of the scrub (item 766): text deltas pass through
-/// with every value replaced, even a value the stream split across two
-/// deltas — the end of a delta that could be a value's start is held until
-/// the next one. Any other event lets the held text go first. The log does
-/// not need this (the recorder scrubs whole blocks); the window and the
-/// phone do.
+/// The live view's side of the scrub (item 766): text and thinking deltas
+/// pass through with every value replaced, even a value the stream split
+/// across two deltas — the end of a delta that could be a value's start is
+/// held until the next one. Any other event, and a change between prose
+/// and thinking, lets the held text go first; [`finish`](Self::finish)
+/// lets go of what is held when the stream ends. The log does not need
+/// this (the recorder scrubs whole blocks); the window, the phone and an
+/// aside's card do.
+///
+/// Thinking is held as prose is (merge round T review, 2026-11-17): the
+/// CLI streams it in pieces too, and a value the model repeats while
+/// thinking reached the window whole when it fell across two of them.
 pub struct DeltaHold {
     scrub: Scrub,
     pending: String,
+    /// Whether `pending` is thinking (else prose).
+    thinking: bool,
 }
 
 impl DeltaHold {
@@ -494,39 +517,57 @@ impl DeltaHold {
         Self {
             scrub,
             pending: String::new(),
+            thinking: false,
+        }
+    }
+
+    fn delta(thinking: bool, text: String) -> crate::turn::TurnEvent {
+        use crate::turn::TurnEvent;
+        if thinking {
+            TurnEvent::ThinkingDelta { text }
+        } else {
+            TurnEvent::TextDelta { text }
         }
     }
 
     /// What to show for `event`, in order.
     pub fn pass(&mut self, event: &crate::turn::TurnEvent) -> Vec<crate::turn::TurnEvent> {
         use crate::turn::TurnEvent;
-        match event {
-            TurnEvent::TextDelta { text } => {
-                self.pending.push_str(text);
-                let clean = self.scrub.text(&self.pending);
-                let keep = self.scrub.held_suffix(&clean);
-                let cut = clean.len() - keep;
-                self.pending = clean[cut..].to_string();
-                let out = &clean[..cut];
-                if out.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![TurnEvent::TextDelta {
-                        text: out.to_string(),
-                    }]
-                }
-            }
+        let (text, thinking) = match event {
+            TurnEvent::TextDelta { text } => (text, false),
+            TurnEvent::ThinkingDelta { text } => (text, true),
             other => {
-                let mut out = Vec::with_capacity(2);
-                if !self.pending.is_empty() {
-                    out.push(TurnEvent::TextDelta {
-                        text: std::mem::take(&mut self.pending),
-                    });
-                }
+                let mut out = self.finish();
                 out.push(other.clone());
-                out
+                return out;
             }
+        };
+        let mut out = Vec::with_capacity(2);
+        if thinking != self.thinking {
+            out.extend(self.finish());
+            self.thinking = thinking;
         }
+        self.pending.push_str(text);
+        let clean = self.scrub.text(&self.pending);
+        let keep = self.scrub.held_suffix(&clean);
+        let cut = clean.len() - keep;
+        self.pending = clean[cut..].to_string();
+        if cut > 0 {
+            out.push(Self::delta(thinking, clean[..cut].to_string()));
+        }
+        out
+    }
+
+    /// What is still held, let go: the stream has ended (or another kind
+    /// of event follows), so no value can complete it.
+    pub fn finish(&mut self) -> Vec<crate::turn::TurnEvent> {
+        if self.pending.is_empty() {
+            return Vec::new();
+        }
+        vec![Self::delta(
+            self.thinking,
+            std::mem::take(&mut self.pending),
+        )]
     }
 }
 
@@ -556,9 +597,19 @@ pub fn scrub_file(scrub: &Scrub, path: &Path) -> std::io::Result<bool> {
     if clean == text {
         return Ok(false);
     }
+    // The rewritten file keeps the mode it had (merge round T review,
+    // 2026-11-17): the CLI writes its session files 0600, and a plain
+    // write here left the whole transcript readable by every account on
+    // the Mac. Made 0600 first, so it is never wider on the way.
+    let perms = std::fs::metadata(path)?.permissions();
     let tmp = path.with_extension(format!("scrub-{}", uuid::Uuid::new_v4()));
-    std::fs::write(&tmp, clean)?;
-    std::fs::rename(&tmp, path)?;
+    let written = write_private(&tmp, clean.as_bytes())
+        .and_then(|_| std::fs::set_permissions(&tmp, perms))
+        .and_then(|_| std::fs::rename(&tmp, path));
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
     Ok(true)
 }
 
@@ -590,6 +641,43 @@ pub fn scrub_cli_files(scrub: &Scrub, session_file: &Path) -> usize {
         }
     }
     changed
+}
+
+/// [`scrub_cli_files`] for the session `id` the CLI keeps for `workspace`,
+/// found as the turn finds it. `0` when there is nothing to scrub or no
+/// such file.
+pub fn scrub_cli_session(scrub: &Scrub, workspace: &Path, id: &str) -> usize {
+    match crate::agent::cli_session::projects_dir() {
+        Some(projects) => scrub_cli_session_in(scrub, &projects, workspace, id),
+        None => 0,
+    }
+}
+
+/// [`scrub_cli_session`] under a named projects folder.
+pub fn scrub_cli_session_in(scrub: &Scrub, projects: &Path, workspace: &Path, id: &str) -> usize {
+    if scrub.is_empty() {
+        return 0;
+    }
+    match crate::agent::cli_session::find(projects, workspace, id) {
+        Ok(file) => scrub_cli_files(scrub, &file),
+        Err(_) => 0,
+    }
+}
+
+/// Sweep `store` of values older than `age`, every `every`, for as long as
+/// the app runs (merge round T review, 2026-11-17): the sweeps at launch,
+/// before a turn and on a put never ran in an app left open and idle, so a
+/// value outlived its day until the next message. The thread sleeps
+/// between sweeps and ends with the process.
+pub fn keep_swept(store: Store, age: Duration, every: Duration) {
+    let _ = std::thread::Builder::new()
+        .name("secret-sweep".into())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(every);
+                store.sweep(age);
+            }
+        });
 }
 
 // ---- the tool ---------------------------------------------------------------
@@ -819,6 +907,133 @@ mod tests {
         }
         assert!(after.contains("[secret TOKEN]"));
         assert_eq!(scrub_cli_files(&scrub, &file), 0);
+    }
+
+    // ---- merge round T review, 2026-11-17 ----
+
+    #[test]
+    fn a_value_split_across_thinking_deltas_never_shows_live_and_the_tail_is_let_go() {
+        use crate::turn::TurnEvent;
+        let scrub = Scrub::default();
+        scrub.add(Secret {
+            name: "TOKEN".into(),
+            value: "ghp_fake766value".into(),
+        });
+        let mut hold = DeltaHold::new(scrub);
+        let (mut thought, mut said) = (String::new(), String::new());
+        let mut take = |events: Vec<TurnEvent>| {
+            for e in events {
+                match e {
+                    TurnEvent::ThinkingDelta { text } => thought.push_str(&text),
+                    TurnEvent::TextDelta { text } => said.push_str(&text),
+                    _ => {}
+                }
+            }
+        };
+        for e in [
+            TurnEvent::ThinkingDelta {
+                text: "the file holds ghp_fake".into(),
+            },
+            TurnEvent::ThinkingDelta {
+                text: "766value, so use it; ghp_".into(),
+            },
+            // Prose after thinking: the held end of the thought goes first,
+            // as thinking, never glued onto the prose.
+            TurnEvent::TextDelta {
+                text: "Done. It starts ghp_fa".into(),
+            },
+        ] {
+            take(hold.pass(&e));
+        }
+        // The stream ends on a held start: `finish` shows it.
+        take(hold.finish());
+        assert!(hold.finish().is_empty());
+        assert_eq!(thought, "the file holds [secret TOKEN], so use it; ghp_");
+        assert_eq!(said, "Done. It starts ghp_fa");
+    }
+
+    #[test]
+    fn a_value_pasted_with_spaces_around_it_is_scrubbed_trimmed_too() {
+        let scrub = Scrub::default();
+        scrub.add(Secret {
+            name: "TOKEN".into(),
+            value: " ghp_fake766value\n".into(),
+        });
+        // What a program that trims it prints.
+        assert_eq!(
+            scrub.text("Authorization: Bearer ghp_fake766value\r\n"),
+            "Authorization: Bearer [secret TOKEN]\r\n"
+        );
+        // And the value as typed, whole.
+        assert_eq!(scrub.text("[ ghp_fake766value\n]"), "[[secret TOKEN]]");
+        let line = serde_json::to_string(&json!({"c": "x ghp_fake766value y"})).unwrap();
+        assert!(!scrub.json_line(&line).contains("ghp_fake766value"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_scrubbed_file_keeps_the_mode_it_had() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = temp("mode");
+        let file = root.join("s-1.jsonl");
+        std::fs::write(&file, "{\"content\":\"ran: ghp_fake766value\"}\n").unwrap();
+        // As the CLI writes its session files: his alone.
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let scrub = Scrub::default();
+        scrub.add(Secret {
+            name: "TOKEN".into(),
+            value: "ghp_fake766value".into(),
+        });
+        assert!(scrub_file(&scrub, &file).unwrap());
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "{mode:o}");
+        assert!(
+            !std::fs::read_to_string(&file)
+                .unwrap()
+                .contains("ghp_fake766value")
+        );
+        // Nothing left beside it.
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn the_session_a_failed_turn_resumed_is_scrubbed_by_its_id() {
+        let projects = temp("failed");
+        let folder = projects.join("-Users-x-project");
+        std::fs::create_dir_all(&folder).unwrap();
+        let file = folder.join("s-9.jsonl");
+        std::fs::write(&file, "{\"content\":\"token=ghp_fake766value\"}\n").unwrap();
+        let scrub = Scrub::default();
+        let cwd = Path::new("/Users/x/project");
+        // Nothing known: nothing read, nothing changed.
+        assert_eq!(scrub_cli_session_in(&scrub, &projects, cwd, "s-9"), 0);
+        scrub.add(Secret {
+            name: "TOKEN".into(),
+            value: "ghp_fake766value".into(),
+        });
+        // No such session, or an id that is no id: nothing, no panic.
+        assert_eq!(scrub_cli_session_in(&scrub, &projects, cwd, "s-none"), 0);
+        assert_eq!(scrub_cli_session_in(&scrub, &projects, cwd, "../s-9"), 0);
+        assert_eq!(scrub_cli_session_in(&scrub, &projects, cwd, "s-9"), 1);
+        assert!(
+            !std::fs::read_to_string(&file)
+                .unwrap()
+                .contains("ghp_fake766value")
+        );
+    }
+
+    #[test]
+    fn an_open_app_sweeps_without_a_turn() {
+        let store = Store::at(temp("idle"));
+        let path = store.put("c", "TOKEN", "fake-secret-value-766").unwrap();
+        assert!(path.exists());
+        // Age zero stands in for "past its day"; no turn, launch or put runs.
+        keep_swept(store.clone(), Duration::ZERO, Duration::from_millis(20));
+        let until = std::time::Instant::now() + Duration::from_secs(5);
+        while path.exists() && std::time::Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!path.exists(), "the sweeper removed it");
     }
 
     #[tokio::test]
