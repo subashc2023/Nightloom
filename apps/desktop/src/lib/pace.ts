@@ -35,8 +35,8 @@ function ahead(hours: number): string {
   return `${hours} h ahead`;
 }
 
-/** One window's line. */
-export function paceLine(w: WindowPace, nowMs: number): string {
+/** One window's full line, with its measured miss — the gauge card's. */
+export function paceDetail(w: WindowPace, nowMs: number): string {
   const name = NAME[w.window];
   if (!w.ready) {
     return `${name}: learning your pace — ${w.backtest.checks} of ${MIN_CHECKS[w.window]} past checks so far (${w.readings} readings logged)`;
@@ -54,6 +54,20 @@ export function paceLine(w: WindowPace, nowMs: number): string {
       : ` (off by ~${Math.round(err)} pts ${ahead(w.horizon_hours)} on ${w.backtest.checks} past checks` +
         (lin == null ? ")" : `; a straight line was off by ~${Math.round(lin)})`);
   return `${name}: ${parts.join(", ")}${check}`;
+}
+
+/** One window's hover line (item 776's rule: numbers first, no caveats):
+ *  `5-hour: 80% at 2:10 PM · empty at 2:50 PM`. The measured miss lives on
+ *  the gauge card (`paceDetail`). */
+export function paceLine(w: WindowPace, nowMs: number): string {
+  const name = NAME[w.window];
+  if (!w.ready) return `${name}: learning your pace (${w.backtest.checks} of ${MIN_CHECKS[w.window]} checks)`;
+  const parts: string[] = [];
+  if (w.pct >= WARN_PCT) parts.push(`past ${WARN_PCT}%`);
+  else if (w.at80_ms != null) parts.push(`${WARN_PCT}% at ${paceWhen(w.at80_ms, nowMs)}`);
+  if (w.at100_ms != null) parts.push(`empty at ${paceWhen(w.at100_ms, nowMs)}`);
+  else parts.push(`~${Math.round(w.end_pct)}% at reset`);
+  return `${name}: ${parts.join(" · ")}`;
 }
 
 /** The windows, tighter first: the one that empties (then reaches 80%)
@@ -85,17 +99,17 @@ export function paceText(p: PlanPace | null, nowMs: number): string {
 export function paceWarn(u: Pick<PlanUsage, "five_hour" | "seven_day"> | null): string | null {
   if (!u) return null;
   const hot = [
-    { name: "5-hour window", pct: u.five_hour },
-    { name: "weekly window", pct: u.seven_day },
+    { name: "5-hour", pct: u.five_hour },
+    { name: "week", pct: u.seven_day },
   ]
     .filter((x): x is { name: string; pct: number } => x.pct != null && x.pct >= WARN_PCT)
     .sort((a, b) => b.pct - a.pct);
   if (hot.length === 0) return null;
-  return `${hot.map((h) => `${h.name} ${h.pct}%`).join(", ")} — past your ${WARN_PCT}% stop line: wrap up`;
+  return `${hot.map((h) => `${h.name} ${h.pct}%`).join(", ")} · past your ${WARN_PCT}% line: wrap up`;
 }
 
 /** One window's line for the gauge card, without its name. */
 export function paceCardLine(w: WindowPace | null | undefined, nowMs: number): string | null {
   if (!w) return null;
-  return paceLine(w, nowMs).replace(/^[^:]+: /, "");
+  return paceDetail(w, nowMs).replace(/^[^:]+: /, "");
 }

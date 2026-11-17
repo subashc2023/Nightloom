@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chipCosts, coldButtons, coldChipShows, LEAD_MS, warmDetail, warmTitle, warmWrapAct, type ColdFacts, type WarmFacts } from "./warmWrap";
+import { chipCosts, coldButtons, coldChipShows, coldTip, LEAD_MS, warmDetail, warmTitle, warmWrapAct, type ColdFacts, type WarmFacts } from "./warmWrap";
 import { parseWarmStored } from "./warmWrap.svelte";
 import type { Usage } from "./types";
 
@@ -71,6 +71,10 @@ describe("item 768: the cold chip", () => {
     expect(c.perTurn).toBeCloseTo((296_000 * 0.2 + 4_000 * 8) / 1e6, 9);
     expect(coldButtons(c)).toEqual({ handoff: "Hand off (≈ $2.40)", keep: "Keep (re-writes 300k ≈ $2.40)" });
     expect(coldButtons(null)).toEqual({ handoff: "Hand off", keep: "Keep" });
+    // Item 776's rule: two short lines, numbers first, no rate source or caveat.
+    const tipLines = coldTip(c, rates).split("\n");
+    expect(tipLines).toEqual(["Next send ≈ $2.40 either way · then ≈ $0.09 a turn here", "Hand off: the wrap-up is that send; the next chat starts small"]);
+    expect(coldTip(null, rates).split("\n")).toHaveLength(2);
   });
 });
 

@@ -125,17 +125,13 @@ export function coldTitle(context: number): string {
   return `Cache cold — this chat is ${tokensShort(context)}`;
 }
 
-/** The chip's tooltip: what each choice costs and what it leaves. */
+/** The chip's tooltip: what each choice costs and what it leaves — two
+ *  short lines, numbers first (item 776's rule). `rates` stays in the
+ *  signature: without them there are no figures. */
 export function coldTip(c: ChipCosts | null, rates: ChipRates | null | undefined): string {
-  const head =
-    "Either way the next send re-writes the whole history into the cache. " +
-    "Hand off sends the wrap-up as that send: the model writes HANDOFF.md and a start prompt, and the next chat starts small. " +
-    "Keep goes on here: after that send, each turn reads the whole history back.";
-  if (!c || !rates) return `${head} No rates for this model, so no figures.`;
-  return (
-    `${head} Here: the cold send ≈ ${usd(c.cold)}, then ≈ ${usd(c.perTurn)} a turn in this chat. ` +
-    `Rates from ${rates.from}. API-price estimates, not a bill: on the Max plan nothing is charged per token. Nothing is compacted.`
-  );
+  const how = "Hand off: the wrap-up is that send; the next chat starts small";
+  if (!c || !rates) return `The next send re-writes the whole history either way\n${how}`;
+  return `Next send ≈ ${usd(c.cold)} either way · then ≈ ${usd(c.perTurn)} a turn here\n${how}`;
 }
 
 /** The warm offer's line: `Cache cold in 4 min — this chat is 180k`. */

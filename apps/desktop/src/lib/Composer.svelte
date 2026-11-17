@@ -3433,8 +3433,8 @@
       <strong class="handoff-min-title">{warmTitle(cache.remainingMs, wwContext)}</strong>
       <span class="mono handoff-fill" use:tip={coldTip(wwCosts, cacheRatesOf(lastModel))}>{warmDetail(wwCosts)}</span>
       <span class="spacer"></span>
-      <button class="ns-btn accent small" disabled={app.busy || !wrapUpText.trim()} use:tip={"Send the wrap-up now, while the history is read back from the cache"} onclick={() => { markActed(wwChat, cache?.warmUntil ?? null); void sendWrapUpNow(); }}>Wrap up now</button>
-      <button class="ns-btn ghost small" use:tip={"Not for this hour; on return a cold chip offers it again"} onclick={() => markActed(wwChat, cache?.warmUntil ?? null)}>Not now</button>
+      <button class="ns-btn accent small" disabled={app.busy || !wrapUpText.trim()} use:tip={"Send the wrap-up now, while the cache is warm"} onclick={() => { markActed(wwChat, cache?.warmUntil ?? null); void sendWrapUpNow(); }}>Wrap up now</button>
+      <button class="ns-btn ghost small" use:tip={"Not this hour; the cold chip offers it again"} onclick={() => markActed(wwChat, cache?.warmUntil ?? null)}>Not now</button>
     </div>
   {:else if coldChip && cache}
     <!-- Item 768: back on a cold big chat — one chip, both prices, before he types. Never compacts. -->
@@ -3442,8 +3442,8 @@
       <span class="handoff-mark" aria-hidden="true"><Icon name="branch" size={13} /></span>
       <strong class="handoff-min-title" use:tip={coldTip(wwCosts, cacheRatesOf(lastModel))}>{coldTitle(wwContext)}</strong>
       <span class="spacer"></span>
-      <button class="ns-btn accent small" disabled={app.busy || !wrapUpText.trim()} use:tip={"Send the wrap-up: the model writes HANDOFF.md and a start prompt; the next chat starts small"} onclick={() => void sendWrapUpNow()}>{coldWords.handoff}</button>
-      <button class="ns-btn ghost small" use:tip={"Go on here; this chip stays away until the next reply"} onclick={() => keepCold(wwChat, cache?.warmUntil ?? null)}>{coldWords.keep}</button>
+      <button class="ns-btn accent small" disabled={app.busy || !wrapUpText.trim()} use:tip={"Send the wrap-up; the next chat starts small"} onclick={() => void sendWrapUpNow()}>{coldWords.handoff}</button>
+      <button class="ns-btn ghost small" use:tip={"Go on here; hidden until the next reply"} onclick={() => keepCold(wwChat, cache?.warmUntil ?? null)}>{coldWords.keep}</button>
     </div>
   {/if}
   {#if handedNext}
