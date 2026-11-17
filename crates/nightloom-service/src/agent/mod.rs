@@ -32,7 +32,6 @@ pub mod ask;
 mod bash_tail;
 pub mod brief;
 pub mod budget;
-pub mod cache_warm;
 pub mod cli_session;
 pub mod connector_writes;
 pub mod connectors;
@@ -1034,7 +1033,7 @@ impl AgentSpec {
     /// The argument vector for one turn whose user message arrives on
     /// stdin as a `stream-json` line — the shape a turn with attachments
     /// takes, since argv carries text and nothing else.
-    pub(crate) fn stdin_args(&self) -> Vec<String> {
+    fn stdin_args(&self) -> Vec<String> {
         self.argv(Shape::Stdin)
     }
 
@@ -2323,15 +2322,6 @@ impl ClaudeCodeAgent {
             )
             .await,
         )
-    }
-
-    /// Warm the chat's cache before an aside on a cold chat (item 787,
-    /// [`cache_warm`]): the CLI's own resume warm, under the aside's
-    /// spec on the chat's model — the prefix the chat's next send and the
-    /// aside both read. `None` when there is no session.
-    pub async fn warm_cache(&self, cancel: &CancellationToken) -> Option<cache_warm::Warm> {
-        let spec = self.spec.aside()?;
-        Some(cache_warm::run(&spec, cancel).await)
     }
 
     /// One turn under a spec the caller shaped — a council seat

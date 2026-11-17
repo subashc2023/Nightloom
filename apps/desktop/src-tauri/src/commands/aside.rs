@@ -255,26 +255,6 @@ pub(crate) async fn ask_aside(
         images: images.unwrap_or_default(),
         documents: documents.unwrap_or_default(),
     };
-    // Item 787: on a cold chat, the CLI's own resume warm first — one
-    // request that writes the chat's prefix up to its newest message, which
-    // the aside then reads and the chat's next send reads too (an aside's
-    // own write ends with its question, which the chat never sends). Only
-    // for an aside on the chat's model: another model's aside shares
-    // nothing with it. The warm skips itself past a usage warning.
-    let same_model = agent
-        .spec()
-        .aside_with(model.as_deref(), effort.as_deref())
-        .is_some_and(|f| f.model == agent.spec().model);
-    let cold = same_model
-        && target.id().is_some_and(|chat| {
-            let open = target.try_lock();
-            let session = open.as_ref().ok().and_then(|o| o.as_ref());
-            keep_warm::cold(&app, chat, session)
-        });
-    if cold {
-        let warm = agent.warm_cache(&cancel).await;
-        eprintln!("nightloom: aside on a cold chat, cache warm first: {warm:?}");
-    }
     let look_at = workspace.clone();
     let before = tokio::task::spawn_blocking(move || Snapshot::take(&look_at))
         .await
