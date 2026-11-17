@@ -41,7 +41,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::plan_usage::PlanUsage;
@@ -510,6 +510,12 @@ pub struct Job {
     /// the runaway guard's measure of a run far above its usual.
     #[serde(default)]
     pub recent_calls: Vec<u32>,
+    /// Item 781: the away server's copy of one of the Mac's jobs (the Mac
+    /// sends its away jobs with each sync, [`Jobs::take_mac_jobs`]). Run
+    /// only under the lease ([`crate::sync::lease`]); never listed to the
+    /// phone, which edits the Mac's own.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stand_in: bool,
 }
 
 /// A job as `/api/jobs` lists it: the job, its schedule in words, and
@@ -938,7 +944,12 @@ impl Jobs {
 
     /// Every job, soonest next run first (paused ones last).
     pub fn list(&self) -> Vec<JobView> {
-        let mut jobs = self.lock().clone();
+        let mut jobs: Vec<Job> = self
+            .lock()
+            .iter()
+            .filter(|j| !j.stand_in)
+            .cloned()
+            .collect();
         jobs.sort_by_key(|j| (j.paused, j.next_run));
         jobs.into_iter().map(JobView::from).collect()
     }
@@ -987,6 +998,7 @@ impl Jobs {
             note: None,
             runs: 0,
             recent_calls: Vec::new(),
+            stand_in: false,
         };
         jobs.push(job.clone());
         self.save(&jobs)?;
@@ -1158,17 +1170,126 @@ impl Jobs {
     /// One step of the clock: finish the runs that ended, start the ones
     /// due. Never fails — what went wrong is the job's `note`.
     pub async fn tick(&self, host: &dyn Host, now: DateTime<Utc>) {
+        self.tick_with(host, now, true).await;
+    }
+
+    /// Item 781: a tick that only finishes the runs that ended and starts
+    /// none (the Mac runner once the app asked for the home).
+    pub async fn finish_ended(&self, host: &dyn Host, now: DateTime<Utc>) {
+        self.tick_with(host, now, false).await;
+    }
+
+    /// Whether a run is in flight.
+    pub fn any_running(&self) -> bool {
+        self.lock().iter().any(|j| j.running.is_some())
+    }
+
+    async fn tick_with(&self, host: &dyn Host, now: DateTime<Utc>, start: bool) {
         let _one = self.ticking.lock().await;
+        host.before_tick(self).await;
         let jobs = self.lock().clone();
         for job in jobs {
             if job.running.is_some() {
                 self.finish_if_ended(host, &job, now).await;
-            } else if job.run_now
-                || (!job.paused && job.next_run <= now && job.retry_at.is_none_or(|at| at <= now))
-            {
+            } else if !start {
+                continue;
+            } else if job.run_now && !job.stand_in {
                 self.start(host, &job, now).await;
+            } else if !job.paused && job.next_run <= now && job.retry_at.is_none_or(|at| at <= now)
+            {
+                // Item 781: one holder per run, the Mac or the away server.
+                match host.job_claim(&job, job.next_run, now).await {
+                    crate::sync::lease::Claim::Granted => self.start(host, &job, now).await,
+                    crate::sync::lease::Claim::Wait => {}
+                    crate::sync::lease::Claim::Taken { by, .. } => {
+                        self.ran_elsewhere(&job, &by, now)
+                    }
+                }
             }
         }
+    }
+
+    /// Item 781: the other host took this run; move on without running it.
+    fn ran_elsewhere(&self, job: &Job, by: &str, now: DateTime<Utc>) {
+        let due = job.next_run;
+        let utc_min = (due.hour() * 60 + due.minute()) as i32;
+        let local = (utc_min + offset_at(&job.zone(), due)).rem_euclid(24 * 60);
+        let when = clock_words(local.unsigned_abs());
+        let place = if by == crate::sync::lease::AWAY {
+            "the away server"
+        } else {
+            "the Mac"
+        };
+        let _ = self.change(&job.id, |j| {
+            j.note = Some(format!("its {when} run ran on {place}"));
+            j.retry_at = None;
+            if j.next_run <= now {
+                j.next_run = j.next_after(now);
+            }
+        });
+    }
+
+    /// Item 781, on the away server: take the Mac's list of away jobs as
+    /// stand-in copies. What he set comes from the Mac (message, schedule,
+    /// pause, approval); the run state stays the server's. The next run is
+    /// the later of the two unless the schedule changed (a run either side
+    /// took moved its own copy on); copies the Mac no longer sends go.
+    pub fn take_mac_jobs(&self, mac: Vec<Job>) {
+        let mut jobs = self.lock();
+        let before = jobs.clone();
+        jobs.retain(|j| !j.stand_in || mac.iter().any(|m| m.id == j.id));
+        for m in mac {
+            match jobs.iter_mut().find(|j| j.id == m.id) {
+                Some(j) if !j.stand_in => {} // never over a job of the server's own
+                Some(j) => {
+                    let moved = j.every != m.every || j.tz != m.tz || j.offset_min != m.offset_min;
+                    j.next_run = if moved {
+                        m.next_run
+                    } else {
+                        j.next_run.max(m.next_run)
+                    };
+                    j.title = m.title;
+                    j.text = m.text;
+                    j.every = m.every;
+                    j.tz = m.tz;
+                    j.offset_min = m.offset_min;
+                    j.project = m.project;
+                    j.paused = m.paused;
+                    j.approved = m.approved;
+                    j.approved_once = m.approved_once;
+                }
+                None => {
+                    let chat = m.chat.clone();
+                    jobs.push(Job {
+                        stand_in: true,
+                        running: None,
+                        retry_at: None,
+                        run_now: false,
+                        note: None,
+                        // The Mac's chat: mirrored, so the first run here
+                        // forks it into a chat of the server's own.
+                        chat,
+                        ..m
+                    });
+                }
+            }
+        }
+        if *jobs != before {
+            let _ = self.save(&jobs);
+        }
+    }
+
+    /// Item 781, on the away server: whether a job keeps it up — a run in
+    /// flight, or one due within `ahead` (an overdue one too, for up to two
+    /// hours: a run that keeps failing does not hold the machine all day).
+    pub fn keeps_up(&self, now: DateTime<Utc>, ahead: Duration) -> bool {
+        self.lock().iter().any(|j| {
+            j.running.is_some()
+                || j.run_now
+                || (!j.paused
+                    && j.next_run <= now + ahead
+                    && j.next_run >= now - Duration::hours(2))
+        })
     }
 
     async fn start(&self, host: &dyn Host, job: &Job, now: DateTime<Utc>) {
@@ -1424,6 +1545,9 @@ pub async fn run_loop(
         }
     }
 }
+
+pub mod knock;
+pub mod runner;
 
 #[cfg(test)]
 mod tests;

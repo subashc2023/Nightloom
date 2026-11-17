@@ -72,6 +72,8 @@ mod inbox_sort;
 // Recurring jobs' part on the Mac (item 746).
 mod home;
 mod jobs;
+// Item 781: `--jobs-runner`, the launchd agent's start.
+mod jobs_runner;
 // The keep-warm clock (backlog 582).
 mod keep_warm;
 /// A `.tex` tab's rendered PDF (nightshift backlog 381).
@@ -1368,6 +1370,15 @@ fn main() {
         return;
     }
 
+    // `nightloom-desktop --jobs-runner` (nightshift item 781): the launchd
+    // agent's start every minute — runs the jobs that are due while the app
+    // is quit, under the home's holder lock, then exits. Before Tauri, like
+    // the hooks: it opens no window.
+    if argv.first().map(String::as_str) == Some(nightloom_service::jobs::runner::FLAG) {
+        jobs_runner::run_from_launchd();
+        return;
+    }
+
     // The one-holder rule (nightshift item 268, step 1): the desktop and
     // `nightloom serve` never both hold one Nightloom home's chats. Each
     // takes `<config>/holder.lock` for its life; while `serve` holds it
@@ -1376,10 +1387,19 @@ fn main() {
     let _holder = match project::config_dir() {
         Some(config) => {
             match nightloom_service::serve::HomeLock::take(&config, "the Nightloom desktop app") {
-                Ok(lock) => Some(lock),
+                Ok(lock) => {
+                    nightloom_service::jobs::runner::clear_yield(&config);
+                    Some(lock)
+                }
+                // Item 781: the jobs runner mid-run — wait for it to end.
                 Err(e) => {
-                    refuse_to_open(&e);
-                    return;
+                    match jobs_runner::wait_for_runner(&config, "the Nightloom desktop app") {
+                        Some(lock) => Some(lock),
+                        None => {
+                            refuse_to_open(&e);
+                            return;
+                        }
+                    }
                 }
             }
         }
@@ -1411,6 +1431,8 @@ fn main() {
                 let what = event_guard::install();
                 eprintln!("event guard: {what}");
             }
+            // Item 781: the launchd agent that runs jobs while the app is quit.
+            jobs_runner::install_in_background();
             // A chat's preview (nightshift item 430): served from the start.
             preview::setup(app.handle());
             // Claude's browser (nightshift item 508): nothing starts until

@@ -177,6 +177,30 @@ pub fn desktop_running() -> bool {
         .is_ok_and(|s| s.success())
 }
 
+/// `NIGHTLOOM_SERVE_IDLE_EXIT_MIN`: on the away server (item 781), `serve`
+/// exits by itself after this many quiet minutes, so Fly's proxy need not
+/// stop the machine — the proxy counts open connections, and a job's run
+/// has none, so its auto-stop would cut a running job (`deploy/fly.toml`).
+pub const IDLE_EXIT_ENV: &str = "NIGHTLOOM_SERVE_IDLE_EXIT_MIN";
+/// A job due within this keeps the server up (the knock comes 15 minutes
+/// early; GitHub may be late or early by a few).
+pub const KEEP_UP_AHEAD_MINUTES: i64 = 20;
+
+/// Whether `serve` may exit now: no turn running, no job running or due
+/// soon ([`crate::jobs::Jobs::keeps_up`]), and nobody has used it for
+/// `idle` since it started or was last used. Pure.
+pub fn idle_exit_due(
+    started: chrono::DateTime<chrono::Utc>,
+    last_used: Option<chrono::DateTime<chrono::Utc>>,
+    now: chrono::DateTime<chrono::Utc>,
+    idle: chrono::Duration,
+    busy: bool,
+    jobs_keep_up: bool,
+) -> bool {
+    let quiet_since = last_used.map_or(started, |u| u.max(started));
+    !busy && !jobs_keep_up && now - quiet_since >= idle
+}
+
 /// How `serve` runs its turns.
 #[derive(Debug, Clone)]
 pub struct ServeConfig {
@@ -394,6 +418,8 @@ pub struct ServeHost {
     /// Push to the phone (item 739): the key, the subscriptions and the
     /// sender, under `<home>/remote/push/`.
     push: Arc<crate::push::Push>,
+    /// Item 781: this host is the Mac's background jobs runner.
+    mac_runner: bool,
     /// The recurring jobs (item 746), kept under the home like the push state.
     jobs: Arc<crate::jobs::Jobs>,
 }
@@ -403,6 +429,18 @@ const VOICE_IDLE: std::time::Duration = std::time::Duration::from_secs(600);
 
 impl ServeHost {
     pub fn new(cfg: ServeConfig, registry: Registry) -> Arc<Self> {
+        Self::build(cfg, registry, false)
+    }
+
+    /// Item 781: the windowless host as the Mac's background jobs runner
+    /// ([`crate::jobs::runner`]): the Mac's own push role and time zone,
+    /// the desktop binary's flag names for its hooks, and the away
+    /// server's lease asked before each run of an away job.
+    pub fn new_mac_runner(cfg: ServeConfig, registry: Registry) -> Arc<Self> {
+        Self::build(cfg, registry, true)
+    }
+
+    fn build(cfg: ServeConfig, registry: Registry, mac_runner: bool) -> Arc<Self> {
         let (tx, _) = broadcast::channel(1024);
         Arc::new_cyclic(|me| {
             let weak: Weak<ServeHost> = me.clone();
@@ -432,11 +470,19 @@ impl ServeHost {
                 resume: Mutex::new(None),
                 pause_gen: std::sync::atomic::AtomicU64::new(1),
                 voice: Mutex::new(None),
-                push: crate::push::Push::open(crate::push::Push::dir_under(&cfg.home), "away"),
+                push: crate::push::Push::open(
+                    crate::push::Push::dir_under(&cfg.home),
+                    if mac_runner { "mac" } else { "away" },
+                ),
                 // Item 780: no zone from this host's clock (UTC), which
                 // would pin a London phone's job to UTC; the phone names
                 // its own zone on its next look at the list.
-                jobs: crate::jobs::Jobs::open_in(crate::jobs::Jobs::dir_under(&cfg.home), None),
+                jobs: if mac_runner {
+                    crate::jobs::Jobs::open(crate::jobs::Jobs::dir_under(&cfg.home))
+                } else {
+                    crate::jobs::Jobs::open_in(crate::jobs::Jobs::dir_under(&cfg.home), None)
+                },
+                mac_runner,
                 cfg,
             }
         })
@@ -635,13 +681,22 @@ impl ServeHost {
         spec.permission_mode = Some(AgentSpec::headless_permission_mode(true).into());
         if let Some(exe) = &self.cfg.hook_exe {
             let exe = exe.to_string_lossy().into_owned();
+            // The `nightloom` CLI's subcommands; the desktop binary (the Mac
+            // runner, item 781) takes the same words as flags.
+            let word = |w: &str| {
+                if self.mac_runner {
+                    format!("--{w}")
+                } else {
+                    w.to_string()
+                }
+            };
             spec.ask = Some(crate::agent::AskSpec {
-                hook: vec![exe.clone(), "permission-hook".into()],
+                hook: vec![exe.clone(), word("permission-hook")],
                 dir: PathBuf::new(),
                 mode: crate::agent::AskMode::Ask,
                 subagents_auto: crate::agent::ask::SUBAGENTS_AUTO_DEFAULT,
             });
-            let mut args = vec!["mcp-serve".to_string()];
+            let mut args = vec![word("mcp-serve")];
             if let Some(p) = project.filter(|_| !incognito) {
                 args.push("--project".into());
                 args.push(p.id.clone());
@@ -663,7 +718,7 @@ impl ServeHost {
             crate::agent::own_browser::add_to(
                 &mut spec,
                 &mut servers,
-                vec![exe.clone(), "permission-hook".into()],
+                vec![exe.clone(), word("permission-hook")],
             );
             spec.mcp_config = Some(serde_json::json!({ "mcpServers": servers }).to_string());
         }
@@ -2326,6 +2381,37 @@ impl Host for ServeHost {
     /// is never written: the send would fork it from the unchanged file,
     /// so a job whose approval was taken back would run with the writers.
     /// The job goes on in a new chat of its own instead.
+    /// Item 781: a stand-in copy of a Mac job is claimed by the server
+    /// itself (after its grace, the Mac silent); the Mac runner asks the
+    /// away server for a job it has a copy of; anything else runs.
+    async fn job_claim(
+        &self,
+        job: &crate::jobs::Job,
+        due: chrono::DateTime<chrono::Utc>,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> crate::sync::lease::Claim {
+        if job.stand_in {
+            return crate::sync::lease::away_claim(&self.cfg.home, job, due, now);
+        }
+        if self.mac_runner {
+            let projects = lock(&self.registry).projects();
+            if let Some(away) = crate::sync::lease::MacAway::load(&self.cfg.home, &projects) {
+                return away.claim(job, due).await;
+            }
+        }
+        crate::sync::lease::Claim::Granted
+    }
+
+    /// Item 781: the server takes the Mac's latest list of away jobs.
+    async fn before_tick(&self, jobs: &crate::jobs::Jobs) {
+        if self.mac_runner {
+            return;
+        }
+        if let Some(list) = crate::sync::lease::read_mac_jobs(&self.cfg.home) {
+            jobs.take_mac_jobs(list);
+        }
+    }
+
     async fn job_prepare(&self, prep: crate::jobs::Prep) -> Result<String, String> {
         let project = self.project(prep.project.as_deref())?;
         let want = crate::jobs::kind_for(prep.read_only);
@@ -2434,7 +2520,7 @@ impl Host for ServeHost {
 }
 
 #[cfg(all(test, unix))]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::remote::Server;
     use std::time::{Duration, Instant};
@@ -2444,7 +2530,7 @@ mod tests {
     /// Ask position (`tool_deferred`), and the resume that follows carries
     /// the call's result and a reply; `park` waits until interrupted and
     /// then ends the turn the way the CLI does on SIGINT.
-    fn stand_in(dir: &Path) -> String {
+    pub(crate) fn stand_in(dir: &Path) -> String {
         let d = dir.display();
         let body = format!(
             r##"#!/bin/sh

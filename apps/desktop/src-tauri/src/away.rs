@@ -318,6 +318,18 @@ async fn pass(app: &AppHandle, away: &Away, url: &str, pull_too: bool) -> Result
     if !pushed.skipped.is_empty() {
         summary.push_str(&format!(", {} could not be read", pushed.skipped.len()));
     }
+    // Item 781: the jobs of marked projects, so the server can run them
+    // while the Mac sleeps. Best effort, like the key.
+    if let Some(jobs) = crate::remote::jobs_store(app) {
+        let all: Vec<nightloom_service::jobs::Job> =
+            jobs.list().into_iter().map(|v| v.job).collect();
+        if let Some(away_cfg) = nightloom_service::sync::lease::MacAway::load(&config, &projects) {
+            match client.put_jobs(&away_cfg.away_jobs(&all)).await {
+                Ok(()) => summary.push_str(", jobs sent"),
+                Err(_) => summary.push_str(", jobs not sent this time"),
+            }
+        }
+    }
     // Item 783: the approval rules for every chat are one set on both
     // hosts. Best effort, like the key — a server from before this, or one
     // that does not answer, fails no pass; the rules sync on the next.

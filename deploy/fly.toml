@@ -16,6 +16,9 @@ swap_size_mb = 512
   # wave 3's A1; this stays the default.
   NIGHTLOOM_SERVE_MODEL = "claude-sonnet-5-5"
   # NIGHTLOOM_REMOTE_TOKEN and CLAUDE_CODE_OAUTH_TOKEN are Fly secrets, never here.
+  # Item 781: `serve` exits by itself after 10 quiet minutes with no turn running and no job
+  # due within 20 minutes or running (see [http_service] below for why the proxy no longer stops it).
+  NIGHTLOOM_SERVE_IDLE_EXIT_MIN = "10"
 
 [[mounts]]
   source = "nightloom_data"
@@ -25,9 +28,13 @@ swap_size_mb = 512
 [http_service]
   internal_port = 8080
   force_https = true
-  # Stops when idle, starts on the next request: nothing runs, nothing costs, while the phone is
-  # not using it. A turn's open event stream keeps it up until the turn ends.
-  auto_stop_machines = "stop"
+  # Starts on the next request (the phone, or the GitHub knock before a job — item 781) and
+  # stops when `serve` exits by itself (NIGHTLOOM_SERVE_IDLE_EXIT_MIN above): nothing runs,
+  # nothing costs, while nothing is due. Item 781: the proxy's own auto-stop is off, because it
+  # stops a machine with no open connection ("load of 0", docs.fly.io, Fly Proxy autostop
+  # reference, read 2026-11-17) — and a job run on its own has none, so it would be cut
+  # mid-run. Was `auto_stop_machines = "stop"`.
+  auto_stop_machines = "off"
   auto_start_machines = true
   min_machines_running = 0
 
@@ -37,6 +44,12 @@ swap_size_mb = 512
     method = "GET"
     timeout = "5s"
     path = "/" # the phone page needs no token; every /api route does
+
+# Item 781: `serve` exiting with 0 (idle) leaves the machine stopped; a crash restarts it
+# ("on-failure" restarts only a non-zero exit — docs.fly.io configuration reference).
+[[restart]]
+  policy = "on-failure"
+  retries = 10
 
 [[vm]]
   # The image carries voice (item 246 part 4C): with voice warm, the two whisper servers and

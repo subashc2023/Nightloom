@@ -732,6 +732,29 @@ impl Host for DesktopHost {
         crate::wake::idle_seconds().is_some_and(|s| s < AT_THE_MAC.as_secs_f64())
     }
 
+    /// Item 781: a job the away server keeps a copy of runs here only once
+    /// the server's lease says the Mac has it (the server may have run it
+    /// while the Mac slept); any failure to ask runs it (the Mac goes first).
+    async fn job_claim(
+        &self,
+        job: &nightloom_service::jobs::Job,
+        due: chrono::DateTime<chrono::Utc>,
+        _now: chrono::DateTime<chrono::Utc>,
+    ) -> nightloom_service::sync::lease::Claim {
+        let Some(config) = nightloom_service::project::config_dir() else {
+            return nightloom_service::sync::lease::Claim::Granted;
+        };
+        let projects = {
+            let state = self.state_of();
+            let ws = state.workspaces.lock().await;
+            ws.registry.projects()
+        };
+        match nightloom_service::sync::lease::MacAway::load(&config, &projects) {
+            Some(away) => away.claim(job, due).await,
+            None => nightloom_service::sync::lease::Claim::Granted,
+        }
+    }
+
     /// The job's chat and the agent its run will use (item 746, `jobs.rs`).
     async fn job_prepare(&self, prep: nightloom_service::jobs::Prep) -> Result<String, String> {
         crate::jobs::prepare(&self.state_of(), prep).await
