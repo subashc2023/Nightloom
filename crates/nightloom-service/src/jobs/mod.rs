@@ -391,6 +391,9 @@ pub enum Outcome {
     Unfinished,
     /// The runaway guard paused it and he chose Stop (item 784).
     Stopped,
+    /// Not started: Home's spend guard stopped it (item 763, H6); the
+    /// summary says why.
+    Skipped,
 }
 
 /// What a read-only run tried to do and was refused (item 780).
@@ -1316,6 +1319,10 @@ impl Jobs {
                 LIMIT_RETRY_SECS,
             );
         }
+        // Item 763 H6: Home's unattended runs stop short of his limits.
+        if let Some(why) = self.home_guard(job, plan.as_ref(), now) {
+            return self.skip(job, &why, now);
+        }
         let chat = match host
             .job_prepare(Prep {
                 project: job.project.clone(),
@@ -1379,6 +1386,74 @@ impl Jobs {
                 crate::home::job_run_ended(&chat);
                 wait(e, RETRY_SECS)
             }
+        }
+    }
+
+    /// Whether `job` is one of Home's: the morning scan, or any job in
+    /// Home's project.
+    fn is_home_job(&self, job: &Job) -> bool {
+        if job.id == crate::home::SCAN_JOB_ID {
+            return true;
+        }
+        let (Some(project), Some(config)) = (&job.project, self.config_dir()) else {
+            return false;
+        };
+        crate::project::Registry::load_in(&config)
+            .find(project)
+            .is_some_and(|p| p.source.as_deref() == Some(crate::home::SOURCE))
+    }
+
+    /// Item 763 H6: why a Home job must not start now (the 80% stop, the
+    /// pace, today's cap), `None` for any other job or when it may run.
+    fn home_guard(
+        &self,
+        job: &Job,
+        plan: Option<&PlanUsage>,
+        now: DateTime<Utc>,
+    ) -> Option<String> {
+        if !self.is_home_job(job) {
+            return None;
+        }
+        let config = self.config_dir()?;
+        let date = local_date(now, &job.zone()).unwrap_or_else(|| now.date_naive());
+        let spent = crate::home::guard::spent(&config, date).points;
+        // The pace from this home's own usage log (not the process's).
+        let pace = crate::home::guard::pace_in(&config, now);
+        crate::home::guard::stop_reason(plan, Some(&pace), spent, crate::home::guard::cap(&config))
+    }
+
+    /// A Home run the guard stopped: its row says why, its next time is
+    /// the next one (no retry each minute), and a skipped scan writes its
+    /// code-only page.
+    fn skip(&self, job: &Job, why: &str, now: DateTime<Utc>) {
+        let summary = format!("skipped — {why}");
+        let _ = self.change(&job.id, |j| {
+            j.last = Some(LastRun {
+                started: now,
+                ended: now,
+                outcome: Outcome::Skipped,
+                summary: summary.clone(),
+                week_points: None,
+                week_after: None,
+                calls: None,
+            });
+            j.note = Some(summary.clone());
+            j.run_now = false;
+            j.retry_at = None;
+            if j.next_run <= now {
+                j.next_run = j.next_after(now);
+            }
+        });
+        if job.id == crate::home::SCAN_JOB_ID
+            && let Some(config) = self.config_dir()
+        {
+            let date = local_date(now, &job.zone()).unwrap_or_else(|| now.date_naive());
+            let text = self.scan_text(now, false);
+            let facts = text
+                .split_once("<facts>\n")
+                .and_then(|(_, r)| r.split_once("</facts>"))
+                .map_or(text.trim(), |(f, _)| f.trim());
+            let _ = crate::home::guard::skipped_scan_page(&config, date, why, facts, now);
         }
     }
 
@@ -1487,6 +1562,13 @@ impl Jobs {
                 j.recent_calls.drain(..over);
             }
         });
+        // Item 763 H6: a Home run's points count toward today's cap.
+        if self.is_home_job(job)
+            && let Some(config) = self.config_dir()
+        {
+            let date = local_date(now, &job.zone()).unwrap_or_else(|| now.date_naive());
+            crate::home::guard::record(&config, date, points);
+        }
         // Item 763: every run's end is a feed row; the scan keeps its page
         // and pushes its counts.
         // One row per run: a scan that kept its page is its `scan` row

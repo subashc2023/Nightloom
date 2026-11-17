@@ -257,6 +257,18 @@ impl Agents {
         }
     }
 
+    /// Whether `chat` has a spec here: its own agent's, or one kept for it.
+    pub fn has_spec_for(&self, chat: &str) -> bool {
+        let inner = self.inner();
+        inner.per_chat.contains_key(chat) || inner.reserved.contains_key(chat)
+    }
+
+    /// Keep `spec` for `chat` (item 763 H4: Home's, built off screen), for
+    /// [`Self::reserve_for_job`] to hold to the job's policy.
+    pub fn keep_for_job(&self, chat: &str, spec: AgentSpec) {
+        self.inner().reserved.insert(chat.to_string(), spec);
+    }
+
     /// Keep for a job's chat the spec its next run goes on (item 746),
     /// held to the job's own policy: `read_only` sets the Chat policy (the
     /// hook that refuses the shell, the file-editing tools and subagents),
@@ -801,6 +813,38 @@ mod tests {
         let busy = agents.reserve_for_job("job", true, true, None).unwrap_err();
         assert!(busy.contains("running a turn"), "{busy}");
         assert!(Arc::ptr_eq(&agents.existing("job").unwrap(), &slot));
+    }
+
+    /// Item 763 H4: with another project open (its connection the newest)
+    /// and after a relaunch (no connection at all), a Home job's run goes
+    /// on Home's own spec, kept off screen, held read-only — never the open
+    /// project's.
+    #[tokio::test]
+    async fn a_home_job_runs_on_homes_own_spec_whatever_project_is_open() {
+        let agents = Agents::default();
+        let mut home = AgentSpec::new(PathBuf::from("/home-folder"));
+        home.model = Some("home-model".into());
+        // After a relaunch: nothing connected, only Home's kept spec.
+        assert!(!agents.has_spec_for("scan"));
+        agents.keep_for_job("scan", home.clone());
+        assert!(agents.has_spec_for("scan"));
+        agents.reserve_for_job("scan", true, false, None).unwrap();
+        let slot = agents.make_reserved("scan", None).unwrap();
+        {
+            let a = slot.lock().await;
+            assert_eq!(a.spec().workspace, PathBuf::from("/home-folder"));
+            assert!(a.spec().chat_policy, "held read-only");
+        }
+        // Another project open: its connection is the newest, and Home's
+        // run still goes on Home's spec.
+        let agents = Agents::default();
+        agents.connect(agent("other-project"), Some("open-chat"));
+        agents.keep_for_job("scan", home);
+        agents.reserve_for_job("scan", true, false, None).unwrap();
+        let slot = agents.make_reserved("scan", None).unwrap();
+        let a = slot.lock().await;
+        assert_eq!(a.spec().workspace, PathBuf::from("/home-folder"));
+        assert_eq!(a.spec().model.as_deref(), Some("home-model"));
     }
 
     #[test]

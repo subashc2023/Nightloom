@@ -65,6 +65,7 @@ fn make_chat(
 }
 
 pub(crate) async fn prepare(state: &AppState, prep: Prep) -> Result<String, String> {
+    let mut home = None;
     let (dir, workspace) = match prep.project.as_deref() {
         Some(p) => {
             let ws = state.workspaces.lock().await;
@@ -72,10 +73,14 @@ pub(crate) async fn prepare(state: &AppState, prep: Prep) -> Result<String, Stri
                 .registry
                 .find(p)
                 .ok_or_else(|| "its project is gone from the Mac".to_string())?;
+            if project.source.as_deref() == Some(nightloom_service::home::SOURCE) {
+                home = Some(project.clone());
+            }
             (project.session_dir(), Some(project.workspace_dir()))
         }
         None => (state.default_log_dir.clone(), None),
     };
+    let log_dir = dir.clone();
     let project_open = prep.project == state.active().await.map(|p| p.id);
     let want = kind_for(prep.read_only);
     let existing = prep
@@ -108,6 +113,17 @@ pub(crate) async fn prepare(state: &AppState, prep: Prep) -> Result<String, Stri
             blocking(move || make_chat(&dir, title, want, auto)).await?
         }
     };
+    // Item 763 H4: Home runs whatever project is open, and after a
+    // relaunch — its spec is built here, as the closed-app runner builds
+    // it, when the window has none for it, and kept for its next runs.
+    if let Some(project) = home.filter(|_| !project_open)
+        && !state.agents.has_spec_for(&id)
+    {
+        let log = log_dir.join(format!("{id}.jsonl"));
+        if let Some(spec) = blocking(move || Ok::<_, String>(home_spec(&project, &log))).await? {
+            state.agents.keep_for_job(&id, spec);
+        }
+    }
     state
         .agents
         .reserve_for_job(&id, prep.read_only, project_open, workspace.as_deref())?;
@@ -133,6 +149,27 @@ pub(crate) async fn prepare(state: &AppState, prep: Prep) -> Result<String, Stri
         state.agents.connectors_for_job(&id, off)?;
     }
     Ok(id)
+}
+
+/// Home's agent spec for an off-screen run (item 763 H4): the one the
+/// closed-app runner (`jobs_runner`, item 781) builds for the chat at
+/// `log` — Home's folder, prompt, model and hooks, this binary's flag
+/// words — so a run never borrows the open project's. `None` when the log
+/// or the home cannot be read.
+fn home_spec(
+    project: &nightloom_service::project::Project,
+    log: &std::path::Path,
+) -> Option<nightloom_service::agent::AgentSpec> {
+    let config = nightloom_service::project::config_dir()?;
+    let session = Session::load(log).ok()?;
+    let mut cfg = nightloom_service::serve::ServeConfig::for_home(&config);
+    cfg.binary = nightloom_service::resolve_binary("claude");
+    cfg.hook_exe = std::env::current_exe().ok();
+    let host = nightloom_service::serve::ServeHost::new_mac_runner(
+        cfg,
+        nightloom_service::project::Registry::load(),
+    );
+    Some(host.spec_for(Some(project), &session))
 }
 
 #[cfg(test)]

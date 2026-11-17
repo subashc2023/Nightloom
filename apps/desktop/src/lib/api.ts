@@ -2291,6 +2291,18 @@ export function remoteSent(id: number, queued: boolean, error: string | null): P
 // ---- Home (nightshift item 763) ----
 
 /** Home's project, today's chat, its folder, brief and scan time. */
+/** Item 763 H6: Home's unattended spend today (percent of the week), its daily cap, and why its runs are paused. */
+export interface HomeToday {
+  points: number;
+  cap: number;
+  week: number | null;
+  five_hour: number | null;
+  stop: string | null;
+}
+export function homeToday(): Promise<HomeToday> {
+  return invoke("home_today");
+}
+
 export function homeInfo(): Promise<HomeInfo> {
   return invoke("home_info");
 }

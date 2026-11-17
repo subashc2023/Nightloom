@@ -8,7 +8,8 @@
 export interface JobLast {
   started: string;
   ended: string;
-  outcome: "done" | "failed" | "unfinished" | "stopped";
+  /** "skipped": Home's spend guard did not start it (item 763 H6); the summary says why. */
+  outcome: "done" | "failed" | "unfinished" | "stopped" | "skipped";
   summary: string;
   week_points: number | null;
   week_after: number | null;
@@ -74,6 +75,8 @@ export interface JobPatch {
 /** What the sheet needs of the client. */
 export interface JobsApi {
   jobs(): Promise<JobsReply>;
+  /** Item 763 H6: Home's spend today; `null` from a host without it. */
+  homeToday?(): Promise<{ points: number; cap: number; stop: string | null } | null>;
   jobNew(req: NewJob): Promise<Job>;
   jobPatch(id: string, patch: JobPatch): Promise<Job>;
   jobRun(id: string): Promise<Job>;
@@ -199,6 +202,8 @@ export function lastText(j: Job, now = new Date()): string {
   const l = j.last;
   if (!l) return "Has not run yet";
   // Item 784: "stopped" is his Stop on a run that looked stuck.
+  // Item 763 H6: a run the spend guard did not start says why, no cost.
+  if (l.outcome === "skipped") return `Skipped ${whenText(l.ended, now)} — ${l.summary.replace(/^skipped — /, "")}`;
   const how =
     l.outcome === "done" ? "finished" : l.outcome === "failed" ? "failed" : l.outcome === "stopped" ? "stopped, looked stuck" : "did not finish";
   return `Last run ${whenText(l.ended, now)} — ${how} · ${costText(l.week_points)}`;
@@ -238,4 +243,13 @@ export function writeJobDraft(d: JobDraft | null, store: Pick<Storage, "setItem"
   } catch {
     // Private mode: the draft lives for this page only.
   }
+}
+
+/** Item 763 H6: the Jobs list's Home line — "Home today: 0.3% of the week
+ *  of its 1% a day", and why its runs are paused when they are. */
+export function homeTodayText(t: { points: number; cap: number; stop: string | null } | null): string {
+  if (!t) return "";
+  const pct = (n: number) => `${Math.round(n * 10) / 10}%`;
+  const line = `Home today: ${pct(t.points)} of the week, of its ${pct(t.cap)} a day`;
+  return t.stop ? `${line} · paused: ${t.stop}` : line;
 }

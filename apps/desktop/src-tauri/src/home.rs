@@ -60,6 +60,25 @@ pub(crate) async fn home_info(
     })
 }
 
+/// Item 763 H6: what Home's unattended runs used of the week today, its
+/// cap, and why they are paused now — the Home row's figure.
+#[tauri::command]
+pub(crate) async fn home_today() -> Result<home::guard::Today, String> {
+    crate::blocking(|| {
+        let config = project::config_dir().ok_or("no Nightloom home")?;
+        let plan = nightloom_service::plan_usage::read();
+        let now = chrono::Utc::now();
+        let pace = home::guard::pace_in(&config, now);
+        Ok::<_, String>(home::guard::today(
+            &config,
+            Some(&plan),
+            Some(&pace),
+            chrono::Local::now().date_naive(),
+        ))
+    })
+    .await
+}
+
 #[derive(Serialize)]
 pub(crate) struct HomeFeed {
     rows: Vec<home::FeedRow>,

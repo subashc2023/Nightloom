@@ -1790,6 +1790,7 @@ fn main() {
             remote::push_note,
             jobs::job_for_chat,
             home::home_info,
+            home::home_today,
             home::home_feed,
             home::home_mark_seen,
             home::home_save_brief,

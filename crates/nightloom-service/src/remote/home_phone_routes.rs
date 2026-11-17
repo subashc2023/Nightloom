@@ -36,6 +36,7 @@ pub(super) fn router() -> Router<Arc<Shared>> {
         .route("/home/scan", get(scan))
         .route("/home/held", get(held))
         .route("/shortcut/needs", get(needs))
+        .route("/home/today", get(today))
 }
 
 /// The most feed rows the phone is sent.
@@ -144,6 +145,24 @@ async fn feed(State(shared): State<Arc<Shared>>) -> Response {
     };
     let home = home_where(&shared);
     answer(Ok::<_, String>(feed_reply(&config, FEED_ROWS, home)))
+}
+
+/// `GET /home/today` (item 763 H6): what Home's unattended runs used of
+/// the week today, the cap, both windows, and why runs are stopped now.
+async fn today(State(shared): State<Arc<Shared>>) -> Response {
+    let config = match config(&shared) {
+        Ok(c) => c,
+        Err(r) => return *r,
+    };
+    let plan = shared.host.usage().await.ok().map(|u| u.plan);
+    let pace = home::guard::pace_in(&config, chrono::Utc::now());
+    let date = chrono::Local::now().date_naive();
+    answer(Ok::<_, String>(home::guard::today(
+        &config,
+        plan.as_ref(),
+        Some(&pace),
+        date,
+    )))
 }
 
 async fn seen(State(shared): State<Arc<Shared>>) -> Response {
