@@ -586,6 +586,29 @@ mod tests {
         slot.try_lock().unwrap().spec().chat_policy
     }
 
+    /// Item 759, the Mac's half: the held job's agent refuses connector
+    /// writes in its `--settings`; the open chat's writer agent does not.
+    #[tokio::test]
+    async fn a_read_only_jobs_agent_refuses_connector_writes() {
+        let denies = |slot: &Slot| -> bool {
+            let a = slot.try_lock().unwrap().spec().args("hi");
+            let Some(i) = a.iter().position(|x| x == "--settings") else {
+                return false;
+            };
+            let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
+            v["hooks"]["PreToolUse"].as_array().is_some_and(|pre| {
+                pre.iter()
+                    .any(|e| e["matcher"] == nightloom_service::agent::connector_writes::MATCHER)
+            })
+        };
+        let agents = Agents::default();
+        agents.connect(agent("open"), Some("job"));
+        assert!(!denies(&ready(agents.slot(Some("job")))));
+        agents.reserve_for_job("job", true, true, None).unwrap();
+        let made = agents.make_reserved("job", None).unwrap();
+        assert!(denies(&made));
+    }
+
     /// Item 746's review: the job's chat is the one on screen, its idle
     /// agent made from the open chat's spec (writers on). A read-only run
     /// drops it and keeps the spec under the Chat policy; the send's
