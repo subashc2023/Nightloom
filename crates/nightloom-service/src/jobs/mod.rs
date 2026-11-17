@@ -3,9 +3,13 @@
 //! the phone, each run in the job's own chat.
 //!
 //! - **The schedule** ([`Every`]): parsed from his words ([`Every::parse`])
-//!   and kept as data; the next run is pure arithmetic over the phone's
-//!   own clock offset ([`Every::next_after`]), so the away server (whose
-//!   clock is UTC) runs "8:00 AM" at his 8:00 AM.
+//!   and kept as data; the next run is pure arithmetic over the job's own
+//!   time zone ([`Every::next_in`]) — the phone's IANA zone when it was
+//!   saved (item 780), so "8:00 AM" stays 8:00 AM across daylight saving
+//!   and the away server (whose clock is UTC) runs it at his 8:00 AM. A
+//!   job saved before zones were kept moves to the host's zone when that
+//!   zone had its offset ([`Jobs::open`]), else to the phone's on its next
+//!   look, and keeps its fixed offset until then.
 //! - **The store** (`jobs.json` in `<home>/remote/jobs/`, mode 0600): every
 //!   job, its next run, its last result and what it cost. A deleted job
 //!   moves to `trash.json` beside it, never erased.
@@ -16,8 +20,13 @@
 //! - **Read-only unless he approved its plan**: a job's chat is a Claude
 //!   Code chat held under the Chat policy (`ChatKind::Chat` over a Build
 //!   declaration: reads, search and the web; the shell, the file-editing
-//!   tools and subagents are refused by hook) until he approves the job's
-//!   plan on the phone. The host sets that before every run
+//!   tools and subagents are refused by hook) until he approves it:
+//!   **Approve once** (the next run may write, then it asks again) or
+//!   **Approve always** (every run may write until the message changes,
+//!   or he takes it back) — item 780. A read-only run the hook refused a
+//!   change is recorded ([`Job::wanted`]) and pushed, so the approval card
+//!   asks at the moment the job wanted to write; approving from that card
+//!   runs it again at once. The host sets the kind before every run
 //!   ([`Host::job_prepare`]), so a kind switched by hand does not stick.
 //! - **The cost**: the weekly window's percent just before the run and
 //!   just after it ended ([`LastRun::week_points`]), and their sum since
@@ -32,7 +41,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use chrono::{DateTime, Datelike, Duration, FixedOffset, NaiveTime, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::plan_usage::PlanUsage;
@@ -270,34 +279,104 @@ impl Every {
     }
 
     /// The first run strictly after `after`, on a clock `offset_min`
-    /// minutes east of UTC (the phone's, kept on the job). Pure.
+    /// minutes east of UTC (a job saved before zones were kept). Pure.
     pub fn next_after(&self, after: DateTime<Utc>, offset_min: i32) -> DateTime<Utc> {
+        self.next_in(after, &zone_of(None, offset_min))
+    }
+
+    /// The first run strictly after `after`, on `zone`'s clock (item 780):
+    /// "8:00 AM" is 8:00 AM there on every date, whatever its offset that
+    /// day. On a change day an hour that does not exist (2:30 AM when the
+    /// clocks go forward) runs at the same distance past it (3:30 AM), and
+    /// an hour that happens twice (1:30 AM when they go back) runs once, at
+    /// the first — what calendars do. Pure.
+    pub fn next_in(&self, after: DateTime<Utc>, zone: &jiff::tz::TimeZone) -> DateTime<Utc> {
         match self {
             Every::Minutes { n } => after + Duration::minutes(i64::from((*n).max(1))),
             Every::Hours { n } => after + Duration::hours(i64::from((*n).max(1))),
             Every::Days { at_min, days } => {
-                let offset = FixedOffset::east_opt(offset_min.clamp(-14 * 60, 14 * 60) * 60)
-                    .unwrap_or_else(|| FixedOffset::east_opt(0).expect("zero is an offset"));
-                let local = after.with_timezone(&offset);
-                let time = NaiveTime::from_num_seconds_from_midnight_opt((*at_min % 1440) * 60, 0)
-                    .unwrap_or(NaiveTime::MIN);
-                for d in 0..=7 {
-                    let date = local.date_naive() + Duration::days(d);
+                let Some(today) = local_date(after, zone) else {
+                    return after + Duration::days(1);
+                };
+                let (h, m) = ((*at_min % 1440 / 60) as i8, (*at_min % 60) as i8);
+                for d in 0..=8 {
+                    let date = today + Duration::days(d);
                     let weekday = date.weekday().num_days_from_monday() as u8;
                     if !days.is_empty() && !days.contains(&weekday) {
                         continue;
                     }
-                    if let Some(at) = offset.from_local_datetime(&date.and_time(time)).single() {
-                        let at = at.with_timezone(&Utc);
-                        if at > after {
-                            return at;
-                        }
+                    let Ok(civil) = jiff::civil::DateTime::new(
+                        date.year() as i16,
+                        date.month() as i8,
+                        date.day() as i8,
+                        h,
+                        m,
+                        0,
+                        0,
+                    ) else {
+                        continue;
+                    };
+                    let Ok(at) = zone.to_ambiguous_timestamp(civil).compatible() else {
+                        continue;
+                    };
+                    if let Some(at) = DateTime::<Utc>::from_timestamp(at.as_second(), 0)
+                        && at > after
+                    {
+                        return at;
                     }
                 }
                 after + Duration::days(1)
             }
         }
     }
+}
+
+/// The zone a job's times are read on (item 780): its IANA zone when this
+/// host's zone list has it, else the fixed offset it was saved with
+/// (minutes east of UTC).
+pub fn zone_of(tz: Option<&str>, offset_min: i32) -> jiff::tz::TimeZone {
+    tz.and_then(|name| jiff::tz::TimeZone::get(name).ok())
+        .unwrap_or_else(|| {
+            let secs = offset_min.clamp(-14 * 60, 14 * 60) * 60;
+            jiff::tz::TimeZone::fixed(
+                jiff::tz::Offset::from_seconds(secs).unwrap_or(jiff::tz::Offset::UTC),
+            )
+        })
+}
+
+/// `at`'s date on `zone`'s clock.
+fn local_date(at: DateTime<Utc>, zone: &jiff::tz::TimeZone) -> Option<NaiveDate> {
+    let ts = jiff::Timestamp::from_second(at.timestamp()).ok()?;
+    let d = ts.to_zoned(zone.clone()).date();
+    NaiveDate::from_ymd_opt(i32::from(d.year()), d.month() as u32, d.day() as u32)
+}
+
+/// `zone`'s offset at `at`, minutes east of UTC.
+pub fn offset_at(zone: &jiff::tz::TimeZone, at: DateTime<Utc>) -> i32 {
+    jiff::Timestamp::from_second(at.timestamp())
+        .map(|ts| zone.to_offset(ts).seconds() / 60)
+        .unwrap_or(0)
+}
+
+/// An IANA name worth keeping: a known zone, by a name of letters, digits,
+/// `/`, `_`, `-` and `+` (what `Intl` answers), never a path.
+fn clean_tz(name: Option<String>) -> Option<String> {
+    let name = name?.trim().to_string();
+    let ok = !name.is_empty()
+        && name.len() <= 64
+        && !name.contains("..")
+        && !name.starts_with('/')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '-' | '+'));
+    (ok && jiff::tz::TimeZone::get(&name).is_ok()).then_some(name)
+}
+
+/// The host's own IANA zone, when it has a name.
+fn host_tz() -> Option<String> {
+    jiff::tz::TimeZone::try_system()
+        .ok()
+        .and_then(|z| z.iana_name().map(str::to_string))
 }
 
 /// How a run ended.
@@ -310,6 +389,17 @@ pub enum Outcome {
     Failed,
     /// Still listed as running after [`RUN_MAX_SECS`]; no longer watched.
     Unfinished,
+}
+
+/// What a read-only run tried to do and was refused (item 780).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Wanted {
+    /// When the run that wanted it ended.
+    pub at: DateTime<Utc>,
+    /// The refused tools, in his words ("run commands", "edit files"),
+    /// each once.
+    #[serde(default)]
+    pub what: Vec<String>,
 }
 
 /// A job's last run, for the list.
@@ -344,6 +434,9 @@ pub struct WeekCost {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunMark {
     pub started: DateTime<Utc>,
+    /// The run was let write (item 780).
+    #[serde(default)]
+    pub writable: bool,
     #[serde(default)]
     pub week_before: Option<u8>,
     #[serde(default)]
@@ -358,9 +451,14 @@ pub struct Job {
     /// The message each run sends.
     pub text: String,
     pub every: Every,
-    /// The phone's clock when it was made, minutes east of UTC.
+    /// The phone's clock when it was made, minutes east of UTC — what its
+    /// times are read on when it has no [`tz`](Self::tz).
     #[serde(default)]
     pub offset_min: i32,
+    /// Its time zone (item 780), the phone's IANA name when it was saved
+    /// ("America/Los_Angeles"): "8:00 AM" is 8:00 AM there on every date.
+    #[serde(default)]
+    pub tz: Option<String>,
     /// The project its chat lives in; `None` is the unfiled chats.
     #[serde(default)]
     pub project: Option<String>,
@@ -372,10 +470,18 @@ pub struct Job {
     pub from_chat: Option<String>,
     #[serde(default)]
     pub paused: bool,
-    /// When he approved its plan: from then its runs may write. `None` is
-    /// read-only.
+    /// When he tapped Approve always: from then every run may write, until
+    /// the message changes or he takes it back. `None`: it asks.
     #[serde(default)]
     pub approved: Option<DateTime<Utc>>,
+    /// When he tapped Approve once (item 780): the next run may write; the
+    /// approval is used up when that run starts.
+    #[serde(default)]
+    pub approved_once: Option<DateTime<Utc>>,
+    /// The last read-only run wanted to make changes and was refused
+    /// (item 780): the approval card asks until he answers it.
+    #[serde(default)]
+    pub wanted: Option<Wanted>,
     pub created: DateTime<Utc>,
     pub next_run: DateTime<Utc>,
     /// A run that could not start is not tried again before this.
@@ -398,20 +504,48 @@ pub struct Job {
 }
 
 /// A job as `/api/jobs` lists it: the job, its schedule in words, and
-/// whether it is read-only.
+/// whether its next run is read-only.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobView {
     #[serde(flatten)]
     pub job: Job,
     pub every_words: String,
+    /// Its next run may not write.
     pub read_only: bool,
+    /// "ask", "once" (the next run may write) or "always" (item 780).
+    pub approval: String,
+}
+
+impl Job {
+    /// The next run may write: approved always, or once and not used yet.
+    pub fn writable(&self) -> bool {
+        self.approved.is_some() || self.approved_once.is_some()
+    }
+
+    /// The zone its times are read on.
+    pub fn zone(&self) -> jiff::tz::TimeZone {
+        zone_of(self.tz.as_deref(), self.offset_min)
+    }
+
+    /// Its first run strictly after `after`.
+    pub fn next_after(&self, after: DateTime<Utc>) -> DateTime<Utc> {
+        self.every.next_in(after, &self.zone())
+    }
 }
 
 impl From<Job> for JobView {
     fn from(job: Job) -> Self {
         Self {
             every_words: job.every.words(),
-            read_only: job.approved.is_none(),
+            read_only: !job.writable(),
+            approval: if job.approved.is_some() {
+                "always"
+            } else if job.approved_once.is_some() {
+                "once"
+            } else {
+                "ask"
+            }
+            .into(),
             job,
         }
     }
@@ -432,6 +566,9 @@ pub struct NewJob {
     /// The phone's clock, minutes east of UTC.
     #[serde(default)]
     pub offset_min: i32,
+    /// The phone's time zone, its IANA name (item 780).
+    #[serde(default)]
+    pub tz: Option<String>,
 }
 
 /// `POST /api/jobs/{id}`: each field only when it changes.
@@ -445,12 +582,26 @@ pub struct JobPatch {
     pub text: Option<String>,
     #[serde(default)]
     pub title: Option<String>,
-    /// `true`: he approved the job's plan — its runs may write from now.
-    /// `false`: read-only again.
+    /// `true`: he approved the job's plan — its runs may write from now
+    /// (Approve always). `false`: read-only again. Kept for pages older
+    /// than [`approve`](Self::approve).
     #[serde(default)]
     pub approve_plan: Option<bool>,
+    /// Item 780: "once" (the next run may write), "always" (every run,
+    /// until the message changes) or "ask" (read-only again; takes back
+    /// either). From the card a refused run raised, "once" and "always"
+    /// also run it again at once.
+    #[serde(default)]
+    pub approve: Option<String>,
+    /// `true`: "Keep read-only" on that card — it stops asking.
+    #[serde(default)]
+    pub dismiss_wanted: Option<bool>,
     #[serde(default)]
     pub offset_min: Option<i32>,
+    /// The phone's IANA zone: kept only on a job with none yet (one saved
+    /// before zones were kept) whose offset it had when the job was made.
+    #[serde(default)]
+    pub tz: Option<String>,
 }
 
 /// What a job's chat may do, as its log says it (item 746): a Chat over
@@ -513,10 +664,52 @@ fn title_from(text: &str) -> String {
     if t.is_empty() { "Job".into() } else { t }
 }
 
-fn weekday_at(now: DateTime<Utc>, offset_min: i32) -> u8 {
-    let offset = FixedOffset::east_opt(offset_min.clamp(-14 * 60, 14 * 60) * 60)
-        .unwrap_or_else(|| FixedOffset::east_opt(0).expect("zero is an offset"));
-    now.with_timezone(&offset).weekday().num_days_from_monday() as u8
+fn weekday_at(now: DateTime<Utc>, zone: &jiff::tz::TimeZone) -> u8 {
+    local_date(now, zone).map_or(0, |d| d.weekday().num_days_from_monday() as u8)
+}
+
+/// The changes a read-only run was refused (item 780): the tools whose
+/// result after the last time `text` was sent is the Chat policy's refusal,
+/// in his words, each once. Pure.
+pub fn refused_in(events: &[serde_json::Value], text: &str) -> Vec<String> {
+    let Some(sent) = events.iter().rposition(|e| {
+        e["event"] == "user_message" && e["text"].as_str().is_some_and(|t| t.contains(text.trim()))
+    }) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = Vec::new();
+    for e in &events[sent + 1..] {
+        if e["event"] != "tool_result" || e["is_error"] != true {
+            continue;
+        }
+        if !e["content"]
+            .as_str()
+            .is_some_and(|c| c.contains(REFUSED_MARK))
+        {
+            continue;
+        }
+        let words = tool_words(e["name"].as_str().unwrap_or(""));
+        if !out.iter().any(|w| w == words) {
+            out.push(words.to_string());
+        }
+    }
+    out
+}
+
+/// What every Chat-policy refusal says (`agent::CHAT_POLICY_REASON` and its
+/// preview and browser forms).
+const REFUSED_MARK: &str = "This chat is a Chat now";
+
+/// A refused tool in his words.
+fn tool_words(name: &str) -> &'static str {
+    match name {
+        "Bash" | "BashOutput" | "KillShell" | "KillBash" => "run commands",
+        "Edit" | "MultiEdit" | "Write" | "NotebookEdit" => "edit files",
+        "Task" | "Agent" => "start helpers",
+        "ExitPlanMode" | "EnterPlanMode" => "make a plan",
+        n if n.starts_with("mcp__") => "use a connector",
+        _ => "use tools that make changes",
+    }
 }
 
 /// The run's reply from the chat's log: the text of the last assistant
@@ -568,6 +761,26 @@ pub fn week_points(mark: &RunMark, after: &PlanUsage) -> Option<u8> {
     Some(now - before)
 }
 
+/// Give every job with no zone `zone` when `zone` had its offset the day
+/// it was made; the next run is read again on it (one already due stays
+/// due). Whether any changed.
+pub fn migrate_zones(jobs: &mut [Job], zone: &str, now: DateTime<Utc>) -> bool {
+    let Ok(z) = jiff::tz::TimeZone::get(zone) else {
+        return false;
+    };
+    let mut changed = false;
+    for job in jobs.iter_mut().filter(|j| j.tz.is_none()) {
+        if offset_at(&z, job.created) == job.offset_min {
+            job.tz = Some(zone.to_string());
+            if job.next_run > now && job.running.is_none() {
+                job.next_run = job.next_after(now);
+            }
+            changed = true;
+        }
+    }
+    changed
+}
+
 /// A host's jobs: the store and the clock's one step.
 pub struct Jobs {
     dir: PathBuf,
@@ -584,16 +797,32 @@ impl Jobs {
 
     /// The jobs kept in `dir` (none when it has no file yet, or one that
     /// does not read — which is then left as it is until a job is saved).
+    ///
+    /// A job saved before zones were kept (item 780) takes the host's zone
+    /// when that zone had the job's offset the day it was made — on the
+    /// Mac, his zone; the away server's UTC matches only a UTC phone — and
+    /// is saved so.
     pub fn open(dir: PathBuf) -> Arc<Self> {
-        let jobs = std::fs::read(dir.join("jobs.json"))
+        Self::open_in(dir, host_tz())
+    }
+
+    /// [`open`](Self::open) with the host's zone named (tests).
+    pub fn open_in(dir: PathBuf, host_zone: Option<String>) -> Arc<Self> {
+        let mut jobs = std::fs::read(dir.join("jobs.json"))
             .ok()
             .and_then(|b| serde_json::from_slice::<Vec<Job>>(&b).ok())
             .unwrap_or_default();
-        Arc::new(Self {
+        let migrated = host_zone.is_some_and(|zone| migrate_zones(&mut jobs, &zone, Utc::now()));
+        let me = Arc::new(Self {
             dir,
             inner: Mutex::new(jobs),
             ticking: tokio::sync::Mutex::new(()),
-        })
+        });
+        if migrated {
+            let jobs = me.lock().clone();
+            let _ = me.save(&jobs);
+        }
+        me
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Job>> {
@@ -644,7 +873,9 @@ impl Jobs {
         if text.is_empty() {
             return Err("a job needs the message it repeats".into());
         }
-        let every = Every::parse(&req.every, weekday_at(now, req.offset_min))?;
+        let tz = clean_tz(req.tz);
+        let zone = zone_of(tz.as_deref(), req.offset_min);
+        let every = Every::parse(&req.every, weekday_at(now, &zone))?;
         let mut jobs = self.lock();
         if jobs.len() >= MAX_JOBS {
             return Err(format!(
@@ -660,14 +891,17 @@ impl Jobs {
             id: uuid::Uuid::new_v4().simple().to_string(),
             title,
             text,
-            next_run: every.next_after(now, req.offset_min),
+            next_run: every.next_in(now, &zone),
             every,
             offset_min: req.offset_min,
+            tz,
             project: req.project.filter(|p| !p.trim().is_empty()),
             chat: None,
             from_chat: req.from_chat.filter(|c| !c.trim().is_empty()),
             paused: false,
             approved: None,
+            approved_once: None,
+            wanted: None,
             created: now,
             retry_at: None,
             run_now: false,
@@ -693,9 +927,34 @@ impl Jobs {
             .cloned()
             .ok_or_else(|| "that job is gone".to_string())?;
         let offset = patch.offset_min.unwrap_or(current.offset_min);
+        // A zone is taken only by a job that has none, and only one that
+        // had its offset the day the job was made (the phone that made it,
+        // not one travelling): a job's zone is where it was saved.
+        let tz = if current.tz.is_none() {
+            clean_tz(patch.tz.clone()).filter(|name| {
+                offset_at(&zone_of(Some(name), 0), current.created) == current.offset_min
+            })
+        } else {
+            None
+        };
+        let zone = zone_of(
+            tz.as_deref().or(current.tz.as_deref()),
+            if current.tz.is_none() && tz.is_none() {
+                offset
+            } else {
+                current.offset_min
+            },
+        );
         let every = match &patch.every {
-            Some(words) => Some(Every::parse(words, weekday_at(now, offset))?),
+            Some(words) => Some(Every::parse(words, weekday_at(now, &zone))?),
             None => None,
+        };
+        let approve = match (patch.approve.as_deref(), patch.approve_plan) {
+            (Some(a @ ("once" | "always" | "ask")), _) => Some(a.to_string()),
+            (Some(_), _) => return Err("approve is once, always or ask".into()),
+            (None, Some(true)) => Some("always".into()),
+            (None, Some(false)) => Some("ask".into()),
+            (None, None) => None,
         };
         if patch.text.as_deref().is_some_and(|t| t.trim().is_empty()) {
             return Err("a job needs the message it repeats".into());
@@ -709,27 +968,61 @@ impl Jobs {
                 if text != job.text {
                     job.text = text;
                     job.approved = None;
+                    job.approved_once = None;
+                    job.wanted = None;
                 }
             }
             if let Some(title) = patch.title {
                 job.title = title.trim().to_string();
             }
-            job.offset_min = offset;
+            if job.tz.is_none() {
+                job.offset_min = offset;
+            }
+            if let Some(tz) = tz {
+                job.tz = Some(tz);
+                if job.next_run > now && job.running.is_none() {
+                    job.next_run = job.next_after(now);
+                }
+            }
             if let Some(every) = every {
-                job.next_run = every.next_after(now, offset);
                 job.every = every;
+                job.next_run = job.next_after(now);
                 job.retry_at = None;
                 job.note = None;
             }
-            match patch.approve_plan {
-                Some(true) if job.approved.is_none() => job.approved = Some(now),
-                Some(false) => job.approved = None,
-                _ => {}
+            // From the card a refused run raised, an approval runs it again.
+            let again = job.wanted.is_some();
+            match approve.as_deref() {
+                Some("always") => {
+                    if job.approved.is_none() {
+                        job.approved = Some(now);
+                    }
+                    job.approved_once = None;
+                }
+                Some("once") => {
+                    job.approved = None;
+                    job.approved_once = Some(now);
+                }
+                Some(_) => {
+                    job.approved = None;
+                    job.approved_once = None;
+                }
+                None => {}
+            }
+            if matches!(approve.as_deref(), Some("once" | "always")) {
+                job.wanted = None;
+                if again && job.running.is_none() {
+                    job.run_now = true;
+                    job.retry_at = None;
+                }
+            }
+            if patch.dismiss_wanted == Some(true) || approve.as_deref() == Some("ask") {
+                job.wanted = None;
             }
             if let Some(paused) = patch.paused {
                 // Resumed: from its next time, not the ones it sat out.
                 if job.paused && !paused && job.next_run <= now {
-                    job.next_run = job.every.next_after(now, job.offset_min);
+                    job.next_run = job.next_after(now);
                 }
                 job.paused = paused;
                 if paused {
@@ -808,7 +1101,7 @@ impl Jobs {
                 project: job.project.clone(),
                 chat: job.chat.clone(),
                 title: job.title.clone(),
-                read_only: job.approved.is_none(),
+                read_only: !job.writable(),
             })
             .await
         {
@@ -825,6 +1118,7 @@ impl Jobs {
                 let _ = self.change(&job.id, |j| {
                     j.running = Some(RunMark {
                         started: now,
+                        writable: job.writable(),
                         week_before: plan.as_ref().and_then(|p| p.seven_day),
                         resets_at: plan.as_ref().and_then(|p| p.seven_day_resets_at.clone()),
                     });
@@ -832,10 +1126,15 @@ impl Jobs {
                     j.retry_at = None;
                     j.note = None;
                     j.runs += 1;
+                    // Approve once is used by this run; the next one asks.
+                    // (Its chat was set writable just now, by `prepare`.)
+                    if j.approved_once.is_some() && job.approved_once.is_some() {
+                        j.approved_once = None;
+                    }
                     // From now, not from the time it was due: a host that
                     // was off for a day runs it once.
                     if j.next_run <= now {
-                        j.next_run = j.every.next_after(now, j.offset_min);
+                        j.next_run = j.next_after(now);
                     }
                 });
             }
@@ -865,6 +1164,7 @@ impl Jobs {
         if listed && age < RUN_MAX_SECS {
             return;
         }
+        let mut refused = Vec::new();
         let (outcome, summary) = if listed {
             (
                 Outcome::Unfinished,
@@ -877,6 +1177,9 @@ impl Jobs {
                         .iter()
                         .filter_map(|e| serde_json::to_value(e).ok())
                         .collect();
+                    if !mark.writable {
+                        refused = refused_in(&events, &job.text);
+                    }
                     match reply_in(&events, &job.text) {
                         Some(reply) => (Outcome::Done, cut(&reply)),
                         None => (
@@ -890,8 +1193,17 @@ impl Jobs {
         };
         let after = host.usage().await.ok().map(|u| u.plan);
         let points = after.as_ref().and_then(|a| week_points(mark, a));
+        let wants = !refused.is_empty();
         let _ = self.change(&job.id, |j| {
             j.running = None;
+            // A read-only run that was refused a change asks; one that was
+            // not leaves an earlier ask standing until he answers it.
+            if wants {
+                j.wanted = Some(Wanted {
+                    at: now,
+                    what: refused,
+                });
+            }
             if let Some(a) = &after
                 && j.week.resets_at != a.seven_day_resets_at
             {
@@ -911,6 +1223,18 @@ impl Jobs {
                 week_after: after.as_ref().and_then(|a| a.seven_day),
             });
         });
+        // Its push: the job's name and "wants to make changes", nothing of
+        // the reply. Not while he is at the Mac (the Mac's chat shows it).
+        if wants && let Some(push) = host.push() {
+            push.notify(crate::push::Note {
+                what: crate::push::What::Changes,
+                chat: Some(chat.clone()),
+                label: Some(job.title.clone()),
+                project: job.project.clone(),
+                at_the_mac: host.at_the_mac(),
+            })
+            .await;
+        }
     }
 }
 

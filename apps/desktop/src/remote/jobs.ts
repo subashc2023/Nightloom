@@ -29,7 +29,19 @@ export interface Job {
   week: { points: number; runs: number };
   note: string | null;
   runs: number;
+  /** Item 780: the zone its times are read on (null: a job saved before zones were kept). */
+  tz?: string | null;
+  offset_min?: number;
+  /** "ask" (read-only), "once" (the next run may make changes), "always". */
+  approval?: Approval;
+  /** The last read-only run was stopped from making changes: the card asks. */
+  wanted?: { at: string; what: string[] } | null;
+  run_now?: boolean;
 }
+
+export type Approval = "ask" | "once" | "always";
+/** An answer on the approval card. */
+export type Answer = "once" | "always" | "keep";
 
 export interface JobsReply {
   jobs: Job[];
@@ -43,6 +55,7 @@ export interface NewJob {
   project?: string | null;
   from_chat?: string | null;
   offset_min: number;
+  tz?: string | null;
 }
 
 export interface JobPatch {
@@ -51,6 +64,9 @@ export interface JobPatch {
   text?: string;
   title?: string;
   approve_plan?: boolean;
+  approve?: Approval;
+  dismiss_wanted?: boolean;
+  tz?: string;
 }
 
 /** What the sheet needs of the client. */
@@ -60,6 +76,62 @@ export interface JobsApi {
   jobPatch(id: string, patch: JobPatch): Promise<Job>;
   jobRun(id: string): Promise<Job>;
   jobDelete(id: string): Promise<void>;
+}
+
+// ---- item 780: approve once / always, and real time zones ----
+
+/** The phone's IANA zone ("America/Los_Angeles"), when it names one. */
+export function phoneTz(): string | null {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || null;
+  } catch {
+    return null;
+  }
+}
+
+/** "America/Los_Angeles" → "Los Angeles"; "UTC" stays. */
+export function zoneWords(tz: string): string {
+  return (tz.split("/").pop() ?? tz).replace(/_/g, " ");
+}
+
+/** The schedule line: his words, plus whose clock when the phone is in another zone. */
+export function everyText(j: Job, here: string | null = phoneTz()): string {
+  return j.tz && here && j.tz !== here ? `${j.every_words}, ${zoneWords(j.tz)} time` : j.every_words;
+}
+
+function approvalOf(j: Job): Approval {
+  return j.approval ?? (j.read_only ? "ask" : "always");
+}
+
+/** The job's badge: what its next runs may do. */
+export function approvalBadge(j: Job): string {
+  const a = approvalOf(j);
+  return a === "always" ? "Always may make changes" : a === "once" ? "Next run may make changes" : "Read-only";
+}
+
+/** "run commands", "run commands and edit files", "a, b and c". */
+function list(words: string[]): string {
+  if (words.length <= 1) return words[0] ?? "make changes";
+  return `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}`;
+}
+
+/** The card's words: what it wanted and was stopped from, or what approving allows. */
+export function approvalAsk(j: Job, where = "its project"): { title: string; body: string } {
+  if (j.wanted) {
+    return {
+      title: "This job wants to make changes",
+      body: `Its last run tried to ${list(j.wanted.what)} and was stopped, because it is read-only. Approving runs it again now.`,
+    };
+  }
+  return {
+    title: "Let this job make changes?",
+    body: `It may edit files and run commands in ${where} while you are away, doing what its message says.`,
+  };
+}
+
+/** The patch an answer on the card sends. */
+export function answerPatch(how: Answer): JobPatch {
+  return how === "keep" ? { dismiss_wanted: true } : { approve: how };
 }
 
 /** The schedules offered as taps; anything else is typed. */

@@ -138,6 +138,7 @@ fn the_reply_is_the_last_one_after_the_jobs_own_message() {
 fn the_cost_is_the_weekly_figures_move_within_one_window() {
     let mark = RunMark {
         started: at(2026, 11, 16, 16, 0),
+        writable: false,
         week_before: Some(41),
         resets_at: Some("w1".into()),
     };
@@ -173,7 +174,7 @@ fn host() -> Arc<FakeHost> {
     let dir = std::env::temp_dir().join(format!("nightloom-jobs-{}", uuid::Uuid::new_v4()));
     let (tx, _) = broadcast::channel(8);
     Arc::new(FakeHost {
-        jobs: Jobs::open(dir),
+        jobs: Jobs::open_in(dir, None),
         tx,
         preps: Mutex::default(),
         sends: Mutex::default(),
@@ -350,7 +351,7 @@ async fn a_due_job_runs_read_only_in_its_own_chat_and_records_result_and_cost() 
     assert_eq!((j.week.points, j.week.runs), (2, 1));
 
     // The store is the file: a fresh open reads the same job.
-    let again = Jobs::open(h.jobs.dir.clone()).list().remove(0).job;
+    let again = Jobs::open_in(h.jobs.dir.clone(), None).list().remove(0).job;
     assert_eq!(again.week.points, 2);
     assert_eq!(again.chat.as_deref(), Some("job-chat"));
 }
@@ -608,4 +609,313 @@ fn a_kind_that_does_not_reach_the_file_is_not_held() {
     );
     let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- item 780: real time zones ----
+
+const LA: &str = "America/Los_Angeles";
+
+fn la_job(every: &str) -> NewJob {
+    NewJob {
+        tz: Some(LA.into()),
+        ..new_job(every)
+    }
+}
+
+/// The check's fake clock: a job saved at 8:00 AM on 2026-11-17 (Pacific
+/// standard time, UTC−8) runs at 8:00 AM on 2027-03-15 (daylight time,
+/// UTC−7) — 15:00 UTC, not the 16:00 a fixed offset would give.
+#[tokio::test]
+async fn a_job_saved_at_8am_in_november_runs_at_8am_after_the_march_change() {
+    let h = host();
+    let saved = at(2026, 11, 17, 16, 0); // 8:00 AM PST
+    let job = h
+        .jobs
+        .create(la_job("every day at 8am"), saved)
+        .unwrap()
+        .job;
+    assert_eq!(job.tz.as_deref(), Some(LA));
+    assert_eq!(job.next_run, at(2026, 11, 18, 16, 0));
+
+    // The host was off until 6:00 AM on 2027-03-15 (13:00 UTC): it runs
+    // once, and its next time is that day's 8:00 AM — daylight time.
+    h.jobs.tick(h.as_ref(), at(2027, 3, 15, 13, 0)).await;
+    assert_eq!(h.sends.lock().unwrap().len(), 1);
+    assert_eq!(h.jobs.list()[0].job.next_run, at(2027, 3, 15, 15, 0));
+    *h.running.lock().unwrap() = None;
+    *h.log.lock().unwrap() = said("check CI and tell me what failed", "all green");
+    h.jobs.tick(h.as_ref(), at(2027, 3, 15, 13, 5)).await; // finishes it
+
+    // 7:59 AM local: nothing. 8:00 AM local: the run.
+    h.jobs.tick(h.as_ref(), at(2027, 3, 15, 14, 59)).await;
+    assert_eq!(h.sends.lock().unwrap().len(), 1);
+    h.jobs.tick(h.as_ref(), at(2027, 3, 15, 15, 0)).await;
+    assert_eq!(h.sends.lock().unwrap().len(), 2);
+    assert_eq!(h.jobs.list()[0].job.next_run, at(2027, 3, 16, 15, 0));
+
+    // A job saved before zones were kept, on the fixed offset: 16:00 UTC,
+    // 9:00 AM daylight time — the drift this fixes.
+    let fixed = Every::parse("every day at 8am", 0).unwrap();
+    assert_eq!(
+        fixed.next_after(at(2027, 3, 15, 13, 0), -480),
+        at(2027, 3, 15, 16, 0)
+    );
+}
+
+#[test]
+fn change_day_hours_that_do_not_exist_or_happen_twice_run_once() {
+    let zone = zone_of(Some(LA), 0);
+    // 2027-03-14: 2:00 AM jumps to 3:00 AM. 2:30 AM does not exist; it
+    // runs at 3:30 AM daylight time (10:30 UTC), once.
+    let gap = Every::parse("every day at 2:30am", 0).unwrap();
+    let first = gap.next_in(at(2027, 3, 14, 8, 0), &zone);
+    assert_eq!(first, at(2027, 3, 14, 10, 30));
+    assert_eq!(gap.next_in(first, &zone), at(2027, 3, 15, 9, 30));
+    // 2026-11-01: 2:00 AM falls back to 1:00 AM. 1:30 AM happens twice;
+    // it runs at the first (daylight, 08:30 UTC), not again an hour later.
+    let fold = Every::parse("every day at 1:30am", 0).unwrap();
+    let first = fold.next_in(at(2026, 11, 1, 7, 0), &zone);
+    assert_eq!(first, at(2026, 11, 1, 8, 30));
+    assert_eq!(fold.next_in(first, &zone), at(2026, 11, 2, 9, 30));
+    // A weekday schedule names the weekday on the job's own clock: 4:00 PM
+    // Sunday in Los Angeles is already Monday in UTC.
+    let monday = Every::parse("every Monday at 9am", 0).unwrap();
+    assert_eq!(
+        monday.next_in(at(2027, 3, 15, 0, 0), &zone),
+        at(2027, 3, 15, 16, 0)
+    );
+}
+
+#[test]
+fn the_jobs_zone_rules_whatever_the_hosts_clock_or_the_phones_now() {
+    // Saved on a phone in India (UTC+5:30, no daylight saving): 8:00 AM
+    // there is 02:30 UTC, on the Mac or on the away server (UTC) alike.
+    let h = host();
+    let req = NewJob {
+        tz: Some("Asia/Kolkata".into()),
+        offset_min: 330,
+        ..new_job("every morning")
+    };
+    let job = h.jobs.create(req, at(2026, 11, 17, 0, 0)).unwrap().job;
+    assert_eq!(job.next_run, at(2026, 11, 17, 2, 30));
+    // A name that is not a zone, or a path, is not kept: the offset rules.
+    for bad in ["Not/AZone", "../../etc/passwd", "/usr/share/zoneinfo/UTC"] {
+        let req = NewJob {
+            tz: Some(bad.into()),
+            ..new_job("every morning")
+        };
+        assert_eq!(
+            h.jobs.create(req, at(2026, 11, 17, 0, 0)).unwrap().job.tz,
+            None
+        );
+    }
+}
+
+#[test]
+fn saved_jobs_with_only_an_offset_move_to_a_zone_that_had_it() {
+    let dir = std::env::temp_dir().join(format!("nightloom-jobs-{}", uuid::Uuid::new_v4()));
+    let old = Jobs::open_in(dir.clone(), None);
+    let made = at(2026, 11, 16, 15, 0);
+    let pacific = old
+        .create(new_job("every day at 8am"), made)
+        .unwrap()
+        .job
+        .id;
+    let india = NewJob {
+        offset_min: 330,
+        ..new_job("every day at 8am")
+    };
+    let india = old.create(india, made).unwrap().job.id;
+    drop(old);
+    // The Mac in Los Angeles: the job saved at UTC−8 in November takes its
+    // zone; the one saved at UTC+5:30 keeps its offset for the phone.
+    let mac = Jobs::open_in(dir.clone(), Some(LA.into()));
+    let tz_of = |jobs: &Jobs, id: &str| {
+        jobs.list()
+            .into_iter()
+            .find(|j| j.job.id == id)
+            .unwrap()
+            .job
+            .tz
+    };
+    assert_eq!(tz_of(&mac, &pacific).as_deref(), Some(LA));
+    assert_eq!(tz_of(&mac, &india), None);
+    // Saved so: a host that names no zone reads it back.
+    let again = Jobs::open_in(dir.clone(), None);
+    assert_eq!(tz_of(&again, &pacific).as_deref(), Some(LA));
+
+    // The phone names its zone: taken by the job with none when it had the
+    // job's offset that day; a job with a zone keeps its own.
+    let patch = |tz: &str| JobPatch {
+        tz: Some(tz.into()),
+        ..JobPatch::default()
+    };
+    let now = at(2026, 11, 17, 0, 0);
+    again.patch(&india, patch("Europe/London"), now).unwrap();
+    assert_eq!(tz_of(&again, &india), None, "London is not UTC+5:30");
+    again.patch(&india, patch("Asia/Kolkata"), now).unwrap();
+    assert_eq!(tz_of(&again, &india).as_deref(), Some("Asia/Kolkata"));
+    again.patch(&pacific, patch("Asia/Tokyo"), now).unwrap();
+    assert_eq!(tz_of(&again, &pacific).as_deref(), Some(LA));
+}
+
+// ---- item 780: Approve once / Approve always ----
+
+fn approve(how: &str) -> JobPatch {
+    JobPatch {
+        approve: Some(how.into()),
+        ..JobPatch::default()
+    }
+}
+
+/// One run, start to end, at `t`: the clock starts it, it ends with
+/// `log`, the clock finishes it.
+async fn one_run(h: &Arc<FakeHost>, id: &str, t: DateTime<Utc>, log: Vec<SessionEvent>) {
+    h.jobs.run_now(id).unwrap();
+    h.jobs.tick(h.as_ref(), t).await;
+    *h.running.lock().unwrap() = None;
+    *h.log.lock().unwrap() = log;
+    h.jobs.tick(h.as_ref(), t + Duration::seconds(60)).await;
+}
+
+fn read_only_of_preps(h: &FakeHost) -> Vec<bool> {
+    h.preps.lock().unwrap().iter().map(|p| p.1).collect()
+}
+
+#[tokio::test]
+async fn approve_once_lets_one_run_write_then_it_asks_again() {
+    let h = host();
+    let t0 = at(2026, 11, 16, 15, 0);
+    let id = h
+        .jobs
+        .create(new_job("every day at 8am"), t0)
+        .unwrap()
+        .job
+        .id;
+    let v = h.jobs.patch(&id, approve("once"), t0).unwrap();
+    assert_eq!((v.read_only, v.approval.as_str()), (false, "once"));
+    let reply = || said("check CI and tell me what failed", "done");
+    one_run(&h, &id, at(2026, 11, 16, 16, 0), reply()).await;
+    let v = h.jobs.list().remove(0);
+    assert_eq!((v.read_only, v.approval.as_str()), (true, "ask"));
+    one_run(&h, &id, at(2026, 11, 16, 17, 0), reply()).await;
+    assert_eq!(read_only_of_preps(&h), vec![false, true]);
+}
+
+/// The check: Approve always lets the next run write; editing the job's
+/// message drops it back to asking.
+#[tokio::test]
+async fn approve_always_lets_every_run_write_until_the_message_changes() {
+    let h = host();
+    let t0 = at(2026, 11, 16, 15, 0);
+    let id = h
+        .jobs
+        .create(new_job("every day at 8am"), t0)
+        .unwrap()
+        .job
+        .id;
+    let v = h.jobs.patch(&id, approve("always"), t0).unwrap();
+    assert_eq!((v.read_only, v.approval.as_str()), (false, "always"));
+    let reply = || said("check CI and tell me what failed", "done");
+    one_run(&h, &id, at(2026, 11, 16, 16, 0), reply()).await;
+    one_run(&h, &id, at(2026, 11, 16, 17, 0), reply()).await;
+    assert_eq!(read_only_of_preps(&h), vec![false, false]);
+    assert_eq!(h.jobs.list()[0].approval, "always");
+
+    // The same words saved again change nothing; new words ask.
+    let same = JobPatch {
+        text: Some("check CI and tell me what failed".into()),
+        ..JobPatch::default()
+    };
+    assert_eq!(h.jobs.patch(&id, same, t0).unwrap().approval, "always");
+    let reword = JobPatch {
+        text: Some("check CI and fix the lint".into()),
+        ..JobPatch::default()
+    };
+    let v = h.jobs.patch(&id, reword, t0).unwrap();
+    assert_eq!((v.read_only, v.approval.as_str()), (true, "ask"));
+    one_run(
+        &h,
+        &id,
+        at(2026, 11, 16, 18, 0),
+        said("check CI and fix the lint", "ok"),
+    )
+    .await;
+    assert_eq!(read_only_of_preps(&h), vec![false, false, true]);
+
+    // Taken back by hand ("ask"), and the old page's switch still works.
+    h.jobs.patch(&id, approve("always"), t0).unwrap();
+    assert_eq!(
+        h.jobs.patch(&id, approve("ask"), t0).unwrap().approval,
+        "ask"
+    );
+    let old_page = JobPatch {
+        approve_plan: Some(true),
+        ..JobPatch::default()
+    };
+    assert_eq!(h.jobs.patch(&id, old_page, t0).unwrap().approval, "always");
+    assert!(h.jobs.patch(&id, approve("forever"), t0).is_err());
+}
+
+fn refused(text: &str, tool: &str) -> Vec<SessionEvent> {
+    serde_json::from_value(serde_json::json!([
+        {"event": "user_message", "text": text, "at": "2026-11-16T16:00:00Z"},
+        {"event": "tool_result", "tool_use_id": "t1", "name": tool, "is_error": true,
+         "content": crate::agent::CHAT_POLICY_REASON, "at": "2026-11-16T16:00:30Z"},
+        {"event": "tool_result", "tool_use_id": "t2", "name": "Read", "is_error": true,
+         "content": "no such file", "at": "2026-11-16T16:00:31Z"},
+        {"event": "assistant_message", "model": "m", "blocks": [{"type": "text", "text": "I could not run it"}],
+         "stop_reason": null, "usage": {"input_tokens": 1, "output_tokens": 1}, "at": "2026-11-16T16:01:00Z"},
+    ]))
+    .unwrap()
+}
+
+#[test]
+fn a_refusal_reads_as_what_it_wanted_in_his_words() {
+    let events: Vec<serde_json::Value> = refused("go", "Bash")
+        .iter()
+        .map(|e| serde_json::to_value(e).unwrap())
+        .collect();
+    assert_eq!(refused_in(&events, "go"), vec!["run commands".to_string()]);
+    // Only after the job's own message; an ordinary failed read is not one.
+    assert!(refused_in(&events, "another message").is_empty());
+}
+
+#[tokio::test]
+async fn a_read_only_run_refused_a_change_asks_and_approving_runs_it_again() {
+    let h = host();
+    let t0 = at(2026, 11, 16, 15, 0);
+    let id = h
+        .jobs
+        .create(new_job("every day at 8am"), t0)
+        .unwrap()
+        .job
+        .id;
+    let text = "check CI and tell me what failed";
+    one_run(&h, &id, at(2026, 11, 16, 16, 0), refused(text, "Edit")).await;
+    let j = h.jobs.list().remove(0).job;
+    let wanted = j.wanted.expect("the card asks");
+    assert_eq!(wanted.what, vec!["edit files".to_string()]);
+
+    // Approve once from the card: the run goes again at the next tick,
+    // writable, and the card is gone.
+    let v = h.jobs.patch(&id, approve("once"), t0).unwrap();
+    assert!(v.job.wanted.is_none() && v.job.run_now);
+    h.jobs.tick(h.as_ref(), at(2026, 11, 16, 16, 5)).await;
+    assert_eq!(read_only_of_preps(&h), vec![true, false]);
+    // A writable run's errors are its own: no card.
+    *h.running.lock().unwrap() = None;
+    *h.log.lock().unwrap() = refused(text, "Edit");
+    h.jobs.tick(h.as_ref(), at(2026, 11, 16, 16, 7)).await;
+    assert!(h.jobs.list()[0].job.wanted.is_none());
+
+    // Keep read-only: the card goes, nothing runs, it stays read-only.
+    one_run(&h, &id, at(2026, 11, 16, 17, 0), refused(text, "Bash")).await;
+    assert!(h.jobs.list()[0].job.wanted.is_some());
+    let keep = JobPatch {
+        dismiss_wanted: Some(true),
+        ..JobPatch::default()
+    };
+    let v = h.jobs.patch(&id, keep, t0).unwrap();
+    assert!(v.job.wanted.is_none() && !v.job.run_now && v.read_only);
 }

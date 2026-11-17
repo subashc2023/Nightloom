@@ -709,6 +709,12 @@ impl Host for DesktopHost {
         self.jobs.clone()
     }
 
+    /// He touched the Mac within [`AT_THE_MAC`] (item 780): a job's push
+    /// is held, as the turn-end ones are, and the chat's card shows it.
+    fn at_the_mac(&self) -> bool {
+        crate::wake::idle_seconds().is_some_and(|s| s < AT_THE_MAC.as_secs_f64())
+    }
+
     /// The job's chat and the agent its run will use (item 746, `jobs.rs`).
     async fn job_prepare(&self, prep: nightloom_service::jobs::Prep) -> Result<String, String> {
         crate::jobs::prepare(&self.state_of(), prep).await
@@ -1934,6 +1940,13 @@ pub fn push_note(
         })
         .await;
     });
+}
+
+/// The Mac's jobs store (item 780), for the chat's approval card
+/// (`jobs.rs`'s commands): the one the listener's clock ticks, so an answer
+/// here and a tick there never save over each other. `None` with no home.
+pub fn jobs_store(app: &AppHandle) -> Option<Arc<nightloom_service::jobs::Jobs>> {
+    app.try_state::<Remote>()?.host.jobs.clone()
 }
 
 /// The Mac's push state, for the away pass to hand its key to the away

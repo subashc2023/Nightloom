@@ -79,6 +79,9 @@ pub enum What {
     Approval,
     /// A question (or a plan) waits for his answer.
     Question,
+    /// A recurring job's read-only run wanted to make changes (item 780):
+    /// its approval card waits.
+    Changes,
 }
 
 impl What {
@@ -90,6 +93,7 @@ impl What {
             What::Limit => "Paused by the usage limit",
             What::Approval => "Waiting for your approval",
             What::Question => "Has a question for you",
+            What::Changes => "Wants to make changes — approve it?",
         }
     }
 

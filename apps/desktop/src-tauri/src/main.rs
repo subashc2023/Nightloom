@@ -1750,6 +1750,8 @@ fn main() {
             remote::remote_done,
             remote::remote_claim,
             remote::push_note,
+            jobs::job_for_chat,
+            jobs::job_answer,
             remote::remote_self_test,
             away::away_status,
             away::away_set_url,

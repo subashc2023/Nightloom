@@ -346,6 +346,12 @@ pub trait Host: Send + Sync + 'static {
     fn jobs(&self) -> Option<Arc<crate::jobs::Jobs>> {
         None
     }
+    /// He is at this host now (item 780): a job's push is not sent then —
+    /// the host's own window shows the card. The Mac answers by its idle
+    /// clock; a host with no screen is never "at".
+    fn at_the_mac(&self) -> bool {
+        false
+    }
     /// Before a job's run (item 746): its chat exists — made in the job's
     /// project and named for it when the job has none yet — and is
     /// read-only (the Chat policy over a Claude Code chat) or not, as the

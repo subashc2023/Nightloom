@@ -4,17 +4,28 @@
    * job's schedule, next run, last result and what it cost of the weekly
    * limit — and the form that makes one. Rendered inside the page's sheet.
    *
-   * - A job is read-only until he approves its plan here (the message it
-   *   repeats, shown in full, with what approving allows); new words take
-   *   the approval back on the host.
+   * - A job is read-only until he approves it here (item 780): Approve
+   *   once (its next run) or Approve always (every run, until its message
+   *   changes), on the card a refused run raises or ahead of time from the
+   *   job's row; Take back makes it read-only again. New words take the
+   *   approval back on the host.
+   * - Times are the job's zone's (item 780): the schedule line names it
+   *   when the phone is elsewhere, and a job saved before zones were kept
+   *   is sent the phone's zone (the host keeps it only when it fits).
    * - Pause and Run now act at once; Delete asks first, and the host moves
    *   the job to its trash file (its chat and past results stay).
    * - The form's half-typed words are kept (`jobs.ts`'s draft) until Save
    *   or Discard, whatever closes the sheet.
    */
   import { untrack } from "svelte";
+  import JobApproval from "./JobApproval.svelte";
   import {
     EVERY_PRESETS,
+    answerPatch,
+    approvalBadge,
+    everyText,
+    phoneTz,
+    type Answer,
     lastText,
     nextText,
     offsetMin,
@@ -65,10 +76,19 @@
     return String(e instanceof Error ? e.message : e);
   }
 
+  /** Jobs already sent the phone's zone this time the sheet is open. */
+  const zoned = new Set<string>();
   async function refresh() {
     try {
       jobs = (await api.jobs()).jobs;
       problem = null;
+      const here = phoneTz();
+      for (const j of jobs) {
+        if (here && j.tz === null && !zoned.has(j.id)) {
+          zoned.add(j.id);
+          void api.jobPatch(j.id, { tz: here }).catch(() => {});
+        }
+      }
     } catch (e) {
       problem = said(e);
     }
@@ -85,7 +105,7 @@
     if (!text.trim()) return void (formProblem = "Write the message it repeats.");
     busy = "new";
     try {
-      await api.jobNew({ every, text, title: title.trim() || undefined, project, from_chat: fromChat, offset_min: offsetMin() });
+      await api.jobNew({ every, text, title: title.trim() || undefined, project, from_chat: fromChat, offset_min: offsetMin(), tz: phoneTz() });
       adding = false;
       every = text = title = "";
       writeJobDraft(null);
@@ -103,6 +123,10 @@
     every = text = title = "";
     formProblem = null;
     writeJobDraft(null);
+  }
+
+  function answer(j: Job, how: Answer) {
+    void act(j, () => api.jobPatch(j.id, answerPatch(how)));
   }
 
   async function act(j: Job, what: () => Promise<unknown>) {
@@ -141,7 +165,7 @@
     <label class="jb-label" for="jb-name">Name (optional)</label>
     <input id="jb-name" class="jb-input" bind:value={title} placeholder="From the message" />
     <p class="jb-note">
-      It runs on {where} in its own chat{projectName ? ` in ${projectName}` : ""}, read-only: it can read, search and use the web, not edit files or run commands — until you approve its plan. Each run spends some of the weekly limit; the list shows how much.
+      It runs on {where} in its own chat{projectName ? ` in ${projectName}` : ""}, read-only: it can read, search and use the web, not edit files or run commands — until you approve it, once or always. Each run spends some of the weekly limit; the list shows how much.
     </p>
     {#if formProblem}<p class="jb-problem" role="alert">{formProblem}</p>{/if}
     <div class="jb-row">
@@ -163,12 +187,15 @@
   <div class="jb-job" class:paused={j.paused} data-job={j.id}>
     <button class="jb-main" aria-expanded={open === j.id} onclick={() => ((open = open === j.id ? null : j.id), (confirm = null))}>
       <span class="jb-name">{j.title}</span>
-      <span class="jb-badge" class:write={!j.read_only}>{j.read_only ? "Read-only" : "May make changes"}</span>
-      <span class="jb-line">{j.every_words}</span>
+      <span class="jb-badge" class:write={!j.read_only} class:always={j.approval === "always"}>{approvalBadge(j)}</span>
+      <span class="jb-line">{everyText(j)}</span>
       <span class="jb-line" class:live={j.running !== null} class:warn={!j.running && !j.paused && j.note !== null}>{nextText(j)}</span>
       <span class="jb-line">{lastText(j)}</span>
       {#if weekText(j)}<span class="jb-line">{weekText(j)}</span>{/if}
     </button>
+    {#if j.wanted}
+      <div class="jb-card"><JobApproval job={j} busy={busy === j.id} onanswer={(how) => answer(j, how)} /></div>
+    {/if}
     {#if open === j.id}
       <div class="jb-detail">
         {#if j.last}<p class="jb-summary">{j.last.summary}</p>{/if}
@@ -181,13 +208,7 @@
             <button class="jb-btn" onclick={() => (confirm = null)}>Keep it</button>
           </div>
         {:else if confirm === "approve"}
-          <p class="jb-ask">
-            Approve this plan? From its next run, the job may edit files and run commands in its project while you are away, doing what the message above says. Changing the message makes it read-only again.
-          </p>
-          <div class="jb-row">
-            <button class="jb-btn primary" data-act="job-approve-yes" disabled={busy === j.id} onclick={() => act(j, () => api.jobPatch(j.id, { approve_plan: true }))}>Approve the plan</button>
-            <button class="jb-btn" onclick={() => (confirm = null)}>Keep read-only</button>
-          </div>
+          <JobApproval job={j} busy={busy === j.id} onanswer={(how) => (how === "keep" ? (confirm = null) : answer(j, how))} />
         {:else}
           <div class="jb-row wrap">
             <button class="jb-btn" data-act="job-pause" disabled={busy === j.id} onclick={() => act(j, () => api.jobPatch(j.id, { paused: !j.paused }))}>{j.paused ? "Resume" : "Pause"}</button>
@@ -195,10 +216,10 @@
             {#if j.chat}
               <button class="jb-btn" data-act="job-open" onclick={() => onopen(j.chat ?? "", j.project)}>Open its chat</button>
             {/if}
-            {#if j.read_only}
-              <button class="jb-btn" data-act="job-approve" onclick={() => (confirm = "approve")}>Approve its plan…</button>
-            {:else}
-              <button class="jb-btn" data-act="job-readonly" disabled={busy === j.id} onclick={() => act(j, () => api.jobPatch(j.id, { approve_plan: false }))}>Make read-only</button>
+            {#if j.read_only && !j.wanted}
+              <button class="jb-btn" data-act="job-approve" onclick={() => (confirm = "approve")}>Approve…</button>
+            {:else if !j.read_only}
+              <button class="jb-btn" data-act="job-readonly" disabled={busy === j.id} onclick={() => act(j, () => api.jobPatch(j.id, { approve: "ask" }))}>Take back approval</button>
             {/if}
             <button class="jb-btn danger" data-act="job-delete" onclick={() => (confirm = "delete")}>Delete…</button>
           </div>
@@ -343,6 +364,14 @@
   .jb-badge.write {
     color: var(--accent-ink);
     border-color: var(--accent);
+  }
+  /* Approve always: the mark that stays on the job until he takes it back. */
+  .jb-badge.always {
+    background: var(--accent);
+    color: var(--on-accent);
+  }
+  .jb-card {
+    padding: 0 10px 10px;
   }
   .jb-line {
     grid-column: 1 / -1;

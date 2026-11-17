@@ -108,6 +108,7 @@
   import ContextSheet from "./ContextSheet.svelte";
   import RunningSheet from "./RunningSheet.svelte";
   import JobsSheet from "./JobsSheet.svelte";
+  import JobChatCard from "./JobChatCard.svelte";
   import { parseRepeat } from "./jobs";
   import UsageLine from "./UsageLine.svelte";
   import MicButton from "./voice/MicButton.svelte";
@@ -3300,6 +3301,16 @@
             </div>
           {/each}
         </div>
+      {/if}
+      <!-- Item 780: a job's chat carries its approval card (or its mark). -->
+      {#if client && chatId && sameHost && hasFeature(remote, "jobs")}
+        {@const jc = client}
+        <JobChatCard
+          chat={chatId}
+          where={projectName(chatProject)}
+          load={async (c) => (await jc.jobs()).jobs.find((j) => j.chat === c) ?? null}
+          send={(id, patch) => jc.jobPatch(id, patch)}
+        />
       {/if}
       {#if readOnly}
         <div class="readonly">
