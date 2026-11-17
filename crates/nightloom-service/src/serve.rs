@@ -2424,6 +2424,17 @@ impl Host for ServeHost {
     /// The job goes on in a new chat of its own instead.
     async fn job_prepare(&self, prep: crate::jobs::Prep) -> Result<String, String> {
         let project = self.project(prep.project.as_deref())?;
+        // 804's review: Home's scan reads the accounts of the last
+        // connector check — checked again here when old or missing (no
+        // model request; a failure keeps the last good list).
+        if prep.connectors && prep.read_only {
+            let home = self.cfg.home.clone();
+            let bin = PathBuf::from(crate::resolve_binary(&self.cfg.binary));
+            let _ = tokio::task::spawn_blocking(move || {
+                crate::home::reach::refresh_if_stale(&home, &bin, chrono::Utc::now())
+            })
+            .await;
+        }
         let want = crate::jobs::kind_for(prep.read_only);
         if let Some(chat) = &prep.chat
             && let Ok(path) = self.find_chat(project.as_ref(), chat)

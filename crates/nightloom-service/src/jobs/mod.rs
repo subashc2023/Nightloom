@@ -912,7 +912,7 @@ impl Jobs {
 
     /// The morning scan's message (item 763): [`crate::home::SCAN_LINE`]
     /// and the facts collected now.
-    fn scan_text(&self, now: DateTime<Utc>) -> String {
+    fn scan_text(&self, now: DateTime<Utc>, read_only: bool) -> String {
         let Some(config) = self.config_dir() else {
             return crate::home::scan_message("(no Nightloom home)", false);
         };
@@ -925,7 +925,10 @@ impl Jobs {
         let facts = crate::home::collect(&config, &self.list(), &projects, now);
         // Item 804: with accounts to read, the turn reads their mail and
         // calendars with the connectors' read tools.
-        let accounts = !crate::home::reach::scan_accounts(&config).is_empty();
+        // Only a read-only run gets the connectors (804's review: an
+        // approved, writable scan is sent without them, so it is not told
+        // to read accounts it cannot reach).
+        let accounts = read_only && !crate::home::reach::scan_accounts(&config).is_empty();
         crate::home::scan_message(&facts, accounts)
     }
 
@@ -1340,7 +1343,7 @@ impl Jobs {
         // Item 763: the morning scan's message is its line plus the facts
         // collected now, in code.
         let text = if job.id == crate::home::SCAN_JOB_ID {
-            self.scan_text(now)
+            self.scan_text(now, !job.writable())
         } else {
             job.text.clone()
         };

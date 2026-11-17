@@ -3431,7 +3431,7 @@
                 </div>
               {/each}
             </div>
-            <p class="note small">A change here takes effect in Home's next reply. An account's address shows once a scan has read it.</p>
+            <p class="note small">The next morning scan uses a change here; an open Home chat, the next time you open it. An account's address shows once a scan has read it.</p>
           {/if}
         </section>
         <section class="card">

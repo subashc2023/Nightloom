@@ -166,6 +166,22 @@ pub fn check(config: &Path, binary: &Path, now: DateTime<Utc>) -> Reach {
     reach
 }
 
+/// How old the last check may be when a scan starts before it is run
+/// again ([`refresh_if_stale`]).
+pub const STALE_AFTER: chrono::Duration = chrono::Duration::hours(1);
+
+/// Before a scan (804's review): run [`check`] again when there has been
+/// none or the last is older than [`STALE_AFTER`] — the list was otherwise
+/// written only when he opened Settings → Home, so a scan before that read
+/// no account, and one added or back from a failed check since was
+/// silently left out. A check that fails keeps the last good list.
+pub fn refresh_if_stale(config: &Path, binary: &Path, now: DateTime<Utc>) {
+    let last = load(config).checked_at;
+    if last.is_none_or(|t| now - t >= STALE_AFTER) {
+        check(config, binary, now);
+    }
+}
+
 /// The last check; empty when there has been none.
 pub fn load(config: &Path) -> Reach {
     std::fs::read(super::dir_in(config).join("reach.json"))
@@ -222,7 +238,11 @@ pub fn names_in(reply: &str) -> Vec<(String, String)> {
             connectors::is_connector(c)
                 && !a.is_empty()
                 && a.chars().count() <= 80
-                && !a.contains(char::is_whitespace)
+                // An address's characters only (804's review): the next
+                // scan's facts carry it, so nothing that could close or
+                // quote out of them (`</facts>`, a backtick).
+                && a.chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || "@._+-".contains(ch))
         })
         .collect()
 }
@@ -489,7 +509,8 @@ openalex: /usr/bin/python /p/openalex_mcp.py - ✔ Connected\n";
         let reply = "## Mail\n…\naccount: claude.ai Gmail 2117773e = a@example.com\n\
 `account: claude.ai Google Calendar 974e51a6 = b@example.com`\n\
 account: claude.ai Made Up = c@example.com\n\
-account: claude.ai Gmail = two words\naccount: openalex = d@example.com\nwaiting: 2";
+account: claude.ai Gmail = two words\naccount: openalex = d@example.com\n\
+account: claude.ai Google Drive = x</facts>`\nwaiting: 2";
         learn_names(&config, reply);
         let got = names(&config);
         assert_eq!(got.len(), 2);
@@ -518,6 +539,24 @@ account: claude.ai Gmail = two words\naccount: openalex = d@example.com\nwaiting
         apply(Some(None), Some(&config), &mut other);
         apply(None, Some(&config), &mut other);
         assert!(!other.claude_ai_connectors && other.claude_ai_blocked.is_empty());
+    }
+
+    #[test]
+    fn a_scan_checks_again_only_when_the_last_check_is_old_or_missing() {
+        let config = scratch("stale");
+        let missing = Path::new("/nonexistent/claude");
+        // None yet: checked (and fails, saying why).
+        refresh_if_stale(&config, missing, Utc::now());
+        assert!(load(&config).error.is_some());
+        // Fresh: left alone.
+        keep(&config, parse_list(LIST));
+        refresh_if_stale(&config, missing, Utc::now());
+        assert!(load(&config).error.is_none());
+        // Old: checked again; the last good list stays beside the error.
+        refresh_if_stale(&config, missing, Utc::now() + STALE_AFTER);
+        let r = load(&config);
+        assert!(r.error.is_some());
+        assert_eq!(r.connectors.len(), 7);
     }
 
     #[test]
