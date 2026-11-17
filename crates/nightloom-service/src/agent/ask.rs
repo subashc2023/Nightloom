@@ -1089,6 +1089,15 @@ pub fn decide_under(dir: &Path, home: Option<&Path>, stdin_json: &str, side: boo
     {
         return HookReply::allow(None);
     }
+    // Feedback he asked the chat to send (item 805): a new item in his
+    // backlog with his words checked against his messages; a card would
+    // ask him to approve his own feedback. A subagent's call gets the
+    // ordinary path.
+    if input.tool_name == crate::mcp_server::mcp_name(crate::feedback::TOOL_NAME)
+        && input.agent_id.as_deref().is_none_or(str::is_empty)
+    {
+        return HookReply::allow(None);
+    }
     if input.agent_id.as_deref().is_some_and(|id| !id.is_empty()) {
         // A subagent's question goes back to the parent (backlog 294,
         // blocker 1031), whatever the switch says.

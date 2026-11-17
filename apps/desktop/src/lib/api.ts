@@ -2305,3 +2305,44 @@ export function homeMarkSeen(): Promise<string> {
 export function homeSaveBrief(text: string): Promise<null> {
   return invoke("home_save_brief", { text });
 }
+
+// ---- feedback to the agent (nightshift item 805) ----------------------------
+
+/** What the feedback box sends: his words and what it attaches. */
+export interface FeedbackNote {
+  text: string;
+  surface: string;
+  chat?: string | null;
+  chat_title?: string | null;
+  project?: string | null;
+  /** A Nightshift project's id; absent is Nightloom (the nightshift repo). */
+  about?: string | null;
+}
+export interface FeedbackFiled {
+  project: string;
+  item: string;
+  file: string;
+}
+export interface FeedbackSent {
+  filed: FeedbackFiled | null;
+  pending_why: string | null;
+  saved: string | null;
+  also_filed: FeedbackFiled[];
+}
+export interface FeedbackTarget {
+  id: string;
+  name: string;
+  default: boolean;
+}
+/** File his feedback as a backlog item (saved first, so nothing is lost). */
+export function feedbackSend(note: FeedbackNote): Promise<FeedbackSent> {
+  return invoke("feedback_send", { note });
+}
+/** The projects feedback can go to, the default (Nightloom's own) first. */
+export function feedbackTargets(): Promise<FeedbackTarget[]> {
+  return invoke("feedback_targets");
+}
+/** File what was saved but not filed (a shift was live); at launch. */
+export function feedbackFlush(): Promise<FeedbackFiled[]> {
+  return invoke("feedback_flush");
+}

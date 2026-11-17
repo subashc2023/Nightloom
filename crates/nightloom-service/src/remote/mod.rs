@@ -30,6 +30,7 @@
 //! headers yet (they need `tailscale serve` in front of the port; later).
 
 pub mod api;
+mod feedback_routes;
 mod job_routes;
 pub mod nightshift_routes;
 mod push_routes;
@@ -330,6 +331,12 @@ pub trait Host: Send + Sync + 'static {
     /// config directory, which is also where the hook reads them. A test's
     /// host names a folder of its own.
     fn rules_home(&self) -> Option<std::path::PathBuf> {
+        crate::project::config_dir()
+    }
+    /// Where feedback from the phone is saved before it is filed (item
+    /// 805): `<this>/feedback/`. The config directory; a test's host names
+    /// a folder of its own.
+    fn feedback_home(&self) -> Option<std::path::PathBuf> {
         crate::project::config_dir()
     }
     /// The ask directory of `chat` (in `project`, when named) — where its
@@ -848,6 +855,7 @@ fn router(shared: Arc<Shared>) -> Router {
         // A file a reply sent (nightshift backlog 343): the chip's tap.
         .route("/sent-files/{id}/{name}", get(sent_file))
         .merge(nightshift_routes::router())
+        .merge(feedback_routes::router())
         .merge(push_routes::router())
         .merge(rules_routes::router())
         .merge(job_routes::router())
@@ -1919,6 +1927,10 @@ mod tests {
 
         fn features(&self) -> Vec<String> {
             api::feature::ALL.iter().map(|s| s.to_string()).collect()
+        }
+        /// Item 805: never his real config dir.
+        fn feedback_home(&self) -> Option<std::path::PathBuf> {
+            Some(self.nightshift.join("feedback-home"))
         }
         async fn nightshift_roots(&self) -> Vec<NightshiftProject> {
             crate::nightshift::detect(&self.nightshift)
@@ -3963,6 +3975,63 @@ mod tests {
             .map(|i| start + 2 + i + 1)
             .unwrap_or(body.len());
         (fm, format!("{}{}", &body[..start], &body[end..]))
+    }
+
+    /// Item 805: the phone's feedback is one backlog item, his words
+    /// verbatim, saved first; a resend with the same nonce is the same item.
+    #[tokio::test]
+    async fn phone_feedback_files_one_item_with_his_words_verbatim() {
+        let (server, host, _tx, token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let r = c
+            .post(format!("{base}/api/feedback"))
+            .json(&serde_json::json!({"text": "x"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 401);
+        let words = "From the phone: the  send button\nhides behind the keyboard.";
+        let body = serde_json::json!({
+            "text": words, "chat": "abc", "chat_title": "Phone", "project": "nightloom", "nonce": "n805"
+        });
+        let (status, sent) =
+            post_json(&c, format!("{base}/api/feedback"), &token, body.clone()).await;
+        assert_eq!(status, 201, "{sent}");
+        let file = sent["filed"]["file"].as_str().unwrap().to_string();
+        let item = std::fs::read_to_string(host.nightshift.join(&file)).unwrap();
+        assert!(
+            item.contains(&format!("## What Swaraag said\n{words}\n")),
+            "{item}"
+        );
+        assert!(item.contains("feedback_from: \"the phone page\""), "{item}");
+        assert!(item.contains("- Chat: `abc` \"Phone\" in project nightloom"));
+        // The same try again: the same answer, no second item.
+        let (status, again) = post_json(&c, format!("{base}/api/feedback"), &token, body).await;
+        assert_eq!(status, 201);
+        assert_eq!(again["filed"]["item"], sent["filed"]["item"]);
+        let count = std::fs::read_dir(host.nightshift.join("backlog"))
+            .unwrap()
+            .filter(|e| {
+                e.as_ref().is_ok_and(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .contains("feedback-from-the-phone")
+                })
+            })
+            .count();
+        assert_eq!(count, 1);
+        // Saved first, then marked filed.
+        assert!(crate::feedback::pending(&host.nightshift.join("feedback-home")).is_empty());
+        let (status, _) = post_json(
+            &c,
+            format!("{base}/api/feedback"),
+            &token,
+            serde_json::json!({"text": "  "}),
+        )
+        .await;
+        assert_eq!(status, 400);
+        server.stop().await;
     }
 
     #[tokio::test]

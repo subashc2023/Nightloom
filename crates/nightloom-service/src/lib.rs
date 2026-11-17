@@ -28,6 +28,7 @@ pub mod council;
 pub mod credentials;
 pub mod credits;
 pub mod dream;
+pub mod feedback;
 pub mod flat_canary;
 pub mod grounding;
 pub mod hand_off;

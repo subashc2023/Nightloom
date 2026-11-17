@@ -1,0 +1,108 @@
+//! `POST /api/feedback` (nightshift item 805): the phone page's feedback
+//! sheet. `{text, chat?, chat_title?, project?, about?, nonce?}` →
+//! [`crate::feedback::Sent`] — the same `feedback::send` the Mac's box and
+//! the chats' `send_feedback` tool call, so a note from the phone is the
+//! same item. Filed in the host's Nightshift projects
+//! ([`super::Host::nightshift_roots`]); saved first under the host's
+//! [`super::Host::feedback_home`]. A host with neither answers 501.
+
+use std::sync::Arc;
+
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::routing::post;
+use axum::{Json, Router};
+use serde::Deserialize;
+
+use super::Shared;
+use super::api::NOT_AVAILABLE;
+use crate::feedback::{self, Note, Target};
+
+#[derive(Debug, Deserialize)]
+struct FeedbackRequest {
+    text: String,
+    #[serde(default)]
+    chat: Option<String>,
+    #[serde(default)]
+    chat_title: Option<String>,
+    #[serde(default)]
+    project: Option<String>,
+    #[serde(default)]
+    about: Option<String>,
+    #[serde(default)]
+    nonce: Option<String>,
+}
+
+pub(super) fn router() -> Router<Arc<Shared>> {
+    Router::new().route("/feedback", post(send))
+}
+
+async fn send(State(shared): State<Arc<Shared>>, Json(req): Json<FeedbackRequest>) -> Response {
+    if req.text.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "there is nothing to send").into_response();
+    }
+    let home = shared.host.feedback_home();
+    let roots = shared.host.nightshift_roots().await;
+    if home.is_none() && roots.is_empty() {
+        return (StatusCode::NOT_IMPLEMENTED, NOT_AVAILABLE).into_response();
+    }
+    let once = "feedback";
+    let nonce = req.nonce.clone();
+    match shared.items.claim(once, nonce.as_deref()) {
+        super::resent::Seen::First => {}
+        super::resent::Seen::Done(json) => {
+            return (
+                StatusCode::CREATED,
+                [("content-type", "application/json")],
+                json,
+            )
+                .into_response();
+        }
+        super::resent::Seen::Running => {
+            return (StatusCode::CONFLICT, "this feedback is being sent now").into_response();
+        }
+    }
+    let targets: Vec<Target> = roots
+        .into_iter()
+        .map(|r| Target {
+            id: r.id,
+            name: r.name,
+            root: r.root,
+        })
+        .collect();
+    let host_kind = shared.host.kind();
+    let note = Note {
+        text: req.text,
+        surface: if host_kind == "serve" {
+            "the phone page (the away server)".into()
+        } else {
+            "the phone page".into()
+        },
+        via: "box".into(),
+        chat: req.chat,
+        chat_title: req.chat_title,
+        project: req.project,
+        about: req.about,
+        model_note: None,
+        model_wording: None,
+    };
+    let sent = tokio::task::spawn_blocking(move || feedback::send(home.as_deref(), &targets, note))
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|r| r)
+        .and_then(|s| serde_json::to_string(&s).map_err(|e| e.to_string()));
+    shared.items.settle(once, nonce.as_deref(), &sent);
+    match sent {
+        Ok(json) => (
+            StatusCode::CREATED,
+            [("content-type", "application/json")],
+            json,
+        )
+            .into_response(),
+        Err(e) if e.starts_with("no Nightshift project called") => {
+            (StatusCode::NOT_FOUND, e).into_response()
+        }
+        Err(e) => (StatusCode::CONFLICT, e).into_response(),
+    }
+}

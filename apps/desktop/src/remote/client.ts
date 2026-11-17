@@ -243,6 +243,14 @@ export interface SendExtras {
   nonce?: string;
 }
 
+/** `POST /api/feedback`'s answer (item 805). */
+export interface FeedbackSent {
+  filed: { project: string; item: string; file: string } | null;
+  pending_why: string | null;
+  saved: string | null;
+  also_filed: { project: string; item: string; file: string }[];
+}
+
 /** A fresh nonce: 32 hex digits. `crypto.getRandomValues`, not
  *  `randomUUID` — the page is plain HTTP over the tailnet, where
  *  `randomUUID` (secure contexts only) is absent. */
@@ -789,6 +797,19 @@ export class Client {
     }
     if (!r.ok) throw new ApiError(r.status, (await r.text()) || r.statusText, this.base);
     return r;
+  }
+
+  /** His feedback to the agent (item 805): one backlog item on the host,
+   *  his words verbatim; `nonce` makes a resend after a lost reply the
+   *  same item. */
+  async feedback(body: {
+    text: string;
+    chat?: string | null;
+    chat_title?: string | null;
+    project?: string | null;
+    nonce?: string;
+  }): Promise<FeedbackSent> {
+    return (await this.call("/feedback", { method: "POST", body: JSON.stringify(body) })).json();
   }
 
   /** A file a reply sent (backlog 343), with the bearer like every call. */

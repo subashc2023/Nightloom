@@ -420,6 +420,15 @@
           ]
         : []),
       {
+        id: "feedback",
+        label: "Send feedback",
+        meta: "to the agent that builds Nightloom",
+        icon: "send",
+        key: "",
+        group: "Go",
+        run: () => go(() => runMenuCommand("feedback")),
+      },
+      {
         id: "settings",
         label: "Settings",
         meta: "keys, models, palette",

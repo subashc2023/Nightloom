@@ -46,6 +46,10 @@ export function runMenuCommand(id: string): void {
       app.showContext = false;
       app.showSettings = true;
       break;
+    // His feedback box (item 805), from the menu bar and the palette.
+    case "feedback":
+      void import("../feedback.svelte").then((f) => f.openFeedback());
+      break;
     case "new_chat":
       void newSession();
       break;

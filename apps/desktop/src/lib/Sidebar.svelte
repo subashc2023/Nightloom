@@ -102,6 +102,7 @@
   import ProjectMenu from "./ProjectMenu.svelte";
   import HomeRow from "./HomeRow.svelte";
   import Icon from "./Icon.svelte";
+  import { runMenuCommand } from "./state/menu.svelte";
   import DisableDialog from "./DisableDialog.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import { tabPlace } from "./tabPlace";
@@ -1629,6 +1630,11 @@
   <div class="side-foot">
     <!-- New terminal, moved here from the top bar (2026-09-18, his words). -->
     <TerminalButton variant="foot" />
+    <!-- His feedback to the agent (item 805); also Nightloom ▸ Send Feedback… and ⌘K. -->
+    <button class="foot-btn" onclick={() => runMenuCommand("feedback")}>
+      <Icon name="send" />
+      <span>Send feedback</span>
+    </button>
     <button class="foot-btn" onclick={() => (app.showSettings = true)}>
       <Icon name="gear" />
       <span>Settings</span>
