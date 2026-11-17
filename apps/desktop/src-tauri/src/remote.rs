@@ -860,6 +860,15 @@ impl Host for DesktopHost {
         from_json(DesktopHost::usage(self).await?)
     }
 
+    /// Wave O: the cache chip's rates, the Mac's own `cache_rates` read.
+    async fn cache_rates(
+        &self,
+        model: &str,
+    ) -> Result<Option<nightloom_service::usage::CacheRates>, String> {
+        let state = self.app.state::<crate::AppState>();
+        crate::commands::usage::cache_rates_for(&state, model.to_string()).await
+    }
+
     async fn search(
         &self,
         q: &str,
@@ -1028,7 +1037,7 @@ const RAIL_WAIT: Duration = Duration::from_secs(30);
 /// What this host serves of §4 (item 246 design), for `/api/state`'s
 /// `features`: the phone greys out what a host lacks. (`nightshift` the
 /// listener adds itself, while a project has it.)
-pub const FEATURES: [&str; 24] = [
+pub const FEATURES: [&str; 25] = [
     "act",
     "context",
     "layers",
@@ -1058,6 +1067,8 @@ pub const FEATURES: [&str; 24] = [
     // Item 743: `/api/rules`, and `decision: "later"` on `/api/approve`.
     "rules",
     "later",
+    // Wave O: `GET /api/cache-rates`, the cache chip's price.
+    "cache_rates",
 ];
 
 /// The phone's note deletes go here, never gone (the never-lose-work
@@ -2542,7 +2553,14 @@ mod tests {
     #[test]
     fn features_name_every_route_this_host_serves() {
         for f in [
-            "act", "rail", "running", "usage", "notes", "images", "aside",
+            "act",
+            "rail",
+            "running",
+            "usage",
+            "notes",
+            "images",
+            "aside",
+            "cache_rates",
         ] {
             assert!(FEATURES.contains(&f), "{f}");
         }

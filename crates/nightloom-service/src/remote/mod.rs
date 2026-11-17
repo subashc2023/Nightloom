@@ -454,6 +454,12 @@ pub trait Host: Send + Sync + 'static {
     async fn usage(&self) -> Result<UsageReply, String> {
         Err(NOT_AVAILABLE.into())
     }
+    /// The cache chip's rates for `model` (wave O): `usage-rates.json`'s
+    /// row, else the fit over the host's keep-warm pings; `None` with no
+    /// figure (never a guess).
+    async fn cache_rates(&self, _model: &str) -> Result<Option<crate::usage::CacheRates>, String> {
+        Err(NOT_AVAILABLE.into())
+    }
     /// Search everywhere, as the Mac's panel does.
     async fn search(
         &self,
@@ -814,6 +820,7 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/rail", get(rail).post(set_rail))
         .route("/running", get(running))
         .route("/usage", get(usage))
+        .route("/cache-rates", get(cache_rates))
         .route("/search", get(search))
         .route("/notes", get(notes_list))
         .route(
@@ -1339,6 +1346,15 @@ async fn running(State(shared): State<Arc<Shared>>) -> Response {
 
 async fn usage(State(shared): State<Arc<Shared>>) -> Response {
     answer::<UsageReply>(shared.host.usage().await)
+}
+
+/// `?model=` (required): the cache chip's rates on this host (wave O).
+async fn cache_rates(State(shared): State<Arc<Shared>>, uri: Uri) -> Response {
+    let model = api::query_param(uri.query(), "model").unwrap_or_default();
+    if model.trim().is_empty() {
+        return bad("no model named".into());
+    }
+    answer(shared.host.cache_rates(model.trim()).await)
 }
 
 /// `?q=` (required) and `?scope=this|all|notes` (default `all`).
@@ -2017,6 +2033,25 @@ mod tests {
                 },
                 ledger: serde_json::Value::Null,
             })
+        }
+        async fn cache_rates(
+            &self,
+            model: &str,
+        ) -> Result<Option<crate::usage::CacheRates>, String> {
+            // A model with a figure, one without, and a failed read.
+            match model {
+                "claude-opus-5-5" => Ok(Some(crate::usage::CacheRates {
+                    model: model.into(),
+                    read: 0.5,
+                    write_1h: 10.0,
+                    write_5m: 6.25,
+                    source: "rates",
+                    pings: 0,
+                    ratio_from: None,
+                })),
+                "broken" => Err("reading the cache rates failed".into()),
+                _ => Ok(None),
+            }
         }
         async fn search(
             &self,
@@ -3384,6 +3419,47 @@ mod tests {
         server.stop().await;
     }
 
+    /// Wave O: the phone's cache price — the chip's rates for a model, `null`
+    /// with no figure, 400 without a model, the host's error as a refusal,
+    /// and behind the token like every route.
+    #[tokio::test]
+    async fn cache_rates_answer_for_a_model() {
+        let (server, _host, _tx, token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let (status, v) = get_json(
+            &c,
+            format!("{base}/api/cache-rates?model=claude-opus-5-5"),
+            &token,
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(v["model"], "claude-opus-5-5");
+        assert_eq!(v["read"], 0.5);
+        assert_eq!(v["write_1h"], 10.0);
+        assert_eq!(v["source"], "rates");
+        let (status, v) = get_json(
+            &c,
+            format!("{base}/api/cache-rates?model=claude-fable-5-2"),
+            &token,
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(v, serde_json::Value::Null);
+        let (status, _) = get_json(&c, format!("{base}/api/cache-rates"), &token).await;
+        assert_eq!(status, 400);
+        let (status, _) =
+            get_json(&c, format!("{base}/api/cache-rates?model=broken"), &token).await;
+        assert!(status >= 400, "{status}");
+        let r = c
+            .get(format!("{base}/api/cache-rates?model=claude-opus-5-5"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status().as_u16(), 401);
+        server.stop().await;
+    }
+
     #[tokio::test]
     async fn running_usage_and_search_answer() {
         let (server, _host, _tx, token) = up().await;
@@ -3718,6 +3794,7 @@ mod tests {
             get_json(&c, format!("{base}/api/rail"), &token).await,
             get_json(&c, format!("{base}/api/running"), &token).await,
             get_json(&c, format!("{base}/api/usage"), &token).await,
+            get_json(&c, format!("{base}/api/cache-rates?model=m"), &token).await,
             get_json(&c, format!("{base}/api/search?q=x"), &token).await,
             get_json(&c, format!("{base}/api/notes"), &token).await,
             post_json(
