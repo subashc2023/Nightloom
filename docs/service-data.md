@@ -848,6 +848,61 @@ summary, not the profile and the seventy files beside it. A path in
 `memory_files` is resolved through `Root` before anything is written, the
 export being a zip that arrived by email.
 
+### Claude Code outside Nightloom (`outside.rs`, item 751, 2026-11-16)
+
+The CLI's own logs (`~/.claude/projects/<folder>/<session>.jsonl`) hold every
+session he ran in the terminal, the Claude desktop app and VS Code; until now
+no Nightloom reader saw them. `outside::sync` copies **what was said** in them —
+his typed messages and the assistant's text, never tool results, thinking,
+sidechain (subagent) lines, `isMeta` injections or the harness's tags
+(`<system-reminder>`, `<task-notification>`, slash-command echoes) — into
+Nightloom-format logs under `<config>/outside/claude-code/sessions/`, one per
+session, titled `<its name or opening line> · Claude Code <surface>, <folder>`.
+That folder is then one more session directory: the chat index, `search_chats`
+/ `read_chat` (`scope: all`) and capture read it on their usual terms, and a
+captured observation's `source` is `Claude Code, outside Nightloom` (no project
+has that name, so the dream files it in the vault with that tag in front of it).
+
+**Which sessions — the exclusions.** Only a session whose `entrypoint` names
+an interactive surface (`cli`, `claude-desktop`, `claude-vscode`) is mirrored.
+Every `sdk-*` entrypoint is a program running `claude -p`; measured
+2026-11-16 over 7,750 logs, all 1,317 of them were Nightloom's — its chats
+(incognito ones included: an incognito chat's CLI writes its log), capture
+and dream passes, test probes. A session a Nightloom log names in an
+`agent_session` event, or one whose working folder is under the config dir,
+is excluded whatever its entrypoint; a log with conversation and no
+entrypoint (an old CLI) is excluded as of unknown origin. An exclusion is
+recorded once and never revisited; a mirror found later to be Nightloom's is
+deleted. The price: his own scripted `claude -p` runs (a Nightshift unit) are
+not mirrored either.
+
+**Incremental.** `state.json` keeps per source log the byte offset read (to
+the last newline), the decision, the surface, folder and title written; a log
+that grew costs its new bytes (at most 32 MB a sync), one that shrank is
+mirrored again from the top. Each mirrored log is stamped with its last
+message's time, which the listing and the ranking's recency read. `since` —
+the first sync's time — is the capture horizon for this directory alone
+(`SessionDir::since`): years of history are searchable, but only what was
+said after the mirror began is captured.
+
+**One writer, never his files.** Only the desktop syncs — on launch, before a
+capture pass, and every ten minutes (`startMemoryClock`) — under a process
+mutex; the source logs are only opened to read.
+
+### Claude Code's memory, versioned (`claude_memory.rs`, item 751)
+
+`~/.claude/projects/<folder>/memory/` is written by the CLI from any session.
+`claude_memory::sync` copies every such folder into a git repository
+Nightloom owns, `<config>/claude-memory/<folder>/…` (files only, ≤ 1 MB,
+symlinks not followed), writing only what differs and removing copies whose
+source is gone, then commits — `nightloom: claude memory baseline` the first
+time (not listed), `nightloom: claude memory — N files in …` after. The bell
+lists those commits as **Claude Code's memory changed** with *Show the diff*
+(the dream card's view, `before` / `after`) and no Revert: a restore would be
+a write to his files. A sync runs on every bell refresh and on the ten-minute
+clock, so one card is "what changed since the last look". A test pins the
+source tree byte- and mtime-identical across a sync.
+
 ## `store.rs` — session-log discovery
 
 `list` → `SessionSummary`, `find_by_prefix`, `latest`, plus `search` and `delete`

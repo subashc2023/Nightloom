@@ -59,6 +59,8 @@ import type {
   ProposalScope,
   ProviderInfo,
   DreamCommit,
+  MemoryCommit,
+  OutsideSync,
   AppliedNotice,
   BuildStamp,
   TidyOutcome,
@@ -1789,6 +1791,12 @@ export function startupMark(step: string, ms: number, detail?: string): Promise<
   return invoke("startup_mark", { step, ms, detail });
 }
 
+/** One line of `<config>/logs/handoffs.jsonl` (item 757): a hand-off, or one
+ *  of its next chat's first turns (`handoffLog.ts` builds it). */
+export function logHandoff(record: Record<string, unknown>): Promise<null> {
+  return invoke("handoff_log", { record });
+}
+
 /**
  * Point the vault at a folder, or back at the default with `null`.
  *
@@ -1890,6 +1898,23 @@ export function centreProposals(): Promise<ProposalNotice[]> {
 /** The newest dream commits per folder, with the files each touched. */
 export function centreDreamCommits(limit?: number): Promise<DreamCommit[]> {
   return invoke("centre_dream_commits", { limit });
+}
+
+/** Version Claude Code's memory folders and list the newest changes
+ *  (item 751): his files are read, never written. */
+export function centreClaudeMemory(limit?: number): Promise<MemoryCommit[]> {
+  return invoke("centre_claude_memory", { limit });
+}
+
+/** One Claude Code memory change's patch, whole or for one file. */
+export function centreClaudeMemoryDiff(hash: string, file?: string): Promise<string> {
+  return invoke("centre_claude_memory_diff", { hash, file });
+}
+
+/** Mirror Claude Code sessions Nightloom did not start, said-only, so
+ *  search_chats and capture read them (item 751). */
+export function outsideSync(): Promise<OutsideSync> {
+  return invoke("outside_sync");
 }
 
 /** One dream commit's patch, whole or for one file. */

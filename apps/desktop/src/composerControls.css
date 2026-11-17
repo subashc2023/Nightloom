@@ -1,0 +1,570 @@
+/* The composer's controls (item 716 part 2): Send (its Jarvis bulb, scan line, edge
+   trace, FilamentMark's coil), Ask aside and Council, the model / effort / drafts
+   pickers, Attach, and the bottom row's switches — lifted out of Composer.svelte's
+   scoped <style>, so Settings' Composer row previews can draw the real controls
+   under the real rules (a hover there runs Send's animation, as in a chat).
+
+   Each selector is re-rooted on `.composer`: Svelte's scope was one class (the
+   hash on the first compound), `.composer` is one class, so no specificity moved.
+   Order in the cascade: main.ts imports this before app.css — the place the
+   scoped rules held in the bundle (every component's CSS, then main.ts's sheets),
+   so app.css still wins the ties it won. Measured: the harness's style dump of the
+   real composer (wave-d-settings2-harness, every control idle / hover / active /
+   open / disabled, Jarvis × four rows and Classic) matches before and after.
+   Keyframes `fil-scan`, `fil-charge`, `fil-edge` are global now (no other sheet
+   names them). */
+
+/* ---- the council button's frame (Composer.svelte, before item 716: lines 3993–4001) ---- */
+/* The council button's frame (backlog 149): the popover hangs off it. */
+.composer .council-wrap {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+}
+.composer .council-wrap .ns-btn.on {
+  color: var(--accent-ink);
+}
+
+/* ---- the model / effort / drafts pickers (Composer.svelte, before item 716: lines 4013–4108) ---- */
+:where(:root:not([data-layout="classic"])) .composer .pick-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  /* A drop-down is a button with a small arrow (Filament IV, item 525):
+     the control fill and edge, 28px, as `.ns-btn` in app.css. */
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: var(--r1);
+  border: 1px solid var(--line2);
+  background: var(--well);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  font-family: var(--sans);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink);
+  white-space: nowrap;
+  cursor: pointer;
+  max-width: 240px;
+  min-width: 0;
+  transition:
+    background-color 120ms,
+    border-color 120ms;
+}
+:where([data-layout="classic"]) .composer .pick-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--ink2);
+  white-space: nowrap;
+  cursor: pointer;
+  max-width: 240px;
+  min-width: 0;
+}
+:where(:root:not([data-layout="classic"])) .composer .pick-btn:hover:not(:disabled),
+:where(:root:not([data-layout="classic"])) .composer .pick-btn.open {
+  background: var(--well2);
+  color: var(--ink);
+  border-color: var(--dim);
+}
+:where([data-layout="classic"]) .composer .pick-btn:hover:not(:disabled),
+:where([data-layout="classic"]) .composer .pick-btn.open {
+  background: var(--well);
+  color: var(--ink);
+  border-color: var(--line2);
+}
+:where(:root:not([data-layout="classic"])) .composer .pick-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.composer .pick-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.composer .pick-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--done);
+  flex: none;
+}
+.composer .pick-dot.unknown {
+  background: var(--dim);
+}
+:where(:root:not([data-layout="classic"])) .composer .pick-k {
+  color: var(--dim);
+  font-weight: 400;
+}
+:where([data-layout="classic"]) .composer .pick-k {
+  color: var(--dim);
+}
+.composer .pick-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+:where(:root:not([data-layout="classic"])) .composer .pick-chev {
+  display: inline-flex;
+  color: var(--ink2);
+  flex: none;
+}
+:where([data-layout="classic"]) .composer .pick-chev {
+  display: inline-flex;
+  color: var(--dim);
+  flex: none;
+}
+.composer .pick-chev svg {
+  width: 11px;
+  height: 11px;
+}
+
+/* ---- the bottom row's switches (Composer.svelte, before item 716: lines 4361–4452) ---- */
+/* A switch (Filament IV, item 525; `.ns-switch` in app.css): a pill with
+   a sliding dot, accent when on. The mark's glyph is the track: its
+   letter is hidden and the dot is drawn on it. */
+:where(:root:not([data-layout="classic"])) .composer .bottom-toggle {
+  cursor: pointer;
+  font: 500 11.5px var(--sans);
+  color: var(--ink2);
+  gap: 7px;
+  min-height: 24px;
+  padding: 0 9px 0 8px;
+  border-radius: 12px;
+  background: var(--raised);
+  text-transform: capitalize;
+}
+:where([data-layout="classic"]) .composer .bottom-toggle {
+  cursor: pointer;
+  font-family: var(--sans);
+  color: var(--dim);
+  gap: 5px;
+}
+:where(:root:not([data-layout="classic"])) .composer .bottom-mark {
+  position: relative;
+  flex: none;
+  width: 20px;
+  height: 12px;
+  border-radius: 6px;
+  background: var(--well2);
+  font-size: 0;
+  color: transparent;
+  overflow: hidden;
+  transition: background-color 120ms;
+}
+:where([data-layout="classic"]) .composer .bottom-mark {
+  font-size: 11px;
+  opacity: 0.55;
+}
+:where(:root:not([data-layout="classic"])) .composer .bottom-mark::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--dim);
+  transition:
+    left 120ms,
+    background-color 120ms;
+}
+.composer .bottom-toggle.on {
+  color: var(--ink);
+}
+:where(:root:not([data-layout="classic"])) .composer .bottom-toggle.on .bottom-mark {
+  background: var(--accent);
+}
+:where([data-layout="classic"]) .composer .bottom-toggle.on .bottom-mark {
+  color: var(--accent);
+  opacity: 1;
+}
+:where(:root:not([data-layout="classic"])) .composer .bottom-toggle.on .bottom-mark::after {
+  left: 10px;
+  background: var(--on-accent);
+}
+:where(:root:not([data-layout="classic"])) .composer .bottom-toggle:hover {
+  border-color: var(--dim);
+  color: var(--ink);
+}
+:where([data-layout="classic"]) .composer .bottom-toggle:hover {
+  border-color: var(--accent);
+  color: var(--ink);
+}
+@media (prefers-reduced-motion: reduce) {
+  :where(:root:not([data-layout="classic"])) .composer .bottom-mark,
+:where(:root:not([data-layout="classic"])) .composer .bottom-mark::after,
+:where(:root:not([data-layout="classic"])) .composer .pick-btn {
+    transition: none;
+  }
+}
+:where(:root:not([data-layout="classic"])) .composer .bottom-toggle:disabled,
+:where(:root:not([data-layout="classic"])) .composer .bottom-toggle:disabled:hover {
+  cursor: default;
+  opacity: 0.5;
+  border-color: var(--line2);
+  color: var(--dim);
+}
+:where([data-layout="classic"]) .composer .bottom-toggle:disabled,
+:where([data-layout="classic"]) .composer .bottom-toggle:disabled:hover {
+  cursor: default;
+  opacity: 0.5;
+  border-color: transparent;
+  color: var(--dim);
+}
+
+/* ---- the row's ghost buttons (Composer.svelte, before item 716: lines 4890–4905) ---- */
+/* The row's buttons are real buttons (Attach, Ask aside, Council, Queue):
+   the markup's `ghost` is the quiet button of other screens; here each has
+   the control fill and edge, 28px tall. */
+:where(:root:not([data-layout="classic"])) .composer .row .ns-btn.ghost {
+  min-height: 28px;
+  padding: 0 11px;
+  font-size: 12.5px;
+  background: var(--well);
+  border-color: var(--line2);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  color: var(--ink);
+}
+:where(:root:not([data-layout="classic"])) .composer .row .ns-btn.ghost:hover:not(:disabled) {
+  background: var(--well2);
+  border-color: var(--dim);
+}
+
+/* ---- Council's icon and the Attach square (Composer.svelte, before item 716: lines 4928–4941) ---- */
+.composer .council-ico {
+  display: none;
+}
+/* Item 607: the attach button is the plus alone under Filament — a
+   28-px square, the row's button height, the icon centred. */
+:where(:root:not([data-layout="classic"])) .composer .attach .fold-word {
+  display: none;
+}
+:where(:root:not([data-layout="classic"])) .composer .attach {
+  justify-content: center;
+  width: 28px;
+  min-height: 28px;
+  padding: 0;
+}
+
+/* ---- Send's size (Composer.svelte, before item 716: lines 5056–5064) ---- */
+/* The main action: the one solid accent block in view, 32px tall. */
+:where(:root:not([data-layout="classic"])) .composer .send {
+  min-height: 32px;
+  padding: 0 16px;
+  font-size: 13px;
+}
+:where([data-layout="classic"]) .composer .send {
+  padding: 6px 16px;
+}
+
+/* ---- the Stop in Send's place (Composer.svelte, before item 716 part 4: lines 4959–5054) ---- */
+/* Item 398: the Stop in Send's place. "Send" in Send's weight, hidden,
+   gives it Send's width and height; the square sits centred over it. */
+/* Filament IV's Stop: a button with a brighter edge and a red square. */
+:where(:root:not([data-layout="classic"])) .composer .stop {
+  position: relative;
+  font-weight: 600;
+  border-color: var(--ink2);
+}
+:where([data-layout="classic"]) .composer .stop {
+  position: relative;
+  font-weight: 500;
+}
+:where(:root:not([data-layout="classic"])) .composer .stop:hover:not(:disabled) {
+  border-color: var(--ink);
+}
+.composer .stop .stop-size {
+  visibility: hidden;
+}
+.composer .stop .stop-ico {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+/* Item 411 (blocker 1524): the compact shapes keep the hidden "Send" for
+   Send's height only, at no width; the button is as wide as it is high. */
+.composer .stop:not(.shape-wide) {
+  padding-left: 0;
+  padding-right: 0;
+  justify-content: center;
+}
+.composer .stop:not(.shape-wide) .stop-size {
+  display: inline-block;
+  width: 0;
+  overflow: hidden;
+}
+/* ~~31 px~~ 32 px: Send's height since item 525 (the main action's). */
+:where(:root:not([data-layout="classic"])) .composer .stop.shape-square,
+:where(:root:not([data-layout="classic"])) .composer .stop.shape-round {
+  width: 32px;
+  background: color-mix(in srgb, var(--failed) 16%, var(--well));
+}
+:where([data-layout="classic"]) .composer .stop.shape-square,
+:where([data-layout="classic"]) .composer .stop.shape-round {
+  width: 31px;
+  background: color-mix(in srgb, var(--failed) 16%, var(--sheet));
+}
+.composer .stop.shape-round {
+  border-radius: 50%;
+}
+.composer .stop.shape-labelled {
+  padding-left: 12px;
+  padding-right: 12px;
+}
+.composer .stop.shape-labelled .stop-ico {
+  position: static;
+  gap: 6px;
+}
+:where(:root:not([data-layout="classic"])) .composer .stop-word {
+  font-size: 13px;
+  color: var(--ink);
+}
+:where([data-layout="classic"]) .composer .stop-word {
+  font-size: 12.5px;
+}
+/* Item 466: the Stop pressed — sunk, dimmed, its square a spinner — held
+   until the turn has ended. */
+.composer .stop.stopping {
+  transform: scale(0.92);
+  opacity: 0.6;
+  box-shadow: inset 0 1px 3px color-mix(in srgb, #000 35%, transparent);
+  cursor: progress;
+}
+.composer .stop.shape-labelled.stopping .stop-ico {
+  gap: 6px;
+}
+.composer .stop-spin {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 1.6px solid currentColor;
+  border-right-color: transparent;
+  animation: stop-spin 0.8s linear infinite;
+  flex: none;
+}
+@keyframes stop-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .composer .stop-spin {
+    animation-duration: 2.4s;
+  }
+}
+
+/* ---- Send's split and the Jarvis Send / Ask aside / Council (Composer.svelte, before item 716: lines 5173–5379) ---- */
+/* Send's split (backlog 224): the ▾ carries the right-hand corners. */
+.composer .send-split {
+  display: inline-flex;
+  align-items: stretch;
+}
+.composer .send-split .send {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+/* Item 606 (his pick, blocker 1827): Filament — Send a dark bulb with an
+   amber edge and a lit coil (FilamentMark), the ▾ its matching half; Ask
+   aside and Council carry the coil family. Filament IV only; Classic has
+   none of it (the spans below are `display: none` there). Idle: a steady
+   glow and nothing moves. Hover: brighter, wider glow and a scan line
+   crosses the bulb once. Press: a charge-and-release ring. Sending: the
+   coil's pulse loops and a bright point traces the edge. */
+.composer .fil-scan,
+.composer .fil-edge {
+  display: none;
+}
+:where(:root:not([data-layout="classic"])) .composer .ns-btn.fil-send {
+  position: relative;
+  overflow: hidden;
+  gap: 6px;
+  padding: 0 14px 0 12px;
+  background: var(--term);
+  border-color: color-mix(in srgb, var(--accent) 70%, var(--line2));
+  color: var(--accent-ink);
+  box-shadow:
+    inset 0 0 10px color-mix(in srgb, var(--accent) 14%, transparent),
+    var(--glow-main);
+  transition:
+    background 140ms ease,
+    border-color 140ms ease,
+    box-shadow 180ms ease;
+}
+:where(:root:not([data-layout="classic"])) .composer .send-split .sched-caret {
+  background: var(--term);
+  border-color: color-mix(in srgb, var(--accent) 70%, var(--line2));
+  border-left-color: color-mix(in srgb, var(--accent) 35%, var(--line2));
+  color: var(--accent-ink);
+  box-shadow:
+    inset 0 0 10px color-mix(in srgb, var(--accent) 14%, transparent),
+    var(--glow-main);
+}
+:where(:root:not([data-layout="classic"])) .composer .send-split .sched-caret:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 12%, var(--term));
+  border-color: var(--accent);
+}
+:where(:root:not([data-layout="classic"])) .composer .send-split .sched-caret:disabled {
+  box-shadow: none;
+  border-color: var(--line2);
+  color: var(--dim);
+}
+:where(:root:not([data-layout="classic"])) .composer .ns-btn.fil-send:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 12%, var(--term));
+  border-color: var(--accent);
+  color: #fff4dc;
+  box-shadow:
+    inset 0 0 12px color-mix(in srgb, var(--accent) 26%, transparent),
+    0 0 18px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+:where(:root:not([data-layout="classic"])) .composer .ns-btn.fil-send:active:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 22%, var(--term));
+  border-color: var(--accent-ink);
+  transform: translateY(1px);
+  box-shadow:
+    inset 0 0 14px color-mix(in srgb, var(--accent) 40%, transparent),
+    0 0 22px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+:where(:root:not([data-layout="classic"])) .composer .ns-btn.fil-send.sending {
+  border-color: var(--accent);
+  box-shadow:
+    inset 0 0 12px color-mix(in srgb, var(--accent) 30%, transparent),
+    0 0 18px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+:where(:root:not([data-layout="classic"])) .composer .ns-btn.fil-send:disabled {
+  background: var(--term);
+  box-shadow: none;
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--line2));
+  color: color-mix(in srgb, var(--accent-ink) 55%, var(--dim));
+  opacity: 1; /* app.css's 0.5 made the unlit bulb unreadable (2026-11-11) */
+}
+/* Calm (IV): no light — the bulb keeps its edge, without the halo. */
+:where([data-light="calm"]) .composer .ns-btn.fil-send,
+:where([data-light="calm"]) .composer .send-split .sched-caret {
+  box-shadow: none !important;
+}
+/* The scan line: a thin bright bar, parked off the left edge. */
+:where(:root:not([data-layout="classic"])) .composer .fil-scan {
+  display: block;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 10px;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--accent-ink) 55%, transparent) 45%,
+    #fffaf0 50%,
+    color-mix(in srgb, var(--accent-ink) 55%, transparent) 55%,
+    transparent
+  );
+  opacity: 0;
+  transform: translateX(-12px);
+}
+/* The edge trace: a ring the shape of the button's edge, lit by a
+   turning conic light (a bright point with an amber tail). */
+:where(:root:not([data-layout="classic"])) .composer .fil-edge {
+  display: block;
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1.5px;
+  pointer-events: none;
+  background: conic-gradient(
+    from var(--fil-a, 0deg),
+    transparent 0deg 230deg,
+    color-mix(in srgb, var(--accent) 80%, transparent) 320deg,
+    #fffaf0 352deg,
+    transparent 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  opacity: 0;
+}
+:where(:root:not([data-layout="classic"])) .composer .ns-btn.fil-send.sending .fil-edge {
+  opacity: 1;
+}
+@media (prefers-reduced-motion: no-preference) {
+  :where(:root:not([data-layout="classic"])) .composer .ns-btn.fil-send:hover:not(:disabled) .fil-scan {
+    animation: fil-scan 0.6s ease-out 1 both;
+  }
+  :where(:root:not([data-layout="classic"])) .composer .ns-btn.fil-send:active:not(:disabled) {
+    animation: fil-charge 0.32s ease-out 1;
+  }
+  :where(:root:not([data-layout="classic"])) .composer .ns-btn.fil-send.sending .fil-edge {
+    animation: fil-edge 1s linear infinite;
+  }
+}
+/* Reduce motion: static glows only — sending is a full lit edge. */
+@media (prefers-reduced-motion: reduce) {
+  :where(:root:not([data-layout="classic"])) .composer .ns-btn.fil-send.sending .fil-edge {
+    background: color-mix(in srgb, var(--accent) 80%, transparent);
+  }
+}
+@keyframes fil-scan {
+  0% {
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+  15% {
+    opacity: 0.9;
+  }
+  85% {
+    opacity: 0.9;
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(var(--fil-scan-to, 120px));
+  }
+}
+@keyframes fil-charge {
+  0% {
+    box-shadow:
+      inset 0 0 4px color-mix(in srgb, var(--accent) 20%, transparent),
+      0 0 6px color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+  45% {
+    box-shadow:
+      inset 0 0 18px color-mix(in srgb, var(--accent) 60%, transparent),
+      0 0 4px color-mix(in srgb, var(--accent) 40%, transparent);
+  }
+  100% {
+    box-shadow:
+      inset 0 0 14px color-mix(in srgb, var(--accent) 40%, transparent),
+      0 0 22px color-mix(in srgb, var(--accent) 55%, transparent);
+  }
+}
+/* The edge light's angle, registered so it turns smoothly (WebKit
+   16.4+); unregistered it would jump, which still reads as a trace. */
+@property --fil-a {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+@keyframes fil-edge {
+  to {
+    --fil-a: 360deg;
+  }
+}
+/* Ask aside and Council: the coil before the word; Council's coil
+   replaces the agent icon (also its icon-only mark at fold 3+). */
+:where(:root:not([data-layout="classic"])) .composer .ns-btn.fil-ghost {
+  gap: 6px;
+}
+:where(:root:not([data-layout="classic"])) .composer .ns-btn.fil-ghost .council-ico {
+  display: none !important;
+}

@@ -622,6 +622,17 @@ pub(crate) async fn connect(
             name: "Unfiled chats".into(),
             dir: state.default_log_dir.clone(),
         });
+        // Claude Code sessions Nightloom did not start (item 751), as the
+        // desktop mirrors them: `scope: all` reaches them, labelled.
+        if let Some(config) = project::config_dir() {
+            let outside = nightloom_service::outside::sessions_dir(&config);
+            if outside.is_dir() {
+                all.push(ChatDir {
+                    name: nightloom_service::outside::OUTSIDE_NAME.into(),
+                    dir: outside,
+                });
+            }
+        }
         ChatDirs {
             active: state.log_dir().await,
             all,

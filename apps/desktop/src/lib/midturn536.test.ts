@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /*
  * Nightshift item 536 (his report, 2026-11-09): a message he sent while a turn ran showed "not sent yet —
+ * (Item 720 renamed this Send now to Interrupt and send; Send now itself only slips a row in — midturn720.test.ts.)
  * goes when this turn ends" with only Edit and Cancel — no Send now — while he needed to stop a runaway turn.
  * The row had not been handed to the turn, and the only retry was the turn's next CLI `init`, which a
  * one-process turn never sends again. Now: every un-handed row says why, is tried again while the turn runs,
@@ -27,7 +28,7 @@ const api = await import("./api");
 const { drafts, enqueueMessage, readDraft } = await import("./drafts.svelte");
 const st = await import("./state.svelte");
 const { app, applyTurnEvent, injectIntoTurn, openChatKey, send, remoteSend, takeQueued, takeStopSend, frontQueued, handReason, sendNowPlan, RETRY_HAND_MS, turnWasStopped } = st;
-const { offersSendNow, pendingLabel, pendingState, sendNow, sendNowTip } = await import("./pendingBubble.svelte");
+const { offersInterrupt: offersSendNow, pendingLabel, pendingState, interruptSend: sendNow, interruptTip: sendNowTip } = await import("./pendingBubble.svelte");
 const composerSrc = (await import("./Composer.svelte?raw")).default as string;
 
 const CHAT = "chat-536";
@@ -112,7 +113,7 @@ describe("536: the root cause — an un-handed row waited for a CLI init that ne
     // The bubble offers Send now even so.
     expect(sendNowPlan(key, row.id)).toBe("hand");
     expect(offersSendNow("turn-end", "hand")).toBe(true);
-    expect(pendingLabel("turn-end")).toContain("or send it now");
+    expect(pendingLabel("turn-end")).toContain("or interrupt and send");
     // The turn's stdin opens; an ordinary event comes (no new `init`).
     inject.mockImplementation(async () => true);
     applyTurnEvent({ type: "thinking_delta", text: "…", chat: CHAT } as never);

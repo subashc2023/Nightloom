@@ -65,8 +65,12 @@ mod event_guard;
 /// (nightshift backlog 161).
 mod filetab;
 mod for_you;
+/// Every hand-off and its next chat's first turns, logged for scoring (nightshift item 757).
+mod handoff_log;
 /// The notes Inbox's Sort inbox (nightshift backlog 488).
 mod inbox_sort;
+// Recurring jobs' part on the Mac (item 746).
+mod jobs;
 // The keep-warm clock (backlog 582).
 mod keep_warm;
 /// A `.tex` tab's rendered PDF (nightshift backlog 381).
@@ -1694,6 +1698,7 @@ fn main() {
             commands::notes::mark_applied,
             commands::notes::knowledge_info,
             startup_log::startup_mark,
+            handoff_log::handoff_log,
             commands::notes::model_instructions_dir,
             commands::notes::chat_instructions_path,
             commands::notes::practices_layer,
@@ -1713,6 +1718,9 @@ fn main() {
             commands::memory::centre_applied_diff,
             commands::memory::centre_revert_applied,
             commands::memory::centre_dream_diff,
+            commands::memory::centre_claude_memory,
+            commands::memory::centre_claude_memory_diff,
+            commands::memory::outside_sync,
             commands::memory::centre_revert_file,
             commands::system::build_stamp,
             commands::memory::tidy_memory,

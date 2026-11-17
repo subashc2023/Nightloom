@@ -394,6 +394,8 @@ pub struct ServeHost {
     /// Push to the phone (item 739): the key, the subscriptions and the
     /// sender, under `<home>/remote/push/`.
     push: Arc<crate::push::Push>,
+    /// The recurring jobs (item 746), kept under the home like the push state.
+    jobs: Arc<crate::jobs::Jobs>,
 }
 
 /// How long the voice programs stay up with no one talking.
@@ -431,6 +433,7 @@ impl ServeHost {
                 pause_gen: std::sync::atomic::AtomicU64::new(1),
                 voice: Mutex::new(None),
                 push: crate::push::Push::open(crate::push::Push::dir_under(&cfg.home), "away"),
+                jobs: crate::jobs::Jobs::open(crate::jobs::Jobs::dir_under(&cfg.home)),
                 cfg,
             }
         })
@@ -1954,6 +1957,8 @@ impl Host for ServeHost {
                     .filter(|r| !r.trim().is_empty())
                     .unwrap_or_else(|| "the user declined this call".into()),
             },
+            // "Not now — carry on" (item 743).
+            "later" => Answer::Later,
             other => return Err(format!("unknown decision: {other}")),
         };
         lock(&self.pending).remove(&req.id);
@@ -2222,6 +2227,55 @@ impl Host for ServeHost {
         Some(self.push.clone())
     }
 
+    async fn ask_dir(&self, project: Option<&str>, chat: &str) -> Result<PathBuf, String> {
+        let (_, path) = self.chat_in(project, chat)?;
+        crate::approval_rules::ask_dir_of_log(&path)
+    }
+
+    fn jobs(&self) -> Option<Arc<crate::jobs::Jobs>> {
+        Some(self.jobs.clone())
+    }
+
+    /// The job's chat (item 746): its log, made as a Claude Code chat in
+    /// the job's project when it has none, and the Chat policy on it while
+    /// the job is read-only — each turn here reads the kind back from the
+    /// log (`apply_kind_policy`), so the run that follows is held to it.
+    ///
+    /// Item 746's review: the kind is read back from the file before the
+    /// run (`jobs::hold_kind_on_disk`), and a chat the Mac owns — a mirrored
+    /// copy, or this server's own once the Mac took it down (0444, acked) —
+    /// is never written: the send would fork it from the unchanged file,
+    /// so a job whose approval was taken back would run with the writers.
+    /// The job goes on in a new chat of its own instead.
+    async fn job_prepare(&self, prep: crate::jobs::Prep) -> Result<String, String> {
+        let project = self.project(prep.project.as_deref())?;
+        let want = crate::jobs::kind_for(prep.read_only);
+        if let Some(chat) = &prep.chat
+            && let Ok(path) = self.find_chat(project.as_ref(), chat)
+            && !self.sync.layout().needs_fork(&path)
+        {
+            let _held = self.hold(chat)?;
+            return tokio::task::spawn_blocking(move || {
+                crate::jobs::hold_kind_on_disk(&path, want)
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        }
+        let dir = self.log_dir(project.as_ref());
+        let mut session =
+            Session::start(dir, ChatMode::Normal, ChatKind::Build).map_err(|e| e.to_string())?;
+        session.record_title_by(prep.title, TitleBy::User);
+        if prep.read_only {
+            chat_ops::set_kind(&mut session, ChatKind::Chat, None);
+        }
+        let path = session.log_path().map(Path::to_path_buf);
+        drop(session);
+        let path = path.ok_or_else(|| crate::jobs::UNHELD.to_string())?;
+        tokio::task::spawn_blocking(move || crate::jobs::hold_kind_on_disk(&path, want))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
     async fn limit_pause(&self) -> Option<crate::remote::api::LimitPause> {
         let p = lock(&self.pause).clone()?;
         let resume_at = lock(&self.resume)
@@ -2286,6 +2340,9 @@ impl Host for ServeHost {
             // capture; `nightshift` the listener names itself.
             feature::BUDGET,
             feature::RESUME_LIMIT,
+            // Item 743: the rules sheet, and "Not now — carry on".
+            feature::RULES,
+            feature::LATER,
         ]
         .into_iter()
         .map(String::from)
@@ -2846,8 +2903,60 @@ esac
                 "notes_project",
                 "budget",
                 "resume_limit",
-                "push"
+                "rules",
+                "later",
+                "push",
+                // 746: named by the listener while the host has jobs.
+                "jobs"
             ])
+        );
+
+        // Item 743: the rules routes, over the chat's own folder — an add
+        // lists back, a rule that could never fire is a 409 with the reason,
+        // and the remove empties the list.
+        let rules = format!("{base}/api/rules?chat={chat}");
+        let listed = get(&c, rules.clone(), &token).await;
+        assert_eq!(listed["chat"], true);
+        let (status, body) = post(
+            &c,
+            rules.clone(),
+            &token,
+            serde_json::json!({"op": "add", "scope": "chat", "action": "block", "tool": "Bash", "text": "sudo"}),
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        let added: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(added["rules"][0]["action"], "block");
+        assert_eq!(added["rules"][0]["scope"], "chat");
+        let id = added["rules"][0]["id"].as_str().unwrap().to_string();
+        let (status, body) = post(
+            &c,
+            rules.clone(),
+            &token,
+            serde_json::json!({"op": "add", "scope": "chat", "action": "allow", "tool": "Read"}),
+        )
+        .await;
+        assert_eq!(status, 409);
+        assert!(
+            body.contains("not a tool Nightloom is asked about"),
+            "{body}"
+        );
+        let (status, body) = post(
+            &c,
+            rules.clone(),
+            &token,
+            serde_json::json!({"op": "remove", "id": id}),
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        let left = get(&c, rules, &token).await;
+        assert!(
+            left["rules"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|r| r["scope"] != "chat"),
+            "{left}"
         );
 
         // Each in-place action: the log equals the shared function's.
@@ -4204,6 +4313,114 @@ esac
         assert_eq!(roots.len(), 1);
         assert_eq!(roots[0].id, "away");
         assert_eq!(roots[0].name, "Value generalization");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+/// Item 746's review: the away server's half of a read-only job's hold.
+#[cfg(all(test, unix))]
+mod job_hold_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn host(root: &Path) -> Arc<ServeHost> {
+        let unfiled = root.join("unfiled");
+        let workspace = root.join("ws");
+        std::fs::create_dir_all(&unfiled).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        let cfg = ServeConfig {
+            binary: "/usr/bin/false".into(),
+            model: None,
+            hook_exe: None,
+            assets: None,
+            unfiled_dir: unfiled,
+            home: root.to_path_buf(),
+            unfiled_workspace: workspace,
+            nightshift_root: None,
+        };
+        ServeHost::new(cfg, Registry::load_from(root.join("projects.json")))
+    }
+
+    fn prep(chat: Option<String>, read_only: bool) -> crate::jobs::Prep {
+        crate::jobs::Prep {
+            project: None,
+            chat,
+            title: "Check CI".into(),
+            read_only,
+        }
+    }
+
+    fn log_of(root: &Path, chat: &str) -> PathBuf {
+        root.join("unfiled").join(format!("{chat}.jsonl"))
+    }
+
+    /// The approval taken back after the Mac took the job's chat down: the
+    /// chat's log is 0444 and still says Claude Code. The run must not fork
+    /// that file (the send would, with the writers on): it goes on in a
+    /// new chat of the server's own, held to the Chat policy, and the
+    /// taken-down log stays byte-identical.
+    #[tokio::test]
+    async fn a_taken_down_jobs_chat_is_never_written_and_the_run_moves_to_a_held_chat() {
+        let root = std::env::temp_dir().join(format!("nightloom-jobhold-{}", uuid::Uuid::new_v4()));
+        let h = host(&root);
+        let approved = h.job_prepare(prep(None, false)).await.unwrap();
+        let log = log_of(&root, &approved);
+        assert_eq!(Session::load(&log).unwrap().kind(), ChatKind::Build);
+        // The Mac takes it down: read-only, and on the acked list.
+        std::fs::set_permissions(&log, std::fs::Permissions::from_mode(0o444)).unwrap();
+        let state = h.sync.layout().state();
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(
+            state.join("acked.json"),
+            serde_json::to_vec(&[&approved]).unwrap(),
+        )
+        .unwrap();
+        assert!(h.sync.layout().needs_fork(&log));
+        let before = std::fs::read(&log).unwrap();
+
+        let next = h
+            .job_prepare(prep(Some(approved.clone()), true))
+            .await
+            .unwrap();
+        assert_ne!(next, approved, "a new chat of its own");
+        let held = Session::load(log_of(&root, &next)).unwrap();
+        assert_eq!(held.kind(), ChatKind::Chat);
+        assert_eq!(held.declared_kind(), ChatKind::Build);
+        assert!(
+            h.spec_for(None, &held).chat_policy,
+            "the run's spec carries the policy"
+        );
+        assert_eq!(
+            std::fs::read(&log).unwrap(),
+            before,
+            "the Mac's chat untouched"
+        );
+        let _ = std::fs::set_permissions(&log, std::fs::Permissions::from_mode(0o644));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The server's own chat, writable: the kind goes on its log, read back.
+    #[tokio::test]
+    async fn the_servers_own_jobs_chat_is_held_and_released_on_its_log() {
+        let root = std::env::temp_dir().join(format!("nightloom-jobhold-{}", uuid::Uuid::new_v4()));
+        let h = host(&root);
+        let chat = h.job_prepare(prep(None, true)).await.unwrap();
+        let s = Session::load(log_of(&root, &chat)).unwrap();
+        assert!(h.spec_for(None, &s).chat_policy);
+        assert_eq!(
+            h.job_prepare(prep(Some(chat.clone()), false))
+                .await
+                .unwrap(),
+            chat
+        );
+        let s = Session::load(log_of(&root, &chat)).unwrap();
+        assert!(!h.spec_for(None, &s).chat_policy, "approved: the writers");
+        assert_eq!(
+            h.job_prepare(prep(Some(chat.clone()), true)).await.unwrap(),
+            chat
+        );
+        let s = Session::load(log_of(&root, &chat)).unwrap();
+        assert!(h.spec_for(None, &s).chat_policy, "taken back");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

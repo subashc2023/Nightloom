@@ -49,6 +49,8 @@
   });
   // Item 617 (own block): Reply text — Line reveal or Word rise.
   import { REPLY_LOOKS, replyLook, setReplyLook } from "./replyLook.svelte";
+  import ThinkingArrivalSample from "./ThinkingArrivalSample.svelte"; // Item 716 part 5: the real thinking block.
+  import ReplyLookDemo from "./ReplyLookDemo.svelte"; // Item 716: the looping demo of each look.
   // End item 617.
   import ContextDial from "./ContextDial.svelte";
   import { planDials, surfaceShares, paceLine, weekGone, resetsWhen } from "./settingsUsage";
@@ -200,6 +202,7 @@
   import { onDestroy, tick, untrack } from "svelte";
   import { isMac } from "./platform";
   import Icon from "./Icon.svelte";
+  import FilamentMark from "./FilamentMark.svelte"; // Item 716: the real controls in the Composer row previews.
   import CopyButton from "./CopyButton.svelte";
   import { COPIED_MS } from "./copyIcon";
   import Kbd from "./Kbd.svelte";
@@ -250,7 +253,8 @@
   function previewArrival(style: ArrivalStyle) {
     stopPreview[style]?.();
     delete stopPreview[style];
-    const node = arrivalBlock[style];
+    // Item 716 part 5: the look plays on the real block's `.activity`, the node a reply's own arrival plays on.
+    const node = arrivalBlock[style]?.querySelector<HTMLElement>(".activity") ?? null;
     if (!node) return;
     stopPreview[style] = playArrival(node, reducedMotion() ? "fade" : style, 0, null, arrivalFrom[style] ?? null);
   }
@@ -1731,19 +1735,23 @@
               <span class="pick-h"><i class="radio" aria-hidden="true"></i>{r.name}</span>
               <span class="pick-n">{r.note}</span>
               <span class="composer crow-pv" data-composer-row={r.id} aria-hidden="true">
+                <!-- Item 716: the composer's own controls — its markup, under its own rules
+                     (src/composerControls.css, lifted out of Composer.svelte) and this
+                     row's (composerRow.css). Spans, not buttons, inside the pick button;
+                     pointing at one runs its hover as in a chat (Send's scan line). -->
                 <span class="card">
                   <span class="pv-text">Ask anything…</span>
                   <span class="row">
                     <span class="ns-btn ghost small attach"><Icon name="plus" /></span>
-                    <span class="pick-btn"><span class="pick-dot"></span><span class="pick-name">Opus 5.5</span></span>
+                    <span class="pick-wrap"><span class="pick-btn"><span class="pick-dot"></span><span class="pick-name">Opus 5.5</span><span class="pick-chev"><Icon name="chev" size={11} /></span></span></span>
                     <span class="pv-gap"></span>
-                    <span class="ns-btn ghost small open">Council</span>
-                    <span class="pv-send">Send</span>
+                    <span class="council-wrap"><span class="ns-btn ghost small fil-btn fil-ghost"><FilamentMark kind="council" /><span class="council-ico"><Icon name="agent" size={13} /></span><span class="council-word">Council</span></span></span>
+                    <span class="send-split"><span class="ns-btn accent send fil-btn fil-send"><span class="fil-scan"></span><span class="fil-edge"></span><FilamentMark kind="send" />Send</span><span class="ns-btn accent sched-caret">▾</span></span>
                   </span>
                 </span>
                 <span class="bottom-row">
-                  <span class="ns-chip bottom-toggle"><span class="bottom-mark"></span>thinking</span>
-                  <span class="ns-chip bottom-toggle on"><span class="bottom-mark"></span>tools</span>
+                  <span class="ns-chip bottom-toggle"><span class="bottom-mark">✦</span>thinking</span>
+                  <span class="ns-chip bottom-toggle on"><span class="bottom-mark">⚒</span>tools</span>
                 </span>
               </span>
             </button>
@@ -1859,7 +1867,14 @@
                   role="radio"
                   aria-checked={stopPref.shape === sh.id}
                   onclick={() => setStopShape(sh.id)}
-                ><span class="stop-swatch {sh.id}" aria-hidden="true">{#if sh.id === "labelled"}<i></i>Stop{:else}<i></i>{/if}</span>{sh.name}</button>
+                ><!-- Item 716 part 4: the composer's own Stop, its markup under its own rules
+                     (src/composerControls.css), at its real size; ~~a small drawing (stop-swatch)~~.
+                     A span inside the choice button; pointing at it runs its hover as in a chat. -->
+                  <span class="composer stop-pv" aria-hidden="true"
+                    ><span class="ns-btn danger send stop shape-{sh.id}"
+                      ><span class="stop-size">Send</span><span class="stop-ico"><Icon name="stop" size={sh.id === "wide" ? 16 : 12} />{#if sh.id === "labelled"}<span class="stop-word">Stop</span>{/if}</span></span
+                    ></span
+                  >{sh.name}</button>
               {/each}
             </div>
           </div>
@@ -2006,10 +2021,8 @@
                 <span class="anim-blurb">{s.blurb}</span>
               </button>
               <div class="anim-stage" aria-hidden="true">
-                <div class="anim-block" bind:this={arrivalBlock[s.id]}>
-                  <span class="anim-label">Thinking</span>
-                  <span class="anim-text">The cache key hashes the lockfile and the toolchain file…</span>
-                </div>
+                <!-- Item 716 part 5: the real reply's thinking block, ~~a stand-in drawing (anim-block)~~. -->
+                <div class="arr-host" bind:this={arrivalBlock[s.id]}><ThinkingArrivalSample /></div>
                 <div class="anim-composer" bind:this={arrivalFrom[s.id]}></div>
               </div>
               <div class="anim-foot">
@@ -2070,6 +2083,8 @@
                     <span class="anim-name">{l.name}</span>
                     <span class="anim-blurb">{l.note}</span>
                   </button>
+                  <!-- Item 716: a sample reply streaming in this look, looping (the real motion). -->
+                  <div class="anim-stage rl-stage" aria-hidden="true"><ReplyLookDemo look={l.id} /></div>
                   <div class="anim-foot">
                     {#if replyLook.value === l.id}<span class="anim-on">In use</span>{/if}
                   </div>
@@ -4999,40 +5014,13 @@
   }
   /* Backlog 412: the whole card picks, not only its name and blurb — the
      pick's ::after stretches over the stage and the foot; Preview sits above it. */
-  /* Item 411: each Stop shape drawn small in its own choice. */
-  .stop-swatch {
+  /* Item 411: each Stop shape ~~drawn small~~ in its own choice — since item 716
+     part 4 the composer's real Stop (src/composerControls.css draws it; the
+     stop-swatch drawing and its rules are gone), at its real size. */
+  .stop-pv {
     display: inline-flex;
     align-items: center;
-    justify-content: center;
-    gap: 3px;
-    height: 16px;
-    min-width: 16px;
-    margin-right: 6px;
-    vertical-align: -3px;
-    border: 1px solid #7a3d3f;
-    border-radius: 3px;
-    color: var(--failed);
-    font-size: 9px;
-    box-sizing: border-box;
-  }
-  .stop-swatch i {
-    width: 6px;
-    height: 6px;
-    border-radius: 1px;
-    background: currentColor;
-  }
-  .stop-swatch.square,
-  .stop-swatch.round {
-    background: color-mix(in srgb, var(--failed) 16%, var(--sheet));
-  }
-  .stop-swatch.round {
-    border-radius: 50%;
-  }
-  .stop-swatch.labelled {
-    padding: 0 4px;
-  }
-  .stop-swatch.wide {
-    width: 32px;
+    margin-right: 8px;
   }
   /* Item 576 (his "labels are kinda screwed up here", 2026-11-10): the
      swatch sat on the text's baseline nudged by `vertical-align: -3px`,
@@ -5042,9 +5030,10 @@
   .seg button.stop-choice {
     display: inline-flex;
     align-items: center;
-  }
-  .stop-choice .stop-swatch {
-    vertical-align: middle;
+    /* Item 716 part 4: the real Stop is 32 px high (Classic ~31), past Jarvis's 30-px choice;
+       the choice grows round it, a 4-px margin on three sides. */
+    height: auto;
+    padding: 4px 13px 4px 4px;
   }
   .anim-pick::after {
     content: "";
@@ -5104,25 +5093,10 @@
     background: var(--sheet);
     border: 1px solid var(--line);
   }
-  .anim-block {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    padding: 7px 10px;
-    border-radius: 8px;
-    border: 1px solid var(--line2);
-    background: var(--paper);
-  }
-  .anim-label {
-    font-size: 11.5px;
-    color: var(--ink2);
-  }
-  .anim-text {
-    font-size: 11.5px;
-    color: var(--dim);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  /* Item 716 part 5: ~~.anim-block / .anim-label / .anim-text, the stand-in block~~ — the stage
+     holds the real reply's thinking block now (ThinkingArrivalSample), clipped to it. */
+  .arr-host {
+    min-height: 0;
   }
   .anim-composer {
     height: 22px;
@@ -5354,7 +5328,8 @@
     border-radius: var(--r2);
     /* A strip of the dot ground behind, so the glass has something to show. */
     background: radial-gradient(circle, color-mix(in srgb, var(--ink) 12%, transparent) 1px, transparent 1.4px) 0 0 / 10px 10px, var(--paper);
-    pointer-events: none;
+    /* Item 716: ~~pointer-events: none~~ — the pointer reaches the controls, so their hover runs;
+       a click still lands on the card's pick (it bubbles to the button). */
   }
   .crow-pv .card {
     position: relative;
@@ -5375,88 +5350,39 @@
     display: flex;
     align-items: center;
     gap: 6px;
+    /* Item 716: as the composer's row does when narrow, what does not fit drops to a second line. */
+    flex-wrap: wrap;
+  }
+  /* Item 716: the controls are drawn at their real size, so each choice takes the pane's width
+     (two to a row, the row ran ~66 px past a 333-px card — measured in the wave D harness). */
+  /* Item 716: the Reply text demo's stage holds just the sample reply. */
+  .anim-stage.rl-stage {
+    gap: 0;
+    padding: 0;
+    background: none;
+    border: 0;
+  }
+  .pick2.crow-picks {
+    grid-template-columns: minmax(0, 1fr);
   }
   :global(:where(.crow-pv) .pv-gap) {
     flex: 1;
-  }
-  :global(:where(.crow-pv) .ns-btn.small.attach) {
-    padding: 0 7px;
-  }
-  :global(:where(.crow-pv) .pick-btn) {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    min-height: 26px;
-    padding: 0 9px;
-    border-radius: var(--r1);
-    border: 1px solid var(--line2);
-    background: var(--well);
-    font: 500 12px var(--sans);
-    color: var(--ink);
-    white-space: nowrap;
-  }
-  :global(:where(.crow-pv) .pick-dot) {
-    flex: none;
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--done);
-  }
-  :global(:where(.crow-pv) .pv-send) {
-    flex: none;
-    display: inline-flex;
-    align-items: center;
-    height: 26px;
-    padding: 0 10px;
-    font: 500 12px var(--sans);
-    color: var(--accent-ink);
-    border-radius: var(--r1);
-    background: var(--term);
-    border: 1px solid color-mix(in srgb, var(--accent) 60%, var(--line2));
-    box-shadow: inset 0 0 8px color-mix(in srgb, var(--accent) 35%, transparent);
   }
   :global(:where(.crow-pv) .bottom-row) {
     display: flex;
     justify-content: flex-end;
     gap: 6px;
   }
-  :global(:where(.crow-pv) .ns-chip.bottom-toggle) {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    min-height: 22px;
-    padding: 0 9px 0 8px;
-    border-radius: 12px;
-    background: var(--raised);
-    font: 500 11px var(--sans);
-    color: var(--ink2);
-    text-transform: capitalize;
-  }
-  :global(:where(.crow-pv) .bottom-mark) {
-    position: relative;
-    flex: none;
-    width: 20px;
-    height: 12px;
-    border-radius: 6px;
-    background: var(--well2);
-    overflow: hidden;
-  }
-  :global(:where(.crow-pv) .bottom-mark::after) {
-    content: "";
-    position: absolute;
-    top: 2px;
-    left: 2px;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--dim);
-  }
-  :global(:where(.crow-pv) .bottom-toggle.on .bottom-mark) {
-    background: var(--accent);
-  }
-  :global(:where(.crow-pv) .bottom-toggle.on .bottom-mark::after) {
-    left: 10px;
-    background: var(--on-accent);
+  /* Item 716: Attach, the picker, Council, Send and the switches are the composer's own now
+     (src/composerControls.css); ~~their stand-ins here (pick-btn, pick-dot, pv-send, the
+     switch)~~ are gone. Send's ▾ keeps ScheduleMenu's split-half base, which lives in that
+     component (its .sched-caret rule, verbatim). */
+  .crow-pv .sched-caret {
+    padding: 6px 7px;
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+    border-left: 1px solid rgba(0, 0, 0, 0.18);
+    margin-left: -1px;
   }
   /* ---- Filament IV, stage 7 (item 571; 521 report §2 and §5,
      f4-settings-*.png). Every rule below is behind the layout gate

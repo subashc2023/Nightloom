@@ -30,9 +30,12 @@
 //! headers yet (they need `tailscale serve` in front of the port; later).
 
 pub mod api;
+mod job_routes;
 pub mod nightshift_routes;
 mod push_routes;
 pub mod resent;
+mod rules_routes;
+mod shortcut_routes;
 pub mod sync_routes;
 pub mod tailnet;
 pub mod token;
@@ -215,7 +218,9 @@ pub struct SendReply {
 }
 
 /// An answer to one approval prompt: the desktop's `approve_call` arguments
-/// by another road. `decision` is `allow`, `always` or `deny`; `answer` is
+/// by another road. `decision` is `allow`, `always`, `deny`, or `later`
+/// ("Not now — carry on", item 743: a host that takes it names the `later`
+/// feature); `answer` is
 /// a question form's or a plan's updated input; `then` is the plan card's
 /// `ask` or `auto`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -320,6 +325,51 @@ pub trait Host: Send + Sync + 'static {
     /// [`Push::seen`]: crate::push::Push::seen
     fn push(&self) -> Option<Arc<crate::push::Push>> {
         None
+    }
+    /// The ask directory of `chat` (in `project`, when named) — where its
+    /// approval rules live (item 743, [`rules_routes`]). The directory need
+    /// not exist yet: a chat that never asked has none until a rule is
+    /// made. A host that serves the `rules` feature answers this.
+    async fn ask_dir(
+        &self,
+        project: Option<&str>,
+        chat: &str,
+    ) -> Result<std::path::PathBuf, String> {
+        let _ = (project, chat);
+        Err(NOT_AVAILABLE.into())
+    }
+
+    /// This host's recurring jobs (item 746, [`crate::jobs`]): the store
+    /// the `/api/jobs` routes read and write, and what the listener's
+    /// clock ticks. `None` — the default — and every `/api/jobs` route
+    /// answers [`NOT_AVAILABLE`].
+    fn jobs(&self) -> Option<Arc<crate::jobs::Jobs>> {
+        None
+    }
+    /// Before a job's run (item 746): its chat exists — made in the job's
+    /// project and named for it when the job has none yet — and is
+    /// read-only (the Chat policy over a Claude Code chat) or not, as the
+    /// job says now. Answers the chat's id. `Err` is why the run waits.
+    async fn job_prepare(&self, _prep: crate::jobs::Prep) -> Result<String, String> {
+        Err(NOT_AVAILABLE.into())
+    }
+    /// A job's run: `text` into its chat, wherever the host's screen is.
+    /// The default is a send that names the chat's project.
+    async fn job_send(
+        &self,
+        project: Option<&str>,
+        chat: &str,
+        text: &str,
+    ) -> Result<Handed, String> {
+        self.send_with(
+            Some(chat),
+            SendRequest {
+                text: text.to_string(),
+                project: project.map(str::to_string),
+                ..Default::default()
+            },
+        )
+        .await
     }
     /// A fresh subscriber to the event relay.
     fn events(&self) -> broadcast::Receiver<Event>;
@@ -626,6 +676,10 @@ impl Server {
             .map_err(|source| Error::Bind { addr, source })?;
         let (tx, rx) = oneshot::channel();
         let closing = tokio_util::sync::CancellationToken::new();
+        // The jobs' clock (item 746) lives and ends with the listener.
+        if let Some(jobs) = host.jobs() {
+            tokio::spawn(crate::jobs::run_loop(jobs, host.clone(), closing.clone()));
+        }
         let app = router(Arc::new(Shared {
             host,
             token: token.clone(),
@@ -760,6 +814,10 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/sent-files/{id}/{name}", get(sent_file))
         .merge(nightshift_routes::router())
         .merge(push_routes::router())
+        .merge(rules_routes::router())
+        .merge(job_routes::router())
+        // Item 744: Siri / Action Button Shortcuts (plain-text answers).
+        .merge(shortcut_routes::router())
         .merge(sync_routes::router(shared.host.sync()))
         // An explicit fallback so the bearer layer below covers a miss
         // too: without one an unknown `/api` path fell through to the
@@ -904,6 +962,11 @@ async fn state(State(shared): State<Arc<Shared>>) -> Json<StateReply> {
     features.retain(|f| f != api::feature::PUSH);
     if shared.host.push().is_some() {
         features.push(api::feature::PUSH.to_string());
+    }
+    // 746: the same for the jobs.
+    features.retain(|f| f != api::feature::JOBS);
+    if shared.host.jobs().is_some() {
+        features.push(api::feature::JOBS.to_string());
     }
     Json(StateReply {
         state,
@@ -2522,6 +2585,69 @@ mod tests {
             1,
             "{started:?}"
         );
+        server.stop().await;
+    }
+
+    /// Item 744: the Shortcut routes — behind the token, a send by name or
+    /// to the open chat with a sentence back, and "what is running" spoken.
+    #[tokio::test]
+    async fn shortcut_routes_send_by_name_and_say_what_runs() {
+        let (server, host, _tx, token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let r = c
+            .post(format!("{base}/api/shortcut/send"))
+            .json(&serde_json::json!({ "text": "hi" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 401, "the token is required");
+        let r = c
+            .post(format!("{base}/api/shortcut/send"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({ "text": "dictated", "chat": "FIRST" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 202);
+        assert_eq!(r.text().await.unwrap(), "Sent to first.");
+        let r = c
+            .post(format!("{base}/api/shortcut/send"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({ "text": "queue me please" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 202);
+        assert!(r.text().await.unwrap().starts_with("Queued in first"));
+        let r = c
+            .post(format!("{base}/api/shortcut/send"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({ "text": "x", "chat": "budget" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 404);
+        let sent = host.sent.lock().unwrap().clone();
+        assert!(
+            sent.contains(&(Some("abc".into()), "dictated".into())),
+            "{sent:?}"
+        );
+        let r = c
+            .get(format!("{base}/api/shortcut/running"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        assert!(
+            r.headers()[reqwest::header::CONTENT_TYPE]
+                .to_str()
+                .unwrap()
+                .starts_with("text/plain")
+        );
+        let said = r.text().await.unwrap();
+        assert!(said.starts_with("1 chat is running: first, "), "{said}");
         server.stop().await;
     }
 

@@ -271,6 +271,12 @@ pub(crate) async fn send_agent(
     {
         return Err("the chat named is not the chat locked — nothing was sent".to_string());
     }
+    // The log is the truth of what the chat may do (item 746's review):
+    // an agent made from a spec built before its kind changed, or for the
+    // chat on screen (a read-only job's chat made from the newest
+    // connection's spec by a prewarm or an open), is held to the Chat
+    // policy here, at the one place every turn passes.
+    agent.hold_to_kind_policy(session.kind(), session.declared_kind());
     // A background send's log folder is its chat's, not the open project's (1467).
     let log_dir = match (&chat, session.log_path().and_then(|p| p.parent())) {
         (Some(_), Some(dir)) => dir.to_path_buf(),
@@ -821,6 +827,9 @@ pub(crate) fn approve_call(
                     .filter(|r| !r.trim().is_empty())
                     .unwrap_or_else(|| "the user declined this call".into()),
             },
+            // "Not now — carry on" (item 743): set aside, asked again at
+            // the end of the reply.
+            "later" => Answer::Later,
             other => return Err(format!("unknown decision: {other}")),
         };
         // Nothing took it (item 522): the turn let go of the call between
@@ -849,6 +858,11 @@ pub(crate) fn approve_call(
                 .filter(|r| !r.trim().is_empty())
                 .unwrap_or_else(|| "the user declined this call".into()),
         ),
+        // "Not now — carry on" (item 743) on the built-in engine: a refusal
+        // is a tool result and the turn goes on, so the same words do the
+        // same job — the model does the rest and calls again, and that call
+        // asks again.
+        "later" => Decision::Deny(nightloom_service::agent::ask::LATER_REASON.to_string()),
         other => return Err(format!("unknown decision: {other}")),
     };
     state.gate.resolve(&id, decision);

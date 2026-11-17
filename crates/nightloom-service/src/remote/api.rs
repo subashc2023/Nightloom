@@ -82,6 +82,15 @@ pub mod feature {
     /// ([`super::super::Host::push`]); a host never names it, and it is
     /// not in [`ALL`].
     pub const PUSH: &str = "push";
+    /// `GET`/`POST /api/rules` (item 743): the approval rules in force.
+    pub const RULES: &str = "rules";
+    /// `POST /api/approve` takes `decision: "later"` (item 743): "Not now
+    /// — carry on".
+    pub const LATER: &str = "later";
+    /// `/api/jobs…` (item 746): recurring jobs. Listed by the listener
+    /// itself, only while the host has jobs ([`super::super::Host::jobs`]);
+    /// not in [`ALL`].
+    pub const JOBS: &str = "jobs";
     /// Every name, for a host that serves the lot and for tests.
     pub const ALL: &[&str] = &[
         ACT,
@@ -108,6 +117,8 @@ pub mod feature {
         CHECKPOINT,
         BUDGET,
         RESUME_LIMIT,
+        RULES,
+        LATER,
     ];
 }
 

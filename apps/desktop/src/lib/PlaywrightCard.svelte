@@ -26,6 +26,9 @@
     box?.focus();
   });
 
+  // Item 743: the same set-aside as ApprovalPrompt's call cards, the phone's note as its hover text.
+  const LATER_TIP = "Not now: Claude does the rest of the task without this, then asks you again at the end.";
+
   function decide(decision: ApprovalDecision) {
     if (done) return;
     done = true;
@@ -95,6 +98,8 @@
         onclick={() => decide(b.decision)}>{b.label}</button
       >
     {/each}
+    <!-- Item 743: the phone card's "Not now — carry on", same words, the `later` reply the window takes. -->
+    <button class="ns-btn" data-act="later" disabled={done} use:tip={LATER_TIP} onclick={() => decide("later")}>Not now — carry on</button>
     <span class="keys">⏎ allow once · esc deny</span>
   </div>
 </div>

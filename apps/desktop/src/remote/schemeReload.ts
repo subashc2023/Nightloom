@@ -95,6 +95,8 @@ export const RESUMABLE_SHEETS = [
   "newproject",
   "hosts",
   "nightshift",
+  // Item 746: the Jobs list (its form's half-typed words are kept apart, `jobs.ts`).
+  "jobs",
 ] as const;
 export type ResumableSheet = (typeof RESUMABLE_SHEETS)[number];
 

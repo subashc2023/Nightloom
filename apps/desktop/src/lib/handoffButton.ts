@@ -16,9 +16,13 @@
  */
 
 import { extractStartPrompt } from "./handoff.svelte";
+import { artifactsSummary, artifactsText, composeFirstMessage, costText, emptyArtifacts, isTicked, SECTIONS, type Carry } from "./handoffCarry";
 import { keptGet, keptSet } from "./keptFolds.svelte";
+import { viewGet, viewSet } from "./viewState";
 import { hasHiddenChars } from "./shellRun";
+import { foldMotion } from "./foldMotion";
 import type { SessionMeta } from "./types";
+import type { HandoffOpened } from "./handoffLog";
 
 export const CONTINUE_LABEL = "Continue with this prompt";
 export const CONTINUED_LABEL = "Continued";
@@ -40,7 +44,104 @@ export interface NextChat {
   used: boolean;
   /** Why the button cannot be pressed now, or null. */
   blocked: string | null;
+  /** Item 747: what the card adds to the prompt — the goal, his unquoted
+   *  messages, the artifact list, the cost; absent, the prompt goes alone. */
+  carry?: Carry | null;
   onContinue: () => void;
+  /** Item 756: a minimize or a restore done on the card, with its inverse,
+   *  for the chat's undo stack (⌘Z restores what a minimize folded). */
+  onFold?: (minimized: boolean, undo: () => void, redo: () => void) => void;
+}
+
+// ---- item 747: the goal he typed and the messages he ticked, per card ----
+//
+// Kept on disk (`viewState`), not for the run only: a goal typed on a card is
+// his work, and a relaunch must not lose it (practices §7).
+
+/** No goal typed on this card: the prompt's own stands. */
+const UNSET = "\u0000";
+
+function carryKey(chat: string, index: number): string {
+  return `carry:${chat}|${index}`;
+}
+
+/** The goal he typed on the card (blank: send none); null when he has not touched it. */
+export function carryGoal(chat: string, index: number): string | null {
+  const v = viewGet(`${carryKey(chat, index)}|goal`, UNSET);
+  return v === UNSET ? null : v;
+}
+
+export function setCarryGoal(chat: string, index: number, goal: string | null): void {
+  viewSet(`${carryKey(chat, index)}|goal`, goal ?? UNSET, UNSET);
+}
+
+/** His ticks on the card's list, by message id; a message not in it follows its default. */
+export function carryTicks(chat: string, index: number): Record<string, boolean> {
+  try {
+    const v = JSON.parse(viewGet(`${carryKey(chat, index)}|ticks`, "") || "{}") as unknown;
+    const out: Record<string, boolean> = {};
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      for (const [k, x] of Object.entries(v as Record<string, unknown>)) if (typeof x === "boolean") out[k] = x;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function setCarryTick(chat: string, index: number, id: string, on: boolean): void {
+  const ticks = carryTicks(chat, index);
+  ticks[id] = on;
+  viewSet(`${carryKey(chat, index)}|ticks`, JSON.stringify(ticks), "");
+}
+
+// ---- item 756: the card minimized to one line ----
+//
+// Kept on disk (`viewState`) like the goal: a card he folded stays folded
+// across a scroll, a chat switch and a relaunch (practices §7). Folding hides
+// the card's parts and drops none of them: the goal and ticks are on disk
+// already, and the fields stay in the page, hidden.
+
+/** The class on a card minimized to its one line. */
+export const MINIMIZED_CLASS = "handoff-minimized";
+/** The – button in the card's head, and the one line a minimized card shows;
+ *  `liveHtml` has no counterpart for either. */
+export const MIN_CLASS = "handoff-min";
+export const MINI_CLASS = "handoff-mini";
+
+function minKey(chat: string, index: number): string {
+  return `${carryKey(chat, index)}|min`;
+}
+
+export function cardMinimized(chat: string, index: number): boolean {
+  return viewGet(minKey(chat, index), false);
+}
+
+export function setCardMinimized(chat: string, index: number, on: boolean): void {
+  viewSet(minKey(chat, index), on, false);
+}
+
+/** What the one line says: the goal as the card's field has it, else the
+ *  prompt's first line without its "Goal:" lead. */
+export function miniText(next: Pick<NextChat, "chat" | "index" | "prompt" | "carry">): string {
+  const typed = carryGoal(next.chat, next.index);
+  const goal = (typed ?? next.carry?.goal ?? "").trim();
+  if (goal) return goal;
+  const first = next.prompt.split("\n").find((l) => l.trim()) ?? "";
+  return first.replace(/^\s*goal\s*:\s*/i, "").trim();
+}
+
+/** What *Continue with this prompt* sends for this card: the prompt alone
+ *  without a carry, else goal, prompt, his ticked messages, the list, the cost. */
+export function nextChatMessage(next: Pick<NextChat, "chat" | "index" | "prompt" | "carry">): string {
+  if (!next.carry) return next.prompt;
+  return composeFirstMessage(next.carry, carryGoal(next.chat, next.index), carryTicks(next.chat, next.index));
+}
+
+/** Item 757: what the hand-off log records for this card's *Continue* — the
+ *  carry, and his goal and ticks as the click reads them. */
+export function cardLog(next: Pick<NextChat, "chat" | "index" | "carry">): Pick<HandoffOpened, "route" | "carry" | "goal" | "ticks"> {
+  return { route: "card", carry: next.carry ?? null, goal: carryGoal(next.chat, next.index), ticks: carryTicks(next.chat, next.index) };
 }
 
 /** A reply as `Transcript` holds it, as much as this asks of it. */
@@ -94,6 +195,159 @@ export function matchingBlock<T>(blocks: readonly { el: T; text: string }[], pro
   return null;
 }
 
+/** The class of the block above the button that holds item 747's parts. */
+export const CARRY_CLASS = "handoff-carry";
+/** Longer than this, a listed message is clamped with a *more* button. */
+const LONG_MESSAGE = 220;
+
+function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, text?: string): HTMLElementTagNameMap[K] {
+  const n = document.createElement(tag);
+  n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+}
+
+/** A fold whose open state is kept for the chat (practices §7). */
+function keptDetails(cls: string, key: string): { details: HTMLDetailsElement; summary: HTMLElement } {
+  const details = el("details", cls);
+  const summary = document.createElement("summary");
+  details.append(summary);
+  details.open = keptGet(key, false);
+  details.addEventListener("toggle", () => keptSet(key, details.open, false));
+  return { details, summary };
+}
+
+function hisSummary(carry: Carry, ticks: Record<string, boolean>): string {
+  const n = carry.unquoted.length;
+  const ticked = carry.unquoted.filter((m) => isTicked(m, ticks)).length;
+  const lead = `${n} of your ${carry.messages} ${carry.messages === 1 ? "message" : "messages"} in this chat ${n === 1 ? "is" : "are"} not quoted in the hand-off`;
+  return ticked > 0 ? `${lead} — ${ticked} ticked to carry over word for word` : `${lead} — tick any to carry over word for word`;
+}
+
+/** What identifies a carry block's content: anything else, it is rebuilt. */
+function carrySig(next: NextChat): string {
+  const c = next.carry;
+  if (!c) return "";
+  return [
+    next.chat,
+    next.index,
+    c.goal,
+    c.messages,
+    c.unquoted.map((m) => m.id).join(","),
+    artifactsSummary(c.artifacts),
+    costText(c.cost),
+    c.missing === null ? "-" : c.missing.join(","),
+  ].join("|");
+}
+
+/**
+ * Item 747's parts of the card, above the button: the goal field, his
+ * messages the hand-off does not quote (tickable), the list Nightloom built
+ * from the tool calls, whether the fixed sections were written, and what the
+ * wrap-up cost. All of what the button sends beyond the prompt is here.
+ */
+function carryBlock(next: NextChat, read: () => NextChat | null | undefined): HTMLElement {
+  const carry = next.carry as Carry;
+  const { chat, index } = next;
+  const box = el("div", CARRY_CLASS);
+  box.dataset.sig = carrySig(next);
+
+  const goal = el("label", "handoff-goal");
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "handoff-goal-input";
+  input.placeholder = "What the next chat is for — sent as its first line";
+  input.setAttribute("aria-label", "Goal for the next chat");
+  input.spellcheck = false;
+  input.value = carryGoal(chat, index) ?? carry.goal;
+  input.addEventListener("input", () => setCarryGoal(chat, index, input.value === carry.goal ? null : input.value));
+  goal.append(el("span", "handoff-goal-label", "Goal"), input);
+  box.append(goal);
+
+  if (carry.unquoted.length > 0) {
+    const { details, summary } = keptDetails("handoff-his", `fold:${chat}|${index}|his`);
+    const sync = () => {
+      summary.textContent = hisSummary(carry, carryTicks(chat, index));
+    };
+    sync();
+    const list = el("div", "handoff-his-list");
+    const ticks = carryTicks(chat, index);
+    for (const m of carry.unquoted) {
+      const row = el("label", "handoff-his-row");
+      const tick = document.createElement("input");
+      tick.type = "checkbox";
+      tick.checked = isTicked(m, ticks);
+      tick.addEventListener("change", () => {
+        if (read()?.used) return;
+        setCarryTick(chat, index, m.id, tick.checked);
+        sync();
+      });
+      const text = el("span", "handoff-his-text", m.text);
+      const when = el("span", "handoff-his-when", m.carried ? `${m.when} · carried from an earlier chat` : m.when);
+      const body = el("span", "handoff-his-body");
+      body.append(when, text);
+      row.append(tick, body);
+      if (m.text.length > LONG_MESSAGE || m.text.includes("\n")) {
+        text.classList.add("clamped");
+        const more = el("button", "handoff-his-more", "more");
+        more.type = "button";
+        more.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const open = text.classList.toggle("clamped") === false;
+          more.textContent = open ? "less" : "more";
+        });
+        body.append(more);
+      }
+      list.append(row);
+    }
+    details.append(list);
+    box.append(details);
+  } else if (carry.messages > 0) {
+    box.append(el("div", "handoff-line", `All ${carry.messages} of your messages in this chat are quoted in the hand-off.`));
+  }
+
+  if (!emptyArtifacts(carry.artifacts)) {
+    const { details, summary } = keptDetails("handoff-made", `fold:${chat}|${index}|made`);
+    summary.textContent = `Nightloom adds what this chat touched, from its tool calls: ${artifactsSummary(carry.artifacts)}`;
+    details.append(el("div", "handoff-made-text", artifactsText(carry.artifacts)));
+    box.append(details);
+  }
+  if (carry.missing !== null) {
+    box.append(
+      el(
+        "div",
+        carry.missing.length ? "handoff-line handoff-warn" : "handoff-line",
+        carry.missing.length
+          ? `HANDOFF.md section: ${SECTIONS.length - carry.missing.length} of ${SECTIONS.length} fixed sections written — missing: ${carry.missing.join("; ")}`
+          : `HANDOFF.md section: all ${SECTIONS.length} fixed sections written (${SECTIONS.map((s) => s.split(" (")[0]).join(" · ")})`,
+      ),
+    );
+  }
+  const cost = costText(carry.cost);
+  if (cost) box.append(el("div", "handoff-line handoff-cost", `${cost}.`));
+  return box;
+}
+
+/** Put the carry block in the row, or take it out; rebuilt only when what it
+ *  shows changed, so a goal being typed and a list being ticked stay put. */
+function syncCarry(row: HTMLElement, next: NextChat, read: () => NextChat | null | undefined): void {
+  const have = row.querySelector<HTMLElement>(`:scope > .${CARRY_CLASS}`);
+  if (!next.carry) {
+    have?.remove();
+    return;
+  }
+  let box = have;
+  if (!box || box.dataset.sig !== carrySig(next)) {
+    box = carryBlock(next, read);
+    if (have) have.replaceWith(box);
+    else row.prepend(box);
+  }
+  for (const c of Array.from(box.querySelectorAll<HTMLInputElement>("input"))) {
+    if (c.disabled !== next.used) c.disabled = next.used;
+  }
+}
+
 function goRow(next: NextChat, read: () => NextChat | null | undefined): HTMLElement {
   const row = document.createElement("div");
   row.className = GO_CLASS;
@@ -123,6 +377,94 @@ function goRow(next: NextChat, read: () => NextChat | null | undefined): HTMLEle
   return row;
 }
 
+/** The card's key attribute, so an undo finds the card it folded wherever it is drawn now. */
+const CARD_KEY = "handoffKey";
+
+/** Show a card minimized or whole: only classes and `hidden`, so nothing in it is dropped. */
+function paintCard(card: HTMLElement, on: boolean): void {
+  card.classList.toggle(MINIMIZED_CLASS, on);
+  const line = card.querySelector<HTMLElement>(`:scope > .${MINI_CLASS}`);
+  const btn = card.querySelector<HTMLElement>(`:scope > .${MIN_CLASS}`);
+  if (line && line.hidden === on) line.hidden = !on;
+  if (btn && btn.hidden !== on) btn.hidden = on;
+}
+
+/** Item 756: minimize or restore the card of `chat`'s reply `index`, wherever it is drawn. */
+export function foldCard(chat: string, index: number, on: boolean): void {
+  setCardMinimized(chat, index, on);
+  const key = `${chat}|${index}`;
+  for (const card of Array.from(document.querySelectorAll<HTMLElement>(".handoff-card"))) {
+    // Item 755: the same short motion an aside's card folds with.
+    if (card.dataset[CARD_KEY] === key) void foldMotion(card, () => paintCard(card, on));
+  }
+}
+
+/** His click (or Enter) on the – button or the one line: fold, move the focus to
+ *  what stands now, and hand the inverse to the chat's undo stack. */
+function clickFold(card: HTMLElement, read: () => NextChat | null | undefined, on: boolean): void {
+  const now = read();
+  if (!now || cardMinimized(now.chat, now.index) === on) return;
+  const { chat, index } = now;
+  foldCard(chat, index, on);
+  card.querySelector<HTMLElement>(`:scope > .${on ? MINI_CLASS : MIN_CLASS}`)?.focus({ preventScroll: true });
+  now.onFold?.(
+    on,
+    () => foldCard(chat, index, !on),
+    () => foldCard(chat, index, on),
+  );
+}
+
+/** Item 756: the – button in the card's head and the one line it folds to. */
+function syncMinimize(card: HTMLElement, next: NextChat, read: () => NextChat | null | undefined): void {
+  card.dataset[CARD_KEY] = `${next.chat}|${next.index}`;
+  let btn = card.querySelector<HTMLButtonElement>(`:scope > button.${MIN_CLASS}`);
+  if (!btn) {
+    btn = el("button", `ns-btn ghost small ${MIN_CLASS}`, "\u2013");
+    btn.type = "button";
+    btn.setAttribute("aria-label", "Minimize the hand-off card");
+    btn.title = "Minimize to one line \u2014 click the line, or \u2318Z, to open it again";
+    const b = btn;
+    b.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      clickFold(card, read, true);
+    });
+    card.prepend(b);
+  }
+  let line = card.querySelector<HTMLElement>(`:scope > div.${MINI_CLASS}`);
+  if (!line) {
+    line = el("div", MINI_CLASS);
+    line.setAttribute("role", "button");
+    line.tabIndex = 0;
+    line.title = "Open the hand-off card again";
+    line.append(el("span", "handoff-mini-tag", "Hand-off"), el("span", "handoff-mini-text"), el("span", "handoff-mini-open", "open"));
+    line.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      clickFold(card, read, false);
+    });
+    line.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      clickFold(card, read, false);
+    });
+    card.prepend(line);
+  }
+  const text = miniText(next);
+  const span = line.querySelector<HTMLElement>(".handoff-mini-text");
+  if (span && span.textContent !== text) span.textContent = text;
+  const label = `Hand-off card, minimized: ${text}. Open it`;
+  if (line.getAttribute("aria-label") !== label) line.setAttribute("aria-label", label);
+  paintCard(card, cardMinimized(next.chat, next.index));
+}
+
+/** A card that no longer holds the controls loses item 756's parts too. */
+function clearMinimize(card: Element): void {
+  for (const n of Array.from(card.querySelectorAll(`:scope > .${MIN_CLASS}, :scope > .${MINI_CLASS}`))) n.remove();
+  card.classList.remove(MINIMIZED_CLASS);
+  if (card instanceof HTMLElement) delete card.dataset[CARD_KEY];
+}
+
 /**
  * The controls under the card that holds the prompt, or under a legacy
  * `start-prompt` block; anything else loses them, since `liveHtml` re-uses
@@ -142,14 +484,18 @@ export function addContinueControls(root: HTMLElement, read: () => NextChat | nu
     if (after && have.previousElementSibling === after && !row) row = have;
     else have.remove();
   }
+  const card = after?.parentElement?.classList.contains("handoff-card") ? after.parentElement : null;
+  for (const c of Array.from(root.querySelectorAll(".handoff-card"))) if (c !== card || !next) clearMinimize(c);
   if (!next || !after) return;
   if (!row) {
     row = goRow(next, read);
     after.after(row);
   }
-  const details = row.querySelector("details");
-  const body = row.querySelector(".handoff-order-text");
-  const b = row.querySelector("button");
+  syncCarry(row, next, read);
+  if (card) syncMinimize(card, next, read);
+  const details = row.querySelector<HTMLDetailsElement>(":scope > details.handoff-order");
+  const body = row.querySelector(":scope > .handoff-order > .handoff-order-text");
+  const b = row.querySelector<HTMLButtonElement>(":scope > button.handoff-continue");
   const order = next.readOrder.trim();
   if (details) details.hidden = !order;
   if (body && body.textContent !== order) body.textContent = order;

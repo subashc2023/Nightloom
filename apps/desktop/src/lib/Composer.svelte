@@ -76,6 +76,7 @@
     hasOwnMessage,
     hasOwnThreshold,
     message,
+    wrapUpToSend,
     noteActivity,
     noteFill,
     queueHold,
@@ -100,6 +101,7 @@
   import { composerModelId, modelFamily } from "./modelFamily";
   import { cacheFrame, cacheLook } from "./cacheLook.svelte";
   import ThreadPicker from "./ThreadPicker.svelte";
+  import HandoffGoal from "./HandoffGoal.svelte";
   import { chatThread, refreshThreadFlags, injectIntoTurn, sendNowRow, openChatKey, takeQueued, takeStopSend, frontQueued, stopSendFor } from "./state.svelte";
   import { injectChip, queueHeadLabel } from "./midTurn";
   import { rowsOf } from "./subagentRows";
@@ -162,7 +164,12 @@
     ranKey,
     takeBackQueued,
     updateAttachment,
+    removeComment,
+    setCommentNote,
   } from "./drafts.svelte";
+  import ConfirmDialog from "./ConfirmDialog.svelte";
+  import { chipLabel, shownQuote, commentLabel, commentsMessage, commentWhere, type PassageComment } from "./passageComments";
+  import { commentRequest, takeCommentFocus } from "./commentRequest.svelte";
   import type { Attachment } from "./types";
   import { chipStep, isChipTag } from "./chipSteps";
   // Scheduled send (backlog 224): the ▾ beside Send and the chip above.
@@ -309,6 +316,42 @@
   });
   const draft = $derived(readDraft(key));
   const text = $derived(draft.text);
+  /*
+   * Item 754: comments on passages — chips over the chat's box, each a
+   * passage he highlighted and his words about it (`passageComments.ts`).
+   * Part of the draft, so they outlive a switch, a reload and a quit;
+   * Send (and Queue, and the council) sends them with the box's text as
+   * one message. The aside's box has none.
+   */
+  const comments = $derived<PassageComment[]>(aside ? [] : (draft.comments ?? []));
+  /** Nothing to send: no words, no chip, no comment. */
+  const boxEmpty = $derived(!text.trim() && draft.attachments.length === 0 && comments.length === 0);
+  /** The chip whose comment line is open (view state). */
+  let openComment = $state<number | null>(null);
+  const openC = $derived(comments.find((c) => c.id === openComment) ?? null);
+  let commentTa = $state<HTMLTextAreaElement | null>(null);
+  const DROP_DIALOG = { title: "Discard this comment?" } as const;
+  /** The chip × asked about; its confirm is showing while set. */
+  let dropAsk = $state<PassageComment | null>(null);
+  $effect(() => {
+    void commentRequest.id;
+    if (aside) return;
+    const id = untrack(() => takeCommentFocus(key));
+    if (!id) return;
+    openComment = id;
+    void tick().then(() => commentTa?.focus());
+  });
+  function closeComment(): void {
+    openComment = null;
+    ta?.focus();
+  }
+  function confirmDropComment(): void {
+    const c = dropAsk;
+    dropAsk = null;
+    if (!c) return;
+    if (openComment === c.id) openComment = null;
+    removeComment(key, c.id);
+  }
 
   /*
    * The aside's composer (backlog 283). Its words were the thread's
@@ -878,7 +921,8 @@
     const chat = app.activeSessionId;
     // Item 285: with open asides, their picker first; each ticked aside's
     // summary rides in (log.md for a bound chat, the message otherwise).
-    const text = wrapUpText;
+    // ~~`wrapUpText`~~ — item 747: with the fixed sections and his goal, as the notice shows.
+    const text = wrapUpToSend(chat, wrapUpText);
     await requestWrapUp(chat, async (extra) => {
       if (app.busy || !app.connection || app.activeSessionId !== chat) {
         addToast("The wrap-up did not go — the chat was busy or no longer open; press Wrap up now again");
@@ -2283,11 +2327,12 @@
    *  where the turn is; the message goes here when it ends. */
   async function enqueue(): Promise<void> {
     const t = text.trim();
-    if (!t && attachments.length === 0) return;
+    if (!t && attachments.length === 0 && comments.length === 0) return;
     // A held message carries finished chips only (item 277).
     if (!(await conversionsDone(key))) return;
-    const held = enqueueMessage(key, readDraft(key).text, readDraft(key).attachments.slice());
-    clearDraft(key);
+    // Item 754: the comments go with it, as one message.
+    const held = enqueueMessage(key, commentsMessage(readDraft(key).comments, readDraft(key).text), readDraft(key).attachments.slice());
+    clearDraft(key, true);
     if (aside) {
       afterSend(key);
       return;
@@ -2441,7 +2486,7 @@
   }
   async function submitNow() {
     const t = text.trim();
-    const empty = !t && attachments.length === 0;
+    const empty = !t && attachments.length === 0 && comments.length === 0;
     if (empty || !app.connection) return;
     // Item 694: a plain turn does not take the held passage; Send drops it.
     dropHeld(key);
@@ -2468,11 +2513,12 @@
     if (sendKey !== key || sendKey !== liveKey() || !app.connection || app.busy) return;
     if (filesBlocked(attachments)) return;
     const pending = attachments.slice();
-    const typed = text;
+    // Item 754: each comment's passage quoted with his words, then the box's.
+    const typed = commentsMessage(comments, text);
     // Where the words were, for the send motion (backlog 194): measured
     // before the box clears.
     launch("chat", boxElement(ta));
-    clearDraft(key);
+    clearDraft(key, true);
     afterSend(key);
     await dispatch(typed, pending);
   }
@@ -2490,17 +2536,17 @@
   async function submitCouncil(prefs: CouncilPrefs) {
     councilOpen = false;
     const t = text.trim();
-    if ((!t && attachments.length === 0) || !app.connection || app.busy || sendHeld()) return;
+    if ((!t && attachments.length === 0 && comments.length === 0) || !app.connection || app.busy || sendHeld()) return;
     const sendKey = key;
     if (!(await conversionsDone(sendKey))) return;
     if (sendKey !== key || sendKey !== liveKey() || !app.connection || app.busy) return;
     if (filesBlocked(attachments)) return;
     noteActivity();
     const pending = attachments.slice();
-    const typed = text;
+    const typed = commentsMessage(comments, text);
     recordText("sent", typed);
     launch("chat", boxElement(ta));
-    clearDraft(key);
+    clearDraft(key, true);
     afterSend(key);
     await dispatch(typed, pending, false, prefs);
   }
@@ -3195,7 +3241,7 @@
           <span class="queue-text" use:tip={q.text} data-find-text={q.text}>{#if handoffHere && q.id === handoff.queuedId}<span class="ns-chip mono" use:tip={"Put here by Nightloom: the window crossed this chat's hand-off mark while you were away. × takes it back."}>wrap-up · queued while you were away</span> {/if}{firstLine(q.text) || "(no text)"}{#if q.attachments.length > 0} <span class="ns-chip mono">{q.attachments.length} {q.attachments.length === 1 ? "file" : "files"}</span>{/if}</span>
           {#if q.inject}{@const chip = injectChip(q.inject)}<span class="ns-chip mono" data-inject={chip.state} use:tip={chip.tip}>{chip.label}</span>{/if}
           {#if q.inject && q.inject.after === undefined && !q.inject.now}
-            <button class="ns-btn ghost small" data-send-now use:tip={"Stop the step Claude is in (a long command, say) and give it this message at once — as Claude Code's own send now does. The turn goes on."} onclick={() => void sendNowRow(key, q.id)}>send now</button>
+            <button class="ns-btn ghost small" data-send-now use:tip={"Interrupt and send: stop what Claude is doing (a long answer, a long command) and give it this message at once — as Claude Code's own send now does. The reply so far stays and the turn goes on. Left alone, the message slips in at Claude's next gap."} onclick={() => void sendNowRow(key, q.id)}>interrupt and send</button>
           {/if}
           {#if q.inject?.after === undefined}
             <button class="ns-btn ghost small" use:tip={"Back into the message box"} onclick={() => void takeBack(q.id)}>take back</button>
@@ -3222,7 +3268,7 @@
             {#if q.inject}{@const chip = injectChip(q.inject)}<span class="ns-chip mono" data-inject={chip.state} use:tip={chip.tip}>{chip.label}</span>{/if}
             <span class="queue-acts">
               {#if q.inject && q.inject.after === undefined && !q.inject.now}
-                <WaitAct icon="send" accent label="Send now" hint="stop the step Claude is in (a long command, say) and give it this message at once — as Claude Code's own send now does; the turn goes on" data-send-now="" onclick={() => void sendNowRow(key, q.id)} />
+                <WaitAct icon="stop" label="Interrupt and send" hint="stop what Claude is doing (a long answer, a long command) and give it this message at once — as Claude Code's own send now does; the reply so far stays and the turn goes on. Left alone, the message slips in at Claude's next gap" data-send-now="" onclick={() => void sendNowRow(key, q.id)} />
               {/if}
               {#if q.inject?.after === undefined}
                 <WaitAct icon="pencil" label="Take back" hint="back into the message box" onclick={() => void takeBack(q.id)} />
@@ -3390,6 +3436,8 @@
           setMessage(app.activeSessionId, (e.currentTarget as HTMLTextAreaElement).value);
         }}
       ></textarea>
+      <!-- Item 747: the goal for the next chat, and what Nightloom adds under the message. -->
+      <HandoffGoal chat={app.activeSessionId} />
       <div class="handoff-acts">
         {#if !wrapUpQueued}
           <button class="ns-btn accent small" disabled={app.busy || !wrapUpText.trim()} onclick={() => void sendWrapUpNow()}>Wrap up now</button>
@@ -3447,6 +3495,82 @@
   {/if}
   {#if mathShown}
     <TypedMathBar spans={mathSpans} onaccept={acceptMath} ondeny={denyMath} />
+  {/if}
+  {#if comments.length > 0}
+    <!-- Item 754: his comments on passages; each chip opens its comment
+         line, × asks first, Send sends them all with the box's words. -->
+    <div class="comments-wrap" class:plain={classic()} data-passage-comments>
+      <div class="comment-chips">
+        <span class="comment-k">{comments.length === 1 ? "1 comment" : `${comments.length} comments`}</span>
+        {#each comments as c (c.id)}
+          <span class="comment-chip" class:open={openComment === c.id} data-comment={c.id}>
+            <button
+              type="button"
+              class="comment-open"
+              aria-expanded={openComment === c.id}
+              use:tip={`A comment on a passage from ${commentWhere(c)} — click to ${openComment === c.id ? "close" : "write or change"} it. Send sends every comment with what is in the box, as one message.`}
+              onmousedown={(e) => e.preventDefault()}
+              onclick={() => {
+                if (openComment === c.id) closeComment();
+                else {
+                  openComment = c.id;
+                  void tick().then(() => commentTa?.focus());
+                }
+              }}
+            >
+              {#if !classic()}<Icon name="pencil" size={11} />{/if}
+              <span class="comment-q">“{chipLabel(c)}”</span>
+              {#if c.note.trim()}<span class="comment-n">{commentLabel(c.note, 28)}</span>{/if}
+            </button>
+            <button
+              type="button"
+              class="held-x"
+              aria-label="Discard this comment"
+              onmousedown={(e) => e.preventDefault()}
+              onclick={() => (dropAsk = c)}><Icon name="x" size={11} /></button
+            >
+          </span>
+        {/each}
+      </div>
+      {#if openC}
+        {@const oc = openC}
+        <div class="comment-edit">
+          <div class="comment-quote" use:tip={`From ${commentWhere(oc)}`}>{shownQuote(oc)}</div>
+          <textarea
+            bind:this={commentTa}
+            class="comment-ta"
+            rows="2"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+            placeholder="Your comment on this passage — ↵ done, ⇧↵ new line"
+            value={oc.note}
+            oninput={(e) => setCommentNote(key, oc.id, e.currentTarget.value)}
+            onkeydown={(e) => {
+              if ((e.key === "Enter" && !e.shiftKey && !e.isComposing) || e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation();
+                closeComment();
+              }
+            }}
+          ></textarea>
+        </div>
+      {/if}
+    </div>
+  {/if}
+  {#if dropAsk}
+    <!-- The dialog's own title prop, spread (tip.test bars title= here). -->
+    <ConfirmDialog
+      {...DROP_DIALOG}
+      lead="The passage and what you wrote about it leave the box. Your other comments and the box's words stay."
+      facts={[
+        ["passage", `“${chipLabel(dropAsk, 60)}”`],
+        ["comment", dropAsk.note.trim() ? commentLabel(dropAsk.note, 60) : "(none written)"],
+      ]}
+      confirmLabel="Discard"
+      onconfirm={confirmDropComment}
+      onclose={() => (dropAsk = null)}
+    />
   {/if}
   {#if held}
     <!-- Item 694: the passage his Ask aside is about; × drops it. -->
@@ -3691,7 +3815,7 @@
           class="ns-btn ghost small act"
           use:tip={aside ? "Hold this message; it goes when this answer ends" : "Hold this message; it goes when the turn ends"}
           onclick={enqueue}
-          disabled={!text.trim() && attachments.length === 0}>Queue</button
+          disabled={boxEmpty}>Queue</button
         >
         <!-- Item 411: its shape is his pick in Settings → Appearance (square
              unless he picks another); `wide` is item 398's, below.
@@ -3717,7 +3841,7 @@
           class="ns-btn accent send act fil-btn fil-send"
           use:tip={asideSendTip}
           onclick={() => void submit()}
-          disabled={!app.connection || asideBlock !== null || (!text.trim() && attachments.length === 0)}
+          disabled={!app.connection || asideBlock !== null || boxEmpty}
         >
           <span class="fil-scan" aria-hidden="true"></span><FilamentMark kind="send" />Send
         </button>
@@ -3732,7 +3856,7 @@
           <button
             class="ns-btn ghost small act fil-btn fil-ghost"
             use:tip={"Ask this of the chat without adding it to the chat: answered from what is already in context, no changes, recorded nowhere (Claude Code's /btw)"}
-            disabled={!text.trim() && attachments.length === 0}
+            disabled={boxEmpty}
             onclick={() => void submitAside()}
           >
             <FilamentMark kind="aside" /><span class="fold-word">Ask aside</span><span class="short-word">Aside</span>
@@ -3758,7 +3882,7 @@
             {#if councilOpen}
               <CouncilPopover
                 anchor={councilBtn}
-                disabled={!app.connection || sendHeld() || (!text.trim() && attachments.length === 0)}
+                disabled={!app.connection || sendHeld() || boxEmpty}
                 onsend={(p) => void submitCouncil(p)}
                 onclose={() => {
                   councilOpen = false;
@@ -3773,10 +3897,10 @@
         <span class="send-split act">
           <button
             class="ns-btn accent send act fil-btn fil-send"
-            use:tip={withEstimate(sendTip(!!app.connection, !text.trim() && attachments.length === 0, sendHeld()))}
+            use:tip={withEstimate(sendTip(!!app.connection, boxEmpty, sendHeld()))}
             onclick={() => void submit()}
             class:sending
-            disabled={!app.connection || sendHeld() || (!text.trim() && attachments.length === 0)}
+            disabled={!app.connection || sendHeld() || boxEmpty}
           >
             <span class="fil-scan" aria-hidden="true"></span><span class="fil-edge" aria-hidden="true"></span><FilamentMark kind="send" />Send
           </button><ScheduleMenu {key} {text} {attachments} blocked={scheduleBlocked} onscheduled={scheduled} />
@@ -3990,15 +4114,7 @@
      verbatim, behind `:global(:where([data-layout="classic"]))`. `:where()`
      weighs nothing, so neither changes the other's cascade (app.css has the
      same gate). */
-  /* The council button's frame (backlog 149): the popover hangs off it. */
-  .council-wrap {
-    position: relative;
-    display: inline-flex;
-    flex: none;
-  }
-  .council-wrap .ns-btn.on {
-    color: var(--accent-ink);
-  }
+  /* Item 716: the council button's frame — moved, verbatim and re-rooted on `.composer`, to src/composerControls.css. */
   /* The in-box pickers (backlog 112, board 10's A): small text buttons
      beside Attach, a menu above each. `.pick-wrap` is the menu's frame. */
   .pick-wrap {
@@ -4010,102 +4126,7 @@
        instead, below. */
     flex: none;
   }
-  :global(:where(:root:not([data-layout="classic"]))) .pick-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    /* A drop-down is a button with a small arrow (Filament IV, item 525):
-       the control fill and edge, 28px, as `.ns-btn` in app.css. */
-    min-height: 28px;
-    padding: 0 10px;
-    border-radius: var(--r1);
-    border: 1px solid var(--line2);
-    background: var(--well);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
-    font-family: var(--sans);
-    font-size: 12.5px;
-    font-weight: 500;
-    color: var(--ink);
-    white-space: nowrap;
-    cursor: pointer;
-    max-width: 240px;
-    min-width: 0;
-    transition:
-      background-color 120ms,
-      border-color 120ms;
-  }
-  :global(:where([data-layout="classic"])) .pick-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 3px 8px;
-    border-radius: 6px;
-    border: 1px solid transparent;
-    background: transparent;
-    font-family: var(--sans);
-    font-size: 12px;
-    color: var(--ink2);
-    white-space: nowrap;
-    cursor: pointer;
-    max-width: 240px;
-    min-width: 0;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .pick-btn:hover:not(:disabled),
-:global(:where(:root:not([data-layout="classic"]))) .pick-btn.open {
-    background: var(--well2);
-    color: var(--ink);
-    border-color: var(--dim);
-  }
-  :global(:where([data-layout="classic"])) .pick-btn:hover:not(:disabled),
-:global(:where([data-layout="classic"])) .pick-btn.open {
-    background: var(--well);
-    color: var(--ink);
-    border-color: var(--line2);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .pick-btn:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
-  }
-  .pick-btn:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-  .pick-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--done);
-    flex: none;
-  }
-  .pick-dot.unknown {
-    background: var(--dim);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .pick-k {
-    color: var(--dim);
-    font-weight: 400;
-  }
-  :global(:where([data-layout="classic"])) .pick-k {
-    color: var(--dim);
-  }
-  .pick-name {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    min-width: 0;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .pick-chev {
-    display: inline-flex;
-    color: var(--ink2);
-    flex: none;
-  }
-  :global(:where([data-layout="classic"])) .pick-chev {
-    display: inline-flex;
-    color: var(--dim);
-    flex: none;
-  }
-  .pick-chev :global(svg) {
-    width: 11px;
-    height: 11px;
-  }
+  /* Item 716: the model / effort / drafts pickers — moved, verbatim and re-rooted on `.composer`, to src/composerControls.css. */
   /* Placed by `use:floatMenu` (backlog 210): portalled to `body` and fixed
      by the button's rectangle, so the Welcome page's scrolling column can
      no longer cut it off; its top, left and max-height are set inline. */
@@ -4358,98 +4379,7 @@
     flex-wrap: wrap;
     gap: 6px;
   }
-  /* A switch (Filament IV, item 525; `.ns-switch` in app.css): a pill with
-     a sliding dot, accent when on. The mark's glyph is the track: its
-     letter is hidden and the dot is drawn on it. */
-  :global(:where(:root:not([data-layout="classic"]))) .bottom-toggle {
-    cursor: pointer;
-    font: 500 11.5px var(--sans);
-    color: var(--ink2);
-    gap: 7px;
-    min-height: 24px;
-    padding: 0 9px 0 8px;
-    border-radius: 12px;
-    background: var(--raised);
-    text-transform: capitalize;
-  }
-  :global(:where([data-layout="classic"])) .bottom-toggle {
-    cursor: pointer;
-    font-family: var(--sans);
-    color: var(--dim);
-    gap: 5px;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .bottom-mark {
-    position: relative;
-    flex: none;
-    width: 20px;
-    height: 12px;
-    border-radius: 6px;
-    background: var(--well2);
-    font-size: 0;
-    color: transparent;
-    overflow: hidden;
-    transition: background-color 120ms;
-  }
-  :global(:where([data-layout="classic"])) .bottom-mark {
-    font-size: 11px;
-    opacity: 0.55;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .bottom-mark::after {
-    content: "";
-    position: absolute;
-    top: 2px;
-    left: 2px;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--dim);
-    transition:
-      left 120ms,
-      background-color 120ms;
-  }
-  .bottom-toggle.on {
-    color: var(--ink);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .bottom-toggle.on .bottom-mark {
-    background: var(--accent);
-  }
-  :global(:where([data-layout="classic"])) .bottom-toggle.on .bottom-mark {
-    color: var(--accent);
-    opacity: 1;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .bottom-toggle.on .bottom-mark::after {
-    left: 10px;
-    background: var(--on-accent);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .bottom-toggle:hover {
-    border-color: var(--dim);
-    color: var(--ink);
-  }
-  :global(:where([data-layout="classic"])) .bottom-toggle:hover {
-    border-color: var(--accent);
-    color: var(--ink);
-  }
-  @media (prefers-reduced-motion: reduce) {
-    :global(:where(:root:not([data-layout="classic"]))) .bottom-mark,
-:global(:where(:root:not([data-layout="classic"]))) .bottom-mark::after,
-:global(:where(:root:not([data-layout="classic"]))) .pick-btn {
-      transition: none;
-    }
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .bottom-toggle:disabled,
-:global(:where(:root:not([data-layout="classic"]))) .bottom-toggle:disabled:hover {
-    cursor: default;
-    opacity: 0.5;
-    border-color: var(--line2);
-    color: var(--dim);
-  }
-  :global(:where([data-layout="classic"])) .bottom-toggle:disabled,
-:global(:where([data-layout="classic"])) .bottom-toggle:disabled:hover {
-    cursor: default;
-    opacity: 0.5;
-    border-color: transparent;
-    color: var(--dim);
-  }
+  /* Item 716: the bottom row's switches — moved, verbatim and re-rooted on `.composer`, to src/composerControls.css. */
   /* Keep-warm (582): the label is a clock time or a reason, never
      capitalised like the one-word toggles. */
   .bottom-toggle.keep-warm {
@@ -4887,22 +4817,7 @@
       linear-gradient(var(--tk), var(--tk)) 100% 100% / 12px 1.5px no-repeat,
       linear-gradient(var(--tk), var(--tk)) 100% 100% / 1.5px 12px no-repeat;
   }
-  /* The row's buttons are real buttons (Attach, Ask aside, Council, Queue):
-     the markup's `ghost` is the quiet button of other screens; here each has
-     the control fill and edge, 28px tall. */
-  :global(:where(:root:not([data-layout="classic"]))) .row .ns-btn.ghost {
-    min-height: 28px;
-    padding: 0 11px;
-    font-size: 12.5px;
-    background: var(--well);
-    border-color: var(--line2);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
-    color: var(--ink);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .row .ns-btn.ghost:hover:not(:disabled) {
-    background: var(--well2);
-    border-color: var(--dim);
-  }
+  /* Item 716: the row's ghost buttons — moved, verbatim and re-rooted on `.composer`, to src/composerControls.css. */
   .row {
     display: flex;
     align-items: center;
@@ -4925,20 +4840,7 @@
   .row:is([data-fold="2"], [data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .draft-tokens {
     display: none;
   }
-  .council-ico {
-    display: none;
-  }
-  /* Item 607: the attach button is the plus alone under Filament — a
-     28-px square, the row's button height, the icon centred. */
-  :global(:where(:root:not([data-layout="classic"]))) .attach .fold-word {
-    display: none;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .attach {
-    justify-content: center;
-    width: 28px;
-    min-height: 28px;
-    padding: 0;
-  }
+  /* Item 716: Council's icon and the Attach square — moved, verbatim and re-rooted on `.composer`, to src/composerControls.css. */
   .row:is([data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .fold-word,
   .row:is([data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .council-word {
     display: none;
@@ -5053,111 +4955,8 @@
   textarea:disabled {
     opacity: 0.5;
   }
-  /* The main action: the one solid accent block in view, 32px tall. */
-  :global(:where(:root:not([data-layout="classic"]))) .send {
-    min-height: 32px;
-    padding: 0 16px;
-    font-size: 13px;
-  }
-  :global(:where([data-layout="classic"])) .send {
-    padding: 6px 16px;
-  }
-  /* Item 398: the Stop in Send's place. "Send" in Send's weight, hidden,
-     gives it Send's width and height; the square sits centred over it. */
-  /* Filament IV's Stop: a button with a brighter edge and a red square. */
-  :global(:where(:root:not([data-layout="classic"]))) .stop {
-    position: relative;
-    font-weight: 600;
-    border-color: var(--ink2);
-  }
-  :global(:where([data-layout="classic"])) .stop {
-    position: relative;
-    font-weight: 500;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .stop:hover:not(:disabled) {
-    border-color: var(--ink);
-  }
-  .stop .stop-size {
-    visibility: hidden;
-  }
-  .stop .stop-ico {
-    position: absolute;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  /* Item 411 (blocker 1524): the compact shapes keep the hidden "Send" for
-     Send's height only, at no width; the button is as wide as it is high. */
-  .stop:not(.shape-wide) {
-    padding-left: 0;
-    padding-right: 0;
-    justify-content: center;
-  }
-  .stop:not(.shape-wide) .stop-size {
-    display: inline-block;
-    width: 0;
-    overflow: hidden;
-  }
-  /* ~~31 px~~ 32 px: Send's height since item 525 (the main action's). */
-  :global(:where(:root:not([data-layout="classic"]))) .stop.shape-square,
-:global(:where(:root:not([data-layout="classic"]))) .stop.shape-round {
-    width: 32px;
-    background: color-mix(in srgb, var(--failed) 16%, var(--well));
-  }
-  :global(:where([data-layout="classic"])) .stop.shape-square,
-:global(:where([data-layout="classic"])) .stop.shape-round {
-    width: 31px;
-    background: color-mix(in srgb, var(--failed) 16%, var(--sheet));
-  }
-  .stop.shape-round {
-    border-radius: 50%;
-  }
-  .stop.shape-labelled {
-    padding-left: 12px;
-    padding-right: 12px;
-  }
-  .stop.shape-labelled .stop-ico {
-    position: static;
-    gap: 6px;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .stop-word {
-    font-size: 13px;
-    color: var(--ink);
-  }
-  :global(:where([data-layout="classic"])) .stop-word {
-    font-size: 12.5px;
-  }
-  /* Item 466: the Stop pressed — sunk, dimmed, its square a spinner — held
-     until the turn has ended. */
-  .stop.stopping {
-    transform: scale(0.92);
-    opacity: 0.6;
-    box-shadow: inset 0 1px 3px color-mix(in srgb, #000 35%, transparent);
-    cursor: progress;
-  }
-  .stop.shape-labelled.stopping .stop-ico {
-    gap: 6px;
-  }
-  .stop-spin {
-    width: 11px;
-    height: 11px;
-    border-radius: 50%;
-    border: 1.6px solid currentColor;
-    border-right-color: transparent;
-    animation: stop-spin 0.8s linear infinite;
-    flex: none;
-  }
-  @keyframes stop-spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .stop-spin {
-      animation-duration: 2.4s;
-    }
-  }
+  /* Item 716: Send's size — moved, verbatim and re-rooted on `.composer`, to src/composerControls.css. */
+  /* Item 716 part 4: the Stop in Send's place (its shapes, its pressed state, the spinner) — moved, verbatim and re-rooted on `.composer`, to src/composerControls.css. */
   .stop-why {
     font-size: 11.5px;
     color: var(--dim);
@@ -5170,213 +4969,7 @@
     flex: 1 1 0;
     text-align: right;
   }
-  /* Send's split (backlog 224): the ▾ carries the right-hand corners. */
-  .send-split {
-    display: inline-flex;
-    align-items: stretch;
-  }
-  .send-split .send {
-    border-top-right-radius: 0;
-    border-bottom-right-radius: 0;
-  }
-  /* Item 606 (his pick, blocker 1827): Filament — Send a dark bulb with an
-     amber edge and a lit coil (FilamentMark), the ▾ its matching half; Ask
-     aside and Council carry the coil family. Filament IV only; Classic has
-     none of it (the spans below are `display: none` there). Idle: a steady
-     glow and nothing moves. Hover: brighter, wider glow and a scan line
-     crosses the bulb once. Press: a charge-and-release ring. Sending: the
-     coil's pulse loops and a bright point traces the edge. */
-  .fil-scan,
-  .fil-edge {
-    display: none;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send {
-    position: relative;
-    overflow: hidden;
-    gap: 6px;
-    padding: 0 14px 0 12px;
-    background: var(--term);
-    border-color: color-mix(in srgb, var(--accent) 70%, var(--line2));
-    color: var(--accent-ink);
-    box-shadow:
-      inset 0 0 10px color-mix(in srgb, var(--accent) 14%, transparent),
-      var(--glow-main);
-    transition:
-      background 140ms ease,
-      border-color 140ms ease,
-      box-shadow 180ms ease;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .send-split :global(.sched-caret) {
-    background: var(--term);
-    border-color: color-mix(in srgb, var(--accent) 70%, var(--line2));
-    border-left-color: color-mix(in srgb, var(--accent) 35%, var(--line2));
-    color: var(--accent-ink);
-    box-shadow:
-      inset 0 0 10px color-mix(in srgb, var(--accent) 14%, transparent),
-      var(--glow-main);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .send-split :global(.sched-caret:hover:not(:disabled)) {
-    background: color-mix(in srgb, var(--accent) 12%, var(--term));
-    border-color: var(--accent);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .send-split :global(.sched-caret:disabled) {
-    box-shadow: none;
-    border-color: var(--line2);
-    color: var(--dim);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--accent) 12%, var(--term));
-    border-color: var(--accent);
-    color: #fff4dc;
-    box-shadow:
-      inset 0 0 12px color-mix(in srgb, var(--accent) 26%, transparent),
-      0 0 18px color-mix(in srgb, var(--accent) 45%, transparent);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send:active:not(:disabled) {
-    background: color-mix(in srgb, var(--accent) 22%, var(--term));
-    border-color: var(--accent-ink);
-    transform: translateY(1px);
-    box-shadow:
-      inset 0 0 14px color-mix(in srgb, var(--accent) 40%, transparent),
-      0 0 22px color-mix(in srgb, var(--accent) 55%, transparent);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send.sending {
-    border-color: var(--accent);
-    box-shadow:
-      inset 0 0 12px color-mix(in srgb, var(--accent) 30%, transparent),
-      0 0 18px color-mix(in srgb, var(--accent) 45%, transparent);
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send:disabled {
-    background: var(--term);
-    box-shadow: none;
-    border-color: color-mix(in srgb, var(--accent) 30%, var(--line2));
-    color: color-mix(in srgb, var(--accent-ink) 55%, var(--dim));
-    opacity: 1; /* app.css's 0.5 made the unlit bulb unreadable (2026-11-11) */
-  }
-  /* Calm (IV): no light — the bulb keeps its edge, without the halo. */
-  :global(:where([data-light="calm"])) .ns-btn.fil-send,
-  :global(:where([data-light="calm"])) .send-split :global(.sched-caret) {
-    box-shadow: none !important;
-  }
-  /* The scan line: a thin bright bar, parked off the left edge. */
-  :global(:where(:root:not([data-layout="classic"]))) .fil-scan {
-    display: block;
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    left: 0;
-    width: 10px;
-    pointer-events: none;
-    background: linear-gradient(
-      90deg,
-      transparent,
-      color-mix(in srgb, var(--accent-ink) 55%, transparent) 45%,
-      #fffaf0 50%,
-      color-mix(in srgb, var(--accent-ink) 55%, transparent) 55%,
-      transparent
-    );
-    opacity: 0;
-    transform: translateX(-12px);
-  }
-  /* The edge trace: a ring the shape of the button's edge, lit by a
-     turning conic light (a bright point with an amber tail). */
-  :global(:where(:root:not([data-layout="classic"]))) .fil-edge {
-    display: block;
-    position: absolute;
-    inset: 0;
-    border-radius: inherit;
-    padding: 1.5px;
-    pointer-events: none;
-    background: conic-gradient(
-      from var(--fil-a, 0deg),
-      transparent 0deg 230deg,
-      color-mix(in srgb, var(--accent) 80%, transparent) 320deg,
-      #fffaf0 352deg,
-      transparent 360deg
-    );
-    -webkit-mask:
-      linear-gradient(#000 0 0) content-box,
-      linear-gradient(#000 0 0);
-    -webkit-mask-composite: xor;
-    mask:
-      linear-gradient(#000 0 0) content-box,
-      linear-gradient(#000 0 0);
-    mask-composite: exclude;
-    opacity: 0;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send.sending .fil-edge {
-    opacity: 1;
-  }
-  @media (prefers-reduced-motion: no-preference) {
-    :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send:hover:not(:disabled) .fil-scan {
-      animation: fil-scan 0.6s ease-out 1 both;
-    }
-    :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send:active:not(:disabled) {
-      animation: fil-charge 0.32s ease-out 1;
-    }
-    :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send.sending .fil-edge {
-      animation: fil-edge 1s linear infinite;
-    }
-  }
-  /* Reduce motion: static glows only — sending is a full lit edge. */
-  @media (prefers-reduced-motion: reduce) {
-    :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-send.sending .fil-edge {
-      background: color-mix(in srgb, var(--accent) 80%, transparent);
-    }
-  }
-  @keyframes fil-scan {
-    0% {
-      opacity: 0;
-      transform: translateX(-12px);
-    }
-    15% {
-      opacity: 0.9;
-    }
-    85% {
-      opacity: 0.9;
-    }
-    100% {
-      opacity: 0;
-      transform: translateX(var(--fil-scan-to, 120px));
-    }
-  }
-  @keyframes fil-charge {
-    0% {
-      box-shadow:
-        inset 0 0 4px color-mix(in srgb, var(--accent) 20%, transparent),
-        0 0 6px color-mix(in srgb, var(--accent) 30%, transparent);
-    }
-    45% {
-      box-shadow:
-        inset 0 0 18px color-mix(in srgb, var(--accent) 60%, transparent),
-        0 0 4px color-mix(in srgb, var(--accent) 40%, transparent);
-    }
-    100% {
-      box-shadow:
-        inset 0 0 14px color-mix(in srgb, var(--accent) 40%, transparent),
-        0 0 22px color-mix(in srgb, var(--accent) 55%, transparent);
-    }
-  }
-  /* The edge light's angle, registered so it turns smoothly (WebKit
-     16.4+); unregistered it would jump, which still reads as a trace. */
-  @property --fil-a {
-    syntax: "<angle>";
-    inherits: false;
-    initial-value: 0deg;
-  }
-  @keyframes fil-edge {
-    to {
-      --fil-a: 360deg;
-    }
-  }
-  /* Ask aside and Council: the coil before the word; Council's coil
-     replaces the agent icon (also its icon-only mark at fold 3+). */
-  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-ghost {
-    gap: 6px;
-  }
-  :global(:where(:root:not([data-layout="classic"]))) .ns-btn.fil-ghost .council-ico {
-    display: none !important;
-  }
+  /* Item 716: Send's split and the Jarvis Send / Ask aside / Council — moved, verbatim and re-rooted on `.composer`, to src/composerControls.css. */
   .hint {
     max-width: 760px;
     margin: 0.4rem auto 0;
@@ -5387,6 +4980,127 @@
      over its first line; the card is the positioning frame. */
   .card {
     position: relative;
+  }
+  /* Item 754: comments on passages — a row of chips over the box (the
+     held chip's pill), and the open one's comment line under them. */
+  .comments-wrap {
+    max-width: 760px;
+    margin: 0 auto 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .comment-chips {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+  .comment-k {
+    font: 10.5px var(--mono);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--dim);
+    flex: none;
+  }
+  .comment-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+    max-width: 100%;
+    padding: 2px 4px 2px 9px;
+    background: var(--raised);
+    border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line2));
+    border-radius: 999px;
+    font-size: 12px;
+    color: var(--ink2);
+    white-space: nowrap;
+  }
+  .comment-chip.open {
+    border-color: var(--accent);
+  }
+  .comment-open {
+    all: unset;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    cursor: pointer;
+  }
+  .comment-open:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+    outline-offset: 1px;
+    border-radius: 999px;
+  }
+  .comment-open :global(.ns-ico) {
+    color: var(--accent);
+    flex: none;
+  }
+  .comment-q {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--ink);
+  }
+  .comment-n {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--dim);
+  }
+  .comment-n::before {
+    content: "— ";
+  }
+  .comment-edit {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 10px;
+    background: var(--raised);
+    border: 1px solid var(--line2);
+    border-left: 2px solid var(--accent);
+    border-radius: var(--r1, 6px);
+  }
+  .comment-quote {
+    font-size: 12px;
+    color: var(--ink2);
+    white-space: pre-wrap;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    -webkit-box-orient: vertical;
+  }
+  .comment-ta {
+    all: unset;
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 2.6em;
+    font: inherit;
+    font-size: 13px;
+    line-height: 1.4;
+    color: var(--ink);
+    white-space: pre-wrap;
+    field-sizing: content;
+    max-height: 9em;
+    overflow-y: auto;
+  }
+  .comment-ta::placeholder {
+    color: var(--dim);
+  }
+  .plain .comment-chip {
+    border-color: var(--line2);
+    border-radius: var(--r1, 4px);
+    background: transparent;
+  }
+  .plain .comment-chip.open {
+    border-color: var(--ink2);
+  }
+  .plain .comment-edit {
+    border-left-color: var(--line2);
+    background: transparent;
   }
   /* Item 694: the held passage's chip, above the box — the cap chip's
      pill (TurnCapChip), the passage in the accent's tint under Jarvis;

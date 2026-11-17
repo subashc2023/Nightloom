@@ -2197,6 +2197,79 @@ them is superseded by this paragraph.
   the unsent path. A chat's own read order can no longer be edited, only kept
   (blocker 1662).
 
+**What a hand-off carries (nightshift item 747, 2026-11-16).** From item
+736's survey of other harnesses (hand-offs that take a goal, fixed summary
+sections, pinned instructions, a file list built from tool calls). Nothing
+here asks the model to judge; all of it is read from the chat's log
+(`handoffCarry.ts`, pure; `handoffCarryFor.ts` reads the open chat's log;
+`handoffButton.ts` draws it).
+
+- **The wrap-up as sent** (`wrapUpToSend`): the chat's wrap-up message — the
+  built-in, his Settings text, the chat's own, a thread's — then **the fixed
+  sections**, added by Nightloom under any of them (`sectionsAddendum`): the
+  prompt opens with a `Goal:` line; the new HANDOFF.md section has `### Goal`,
+  `### His instructions in this chat (verbatim, dated)`, `### Done / In
+  progress / Blocked`, `### Decisions`, `### Critical context`, `### Next
+  steps` (the queue, last); what to keep word for word and what to drop; and
+  not to list files, since Nightloom does. A thread chat in a project with no
+  HANDOFF.md is asked only for the goal line and his words in the prompt. Then
+  his **goal**, when he typed one in the notice's *Goal for the next chat*
+  field (`HandoffGoal.svelte`; kept per chat with the other hand-off choices).
+  The notice has a folded line, *Nightloom adds the hand-off's fixed sections
+  under this message*, opening to the added text, so all that is sent is on
+  the notice. The usage line's *Wrap up* and the wrap-up queued while he is
+  away send the same.
+- **The card**, above *Continue with this prompt*: a **Goal** field holding
+  the prompt's own `Goal:` line, editable (his edit replaces the line; emptied,
+  none is sent); **his messages the hand-off does not quote** — every message
+  of his in the chat (not rewound, not removed, edits applied, wrap-ups and the
+  chat's own opening hand-off prompt left out) is compared with what the
+  wrap-up turn wrote (its replies, and the text its Edit, Write and Bash calls
+  put on disk); one is *quoted* when at least half its words sit in runs of 8
+  words the hand-off repeats. The rest are listed, oldest first, each with a
+  tick box: a ticked one goes to the next chat word for word, dated. Messages
+  carried into this chat that way are listed first and stay ticked until he
+  unticks them, so a rule survives every hop; **the list built from the tool
+  calls** (folded): files edited with call counts, files read most, files
+  named most in shell commands, commits (from `git commit`'s own output line),
+  subagents with the report files their prompt or result names, backlog items
+  and blockers named by a path or a commit subject; **the section check** when
+  the turn wrote HANDOFF.md: which fixed headings are missing; and **what the
+  wrap-up cost**: requests, tokens written, tokens read and how many from
+  cache, time, dollars where recorded.
+- **What the button sends** (`nextChatMessage`): `Goal: …`, the prompt, his
+  ticked messages under a fixed heading, the list and the cost line. With no
+  goal, nothing ticked and no tool calls it is the prompt unchanged. The goal
+  and the ticks are kept on disk per reply (`viewState`), the folds for the
+  run. After *Continued* the field and boxes are disabled.
+- **Not covered:** the phone's Continue and the composer's no-prompt
+  *Continue in a new chat* send no carry; what a shell command *wrote* is not
+  attributed to a file beyond the path being named in the command.
+
+**Every hand-off is logged for scoring (nightshift item 757, 2026-11-16).**
+`<config>/logs/handoffs.jsonl` (`~/.nightloom/logs/`, or under
+`NIGHTLOOM_HOME`), one JSON object per line, built in the window
+(`handoffLog.ts`) and appended and stamped (`at`) by `handoff_log.rs`:
+
+- **`kind: "handoff"`** when a next chat opens from a hand-off, by any of the
+  three routes — `route: "card"` (*Continue with this prompt*, with the carry),
+  `"box"` (the no-prompt line or the phone: the text goes in the box) and
+  `"unattended"` (the hand-off made while he is away). It holds both chats,
+  the goal and where it came from (`goal_from`: the card's field, the
+  prompt's own line, none), the first message as sent, his ticked messages
+  word for word, the unticked ones by id, date, word count and quoted share
+  only (their text was not carried, so it is not logged), the list built from
+  the tool calls uncapped with the card's caps beside it, the fixed-sections
+  check (`missing`) and the wrap-up's cost.
+- **`kind: "next_turn"`**, one for each of the first 30 turns of a chat whose
+  log opens with a `handoff` fork, at each turn's end (open chat, provider and
+  background turns alike): files edited, read and named in shell commands,
+  commits, tool-call count. The last turn logged is kept per chat in
+  `viewState`, so a relaunch does not log a turn twice.
+
+Nothing is sent anywhere; a line that cannot be written is dropped. The
+reader is `nightshift-code/bin/handoffscore.py`.
+
 **The read order (nightshift backlog 193, 2026-09-25).** *Continue in a new
 chat* now fills the new chat's box with a fixed prompt — the read order —
 and under it the model's `start-prompt` block (`firstMessage` in

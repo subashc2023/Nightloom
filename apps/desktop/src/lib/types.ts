@@ -511,6 +511,27 @@ export interface DreamCommit {
   files: ChangedFile[];
 }
 
+/** A change to Claude Code's own memory (`~/.claude/projects/<dir>/memory/`),
+ *  seen by a sync into Nightloom's history folder (item 751). Paths are
+ *  `<dir>/<file>`; `places` names each `<dir>` for a person. */
+export interface MemoryCommit {
+  hash: string;
+  /** RFC 3339: when the sync saw it. */
+  at: string;
+  subject: string;
+  files: ChangedFile[];
+  places: string[];
+}
+
+/** What a sync of Claude Code sessions outside Nightloom did (item 751). */
+export interface OutsideSync {
+  sources: number;
+  mirrored: number;
+  messages: number;
+  excluded: Record<string, number>;
+  admitted: number;
+}
+
 /** A dream's write to an `AGENTS.md` that no git commit carries (backlog
  *  344): the user's own file, or a project outside git. Revert restores
  *  the copy kept from before. */
@@ -1156,7 +1177,9 @@ export interface ApprovalRequest {
   reason?: string;
 }
 
-export type ApprovalDecision = "allow" | "always" | "deny";
+/** `later` is "Not now — carry on" (nightshift item 743): the call is set
+ *  aside, the turn does the rest and asks again at the end. */
+export type ApprovalDecision = "allow" | "always" | "deny" | "later";
 
 /** The approval card's folder grant (backlog 143, pass 2): the folder and
  *  who keeps it — the chat's log, or the project's registry. */

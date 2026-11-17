@@ -18,6 +18,7 @@
   import { outcome, startMove } from "./floatingMove";
   import { landMoved, placeMoved } from "./asideMove";
   import { expandAside, minimizeAside } from "./state/asides.svelte";
+  import { foldMotion } from "./foldMotion";
   import { asideLabel } from "./asides";
   import type { Zone } from "./floatingMove";
   import { tick, untrack } from "svelte";
@@ -141,6 +142,19 @@
   const folded = $derived(!panel && aside.folded === true);
   /** Item 735: minimized to one line (never in the panel). */
   const minimized = $derived(!panel && aside.minimized === true);
+  /** Item 755: minimize and expand with the short fold motion (foldMotion.ts), the hand-off card's too. */
+  function minimizeMoving(): void {
+    void foldMotion(root, async () => {
+      minimizeAside(aside);
+      await tick();
+    });
+  }
+  function expandMoving(): void {
+    void foldMotion(root, async () => {
+      expandAside(aside);
+      await tick();
+    });
+  }
   const miniLabel = $derived(asideLabel(aside, 40));
   const last = $derived(aside.turns[aside.turns.length - 1] ?? null);
   /** The chat the thread belongs to: the panel's, else the open one. */
@@ -457,11 +471,11 @@
     use:tip={aside.newReply ? "A new reply landed — click to open the aside" : "Click to open the aside"}
     onpointerdown={headDown}
     onmousedown={headMouseDown}
-    onclick={() => expandAside(aside)}
+    onclick={() => expandMoving()}
     onkeydown={(e) => {
       if (e.key !== "Enter" && e.key !== " ") return;
       e.preventDefault();
-      expandAside(aside);
+      expandMoving();
     }}
   >
     <span class="aside-mini-tag" aria-hidden="true">aside</span>
@@ -537,7 +551,7 @@
         class="ns-btn ghost small aside-card-min"
         aria-label="Minimize the aside"
         use:tip={"Minimize to one line — click it to open again"}
-        onclick={() => minimizeAside(aside)}>–</button
+        onclick={() => minimizeMoving()}>–</button
       >
     {/if}
     {#if moved}

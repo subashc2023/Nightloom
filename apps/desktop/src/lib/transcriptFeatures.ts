@@ -61,6 +61,7 @@ export const TRANSCRIPT_FEATURES: Record<string, Where> = {
   "save an edit in place": mainOnly("an aside's exchanges travel as text; Ask again replaces them"),
   "fork helpers from here, checkpoint line": mainOnly("an aside has no session of its own"),
   "ask aside on a selection, aside cards": mainOnly("an aside of an aside has no context to fork from"),
+  "comment on a selection (item 754): chips over the chat's box": mainOnly("comments collect in the chat's message box; an aside's thread has Reply for its own box"),
   "approval prompts, answer hand-back": mainOnly("an aside runs without prompts"),
   "budget stop card": mainOnly("the 85% hold is on the chat's turn"),
   "rewound-writes card": mainOnly("an aside writes nothing"),

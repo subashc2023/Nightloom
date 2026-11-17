@@ -5,7 +5,9 @@
  * while the Mac is unreachable. Nothing here touches the DOM, so all of it
  * is under `client.test.ts`; `Remote.svelte` is the screen over it.
  */
+import type { Job, JobPatch, JobsReply, NewJob } from "./jobs";
 import type { ApprovalRequest, DocumentInput, ImageInput, SessionEvent, TurnEvent } from "../lib/types";
+import type { RuleEdit, RulesListing } from "./rules";
 import type { SubagentLimits } from "../lib/catalog";
 import type { WireView } from "../lib/types";
 import type { ContextReply, LayerChange } from "./ContextSheet.svelte";
@@ -82,6 +84,14 @@ export interface LimitPauseWire {
   subagents?: string[];
   /** Set while the host has a resume scheduled (reset + 30 s). */
   resume_at?: number | string | null;
+}
+
+/** `?chat=…&project=…` for the rules routes; neither when no chat is named. */
+export function rulesQuery(chat: string | null, project: string | null): string {
+  if (!chat) return "";
+  const q = new URLSearchParams({ chat });
+  if (project) q.set("project", project);
+  return `?${q.toString()}`;
 }
 
 /** Whether the host serves `name` (design §4's `features`). */
@@ -829,6 +839,29 @@ export class Client {
     return (await this.call("/usage")).json();
   }
 
+  // ---- item 746: recurring jobs (`jobs.ts`, `JobsSheet.svelte`) ----
+
+  async jobs(): Promise<JobsReply> {
+    return (await this.call("/jobs")).json();
+  }
+
+  /** A 400 is the host's sentence for a schedule it cannot read. */
+  async jobNew(req: NewJob): Promise<Job> {
+    return (await this.call("/jobs", { method: "POST", body: JSON.stringify(req) })).json();
+  }
+
+  async jobPatch(id: string, patch: JobPatch): Promise<Job> {
+    return (await this.call(`/jobs/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify(patch) })).json();
+  }
+
+  async jobRun(id: string): Promise<Job> {
+    return (await this.call(`/jobs/${encodeURIComponent(id)}/run`, { method: "POST" })).json();
+  }
+
+  async jobDelete(id: string): Promise<void> {
+    await this.call(`/jobs/${encodeURIComponent(id)}`, { method: "DELETE" });
+  }
+
   // ---- wave 2B's patch note (246w2-patch-p2b-to-p2c, ~4:15 AM) ----
 
   /** A chat's Context page (design §4 `context`): the view, its layers,
@@ -959,10 +992,23 @@ export class Client {
     return parseSendReply(await r.text());
   }
 
+  /** Item 743: the approval rules in force — every chat's, and `chat`'s
+   *  when one is named (`project` as `act`'s). */
+  async rules(chat: string | null, project: string | null = null): Promise<RulesListing> {
+    return (await this.call(`/rules${rulesQuery(chat, project)}`)).json();
+  }
+
+  /** One change to the rules; the reply is the listing after it. A 409's
+   *  text is the host's sentence for why not. */
+  async editRules(chat: string | null, project: string | null, edit: RuleEdit): Promise<RulesListing> {
+    return (await this.call(`/rules${rulesQuery(chat, project)}`, { method: "POST", body: JSON.stringify(edit) })).json();
+  }
+
   async approve(req: {
     id: string;
     name: string;
-    decision: "allow" | "always" | "deny";
+    /** `later` is "Not now — carry on" (item 743), where the host has the `later` feature. */
+    decision: "allow" | "always" | "deny" | "later";
     reason?: string;
     answer?: unknown;
     then?: "ask" | "auto";

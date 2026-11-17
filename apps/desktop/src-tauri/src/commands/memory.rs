@@ -461,6 +461,57 @@ pub(crate) async fn centre_dream_diff(
     .await
 }
 
+/// Claude Code's own memory, versioned (item 751): copy every
+/// `~/.claude/projects/*/memory/` into Nightloom's history folder, commit
+/// what changed, and list the newest change commits — the bell's "Claude
+/// Code's memory changed" cards. His files are only read.
+#[tauri::command]
+pub(crate) async fn centre_claude_memory(
+    limit: Option<usize>,
+) -> Result<Vec<nightloom_service::claude_memory::MemoryCommit>, String> {
+    let Some(config) = project::config_dir() else {
+        return Ok(Vec::new());
+    };
+    let limit = limit.unwrap_or(10).clamp(1, 50);
+    blocking(move || {
+        if let Some(claude) = nightloom_service::usage::claude_dir() {
+            // A sync that fails (git missing, say) still lists what is there.
+            let _ = nightloom_service::claude_memory::sync(&config, &claude);
+        }
+        Ok::<_, String>(nightloom_service::claude_memory::commits(&config, limit))
+    })
+    .await
+}
+
+/// One Claude Code memory change's patch, whole or for one file. The
+/// repository is Nightloom's history folder, never a path from the window.
+#[tauri::command]
+pub(crate) async fn centre_claude_memory_diff(
+    hash: String,
+    file: Option<String>,
+) -> Result<String, String> {
+    let config = project::config_dir().ok_or("no config folder")?;
+    blocking(move || nightloom_service::claude_memory::diff(&config, &hash, file.as_deref())).await
+}
+
+/// One writer for the mirror of outside Claude Code sessions.
+static OUTSIDE_SYNC: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Bring the mirror of Claude Code sessions Nightloom did not start up to
+/// date (item 751), so `search_chats`, `read_chat` and capture read them.
+/// Run on launch and on the bell's clock; a sync already running is
+/// waited for, not doubled.
+#[tauri::command]
+pub(crate) async fn outside_sync() -> Result<nightloom_service::outside::SyncOutcome, String> {
+    let config = project::config_dir().ok_or("no config folder")?;
+    let claude = nightloom_service::usage::claude_dir().ok_or("no Claude Code folder")?;
+    blocking(move || {
+        let _one = OUTSIDE_SYNC.lock().unwrap_or_else(|e| e.into_inner());
+        nightloom_service::outside::sync(&config, &claude)
+    })
+    .await
+}
+
 /// The dream's writes to an `AGENTS.md` that no git commit carries
 /// (backlog 344) — the user's own file, a project outside git — listed
 /// beside the dream commits as *Show the diff*.

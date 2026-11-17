@@ -323,7 +323,20 @@ pub enum Answer {
     /// as delivered under it once the refusal has landed, and the log keeps
     /// it as his message.
     Reply { id: Option<String>, text: String },
+    /// "Not now — carry on" (nightshift item 743): the call is set aside,
+    /// neither run nor refused for good. The model reads [`LATER_REASON`]
+    /// as the call's result, does the rest of the task, and makes the call
+    /// again at the end — which pauses on the card again. Measured before
+    /// it was built (nightshift `notes/runner-design/743-measure/`): the
+    /// call came back in 6 of 6 runs on three models.
+    Later,
 }
+
+/// What the model reads when he answered "Not now — carry on" (item 743).
+/// Prompt text, measured as written: it has to say the call is not refused
+/// (or the model reports a refusal and stops), not to route around it, and
+/// when to ask again.
+pub const LATER_REASON: &str = "The user answered \"Not now — carry on\" to this call. It is set aside: not approved, not refused, and it did not run. Do not run it another way, and do not ask again yet. Carry on with all the other work of this task that does not depend on it. When that other work is done, make this same call again as your last step — the user is asked again then. If nothing else can be done without it, make the call again now.";
 
 /// What the model reads when he replied instead of answering (item 522).
 pub fn reply_reason(text: &str) -> String {
@@ -501,6 +514,12 @@ impl AskDir {
                 updated_input: None,
                 reason: Some(reply_reason(text)),
             },
+            Answer::Later => Decision {
+                tool_use_id: call.id.clone(),
+                decision: "deny".into(),
+                updated_input: None,
+                reason: Some(LATER_REASON.into()),
+            },
         };
         write_atomic(
             &self.dir.join(DECISION_FILE),
@@ -562,6 +581,14 @@ impl AskDir {
                     reason: Some(reply_reason(text)),
                 }
             }
+            // Set aside (item 743): this call only — the reply's answer is
+            // left unset, so the call the model makes again shows the card.
+            Answer::Later => Decision {
+                tool_use_id: call.id.clone(),
+                decision: "deny".into(),
+                updated_input: None,
+                reason: Some(LATER_REASON.into()),
+            },
         };
         write_atomic(
             &self.dir.join(DECISION_FILE),
@@ -630,6 +657,18 @@ impl AskDir {
         let mut rules = read_rules(&self.dir);
         if !rules.allow.iter().any(|n| n == name) {
             rules.allow.push(name.to_string());
+        }
+        write_atomic(&self.dir.join(RULES_FILE), &serde_json::to_vec(&rules)?)
+    }
+
+    /// Take `name` off the chat's standing allow list (item 743: the rules
+    /// sheet's Remove on an "Allow for this chat"). Its next call asks.
+    pub fn disallow_tool(&self, name: &str) -> std::io::Result<()> {
+        let mut rules = read_rules(&self.dir);
+        let before = rules.allow.len();
+        rules.allow.retain(|n| n != name);
+        if rules.allow.len() == before {
+            return Ok(());
         }
         write_atomic(&self.dir.join(RULES_FILE), &serde_json::to_vec(&rules)?)
     }
@@ -942,6 +981,24 @@ pub fn decide(dir: &Path, stdin_json: &str) -> HookReply {
 /// or a checkpoint fork (`side`), which only Playwright's gate is
 /// registered with (backlog 367): such a call is never deferred.
 pub fn decide_in(dir: &Path, stdin_json: &str, side: bool) -> HookReply {
+    decide_under(dir, None, stdin_json, side)
+}
+
+/// [`decide_in`] with his rules for every chat (nightshift item 743):
+/// `home` is the config directory, where [`crate::approval_rules`] keeps
+/// them; the chat's own are in `dir`. A parameter and not a lookup so the
+/// decision stays a pure function of what it is handed — [`run_hook`]
+/// passes the real one.
+///
+/// A rule decides after the two gates with rules of their own and never
+/// for the model's question or the plan tools. **Block** comes first of
+/// all that is left — before plan mode stands aside, before any standing
+/// allow, for a subagent's call as for the chat's. **Allow** runs the call
+/// as a standing allow does. **Ask** takes a standing allow back: the call
+/// goes on to its own answer or the card — and a subagent's, which no card
+/// can wait on, is refused in words whatever the switch says.
+pub fn decide_under(dir: &Path, home: Option<&Path>, stdin_json: &str, side: bool) -> HookReply {
+    use crate::approval_rules::{self, Action};
     let input: HookInput = match serde_json::from_str(stdin_json) {
         Ok(i) => i,
         // Unreadable input is not a call anyone can answer; deferring it
@@ -962,11 +1019,30 @@ pub fn decide_in(dir: &Path, stdin_json: &str, side: bool) -> HookReply {
     // Before the rules on purpose: plan mode's promise is that nothing is
     // edited until the plan is approved, and a rule granted in an earlier
     // Ask turn must not be the thing that breaks it.
+    let ruled = (!matches!(
+        input.tool_name.as_str(),
+        QUESTION_TOOL | EXIT_PLAN_TOOL | "EnterPlanMode"
+    ))
+    .then(|| {
+        approval_rules::verdict(
+            &approval_rules::Places {
+                all: home.map(Path::to_path_buf),
+                chat: Some(dir.to_path_buf()),
+            },
+            &input.tool_name,
+            &input.tool_input,
+        )
+    })
+    .flatten();
+    if let Some(rule) = ruled.as_ref().filter(|r| r.action == Action::Block) {
+        return HookReply::deny(approval_rules::blocked_message(rule));
+    }
     if input.permission_mode == "plan" && PLAN_MODE_PASS.contains(&input.tool_name.as_str()) {
         return HookReply::pass();
     }
+    let asked = ruled.as_ref().is_some_and(|r| r.action == Action::Ask);
     let rules = read_rules(dir);
-    if rules.allow.contains(&input.tool_name) {
+    if !asked && (ruled.is_some() || rules.allow.contains(&input.tool_name)) {
         return HookReply::allow(None);
     }
     // The message's usage cap (item 538) is the model's to declare: it
@@ -986,6 +1062,10 @@ pub fn decide_in(dir: &Path, stdin_json: &str, side: bool) -> HookReply {
         // review, blocker 1415), whatever the switch says.
         if input.tool_name.starts_with(BROWSER_TOOL_PREFIX) {
             return HookReply::deny(SUBAGENT_BROWSER_DENIED.into());
+        }
+        // His rule says ask (item 743), and no card can wait on a subagent.
+        if asked {
+            return HookReply::deny(SUBAGENT_DENIED.into());
         }
         return if rules.subagents_auto.unwrap_or(SUBAGENTS_AUTO_DEFAULT) {
             HookReply::allow(None)
@@ -1142,7 +1222,8 @@ pub fn run_hook(args: &[String]) -> std::io::Result<()> {
         .any(|a| a == super::own_browser::SIDE_ARG);
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input)?;
-    let reply = decide_in(&dir, &input, side);
+    let home = crate::project::config_dir();
+    let reply = decide_under(&dir, home.as_deref(), &input, side);
     let mut out = std::io::stdout().lock();
     out.write_all(serde_json::to_string(&reply)?.as_bytes())?;
     out.write_all(b"\n")?;
@@ -2200,5 +2281,186 @@ mod tests {
             !MCP_ALTERNATIVE.contains('|'),
             "the Chat policy splits on |"
         );
+    }
+
+    // ---- his rules, and "Not now" (nightshift item 743) -------------------
+
+    use crate::approval_rules::{self, Edit, Places};
+
+    /// A Bash call's stdin line, a subagent's when `agent`.
+    fn bash_stdin(id: &str, command: &str, mode: &str, agent: Option<&str>) -> String {
+        let mut v = json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+            "tool_use_id": id,
+            "permission_mode": mode,
+        });
+        if let Some(a) = agent {
+            v["agent_id"] = json!(a);
+        }
+        v.to_string()
+    }
+
+    fn rule(places: &Places, scope: &str, action: &str, tool: &str, text: &str) {
+        approval_rules::edit(
+            places,
+            Edit::Add {
+                scope: scope.into(),
+                action: action.into(),
+                tool: tool.into(),
+                text: text.into(),
+            },
+        )
+        .unwrap();
+    }
+
+    /// The three actions as the hook answers them, from either file: a
+    /// block refuses in words that name the rule, an allow runs the call
+    /// with no card, and a call no rule names still defers.
+    #[test]
+    fn his_rules_block_allow_and_leave_the_rest_to_the_card() {
+        let root = scratch();
+        let (home, dir) = (root.join("home"), root.join("home/sessions/ask/c1"));
+        let places = Places {
+            all: Some(home.clone()),
+            chat: Some(dir.clone()),
+        };
+        rule(&places, "all", "block", "Bash", "git push*--force");
+        rule(&places, "chat", "allow", "Bash", "cargo test");
+        let go = |cmd: &str| {
+            decide_under(
+                &dir,
+                Some(&home),
+                &bash_stdin("t1", cmd, "default", None),
+                false,
+            )
+        };
+        let blocked = go("git push origin main --force");
+        assert_eq!(blocked.decision(), "deny");
+        assert!(
+            blocked
+                .reason()
+                .unwrap()
+                .contains("Bash \"git push*--force\""),
+            "{:?}",
+            blocked.reason()
+        );
+        assert_eq!(go("cargo test -p nightloom-core"), HookReply::allow(None));
+        // An allow never reaches past the one command it names.
+        assert_eq!(go("cargo test && git push"), HookReply::defer());
+        assert_eq!(go("ls"), HookReply::defer());
+        // Without the home handed in, only the chat's rules are read.
+        let alone = decide_in(
+            &dir,
+            &bash_stdin("t1", "git push --force", "default", None),
+            false,
+        );
+        assert_eq!(alone, HookReply::defer());
+    }
+
+    /// An ask rule takes "Allow for this chat" back for what it names, the
+    /// card's own answer still gets through it, and a subagent — which no
+    /// card can wait on — is refused in words even with the switch on.
+    #[test]
+    fn an_ask_rule_takes_back_a_standing_allow() {
+        let dir = scratch();
+        let ask = AskDir::new(&dir);
+        ask.allow_tool("Bash").unwrap();
+        let places = Places {
+            all: None,
+            chat: Some(dir.clone()),
+        };
+        rule(&places, "chat", "ask", "Bash", "git push");
+        let go = |id: &str, cmd: &str, agent: Option<&str>| {
+            decide(&dir, &bash_stdin(id, cmd, "default", agent))
+        };
+        assert_eq!(go("t1", "ls", None), HookReply::allow(None));
+        assert_eq!(go("t2", "git push", None), HookReply::defer());
+        let pushed = DeferredCall {
+            id: "t2".into(),
+            name: "Bash".into(),
+            input: json!({"command": "git push"}),
+        };
+        ask.write(&pushed, &allow_once()).unwrap();
+        assert_eq!(go("t2", "git push", None), HookReply::allow(None));
+        assert!(ask.subagents_auto());
+        let sub = go("t3", "git push", Some("agent-1"));
+        assert_eq!(sub.decision(), "deny");
+        assert_eq!(sub.reason(), Some(SUBAGENT_DENIED));
+        assert_eq!(go("t4", "ls", Some("agent-1")), HookReply::allow(None));
+    }
+
+    /// A block holds where the other rules stand aside: in plan mode, whose
+    /// editing tools the hook otherwise has no opinion on, and for a
+    /// subagent. And the model's question is never a rule's to answer, even
+    /// from a file written by hand.
+    #[test]
+    fn a_block_holds_in_plan_mode_and_no_rule_answers_a_question() {
+        let dir = scratch();
+        let places = Places {
+            all: None,
+            chat: Some(dir.clone()),
+        };
+        rule(&places, "chat", "block", "Write", "/tmp/b");
+        let planned = STDIN.replace("acceptEdits", "plan");
+        assert_eq!(decide(&dir, &planned).decision(), "deny");
+        assert_eq!(decide(&dir, STDIN).decision(), "deny");
+        std::fs::write(
+            dir.join(approval_rules::FILE),
+            r#"{"rules":[{"id":"c9","action":"allow","tool":"AskUserQuestion"}],"next":9}"#,
+        )
+        .unwrap();
+        let question = json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": QUESTION_TOOL,
+            "tool_input": {"questions": []},
+            "tool_use_id": "q1",
+            "permission_mode": "default",
+        })
+        .to_string();
+        assert_eq!(decide(&dir, &question), HookReply::defer());
+        // With the block gone, plan mode stands aside again.
+        assert_eq!(decide(&dir, &planned), HookReply::pass());
+    }
+
+    /// "Not now — carry on": the call is refused once, in the words that
+    /// tell the model to do the rest and ask again — and nothing stays
+    /// behind, so the call it makes again shows the card. Playwright's
+    /// answer for the reply is left unset for the same reason.
+    #[test]
+    fn not_now_refuses_this_call_only_and_the_next_one_asks_again() {
+        let dir = scratch();
+        let ask = AskDir::new(&dir);
+        ask.write(&call(), &Answer::Later).unwrap();
+        let first = decide(&dir, STDIN);
+        assert_eq!(first.decision(), "deny");
+        assert_eq!(first.reason(), Some(LATER_REASON));
+        assert!(ask.allowed().is_empty());
+        let again = STDIN.replace("toolu_0183kRSEVfCJqZ7Xkb2qtMU8", "toolu_again");
+        assert_eq!(decide(&dir, &again), HookReply::defer());
+
+        ask.write(&pw_call("p1"), &Answer::Later).unwrap();
+        let pw = decide(&dir, &pw_stdin("p1", "default", None));
+        assert_eq!(pw.reason(), Some(LATER_REASON));
+        assert_eq!(
+            decide(&dir, &pw_stdin("p2", "default", None)),
+            HookReply::defer()
+        );
+    }
+
+    /// The rules sheet's Remove on an "Allow for this chat".
+    #[test]
+    fn a_tool_taken_off_the_allow_list_asks_again() {
+        let dir = scratch();
+        let ask = AskDir::new(&dir);
+        ask.allow_tool("Write").unwrap();
+        ask.set_subagents_auto(false).unwrap();
+        assert_eq!(decide(&dir, STDIN), HookReply::allow(None));
+        ask.disallow_tool("Write").unwrap();
+        ask.disallow_tool("Write").unwrap();
+        assert_eq!(decide(&dir, STDIN), HookReply::defer());
+        // The file's other fields ride through the rewrite.
+        assert!(!ask.subagents_auto());
     }
 }

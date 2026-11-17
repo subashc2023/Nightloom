@@ -9,7 +9,7 @@
  */
 import { askKind, type AskKind } from "./askReply";
 
-export type Handed = "answered" | "skipped" | "replied" | "allowed" | "denied" | "approved" | "kept-planning";
+export type Handed = "answered" | "skipped" | "replied" | "allowed" | "denied" | "approved" | "kept-planning" | "set-aside";
 
 export interface HandBack {
   /** The call's id. */
@@ -27,9 +27,11 @@ export const SLOW_MS = 20_000;
 export const handBack = $state<{ current: HandBack | null }>({ current: null });
 
 /** What his answer was, in one word, from the card's kind and decision. */
-export function handedHow(name: string, decision: "allow" | "always" | "deny", reply: boolean): Handed {
+export function handedHow(name: string, decision: "allow" | "always" | "deny" | "later", reply: boolean): Handed {
   const kind: AskKind = askKind(name);
   if (reply) return "replied";
+  // Item 743: "Not now — carry on", from the phone's card.
+  if (decision === "later") return "set-aside";
   if (kind === "question") return decision === "deny" ? "skipped" : "answered";
   if (kind === "plan") return decision === "deny" ? "kept-planning" : "approved";
   return decision === "deny" ? "denied" : "allowed";
@@ -58,6 +60,7 @@ const SAID: Record<Handed, string> = {
   denied: "Denied",
   approved: "Plan approved",
   "kept-planning": "Sent back to planning",
+  "set-aside": "Set aside until the rest is done",
 };
 
 /** The line, and whether it has been long enough to say so. */

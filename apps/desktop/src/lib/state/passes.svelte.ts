@@ -85,6 +85,9 @@ export async function runCapture(quiet = false): Promise<void> {
   const target = passTarget();
   app.capturing = true;
   try {
+    // Outside Claude Code sessions first (item 751), so the pass reads
+    // what was said there up to now.
+    await syncOutside();
     const r = await api.capture(target);
     // An automatic pass that read nothing (every chat deferred) says
     // nothing (item 278: "skip silently when nothing is pending").
@@ -356,18 +359,22 @@ export async function stopDream(): Promise<void> {
  */
 let centreSeen: Set<string> | null = null;
 export async function refreshCentre(): Promise<void> {
-  const [proposals, commits, applied, rows, stamp] = await Promise.all([
+  const [proposals, commits, applied, rows, stamp, memory] = await Promise.all([
     api.centreProposals().catch(() => []),
     api.centreDreamCommits(10).catch(() => []),
     api.centreApplied(10).catch(() => []),
     api.nightshiftProjects().catch(() => [] as NightshiftRow[]),
     api.buildStamp().catch(() => null),
+    // Claude Code's own memory (item 751): synced into Nightloom's history
+    // folder on the way, so a change since the last refresh is a card now.
+    api.centreClaudeMemory(10).catch(() => []),
   ]);
   app.centre.rows = rows;
   app.centre.notices = buildNotices({
     proposals,
     commits,
     applied,
+    memory,
     rows,
     read: app.nightshift.read,
     stamp,
@@ -392,6 +399,37 @@ export async function refreshCentre(): Promise<void> {
     }
   }
   centreSeen = ids;
+}
+
+/** How often Claude Code's memory and outside sessions are re-read while
+ *  the app is open (item 751): a change made in the terminal or the Claude
+ *  desktop app is a card, and searchable, within this. */
+export const MEMORY_CLOCK_MS = 10 * 60 * 1000;
+let memoryClock: ReturnType<typeof setInterval> | null = null;
+let outsideRunning = false;
+
+/** Mirror the Claude Code sessions Nightloom did not start (one at a time). */
+export async function syncOutside(): Promise<void> {
+  if (outsideRunning) return;
+  outsideRunning = true;
+  try {
+    await api.outsideSync();
+  } catch {
+    // A sync that fails leaves the mirror as it was; the next tick retries.
+  } finally {
+    outsideRunning = false;
+  }
+}
+
+/** On launch and every `MEMORY_CLOCK_MS`: the outside mirror, then the bell
+ *  (whose refresh versions Claude Code's memory). */
+export function startMemoryClock(): void {
+  if (memoryClock) return;
+  void syncOutside();
+  memoryClock = setInterval(() => {
+    void syncOutside();
+    void refreshCentre();
+  }, MEMORY_CLOCK_MS);
 }
 
 /** The bell's count: everything listed. */

@@ -1,5 +1,6 @@
 // Moved out of state.svelte.ts by item 641 (pure move; state.svelte.ts re-exports every name it exported).
 import { takeThreadHandoff } from "../threadHandoff.svelte";
+import { noteHandoffOpened } from "../handoffLog";
 import { hasHiddenChars } from "../shellRun";
 import * as api from "../api";
 import { carryReadOrder, firstMessage, awayNow, extractStartPrompt, handoff, markUnattended, neverHandsOff, noteChatProject, noteSystemIdle, noteThread, leaveHandoff, threadFor } from "../handoff.svelte";
@@ -213,7 +214,7 @@ async function handOffUnattended(chat: string, prompt: string, home: { id: strin
     }
     let index = app.events.length - 1;
     while (index > 0 && app.events[index].event !== "assistant_message") index--;
-    await continueWithPrompt(chat, index, prompt);
+    await continueWithPrompt(chat, index, prompt, { route: "unattended" });
     if (app.activeSessionId !== chat) markUnattended(app.activeSessionId);
     return;
   }
@@ -225,6 +226,8 @@ async function handOffUnattended(chat: string, prompt: string, home: { id: strin
     resumeLog(`handoff ${chat.slice(0, 8)} not continued: ${String(e)}`);
     return;
   }
+  // Item 757: logged for scoring.
+  noteHandoffOpened({ route: "unattended", from: chat, index: null, to: next, sent: text });
   const thread = threadFor(chat);
   leaveHandoff(chat);
   carryReadOrder(chat, next);

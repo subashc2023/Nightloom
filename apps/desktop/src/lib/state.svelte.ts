@@ -3,6 +3,7 @@ import { passingEvent } from "./bashOutput.svelte";
 import { isShellCall as isShellForPassing } from "./agentCommands";
 import { tick, untrack } from "svelte";
 import { noteThreadHandoff, takeThreadHandoff } from "./threadHandoff.svelte";
+import { noteHandoffOpened, noteNextTurns, type HandoffOpened } from "./handoffLog";
 import { switchSameToChoose } from "./subagentSwitch";
 import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
@@ -157,7 +158,7 @@ import { showNightshift, syncNightshiftProject, refreshNightshiftRow, loadNights
 import { showNote, showGraph, leaveNote, currentModelId, followToolMoves, reviewProposal, noteDraftKey, closeNote, openModelInstructions, CHAT_INSTRUCTIONS_FILE, openChatInstructions, saveNote, deleteNote, moveNoteTo, followNoteMove, onNoteMove, movedNoteName, newNoteFolder, deleteNoteFolder, mirrorDraft, stageProposal, acceptProposal, unstageProposal, dismissProposal } from "./state/notes.svelte";
 import { reflectTabs, frontOpenChat, tabOpening, showContentOf, newTab, closeTab, stepTab, splitActiveTab, dropNoteTabs, flushTabs, shownContent, openContent, dropContent, focusPane, moveTab, splitTab, registerTerminalHooks, flushNewProject, startContentDrag, endContentDrag, droppedContent } from "./state/tabs.svelte";
 import { history, chatScope, undo, redo, inTextField, editAttachments, sendInFork, contextUsed, undoLabel, redoLabel, syncUndoMenu, saveEdit, removeTurn, restoreTurn, removeBlock, restoreBlock, saveReplyEdit, editContextItems, renameSession, sessionCost, roundCost, cacheHitRate } from "./state/edits.svelte";
-import { refreshDreamStatus, refreshCaptureStatus, maybeAutoDream, maybeHandoffPass, refreshCentre, maybeDailyPass, startDailyClock, passTargetFor, runCapture, saveMemoryFromChat, stopCapture, runDream, stopDream, centreCount, dismissNotice, openNotice, revertDreamFile, revertApplied, openInstructions, setDailyPrefs, runDailyPass, type AutoPassKind } from "./state/passes.svelte";
+import { refreshDreamStatus, refreshCaptureStatus, maybeAutoDream, maybeHandoffPass, refreshCentre, maybeDailyPass, startDailyClock, startMemoryClock, passTargetFor, runCapture, saveMemoryFromChat, stopCapture, runDream, stopDream, centreCount, dismissNotice, openNotice, revertDreamFile, revertApplied, openInstructions, setDailyPrefs, runDailyPass, type AutoPassKind } from "./state/passes.svelte";
 import { refreshPlanUsage, readPlanAtReplyEnd, planUsageFromTurn, readTurnBudget, readCheckpoint, startBudgetPoll, ensureBudgetPoll, startPlanUsageClock, PLAN_USAGE_LIVE_EVERY_MS, TURN_BUDGET_EVERY_MS, setCheckpoint } from "./state/usage.svelte";
 import { refreshProjects, refreshNotes, refreshKnowledge, refreshProjectsFolder, useProject, openProjectFolder, showNewProject, importFromClaude, restoreTabs, refreshProposals, useProjectsFolder, useKnowledgeDir, offerPracticesClaudeMd, closeNewProject, discardNewProject, pickNewProjectFolder, resolveNewProjectPath, createNewProject, renameProject, forgetProject, revealFolder, tabsOwner } from "./state/projects.svelte";
 import { layersBeforeTurn, refreshLayerVersions, updateLayerNow, chooseLayerVersion, setAutoLayers, promptLayersOff, sameLayers, setPromptLayer, promptLayerEdits, sameEdits, setPromptLayerText, promoteLayerText, syncPromptLayers, retryConnect } from "./state/layers.svelte";
@@ -166,7 +167,7 @@ import { resumes, showResume, armResumes, liveText, homeFor, noteTurnLimit, read
 import { pendingChatKey, clearPendingThread, bindPendingThread, showBoundChat, defaultKind, firstTurnChat, chatMode, chatKind, bornKind, declaredKind, kindSwitchCost, switchChatKind, kindWorkspace, adoptCreatedChat, chatFolders, setChatFolders, chatThread, setChatThread, startPendingChat, moveChatToThread, backToNewChat, pendingThreadDeleted, writePendingThread, newChatInThread, createThread, refreshThreadFlags, promoteThreadText, setProjectFolders, kindLabel, KIND_LINES, newChatSelected, threadPlusSelected, chatSelected, threadSelected, newChatLabel, MODE_LINES, MODE_GLYPH } from "./state/threads.svelte";
 import { usable, autoConnect, chatChoice, saveChatChoices, adoptChatRules, windowFromInit, applyDraft, useEngine, subagentRules, RULES_DEBOUNCE_MS, setOpenChatRules, useDefaultRules, setDefaultRules, sendHeld, APPLY_DEBOUNCE_MS, applyTimer, scheduleApply, lastSent, sentKey, restoreChatChoice, applyAgentDraft, filesChangedGen, filesSeenGen, projectFilesChanged, closePrompts, usePrompt, storePrompt, deletePrompt, refreshProviders, refreshSearchBackends, fetchModels, setPrefs } from "./state/connection.svelte";
 import { bgTurns, backgroundTurnOf, backgroundName, whereItRuns, openRunningChat, turnsRunning, canDeleteChat, keepPaneLog, refreshPaneLog, providerElsewhere, providerElsewhereName, providerDrains, canLeaveProject, openWaiting, waitingChatName, liveChats, connectionWindowFor, chatRuns, runningWork, openRun, paneChat, loadPaneLog, browseFree, registerProviderDrain, registerRunDrain, runDrainNow, turnChatRef, canLeaveRunning, type LiveChat } from "./state/running.svelte";
-import { stillRunningAsked, injectIntoTurn, nudgeInjects, openChatKey, takeQueuedFor, injectLater, retryInjects, handWhy, handKey, handReason, RETRY_HAND_MS, replyToPending, turnOwnsKey, takeQueued, sendNowRow, sendNowPlan, stopSend, stopSendFor, takeStopSend, frontQueued, stopAndSendRow, sendNowAny, type HandReason, type SendNowPlan } from "./state/queue.svelte";
+import { stillRunningAsked, injectIntoTurn, nudgeInjects, openChatKey, takeQueuedFor, injectLater, retryInjects, handWhy, handKey, handReason, RETRY_HAND_MS, replyToPending, turnOwnsKey, takeQueued, sendNowRow, slipRow, sendNowPlan, stopSend, stopSendFor, takeStopSend, frontQueued, stopAndSendRow, sendNowAny, type HandReason, type SendNowPlan } from "./state/queue.svelte";
 import { peekNew, viewMark, sameView, adoptOpen, settleTurnView, openSession, compactSession, deleteSession, moveSession, remoteSend, remoteNewChat } from "./state/sessions.svelte";
 import { loadLastProject, saveLastProject, loadDreamPrefs, loadPalette, loadLayout, viewport, loadReadPages, DREAM_ENGINE, DREAM_PREFS_VERSION, parseDreamPrefs, saveDreamPrefs, PALETTES, applyPalette, setPalette, SIDEBAR_MIN, SIDEBAR_MAX, toggleSidebar, sidebarColumn, SIDEBAR_SHARE, fitSidebar, sidebarShown, setSidebarWidth, paneWidth, setPaneWidth, READ_KEY, type Palette, type DreamPrefs, type Layout } from "./state/prefs.svelte";
 import { runMenuCommand, menuInterceptors, providerPills, switchProvider, toggleEngine, pickerModels, switchModel, switchModelAt, loadContextLimits } from "./state/menu.svelte";
@@ -180,7 +181,7 @@ export { menuInterceptors, runMenuCommand, providerPills, switchProvider, toggle
 export { saveLastProject, DREAM_ENGINE, DREAM_PREFS_VERSION, parseDreamPrefs, saveDreamPrefs, PALETTES, applyPalette, setPalette, SIDEBAR_MIN, SIDEBAR_MAX, toggleSidebar, sidebarColumn, SIDEBAR_SHARE, fitSidebar, sidebarShown, setSidebarWidth, paneWidth, setPaneWidth, READ_KEY };
 export type { DreamPrefs, Palette, Layout };
 export { viewMark, sameView, adoptOpen, openSession, compactSession, deleteSession, moveSession, remoteSend, remoteNewChat };
-export { injectIntoTurn, handWhy, handKey, handReason, RETRY_HAND_MS, nudgeInjects, replyToPending, turnOwnsKey, openChatKey, takeQueuedFor, takeQueued, retryInjects, sendNowRow, sendNowPlan, stopSend, stopSendFor, takeStopSend, frontQueued, stopAndSendRow, sendNowAny };
+export { injectIntoTurn, handWhy, handKey, handReason, RETRY_HAND_MS, nudgeInjects, replyToPending, turnOwnsKey, openChatKey, takeQueuedFor, takeQueued, retryInjects, sendNowRow, slipRow, sendNowPlan, stopSend, stopSendFor, takeStopSend, frontQueued, stopAndSendRow, sendNowAny };
 export type { HandReason, SendNowPlan };
 export { bgTurns, backgroundTurnOf, backgroundName, canLeaveProject, openRunningChat, openWaiting, waitingChatName, liveChats, connectionWindowFor, turnsRunning, chatRuns, runningWork, openRun, canDeleteChat, paneChat, loadPaneLog, browseFree, providerElsewhere, providerElsewhereName, registerProviderDrain, registerRunDrain, runDrainNow, turnChatRef, canLeaveRunning };
 export type { LiveChat };
@@ -970,6 +971,8 @@ export async function init(): Promise<void> {
   // Claude Code's version (nightshift backlog 182): a check shortly after
   // launch and every six hours; an Update waits for a cold moment.
   startCliClock();
+  // Claude Code's memory and its sessions outside Nightloom (item 751).
+  startMemoryClock();
   // The Refresh-now banner's click (nightshift backlog 116): Rust has
   // already brought the window forward; this opens Settings on Usage.
   await listen("usage-banner-clicked", () => {
@@ -1396,6 +1399,8 @@ export async function continueChat(): Promise<void> {
     const opened = await openContinuation(from, !!start);
     const first = start ? firstMessage("", start) : firstMessage(readOrder(from), null);
     if (first) setDraftText(opened, first);
+    // Item 757: logged for scoring, as put in the box.
+    noteHandoffOpened({ route: "box", from, index: null, to: opened, sent: first ?? "" });
     if (!start) {
       handoff.noStartPromptChat = opened;
       addToast(
@@ -1461,7 +1466,12 @@ export function continuedThisRun(chat: string, index: number): boolean {
  * for this button only. Needs no wrap-up: the card is enough. A send that
  * fails, or cannot go, leaves the text in the new chat's box.
  */
-export async function continueWithPrompt(from: string, index: number, prompt: string): Promise<void> {
+export async function continueWithPrompt(
+  from: string,
+  index: number,
+  prompt: string,
+  log: Pick<HandoffOpened, "route" | "carry" | "goal" | "ticks"> = { route: "card" },
+): Promise<void> {
   if (continuing) return;
   if (app.busy || app.activeSessionId !== from) {
     addToast("A turn is running — continue when it ends");
@@ -1480,6 +1490,8 @@ export async function continueWithPrompt(from: string, index: number, prompt: st
       return;
     }
     continuedHere[`${from}|${index}`] = true;
+    // Item 757: what the hand-off carried, logged for scoring.
+    noteHandoffOpened({ ...log, from, index, to: opened, sent: text });
     leaveNote();
     void refreshSessions();
     if (!app.connection || app.busy) {
@@ -1822,6 +1834,8 @@ function endBackground(t: TurnCtx, failed: string | null, res: AgentTurnResult |
     // (the open project's threads only).
     if (b) noteThreadHandoff(id, b.events);
   }
+  // Item 757: a hand-off's next chat logs its first turns' file use, in any project.
+  if (b) noteNextTurns(id, b.events, liveFlags(b.events));
   if (t.provider) {
     // A provider turn's end (A4 review, 2026-09-29) does what the
     // screen's provider end does — ~~the plan meter and the Claude Code
@@ -2221,6 +2235,8 @@ export async function send(
   await settleTurnView(pendingKey, turn.chat, choice);
   // Item 464: a thread chat's `<handoff>` prompt is kept on its thread.
   if (!app.parked) noteThreadHandoff(app.activeSessionId, app.events);
+  // Item 757: a hand-off's next chat logs its first turns' file use.
+  if (!app.parked) noteNextTurns(app.activeSessionId, app.events, liveFlags(app.events));
   void refreshSessions();
   // The turn may have written to the docspace, and the sidebar showing a
   // note the model just left is the visible half of "shared knowledge".
@@ -2492,6 +2508,8 @@ async function sendAgent(
     );
     // Item 464: a thread chat's `<handoff>` prompt is kept on its thread.
     if (!browsed) noteThreadHandoff(app.activeSessionId, app.events);
+    // Item 757: a hand-off's next chat logs its first turns' file use.
+    if (!browsed) noteNextTurns(app.activeSessionId, app.events, liveFlags(app.events));
     // A turn that wrote HANDOFF.md is a hand-off (item 278).
     if (!browsed && turnWroteHandoff(app.events)) maybeHandoffPass();
     // Last, once the turn is fully over: was it sleep that ended it
