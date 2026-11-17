@@ -1653,6 +1653,7 @@ fn main() {
             commands::usage::refresh_usage_ledger,
             commands::usage::plan_usage,
             commands::usage::plan_usage_refresh,
+            commands::usage::plan_pace,
             commands::usage::plan_scoped_limits,
             commands::usage::session_figures,
             commands::cli::cli_version_check,

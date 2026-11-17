@@ -384,6 +384,17 @@ pub(crate) async fn session_figures(
     .map_err(|e| format!("reading the chat's figures failed: {e}"))
 }
 
+/// The plan's pace (item 769): when each window is expected to reach 80%
+/// and empty, forecast from his own reading history and checked against
+/// past windows (`nightloom_service::pace`). Reads the log on the
+/// blocking pool; also writes `plan-pace.json` for `usagectl.py`.
+#[tauri::command]
+pub(crate) async fn plan_pace() -> Result<nightloom_service::pace::PlanPace, String> {
+    tokio::task::spawn_blocking(nightloom_service::pace::read)
+        .await
+        .map_err(|e| format!("reading the plan pace failed: {e}"))
+}
+
 /// A plan reading is also the end reading of any reply that finished
 /// before its sample was taken (item 323, `turn_usage`).
 pub(crate) fn observed(

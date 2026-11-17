@@ -45,6 +45,7 @@ import type {
   NewProjectPath,
   UsageSummary,
   PlanUsage,
+  PlanPace,
   TurnBudget,
   CapMode,
   Checkpoint,
@@ -1177,6 +1178,11 @@ export function planUsage(): Promise<PlanUsage> {
 /** The figure refreshed through the CLI's print-mode `/usage` when the
  *  files are over a minute old (backlog 166, blocker 264): exact, zero
  *  tokens, ~12 s on the backend. */
+/** The plan's pace (item 769): forecast from his reading history. */
+export function planPace(): Promise<PlanPace> {
+  return invoke("plan_pace");
+}
+
 export function planUsageRefresh(afterMs?: number): Promise<PlanUsage> {
   // `afterMs` (item 323 review): a reading for a reply's end — a sample
   // from before that moment is not fresh, so `/usage` runs.

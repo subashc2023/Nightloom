@@ -1,5 +1,6 @@
 <script lang="ts">
   import { resetLong, resetText as resetTextAt } from "./resetTime";
+  import { paceCardLine, paceText, paceWarn, WARN_PCT } from "./pace";
   import { hudIn, hudOut } from "./hudMenu";
   import {
     addToast,
@@ -369,9 +370,15 @@
       `Plan usage, account-wide (every surface, not just this chat): ` +
       `5-hour window ${plan.five_hour}% (${when(plan.five_hour_resets_at)}); ` +
       `7-day window ${plan.seven_day ?? "?"}% (${when(plan.seven_day_resets_at)}). ` +
-      `From ${where}, ${age}${plan.stale ? " — stale: past 20 minutes, may be behind" : ""}. Refreshed at each turn end.`
+      `From ${where}, ${age}${plan.stale ? " — stale: past 20 minutes, may be behind" : ""}. Refreshed at each turn end.` +
+      (pace ? `\n${pace}` : "")
     );
   });
+  /** Item 769: the pace lines (tighter window first) and the 80% warning
+   *  — his stop line — from the reading itself, either window. */
+  const pace = $derived(plan ? paceText(app.planPace, now) : "");
+  const warn = $derived(plan ? paceWarn(plan) : null);
+  const weekHot = $derived(plan?.seven_day != null && plan.seven_day >= WARN_PCT);
 
   /** Item 595: each reading's own hover, naming it ("Context 212k of 1M",
    *  "5-hour window 59%"); the chip's hover keeps every figure. */
@@ -385,7 +392,12 @@
   });
   const planTip = $derived.by(() => {
     if (!plan) return "";
-    return `5-hour window ${plan.five_hour}% (${resetText(plan.five_hour_resets_at)}) · ${planAgeText}${plan.stale ? " — stale" : ""} — click for the figures`;
+    return (
+      (warn ? `${warn}\n` : "") +
+      `5-hour window ${plan.five_hour}% (${resetText(plan.five_hour_resets_at)}) · ${planAgeText}${plan.stale ? " — stale" : ""}` +
+      (pace ? `\n${pace}` : "") +
+      " — click for the figures"
+    );
   });
 
   function tokens(n: number): string {
@@ -728,6 +740,7 @@
         class="ns-chip mono gauge {level}"
         class:open={showGauge}
         class:stale={plan?.stale}
+        class:warn80={warn != null}
         aria-expanded={showGauge}
         bind:this={gaugeEl}
         use:tip={(gauge
@@ -735,6 +748,7 @@
             ? `Context: ${gauge.used.toLocaleString()} of ${gauge.limit.toLocaleString()} tokens (${Math.round((gauge.ratio ?? 0) * 100)}%)${spendTail}${agentsTail}`
             : `Context: ${gauge.used.toLocaleString()} tokens — window size unknown for this model${spendTail}${agentsTail}`
           : "Context: nothing sent yet") +
+          (warn ? `\n${warn}` : "") +
           (plan ? `\n${planTitle}` : "") +
           " — click for the figures (⌘⇧C itemises the context)"}
         onclick={toggleGauge}
@@ -777,6 +791,7 @@
                 label={`5-hour window ${plan.five_hour}%`}
               />
               <span class="figure">{plan.five_hour}%</span>
+              {#if weekHot}<span class="of week-hot">wk {plan.seven_day}%</span>{/if}
               <span class="of plan-age">{planAgeMark}</span>
             </span>
           {/if}
@@ -921,6 +936,9 @@
           <span class="gc-val">
             <span class="gc-bar"><span class="fill plan-fill" style:width="{Math.min(plan.five_hour ?? 0, 100)}%"></span></span>
             <span class="gc-fig">{plan.five_hour}% · {resetText(plan.five_hour_resets_at)}</span>
+            {#if paceCardLine(app.planPace?.five_hour, now)}
+              <span class="gc-note pace-note" data-pace="five_hour">{paceCardLine(app.planPace?.five_hour, now)}</span>
+            {/if}
           </span>
         </div>
         {#if plan.seven_day != null}
@@ -929,6 +947,9 @@
             <span class="gc-val">
               <span class="gc-bar"><span class="fill plan-fill" style:width="{Math.min(plan.seven_day, 100)}%"></span></span>
               <span class="gc-fig">{plan.seven_day}% · {resetText(plan.seven_day_resets_at)}</span>
+              {#if paceCardLine(app.planPace?.seven_day, now)}
+                <span class="gc-note pace-note" data-pace="seven_day">{paceCardLine(app.planPace?.seven_day, now)}</span>
+              {/if}
             </span>
           </div>
         {/if}
@@ -1245,6 +1266,16 @@
   }
   .gauge.stale .plan-age {
     font-style: italic;
+  }
+  /* Item 769: past 80% of either window (his stop line) the plan's
+     figure turns the partial colour, and a hot week shows beside it. */
+  .gauge.warn80 .reading[data-reading="five-hour"] .figure,
+  .gauge .week-hot {
+    color: var(--partial);
+    font-weight: 600;
+  }
+  .gauge .week-hot {
+    font-size: 11px;
   }
   /* The gauge card: the rail card's frame, a label column and a value
      column; portalled, so fixed to the viewport. */

@@ -678,6 +678,64 @@ export interface PlanUsage {
   source: "desktop" | "cli-cache" | "cli-usage" | "none" | "turn";
 }
 
+/** How the forecast did on past windows (item 769, `pace.rs`). */
+export interface PaceBacktest {
+  /** Mean miss of the forecast, points, `horizon_hours` ahead. */
+  err_pts: number | null;
+  /** Mean miss of a straight line from the window's start. */
+  linear_err_pts: number | null;
+  checks: number;
+}
+
+/**
+ * One window's pace (item 769): when it is expected to reach 80% (his stop
+ * line) and 100%, forecast from his own reading history by hour of the
+ * week, with its measured error. Times are unix ms; null when not before
+ * the reset.
+ */
+export interface WindowPace {
+  window: "five_hour" | "seven_day";
+  pct: number;
+  at_ms: number;
+  resets_at_ms: number | null;
+  /** Enough past checks to show a time. */
+  ready: boolean;
+  at80_ms: number | null;
+  at100_ms: number | null;
+  end_pct: number;
+  horizon_hours: number;
+  backtest: PaceBacktest;
+  readings: number;
+  history_hours: number;
+}
+
+/** One window's forecast knobs, re-fitted weekly from the log (item 769). */
+export interface PaceKnobs {
+  recent_ms: number;
+  fade_ms: number;
+  slot_scale: number;
+}
+
+export interface PaceKindFit {
+  /** The pair in use; `fitted` is the grid's choice on older checks. */
+  tuning: PaceKnobs;
+  fitted: PaceKnobs;
+  fitted_at_ms: number;
+  how: "held-out" | "in-sample" | "default-thin" | "default-kept";
+  fit_checks: number;
+  holdout_checks: number;
+  holdout_err_pts: number | null;
+  default_holdout_err_pts: number | null;
+}
+
+export interface PlanPace {
+  five_hour: WindowPace | null;
+  seven_day: WindowPace | null;
+  computed_at_ms: number;
+  /** Absent from a pace read before the weekly fit existed. */
+  fit?: { five_hour: PaceKindFit; seven_day: PaceKindFit };
+}
+
 /**
  * One message's budget ledger (nightshift backlog 165, pass 2,
  * 2026-09-22): `turn-budget.json` in the chat's ask directory, started

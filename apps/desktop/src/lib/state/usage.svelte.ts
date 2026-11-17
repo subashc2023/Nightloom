@@ -38,12 +38,36 @@ export async function refreshPlanUsage(live = false): Promise<void> {
       return;
     }
     app.planUsage = fresh;
+    void refreshPlanPace();
   } catch {
     // A failed read keeps the last reading, whose age the chip shows.
   } finally {
     planReadsInFlight--;
   }
 }
+
+/**
+ * Re-read the plan's pace (item 769) after a new reading: the backend has
+ * already logged it (every reading passes `turn_usage::reading`). Once per
+ * reading time, and at most once a minute — a read opens the whole log.
+ */
+export async function refreshPlanPace(nowMs: number = Date.now()): Promise<void> {
+  const at = app.planUsage?.sampled_at_ms ?? null;
+  if (paceInFlight || (at != null && at === paceFor) || nowMs - paceAtMs < 60_000) return;
+  paceInFlight = true;
+  try {
+    app.planPace = await api.planPace();
+    paceFor = at;
+    paceAtMs = nowMs;
+  } catch {
+    // The chip keeps the last pace; the next reading tries again.
+  } finally {
+    paceInFlight = false;
+  }
+}
+let paceInFlight = false;
+let paceFor: number | null = null;
+let paceAtMs = 0;
 
 /** Plan readings under way (`refreshPlanUsage`, `readPlanAtReplyEnd`). */
 let planReadsInFlight = 0;
@@ -72,6 +96,7 @@ export async function readPlanAtReplyEnd(endedAtMs: number = Date.now()): Promis
       return true;
     }
     app.planUsage = fresh;
+    void refreshPlanPace();
   } catch {
     // A failed read keeps the last reading; the next one closes the line.
   } finally {

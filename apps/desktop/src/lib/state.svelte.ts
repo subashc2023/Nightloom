@@ -108,6 +108,7 @@ import type {
   AgentTurnResult,
   SubagentStatus,
   PlanUsage,
+  PlanPace,
   ApprovalDecision,
   ApprovalRequest,
   AsideDelta,
@@ -159,7 +160,7 @@ import { showNote, showGraph, leaveNote, currentModelId, followToolMoves, review
 import { reflectTabs, frontOpenChat, tabOpening, showContentOf, newTab, closeTab, stepTab, splitActiveTab, dropNoteTabs, flushTabs, shownContent, openContent, dropContent, focusPane, moveTab, splitTab, registerTerminalHooks, flushNewProject, startContentDrag, endContentDrag, droppedContent } from "./state/tabs.svelte";
 import { history, chatScope, undo, redo, inTextField, editAttachments, sendInFork, contextUsed, undoLabel, redoLabel, syncUndoMenu, saveEdit, removeTurn, restoreTurn, removeBlock, restoreBlock, saveReplyEdit, editContextItems, renameSession, sessionCost, roundCost, cacheHitRate } from "./state/edits.svelte";
 import { refreshDreamStatus, refreshCaptureStatus, maybeAutoDream, maybeHandoffPass, refreshCentre, maybeDailyPass, startDailyClock, startMemoryClock, passTargetFor, runCapture, saveMemoryFromChat, stopCapture, runDream, stopDream, centreCount, dismissNotice, openNotice, revertDreamFile, revertApplied, openInstructions, setDailyPrefs, runDailyPass, type AutoPassKind } from "./state/passes.svelte";
-import { refreshPlanUsage, readPlanAtReplyEnd, planUsageFromTurn, readTurnBudget, readCheckpoint, startBudgetPoll, ensureBudgetPoll, startPlanUsageClock, PLAN_USAGE_LIVE_EVERY_MS, TURN_BUDGET_EVERY_MS, setCheckpoint } from "./state/usage.svelte";
+import { refreshPlanUsage, refreshPlanPace, readPlanAtReplyEnd, planUsageFromTurn, readTurnBudget, readCheckpoint, startBudgetPoll, ensureBudgetPoll, startPlanUsageClock, PLAN_USAGE_LIVE_EVERY_MS, TURN_BUDGET_EVERY_MS, setCheckpoint } from "./state/usage.svelte";
 import { refreshProjects, refreshNotes, refreshKnowledge, refreshProjectsFolder, useProject, openProjectFolder, showNewProject, importFromClaude, restoreTabs, refreshProposals, useProjectsFolder, useKnowledgeDir, offerPracticesClaudeMd, closeNewProject, discardNewProject, pickNewProjectFolder, resolveNewProjectPath, createNewProject, renameProject, forgetProject, revealFolder, tabsOwner } from "./state/projects.svelte";
 import { layersBeforeTurn, refreshLayerVersions, updateLayerNow, chooseLayerVersion, setAutoLayers, promptLayersOff, sameLayers, setPromptLayer, promptLayerEdits, sameEdits, setPromptLayerText, promoteLayerText, syncPromptLayers, retryConnect } from "./state/layers.svelte";
 import { subagentRow, upsertSubagentRow, subagentRunning, findCall, applyToSegments, openChatSubagents, latestSubagents, subagentsOfTurn, denialReason, currentTodos } from "./state/segments.svelte";
@@ -191,7 +192,7 @@ export { resumes, clearResumes, limitWakeDue, resumeAfterLimit };
 export { openChatSubagents, latestSubagents, subagentRunning, subagentsOfTurn, applyToSegments, denialReason, currentTodos };
 export { refreshLayerVersions, updateLayerNow, chooseLayerVersion, setAutoLayers, promptLayersOff, sameLayers, setPromptLayer, promptLayerEdits, sameEdits, setPromptLayerText, promoteLayerText, syncPromptLayers, retryConnect };
 export { refreshProjects, refreshNotes, refreshProposals, refreshKnowledge, refreshProjectsFolder, useProjectsFolder, useKnowledgeDir, useProject, openProjectFolder, offerPracticesClaudeMd, showNewProject, closeNewProject, discardNewProject, pickNewProjectFolder, resolveNewProjectPath, createNewProject, importFromClaude, renameProject, forgetProject, revealFolder, tabsOwner, restoreTabs };
-export { refreshPlanUsage, readPlanAtReplyEnd, planUsageFromTurn, PLAN_USAGE_LIVE_EVERY_MS, TURN_BUDGET_EVERY_MS, readTurnBudget, readCheckpoint, setCheckpoint };
+export { refreshPlanUsage, refreshPlanPace, readPlanAtReplyEnd, planUsageFromTurn, PLAN_USAGE_LIVE_EVERY_MS, TURN_BUDGET_EVERY_MS, readTurnBudget, readCheckpoint, setCheckpoint };
 export { refreshDreamStatus, refreshCaptureStatus, passTargetFor, runCapture, saveMemoryFromChat, stopCapture, runDream, maybeHandoffPass, stopDream, refreshCentre, centreCount, dismissNotice, openNotice, revertDreamFile, revertApplied, openInstructions, setDailyPrefs, runDailyPass, maybeDailyPass };
 export type { AutoPassKind };
 export { history, chatScope, undoLabel, redoLabel, undo, redo, inTextField, syncUndoMenu, saveEdit, removeTurn, restoreTurn, removeBlock, restoreBlock, saveReplyEdit, editContextItems, renameSession, contextUsed, sessionCost, roundCost, cacheHitRate };
@@ -677,6 +678,12 @@ export const app = $state({
    * timer faster than the sample changes — and shown with its age.
    */
   planUsage: null as PlanUsage | null,
+  /**
+   * The plan's pace (item 769): each window's forecast 80% and empty times
+   * from his own reading history, with the forecast's measured error.
+   * Re-read whenever a new plan reading lands (`refreshPlanPace`).
+   */
+  planPace: null as PlanPace | null,
   /**
    * What the open chat's Claude Code session has — the CLI's `system/init`
    * line from its latest turn (nightshift backlog 077), for the Context
@@ -2399,7 +2406,10 @@ async function sendAgent(
     // sent one with figures (nightshift backlog 073), else from the files
     // in `finally`.
     const fromTurn = planUsageFromTurn(res.plan);
-    if (fromTurn) app.planUsage = fromTurn;
+    if (fromTurn) {
+      app.planUsage = fromTurn;
+      void refreshPlanPace();
+    }
     // The CLI resolves an alias to a real model id, which is the first
     // moment a context window can be looked up at all: `sonnet` is in no
     // limits table and a guessed denominator would promise headroom nobody
