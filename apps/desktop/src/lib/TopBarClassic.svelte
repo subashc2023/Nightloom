@@ -17,6 +17,7 @@
   import { keepWarm } from "./keepWarm.svelte";
   import { cacheState } from "./cache";
   import { coldToast, lastReply } from "./cacheCost";
+  import { tellPhoneCache } from "./remoteHandlers";
   import { loadCacheRates, ratesForChat } from "./cacheRates.svelte";
   import { connectionWord, launch } from "./launch.svelte";
   import { budgetChip, budgetTitle } from "./budget";
@@ -201,6 +202,8 @@
    */
   $effect(() => {
     const warmUntil = cacheState(app.events, Date.now(), app.activeSessionId ? touchedUntil(keepWarm.byChat[app.activeSessionId]) : null, asideReads(app.activeSessionId))?.warmUntil ?? null;
+    // Item 786: the phone's header times the same cache (pings and asides too).
+    tellPhoneCache(app.activeSessionId, warmUntil);
     if (warmUntil == null) return;
     const wait = warmUntil - Date.now();
     if (wait <= 0) return;

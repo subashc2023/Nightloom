@@ -45,6 +45,7 @@
     dismissVerdict,
     foldAside,
     parseAsideEvent,
+    parseCacheEvent,
     pastAsides,
     searchGroupLabel,
     searchSummary,
@@ -520,7 +521,16 @@
   /** The header's context line: the newest reply's prompt size and the
    *  cache's time left, from the chat's own log. */
   const ctxLine = $derived(chatId ? contextLine(events, liveFlags(events)) : { used: null, warmUntil: null });
-  const cacheText = $derived(cacheLeft(ctxLine.warmUntil, now));
+  /** Item 786: the desktop's reckoning of the open chat's cache (its
+   *  reply, keep-warm pings, asides' reads), when it has told one; the
+   *  later of it and the log's reply. */
+  let hostWarm = $state<Record<string, number | null>>({});
+  const warmUntil = $derived.by(() => {
+    const told = chatId ? hostWarm[chatId] : undefined;
+    if (told == null) return ctxLine.warmUntil;
+    return ctxLine.warmUntil == null ? told : Math.max(told, ctxLine.warmUntil);
+  });
+  const cacheText = $derived(cacheLeft(warmUntil, now));
   /** The window size, once the Context sheet has read it for this chat
    *  (`view.context_limit`); the phone has no other source (blocker 1781). */
   let ctxLimits = $state<Record<string, number>>({});
@@ -813,6 +823,12 @@
         break;
       case "aside-event":
       case "aside-delta": {
+        // Item 786: the desktop's cache expiry for a chat (pings and asides too).
+        const told = parseCacheEvent(data);
+        if (told) {
+          hostWarm = { ...hostWarm, [told.chat]: told.warmUntil };
+          break;
+        }
         // Wave 2C: an aside's answer streaming in (patch note 2C→2A).
         const ev = parseAsideEvent(data);
         if (!ev) break;
@@ -3672,6 +3688,7 @@
             aside={asides[chatId] ?? null}
             past={asidePast}
             problem={asideProblem}
+            cache={warmUntil == null ? null : (cacheText ?? "cold")}
             onask={askAside}
             onstop={stopAside}
             oncopy={copy}

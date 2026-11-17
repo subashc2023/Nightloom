@@ -301,8 +301,12 @@ pub(crate) async fn ask_aside(
         .last_round
         .and_then(|u| u.cache_read_tokens)
         .unwrap_or(0);
+    // Item 786: a stopped aside's read counts too, when the CLI reported it
+    // on its way out (measured on 2.1.326: the interrupt's `message_delta`
+    // carries the round's prompt side; a stopped aside on a warm chat had
+    // read 67,172 of 67,174 before its first word).
     if !outcome.is_error
-        && !cancel.is_cancelled()
+        && outcome.last_round.is_some()
         && let Some(chat) = target.id()
     {
         keep_warm::aside_read(&app, chat, sent_ms, round_read);

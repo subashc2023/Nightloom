@@ -48,7 +48,12 @@
     nextTickMs,
     remainingText,
     restoreCacheSettings,
+    asideSinceCold,
+    chipFace,
+    ownModelCache,
+    stoppedUnsure,
   } from "./cache";
+  import { asideFigures } from "./asideFigures";
   import { cacheEstimate, lastReply, ratesFromPrice } from "./cacheCost";
   import { cacheRatesOf, loadCacheRates } from "./cacheRates.svelte";
   import { layerChangeSinceCache, modelIdFor, nextSendModel, pendingChangeCost, switchDetail } from "./changeCost";
@@ -3100,7 +3105,10 @@
    * extends. A ping's read restarts the cache's hour, so the timer counts
    * from the later of the reply and the last ping.
    */
-  const kwChat = $derived(floating ? null : app.activeSessionId);
+  // Item 786: an aside's box keeps its chat's cache — the same switch and
+  // chip, read off the chat it forks — while that chat is the open one
+  // (an aside of another chat cannot send, and its log is not loaded).
+  const kwChat = $derived(floating ? null : aside ? (asideOpen ? asideOwner : null) : app.activeSessionId);
   const kw = $derived(kwChat ? (keepWarm.byChat[kwChat] ?? null) : null);
   $effect(() => {
     if (kwChat) void loadKeepWarm(kwChat);
@@ -3119,7 +3127,22 @@
     const refused = await holdKeepWarm(kwChat, hours);
     if (refused) addToast(`Keep warm: ${refused}`);
   }
-  const cache = $derived(floating ? null : cacheState(app.events, now, touchedUntil(kw), asideReads(kwChat)));
+  /** Item 786: an aside on another model than the chat's reads none of the
+   *  chat's cache; its own answers write and read that model's. */
+  const asideOwnModel = $derived(!!aside?.model && displayName(aside.model) !== chatModelName);
+  const cache = $derived(
+    floating || (aside && !kwChat)
+      ? null
+      : aside && asideOwnModel
+        ? ownModelCache(aside.turns, now)
+        : cacheState(app.events, now, touchedUntil(kw), asideReads(kwChat)),
+  );
+  /** Item 786: the chat's own turn stopped before its reply was logged —
+   *  a cold reading is unknown until the next send. */
+  const cacheUnsure = $derived(!aside && !!cache && !cache.warm && stoppedUnsure(app.events, app.busy));
+  const face = $derived(chipFace(cache, cacheUnsure));
+  /** Item 786: the share an aside's newest answer read, for its chip. */
+  const asideHit = $derived(aside ? asideFigures(aside, now).cacheHit : null);
   /**
    * Item 699: what the next send costs at API prices — the history read
    * back while warm, all of it written once cold — at the newest reply's
@@ -3224,7 +3247,9 @@
    * them back; offered only while the cache is warm, since a cold cache
    * has nothing left to lose.
    */
-  const cacheBuilt = $derived(floating ? null : cacheBuiltWith(app.events));
+  // Item 786: an aside's box warns of none: the rail's pending settings are
+  // the chat's next turn's, not the aside's (its model shows on its chip).
+  const cacheBuilt = $derived(floating || aside ? null : cacheBuiltWith(app.events));
   // Item 601: and what the next turn carries beside the draft — the
   // chat's declared kind then and now, and the API engine's resolved model.
   const cacheChanges = $derived(
@@ -3245,7 +3270,7 @@
    * A prompt-layer change logged since the cache's reply (notes, practices,
    * memory, a layer's own text) is priced from the system block on.
    */
-  const targetModel = $derived(cache ? nextSendModel(app.events, app.draft.agentModel, modelSeen.byAlias) : null);
+  const targetModel = $derived(cache ? nextSendModel(app.events, aside?.model || app.draft.agentModel, modelSeen.byAlias) : null);
   $effect(() => {
     if (targetModel && onClaudeCode) void loadCacheRates(targetModel);
   });
@@ -3313,12 +3338,17 @@
    * caveat~~ (cut 2026-11-16).
    */
   const cacheTitle = $derived.by(() => {
-    const share = cached != null ? `${Math.round(cached * 100)}% from cache` : null;
+    const hit = aside ? asideHit : cached;
+    const share = hit != null ? `${Math.round(hit * 100)}% from cache` : null;
     if (!cache) return `${share ?? "Cache"} · no timer: this chat's last turn predates cache timing`;
+    // Item 786: what a stop or an aside left, in the chip's two lines.
+    if (face === "unknown") return `Unknown until the next send (a stopped turn)\n${nextEst?.title ?? "Cold, the next send writes it again"}`;
+    if (!cache.warm && aside && asideOwnModel) return `Own model · no cache from the chat\n${nextEst?.title ?? "The next answer writes it"}`;
+    if (!cache.warm && !aside && asideSinceCold(cache, asideReads(kwChat))) return `Cold · an aside since warmed only its own copy\n${nextEst?.title ?? "The next send writes it again"}`;
     if (!cache.warm) return nextEst?.title ?? "Cache cold · the next send writes it again";
     const left = remainingText(cache.remainingMs);
-    const aside = cache.asideShare != null ? " (an aside refreshed it)" : "";
-    const first = share ? `${share} · warm for ${left} more${aside}` : `Cache warm for ${left} more${aside}`;
+    const refreshed = !aside && cache.asideShare != null ? " (an aside refreshed it)" : "";
+    const first = share ? `${share} · warm for ${left} more${refreshed}` : `Cache warm for ${left} more${refreshed}`;
     return nextEst ? `${first}\n${nextEst.title}` : first;
   });
 </script>
@@ -4100,6 +4130,55 @@
         <span class="bottom-mark" aria-hidden="true">⚒</span>tools
       </button>
   {/snippet}
+  <!-- Item 786 (his "we have none of the cash information on this"): the
+       keep-warm switch and the cache chip, one snippet drawn in the chat's
+       row and an aside's — an aside reads the chat's cache (item 732), so
+       its box shows the same chip, timed by the same reads. -->
+  {#snippet cacheChips()}
+    <!-- Item 728: a chat whose hand-off switched it off says so, cache or not. -->
+    {#if kwChat && !(aside && asideOwnModel) && ((isOn(kw) && kw?.chosen !== false) || cache?.ttl === "1h" || handedOffOff(kw))}
+      <button
+        class="ns-chip bottom-toggle keep-warm"
+        class:on={isOn(kw)}
+        class:keeping={isKeeping(kw, now)}
+        aria-pressed={isOn(kw)}
+        aria-haspopup="menu"
+        bind:this={kwButton}
+        use:tip={switchTitle(kw, now, cache?.warm ? nextEst?.cold : null)}
+        use:holdPress={() => (kwHoldOpen = true)}
+        onclick={() => void flipKeepWarm(isOn(kw) ? "off" : "on")}
+      >
+        <span class="bottom-mark" aria-hidden="true">♨</span>{switchLabel(kw, now)}{#if kw?.hold_hours}<span class="keep-warm-hold">· {kw.hold_hours} h</span>{/if}
+      </button>
+      {#if kwHoldOpen && kwButton}<KeepWarmHold anchor={kwButton} status={kw} onpick={(h) => void holdFor(h)} onclose={() => (kwHoldOpen = false)} />{/if}
+    {/if}
+    {#if cache && cacheBuilt && cache.warm && (cacheChanges.length > 0 || layerChange)}
+      <!-- Backlog 408: a pending change would lose the warm cache; the
+           click puts every changed setting back. Item 777: priced, with
+           it against without it; a logged layer change is named too (the
+           Context page puts it back, not this click). -->
+      <button
+        class="ns-chip mono bottom-cache losing"
+        use:tip={lossTip}
+        onclick={restoreCache}
+      >
+        <span class="losing-what">{cacheChanges.length > 0 && !layerChange ? cacheLossLine(cacheChanges) : `cache will be lost · ${lossWords.join(", ")}`}</span>{#if changeCost}{@const vs = changeCost.line.indexOf(" (vs")}<span class="bottom-cache-next"><span class="next-sep">&nbsp;· </span>{vs < 0 ? changeCost.line : changeCost.line.slice(0, vs)}{#if vs >= 0}<span class="cost-vs">{changeCost.line.slice(vs)}</span>{/if}</span>{/if}{#if canRestore(cacheChanges)}<span class="bottom-cache-when restore-part">&nbsp;· <span class="restore-word">restore</span></span>{/if}
+      </button>
+    {:else if (aside ? asideHit : cached) != null || cache}
+      <div
+        class="ns-chip mono bottom-cache"
+        class:cold={cache ? !cache.warm : false}
+        class:unknown={face === "unknown"}
+        use:tip={cacheTitle}
+      >
+        <!-- Item 776: cold reads `cache cold · next ≈ $1.65`; warm puts both prices on the face. -->
+        <!-- Item 786: `unknown` after a stop that logged no reply; an aside on its own model says so. -->
+        {#if face === "unknown"}cache <span class="bottom-cache-when" aria-label="cache unknown until the next send">unknown</span>{:else if cache && !cache.warm}{#if aside && asideOwnModel}own model{:else}cache{/if} <span class="bottom-cache-when" aria-label={cacheLine(cache)}>cold</span>{:else}{@const hit = aside ? asideHit : cached}{#if hit != null}{Math.round(hit * 100)}%<span class="bottom-cache-word"> cached</span>{:else}cache{/if}{#if cache}
+          <span class="bottom-cache-when" aria-label={cacheLine(cache)}>· {remainingText(cache.remainingMs)}</span>
+        {/if}{/if}{#if cache && nextEst}<span class="bottom-cache-next">· {nextEst.line}</span>{/if}
+      </div>
+    {/if}
+  {/snippet}
   {#if aside}
     <!-- The aside's bottom row (backlog 283): its line — where it answers
          from, or why Send waits — and the format toggle, the one bottom
@@ -4132,6 +4211,7 @@
       >
         <span class="bottom-mark" aria-hidden="true">∑</span>format
       </button>
+      {@render cacheChips()}
     </div>
   {:else if !floating}
     <!-- The bottom row (backlog 112, board 10's C): the two transcript
@@ -4169,47 +4249,7 @@
            (blocker 1844): with the default on, the switch covers it. A chat
            already in that mode reads "On until your next message" and ends
            at his send as before. -->
-      <!-- Item 728: a chat whose hand-off switched it off says so, cache or not. -->
-      {#if kwChat && ((isOn(kw) && kw?.chosen !== false) || cache?.ttl === "1h" || handedOffOff(kw))}
-        <button
-          class="ns-chip bottom-toggle keep-warm"
-          class:on={isOn(kw)}
-          class:keeping={isKeeping(kw, now)}
-          aria-pressed={isOn(kw)}
-          aria-haspopup="menu"
-          bind:this={kwButton}
-          use:tip={switchTitle(kw, now, cache?.warm ? nextEst?.cold : null)}
-          use:holdPress={() => (kwHoldOpen = true)}
-          onclick={() => void flipKeepWarm(isOn(kw) ? "off" : "on")}
-        >
-          <span class="bottom-mark" aria-hidden="true">♨</span>{switchLabel(kw, now)}{#if kw?.hold_hours}<span class="keep-warm-hold">· {kw.hold_hours} h</span>{/if}
-        </button>
-        {#if kwHoldOpen && kwButton}<KeepWarmHold anchor={kwButton} status={kw} onpick={(h) => void holdFor(h)} onclose={() => (kwHoldOpen = false)} />{/if}
-      {/if}
-      {#if cache && cacheBuilt && cache.warm && (cacheChanges.length > 0 || layerChange)}
-        <!-- Backlog 408: a pending change would lose the warm cache; the
-             click puts every changed setting back. Item 777: priced, with
-             it against without it; a logged layer change is named too (the
-             Context page puts it back, not this click). -->
-        <button
-          class="ns-chip mono bottom-cache losing"
-          use:tip={lossTip}
-          onclick={restoreCache}
-        >
-          <span class="losing-what">{cacheChanges.length > 0 && !layerChange ? cacheLossLine(cacheChanges) : `cache will be lost · ${lossWords.join(", ")}`}</span>{#if changeCost}{@const vs = changeCost.line.indexOf(" (vs")}<span class="bottom-cache-next"><span class="next-sep">&nbsp;· </span>{vs < 0 ? changeCost.line : changeCost.line.slice(0, vs)}{#if vs >= 0}<span class="cost-vs">{changeCost.line.slice(vs)}</span>{/if}</span>{/if}{#if canRestore(cacheChanges)}<span class="bottom-cache-when restore-part">&nbsp;· <span class="restore-word">restore</span></span>{/if}
-        </button>
-      {:else if cached != null || cache}
-        <div
-          class="ns-chip mono bottom-cache"
-          class:cold={cache ? !cache.warm : false}
-          use:tip={cacheTitle}
-        >
-          <!-- Item 776: cold reads `cache cold · next ≈ $1.65`; warm puts both prices on the face. -->
-          {#if cache && !cache.warm}cache <span class="bottom-cache-when" aria-label={cacheLine(cache)}>cold</span>{:else}{#if cached != null}{Math.round(cached * 100)}%<span class="bottom-cache-word"> cached</span>{:else}cache{/if}{#if cache}
-            <span class="bottom-cache-when" aria-label={cacheLine(cache)}>· {remainingText(cache.remainingMs)}</span>
-          {/if}{/if}{#if cache && nextEst}<span class="bottom-cache-next">· {nextEst.line}</span>{/if}
-        </div>
-      {/if}
+      {@render cacheChips()}
     </div>
   {/if}
   {#if !app.connection}
@@ -4680,7 +4720,8 @@
   .composer.aside .bottom-row {
     margin-top: 5px;
     justify-content: space-between;
-    flex-wrap: nowrap;
+    /* Item 786: the cache chips joined the row; it wraps, never clips. */
+    flex-wrap: wrap;
   }
   .aside-line {
     min-width: 0;
