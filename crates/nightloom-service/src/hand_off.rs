@@ -27,6 +27,15 @@
 //! report §3c: a cold 200k return ≈ $1.53, a fresh slice ≈ $0.26). The
 //! brief is collected by code, so no warm wrap-up turn is needed first.
 //!
+//! **Loop guard (item 811, his "sounds good", 2026-11-17):** the soft mark
+//! fires only once the chat has also grown [`GROWTH_TOKENS`] past its own
+//! fresh start ([`fresh_start`]: the context of the first reply after its
+//! last hand-off, or after its creation), so a chat whose fresh slice
+//! already starts near the mark is never handed off again and again. The
+//! start is read off the log, so it survives a relaunch. Each hand-off
+//! appends its start, its size and its brief's size to
+//! [`HAND_OFFS_FILE`] (items 810 and 811 read it).
+//!
 //! [`SessionEvent::AutoHandOff`]: nightloom_core::SessionEvent::AutoHandOff
 
 use std::path::Path;
@@ -42,6 +51,9 @@ pub const SOFT_TOKENS: u64 = 100_000;
 /// so a chat already past 100k when this ships follows the new mark
 /// without waiting for the next scan to re-set it.
 const EARLIER_SOFT: &[u64] = &[200_000];
+/// The soft mark fires only this many tokens past the chat's fresh start
+/// (item 811), so a hand-off can never loop.
+pub const GROWTH_TOKENS: u64 = 50_000;
 /// The hard mark, tokens.
 pub const HARD_TOKENS: u64 = 330_000;
 /// The shortest pause since the newest reply that can count as cold — the
@@ -72,9 +84,11 @@ impl Reason {
 /// `context` tokens, ended at `last_at` and left a cache that goes cold at
 /// `cold_at` ([`cold_at`]), hands off before a message sent at `now`: past
 /// the hard mark always; past the soft one only once the cache is cold
-/// (item 792). Pure.
+/// (item 792) and the chat is [`GROWTH_TOKENS`] past its fresh `start`
+/// ([`fresh_start`], item 811). Pure.
 pub fn due(
     marks: (u64, u64),
+    start: u64,
     context: u64,
     last_at: DateTime<Utc>,
     cold_at: DateTime<Utc>,
@@ -87,10 +101,75 @@ pub fn due(
     if hard > 0 && context >= hard {
         return Some(Reason::Hard);
     }
-    if context >= soft && (now - last_at).num_seconds() >= IDLE_SECS && now >= cold_at {
+    if context >= soft
+        && context >= start.saturating_add(GROWTH_TOKENS)
+        && (now - last_at).num_seconds() >= IDLE_SECS
+        && now >= cold_at
+    {
         return Some(Reason::Soft);
     }
     None
+}
+
+/// The chat's fresh start: the context (input + output tokens) of the
+/// first live reply after its newest live in-place hand-off, or after its
+/// creation when it has none; `None` before that reply. Read off the log,
+/// so a relaunch reads the same (item 811). Pure.
+pub fn fresh_start(session: &Session) -> Option<u64> {
+    let live = session.live_events();
+    let since = live
+        .iter()
+        .rposition(|(_, e)| matches!(e, SessionEvent::HandOff { .. }))
+        .map_or(0, |i| i + 1);
+    live[since..].iter().find_map(|(_, e)| match e {
+        SessionEvent::AssistantMessage { usage, .. } => {
+            Some(usage.input_tokens + usage.output_tokens)
+        }
+        _ => None,
+    })
+}
+
+/// Every hand-off's sizes, one JSON line each, in the chat's `ask/<id>`
+/// folder (item 811; item 810 and 811's measuring half read it).
+pub const HAND_OFFS_FILE: &str = "hand-offs.jsonl";
+
+/// One hand-off's sizes, tokens: the fresh start it grew from, the context
+/// at the hand-off and the brief (≈ 4 chars a token).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HandOffLine {
+    pub at_ms: i64,
+    pub reason: String,
+    pub start: u64,
+    pub context: u64,
+    pub brief_tokens: u64,
+}
+
+/// Append `line` to `dir`'s [`HAND_OFFS_FILE`]. Best effort: a failed write
+/// loses the measurement, never the hand-off.
+pub fn note_hand_off(dir: &Path, line: &HandOffLine) {
+    use std::io::Write;
+    let _ = std::fs::create_dir_all(dir);
+    if let (Ok(text), Ok(mut f)) = (
+        serde_json::to_string(line),
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join(HAND_OFFS_FILE)),
+    ) {
+        let _ = writeln!(f, "{text}");
+    }
+}
+
+/// The lines [`note_hand_off`] wrote in `dir`, oldest first; unreadable
+/// lines are skipped.
+pub fn read_hand_offs(dir: &Path) -> Vec<HandOffLine> {
+    std::fs::read_to_string(dir.join(HAND_OFFS_FILE))
+        .map(|t| {
+            t.lines()
+                .filter_map(|l| serde_json::from_str(l).ok())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// When the newest live reply's prompt cache goes cold: its `sent_at` (else
@@ -327,8 +406,21 @@ pub fn hand_off_if_due(
     let (context, last_at) = session.last_reply_context()?;
     let pings = crate::cache_miss::ask_dir_of(session);
     let cold = cold_at(session, pings.as_deref()).unwrap_or(last_at);
-    let reason = due(marks, context, last_at, cold, now)?;
+    let start = fresh_start(session).unwrap_or(0);
+    let reason = due(marks, start, context, last_at, cold, now)?;
     let text = brief_in(session, skip_prefix, logs);
+    if let Some(dir) = &pings {
+        note_hand_off(
+            dir,
+            &HandOffLine {
+                at_ms: now.timestamp_millis(),
+                reason: reason.word().to_string(),
+                start,
+                context,
+                brief_tokens: (text.len() / 4) as u64,
+            },
+        );
+    }
     session.record_hand_off(text, context, reason.word());
     Some(reason)
 }
@@ -365,20 +457,20 @@ mod tests {
         let idle = now - Duration::seconds(IDLE_SECS + 1);
         let warm = now + Duration::minutes(20);
         let cold = now - Duration::seconds(1);
-        assert_eq!(due(m, 90_000, idle, cold, now), None, "under soft");
+        assert_eq!(due(m, 0, 90_000, idle, cold, now), None, "under soft");
         assert_eq!(
-            due(m, 150_000, recent, cold, now),
+            due(m, 0, 150_000, recent, cold, now),
             None,
             "soft but not idle"
         );
         assert_eq!(
-            due(m, 150_000, idle, warm, now),
+            due(m, 0, 150_000, idle, warm, now),
             None,
             "soft, idle, still warm"
         );
-        assert_eq!(due(m, 150_000, idle, cold, now), Some(Reason::Soft));
-        assert_eq!(due(m, 340_000, recent, warm, now), Some(Reason::Hard));
-        assert_eq!(due((0, 0), 900_000, idle, cold, now), None, "off");
+        assert_eq!(due(m, 0, 150_000, idle, cold, now), Some(Reason::Soft));
+        assert_eq!(due(m, 0, 340_000, recent, warm, now), Some(Reason::Hard));
+        assert_eq!(due((0, 0), 0, 900_000, idle, cold, now), None, "off");
     }
 
     /// A reply on the Claude Code engine's one-hour cache, `tokens` of
@@ -412,6 +504,7 @@ mod tests {
         s.set_auto_hand_off(SOFT_TOKENS, HARD_TOKENS);
         s.record_user_message("look at the build", vec![], vec![], false);
         let sent = Utc::now();
+        timed_reply(&mut s, 20_000, sent - Duration::minutes(1));
         timed_reply(&mut s, 150_000, sent);
         assert_eq!(
             cold_at(&s, None).map(|t| t.timestamp_millis()),
@@ -476,6 +569,7 @@ mod tests {
         s.set_auto_hand_off(SOFT_TOKENS, HARD_TOKENS);
         s.record_user_message("look at the build", vec![], vec![], false);
         let sent = Utc::now();
+        timed_reply(&mut s, 20_000, sent - Duration::minutes(1));
         timed_reply(&mut s, 150_000, sent);
         let ask = crate::cache_miss::ask_dir_of(&s).unwrap();
         // Under half the context: the head of the prefix only, no read.
@@ -519,6 +613,7 @@ mod tests {
         let mut s = Session::start(&dir, ChatMode::Normal, ChatKind::Build).unwrap();
         s.set_auto_hand_off(200_000, HARD_TOKENS);
         let sent = Utc::now();
+        timed_reply(&mut s, 20_000, sent - Duration::minutes(1));
         timed_reply(&mut s, 150_000, sent);
         assert_eq!(
             hand_off_if_due(&mut s, sent + Duration::minutes(10), None, None),
@@ -535,6 +630,88 @@ mod tests {
         timed_reply(&mut other, 40_000, sent);
         hand_off_if_due(&mut other, sent + Duration::minutes(10), None, None);
         assert_eq!(other.auto_hand_off(), Some((50_000, 80_000)));
+    }
+
+    /// Item 811's check: a chat whose fresh slice starts at 80k is not
+    /// handed off at 110k (cold, past the 100k mark, only 30k grown), and is
+    /// at 135k (cold, 55k grown); the hand-off logs its sizes.
+    #[test]
+    fn a_chat_that_starts_at_80k_carries_on_at_110k_and_hands_off_at_135k() {
+        let dir = scratch();
+        let mut s = Session::start(&dir, ChatMode::Normal, ChatKind::Build).unwrap();
+        s.set_auto_hand_off(SOFT_TOKENS, HARD_TOKENS);
+        let sent = Utc::now();
+        s.record_user_message("Morning scan — facts", vec![], vec![], false);
+        timed_reply(&mut s, 80_000, sent - Duration::minutes(10));
+        s.record_user_message("what's on today", vec![], vec![], false);
+        timed_reply(&mut s, 110_000, sent);
+        assert_eq!(fresh_start(&s), Some(80_100));
+        let cold = sent + Duration::hours(2);
+        assert_eq!(hand_off_if_due(&mut s, cold, None, None), None, "110k");
+        assert!(s.pending_hand_off().is_none());
+        s.record_user_message("and the mail", vec![], vec![], false);
+        timed_reply(&mut s, 135_000, cold);
+        let colder = cold + Duration::hours(2);
+        assert_eq!(
+            hand_off_if_due(&mut s, colder, None, None),
+            Some(Reason::Soft),
+            "135k"
+        );
+        let ask = crate::cache_miss::ask_dir_of(&s).unwrap();
+        let lines = read_hand_offs(&ask);
+        assert_eq!(lines.len(), 1);
+        let l = &lines[0];
+        assert_eq!(
+            (l.start, l.context, l.reason.as_str()),
+            (80_100, 135_100, "soft")
+        );
+        assert_eq!(l.at_ms, colder.timestamp_millis());
+        let brief = s.pending_hand_off().unwrap();
+        assert_eq!(l.brief_tokens, (brief.len() / 4) as u64);
+
+        // The new slice's first reply is its fresh start: a brief that
+        // lands it at 105k is not handed off again at 105k or 140k.
+        s.record_agent_session("claude-code", "s-2");
+        s.record_user_message("next", vec![], vec![], false);
+        timed_reply(&mut s, 105_000, colder);
+        assert_eq!(fresh_start(&s), Some(105_100));
+        let later = colder + Duration::hours(2);
+        assert_eq!(hand_off_if_due(&mut s, later, None, None), None, "no loop");
+        timed_reply(&mut s, 140_000, later);
+        assert_eq!(
+            hand_off_if_due(&mut s, later + Duration::hours(2), None, None),
+            None,
+            "35k grown"
+        );
+        // The hard mark is not guarded: past it the chat hands off.
+        timed_reply(&mut s, HARD_TOKENS, later);
+        assert_eq!(
+            hand_off_if_due(&mut s, later + Duration::minutes(1), None, None),
+            Some(Reason::Hard)
+        );
+        assert_eq!(read_hand_offs(&ask).len(), 2);
+    }
+
+    /// Item 811: the fresh start is read off the log, so a relaunch (the
+    /// log loaded again) reads the same start and makes the same call.
+    #[test]
+    fn the_fresh_start_survives_a_relaunch() {
+        let dir = scratch();
+        let mut s = Session::start(&dir, ChatMode::Normal, ChatKind::Build).unwrap();
+        s.set_auto_hand_off(SOFT_TOKENS, HARD_TOKENS);
+        let sent = Utc::now();
+        s.record_user_message("go", vec![], vec![], false);
+        timed_reply(&mut s, 30_000, sent - Duration::hours(1));
+        s.record_hand_off("brief".into(), 120_000, "soft");
+        s.record_agent_session("claude-code", "s-2");
+        s.record_user_message("next", vec![], vec![], false);
+        timed_reply(&mut s, 80_000, sent - Duration::minutes(5));
+        timed_reply(&mut s, 110_000, sent);
+        assert_eq!(fresh_start(&s), Some(80_100));
+        let mut back = Session::load(s.log_path().unwrap()).unwrap();
+        assert_eq!(fresh_start(&back), Some(80_100), "after a relaunch");
+        let cold = sent + Duration::hours(2);
+        assert_eq!(hand_off_if_due(&mut back, cold, None, None), None);
     }
 
     fn reply(session: &mut Session, text: &str, tokens: u64, tool_path: Option<&str>) {
