@@ -17,7 +17,10 @@ export const ASIDE_HIDDEN = {
   // ~~thinkingToggle / toolsToggle: "an aside's answer streams its text
   // only"~~ — item 403 gave an aside's answer the chat's thinking and tool
   // rows, so since item 605 (2026-11-11) the two toggles are in its row.
-  cacheChip: "the chip times the chat's cache; the aside's head says what it read from it",
+  // ~~cacheChip: "the chip times the chat's cache; the aside's head says
+  // what it read from it"~~ — item 786 (2026-11-17, his "we have none of
+  // the cash information on this"): the aside reads the chat's cache, so
+  // its box draws the chat's chip and keep-warm switch (ASIDE_KEPT).
   fork: "Fork helpers from here checkpoints the chat's session; an aside has no session of its own",
   removeFromContext: "an aside keeps no context to remove from: its exchanges travel as text, and Rewind drops them",
 } as const;
@@ -43,6 +46,9 @@ export const ASIDE_KEPT = [
   // Item 605: the transcript toggles, now an aside's answer has both.
   "thinkingToggle",
   "toolsToggle",
+  // Item 786: the cache chip and the keep-warm switch beside it.
+  "cacheChip",
+  "keepWarm",
   "copy",
   "edit",
   "rewind",

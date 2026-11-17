@@ -752,6 +752,20 @@ function openedSince(list: readonly Aside[], before: number): { thread: Aside; t
   return null;
 }
 
+/**
+ * Item 786: the open chat's cache expiry as the desktop reckons it — the
+ * reply, keep-warm pings and asides' reads (`cacheState`) — for the phone,
+ * whose header reads only the log's reply. Rides the relayed `aside-event`
+ * as `{kind: "cache", chat, warm_until}` (no `seq`, so a phone page from
+ * before ignores it). Sent when it changes, per chat.
+ */
+const toldCache = new Map<string, number | null>();
+export function tellPhoneCache(chat: string | null, warmUntil: number | null): void {
+  if (!chat || toldCache.get(chat) === warmUntil) return;
+  toldCache.set(chat, warmUntil);
+  void emit("aside-event", { kind: "cache", chat, warm_until: warmUntil }).catch(() => {});
+}
+
 function emitAsideEvent(e: AsideEvent): void {
   void emit("aside-event", e).catch(() => {});
 }

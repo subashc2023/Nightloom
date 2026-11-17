@@ -201,6 +201,11 @@ pub struct Translator {
     /// The rounds that streamed, by the id their `message_start` named
     /// (item 723): an `assistant` line for any other id came whole.
     streamed: HashSet<String>,
+    /// The newest round's `message_start` usage while no `message_delta`
+    /// has closed it (item 786): a run killed mid-answer still says what
+    /// its request read and wrote, so [`Self::finish`] gives it to the
+    /// rounds when nothing else did.
+    open_start: Option<Usage>,
     /// `stream_event` lines since the last main-thread `assistant` or
     /// `user` line (item 723), where the rounds have no ids to go by.
     events_since_line: u32,
@@ -590,6 +595,14 @@ impl Translator {
     }
 
     pub fn finish(mut self) -> AgentOutcome {
+        // Item 786: a round that started and never ended (a stop the CLI
+        // did not close with its own `message_delta`, a kill): its prompt
+        // side is what the request read and wrote. Measured on 2.1.326 the
+        // interrupt does send the `message_delta`; this is the backstop.
+        if let Some(start) = self.open_start.take() {
+            self.outcome.last_round = Some(start);
+            self.outcome.first_round.get_or_insert(start);
+        }
         if let Some(hit) = self.outcome.limit.as_mut() {
             hit.agents = stopped_agents(&hit.subagents, &self.subagent_order, &self.subagents);
         }
@@ -664,7 +677,14 @@ impl Translator {
                     self.streamed.insert(id);
                 }
                 match message.usage {
-                    Some(raw) => vec![self.live.exact(raw.to_usage().input_tokens)],
+                    Some(raw) => {
+                        let usage = raw.to_usage();
+                        self.open_start = Some(Usage {
+                            output_tokens: 0,
+                            ..usage
+                        });
+                        vec![self.live.exact(usage.input_tokens)]
+                    }
                     None => Vec::new(),
                 }
             }
@@ -673,6 +693,7 @@ impl Translator {
             // wants and what `TurnEvent::Usage` documents itself as.
             StreamEv::MessageDelta { usage: Some(raw) } => {
                 let usage = raw.to_usage();
+                self.open_start = None;
                 self.outcome.usage.add(usage);
                 self.outcome.last_round = Some(usage);
                 self.outcome.first_round.get_or_insert(usage);
@@ -1668,6 +1689,29 @@ mod tests {
         let (_, none) = drive(&[]);
         assert_eq!(none.last_round, None);
         assert_eq!(none.first_round, None);
+    }
+
+    /// Item 786: a round stopped before its `message_delta` (a kill) still
+    /// reports what its request read, from its `message_start`; one the CLI
+    /// closed itself keeps the closing figure, as before.
+    #[test]
+    fn a_round_cut_off_after_its_start_still_reports_its_read() {
+        let (_, cut) = drive(&[MSG_START]);
+        let first = cut.first_round.expect("the start's figure");
+        assert_eq!(first.cache_read_tokens, Some(20000));
+        assert_eq!(first.cache_write_tokens, Some(500));
+        assert_eq!(first.output_tokens, 0);
+        assert_eq!(cut.last_round, Some(first));
+        assert_eq!(
+            cut.usage.input_tokens, 0,
+            "the sum counts closed rounds only"
+        );
+        let (_, closed) = drive(&[MSG_START, MSG_DELTA_263]);
+        assert_eq!(closed.last_round.expect("closed").output_tokens, 42);
+        assert_eq!(
+            closed.first_round.expect("closed").cache_read_tokens,
+            Some(12144)
+        );
     }
 
     /// Verbatim from one `claude -p` turn on 2.1.263 (2026-09-15, nightshift

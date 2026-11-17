@@ -23,11 +23,12 @@
   import { mark as handoffMark } from "./handoff.svelte";
   import { touchedUntil } from "./keepWarm";
   import { keepWarm } from "./keepWarm.svelte";
-  import { cacheState, nextTickMs, remainingText } from "./cache";
+  import { cacheState, chipFace, nextTickMs, ownModelCache, remainingText, stoppedUnsure } from "./cache";
   import { cacheEstimate, ratesFromPrice, usd as usdShort } from "./cacheCost";
   import { cacheRatesOf, loadCacheRates } from "./cacheRates.svelte";
   import { nextSendModel, pendingChangeCost } from "./changeCost";
   import { modelSeen } from "./modelSeen.svelte";
+  import { displayName } from "./modelSeen";
   import {
     clockText,
     freshIn,
@@ -61,8 +62,10 @@
      * stuff in the side bar?"): the column beside an aside tab — the same
      * column, reading the aside: its context dial, plan use, This aside
      * (its cost and cache hit), This turn (its newest exchange). No Tasks
-     * (the to-do list is the chat's session's) and no cache timer (the
-     * timer is the chat's newest reply's). Null: the chat's, as before.
+     * (the to-do list is the chat's session's) ~~and no cache timer (the
+     * timer is the chat's newest reply's)~~ — item 786 (2026-11-17): the
+     * cache row too, the chat's timer, since the aside reads that cache.
+     * Null: the chat's, as before.
      */
     aside?: Aside | null;
     /** The chat the aside is of (item 605), for its hand-off line. */
@@ -136,7 +139,22 @@
    * second under two minutes — and not at all once cold, so an idle
    * column with a cold cache has no timer.
    */
-  const cache = $derived(column && !aside ? cacheState(app.events, now, app.activeSessionId ? touchedUntil(keepWarm.byChat[app.activeSessionId]) : null, asideReads(app.activeSessionId)) : null);
+  // Item 786: an aside's column times its chat's cache too (it reads the
+  // chat's prefix, item 732) while that chat is the open one; an aside on
+  // another model times its own answers' cache (`ownModelCache`).
+  const railChat = $derived(aside ? (asideChat === app.activeSessionId ? asideChat : null) : app.activeSessionId);
+  const railOwnModel = $derived(
+    !!aside?.model && displayName(aside.model) !== (app.draft.agentModel.trim() ? displayName(app.draft.agentModel) : "default"),
+  );
+  const cache = $derived(
+    !column || (aside && !railChat)
+      ? null
+      : aside && railOwnModel
+        ? ownModelCache(aside.turns, now)
+        : cacheState(app.events, now, railChat ? touchedUntil(keepWarm.byChat[railChat]) : null, asideReads(railChat)),
+  );
+  /** Item 786: cold after a stop that logged no reply reads "unknown". */
+  const railFace = $derived(chipFace(cache, !aside && !!cache && !cache.warm && stoppedUnsure(app.events, app.busy)));
   $effect(() => {
     if (!cache || !cache.warm) return;
     const wait = nextTickMs(cache.remainingMs);
@@ -150,14 +168,14 @@
   /** Item 699's price fix (2026-11-16): the next send's API-price estimate,
    *  as the composer's chip gives it — the column's cache row had none. */
   // Item 777: a pending model switch is priced at the new model (cold too).
-  const nextModel = $derived(cache ? nextSendModel(app.events, app.draft.agentModel, modelSeen.byAlias) : null);
+  const nextModel = $derived(cache ? nextSendModel(app.events, aside?.model || app.draft.agentModel, modelSeen.byAlias) : null);
   $effect(() => {
     if (nextModel && app.connection?.engine === "claude-code") void loadCacheRates(nextModel);
   });
   /** Item 777: with a change pending on a warm cache, the price with it
    *  (the composer's bar gives both), so the two never disagree. */
   const pendingCost = $derived(
-    cache?.warm
+    cache?.warm && !aside
       ? pendingChangeCost({
           events: app.events,
           draft: app.draft,
@@ -417,9 +435,13 @@
             class="dk"
             use:tip={cacheLeft
               ? `Warm for ${cacheLeft} more (${cache.ttl === "1h" ? "1-hour" : "5-minute"} cache)`
-              : "Cache cold · the next send writes it again"}
+              : railFace === "unknown"
+                ? "Unknown until the next send (a stopped turn)"
+                : aside && railOwnModel
+                  ? "Own model · no cache from the chat"
+                  : "Cache cold · the next send writes it again"}
           >
-            <i class="s"></i><span>Cache {cacheLeft ? "warm" : "cold"}</span><b class:sig={!!cacheLeft}>{cacheLeft ? `${cacheLeft} left` : "—"}</b>
+            <i class="s"></i><span>Cache {cacheLeft ? "warm" : railFace === "unknown" ? "unknown" : "cold"}</span><b class:sig={!!cacheLeft}>{cacheLeft ? `${cacheLeft} left` : "—"}</b>
           </div>
           {#if nextEst}
             <!-- Item 699's price fix: what the next send costs, warm or cold. -->

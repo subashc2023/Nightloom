@@ -162,6 +162,72 @@ export function nextTickMs(remainingMs: number): number | null {
 }
 
 /**
+ * Item 786 (his "I don't know if that means … the cash is still warm, or …
+ * just cold"): what the chip can and cannot know after a stop or an aside.
+ * Measured 2026-11-17 on CLI 2.1.326, Haiku, a scratch chat
+ * (`wave-m-786-report-2026-11-17.md` §Measured):
+ *
+ * - a request stopped mid-answer had already written its prompt: the next
+ *   send read 64,472 of 67,740 (95%);
+ * - an aside stopped mid-answer on a warm chat read the whole prefix
+ *   (67,172 of 67,174), so it refreshed the entry as a finished one does;
+ * - an aside, stopped **or finished**, on a cold chat warmed nothing the
+ *   chat can use: the chat's next send read 27,014 of ~69.6k, the same as
+ *   with no aside (the aside writes its own copy, ending at its question).
+ *
+ * `stoppedUnsure`: a turn that ended before its reply was recorded — the
+ * log ends on his message with nothing after it — may or may not have
+ * reached the API, so a cold reading is "unknown until the next send"
+ * rather than a wrong "cold". A warm reading stays: the entry before it
+ * holds at least that long either way.
+ */
+export function stoppedUnsure(events: SessionEvent[], busy: boolean): boolean {
+  if (busy) return false;
+  const live = liveFlags(events);
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (!live[i]) continue;
+    const e = events[i];
+    if (e.event === "assistant_message") return false;
+    if (e.event === "user_message") return true;
+  }
+  return false;
+}
+
+/** Item 786: an aside asked after the chat's cache had gone cold — it did
+ *  not warm the chat (measured above); the chip's tooltip says so. */
+export function asideSinceCold(state: CacheState | null, asides: readonly AsideRead[]): boolean {
+  if (!state || state.warm) return false;
+  return asides.some((r) => r.at >= state.warmUntil);
+}
+
+/**
+ * Item 786: an aside's own cache when it runs on another model than the
+ * chat's: the chat's entry is that model's, so the aside's first answer
+ * writes its own and each later answer reads it. Times it from the newest
+ * answer (or stop) that reported its read; cold before the first. One
+ * hour: what Claude Code writes with (`CLAUDE_CODE_CACHE_TTL`).
+ */
+export function ownModelCache(turns: readonly { readAt?: number }[], now: number): CacheState {
+  let at: number | null = null;
+  for (const t of turns) if (t.readAt != null && (at === null || t.readAt > at)) at = t.readAt;
+  const ttl: CacheTtl = "1h";
+  const warmUntil = at === null ? now - 1 : at + TTL_MS[ttl];
+  const remainingMs = warmUntil - now;
+  return { sentAt: at ?? warmUntil - TTL_MS[ttl], ttl, warmUntil, remainingMs, warm: remainingMs > 0 };
+}
+
+/**
+ * What the composer's chip draws (item 786: the chat's and an aside's are
+ * one chip): `warm` with its time left, `cold`, or `unknown` until the next
+ * send. Pure, for the suite.
+ */
+export function chipFace(state: CacheState | null, unsure: boolean): "warm" | "cold" | "unknown" | null {
+  if (!state) return null;
+  if (state.warm) return "warm";
+  return unsure ? "unknown" : "cold";
+}
+
+/**
  * What the cache was built with (nightshift backlog 408, 2026-10-24): the
  * newest live reply's recorded settings, and how many tokens its request
  * left in the cache (read plus written — the prefix the next request would

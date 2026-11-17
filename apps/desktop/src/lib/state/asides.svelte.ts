@@ -11,13 +11,14 @@ import { loadCouncilPrefs, type CouncilPrefs } from "../council";
 import * as tabs from "../tabs";
 import type { TabContent } from "../tabs";
 import { pdfFileName, pdfRoute } from "../attachKinds";
-import type { Attachment, AsideSendOptions, TurnEvent } from "../types";
+import type { Attachment, AsideResult, AsideSendOptions, TurnEvent } from "../types";
 import { type Segment, app, closeThinking, applyToSegments } from "../state.svelte";
 import { limitPauseFrom, type LimitPause } from "../limit";
 import { addToast } from "./toasts.svelte";
 import { lastPrompt, missToastFor } from "../cacheCost";
 import { cleanChanges, type AsideChange } from "../asideNotes";
 import { addAsideNote } from "../asideNotes.svelte";
+import { scheduleAsideSave } from "../asides.svelte";
 
 /** One exchange of the open chat's aside (backlog 081; streamed since
  *  backlog 128; a thread of them since backlog 130) — see `app.aside`. */
@@ -219,15 +220,18 @@ export function asideTabThread(content: TabContent): number | undefined {
 /**
  * Every answered aside's read of the chat's cache (item 677), for
  * `cacheState`: an aside is a fork of the chat on its cache, so one that
- * read it refreshed it. A cancelled or failed turn, and one answered
- * before 677, gives none.
+ * read it refreshed it. ~~A cancelled or failed turn, and one answered
+ * before 677, gives none.~~ Item 786 (2026-11-17): a stopped one counts
+ * when its read arrived — measured, a stopped aside had read the whole
+ * prefix before its first word (`cache.ts` `stoppedUnsure`'s note). A
+ * failed turn, a stop before any read, and one answered before 677 give none.
  */
 export function asideReads(session: string | null | undefined): AsideRead[] {
   if (!session) return [];
   const out: AsideRead[] = [];
   for (const a of asidesOf(session))
     for (const t of a.turns)
-      if (!t.cancelled && !t.error && t.readAt != null && t.roundRead != null) out.push({ at: t.readAt, read: t.roundRead });
+      if (!t.error && t.readAt != null && t.roundRead != null) out.push({ at: t.readAt, read: t.roundRead });
   return out;
 }
 
@@ -429,7 +433,14 @@ async function runAside(turn: AsideTurn, sent: string, thread: Aside | null = nu
     const noteId = changes.length > 0 ? `${thread?.uid ?? "aside"}:${turn.seq}:${Date.now()}` : null;
     if (chat && noteId) addAsideNote(chat, noteId, turn.question || "(attachments)", changes);
     const t = live();
-    if (!t || t.cancelled) return; // dismissed, replaced or cancelled meanwhile
+    if (!t) return; // dismissed or replaced meanwhile
+    if (t.cancelled) {
+      // Item 786: stopped — the text stands as it was, but the request's
+      // read of the chat's cache (reported on the CLI's way out, measured
+      // on 2.1.326) restarts the chat's countdown as an answer's does.
+      stoppedRead(t, res);
+      return;
+    }
     settleAsideSegments(t, res.answer);
     t.answer = res.answer;
     t.partial = res.answer;
@@ -477,6 +488,24 @@ async function runAside(turn: AsideTurn, sent: string, thread: Aside | null = nu
       noteAsideReply(turn.seq);
     }
   }
+}
+
+/**
+ * A stopped exchange's figures (item 786): when the CLI reported the
+ * request's read before it ended (`first_read` set — the backend's round
+ * usage), its send time and read go on the turn, so `asideReads` restarts
+ * the chat's countdown and the aside's bar shows what it read. Its text is
+ * left as it stood. No report (stopped before the request was answered, or
+ * killed): nothing is claimed. Exported for the suite.
+ */
+export function stoppedRead(t: AsideTurn, res: Pick<AsideResult, "is_error" | "sent_ms" | "round_read" | "first_read" | "cache_read" | "context_tokens" | "cost_usd">): void {
+  if (res.is_error || res.first_read == null || typeof res.sent_ms !== "number" || typeof res.round_read !== "number") return;
+  t.readAt = res.sent_ms;
+  t.roundRead = res.round_read;
+  t.cacheRead = res.cache_read;
+  if (typeof res.context_tokens === "number") t.context = res.context_tokens;
+  if (typeof res.cost_usd === "number") t.added = res.cost_usd;
+  scheduleAsideSave();
 }
 
 /**

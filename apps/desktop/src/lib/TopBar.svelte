@@ -18,6 +18,7 @@
   import { keepWarm } from "./keepWarm.svelte";
   import { cacheState } from "./cache";
   import { coldToast, lastReply } from "./cacheCost";
+  import { tellPhoneCache } from "./remoteHandlers";
   import { loadCacheRates, ratesForChat } from "./cacheRates.svelte";
   import ContextDial from "./ContextDial.svelte";
   import { lastLoggedTurn } from "./contextDial";
@@ -266,6 +267,8 @@
     // Item 605: the chat's bar alone toasts its cache going cold.
     if (aside) return;
     const warmUntil = cacheState(app.events, Date.now(), app.activeSessionId ? touchedUntil(keepWarm.byChat[app.activeSessionId]) : null, asideReads(app.activeSessionId))?.warmUntil ?? null;
+    // Item 786: the phone's header times the same cache (pings and asides too).
+    tellPhoneCache(app.activeSessionId, warmUntil);
     if (warmUntil == null) return;
     const wait = warmUntil - Date.now();
     if (wait <= 0) return;

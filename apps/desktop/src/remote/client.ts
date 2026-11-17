@@ -416,6 +416,24 @@ export type AsideEvent =
 // (An `error` event — `{kind: "error", seq, error, answer, cancelled}` — is
 // read as a `done` with its `error` set.)
 
+/**
+ * Item 786: the desktop's word on a chat's cache expiry (`tellPhoneCache`
+ * in `remoteHandlers.ts`), on the `aside-event` stream: `{kind: "cache",
+ * chat, warm_until}`, `warm_until` ms epoch or null. Null for anything else.
+ */
+export function parseCacheEvent(data: string): { chat: string; warmUntil: number | null } | null {
+  try {
+    const v: unknown = JSON.parse(data);
+    if (!v || typeof v !== "object") return null;
+    const o = v as Record<string, unknown>;
+    if (o.kind !== "cache" || typeof o.chat !== "string") return null;
+    const w = o.warm_until;
+    return { chat: o.chat, warmUntil: typeof w === "number" && Number.isFinite(w) ? w : null };
+  } catch {
+    return null;
+  }
+}
+
 export function parseAsideEvent(data: string): AsideEvent | null {
   let v: Record<string, unknown>;
   try {
