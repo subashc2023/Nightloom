@@ -493,7 +493,7 @@ pub(crate) async fn send_agent(
             outcome.cost_usd,
         )
     {
-        tauri::async_runtime::spawn_blocking(move || nightloom_service::cache_miss::check(&req));
+        crate::commands::cli::check_request(&app, req);
     }
     // The reads the CLI refused outside the trees (backlog 143, pass 2):
     // each folder once, for the rail to offer the grant after the fact.

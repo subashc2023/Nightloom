@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AsideResult,
+  FlatAlarm,
   EditedAttachments,
   AsideSendOptions,
   ClaudeAuthStatus,
@@ -1201,6 +1202,13 @@ export function sessionFigures(agentSession: string, earlier: string[] = []): Pr
  *  the connected chat's resolved CLI, or null for `claude` resolved. */
 export function cliVersionCheck(binary: string | null): Promise<CliStatus> {
   return invoke("cli_version_check", { binary });
+}
+
+/** Item 758's canary: the installed CLI still holds the cache switch's
+ *  strings (read once per install), and the second-request notices logged
+ *  since. Zero tokens. */
+export function flatCanary(binary: string | null): Promise<FlatAlarm[]> {
+  return invoke("flat_canary", { binary });
 }
 
 /** Whether Claude Code is signed in (backlog 409), by `claude auth status`.

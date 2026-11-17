@@ -66,3 +66,30 @@ pub(crate) async fn cli_update(
     CLI_UPDATING.store(false, Ordering::SeqCst);
     r.map_err(|e| format!("running claude update failed: {e}"))
 }
+
+/// Item 758's canary for the bell ([`nightloom_service::flat_canary`]):
+/// whether the installed CLI still holds the strings the cache switch
+/// relies on (read once per install, so after an update too), and every
+/// second-request notice logged since. Zero tokens; reads the CLI's file.
+#[tauri::command]
+pub(crate) async fn flat_canary(
+    binary: Option<String>,
+) -> Result<Vec<nightloom_service::flat_canary::Alarm>, String> {
+    let bin = cli_binary(binary);
+    tokio::task::spawn_blocking(move || nightloom_service::flat_canary::notices(&bin))
+        .await
+        .map_err(|e| format!("the 758 check failed: {e}"))
+}
+
+/// After a request: item 727's cache-miss check, then item 758's canary,
+/// whose notice the window hears as `flat-canary` — off the turn's path.
+pub(crate) fn check_request(app: &tauri::AppHandle, req: nightloom_service::cache_miss::Request) {
+    use tauri::Emitter;
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        nightloom_service::cache_miss::check(&req);
+        if let Some(alarm) = nightloom_service::flat_canary::after_request(&req) {
+            let _ = app.emit("flat-canary", alarm);
+        }
+    });
+}

@@ -8,7 +8,7 @@
  * pass; `NotificationCentre.svelte` draws the list. Nothing here touches
  * the store, so every rule below is pinned by `centre.test.ts`.
  */
-import type { AppliedNotice, BuildStamp, CliStatus, DreamCommit, MemoryCommit, NightshiftRow, ProjectRef, ProposalNotice } from "./types";
+import type { AppliedNotice, BuildStamp, CliStatus, DreamCommit, FlatAlarm, MemoryCommit, NightshiftRow, ProjectRef, ProposalNotice } from "./types";
 import { cliNoticeDetail, cliNoticeId, cliNoticeTitle, offersUpdate } from "./cliUpdate";
 
 // ---- the daily switch ----
@@ -115,7 +115,7 @@ export const RECENT_PASS_MS = 12 * 60 * 60 * 1000;
 
 // ---- the notices ----
 
-export type NoticeKind = "proposal" | "dream" | "memory" | "morning" | "blocker" | "release" | "cli";
+export type NoticeKind = "canary" | "proposal" | "dream" | "memory" | "morning" | "blocker" | "release" | "cli";
 
 /** One row of the panel. `id` is stable for as long as the thing it names
  *  is unchanged, which is what "dismissed" is keyed on. */
@@ -138,9 +138,12 @@ export interface Notice {
   cli?: CliStatus;
   /** The change, for a `memory` notice (item 751). */
   memory?: MemoryCommit;
+  /** The alarm, for a `canary` notice (item 758). */
+  canary?: FlatAlarm;
 }
 
 export const KIND_LABEL: Record<NoticeKind, string> = {
+  canary: "Claude Code's cache switch (item 758)",
   proposal: "Proposals",
   dream: "Notes changed by a dream",
   memory: "Claude Code's memory changed",
@@ -150,7 +153,9 @@ export const KIND_LABEL: Record<NoticeKind, string> = {
   cli: "Claude Code",
 };
 
-export const KIND_ORDER: NoticeKind[] = ["proposal", "dream", "memory", "morning", "blocker", "release", "cli"];
+/** Item 758's canary first: it means every new chat may be paying a
+ *  re-write until the switch is re-matched. */
+export const KIND_ORDER: NoticeKind[] = ["canary", "proposal", "dream", "memory", "morning", "blocker", "release", "cli"];
 
 export interface NoticeSources {
   proposals: ProposalNotice[];
@@ -173,6 +178,9 @@ export interface NoticeSources {
   /** The Anthropic ids the provider engine's picker lists, for naming a
    *  new model it lacks. */
   curated?: string[];
+  /** Item 758's canary: each alarm is a notice until dismissed (a bundle
+   *  alarm comes back while the CLI still lacks the strings). */
+  canary?: FlatAlarm[];
 }
 
 /** A file in a dream commit that is the project's always-loaded
@@ -313,6 +321,17 @@ export function buildNotices(s: NoticeSources): Notice[] {
       cli: s.cli,
     });
   }
+  for (const a of s.canary ?? []) {
+    out.push({
+      kind: "canary",
+      id: `canary:${a.id}`,
+      title: a.title,
+      detail: a.detail,
+      at: new Date(a.at_ms).toISOString(),
+      project: null,
+      canary: a,
+    });
+  }
   const rank = new Map(KIND_ORDER.map((k, i) => [k, i]));
   return out
     .filter((n) => !dismissed.has(n.id))
@@ -321,7 +340,7 @@ export function buildNotices(s: NoticeSources): Notice[] {
 
 /** How many of each kind, for the panel's headings and the bell's count. */
 export function countsOf(notices: Notice[]): Record<NoticeKind, number> {
-  const c: Record<NoticeKind, number> = { proposal: 0, dream: 0, memory: 0, morning: 0, blocker: 0, release: 0, cli: 0 };
+  const c: Record<NoticeKind, number> = { canary: 0, proposal: 0, dream: 0, memory: 0, morning: 0, blocker: 0, release: 0, cli: 0 };
   for (const n of notices) c[n.kind]++;
   return c;
 }

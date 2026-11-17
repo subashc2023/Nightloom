@@ -26,6 +26,7 @@ pub mod council;
 pub mod credentials;
 pub mod credits;
 pub mod dream;
+pub mod flat_canary;
 pub mod grounding;
 pub mod history;
 pub mod import;
