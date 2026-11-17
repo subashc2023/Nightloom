@@ -45,6 +45,10 @@ pub(crate) struct AsideResult {
     /// The plan's usage limit stopped the answer (item 674): the shared
     /// transcript draws the chat's limit card under it, with Ask again.
     limit: Option<nightloom_service::agent::LimitHit>,
+    /// The files the aside changed (item 775): its edit calls, and what a
+    /// shell command moved in the workspace. The window carries them to
+    /// the main chat at the end of his next message there.
+    changes: Vec<nightloom_service::aside_changes::Change>,
 }
 
 /// A piece of an aside's answer as it streams (nightshift backlog 128):
@@ -213,7 +217,13 @@ pub(crate) async fn ask_aside(
     *state.cancel.lock().unwrap() = cancel.clone();
     let mut answer = String::new();
     let marks = timing.clone();
+    // Item 775: what it changes on disk — its edit calls from the stream,
+    // and a look at the workspace before, for what a shell command moves.
+    use nightloom_service::aside_changes::{Collector, Snapshot};
+    let workspace = agent.spec().workspace.clone();
+    let mut collector = Collector::new();
     let mut on_event = |e: TurnEvent| {
+        collector.on_event(&e);
         if let TurnEvent::TextDelta { text } = &e {
             answer.push_str(text);
             let _ = app.emit(
@@ -245,6 +255,11 @@ pub(crate) async fn ask_aside(
         images: images.unwrap_or_default(),
         documents: documents.unwrap_or_default(),
     };
+    let look_at = workspace.clone();
+    let before = tokio::task::spawn_blocking(move || Snapshot::take(&look_at))
+        .await
+        .ok()
+        .flatten();
     let outcome = agent
         .ask_aside(
             input,
@@ -254,7 +269,20 @@ pub(crate) async fn ask_aside(
             &cancel,
             &mut on_event,
         )
-        .await
+        .await;
+    // Item 775: the look after, only when it ran a shell command.
+    let after = match (&before, collector.ran_shell()) {
+        (Some(_), true) => {
+            let look_at = workspace.clone();
+            tokio::task::spawn_blocking(move || Snapshot::take(&look_at))
+                .await
+                .ok()
+                .flatten()
+        }
+        _ => None,
+    };
+    let changes = collector.finish(&workspace, before.as_ref().zip(after.as_ref()));
+    let outcome = outcome
         .ok_or_else(|| {
             "this chat has no Claude Code session to ask beside yet — send a message first"
                 .to_string()
@@ -333,6 +361,7 @@ pub(crate) async fn ask_aside(
         first_write: outcome
             .first_round
             .map(|u| u.cache_write_tokens.unwrap_or(0)),
+        changes,
     })
 }
 

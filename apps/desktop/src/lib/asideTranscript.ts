@@ -25,6 +25,7 @@
  * The events of the asking exchange read only its question, attachments
  * and start: a streamed delta never rebuilds them.
  */
+import { changesLine } from "./asideNotes";
 import type { Aside, AsideTurn, Segment } from "./state.svelte";
 import type { ContentBlock, DocumentInput, ImageInput, SessionEvent } from "./types";
 import type { TurnSize } from "./tokens";
@@ -32,7 +33,9 @@ import { exchangeSizes } from "./asideFigures";
 import { estimateView, type ReplyUsageView } from "./replyUsage";
 
 export interface AsideNote {
-  kind: "stopped" | "error";
+  /** Item 775: `changes` — the files the answer changed, and whether the
+   *  main chat has heard. */
+  kind: "stopped" | "error" | "changes";
   text: string;
 }
 
@@ -77,7 +80,7 @@ function askedAt(t: AsideTurn): string {
   return t.at ?? "";
 }
 
-export function asideEvents(aside: Pick<Aside, "turns">): AsideEvents {
+export function asideEvents(aside: Pick<Aside, "turns">, waiting: (noteId: string) => boolean = () => false): AsideEvents {
   const events: SessionEvent[] = [];
   const turnOf: number[] = [];
   const seqOf: number[] = [];
@@ -152,6 +155,8 @@ export function asideEvents(aside: Pick<Aside, "turns">): AsideEvents {
     }
     const ns: AsideNote[] = [];
     if (t.cancelled) ns.push({ kind: "stopped", text: "stopped here" });
+    if (t.changes && t.changes.length > 0 && t.noteId)
+      ns.push({ kind: "changes", text: changesLine(t.changes, waiting(t.noteId)) });
     // Item 674's follow-up: the limit that stopped the last answer is the
     // transcript's limit card (`AsideTranscript`), not a note as well.
     if (t.error && !(t.limit && i === aside.turns.length - 1)) ns.push({ kind: "error", text: t.error });

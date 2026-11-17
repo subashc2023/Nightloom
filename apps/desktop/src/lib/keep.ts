@@ -10,6 +10,7 @@
  * chat's system prompt lists; nothing is overwritten (the backend's
  * `keep::keep_in_project`).
  */
+import { splitAsideNote, type NoteRow } from "./asideNotes";
 
 export type KeepPhase = "idle" | "keeping" | "kept";
 
@@ -84,6 +85,18 @@ export interface SplitNote {
   said: string;
   files: NotedFile[];
   note: string;
+  /** Item 775: the asides' changes the message carried to the main chat
+   *  (`asideNotes.ts`), drawn as a chip; absent when it carried none. Their
+   *  block is part of `note`, so an edit puts it back with the files'. */
+  aside?: NoteRow[];
+}
+
+/** Item 775: the asides' block off the end of his words, into the note. */
+function withAside(s: SplitNote): SplitNote {
+  const a = splitAsideNote(s.said);
+  if (!a.rows) return s;
+  const block = s.said.slice(a.text.length).replace(/^\n\n/, "");
+  return { said: a.text, files: s.files, note: s.note ? `${block}\n\n${s.note}` : block, aside: a.rows };
 }
 
 const FILES_HEAD = /^\[Attached (?:a file|files) — saved for you to open with your tools:\n/;
@@ -133,9 +146,9 @@ export function splitAttachNote(text: string): SplitNote {
     // The backend's separator is exactly one blank line; any newline of
     // his own before it is his.
     const said = head.endsWith("\n\n") ? head.slice(0, -2) : head;
-    return { said, files, note: text.slice(p) };
+    return withAside({ said, files, note: text.slice(p) });
   }
-  return { said: text, files: [], note: "" };
+  return withAside({ said: text, files: [], note: "" });
 }
 
 /** His words with the note put back after an edit, as the backend joins
