@@ -919,3 +919,71 @@ async fn a_read_only_run_refused_a_change_asks_and_approving_runs_it_again() {
     let v = h.jobs.patch(&id, keep, t0).unwrap();
     assert!(v.job.wanted.is_none() && !v.job.run_now && v.read_only);
 }
+
+/// Item 784: a finished run's tool calls are kept as the measure of the
+/// next one; the guard finds the job by its chat; a run he stopped on the
+/// guard's card is listed as stopped and is not the measure.
+#[tokio::test]
+async fn a_runs_calls_are_kept_and_a_stopped_run_is_listed_as_stopped() {
+    let h = host();
+    let made = at(2026, 11, 16, 15, 0);
+    h.jobs.create(new_job("every morning"), made).unwrap();
+    let text = "check CI and tell me what failed";
+    let run = |calls: usize, reply: &str| -> Vec<SessionEvent> {
+        let mut blocks: Vec<serde_json::Value> = (0..calls)
+            .map(|i| serde_json::json!({"type": "tool_use", "id": format!("t{i}"), "name": "Bash", "input": {}}))
+            .collect();
+        blocks.push(serde_json::json!({"type": "text", "text": reply}));
+        serde_json::from_value(serde_json::json!([
+            {"event": "user_message", "text": text, "at": "2026-11-16T16:00:00Z"},
+            {"event": "assistant_message", "model": "m", "blocks": blocks,
+             "stop_reason": null, "usage": {"input_tokens": 1, "output_tokens": 1}, "at": "2026-11-16T16:01:00Z"},
+        ]))
+        .unwrap()
+    };
+    let mut t = at(2026, 11, 16, 16, 0);
+    for (calls, reply) in [
+        (7, "all green".to_string()),
+        (
+            300,
+            crate::runaway::stopped_line(&crate::runaway::Trip::Calls {
+                made: 300,
+                ceiling: 200,
+                usual: None,
+            }),
+        ),
+    ] {
+        h.jobs.run_now(&h.jobs.list()[0].job.id).unwrap();
+        *h.running.lock().unwrap() = Some("job-chat".into());
+        h.jobs.tick(h.as_ref(), t).await;
+        *h.running.lock().unwrap() = None;
+        *h.log.lock().unwrap() = run(calls, &reply);
+        h.jobs.tick(h.as_ref(), t + Duration::seconds(120)).await;
+        t += Duration::hours(1);
+        if calls == 7 {
+            let j = h.jobs.list().remove(0).job;
+            assert_eq!(j.last.as_ref().unwrap().calls, Some(7));
+            assert_eq!(j.recent_calls, vec![7]);
+            let usual = h
+                .jobs
+                .usual_for_chat("job-chat")
+                .expect("found by its chat");
+            assert_eq!(usual.recent_calls, vec![7]);
+            assert_eq!(usual.title, text);
+        }
+    }
+    let j = h.jobs.list().remove(0).job;
+    let last = j.last.unwrap();
+    assert_eq!(last.outcome, Outcome::Stopped);
+    assert!(
+        last.summary.starts_with(crate::runaway::STOPPED_PREFIX),
+        "{}",
+        last.summary
+    );
+    assert_eq!(
+        j.recent_calls,
+        vec![7],
+        "the stopped run is not the measure"
+    );
+    assert!(h.jobs.usual_for_chat("other").is_none());
+}

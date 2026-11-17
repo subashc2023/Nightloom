@@ -60,6 +60,8 @@ const SAME_END: Duration = Duration::from_secs(10);
 const DEFAULT_SUBJECT: &str = "mailto:push@nightloom.invalid";
 /// The longest chat name a push carries.
 const NAME_MAX: usize = 80;
+/// The most of a stuck run's line a push carries (item 784).
+const DETAIL_MAX: usize = 120;
 
 /// What [`Push::subscribe`] answers when the page subscribed with another
 /// host's key (the phone page shows it; it clears after the Mac's next sync).
@@ -91,6 +93,8 @@ pub enum What {
     /// A read-only chat's card in a run nobody was there for (item 783's
     /// finish): set aside at once, not run, listed at the run's end.
     Unattended,
+    /// The runaway guard paused a run: Continue or Stop (item 784).
+    Stuck,
 }
 
 impl What {
@@ -106,6 +110,7 @@ impl What {
             What::Reminder => "Still waiting for your approval",
             What::SetAside => "No answer, so it was set aside — it asks again at the end",
             What::Unattended => "Needed your approval while you were away — set aside, not run",
+            What::Stuck => "Looks stuck — Continue or Stop?",
         }
     }
 
@@ -114,6 +119,7 @@ impl What {
     pub fn for_prompt(tool: &str) -> Self {
         match tool {
             "AskUserQuestion" | "ExitPlanMode" => What::Question,
+            crate::runaway::STUCK_TOOL => What::Stuck,
             _ => What::Approval,
         }
     }
@@ -135,6 +141,11 @@ pub struct Note {
     /// He is at the Mac: nothing is sent, and the chat stops waiting.
     #[serde(default)]
     pub at_the_mac: bool,
+    /// The second line in place of [`What::words`], for a stuck run only
+    /// (item 784): "Looks stuck: ran `cargo test` 3 times, same result".
+    /// Every other kind says only its state, never the reply.
+    #[serde(default)]
+    pub detail: Option<String>,
 }
 
 /// What became of one [`Push::notify`].
@@ -590,9 +601,13 @@ impl Push {
         } else {
             name.to_string()
         };
+        let body = match (note.what, note.detail.as_deref().map(str::trim)) {
+            (What::Stuck, Some(d)) if !d.is_empty() => d.chars().take(DETAIL_MAX).collect(),
+            _ => note.what.words().to_string(),
+        };
         serde_json::json!({
             "title": title,
-            "body": note.what.words(),
+            "body": body,
             // The reminder and the set-aside are notifications of their
             // own (item 783): under the chat's tag they would replace the
             // first one silently, which is the push he already missed.

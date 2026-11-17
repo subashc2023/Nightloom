@@ -177,6 +177,22 @@ pub trait TurnEnv: Send + Sync {
     fn timing(&self) -> Option<Arc<TurnTiming>> {
         None
     }
+    /// Item 784: nobody is watching `chat` now — he has left the Mac, or
+    /// no phone is connected to the away server — so the runaway guard may
+    /// pause it. Asked at the moment the guard trips. A job's run is
+    /// always unattended ([`TurnEnv::job_of`]). Default: somebody is.
+    /// Not [`TurnEnv::unattended`] (item 783's, "nobody can answer a
+    /// card"): on the Mac a phone page left open does not count as
+    /// watching here — a missed runaway costs more than a pause he can
+    /// Continue from the phone.
+    fn unwatched(&self, _chat: &str) -> bool {
+        false
+    }
+    /// Item 784: the job `chat` runs for — its name and its recent runs'
+    /// tool calls, for the guard's calls ceiling.
+    fn job_of(&self, _chat: &str) -> Option<crate::runaway::JobUsual> {
+        None
+    }
 }
 
 /// One turn's inputs besides the environment.
@@ -408,6 +424,17 @@ async fn turn_body(
     let mut emitted = false;
     // The model's words before a call, for Playwright's card (backlog 367).
     let reason = std::sync::Mutex::new(crate::agent::own_browser::ReasonTracker::default());
+    // Item 784: the runaway guard. A trip while nobody watches interrupts
+    // the CLI through the run's own token (a child of the turn's, so his
+    // Stop is still told apart) and leaves the trip for the pause below.
+    let job = env.job_of(chat_id);
+    let guard = std::sync::Mutex::new(crate::runaway::Guard::new(job.as_ref()));
+    let halt = std::sync::Mutex::new((cancel.child_token(), None::<crate::runaway::Trip>));
+    let run_token = || {
+        halt.lock()
+            .map(|h| h.0.clone())
+            .unwrap_or_else(|_| cancel.clone())
+    };
     let mut on_event = |e: TurnEvent| {
         if let Ok(mut r) = reason.lock() {
             r.push(&e);
@@ -418,6 +445,20 @@ async fn turn_body(
             timing.mark(Mark::Emitted);
         }
         recorder.push(&e);
+        if let Ok(mut g) = guard.lock()
+            && let Some(trip) = g.see(&e)
+        {
+            if job.is_some() || env.unwatched(chat_id) {
+                if let Ok(mut h) = halt.lock()
+                    && h.1.is_none()
+                {
+                    h.1 = Some(trip);
+                    h.0.cancel();
+                }
+            } else {
+                g.passed();
+            }
+        }
     };
     // The chat's own processes mark the spawn, `init` and the first text;
     // a council's seats above ran without it.
@@ -431,7 +472,7 @@ async fn turn_body(
             agent.note_refused(resume.as_deref(), call);
         }
     }
-    let mut result = agent.run_turn(input, cancel, &mut on_event).await;
+    let mut result = agent.run_turn(input, &run_token(), &mut on_event).await;
 
     // The Ask position's round trip (backlog 084): one Nightloom turn spans
     // every CLI process it takes. The folder entrance (backlog 143, pass
@@ -448,292 +489,395 @@ async fn turn_body(
     // that never returns is said at the turn's end, never silently lost.
     // With each, why (item 783): his word, nobody answering, or nobody there.
     let mut set_aside: Vec<(crate::agent::DeferredCall, Aside)> = Vec::new();
-    while let Ok(outcome) = &result
-        && let Some(call) = outcome.deferred.clone()
-    {
-        let Some(dir) = ask_dir.clone() else {
-            break;
-        };
-        // The same call again is the one set aside, back for its answer.
-        let before = set_aside.len();
-        set_aside.retain(|(c, _)| !(c.name == call.name && c.input == call.input));
-        let back = set_aside.len() != before;
-        // A read-only chat's own cards (item 783): a connector action that
-        // is not a known read, and `remember`.
-        let rules_home = ask.rules_home();
-        let card_kind = agent
-            .spec()
-            .refuses_mcp_writers()
-            .then(|| crate::agent::ask::read_only_card(rules_home.as_deref(), &call.name))
-            .flatten();
-        let session_id = outcome.session_id.clone();
-        let ask_files = AskDir::new(dir);
-        // On disk while the card waits (item 522): a launch after a quit
-        // mid-wait refuses the call rather than meeting it again.
-        let _ = ask_files.set_waiting(session_id.as_deref(), &call);
-        // `add_folder` (nightshift item 613): the card offers the folder
-        // the model named — exactly it, never a parent the walk-up would
-        // find — and a call the card has nothing to ask about is answered
-        // here: a path that is not a folder refused with the reason, one
-        // already among the chat's folders allowed (and noted, so the tool
-        // says so).
-        let folder_ask = (call.name == crate::mcp_server::mcp_name(add_folder::NAME))
-            .then(|| add_folder::requested_dir(&call.input));
-        let trees = agent_trees(agent);
-        let preanswer = match &folder_ask {
-            Some(Err(e)) => Some(Answer::Deny { reason: e.clone() }),
-            Some(Ok(d)) if add_folder::inside(d, &trees) => {
-                let _ = add_folder::note_granted(ask_files.path(), d, add_folder::ALREADY);
-                Some(Answer::Allow {
-                    updated_input: None,
-                    plan_then: None,
-                    grant: None,
-                })
-            }
-            _ => None,
-        };
-        let answered_here = preanswer.is_some();
-        let mut aside: Option<Aside> = None;
-        // A read-only chat's card in a run nobody is there for (item 783's
-        // finish): never shown, never waited on — the phone is pushed, the
-        // call set aside at once, the run finishes and lists it at its end.
-        let unattended = !answered_here && card_kind.is_some() && env.unattended();
-        let answer = if let Some(a) = preanswer {
-            Some(a)
-        } else if unattended {
-            env.nudge(&ApprovalNudge {
-                id: &call.id,
-                name: &call.name,
-                chat: Some(chat_id),
-                stage: crate::agent::ask::Nudge::Unattended,
-            });
-            aside = Some(Aside::Unattended);
-            Some(Answer::Deny {
-                reason: crate::agent::ask::UNATTENDED_REASON.into(),
-            })
-        } else {
-            let rx = ask.wait(&call.id);
-            let outside = match &folder_ask {
-                Some(Ok(d)) => Some(d.clone()),
-                _ => outside_folder(&call.input, &trees),
+    loop {
+        while let Ok(outcome) = &result
+            && let Some(call) = outcome.deferred.clone()
+        {
+            let Some(dir) = ask_dir.clone() else {
+                break;
             };
-            // An Allow or a Deny that nobody gives is reminded of and then
-            // set aside (item 783) — once: a call that is back after a
-            // set-aside waits for him, or a reply would never end. A
-            // question, a plan and a folder are answers only he can give.
-            let times = (!back
-                && folder_ask.is_none()
-                && crate::push::What::for_prompt(&call.name) == crate::push::What::Approval)
-                .then(|| ask.times());
-            env.approval(&ApprovalPrompt {
-                kind: card_kind,
-                back,
-                id: &call.id,
-                name: &call.name,
-                input: &call.input,
-                // Nightloom's own tools by their own effect (backlog 317);
-                // every other deferred call is `Mutating`, as before.
-                effect: crate::mcp_server::effect_of(&call.name),
-                outside,
-                chat: Some(chat_id),
-                reason: crate::agent::own_browser::is_playwright(&call.name)
-                    .then(|| reason.lock().ok().and_then(|r| r.reason()))
-                    .flatten(),
-            });
-            let nudge = |stage| {
+            // The same call again is the one set aside, back for its answer.
+            let before = set_aside.len();
+            set_aside.retain(|(c, _)| !(c.name == call.name && c.input == call.input));
+            let back = set_aside.len() != before;
+            // A read-only chat's own cards (item 783): a connector action that
+            // is not a known read, and `remember`.
+            let rules_home = ask.rules_home();
+            let card_kind = agent
+                .spec()
+                .refuses_mcp_writers()
+                .then(|| crate::agent::ask::read_only_card(rules_home.as_deref(), &call.name))
+                .flatten();
+            let session_id = outcome.session_id.clone();
+            let ask_files = AskDir::new(dir);
+            // On disk while the card waits (item 522): a launch after a quit
+            // mid-wait refuses the call rather than meeting it again.
+            let _ = ask_files.set_waiting(session_id.as_deref(), &call);
+            // `add_folder` (nightshift item 613): the card offers the folder
+            // the model named — exactly it, never a parent the walk-up would
+            // find — and a call the card has nothing to ask about is answered
+            // here: a path that is not a folder refused with the reason, one
+            // already among the chat's folders allowed (and noted, so the tool
+            // says so).
+            let folder_ask = (call.name == crate::mcp_server::mcp_name(add_folder::NAME))
+                .then(|| add_folder::requested_dir(&call.input));
+            let trees = agent_trees(agent);
+            let preanswer = match &folder_ask {
+                Some(Err(e)) => Some(Answer::Deny { reason: e.clone() }),
+                Some(Ok(d)) if add_folder::inside(d, &trees) => {
+                    let _ = add_folder::note_granted(ask_files.path(), d, add_folder::ALREADY);
+                    Some(Answer::Allow {
+                        updated_input: None,
+                        plan_then: None,
+                        grant: None,
+                    })
+                }
+                _ => None,
+            };
+            let answered_here = preanswer.is_some();
+            let mut aside: Option<Aside> = None;
+            // A read-only chat's card in a run nobody is there for (item 783's
+            // finish): never shown, never waited on — the phone is pushed, the
+            // call set aside at once, the run finishes and lists it at its end.
+            let unattended = !answered_here && card_kind.is_some() && env.unattended();
+            let answer = if let Some(a) = preanswer {
+                Some(a)
+            } else if unattended {
                 env.nudge(&ApprovalNudge {
                     id: &call.id,
                     name: &call.name,
                     chat: Some(chat_id),
-                    stage,
+                    stage: crate::agent::ask::Nudge::Unattended,
                 });
+                aside = Some(Aside::Unattended);
+                Some(Answer::Deny {
+                    reason: crate::agent::ask::UNATTENDED_REASON.into(),
+                })
+            } else {
+                let rx = ask.wait(&call.id);
+                let outside = match &folder_ask {
+                    Some(Ok(d)) => Some(d.clone()),
+                    _ => outside_folder(&call.input, &trees),
+                };
+                // An Allow or a Deny that nobody gives is reminded of and then
+                // set aside (item 783) — once: a call that is back after a
+                // set-aside waits for him, or a reply would never end. A
+                // question, a plan and a folder are answers only he can give.
+                let times = (!back
+                    && folder_ask.is_none()
+                    && crate::push::What::for_prompt(&call.name) == crate::push::What::Approval)
+                    .then(|| ask.times());
+                env.approval(&ApprovalPrompt {
+                    kind: card_kind,
+                    back,
+                    id: &call.id,
+                    name: &call.name,
+                    input: &call.input,
+                    // Nightloom's own tools by their own effect (backlog 317);
+                    // every other deferred call is `Mutating`, as before.
+                    effect: crate::mcp_server::effect_of(&call.name),
+                    outside,
+                    chat: Some(chat_id),
+                    reason: crate::agent::own_browser::is_playwright(&call.name)
+                        .then(|| reason.lock().ok().and_then(|r| r.reason()))
+                        .flatten(),
+                });
+                let nudge = |stage| {
+                    env.nudge(&ApprovalNudge {
+                        id: &call.id,
+                        name: &call.name,
+                        chat: Some(chat_id),
+                        stage,
+                    });
+                };
+                use crate::agent::ask::{Nudge, Waited, wait_for_answer};
+                match wait_for_answer(rx, cancel, times, || nudge(Nudge::Remind)).await {
+                    Waited::Answer(a) => Some(a),
+                    Waited::Gone => None,
+                    Waited::SetAside => {
+                        // Nobody answered: the card goes, the call is set
+                        // aside — never run — and comes back at the end.
+                        ask.abandon(&call.id);
+                        nudge(Nudge::SetAside);
+                        aside = Some(Aside::Unanswered);
+                        Some(Answer::Deny {
+                            reason: crate::agent::ask::AUTO_LATER_REASON.into(),
+                        })
+                    }
+                }
             };
-            use crate::agent::ask::{Nudge, Waited, wait_for_answer};
-            match wait_for_answer(rx, cancel, times, || nudge(Nudge::Remind)).await {
-                Waited::Answer(a) => Some(a),
-                Waited::Gone => None,
-                Waited::SetAside => {
-                    // Nobody answered: the card goes, the call is set
-                    // aside — never run — and comes back at the end.
-                    ask.abandon(&call.id);
-                    nudge(Nudge::SetAside);
-                    aside = Some(Aside::Unanswered);
-                    Some(Answer::Deny {
-                        reason: crate::agent::ask::AUTO_LATER_REASON.into(),
+            // The read-only chat's cards (item 783): *Allow always* on a
+            // connector action makes it a read he allows — on this host now,
+            // on the other at the next sync — and never a standing allow in
+            // the chat's own list; a `remember` is approved one at a time.
+            let answer = match (card_kind, answer) {
+                (Some(kind), Some(Answer::AllowForChat { updated_input })) => {
+                    if kind == "connector"
+                        && let Some(home) = &rules_home
+                        && let Err(e) = crate::approval_rules::allow_read(home, &call.name)
+                    {
+                        env.notice(format!("could not keep that as always allowed: {e}"));
+                    }
+                    Some(Answer::Allow {
+                        updated_input,
+                        plan_then: None,
+                        grant: None,
                     })
                 }
-            }
-        };
-        // The read-only chat's cards (item 783): *Allow always* on a
-        // connector action makes it a read he allows — on this host now,
-        // on the other at the next sync — and never a standing allow in
-        // the chat's own list; a `remember` is approved one at a time.
-        let answer = match (card_kind, answer) {
-            (Some(kind), Some(Answer::AllowForChat { updated_input })) => {
-                if kind == "connector"
-                    && let Some(home) = &rules_home
-                    && let Err(e) = crate::approval_rules::allow_read(home, &call.name)
-                {
-                    env.notice(format!("could not keep that as always allowed: {e}"));
-                }
-                Some(Answer::Allow {
-                    updated_input,
-                    plan_then: None,
-                    grant: None,
-                })
-            }
-            (_, a) => a,
-        };
-        // His *Allow* on an `add_folder` card is the grant the call asked
-        // for, at the model's scope unless his button named one; *Allow for
-        // this chat* is the same single grant — the gate reads no rule.
-        let answer = match (&folder_ask, answer) {
-            (
-                Some(Ok(d)),
-                Some(Answer::Allow {
-                    grant: None,
+                (_, a) => a,
+            };
+            // His *Allow* on an `add_folder` card is the grant the call asked
+            // for, at the model's scope unless his button named one; *Allow for
+            // this chat* is the same single grant — the gate reads no rule.
+            let answer = match (&folder_ask, answer) {
+                (
+                    Some(Ok(d)),
+                    Some(Answer::Allow {
+                        grant: None,
+                        updated_input,
+                        plan_then,
+                    }),
+                ) if !answered_here => Some(Answer::Allow {
                     updated_input,
                     plan_then,
+                    grant: Some(FolderGrant {
+                        dir: d.clone(),
+                        scope: GrantScope::parse(add_folder::requested_scope(&call.input))
+                            .unwrap_or(GrantScope::Chat),
+                    }),
                 }),
-            ) if !answered_here => Some(Answer::Allow {
-                updated_input,
-                plan_then,
-                grant: Some(FolderGrant {
-                    dir: d.clone(),
-                    scope: GrantScope::parse(add_folder::requested_scope(&call.input))
-                        .unwrap_or(GrantScope::Chat),
-                }),
-            }),
-            (Some(Ok(d)), Some(Answer::AllowForChat { updated_input })) => Some(Answer::Allow {
-                updated_input,
-                plan_then: None,
-                grant: Some(FolderGrant {
-                    dir: d.clone(),
-                    scope: GrantScope::parse(add_folder::requested_scope(&call.input))
-                        .unwrap_or(GrantScope::Chat),
-                }),
-            }),
-            (_, a) => a,
-        };
-        let Some(answer) = answer else {
-            // Stopped, or the prompt let go: refused on disk now, for the
-            // next turn's hook to deliver (`m084-9-deny-stale.jsonl`).
-            let _ = ask_files.write(
-                &call,
-                &Answer::Deny {
-                    reason: "the turn was stopped before this was approved".into(),
-                },
-            );
-            agent.note_refused(session_id.as_deref(), call.clone());
-            ask_files.clear_waiting();
-            ask.abandon(&call.id);
-            if let Ok(o) = &mut result {
-                o.notices
-                    .push("stopped while waiting for your answer".into());
-                o.deferred = None;
-            }
-            break;
-        };
-        // A set-aside without his word writes only this call's refusal
-        // (item 783's review: a Deny would also refuse Playwright's next
-        // call for the reply, the one that comes back for its card).
-        let wrote = match (&aside, &answer) {
-            (Some(_), Answer::Deny { reason }) => ask_files.write_set_aside(&call, reason),
-            _ => ask_files.write(&call, &answer),
-        };
-        if let Err(e) = wrote {
-            ask_files.clear_waiting();
-            if let Ok(o) = &mut result {
-                o.notices.push(format!("could not record the answer: {e}"));
-                o.deferred = None;
-            }
-            break;
-        }
-        if let Some(id) = &session_id {
-            agent.set_resume(Some(id.clone()));
-        }
-        if let Some(why) = aside.or(matches!(answer, Answer::Later).then_some(Aside::Later)) {
-            set_aside.push((call.clone(), why));
-        }
-        if let Answer::Allow {
-            grant: Some(grant), ..
-        } = &answer
-        {
-            agent.grant_dir(grant.dir.clone());
-            granted_any = true;
-            let kept = match grant.scope {
-                GrantScope::Chat => {
-                    granted_to_chat.push(grant.dir.clone());
-                    Some("chat")
+                (Some(Ok(d)), Some(Answer::AllowForChat { updated_input })) => {
+                    Some(Answer::Allow {
+                        updated_input,
+                        plan_then: None,
+                        grant: Some(FolderGrant {
+                            dir: d.clone(),
+                            scope: GrantScope::parse(add_folder::requested_scope(&call.input))
+                                .unwrap_or(GrantScope::Chat),
+                        }),
+                    })
                 }
-                GrantScope::Project => match env.grant_to_project(&grant.dir).await {
-                    ProjectGrant::Kept => Some("project"),
-                    ProjectGrant::NoProject => {
+                (_, a) => a,
+            };
+            let Some(answer) = answer else {
+                // Stopped, or the prompt let go: refused on disk now, for the
+                // next turn's hook to deliver (`m084-9-deny-stale.jsonl`).
+                let _ = ask_files.write(
+                    &call,
+                    &Answer::Deny {
+                        reason: "the turn was stopped before this was approved".into(),
+                    },
+                );
+                agent.note_refused(session_id.as_deref(), call.clone());
+                ask_files.clear_waiting();
+                ask.abandon(&call.id);
+                if let Ok(o) = &mut result {
+                    o.notices
+                        .push("stopped while waiting for your answer".into());
+                    o.deferred = None;
+                }
+                break;
+            };
+            // A set-aside without his word writes only this call's refusal
+            // (item 783's review: a Deny would also refuse Playwright's next
+            // call for the reply, the one that comes back for its card).
+            let wrote = match (&aside, &answer) {
+                (Some(_), Answer::Deny { reason }) => ask_files.write_set_aside(&call, reason),
+                _ => ask_files.write(&call, &answer),
+            };
+            if let Err(e) = wrote {
+                ask_files.clear_waiting();
+                if let Ok(o) = &mut result {
+                    o.notices.push(format!("could not record the answer: {e}"));
+                    o.deferred = None;
+                }
+                break;
+            }
+            if let Some(id) = &session_id {
+                agent.set_resume(Some(id.clone()));
+            }
+            if let Some(why) = aside.or(matches!(answer, Answer::Later).then_some(Aside::Later)) {
+                set_aside.push((call.clone(), why));
+            }
+            if let Answer::Allow {
+                grant: Some(grant), ..
+            } = &answer
+            {
+                agent.grant_dir(grant.dir.clone());
+                granted_any = true;
+                let kept = match grant.scope {
+                    GrantScope::Chat => {
                         granted_to_chat.push(grant.dir.clone());
                         Some("chat")
                     }
-                    ProjectGrant::Failed(e) => {
-                        env.notice(format!("folder not granted: {e}"));
-                        None
-                    }
-                },
+                    GrantScope::Project => match env.grant_to_project(&grant.dir).await {
+                        ProjectGrant::Kept => Some("project"),
+                        ProjectGrant::NoProject => {
+                            granted_to_chat.push(grant.dir.clone());
+                            Some("chat")
+                        }
+                        ProjectGrant::Failed(e) => {
+                            env.notice(format!("folder not granted: {e}"));
+                            None
+                        }
+                    },
+                };
+                // For `add_folder`'s own result (item 613): it says "added" only
+                // for a folder noted here.
+                if let (Some(Ok(_)), Some(kept)) = (&folder_ask, kept) {
+                    let _ = add_folder::note_granted(ask_files.path(), &grant.dir, kept);
+                }
+            }
+            // An approved plan (backlog 085).
+            let plan_then = match &answer {
+                Answer::Allow { plan_then, .. }
+                    if call.name == crate::agent::ask::EXIT_PLAN_TOOL =>
+                {
+                    *plan_then
+                }
+                _ => None,
             };
-            // For `add_folder`'s own result (item 613): it says "added" only
-            // for a folder noted here.
-            if let (Some(Ok(_)), Some(kept)) = (&folder_ask, kept) {
-                let _ = add_folder::note_granted(ask_files.path(), &grant.dir, kept);
+            if let Some(then) = plan_then {
+                agent.plan_approved(then);
+            }
+            // His message in place of an answer (item 522): the refusal carries
+            // his words, and once it has landed as the call's result the turn
+            // reports the message delivered — after the result, the order the
+            // model read them in — so the window's row leaves its queue and the
+            // log keeps it as his message. A resume that never delivers the
+            // result reports nothing: the row stays queued, unsent.
+            let mut reply = match &answer {
+                Answer::Reply { id: Some(id), text } => Some((id.clone(), text.clone())),
+                _ => None,
+            };
+            if let Some(c) = result.as_ref().ok().and_then(|o| o.cost_usd) {
+                spent_before = Some(spent_before.unwrap_or(0.0) + c);
+            }
+            if reply.is_some() {
+                let mut relay = |e: TurnEvent| {
+                    let landed = matches!(
+                        &e,
+                        TurnEvent::ToolResult { tool_use_id, .. } if *tool_use_id == call.id
+                    );
+                    on_event(e);
+                    if landed && let Some((id, text)) = reply.take() {
+                        on_event(TurnEvent::MessageDelivered {
+                            id,
+                            text,
+                            after: format!("in place of an answer to {}", call.name),
+                            images: Vec::new(),
+                            documents: Vec::new(),
+                        });
+                    }
+                };
+                result = agent.resume_deferred(&call, &run_token(), &mut relay).await;
+            } else {
+                result = agent
+                    .resume_deferred(&call, &run_token(), &mut on_event)
+                    .await;
+            }
+            // The resume's process asked the hook and the answer was read (or
+            // the turn was stopped and refuses it itself): the wait is over.
+            ask_files.clear_waiting();
+            if plan_then.is_some() {
+                agent.plan_exited();
             }
         }
-        // An approved plan (backlog 085).
-        let plan_then = match &answer {
-            Answer::Allow { plan_then, .. } if call.name == crate::agent::ask::EXIT_PLAN_TOOL => {
-                *plan_then
-            }
-            _ => None,
+
+        // Item 784: the runaway guard paused the run. The CLI was interrupted
+        // as Stop interrupts it; the turn waits here on Continue or Stop, the
+        // card on the same channel as a deferred call's (the phone's card and
+        // push with it).
+        let trip = halt.lock().ok().and_then(|mut h| h.1.take());
+        let Some(trip) = trip else {
+            break;
         };
-        if let Some(then) = plan_then {
-            agent.plan_approved(then);
+        if cancel.is_cancelled() {
+            break;
         }
-        // His message in place of an answer (item 522): the refusal carries
-        // his words, and once it has landed as the call's result the turn
-        // reports the message delivered — after the result, the order the
-        // model read them in — so the window's row leaves its queue and the
-        // log keeps it as his message. A resume that never delivers the
-        // result reports nothing: the row stays queued, unsent.
-        let mut reply = match &answer {
-            Answer::Reply { id: Some(id), text } => Some((id.clone(), text.clone())),
+        let session_id = result.as_ref().ok().and_then(|o| o.session_id.clone());
+        if let Ok(o) = &mut result {
+            // The interrupt's own line is not his Stop.
+            o.notices.retain(|n| !n.starts_with("interrupted"));
+        }
+        let id = format!("{}-{}", crate::runaway::STUCK_TOOL, uuid::Uuid::new_v4());
+        let rx = ask.wait(&id);
+        let card = trip.card_input(job.as_ref().map(|j| j.title.as_str()));
+        env.approval(&ApprovalPrompt {
+            id: &id,
+            name: crate::runaway::STUCK_TOOL,
+            input: &card,
+            effect: nightloom_core::Effect::ReadOnly,
+            outside: None,
+            chat: Some(chat_id),
+            reason: Some(trip.sentence()),
+            kind: None,
+            back: false,
+        });
+        let answer = tokio::select! {
+            _ = cancel.cancelled() => None,
+            a = rx => a.ok(),
+        };
+        let go_on = match answer {
+            Some(Answer::Allow { .. } | Answer::AllowForChat { .. }) => {
+                Some((crate::runaway::continue_note(&trip), None))
+            }
+            // His message in place of an answer: a Continue that carries it.
+            Some(Answer::Reply { id: reply, text }) => Some((
+                format!("{}\n\n{text}", crate::runaway::continue_note(&trip)),
+                reply.map(|r| (r, text)),
+            )),
             _ => None,
         };
+        let Some((note, reply)) = go_on else {
+            ask.abandon(&id);
+            // Stop: the run ends with everything it did on the log, and the
+            // line that says why (the jobs list reads it as a stopped run).
+            if !cancel.is_cancelled() {
+                on_event(TurnEvent::TextDelta {
+                    text: format!("\n\n{}", crate::runaway::stopped_line(&trip)),
+                });
+            }
+            if let Ok(o) = &mut result {
+                o.notices.push("stopped — the run looked stuck".into());
+                o.deferred = None;
+            }
+            break;
+        };
+        if let Some((rid, text)) = reply {
+            on_event(TurnEvent::MessageDelivered {
+                id: rid,
+                text,
+                after: "in place of an answer to the stuck run's card".into(),
+                images: Vec::new(),
+                documents: Vec::new(),
+            });
+        }
+        if let Ok(mut g) = guard.lock() {
+            g.continued();
+        }
+        if let Ok(mut h) = halt.lock() {
+            h.0 = cancel.child_token();
+        }
+        if let Some(sid) = &session_id {
+            agent.set_resume(Some(sid.clone()));
+        }
+        // The paused process's cost, before its outcome is replaced (a
+        // Stop keeps the outcome, so it is counted once there).
         if let Some(c) = result.as_ref().ok().and_then(|o| o.cost_usd) {
             spent_before = Some(spent_before.unwrap_or(0.0) + c);
         }
-        if reply.is_some() {
-            let mut relay = |e: TurnEvent| {
-                let landed = matches!(
-                    &e,
-                    TurnEvent::ToolResult { tool_use_id, .. } if *tool_use_id == call.id
-                );
-                on_event(e);
-                if landed && let Some((id, text)) = reply.take() {
-                    on_event(TurnEvent::MessageDelivered {
-                        id,
-                        text,
-                        after: format!("in place of an answer to {}", call.name),
-                        images: Vec::new(),
-                        documents: Vec::new(),
-                    });
-                }
-            };
-            result = agent.resume_deferred(&call, cancel, &mut relay).await;
-        } else {
-            result = agent.resume_deferred(&call, cancel, &mut on_event).await;
-        }
-        // The resume's process asked the hook and the answer was read (or
-        // the turn was stopped and refuses it itself): the wait is over.
-        ask_files.clear_waiting();
-        if plan_then.is_some() {
-            agent.plan_exited();
-        }
+        result = agent
+            .run_turn(
+                TurnInput {
+                    text: note,
+                    images: Vec::new(),
+                    documents: Vec::new(),
+                },
+                &run_token(),
+                &mut on_event,
+            )
+            .await;
     }
 
     agent.set_timing(None);
@@ -2200,5 +2344,249 @@ mod reply_end_tests {
         drop(guard);
         assert!(!ask.held_by_user(), "the turn's end hands it back");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Item 784: the runaway guard, end to end through a stand-in `claude`.
+#[cfg(all(test, unix))]
+mod runaway_tests {
+    use super::*;
+    use crate::agent::AgentSpec;
+    use crate::runaway::STUCK_TOOL;
+    use nightloom_core::ChatKind;
+
+    /// A stand-in `claude`. Its first run does what `<root>/mode` says:
+    /// `loop` runs `cargo test` and gets the same failure each time, then
+    /// keeps going (slowly) until it is interrupted; `poll` runs `gh run
+    /// view` five times with a changing output and ends. A later run (the
+    /// Continue's resume) keeps its argv and says "carried on".
+    fn stand_in(root: &Path) -> String {
+        let d = root.display();
+        let init = r#"{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"claude-haiku-4-5","permissionMode":"default","session_id":"s-1"}"#;
+        let body = format!(
+            r##"#!/bin/sh
+D="{d}"
+trap 'exit 130' INT
+printf '%s\n' '{init}'
+if [ -f "$D/ran" ]; then
+  printf '%s\n' "$@" > "$D/argv2"
+  head -n 1 > "$D/stdin2"
+  printf '%s\n' '{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"carried on"}}]}},"parent_tool_use_id":null}}'
+  printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"carried on","session_id":"s-1","stop_reason":"end_turn","usage":{{"input_tokens":3,"output_tokens":2}}}}'
+  exit 0
+fi
+touch "$D/ran"
+mode=$(cat "$D/mode")
+i=0
+while [ $i -lt 8 ]; do
+  if [ "$mode" = poll ]; then cmd="gh run view"; out="$i of 5 done"; err=false; else cmd="cargo test"; out="error[E0425]: cannot find value"; err=true; fi
+  if [ "$mode" = poll ] && [ $i -ge 5 ]; then break; fi
+  printf '%s\n' '{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"t'$i'","name":"Bash","input":{{"command":"'"$cmd"'"}}}}]}},"parent_tool_use_id":null}}'
+  printf '%s\n' '{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"t'$i'","content":"'"$out"'","is_error":'$err'}}]}},"parent_tool_use_id":null}}'
+  echo $i > "$D/calls"
+  i=$((i+1))
+  if [ "$mode" = loop ]; then n=0; while [ $n -lt 10 ]; do sleep 0.05; n=$((n+1)); done; fi
+done
+printf '%s\n' '{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"all done"}}]}},"parent_tool_use_id":null}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"all done","session_id":"s-1","stop_reason":"end_turn","usage":{{"input_tokens":3,"output_tokens":2}}}}'
+"##
+        );
+        let path = root.join("claude-runaway");
+        std::fs::write(&path, body).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    /// Answers the stuck card as told; keeps every card and push it made.
+    struct GuardEnv {
+        ask: Arc<AskGate>,
+        answer: std::sync::Mutex<Option<Answer>>,
+        cards: std::sync::Mutex<Vec<(String, serde_json::Value, Option<String>)>>,
+        unattended: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl TurnEnv for GuardEnv {
+        fn event(&self, _chat: &str, _event: &TurnEvent) {}
+        fn notice(&self, _text: String) {}
+        fn approval(&self, prompt: &ApprovalPrompt<'_>) {
+            self.cards.lock().unwrap().push((
+                prompt.name.to_string(),
+                prompt.input.clone(),
+                prompt.reason.clone(),
+            ));
+            if let Some(a) = self.answer.lock().unwrap().take() {
+                self.ask.answer(prompt.id, a);
+            }
+        }
+        async fn grant_to_project(&self, _dir: &Path) -> ProjectGrant {
+            ProjectGrant::NoProject
+        }
+        fn unwatched(&self, _chat: &str) -> bool {
+            self.unattended
+        }
+    }
+
+    struct Ran {
+        end: Result<AgentTurnEnd, String>,
+        cards: Vec<(String, serde_json::Value, Option<String>)>,
+        log: Vec<SessionEvent>,
+        root: PathBuf,
+        calls: u32,
+    }
+
+    async fn run(mode: &str, answer: Option<Answer>, unattended: bool) -> Ran {
+        let root = std::env::temp_dir().join(format!("nightloom-784-{}", uuid::Uuid::new_v4()));
+        let logs = root.join("sessions");
+        std::fs::create_dir_all(&logs).unwrap();
+        std::fs::write(root.join("mode"), mode).unwrap();
+        let mut session = Session::start(&logs, ChatMode::Normal, ChatKind::Build).unwrap();
+        let ask_dir = root.join("ask").join(&session.id);
+        let mut spec = AgentSpec::new(&root);
+        spec.binary = stand_in(&root);
+        let mut agent = ClaudeCodeAgent::new(spec);
+        agent.set_ask_dir(ask_dir.clone());
+        let ask = Arc::new(AskGate::new());
+        let env = GuardEnv {
+            ask: ask.clone(),
+            answer: std::sync::Mutex::new(answer),
+            cards: std::sync::Mutex::new(Vec::new()),
+            unattended,
+        };
+        let cancel = CancellationToken::new();
+        let chat = session.id.clone();
+        let end = run_agent_turn(
+            AgentTurnRun {
+                agent: &mut agent,
+                session: &mut session,
+                chat_id: &chat,
+                input: TurnInput::from("fix the build"),
+                spoken: false,
+                wire_note: None,
+                council: None,
+                cancel: &cancel,
+                ask_dir: Some(ask_dir),
+                ask: &ask,
+            },
+            &env,
+        )
+        .await;
+        let calls = std::fs::read_to_string(root.join("calls"))
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .map_or(0, |n| n + 1);
+        Ran {
+            end,
+            cards: env.cards.into_inner().unwrap(),
+            log: session.events().to_vec(),
+            root,
+            calls,
+        }
+    }
+
+    fn reply_text(log: &[SessionEvent]) -> String {
+        log.iter()
+            .filter_map(|e| match e {
+                SessionEvent::AssistantMessage { blocks, .. } => Some(blocks),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// A run looping on one failing command pauses after the third
+    /// identical call: the CLI is stopped there (no fourth), and the card
+    /// — the push's source — says what it ran.
+    #[tokio::test]
+    async fn a_loop_on_one_failing_command_pauses_after_the_third_and_stop_keeps_the_record() {
+        let r = run(
+            "loop",
+            Some(Answer::Deny {
+                reason: "stop".into(),
+            }),
+            true,
+        )
+        .await;
+        assert!(
+            matches!(r.end, Ok(AgentTurnEnd::Done { .. })),
+            "{:?}",
+            r.end.as_ref().err()
+        );
+        assert_eq!(r.calls, 3, "interrupted after the third call");
+        assert_eq!(r.cards.len(), 1);
+        let (name, input, reason) = &r.cards[0];
+        assert_eq!(name, STUCK_TOOL);
+        assert_eq!(input["shown"], "cargo test");
+        assert_eq!(input["count"], 3);
+        let line = "Looks stuck: ran `cargo test` 3 times, same result";
+        assert_eq!(reason.as_deref(), Some(line));
+        // The push the card makes: its own kind, and the line as its body.
+        assert_eq!(
+            crate::push::What::for_prompt(name),
+            crate::push::What::Stuck
+        );
+        // Stop: the record is kept — the three calls and their results, and
+        // the line that says why — and nothing ran after.
+        let results = r
+            .log
+            .iter()
+            .filter(|e| matches!(e, SessionEvent::ToolResult { .. }))
+            .count();
+        assert_eq!(results, 3);
+        let text = reply_text(&r.log);
+        assert!(text.contains(crate::runaway::STOPPED_PREFIX), "{text}");
+        assert!(!r.root.join("argv2").exists(), "no resume after Stop");
+        let _ = std::fs::remove_dir_all(&r.root);
+    }
+
+    /// Continue resumes the same CLI session with the note, and the run
+    /// ends as any turn does.
+    #[tokio::test]
+    async fn continue_resumes_the_same_session() {
+        let r = run(
+            "loop",
+            Some(Answer::Allow {
+                updated_input: None,
+                plan_then: None,
+                grant: None,
+            }),
+            true,
+        )
+        .await;
+        assert!(matches!(r.end, Ok(AgentTurnEnd::Done { .. })));
+        assert_eq!(r.cards.len(), 1);
+        let argv = std::fs::read_to_string(r.root.join("argv2")).expect("resumed");
+        assert!(argv.contains("--resume\ns-1"), "{argv}");
+        let sent = std::fs::read_to_string(r.root.join("stdin2")).unwrap_or_default();
+        assert!(sent.contains("chose Continue"), "{sent}");
+        assert!(reply_text(&r.log).contains("carried on"));
+        let _ = std::fs::remove_dir_all(&r.root);
+    }
+
+    /// A poll whose output changes is never paused.
+    #[tokio::test]
+    async fn a_poll_whose_output_changes_is_not_paused() {
+        let r = run("poll", None, true).await;
+        assert!(matches!(r.end, Ok(AgentTurnEnd::Done { .. })));
+        assert!(r.cards.is_empty());
+        assert_eq!(r.calls, 5);
+        assert!(reply_text(&r.log).contains("all done"));
+        let _ = std::fs::remove_dir_all(&r.root);
+    }
+
+    /// While he watches, the loop is his to see: no pause.
+    #[tokio::test]
+    async fn a_watched_run_is_not_paused() {
+        let r = run("loop", None, false).await;
+        assert!(matches!(r.end, Ok(AgentTurnEnd::Done { .. })));
+        assert!(r.cards.is_empty());
+        assert_eq!(r.calls, 8);
+        let _ = std::fs::remove_dir_all(&r.root);
     }
 }

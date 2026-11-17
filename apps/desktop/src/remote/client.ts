@@ -17,6 +17,7 @@ import { cleanPassage, shownText, splitAttachNote } from "../lib/keep";
 import { isSendFile, parseSentFile, sentFileRoute, type SentFile } from "../lib/sentFiles";
 import { aimOf } from "../lib/aim";
 import { isPlaywright } from "../lib/playwright";
+import { isStuck } from "../lib/stuck";
 import { applyRetry, type RetrySegment } from "../lib/retryLine";
 // Pure over the log (only a type import inside): the desktop's per-reply
 // sizes, so the phone's line under a reply says the Mac's number.
@@ -1740,8 +1741,10 @@ export function newQueued(
 // ---- the cards --------------------------------------------------------------
 
 /** The card a prompt draws, by the tool the CLI paused on. */
-export function cardKind(req: ApprovalRequest): "question" | "plan" | "playwright" | "call" {
+export function cardKind(req: ApprovalRequest): "question" | "plan" | "playwright" | "stuck" | "call" {
   if (req.name === "AskUserQuestion") return "question";
+  // Item 784: the runaway guard paused a run — Continue or Stop.
+  if (isStuck(req.name)) return "stuck";
   // Playwright, Claude's own browser (backlog 367): the desktop's card,
   // here too — the phone renders questions, so it renders this.
   if (isPlaywright(req.name)) return "playwright";

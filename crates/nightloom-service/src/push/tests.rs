@@ -86,6 +86,7 @@ fn note(what: What, chat: &str) -> Note {
         label: Some("Fix the tab drag".into()),
         project: Some("p1".into()),
         at_the_mac: false,
+        detail: None,
     }
 }
 
@@ -512,4 +513,29 @@ async fn the_key_goes_only_over_https_or_the_tailnet() {
             .unwrap_err(),
         KEY_NEEDS_A_SAFE_ROAD
     );
+}
+
+/// Item 784: a stuck run's push names the job and says what it ran, with
+/// Continue / Stop waiting in the chat; any other kind ignores a detail.
+#[test]
+fn a_stuck_runs_push_says_what_it_ran() {
+    let (p, _, _) = push("stuck");
+    let mut n = note(What::Stuck, "c1");
+    n.label = Some("Check CI".into());
+    n.detail = Some("Looks stuck: ran `cargo test` 3 times, same result".into());
+    let v: serde_json::Value = serde_json::from_str(&p.payload(&n, 1)).unwrap();
+    assert_eq!(v["title"], "Check CI");
+    assert_eq!(
+        v["body"],
+        "Looks stuck: ran `cargo test` 3 times, same result"
+    );
+    assert_eq!(v["kind"], "stuck");
+    assert_eq!(What::for_prompt(crate::runaway::STUCK_TOOL), What::Stuck);
+    n.detail = None;
+    let v: serde_json::Value = serde_json::from_str(&p.payload(&n, 1)).unwrap();
+    assert_eq!(v["body"], "Looks stuck — Continue or Stop?");
+    let mut done = note(What::Done, "c1");
+    done.detail = Some("the reply".into());
+    let v: serde_json::Value = serde_json::from_str(&p.payload(&done, 1)).unwrap();
+    assert_eq!(v["body"], "Finished", "never the reply");
 }
