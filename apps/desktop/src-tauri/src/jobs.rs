@@ -111,6 +111,9 @@ pub(crate) async fn prepare(state: &AppState, prep: Prep) -> Result<String, Stri
     state
         .agents
         .reserve_for_job(&id, prep.read_only, project_open, workspace.as_deref())?;
+    if let Some((model, effort)) = &prep.model {
+        state.agents.pick_for_job(&id, model, effort)?;
+    }
     Ok(id)
 }
 

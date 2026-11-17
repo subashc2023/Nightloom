@@ -121,6 +121,53 @@ fn a_push_writes_a_feed_row_under_the_nightloom_home() {
 }
 
 #[test]
+fn homes_chats_on_the_away_server_run_on_opus_low_and_others_are_left() {
+    let mut spec = crate::agent::AgentSpec::new(std::path::Path::new("/tmp"));
+    spec.model = Some("sonnet".into());
+    apply_model(Some(Some("import")), &mut spec);
+    apply_model(None, &mut spec);
+    assert_eq!(spec.model.as_deref(), Some("sonnet"));
+    apply_model(Some(Some(SOURCE)), &mut spec);
+    assert_eq!(spec.model.as_deref(), Some(MODEL));
+    assert_eq!(spec.effort.as_deref(), Some(EFFORT));
+}
+
+#[test]
+fn a_job_runs_turn_end_push_is_no_second_row() {
+    // Item 763 finish: one row per job run — the run's own row, never also
+    // the turn-end push's `done` / `failed`; its other pushes still count.
+    let c = scratch("jobpush");
+    let push = crate::push::Push::open(crate::push::Push::dir_under(&c), "mac");
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let chat = format!("job-chat-{}", uuid::Uuid::new_v4());
+    let note = |what| crate::push::Note {
+        what,
+        chat: Some(chat.clone()),
+        label: Some("Check CI".into()),
+        project: None,
+        at_the_mac: true,
+        detail: None,
+    };
+    job_run_started(&chat);
+    rt.block_on(push.notify(note(crate::push::What::Done)));
+    rt.block_on(push.notify(note(crate::push::What::Failed)));
+    rt.block_on(push.notify(note(crate::push::What::Question)));
+    let kinds: Vec<String> = read_feed(&c).into_iter().map(|r| r.kind).collect();
+    assert_eq!(kinds, vec!["question"], "a run's turn end is the run's row");
+    job_run_ended(&chat);
+    rt.block_on(push.notify(note(crate::push::What::Done)));
+    let kinds: Vec<String> = read_feed(&c).into_iter().map(|r| r.kind).collect();
+    assert_eq!(
+        kinds,
+        vec!["question", "done"],
+        "his own turn later is a row"
+    );
+}
+
+#[test]
 fn a_projects_state_is_its_newest_handoff_section_and_blockers_head() {
     let ws = scratch("ws");
     std::fs::write(

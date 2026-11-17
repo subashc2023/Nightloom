@@ -281,10 +281,13 @@ mod tests {
         assert!(b.contains("/x/HANDOFF.md"), "{b}");
         // Twice in a row it does not hand off again.
         assert_eq!(hand_off_if_due(&mut s, later, None), None);
-        // His next message takes it; a new agent session is then current.
+        // His next message carries it until the new agent session starts
+        // (a turn that failed before it leaves the brief for the next).
         s.record_user_message("and the CI?", vec![], vec![], false);
-        assert_eq!(s.pending_hand_off(), None);
+        assert!(s.pending_hand_off().is_some(), "a failed turn keeps it");
+        assert_eq!(hand_off_if_due(&mut s, later, None), None, "never twice");
         s.record_agent_session("claude-code", "s-2");
+        assert_eq!(s.pending_hand_off(), None);
         assert_eq!(s.agent_session(), Some(("claude-code", "s-2")));
         // Reloads the same from disk.
         let back = Session::load(s.log_path().unwrap()).unwrap();

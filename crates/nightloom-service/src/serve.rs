@@ -599,6 +599,7 @@ impl ServeHost {
         // The phone's rail (`<home>/serve/rail.json`), else `--model`.
         let rail = self.rail();
         rail.apply_model(&mut spec, self.cfg.model.as_deref());
+        crate::home::apply_model(project.map(|p| p.source.as_deref()), &mut spec);
         // No checkpoint helper on this host (the desktop's `sync_checkpoint`).
         spec.fork_mode = false;
         // A chat does not compact (backlog 086).
@@ -1549,6 +1550,7 @@ impl ServeHost {
         let workspace = self.workspace_for(project, session);
         let mut spec = AgentSpec::new(workspace.clone());
         rail.apply_model(&mut spec, self.cfg.model.as_deref());
+        crate::home::apply_model(project.map(|p| p.source.as_deref()), &mut spec);
         let prompt = self.prompt_for(project, session, &workspace, &spec);
         let view = WireView::assemble(Some(&prompt), &Session::new(), None, None);
         let mut layers = serde_json::to_value(PromptLayersInfo::as_built(session))
@@ -4503,6 +4505,7 @@ mod job_hold_tests {
             title: "Check CI".into(),
             read_only,
             auto_hand_off: None,
+            model: None,
         }
     }
 

@@ -141,3 +141,73 @@ describe("Done since you looked (H2)", () => {
     expect(doneSince([row("2026-11-17T08:00:00Z", "a")], null)).toHaveLength(1);
   });
 });
+
+// ---- item 763 finish: palette numbers, Home's model and effort ----
+import { paletteKeys, HOME_MODEL, HOME_EFFORT } from "./home";
+import { applyHomeEffort, homeChoice, loadChoices, saveChoices, type ChatChoices } from "./chatChoice";
+import { defaultDraft } from "./catalog";
+import { readFileSync } from "node:fs";
+
+describe("763 finish — the palette keeps his number keys", () => {
+  const a = { id: "a", source: null };
+  const b = { id: "b", source: null };
+  const h = { id: "h", source: HOME_SOURCE };
+  it("other projects keep the numbers they had before Home; Home takes the next free one", () => {
+    const keys = paletteKeys(homeFirst([a, b, h]));
+    expect(keys.get("a")).toBe("1");
+    expect(keys.get("b")).toBe("2");
+    expect(keys.get("h")).toBe("3");
+  });
+  it("Home gets no number past 9", () => {
+    const many = Array.from({ length: 9 }, (_, i) => ({ id: `p${i}`, source: null }));
+    const keys = paletteKeys([h, ...many]);
+    expect(keys.get("p0")).toBe("1");
+    expect(keys.get("p8")).toBe("9");
+    expect(keys.get("h")).toBe("");
+  });
+  it("the palette reads its numbers from paletteKeys, Home still listed first", () => {
+    const src = readFileSync(new URL("./Palette.svelte", import.meta.url), "utf8");
+    expect(src).toContain("paletteKeys(app.projects)");
+    expect(src).toContain("homeFirst(app.projects).map((p) =>");
+    expect(src).not.toContain("key: i < 9 ? String(i + 1) : \"\",\n      group: \"Projects");
+  });
+});
+
+describe("763 finish — Home's chat defaults to Opus 5.5 at low effort", () => {
+  it("a Home chat with no choice starts on Claude Code + Opus 5.5", () => {
+    const c = homeChoice({ engine: "provider", provider: "anthropic", model: "claude-sonnet-5", agentModel: "sonnet" });
+    expect(c).toEqual({ engine: "claude-code", provider: "anthropic", model: "claude-sonnet-5", agentModel: HOME_MODEL });
+  });
+  it("entering Home puts its effort on, leaving puts his window effort back", () => {
+    const choices: ChatChoices = { default: null, chats: {} };
+    const d = defaultDraft();
+    d.agentEffort = "high";
+    expect(applyHomeEffort(choices, d, true)).toBe(true);
+    expect(d.agentEffort).toBe(HOME_EFFORT);
+    expect(applyHomeEffort(choices, d, true)).toBe(false);
+    expect(d.agentEffort).toBe(HOME_EFFORT);
+    expect(applyHomeEffort(choices, d, false)).toBe(true);
+    expect(d.agentEffort).toBe("high");
+    expect(applyHomeEffort(choices, d, false)).toBe(false);
+  });
+  it("an effort he picked in Home is Home's, and survives a relaunch", () => {
+    const choices: ChatChoices = { default: null, chats: {}, homeEffort: "medium" };
+    const d = defaultDraft();
+    d.agentEffort = "";
+    applyHomeEffort(choices, d, true);
+    expect(d.agentEffort).toBe("medium");
+    const store = new Map<string, string>();
+    saveChoices({ setItem: (k, v) => void store.set(k, v) }, choices);
+    const back = loadChoices({ getItem: (k) => store.get(k) ?? null });
+    expect(back.homeEffort).toBe("medium");
+    expect(back.windowEffort).toBe("");
+    applyHomeEffort(back, d, false);
+    expect(d.agentEffort).toBe("");
+  });
+  it("restoreChatChoice and the connect use them", () => {
+    const src = readFileSync(new URL("./state/connection.svelte.ts", import.meta.url), "utf8");
+    expect(src).toContain("homeChoice(wanted ?? choiceOf(app.draft))");
+    expect(src).toContain("applyHomeEffort(chatChoice.choices, app.draft, inHome)");
+    expect(src).toContain("if (!(inHome && chat === null)) noteConnected");
+  });
+});

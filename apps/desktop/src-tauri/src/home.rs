@@ -29,12 +29,20 @@ pub(crate) struct HomeInfo {
 }
 
 /// Home's project, chat, folder, brief and scan time. Makes the built-in
-/// scan job when the Mac keeps jobs and has none yet.
+/// scan job when the Mac keeps jobs and has none yet. Through the app's
+/// own registry (the review's finding: a second copy read from disk could
+/// register Home behind the app's back, and the app's next save would drop
+/// it).
 #[tauri::command]
-pub(crate) fn home_info(app: AppHandle) -> Result<HomeInfo, String> {
+pub(crate) async fn home_info(
+    app: AppHandle,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<HomeInfo, String> {
     let config = project::config_dir().ok_or("no Nightloom home")?;
-    let mut r = Registry::load();
-    let project_id = home::ensure_project(&mut r, &config)?;
+    let project_id = {
+        let mut ws = state.workspaces.lock().await;
+        home::ensure_project(&mut ws.registry, &config)?
+    };
     let jobs = crate::remote::jobs_store(&app);
     if let Some(j) = &jobs {
         j.ensure_home_scan(&project_id, chrono::Utc::now());

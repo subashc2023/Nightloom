@@ -2922,12 +2922,16 @@ impl Session {
     }
 
     /// Item 763: the in-place hand-off the next message carries — the
-    /// newest live [`SessionEvent::HandOff`] with no message of his after
-    /// it. Its brief.
+    /// newest live [`SessionEvent::HandOff`] that no reply and no new agent
+    /// session has followed yet. Its brief. Not "no message of his after
+    /// it": a turn that failed before the agent started would then leave
+    /// the next one on a fresh session with no brief at all.
     pub fn pending_hand_off(&self) -> Option<&str> {
         for (_, e) in self.live_events().into_iter().rev() {
             match e {
-                SessionEvent::UserMessage { .. } => return None,
+                SessionEvent::AssistantMessage { .. } | SessionEvent::AgentSession { .. } => {
+                    return None;
+                }
                 SessionEvent::HandOff { brief, .. } => return Some(brief.as_str()),
                 _ => {}
             }

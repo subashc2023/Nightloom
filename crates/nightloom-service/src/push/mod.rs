@@ -490,9 +490,10 @@ impl Push {
     /// Tell every subscribed phone. Never fails: what happened is in
     /// [`Sent`], and a push that could not go is not worth failing a turn.
     pub async fn notify(&self, note: Note) -> Sent {
-        // Item 763: every push is a row of Home's feed, sent or not (the
-        // scan writes its own row).
-        if note.what != What::Scan
+        // Item 763: every push is a row of Home's feed, sent or not — but
+        // the scan and a job run's turn end, whose own rows cover them
+        // (one row per job run).
+        if crate::home::push_is_a_row(&note)
             && self.dir.ends_with("remote/push")
             && let Some(config) = self.dir.parent().and_then(Path::parent)
         {

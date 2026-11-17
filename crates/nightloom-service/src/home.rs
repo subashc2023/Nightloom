@@ -36,6 +36,22 @@ pub const SCAN_JOB_ID: &str = "home-morning-scan";
 /// The scan message's first line; the transcript draws a message that
 /// starts with it as the scan card, and the hand-off brief skips it.
 pub const SCAN_LINE: &str = "Morning scan — write today's Home page.";
+/// The model Home's scan and Home's chat default to (blocker 2041, his
+/// decision: Opus 5.5 at low effort for both, so his first message after
+/// the scan reads its warm cache; he can still switch a chat).
+pub const MODEL: &str = "claude-opus-5-5";
+/// Their effort.
+pub const EFFORT: &str = "low";
+/// Item 763, blocker 2041: a chat of Home's project (`source`) runs on
+/// [`MODEL`] at [`EFFORT`] on the away server, whose rail is one for every
+/// chat and so cannot switch Home alone. Other projects are left as set.
+pub fn apply_model(source: Option<Option<&str>>, spec: &mut crate::agent::AgentSpec) {
+    if source.flatten() == Some(SOURCE) {
+        spec.model = Some(MODEL.into());
+        spec.effort = Some(EFFORT.into());
+    }
+}
+
 /// The facts block, at most this many characters (≈ 4k tokens).
 const FACTS_MAX: usize = 16_000;
 /// Per project, at most this many characters of its state.
@@ -90,6 +106,48 @@ pub fn read_brief(config: &Path) -> String {
 pub fn save_brief(config: &Path, text: &str) -> Result<(), String> {
     let dir = ensure_folder(config).map_err(|e| e.to_string())?;
     std::fs::write(dir.join("brief.md"), text).map_err(|e| e.to_string())
+}
+
+/// Chats whose job run is under way in this process (one feed row per job
+/// run: the run's own `job_*` / `scan` row, never also the turn-end push's
+/// `done` / `failed`). Kept by `jobs` from the send until the run's end.
+static JOB_RUNS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// A job's run is under way in `chat` (idempotent).
+pub fn job_run_started(chat: &str) {
+    let mut runs = JOB_RUNS.lock().unwrap_or_else(|p| p.into_inner());
+    if !runs.iter().any(|c| c == chat) {
+        runs.push(chat.to_string());
+    }
+}
+
+/// The job's run in `chat` ended (its own row is written).
+pub fn job_run_ended(chat: &str) {
+    JOB_RUNS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .retain(|c| c != chat);
+}
+
+/// Whether a push about `chat` is a job run's turn end, which the run's
+/// own row covers.
+pub fn is_job_run(chat: &str) -> bool {
+    JOB_RUNS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .any(|c| c == chat)
+}
+
+/// Whether a push gets its own feed row: every push but the scan's (which
+/// writes its own row) and a job run's turn end (the run's row covers it).
+pub fn push_is_a_row(note: &crate::push::Note) -> bool {
+    use crate::push::What;
+    match note.what {
+        What::Scan => false,
+        What::Done | What::Failed => !note.chat.as_deref().is_some_and(is_job_run),
+        _ => true,
+    }
 }
 
 /// One feed row.
@@ -296,9 +354,6 @@ pub fn collect(
     }
     out.push_str("\n## Projects\n");
     for (name, ws) in projects {
-        if name == NAME {
-            continue;
-        }
         let Some(ws) = ws else { continue };
         if let Some(state) = project_state(ws) {
             out.push_str(&format!("\n### {name}\n\n{state}"));

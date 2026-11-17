@@ -315,6 +315,34 @@ impl Agents {
         Ok(())
     }
 
+    /// After [`Self::reserve_for_job`]: the run goes on `model` at `effort`
+    /// (item 763, blocker 2041: Home's scan on Opus 5.5 low). An idle agent
+    /// the chat has on another model or effort is dropped and its spec kept
+    /// with these, so the run makes a new one; a kept spec takes them.
+    pub fn pick_for_job(&self, chat: &str, model: &str, effort: &str) -> Result<(), String> {
+        let mut inner = self.inner();
+        let own = match inner.per_chat.get(chat) {
+            Some(e) => match e.slot.try_lock() {
+                Ok(agent) => Some(agent.spec().clone()),
+                Err(_) => return Err("its chat is running a turn".into()),
+            },
+            None => None,
+        };
+        if let Some(spec) = own {
+            if spec.model.as_deref() == Some(model) && spec.effort.as_deref() == Some(effort) {
+                return Ok(());
+            }
+            inner.per_chat.remove(chat);
+            inner.reserved.insert(chat.to_string(), spec);
+        }
+        let Some(spec) = inner.reserved.get_mut(chat) else {
+            return Err("no spec is kept for the job's chat".into());
+        };
+        spec.model = Some(model.to_string());
+        spec.effort = Some(effort.to_string());
+        Ok(())
+    }
+
     /// Let `chat`'s kept spec go (its scheduled message left or was
     /// cancelled).
     pub fn release(&self, chat: &str) {
@@ -587,6 +615,29 @@ mod tests {
     }
 
     /// Item 759, the Mac's half: the held job's agent refuses connector
+    /// Item 763 (blocker 2041): Home's scan runs on Opus 5.5 low — a kept
+    /// spec takes them, and an idle agent on another model is replaced.
+    #[tokio::test]
+    async fn homes_scan_runs_on_the_model_and_effort_it_names() {
+        let agents = Agents::default();
+        agents.connect(agent("open"), Some("job"));
+        agents.reserve_for_job("job", true, true, None).unwrap();
+        agents
+            .pick_for_job("job", "claude-opus-5-5", "low")
+            .unwrap();
+        let slot = agents.make_reserved("job", None).expect("a kept spec");
+        let spec = slot.try_lock().unwrap().spec().clone();
+        assert_eq!(spec.model.as_deref(), Some("claude-opus-5-5"));
+        assert_eq!(spec.effort.as_deref(), Some("low"));
+        assert!(spec.chat_policy, "still held read-only");
+        // The same pick again keeps the agent it made.
+        agents.reserve_for_job("job", true, true, None).unwrap();
+        agents
+            .pick_for_job("job", "claude-opus-5-5", "low")
+            .unwrap();
+        assert!(agents.existing("job").is_some());
+    }
+
     /// writes; the open chat's writer agent does not.
     #[tokio::test]
     async fn a_read_only_jobs_agent_refuses_connector_writes() {

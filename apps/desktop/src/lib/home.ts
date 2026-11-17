@@ -62,6 +62,27 @@ export function homeFirst<T extends { source?: string | null }>(ps: readonly T[]
   return home.length === 0 ? [...ps] : [...home, ...ps.filter((p) => !isHome(p))];
 }
 
+/**
+ * The ⌘P palette's number keys (item 763 finish): every other project keeps
+ * the number it had before Home existed (his muscle memory) — their own
+ * order, 1–9 — and Home, listed first, takes the next free number, or none
+ * past 9. `ids` in the palette's order (Home first); the key for each.
+ */
+export function paletteKeys<T extends { id: string; source?: string | null }>(ps: readonly T[]): Map<string, string> {
+  const keys = new Map<string, string>();
+  const others = ps.filter((p) => !isHome(p));
+  others.forEach((p, i) => keys.set(p.id, i < 9 ? String(i + 1) : ""));
+  const next = others.length + 1;
+  for (const p of ps.filter(isHome)) keys.set(p.id, next <= 9 ? String(next) : "");
+  return keys;
+}
+
+/** Home's model and effort (blocker 2041): Opus 5.5 at low effort for the
+ *  scan and his messages alike, so his first message reads the scan's warm
+ *  cache. A default only — he can switch a Home chat like any. */
+export const HOME_MODEL = "claude-opus-5-5";
+export const HOME_EFFORT = "low";
+
 /** The sidebar's count beside Home: "3 need you", or nothing at none. */
 export function homeCount(n: number): string {
   return n <= 0 ? "" : `${n} need${n === 1 ? "s" : ""} you`;

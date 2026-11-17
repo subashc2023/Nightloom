@@ -673,6 +673,9 @@ pub struct Prep {
     /// The chat hands off in place by itself at these marks (item 763:
     /// Home's chat, `(soft, hard)` tokens); `None` leaves it as it is.
     pub auto_hand_off: Option<(u64, u64)>,
+    /// The model and effort the run must use, `(model, effort)` (item
+    /// 763: Home's scan, blocker 2041); `None` leaves the host's choice.
+    pub model: Option<(String, String)>,
 }
 
 /// A title from the message when he gave none: its first line, cut.
@@ -906,6 +909,7 @@ impl Jobs {
         let projects: Vec<(String, Option<PathBuf>)> = crate::project::Registry::load_in(&config)
             .projects()
             .into_iter()
+            .filter(|p| p.source.as_deref() != Some(crate::home::SOURCE))
             .map(|p| (p.name, p.workspace))
             .collect();
         let facts = crate::home::collect(&config, &self.list(), &projects, now);
@@ -1189,6 +1193,13 @@ impl Jobs {
                 read_only: !job.writable(),
                 auto_hand_off: (job.id == crate::home::SCAN_JOB_ID)
                     .then_some((crate::hand_off::SOFT_TOKENS, crate::hand_off::HARD_TOKENS)),
+                // Blocker 2041: the scan runs on Home's model and effort.
+                model: (job.id == crate::home::SCAN_JOB_ID).then(|| {
+                    (
+                        crate::home::MODEL.to_string(),
+                        crate::home::EFFORT.to_string(),
+                    )
+                }),
             })
             .await
         {
@@ -1204,6 +1215,9 @@ impl Jobs {
         } else {
             job.text.clone()
         };
+        // Item 763: from before the send (a quick turn's end push must
+        // find it), the run's own row is this chat's only one.
+        crate::home::job_run_started(&chat);
         match host.job_send(job.project.as_deref(), &chat, &text).await {
             Ok(Handed::Sent | Handed::Queued) => {
                 let _ = self.change(&job.id, |j| {
@@ -1229,7 +1243,10 @@ impl Jobs {
                     }
                 });
             }
-            Err(e) => wait(e, RETRY_SECS),
+            Err(e) => {
+                crate::home::job_run_ended(&chat);
+                wait(e, RETRY_SECS)
+            }
         }
     }
 
@@ -1238,6 +1255,9 @@ impl Jobs {
             let _ = self.change(&job.id, |j| j.running = None);
             return;
         };
+        // Item 763: a relaunch mid-run forgets the process's runs; every
+        // tick of a running job says it again.
+        crate::home::job_run_started(chat);
         let age = (now - mark.started).num_seconds();
         if age < RUN_GRACE_SECS {
             return;
@@ -1337,27 +1357,18 @@ impl Jobs {
         });
         // Item 763: every run's end is a feed row; the scan keeps its page
         // and pushes its counts.
+        // One row per run: a scan that kept its page is its `scan` row
+        // alone; every other end is a `job_done` / `job_failed` row.
         if let Some(config) = self.config_dir() {
             let ok = outcome == Outcome::Done;
-            crate::home::append(
-                &config,
-                &crate::home::FeedRow {
-                    at: now,
-                    kind: if ok { "job_done" } else { "job_failed" }.into(),
-                    label: Some(job.title.clone()),
-                    chat: Some(chat.clone()),
-                    project: job.project.clone(),
-                    line: summary_line.clone(),
-                },
-            );
+            let mut scanned = false;
             if job.id == crate::home::SCAN_JOB_ID
                 && ok
                 && let Some(reply) = &full_reply
             {
                 let date = local_date(now, &job.zone()).unwrap_or_else(|| now.date_naive());
-                if crate::home::finish_scan(&config, reply, date, Some(chat), now).is_ok()
-                    && let Some(push) = host.push()
-                {
+                scanned = crate::home::finish_scan(&config, reply, date, Some(chat), now).is_ok();
+                if scanned && let Some(push) = host.push() {
                     push.notify(crate::home::scan_note(
                         reply,
                         Some(chat.clone()),
@@ -1367,7 +1378,21 @@ impl Jobs {
                     .await;
                 }
             }
+            if !scanned {
+                crate::home::append(
+                    &config,
+                    &crate::home::FeedRow {
+                        at: now,
+                        kind: if ok { "job_done" } else { "job_failed" }.into(),
+                        label: Some(job.title.clone()),
+                        chat: Some(chat.clone()),
+                        project: job.project.clone(),
+                        line: summary_line.clone(),
+                    },
+                );
+            }
         }
+        crate::home::job_run_ended(chat);
         // Its push: the job's name and "wants to make changes", nothing of
         // the reply. Not while he is at the Mac (the Mac's chat shows it).
         if wants && let Some(push) = host.push() {

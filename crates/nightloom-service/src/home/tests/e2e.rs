@@ -154,6 +154,16 @@ impl Host for E2eHost {
         Some(self.push.clone())
     }
     async fn job_prepare(&self, prep: Prep) -> Result<String, String> {
+        // Blocker 2041: the scan asks for Home's model and effort.
+        assert_eq!(
+            prep.model,
+            Some((super::MODEL.to_string(), super::EFFORT.to_string()))
+        );
+        // Blocker 2041: the scan asks for Home's model and effort.
+        assert_eq!(
+            prep.model,
+            Some((super::MODEL.to_string(), super::EFFORT.to_string()))
+        );
         let mut guard = self.session.lock().await;
         if let Some(s) = guard.as_ref() {
             return Ok(s.id.clone());
@@ -273,8 +283,13 @@ async fn the_scan_lands_in_homes_one_chat_and_the_chat_hands_off_in_place() {
         .await;
     let rows = super::read_feed(&config);
     let kinds: Vec<&str> = rows.iter().map(|r| r.kind.as_str()).collect();
-    assert_eq!(kinds, vec!["job_failed", "job_done", "scan"], "{rows:?}");
-    assert_eq!(rows[2].line, "Morning scan · 1 waiting");
+    // One row per run: the scan's own, no `job_done` beside it.
+    assert_eq!(kinds, vec!["job_failed", "scan"], "{rows:?}");
+    assert_eq!(rows[1].line, "Morning scan · 1 waiting");
+    assert!(
+        !super::is_job_run(&rows[1].chat.clone().unwrap()),
+        "the run's end lets its chat go"
+    );
     let date = host.jobs.list()[0].job.last.as_ref().unwrap().ended;
     let _ = date;
     let page = std::fs::read_dir(super::dir_in(&config).join("scans"))
