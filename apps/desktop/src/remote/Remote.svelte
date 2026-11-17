@@ -792,8 +792,13 @@
         // 783: nobody answered. A set-aside takes the card down and is
         // remembered, so the card that returns says so.
         try {
-          const n: { id: string; stage: "remind" | "set_aside" } = JSON.parse(data);
-          if (n.stage === "set_aside") {
+          const n: { id: string; name?: string; stage: "remind" | "set_aside" | "unattended" } = JSON.parse(data);
+          if (n.stage === "unattended") {
+            // 783's finish: a read-only chat's card in a run nobody was
+            // there for — never shown; the reply's end lists it.
+            remote = { ...remote, pending: remote.pending.filter((p) => p.id !== n.id) };
+            note("Nobody was here to approve it, so it was set aside and did not run");
+          } else if (n.stage === "set_aside") {
             const req = remote.pending.find((p) => p.id === n.id);
             if (req) {
               remote = { ...remote, pending: remote.pending.filter((p) => p.id !== n.id) };
@@ -3267,7 +3272,7 @@
               <p class="card-note">This chat is read-only, so Claude asks before it adds to your memory.</p>
             {:else if req.kind === "connector"}
               <div class="card-head" data-card-kind="connector">Let <b>{connectorWords(req.name)}</b> run?</div>
-              <p class="card-note">This chat is read-only, and this connector action is not a plain read. It may send, create, change or delete.</p>
+              <p class="card-note">This chat is read-only, and this connector action's name does not say whether it only reads or also changes something.</p>
             {:else}
               <div class="card-head">Allow <b>{req.name}</b>?</div>
             {/if}

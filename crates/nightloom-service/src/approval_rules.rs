@@ -379,7 +379,7 @@ pub const DEFAULTS: [&str; 5] = [
     "Ask: commands (Bash), file edits (Write, Edit, MultiEdit, NotebookEdit), the web (WebFetch, WebSearch), worktrees, schedules, and every connector tool.",
     "Allow: reading and searching inside the chat's folders.",
     "Block: reading outside the chat's folders, until you add the folder.",
-    "In a read-only chat: a connector action that is not a plain read asks you first (Allow once, Allow always, Deny), and so does remembering something.",
+    "In a read-only chat: connector actions that send, create, change or delete are refused; one whose name says neither read nor write asks you first (Allow once, Allow always, Deny), and so does remembering something.",
     "These are read while a chat is on Ask or Plan. On Auto, Claude Code decides each call itself and no rule here is consulted.",
 ];
 

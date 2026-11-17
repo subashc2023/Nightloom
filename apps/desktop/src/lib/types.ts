@@ -1264,7 +1264,9 @@ export interface ApprovalNudge {
   id: string;
   name: string;
   chat?: string;
-  stage: "remind" | "set_aside";
+  /** `unattended` (783's finish): a read-only chat's card in a run nobody
+   *  was there for — never shown, set aside at once, listed at the end. */
+  stage: "remind" | "set_aside" | "unattended";
 }
 
 /** `later` is "Not now — carry on" (nightshift item 743): the call is set

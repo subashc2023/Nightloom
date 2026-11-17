@@ -162,6 +162,12 @@ pub trait TurnEnv: Send + Sync {
     fn nudge(&self, nudge: &ApprovalNudge<'_>) {
         let _ = nudge;
     }
+    /// Nobody is there to answer a card (item 783's finish): no phone
+    /// connected and, on the Mac, nobody at it. A read-only chat's card is
+    /// then set aside at once instead of holding the run.
+    fn unattended(&self) -> bool {
+        false
+    }
     /// Keep `dir` on the turn's project (the card's *let the project see
     /// it*).
     async fn grant_to_project(&self, dir: &Path) -> ProjectGrant;
@@ -440,8 +446,8 @@ async fn turn_body(
     // Calls he answered "Not now — carry on" (item 743) that have not come
     // back yet. The model is told to make the call again at the end; one
     // that never returns is said at the turn's end, never silently lost.
-    // With each, whether nobody answered (item 783) rather than he said so.
-    let mut set_aside: Vec<(crate::agent::DeferredCall, bool)> = Vec::new();
+    // With each, why (item 783): his word, nobody answering, or nobody there.
+    let mut set_aside: Vec<(crate::agent::DeferredCall, Aside)> = Vec::new();
     while let Ok(outcome) = &result
         && let Some(call) = outcome.deferred.clone()
     {
@@ -487,9 +493,24 @@ async fn turn_body(
             _ => None,
         };
         let answered_here = preanswer.is_some();
-        let mut auto_aside = false;
+        let mut aside: Option<Aside> = None;
+        // A read-only chat's card in a run nobody is there for (item 783's
+        // finish): never shown, never waited on — the phone is pushed, the
+        // call set aside at once, the run finishes and lists it at its end.
+        let unattended = !answered_here && card_kind.is_some() && env.unattended();
         let answer = if let Some(a) = preanswer {
             Some(a)
+        } else if unattended {
+            env.nudge(&ApprovalNudge {
+                id: &call.id,
+                name: &call.name,
+                chat: Some(chat_id),
+                stage: crate::agent::ask::Nudge::Unattended,
+            });
+            aside = Some(Aside::Unattended);
+            Some(Answer::Deny {
+                reason: crate::agent::ask::UNATTENDED_REASON.into(),
+            })
         } else {
             let rx = ask.wait(&call.id);
             let outside = match &folder_ask {
@@ -536,7 +557,7 @@ async fn turn_body(
                     // aside — never run — and comes back at the end.
                     ask.abandon(&call.id);
                     nudge(Nudge::SetAside);
-                    auto_aside = true;
+                    aside = Some(Aside::Unanswered);
                     Some(Answer::Deny {
                         reason: crate::agent::ask::AUTO_LATER_REASON.into(),
                     })
@@ -613,7 +634,14 @@ async fn turn_body(
             }
             break;
         };
-        if let Err(e) = ask_files.write(&call, &answer) {
+        // A set-aside without his word writes only this call's refusal
+        // (item 783's review: a Deny would also refuse Playwright's next
+        // call for the reply, the one that comes back for its card).
+        let wrote = match (&aside, &answer) {
+            (Some(_), Answer::Deny { reason }) => ask_files.write_set_aside(&call, reason),
+            _ => ask_files.write(&call, &answer),
+        };
+        if let Err(e) = wrote {
             ask_files.clear_waiting();
             if let Ok(o) = &mut result {
                 o.notices.push(format!("could not record the answer: {e}"));
@@ -624,8 +652,8 @@ async fn turn_body(
         if let Some(id) = &session_id {
             agent.set_resume(Some(id.clone()));
         }
-        if matches!(answer, Answer::Later) || auto_aside {
-            set_aside.push((call.clone(), auto_aside));
+        if let Some(why) = aside.or(matches!(answer, Answer::Later).then_some(Aside::Later)) {
+            set_aside.push((call.clone(), why));
         }
         if let Answer::Allow {
             grant: Some(grant), ..
@@ -715,11 +743,11 @@ async fn turn_body(
     if let Ok(o) = &mut result
         && !cancel.is_cancelled()
     {
-        for (c, auto) in &set_aside {
-            o.notices.push(if *auto {
-                unanswered_notice(&c.name)
-            } else {
-                set_aside_notice(&c.name)
+        for (c, why) in &set_aside {
+            o.notices.push(match why {
+                Aside::Later => set_aside_notice(&c.name),
+                Aside::Unanswered => unanswered_notice(&c.name),
+                Aside::Unattended => unattended_notice(&c.name),
             });
         }
     }
@@ -1385,14 +1413,19 @@ printf '%s\n' '{{"type":"result","subtype":"success","stop_reason":"tool_deferre
     /// on the second resume it ends. Each resume keeps the decision it was
     /// handed, and a call that was allowed leaves `ran-<n>`.
     fn publishing_stand_in(root: &Path, ask_dir: &Path) -> String {
+        stand_in_deferring(root, ask_dir, "Bash")
+    }
+
+    /// [`publishing_stand_in`] with the gated call made to `tool`.
+    fn stand_in_deferring(root: &Path, ask_dir: &Path, tool: &str) -> String {
         let body = format!(
             r##"#!/bin/sh
 D="{d}"
 A="{a}"
 INIT='{{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"claude-haiku-4-5","permissionMode":"default","session_id":"s-1"}}'
 defer() {{
-  printf '%s\n' '{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"'"$1"'","name":"Bash","input":{{"command":"./publish.sh"}}}}]}},"parent_tool_use_id":null}}'
-  printf '%s\n' '{{"type":"result","subtype":"success","stop_reason":"tool_deferred","terminal_reason":"tool_deferred","is_error":false,"num_turns":1,"result":"","permission_denials":[],"session_id":"s-1","deferred_tool_use":{{"id":"'"$1"'","name":"Bash","input":{{"command":"./publish.sh"}}}}}}'
+  printf '%s\n' '{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"'"$1"'","name":"{t}","input":{{"command":"./publish.sh"}}}}]}},"parent_tool_use_id":null}}'
+  printf '%s\n' '{{"type":"result","subtype":"success","stop_reason":"tool_deferred","terminal_reason":"tool_deferred","is_error":false,"num_turns":1,"result":"","permission_denials":[],"session_id":"s-1","deferred_tool_use":{{"id":"'"$1"'","name":"{t}","input":{{"command":"./publish.sh"}}}}}}'
 }}
 N=$(cat "$D/n" 2>/dev/null || echo 0)
 printf '%s\n' "$INIT"
@@ -1415,6 +1448,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
 "##,
             d = root.display(),
             a = ask_dir.display(),
+            t = tool,
         );
         let path = root.join("claude-publishing");
         std::fs::write(&path, body).unwrap();
@@ -1569,6 +1603,250 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
             outcome.notices
         );
         assert!(!ask.has("toolu_1") && !ask.has("toolu_2"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ---- item 783's finish: Allow always, and runs nobody is there for ----
+
+    /// Keeps every card (id, kind, back) and nudge; answers each card at
+    /// once with the next of `answers`, unless `unattended`.
+    struct CardEnv {
+        ask: Arc<AskGate>,
+        answers: std::sync::Mutex<Vec<Answer>>,
+        cards: std::sync::Mutex<Vec<(String, Option<&'static str>, bool)>>,
+        nudges: std::sync::Mutex<Vec<(String, crate::agent::ask::Nudge)>>,
+        unattended: bool,
+    }
+
+    impl CardEnv {
+        fn new(ask: Arc<AskGate>, answers: Vec<Answer>, unattended: bool) -> Self {
+            Self {
+                ask,
+                answers: std::sync::Mutex::new(answers),
+                cards: Default::default(),
+                nudges: Default::default(),
+                unattended,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl TurnEnv for CardEnv {
+        fn event(&self, _chat: &str, _event: &TurnEvent) {}
+        fn notice(&self, _text: String) {}
+        fn approval(&self, prompt: &ApprovalPrompt<'_>) {
+            self.cards
+                .lock()
+                .unwrap()
+                .push((prompt.id.to_string(), prompt.kind, prompt.back));
+            let mut answers = self.answers.lock().unwrap();
+            if !answers.is_empty() {
+                // The turn registers the wait before it shows the card.
+                let a = answers.remove(0);
+                assert!(self.ask.answer(prompt.id, a), "no wait for {}", prompt.id);
+            }
+        }
+        fn nudge(&self, nudge: &ApprovalNudge<'_>) {
+            self.nudges
+                .lock()
+                .unwrap()
+                .push((nudge.id.to_string(), nudge.stage));
+        }
+        fn unattended(&self) -> bool {
+            self.unattended
+        }
+        async fn grant_to_project(&self, _dir: &Path) -> ProjectGrant {
+            ProjectGrant::NoProject
+        }
+    }
+
+    /// One turn of a read-only chat whose task needs `tool` (the stand-in
+    /// defers it, then makes it again as its last step), under `env`.
+    async fn read_only_turn(
+        root: &Path,
+        tool: &str,
+        env: &CardEnv,
+    ) -> (Result<AgentTurnEnd, String>, PathBuf) {
+        let logs = root.join("sessions");
+        std::fs::create_dir_all(&logs).unwrap();
+        let mut session = Session::start(&logs, ChatMode::Normal, ChatKind::Build).unwrap();
+        let ask_dir = root.join("ask").join(&session.id);
+        let mut spec = AgentSpec::new(root);
+        spec.binary = stand_in_deferring(root, &ask_dir, tool);
+        spec.chat_policy = true;
+        let mut agent = ClaudeCodeAgent::new(spec);
+        agent.set_ask_dir(ask_dir.clone());
+        let chat = session.id.clone();
+        let cancel = CancellationToken::new();
+        let end = run_agent_turn(
+            AgentTurnRun {
+                agent: &mut agent,
+                session: &mut session,
+                chat_id: &chat,
+                input: TurnInput::from("do the thing"),
+                spoken: false,
+                wire_note: None,
+                council: None,
+                cancel: &cancel,
+                ask_dir: Some(ask_dir.clone()),
+                ask: &env.ask,
+            },
+            env,
+        )
+        .await
+        .map_err(|e| format!("{e:?}"));
+        (end, ask_dir)
+    }
+
+    /// Item 783's finish (the spec's step 3): *Allow always* on a
+    /// read-only chat's connector card runs the call and keeps the action
+    /// as a read in the every-chat set — the shared allowance the other
+    /// host gets at the next sync — and never in the chat's own "Allow for
+    /// this chat" list; the next call to it is no longer a connector card.
+    #[tokio::test]
+    async fn allow_always_on_a_connector_card_saves_the_shared_allowance() {
+        let root = std::env::temp_dir().join(format!("nightloom-783f-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
+        let tool = "mcp__claude_ai_Acme__inspect_record";
+        let ask = Arc::new(AskGate::new().with_rules_home(home.clone()));
+        let allow = Answer::Allow {
+            updated_input: None,
+            plan_then: None,
+            grant: None,
+        };
+        let env = CardEnv::new(
+            ask.clone(),
+            vec![
+                Answer::AllowForChat {
+                    updated_input: None,
+                },
+                allow,
+            ],
+            false,
+        );
+        assert!(!crate::approval_rules::is_read(Some(&home), tool));
+        let (end, ask_dir) = read_only_turn(&root, tool, &env).await;
+        assert!(
+            matches!(end, Ok(AgentTurnEnd::Done { .. })),
+            "{:?}",
+            end.err()
+        );
+        let cards = env.cards.lock().unwrap().clone();
+        assert_eq!(cards[0], ("toolu_1".to_string(), Some("connector"), false));
+        // Kept for every read-only chat, in the shared set…
+        assert!(crate::approval_rules::is_read(Some(&home), tool));
+        let shared = crate::approval_rules::shared::get(&home);
+        assert_eq!(shared.shared.reads, [tool.to_string()]);
+        // …not in this chat's own list.
+        assert!(!AskDir::new(&ask_dir).allowed().contains(&tool.to_string()));
+        // The call ran on that answer.
+        let first: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("decision-1.json")).unwrap()).unwrap();
+        assert_eq!(first["decision"], "allow");
+        assert!(root.join("ran-1").exists());
+        // The same action again is no longer a connector card.
+        assert_eq!(cards.get(1).map(|c| c.1), Some(None));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Item 783's finish (step 2): in a run nobody is there for, a
+    /// read-only chat's card is never shown and never waited on — the phone
+    /// is told, the call is set aside at once and never runs, the run
+    /// finishes, and its end lists the call. The model making it again is
+    /// set aside again, not waited on.
+    #[tokio::test]
+    async fn an_unattended_run_sets_a_read_only_card_aside_at_once_and_finishes() {
+        use crate::agent::ask::{Nudge, UNATTENDED_REASON};
+        let root = std::env::temp_dir().join(format!("nightloom-783f-{}", uuid::Uuid::new_v4()));
+        let tool = "mcp__claude_ai_Acme__inspect_record";
+        let ask = Arc::new(AskGate::new().with_rules_home(root.join("home")));
+        let env = CardEnv::new(ask.clone(), Vec::new(), true);
+        let started = std::time::Instant::now();
+        let (end, _) = read_only_turn(&root, tool, &env).await;
+        let Ok(AgentTurnEnd::Done { outcome, .. }) = end else {
+            panic!("{:?}", end.err());
+        };
+        // Well inside the 3:30 set-aside: nothing waited.
+        assert!(started.elapsed() < std::time::Duration::from_secs(30));
+        assert!(env.cards.lock().unwrap().is_empty(), "no card is shown");
+        assert_eq!(
+            *env.nudges.lock().unwrap(),
+            [
+                ("toolu_1".to_string(), Nudge::Unattended),
+                ("toolu_2".to_string(), Nudge::Unattended)
+            ]
+        );
+        for n in [1, 2] {
+            let d: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(root.join(format!("decision-{n}.json"))).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                (&d["decision"], &d["reason"]),
+                (
+                    &serde_json::json!("deny"),
+                    &serde_json::json!(UNATTENDED_REASON)
+                )
+            );
+            assert!(!root.join(format!("ran-{n}")).exists(), "never run");
+        }
+        assert!(
+            outcome
+                .notices
+                .iter()
+                .any(|n| *n == unattended_notice(tool)),
+            "{:?}",
+            outcome.notices
+        );
+        assert!(!ask.has("toolu_1") && !ask.has("toolu_2"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The other side of it: an unattended run's *ordinary* card (not a
+    /// read-only chat's) is not this rule's — it shows and waits as before.
+    #[tokio::test]
+    async fn an_unattended_run_still_shows_an_ordinary_card() {
+        let root = std::env::temp_dir().join(format!("nightloom-783f-{}", uuid::Uuid::new_v4()));
+        let logs = root.join("sessions");
+        std::fs::create_dir_all(&logs).unwrap();
+        let mut session = Session::start(&logs, ChatMode::Normal, ChatKind::Build).unwrap();
+        let ask_dir = root.join("ask").join(&session.id);
+        let mut spec = AgentSpec::new(&root);
+        spec.binary = publishing_stand_in(&root, &ask_dir);
+        let mut agent = ClaudeCodeAgent::new(spec);
+        agent.set_ask_dir(ask_dir.clone());
+        let allow = || Answer::Allow {
+            updated_input: None,
+            plan_then: None,
+            grant: None,
+        };
+        let ask = Arc::new(AskGate::new().with_rules_home(root.join("home")));
+        let env = CardEnv::new(ask.clone(), vec![allow(), allow()], true);
+        let chat = session.id.clone();
+        let cancel = CancellationToken::new();
+        let end = run_agent_turn(
+            AgentTurnRun {
+                agent: &mut agent,
+                session: &mut session,
+                chat_id: &chat,
+                input: TurnInput::from("publish it"),
+                spoken: false,
+                wire_note: None,
+                council: None,
+                cancel: &cancel,
+                ask_dir: Some(ask_dir.clone()),
+                ask: &ask,
+            },
+            &env,
+        )
+        .await;
+        assert!(matches!(end, Ok(AgentTurnEnd::Done { .. })));
+        assert_eq!(
+            env.cards.lock().unwrap()[0],
+            ("toolu_1".to_string(), None, false)
+        );
+        assert!(env.nudges.lock().unwrap().is_empty());
+        assert!(root.join("ran-1").exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1870,6 +2148,25 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
 pub fn set_aside_notice(tool: &str) -> String {
     format!(
         "You set {tool} aside and the reply ended without that same call coming back, so it did not run. Ask for it when you want it."
+    )
+}
+
+/// Why a call was set aside in this reply (items 743, 783).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Aside {
+    /// His "Not now — carry on".
+    Later,
+    /// Nobody answered the card in time.
+    Unanswered,
+    /// A read-only chat's card in a run nobody was there for.
+    Unattended,
+}
+
+/// The same for a read-only chat's card in an unattended run (item 783's
+/// finish): never shown, so never "waited".
+pub fn unattended_notice(tool: &str) -> String {
+    format!(
+        "{tool} needed your approval while nobody was there to give it, so it was set aside and did not run. Ask for it when you want it."
     )
 }
 

@@ -1547,7 +1547,7 @@ impl AgentSpec {
                                 && !ask.dir.as_os_str().is_empty() =>
                         {
                             pre.push(serde_json::json!({
-                                "matcher": connector_writes::NIGHTLOOM_MATCHER,
+                                "matcher": connector_writes::KNOWN_WRITES_MATCHER,
                                 "hooks": [{ "type": "command", "command": chat_policy_command(&reply) }]
                             }));
                             pre.push(ask::hook_entry(
@@ -3728,7 +3728,7 @@ mod tests {
                     && *m != BROWSER_TOOLS_MATCHER
                     && *m != PREVIEW_TOOL_MATCHER
                     && *m != connector_writes::MATCHER
-                    && *m != connector_writes::NIGHTLOOM_MATCHER
+                    && *m != connector_writes::KNOWN_WRITES_MATCHER
                     && *m != connector_writes::CARD_MATCHER
             })
             .collect();
@@ -4432,7 +4432,7 @@ mod tests {
         assert_eq!(pre[2]["matcher"], PREVIEW_TOOL_MATCHER);
         // Item 783: with the Ask hook there, Nightloom's own note writes
         // stay refused and the connector actions (and `remember`) ask.
-        assert_eq!(pre[3]["matcher"], connector_writes::NIGHTLOOM_MATCHER);
+        assert_eq!(pre[3]["matcher"], connector_writes::KNOWN_WRITES_MATCHER);
         assert_eq!(pre[4]["matcher"], connector_writes::CARD_MATCHER);
         assert!(
             pre[4]["hooks"][0]["command"]
@@ -4565,7 +4565,7 @@ mod tests {
         assert_eq!(pre[1]["matcher"], CHAT_POLICY_MATCHER);
         assert_eq!(pre[2]["matcher"], PREVIEW_TOOL_MATCHER);
         // Item 783: the connector actions and `remember` ask.
-        assert_eq!(pre[3]["matcher"], connector_writes::NIGHTLOOM_MATCHER);
+        assert_eq!(pre[3]["matcher"], connector_writes::KNOWN_WRITES_MATCHER);
         assert_eq!(pre[4]["matcher"], connector_writes::CARD_MATCHER);
         // The one resume that leaves plan mode: only the deny is registered.
         s.ask.as_mut().unwrap().mode = AskMode::ExitingToAuto;
@@ -4576,7 +4576,7 @@ mod tests {
         assert_eq!(pre.len(), 4, "{v}");
         assert_eq!(pre[0]["matcher"], CHAT_POLICY_MATCHER);
         assert_eq!(pre[1]["matcher"], PREVIEW_TOOL_MATCHER);
-        assert_eq!(pre[2]["matcher"], connector_writes::NIGHTLOOM_MATCHER);
+        assert_eq!(pre[2]["matcher"], connector_writes::KNOWN_WRITES_MATCHER);
         assert_eq!(pre[3]["matcher"], connector_writes::CARD_MATCHER);
         // Without the policy, the matcher is untouched.
         let mut plain = spec();

@@ -1679,7 +1679,7 @@ impl TurnEnv for ServeEnv<'_> {
         use crate::agent::ask::Nudge;
         // 783: nobody answered. The reminder is a second push; a set-aside
         // takes the card off the phone and says so.
-        if nudge.stage == Nudge::SetAside {
+        if matches!(nudge.stage, Nudge::SetAside | Nudge::Unattended) {
             lock(&self.host.pending).remove(nudge.id);
         }
         if let Ok(p) = serde_json::to_string(nudge) {
@@ -1690,11 +1690,19 @@ impl TurnEnv for ServeEnv<'_> {
                 match nudge.stage {
                     Nudge::Remind => crate::push::What::Reminder,
                     Nudge::SetAside => crate::push::What::SetAside,
+                    Nudge::Unattended => crate::push::What::Unattended,
                 },
                 chat,
                 self.project.as_deref(),
             );
         }
+    }
+
+    /// Item 783's finish: nobody has the phone page open (no subscriber
+    /// to the event stream, the voice socket included), so nobody can
+    /// answer a card here — a job's run at night, most often.
+    fn unattended(&self) -> bool {
+        self.host.tx.receiver_count() == 0
     }
 
     async fn grant_to_project(&self, dir: &Path) -> ProjectGrant {

@@ -56,6 +56,7 @@ import {
 import { madeChatRow } from "./afterWrite";
 import { runLaunch } from "./launch.svelte";
 import { chatName, notifyNeedsYou, notifyNudge, postHeldNeedsYou } from "./notify";
+import { connectorWords } from "../remote/rules";
 import { onAway, watchPresence } from "./away.svelte";
 import { RESUME_TEXT, SleepWatch, loadSleepPrefs, pushPowerPrefs, type Woke } from "./sleep";
 import { type CouncilRequest } from "./council";
@@ -1027,10 +1028,14 @@ export async function init(): Promise<void> {
     const bg = eventHost(app.background, n.chat);
     const name = bg ? backgroundName(bg.session) : bannerChat();
     notifyNudge(name, n);
-    if (n.stage !== "set_aside") return;
+    if (n.stage === "remind") return;
     if (bg) bg.approvals = bg.approvals.filter((r) => r.id !== n.id);
     else app.pendingApprovals = app.pendingApprovals.filter((r) => r.id !== n.id);
-    addToast(`No answer, so ${n.name} was set aside. It asks again when the rest is done.`);
+    addToast(
+      n.stage === "unattended"
+        ? `Nobody was here to approve ${connectorWords(n.name)}, so it was set aside and did not run.`
+        : `No answer, so ${connectorWords(n.name)} was set aside. It asks again when the rest is done.`,
+    );
   });
   // A card that landed while he looked posts its banner when he leaves with
   // it still waiting (nightshift backlog 373).

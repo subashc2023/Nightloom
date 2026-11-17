@@ -617,7 +617,7 @@
           <div class="why open" data-card-note>
             {req.kind === "remember"
               ? "This chat is read-only, so Claude asks before it adds to your memory."
-              : "This chat is read-only, and this connector action is not a plain read: it may send, create, change or delete."}
+              : "This chat is read-only, and this connector action's name does not say whether it only reads or also changes something."}
           </div>
         </div>
       {/if}

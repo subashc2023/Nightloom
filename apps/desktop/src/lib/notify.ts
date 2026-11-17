@@ -313,8 +313,8 @@ export async function notifyNeedsYou(chat: string, req: ApprovalRequest, prefs?:
 
 /** Item 783: an unanswered card's second push (2:30) and its set-aside
  *  (3:30), to the phone — whether he is at the Mac is the backend's to judge. */
-export function notifyNudge(chat: string, n: { chat?: string; stage: "remind" | "set_aside" }): void {
-  pushToPhone(n.stage === "remind" ? "reminder" : "set_aside", n.chat ?? null, chat, null);
+export function notifyNudge(chat: string, n: { chat?: string; stage: "remind" | "set_aside" | "unattended" }): void {
+  pushToPhone(n.stage === "remind" ? "reminder" : n.stage, n.chat ?? null, chat, null);
 }
 
 /**

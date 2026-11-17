@@ -343,6 +343,12 @@ pub const LATER_REASON: &str = "The user answered \"Not now — carry on\" to th
 /// — said truthfully: he did not answer, he did not say "not now".
 pub const AUTO_LATER_REASON: &str = "The user has not answered this call's approval card yet (they may be away), so it is set aside for now: not approved, not refused, and it did not run. Do not run it another way, and do not ask again yet. Carry on with all the other work of this task that does not depend on it. When that other work is done, make this same call again as your last step — the user is asked again then, and the turn waits for them. If nothing else can be done without it, make the call again now.";
 
+/// What the model reads when a read-only chat's card comes up in a run
+/// nobody is there for (item 783's finish: a job, or any run with no phone
+/// connected and nobody at the Mac): set aside at once — never run, never
+/// waited on — so the run finishes, and listed at its end.
+pub const UNATTENDED_REASON: &str = "Nobody is there to approve this call right now (this run is unattended), so it is set aside: not approved, not refused for good, and it did not run. Do not run it another way, and do not make this call again in this run. Carry on with everything else, and say in your reply what this call would have done, so the user can ask for it.";
+
 /// What the model reads when he replied instead of answering (item 522).
 pub fn reply_reason(text: &str) -> String {
     format!(
@@ -594,6 +600,25 @@ impl AskDir {
                 updated_input: None,
                 reason: Some(LATER_REASON.into()),
             },
+        };
+        write_atomic(
+            &self.dir.join(DECISION_FILE),
+            &serde_json::to_vec(&decision)?,
+        )
+    }
+
+    /// A call set aside without his word (item 783: nobody answered in
+    /// time, or nobody is there): refused this once with `reason`, and
+    /// nothing else written — not Playwright's answer for the reply, which
+    /// a Deny would set and which would then refuse the call that comes
+    /// back without its card.
+    pub fn write_set_aside(&self, call: &DeferredCall, reason: &str) -> std::io::Result<()> {
+        std::fs::create_dir_all(&self.dir)?;
+        let decision = Decision {
+            tool_use_id: call.id.clone(),
+            decision: "deny".into(),
+            updated_input: None,
+            reason: Some(reason.into()),
         };
         write_atomic(
             &self.dir.join(DECISION_FILE),
@@ -1109,8 +1134,9 @@ pub const READ_ONLY_ARG: &str = "--read-only";
 pub const READ_ONLY_NO_CARD: &str = "This chat is read-only, so this action needs the user's approval, and only the main conversation can ask for it — make the call from there, or report what you would have done.";
 
 /// The kind of card a read-only chat shows for `tool` (item 783), if it
-/// shows one of its own: `connector` — a connector action that is not a
-/// known read and that he has not allowed for good (blocker 2033: Allow
+/// shows one of its own: `connector` — a connector action that is neither
+/// a known read nor a known write (those are refused by their own entry,
+/// item 783's finish) and that he has not allowed for good (blocker 2033: Allow
 /// once / Allow always / Deny) — or `remember` — Nightloom's `remember`,
 /// a proposal he approves (blocker 2032). `None` for everything else.
 pub fn read_only_card(home: Option<&Path>, tool: &str) -> Option<&'static str> {
@@ -1431,6 +1457,9 @@ pub enum Nudge {
     /// [`ApprovalTimes::set_aside`] passed: the card is withdrawn, the
     /// call set aside; say so.
     SetAside,
+    /// A read-only chat's card in a run nobody is there for: never shown,
+    /// set aside at once; the phone is told (item 783's finish).
+    Unattended,
 }
 
 /// How a wait on a card ended.
@@ -2963,6 +2992,30 @@ mod tests {
             decide(&dir, &pw_stdin("p2", "default", None)),
             HookReply::defer()
         );
+    }
+
+    /// Item 783's review: a call set aside because nobody answered is
+    /// refused once and leaves nothing behind — on a Playwright call too,
+    /// where a plain Deny would refuse the rest of the reply, so the call
+    /// that comes back at the end would be refused without its card.
+    #[test]
+    fn a_call_set_aside_unanswered_leaves_nothing_behind_on_playwright_too() {
+        let dir = scratch();
+        let ask = AskDir::new(&dir);
+        ask.write_set_aside(&pw_call("p1"), AUTO_LATER_REASON)
+            .unwrap();
+        let first = decide(&dir, &pw_stdin("p1", "default", None));
+        assert_eq!(
+            (first.decision(), first.reason()),
+            ("deny", Some(AUTO_LATER_REASON))
+        );
+        assert_eq!(
+            decide(&dir, &pw_stdin("p2", "default", None)),
+            HookReply::defer()
+        );
+        ask.write_set_aside(&call(), AUTO_LATER_REASON).unwrap();
+        assert_eq!(decide(&dir, STDIN).reason(), Some(AUTO_LATER_REASON));
+        assert!(ask.allowed().is_empty());
     }
 
     /// The rules sheet's Remove on an "Allow for this chat".
