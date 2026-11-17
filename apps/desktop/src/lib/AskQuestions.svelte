@@ -20,6 +20,7 @@
     onother,
     notes = {},
     onnote,
+    onquick,
     folded = false,
     tail,
   }: {
@@ -33,6 +34,9 @@
      *  the answer. Without `onnote` the options have no comment control. */
     notes?: Record<number, OptionNotes>;
     onnote?: (i: number, label: string, value: string) => void;
+    /** Item 753: the turn-end card. A click on an option answers at once — the option is picked (with
+     *  his comment on it, if any) and the host sends; Enter on a picked option or in Other sends too. */
+    onquick?: (i: number) => void;
     folded?: boolean;
     tail?: Snippet;
   } = $props();
@@ -126,10 +130,16 @@
       if (e.key === "Enter" && !e.isComposing) {
         e.preventDefault();
         if (many && i < questions.length - 1) go(i + 1);
+        else if (onquick && !e.shiftKey && isAnswered(picks[i], others[i])) onquick(i);
       }
       return;
     }
     if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (onquick && e.key === "Enter" && isAnswered(picks[i], others[i])) {
+      e.preventDefault();
+      onquick(i);
+      return;
+    }
     const p = keyPick(e.key, q.options.length);
     if (!p) return;
     e.preventDefault();
@@ -211,9 +221,18 @@
           <div class="aq-opts" role={multi ? "group" : "radiogroup"} aria-labelledby="{idBase}-q{i}-t">
             {#each q.options as o, k (o.label)}
               {@const on = (picks[i] ?? []).includes(o.label)}
+              <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
               <label
                 class="aq-opt"
                 class:on
+                class:quick={!!onquick}
+                onclick={(e) => {
+                  // Item 753: on the turn-end card a click answers (the comment button is its own control).
+                  if (!onquick || (e.target as HTMLElement).closest(".aq-cb")) return;
+                  e.preventDefault();
+                  if (!on) ontoggle(i, o.label, multi);
+                  onquick(i);
+                }}
                 onmouseenter={() => (hover[i] = o.label)}
                 onmouseleave={() => (hover[i] = null)}
               >
@@ -496,6 +515,14 @@
     min-width: 0;
     transition: background 0.12s;
   }
+  /* Item 753: on the turn-end card an option is a button — a click answers. */
+  .aq-opt.quick {
+    border: 1px solid var(--line2);
+    margin-bottom: 5px;
+  }
+  .aq-opt.quick:hover {
+    border-color: var(--accent-ink);
+  }
   .aq-opt:hover {
     background: var(--well);
   }
@@ -772,5 +799,80 @@
   }
   :global(:where(:root:not([data-layout="classic"]))) .aq-next:hover {
     border-color: var(--accent);
+  }
+
+  /* Wave K, Lock-on (his pick, blocker 2031): an answer under the pointer is bracketed — two corner ticks
+     in `--bracket` (none under calm) and an amber wash; the picked one keeps its ticks, and its mark locks
+     in with a short pulse. Jarvis only; the ticks slide in only with motion allowed. */
+  :global(:where(:root:not([data-layout="classic"]))) .aq-opt::before,
+  :global(:where(:root:not([data-layout="classic"]))) .aq-opt::after {
+    content: "";
+    position: absolute;
+    width: 7px;
+    height: 7px;
+    box-sizing: border-box;
+    border: 1.5px solid var(--bracket, transparent);
+    opacity: 0;
+    pointer-events: none;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aq-opt::before {
+    left: -3px;
+    top: -3px;
+    border-right: 0;
+    border-bottom: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aq-opt::after {
+    right: -3px;
+    bottom: -3px;
+    border-left: 0;
+    border-top: 0;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aq-opt:not(.aq-other):hover::before,
+  :global(:where(:root:not([data-layout="classic"]))) .aq-opt:not(.aq-other):hover::after,
+  :global(:where(:root:not([data-layout="classic"]))) .aq-opt.on:not(.aq-other)::before,
+  :global(:where(:root:not([data-layout="classic"]))) .aq-opt.on:not(.aq-other)::after {
+    opacity: 1;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aq-opt:not(.aq-other):hover {
+    background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 9%, transparent), transparent 70%);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .aq-opt.quick:hover {
+    border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    :global(:where(:root:not([data-layout="classic"]))) .aq-opt::before {
+      transform: translate(-5px, -5px);
+      transition:
+        opacity 0.15s,
+        transform 0.25s cubic-bezier(0.2, 0.9, 0.25, 1.3);
+    }
+    :global(:where(:root:not([data-layout="classic"]))) .aq-opt::after {
+      transform: translate(5px, 5px);
+      transition:
+        opacity 0.15s,
+        transform 0.25s cubic-bezier(0.2, 0.9, 0.25, 1.3);
+    }
+    :global(:where(:root:not([data-layout="classic"]))) .aq-opt:not(.aq-other):hover::before,
+    :global(:where(:root:not([data-layout="classic"]))) .aq-opt:not(.aq-other):hover::after,
+    :global(:where(:root:not([data-layout="classic"]))) .aq-opt.on:not(.aq-other)::before,
+    :global(:where(:root:not([data-layout="classic"]))) .aq-opt.on:not(.aq-other)::after {
+      transform: none;
+    }
+    :global(:where(:root:not([data-layout="classic"]))) .aq-opt.on .aq-mk {
+      animation: aq-lock 0.4s cubic-bezier(0.2, 0.9, 0.3, 1);
+    }
+  }
+  @keyframes aq-lock {
+    0% {
+      transform: scale(1.7);
+      box-shadow: 0 0 0 0 var(--accent);
+    }
+    60% {
+      transform: scale(0.92);
+    }
+    100% {
+      transform: none;
+      box-shadow: 0 0 0 8px transparent;
+    }
   }
 </style>

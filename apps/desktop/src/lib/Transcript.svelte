@@ -175,6 +175,7 @@
   import AsideLayer from "./AsideLayer.svelte";
   import { openAttachment } from "./attachments.svelte";
   import ApprovalPrompt from "./ApprovalPrompt.svelte";
+  import TurnAskHost from "./TurnAskHost.svelte";
   import AskHandBack from "./AskHandBack.svelte";
   import BudgetStopCard from "./BudgetStopCard.svelte";
   import { afterWrapTurn, wrapAsk } from "./budgetWrap.svelte";
@@ -3164,6 +3165,8 @@
     {#each stranded as req (req.id)}
       <ApprovalPrompt {req} />
     {/each}
+    <!-- Item 753: the question the last turn ended on, as a card, until he answers. -->
+    {#if isChat}<TurnAskHost />{/if}
     <!-- A call held at the 85% stop line for his answer (nightshift
          backlog 189): ~~only in the chat the turn runs in~~ — since 192 in
          the chat on screen whichever it is, naming the running chat when

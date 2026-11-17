@@ -129,6 +129,112 @@ pub fn answer_blocker(root: &Path, id: &str, answer: &str) -> Result<Blocker, St
     read_at(path, id)
 }
 
+/// Where a chat's answered question is filed (item 753): the project's
+/// Nightshift root when it has one, else the workspace itself when it
+/// keeps a `blockers/` folder (the practices layout); `None` for a project
+/// with neither — its answer is sent and no file is written.
+pub fn filing_root(workspace: &Path) -> Option<PathBuf> {
+    if let Some(root) = super::detect(workspace) {
+        return Some(root.root);
+    }
+    workspace
+        .join("blockers")
+        .is_dir()
+        .then(|| workspace.to_path_buf())
+}
+
+/// What [`file_answered`] is given: a question a chat asked and what he
+/// answered, in his words.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct AnsweredAsk {
+    pub question: String,
+    /// His answer as sent — a button's label, with his comment, or what he typed.
+    pub answer: String,
+    /// The answers the card offered, the model's default first.
+    #[serde(default)]
+    pub options: Vec<String>,
+    /// The chat that asked, as its lists name it.
+    #[serde(default)]
+    pub chat: String,
+    /// When he answered, as the file should say it ("2026-11-16 9:05 AM").
+    #[serde(default)]
+    pub when: String,
+}
+
+/// File a question he answered in a chat as a new blocker, `status:
+/// answered`, `source: chat`, his words under `## Answer` (item 753; the
+/// contract's "decisions answered in chat are blockers too"). A new file
+/// under the next free id; nothing existing is touched. Refused while a
+/// shift is live (the runner allots ids then) and for an empty question or
+/// answer.
+pub fn file_answered(root: &Path, ask: &AnsweredAsk) -> Result<Blocker, String> {
+    launch::ensure_not_live(root)?;
+    let one_line = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let question = one_line(&ask.question);
+    let answer = ask.answer.trim();
+    if question.is_empty() || answer.is_empty() {
+        return Err("a blocker needs the question and the answer".into());
+    }
+    let dir = root.join("blockers");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let next = blocker_files(root)
+        .keys()
+        .filter_map(|k| k.parse::<u64>().ok())
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let id = format!("{next:03}");
+    let slug = question
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|p| !p.is_empty())
+        .take(8)
+        .collect::<Vec<_>>()
+        .join("-");
+    let slug = if slug.is_empty() {
+        "ask".to_string()
+    } else {
+        slug
+    };
+    let path = dir.join(format!("{id}-{slug}.md"));
+    if path.exists() {
+        return Err(format!("blocker {id} already exists"));
+    }
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let offered = if ask.options.is_empty() {
+        "The chat offered no answers of its own.".to_string()
+    } else {
+        format!(
+            "The chat offered, its default first: {}.",
+            ask.options
+                .iter()
+                .map(|o| format!("\"{}\"", one_line(o)))
+                .collect::<Vec<_>>()
+                .join("; ")
+        )
+    };
+    let chat = one_line(&ask.chat);
+    let asked_in = if chat.is_empty() {
+        "A chat's turn-end question.".to_string()
+    } else {
+        format!("The turn-end question of the chat \"{chat}\".")
+    };
+    let when = one_line(&ask.when);
+    let stamp = if when.is_empty() { today.clone() } else { when };
+    let body = format!(
+        "---\nid: {id}\nstatus: answered\nraised: {today}\nsource: chat\nitem: \n---\n\n## Question\n{question}\n\n## What I would have done, and why\n{offered}\n\n## What it blocks\n{asked_in}\n\n## Answer\n"
+    );
+    let text = replace_answer(
+        &body,
+        &format!("His answer ({stamp}, chat, `user_stated`): {answer}"),
+    );
+    write_atomic(&path, &text)?;
+    read_at(&path, &id)
+}
+
 /// The body with its `## Answer` section's text replaced (or the section
 /// appended when absent). Everything else is byte-identical. A line of the
 /// answer that starts `## ` gets one leading space, so it stays inside the
@@ -264,6 +370,74 @@ mod tests {
             replace_answer(&once, "no"),
             "## Q\nq\n\n## Answer\nno\n\n## Later\nl\n"
         );
+    }
+
+    #[test]
+    fn an_answered_ask_is_filed_as_a_new_answered_blocker_in_his_words() {
+        let root = scratch();
+        let before = blocker_files(&root).len();
+        let b = file_answered(
+            &root,
+            &AnsweredAsk {
+                question: "Roll the release\nnow, or after the merge?".into(),
+                answer: "After the merge (note: not before lunch)\n## not a heading".into(),
+                options: vec!["Now".into(), "After the merge".into()],
+                chat: "Wave F".into(),
+                when: "2026-11-16 9:05 AM".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(b.status, "answered");
+        assert_eq!(b.question, "Roll the release now, or after the merge?");
+        assert!(b.answer.starts_with(
+            "His answer (2026-11-16 9:05 AM, chat, `user_stated`): After the merge (note: not before lunch)"
+        ));
+        assert!(b.guess.contains("\"Now\"; \"After the merge\""));
+        assert_eq!(b.fields.get("source").map(String::as_str), Some("chat"));
+        assert_eq!(blocker_files(&root).len(), before + 1);
+        // The next one takes the next id; an empty answer files nothing.
+        let c = file_answered(
+            &root,
+            &AnsweredAsk {
+                question: "Again?".into(),
+                answer: "Yes".into(),
+                ..AnsweredAsk::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            c.id.parse::<u64>().unwrap(),
+            b.id.parse::<u64>().unwrap() + 1
+        );
+        assert!(
+            file_answered(
+                &root,
+                &AnsweredAsk {
+                    question: "Q".into(),
+                    answer: "  ".into(),
+                    ..AnsweredAsk::default()
+                }
+            )
+            .is_err()
+        );
+        // Its section survives a re-read as one section.
+        assert!(
+            read_blocker(&root, &b.id)
+                .unwrap()
+                .answer
+                .contains(" ## not a heading")
+        );
+    }
+
+    #[test]
+    fn an_answer_is_filed_in_the_nightshift_root_or_a_blockers_folder_only() {
+        let dir = std::env::temp_dir().join(format!("nl-753-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(filing_root(&dir), None);
+        std::fs::create_dir_all(dir.join("blockers")).unwrap();
+        assert_eq!(filing_root(&dir), Some(dir.clone()));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

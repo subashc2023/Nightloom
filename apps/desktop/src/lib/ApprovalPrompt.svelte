@@ -11,6 +11,8 @@
   import { viewGet, viewSet } from "./viewState";
   import type { ApprovalRequest, AskQuestion, FolderGrant } from "./types";
   import AskQuestions from "./AskQuestions.svelte";
+  import AskLock from "./AskLock.svelte";
+  import { flyAnswer } from "./askMotion";
   import { answeredRows, buildAnswer } from "./askQuestions";
   import { recordAnswers } from "./askAnswers.svelte";
   import PlaywrightCard from "./PlaywrightCard.svelte";
@@ -298,6 +300,10 @@
     const payload = buildAnswer(req.input, questions, picks, others, notes) as { answers: Record<string, string> };
     // Kept by call id for the answered table under the call (354).
     recordAnswers(req.id, answeredRows(questions, payload.answers));
+    // Wave K (his pick, blocker 2031): the thread carries the answer down into the message box and the card
+    // folds to a receipt — a copy over the page; the real card goes at once, as before.
+    const said = Object.values(payload.answers ?? {});
+    flyAnswer(box, box?.querySelector<HTMLElement>(".aq-opt.on") ?? null, said.length === 1 ? said[0] : `${said.length} answers`);
     decide("allow", payload);
   }
 
@@ -398,7 +404,7 @@
        them in the card's one scroll, a Next after each, the lit tab following the scroll (AskQuestions). The
        card grows to its content up to the cap and then scrolls as one; the strip stays at its top. -->
   <div
-    class="ask qcard"
+    class="ask qcard lk-shell"
     class:folded
     bind:this={box}
     use:trackCard={req.id}
@@ -407,6 +413,7 @@
     aria-label="the model asks {questions.length} question{questions.length === 1 ? '' : 's'}"
     style:max-height={sized.maxHeight !== null ? `${sized.maxHeight}px` : null}
   >
+    <AskLock />
     <AskQuestions
       {questions}
       idBase={req.id}

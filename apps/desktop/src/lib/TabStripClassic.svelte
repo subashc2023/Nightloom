@@ -21,6 +21,7 @@
   import { tabIn, tabOut } from "./tabMotion";
   import TabChooser from "./TabChooser.svelte";
   import RunningBadge from "./RunningBadge.svelte";
+  import NeedsYouBadge from "./NeedsYouBadge.svelte";
   import { isMac } from "./platform";
   import { web, webLabel } from "./webtabs.svelte";
   import { plan, startTabDrag } from "./tabDrag";
@@ -480,7 +481,7 @@
        not here: the strip is the tabs' and stays the tabs'. The one
        exception is the running badge (backlog 309): the strip is the only
        bar drawn over every view. -->
-  {#if lastPane}<RunningBadge />{/if}
+  {#if lastPane}<NeedsYouBadge /><RunningBadge />{/if}
 </div>
 {#if ghost}
   <!-- The dragged tab under the pointer (backlog 195); after a drag that

@@ -1,3 +1,4 @@
+import { askTag } from "./askTag";
 import { Marked, marked, Renderer, type Tokens } from "marked";
 import DOMPurify from "dompurify";
 import { math, renderMath } from "./math";
@@ -66,6 +67,8 @@ replyMarked.use(cite);
 replyMarked.use(proseBlocks);
 // Item 464: a `<handoff>` block shows as the next chat's prompt card.
 replyMarked.use(handoffTag);
+// Item 753: an `<ask>` block shows as the turn's question box.
+replyMarked.use(askTag);
 // Item 503: a real shell fence is told apart from raw HTML shaped like one.
 const plainBlock = new Renderer();
 replyMarked.use({

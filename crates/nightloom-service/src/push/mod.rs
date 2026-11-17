@@ -170,6 +170,32 @@ pub struct Status {
     pub waiting: usize,
 }
 
+/// One row of `GET /api/push/feed` (item 741): the last thing that happened
+/// in a chat he has not opened since — the phone's home screen sorts these
+/// into "needs you" (an approval, a question) and "done since you looked"
+/// (finished, failed, paused). Kept whether or not a phone is subscribed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FeedRow {
+    pub what: What,
+    pub chat: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub project: Option<String>,
+    /// When it happened, unix milliseconds.
+    pub at: i64,
+}
+
+/// The most chats the feed holds; the oldest row goes first.
+pub const FEED_MAX: usize = 200;
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 /// One request to a push service. A trait so the tests send nowhere.
 #[async_trait::async_trait]
 pub trait Transport: Send + Sync + 'static {
@@ -226,6 +252,8 @@ struct Inner {
     vapid: Option<Arc<Vapid>>,
     subs: Option<Vec<Subscription>>,
     waiting: BTreeSet<String>,
+    /// Item 741: the last note per chat he has not opened since.
+    feed: HashMap<String, FeedRow>,
     /// The last note sent per chat, for [`SAME_END`].
     last: HashMap<String, (What, Instant)>,
 }
@@ -408,7 +436,17 @@ impl Push {
 
     /// He opened, answered or wrote in `chat`: it no longer waits on him.
     pub fn seen(&self, chat: &str) {
-        self.lock().waiting.remove(chat);
+        let mut inner = self.lock();
+        inner.waiting.remove(chat);
+        inner.feed.remove(chat);
+    }
+
+    /// The home screen's rows (item 741): the last note of every chat he
+    /// has not opened since, newest first.
+    pub fn feed(&self) -> Vec<FeedRow> {
+        let mut rows: Vec<FeedRow> = self.lock().feed.values().cloned().collect();
+        rows.sort_by(|a, b| b.at.cmp(&a.at).then_with(|| a.chat.cmp(&b.chat)));
+        rows
     }
 
     /// Whether any phone is subscribed — a caller's cheap way to skip the
@@ -426,6 +464,7 @@ impl Push {
             let mut inner = self.lock();
             if note.at_the_mac {
                 inner.waiting.remove(&chat);
+                inner.feed.remove(&chat);
                 return Sent {
                     skipped: Some("he is at the Mac"),
                     ..Sent::default()
@@ -440,6 +479,29 @@ impl Push {
                     skipped: Some("the same turn's end, already said"),
                     ..Sent::default()
                 };
+            }
+            // Item 741: the home screen's row, subscribed phone or none.
+            if !chat.is_empty() {
+                if inner.feed.len() >= FEED_MAX && !inner.feed.contains_key(&chat) {
+                    let oldest = inner
+                        .feed
+                        .values()
+                        .min_by_key(|r| r.at)
+                        .map(|r| r.chat.clone());
+                    if let Some(oldest) = oldest {
+                        inner.feed.remove(&oldest);
+                    }
+                }
+                inner.feed.insert(
+                    chat.clone(),
+                    FeedRow {
+                        what: note.what,
+                        chat: chat.clone(),
+                        label: note.label.clone(),
+                        project: note.project.clone(),
+                        at: now_ms(),
+                    },
+                );
             }
             if self.subs(&mut inner).is_empty() {
                 return Sent {

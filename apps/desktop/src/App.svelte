@@ -60,6 +60,7 @@
   import WebView from "./lib/WebView.svelte";
   import { closeOrphans, initWebTabs, routeLink } from "./lib/webtabs.svelte";
   import RunningTasks from "./lib/RunningTasks.svelte";
+  import NeedsYou from "./lib/NeedsYou.svelte";
   import { allRunning, cancelQuit, listenForQuit, pushQuitLines, quitAnyway, quitAsk } from "./lib/running.svelte";
   import { quitBlockers } from "./lib/running";
   import { isMac } from "./lib/platform";
@@ -1046,6 +1047,12 @@
     {/if}
     <!-- Running tasks (nightshift backlog 152): the open chat's subagents,
          on the same overlay, from the top bar's agents chip. -->
+    <!-- Needs you (nightshift item 753): everything waiting on him, ready
+         for review or working, in every project, answerable in place. -->
+    {#if app.showNeeds}
+      <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+      <div class="settings-overlay" onmousedown={(e) => { if (e.target === e.currentTarget) app.showNeeds = false; }}><NeedsYou /></div>
+    {/if}
     {#if app.showTasks}
       <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
       <div class="settings-overlay" onmousedown={(e) => { if (e.target === e.currentTarget) app.showTasks = false; }}><RunningTasks /></div>
