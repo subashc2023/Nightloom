@@ -1549,7 +1549,7 @@ export async function continueWithPrompt(
 async function applyThreadUpkeep(slug: string): Promise<void> {
   try {
     const up = await api.threadUpkeep(slug, true);
-    noteThreadFlags(slug, up.flags);
+    noteThreadFlags(slug, up.flags, up.over_cap === true);
     const parts: string[] = [];
     if (up.struck_moved > 0) parts.push(`${up.struck_moved} struck line${up.struck_moved === 1 ? "" : "s"} moved to archive.md`);
     if (up.merged.length > 0) parts.push(`${up.merged.length} duplicate queue row${up.merged.length === 1 ? "" : "s"} merged`);

@@ -1389,7 +1389,9 @@ pub struct ThreadTidy {
 /// threads changed is snapshotted like the memory tidy. Mechanical: no
 /// model turn, so no cost beyond the disk. What needs judgement
 /// (condensing a long Start here, replacing a pasted block) is flagged in
-/// the index and the thread layer for the next bound chat's wrap-up.
+/// the index and the thread layer for the next bound chat's wrap-up; a
+/// thread still over its cap gets a "trim thread.md" row at the top of its
+/// Queue, which the next bound chat does first (item 708).
 /// Never age-based (his word, 2026-10-02: threads live days, not months).
 pub fn tidy_threads(
     config: &Path,
@@ -1411,13 +1413,13 @@ pub fn tidy_threads(
         let (threads, errors) = crate::thread::tidy_threads(&notes, today, apply);
         let changed: usize = threads
             .iter()
-            .map(|u| u.struck_moved + u.merged.len())
+            .map(|u| u.struck_moved + u.merged.len() + usize::from(u.trim_queued.is_some()))
             .sum();
         let git = if apply && changed > 0 {
             snapshot_target(
                 &Target::project(&p),
                 &format!(
-                    "nightloom: thread upkeep — {changed} line{} archived or merged",
+                    "nightloom: thread upkeep — {changed} line{} archived, merged or queued",
                     if changed == 1 { "" } else { "s" }
                 ),
             )
@@ -1990,6 +1992,36 @@ mod tests {
         // paths the test compares are the ones the dream will use.
         let workspace = registry.find_by_name(name).unwrap().workspace_dir();
         (config, vault, workspace)
+    }
+
+    #[test]
+    fn the_daily_pass_queues_the_trim_first_for_an_over_cap_thread() {
+        // Item 708: the daily pass's thread step, like Continue, puts a
+        // "trim thread.md" row at the top of an over-cap thread's Queue.
+        let (config, _vault, workspace) = fixture("thread-trim", "lanternfish");
+        let dir = workspace.join(".agents/threads/big");
+        fs::create_dir_all(&dir).unwrap();
+        let thread = format!(
+            "# Thread: Big\n\n## Start here\nAs of x.\n\n## Queue\n| id | Item | Status | Pointer |\n|---|---|---|---|\n| Q-1 | the question | live | ev 1 |\n\n## Claims\n{}\n",
+            "pad ".repeat(11000)
+        );
+        fs::write(dir.join(crate::thread::THREAD_FILE), &thread).unwrap();
+        fs::write(dir.join(crate::thread::LOG_FILE), "2026-10-01\n").unwrap();
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 10, 2).unwrap();
+        let out = tidy_threads(&config, Some(day), true).unwrap();
+        let up = &out[0].threads[0];
+        assert_eq!(up.trim_queued.as_deref(), Some("Q-2"), "{up:?}");
+        let live = fs::read_to_string(dir.join(crate::thread::THREAD_FILE)).unwrap();
+        assert!(
+            live.contains("|---|---|---|---|\n| Q-2 | trim thread.md: ~"),
+            "first in the Queue"
+        );
+        // The next day's pass leaves the waiting row alone.
+        let day2 = chrono::NaiveDate::from_ymd_opt(2026, 10, 3).unwrap();
+        let out = tidy_threads(&config, Some(day2), true).unwrap();
+        assert!(out[0].threads[0].trim_queued.is_none());
+        let live = fs::read_to_string(dir.join(crate::thread::THREAD_FILE)).unwrap();
+        assert_eq!(live.matches("trim thread.md:").count(), 1);
     }
 
     fn append(config: &Path, text: &str, source: Option<&str>) {

@@ -897,7 +897,7 @@ export function threadDir(slug: string): string {
  * line on Start here, condensing claim by claim, a start prompt with no
  * placeholders — and the upkeep flags Nightloom found, when there are any.
  */
-export function threadWrapUp(slug: string, flags: readonly string[] = [], code = false): string {
+export function threadWrapUp(slug: string, flags: readonly string[] = [], code = false, overCap = false): string {
   const dir = threadDir(slug);
   const lines = [
     `This chat's context is filling, so let's hand off to a new chat. This chat works from the thread ${dir}/. Before anything else:`,
@@ -925,18 +925,31 @@ export function threadWrapUp(slug: string, flags: readonly string[] = [], code =
     lines.push("Upkeep Nightloom found in the thread files (fix these in the same small edits):");
     for (const f of flags) lines.push(`- ${f}`);
   }
+  // Item 708: ~~"thread.md is ~16k tokens, over its ~10k cap. Nightloom archives struck
+  // lines; look for detail that belongs in .agents/notes/ behind a pointer."~~ — the trim
+  // is never asked here (practices §2: a tired session cuts what matters). Nightloom
+  // queues it first for the next chat, whose thread layer carries the method.
+  if (overCap) lines.push(TRIM_AT_WRAP_UP(dir));
   lines.push("Then stop; do not start the next step.");
   return lines.join("\n");
 }
 
+/** The wrap-up's line for an over-cap thread (item 708): no trim now; the
+ *  start prompt sends the next chat to the queued row first. */
+export const TRIM_AT_WRAP_UP = (dir: string): string =>
+  `${dir}/thread.md is over its ~10k-token cap. Do not trim it in this chat. When the next chat opens, Nightloom puts a "trim thread.md" row at the top of its Queue, and that chat's thread layer carries the method ("How to trim thread.md"). Make that row the first thing your start prompt asks for.`;
+
+/** The read order's line for an over-cap thread (item 708). */
+export const TRIM_FIRST = 'First do the "trim thread.md" row at the top of the Queue, by "How to trim thread.md" in your thread layer; then the rest.';
+
 /** The read order a bound chat's continuation opens with. */
-export function threadReadOrder(slug: string, then: string = THEN_START_PROMPT): string {
+export function threadReadOrder(slug: string, then: string = THEN_START_PROMPT, overCap = false): string {
   const dir = threadDir(slug);
   return (
     `This chat continues the research thread ${dir}/. Its "## Start here" is in your context as the thread layer (if it is not, read that section of ${dir}/thread.md first). Then read, one per command and by line range rather than whole:\n` +
     `1. the "## Queue" section of ${dir}/thread.md;\n` +
     `2. the newest entry of ${dir}/log.md.\n` +
-    `Read the rest of thread.md, the notes it points at, and source chats (read_chat at the cited event) only when a task needs them. ${then}`
+    `Read the rest of thread.md, the notes it points at, and source chats (read_chat at the cited event) only when a task needs them. ${overCap ? `${TRIM_FIRST} ` : ""}${then}`
   );
 }
 
@@ -980,6 +993,8 @@ export function codeProjectFor(chat: string | null): boolean {
 
 /** Each thread's upkeep flags from the last dry run. */
 const threadFlags = $state<Record<string, string[]>>({});
+/** The threads over their cap at the last upkeep run (item 708). */
+const threadOverCap = $state<Record<string, true>>({});
 
 /** Note the chat's thread (null: none), read from its log by the shell. */
 export function noteThread(chat: string | null, slug: string | null): void {
@@ -994,8 +1009,10 @@ export function threadFor(chat: string | null): string | null {
 }
 
 /** Note a thread's upkeep flags, for its wrap-up. */
-export function noteThreadFlags(slug: string, flags: string[]): void {
+export function noteThreadFlags(slug: string, flags: string[], overCap = false): void {
   threadFlags[slug] = flags;
+  if (overCap) threadOverCap[slug] = true;
+  else delete threadOverCap[slug];
 }
 
 /** The wrap-up a chat starts from before its own edit: the thread's, else Settings'. */
@@ -1006,13 +1023,13 @@ function baseMessage(chat: string | null): string {
 /** The chat's thread's research wrap-up, flags included; null when unbound. */
 function threadMessage(chat: string | null): string | null {
   const t = threadFor(chat);
-  return t ? threadWrapUp(t, threadFlags[t] ?? [], codeProjectFor(chat)) : null;
+  return t ? threadWrapUp(t, threadFlags[t] ?? [], codeProjectFor(chat), threadOverCap[t] === true) : null;
 }
 
 /** The read order a chat starts from before its own edit. */
 function baseReadOrder(chat: string | null): string {
   const t = threadFor(chat);
-  return pickText(undefined, t ? threadReadOrder(t) : null, defaultReadOrder());
+  return pickText(undefined, t ? threadReadOrder(t, THEN_START_PROMPT, threadOverCap[t] === true) : null, defaultReadOrder());
 }
 
 /** The chat's threshold, 0..1: its own if set, else the default. */
