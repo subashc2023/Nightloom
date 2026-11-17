@@ -115,7 +115,7 @@ pub fn brief(session: &Session, skip_prefix: Option<&str>) -> String {
 
 /// [`brief`], with the chat's chain (items 789 and 791, [`crate::chain`])
 /// in `logs` (the chat's log dir): its state file as it is now — frozen for the slice that
-/// starts — and the newest run-log entries up to the load cap. A chat with
+/// starts — and the newest three run-log entries (807). A chat with
 /// no chain gets the plain brief.
 pub fn brief_in(session: &Session, skip_prefix: Option<&str>, logs: Option<&Path>) -> String {
     let live = session.live_events();
@@ -175,10 +175,8 @@ pub fn brief_in(session: &Session, skip_prefix: Option<&str>, logs: Option<&Path
     }
     // The chain's state file and run log, read now (items 789, 791): the
     // entries are carried as written, so run 1's exact values survive
-    // every later hand-off while they fit the load cap.
-    if let Some(section) =
-        logs.and_then(|l| crate::chain::brief_section(l, &session.id, !words.is_empty()))
-    {
+    // every later hand-off while it is among the newest three (807).
+    if let Some(section) = logs.and_then(|l| crate::chain::brief_section(l, &session.id)) {
         out.push_str(&section);
     }
     if let Some(prev) = earlier {
@@ -412,6 +410,55 @@ mod tests {
             sizes[2] < sizes[0] + 2_000,
             "the brief does not snowball: {sizes:?}"
         );
+    }
+
+    /// Item 807's done-when: a fourth hand-off's brief carries exactly the
+    /// newest three run-log entries, each as written, and says the oldest
+    /// is in the file — in a job's chat and a talked one alike.
+    #[test]
+    fn a_fourth_hand_off_carries_exactly_the_newest_three_run_log_entries() {
+        use crate::chain;
+        for talked in [false, true] {
+            let dir = scratch();
+            let mut s = Session::start(&dir, ChatMode::Normal, ChatKind::Build).unwrap();
+            let logs = s.log_path().unwrap().parent().unwrap().to_path_buf();
+            s.set_auto_hand_off(SOFT_TOKENS, HARD_TOKENS);
+            chain::ensure(&logs, &s.id).unwrap();
+            let entry = |run: u32| format!("Run {run}: p95 {}.{run} ms on /api/signup", 400 + run);
+            let mut now = t0();
+            for run in 1..=4 {
+                let msg = if talked {
+                    format!("look at the signup flow, round {run}")
+                } else {
+                    "Morning job: check the signup flow".to_string()
+                };
+                s.record_user_message(msg, vec![], vec![], false);
+                reply(&mut s, &format!("run {run} done"), HARD_TOKENS + 1, None);
+                chain::append(&logs, &s.id, chain::Kind::Run, now, &entry(run)).unwrap();
+                now += chrono::Duration::days(1);
+                assert_eq!(
+                    hand_off_if_due(&mut s, now, Some("Morning job"), Some(&logs)),
+                    Some(Reason::Hard),
+                    "hand-off {run}"
+                );
+                if run < 4 {
+                    s.record_agent_session("claude-code", format!("s-{run}"));
+                }
+            }
+            let b = s.pending_hand_off().unwrap().to_string();
+            assert_eq!(
+                b.contains("look at the signup flow, round 4"),
+                talked,
+                "the right kind of chat"
+            );
+            let carried: Vec<u32> = (1..=4).filter(|r| b.contains(&entry(*r))).collect();
+            assert_eq!(carried, [2, 3, 4], "exactly the newest three:\n{b}");
+            for r in 2..=4 {
+                assert_eq!(b.matches(&entry(r)).count(), 1, "run {r} once");
+            }
+            assert!(b.contains("Run log (newest 3 of 4;"), "{b}");
+            assert!(b.contains("1 older entry is not carried"), "{b}");
+        }
     }
 
     /// Item 791: the state file is frozen per slice — a write after the

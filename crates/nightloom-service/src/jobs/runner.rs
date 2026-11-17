@@ -198,13 +198,50 @@ pub fn plist(exe: &Path, config: &Path, path: &str) -> String {
 /// Whether the app at `exe` installs the agent: only an app inside a
 /// `.app` bundle that is not a build folder's (a dev build must never
 /// point his agent at itself), on the default home (`NIGHTLOOM_HOME`
-/// unset). Pure.
+/// unset), and only from an Applications folder — `/Applications` or his
+/// own `~/Applications` (item 803): an app opened from a DMG (`/Volumes`),
+/// from `~/Downloads`, or from macOS's translocated copy of either, would
+/// point the agent at a copy that goes away. Pure.
 pub fn installs_from(exe: &Path, nightloom_home_set: bool) -> bool {
     let s = exe.to_string_lossy();
     !nightloom_home_set
         && s.contains(".app/Contents/MacOS/")
         && !s.contains("/target/")
         && !s.contains("/local/")
+        && in_applications(&s)
+}
+
+/// How many times the install tries `launchctl bootstrap` (item 803):
+/// straight after a `bootout`, launchd may still be tearing the old agent
+/// down and refuse the new one ("Bootstrap failed: 5: Input/output
+/// error"), so the install waits and tries again.
+pub const BOOTSTRAP_TRIES: u32 = 5;
+
+/// Run `attempt` until it succeeds, at most [`BOOTSTRAP_TRIES`] times,
+/// calling `pause(n)` (n = 1, 2, …: the install sleeps n × 500 ms) between
+/// tries. Whether one succeeded.
+pub fn bootstrap_retrying(mut attempt: impl FnMut() -> bool, mut pause: impl FnMut(u32)) -> bool {
+    for n in 1..=BOOTSTRAP_TRIES {
+        if attempt() {
+            return true;
+        }
+        if n < BOOTSTRAP_TRIES {
+            pause(n);
+        }
+    }
+    false
+}
+
+/// `/Applications/…` or `/Users/<him>/Applications/…`.
+fn in_applications(s: &str) -> bool {
+    if s.starts_with("/Applications/") {
+        return true;
+    }
+    let mut parts = s.split('/');
+    parts.next() == Some("")
+        && parts.next() == Some("Users")
+        && parts.next().is_some_and(|u| !u.is_empty())
+        && parts.next() == Some("Applications")
 }
 
 #[cfg(test)]

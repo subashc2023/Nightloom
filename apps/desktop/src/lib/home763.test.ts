@@ -241,7 +241,7 @@ describe("the run log on the hand-off divider (items 789, 791)", () => {
     "",
     "The run did not finish: no reply",
     "",
-    "(3 older entries are past the 6000-token load cap — read the file or search the chat.)",
+    "(3 older entries are not carried here — read the file or search the chat.)",
     "",
     "## The hand-off before this one",
     "",
