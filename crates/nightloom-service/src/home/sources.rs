@@ -9,8 +9,12 @@
 //!   raises a macOS dialog: [`MacStores::access`] only reads the status.
 //!   A host with no reader (the away server, the closed-app runner) reads
 //!   none of them and says so.
-//! - **His switches** are `home/sources.json` (the sources he turned off;
-//!   one he allowed is on until he turns it off) — [`set_on`].
+//! - **His switches** are `home/sources.json`: the sources he granted
+//!   from inside Nightloom (his Allow press, or his switch turned on —
+//!   [`grant`], [`set_on`]) and the ones he turned off. A store macOS
+//!   already lets Nightloom read for another reason (Full Disk Access
+//!   given earlier, say) is **not** read until he grants it here (merge
+//!   round S, 2026-11-17; his "not by default", blocker 2070).
 //! - **The scan's facts** ([`facts`]): per source, what it holds now, each
 //!   section ending in a `cite:` line the page can quote; a source not
 //!   allowed or switched off is one line saying why. Messages carries who
@@ -231,11 +235,15 @@ pub fn installed() -> Option<Arc<dyn MacStores>> {
     STORES.get().cloned()
 }
 
-/// The sources he turned off (`home/sources.json`).
+/// His choices (`home/sources.json`): the sources he granted from inside
+/// Nightloom, and the ones he turned off since.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct Choices {
     #[serde(default)]
     off: BTreeSet<Source>,
+    /// Granted in the app: his Allow press or his switch turned on.
+    #[serde(default)]
+    granted: BTreeSet<Source>,
 }
 
 fn choices(config: &Path) -> Choices {
@@ -245,22 +253,36 @@ fn choices(config: &Path) -> Choices {
         .unwrap_or_default()
 }
 
-/// Whether he left `source` on (on unless he turned it off).
+/// Whether Home may read `source` as far as he is concerned: he granted
+/// it from inside Nightloom and has not turned it off since. Never on by
+/// default, whatever macOS already allows.
 pub fn is_on(config: &Path, source: Source) -> bool {
-    !choices(config).off.contains(&source)
+    let c = choices(config);
+    c.granted.contains(&source) && !c.off.contains(&source)
 }
 
-/// Turn a source on or off for Home.
+/// Turn a source on or off for Home. On is his grant.
 pub fn set_on(config: &Path, source: Source, on: bool) -> Result<(), String> {
     let dir = super::ensure_folder(config).map_err(|e| e.to_string())?;
     let mut c = choices(config);
     if on {
         c.off.remove(&source);
+        c.granted.insert(source);
     } else {
         c.off.insert(source);
     }
     let bytes = serde_json::to_vec_pretty(&c).map_err(|e| e.to_string())?;
     std::fs::write(dir.join("sources.json"), bytes).map_err(|e| e.to_string())
+}
+
+/// Whether he ever granted `source` from inside Nightloom.
+pub fn is_granted(config: &Path, source: Source) -> bool {
+    choices(config).granted.contains(&source)
+}
+
+/// His Allow press on `source` in Settings → Home: granted, and on.
+pub fn grant(config: &Path, source: Source) -> Result<(), String> {
+    set_on(config, source, true)
 }
 
 /// One row of the panel and of `GET /api/home/sources`.
@@ -278,10 +300,13 @@ pub struct Row {
 }
 
 /// Why a source is where it is, in one sentence.
-fn why(source: Source, status: Access, on: bool, reader: bool) -> String {
+fn why(source: Source, status: Access, on: bool, granted: bool, reader: bool) -> String {
     let pane = source.settings_name();
     match status {
         Access::Allowed if on => format!("The morning scan reads {}.", source.reads()),
+        Access::Allowed if !granted => {
+            "macOS already allows it; Home reads it once you turn it on here.".into()
+        }
         Access::Allowed => "Allowed, and turned off for Home.".into(),
         Access::NotAsked if source == Source::Messages => {
             "Press Allow, then turn on Nightloom under Full Disk Access in System Settings.".into()
@@ -311,7 +336,7 @@ pub fn rows(config: &Path, stores: Option<&dyn MacStores>) -> Vec<Row> {
                 name: s.name(),
                 status,
                 on,
-                why: why(s, status, on, stores.is_some()),
+                why: why(s, status, on, is_granted(config, s), stores.is_some()),
                 settings_url: s.settings_url(),
             }
         })
@@ -584,6 +609,13 @@ where
             ));
             continue;
         }
+        if !is_granted(config, s) {
+            out.push_str(&format!(
+                "{}: not read — he has not turned it on for Home in Settings → Home.\n\n",
+                s.name()
+            ));
+            continue;
+        }
         if !is_on(config, s) {
             out.push_str(&format!(
                 "{}: turned off for Home in Settings → Home.\n\n",
@@ -762,6 +794,17 @@ mod tests {
             access: Access::Allowed,
             now,
         };
+        // Allowed by macOS but never granted in the app: nothing is read.
+        let f = facts_with(&config, Some(&stub), &Window::at(now, &tz), &tz);
+        assert!(!f.contains("cite:"), "{f}");
+        assert!(
+            f.contains("Messages: not read — he has not turned it on"),
+            "{f}"
+        );
+        assert!(rows(&config, Some(&stub)).iter().all(|r| !r.on));
+        for s in Source::ALL {
+            grant(&config, s).unwrap();
+        }
         let f = facts_with(&config, Some(&stub), &Window::at(now, &tz), &tz);
         let cites: Vec<&str> = f.lines().filter(|l| l.starts_with("cite: ")).collect();
         assert_eq!(cites.len(), 4, "{f}");
@@ -799,6 +842,9 @@ mod tests {
     fn a_source_he_turned_off_is_skipped_and_says_so() {
         let config = scratch("off");
         let (now, tz) = noon();
+        for s in Source::ALL {
+            grant(&config, s).unwrap();
+        }
         set_on(&config, Source::Messages, false).unwrap();
         let stub = Stub {
             access: Access::Allowed,

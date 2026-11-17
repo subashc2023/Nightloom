@@ -12,7 +12,8 @@
 //!   their request API (macOS asks once; a no is then System Settings'),
 //!   Messages opens System Settings at Full Disk Access. When a request is
 //!   answered the window hears `home-sources-changed`.
-//! - **Reads** ([`Mac::read`]) only for a store that is allowed: Messages
+//! - **Reads** ([`Mac::read`]) only for a store that is allowed (and the
+//!   scan asks only for one he granted in the app — `sources::is_on`): Messages
 //!   from its database with `/usr/bin/sqlite3 -readonly` (who and when;
 //!   no message text is selected), the rest through their frameworks by
 //!   `msg_send!` (no new crate: `objc2-contacts` / `objc2-event-kit` are
@@ -247,6 +248,11 @@ fn open_settings(source: Source) -> Result<(), String> {
 pub(crate) async fn home_source_allow(app: AppHandle, id: String) -> Result<Vec<Row>, String> {
     let source = Source::parse(&id).ok_or_else(|| format!("no source {id}"))?;
     let status = Mac.access(source);
+    // His press is the grant from inside Nightloom (merge round S): the
+    // scan reads a store only with it, whatever macOS already allows.
+    if status != Access::NotOnThisMac {
+        sources::grant(&config()?, source)?;
+    }
     match (source, status) {
         (_, Access::Allowed) => {}
         (Source::Messages, _) | (_, Access::Denied | Access::WriteOnly) => open_settings(source)?,

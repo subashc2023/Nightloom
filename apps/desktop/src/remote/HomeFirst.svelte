@@ -294,6 +294,14 @@
     }
   }
 
+  /** What stays in a box once `sent` left it: nothing, or the words he
+   *  typed while the send was on its way (merge round S). */
+  function afterSend(now: string, sent: string): string {
+    const t = now.trim();
+    if (t === sent) return "";
+    return t.startsWith(sent) ? t.slice(sent.length).trimStart() : now;
+  }
+
   async function sendReply(row: NeedRow) {
     const chat = row.chat;
     if (!chat) return;
@@ -301,7 +309,7 @@
     if (!text) return;
     busyKey = row.key;
     if (await sendInto(chat, row.project, text)) {
-      typedReply(chat, "");
+      typedReply(chat, afterSend(replyText(chat), text));
       void load();
     }
     busyKey = null;
@@ -315,10 +323,14 @@
   $effect(() => {
     if (tellFor === tellKey) return;
     // The key moved (Home's chat became known): carry what is typed over.
+    // Merge round S: when the new key already holds a draft (the chat's
+    // own composer text), the two are joined — neither is dropped.
     const kept = loadDraft(tellKey);
-    if (tellFor && tell.trim() && !kept.trim()) saveDraft(tellKey, tell);
-    else tell = kept;
-    if (tellFor && tellFor !== tellKey && tell.trim()) saveDraft(tellFor, "");
+    if (tellFor && tell.trim()) {
+      const joined = kept.trim() && kept.trim() !== tell.trim() ? `${kept.replace(/\s+$/, "")}\n\n${tell}` : tell;
+      if (saveDraft(tellKey, joined)) saveDraft(tellFor, "");
+      tell = joined;
+    } else tell = kept;
     tellFor = tellKey;
   });
   function typedTell() {
@@ -332,14 +344,14 @@
     try {
       if (target && "chat" in target) {
         if (await sendInto(target.chat, home.project, text)) {
-          tell = "";
-          saveDraft(tellKey, "");
+          tell = afterSend(tell, text);
+          saveDraft(tellKey, tell);
         }
       } else if (target) {
         try {
           await client.newChat(target.project, text, [], newNonce());
-          tell = "";
-          saveDraft(tellKey, "");
+          tell = afterSend(tell, text);
+          saveDraft(tellKey, tell);
           onnote("Sent to Home");
           void load();
         } catch (e) {
