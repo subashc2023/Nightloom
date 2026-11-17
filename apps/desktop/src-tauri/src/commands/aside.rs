@@ -310,6 +310,15 @@ pub(crate) async fn ask_aside(
         && let Some(chat) = target.id()
     {
         keep_warm::aside_read(&app, chat, sent_ms, round_read);
+        // Item 792: the automatic hand-off waits for the cache edge, and an
+        // aside that read the cache moved it, keep-warm on or off. A chat
+        // busy with a turn is skipped: its new reply sets a new edge.
+        if let Ok(open) = target.try_lock()
+            && let Some(session) = open.as_ref()
+            && let Some(dir) = nightloom_service::cache_miss::ask_dir_of(session)
+        {
+            nightloom_service::hand_off::note_aside_read(&dir, sent_ms, round_read);
+        }
     }
     // Item 727: the aside's prefix print and the cache-miss check, against
     // the chat's newest reply. Its log is read without waiting: busy (a

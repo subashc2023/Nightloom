@@ -97,18 +97,23 @@ pub fn due(
 /// its `at`) plus the lifetime it recorded (else [`IDLE_SECS`]), or later
 /// when a keep-warm ping ([`crate::keep_warm`]) read it since — that ping's
 /// send plus the hour. `pings` is the chat's keep-warm folder; `None` when
-/// the chat has no reply. Pure over the log and the file.
+/// the chat has no reply. An aside that read it since ([`ASIDE_READ_FILE`],
+/// the keep-warm hit rule: at least half the reply's context) moves the
+/// edge to its send plus the reply's lifetime, as it moves the cache's.
+/// Pure over the log and the files.
 pub fn cold_at(session: &Session, pings: Option<&Path>) -> Option<DateTime<Utc>> {
     let live = session.live_events();
-    let (sent, ttl) = live.iter().rev().find_map(|(_, e)| match e {
+    let (sent, ttl, context) = live.iter().rev().find_map(|(_, e)| match e {
         SessionEvent::AssistantMessage {
             sent_at,
             cache_ttl,
             at,
+            usage,
             ..
         } => Some((
             sent_at.unwrap_or(*at),
             cache_ttl.map_or(IDLE_SECS * 1000, |t| t.duration().as_millis() as i64),
+            usage.input_tokens + usage.output_tokens,
         )),
         _ => None,
     })?;
@@ -120,8 +125,49 @@ pub fn cold_at(session: &Session, pings: Option<&Path>) -> Option<DateTime<Utc>>
                 cold = cold.max(p.sent_ms + crate::keep_warm::TTL_MS);
             }
         }
+        if let Some(a) = last_aside_read(dir)
+            && a.sent_ms > sent_ms
+            && a.cache_read.saturating_mul(2) >= context
+        {
+            cold = cold.max(a.sent_ms + ttl);
+        }
     }
     DateTime::from_timestamp_millis(cold)
+}
+
+/// The newest aside's cache read, per chat, in its keep-warm folder: an
+/// aside forks the chat on its cache, so one that read it keeps it warm
+/// (item 677), and [`cold_at`] must see that even with keep-warm off.
+pub const ASIDE_READ_FILE: &str = "aside-read.json";
+
+/// One aside's read of the chat's cache: when it was sent, unix ms, and
+/// what its newest round read from cache.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AsideRead {
+    pub sent_ms: i64,
+    pub cache_read: u64,
+}
+
+/// Record an aside's read in `dir` (the chat's `ask/<id>` folder), unless a
+/// later one is already there. Best effort: a failed write only means the
+/// edge is judged from the reply and the pings.
+pub fn note_aside_read(dir: &Path, sent_ms: i64, cache_read: u64) {
+    if last_aside_read(dir).is_some_and(|a| a.sent_ms >= sent_ms) {
+        return;
+    }
+    let _ = std::fs::create_dir_all(dir);
+    if let Ok(text) = serde_json::to_string(&AsideRead {
+        sent_ms,
+        cache_read,
+    }) {
+        let _ = std::fs::write(dir.join(ASIDE_READ_FILE), text);
+    }
+}
+
+/// The aside read [`note_aside_read`] kept in `dir`, when there is one.
+pub fn last_aside_read(dir: &Path) -> Option<AsideRead> {
+    let text = std::fs::read_to_string(dir.join(ASIDE_READ_FILE)).ok()?;
+    serde_json::from_str(&text).ok()
 }
 
 /// The paths a chat's tool calls named (`file_path`, `path`,
@@ -418,6 +464,52 @@ mod tests {
         assert_eq!(
             hand_off_if_due(&mut small, sent + Duration::hours(3), None, None),
             None
+        );
+    }
+
+    /// Merge round R: an aside that read the cache keeps it warm (item
+    /// 677), keep-warm on or off, so a chat he asked beside at 50 minutes
+    /// is not handed off at 70; one that read under half is no read; past
+    /// the aside's own hour the chat hands off.
+    #[test]
+    fn an_aside_that_read_the_cache_keeps_the_chat_from_a_warm_hand_off() {
+        let dir = scratch();
+        let mut s = Session::start(&dir, ChatMode::Normal, ChatKind::Build).unwrap();
+        s.set_auto_hand_off(SOFT_TOKENS, HARD_TOKENS);
+        s.record_user_message("look at the build", vec![], vec![], false);
+        let sent = Utc::now();
+        timed_reply(&mut s, 150_000, sent);
+        let ask = crate::cache_miss::ask_dir_of(&s).unwrap();
+        // Under half the context: the head of the prefix only, no read.
+        note_aside_read(
+            &ask,
+            (sent + Duration::minutes(40)).timestamp_millis(),
+            60_000,
+        );
+        assert_eq!(
+            cold_at(&s, Some(&ask)).map(|t| t.timestamp_millis()),
+            Some((sent + Duration::hours(1)).timestamp_millis())
+        );
+        let aside = sent + Duration::minutes(50);
+        note_aside_read(&ask, aside.timestamp_millis(), 149_000);
+        // An older aside never replaces a newer one.
+        note_aside_read(
+            &ask,
+            (sent + Duration::minutes(45)).timestamp_millis(),
+            149_000,
+        );
+        assert_eq!(
+            last_aside_read(&ask).map(|a| a.sent_ms),
+            Some(aside.timestamp_millis())
+        );
+        assert_eq!(
+            hand_off_if_due(&mut s, sent + Duration::minutes(70), None, None),
+            None,
+            "warm from the aside"
+        );
+        assert_eq!(
+            hand_off_if_due(&mut s, aside + Duration::minutes(61), None, None),
+            Some(Reason::Soft)
         );
     }
 
