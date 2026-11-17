@@ -563,7 +563,7 @@ export const app = $state({
   noteFrom: null as null | "rail" | "settings",
   /** Which pane Settings opens on next time, then clears; the round trip
    *  back from a model's file lands on the Model instructions row. */
-  settingsOpenOn: null as null | "models" | "usage" | "claude-code",
+  settingsOpenOn: null as null | "models" | "usage" | "claude-code" | "home",
   /**
    * The library's unsaved edit, kept here rather than in the component so
    * that no way out of the modal loses typed text (memory never-lose-work):
@@ -992,6 +992,9 @@ export async function init(): Promise<void> {
     app.settingsOpenOn = "usage";
     app.showSettings = true;
   });
+  // Item 808: the phone asked for a source (Settings opens on Home at its
+  // row), and macOS answered an Allow (the rows re-read).
+  void import("./home.svelte").then((h) => h.listenSources());
   void refreshCentre().then(() => maybeDailyPass());
   // The dream's own channel: a running chat and a running dream must not
   // interleave in the transcript, so its events never reach applyTurnEvent.

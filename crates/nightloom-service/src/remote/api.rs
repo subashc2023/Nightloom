@@ -497,6 +497,12 @@ pub struct Running {
     pub asides: Vec<serde_json::Value>,
     pub dream: Option<serde_json::Value>,
     pub capture: Option<serde_json::Value>,
+    /// Each running chat's context now, in tokens, by chat id — the newest
+    /// reply's prompt and output (item 741: the phone's Home lists what
+    /// runs with its size). A chat absent here has not replied yet, or its
+    /// host does not know.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub contexts: std::collections::BTreeMap<String, u64>,
 }
 
 /// The drawer's usage line: the plan's windows and the ledger's summary

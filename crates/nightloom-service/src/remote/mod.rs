@@ -31,6 +31,9 @@
 
 pub mod api;
 mod feedback_routes;
+mod home_routes;
+// Item 763 H8: what the phone's Home reads (feed, scan, held blockers, Siri's needs).
+mod home_phone_routes;
 mod job_routes;
 pub mod nightshift_routes;
 mod push_routes;
@@ -339,6 +342,12 @@ pub trait Host: Send + Sync + 'static {
     fn feedback_home(&self) -> Option<std::path::PathBuf> {
         crate::project::config_dir()
     }
+    /// The folder Home's files live under (item 763 H8): `<this>/home/`
+    /// holds the feed, `seen.json` and the scan pages the phone's Home
+    /// screen reads. The config directory; a test's host names its own.
+    fn home_config(&self) -> Option<std::path::PathBuf> {
+        crate::project::config_dir()
+    }
     /// The ask directory of `chat` (in `project`, when named) — where its
     /// approval rules live (item 743, [`rules_routes`]). The directory need
     /// not exist yet: a chat that never asked has none until a rule is
@@ -350,6 +359,26 @@ pub trait Host: Send + Sync + 'static {
     ) -> Result<std::path::PathBuf, String> {
         let _ = (project, chat);
         Err(NOT_AVAILABLE.into())
+    }
+
+    /// Item 808: Messages, Contacts, Reminders and the Calendar app as
+    /// this host reads them (status read now, no dialog). The default — a
+    /// host with no reader of the Mac's stores, the away server — answers
+    /// every one "not on this Mac".
+    async fn home_sources(&self) -> Vec<crate::home::sources::Row> {
+        let config = self.rules_home().unwrap_or_default();
+        crate::home::sources::rows(&config, None)
+    }
+    /// Item 808: the phone asks for `source`; the Mac shows its Allow (it
+    /// never raises the macOS dialog itself). The sentence for the phone.
+    async fn home_source_ask(
+        &self,
+        source: crate::home::sources::Source,
+    ) -> Result<String, String> {
+        Err(format!(
+            "Only the Nightloom app on your Mac can ask for {}.",
+            source.name()
+        ))
     }
 
     /// This host's recurring jobs (item 746, [`crate::jobs`]): the store
@@ -856,11 +885,15 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/sent-files/{id}/{name}", get(sent_file))
         .merge(nightshift_routes::router())
         .merge(feedback_routes::router())
+        // Item 808: Home's sources on this Mac (status, and ask the Mac).
+        .merge(home_routes::router())
         .merge(push_routes::router())
         .merge(rules_routes::router())
         .merge(job_routes::router())
         // Item 744: Siri / Action Button Shortcuts (plain-text answers).
         .merge(shortcut_routes::router())
+        // Item 763 H8: the phone's Home screen and `GET /shortcut/needs`.
+        .merge(home_phone_routes::router())
         .merge(sync_routes::router(shared.host.sync()))
         // An explicit fallback so the bearer layer below covers a miss
         // too: without one an unknown `/api` path fell through to the
@@ -1932,6 +1965,10 @@ mod tests {
         fn feedback_home(&self) -> Option<std::path::PathBuf> {
             Some(self.nightshift.join("feedback-home"))
         }
+        /// Item 763 H8: never his real Home folder.
+        fn home_config(&self) -> Option<std::path::PathBuf> {
+            Some(self.nightshift.join("home-config"))
+        }
         async fn nightshift_roots(&self) -> Vec<NightshiftProject> {
             crate::nightshift::detect(&self.nightshift)
                 .map(|root| NightshiftProject {
@@ -2756,6 +2793,85 @@ mod tests {
         server.stop().await;
     }
 
+    /// Item 763 H8: Siri's "what needs me?", and the Home screen's reads.
+    #[tokio::test]
+    async fn shortcut_needs_speaks_what_waits_and_home_routes_read_the_folder() {
+        let (server, host, _tx, token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let r = c
+            .get(format!("{base}/api/shortcut/needs"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 401, "the token is required");
+        let root = crate::nightshift::detect(&host.nightshift).unwrap().root;
+        std::fs::write(
+            root.join("blockers").join("9990-held-one.md"),
+            "---\nid: 9990\nstatus: open\nraised: 2026-11-17\nitem: 763\ndefault: held\n---\n\n## Question\nWhich first-screen layout?\n\n## What I would have done, and why\nx\n\n## What it blocks\ny\n\n## Answer\n",
+        )
+        .unwrap();
+        let r = c
+            .get(format!("{base}/api/shortcut/needs"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        assert!(
+            r.headers()[reqwest::header::CONTENT_TYPE]
+                .to_str()
+                .unwrap()
+                .starts_with("text/plain")
+        );
+        let said = r.text().await.unwrap();
+        assert!(said.contains("one held blocker"), "{said}");
+        assert!(said.ends_with('.'), "{said}");
+        let held: serde_json::Value = c
+            .get(format!("{base}/api/home/held"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(held["blockers"][0]["id"], "9990", "{held}");
+        assert_eq!(
+            held["blockers"][0]["question"],
+            "Which first-screen layout?"
+        );
+        let scan: serde_json::Value = c
+            .get(format!("{base}/api/home/scan"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(scan["scan"].is_null(), "no page yet: {scan}");
+        let r = c
+            .post(format!("{base}/api/home/seen"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        let feed: serde_json::Value = c
+            .get(format!("{base}/api/home/feed"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(feed["rows"].as_array().unwrap().is_empty());
+        assert!(feed["seen_at"].is_string(), "{feed}");
+        server.stop().await;
+    }
+
     #[tokio::test]
     async fn chats_transcript_send_approve_and_cancel_reach_the_host() {
         let (server, host, _tx, token) = up().await;
@@ -3403,6 +3519,47 @@ mod tests {
             (status, v.as_str()),
             (409, Some("there is no engine called bogus"))
         );
+        server.stop().await;
+    }
+
+    /// Item 808: a host with no reader of the Mac's stores lists all four
+    /// as "not on this Mac", and an ask says only the Mac can.
+    #[tokio::test]
+    async fn home_sources_on_a_host_without_the_macs_stores() {
+        let (server, _host, _tx, token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let (status, v) = get_json(&c, format!("{base}/api/home/sources"), &token).await;
+        assert_eq!(status, 200, "{v}");
+        let ids: Vec<&str> = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["messages", "contacts", "reminders", "calendar"]);
+        assert!(
+            v.as_array()
+                .unwrap()
+                .iter()
+                .all(|r| r["status"] == "not_on_this_mac")
+        );
+        let (status, v) = post_json(
+            &c,
+            format!("{base}/api/home/sources/contacts/ask"),
+            &token,
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, 409, "{v}");
+        let (status, _) = post_json(
+            &c,
+            format!("{base}/api/home/sources/photos/ask"),
+            &token,
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, 400);
         server.stop().await;
     }
 

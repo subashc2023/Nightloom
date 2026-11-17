@@ -21,6 +21,7 @@
  * call that changed no log and raised a toast is a refusal, and the
  * toast's words are the phone's sentence.
  */
+import { contextOf as usageContext } from "./warmWrap";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import * as api from "./api";
@@ -563,6 +564,8 @@ export function runningNow(): unknown {
     asides: asidesRunning(),
     dream: app.dreaming ? { running: true } : null,
     capture: app.capturing ? { running: true } : null,
+    // Item 741 (763 H8): each running chat's context, for the phone's Home.
+    contexts: Object.fromEntries(liveChats().flatMap((c) => (c.session && c.usage ? [[c.session, usageContext(c.usage)]] : []))),
   };
 }
 

@@ -76,6 +76,8 @@ mod home;
 mod jobs;
 // Item 781: `--jobs-runner`, the launchd agent's start.
 mod jobs_runner;
+/// Item 808: Messages, Contacts, Reminders and the Calendar app for Home.
+mod mac_sources;
 // The keep-warm clock (backlog 582).
 mod keep_warm;
 /// A `.tex` tab's rendered PDF (nightshift backlog 381).
@@ -1429,6 +1431,9 @@ fn main() {
 
     builder
         .setup(|app| {
+            // Item 808: Home's scan and the phone read the Mac's own stores
+            // through this reader (status only until he allows one).
+            mac_sources::install();
             // Item 486: an exception AppKit raises while dispatching an event
             // is logged instead of aborting the app through tao's `extern "C"`
             // `sendEvent:` (the 11:27 AM 2026-10-30 crash).
@@ -1791,6 +1796,9 @@ fn main() {
             home::home_reach,
             home::home_reach_check,
             home::home_reach_set,
+            mac_sources::home_sources,
+            mac_sources::home_source_allow,
+            mac_sources::home_source_set,
             jobs::job_answer,
             remote::remote_self_test,
             away::away_status,

@@ -32,6 +32,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 pub mod reach;
+/// Item 808: Messages, Contacts, Reminders and the Calendar app, read once he allows them.
+pub mod sources;
 
 /// The registry `source` that marks Home's project.
 pub const SOURCE: &str = "nightloom:home";
@@ -369,6 +371,9 @@ pub fn collect(
         }
     }
     let mut out = cut_to(&out, FACTS_MAX);
+    // Item 808: what the Mac's own stores hold (after the cut, so a long
+    // morning never drops it; each source caps its own lines).
+    out.push_str(&sources::facts(config, now));
     out.push_str(&accounts_section(config, now));
     out
 }

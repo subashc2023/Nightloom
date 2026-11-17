@@ -22,12 +22,19 @@ export interface Place {
    *  the host lists no id for it (the Mac's unfiled chats). */
   project: string | null;
   host: HostRole | null;
+  /** Item 763 H8: the Home screen (the phone's first screen); `chat`,
+   *  `project` and `host` are then null. */
+  home?: boolean;
 }
+
+/** The Home screen's place. */
+export const HOME_PLACE: Place = { chat: null, project: null, host: null, home: true };
 
 const isRole = (v: unknown): v is HostRole => v === "mac" || v === "away";
 
 /** `#chat=<id>&project=<pid>&host=<role>`, or `#new` (and its project). */
 export function placeHash(p: Place): string {
+  if (p.home) return "#home";
   const parts: string[] = [p.chat ? `chat=${encodeURIComponent(p.chat)}` : "new"];
   if (p.project) parts.push(`project=${encodeURIComponent(p.project)}`);
   if (p.host) parts.push(`host=${p.host}`);
@@ -42,6 +49,7 @@ export function placeFromHash(hash: string): Place | null {
   let project: string | null = null;
   let host: HostRole | null = null;
   let isNew = false;
+  let isHome = false;
   for (const part of body.split("&")) {
     const at = part.indexOf("=");
     const key = at < 0 ? part : part.slice(0, at);
@@ -52,17 +60,19 @@ export function placeFromHash(hash: string): Place | null {
       return null;
     }
     if (key === "new") isNew = true;
+    else if (key === "home") isHome = true;
     else if (key === "chat" && value) chat = value;
     else if (key === "project" && value) project = value;
     else if (key === "host" && isRole(value)) host = value;
   }
+  if (isHome && !chat) return { ...HOME_PLACE };
   if (!chat && !isNew) return null;
   return { chat, project, host };
 }
 
 export function samePlace(a: Place | null, b: Place | null): boolean {
   if (!a || !b) return a === b;
-  return a.chat === b.chat && a.project === b.project && a.host === b.host;
+  return a.chat === b.chat && a.project === b.project && a.host === b.host && !!a.home === !!b.home;
 }
 
 /** A place read back from storage, checked field by field. */
@@ -70,6 +80,7 @@ export function readPlace(v: unknown): Place | null {
   if (!v || typeof v !== "object") return null;
   const o = v as Record<string, unknown>;
   const str = (x: unknown) => (typeof x === "string" && x ? x : null);
+  if (o.home === true && !str(o.chat)) return { ...HOME_PLACE };
   return { chat: str(o.chat), project: str(o.project), host: isRole(o.host) ? o.host : null };
 }
 

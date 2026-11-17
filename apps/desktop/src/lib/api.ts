@@ -89,6 +89,7 @@ import type { PriorExchange } from "./noteEdit";
 import type { TurnUsageLine } from "./replyUsage";
 import { cleanPassage, shownText } from "./keep";
 import type { HomeFeed, HomeInfo, HomeReach } from "./home";
+import type { HomeSource, SourceId } from "./homeSources";
 
 // All backend errors reject with a plain string.
 
@@ -2319,6 +2320,21 @@ export function homeReachCheck(binary?: string): Promise<HomeReach> {
 /** Item 804: turn one connector on or off for Home. */
 export function homeReachSet(connector: string, on: boolean): Promise<HomeReach> {
   return invoke("home_reach_set", { connector, on });
+}
+
+/** Item 808: Messages, Contacts, Reminders and the Calendar app — status read now, no dialog. */
+export function homeSources(): Promise<HomeSource[]> {
+  return invoke("home_sources");
+}
+
+/** Item 808: his Allow on a row (the one place macOS may show its dialog). */
+export function homeSourceAllow(id: SourceId): Promise<HomeSource[]> {
+  return invoke("home_source_allow", { id });
+}
+
+/** Item 808: his On/Off switch on an allowed row. */
+export function homeSourceSet(id: SourceId, on: boolean): Promise<HomeSource[]> {
+  return invoke("home_source_set", { id, on });
 }
 
 // ---- feedback to the agent (nightshift item 805) ----------------------------

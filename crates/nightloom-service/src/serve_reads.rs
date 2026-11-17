@@ -141,16 +141,28 @@ pub struct Busy {
 /// No subagents, budget, asides, dream or capture on this host.
 pub async fn running(places: Places, busy: Vec<Busy>) -> Result<Running, String> {
     blocking(move || {
-        let chats = busy.into_iter().map(|b| running_chat(&places, b)).collect();
+        let mut contexts = std::collections::BTreeMap::new();
+        let chats = busy
+            .into_iter()
+            .map(|b| {
+                let (row, context) = running_chat(&places, b);
+                if let (Some(id), Some(n)) = (row.chat.clone(), context) {
+                    contexts.insert(id, n);
+                }
+                row
+            })
+            .collect();
         Ok(Running {
             chats,
+            contexts,
             ..Running::default()
         })
     })
     .await
 }
 
-fn running_chat(places: &Places, busy: Busy) -> RunningChat {
+/// The row and, beside it, its context now (item 741).
+fn running_chat(places: &Places, busy: Busy) -> (RunningChat, Option<u64>) {
     let found = find_chat(places, &busy.chat);
     let (project, log) = match found {
         Some((project, path)) => (project, Session::load(path).ok()),
@@ -161,14 +173,16 @@ fn running_chat(places: &Places, busy: Busy) -> RunningChat {
         .and_then(chat_title)
         .unwrap_or_else(|| "the new chat".into());
     let since = log.as_ref().and_then(turn_started);
-    RunningChat {
+    let context = log.as_ref().and_then(context_now);
+    let row = RunningChat {
         chat: Some(log.as_ref().map(|s| s.id.clone()).unwrap_or(busy.chat)),
         project,
         title,
         since,
         on_screen: false,
         waiting: busy.waiting,
-    }
+    };
+    (row, context)
 }
 
 /// The chat's log and the project it is in: the current project first,
@@ -208,6 +222,17 @@ fn chat_title(session: &Session) -> Option<String> {
 }
 
 /// When the running turn started: its message's time, unix ms.
+/// The chat's context now (item 741): the newest reply's prompt and
+/// output, as the Mac's `contextOf` counts it.
+fn context_now(session: &Session) -> Option<u64> {
+    session.events().iter().rev().find_map(|e| match e {
+        SessionEvent::AssistantMessage { usage, .. } => {
+            Some(usage.input_tokens + usage.output_tokens)
+        }
+        _ => None,
+    })
+}
+
 fn turn_started(session: &Session) -> Option<i64> {
     session.events().iter().rev().find_map(|e| match e {
         SessionEvent::UserMessage { at, .. } => Some(at.timestamp_millis()),
