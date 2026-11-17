@@ -28,6 +28,12 @@
 //!   before it pauses again, so a poll he let run is not stopped every
 //!   third look. **Stop** ends the run with everything it did on the log
 //!   and one line saying why ([`stopped_line`]).
+//! - **Refusals with nobody there** (item 788): when the repeated result
+//!   is a refusal — a call set aside because nobody can approve it, a
+//!   tool the chat does not allow, the CLI's own denial ([`is_refusal`])
+//!   — and nobody can press the card either, the run does not wait on it:
+//!   it ends at once with its record and [`ended_line`], so a job is not
+//!   left "running" until its six-hour mark. A watched run keeps the card.
 
 use std::collections::HashMap;
 
@@ -93,6 +99,9 @@ pub enum Trip {
         result: String,
         /// The result was an error.
         error: bool,
+        /// The repeated result was a refusal ([`is_refusal`], item 788):
+        /// the call never ran, so waiting changes nothing.
+        refused: bool,
     },
     /// A job's run made `made` tool calls; it pauses past `ceiling`.
     Calls {
@@ -131,6 +140,36 @@ impl Trip {
     }
 }
 
+impl Trip {
+    /// The same call was refused each time (item 788).
+    pub fn refused(&self) -> bool {
+        matches!(self, Trip::Repeat { refused: true, .. })
+    }
+}
+
+/// Refusals Nightloom itself gives a call (item 788), by their reasons.
+fn own_refusals() -> [&'static str; 7] {
+    [
+        crate::agent::ask::UNATTENDED_REASON,
+        crate::agent::ask::LATER_REASON,
+        crate::agent::ask::AUTO_LATER_REASON,
+        crate::agent::CHAT_POLICY_REASON,
+        crate::agent::PREVIEW_UNDER_CHAT_POLICY_REASON,
+        crate::agent::BROWSER_UNDER_CHAT_POLICY_REASON,
+        crate::agent::connector_writes::REASON,
+    ]
+}
+
+/// The CLI's own words when a permission mode or rule refuses a call.
+const CLI_REFUSALS: [&str; 2] = ["haven't granted it yet", "has been denied"];
+
+/// A tool result that says the call was refused, not run (item 788):
+/// one of Nightloom's own reasons, or the CLI's denial. Pure.
+pub fn is_refusal(content: &str) -> bool {
+    own_refusals().iter().any(|r| content.contains(r))
+        || CLI_REFUSALS.iter().any(|r| content.contains(r))
+}
+
 /// What the resumed run reads when he chose Continue.
 pub fn continue_note(trip: &Trip) -> String {
     let why = match trip {
@@ -156,6 +195,22 @@ pub fn stopped_line(trip: &Trip) -> String {
         Trip::Calls { made, .. } => format!("it had made {made} tool calls"),
     };
     format!("{STOPPED_PREFIX}{why}, and you chose Stop. Everything it did is above.")
+}
+
+/// The line the log keeps when a refused call repeated with nobody there
+/// to answer (item 788): the run ended instead of waiting on a card.
+/// Starts with [`STOPPED_PREFIX`], so the jobs list reads a stopped run.
+pub fn ended_line(trip: &Trip) -> String {
+    let what = match trip {
+        Trip::Repeat { shown, count, .. } => {
+            format!("`{shown}` was refused {count} times in a row")
+        }
+        Trip::Calls { made, .. } => format!("it had made {made} tool calls"),
+    };
+    format!(
+        "{STOPPED_PREFIX}{what} and nobody was there to answer, so the run ended here \
+         instead of waiting. Everything it did is above."
+    )
 }
 
 /// The call as a person reads it: a shell command as typed, a file by its
@@ -271,17 +326,22 @@ impl Guard {
                 content,
                 is_error,
                 ..
-            } => self.answered(tool_use_id, content, *is_error),
+            } => self.answered(
+                tool_use_id,
+                content,
+                *is_error,
+                *is_error && is_refusal(content),
+            ),
             TurnEvent::ToolDenied {
                 tool_use_id,
                 reason,
                 ..
-            } => self.answered(tool_use_id, reason, true),
+            } => self.answered(tool_use_id, reason, true, true),
             _ => None,
         }
     }
 
-    fn answered(&mut self, id: &str, content: &str, error: bool) -> Option<Trip> {
+    fn answered(&mut self, id: &str, content: &str, error: bool, refused: bool) -> Option<Trip> {
         let (thread, key, name, input) = self.pending.remove(id)?;
         let t = self.threads.entry(thread).or_default();
         let same = t
@@ -302,6 +362,7 @@ impl Guard {
                 count: self.repeats,
                 result: cut(content.trim(), RESULT_MAX),
                 error,
+                refused,
             }
         })
     }
@@ -386,8 +447,10 @@ mod tests {
                 count: 3,
                 result: "error[E0425]".into(),
                 error: true,
+                refused: false,
             }
         );
+        assert!(!trip.refused());
         assert_eq!(
             trip.sentence(),
             "Looks stuck: ran `cargo test` 3 times, same result"
@@ -514,6 +577,44 @@ mod tests {
             shown("Bash", &json!({ "command": long })).chars().count(),
             60
         );
+    }
+
+    /// Item 788: a refusal repeated is a refused trip — Nightloom's own
+    /// set-aside reason, the CLI's denial, or a denial event — and an
+    /// ordinary failure is not.
+    #[test]
+    fn a_repeated_refusal_is_a_refused_trip() {
+        let refusal = format!("Hook denied: {}", crate::agent::ask::UNATTENDED_REASON);
+        let mut g = Guard::new(None);
+        let mut trip = None;
+        for i in 0..3 {
+            let id = format!("r{i}");
+            g.see(&call(&id, "gmail send"));
+            trip = g.see(&result(&id, &refusal, true));
+        }
+        let trip = trip.expect("tripped");
+        assert!(trip.refused());
+        assert_eq!(
+            ended_line(&trip),
+            "Stopped — `gmail send` was refused 3 times in a row and nobody was there to \
+             answer, so the run ended here instead of waiting. Everything it did is above."
+        );
+        assert!(is_refusal(
+            "Claude requested permissions to use Bash, but you haven't granted it yet."
+        ));
+        assert!(!is_refusal("error[E0425]: cannot find value"));
+        let mut g = Guard::new(None);
+        let mut trip = None;
+        for i in 0..3 {
+            let id = format!("d{i}");
+            g.see(&call(&id, "rm -rf x"));
+            trip = g.see(&TurnEvent::ToolDenied {
+                tool_use_id: id,
+                name: "Bash".into(),
+                reason: "no".into(),
+            });
+        }
+        assert!(trip.expect("tripped").refused());
     }
 
     #[test]
