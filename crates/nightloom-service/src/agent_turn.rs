@@ -293,6 +293,14 @@ async fn turn_body(
     // first and put on the wire after, around whatever the chair is sent.
     let carry_head = (session.mode() == ChatMode::Ephemeral).then(|| carry_transcript(session, ""));
     let switch_note = session.kind_switch_note();
+    // Item 763: a chat with the automatic hand-off on hands off in place
+    // before this message when it is due; a hand-off recorded earlier (or
+    // just now) rides this message's wire, and its agent session is new.
+    crate::hand_off::hand_off_if_due(session, chrono::Utc::now(), Some(crate::home::SCAN_LINE));
+    let hand_off_brief = session.pending_hand_off().map(str::to_string);
+    if hand_off_brief.is_some() {
+        agent.set_resume(None);
+    }
     session.record_user_message(
         typed.clone(),
         input.images.clone(),
@@ -386,6 +394,9 @@ async fn turn_body(
     }
     if let Some(note) = switch_note {
         input.text = format!("{note}\n\n{}", input.text);
+    }
+    if let Some(brief) = &hand_off_brief {
+        input.text = crate::hand_off::wire_with(brief, &input.text);
     }
     if let Some(note) = wire_note {
         input.text = format!("{}\n\n{note}", input.text);

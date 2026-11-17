@@ -225,6 +225,8 @@
   // Item 768: wrap up while the cache is warm; the cold-return chip.
   import { MODES as WARM_MODES, modeLabel as warmModeLabel, isMode as isWarmMode } from "./warmWrap";
   import { setWarmMinTokens, setWarmMode, warmWrap } from "./warmWrap.svelte";
+  import { home, homeProject, refreshHome, saveBrief, setBriefDraft } from "./home.svelte";
+  import { revealFolder } from "./state.svelte";
 
   /**
    * Redesigned 2026-09-13 (nightshift surface-redesign-2026-09-13, canvas
@@ -752,6 +754,11 @@
     );
   }
   let navEl = $state<HTMLElement | null>(null);
+  // Item 763: the Home pane's discard is two clicks, and the pane re-reads Home when opened.
+  let briefDiscardArmed = $state(false);
+  $effect(() => {
+    if (selected === "home") untrack(() => void refreshHome());
+  });
 
   /** Which of the key card's states a provider is in. */
   function keyState(p: ProviderInfo): "stored" | "env" | "local" | "none" {
@@ -1491,6 +1498,18 @@
       </span>
     </button>
     <div class="nav-title">Projects<Kbd keys={keyOf("Projects")} dim /></div>
+    <!-- Item 763: Home's brief and its scan time. -->
+    <button
+      class="nav-item"
+      class:active={selected === "home"}
+      onclick={() => select("home")}
+    >
+      <span class="nav-label">Home</span>
+      <span class="st">
+        <span class="dot" class:ok={!!home.info}></span>
+        {home.briefDraft !== null ? "unsaved" : home.info ? "on" : "none"}
+      </span>
+    </button>
     <button
       class="nav-item"
       class:active={selected === "projects"}
@@ -3284,6 +3303,73 @@
           <p class="note small">Tokens are the seats' sum (the chair's are the chat's own turn); ↑ marks a turn whose overlap set areas for the next.</p>
         {/if}
       </section>
+    </div>
+  {:else if selected === "home"}
+    <div class="pane" use:tabPlace={"settings:" + selected}>
+      <div class="pane-head">
+        <h2 class="pane-title">Home</h2>
+        <span class="slug">the pinned chat that writes your morning scan</span>
+        <span class="spacer"></span>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
+      </div>
+      {#if !home.info && !homeProject()}
+        <p class="note">Home is not set up on this Mac yet.{home.problem ? ` (${home.problem})` : ""}</p>
+      {:else}
+        <p class="note">
+          Home is pinned first in the sidebar. Each day it starts a fresh chat from this brief and its folder,
+          writes the morning scan, and lists what finished since you last looked in Needs you.
+        </p>
+        <section class="card">
+          <div class="ch">
+            <span class="t">Brief</span>
+            {#if home.briefDraft !== null}<span class="sub-tag">not saved</span>{/if}
+          </div>
+          <p class="note small">What Home should always know — what you want each morning, what to leave out. Your draft is kept until you save or discard it.</p>
+          <textarea
+            class="home-brief"
+            rows="10"
+            spellcheck="true"
+            aria-label="Home's brief"
+            placeholder="What should Home always keep in mind?"
+            value={home.briefDraft ?? home.info?.brief ?? ""}
+            oninput={(e) => {
+              const v = (e.currentTarget as HTMLTextAreaElement).value;
+              setBriefDraft(v === (home.info?.brief ?? "") ? null : v);
+              briefDiscardArmed = false;
+            }}
+          ></textarea>
+          <div class="kf">
+            <button class="ns-btn accent" disabled={home.briefDraft === null || home.saving} onclick={() => void saveBrief()}
+              >{home.saving ? "Saving…" : "Save"}</button
+            >
+            {#if home.briefDraft !== null}
+              <button
+                class="ns-btn ghost"
+                onclick={() => {
+                  if (!briefDiscardArmed) {
+                    briefDiscardArmed = true;
+                    return;
+                  }
+                  briefDiscardArmed = false;
+                  setBriefDraft(null);
+                }}
+                onmouseleave={() => (briefDiscardArmed = false)}>{briefDiscardArmed ? "Discard your changes? Click again" : "Discard changes"}</button
+              >
+            {/if}
+          </div>
+        </section>
+        <section class="card">
+          <div class="ch"><span class="t">Morning scan</span></div>
+          <div class="key-status">
+            {home.info?.scan_words ? `Runs ${home.info.scan_words}.` : "No scan time set yet."}
+          </div>
+          <p class="note small">The scan is one of your jobs: change its time from the Jobs list on the phone page.</p>
+          {#if home.info?.folder}
+            <div class="key-status">Folder <code class="path">{home.info.folder}</code></div>
+            <div class="kf"><button class="ns-btn ghost" onclick={() => void revealFolder(home.info?.folder ?? "")}>Show folder</button></div>
+          {/if}
+        </section>
+      {/if}
     </div>
   {:else if selected === "projects"}
     <div class="pane" use:tabPlace={"settings:" + selected}>
@@ -5456,6 +5542,18 @@
     border-left: 1px solid rgba(0, 0, 0, 0.18);
     margin-left: -1px;
   }
+  /* Item 763: Home's brief editor. */
+  .home-brief {
+    width: 100%;
+    box-sizing: border-box;
+    margin: 6px 0 8px;
+    padding: 8px 10px;
+    font: inherit;
+    font-size: 13.5px;
+    line-height: 1.5;
+    resize: vertical;
+  }
+
   /* ---- Filament IV, stage 7 (item 571; 521 report §2 and §5,
      f4-settings-*.png). Every rule below is behind the layout gate
      (`:where()`, zero specificity), so Classic draws exactly as before;

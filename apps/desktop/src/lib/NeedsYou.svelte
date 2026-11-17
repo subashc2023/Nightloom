@@ -13,20 +13,38 @@
   import { tip } from "./tip";
   import { app } from "./state.svelte";
   import { openRun } from "./state/running.svelte";
-  import { relativeTime } from "./time";
+  import { relativeTime, relativeTimeLong } from "./time";
   import { withNote } from "./askQuestions";
   import { NEED_EMPTY, groupNeeds, type NeedRow } from "./needsYou";
   import { needs, needsNow, refreshBoard, replyTo, setDraft, setFold } from "./needsBoard.svelte";
   import AskLock from "./AskLock.svelte";
   import { look } from "./askMotion";
+  import { clock, feedTag, type FeedRow } from "./home";
+  import { home, homeDone, homeProject, markHomeSeen, refreshHome } from "./home.svelte";
 
   const groups = $derived(groupNeeds(needsNow()));
   let listEl = $state<HTMLElement | null>(null);
 
   // Once per opening: untracked, or the read of `needs.loading` inside makes each refresh's end start the next.
   $effect(() => {
-    untrack(() => void refreshBoard(true));
+    untrack(() => {
+      void refreshBoard(true);
+      // Item 763 (H2): the feed is read, never marked seen, by opening the view.
+      void refreshHome();
+    });
   });
+  const hasHome = $derived(!!homeProject() || !!home.info);
+  const done = $derived(homeDone());
+  /** A feed row's project, as the list knows it: by id, else by name. */
+  function feedProject(row: FeedRow): { id: string | null; name: string } {
+    const p = app.projects.find((x) => x.id === row.project) ?? app.projects.find((x) => x.name === row.project);
+    return p ? { id: p.id, name: p.name } : { id: row.project, name: row.project ?? "unfiled chats" };
+  }
+  async function openFeed(row: FeedRow): Promise<void> {
+    if (!row.chat) return;
+    app.showNeeds = false;
+    await openRun({ session: row.chat, project: feedProject(row).id, onScreen: false });
+  }
   // The scroll he left it at (the rows are there at mount; the files' rows arrive after and sit below).
   $effect(() => {
     if (listEl) listEl.scrollTop = needs.scroll;
@@ -149,10 +167,62 @@
         {/if}
       </section>
     {/each}
+    {#if hasHome}
+      <!-- Item 763 (H2): Home's feed since he last marked it seen. -->
+      {@const folded = needs.folds["done-since"] === "1"}
+      <section class="group" data-state="done-since">
+        <div class="group-row">
+          <button class="group-head" aria-expanded={!folded} onclick={() => setFold("done-since", !folded)}>
+            <span class="chev" class:folded aria-hidden="true">▾</span>
+            <span class="group-name">Done since you looked</span>
+            <span class="count">{done.length}</span>
+          </button>
+          {#if done.length > 0}
+            <button class="ns-btn ghost small seen" disabled={home.marking} onclick={() => void markHomeSeen()} use:tip={`${done.length} rows · clears this list\nNothing else changes`}
+              >{home.marking ? "Marking…" : "Mark all seen"}</button
+            >
+          {/if}
+        </div>
+        {#if !folded}
+          {#if done.length === 0}
+            <div class="empty">{home.seenAt ? `Nothing new since you last looked (${clock(home.seenAt)}, ${relativeTimeLong(home.seenAt)}).` : "Nothing in Home's feed yet."}</div>
+          {/if}
+          {#each done as row, k (`${row.at}|${row.kind}|${row.chat ?? ""}|${k}`)}
+            {@const where = feedProject(row).name}
+            <div class="row" data-kind={row.kind} style:--i={k}>
+              <span class="tag">{feedTag(row.kind)}</span>
+              <div class="main">
+                <div class="title">{row.label ?? row.line}</div>
+                {#if row.label && row.line}<div class="detail">{row.line}</div>{/if}
+              </div>
+              <span class="where" use:tip={where}>{where}</span>
+              <span class="when">{when(Date.parse(row.at))}</span>
+              {#if row.chat}
+                <button class="ns-btn ghost small open" onclick={() => void openFeed(row)}>Open</button>
+              {:else}
+                <span></span>
+              {/if}
+            </div>
+          {/each}
+        {/if}
+      </section>
+    {/if}
   </div>
 </div>
 
 <style>
+  .group-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .group-row .group-head {
+    flex: 1;
+    min-width: 0;
+  }
+  .seen {
+    flex: none;
+  }
   .modal {
     background: var(--sheet);
     border: 1px solid var(--line2);

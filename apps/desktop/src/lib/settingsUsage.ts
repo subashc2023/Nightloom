@@ -60,7 +60,7 @@ export function settingsGroups(providerKinds: string[], searchBackendNames: stri
     { title: USAGE_COST_GROUP, panes: [USAGE_PANE, COST_PANE] },
     { title: "Subscription", panes: ["claude-code", "council"] },
     { title: "Knowledge", panes: ["knowledge", "models"] },
-    { title: "Projects", panes: ["projects"] },
+    { title: "Projects", panes: ["home", "projects"] },
     { title: "Providers", panes: [...providerKinds] },
     { title: "Web search", panes: searchBackendNames.map((n) => "search:" + n) },
     // Palette, then Animations (backlog 395): ⌘7 again steps between them.

@@ -543,6 +543,13 @@ impl Registry {
     /// Nightloom actually owns. Deleting a user's directory because they
     /// tidied a list would be indefensible.
     pub fn forget(&mut self, id: &str) -> Result<(), String> {
+        // Item 763: Home stays; its chats delete to the trash like any.
+        if self
+            .find(id)
+            .is_some_and(|p| p.source.as_deref() == Some(crate::home::SOURCE))
+        {
+            return Err("Home cannot be removed — its chats can be deleted one by one".into());
+        }
         let before = self.projects.len();
         self.projects.retain(|p| p.id != id);
         if self.projects.len() == before {

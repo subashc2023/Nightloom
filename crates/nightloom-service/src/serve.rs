@@ -599,6 +599,7 @@ impl ServeHost {
         // The phone's rail (`<home>/serve/rail.json`), else `--model`.
         let rail = self.rail();
         rail.apply_model(&mut spec, self.cfg.model.as_deref());
+        crate::home::apply_model(project.map(|p| p.source.as_deref()), &mut spec);
         // No checkpoint helper on this host (the desktop's `sync_checkpoint`).
         spec.fork_mode = false;
         // A chat does not compact (backlog 086).
@@ -1549,6 +1550,7 @@ impl ServeHost {
         let workspace = self.workspace_for(project, session);
         let mut spec = AgentSpec::new(workspace.clone());
         rail.apply_model(&mut spec, self.cfg.model.as_deref());
+        crate::home::apply_model(project.map(|p| p.source.as_deref()), &mut spec);
         let prompt = self.prompt_for(project, session, &workspace, &spec);
         let view = WireView::assemble(Some(&prompt), &Session::new(), None, None);
         let mut layers = serde_json::to_value(PromptLayersInfo::as_built(session))
@@ -2314,8 +2316,9 @@ impl Host for ServeHost {
             && !self.sync.layout().needs_fork(&path)
         {
             let _held = self.hold(chat)?;
+            let auto = prep.auto_hand_off;
             return tokio::task::spawn_blocking(move || {
-                crate::jobs::hold_kind_on_disk(&path, want)
+                crate::jobs::hold_on_disk(&path, want, auto)
             })
             .await
             .map_err(|e| e.to_string())?;
@@ -2330,7 +2333,8 @@ impl Host for ServeHost {
         let path = session.log_path().map(Path::to_path_buf);
         drop(session);
         let path = path.ok_or_else(|| crate::jobs::UNHELD.to_string())?;
-        tokio::task::spawn_blocking(move || crate::jobs::hold_kind_on_disk(&path, want))
+        let auto = prep.auto_hand_off;
+        tokio::task::spawn_blocking(move || crate::jobs::hold_on_disk(&path, want, auto))
             .await
             .map_err(|e| e.to_string())?
     }
@@ -4500,6 +4504,8 @@ mod job_hold_tests {
             chat,
             title: "Check CI".into(),
             read_only,
+            auto_hand_off: None,
+            model: None,
         }
     }
 

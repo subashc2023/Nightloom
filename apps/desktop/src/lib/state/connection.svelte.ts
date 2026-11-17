@@ -2,7 +2,8 @@
 import * as api from "../api";
 import { suggestions } from "../suggestions.svelte";
 import { isProviderVisible, modelsFor, newPromptId, sanitizeThinking, saveLastConnection, savePrefs, savePrompts, thinkingString, type CatalogPrefs, type Engine } from "../catalog";
-import { applyChoice, choiceOf, loadChoices, noteConnected, noteMade, saveChoices, wantedChoice, type ChatChoice, type ChatChoices } from "../chatChoice";
+import { applyChoice, applyHomeEffort, choiceOf, homeChoice, loadChoices, noteConnected, noteMade, saveChoices, wantedChoice, type ChatChoice, type ChatChoices } from "../chatChoice";
+import { isHome } from "../home";
 import { adoptNewChat, emptyRules, loadRules, rulesFor, saveRules, setRulesFor, useDefaultFor, type SubagentRulesStore } from "../subagentRules";
 import { probeAuth } from "../claudeAuth.svelte";
 import { chatIsCold } from "../promptVersions";
@@ -192,7 +193,12 @@ function connectStarting(): void {
  *  only while that chat is still the one on screen. */
 function chatConnected(chat: string | null, c: ChatChoice): void {
   if (app.activeSessionId !== chat) return;
-  noteConnected(chatChoice.choices, chat, c);
+  // Item 763 (blocker 2041): an effort picked in Home is Home's; a New
+  // chat in Home is on Home's default, which must not become every New
+  // chat's.
+  const inHome = isHome(app.project);
+  if (inHome) chatChoice.choices.homeEffort = app.draft.agentEffort;
+  if (!(inHome && chat === null)) noteConnected(chatChoice.choices, chat, c);
   saveChatChoices();
 }
 
@@ -209,19 +215,25 @@ export function restoreChatChoice(): boolean {
   if (!chatChoice.ready) return false;
   const chat = app.activeSessionId;
   if (chat === chatChoice.shownFor) return false;
-  const wanted = wantedChoice(chatChoice.choices, chat);
+  const inHome = isHome(app.project);
+  let wanted = wantedChoice(chatChoice.choices, chat);
+  // Item 763 (blocker 2041): a Home chat with no choice of its own starts
+  // on Opus 5.5; recorded below, so his later pick in it sticks.
+  if (inHome && (chat === null || !chatChoice.choices.chats[chat])) wanted = homeChoice(wanted ?? choiceOf(app.draft));
   const engineChanged = wanted !== null && wanted.engine !== app.draft.engine;
   // While a turn runs on screen the rail may show the chat's model, but
   // not tear down the connection that turn belongs to: an engine change
   // waits for the turn's end.
   if (engineChanged && (app.busy || app.connecting)) return false;
   chatChoice.shownFor = chat;
-  if (!wanted) return false;
+  const effortMoved = applyHomeEffort(chatChoice.choices, app.draft, inHome);
+  if (effortMoved) saveChatChoices();
+  if (!wanted) return effortMoved;
   if (chat !== null) {
     noteMade(chatChoice.choices, chat, wanted);
     saveChatChoices();
   }
-  if (!applyChoice(app.draft, wanted)) return false;
+  if (!applyChoice(app.draft, wanted)) return effortMoved;
   sanitizeThinking(app.draft);
   if (engineChanged) {
     // As `useEngine`: the other engine's connection, plan window and

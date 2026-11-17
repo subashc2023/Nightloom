@@ -29,6 +29,7 @@ export const ICONS = {
   term: '<path d="M4 6l4 4-4 4M10 14h6"/>',
   cols: '<rect x="3" y="4" width="14" height="12" rx="1.5"/><path d="M10 4v12"/>',
   // The chat-surface redesign (nightshift notes/runner-design/surface-redesign-2026-09-13).
+  home: '<path d="M3.5 9.5 10 4l6.5 5.5"/><path d="M5.5 8.2V16h3.2v-4h2.6v4h3.2V8.2"/>',
   folder: '<path d="M3 6a1.5 1.5 0 0 1 1.5-1.5H8l2 2h5.5A1.5 1.5 0 0 1 17 8v7a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 3 15z"/>',
   // Item 673: the aside head's "about its Nth reply" pill.
   reply: '<path d="M8 5 4 9l4 4"/><path d="M4 9h7a5 5 0 0 1 5 5v1"/>',
