@@ -586,6 +586,22 @@ mod tests {
         slot.try_lock().unwrap().spec().chat_policy
     }
 
+    /// Item 759, the Mac's half: the held job's agent refuses connector
+    /// writes; the open chat's writer agent does not.
+    #[tokio::test]
+    async fn a_read_only_jobs_agent_refuses_connector_writes() {
+        // `refuses_mcp_writers` is what registers the connector-writes
+        // deny in `--settings` (the service crate's tests read the JSON).
+        let denies =
+            |slot: &Slot| -> bool { slot.try_lock().unwrap().spec().refuses_mcp_writers() };
+        let agents = Agents::default();
+        agents.connect(agent("open"), Some("job"));
+        assert!(!denies(&ready(agents.slot(Some("job")))));
+        agents.reserve_for_job("job", true, true, None).unwrap();
+        let made = agents.make_reserved("job", None).unwrap();
+        assert!(denies(&made));
+    }
+
     /// Item 746's review: the job's chat is the one on screen, its idle
     /// agent made from the open chat's spec (writers on). A read-only run
     /// drops it and keeps the spec under the Chat policy; the send's

@@ -33,6 +33,7 @@ mod bash_tail;
 pub mod brief;
 pub mod budget;
 pub mod cli_session;
+pub mod connector_writes;
 pub mod connectors;
 pub mod fork;
 pub mod inbox;
@@ -452,6 +453,13 @@ pub struct AgentSpec {
     /// (nightshift `143-report-2026-09-17.md`, steps 8–11). Set by
     /// [`apply_kind_policy`](Self::apply_kind_policy).
     pub chat_policy: bool,
+    /// A Chat by declaration and by kind (nightshift item 759): its
+    /// `--tools` list is the five readers, but MCP tools are not on that
+    /// list, so the connector writes, the browser and the preview are
+    /// refused by the same deny entries the Chat policy registers
+    /// ([`connector_writes`]). Set by
+    /// [`apply_kind_policy`](Self::apply_kind_policy).
+    pub born_chat: bool,
     /// Fork mode (nightshift backlog 104, pass 3, 2026-09-22; blocker 288,
     /// his answer: "per-chat switch, on"). **On by default.** On, the turn
     /// carries two things: `CLAUDE_CODE_FORK_SUBAGENT=1` — in the one
@@ -571,15 +579,44 @@ fn ask_matcher_under_chat_policy(matcher: &str, browser: bool) -> String {
         .filter(|alt| CHAT_POLICY_KEPT.iter().any(|kept| alt.starts_with(kept)))
         .map(|alt| {
             if alt != ask::MCP_ALTERNATIVE {
-                alt
-            } else if browser {
-                ASK_MCP_LESS_BROWSER
+                alt.to_string()
             } else {
-                ASK_MCP_LESS_PREVIEW
+                ask_mcp_less(browser)
             }
         })
         .collect::<Vec<_>>()
         .join("|")
+}
+
+/// The Ask hook's matcher in a born Chat (item 759): its `mcp__`
+/// alternative narrowed as under the policy — the deny entries refuse the
+/// connector writes, the browser and the preview there too, and a card
+/// for a refused call is backlog 147's bug. The rest is untouched: the
+/// tool list already holds only the readers.
+fn ask_matcher_in_born_chat(matcher: &str, browser: bool) -> String {
+    matcher
+        .split('|')
+        .map(|alt| {
+            if alt == ask::MCP_ALTERNATIVE {
+                ask_mcp_less(browser)
+            } else {
+                alt.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+/// [`ASK_MCP_LESS_BROWSER`] or [`ASK_MCP_LESS_PREVIEW`], with the connector
+/// writes ([`connector_writes::ASK_EXCLUSION`], item 759) left out too.
+fn ask_mcp_less(browser: bool) -> String {
+    let base = if browser {
+        ASK_MCP_LESS_BROWSER
+    } else {
+        ASK_MCP_LESS_PREVIEW
+    };
+    let head = base.strip_suffix(").*").expect("a lookahead and .*");
+    format!("{head}|{}).*", connector_writes::ASK_EXCLUSION)
 }
 
 /// The Ask hook's `mcp__` alternative under the Chat policy with the
@@ -842,6 +879,7 @@ impl AgentSpec {
             ask: None,
             brief: None,
             chat_policy: false,
+            born_chat: false,
             fork_mode: true,
             claude_ai_connectors: false,
             claude_ai_blocked: Vec::new(),
@@ -936,6 +974,14 @@ impl AgentSpec {
     /// Claude Code chat has nothing withdrawn.
     pub fn apply_kind_policy(&mut self, kind: ChatKind, declared: ChatKind) {
         self.chat_policy = kind == ChatKind::Chat && declared == ChatKind::Build;
+        self.born_chat = kind == ChatKind::Chat && declared == ChatKind::Chat;
+    }
+
+    /// Whether this spec refuses the tools that act through MCP — the
+    /// connector writes, the browser, the preview (item 759): a Chat over
+    /// a Claude Code declaration, or a born Chat.
+    pub fn refuses_mcp_writers(&self) -> bool {
+        self.chat_policy || self.born_chat
     }
 
     /// What the approval switch means on a headless run: `auto` when it is
@@ -1310,6 +1356,8 @@ impl AgentSpec {
             // show a prompt whose answer cannot matter.
             let matcher = if self.chat_policy {
                 ask_matcher_under_chat_policy(ask.mode.matcher(), self.browser)
+            } else if self.born_chat {
+                ask_matcher_in_born_chat(ask.mode.matcher(), self.browser)
             } else {
                 ask.mode.matcher().to_string()
             };
@@ -1324,11 +1372,13 @@ impl AgentSpec {
             a.push("--permission-prompt-tool".into());
             a.push(ask::PROMPT_TOOL.into());
         }
-        if self.chat_policy {
+        if self.refuses_mcp_writers() {
             // A second `PreToolUse` entry beside the Ask hook's, in the same
             // array — the CLI runs every matching entry, and a deny from
             // any of them stands. The command is an `echo` of the reply,
             // so no program of Nightloom's has to be found for it to work.
+            // The policy's own entry is a Chat-over-Claude-Code's; a born
+            // Chat's tool list already holds only the readers (item 759).
             let reply = serde_json::json!({
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
@@ -1349,7 +1399,9 @@ impl AgentSpec {
                     .entry("PreToolUse")
                     .or_insert_with(|| serde_json::Value::Array(Vec::new()));
                 if let serde_json::Value::Array(pre) = pre {
-                    pre.push(entry);
+                    if self.chat_policy {
+                        pre.push(entry);
+                    }
                     // The preview runs a command (item 430): it passes the
                     // policy's matcher as `mcp__` and is refused here, as
                     // the shell is.
@@ -1381,6 +1433,20 @@ impl AgentSpec {
                             "hooks": [{ "type": "command", "command": chat_policy_command(&reply) }]
                         }));
                     }
+                    // The connector tools that write or send (item 759):
+                    // the policy's matcher lets every `mcp__` through.
+                    let reply = serde_json::json!({
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": connector_writes::REASON,
+                        }
+                    })
+                    .to_string();
+                    pre.push(serde_json::json!({
+                        "matcher": connector_writes::MATCHER,
+                        "hooks": [{ "type": "command", "command": chat_policy_command(&reply) }]
+                    }));
                 }
             }
         }
@@ -1793,12 +1859,18 @@ impl ClaudeCodeAgent {
     /// used — its command differs (the hook rides `--settings`).
     pub fn hold_to_kind_policy(&mut self, kind: ChatKind, declared: ChatKind) -> bool {
         let want = kind == ChatKind::Chat && declared == ChatKind::Build;
+        // A born Chat's MCP denies too (item 759), on the same terms.
+        let born = kind == ChatKind::Chat && declared == ChatKind::Chat;
+        let mut changed = false;
         if want && !self.spec.chat_policy {
             self.spec.chat_policy = true;
-            true
-        } else {
-            false
+            changed = true;
         }
+        if born && !self.spec.born_chat {
+            self.spec.born_chat = true;
+            changed = true;
+        }
+        changed
     }
 
     /// Adopt the session the last turn opened, so the next one continues it.
@@ -3487,13 +3559,15 @@ mod tests {
                 *m != CHAT_POLICY_MATCHER
                     && *m != BROWSER_TOOLS_MATCHER
                     && *m != PREVIEW_TOOL_MATCHER
+                    && *m != connector_writes::MATCHER
             })
             .collect();
         assert_eq!(
             asks,
-            [
-                "WebFetch|WebSearch|mcp__(?!claude-in-chrome__|playwright__|nightloom__preview|nightloom__add_folder).*"
-            ],
+            [format!(
+                "WebFetch|WebSearch|mcp__(?!claude-in-chrome__|playwright__|nightloom__preview|nightloom__add_folder|{}).*",
+                connector_writes::ASK_EXCLUSION
+            )],
             "{pre:?}"
         );
         // Item 430: the preview is the policy's to refuse, not the Ask
@@ -3509,7 +3583,10 @@ mod tests {
         assert!(
             pre.iter()
                 .any(|e| e["matcher"]
-                    == "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview|nightloom__add_folder).*"),
+                    == format!(
+                        "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview|nightloom__add_folder|{}).*",
+                        connector_writes::ASK_EXCLUSION
+                    )),
             "{pre:?}"
         );
     }
@@ -4137,10 +4214,12 @@ mod tests {
         let i = a.iter().position(|x| x == "--settings").unwrap();
         let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
         let pre = v["hooks"]["PreToolUse"].as_array().unwrap();
-        // The policy's deny, and the preview's beside it (item 430).
-        assert_eq!(pre.len(), 2);
+        // The policy's deny, the preview's beside it (item 430), and the
+        // connector writes' (item 759).
+        assert_eq!(pre.len(), 3);
         assert_eq!(pre[0]["matcher"], CHAT_POLICY_MATCHER);
         assert_eq!(pre[1]["matcher"], PREVIEW_TOOL_MATCHER);
+        assert_eq!(pre[2]["matcher"], connector_writes::MATCHER);
         let command = pre[0]["hooks"][0]["command"].as_str().unwrap();
         assert!(command.starts_with("echo "), "{command}");
         let reply: serde_json::Value = serde_json::from_str(
@@ -4169,7 +4248,7 @@ mod tests {
         let i = a.iter().position(|x| x == "--settings").unwrap();
         let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
         let pre = v["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq!(pre.len(), 3, "{v}");
+        assert_eq!(pre.len(), 4, "{v}");
         // Narrowed beside the policy (backlog 147): see the next test.
         assert_eq!(
             pre[0]["matcher"],
@@ -4177,12 +4256,13 @@ mod tests {
         );
         assert_eq!(pre[1]["matcher"], CHAT_POLICY_MATCHER);
         assert_eq!(pre[2]["matcher"], PREVIEW_TOOL_MATCHER);
+        assert_eq!(pre[3]["matcher"], connector_writes::MATCHER);
         assert_eq!(v["autoMemoryEnabled"], false);
 
-        // The other pairings: nothing to refuse.
+        // The other pairings: nothing to refuse. (A born Chat, Chat over
+        // Chat, refuses the MCP writers: its own test, item 759.)
         for (kind, declared) in [
             (ChatKind::Build, ChatKind::Build),
-            (ChatKind::Chat, ChatKind::Chat),
             (ChatKind::Build, ChatKind::Chat),
         ] {
             let mut s = spec();
@@ -4198,6 +4278,60 @@ mod tests {
         // Bash refused, Read run, in one turn (the report's step 11).
     }
 
+    /// Item 759: a born Chat (Chat over Chat) keeps its five readers and
+    /// gets the MCP denies — the preview's, the browser's when it is on,
+    /// and the connector writes' — but not the policy's own entry; its
+    /// Ask hook's `mcp__` alternative leaves out what they refuse, and
+    /// the rest of the Ask matcher is untouched.
+    #[test]
+    fn a_born_chat_refuses_the_mcp_writers_but_keeps_its_readers() {
+        let mut s = spec();
+        s.fork_mode = false;
+        s.apply_kind(ChatKind::Chat);
+        s.apply_kind_policy(ChatKind::Chat, ChatKind::Chat);
+        assert!(!s.chat_policy);
+        assert!(s.born_chat);
+        let pre_of = |s: &AgentSpec| -> Vec<serde_json::Value> {
+            let a = s.args("hi");
+            let i = a.iter().position(|x| x == "--settings").unwrap();
+            let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
+            v["hooks"]["PreToolUse"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        };
+        let pre = pre_of(&s);
+        let m: Vec<&str> = pre.iter().filter_map(|e| e["matcher"].as_str()).collect();
+        assert_eq!(m, [PREVIEW_TOOL_MATCHER, connector_writes::MATCHER]);
+        s.browser = true;
+        let pre = pre_of(&s);
+        let m: Vec<&str> = pre.iter().filter_map(|e| e["matcher"].as_str()).collect();
+        assert_eq!(
+            m,
+            [
+                PREVIEW_TOOL_MATCHER,
+                BROWSER_TOOLS_MATCHER,
+                connector_writes::MATCHER
+            ]
+        );
+        s.ask = Some(AskSpec {
+            hook: vec!["/app/nightloom-desktop".into(), "--permission-hook".into()],
+            dir: PathBuf::from("/logs/ask/chat-1"),
+            mode: AskMode::Ask,
+            subagents_auto: true,
+        });
+        let pre = pre_of(&s);
+        let expected = ask::MATCHER.replace(ask::MCP_ALTERNATIVE, &ask_mcp_less(true));
+        assert_eq!(pre[0]["matcher"], expected);
+        assert!(expected.starts_with("Bash|Write|"));
+
+        // The turn-time hold tightens a spec made for another chat.
+        let mut agent = ClaudeCodeAgent::new(spec());
+        assert!(agent.hold_to_kind_policy(ChatKind::Chat, ChatKind::Chat));
+        assert!(agent.spec().born_chat && !agent.spec().chat_policy);
+        assert!(!agent.hold_to_kind_policy(ChatKind::Chat, ChatKind::Chat));
+    }
+
     /// Under the Chat policy the Ask hook no longer names a withdrawn
     /// tool (nightshift backlog 147): the CLI runs every matching entry,
     /// so a `Bash` both hooks matched would raise a prompt the policy's
@@ -4210,7 +4344,10 @@ mod tests {
         // The preview's tool is out too (item 430): the policy refuses it.
         assert_eq!(
             narrowed,
-            "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview|nightloom__add_folder).*"
+            format!(
+                "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview|nightloom__add_folder|{}).*",
+                connector_writes::ASK_EXCLUSION
+            )
         );
         for withdrawn in [
             "Bash",
@@ -4240,22 +4377,21 @@ mod tests {
         let i = a.iter().position(|x| x == "--settings").unwrap();
         let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
         let pre = v["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq!(pre.len(), 3, "{v}");
-        assert_eq!(
-            pre[0]["matcher"],
-            "WebFetch|WebSearch|mcp__(?!playwright__|nightloom__preview|nightloom__add_folder).*"
-        );
+        assert_eq!(pre.len(), 4, "{v}");
+        assert_eq!(pre[0]["matcher"], narrowed);
         assert_eq!(pre[1]["matcher"], CHAT_POLICY_MATCHER);
         assert_eq!(pre[2]["matcher"], PREVIEW_TOOL_MATCHER);
+        assert_eq!(pre[3]["matcher"], connector_writes::MATCHER);
         // The one resume that leaves plan mode: only the deny is registered.
         s.ask.as_mut().unwrap().mode = AskMode::ExitingToAuto;
         let a = s.args("hi");
         let i = a.iter().position(|x| x == "--settings").unwrap();
         let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
         let pre = v["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq!(pre.len(), 2, "{v}");
+        assert_eq!(pre.len(), 3, "{v}");
         assert_eq!(pre[0]["matcher"], CHAT_POLICY_MATCHER);
         assert_eq!(pre[1]["matcher"], PREVIEW_TOOL_MATCHER);
+        assert_eq!(pre[2]["matcher"], connector_writes::MATCHER);
         // Without the policy, the matcher is untouched.
         let mut plain = spec();
         plain.ask = s.ask.clone();
@@ -4717,8 +4853,8 @@ mod tests {
         assert_eq!(brief_entries(&a), 1);
         assert_eq!(
             entries(&a).len(),
-            4,
-            "the policy's own entry, the preview's deny (item 430), the budget's and add_folder's gate (613)"
+            5,
+            "the policy's own entry, the preview's deny (item 430), the connector writes' (759), the budget's and add_folder's gate (613)"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -4424,4 +4424,33 @@ mod job_hold_tests {
         assert!(h.spec_for(None, &s).chat_policy, "taken back");
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// Item 759, the away server's half: a held job's run (`spec_for`)
+    /// carries the connector-write deny in its `--settings`, and the
+    /// approved run does not.
+    #[tokio::test]
+    async fn a_held_jobs_run_refuses_connector_writes_on_the_away_server() {
+        let root = std::env::temp_dir().join(format!("nightloom-jobhold-{}", uuid::Uuid::new_v4()));
+        let h = host(&root);
+        let denies = |spec: &crate::agent::AgentSpec| -> bool {
+            let a = spec.args("hi");
+            let Some(i) = a.iter().position(|x| x == "--settings") else {
+                return false;
+            };
+            let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
+            v["hooks"]["PreToolUse"].as_array().is_some_and(|pre| {
+                pre.iter()
+                    .any(|e| e["matcher"] == crate::agent::connector_writes::MATCHER)
+            })
+        };
+        let chat = h.job_prepare(prep(None, true)).await.unwrap();
+        let s = Session::load(log_of(&root, &chat)).unwrap();
+        assert!(denies(&h.spec_for(None, &s)), "held: refused");
+        h.job_prepare(prep(Some(chat.clone()), false))
+            .await
+            .unwrap();
+        let s = Session::load(log_of(&root, &chat)).unwrap();
+        assert!(!denies(&h.spec_for(None, &s)), "approved: the writers");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
