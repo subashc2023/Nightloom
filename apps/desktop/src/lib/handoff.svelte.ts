@@ -138,32 +138,70 @@ export const CODE_CLOSE =
 /**
  * The default wrap-up, sent as a message of its own. The shape is his:
  * update the files, write the hand-off, and produce a brief start prompt
- * naming which files to read in which order. The `start-prompt` fence is
+ * naming which files to read in which order. The `<handoff>` tags are
  * what Nightloom reads the new chat's first message out of.
+ *
+ * Item 760 (2026-11-16, his words: "every piece has a reason to be there"):
+ * each step below carries its reason in the comment beside it; the full
+ * before/after with reasons is nightshift-code
+ * `notes/runner-design/760-wrapup-message-2026-11-16.md`. What Nightloom
+ * adds under it (`handoffCarry.ts` `sectionsAddendum`, item 747) holds the
+ * section headings and the Goal line, so this text names them and does not
+ * repeat them. ~~"what we were doing, what is done, what is next, the
+ * decisions taken and why, and the files that matter — in your own words"~~
+ * (item 760: duplicated 747's sections, "in your own words" fought the
+ * verbatim section, and "the files that matter" fought "do not list files").
  */
 export const WRAP_UP =
+  // Why: says the reason, so the model scopes the turn to a hand-off; the
+  // usage line swaps this line for its own (`budget.ts` `usageWrapUp`).
   "This chat's context window is nearly full, so let's hand off to a new chat. Before anything else:\n" +
-  "1. Finish or save whatever edit is half-done, so every file is in a coherent state.\n" +
-  "2. Add a new section at the top of HANDOFF.md, the file at the top of the project folder (create the file " +
+  // Why: a hard stop must not leave half an edit (CONTRACT.md); a late
+  // subagent report can change the state (procedures.md §Wrap-up step 4).
+  "1. Finish or save whatever edit is half-done, so every file is in a coherent state. If a subagent you launched " +
+  "has not reported yet, wait for it and fold its report in before you go on.\n" +
+  // Why: his own line, kept from his Settings copy (blocker 2015); scoped to
+  // facts so it never becomes a trim at wrap-up (procedures.md step 2), and
+  // notes keep the old claim struck with a date (practices §1).
+  "2. Fix any fact this chat made outdated in CLAUDE.md or any other .md file (in notes, strike the old claim with " +
+  "today's date and put the new one beside it, never delete). Fix facts only; do not trim or restructure.\n" +
+  // Why: a tired session cuts what matters, so FLAGs are queued, not acted
+  // on (procedures.md step 2).
+  "3. If ~/.claude/practices/bin/mdcheck.py exists, run it in the project folder and keep each FLAG it prints for the " +
+  "top of the queue as \"trim <file>\"; do not trim now.\n" +
+  // Why: a new section, never an overwrite (an overwrite lost every earlier
+  // hand-off, 2026-09-25); AM/PM times (practices §4); the sub-headings
+  // live in the addendum below (747); measurements, spend and questions
+  // waiting on him are STATE fields of practices §5 and §4's "Waiting on
+  // you", which the six headings do not name.
+  "4. Add a new section at the top of HANDOFF.md, the file at the top of the project folder (create the file " +
   "if there is none; never delete or rewrite the sections already in it), headed " +
-  "`## STATE AS OF <date time> — <one line>`, for the chat that continues this one: what we were " +
-  "doing, what is done, what is next, the decisions taken and why, and the files that matter — in " +
-  "your own words, complete enough that a fresh session can carry on without this conversation — " +
-  "ending with the queue of next steps in order as its last list. If ~/.claude/practices/bin/mdcheck.py " +
-  "exists, run it in the project folder first and put each FLAG it prints at the top of that queue as " +
-  "\"trim <file>\"; do not trim now.\n" +
-  `3. ${CODE_CLOSE}\n` +
+  "`## STATE AS OF <date time AM/PM> — <one line>`, for the chat that continues this one — complete enough that a " +
+  "fresh session can carry on without this conversation — with the sub-headings listed under \"Hand-off contents\" " +
+  "below. Under Done, give what was measured with its numbers, and what the subagents you launched cost when you " +
+  "know it; under Blocked, every question still waiting on me, in a full sentence with what it holds; the trim " +
+  "FLAGs open Next steps.\n" +
+  // Why: commit by path and the index (practices §5, §6); push only where
+  // the project says.
+  `5. ${CODE_CLOSE}\n` +
   // ~~"The new chat is already told to read the newest HANDOFF.md section, then backlog/INDEX.md,
   // then blockers/INDEX.md, so say only what that does not: …"~~ — item 520 (2026-11-09): the
   // prompt is sent alone, so it carries the read order itself.
-  "4. End your reply with a short start prompt for the new chat. It is that chat's whole first message — " +
-  "nothing is added above it — so open it with what to read, one file per command: the newest HANDOFF.md " +
+  // ~~"so open it with what to read"~~ — item 760: the addendum opens the
+  // prompt with its Goal line, so the reads come after it.
+  // Why: the prompt is the next chat's whole first message (item 520); the
+  // read order is practices §5's; "ask him X first" is procedures.md step 4's
+  // way to carry a needed answer without a placeholder.
+  "6. End your reply with a short start prompt for the new chat. It is that chat's whole first message — " +
+  "nothing is added above it — so after its Goal line say what to read, one file per command: the newest HANDOFF.md " +
   "section by its line range, then backlog/INDEX.md, then blockers/INDEX.md; then what changed since the " +
   "section was written, any other file to read, and " +
   // ~~"Put it in a fenced code block tagged `start-prompt` (a line of three
   // backticks followed by start-prompt, the prompt, then a line of three
   // backticks)."~~ — item 464 (2026-10-28): the tagged hand-off.
-  `what to do first. ${HANDOFF_ASK}\n` +
+  "what to do first. If an answer of mine truly matters before that, say in it which question to ask me first. " +
+  `${HANDOFF_ASK}\n` +
+  // Why: the prompt means the chat is over; work after it is not in the hand-off.
   "Then stop; do not start the next step.";
 
 /**
@@ -639,6 +677,34 @@ export interface Stored {
   perProject: Record<string, number>;
   /** Item 747: the goal he typed on a chat's notice, for its next chat. */
   goals: Record<string, string>;
+  /** Item 760: the Settings wrap-up Nightloom replaced because it carried
+   *  September's stale parts (`isStaleWrapUp`), kept so Settings can offer
+   *  it back; `restored` once he took it back (it is then not replaced
+   *  again). null when nothing was replaced. */
+  replaced: Replaced | null;
+}
+
+export interface Replaced {
+  text: string;
+  /** When it was replaced, ms since the epoch. */
+  at: number;
+  restored: boolean;
+}
+
+/**
+ * Item 760: a wrap-up message carrying September's parts that are wrong
+ * now — it tells the model to overwrite HANDOFF.md (an overwrite lost every
+ * earlier hand-off; superseded 2026-09-25) or asks for the `start-prompt`
+ * fence (superseded by the `<handoff>` tags, item 464). His Settings copy
+ * (an edited copy of September's default, blocker 2015) has both.
+ */
+export function isStaleWrapUp(text: string): boolean {
+  return /overwrite it if one exists/i.test(text) || /fenced code block tagged `?start-prompt/i.test(text);
+}
+
+function isReplaced(v: unknown): v is Replaced {
+  const r = v as Replaced;
+  return !!r && typeof r === "object" && isText(r.text) && typeof r.at === "number" && typeof r.restored === "boolean";
 }
 
 /**
@@ -747,6 +813,7 @@ export function parseStored(raw: string | null): Stored {
         readOrders: readMap(p.readOrders, isString),
         cap: typeof p.cap === "number" && Number.isFinite(p.cap) && p.cap >= 0 ? p.cap : DEFAULT_CAP_TOKENS,
         goals: readMap(p.goals, isText),
+        replaced: isReplaced(p.replaced) ? p.replaced : null,
       };
     }
   } catch {
@@ -763,15 +830,38 @@ export function parseStored(raw: string | null): Stored {
     readOrders: {},
     cap: DEFAULT_CAP_TOKENS,
     goals: {},
+    replaced: null,
   };
 }
 
+/**
+ * Item 760: a Settings wrap-up with September's stale parts gives way to
+ * the built-in, once, and is kept in `replaced` so Settings offers it back
+ * (practices §7: no mechanic loses his text). Once replaced — restored or
+ * not — it is never replaced again. Returns whether it changed anything.
+ */
+export function replaceStaleWrapUp(s: Stored, now: number = Date.now()): boolean {
+  if (s.replaced || s.message === null || !isStaleWrapUp(s.message)) return false;
+  s.replaced = { text: s.message, at: now, restored: false };
+  s.message = null;
+  return true;
+}
+
 function load(): Stored {
+  let s: Stored;
   try {
-    return parseStored(localStorage.getItem(KEY));
+    s = parseStored(localStorage.getItem(KEY));
   } catch {
     return parseStored(null);
   }
+  if (replaceStaleWrapUp(s)) {
+    try {
+      localStorage.setItem(KEY, JSON.stringify(s));
+    } catch {
+      // Storage refused; replaced again next launch, same text.
+    }
+  }
+  return s;
 }
 
 /** Reactive, so the notice, the Context page and Settings agree at once;
@@ -1046,6 +1136,22 @@ export function defaultMessage(): string {
 /** Whether Settings holds a wrap-up of his own. */
 export function hasOwnDefaultMessage(): boolean {
   return stored.message !== null;
+}
+
+/** Item 760: the Settings wrap-up Nightloom replaced, while he has not
+ *  taken it back and the box still holds the built-in; null otherwise (once
+ *  he types his own, Restore would overwrite it, so it is not offered). */
+export function replacedMessage(): Replaced | null {
+  return stored.replaced && !stored.replaced.restored && stored.message === null ? stored.replaced : null;
+}
+
+/** Item 760: Settings' *Restore my old message* — his replaced text back as
+ *  the Settings wrap-up, and never replaced again. */
+export function restoreReplacedMessage(): void {
+  if (!stored.replaced) return;
+  stored.message = stored.replaced.text;
+  stored.replaced = { ...stored.replaced, restored: true };
+  save();
 }
 
 /** Set the Settings wrap-up; the built-in text (or Reset to default) clears

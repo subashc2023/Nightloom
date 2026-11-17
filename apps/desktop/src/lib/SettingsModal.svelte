@@ -190,6 +190,8 @@
     defaultReadOrder,
     hasOwnDefaultMessage,
     hasOwnDefaultReadOrder,
+    replacedMessage,
+    restoreReplacedMessage,
     hasOwnThreshold as hasOwnHandoffThreshold,
     reconsider as reconsiderHandoff,
     setDefaultReadOrder,
@@ -2504,6 +2506,17 @@
             {#if hasOwnDefaultMessage()}
               <div class="sub-actions"><button class="ns-btn ghost small" onclick={() => setHandoffDefaultMessage("")}>Reset to default</button></div>
             {/if}
+            <!-- Item 760: his September copy, replaced once, offered back. -->
+            {#if replacedMessage()}
+              {@const r = replacedMessage()}
+              <p class="handoff-replaced">
+                On {new Date(r?.at ?? 0).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true })}
+                Nightloom put the current wrap-up here in place of your September copy, which told the model to
+                overwrite HANDOFF.md (losing every earlier hand-off) and asked for the old <code>start-prompt</code> fence.
+                Your line about updating CLAUDE.md and other MD files is step 2 now.
+              </p>
+              <div class="sub-actions"><button class="ns-btn ghost small" onclick={restoreReplacedMessage}>Restore my old message</button></div>
+            {/if}
           {/snippet}
           {#snippet help()}
             What <em>Wrap up now</em> sends, as typed. Keep the ask for a prompt between
@@ -4555,6 +4568,13 @@
   .handoff-msg:focus {
     outline: none;
     border-color: var(--accent);
+  }
+  /* Item 760: the note that his September copy was replaced. */
+  .handoff-replaced {
+    margin: 6px 0 0;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--ink2);
   }
   /* The dream row as rows and pills (nightshift backlog 071): the Models
      card's `.mr` / `.cb` / `.cart` shapes, a name in the sans with one dim

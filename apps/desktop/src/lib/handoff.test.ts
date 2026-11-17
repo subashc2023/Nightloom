@@ -8,9 +8,12 @@ import {
   isAway,
   lastReplyText,
   nextStage,
+  isStaleWrapUp,
   parseStored,
   queueHold,
+  replaceStaleWrapUp,
 } from "./handoff.svelte";
+import { SECTIONS, SECTIONS_MARK, wrapUpWithSections } from "./handoffCarry";
 import type { SessionEvent } from "./types";
 
 // The context-full hand-off (nightshift backlog 086; pass 2 per blocker
@@ -58,9 +61,10 @@ describe("nextStage", () => {
 describe("the wrap-up text", () => {
   it("names the file, its contents, the <handoff> tags and the stop", () => {
     expect(WRAP_UP).toContain("HANDOFF.md");
-    for (const part of ["what we were doing", "what is done", "what is next", "files that matter"]) {
-      expect(WRAP_UP).toContain(part);
-    }
+    // ~~`["what we were doing", "what is done", "what is next", "files that matter"]`~~ —
+    // item 760: those parts are 747's fixed sections now, which the text names.
+    expect(WRAP_UP).toContain('"Hand-off contents"');
+    expect(WRAP_UP).not.toContain("files that matter");
     // ~~`toContain("start-prompt")`~~ — item 464: the tagged hand-off.
     expect(WRAP_UP).toContain("<handoff>");
     expect(WRAP_UP).toContain("</handoff>");
@@ -623,5 +627,74 @@ describe("702: a shown notice keeps up near the mark", () => {
   });
   it("a rewind compares at the mark exactly", () => {
     expect(nextStage("due", 0.299, 0.3, 0, true)).toBe("idle");
+  });
+});
+
+// Item 760: the wrap-up message made optimal — every piece has a reason, the
+// stale September parts are gone, and his September copy gives way once.
+describe("item 760: the wrap-up message", () => {
+  // His Settings text as read from a copy of the installed app's storage on
+  // 2026-11-16 (September's default with his one added sentence).
+  const SEPT =
+    "This chat's context window is nearly full, so let's hand off to a new chat. Before anything else:\n" +
+    "1. Finish or save whatever edit is half-done, so every file is in a coherent state.\n" +
+    "2. Write a file named HANDOFF.md at the top of the project folder (overwrite it if one exists) for the chat that continues this one: what we were doing, what is done, what is next, the decisions taken and why, and the files that matter — in your own words, complete enough that a fresh session can carry on without this conversation. Update CLAUDE.md or any other MD files that are outdated or have not been updated with the latest state of things.\n" +
+    "3. End your reply with a short start prompt for the new chat — which files to read, in which order, and what to do first — in a fenced code block tagged `start-prompt` (a line of three backticks followed by start-prompt, the prompt, then a line of three backticks).";
+
+  it("covers procedures.md's wrap-up: wait for subagents, MD facts, mdcheck, STATE, close, prompt, stop", () => {
+    const i = (t: string) => WRAP_UP.indexOf(t);
+    for (const t of ["has not reported yet", "CLAUDE.md", "mdcheck.py", "## STATE AS OF", "<handoff>", "Then stop"]) {
+      expect(i(t)).toBeGreaterThan(-1);
+    }
+    expect(i("has not reported yet")).toBeLessThan(i("CLAUDE.md"));
+    expect(i("CLAUDE.md")).toBeLessThan(i("mdcheck.py"));
+    expect(i("mdcheck.py")).toBeLessThan(i("## STATE AS OF"));
+    expect(WRAP_UP).toContain("AM/PM");
+    expect(WRAP_UP).toContain("do not trim or restructure");
+    expect(WRAP_UP).toContain("what was measured");
+    expect(WRAP_UP).toContain("every question still waiting on me");
+    expect(WRAP_UP).toContain("which question to ask me first");
+  });
+
+  it("does not fight the addendum: the prompt opens with the Goal line, no own-words or file-list ask", () => {
+    expect(WRAP_UP).toContain("after its Goal line");
+    expect(WRAP_UP).not.toMatch(/so open it with what to read/);
+    expect(WRAP_UP).not.toContain("in your own words");
+    expect(WRAP_UP).not.toContain(SECTIONS_MARK);
+    const sent = wrapUpWithSections(WRAP_UP, "", true);
+    for (const s of SECTIONS) expect(sent).toContain(s);
+    expect(sent.split(SECTIONS_MARK)).toHaveLength(2);
+  });
+
+  it("knows September's stale parts, and the built-in has none", () => {
+    expect(isStaleWrapUp(SEPT)).toBe(true);
+    expect(isStaleWrapUp("Write HANDOFF.md (overwrite it if one exists).")).toBe(true);
+    expect(isStaleWrapUp("Put it in a fenced code block tagged `start-prompt`.")).toBe(true);
+    expect(isStaleWrapUp(WRAP_UP)).toBe(false);
+    expect(isStaleWrapUp("Wrap it up, my way.")).toBe(false);
+  });
+
+  it("replaces his September copy once, keeping it to offer back", () => {
+    const s = parseStored(JSON.stringify({ default: 0.7, message: SEPT }));
+    expect(replaceStaleWrapUp(s, 123)).toBe(true);
+    expect(s.message).toBeNull();
+    expect(s.replaced).toEqual({ text: SEPT, at: 123, restored: false });
+    // Round trip through storage, then never again — restored or not.
+    const back = parseStored(JSON.stringify(s));
+    expect(back.replaced).toEqual({ text: SEPT, at: 123, restored: false });
+    back.message = SEPT;
+    back.replaced = { text: SEPT, at: 123, restored: true };
+    expect(replaceStaleWrapUp(back, 456)).toBe(false);
+    expect(back.message).toBe(SEPT);
+  });
+
+  it("leaves a text of his own without stale parts, and the built-in, alone", () => {
+    const own = parseStored(JSON.stringify({ message: "Wrap it up, my way." }));
+    expect(replaceStaleWrapUp(own)).toBe(false);
+    expect(own.message).toBe("Wrap it up, my way.");
+    const none = parseStored(null);
+    expect(replaceStaleWrapUp(none)).toBe(false);
+    expect(none.replaced).toBeNull();
+    expect(parseStored(JSON.stringify({ replaced: { text: "", at: 1, restored: false } })).replaced).toBeNull();
   });
 });
