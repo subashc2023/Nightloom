@@ -296,7 +296,21 @@ async fn turn_body(
     // Item 763: a chat with the automatic hand-off on hands off in place
     // before this message when it is due; a hand-off recorded earlier (or
     // just now) rides this message's wire, and its agent session is new.
-    crate::hand_off::hand_off_if_due(session, chrono::Utc::now(), Some(crate::home::SCAN_LINE));
+    // Items 789 + 791: such a chat keeps a chain (its run log and state
+    // file) beside its log, made the first time it is seen.
+    let chain_logs = session
+        .log_path()
+        .and_then(|p| p.parent())
+        .map(Path::to_path_buf)
+        .filter(|l| {
+            session.auto_hand_off().is_some() && crate::chain::ensure(l, &session.id).is_ok()
+        });
+    crate::hand_off::hand_off_if_due(
+        session,
+        chrono::Utc::now(),
+        Some(crate::home::SCAN_LINE),
+        chain_logs.as_deref(),
+    );
     let hand_off_brief = session.pending_hand_off().map(str::to_string);
     if hand_off_brief.is_some() {
         agent.set_resume(None);
@@ -400,6 +414,10 @@ async fn turn_body(
     }
     if let Some(note) = wire_note {
         input.text = format!("{}\n\n{note}", input.text);
+    }
+    // Item 789: when to call `log_run`, after his words, on the wire only.
+    if chain_logs.is_some() {
+        input.text = format!("{}\n\n{}", input.text, crate::chain::LOG_NOTE);
     }
     // `context_status` describes this chat before the turn (review
     // 2026-09-17 FC-d, backlog 134). Best-effort.

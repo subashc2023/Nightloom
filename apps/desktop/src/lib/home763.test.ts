@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   HOME_SOURCE,
   SCAN_LINE,
+  carriedEntries,
+  carriedLabel,
   clock,
   dateLabel,
   doneSince,
@@ -14,6 +16,7 @@ import {
   isHome,
   isScanMessage,
   kTokens,
+  lastCarried,
   placeDividers,
   scanFacts,
   type FeedRow,
@@ -210,5 +213,56 @@ describe("763 finish — Home's chat defaults to Opus 5.5 at low effort", () => 
     expect(src).toContain("homeChoice(wanted ?? choiceOf(app.draft))");
     expect(src).toContain("applyHomeEffort(chatChoice.choices, app.draft, inHome)");
     expect(src).toContain("if (!(inHome && chat === null)) noteConnected");
+  });
+});
+
+// Items 789 + 791: the run log a hand-off carried, drawn on its divider. The brief's shape is `chain.rs`'s.
+describe("the run log on the hand-off divider (items 789, 791)", () => {
+  const brief = [
+    "## Hand-off (in place)",
+    "",
+    "## His words since the last hand-off, verbatim (oldest first)",
+    "",
+    "- 2026-11-17 08:00 UTC — check the signup flow",
+    "",
+    "## State file (as of this hand-off; frozen for this slice)",
+    "",
+    "### not an entry",
+    "",
+    "## Run log (newest 2 of 5; written once each, never rewritten)",
+    "",
+    "Notes the model wrote at the end of earlier runs.",
+    "",
+    "### 2026-11-16 08:03:12 UTC · by the model",
+    "",
+    "p95 412.7 ms on /api/signup",
+    "",
+    "### 2026-11-17 08:04:00 UTC · run failed · by code",
+    "",
+    "The run did not finish: no reply",
+    "",
+    "(3 older entries are past the 6000-token load cap — read the file or search the chat.)",
+    "",
+    "## The hand-off before this one",
+    "",
+    "### 2026-11-10 08:00:00 UTC · by the model",
+    "old",
+  ].join("\n");
+
+  it("reads only the run log's entries, exact, oldest first", () => {
+    const es = carriedEntries(brief);
+    expect(es.map((e) => e.body)).toEqual(["p95 412.7 ms on /api/signup", "The run did not finish: no reply"]);
+    expect(es[0].at).toBe("2026-11-16T08:03:12Z");
+    expect(es[0].who).toBe("by the model");
+  });
+
+  it("draws the newest, and says when a run failed", () => {
+    const e = lastCarried(brief)!;
+    expect(carriedLabel(e)).toBe(`Run failed · ${clock("2026-11-17T08:04:00Z")}`);
+    expect(carriedLabel(carriedEntries(brief)[0])).toMatch(/^Run log · /);
+  });
+
+  it("draws nothing for a brief from before the run log", () => {
+    expect(lastCarried("## Hand-off (in place)\n\n## His words\n- hi")).toBeNull();
   });
 });
