@@ -73,7 +73,9 @@ describe("item 768: the cold chip", () => {
     expect(coldButtons(null)).toEqual({ handoff: "Hand off", keep: "Keep" });
     // Item 776's rule: two short lines, numbers first, no rate source or caveat.
     const tipLines = coldTip(c, rates).split("\n");
-    expect(tipLines).toEqual(["Next send ≈ $2.40 either way · then ≈ $0.09 a turn here", "Hand off: the wrap-up is that send; the next chat starts small"]);
+    expect(tipLines).toEqual(["Next send ≈ $2.40 · then ≈ $0.09 a turn", "Hand off: that send is the wrap-up"]);
+    // One drawn line each in the 320 px pill: ≤ 44 characters (776 measured 44 in 279 px).
+    for (const l of [...tipLines, ...coldTip(null, rates).split("\n")]) expect(l.length).toBeLessThanOrEqual(44);
     expect(coldTip(null, rates).split("\n")).toHaveLength(2);
   });
 });

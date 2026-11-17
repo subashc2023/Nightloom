@@ -129,9 +129,11 @@ export function coldTitle(context: number): string {
  *  short lines, numbers first (item 776's rule). `rates` stays in the
  *  signature: without them there are no figures. */
 export function coldTip(c: ChipCosts | null, rates: ChipRates | null | undefined): string {
-  const how = "Hand off: the wrap-up is that send; the next chat starts small";
-  if (!c || !rates) return `The next send re-writes the whole history either way\n${how}`;
-  return `Next send ≈ ${usd(c.cold)} either way · then ≈ ${usd(c.perTurn)} a turn here\n${how}`;
+  // Post-install 16c8e01: both lines wrapped to 4 in the 320 px pill
+  // (measured); each line now fits one (≤ 44 chars at $12.40-sized figures).
+  const how = "Hand off: that send is the wrap-up";
+  if (!c || !rates) return `The next send re-writes the whole history\n${how}`;
+  return `Next send ≈ ${usd(c.cold)} · then ≈ ${usd(c.perTurn)} a turn\n${how}`;
 }
 
 /** The warm offer's line: `Cache cold in 4 min — this chat is 180k`. */
