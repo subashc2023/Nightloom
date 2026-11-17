@@ -40,6 +40,8 @@ export const CONTROLS: readonly Control[] = [
   { id: "handoff-cap", group: "handoff", label: "or at k tokens", terms: "token cap limit 300k thousand whichever first" },
   { id: "handoff-chat", group: "handoff", label: "This chat's mark", terms: "this chat own mark percent open chat use the default" },
   { id: "handoff-away", group: "handoff", label: "When you are away", terms: "away queue wrap-up automatic present notice minute" },
+  { id: "handoff-warm", group: "handoff", label: "Before the cache lapses", terms: "warm cache lapse cold wrap up early offer do it off idle keep-warm price" },
+  { id: "handoff-warm-size", group: "handoff", label: "A big chat is over", terms: "big chat size tokens cold chip hand off keep cost" },
   { id: "handoff-message", group: "handoff", label: "The wrap-up message", terms: "wrap-up message handoff.md prompt start reset default text" },
   { id: "handoff-readorder", group: "handoff", label: "The read order", terms: "read order new chat continue prompt box reset default" },
   { id: "models-list", group: "models", label: "Model list", terms: "models picker order alias id fable opus sonnet haiku move up down remove reset built-in" },
