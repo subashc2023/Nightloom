@@ -1,5 +1,6 @@
 // Moved out of state.svelte.ts by item 641 (pure move; state.svelte.ts re-exports every name it exported).
 import * as api from "../api";
+import { listen } from "@tauri-apps/api/event";
 import { clockText } from "../schedule";
 import { CURATED, thinkingString, type ConnectionDraft } from "../catalog";
 import { refreshWithin } from "../afterWrite";
@@ -358,8 +359,25 @@ export async function stopDream(): Promise<void> {
  * the first refresh of a window, which would announce the whole backlog.
  */
 let centreSeen: Set<string> | null = null;
+/** Item 758's canary: the alarms this window has already toasted (each one
+ *  toasts once, and stays in the bell until dismissed). */
+const canaryToasted = new Set<string>();
+let canaryListening = false;
+
+/** The backend's `flat-canary` (a new chat's second request read under 95%
+ *  with the switch on): the bell re-reads at once, which toasts it. */
+function watchCanary(): void {
+  if (canaryListening) return;
+  canaryListening = true;
+  void listen("flat-canary", () => void refreshCentre()).catch(() => {
+    canaryListening = false;
+  });
+}
+
 export async function refreshCentre(): Promise<void> {
-  const [proposals, commits, applied, rows, stamp, memory] = await Promise.all([
+  watchCanary();
+  const cliBinary = app.connection?.engine === "claude-code" ? (app.connection.agent?.binary ?? null) : null;
+  const [proposals, commits, applied, rows, stamp, memory, canary] = await Promise.all([
     api.centreProposals().catch(() => []),
     api.centreDreamCommits(10).catch(() => []),
     api.centreApplied(10).catch(() => []),
@@ -368,6 +386,9 @@ export async function refreshCentre(): Promise<void> {
     // Claude Code's own memory (item 751): synced into Nightloom's history
     // folder on the way, so a change since the last refresh is a card now.
     api.centreClaudeMemory(10).catch(() => []),
+    // Item 758's canary: the CLI's file re-read once per install (so after
+    // an update too), and the second-request alarms logged since.
+    api.flatCanary(cliBinary).catch(() => []),
   ]);
   app.centre.rows = rows;
   app.centre.notices = buildNotices({
@@ -382,7 +403,14 @@ export async function refreshCentre(): Promise<void> {
     dismissed: app.centre.dismissed,
     cli: cli.status,
     curated: CURATED.anthropic ?? [],
+    canary,
   });
+  for (const n of app.centre.notices) {
+    if (n.kind === "canary" && !canaryToasted.has(n.id)) {
+      canaryToasted.add(n.id);
+      addToast(n.title);
+    }
+  }
   // A first run has no stamp on record: the one seen now becomes it, so
   // the next roll is the first release the bell announces.
   if (stamp?.exe_modified && !app.centre.seenStamp) {

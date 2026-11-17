@@ -1658,6 +1658,7 @@ fn main() {
             commands::cli::cli_version_check,
             commands::cli::claude_auth_status,
             commands::cli::cli_update,
+            commands::cli::flat_canary,
             commands::usage::turn_budget,
             commands::usage::set_turn_cap,
             commands::usage::turn_usage,

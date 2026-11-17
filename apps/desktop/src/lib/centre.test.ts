@@ -110,7 +110,27 @@ describe("the notices", () => {
     expect(n[3].id).toBe("morning:p1:2026-09-16.md");
     expect(n[4].id).toBe("blocker:p1:2");
     expect(n[5].title).toBe("A release was installed (0.1.0)");
-    expect(countsOf(n)).toEqual({ proposal: 2, dream: 1, memory: 0, morning: 1, blocker: 1, release: 1, cli: 0 });
+    expect(countsOf(n)).toEqual({ canary: 0, proposal: 2, dream: 1, memory: 0, morning: 1, blocker: 1, release: 1, cli: 0 });
+  });
+
+  it("puts item 758's canary first, one notice per alarm, gone once dismissed", () => {
+    const alarm = {
+      id: "758:cache:2.1.400",
+      item: 758,
+      kind: "cache" as const,
+      cli_version: "2.1.400",
+      title: "Claude Code 2.1.400 may no longer honour the 758 switch",
+      detail: "A new chat's second request (turn) read 23165 of 32533 tokens",
+      time: "2026-11-16 5:30 PM",
+      at_ms: Date.UTC(2026, 10, 17, 1, 30),
+      chat: "c1",
+    };
+    const n = buildNotices({ ...base, canary: [alarm] });
+    expect(n[0].kind).toBe("canary");
+    expect(n[0].id).toBe("canary:758:cache:2.1.400");
+    expect(n[0].title).toContain("758");
+    expect(countsOf(n).canary).toBe(1);
+    expect(buildNotices({ ...base, canary: [alarm], dismissed: ["canary:758:cache:2.1.400"] }).some((x) => x.kind === "canary")).toBe(false);
   });
 
   it("leaves out dismissed ids, read pages, and a release on a first run", () => {

@@ -181,7 +181,7 @@ fn tick(app: &AppHandle) {
                     cli_file: cache_miss::cli_file(&job.spec.workspace, job.spec.resume.as_deref()),
                     ask_dir: Some(job.dir.clone()),
                 };
-                tauri::async_runtime::spawn_blocking(move || cache_miss::check(&req));
+                crate::commands::cli::check_request(&app, req);
             }
             holder.0.done(&job, sent, result);
             tell(&app, &holder, &job.chat);

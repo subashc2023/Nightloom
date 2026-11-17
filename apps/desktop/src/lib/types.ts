@@ -604,6 +604,22 @@ export interface CliNewModel {
   has_window: boolean;
 }
 
+/** Item 758's canary (the backend's `flat_canary::Alarm`): the installed
+ *  CLI lost a string the cache switch relies on (`bundle`), or a new chat's
+ *  second request read under 95% from the cache with the switch on (`cache`). */
+export interface FlatAlarm {
+  id: string;
+  item: number;
+  kind: "bundle" | "cache";
+  cli_version: string | null;
+  title: string;
+  detail: string;
+  /** Local time, for the log. */
+  time: string;
+  at_ms: number;
+  chat: string | null;
+}
+
 /** One version check (backlog 182): `claude --version` against the release
  *  feed. A failed lookup leaves `latest` null and says why in `error`. */
 export interface CliStatus {

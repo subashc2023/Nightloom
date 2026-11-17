@@ -306,7 +306,7 @@ pub(crate) async fn ask_aside(
             outcome.cost_usd,
             other,
         ) {
-            tauri::async_runtime::spawn_blocking(move || cache_miss::check(&req));
+            crate::commands::cli::check_request(&app, req);
         }
     }
     Ok(AsideResult {
