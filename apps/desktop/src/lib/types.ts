@@ -1881,6 +1881,10 @@ export interface ThreadUpkeep {
   merged: [string, string][];
   saved: number;
   last_round: string | null;
+  /** thread.md is still over its ~10k cap after the moves (item 708). */
+  over_cap?: boolean;
+  /** The id of the "trim thread.md" Queue row this run added, if any. */
+  trim_queued?: string | null;
 }
 
 /** The daily pass's thread step in one project (backlog 271). */

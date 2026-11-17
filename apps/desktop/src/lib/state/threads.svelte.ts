@@ -509,7 +509,7 @@ export async function createThread(name: string, slug: string): Promise<boolean>
 export async function refreshThreadFlags(slug: string): Promise<void> {
   try {
     const up = await api.threadUpkeep(slug, false);
-    noteThreadFlags(slug, up.flags);
+    noteThreadFlags(slug, up.flags, up.over_cap === true);
   } catch {
     // No project open, or the thread is gone: the wrap-up goes without flags.
   }

@@ -39,6 +39,14 @@
 //!   condenses claim by claim with each claim's pointer kept (ACE's
 //!   "context collapse" warning; practices §1) and replaces pastes with
 //!   pointers.
+//! - *Over the cap, the trim is queued, never asked at the wrap-up*
+//!   (nightshift item 708; practices §2, "Do not trim at wrap-up — a tired
+//!   session cuts what matters"): an upkeep run that leaves `thread.md` past
+//!   [`THREAD_CAP_TOKENS`] puts a [`TRIM_ITEM`] row at the top of its
+//!   `## Queue` ([`queue_trim`]), and the thread layer of every chat that
+//!   opens on an over-cap file carries the method ([`trim_method`]): the
+//!   practices Trim, for a thread — rows moved verbatim to `archive.md`
+//!   with pointers, every row accounted for in `log.md`.
 //!
 //! Who runs it: the shell at *Continue* (the wrapped chat has stopped
 //! writing, the next has not started — no second writer), the daily pass
@@ -66,6 +74,8 @@ pub const PASTE_LINES: usize = 15;
 /// moves, not only the earlier rounds'. ~10k is the design's "full
 /// thread after ~10 rounds" (271 note §5), read only on demand.
 pub const THREAD_CAP_TOKENS: u64 = 10_000;
+/// The Queue row an over-cap upkeep puts first (item 708).
+pub const TRIM_ITEM: &str = "trim thread.md";
 /// Ceiling on the Start here text the layer carries; a runaway section
 /// costs a read, not the window.
 const LAYER_CAP: usize = 12 * 1024;
@@ -204,16 +214,48 @@ pub fn thread_segment(ctx: &ThreadContext) -> Segment {
     match std::fs::read_to_string(&file) {
         Ok(text) => {
             let body = start_here(&text).unwrap_or_default();
-            let flags = check_text(&text, None).flags();
-            segment(ctx, Some(&body), &flags)
+            let checks = check_text(&text, None);
+            segment(ctx, Some(&body), &checks.flags(), checks.over_cap())
         }
-        Err(_) => segment(ctx, None, &[]),
+        Err(_) => segment(ctx, None, &[], None),
     }
 }
 
 /// The layer around a chat's own text in place of the file's Start here.
+/// The trim method still rides along when the file is over its cap: the
+/// chat's own Start here does not shrink the file.
 pub fn thread_segment_from(ctx: &ThreadContext, body: &str) -> Segment {
-    segment(ctx, Some(body), &[])
+    let over = std::fs::read_to_string(ctx.dir.join(THREAD_FILE))
+        .ok()
+        .and_then(|t| check_text(&t, None).over_cap());
+    segment(ctx, Some(body), &[], over)
+}
+
+/// How a chat trims an over-cap `thread.md` (item 708): the practices Trim
+/// method (`~/.claude/practices/procedures.md` §Trim, item 524) for a
+/// thread's rows. Carried by the thread layer of the next chat — never by
+/// the wrap-up, where a tired session cuts what matters.
+pub fn trim_method() -> String {
+    format!(
+        "How to trim {THREAD_FILE} (in a chat that has just started, before other work; one row \
+         at a time, never by rewriting the file):\n\
+         1. Measure: `wc -c {THREAD_FILE}` (tokens are about characters / 4). Aim for about 9k, \
+         under the ~{cap}k cap.\n\
+         2. Move rows in this order until it is under: (a) Queue rows that are done, superseded, \
+         answered, merged or parked, and Claims that are struck, superseded or rejected, unless \
+         Start here or a live or open Queue row cites them; (b) Claims from earlier rounds, \
+         oldest id first, that neither Start here nor a live or open Queue row cites; (c) last \
+         of all, the oldest \"## His view\" quotes, never the newest. Never move Start here, a \
+         live or open Queue row, this round's claims or How to edit.\n\
+         3. Move, don't paraphrase: each row goes verbatim to {ARCHIVE_FILE} under one \"## trim \
+         <date>\" heading, by section, under its table header, with the line it stood on. Under \
+         each section's heading in {THREAD_FILE} leave one line, \"Moved <date> to \
+         {ARCHIVE_FILE} (## trim <date>), verbatim: <ids>.\", so every id still resolves.\n\
+         4. Account for every row: append a dated paragraph to {LOG_FILE} with the tokens \
+         before and after, each moved id with its section, and the kept ids, none missing.\n\
+         5. Mark the \"{TRIM_ITEM}\" Queue row done, with the date and the tokens after.\n",
+        cap = THREAD_CAP_TOKENS / 1000
+    )
 }
 
 /// The file's Start here, for the Context page's *Edit for this chat*.
@@ -222,7 +264,13 @@ pub fn layer_source(ctx: &ThreadContext) -> Option<String> {
     start_here(&text)
 }
 
-fn segment(ctx: &ThreadContext, body: Option<&str>, flags: &[String]) -> Segment {
+/// `over`: the file's estimated tokens when past [`THREAD_CAP_TOKENS`].
+fn segment(
+    ctx: &ThreadContext,
+    body: Option<&str>,
+    flags: &[String],
+    over: Option<u64>,
+) -> Segment {
     let slug = &ctx.slug;
     let rel = &ctx.rel;
     let mut text = format!("<thread slug=\"{slug}\" dir=\"{rel}\">\n");
@@ -257,6 +305,22 @@ fn segment(ctx: &ThreadContext, body: Option<&str>, flags: &[String]) -> Segment
         for f in flags {
             text.push_str(&format!("- {f}\n"));
         }
+    }
+    if let Some(tokens) = over {
+        // Only a chat that has just started trims (merge round T review,
+        // 2026-11-17): the layer is rebuilt on every turn, so a chat hours
+        // in — the wrapping one included — read "do that row before
+        // anything else" too, which is the trim by a tired session item
+        // 708 exists to stop.
+        text.push_str(&format!(
+            "\nTrim first: {THREAD_FILE} is ~{}k tokens, over its ~{}k cap, so Nightloom puts a \
+             \"{TRIM_ITEM}\" row at the top of its Queue. If this chat has just started, do \
+             that row before anything else. If it is already under way, do not trim in this \
+             chat — a long session cuts what matters; the next chat does it first.\n",
+            tokens / 1000,
+            THREAD_CAP_TOKENS / 1000
+        ));
+        text.push_str(&trim_method());
     }
     let mut body = body.trim().to_string();
     if body.len() > LAYER_CAP {
@@ -317,15 +381,17 @@ impl Checks {
                  Move it to .agents/notes/ (or cite its chat event) and leave a pointer."
             ));
         }
-        if self.tokens > THREAD_CAP_TOKENS {
-            out.push(format!(
-                "{THREAD_FILE} is ~{}k tokens, over its ~{}k cap. Nightloom archives struck \
-                 lines; look for detail that belongs in .agents/notes/ behind a pointer.",
-                self.tokens / 1000,
-                THREAD_CAP_TOKENS / 1000
-            ));
-        }
+        // ~~"{THREAD_FILE} is ~Nk tokens, over its ~10k cap. Nightloom archives struck
+        // lines; look for detail that belongs in .agents/notes/ behind a pointer."~~ —
+        // item 708 (2026-11-17): that flag reached the wrap-up, the worst moment to trim
+        // (practices §2). Over the cap is now [`Checks::over_cap`]: a Queue row
+        // ([`queue_trim`]) and the method in the next chat's layer ([`trim_method`]).
         out
+    }
+
+    /// The estimated tokens when `thread.md` is past [`THREAD_CAP_TOKENS`].
+    pub fn over_cap(&self) -> Option<u64> {
+        (self.tokens > THREAD_CAP_TOKENS).then_some(self.tokens)
     }
 }
 
@@ -424,6 +490,11 @@ pub struct Upkeep {
     pub saved: usize,
     /// The newest date in `log.md` — the last round's — when there is one.
     pub last_round: Option<NaiveDate>,
+    /// `thread.md` is still past [`THREAD_CAP_TOKENS`] after the moves.
+    pub over_cap: bool,
+    /// The id of the [`TRIM_ITEM`] row this run put at the top of the Queue
+    /// (on a dry run, would put); `None` when none was needed or one waits.
+    pub trim_queued: Option<String>,
 }
 
 /// The newest `YYYY-MM-DD` in `log.md`: the date of the last round. An
@@ -539,6 +610,17 @@ pub fn upkeep(dir: &Path, today: NaiveDate, apply: bool) -> Result<Upkeep, Strin
     }
     up.struck_moved = moving.len();
     let (out, entries) = move_spans(&merged_text, &moving);
+    // 3. Still over the cap: the trim goes first in the Queue, for the next
+    // chat (item 708), never to the wrap-up.
+    let out_tokens = nightloom_core::estimate_tokens(&out);
+    up.over_cap = out_tokens > THREAD_CAP_TOKENS;
+    let out = if up.over_cap {
+        let (queued, id) = queue_trim(&out, today, out_tokens);
+        up.trim_queued = id;
+        queued
+    } else {
+        out
+    };
     up.saved = text.len().saturating_sub(out.len());
     up.checks = check_text(&out, Some(&log));
     up.flags = up.checks.flags();
@@ -624,6 +706,101 @@ fn normalized(item: &str) -> String {
         out.push_str(w);
     }
     out
+}
+
+/// Put a [`TRIM_ITEM`] row at the top of `## Queue` (item 708), unless one
+/// is already waiting there (not struck, not done). Its id is the Queue's
+/// own pattern, max + 1 (`Q-34` → `Q-35`, `T-01` → `T-02`); its pointer
+/// says Nightloom put it there and when. A thread with no Queue table is
+/// left as it is — the layer still carries the method. Returns the text
+/// and the new row's id.
+pub fn queue_trim(text: &str, today: NaiveDate, tokens: u64) -> (String, Option<String>) {
+    let view: Vec<&str> = text.split('\n').collect();
+    let Some((a, b)) = section_range(&view, "Queue") else {
+        return (text.to_string(), None);
+    };
+    let mut header: Option<usize> = None;
+    let mut sep: Option<usize> = None;
+    let mut best: Option<(String, u64, usize)> = None;
+    // An id's prefix, number and width (`T-04` → `T-`, 4, 2).
+    let parts = |id: &str| -> Option<(String, u64, usize)> {
+        let id = id
+            .trim()
+            .trim_matches('~')
+            .trim_end_matches(['.', ',', ';']);
+        let cut = id.rfind('-')?;
+        let (prefix, digits) = id.split_at(cut + 1);
+        if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        Some((prefix.to_string(), digits.parse().ok()?, digits.len()))
+    };
+    for (i, line) in view.iter().enumerate().take(b).skip(a) {
+        let Some(row) = cells(line) else {
+            // The ids a trim moved to the archive still count (merge round T
+            // review, 2026-11-17): the method leaves "Moved <date> to
+            // archive.md (## trim <date>), verbatim: <ids>." under the
+            // heading, and the first rows a trim moves are the done ones —
+            // the last trim row among them, often the highest id. Without
+            // this the next trim row took an archived row's id.
+            if let Some((_, ids)) = line.split_once("verbatim:")
+                && line.trim_start().starts_with("Moved ")
+            {
+                for id in ids.split(',') {
+                    if let Some(p) = parts(id)
+                        && best.as_ref().is_none_or(|(_, m, _)| p.1 > *m)
+                    {
+                        best = Some(p);
+                    }
+                }
+            }
+            continue;
+        };
+        if header.is_none() {
+            header = Some(row.len());
+            continue;
+        }
+        if sep.is_none() && row.iter().all(|c| c.chars().all(|ch| "-: ".contains(ch))) {
+            sep = Some(i);
+            continue;
+        }
+        let item = row.get(1).map(String::as_str).unwrap_or("");
+        let status = row.get(2).map(String::as_str).unwrap_or("").to_lowercase();
+        if item.to_lowercase().contains(TRIM_ITEM)
+            && !item.contains("~~")
+            && !item.contains("[struck")
+            && !status.starts_with("done")
+            && !status.starts_with("merged")
+        {
+            return (text.to_string(), None);
+        }
+        if let Some(p) = parts(&row[0])
+            && best.as_ref().is_none_or(|(_, m, _)| p.1 > *m)
+        {
+            best = Some(p);
+        }
+    }
+    let (Some(cols), Some(sep)) = (header, sep) else {
+        return (text.to_string(), None);
+    };
+    let (prefix, n, width) = best.unwrap_or_else(|| ("Q-".to_string(), 0, 1));
+    let id = format!("{prefix}{:0width$}", n + 1);
+    let mut row = vec![String::new(); cols.max(3)];
+    row[0] = id.clone();
+    row[1] = format!(
+        "{TRIM_ITEM}: ~{}k tokens, over its ~{}k cap. Do this first, by \"How to trim \
+         {THREAD_FILE}\" in this chat's thread layer.",
+        tokens / 1000,
+        THREAD_CAP_TOKENS / 1000
+    );
+    row[2] = "live (front)".to_string();
+    if cols >= 4 {
+        let last = row.len() - 1;
+        row[last] = format!("Nightloom upkeep {}", today.format("%Y-%m-%d"));
+    }
+    let mut lines: Vec<String> = view.iter().map(|l| l.to_string()).collect();
+    lines.insert(sep + 1, format!("| {} |", row.join(" | ")));
+    (lines.join("\n"), Some(id))
 }
 
 /// Merge `## Queue` rows whose item text is the same once case and
@@ -758,7 +935,9 @@ pub fn list_threads(notes_dir: &Path) -> Vec<ThreadInfo> {
             touched: touched(&file),
             start_here_words: checks.start_here_words,
             tokens: checks.tokens,
-            flags: checks.flags().len(),
+            // The over-cap trim still counts as one upkeep item for the
+            // picker and the index; it is queued, not flagged (item 708).
+            flags: checks.flags().len() + usize::from(checks.over_cap().is_some()),
             slug,
         });
     }
@@ -1147,6 +1326,178 @@ The question.
         let gone = ThreadContext::new(&notes, "gone").unwrap();
         assert!(thread_segment(&gone).text.contains("does not exist"));
         assert_eq!(layer_source(&ctx).unwrap(), start_here(FIXTURE).unwrap());
+    }
+
+    /// The fixture past the cap: padding in Claims, after the Queue.
+    fn over_cap_fixture() -> String {
+        FIXTURE.replace(
+            "## His view",
+            &format!(
+                "| C-07 | {} | inferred | live | ev 5 |\n\n## His view",
+                "pad ".repeat(11000)
+            ),
+        )
+    }
+
+    fn queue_rows(text: &str) -> Vec<String> {
+        let lines: Vec<&str> = text.split('\n').collect();
+        let (a, b) = section_range(&lines, "Queue").unwrap();
+        lines[a..b]
+            .iter()
+            .filter(|l| l.starts_with("| ") && !l.starts_with("| id"))
+            .map(|l| l.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn a_trim_row_never_takes_the_id_of_a_row_a_trim_archived() {
+        // Merge round T review (2026-11-17): the trim method moves done
+        // Queue rows to archive.md and leaves their ids on a "Moved …
+        // verbatim:" line. The next trim row's id counts those, and a
+        // struck id cell, so no id is ever given twice.
+        let q = "## Queue\nMoved 2026-11-17 to archive.md (## trim 2026-11-17), verbatim: T-02, T-09, T-04.\n\n\
+                 | id | Item | Status | Pointer |\n|---|---|---|---|\n\
+                 | T-01 | the question | live | ev 1 |\n| T-03 | another | open | ev 2 |\n\n## Claims\n";
+        let (out, id) = queue_trim(q, day("2026-11-20"), 12_000);
+        assert_eq!(id.as_deref(), Some("T-10"), "past the archived T-09: {out}");
+        assert!(out.contains("|---|---|---|---|\n| T-10 | trim thread.md: ~12k tokens"));
+        // A struck id cell counts too.
+        let q = "## Queue\n| id | Item | Status | Pointer |\n|---|---|---|---|\n\
+                 | Q-1 | the question | live | ev 1 |\n| ~~Q-7~~ | ~~old~~ (struck 2026-11-01: dropped) | struck | ev 2 |\n";
+        let (_, id) = queue_trim(q, day("2026-11-20"), 12_000);
+        assert_eq!(id.as_deref(), Some("Q-8"));
+        // Through the upkeep, on files: done trim row archived by the trim,
+        // file over the cap again.
+        let tmp = scratch();
+        let dir = tmp.as_path().join("again");
+        let thread = over_cap_fixture().replace(
+            "## Queue\n",
+            "## Queue\nMoved 2026-10-05 to archive.md (## trim 2026-10-05), verbatim: T-04.\n\n",
+        );
+        write_fixture(&dir, &thread, "2026-10-01\n");
+        let up = upkeep(&dir, day("2026-10-06"), true).unwrap();
+        assert_eq!(up.trim_queued.as_deref(), Some("T-05"), "not T-04 again");
+    }
+
+    #[test]
+    fn an_over_cap_thread_gets_the_trim_first_in_its_queue_once_and_never_a_wrap_up_flag() {
+        // Item 708: at Continue (the wrap-up's hand-over) the shell applies
+        // the upkeep; over the cap it queues the trim, it does not flag it.
+        let tmp = scratch();
+        let dir = tmp.as_path().join("big");
+        write_fixture(&dir, &over_cap_fixture(), "2026-10-01\n");
+        let dry = upkeep(&dir, day("2026-10-02"), false).unwrap();
+        assert!(dry.over_cap);
+        assert_eq!(dry.trim_queued.as_deref(), Some("T-04"), "max id + 1");
+        assert_eq!(
+            std::fs::read_to_string(dir.join(THREAD_FILE)).unwrap(),
+            over_cap_fixture(),
+            "a dry run writes nothing"
+        );
+        assert!(
+            dry.flags.iter().all(|f| !f.contains("cap")),
+            "the wrap-up is never asked to trim: {:?}",
+            dry.flags
+        );
+
+        let up = upkeep(&dir, day("2026-10-02"), true).unwrap();
+        assert_eq!(up.trim_queued.as_deref(), Some("T-04"));
+        let live = std::fs::read_to_string(dir.join(THREAD_FILE)).unwrap();
+        let rows = queue_rows(&live);
+        assert!(
+            rows[0].starts_with("| T-04 | trim thread.md: ~")
+                && rows[0].contains("over its ~10k cap")
+                && rows[0].contains("How to trim thread.md")
+                && rows[0].ends_with("| live (front) | Nightloom upkeep 2026-10-02 |"),
+            "first in the Queue: {rows:?}"
+        );
+        assert_eq!(rows.len(), 4, "the three rows kept below it: {rows:?}");
+
+        // Idempotent: a waiting trim row is not queued again (the daily pass
+        // and the next Continue both run).
+        let again = upkeep(&dir, day("2026-10-03"), true).unwrap();
+        assert!(again.over_cap && again.trim_queued.is_none(), "{again:?}");
+        let live = std::fs::read_to_string(dir.join(THREAD_FILE)).unwrap();
+        assert_eq!(live.matches("| trim thread.md").count(), 1, "{live}");
+
+        // Marked done but still over: a new row, the next id.
+        let done = live.replacen(
+            "| live (front) | Nightloom upkeep",
+            "| done 2026-10-03: ~9k | Nightloom upkeep",
+            1,
+        );
+        std::fs::write(dir.join(THREAD_FILE), &done).unwrap();
+        let next = upkeep(&dir, day("2026-10-04"), true).unwrap();
+        assert_eq!(next.trim_queued.as_deref(), Some("T-05"));
+
+        // Under the cap: no row.
+        let small = tmp.as_path().join("small");
+        write_fixture(&small, FIXTURE, "2026-10-01\n");
+        let up = upkeep(&small, day("2026-10-02"), true).unwrap();
+        assert!(!up.over_cap && up.trim_queued.is_none());
+        assert!(
+            !std::fs::read_to_string(small.join(THREAD_FILE))
+                .unwrap()
+                .contains(TRIM_ITEM)
+        );
+
+        // No Queue table: nothing inserted (the layer still carries the method).
+        let (same, id) = queue_trim("## Start here\nx\n", day("2026-10-02"), 20_000);
+        assert_eq!((same.as_str(), id), ("## Start here\nx\n", None));
+        // An empty Queue table starts at Q-1.
+        let empty = "## Queue\n| id | Item | Status | Pointer |\n|---|---|---|---|\n\n## Claims\n";
+        let (out, id) = queue_trim(empty, day("2026-10-02"), 12_000);
+        assert_eq!(id.as_deref(), Some("Q-1"));
+        assert!(
+            out.contains("|---|---|---|---|\n| Q-1 | trim thread.md: ~12k tokens"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn the_layer_of_an_over_cap_thread_carries_the_trim_method_first() {
+        let tmp = scratch();
+        let notes = tmp.as_path().join(".agents");
+        let ctx = ThreadContext::new(&notes, "big").unwrap();
+        write_fixture(&ctx.dir, &over_cap_fixture(), "");
+        let seg = thread_segment(&ctx);
+        assert!(
+            seg.text.contains("Trim first: thread.md is ~"),
+            "{}",
+            seg.text
+        );
+        // Only a chat that has just started is told to trim: the layer
+        // rides every turn, the wrapping chat's included.
+        assert!(
+            seg.text
+                .contains("If this chat has just started, do that row before anything else.")
+        );
+        assert!(
+            seg.text
+                .contains("If it is already under way, do not trim in this chat")
+        );
+        assert!(seg.text.contains("How to trim thread.md"));
+        assert!(seg.text.contains("verbatim to archive.md"));
+        assert!(seg.text.contains("Account for every row"));
+        assert!(
+            seg.text.find("Trim first").unwrap() < seg.text.rfind("\n## Start here\n").unwrap(),
+            "before Start here"
+        );
+        // The chat's own Start here does not drop it; the file is still big.
+        assert!(
+            thread_segment_from(&ctx, "mine")
+                .text
+                .contains("How to trim thread.md")
+        );
+        // Under the cap: no method.
+        let small = ThreadContext::new(&notes, "small").unwrap();
+        write_fixture(&small.dir, FIXTURE, "");
+        assert!(!thread_segment(&small).text.contains("How to trim"));
+        // The picker and index still count it as one upkeep item.
+        let infos = list_threads(&notes);
+        let big = infos.iter().find(|t| t.slug == "big").unwrap();
+        let checks = check_text(&over_cap_fixture(), None);
+        assert_eq!(big.flags, checks.flags().len() + 1);
     }
 
     #[test]

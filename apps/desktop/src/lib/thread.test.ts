@@ -194,6 +194,25 @@ describe("the wrap-up and the read order a chat gets", () => {
     expect(message("c1")).not.toContain("Upkeep Nightloom found");
   });
 
+  it("over the cap, the wrap-up asks for no trim and the start prompt and read order send the next chat to the queued row (item 708)", () => {
+    noteThread("c1", "stuart-brainstorm");
+    noteThreadFlags("stuart-brainstorm", [], true);
+    const m = message("c1");
+    expect(m).toContain("Do not trim it in this chat.");
+    expect(m).toContain('puts a "trim thread.md" row at the top of its Queue');
+    expect(m).toContain("Make that row the first thing your start prompt asks for.");
+    expect(m).not.toContain("look for detail that belongs in .agents/notes/");
+    expect(m).not.toContain("Upkeep Nightloom found");
+    expect(m.indexOf("Do not trim")).toBeLessThan(m.indexOf("Then stop; do not start the next step."));
+    expect(readOrder("c1")).toContain('First do the "trim thread.md" row at the top of the Queue');
+    expect(readOrder("c1")).toBe(threadReadOrder("stuart-brainstorm", undefined, true));
+    // Back under the cap: neither line.
+    noteThreadFlags("stuart-brainstorm", []);
+    expect(message("c1")).not.toContain("trim thread.md");
+    expect(readOrder("c1")).toBe(threadReadOrder("stuart-brainstorm"));
+    expect(threadWrapUp("x", [], false, true)).toContain(".agents/threads/x/thread.md is over its ~10k-token cap");
+  });
+
   it("his own edit wins over the thread's, and setting the thread's text back clears it", () => {
     noteThread("c1", "stuart-brainstorm");
     setMessage("c1", "my own wrap-up");

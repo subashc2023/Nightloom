@@ -603,9 +603,12 @@ export async function runDailyPass(): Promise<void> {
       if (ups.length > 0) {
         const moved = ups.reduce((n, u) => n + u.struck_moved + u.merged.length, 0);
         const flagged = ups.reduce((n, u) => n + u.flags.length, 0);
+        // Item 708: an over-cap thread gets a "trim thread.md" row first in its Queue.
+        const trims = ups.filter((u) => u.trim_queued).length;
         said.push(
           `threads: ${moved} line${moved === 1 ? "" : "s"} archived or merged` +
-            (flagged > 0 ? `, ${flagged} flag${flagged === 1 ? "" : "s"} for the next wrap-up` : ""),
+            (flagged > 0 ? `, ${flagged} flag${flagged === 1 ? "" : "s"} for the next wrap-up` : "") +
+            (trims > 0 ? `, ${trims} trim${trims === 1 ? "" : "s"} queued for the next chat` : ""),
         );
       }
     } catch (e) {
