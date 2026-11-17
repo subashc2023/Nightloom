@@ -16,6 +16,8 @@ import { type Segment, app, closeThinking, applyToSegments } from "../state.svel
 import { limitPauseFrom, type LimitPause } from "../limit";
 import { addToast } from "./toasts.svelte";
 import { lastPrompt, missToastFor } from "../cacheCost";
+import { cleanChanges, type AsideChange } from "../asideNotes";
+import { addAsideNote } from "../asideNotes.svelte";
 
 /** One exchange of the open chat's aside (backlog 081; streamed since
  *  backlog 128; a thread of them since backlog 130) — see `app.aside`. */
@@ -96,6 +98,12 @@ export interface AsideTurn {
   /** When anything of it last arrived (item 404): the stalled notice
    *  counts from here (`asideWait`). */
   heardAt?: number;
+  /** Item 775: the files this answer changed (its edit calls, and what a
+   *  shell command moved), and the name its note to the main chat goes by
+   *  (`asideNotes.svelte.ts`) — the thread's line says whether the main
+   *  chat has heard yet. Written with the thread. */
+  changes?: AsideChange[];
+  noteId?: string;
 }
 
 /** A moved card's place (item 734), in the chat column's px — `asideMove.ts`. */
@@ -411,8 +419,15 @@ async function runAside(turn: AsideTurn, sent: string, thread: Aside | null = nu
   // Item 699: the context the aside resumes — it forks the chat's session,
   // so the newest live reply's prompt; 0 (no toast) before the first.
   const resumed = lastPrompt(app.events);
+  // Item 775: the chat it forks, whose next message hears what it changed.
+  const chat = app.activeSessionId;
   try {
     const res = await api.askAside(sent, turn.seq, asideWire(thread, chips));
+    // Item 775: changed files wait for the main chat even when the card was
+    // dismissed meanwhile — the files changed all the same.
+    const changes = cleanChanges(res.changes);
+    const noteId = changes.length > 0 ? `${thread?.uid ?? "aside"}:${turn.seq}:${Date.now()}` : null;
+    if (chat && noteId) addAsideNote(chat, noteId, turn.question || "(attachments)", changes);
     const t = live();
     if (!t || t.cancelled) return; // dismissed, replaced or cancelled meanwhile
     settleAsideSegments(t, res.answer);
@@ -436,6 +451,10 @@ async function runAside(turn: AsideTurn, sent: string, thread: Aside | null = nu
     if (!res.is_error && typeof res.sent_ms === "number" && typeof res.round_read === "number") {
       t.readAt = res.sent_ms;
       t.roundRead = res.round_read;
+    }
+    if (noteId) {
+      t.changes = changes;
+      t.noteId = noteId;
     }
     t.at = new Date().toISOString();
     noteAsideReply(turn.seq);

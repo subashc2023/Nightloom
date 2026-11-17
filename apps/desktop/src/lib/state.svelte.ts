@@ -175,6 +175,8 @@ import { rewindTo, setAsideRewound, keepRewound } from "./state/rewind.svelte";
 import { addToast, TOAST_MS, ACTION_TOAST_MS, dismissToast, runToastAction } from "./state/toasts.svelte";
 import { turnMissToast } from "./cacheCost";
 import { inViewLane } from "./viewLane";
+import { withNote } from "./asideNotes";
+import { restoreAsideNotes, takeAsideNote } from "./asideNotes.svelte";
 export { TOAST_MS, ACTION_TOAST_MS, addToast, dismissToast, runToastAction };
 export { rewindTo, setAsideRewound, keepRewound };
 export { menuInterceptors, runMenuCommand, providerPills, switchProvider, toggleEngine, pickerModels, switchModel, switchModelAt, loadContextLimits };
@@ -1918,10 +1920,14 @@ export async function runInChat(
     .map(({ media_type, name, data }) => ({ media_type, name, data }));
   const files = q.attachments.filter((a) => a.kind === "file").map(({ name, data }) => ({ name, data }));
   const project = was?.project ?? null;
+  // Item 775: what asides of this chat changed since its last turn, at the
+  // end of the message (past the cached prefix).
+  const asideNote = takeAsideNote(id);
+  const text = withNote(q.text, asideNote?.text ?? "");
   const turn: TurnCtx = { chat: id, detached: true, key: newTurnKey(), contextLimit: ended.contextLimit, pendingKey: null, choice: ended.choice };
   const mine: SessionEvent = {
     event: "user_message",
-    text: q.text,
+    text,
     ...(images.length > 0 ? { images } : {}),
     ...(documents.length > 0 ? { documents } : {}),
     at: new Date().toISOString(),
@@ -1956,7 +1962,7 @@ export async function runInChat(
   let delivered: string[] = [];
   try {
     res = await api.sendAgent(
-      q.text,
+      text,
       images.length > 0 ? images : undefined,
       documents.length > 0 ? documents : undefined,
       undefined,
@@ -1968,6 +1974,9 @@ export async function runInChat(
     delivered = res.delivered ?? [];
   } catch (e) {
     failed = String(e);
+    // Item 775: a failed send may not have reached the chat — its notes
+    // wait again (told twice is harmless; never told is the harm).
+    if (asideNote) restoreAsideNotes(id, asideNote.notes);
   }
   // Refused before anything was sent (the chat not loaded, or its project
   // closed with no agent of its own): back at the head of its own queue.
@@ -2313,6 +2322,11 @@ async function sendAgent(
   // (nightshift backlog 094).
   const pendingKey = pendingChatKey();
   app.error = null;
+  // Item 775: what asides of this chat changed since its last turn, at the
+  // end of his message — past the cached prefix, which stays as it was.
+  const noteChat = target?.chat ?? app.activeSessionId;
+  const asideNote = takeAsideNote(noteChat);
+  if (asideNote) text = withNote(text, asideNote.text);
   // Item 699: the replies the log holds now — the turn's first round is
   // the next one, whose read the cache-miss toast tests at the turn's end.
   const repliesBefore = app.events.reduce((n, e) => n + (e.event === "assistant_message" ? 1 : 0), 0);
@@ -2422,6 +2436,8 @@ async function sendAgent(
     for (const notice of turnNotices(res.notices, stopped)) addToast(notice);
   } catch (e) {
     failed = String(e);
+    // Item 775: as `runInChat` — a failed send's notes wait again.
+    if (asideNote && noteChat) restoreAsideNotes(noteChat, asideNote.notes);
     if (turn.detached) {
       endBackground(turn, failed, null);
       return;

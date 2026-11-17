@@ -1527,6 +1527,8 @@ export interface AsideResult {
   /** Item 674: the plan's usage limit stopped the answer — the shape a
    *  turn's result carries (`AgentTurnResult.limit`). */
   limit?: AgentTurnResult["limit"];
+  /** Item 775: the files the aside changed. Absent from an older backend. */
+  changes?: unknown;
 }
 
 /** What an aside's question carries besides its words (backlog 283): the

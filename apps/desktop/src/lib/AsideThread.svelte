@@ -35,6 +35,8 @@
   import { selectionText } from "./asideQuote";
   import { asideDraftKey } from "./asides";
   import type { FoldScope } from "./keptFolds.svelte";
+  import { changesLine } from "./asideNotes";
+  import { noteWaiting } from "./asideNotes.svelte";
 
   /**
    * An aside's exchanges, drawn as the chat's turns are (nightshift backlog
@@ -427,6 +429,10 @@
     {/if}
     {#if turn.cancelled}
       <div class="aside-mark">stopped here</div>
+    {/if}
+    {#if turn.changes && turn.changes.length > 0 && turn.noteId}
+      <!-- Item 775: the files it changed, and whether the main chat has heard. -->
+      <div class="aside-mark" data-aside-changes>{changesLine(turn.changes, noteWaiting(turn.noteId))}</div>
     {/if}
     {#if turn.error}
       <div class="aside-err">{turn.error}</div>

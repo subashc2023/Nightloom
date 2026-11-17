@@ -55,6 +55,7 @@ import { loadFold, loadFoldRecords, storedFold, type AsideFold, type FoldRecord 
 import type { Attachment } from "./types";
 import type { AsideMoved } from "./state/asides.svelte";
 import { cleanMoved } from "./asideMove";
+import { cleanChanges, type AsideChange } from "./asideNotes";
 
 export const ASIDES_KEY = "nightloom.asides";
 let loadedSeq = 0;
@@ -211,6 +212,9 @@ interface StoredTurn {
    *  cache read, so its refresh of the chat's cache outlives a relaunch. */
   readAt?: number;
   roundRead?: number;
+  /** Item 775: the files the answer changed, and its note's name. */
+  changes?: AsideChange[];
+  noteId?: string;
 }
 
 // ---- Backlog 283 (2026-10-02): the aside's composer is the chat's ----
@@ -295,6 +299,10 @@ function storeTurn(t: AsideTurn): StoredTurn | null {
   if (typeof t.readAt === "number" && typeof t.roundRead === "number") {
     out.readAt = t.readAt;
     out.roundRead = t.roundRead;
+  }
+  if (t.changes && t.changes.length > 0 && t.noteId) {
+    out.changes = t.changes.map((c) => ({ ...c }));
+    out.noteId = t.noteId;
   }
   const end = t.at ? Date.parse(t.at) : NaN;
   if (t.startedAt != null && Number.isFinite(end)) out.ms = Math.max(0, end - t.startedAt);
@@ -466,6 +474,12 @@ function loadAside(v: unknown): Aside | null {
     if (typeof m.readAt === "number" && Number.isFinite(m.readAt) && typeof m.roundRead === "number" && m.roundRead >= 0) {
       turn.readAt = m.readAt;
       turn.roundRead = m.roundRead;
+    }
+    // Item 775: what it changed, for the thread's line.
+    const changes = cleanChanges(m.changes);
+    if (changes.length > 0 && typeof m.noteId === "string") {
+      turn.changes = changes;
+      turn.noteId = m.noteId;
     }
     // Item 674 step 6: the thinking and calls; an older entry has none
     // and reads as its text.

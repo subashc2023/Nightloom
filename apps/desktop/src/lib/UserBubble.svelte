@@ -12,6 +12,7 @@
   import { extOf } from "./attachKinds";
   import { keptGet, keptSet } from "./keptFolds.svelte";
   import RanCard from "./RanCard.svelte";
+  import AsideNoteChip from "./AsideNoteChip.svelte";
   import { parseRan } from "./shellRun";
 
   /**
@@ -224,6 +225,11 @@
     <!-- Item 315: a ``` fenced block is drawn as code, coloured, its
          language on a label; the rest of his words stay plain text. -->
     <div class="user-text">{#each splitFences(said) as part, p (p)}{#if part.kind === "code"}<div class="user-code"><span class="user-code-lang mono">{languageOf(part.info)?.label ?? (part.info || "code")}</span><pre><code>{#each segments(part.code, part.info) as sg, j (j)}<span class={sg.cls}>{sg.text}</span>{/each}</code></pre></div>{:else}{#each splitQuotes(part.text) as seg, k (k)}{#if seg.kind === "quote" && quoteNeedsRender(seg.text)}<blockquote class="user-quote markdown rendered">{@html renderReply(seg.text)}</blockquote>{:else if seg.kind === "quote"}<blockquote class="user-quote">{seg.text}</blockquote>{:else}{seg.text}{/if}{/each}{/if}{/each}</div>
+  {/if}
+  {#if split.aside}
+    <!-- Item 775: what his asides changed, told to the main chat with
+         this message — a chip, never his words. -->
+    <AsideNoteChip rows={split.aside} {keep} />
   {/if}
   {@render extra?.()}
 </div>

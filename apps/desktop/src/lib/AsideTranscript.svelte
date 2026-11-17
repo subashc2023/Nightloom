@@ -23,6 +23,7 @@
   import type { LimitCard, TranscriptSource } from "./transcriptSource.svelte";
   import Transcript from "./Transcript.svelte";
   import AsideFoldPanel from "./AsideFoldPanel.svelte";
+  import { noteWaiting } from "./asideNotes.svelte";
 
   /**
    * An aside's thread, drawn by the chat's own transcript (item 674,
@@ -71,7 +72,8 @@
   const onClaudeCode = $derived(app.connection?.engine === "claude-code");
   // The asking exchange's events read only its question, so a streamed
   // delta rebuilds the live turn alone, never the thread's items.
-  const ev = $derived(asideEvents(aside));
+  // Item 775: an answer that changed files says whether the main chat has heard.
+  const ev = $derived(asideEvents(aside, noteWaiting));
   const live = $derived(asideLive(aside));
 
   // The clock the queued / stalled words read (item 404), ticking only

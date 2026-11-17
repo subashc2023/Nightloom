@@ -17,6 +17,10 @@ import { app, asideStash, chatMode } from "./state.svelte";
 import type { Aside } from "./state.svelte";
 import { asideDraftKey, cleanAsideName, isPrivateChat, markChatMode, saveAsides, setAsideHeld } from "./asides";
 import { drafts } from "./drafts.svelte";
+import { setNoteSkip } from "./asideNotes.svelte";
+
+// Item 775: a private chat's pending aside notes are kept for the window only.
+setNoteSkip((chat) => isPrivateChat(chat, app.sessions));
 
 // Backlog 283: a thread's composer keeps its chips and held messages in
 // the drafts store; a draft card holding only those is still his.
