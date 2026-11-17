@@ -1267,6 +1267,10 @@ pub fn write_copy(original: &Path, edited: &CliSession) -> Result<String, CliSes
     use std::io::Write;
     file.write_all(text.as_bytes())?;
     file.flush()?;
+    // The copy keeps the original's shape (item 758, [`super::flat`]).
+    if let Some(from) = original.file_stem().and_then(|s| s.to_str()) {
+        super::flat::inherit(from, &id);
+    }
     Ok(id)
 }
 

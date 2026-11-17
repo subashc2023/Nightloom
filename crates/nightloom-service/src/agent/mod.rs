@@ -34,6 +34,7 @@ pub mod brief;
 pub mod budget;
 pub mod cli_session;
 pub mod connectors;
+pub mod flat;
 pub mod fork;
 pub mod inbox;
 pub mod nested;
@@ -1159,11 +1160,30 @@ impl AgentSpec {
         }
         // His claude.ai connectors (backlog 235): off unless the chat said on.
         env.extend(connectors::env(self.claude_ai_connectors));
+        // A new session's reminders in its first user message (item 758,
+        // [`flat`]): on only for a new session or one that began so.
+        if self.flat_reminders() {
+            env.push((
+                flat::CAPS_ENV,
+                flat::caps_value(std::env::var(flat::CAPS_ENV).ok().as_deref()),
+            ));
+        }
         // Nightloom's mark on its own `claude` processes (backlog 435): his
         // `~/.claude/hooks/notify.sh` exits quietly when it is set, since
         // Nightloom raises its own banner. Inherited by the CLI's hooks.
         env.push((NIGHTLOOM_MARKER_ENV, "1".into()));
         env
+    }
+
+    /// Whether this process sends the reminders inside the user's message
+    /// (item 758, [`flat`]): a process starting a session does, and one
+    /// resuming a session that started so; every older session keeps the
+    /// CLI's default shape, which switching would re-write in full.
+    pub fn flat_reminders(&self) -> bool {
+        match self.resume.as_deref() {
+            None => true,
+            Some(id) => flat::is_flat(id),
+        }
     }
 
     /// The variables kept out of a turn's process.
@@ -2219,6 +2239,8 @@ impl ClaudeCodeAgent {
             None => (spec.resume_args(), Stdio::null()),
         };
         let key = warm::Key::of(spec, &args);
+        // Whether this process starts or continues a flat session (758).
+        let flat_run = spec.flat_reminders();
         // The running cost this process restores (item 675): a resumed or
         // forked process's `total_cost_usd` starts from its session's, and
         // the outcome carries only what this process added. Read before
@@ -2740,6 +2762,9 @@ impl ClaudeCodeAgent {
             } else {
                 stop.into()
             });
+            if flat_run && !spec.no_session_persistence {
+                mark_flat(&outcome);
+            }
             return Ok(outcome);
         }
         let status = child.wait().await?;
@@ -2808,6 +2833,11 @@ impl ClaudeCodeAgent {
         // and the stderr tail is the only thing that explains it. A run that
         // did stream is reported through the outcome instead, since the CLI
         // prints in-run failures as the result on stdout.
+        // The session this flat process saved — a new one, or a fork's new
+        // id — is resumed flat from now on (item 758, [`flat`]).
+        if flat_run && !spec.no_session_persistence {
+            mark_flat(&outcome);
+        }
         if !status.success() && outcome.text.is_empty() && outcome.session_id.is_none() {
             return Err(AgentError::Failed {
                 binary: spec.binary.clone(),
@@ -2816,6 +2846,14 @@ impl ClaudeCodeAgent {
             });
         }
         Ok(outcome)
+    }
+}
+
+/// The session a flat process saved — a new one, or a fork's new id — is
+/// resumed flat from now on (item 758, [`flat`]); a stopped turn too.
+fn mark_flat(outcome: &AgentOutcome) {
+    if let Some(id) = &outcome.session_id {
+        flat::mark(id);
     }
 }
 
@@ -3381,6 +3419,41 @@ mod tests {
                 .argv
                 .iter()
                 .any(|x| x == "mcp__claude_ai_Google_Drive")
+        );
+    }
+
+    /// Item 758: a new session's reminders go in its first user message —
+    /// the switch on a process that starts a session, its forks and its
+    /// warm process alike — and never on a session that began without it,
+    /// which switching would re-render and re-write in full.
+    #[test]
+    fn a_new_session_sends_its_reminders_in_the_user_message() {
+        let caps = |s: &AgentSpec| -> Option<String> {
+            s.env_set()
+                .into_iter()
+                .find(|(k, _)| *k == flat::CAPS_ENV)
+                .map(|(_, v)| v)
+        };
+        let fresh = spec();
+        assert!(fresh.flat_reminders());
+        assert!(caps(&fresh).unwrap().ends_with(flat::MID_CONV_OFF));
+        // The waiting process carries it, so the first turn can take it.
+        let key = warm::Key::of(&fresh, &fresh.stdin_args());
+        assert!(
+            key.differs_in(&warm::Key::of(&fresh, &fresh.stdin_args()))
+                .is_empty()
+        );
+        // A session this machine never marked (every chat before 758).
+        let mut old = spec();
+        old.resume = Some("never-marked-758".into());
+        assert!(!old.flat_reminders());
+        assert_eq!(caps(&old), None);
+        assert!(
+            !old.fork_spec()
+                .unwrap()
+                .env
+                .iter()
+                .any(|(k, _)| k == flat::CAPS_ENV)
         );
     }
 
