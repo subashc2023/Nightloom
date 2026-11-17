@@ -416,7 +416,13 @@ async fn turn_body(
         input.text = format!("{}\n\n{note}", input.text);
     }
     // Item 789: when to call `log_run`, after his words, on the wire only.
-    if chain_logs.is_some() {
+    // Only where the tool is served: Nightloom's server gets the chat's
+    // `--budget-dir` (and so `log_run`) only beside a brief
+    // (`agent::ClaudeCodeAgent`'s ask-dir step) — `serve`'s turns (the
+    // away server, the Mac's jobs runner) have none, and a note naming a
+    // tool the model cannot see would only cost it a search (merge round
+    // P review). The run still gets code's entry at its end.
+    if chain_logs.is_some() && agent.spec().brief.is_some() && agent.spec().mcp_config.is_some() {
         input.text = format!("{}\n\n{}", input.text, crate::chain::LOG_NOTE);
     }
     // `context_status` describes this chat before the turn (review

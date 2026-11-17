@@ -2370,17 +2370,6 @@ impl Host for ServeHost {
         Some(self.jobs.clone())
     }
 
-    /// The job's chat (item 746): its log, made as a Claude Code chat in
-    /// the job's project when it has none, and the Chat policy on it while
-    /// the job is read-only — each turn here reads the kind back from the
-    /// log (`apply_kind_policy`), so the run that follows is held to it.
-    ///
-    /// Item 746's review: the kind is read back from the file before the
-    /// run (`jobs::hold_kind_on_disk`), and a chat the Mac owns — a mirrored
-    /// copy, or this server's own once the Mac took it down (0444, acked) —
-    /// is never written: the send would fork it from the unchanged file,
-    /// so a job whose approval was taken back would run with the writers.
-    /// The job goes on in a new chat of its own instead.
     /// Item 781: a stand-in copy of a Mac job is claimed by the server
     /// itself (after its grace, the Mac silent); the Mac runner asks the
     /// away server for a job it has a copy of; anything else runs.
@@ -2412,6 +2401,17 @@ impl Host for ServeHost {
         }
     }
 
+    /// The job's chat (item 746): its log, made as a Claude Code chat in
+    /// the job's project when it has none, and the Chat policy on it while
+    /// the job is read-only — each turn here reads the kind back from the
+    /// log (`apply_kind_policy`), so the run that follows is held to it.
+    ///
+    /// Item 746's review: the kind is read back from the file before the
+    /// run (`jobs::hold_kind_on_disk`), and a chat the Mac owns — a mirrored
+    /// copy, or this server's own once the Mac took it down (0444, acked) —
+    /// is never written: the send would fork it from the unchanged file,
+    /// so a job whose approval was taken back would run with the writers.
+    /// The job goes on in a new chat of its own instead.
     async fn job_prepare(&self, prep: crate::jobs::Prep) -> Result<String, String> {
         let project = self.project(prep.project.as_deref())?;
         let want = crate::jobs::kind_for(prep.read_only);
