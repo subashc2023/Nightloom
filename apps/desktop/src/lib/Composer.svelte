@@ -4565,6 +4565,9 @@
   /* Backlog 408: the warning reads in the accent, and is a button. */
   .bottom-cache.losing {
     display: inline-flex;
+    /* Post-install 16c8e01: each part brings its own "&nbsp;· "; the chip's
+       6 px flex gap doubled the space before every "·" (measured in WebKit). */
+    gap: 0;
     min-width: 0;
     max-width: 100%;
     color: var(--accent);
