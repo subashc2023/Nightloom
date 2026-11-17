@@ -1,10 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { feedbackSurface } from "./feedbackText";
+import { afterSend, feedbackSurface } from "./feedbackText";
 import { FEEDBACK_PHONE_KEY, loadPhoneFeedback, savePhoneFeedback, sentSentence } from "../remote/feedbackDraft";
 import { keptSheet } from "../remote/schemeReload";
 
 /** Item 805: the feedback box and the phone's sheet. */
 describe("feedback (item 805)", () => {
+  it("clears only the words that were sent, keeping what was typed meanwhile", () => {
+    expect(afterSend("hello", "hello")).toBe("");
+    expect(afterSend("hello\nand more", "hello")).toBe("and more");
+    expect(afterSend("rewritten", "hello")).toBe("rewritten");
+  });
+
   it("names where it was sent from in plain words", () => {
     expect(feedbackSurface({ home: false, asideOpen: false, theme: "Jarvis" })).toBe("the Mac (Jarvis theme)");
     expect(feedbackSurface({ home: true, asideOpen: true, theme: "Classic" })).toBe(

@@ -14,7 +14,7 @@ import { app, addToast } from "./state.svelte";
 import { classic } from "./layout.svelte";
 import { chatLabel } from "./chatLabel";
 import { isHome } from "./home";
-import { feedbackSurface, type FeedbackDraft } from "./feedbackText";
+import { afterSend, feedbackSurface, type FeedbackDraft } from "./feedbackText";
 
 export const FEEDBACK_DRAFT_KEY = "nightloom.feedback.draft";
 
@@ -60,7 +60,14 @@ export function openFeedback(): void {
   feedback.problem = null;
   void api
     .feedbackTargets()
-    .then((t) => (feedback.targets = t))
+    .then((t) => {
+      feedback.targets = t;
+      // A pick of a project no longer here would fail every send (review of 805).
+      if (feedback.draft.about && !t.some((x) => x.id === feedback.draft.about)) {
+        feedback.draft.about = "";
+        keepDraft();
+      }
+    })
     .catch(() => (feedback.targets = []));
 }
 
@@ -100,10 +107,13 @@ export async function sendFeedback(): Promise<boolean> {
   feedback.sending = true;
   feedback.problem = null;
   try {
-    const sent = await api.feedbackSend(feedbackContext());
+    const note = feedbackContext();
+    const sent = await api.feedbackSend(note);
     const line = sentLine(sent);
     feedback.last = line;
-    feedback.draft = { text: "", about: feedback.draft.about };
+    // Only what was sent goes (review of 805): words typed while it was
+    // sending stay in the box.
+    feedback.draft = { text: afterSend(feedback.draft.text, note.text), about: feedback.draft.about };
     keepDraft();
     addToast(line);
     return true;

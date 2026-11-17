@@ -86,6 +86,7 @@ async fn send(State(shared): State<Arc<Shared>>, Json(req): Json<FeedbackRequest
         about: req.about,
         model_note: None,
         model_wording: None,
+        words_unchecked: false,
     };
     let sent = tokio::task::spawn_blocking(move || feedback::send(home.as_deref(), &targets, note))
         .await

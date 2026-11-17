@@ -30,6 +30,10 @@ use crate::nightshift::{self, ContractRoot, items, launch};
 /// The folder under the config dir where every note is saved first.
 pub const DIR: &str = "feedback";
 
+/// The lock file under [`DIR`] that keeps two flushes from filing one note
+/// twice. Not `.json`, so [`pending`] never reads it.
+const LOCK_FILE: &str = "flush.lock";
+
 /// The heading of the list at the top of `backlog/INDEX.md`. The practices'
 /// `backlogctl.py index` writes the same heading from the items' front
 /// matter (`source: feedback`, status `todo`), so the list survives the
@@ -73,6 +77,10 @@ pub struct Note {
     /// own message is then `text`, and this is what the model wrote.
     #[serde(default)]
     pub model_wording: Option<String>,
+    /// The tool's words could not be checked against his messages (no chat,
+    /// or its log unreadable): the item says so rather than vouch for them.
+    #[serde(default)]
+    pub words_unchecked: bool,
 }
 
 /// Where a note was filed.
@@ -273,6 +281,26 @@ pub fn send(home: Option<&Path>, targets: &[Target], note: Note) -> Result<Sent,
 /// reason in `pending_why`.
 pub fn flush(home: &Path, targets: &[Target]) -> Vec<(PathBuf, FiledAs)> {
     let mut out = Vec::new();
+    // One flush at a time, across processes (review of 805): the desktop,
+    // its phone listener, the away server and each chat's MCP server all
+    // flush, and two reading the same pending record would each file it —
+    // a duplicate item. An advisory lock (`flock`), released on drop or
+    // when the process dies; `pending` is read only once it is held, so a
+    // record the other one filed is seen as filed. A lock that cannot be
+    // taken (the folder unwritable) files nothing: the notes stay saved.
+    let dir = home.join(DIR);
+    let _ = fs::create_dir_all(&dir);
+    let Ok(lock) = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join(LOCK_FILE))
+    else {
+        return out;
+    };
+    if lock.lock().is_err() {
+        return out;
+    }
     for (path, mut rec) in pending(home) {
         match file(targets, &rec) {
             Ok(f) => {
@@ -389,10 +417,17 @@ fn body(rec: &Record, root: &Path) -> String {
     }
     if let Some(w) = n.model_wording.as_deref() {
         inferred.push(format!(
-            "The model's wording was not found verbatim in his messages, so his latest message is \
-             quoted above; what the model sent was: {}",
+            "The model's wording was not found verbatim in his messages, so his message closest to \
+             it is quoted above; what the model sent was: {}",
             w.trim()
         ));
+    }
+    if n.words_unchecked {
+        inferred.push(
+            "A chat's model sent these words and they could not be checked against his messages \
+             (the chat's log was not found), so they may not be verbatim."
+                .into(),
+        );
     }
     if inferred.is_empty() {
         inferred.push("Nothing yet: no agent has read this.".into());
@@ -508,7 +543,7 @@ pub fn note_in_index(root: &Path, line: &str) -> Result<(), String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Words {
     Found,
-    /// Not found; his latest message, to quote instead.
+    /// Not found; his message closest to the words, to quote instead.
     NotFound {
         last: String,
     },
@@ -537,15 +572,41 @@ pub fn check_words(log_dir: &Path, chat: &str, words: &str) -> (Words, Option<St
             _ => None,
         })
         .collect();
-    let Some(last) = his.last().cloned() else {
+    if his.is_empty() {
         return (Words::Unchecked, title);
-    };
+    }
     let want = squash(words);
     if want.is_empty() || his.iter().any(|m| squash(m).contains(&want)) {
         (Words::Found, title)
     } else {
-        (Words::NotFound { last }, title)
+        (
+            Words::NotFound {
+                last: closest(&his, words),
+            },
+            title,
+        )
     }
+}
+
+/// His message that shares the most words with the model's `words`, the
+/// latest on a tie (review of 805): the latest alone would file a "yes, send
+/// it" that came after the feedback itself.
+fn closest(his: &[String], words: &str) -> String {
+    let bag = |s: &str| -> std::collections::HashSet<String> {
+        s.split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.chars().count() > 2)
+            .map(str::to_lowercase)
+            .collect()
+    };
+    let want = bag(words);
+    let mut best = (0usize, his.len() - 1);
+    for (i, m) in his.iter().enumerate() {
+        let shared = bag(m).intersection(&want).count();
+        if shared >= best.0 && shared > 0 {
+            best = (shared, i);
+        }
+    }
+    his[best.1].clone()
 }
 
 fn squash(s: &str) -> String {
@@ -611,6 +672,7 @@ impl SendFeedbackTool {
             Some(chat) => check_words(&self.log_dir(), chat, words),
             None => (Words::Unchecked, None),
         };
+        let unchecked = check == Words::Unchecked;
         let (text, model_wording) = match check {
             Words::NotFound { last } => (last, Some(words.to_string())),
             Words::Found | Words::Unchecked => (words.to_string(), None),
@@ -625,6 +687,7 @@ impl SendFeedbackTool {
             about: about.map(str::to_string),
             model_note: context.map(str::to_string),
             model_wording,
+            words_unchecked: unchecked,
         }
     }
 }
@@ -644,7 +707,7 @@ impl nightloom_core::tool::Tool for SendFeedbackTool {
                  session sees it first. Call it when the user says to send feedback. `words` \
                  must be the user's own words, copied exactly from their message (the part \
                  that is the feedback) — never a summary; if they are not found in their \
-                 messages, their latest message is filed instead. Put anything you add in \
+                 messages, their message closest to them is filed instead. Put anything you add in \
                  `context`. Leave `project` out for feedback about Nightloom."
                 .into(),
             input_schema: serde_json::json!({
@@ -884,7 +947,7 @@ mod tests {
     }
 
     /// The tool's words are his when they are in one of his messages;
-    /// otherwise his latest message is filed and the model's text is kept
+    /// otherwise his closest message is filed and the model's text is kept
     /// apart.
     #[test]
     fn the_tool_files_his_words_and_never_a_paraphrase() {
@@ -928,6 +991,78 @@ mod tests {
             item.contains("what the model sent was: The user finds the close control undersized.")
         );
         assert!(item.contains(&format!("- Chat: `{chat}` \"Phone asides\"")));
+    }
+
+    /// Review of 805: a "yes, send it" after the feedback is not what gets
+    /// filed when the model's words are off; his closest message is.
+    #[test]
+    fn a_paraphrase_files_his_closest_message_not_his_latest() {
+        let config = scratch("closest");
+        let dir = config
+            .join(crate::capture::UNFILED)
+            .join(crate::project::SESSIONS_DIR);
+        fs::create_dir_all(&dir).unwrap();
+        let mut s = nightloom_core::Session::with_log(&dir).unwrap();
+        s.record_user("the aside close button is too small on the phone, send that as feedback");
+        s.record_user("yes, send it");
+        let tool = SendFeedbackTool::new(config.clone(), None, None, Some(s.id.clone()));
+        let n = tool.note(
+            "The aside close button is undersized on phones.",
+            None,
+            None,
+        );
+        assert_eq!(
+            n.text,
+            "the aside close button is too small on the phone, send that as feedback"
+        );
+        assert!(!n.words_unchecked);
+        // No chat to check against: filed, and the item says unchecked.
+        let blind = SendFeedbackTool::new(config.clone(), None, None, None);
+        let b = blind.note("words", None, None);
+        assert!(b.words_unchecked);
+        let ns = scratch("closest-ns");
+        let sent = send(Some(&config), &[repo(&ns)], b).unwrap();
+        let item = fs::read_to_string(ns.join(sent.filed.unwrap().file)).unwrap();
+        assert!(item.contains("could not be checked against his messages"));
+    }
+
+    /// Review of 805: flushes racing over the same pending notes file each
+    /// note once.
+    #[test]
+    fn racing_flushes_file_each_note_once() {
+        let home = scratch("race");
+        for i in 0..4 {
+            send(
+                Some(&home),
+                &[],
+                Note {
+                    text: format!("waiting {i}"),
+                    ..Note::default()
+                },
+            )
+            .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(pending(&home).len(), 4);
+        let ns = scratch("race-ns");
+        repo(&ns);
+        let threads: Vec<_> = (0..4)
+            .map(|_| {
+                let home = home.clone();
+                let ns = ns.clone();
+                std::thread::spawn(move || flush(&home, &[repo_again(&ns)]).len())
+            })
+            .collect();
+        let filed: usize = threads.into_iter().map(|t| t.join().unwrap()).sum();
+        assert_eq!(filed, 4);
+        let items = fs::read_dir(ns.join("backlog"))
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .is_ok_and(|e| e.file_name().to_string_lossy().contains("feedback-waiting"))
+            })
+            .count();
+        assert_eq!(items, 4);
     }
 
     #[test]

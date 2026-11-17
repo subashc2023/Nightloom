@@ -10,6 +10,7 @@
    */
   import { nonceFor, type Client, type Try } from "./client";
   import { FEEDBACK_PHONE_KEY, loadPhoneFeedback, savePhoneFeedback, sentSentence } from "./feedbackDraft";
+  import { afterSend } from "../lib/feedbackText";
 
   interface Props {
     client: Pick<Client, "feedback">;
@@ -41,14 +42,16 @@
     if (busy || !text.trim()) return;
     busy = true;
     problem = null;
-    const t = nonceFor(last, `${FEEDBACK_PHONE_KEY}:${text}`);
+    const words = text;
+    const t = nonceFor(last, `${FEEDBACK_PHONE_KEY}:${words}`);
     last = t;
     try {
-      const sent = await client.feedback({ text, chat, chat_title: chatTitle, project, nonce: t.nonce });
+      const sent = await client.feedback({ text: words, chat, chat_title: chatTitle, project, nonce: t.nonce });
       done = sentSentence(sent);
       onnote(done);
-      text = "";
-      savePhoneFeedback("");
+      // Only what was sent goes (review of 805): words typed meanwhile stay.
+      text = afterSend(text, words);
+      savePhoneFeedback(text);
       last = null;
     } catch (e) {
       problem = `Not sent — ${e instanceof Error ? e.message : String(e)}. Your words are kept.`;

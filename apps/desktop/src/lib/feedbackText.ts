@@ -12,3 +12,11 @@ export function feedbackSurface(at: { home: boolean; asideOpen: boolean; theme: 
   const aside = at.asideOpen ? ", an aside open beside the chat" : "";
   return `${where} (${at.theme} theme${aside})`;
 }
+
+/** What stays in the box after `sent` landed: the words typed while it was
+ *  sending (review of 805), never the ones that went. */
+export function afterSend(now: string, sent: string): string {
+  if (now === sent) return "";
+  if (now.startsWith(sent)) return now.slice(sent.length).replace(/^\s+/, "");
+  return now;
+}
