@@ -226,6 +226,11 @@ impl MacAway {
         if !self.covers(job) {
             return Claim::Granted;
         }
+        // Asked once per run: a run that waits (its project not open on the
+        // Mac) retries every minute, and each ask would keep the server up.
+        if granted_before(&job.id, due) {
+            return Claim::Granted;
+        }
         let Ok(client) = self.client() else {
             return Claim::Granted;
         };
@@ -235,9 +240,33 @@ impl MacAway {
         };
         match client.lease(&req).await {
             Ok(Claim::Taken { by, at }) => Claim::Taken { by, at },
-            _ => Claim::Granted,
+            Ok(_) => {
+                remember_granted(&job.id, due);
+                Claim::Granted
+            }
+            // Not remembered: the next retry asks again.
+            Err(_) => Claim::Granted,
         }
     }
+}
+
+/// The runs this process was granted, by job (the Mac's side).
+static GRANTED: Mutex<Option<std::collections::HashMap<String, DateTime<Utc>>>> = Mutex::new(None);
+
+fn granted_before(job: &str, due: DateTime<Utc>) -> bool {
+    GRANTED
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .as_ref()
+        .is_some_and(|m| m.get(job) == Some(&due))
+}
+
+fn remember_granted(job: &str, due: DateTime<Utc>) {
+    GRANTED
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get_or_insert_with(Default::default)
+        .insert(job.to_string(), due);
 }
 
 /// The away server's claim on its stand-in copy of a Mac job.
