@@ -1,9 +1,11 @@
 //! The automatic in-place hand-off (nightshift item 763, blocker 2021, his
 //! "That sounds good as a default", 2026-11-17 ~2:25 AM).
 //!
-//! A talked-in chat that has grown past a soft mark (~200k tokens) hands
-//! off **in the same chat** at an idle moment — never mid-reply — and past
-//! a hard mark (~330k) at the next message whatever the moment. He sees a
+//! A talked-in chat that has grown past a soft mark (100k tokens; 200k
+//! until item 792, blocker 2056) hands off **in the same chat** at the
+//! cache edge — his first message after the chat's prompt cache has gone
+//! cold, never mid-reply and never while the cache is warm — and past a
+//! hard mark (~330k) at the next message whatever the moment. He sees a
 //! divider; the model's next request starts a fresh session whose first
 //! message carries a brief collected by code: the files the chat touched
 //! and **his own words verbatim**, newest first up to [`WORDS_CAP_TOKENS`].
@@ -14,10 +16,16 @@
 //! [`due`] (pure), the brief is [`brief`] (pure), and the turn engine calls
 //! [`hand_off_if_due`] before it records his message.
 //!
-//! "Idle" here is measured on the log: the newest reply ended at least
-//! [`IDLE_SECS`] before this message — he stepped away, so the prefix the
-//! next request would re-read is cooling anyway, and the hand-off costs no
-//! warm cache he was using.
+//! ~~"Idle" here is measured on the log: the newest reply ended at least
+//! [`IDLE_SECS`] before this message~~ (superseded 2026-11-17, item 792).
+//! "Cold" is measured on the log and the keep-warm file: the newest reply's
+//! cache entry (its `sent_at` plus its recorded lifetime, else
+//! [`IDLE_SECS`]) and any keep-warm ping that read it since have all run
+//! out ([`cold_at`]). Then his next message re-writes the whole prefix
+//! anyway, so starting a fresh slice costs nothing he was using; while the
+//! cache is warm, carrying on is the cheap read and nothing happens (785
+//! report §3c: a cold 200k return ≈ $1.53, a fresh slice ≈ $0.26). The
+//! brief is collected by code, so no warm wrap-up turn is needed first.
 //!
 //! [`SessionEvent::AutoHandOff`]: nightloom_core::SessionEvent::AutoHandOff
 
@@ -26,11 +34,18 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 use nightloom_core::{ContentBlock, Session, SessionEvent};
 
-/// The soft mark for a talked-in chat, tokens.
-pub const SOFT_TOKENS: u64 = 200_000;
+/// The soft mark for a talked-in chat, tokens (item 792, blocker 2056's
+/// default "100k"; it was 200k from item 763).
+pub const SOFT_TOKENS: u64 = 100_000;
+/// Soft marks an earlier build wrote to a chat's log; a chat carrying one
+/// (with today's hard mark) moves to [`SOFT_TOKENS`] at its next message,
+/// so a chat already past 100k when this ships follows the new mark
+/// without waiting for the next scan to re-set it.
+const EARLIER_SOFT: &[u64] = &[200_000];
 /// The hard mark, tokens.
 pub const HARD_TOKENS: u64 = 330_000;
-/// A pause this long since the newest reply makes the moment idle.
+/// The shortest pause since the newest reply that can count as cold — the
+/// lifetime used when the reply recorded none (the API's five minutes).
 pub const IDLE_SECS: i64 = 5 * 60;
 /// His words carried verbatim, at most this many tokens (≈ 4 chars each).
 pub const WORDS_CAP_TOKENS: usize = 15_000;
@@ -54,12 +69,15 @@ impl Reason {
 }
 
 /// Whether a chat with marks `(soft, hard)`, whose newest reply had
-/// `context` tokens and ended at `last_at`, hands off before a message sent
-/// at `now`. Pure.
+/// `context` tokens, ended at `last_at` and left a cache that goes cold at
+/// `cold_at` ([`cold_at`]), hands off before a message sent at `now`: past
+/// the hard mark always; past the soft one only once the cache is cold
+/// (item 792). Pure.
 pub fn due(
     marks: (u64, u64),
     context: u64,
     last_at: DateTime<Utc>,
+    cold_at: DateTime<Utc>,
     now: DateTime<Utc>,
 ) -> Option<Reason> {
     let (soft, hard) = marks;
@@ -69,10 +87,87 @@ pub fn due(
     if hard > 0 && context >= hard {
         return Some(Reason::Hard);
     }
-    if context >= soft && (now - last_at).num_seconds() >= IDLE_SECS {
+    if context >= soft && (now - last_at).num_seconds() >= IDLE_SECS && now >= cold_at {
         return Some(Reason::Soft);
     }
     None
+}
+
+/// When the newest live reply's prompt cache goes cold: its `sent_at` (else
+/// its `at`) plus the lifetime it recorded (else [`IDLE_SECS`]), or later
+/// when a keep-warm ping ([`crate::keep_warm`]) read it since — that ping's
+/// send plus the hour. `pings` is the chat's keep-warm folder; `None` when
+/// the chat has no reply. An aside that read it since ([`ASIDE_READ_FILE`],
+/// the keep-warm hit rule: at least half the reply's context) moves the
+/// edge to its send plus the reply's lifetime, as it moves the cache's.
+/// Pure over the log and the files.
+pub fn cold_at(session: &Session, pings: Option<&Path>) -> Option<DateTime<Utc>> {
+    let live = session.live_events();
+    let (sent, ttl, context) = live.iter().rev().find_map(|(_, e)| match e {
+        SessionEvent::AssistantMessage {
+            sent_at,
+            cache_ttl,
+            at,
+            usage,
+            ..
+        } => Some((
+            sent_at.unwrap_or(*at),
+            cache_ttl.map_or(IDLE_SECS * 1000, |t| t.duration().as_millis() as i64),
+            usage.input_tokens + usage.output_tokens,
+        )),
+        _ => None,
+    })?;
+    let sent_ms = sent.timestamp_millis();
+    let mut cold = sent_ms + ttl;
+    if let Some(dir) = pings {
+        for p in crate::keep_warm::read_pings(dir) {
+            if p.hit && p.sent_ms > sent_ms {
+                cold = cold.max(p.sent_ms + crate::keep_warm::TTL_MS);
+            }
+        }
+        if let Some(a) = last_aside_read(dir)
+            && a.sent_ms > sent_ms
+            && a.cache_read.saturating_mul(2) >= context
+        {
+            cold = cold.max(a.sent_ms + ttl);
+        }
+    }
+    DateTime::from_timestamp_millis(cold)
+}
+
+/// The newest aside's cache read, per chat, in its keep-warm folder: an
+/// aside forks the chat on its cache, so one that read it keeps it warm
+/// (item 677), and [`cold_at`] must see that even with keep-warm off.
+pub const ASIDE_READ_FILE: &str = "aside-read.json";
+
+/// One aside's read of the chat's cache: when it was sent, unix ms, and
+/// what its newest round read from cache.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AsideRead {
+    pub sent_ms: i64,
+    pub cache_read: u64,
+}
+
+/// Record an aside's read in `dir` (the chat's `ask/<id>` folder), unless a
+/// later one is already there. Best effort: a failed write only means the
+/// edge is judged from the reply and the pings.
+pub fn note_aside_read(dir: &Path, sent_ms: i64, cache_read: u64) {
+    if last_aside_read(dir).is_some_and(|a| a.sent_ms >= sent_ms) {
+        return;
+    }
+    let _ = std::fs::create_dir_all(dir);
+    if let Ok(text) = serde_json::to_string(&AsideRead {
+        sent_ms,
+        cache_read,
+    }) {
+        let _ = std::fs::write(dir.join(ASIDE_READ_FILE), text);
+    }
+}
+
+/// The aside read [`note_aside_read`] kept in `dir`, when there is one.
+pub fn last_aside_read(dir: &Path) -> Option<AsideRead> {
+    let text = std::fs::read_to_string(dir.join(ASIDE_READ_FILE)).ok()?;
+    serde_json::from_str(&text).ok()
 }
 
 /// The paths a chat's tool calls named (`file_path`, `path`,
@@ -211,7 +306,9 @@ fn without_chain(brief: &str) -> String {
 }
 
 /// Hand `session` off in place when its marks say it is due before a
-/// message sent at `now`. The reason when it did. `logs` is the chat's log
+/// message sent at `now` (a chat still on an earlier build's soft mark is
+/// moved to today's first). The reason when it did. The keep-warm folder
+/// read for [`cold_at`] is the chat's `ask/<id>` beside its log. `logs` is the chat's log
 /// dir, where its chain lives ([`crate::chain`]); `None` leaves it out.
 pub fn hand_off_if_due(
     session: &mut Session,
@@ -219,12 +316,18 @@ pub fn hand_off_if_due(
     skip_prefix: Option<&str>,
     logs: Option<&Path>,
 ) -> Option<Reason> {
-    let marks = session.auto_hand_off()?;
+    let mut marks = session.auto_hand_off()?;
+    if EARLIER_SOFT.contains(&marks.0) && marks.1 == HARD_TOKENS {
+        session.set_auto_hand_off(SOFT_TOKENS, HARD_TOKENS);
+        marks = (SOFT_TOKENS, HARD_TOKENS);
+    }
     if session.pending_hand_off().is_some() {
         return None;
     }
     let (context, last_at) = session.last_reply_context()?;
-    let reason = due(marks, context, last_at, now)?;
+    let pings = crate::cache_miss::ask_dir_of(session);
+    let cold = cold_at(session, pings.as_deref()).unwrap_or(last_at);
+    let reason = due(marks, context, last_at, cold, now)?;
     let text = brief_in(session, skip_prefix, logs);
     session.record_hand_off(text, context, reason.word());
     Some(reason)
@@ -255,16 +358,183 @@ mod tests {
     }
 
     #[test]
-    fn due_follows_the_marks_and_the_pause() {
+    fn due_follows_the_marks_and_the_cache_edge() {
         let m = (SOFT_TOKENS, HARD_TOKENS);
         let now = t0();
         let recent = now - Duration::seconds(30);
         let idle = now - Duration::seconds(IDLE_SECS + 1);
-        assert_eq!(due(m, 150_000, idle, now), None, "under soft");
-        assert_eq!(due(m, 210_000, recent, now), None, "soft but not idle");
-        assert_eq!(due(m, 210_000, idle, now), Some(Reason::Soft));
-        assert_eq!(due(m, 340_000, recent, now), Some(Reason::Hard));
-        assert_eq!(due((0, 0), 900_000, idle, now), None, "off");
+        let warm = now + Duration::minutes(20);
+        let cold = now - Duration::seconds(1);
+        assert_eq!(due(m, 90_000, idle, cold, now), None, "under soft");
+        assert_eq!(
+            due(m, 150_000, recent, cold, now),
+            None,
+            "soft but not idle"
+        );
+        assert_eq!(
+            due(m, 150_000, idle, warm, now),
+            None,
+            "soft, idle, still warm"
+        );
+        assert_eq!(due(m, 150_000, idle, cold, now), Some(Reason::Soft));
+        assert_eq!(due(m, 340_000, recent, warm, now), Some(Reason::Hard));
+        assert_eq!(due((0, 0), 900_000, idle, cold, now), None, "off");
+    }
+
+    /// A reply on the Claude Code engine's one-hour cache, `tokens` of
+    /// context, sent at `sent`.
+    fn timed_reply(session: &mut Session, tokens: u64, sent: DateTime<Utc>) {
+        session.record_assistant_timed(
+            "claude-opus-5-5",
+            vec![ContentBlock::Text { text: "ok".into() }],
+            Some("end_turn".into()),
+            Usage {
+                input_tokens: tokens,
+                output_tokens: 100,
+                cache_read_tokens: Some(tokens - 2_000),
+                cache_write_tokens: Some(2_000),
+                cache_write_1h_tokens: Some(2_000),
+                ..Usage::default()
+            },
+            None,
+            sent,
+            Some(nightloom_core::CacheTtl::OneHour),
+        );
+    }
+
+    /// Item 792's check: a warm chat at 150k is not handed off; the same
+    /// chat gone cold is. A keep-warm ping that read the cache pushes the
+    /// edge out by its hour; a 90k chat gone cold stays as it is.
+    #[test]
+    fn a_warm_chat_at_150k_carries_on_and_the_same_chat_gone_cold_hands_off() {
+        let dir = scratch();
+        let mut s = Session::start(&dir, ChatMode::Normal, ChatKind::Build).unwrap();
+        s.set_auto_hand_off(SOFT_TOKENS, HARD_TOKENS);
+        s.record_user_message("look at the build", vec![], vec![], false);
+        let sent = Utc::now();
+        timed_reply(&mut s, 150_000, sent);
+        assert_eq!(
+            cold_at(&s, None).map(|t| t.timestamp_millis()),
+            Some((sent + Duration::hours(1)).timestamp_millis())
+        );
+        // Back after 20 minutes: the hour's cache is warm, nothing happens.
+        let warm = sent + Duration::minutes(20);
+        assert_eq!(hand_off_if_due(&mut s, warm, None, None), None, "warm");
+        assert!(s.pending_hand_off().is_none());
+        // A keep-warm ping read it at 55 minutes: still warm at 61.
+        let pings = crate::cache_miss::ask_dir_of(&s).unwrap();
+        std::fs::create_dir_all(&pings).unwrap();
+        let ping = crate::keep_warm::PingLine {
+            sent_ms: (sent + Duration::minutes(55)).timestamp_millis(),
+            cache_read: 150_000,
+            cache_write: 0,
+            input: 3,
+            output: 1,
+            cost_usd: None,
+            model: None,
+            context: 150_100,
+            hit: true,
+            error: None,
+        };
+        std::fs::write(
+            pings.join(crate::keep_warm::PINGS_FILE),
+            serde_json::to_string(&ping).unwrap() + "\n",
+        )
+        .unwrap();
+        let after_hour = sent + Duration::minutes(61);
+        assert_eq!(
+            hand_off_if_due(&mut s, after_hour, None, None),
+            None,
+            "kept warm"
+        );
+        // Gone cold (the ping's hour ran out too): it hands off.
+        let cold = sent + Duration::minutes(55 + 61);
+        assert_eq!(
+            hand_off_if_due(&mut s, cold, None, None),
+            Some(Reason::Soft)
+        );
+        assert!(s.pending_hand_off().is_some());
+
+        // A 90k chat gone cold is under the mark.
+        let mut small = Session::start(&dir, ChatMode::Normal, ChatKind::Build).unwrap();
+        small.set_auto_hand_off(SOFT_TOKENS, HARD_TOKENS);
+        timed_reply(&mut small, 90_000, sent);
+        assert_eq!(
+            hand_off_if_due(&mut small, sent + Duration::hours(3), None, None),
+            None
+        );
+    }
+
+    /// Merge round R: an aside that read the cache keeps it warm (item
+    /// 677), keep-warm on or off, so a chat he asked beside at 50 minutes
+    /// is not handed off at 70; one that read under half is no read; past
+    /// the aside's own hour the chat hands off.
+    #[test]
+    fn an_aside_that_read_the_cache_keeps_the_chat_from_a_warm_hand_off() {
+        let dir = scratch();
+        let mut s = Session::start(&dir, ChatMode::Normal, ChatKind::Build).unwrap();
+        s.set_auto_hand_off(SOFT_TOKENS, HARD_TOKENS);
+        s.record_user_message("look at the build", vec![], vec![], false);
+        let sent = Utc::now();
+        timed_reply(&mut s, 150_000, sent);
+        let ask = crate::cache_miss::ask_dir_of(&s).unwrap();
+        // Under half the context: the head of the prefix only, no read.
+        note_aside_read(
+            &ask,
+            (sent + Duration::minutes(40)).timestamp_millis(),
+            60_000,
+        );
+        assert_eq!(
+            cold_at(&s, Some(&ask)).map(|t| t.timestamp_millis()),
+            Some((sent + Duration::hours(1)).timestamp_millis())
+        );
+        let aside = sent + Duration::minutes(50);
+        note_aside_read(&ask, aside.timestamp_millis(), 149_000);
+        // An older aside never replaces a newer one.
+        note_aside_read(
+            &ask,
+            (sent + Duration::minutes(45)).timestamp_millis(),
+            149_000,
+        );
+        assert_eq!(
+            last_aside_read(&ask).map(|a| a.sent_ms),
+            Some(aside.timestamp_millis())
+        );
+        assert_eq!(
+            hand_off_if_due(&mut s, sent + Duration::minutes(70), None, None),
+            None,
+            "warm from the aside"
+        );
+        assert_eq!(
+            hand_off_if_due(&mut s, aside + Duration::minutes(61), None, None),
+            Some(Reason::Soft)
+        );
+    }
+
+    /// A chat already on the earlier build's 200k mark moves to 100k at its
+    /// next message, so a Home chat at 150k does not wait for the next scan.
+    #[test]
+    fn a_chat_on_the_old_200k_mark_moves_to_100k() {
+        let dir = scratch();
+        let mut s = Session::start(&dir, ChatMode::Normal, ChatKind::Build).unwrap();
+        s.set_auto_hand_off(200_000, HARD_TOKENS);
+        let sent = Utc::now();
+        timed_reply(&mut s, 150_000, sent);
+        assert_eq!(
+            hand_off_if_due(&mut s, sent + Duration::minutes(10), None, None),
+            None
+        );
+        assert_eq!(s.auto_hand_off(), Some((SOFT_TOKENS, HARD_TOKENS)));
+        assert_eq!(
+            hand_off_if_due(&mut s, sent + Duration::minutes(70), None, None),
+            Some(Reason::Soft)
+        );
+        // A mark he or another build set otherwise is left alone.
+        let mut other = Session::start(&dir, ChatMode::Normal, ChatKind::Build).unwrap();
+        other.set_auto_hand_off(50_000, 80_000);
+        timed_reply(&mut other, 40_000, sent);
+        hand_off_if_due(&mut other, sent + Duration::minutes(10), None, None);
+        assert_eq!(other.auto_hand_off(), Some((50_000, 80_000)));
     }
 
     fn reply(session: &mut Session, text: &str, tokens: u64, tool_path: Option<&str>) {
