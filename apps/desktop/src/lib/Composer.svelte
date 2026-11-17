@@ -51,6 +51,7 @@
   } from "./cache";
   import { cacheEstimate, lastReply, ratesFromPrice } from "./cacheCost";
   import { cacheRatesOf, loadCacheRates } from "./cacheRates.svelte";
+  import { layerChangeSinceCache, modelIdFor, nextSendModel, pendingChangeCost, switchDetail } from "./changeCost";
   import { handedOffOff, holdPress, isKeeping, isOn, switchLabel, switchTitle, touchedUntil } from "./keepWarm";
   import { holdKeepWarm, keepWarm, loadKeepWarm, setKeepWarm } from "./keepWarm.svelte";
   import KeepWarmHold from "./KeepWarmHold.svelte";
@@ -2704,6 +2705,21 @@
     const current = a === cur ? " · current" : "";
     return { detail: `${v.detail}${current}`, title: `${v.title}${newest}` };
   }
+  /** Item 777: a row's price for switching to it while the cache is warm —
+   *  the menu says it before he picks (`switchDetail`); "" on the cache's
+   *  own model, a cold cache or no reply. */
+  function switchPrice(pick: string): string {
+    if (!onClaudeCode || !cache?.warm) return "";
+    const id = modelIdFor(pick, modelSeen.byAlias);
+    if (id) void loadCacheRates(id);
+    return switchDetail(lastReply(app.events)?.usage ?? null, lastModel, id, cacheRatesOf(id), true);
+  }
+  /** The price ahead of a row's detail (`· claude-opus-5-5 · …`). */
+  const withPrice = (price: string, detail: string): string => {
+    if (!price) return detail;
+    const rest = detail.replace(/^·\s*/, "").trim();
+    return rest ? `· ${price} · ${rest}` : `· ${price}`;
+  };
   const modelRows = $derived.by((): MenuRow[] => {
     const rows: MenuRow[] = [];
     if (agentMode) {
@@ -2711,7 +2727,7 @@
       // ~~"whatever the CLI defaults to" / "current · the CLI resolves it"~~
       // — item 511: the model each resolved to on this CLI, or not yet.
       const dv = aliasRow("", cur);
-      rows.push({ id: "default", label: "default", detail: dv.detail, title: dv.title, on: cur === "", run: () => void switchModel("") });
+      rows.push({ id: "default", label: "default", detail: withPrice(switchPrice(""), dv.detail), title: dv.title, on: cur === "", run: () => void switchModel("") });
       // ~~One row per alias (`fable · Fable 5.1`), then each family's newest
       // by full id unless an alias already shows it (511)~~ — item 518: one
       // row per family, `Fable 5.2`, picking the full id, the alias noted
@@ -2721,7 +2737,7 @@
       for (const f of full) {
         const sep = f.kind === "newest" && firstNewest;
         if (f.kind === "newest") firstNewest = false;
-        rows.push({ id: f.key, label: f.label, detail: f.detail, title: f.title, cap: f.capAlias ? agentKey(f.capAlias) : null, on: f.on, sep, run: () => void switchModel(f.pick) });
+        rows.push({ id: f.key, label: f.label, detail: withPrice(switchPrice(f.pick), f.detail), title: f.title, cap: f.capAlias ? agentKey(f.capAlias) : null, on: f.on, sep, run: () => void switchModel(f.pick) });
       }
       // A full id typed into the rail's field: named here, changed there.
       // ~~`!AGENT_PILLS.includes(cur)`~~ — and no newest row names it (511);
@@ -3115,9 +3131,15 @@
   $effect(() => {
     if (lastModel && onClaudeCode) void loadCacheRates(lastModel);
   });
-  const nextEst = $derived(
-    cache ? cacheEstimate(app.events, onClaudeCode ? cacheRatesOf(lastModel) : ratesFromPrice(app.connection?.price), cache.warm) : null,
-  );
+  // Item 777: at the rates of the model the next send goes to (`targetRates`,
+  // below) — a cold chip with a model switch pending prices the new model,
+  // and says the change itself costs nothing extra.
+  const nextEst = $derived.by(() => {
+    if (!cache) return null;
+    const est = cacheEstimate(app.events, targetRates, cache.warm);
+    if (!est || cache.warm || !coldPending) return est;
+    return { ...est, line: `${est.line}, the change costs no extra` };
+  });
   /** Item 596: the same state drawn on the box's frame (`cacheLook.css`). */
   const frame = $derived(cacheFrame(cache));
   /*
@@ -3214,6 +3236,66 @@
         })
       : [],
   );
+  /*
+   * Item 777: what the pending change costs on the next send, with it
+   * against without it (`changePrice`). The model it goes to: on Claude
+   * Code a draft model other than the cache's, by its own rates (an alias
+   * by what it last resolved to; unknown → tokens, no figure); on the API
+   * engine the connection, which already carries the picked model's price.
+   * A prompt-layer change logged since the cache's reply (notes, practices,
+   * memory, a layer's own text) is priced from the system block on.
+   */
+  const targetModel = $derived(cache ? nextSendModel(app.events, app.draft.agentModel, modelSeen.byAlias) : null);
+  $effect(() => {
+    if (targetModel && onClaudeCode) void loadCacheRates(targetModel);
+  });
+  const targetRates = $derived(onClaudeCode ? cacheRatesOf(targetModel) : ratesFromPrice(app.connection?.price));
+  const layerChange = $derived(cacheBuilt ? layerChangeSinceCache(app.events) : null);
+  /** A change pending on a cold cache: costs nothing extra (the chip says so). */
+  const coldPending = $derived(
+    !!cacheBuilt &&
+      !!cache &&
+      !cache.warm &&
+      (!!layerChange ||
+        cacheLoss(cacheBuilt.key, app.draft, {
+          kind: declaredKind(app.events),
+          builtKind: kindAtCache(app.events),
+          apiModel: app.connection && app.connection.engine !== "claude-code" ? app.connection.model : undefined,
+        }).length > 0),
+  );
+  // One rule with the rail's *Next send* row (`pendingChangeCost`).
+  const changeCost = $derived(
+    cache?.warm
+      ? pendingChangeCost({
+          events: app.events,
+          draft: app.draft,
+          connection: app.connection,
+          seen: modelSeen.byAlias,
+          warm: true,
+          rates: (m) => {
+            if (m && onClaudeCode) void loadCacheRates(m);
+            return cacheRatesOf(m);
+          },
+        })
+      : null,
+  );
+  /** The bar's words: the draft changes, then a logged layer change. */
+  const lossWords = $derived([...cacheChanges.map((c) => c.text), ...(layerChange ? [layerChange.text] : [])]);
+  /** The bar's tooltip, two short lines (776's rule) with 777's with-change
+   *  price: `<changes> changed · next ≈ $X (vs $Y warm)` / the click clause. */
+  const lossTip = $derived.by(() => {
+    if (!cache || !cacheBuilt) return "";
+    if (!changeCost) {
+      return cacheChanges.length > 0
+        ? cacheLossTitle(cacheChanges, cacheBuilt.cachedTokens, cache.remainingMs, nextEst?.cold)
+        : "Prompt layers changed since the cache was built\nThe Context page puts them back";
+    }
+    const click =
+      cacheChanges.length > 0
+        ? cacheLossTitle(cacheChanges, cacheBuilt.cachedTokens, cache.remainingMs).split("\n")[1]
+        : "The Context page puts them back";
+    return `${lossWords.join(", ")} changed · ${changeCost.line}\n${click}`;
+  });
   function restoreCache() {
     if (!cacheBuilt || cacheChanges.length === 0 || !canRestore(cacheChanges)) return;
     const engine = restoreEngine(cacheBuilt.key, cacheChanges);
@@ -4104,15 +4186,17 @@
         </button>
         {#if kwHoldOpen && kwButton}<KeepWarmHold anchor={kwButton} status={kw} onpick={(h) => void holdFor(h)} onclose={() => (kwHoldOpen = false)} />{/if}
       {/if}
-      {#if cache && cacheBuilt && cacheChanges.length > 0}
+      {#if cache && cacheBuilt && cache.warm && (cacheChanges.length > 0 || layerChange)}
         <!-- Backlog 408: a pending change would lose the warm cache; the
-             click puts every changed setting back. -->
+             click puts every changed setting back. Item 777: priced, with
+             it against without it; a logged layer change is named too (the
+             Context page puts it back, not this click). -->
         <button
           class="ns-chip mono bottom-cache losing"
-          use:tip={cacheLossTitle(cacheChanges, cacheBuilt.cachedTokens, cache.remainingMs, nextEst?.cold)}
+          use:tip={lossTip}
           onclick={restoreCache}
         >
-          <span class="losing-what">{cacheLossLine(cacheChanges)}</span>{#if canRestore(cacheChanges)}<span class="bottom-cache-when">&nbsp;· <span class="restore-word">restore</span></span>{/if}
+          <span class="losing-what">{cacheChanges.length > 0 && !layerChange ? cacheLossLine(cacheChanges) : `cache will be lost · ${lossWords.join(", ")}`}</span>{#if changeCost}{@const vs = changeCost.line.indexOf(" (vs")}<span class="bottom-cache-next"><span class="next-sep">&nbsp;· </span>{vs < 0 ? changeCost.line : changeCost.line.slice(0, vs)}{#if vs >= 0}<span class="cost-vs">{changeCost.line.slice(vs)}</span>{/if}</span>{/if}{#if canRestore(cacheChanges)}<span class="bottom-cache-when restore-part">&nbsp;· <span class="restore-word">restore</span></span>{/if}
         </button>
       {:else if cached != null || cache}
         <div
@@ -4511,8 +4595,25 @@
     color: var(--dim);
     white-space: nowrap;
   }
+  /* Item 777: on the "cache will be lost" bar the price is the point — it
+     never shrinks, and the words ahead of it give way first, phone width too. */
+  .bottom-cache.losing .bottom-cache-next {
+    flex: none;
+    color: inherit;
+  }
   @media (max-width: 560px) {
     .bottom-cache-next {
+      display: none;
+    }
+    .bottom-cache.losing .bottom-cache-next {
+      display: inline;
+    }
+    /* Phone width: the price alone (the click still restores; the tooltip
+       has the rest). */
+    .bottom-cache.losing .cost-vs,
+    .bottom-cache.losing .next-sep,
+    .bottom-cache.losing .restore-part,
+    .bottom-cache.losing .losing-what {
       display: none;
     }
   }
