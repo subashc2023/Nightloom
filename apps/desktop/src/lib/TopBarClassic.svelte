@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { resetLong, resetText as resetTextAt } from "./resetTime";
-  import { paceCardLine, paceText, paceWarn, WARN_PCT } from "./pace";
+  import { resetText as resetTextAt } from "./resetTime";
+  import { paceCardLine, paceWarn, WARN_PCT } from "./pace";
   import {
     addToast,
     app,
@@ -23,6 +23,7 @@
   import RightRail from "./RightRailClassic.svelte";
   import { portal, anchorBelow } from "./portal";
   import { tip } from "./tip";
+  import { gaugeChipTip } from "./shortTip";
   import { foldToFit } from "./fold";
   const POP_WIDTH = 340;
   import NotificationCentre from "./NotificationCentre.svelte";
@@ -281,22 +282,8 @@
   function resetText(iso: string | null): string {
     return resetTextAt(iso, now);
   }
-  const planTitle = $derived.by(() => {
-    if (!plan) return "";
-    const age = planAgeText;
-    const where = planWhere;
-    const when = resetLong;
-    return (
-      `Plan usage, account-wide (every surface, not just this chat): ` +
-      `5-hour window ${plan.five_hour}% (${when(plan.five_hour_resets_at)}); ` +
-      `7-day window ${plan.seven_day ?? "?"}% (${when(plan.seven_day_resets_at)}). ` +
-      `From ${where}, ${age}${plan.stale ? " — stale: past 20 minutes, may be behind" : ""}. Refreshed at each turn end.` +
-      (pace ? `\n${pace}` : "")
-    );
-  });
   /** Item 769: the pace lines (tighter window first) and the 80% warning
    *  — his stop line — from the reading itself, either window. */
-  const pace = $derived(plan ? paceText(app.planPace, now) : "");
   const warn = $derived(plan ? paceWarn(plan) : null);
   const weekHot = $derived(plan?.seven_day != null && plan.seven_day >= WARN_PCT);
 
@@ -336,11 +323,18 @@
       ? (signedOut ?? "subscription")
       : (app.connection?.provider ?? ""),
   );
-  /** The spend, for the gauge's hover once its chip has folded (backlog
-   *  129, step 2) — carried always, so the hover reads the same at every
-   *  width. */
-  const spendTail = $derived(
-    spend ? ` · spent ${spend.complete ? "" : "at least "}${spend.text}` : "",
+  /** Post-install 16c8e01: the gauge chip's hover, two short lines
+   *  (shortTip.ts) — the spend carried always (backlog 129, step 2), so
+   *  it reads the same at every width; every other figure is on the
+   *  gauge card it opens. */
+  const chipTip = $derived(
+    gaugeChipTip({
+      context: gauge
+        ? `Context ${tokens(gauge.used)}${gauge.limit ? ` of ${tokens(gauge.limit)} (${Math.round((gauge.ratio ?? 0) * 100)}%)` : " · window unknown"}`
+        : null,
+      spend: spend ? `${spend.complete ? "" : "≥ "}${spend.text}` : null,
+      plan,
+    }),
   );
   /**
    * The latest turn's subagents (nightshift backlog 152): the agents chip
@@ -356,11 +350,6 @@
    *  chip shows while any does, so the Running-tasks panel that lists
    *  them is a click away even in a chat with no subagents. */
   const offScreen = $derived(liveChats().filter((c) => !c.onScreen).length);
-  const agentsTail = $derived(
-    agents.rows.length > 0
-      ? ` · + subagents: ${agents.tokens.toLocaleString()} tokens (${agents.rows.length}, not in the window)`
-      : "",
-  );
   function toggleTasks() {
     app.showRail = false;
     app.showContext = false;
@@ -608,14 +597,7 @@
         class:warn80={warn != null}
         aria-expanded={showGauge}
         bind:this={gaugeEl}
-        use:tip={(gauge
-          ? gauge.limit
-            ? `Context: ${gauge.used.toLocaleString()} of ${gauge.limit.toLocaleString()} tokens (${Math.round((gauge.ratio ?? 0) * 100)}%)${spendTail}${agentsTail}`
-            : `Context: ${gauge.used.toLocaleString()} tokens — window size unknown for this model${spendTail}${agentsTail}`
-          : "Context: nothing sent yet") +
-          (warn ? `\n${warn}` : "") +
-          (plan ? `\n${planTitle}` : "") +
-          " — click for the figures (⌘⇧C itemises the context)"}
+        use:tip={chipTip}
         onclick={toggleGauge}
       >
         {#if gauge || plan}

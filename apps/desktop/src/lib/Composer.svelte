@@ -43,13 +43,13 @@
     restoreEngine,
     cacheLoss,
     cacheLossLine,
-    cacheLossTitle,
     cacheState,
     nextTickMs,
     remainingText,
     restoreCacheSettings,
   } from "./cache";
   import { cacheEstimate, lastReply, ratesFromPrice } from "./cacheCost";
+  import { lossTipText } from "./shortTip";
   import { cacheRatesOf, loadCacheRates } from "./cacheRates.svelte";
   import { layerChangeSinceCache, modelIdFor, nextSendModel, pendingChangeCost, switchDetail } from "./changeCost";
   import { handedOffOff, holdPress, isKeeping, isOn, switchLabel, switchTitle, touchedUntil } from "./keepWarm";
@@ -3285,22 +3285,17 @@
    *  price: `<changes> changed · next ≈ $X (vs $Y warm)` / the click clause. */
   const lossTip = $derived.by(() => {
     if (!cache || !cacheBuilt) return "";
-    if (!changeCost) {
-      return cacheChanges.length > 0
-        ? cacheLossTitle(cacheChanges, cacheBuilt.cachedTokens, cache.remainingMs, nextEst?.cold)
-        : "Prompt layers changed since the cache was built\nThe Context page puts them back";
-    }
-    // Post-install 16c8e01: `<words> changed · next ≈ …` and the click
-    // clause with "(the cache is warm for 40 min)" each wrapped (3 drawn
-    // lines, measured). The bar's face names the change and the chip the
-    // time left, so the tip keeps the price and the click.
-    const click =
-      cacheChanges.length > 0
-        ? cacheLossTitle(cacheChanges, cacheBuilt.cachedTokens, cache.remainingMs)
-            .split("\n")[1]
-            .replace(/ \(the cache is warm for [^)]*\)/, "")
-        : "The Context page puts them back";
-    return `${changeCost.line.charAt(0).toUpperCase()}${changeCost.line.slice(1)}\n${click}`;
+    // Post-install 16c8e01: the price first, then what the click actually
+    // does (shortTip.ts `lossClick`): a layer change is the Context page's,
+    // so with one pending the click never promises to undo it. The bar's
+    // face names the change and the chip the time left.
+    return lossTipText({
+      changes: cacheChanges,
+      layer: !!layerChange,
+      cachedTokens: cacheBuilt.cachedTokens,
+      priceLine: changeCost?.line ?? null,
+      resendUsd: nextEst?.cold ?? null,
+    });
   });
   function restoreCache() {
     if (!cacheBuilt || cacheChanges.length === 0 || !canRestore(cacheChanges)) return;
@@ -4202,7 +4197,7 @@
           use:tip={lossTip}
           onclick={restoreCache}
         >
-          <span class="losing-what">{cacheChanges.length > 0 && !layerChange ? cacheLossLine(cacheChanges) : `cache will be lost · ${lossWords.join(", ")}`}</span>{#if changeCost}{@const vs = changeCost.line.indexOf(" (vs")}<span class="bottom-cache-next"><span class="next-sep">&nbsp;· </span>{vs < 0 ? changeCost.line : changeCost.line.slice(0, vs)}{#if vs >= 0}<span class="cost-vs">{changeCost.line.slice(vs)}</span>{/if}</span>{/if}{#if canRestore(cacheChanges)}<span class="bottom-cache-when restore-part">&nbsp;· <span class="restore-word">restore</span></span>{/if}
+          <span class="losing-what">{cacheChanges.length > 0 && !layerChange ? cacheLossLine(cacheChanges) : `cache will be lost · ${lossWords.join(", ")}`}</span>{#if changeCost}{@const vs = changeCost.line.indexOf(" (vs")}<span class="bottom-cache-next"><span class="next-sep">&nbsp;·&nbsp;</span>{vs < 0 ? changeCost.line : changeCost.line.slice(0, vs)}{#if vs >= 0}<span class="cost-vs">{changeCost.line.slice(vs)}</span>{/if}</span>{/if}{#if canRestore(cacheChanges)}<span class="bottom-cache-when restore-part">&nbsp;· <span class="restore-word">restore</span></span>{/if}
         </button>
       {:else if cached != null || cache}
         <div
@@ -4606,6 +4601,9 @@
   .bottom-cache.losing .bottom-cache-next {
     flex: none;
     color: inherit;
+    /* Post-install 16c8e01: the separator span carries its own spaces
+       (a trailing plain space was dropped, so the face read "off  ·next"). */
+    margin-left: 0;
   }
   @media (max-width: 560px) {
     .bottom-cache-next {
