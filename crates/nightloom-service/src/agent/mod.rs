@@ -1207,7 +1207,8 @@ impl AgentSpec {
     /// as for an aside: the fork exists to read the checkpoint's prefix
     /// from the cache, not to re-write it. What differs: the fork keeps no
     /// session file of its own (its report is the deliverable); under Ask
-    /// or Plan it runs as an aside does — `dontAsk`, no Ask hook — since a
+    /// ~~or Plan~~ it runs as an aside does — `dontAsk`, no Ask hook (under
+    /// Plan, `plan`, no Ask hook, since 2026-11-17: see the body) — since a
     /// deferral from a side process would park it on a card nobody's turn
     /// is waiting for; the brief hook stays, so its calls are judged by the
     /// message's budget and its own spawns by the caps; `--max-turns` is
@@ -1227,14 +1228,30 @@ impl AgentSpec {
         }
         spec.folder_side = true;
         spec.own_browser_for_side();
+        // The fork stays in the chat's tool-text class, as its aside does
+        // (item 774, blocker 2037; wave O, 2026-11-17). ~~Under Plan the
+        // fork ran `dontAsk`~~: `dontAsk` and `plan` send another Bash
+        // description on Opus 5.5, and `--model haiku` under `plan` runs
+        // Sonnet 5.5 where `dontAsk` runs Haiku (CLI 2.1.326, measured), so
+        // a Plan chat's fork missed the checkpoint's prefix. Now an Auto
+        // chat's fork — and that of the
+        // one resume of an approved plan going to Auto
+        // ([`AskMode::ExitingToAuto`], `auto` too, which also ran
+        // `dontAsk`) — is [`AskMode::AutoFork`]; a Plan chat's is
+        // [`AskMode::PlanAside`]: `plan`, so it still edits nothing, no
+        // Ask hook; an Ask chat's stays `dontAsk`, its `default`'s class.
         if let Some(ask) = &mut spec.ask {
-            if ask.mode.is_auto() {
+            match ask.mode {
                 // An Auto chat's fork stays on `auto`, as it ran before
                 // the position asked questions (backlog 294).
-                ask.mode = AskMode::AutoFork;
-            } else {
-                ask.mode = AskMode::Aside;
-                spec.permission_mode = Some("dontAsk".into());
+                AskMode::Auto | AskMode::AutoFork | AskMode::ExitingToAuto => {
+                    ask.mode = AskMode::AutoFork;
+                }
+                AskMode::Plan | AskMode::PlanAside => ask.mode = AskMode::PlanAside,
+                AskMode::Ask | AskMode::Aside => {
+                    ask.mode = AskMode::Aside;
+                    spec.permission_mode = Some("dontAsk".into());
+                }
             }
         }
         Some(spec)
@@ -5562,6 +5579,91 @@ mod tests {
             "{entries:?}"
         );
         assert!(entries.iter().any(|(m, _)| m == ask::PLAN_TOOLS_MATCHER));
+    }
+
+    /// Wave O (2026-11-17; 2037's left-out): a checkpoint fork, of every
+    /// chat mode, sends the chat's own request flags — the permission mode
+    /// in the chat's tool-text class and nothing else changed but the
+    /// settings JSON (hooks, not the request) and the fork's own flags.
+    /// ~~A Plan chat's and an approved plan's (ExitingToAuto) forks ran
+    /// `dontAsk`~~, which on Opus 5.5 sends other Bash text, and on a
+    /// Haiku chat runs Haiku where `plan` runs Sonnet, so the fork missed.
+    #[test]
+    fn every_chat_modes_checkpoint_fork_sends_the_chats_request_flags() {
+        // Everything but the prompt, the settings JSON and the fork's flags.
+        fn request_flags(a: &[String]) -> Vec<String> {
+            let mut out = Vec::new();
+            let mut it = a.iter();
+            while let Some(x) = it.next() {
+                match x.as_str() {
+                    "-p" | "--settings" => {
+                        it.next();
+                    }
+                    "--fork-session" | "--no-session-persistence" => {}
+                    "--permission-mode" => {
+                        it.next();
+                    }
+                    _ => out.push(x.clone()),
+                }
+            }
+            out
+        }
+        let mut chats: Vec<(AgentSpec, &str)> = Vec::new();
+        for (mode, fork) in [
+            (AskMode::Ask, "dontAsk"),
+            (AskMode::Plan, "plan"),
+            (AskMode::Auto, "auto"),
+            (AskMode::ExitingToAuto, "auto"),
+        ] {
+            chats.push((asking(mode), fork));
+        }
+        // No Ask hook: the fork keeps the chat's mode, as before.
+        for mode in [
+            None,
+            Some("default"),
+            Some("dontAsk"),
+            Some("auto"),
+            Some("bypassPermissions"),
+        ] {
+            let mut s = spec();
+            s.permission_mode = mode.map(Into::into);
+            chats.push((s, mode.unwrap_or("")));
+        }
+        for (mut s, want) in chats {
+            s.resume = Some("sess-1".into());
+            s.brief = Some(BriefSpec {
+                hook: vec!["hook".into()],
+                dir: PathBuf::from("/chat"),
+                text: "brief".into(),
+            });
+            let chat = s.args("turn");
+            let f = s.checkpoint_fork().unwrap();
+            let a = f.args("");
+            assert_eq!(
+                mode_or_default(&a),
+                if want.is_empty() { "default" } else { want },
+                "{chat:?}"
+            );
+            assert_eq!(
+                tool_text_class(&mode_or_default(&a)),
+                tool_text_class(&mode_or_default(&chat)),
+                "{chat:?}"
+            );
+            assert_eq!(request_flags(&a), request_flags(&chat), "{chat:?}");
+            assert!(f.brief.is_some(), "the budget hook rides in the fork");
+            // No Ask hook: nothing points at the chat's card directory.
+            let entries = pre_tool_use(&a);
+            assert!(
+                !entries.iter().any(|(_, c)| c.contains("/logs/ask/chat-3")),
+                "{entries:?}"
+            );
+        }
+        // A Plan chat's fork has nothing to approve: `planning()` is off.
+        let mut s = asking(AskMode::Plan);
+        s.resume = Some("sess-1".into());
+        let f = s.checkpoint_fork().unwrap();
+        assert_eq!(f.ask.as_ref().unwrap().mode, AskMode::PlanAside);
+        assert!(!ClaudeCodeAgent::new(f).planning());
     }
 
     /// Beside the Chat policy (backlog 147's narrowing), the Auto position
