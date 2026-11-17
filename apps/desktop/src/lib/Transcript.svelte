@@ -38,6 +38,7 @@
   import { scheduledFor } from "./scheduled.svelte";
   import type { Segment } from "./state.svelte";
   import { asideReads } from "./state.svelte";
+  import { coldUsdFor } from "./cacheRates.svelte";
   import { cardLog, continuableReply, continuedFromReply, nextChatMessage, type NextChat } from "./handoffButton";
   import { carryFor } from "./handoffCarryFor";
   import { pushUndo } from "./state/edits.svelte";
@@ -837,7 +838,7 @@
       editing = editReduce(editing, { type: "begin", index: item.index, text, parts, chipsAt });
       editCacheLine = src.words
         ? src.words.editLine
-        : editLine(cacheState(evs, Date.now(), chatId ? touchedUntil(keepWarm.byChat[chatId]) : null, asideReads(chatId)));
+        : editLine(cacheState(evs, Date.now(), chatId ? touchedUntil(keepWarm.byChat[chatId]) : null, asideReads(chatId)), coldUsdFor(evs, app.connection));
     }).then(() => {
       if (editorLive) {
         editorLive.focus();

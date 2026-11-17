@@ -391,8 +391,8 @@
           <div
             class="dk"
             use:tip={cacheLeft
-              ? `The prompt cache from the newest reply: ${cache.ttl === "1h" ? "an hour" : "five minutes"} from when its request was sent`
-              : "The prompt cache has expired: the next request writes it again"}
+              ? `Warm for ${cacheLeft} more (${cache.ttl === "1h" ? "1-hour" : "5-minute"} cache)`
+              : "Cache cold · the next send writes it again"}
           >
             <i class="s"></i><span>Cache {cacheLeft ? "warm" : "cold"}</span><b class:sig={!!cacheLeft}>{cacheLeft ? `${cacheLeft} left` : "—"}</b>
           </div>
@@ -401,6 +401,12 @@
             <div class="dk" use:tip={nextEst.title}>
               <i class="s"></i><span>Next send</span><b>≈ {usdShort(nextEst.usd)}</b>
             </div>
+            {#if cache.warm}
+              <!-- Item 776: what the next send costs if he lets it go cold, on the face. -->
+              <div class="dk" use:tip={"The next send's API price once the cache has gone cold"}>
+                <i class="s"></i><span>Once cold</span><b>≈ {usdShort(nextEst.cold)}</b>
+              </div>
+            {/if}
           {/if}
         {/if}
       </div>
@@ -454,8 +460,8 @@
           <div
             class="cost"
             use:tip={chat.rewound_usd
-              ? `Claude Code's own estimate at API prices, subagents included — /usage's figure plus ${usd(chat.rewound_usd)} of replies you rewound: a rewind does not un-spend them`
-              : "Claude Code's own estimate at API prices, subagents included — the figure /usage shows"}
+              ? `Claude Code's estimate at API prices, subagents in · /usage's figure plus ${usd(chat.rewound_usd)} of rewound replies`
+              : "Claude Code's estimate at API prices, subagents in · the figure /usage shows"}
           >
             <b>{usd(chat.cost_usd)}{chat.unknown_cost ? "+" : ""}</b><span>at API prices</span>
           </div>
@@ -527,8 +533,8 @@
             class="cost"
             data-aside-added
             use:tip={af.cost.complete
-              ? "What this aside has added on top of the chat: each answer's own cost at API prices (the CLI's estimate) — not a bill under a subscription"
-              : "At least this much on top of the chat: some answers here kept no cost of their own (none came, or they were answered before Nov 12, when an answer's figure was the whole chat's running total)"}
+              ? "What this aside added over the chat, at API prices (the CLI's estimate)"
+              : "At least this much over the chat · some answers kept no cost (none came, or before Nov 12)"}
           >
             <b>+{usd(af.cost.usd)}{af.cost.complete ? "" : "+"}</b><span>over the chat, at API prices</span>
           </div>
@@ -536,7 +542,7 @@
           <div
             class="kv"
             data-cost-unkept
-            use:tip={"Answers before Nov 12 kept no cost of their own (the figure shown then was the whole chat's running total, counted again with each answer); the next answer here is counted"}
+            use:tip={"Answers before Nov 12 kept no cost of their own · the next one here is counted"}
           >
             <span>Cost</span><b>not kept</b>
           </div>

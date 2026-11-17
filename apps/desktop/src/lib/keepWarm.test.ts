@@ -78,13 +78,19 @@ describe("keep-warm words (backlog 582)", () => {
 
   it("keeps the tooltip to the state and the click, under 140 characters (item 697)", () => {
     const off = switchTitle(null, T0);
-    expect(off).toBe("Keep warm off. Click to switch on; right-click to hold it 12 h or 24 h.");
+    expect(off).toBe("Keep warm off.\nClick to switch on; right-click to hold 12 or 24 h.");
     const on = switchTitle(status({ spent: { pings: 2, cache_read: 240_000, cache_write: 600, output: 8, cost_usd: 0.05 } }), T0);
     expect(on).toContain("Warm until 11:30 PM, next ping 5:55 PM · 2 pings so far.");
-    expect(on).toContain("Click to switch off; right-click to hold it 12 h or 24 h.");
+    expect(on).toContain("Click to switch off; right-click to hold 12 or 24 h.");
     const missed = switchTitle(status({ scheduled: false, why: "missed" }), T0);
     expect(missed).toContain("not running: stopped — a ping had to rebuild the cache");
     for (const t of [off, on, missed]) expect(t.length).toBeLessThan(140);
+    // Item 776: the price of letting it go cold on the state line while off or idle; not while keeping (the chip has it).
+    const keeping = switchTitle(status({ spent: { pings: 2, cache_read: 240_000, cache_write: 600, output: 8, cost_usd: 0.05 } }), T0, 1.65);
+    expect(keeping).not.toContain("cold ≈");
+    expect(keeping.split("\n")).toHaveLength(2);
+    expect(switchTitle(null, T0, 1.65)).toBe("Keep warm off · cold ≈ $1.65.\nClick to switch on; right-click to hold 12 or 24 h.");
+    expect(switchTitle(status({ scheduled: false, why: "missed" }), T0, 1.65)).toContain("rebuild the cache · cold ≈ $1.65.\n");
     expect(idleWords(status({ why: "cap", policy: { every_ms: 55 * MIN, cap_ms: 4 * HOUR, min_context: 50_000 } }))).toContain("4 h");
   });
 
@@ -157,8 +163,8 @@ describe("hold longer (item 643)", () => {
     expect(capOf(status())).toBe(6 * HOUR);
     expect(holdWords(status(), T0)).toBe("");
     // Discoverable: every tooltip, on or off, ends with the hint.
-    expect(switchTitle(status(), T0)).toContain("right-click to hold it 12 h or 24 h.");
-    expect(switchTitle(null, T0)).toContain("right-click to hold it");
+    expect(switchTitle(status(), T0)).toContain("right-click to hold 12 or 24 h.");
+    expect(switchTitle(null, T0)).toContain("right-click to hold");
   });
 
   it("opens on a right-click or a 500 ms press, and swallows the click that ends a long press", () => {
@@ -251,7 +257,7 @@ describe("keep warm off at a hand-off (item 728)", () => {
     expect(handedOffOff(handed())).toBe(true);
     expect(switchLabel(handed(), T0)).toBe("keep warm · off — chat handed off");
     const title = switchTitle(handed(), T0);
-    expect(title).toBe("Keep warm off — chat handed off. Click to switch on; right-click to hold it 12 h or 24 h.");
+    expect(title).toBe("Keep warm off — chat handed off.\nClick to switch on; right-click to hold 12 or 24 h.");
     expect(title.length).toBeLessThan(140);
     // A click switches it on, as on any off chip.
     expect(isOn(handed())).toBe(false);

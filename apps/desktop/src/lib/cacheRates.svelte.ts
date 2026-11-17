@@ -6,7 +6,8 @@
  * read is no figure, never a guess.
  */
 import * as api from "./api";
-import { ratesFromPrice, ratesFromWire, type ChipRates } from "./cacheCost";
+import { cacheEstimate, lastReply, ratesFromPrice, ratesFromWire, type ChipRates } from "./cacheCost";
+import type { SessionEvent } from "./types";
 
 const byModel = $state<Record<string, ChipRates | null>>({});
 const readAt: Record<string, number> = {};
@@ -44,4 +45,13 @@ export function ratesForChat(
     return cacheRatesOf(model);
   }
   return ratesFromPrice(connection?.price);
+}
+
+/** Item 776: what the next send costs once cold (the whole history
+ *  written), for the edit line's price; null with no reply or no rates. */
+export function coldUsdFor(
+  events: SessionEvent[],
+  connection: Parameters<typeof ratesForChat>[1],
+): number | null {
+  return cacheEstimate(events, ratesForChat(lastReply(events)?.model, connection), true)?.cold ?? null;
 }

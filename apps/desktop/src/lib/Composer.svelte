@@ -3223,22 +3223,21 @@
     if (engine === "claude-code" || engine === "provider") void useEngine(engine);
     else void applyDraft();
   }
-  const cacheShareTitle = "Share of the last request's prompt served from cache.";
+  /**
+   * The chip's tooltip, at most two short lines, numbers first (item 776,
+   * his "dude this is the biggest yapfest ever i thought we talked about
+   * this wtf"): `95% from cache · warm for 31 min more`, then the estimate's
+   * line. ~~What the share means, the 1-hour rule, the subscription "free"
+   * caveat~~ (cut 2026-11-16).
+   */
   const cacheTitle = $derived.by(() => {
-    if (!cache) return "";
-    const engine = app.connection?.engine === "claude-code" ? "claude-code" : "api";
-    if (!cache.warm) {
-      return "The last turn's prompt cache has expired, so the next turn re-reads the whole history either way and editing it now costs nothing extra.";
-    }
-    // Item 677: an aside's read restarted the clock; say so, and how much of the history it read.
-    const from =
-      cache.asideShare != null
-        ? `counted from the aside asked at ${new Date(cache.sentAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}, which read ${Math.round(cache.asideShare * 100)}% of the history from it and so refreshed that much`
-        : "counted from when its request was sent";
-    const what = `Time left on the last turn's prompt cache (${cache.ttl}), ${from}: until it expires an edit to the history re-writes the cache, and after it the next turn pays for the whole history whether or not you edited it.`;
-    return engine === "claude-code"
-      ? `${what} On this engine you are on the subscription, so "free" means an edit costs no more usage than an unedited turn would — whether cache reads are discounted against the plan's limit is not documented.`
-      : what;
+    const share = cached != null ? `${Math.round(cached * 100)}% from cache` : null;
+    if (!cache) return `${share ?? "Cache"} · no timer: this chat's last turn predates cache timing`;
+    if (!cache.warm) return nextEst?.title ?? "Cache cold · the next send writes it again";
+    const left = remainingText(cache.remainingMs);
+    const aside = cache.asideShare != null ? " (an aside refreshed it)" : "";
+    const first = share ? `${share} · warm for ${left} more${aside}` : `Cache warm for ${left} more${aside}`;
+    return nextEst ? `${first}\n${nextEst.title}` : first;
   });
 </script>
 
@@ -4097,7 +4096,7 @@
           aria-pressed={isOn(kw)}
           aria-haspopup="menu"
           bind:this={kwButton}
-          use:tip={switchTitle(kw, now)}
+          use:tip={switchTitle(kw, now, cache?.warm ? nextEst?.cold : null)}
           use:holdPress={() => (kwHoldOpen = true)}
           onclick={() => void flipKeepWarm(isOn(kw) ? "off" : "on")}
         >
@@ -4110,7 +4109,7 @@
              click puts every changed setting back. -->
         <button
           class="ns-chip mono bottom-cache losing"
-          use:tip={cacheLossTitle(cacheChanges, cacheBuilt.cachedTokens, cache.remainingMs)}
+          use:tip={cacheLossTitle(cacheChanges, cacheBuilt.cachedTokens, cache.remainingMs, nextEst?.cold)}
           onclick={restoreCache}
         >
           <span class="losing-what">{cacheLossLine(cacheChanges)}</span>{#if canRestore(cacheChanges)}<span class="bottom-cache-when">&nbsp;· <span class="restore-word">restore</span></span>{/if}
@@ -4119,14 +4118,12 @@
         <div
           class="ns-chip mono bottom-cache"
           class:cold={cache ? !cache.warm : false}
-          use:tip={cache
-            ? `${cacheShareTitle} ${cacheTitle}${nextEst ? `\n\n${nextEst.title}` : ""}`
-            : `${cacheShareTitle} No timer for this chat: its last turn was made before the cache lifetime was recorded (2026-09-15); the next turn will show one.`}
+          use:tip={cacheTitle}
         >
-          {#if cached != null}{Math.round(cached * 100)}% cached{:else}cache{/if}{#if cache}
-            <span class="bottom-cache-when" aria-label={cacheLine(cache)}>· {remainingText(cache.remainingMs) ?? "cold"}</span>
-            {#if nextEst}<span class="bottom-cache-next">· {nextEst.line}</span>{/if}
-          {/if}
+          <!-- Item 776: cold reads `cache cold · next ≈ $1.65`; warm puts both prices on the face. -->
+          {#if cache && !cache.warm}cache <span class="bottom-cache-when" aria-label={cacheLine(cache)}>cold</span>{:else}{#if cached != null}{Math.round(cached * 100)}%<span class="bottom-cache-word"> cached</span>{:else}cache{/if}{#if cache}
+            <span class="bottom-cache-when" aria-label={cacheLine(cache)}>· {remainingText(cache.remainingMs)}</span>
+          {/if}{/if}{#if cache && nextEst}<span class="bottom-cache-next">· {nextEst.line}</span>{/if}
         </div>
       {/if}
     </div>
