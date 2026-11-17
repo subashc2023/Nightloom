@@ -88,7 +88,7 @@ import type { ForYouRow } from "./forYou";
 import type { PriorExchange } from "./noteEdit";
 import type { TurnUsageLine } from "./replyUsage";
 import { cleanPassage, shownText } from "./keep";
-import type { HomeFeed, HomeInfo } from "./home";
+import type { HomeFeed, HomeInfo, HomeReach } from "./home";
 
 // All backend errors reject with a plain string.
 
@@ -2304,4 +2304,19 @@ export function homeMarkSeen(): Promise<string> {
 /** Save his standing brief for Home. */
 export function homeSaveBrief(text: string): Promise<null> {
   return invoke("home_save_brief", { text });
+}
+
+/** Item 804: what Home can reach, from the last check (nothing is run). */
+export function homeReach(): Promise<HomeReach> {
+  return invoke("home_reach");
+}
+
+/** Item 804: ask Claude Code what it reaches now (no model request). */
+export function homeReachCheck(binary?: string): Promise<HomeReach> {
+  return invoke("home_reach_check", binary ? { binary } : {});
+}
+
+/** Item 804: turn one connector on or off for Home. */
+export function homeReachSet(connector: string, on: boolean): Promise<HomeReach> {
+  return invoke("home_reach_set", { connector, on });
 }

@@ -51,6 +51,79 @@ export interface HomeFeed {
   seen_at: string | null;
 }
 
+// ---- Item 804: what Home can reach ----
+
+export type ReachKind = "mail" | "calendar" | "files" | "other";
+export type ReachStatus = "connected" | "needs_sign_in" | "failed";
+
+/** One connector Claude Code listed — for a service with several accounts, one row per account. */
+export interface ReachAccount {
+  /** Claude Code's name for it; what turning it on or off takes. */
+  connector: string;
+  service: string;
+  kind: ReachKind;
+  /** The account's address, once a scan has read it. */
+  address: string | null;
+  /** Which account of its service, from 1, when there are several. */
+  nth: number | null;
+  status: ReachStatus;
+  on: boolean;
+  claude_ai: boolean;
+  in_scan: boolean;
+}
+
+export interface HomeReach {
+  /** RFC 3339; null before the first check. */
+  checked_at: string | null;
+  error: string | null;
+  accounts: ReachAccount[];
+  /** What macOS keeps on this Mac that Home does not read, with why. */
+  locals: { name: string; why: string }[];
+}
+
+export const REACH_GROUPS: { kind: ReachKind; title: string }[] = [
+  { kind: "mail", title: "Mail" },
+  { kind: "calendar", title: "Calendars" },
+  { kind: "files", title: "Files and documents" },
+  { kind: "other", title: "Other tools" },
+];
+
+const ORDINALS = ["first", "second", "third", "fourth", "fifth", "sixth"];
+
+/** A row's name: the address when known, else the service and which account. */
+export function reachName(a: ReachAccount): string {
+  if (a.address) return a.address;
+  if (a.nth === null) return a.service;
+  return `${a.service} · ${ORDINALS[a.nth - 1] ?? `#${a.nth}`} account`;
+}
+
+/** Under the name: the service when the name is an address, and what Home does with it. */
+export function reachNote(a: ReachAccount): string {
+  const service = a.address ? `${a.service} · ` : "";
+  if (a.status === "needs_sign_in") return `${service}Not reachable — sign in to it at claude.ai, under Settings, Connectors.`;
+  if (a.status === "failed") return `${service}Not reachable — it did not answer the last check.`;
+  if (!a.on) return `${service}Turned off for Home.`;
+  if (a.in_scan) return `${service}Read by the morning scan and Home's chat.`;
+  if (!a.claude_ai) return `${service}One of your own tools; Home's chat can use it.`;
+  return `${service}Home's chat can read it; the scan does not.`;
+}
+
+export function reachStatusWords(s: ReachStatus): string {
+  return s === "connected" ? "Connected" : s === "needs_sign_in" ? "Needs sign-in" : "Not answering";
+}
+
+/** "3 mail accounts and 2 calendars are read each morning", or why none is. */
+export function reachSummary(r: HomeReach | null): string {
+  if (!r || r.checked_at === null) return "Not checked yet.";
+  const n = (k: ReachKind) => r.accounts.filter((a) => a.in_scan && a.kind === k).length;
+  const mail = n("mail");
+  const cal = n("calendar");
+  if (mail + cal === 0) return "The morning scan reads no mail or calendar yet.";
+  const part = (c: number, one: string, many: string) => `${c} ${c === 1 ? one : many}`;
+  const parts = [mail ? part(mail, "mail account", "mail accounts") : "", cal ? part(cal, "calendar", "calendars") : ""].filter(Boolean);
+  return `The morning scan reads ${parts.join(" and ")}.`;
+}
+
 /** Whether a project is Home: by its source, never its name (he may rename it). */
 export function isHome(p: { source?: string | null } | null | undefined): boolean {
   return p?.source === HOME_SOURCE;

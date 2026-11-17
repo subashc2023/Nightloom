@@ -114,6 +114,14 @@ pub(crate) async fn prepare(state: &AppState, prep: Prep) -> Result<String, Stri
     if let Some((model, effort)) = &prep.model {
         state.agents.pick_for_job(&id, model, effort)?;
     }
+    // Item 804: Home's scan reads his mail and calendars — its chat gets
+    // his connectors, less the ones he turned off for Home.
+    if prep.connectors && prep.read_only {
+        let off = nightloom_service::project::config_dir()
+            .map(|c| nightloom_service::home::reach::off(&c))
+            .unwrap_or_default();
+        state.agents.connectors_for_job(&id, off)?;
+    }
     Ok(id)
 }
 

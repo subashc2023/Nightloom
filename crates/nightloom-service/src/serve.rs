@@ -733,6 +733,16 @@ impl ServeHost {
         }
         spec.apply_kind(declared);
         spec.apply_kind_policy(session.kind(), declared);
+        // Item 804: a read-only chat of Home's gets his connectors, less
+        // the ones he turned off for Home — only one that refuses the
+        // connectors' writers, so there is no write path through them.
+        if spec.refuses_mcp_writers() {
+            crate::home::reach::apply(
+                project.map(|p| p.source.as_deref()),
+                Some(&self.cfg.home),
+                &mut spec,
+            );
+        }
         if !spec.no_session_persistence
             && let Some((agent, id)) = session.agent_session()
             && agent == AGENT
@@ -4623,6 +4633,7 @@ mod job_hold_tests {
             read_only,
             auto_hand_off: None,
             model: None,
+            connectors: false,
         }
     }
 

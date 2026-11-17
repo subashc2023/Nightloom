@@ -225,7 +225,8 @@
   // Item 768: wrap up while the cache is warm; the cold-return chip.
   import { MODES as WARM_MODES, modeLabel as warmModeLabel, isMode as isWarmMode } from "./warmWrap";
   import { setWarmMinTokens, setWarmMode, warmWrap } from "./warmWrap.svelte";
-  import { home, homeProject, refreshHome, saveBrief, setBriefDraft } from "./home.svelte";
+  import { checkReach, home, homeProject, refreshHome, refreshReach, saveBrief, setBriefDraft, setReach } from "./home.svelte";
+  import { REACH_GROUPS, reachName, reachNote, reachStatusWords, reachSummary } from "./home";
   import { revealFolder } from "./state.svelte";
 
   /**
@@ -757,7 +758,12 @@
   // Item 763: the Home pane's discard is two clicks, and the pane re-reads Home when opened.
   let briefDiscardArmed = $state(false);
   $effect(() => {
-    if (selected === "home") untrack(() => void refreshHome());
+    if (selected === "home")
+      untrack(() => {
+        void refreshHome();
+        // Item 804: what Home can reach, from the last check.
+        void refreshReach();
+      });
   });
 
   /** Which of the key card's states a provider is in. */
@@ -3358,6 +3364,76 @@
             {/if}
           </div>
         </section>
+        <!-- Item 804: what Home can reach, account by account, and what it cannot and why. -->
+        <section class="card" data-testid="home-reach">
+          <div class="ch">
+            <span class="t">What Home can reach</span>
+            <span class="spacer"></span>
+            <span class="reach-when">{home.checking ? "Checking…" : home.reach?.checked_at ? `Checked ${clock12(home.reach.checked_at)}` : ""}</span>
+            <button class="ns-btn ghost" disabled={home.checking} onclick={() => void checkReach()}>{home.checking ? "Checking…" : "Check again"}</button>
+          </div>
+          <p class="note small">
+            Your connectors, one row per account. Home only reads them: it cannot send, change or delete anything through them.
+            {reachSummary(home.reach)}
+          </p>
+          {#if home.reach?.error}
+            <p class="note small reach-bad">{home.reach.error} The rows below are from the check before.</p>
+          {/if}
+          {#if home.reach === null}
+            <p class="note small">Not available in this build.</p>
+          {:else}
+            {#each REACH_GROUPS as g (g.kind)}
+              {@const rows = home.reach.accounts.filter((a) => a.kind === g.kind)}
+              {#if rows.length > 0}
+                <div class="reach-group">
+                  <div class="reach-title">{g.title}</div>
+                  {#each rows as a (a.connector)}
+                    <div class="reach-row" class:off={!a.on || a.status !== "connected"}>
+                      <span class="reach-dot" class:ok={a.status === "connected" && a.on} class:warn={a.status !== "connected"}></span>
+                      <div class="reach-main">
+                        <div class="reach-name">{reachName(a)}</div>
+                        <div class="reach-note">{reachNote(a)}</div>
+                      </div>
+                      <span class="sub-tag">{reachStatusWords(a.status)}</span>
+                      {#if a.claude_ai && a.status === "connected"}
+                        <label class="reach-switch">
+                          <input
+                            type="checkbox"
+                            checked={a.on}
+                            disabled={home.switching !== null}
+                            aria-label={`Let Home read ${reachName(a)}`}
+                            onchange={(e) => void setReach(a.connector, e.currentTarget.checked)}
+                          />
+                          <span>{a.on ? "On" : "Off"}</span>
+                        </label>
+                      {:else}
+                        <span class="reach-switch" aria-hidden="true"></span>
+                      {/if}
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+            {/each}
+            {#if home.reach.accounts.length === 0 && !home.checking}
+              <p class="note small">Claude Code listed no connectors. Add them at claude.ai, under Settings, Connectors, then check again.</p>
+            {/if}
+            <div class="reach-group">
+              <div class="reach-title">On this Mac, not reachable</div>
+              {#each home.reach.locals as l (l.name)}
+                <div class="reach-row off">
+                  <span class="reach-dot"></span>
+                  <div class="reach-main">
+                    <div class="reach-name">{l.name}</div>
+                    <div class="reach-note">{l.why}</div>
+                  </div>
+                  <span class="sub-tag">Not reachable</span>
+                  <span class="reach-switch" aria-hidden="true"></span>
+                </div>
+              {/each}
+            </div>
+            <p class="note small">A change here takes effect in Home's next reply. An account's address shows once a scan has read it.</p>
+          {/if}
+        </section>
         <section class="card">
           <div class="ch"><span class="t">Morning scan</span></div>
           <div class="key-status">
@@ -5541,6 +5617,85 @@
     border-bottom-left-radius: 0;
     border-left: 1px solid rgba(0, 0, 0, 0.18);
     margin-left: -1px;
+  }
+  /* Item 804: what Home can reach. */
+  .reach-when {
+    font-size: 12px;
+    color: var(--dim);
+  }
+  .reach-bad {
+    color: var(--accent);
+  }
+  .reach-group {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .reach-title {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--dim);
+    padding-bottom: 2px;
+  }
+  .reach-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 0;
+    border-top: 1px solid var(--line);
+    min-width: 0;
+  }
+  .reach-row.off .reach-name {
+    color: var(--dim);
+  }
+  .reach-dot {
+    flex: none;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--line2);
+  }
+  .reach-dot.ok {
+    background: var(--done);
+  }
+  .reach-dot.warn {
+    background: var(--accent);
+  }
+  .reach-main {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .reach-name {
+    font-size: 13.5px;
+    overflow-wrap: anywhere;
+  }
+  .reach-note {
+    font-size: 12px;
+    color: var(--dim);
+    overflow-wrap: anywhere;
+  }
+  .reach-row .sub-tag {
+    flex: none;
+    white-space: nowrap;
+  }
+  .reach-switch {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    color: var(--dim);
+    min-width: 3.2rem;
+  }
+  @media (max-width: 560px) {
+    .reach-row {
+      flex-wrap: wrap;
+    }
+    .reach-main {
+      flex-basis: calc(100% - 20px);
+    }
   }
   /* Item 763: Home's brief editor. */
   .home-brief {

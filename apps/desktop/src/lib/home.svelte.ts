@@ -7,7 +7,7 @@
  */
 import * as api from "./api";
 import { app, addToast, canLeaveProject, openRun, useProject } from "./state.svelte";
-import { doneSince, isHome, type FeedRow, type HomeInfo } from "./home";
+import { doneSince, isHome, type FeedRow, type HomeInfo, type HomeReach } from "./home";
 
 export const BRIEF_DRAFT_KEY = "nightloom.home.briefDraft";
 
@@ -33,6 +33,12 @@ export const home = $state({
   briefDraft: readDraft(),
   saving: false,
   marking: false,
+  /** Item 804: what Home can reach, from the last check; null before it is read. */
+  reach: null as HomeReach | null,
+  /** A check is running (it asks Claude Code; no model request). */
+  checking: false,
+  /** The connector whose switch is being saved. */
+  switching: null as string | null,
 });
 
 /** The Home project in the list, when the backend has made one. */
@@ -121,5 +127,44 @@ export async function saveBrief(): Promise<boolean> {
     return false;
   } finally {
     home.saving = false;
+  }
+}
+
+// ---- Item 804: what Home can reach ----
+
+/** Read the last check; the first time ever, run one. */
+export async function refreshReach(): Promise<void> {
+  try {
+    home.reach = await api.homeReach();
+  } catch {
+    // An older backend: the panel says it is not available.
+    return;
+  }
+  if (home.reach.checked_at === null) await checkReach();
+}
+
+/** Ask Claude Code what it reaches now. */
+export async function checkReach(): Promise<void> {
+  if (home.checking) return;
+  home.checking = true;
+  try {
+    home.reach = await api.homeReachCheck(app.draft.agentBinary.trim() || undefined);
+  } catch (e) {
+    addToast(`Could not check what Home can reach — ${String(e)}`);
+  } finally {
+    home.checking = false;
+  }
+}
+
+/** Turn one connector on or off for Home. */
+export async function setReach(connector: string, on: boolean): Promise<void> {
+  if (home.switching) return;
+  home.switching = connector;
+  try {
+    home.reach = await api.homeReachSet(connector, on);
+  } catch (e) {
+    addToast(`Could not change that — ${String(e)}`);
+  } finally {
+    home.switching = null;
   }
 }

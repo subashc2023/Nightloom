@@ -343,6 +343,34 @@ impl Agents {
         Ok(())
     }
 
+    /// After [`Self::reserve_for_job`]: the run's chat gets his claude.ai
+    /// connectors, less `off` (item 804: Home's scan reads mail and
+    /// calendars; its chat is held read-only). As [`Self::pick_for_job`]:
+    /// an idle agent without them is dropped and its spec kept with them.
+    pub fn connectors_for_job(&self, chat: &str, off: Vec<String>) -> Result<(), String> {
+        let mut inner = self.inner();
+        let own = match inner.per_chat.get(chat) {
+            Some(e) => match e.slot.try_lock() {
+                Ok(agent) => Some(agent.spec().clone()),
+                Err(_) => return Err("its chat is running a turn".into()),
+            },
+            None => None,
+        };
+        if let Some(spec) = own {
+            if spec.claude_ai_connectors && spec.claude_ai_blocked == off {
+                return Ok(());
+            }
+            inner.per_chat.remove(chat);
+            inner.reserved.insert(chat.to_string(), spec);
+        }
+        let Some(spec) = inner.reserved.get_mut(chat) else {
+            return Err("no spec is kept for the job's chat".into());
+        };
+        spec.claude_ai_connectors = true;
+        spec.claude_ai_blocked = off;
+        Ok(())
+    }
+
     /// Let `chat`'s kept spec go (its scheduled message left or was
     /// cancelled).
     pub fn release(&self, chat: &str) {
@@ -636,6 +664,32 @@ mod tests {
             .pick_for_job("job", "claude-opus-5-5", "low")
             .unwrap();
         assert!(agents.existing("job").is_some());
+    }
+
+    /// Item 804: Home's scan gets his connectors, less the ones he turned
+    /// off for Home, on an agent that still refuses their writers; the
+    /// chat on screen is left without them.
+    #[tokio::test]
+    async fn homes_scan_gets_the_connectors_and_still_refuses_their_writers() {
+        let agents = Agents::default();
+        agents.connect(agent("open"), Some("job"));
+        agents.connect(agent("open"), Some("other"));
+        agents.reserve_for_job("job", true, true, None).unwrap();
+        let off = vec!["claude.ai Google Drive".to_string()];
+        agents.connectors_for_job("job", off.clone()).unwrap();
+        let slot = agents.make_reserved("job", None).expect("a kept spec");
+        let spec = slot.try_lock().unwrap().spec().clone();
+        assert!(spec.claude_ai_connectors);
+        assert_eq!(spec.claude_ai_blocked, off);
+        assert!(spec.refuses_mcp_writers(), "still held read-only");
+        let other = ready(agents.slot(Some("other")));
+        assert!(!other.try_lock().unwrap().spec().claude_ai_connectors);
+        // The same again keeps the agent it made; a changed list remakes it.
+        agents.reserve_for_job("job", true, true, None).unwrap();
+        agents.connectors_for_job("job", off).unwrap();
+        assert!(agents.existing("job").is_some());
+        agents.connectors_for_job("job", Vec::new()).unwrap();
+        assert!(agents.existing("job").is_none());
     }
 
     /// writes; the open chat's writer agent does not.

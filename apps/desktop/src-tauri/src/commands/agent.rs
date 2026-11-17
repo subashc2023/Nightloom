@@ -694,6 +694,17 @@ pub(crate) async fn connect_agent_body(
     // the cached prefix across the switch.
     spec.apply_kind(declared);
     spec.apply_kind_policy(kind, declared);
+    // Item 804: a read-only chat of Home's gets his connectors whatever
+    // the rail's switch says, less the ones he turned off for Home — only
+    // a chat that refuses the connectors' writers, so nothing can be sent
+    // or changed through them.
+    if spec.refuses_mcp_writers() {
+        nightloom_service::home::reach::apply(
+            seen.map(|p| p.source.as_deref()),
+            nightloom_service::project::config_dir().as_deref(),
+            &mut spec,
+        );
+    }
 
     // Probed rather than assumed. A missing or unrunnable binary is the
     // overwhelmingly likely first failure on this engine, and finding out at

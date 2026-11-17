@@ -198,7 +198,7 @@ pub fn table_rows(id: &str) -> (bool, bool) {
 /// Run `binary args…` with stdin closed, a working directory of `cwd`, and
 /// `HOME` set to `home` when given; kill it past `limit`. Returns whether
 /// it exited 0 and its stdout and stderr.
-fn run(
+pub(crate) fn run(
     binary: &Path,
     args: &[&str],
     cwd: &Path,
