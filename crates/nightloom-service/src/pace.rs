@@ -144,7 +144,7 @@ impl Kind {
 
 /// The forecast's knobs; [`Tuning::of`] is what ships. Separate so the
 /// measurement on his history can try others.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Tuning {
     pub recent_ms: i64,
     pub fade_ms: i64,
@@ -426,6 +426,19 @@ pub fn backtest_tuned(
     tz: i64,
     tune: Tuning,
 ) -> (Backtest, Option<f64>) {
+    backtest_scored(wins, kind, tz, tune, i64::MIN, i64::MAX)
+}
+
+/// [`backtest_tuned`] counting only the checks taken in `[from, to)` —
+/// the table still holds every reading before each check.
+pub fn backtest_scored(
+    wins: &[Vec<Pt>],
+    kind: Kind,
+    tz: i64,
+    tune: Tuning,
+    from: i64,
+    to: i64,
+) -> (Backtest, Option<f64>) {
     // Every pair, by its end time, so the table only ever holds the past.
     let mut pairs: Vec<(Pt, Pt)> = wins
         .iter()
@@ -453,6 +466,9 @@ pub fn backtest_tuned(
     for (wi, pi) in checks {
         let w = &wins[wi];
         let now = w[pi];
+        if now.t < from || now.t >= to {
+            continue;
+        }
         while next_pair < pairs.len() && pairs[next_pair].1.t <= now.t {
             table.add_pair(pairs[next_pair].0, pairs[next_pair].1, kind);
             next_pair += 1;
@@ -519,11 +535,25 @@ pub struct PlanPace {
     pub five_hour: Option<WindowPace>,
     pub seven_day: Option<WindowPace>,
     pub computed_at_ms: i64,
+    /// The knobs in use and when they were fitted (persisted in
+    /// [`PACE_FILE`]; refitted weekly, [`needs_refit`]).
+    pub fit: PaceFit,
 }
 
 /// One window's pace from the whole log, at `now`; `None` without a
 /// reading of it.
 pub fn window_pace(log: &[Logged], kind: Kind, now: i64, tz: i64) -> Option<WindowPace> {
+    window_pace_tuned(log, kind, now, tz, Tuning::of(kind))
+}
+
+/// [`window_pace`] with the knobs given (the weekly fit's, [`PaceFit`]).
+pub fn window_pace_tuned(
+    log: &[Logged],
+    kind: Kind,
+    now: i64,
+    tz: i64,
+    tune: Tuning,
+) -> Option<WindowPace> {
     let s = series(log, kind);
     let wins = windows(&s, kind);
     let open = wins.last()?;
@@ -533,7 +563,7 @@ pub fn window_pace(log: &[Logged], kind: Kind, now: i64, tz: i64) -> Option<Wind
         return None;
     }
     let closed = &wins[..wins.len() - 1];
-    let bt = backtest(closed, kind, tz);
+    let bt = backtest_tuned(closed, kind, tz, tune).0;
     let mut table = Table::new(tz);
     for w in &wins {
         for p in w.windows(2) {
@@ -545,13 +575,14 @@ pub fn window_pace(log: &[Logged], kind: Kind, now: i64, tz: i64) -> Option<Wind
         .unwrap_or_else(|| open[0].t + kind.len_ms())
         .max(now);
     let start = now.max(cur.t);
-    let pr = project(
+    let pr = project_tuned(
         &table,
         start,
         cur.p,
         until,
-        recent_rate(open, cur.t, kind),
+        recent_rate_over(open, cur.t, tune.recent_ms),
         kind,
+        tune,
     );
     Some(WindowPace {
         window: kind.name(),
@@ -571,10 +602,251 @@ pub fn window_pace(log: &[Logged], kind: Kind, now: i64, tz: i64) -> Option<Wind
 
 /// Both windows from the log.
 pub fn pace_of(log: &[Logged], now: i64, tz: i64) -> PlanPace {
+    pace_with_fit(log, now, tz, PaceFit::defaults(now))
+}
+
+/// Both windows from the log with the fitted knobs.
+pub fn pace_with_fit(log: &[Logged], now: i64, tz: i64, fit: PaceFit) -> PlanPace {
     PlanPace {
-        five_hour: window_pace(log, Kind::FiveHour, now, tz),
-        seven_day: window_pace(log, Kind::Week, now, tz),
+        five_hour: window_pace_tuned(log, Kind::FiveHour, now, tz, fit.five_hour.tuning),
+        seven_day: window_pace_tuned(log, Kind::Week, now, tz, fit.seven_day.tuning),
         computed_at_ms: now,
+        fit,
+    }
+}
+
+// ---- the weekly fit (his yes, 2026-11-16) ----------------------------------
+//
+// The two knobs — the weight on the hour-of-week figure and how far back
+// "his rate right now" looks — re-tune themselves once a week from the
+// log: every pair on a grid is back-tested over the last [`FIT_WEEKS`]
+// weeks, fitted on the older checks and scored on the newest week (out of
+// sample) when there are enough of each; the fitted pair is kept only if
+// it does no worse than today's pair on that newest week. With fewer
+// checks it fits in-sample on them all; thinner still, today's pair.
+
+/// How far back the fit looks.
+pub const FIT_WEEKS: i64 = 6;
+/// How often it refits.
+pub const REFIT_MS: i64 = 7 * 24 * HOUR_MS;
+/// The grid: weights on the hour-of-week figure.
+pub const SLOT_GRID: [f64; 5] = [0.25, 0.35, 0.5, 0.7, 1.0];
+/// The grid: the recent window as a multiple of today's.
+pub const RECENT_GRID: [f64; 4] = [0.5, 1.0, 2.0, 4.0];
+
+/// One window's fitted knobs and the evidence for them (read back by
+/// [`stored_fit`]).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct KindFit {
+    /// The pair in use.
+    pub tuning: Tuning,
+    /// The pair the grid chose on the older checks (equal to `tuning`
+    /// unless today's pair was kept).
+    pub fitted: Tuning,
+    /// When it was fitted, unix ms.
+    pub fitted_at_ms: i64,
+    /// `held-out`, `in-sample`, `default-thin` (too few checks) or
+    /// `default-kept` (the fitted pair did worse on the newest week).
+    pub how: &'static str,
+    /// Checks the pair was chosen on, and scored on afterwards.
+    pub fit_checks: u32,
+    pub holdout_checks: u32,
+    /// Mean miss on the newest week: the grid's pair (`fitted`) and today's.
+    pub holdout_err_pts: Option<f64>,
+    pub default_holdout_err_pts: Option<f64>,
+}
+
+/// Both windows' fits.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct PaceFit {
+    pub five_hour: KindFit,
+    pub seven_day: KindFit,
+}
+
+impl KindFit {
+    fn default_at(kind: Kind, now: i64, how: &'static str) -> Self {
+        Self {
+            tuning: Tuning::of(kind),
+            fitted: Tuning::of(kind),
+            fitted_at_ms: now,
+            how,
+            fit_checks: 0,
+            holdout_checks: 0,
+            holdout_err_pts: None,
+            default_holdout_err_pts: None,
+        }
+    }
+}
+
+impl PaceFit {
+    /// Today's pair for both, unfitted.
+    pub fn defaults(now: i64) -> Self {
+        Self {
+            five_hour: KindFit::default_at(Kind::FiveHour, now, "default-thin"),
+            seven_day: KindFit::default_at(Kind::Week, now, "default-thin"),
+        }
+    }
+}
+
+/// Every pair on the grid for `kind`.
+pub fn grid(kind: Kind) -> Vec<Tuning> {
+    let base = Tuning::of(kind);
+    let mut out = Vec::new();
+    for &s in &SLOT_GRID {
+        for &r in &RECENT_GRID {
+            out.push(Tuning {
+                slot_scale: s,
+                recent_ms: (base.recent_ms as f64 * r) as i64,
+                ..base
+            });
+        }
+    }
+    out
+}
+
+/// The pair with the lowest miss over checks in `[from, to)`, and its
+/// result; ties keep the earlier (smaller) pair on the grid.
+fn best_on(wins: &[Vec<Pt>], kind: Kind, tz: i64, from: i64, to: i64) -> (Tuning, Backtest) {
+    let mut best: Option<(Tuning, Backtest)> = None;
+    for t in grid(kind) {
+        let (b, _) = backtest_scored(wins, kind, tz, t, from, to);
+        let better = match (&best, b.err_pts) {
+            (_, None) => false,
+            (None, Some(_)) => true,
+            (Some((_, bb)), Some(e)) => bb.err_pts.is_none_or(|be| e < be - 1e-9),
+        };
+        if better {
+            best = Some((t, b));
+        }
+    }
+    best.unwrap_or((Tuning::of(kind), Backtest::default()))
+}
+
+/// Fit one window's knobs from the log at `now`.
+pub fn fit_kind(log: &[Logged], kind: Kind, now: i64, tz: i64) -> KindFit {
+    let s = series(log, kind);
+    let mut wins = windows(&s, kind);
+    // Closed windows only (the open one has no answers yet), within the span.
+    wins.pop();
+    let span_from = now - FIT_WEEKS * 7 * 24 * HOUR_MS;
+    wins.retain(|w| w.last().is_some_and(|l| l.t >= span_from));
+    let base = Tuning::of(kind);
+    let hold_from = now - 7 * 24 * HOUR_MS;
+    let min = min_checks(kind);
+    let fit_n = backtest_scored(&wins, kind, tz, base, span_from, hold_from)
+        .0
+        .checks;
+    let hold_default = backtest_scored(&wins, kind, tz, base, hold_from, i64::MAX).0;
+    if fit_n >= 2 * min && hold_default.checks >= min.div_ceil(2) {
+        let (t, fitb) = best_on(&wins, kind, tz, span_from, hold_from);
+        let hold = backtest_scored(&wins, kind, tz, t, hold_from, i64::MAX).0;
+        let keep_fitted = match (hold.err_pts, hold_default.err_pts) {
+            (Some(a), Some(b)) => a <= b + 1e-9,
+            _ => false,
+        };
+        return KindFit {
+            tuning: if keep_fitted { t } else { base },
+            fitted: t,
+            fitted_at_ms: now,
+            how: if keep_fitted {
+                "held-out"
+            } else {
+                "default-kept"
+            },
+            fit_checks: fitb.checks,
+            holdout_checks: hold.checks,
+            holdout_err_pts: hold.err_pts,
+            default_holdout_err_pts: hold_default.err_pts,
+        };
+    }
+    let all_n = backtest_scored(&wins, kind, tz, base, span_from, i64::MAX)
+        .0
+        .checks;
+    if all_n >= 2 * min {
+        let (t, b) = best_on(&wins, kind, tz, span_from, i64::MAX);
+        return KindFit {
+            tuning: t,
+            fitted: t,
+            fitted_at_ms: now,
+            how: "in-sample",
+            fit_checks: b.checks,
+            holdout_checks: 0,
+            holdout_err_pts: None,
+            default_holdout_err_pts: None,
+        };
+    }
+    KindFit::default_at(kind, now, "default-thin")
+}
+
+/// Both windows' fits.
+pub fn fit_all(log: &[Logged], now: i64, tz: i64) -> PaceFit {
+    PaceFit {
+        five_hour: fit_kind(log, Kind::FiveHour, now, tz),
+        seven_day: fit_kind(log, Kind::Week, now, tz),
+    }
+}
+
+/// Whether a stored fit is due again: none, a week old, or from the future
+/// (a clock change).
+pub fn needs_refit(prev: Option<&KindFit>, now: i64) -> bool {
+    prev.is_none_or(|f| now - f.fitted_at_ms >= REFIT_MS || f.fitted_at_ms > now)
+}
+
+/// A stored fit, read back from [`PACE_FILE`]'s text; `None` per window
+/// when absent or unreadable.
+pub fn stored_fit(text: &str) -> (Option<KindFit>, Option<KindFit>) {
+    #[derive(Deserialize)]
+    struct Stored {
+        tuning: Tuning,
+        #[serde(default)]
+        fitted: Option<Tuning>,
+        fitted_at_ms: i64,
+        how: String,
+        #[serde(default)]
+        fit_checks: u32,
+        #[serde(default)]
+        holdout_checks: u32,
+        #[serde(default)]
+        holdout_err_pts: Option<f64>,
+        #[serde(default)]
+        default_holdout_err_pts: Option<f64>,
+    }
+    let v: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
+    let one = |k: &str| -> Option<KindFit> {
+        let s: Stored = serde_json::from_value(v.get("fit")?.get(k)?.clone()).ok()?;
+        let how: &'static str = match s.how.as_str() {
+            "held-out" => "held-out",
+            "in-sample" => "in-sample",
+            "default-kept" => "default-kept",
+            _ => "default-thin",
+        };
+        Some(KindFit {
+            tuning: s.tuning,
+            fitted: s.fitted.unwrap_or(s.tuning),
+            fitted_at_ms: s.fitted_at_ms,
+            how,
+            fit_checks: s.fit_checks,
+            holdout_checks: s.holdout_checks,
+            holdout_err_pts: s.holdout_err_pts,
+            default_holdout_err_pts: s.default_holdout_err_pts,
+        })
+    };
+    (one("five_hour"), one("seven_day"))
+}
+
+/// The fit to use now: the stored one per window while under a week old,
+/// else a fresh fit of that window.
+pub fn current_fit(stored: &str, log: &[Logged], now: i64, tz: i64) -> PaceFit {
+    let (fh, sd) = stored_fit(stored);
+    PaceFit {
+        five_hour: match fh {
+            Some(f) if !needs_refit(Some(&f), now) => f,
+            _ => fit_kind(log, Kind::FiveHour, now, tz),
+        },
+        seven_day: match sd {
+            Some(f) if !needs_refit(Some(&f), now) => f,
+            _ => fit_kind(log, Kind::Week, now, tz),
+        },
     }
 }
 
@@ -778,7 +1050,11 @@ pub fn read() -> PlanPace {
     let Some(dir) = crate::project::config_dir() else {
         return pace_of(&[], now, 0);
     };
-    let pace = pace_of(&read_log_in(&dir), now, local_offset_secs());
+    let log = read_log_in(&dir);
+    let tz = local_offset_secs();
+    let stored = std::fs::read_to_string(dir.join(PACE_FILE)).unwrap_or_default();
+    let fit = current_fit(&stored, &log, now, tz);
+    let pace = pace_with_fit(&log, now, tz, fit);
     if let Ok(s) = serde_json::to_string_pretty(&pace) {
         let tmp = dir.join(format!("{PACE_FILE}.tmp"));
         if std::fs::write(&tmp, s).is_ok() {

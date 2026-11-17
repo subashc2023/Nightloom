@@ -277,6 +277,99 @@ not json
     assert_eq!(read_log_in(d.path())[0].t, 40);
 }
 
+#[test]
+fn the_weekly_fit_picks_the_pair_that_does_best_on_the_newest_week() {
+    // Six weeks of the morning pattern: the table is exact for the hours
+    // he works, so full weight on it beats today's half weight.
+    let log = morning_worker(42);
+    let now = log.last().unwrap().t + H;
+    let f = fit_kind(&log, Kind::FiveHour, now, 0);
+    assert_eq!(f.how, "held-out", "{f:?}");
+    assert!(f.fit_checks >= 40 && f.holdout_checks >= 10, "{f:?}");
+    assert!(grid(Kind::FiveHour).contains(&f.tuning));
+    assert!(
+        f.tuning.slot_scale > Tuning::of(Kind::FiveHour).slot_scale,
+        "{f:?}"
+    );
+    let (h, d) = (
+        f.holdout_err_pts.unwrap(),
+        f.default_holdout_err_pts.unwrap(),
+    );
+    assert!(h < d, "fitted {h:.2} vs today's {d:.2}");
+    assert_eq!(f.fitted_at_ms, now);
+    // No checks in the newest week: it fits on what there is.
+    let log = morning_worker(14);
+    let f = fit_kind(&log, Kind::FiveHour, log.last().unwrap().t + 8 * DAY, 0);
+    assert_eq!(f.how, "in-sample", "{f:?}");
+    assert_eq!(f.holdout_checks, 0);
+}
+
+#[test]
+fn thin_history_keeps_todays_pair() {
+    let log = morning_worker(2);
+    let now = log.last().unwrap().t + H;
+    let f = fit_kind(&log, Kind::FiveHour, now, 0);
+    assert_eq!(
+        (f.how, f.tuning),
+        ("default-thin", Tuning::of(Kind::FiveHour))
+    );
+    // No weekly figures at all.
+    let w = fit_kind(&log, Kind::Week, now, 0);
+    assert_eq!((w.how, w.tuning), ("default-thin", Tuning::of(Kind::Week)));
+    let f = fit_kind(&[], Kind::FiveHour, now, 0);
+    assert_eq!(f.how, "default-thin");
+}
+
+#[test]
+fn the_fit_is_kept_in_the_pace_file_and_redone_after_a_week() {
+    let now = MON + 60 * DAY;
+    let mut fit = PaceFit::defaults(now - 2 * DAY);
+    fit.five_hour.tuning.slot_scale = 0.7;
+    fit.five_hour.how = "held-out";
+    fit.five_hour.holdout_err_pts = Some(6.5);
+    let text = serde_json::to_string(&pace_with_fit(&[], now, 0, fit)).unwrap();
+    let (fh, sd) = stored_fit(&text);
+    assert_eq!(fh, Some(fit.five_hour));
+    assert_eq!(sd, Some(fit.seven_day));
+    assert_eq!(stored_fit("not json"), (None, None));
+
+    assert!(needs_refit(None, now));
+    assert!(!needs_refit(Some(&fit.five_hour), now));
+    let old = KindFit {
+        fitted_at_ms: now - 8 * DAY,
+        ..fit.five_hour
+    };
+    assert!(needs_refit(Some(&old), now));
+    let future = KindFit {
+        fitted_at_ms: now + H,
+        ..fit.five_hour
+    };
+    assert!(needs_refit(Some(&future), now));
+
+    // Fresh: reused as stored. A week on: refitted (thin log: today's pair).
+    assert_eq!(
+        current_fit(&text, &[], now, 0).five_hour.tuning.slot_scale,
+        0.7
+    );
+    let later = current_fit(&text, &[], now + 6 * DAY, 0);
+    assert_eq!(later.five_hour.tuning, Tuning::of(Kind::FiveHour));
+    assert_eq!(later.five_hour.how, "default-thin");
+    assert_eq!(later.five_hour.fitted_at_ms, now + 6 * DAY);
+    // The live miss uses the fitted pair.
+    let log = morning_worker(28);
+    let n = log.last().unwrap().t;
+    let fitted = Tuning {
+        slot_scale: 1.0,
+        ..Tuning::of(Kind::FiveHour)
+    };
+    let mut f2 = PaceFit::defaults(n);
+    f2.five_hour.tuning = fitted;
+    let live = pace_with_fit(&log, n, 0, f2).five_hour.unwrap().backtest;
+    let wins = windows(&series(&log, Kind::FiveHour), Kind::FiveHour);
+    let expect = backtest_tuned(&wins[..wins.len() - 1], Kind::FiveHour, 0, fitted).0;
+    assert_eq!(live, expect);
+}
+
 /// By hand, read-only (item 769's measurement): the pace from his own
 /// history as a new log would be seeded, plus the log and import if
 /// present. Run it ignored, with `NL_PACE_DIR` set to `~/.nightloom`,
@@ -395,4 +488,5 @@ fn measure_on_real_history() {
     }
     let now = log.last().map_or(0, |l| l.t);
     println!("{:#?}", pace_of(&log, now, tz));
+    println!("fit at last reading: {:#?}", fit_all(&log, now, tz));
 }
