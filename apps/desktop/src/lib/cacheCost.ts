@@ -203,17 +203,22 @@ export interface CacheRatesWire {
   read: number;
   write_1h: number;
   write_5m: number;
-  source: "rates" | "pings";
+  source: "rates" | "pings" | "pings_ratio";
   pings: number;
+  /** `pings_ratio` only: the row whose read : write ratio the fit held. */
+  ratio_from?: string | null;
 }
 
 /** Claude Code writes the 1-hour kind. */
 export function ratesFromWire(r: CacheRatesWire | null | undefined): ChipRates | null {
   if (!r) return null;
+  const pings = `${r.pings} keep-warm ping${r.pings === 1 ? "" : "s"} on ${r.model}`;
   const from =
     r.source === "rates"
       ? `usage-rates.json's row for ${r.model}`
-      : `a fit to the CLI's reported cost of ${r.pings} keep-warm pings on ${r.model} (usage-rates.json has no row for it)`;
+      : r.source === "pings_ratio"
+        ? `a fit to the CLI's reported cost of ${pings}, across your projects, with the read : write ratio of ${r.ratio_from ?? "the API's standard shape"} (usage-rates.json has no row for ${r.model}, and its pings are all hits or all misses)`
+        : `a fit to the CLI's reported cost of ${pings}, across your projects (usage-rates.json has no row for it)`;
   return { read: r.read, write: r.write_1h, from };
 }
 
@@ -265,6 +270,19 @@ export function cacheEstimate(
   const c = nextSendCost(last.usage, rates);
   const n = warm ? c.warm : c.cold;
   return { line: nextLine(n), title: nextTitle(last.usage, rates, warm), usd: n };
+}
+
+/** The toast on the crossing to cold (item 605), with what the next send
+ *  now costs (item 699's price fix, 2026-11-16: "it doesnt say like what
+ *  the price of cache is"): `Prompt cache cold — edits to the history now
+ *  cost nothing extra · the next send re-writes 270k ≈ $4.32 API`. Without
+ *  rates it is the old words alone. */
+export function coldToast(events: SessionEvent[], rates: ChipRates | null | undefined): string {
+  const base = "Prompt cache cold — edits to the history now cost nothing extra";
+  const last = lastReply(events);
+  if (!last || !rates) return base;
+  const ctx = last.usage.input_tokens + last.usage.output_tokens;
+  return `${base} · the next send re-writes ${tokensShort(ctx)} ≈ ${usd(nextSendCost(last.usage, rates).cold)} API`;
 }
 
 /** The toast for a turn that just ended (item 699), or null: `before` is

@@ -413,16 +413,35 @@ pub(crate) async fn turn_usage(
 
 /// The read and write rates the composer's `next ≈ $…` estimate prices
 /// the chat's context at (item 699): `usage-rates.json`'s row for the
-/// model, else a fit to the CLI's own reported cost of this project's
-/// keep-warm pings on it (`usage::fit_cache_rates`). `None` when neither
-/// can say — the chip then shows no figure rather than a guess. Reads
-/// only; on the blocking pool, since it opens every chat's ping file.
+/// model, else a fit to the CLI's own reported cost of the keep-warm pings
+/// on it in **every** project (`usage::cache_rates_with`). The price fix of
+/// 2026-11-16: this read only the open project's pings, and needed a hit
+/// and a miss among them — so a Fable 5.2 chat (no table row) in a project
+/// with one or two pings showed no figure at all. Every project's pings are
+/// one model's evidence; with only hits or only misses the fit holds the
+/// family's read : write ratio. `None` only with no ping on the model.
+/// Reads only; on the blocking pool, since it opens every chat's ping file.
 #[tauri::command]
 pub(crate) async fn cache_rates(
     state: State<'_, AppState>,
     model: String,
 ) -> Result<Option<nightloom_service::usage::CacheRates>, String> {
-    let ask = state.log_dir().await.join("ask");
+    let mut asks = vec![
+        state.log_dir().await.join("ask"),
+        state.default_log_dir.join("ask"),
+    ];
+    {
+        let guard = state.workspaces.lock().await;
+        asks.extend(
+            guard
+                .registry
+                .projects()
+                .iter()
+                .map(|p| p.session_dir().join("ask")),
+        );
+    }
+    asks.sort();
+    asks.dedup();
     tokio::task::spawn_blocking(move || {
         use nightloom_service::usage;
         let rates = usage::claude_dir().and_then(|d| usage::load_rates_in(&d).ok());
@@ -433,12 +452,14 @@ pub(crate) async fn cache_rates(
             return Some(r);
         }
         let mut pings = Vec::new();
-        if let Ok(chats) = std::fs::read_dir(&ask) {
-            for c in chats.flatten() {
-                pings.extend(nightloom_service::keep_warm::read_pings(&c.path()));
+        for ask in &asks {
+            if let Ok(chats) = std::fs::read_dir(ask) {
+                for c in chats.flatten() {
+                    pings.extend(nightloom_service::keep_warm::read_pings(&c.path()));
+                }
             }
         }
-        usage::cache_rates_with(None, &pings, &model)
+        usage::cache_rates_with(rates.as_ref(), &pings, &model)
     })
     .await
     .map_err(|e| format!("reading the cache rates failed: {e}"))

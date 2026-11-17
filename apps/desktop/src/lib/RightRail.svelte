@@ -24,6 +24,8 @@
   import { touchedUntil } from "./keepWarm";
   import { keepWarm } from "./keepWarm.svelte";
   import { cacheState, nextTickMs, remainingText } from "./cache";
+  import { cacheEstimate, lastReply, ratesFromPrice, usd as usdShort } from "./cacheCost";
+  import { cacheRatesOf, loadCacheRates } from "./cacheRates.svelte";
   import {
     clockText,
     freshIn,
@@ -143,6 +145,15 @@
   const TTL_MS = { "5m": 5 * 60_000, "1h": 60 * 60_000 } as const;
   const cacheShare = $derived(cache ? Math.max(0, cache.remainingMs) / TTL_MS[cache.ttl] : null);
   const cacheLeft = $derived(cache ? remainingText(cache.remainingMs) : null);
+  /** Item 699's price fix (2026-11-16): the next send's API-price estimate,
+   *  as the composer's chip gives it — the column's cache row had none. */
+  const nextModel = $derived(cache ? (lastReply(app.events)?.model ?? null) : null);
+  $effect(() => {
+    if (nextModel && app.connection?.engine === "claude-code") void loadCacheRates(nextModel);
+  });
+  const nextEst = $derived(
+    cache ? cacheEstimate(app.events, app.connection?.engine === "claude-code" ? cacheRatesOf(nextModel) : ratesFromPrice(app.connection?.price), cache.warm) : null,
+  );
 
   /**
    * Item 654 (his pick B3, blocker 1962): the column's dial moves with a
@@ -385,6 +396,12 @@
           >
             <i class="s"></i><span>Cache {cacheLeft ? "warm" : "cold"}</span><b class:sig={!!cacheLeft}>{cacheLeft ? `${cacheLeft} left` : "—"}</b>
           </div>
+          {#if nextEst}
+            <!-- Item 699's price fix: what the next send costs, warm or cold. -->
+            <div class="dk" use:tip={nextEst.title}>
+              <i class="s"></i><span>Next send</span><b>≈ {usdShort(nextEst.usd)}</b>
+            </div>
+          {/if}
         {/if}
       </div>
     </section>

@@ -16,6 +16,8 @@
   import { touchedUntil } from "./keepWarm";
   import { keepWarm } from "./keepWarm.svelte";
   import { cacheState } from "./cache";
+  import { coldToast, lastReply } from "./cacheCost";
+  import { loadCacheRates, ratesForChat } from "./cacheRates.svelte";
   import ContextDial from "./ContextDial.svelte";
   import { lastLoggedTurn } from "./contextDial";
   import { liveFor, liveTokens } from "./liveContext";
@@ -268,8 +270,12 @@
     if (wait <= 0) return;
     // A millisecond past the boundary, as the display's ticks were: a
     // timer firing on the boundary itself would read the cache as warm.
+    // Item 699's price fix: the toast says what the next send now costs,
+    // at the rates read when it fires (the composer's chip reads the same).
+    const model = lastReply(app.events)?.model ?? null;
+    if (model && app.connection?.engine === "claude-code") void loadCacheRates(model);
     const id = setTimeout(
-      () => addToast("Prompt cache cold — edits to the history now cost nothing extra"),
+      () => addToast(coldToast(app.events, ratesForChat(lastReply(app.events)?.model, app.connection))),
       wait + 1,
     );
     return () => clearTimeout(id);
