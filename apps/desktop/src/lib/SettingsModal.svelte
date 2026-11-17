@@ -222,6 +222,9 @@
   } from "./messageMotion";
   import { REMOVED_PLACEHOLDER } from "./edit";
   import { setTypedMathOn, typedMathPrefs } from "./typedMathPrefs.svelte";
+  // Item 768: wrap up while the cache is warm; the cold-return chip.
+  import { MODES as WARM_MODES, modeLabel as warmModeLabel, isMode as isWarmMode } from "./warmWrap";
+  import { setWarmMinTokens, setWarmMode, warmWrap } from "./warmWrap.svelte";
 
   /**
    * Redesigned 2026-09-13 (nightshift surface-redesign-2026-09-13, canvas
@@ -2485,6 +2488,55 @@
             window not in front — when the mark is crossed, the wrap-up is put
             in the composer's queue and goes when the turn ends; the queue's ×
             takes it back. With you present, only the notice shows.
+          {/snippet}
+        </SettingRow>
+        <SettingRow fold="subscription/handoff-warm" shown={subShown("handoff-warm")}>
+          {#snippet label()}<span>Before the cache lapses</span>{/snippet}
+          {#snippet control()}
+            <select
+              value={warmWrap.mode}
+              aria-label="What Nightloom does when a big idle chat's cache is about to lapse"
+              onchange={(e) => {
+                const v = e.currentTarget.value;
+                if (isWarmMode(v)) setWarmMode(v);
+              }}
+            >
+              {#each WARM_MODES as m (m)}
+                <option value={m}>{warmModeLabel(m)}</option>
+              {/each}
+            </select>
+          {/snippet}
+          {#snippet help()}
+            Five minutes before a big chat's cache goes cold, with no turn running and
+            keep-warm off: <em>Offer</em> (to begin with) shows a line over the box with
+            <em>Wrap up now</em>; <em>Do it</em> sends the wrap-up then, when you are away
+            (else it offers); <em>Off</em> does nothing. A wrap-up sent warm reads the history
+            back from the cache — on Opus 5.5 about a fortieth of what it costs once cold,
+            when it is all written again. Nothing is ever compacted.
+          {/snippet}
+        </SettingRow>
+        <SettingRow fold="subscription/handoff-warm-size" shown={subShown("handoff-warm-size")}>
+          {#snippet label()}<span>A big chat is over</span>{/snippet}
+          {#snippet control()}
+            <label class="sub-num">
+              <input
+                type="number"
+                min="0"
+                step="10"
+                value={Math.round(warmWrap.minTokens / 1000)}
+                aria-label="The size, thousands of tokens, past which a chat is offered the warm wrap-up and the cold chip"
+                onchange={(e) => {
+                  const n = Number((e.currentTarget as HTMLInputElement).value);
+                  if (Number.isFinite(n) && n >= 0) setWarmMinTokens(Math.round(n) * 1000);
+                }}
+              />
+              <span>k tokens</span>
+            </label>
+          {/snippet}
+          {#snippet help()}
+            150k to begin with; 0 for never. The same size gates the chip a cold chat shows
+            when you come back to it: <em>Hand off</em> or <em>Keep</em>, each with what the
+            next send costs.
           {/snippet}
         </SettingRow>
         <SettingRow fold="subscription/handoff-message" shown={subShown("handoff-message")} stack>

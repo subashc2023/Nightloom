@@ -93,8 +93,12 @@
     codeProbePaths,
     codeProjectFor,
     noteCodeProject,
+    neverHandsOff,
   } from "./handoff.svelte";
   import { fold, isFolded, noteStay, unfold } from "./handoffFold.svelte";
+  // Item 768: wrap up while warm; one chip on return to a cold big chat.
+  import { chipCosts, coldButtons, coldChipShows, coldTip, coldTitle, contextOf, sentToast, warmDetail, warmTitle, warmWrapAct } from "./warmWrap";
+  import { actedOn, keepCold, keptCold, markActed, warmWrap } from "./warmWrap.svelte";
   // Item 618b: the row's look (Settings → Appearance → Composer row), stamped on the root; rules in src/composerRow.css.
   import { composerRow } from "./composerRow.svelte";
   // Item 644: the box takes the chat's model family (Opus Copper, Fable Lilac glass, others today's).
@@ -3116,6 +3120,62 @@
   );
   /** Item 596: the same state drawn on the box's frame (`cacheLook.css`). */
   const frame = $derived(cacheFrame(cache));
+  /*
+   * Item 768: the chat's own composer only (not an aside's, not the new-chat
+   * page's), on the engine whose hand-off this is. The figures are the
+   * cache chip's rates (item 699) on the newest reply's usage.
+   */
+  const wwChat = $derived(!aside && !floating && onClaudeCode ? app.activeSessionId : null);
+  const wwUsage = $derived(wwChat ? (lastReply(app.events)?.usage ?? null) : null);
+  const wwContext = $derived(contextOf(wwUsage));
+  const wwCosts = $derived(wwUsage ? chipCosts(wwUsage, cacheRatesOf(lastModel)) : null);
+  const wwHandingOff = $derived(!!handedNext || (handoffHere && (handoff.stage === "wrapping" || handoff.stage === "wrapped")));
+  const wwBusy = $derived(busy || queue.length > 0);
+  /** The warm moment: `offer`, `do` or null; `now` ticks each minute while warm. */
+  const warmAct = $derived(
+    wwChat && cache && !actedOn(wwChat, cache.warmUntil)
+      ? warmWrapAct({
+          mode: warmWrap.mode,
+          minTokens: warmWrap.minTokens,
+          context: wwContext,
+          warmUntil: cache.warmUntil,
+          now,
+          keeping: isKeeping(kw, now),
+          busy: wwBusy,
+          // Past the mark the hand-off notice is up and carries Wrap up now itself.
+          handingOff: wwHandingOff || (handoffHere && handoff.stage === "due"),
+          // A "never" mark or a *Stay here* in this chat: offered, never sent.
+          never: neverHandsOff(wwChat) || (handoffHere && handoff.dismissedAt > 0),
+          away: untrack(() => awayNow(true, now)),
+        })
+      : null,
+  );
+  /** Sent at most once per cache end: the mark is set before the send. */
+  $effect(() => {
+    if (warmAct !== "do" || !wwChat || !cache) return;
+    const [chat, until] = [wwChat, cache.warmUntil];
+    untrack(() => {
+      markActed(chat, until);
+      // Under the mark the stage stays idle; the reply's next-chat card
+      // (item 506) reads the reply, not the stage, so the way on is the same.
+      addToast(sentToast(wwCosts));
+      void sendWrapUpNow();
+    });
+  });
+  const coldChip = $derived(
+    !!wwChat &&
+      !!cache &&
+      coldChipShows({
+        minTokens: warmWrap.minTokens,
+        context: wwContext,
+        warm: cache.warm,
+        busy: wwBusy,
+        handingOff: wwHandingOff,
+        noticeUp: handoffHere && handoff.stage === "due",
+        kept: keptCold(wwChat, cache.warmUntil),
+      }),
+  );
+  const coldWords = $derived(coldButtons(wwCosts));
   $effect(() => {
     if (floating) return;
     const warmUntil = cacheState(app.events, Date.now(), touchedUntil(kw), asideReads(kwChat))?.warmUntil ?? null;
@@ -3367,6 +3427,26 @@
     </div>
   {/if}
   <!-- Item 702: the notice waits for the turn to be idle, never mid-turn or mid-send. -->
+  {#if warmAct === "offer" && cache}
+    <!-- Item 768: the cache is about to lapse on a big idle chat; the wrap-up is cheapest now. -->
+    <div class="handoff handoff-min warm-wrap" role="status" aria-label="Wrap up while the cache is warm">
+      <span class="handoff-mark" aria-hidden="true"><Icon name="branch" size={13} /></span>
+      <strong class="handoff-min-title">{warmTitle(cache.remainingMs, wwContext)}</strong>
+      <span class="mono handoff-fill" use:tip={coldTip(wwCosts, cacheRatesOf(lastModel))}>{warmDetail(wwCosts)}</span>
+      <span class="spacer"></span>
+      <button class="ns-btn accent small" disabled={app.busy || !wrapUpText.trim()} use:tip={"Send the wrap-up now, while the history is read back from the cache"} onclick={() => { markActed(wwChat, cache?.warmUntil ?? null); void sendWrapUpNow(); }}>Wrap up now</button>
+      <button class="ns-btn ghost small" use:tip={"Not for this hour; on return a cold chip offers it again"} onclick={() => markActed(wwChat, cache?.warmUntil ?? null)}>Not now</button>
+    </div>
+  {:else if coldChip && cache}
+    <!-- Item 768: back on a cold big chat — one chip, both prices, before he types. Never compacts. -->
+    <div class="handoff handoff-min cold-return" role="status" aria-label="Cache cold — hand off or keep">
+      <span class="handoff-mark" aria-hidden="true"><Icon name="branch" size={13} /></span>
+      <strong class="handoff-min-title" use:tip={coldTip(wwCosts, cacheRatesOf(lastModel))}>{coldTitle(wwContext)}</strong>
+      <span class="spacer"></span>
+      <button class="ns-btn accent small" disabled={app.busy || !wrapUpText.trim()} use:tip={"Send the wrap-up: the model writes HANDOFF.md and a start prompt; the next chat starts small"} onclick={() => void sendWrapUpNow()}>{coldWords.handoff}</button>
+      <button class="ns-btn ghost small" use:tip={"Go on here; this chip stays away until the next reply"} onclick={() => keepCold(wwChat, cache?.warmUntil ?? null)}>{coldWords.keep}</button>
+    </div>
+  {/if}
   {#if handedNext}
     <div class="handoff handoff-min" role="status" aria-label="This chat was handed off">
       <span class="handoff-mark" aria-hidden="true"><Icon name="branch" size={13} /></span>
