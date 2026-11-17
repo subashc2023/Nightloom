@@ -2314,8 +2314,9 @@ impl Host for ServeHost {
             && !self.sync.layout().needs_fork(&path)
         {
             let _held = self.hold(chat)?;
+            let auto = prep.auto_hand_off;
             return tokio::task::spawn_blocking(move || {
-                crate::jobs::hold_kind_on_disk(&path, want)
+                crate::jobs::hold_on_disk(&path, want, auto)
             })
             .await
             .map_err(|e| e.to_string())?;
@@ -2330,7 +2331,8 @@ impl Host for ServeHost {
         let path = session.log_path().map(Path::to_path_buf);
         drop(session);
         let path = path.ok_or_else(|| crate::jobs::UNHELD.to_string())?;
-        tokio::task::spawn_blocking(move || crate::jobs::hold_kind_on_disk(&path, want))
+        let auto = prep.auto_hand_off;
+        tokio::task::spawn_blocking(move || crate::jobs::hold_on_disk(&path, want, auto))
             .await
             .map_err(|e| e.to_string())?
     }
@@ -4500,6 +4502,7 @@ mod job_hold_tests {
             chat,
             title: "Check CI".into(),
             read_only,
+            auto_hand_off: None,
         }
     }
 

@@ -48,7 +48,12 @@ fn hold(session: &mut Session, want: ChatKind) {
 
 /// A job's new chat under `dir`: a Claude Code chat named for the job, held
 /// to `want` from its first line. Its id.
-fn make_chat(dir: &std::path::Path, title: String, want: ChatKind) -> Result<String, String> {
+fn make_chat(
+    dir: &std::path::Path,
+    title: String,
+    want: ChatKind,
+    auto: Option<(u64, u64)>,
+) -> Result<String, String> {
     let mut session =
         Session::start(dir, ChatMode::Normal, ChatKind::Build).map_err(|e| e.to_string())?;
     session.record_title_by(title, nightloom_core::TitleBy::User);
@@ -56,7 +61,7 @@ fn make_chat(dir: &std::path::Path, title: String, want: ChatKind) -> Result<Str
     let path = session.log_path().map(std::path::Path::to_path_buf);
     drop(session);
     let path = path.ok_or_else(|| nightloom_service::jobs::UNHELD.to_string())?;
-    nightloom_service::jobs::hold_kind_on_disk(&path, want)
+    nightloom_service::jobs::hold_on_disk(&path, want, auto)
 }
 
 pub(crate) async fn prepare(state: &AppState, prep: Prep) -> Result<String, String> {
@@ -85,17 +90,22 @@ pub(crate) async fn prepare(state: &AppState, prep: Prep) -> Result<String, Stri
                     .try_lock()
                     .map_err(|_| "its chat is running a turn".to_string())?;
                 hold(&mut open, want);
+                if let Some((soft, hard)) = prep.auto_hand_off {
+                    open.set_auto_hand_off(soft, hard);
+                }
             } else {
                 // Written, then read back from the file (the review's away
                 // finding: a log that refuses the write must not run).
                 let path = dir.join(format!("{chat}.jsonl"));
-                blocking(move || nightloom_service::jobs::hold_kind_on_disk(&path, want)).await?;
+                let auto = prep.auto_hand_off;
+                blocking(move || nightloom_service::jobs::hold_on_disk(&path, want, auto)).await?;
             }
             chat
         }
         None => {
             let title = prep.title.clone();
-            blocking(move || make_chat(&dir, title, want)).await?
+            let auto = prep.auto_hand_off;
+            blocking(move || make_chat(&dir, title, want, auto)).await?
         }
     };
     state
@@ -123,7 +133,7 @@ mod tests {
     #[test]
     fn a_read_only_jobs_chat_is_a_chat_over_claude_code_and_holds_any_agent_to_it() {
         let d = dir("ro");
-        let id = make_chat(&d, "Check CI".into(), kind_for(true)).unwrap();
+        let id = make_chat(&d, "Check CI".into(), kind_for(true), None).unwrap();
         let path = d.join(format!("{id}.jsonl"));
         assert!(path.is_file(), "the log exists, so the next run finds it");
         let session = Session::load(&path).unwrap();
@@ -143,7 +153,7 @@ mod tests {
     #[test]
     fn approving_and_taking_back_moves_the_logs_kind_and_the_hold_only_tightens() {
         let d = dir("flip");
-        let id = make_chat(&d, "Tidy".into(), kind_for(true)).unwrap();
+        let id = make_chat(&d, "Tidy".into(), kind_for(true), None).unwrap();
         let path = d.join(format!("{id}.jsonl"));
         let mut s = Session::load(&path).unwrap();
         hold(&mut s, kind_for(false));

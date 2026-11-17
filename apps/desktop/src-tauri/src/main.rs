@@ -70,6 +70,7 @@ mod handoff_log;
 /// The notes Inbox's Sort inbox (nightshift backlog 488).
 mod inbox_sort;
 // Recurring jobs' part on the Mac (item 746).
+mod home;
 mod jobs;
 // The keep-warm clock (backlog 582).
 mod keep_warm;
@@ -371,6 +372,9 @@ struct ProjectInfo {
     /// (`Project::is_unfiled_holder`): a New chat in it is a Chat even though
     /// it has a folder (nightshift backlog 102).
     unfiled: bool,
+    /// Where it came from (`nightloom:home` is Home, item 763; the frontend
+    /// pins it first and offers no Remove).
+    source: Option<String>,
 }
 
 impl ProjectInfo {
@@ -379,6 +383,7 @@ impl ProjectInfo {
             id: project.id.clone(),
             name: project.name.clone(),
             unfiled: project.is_unfiled_holder(),
+            source: project.source.clone(),
             root: project
                 .workspace
                 .as_ref()
@@ -1460,7 +1465,7 @@ fn main() {
                 pending_kind: tokio::sync::Mutex::new(ChatKind::Build),
                 cancel,
                 workspaces: tokio::sync::Mutex::new(Workspaces {
-                    registry: Registry::load(),
+                    registry: home::registry_with_home(),
                     // Nothing open at launch. The frontend reopens the last
                     // project if it had one, which keeps "which project was
                     // I in" a UI preference rather than a second source of
@@ -1751,6 +1756,10 @@ fn main() {
             remote::remote_claim,
             remote::push_note,
             jobs::job_for_chat,
+            home::home_info,
+            home::home_feed,
+            home::home_mark_seen,
+            home::home_save_brief,
             jobs::job_answer,
             remote::remote_self_test,
             away::away_status,

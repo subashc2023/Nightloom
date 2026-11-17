@@ -631,9 +631,22 @@ pub fn kind_for(read_only: bool) -> nightloom_core::ChatKind {
 /// read the old kind and run with the writers. `Err` then: the job waits.
 /// The chat's id on success.
 pub fn hold_kind_on_disk(path: &Path, want: nightloom_core::ChatKind) -> Result<String, String> {
+    hold_on_disk(path, want, None)
+}
+
+/// [`hold_kind_on_disk`], and the chat's automatic in-place hand-off marks
+/// (item 763: Home's chat) when `auto` names them.
+pub fn hold_on_disk(
+    path: &Path,
+    want: nightloom_core::ChatKind,
+    auto: Option<(u64, u64)>,
+) -> Result<String, String> {
     let mut session = nightloom_core::Session::load(path).map_err(|e| e.to_string())?;
     if session.kind() != want {
         crate::chat_ops::set_kind(&mut session, want, None);
+    }
+    if let Some((soft, hard)) = auto {
+        session.set_auto_hand_off(soft, hard);
     }
     let id = session.id.clone();
     drop(session);
@@ -657,6 +670,9 @@ pub struct Prep {
     pub chat: Option<String>,
     pub title: String,
     pub read_only: bool,
+    /// The chat hands off in place by itself at these marks (item 763:
+    /// Home's chat, `(soft, hard)` tokens); `None` leaves it as it is.
+    pub auto_hand_off: Option<(u64, u64)>,
 }
 
 /// A title from the message when he gave none: its first line, cut.
@@ -874,6 +890,46 @@ impl Jobs {
         let out = job.clone();
         self.save(&jobs)?;
         Ok(out)
+    }
+
+    /// The Nightloom home this store lives under (`<home>/remote/jobs`).
+    fn config_dir(&self) -> Option<PathBuf> {
+        self.dir.parent()?.parent().map(Path::to_path_buf)
+    }
+
+    /// The morning scan's message (item 763): [`crate::home::SCAN_LINE`]
+    /// and the facts collected now.
+    fn scan_text(&self, now: DateTime<Utc>) -> String {
+        let Some(config) = self.config_dir() else {
+            return crate::home::scan_message("(no Nightloom home)");
+        };
+        let projects: Vec<(String, Option<PathBuf>)> = crate::project::Registry::load_in(&config)
+            .projects()
+            .into_iter()
+            .map(|p| (p.name, p.workspace))
+            .collect();
+        let facts = crate::home::collect(&config, &self.list(), &projects, now);
+        crate::home::scan_message(&facts)
+    }
+
+    /// Item 763: the built-in morning scan in Home's project `project`,
+    /// made once (8:00 AM on the host's zone); a job he changed or paused
+    /// is left as he left it. Whether it was made now.
+    pub fn ensure_home_scan(&self, project: &str, now: DateTime<Utc>) -> bool {
+        if self.lock().iter().any(|j| j.id == crate::home::SCAN_JOB_ID) {
+            return false;
+        }
+        let mut req = crate::home::scan_job(project);
+        req.tz = host_tz();
+        let Ok(view) = self.create(req, now) else {
+            return false;
+        };
+        let mut jobs = self.lock();
+        if let Some(j) = jobs.iter_mut().find(|j| j.id == view.job.id) {
+            j.id = crate::home::SCAN_JOB_ID.into();
+        }
+        let _ = self.save(&jobs);
+        true
     }
 
     /// Every job, soonest next run first (paused ones last).
@@ -1131,6 +1187,8 @@ impl Jobs {
                 chat: job.chat.clone(),
                 title: job.title.clone(),
                 read_only: !job.writable(),
+                auto_hand_off: (job.id == crate::home::SCAN_JOB_ID)
+                    .then_some((crate::hand_off::SOFT_TOKENS, crate::hand_off::HARD_TOKENS)),
             })
             .await
         {
@@ -1139,10 +1197,14 @@ impl Jobs {
         };
         // Kept before the send: a send that fails must not make a second chat.
         let _ = self.change(&job.id, |j| j.chat = Some(chat.clone()));
-        match host
-            .job_send(job.project.as_deref(), &chat, &job.text)
-            .await
-        {
+        // Item 763: the morning scan's message is its line plus the facts
+        // collected now, in code.
+        let text = if job.id == crate::home::SCAN_JOB_ID {
+            self.scan_text(now)
+        } else {
+            job.text.clone()
+        };
+        match host.job_send(job.project.as_deref(), &chat, &text).await {
             Ok(Handed::Sent | Handed::Queued) => {
                 let _ = self.change(&job.id, |j| {
                     j.running = Some(RunMark {
@@ -1195,6 +1257,7 @@ impl Jobs {
         }
         let mut refused = Vec::new();
         let mut calls = None;
+        let mut full_reply: Option<String> = None;
         let (outcome, summary) = if listed {
             (
                 Outcome::Unfinished,
@@ -1211,7 +1274,8 @@ impl Jobs {
                         refused = refused_in(&events, &job.text);
                     }
                     calls = crate::runaway::calls_in(&events, &job.text);
-                    match reply_in(&events, &job.text) {
+                    full_reply = reply_in(&events, &job.text);
+                    match full_reply.clone() {
                         // Item 784: he chose Stop on the guard's card.
                         Some(reply) if stopped_reply(&reply).is_some() => (
                             Outcome::Stopped,
@@ -1230,6 +1294,7 @@ impl Jobs {
         let after = host.usage().await.ok().map(|u| u.plan);
         let points = after.as_ref().and_then(|a| week_points(mark, a));
         let wants = !refused.is_empty();
+        let summary_line = summary.clone();
         let _ = self.change(&job.id, |j| {
             j.running = None;
             // A read-only run that was refused a change asks; one that was
@@ -1270,6 +1335,39 @@ impl Jobs {
                 j.recent_calls.drain(..over);
             }
         });
+        // Item 763: every run's end is a feed row; the scan keeps its page
+        // and pushes its counts.
+        if let Some(config) = self.config_dir() {
+            let ok = outcome == Outcome::Done;
+            crate::home::append(
+                &config,
+                &crate::home::FeedRow {
+                    at: now,
+                    kind: if ok { "job_done" } else { "job_failed" }.into(),
+                    label: Some(job.title.clone()),
+                    chat: Some(chat.clone()),
+                    project: job.project.clone(),
+                    line: summary_line.clone(),
+                },
+            );
+            if job.id == crate::home::SCAN_JOB_ID
+                && ok
+                && let Some(reply) = &full_reply
+            {
+                let date = local_date(now, &job.zone()).unwrap_or_else(|| now.date_naive());
+                if crate::home::finish_scan(&config, reply, date, Some(chat), now).is_ok()
+                    && let Some(push) = host.push()
+                {
+                    push.notify(crate::home::scan_note(
+                        reply,
+                        Some(chat.clone()),
+                        job.project.clone(),
+                        host.at_the_mac(),
+                    ))
+                    .await;
+                }
+            }
+        }
         // Its push: the job's name and "wants to make changes", nothing of
         // the reply. Not while he is at the Mac (the Mac's chat shows it).
         if wants && let Some(push) = host.push() {

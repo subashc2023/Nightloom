@@ -95,6 +95,9 @@ pub enum What {
     Unattended,
     /// The runaway guard paused a run: Continue or Stop (item 784).
     Stuck,
+    /// Home's morning scan landed (item 763): "Morning scan · 3 waiting",
+    /// counts only.
+    Scan,
 }
 
 impl What {
@@ -111,6 +114,7 @@ impl What {
             What::SetAside => "No answer, so it was set aside — it asks again at the end",
             What::Unattended => "Needed your approval while you were away — set aside, not run",
             What::Stuck => "Looks stuck — Continue or Stop?",
+            What::Scan => "Morning scan",
         }
     }
 
@@ -486,6 +490,17 @@ impl Push {
     /// Tell every subscribed phone. Never fails: what happened is in
     /// [`Sent`], and a push that could not go is not worth failing a turn.
     pub async fn notify(&self, note: Note) -> Sent {
+        // Item 763: every push is a row of Home's feed, sent or not (the
+        // scan writes its own row).
+        if note.what != What::Scan
+            && self.dir.ends_with("remote/push")
+            && let Some(config) = self.dir.parent().and_then(Path::parent)
+        {
+            crate::home::append(
+                config,
+                &crate::home::row_for_note(&note, chrono::Utc::now()),
+            );
+        }
         let chat = note.chat.clone().unwrap_or_default();
         let (vapid, subs, badge) = {
             let mut inner = self.lock();
@@ -587,7 +602,7 @@ impl Push {
 
     /// What the phone's service worker is handed: the chat's name, the
     /// state in words, where a tap goes, the badge. Nothing of the reply.
-    fn payload(&self, note: &Note, badge: usize) -> String {
+    pub fn payload(&self, note: &Note, badge: usize) -> String {
         let name = note
             .label
             .as_deref()
@@ -602,7 +617,9 @@ impl Push {
             name.to_string()
         };
         let body = match (note.what, note.detail.as_deref().map(str::trim)) {
-            (What::Stuck, Some(d)) if !d.is_empty() => d.chars().take(DETAIL_MAX).collect(),
+            (What::Stuck | What::Scan, Some(d)) if !d.is_empty() => {
+                d.chars().take(DETAIL_MAX).collect()
+            }
             _ => note.what.words().to_string(),
         };
         serde_json::json!({
