@@ -207,6 +207,11 @@ fn age_last_reply(session: &mut Session, secs: i64) {
     let mut v: serde_json::Value = serde_json::from_str(&lines[i]).unwrap();
     let at: DateTime<Utc> = v["at"].as_str().unwrap().parse().unwrap();
     v["at"] = serde_json::json!(at - chrono::Duration::seconds(secs));
+    // Item 792: the cache edge runs from the request's send.
+    if let Some(sent) = v["sent_at"].as_str() {
+        let sent: DateTime<Utc> = sent.parse().unwrap();
+        v["sent_at"] = serde_json::json!(sent - chrono::Duration::seconds(secs));
+    }
     lines[i] = v.to_string();
     std::fs::write(&path, lines.join("\n") + "\n").unwrap();
     *session = Session::load(&path).unwrap();
@@ -316,10 +321,11 @@ async fn the_scan_lands_in_homes_one_chat_and_the_chat_hands_off_in_place() {
     assert!(argv2.contains("--resume\ns-1"), "{argv2}");
     assert!(!read(&root, "stdin2").contains("Hand-off"), "not idle yet");
 
-    // Past the soft mark (250k) and idle: his next message hands off in place.
+    // Past the soft mark (250k) and its cache gone cold (item 792: the
+    // hour past its send): his next message hands off in place.
     {
         let mut guard = host.session.lock().await;
-        age_last_reply(guard.as_mut().unwrap(), crate::hand_off::IDLE_SECS + 60);
+        age_last_reply(guard.as_mut().unwrap(), 61 * 60);
     }
     host.turn("and the CI?").await;
     let guard = host.session.lock().await;

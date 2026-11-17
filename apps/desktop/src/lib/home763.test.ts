@@ -97,6 +97,8 @@ describe("the hand-off divider (H3)", () => {
     const t = handOffTip({ context: 212345, reason: "hard" });
     expect(t.split("\n")).toHaveLength(2);
     expect(t.startsWith("212k")).toBe(true);
+    // Item 792: a soft one happens only once the cache has gone cold, and says so.
+    expect(handOffTip({ context: 104_000, reason: "soft" })).toBe("104k of context → a fresh start\nAfter the cache went cold · click for the brief");
   });
   it("sits before the first item logged after it, after the day's date line", () => {
     const items = [

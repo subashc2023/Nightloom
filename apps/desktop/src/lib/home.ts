@@ -189,9 +189,10 @@ export function handOffLine(h: Pick<HandOff, "context" | "at">): string {
   return `Handed off in place · ${kTokens(h.context)} → fresh${t ? ` · ${t}` : ""}`;
 }
 
-/** The divider's tooltip: two short lines, numbers first. */
+/** The divider's tooltip: two short lines, numbers first. A soft hand-off happens only once the
+ *  chat's cache has gone cold (item 792), so its line says that. */
 export function handOffTip(h: Pick<HandOff, "context" | "reason">): string {
-  return `${kTokens(h.context)} of context → a fresh start\n${h.reason === "hard" ? "At the hard limit" : "At a quiet moment"} · click for the brief`;
+  return `${kTokens(h.context)} of context → a fresh start\n${h.reason === "hard" ? "At the hard limit" : "After the cache went cold"} · click for the brief`;
 }
 
 /** One run-log entry a hand-off carried (items 789 and 791: `chain.rs` writes them as `### <stamp> · <who>`). */
