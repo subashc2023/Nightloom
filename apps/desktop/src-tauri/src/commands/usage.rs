@@ -437,6 +437,16 @@ pub(crate) async fn cache_rates(
     state: State<'_, AppState>,
     model: String,
 ) -> Result<Option<nightloom_service::usage::CacheRates>, String> {
+    cache_rates_for(&state, model).await
+}
+
+/// The command's read, for the phone's `GET /api/cache-rates` too (wave O,
+/// 2026-11-17): every project's `ask/` directory, then
+/// `usage::cache_rates_in` on the blocking pool.
+pub(crate) async fn cache_rates_for(
+    state: &AppState,
+    model: String,
+) -> Result<Option<nightloom_service::usage::CacheRates>, String> {
     let mut asks = vec![
         state.log_dir().await.join("ask"),
         state.default_log_dir.join("ask"),
@@ -453,27 +463,9 @@ pub(crate) async fn cache_rates(
     }
     asks.sort();
     asks.dedup();
-    tokio::task::spawn_blocking(move || {
-        use nightloom_service::usage;
-        let rates = usage::claude_dir().and_then(|d| usage::load_rates_in(&d).ok());
-        if let Some(r) = rates
-            .as_ref()
-            .and_then(|r| usage::table_cache_rates(r, &model))
-        {
-            return Some(r);
-        }
-        let mut pings = Vec::new();
-        for ask in &asks {
-            if let Ok(chats) = std::fs::read_dir(ask) {
-                for c in chats.flatten() {
-                    pings.extend(nightloom_service::keep_warm::read_pings(&c.path()));
-                }
-            }
-        }
-        usage::cache_rates_with(rates.as_ref(), &pings, &model)
-    })
-    .await
-    .map_err(|e| format!("reading the cache rates failed: {e}"))
+    tokio::task::spawn_blocking(move || nightloom_service::usage::cache_rates_in(&asks, &model))
+        .await
+        .map_err(|e| format!("reading the cache rates failed: {e}"))
 }
 
 /// The plan's figure refreshed through the CLI's print-mode `/usage` when

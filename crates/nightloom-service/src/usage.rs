@@ -536,6 +536,28 @@ pub fn cache_rates_with(
         })
 }
 
+/// The rates for `model` as the composer's chip prices it (item 699):
+/// `usage-rates.json`'s row, else the fit over the keep-warm pings of every
+/// chat under each of `asks` (an `ask/` directory per project, one
+/// directory per chat in it). Moved here from the desktop's `cache_rates`
+/// command (wave O, 2026-11-17) so the phone's `GET /api/cache-rates` on
+/// either host reads the same figure. Blocking: it opens every ping file.
+pub fn cache_rates_in(asks: &[std::path::PathBuf], model: &str) -> Option<CacheRates> {
+    let rates = claude_dir().and_then(|d| load_rates_in(&d).ok());
+    if let Some(r) = rates.as_ref().and_then(|r| table_cache_rates(r, model)) {
+        return Some(r);
+    }
+    let mut pings = Vec::new();
+    for ask in asks {
+        if let Ok(chats) = std::fs::read_dir(ask) {
+            for c in chats.flatten() {
+                pings.extend(crate::keep_warm::read_pings(&c.path()));
+            }
+        }
+    }
+    cache_rates_with(rates.as_ref(), &pings, model)
+}
+
 // ---- the surfaces ----
 
 /// One snapshot of the desktop app's seven-day breakdown. Percents are of

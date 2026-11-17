@@ -2158,6 +2158,24 @@ impl Host for ServeHost {
         serve_reads::usage().await
     }
 
+    /// Wave O: the cache chip's rates, from every chat's pings here — the
+    /// unfiled chats' and each project's `ask/` directory.
+    async fn cache_rates(&self, model: &str) -> Result<Option<crate::usage::CacheRates>, String> {
+        let mut asks = vec![self.cfg.unfiled_dir.join("ask")];
+        asks.extend(
+            lock(&self.registry)
+                .projects()
+                .iter()
+                .map(|p| p.session_dir().join("ask")),
+        );
+        asks.sort();
+        asks.dedup();
+        let model = model.to_string();
+        tokio::task::spawn_blocking(move || crate::usage::cache_rates_in(&asks, &model))
+            .await
+            .map_err(|e| format!("reading the cache rates failed: {e}"))
+    }
+
     async fn search(
         &self,
         q: &str,
@@ -2406,6 +2424,8 @@ impl Host for ServeHost {
             // Item 743: the rules sheet, and "Not now — carry on".
             feature::RULES,
             feature::LATER,
+            // Wave O: the cache chip's price.
+            feature::CACHE_RATES,
         ]
         .into_iter()
         .map(String::from)
@@ -2968,11 +2988,22 @@ esac
                 "resume_limit",
                 "rules",
                 "later",
+                "cache_rates",
                 "push",
                 // 746: named by the listener while the host has jobs.
                 "jobs"
             ])
         );
+
+        // Wave O: the cache chip's rates — no table row and no ping on this
+        // model here, so no figure (`null`), never a guess.
+        let rates = get(
+            &c,
+            format!("{base}/api/cache-rates?model=claude-none-0"),
+            &token,
+        )
+        .await;
+        assert_eq!(rates, serde_json::Value::Null);
 
         // Item 743: the rules routes, over the chat's own folder — an add
         // lists back, a rule that could never fire is a 409 with the reason,

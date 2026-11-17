@@ -10,6 +10,7 @@ import type { ApprovalRequest, DocumentInput, ImageInput, SessionEvent, TurnEven
 import type { RuleEdit, RulesListing } from "./rules";
 import type { SubagentLimits } from "../lib/catalog";
 import type { WireView } from "../lib/types";
+import type { CacheRatesWire } from "../lib/cachePrice";
 import type { ContextReply, LayerChange } from "./ContextSheet.svelte";
 import { isCouncilBlock } from "../lib/council";
 import { parseSubagentBlock } from "../lib/subagent";
@@ -856,6 +857,12 @@ export class Client {
 
   async usage(): Promise<Usage> {
     return (await this.call("/usage")).json();
+  }
+
+  /** Wave O: the cache chip's rates for `model` on this host — `null` with
+   *  no figure (the `cache_rates` feature). */
+  async cacheRates(model: string): Promise<CacheRatesWire | null> {
+    return (await this.call(`/cache-rates?model=${encodeURIComponent(model)}`)).json();
   }
 
   // ---- item 746: recurring jobs (`jobs.ts`, `JobsSheet.svelte`) ----

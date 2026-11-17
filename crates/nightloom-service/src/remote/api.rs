@@ -39,6 +39,10 @@ pub mod feature {
     pub const RUNNING: &str = "running";
     /// `GET /api/usage`.
     pub const USAGE: &str = "usage";
+    /// `GET /api/cache-rates?model=` (wave O, 2026-11-17): the rates the
+    /// chat's cache chip prices the next send at, as the Mac's chip reads
+    /// them (`usage::cache_rates_in`) — `null` with no figure.
+    pub const CACHE_RATES: &str = "cache_rates";
     /// `GET /api/search`.
     pub const SEARCH: &str = "search";
     /// `POST /api/projects`, `…/open`, `…/rename`, `…/forget`.

@@ -30,12 +30,14 @@
     /** Item 786: the chat's cache, which the aside reads — its time left
      *  ("41 min"), "cold", or null with no clock. */
     cache?: string | null;
+    /** Wave O: the chat chip's price (`next ≈ $0.37 · cold ≈ $4.32`), or null. */
+    price?: string | null;
     /** Resolves true when the Mac took the question. */
     onask: (text: string) => Promise<boolean>;
     onstop: () => void;
     oncopy: (text: string) => void;
   }
-  let { chat, title, available, host = undefined, aside, past, problem, cache = null, onask, onstop, oncopy }: Props = $props();
+  let { chat, title, available, host = undefined, aside, past, problem, cache = null, price = null, onask, onstop, oncopy }: Props = $props();
 
   const key = $derived(`aside:${chat}`);
   let text = $state("");
@@ -72,7 +74,7 @@
 <div class="as-title">Ask aside</div>
 <div class="as-sub">Beside “{title}” — the answer stays out of the chat.</div>
 <!-- Item 786: the chat's cache, as its header line reads it — the aside reads the same. -->
-{#if available && cache}<div class="as-cache" class:cold={cache === "cold"}>cache <b>{cache === "cold" ? "cold" : cache}</b>{cache === "cold" ? " · the ask writes it again" : " left"}</div>{/if}
+{#if available && cache}<div class="as-cache" class:cold={cache === "cold"}>cache <b>{cache === "cold" ? "cold" : cache}</b>{cache === "cold" ? " · the ask writes it again" : " left"}{#if price}<span class="as-price">{" · "}{price}</span>{/if}</div>{/if}
 {#if !available}
   <p class="as-note">{missingSentence(host, "This Mac's Nightloom is older than the phone page: update it to ask asides from here.")}</p>
 {:else}

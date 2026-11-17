@@ -134,6 +134,9 @@
   import ProjectsSheet from "./ProjectsSheet.svelte";
   // Item 572 (Filament IV stage 11): the phone's own look, the context dial.
   import { applyLook, cacheLeft, contextLine, kTokens, loadLook, saveLook, type Look } from "./look";
+  // Wave O: the cache chip's price and tooltip, as the Mac's.
+  import { newestReply, phoneCache } from "./cacheChip";
+  import type { CacheRatesWire } from "../lib/cachePrice";
   import ContextDial from "../lib/ContextDial.svelte";
   import ProjectPage from "./ProjectPage.svelte";
   import {
@@ -533,6 +536,40 @@
     return ctxLine.warmUntil == null ? told : Math.max(told, ctxLine.warmUntil);
   });
   const cacheText = $derived(cacheLeft(warmUntil, now));
+  /** Wave O (776's left-out): the chip's price — the newest reply's model's
+   *  rates from the chat's host (`GET /api/cache-rates`), read once per model
+   *  and again after ten minutes, as the Mac's; no rates, no price. */
+  let cacheRatesBy = $state<Record<string, CacheRatesWire | null>>({});
+  const cacheRatesAt: Record<string, number> = {};
+  const lastReplyHere = $derived(chatId ? newestReply(events, liveFlags(events)) : null);
+  $effect(() => {
+    const model = lastReplyHere?.model;
+    const via = sameHost ? client : chatClient;
+    if (!model || !via || !hasFeature(chatState ?? remote, "cache_rates")) return;
+    const key = `${via.base} ${model}`;
+    if (cacheRatesAt[key] && Date.now() - cacheRatesAt[key] < 10 * 60_000) return;
+    cacheRatesAt[key] = Date.now();
+    void via
+      .cacheRates(model)
+      .then((r) => (cacheRatesBy = { ...cacheRatesBy, [key]: r }))
+      .catch(() => {
+        // A failed read is no figure; the next reply's model asks again.
+        delete cacheRatesAt[key];
+      });
+  });
+  const chipRates = $derived.by(() => {
+    const via = sameHost ? client : chatClient;
+    return lastReplyHere && via ? (cacheRatesBy[`${via.base} ${lastReplyHere.model}`] ?? null) : null;
+  });
+  const chip = $derived(phoneCache(lastReplyHere, warmUntil, now, chipRates));
+  /** The chip's tooltip, shown by a tap on it (a phone has no hover). */
+  let chipTip = $state(false);
+  let chipTipTimer: ReturnType<typeof setTimeout> | undefined;
+  function showChipTip() {
+    chipTip = !chipTip;
+    clearTimeout(chipTipTimer);
+    if (chipTip) chipTipTimer = setTimeout(() => (chipTip = false), 5000);
+  }
   /** The window size, once the Context sheet has read it for this chat
    *  (`view.context_limit`); the phone has no other source (blocker 1781). */
   let ctxLimits = $state<Record<string, number>>({});
@@ -2998,18 +3035,30 @@
       {/if}
       <button class="icon-btn" onclick={() => startNew(chatProject ?? newProject)} aria-label="New chat">{@render icon("new")}</button>
     </header>
-    {#if fil && chatId && (ctxLine.used !== null || fiveHour !== null)}
+    {#if chatId && (ctxLine.used !== null || fiveHour !== null || chip)}
       <!-- Item 572 (f4-phone-390): the chat's context, the cache's time
-           left and the 5-hour window, under the title. Tap: the Context sheet. -->
-      <button class="ctx-row" onclick={() => hasFeature(remote, "context") && (contextOn = true)} aria-label="Context">
+           left and the 5-hour window, under the title. Tap: the Context sheet.
+           Wave O (776's left-out): the cache chip as the Mac's — cold too, the
+           next send's price (warm and cold), its two-line tooltip on a tap of
+           the cache part; in Classic as well, which had no cache line. -->
+      <button
+        class="ctx-row"
+        onclick={(e) => {
+          if ((e.target as Element | null)?.closest?.(".ctx-cache")) showChipTip();
+          else if (hasFeature(remote, "context")) contextOn = true;
+        }}
+        aria-label="Context"
+      >
         {#if ctxLine.used !== null}
           <span class="ctx-k">Context</span>
           <b class="ctx-v">{kTokens(ctxLine.used)}</b>
           {#if ctxLimit}<span class="ctx-k">of {kTokens(ctxLimit)}</span>{/if}
         {/if}
         <span class="spacer"></span>
-        {#if cacheText}<span class="ctx-k">cache <b class="ctx-v sig">{cacheText}</b></span>{/if}
+        {#if chip}<span class="ctx-k ctx-cache" class:cold={chip.cold} title={chip.tip}>cache <b class="ctx-v sig">{chip.cold ? "cold" : chip.left}</b></span>{/if}
         {#if fiveHour !== null}<span class="ctx-k">5h <b class="ctx-v" class:hot={fiveHour >= 85}>{Math.round(fiveHour)}%</b></span>{/if}
+        {#if chip?.price}<span class="ctx-k ctx-cache ctx-price" title={chip.tip}>{chip.price}</span>{/if}
+        {#if chipTip && chip}<span class="ctx-cache ctx-tip" role="tooltip">{chip.tip}</span>{/if}
       </button>
     {/if}
 
@@ -3764,6 +3813,7 @@
             past={asidePast}
             problem={asideProblem}
             cache={warmUntil == null ? null : (cacheText ?? "cold")}
+            price={chip?.price ?? null}
             onask={askAside}
             onstop={stopAside}
             oncopy={copy}
@@ -5837,6 +5887,39 @@
   }
   .ctx-row .ctx-k + .ctx-k {
     margin-left: 6px;
+  }
+  /* Wave O: the price takes its own line under the row, right-aligned
+     under the cache part (warm or cold alike, so it never reads as the 5h
+     figure's); the tooltip opens under the row's right end. */
+  .ctx-row {
+    flex-wrap: wrap;
+    row-gap: 2px;
+  }
+  .ctx-row .ctx-k.ctx-price {
+    margin-left: 0;
+    flex-basis: 100%;
+    text-align: right;
+    font-family: var(--mono);
+    color: var(--ink2, var(--ink));
+    white-space: nowrap;
+  }
+  .ctx-cache.cold .ctx-v {
+    color: var(--dim);
+  }
+  .ctx-tip {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 10px;
+    max-width: calc(100% - 20px);
+    padding: 6px 9px;
+    border-radius: 8px;
+    background: var(--raised, var(--sheet));
+    box-shadow: inset 0 0 0 1px var(--line2), 0 6px 18px rgba(0, 0, 0, 0.35);
+    color: var(--ink);
+    font-size: 12px;
+    line-height: 1.4;
+    white-space: pre-line;
+    text-align: left;
   }
   .ctx-v {
     font-family: var(--mono);
