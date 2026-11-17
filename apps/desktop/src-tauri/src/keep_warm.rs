@@ -257,6 +257,24 @@ pub fn ask_dir(session: &Session, log_dir: &Path) -> std::path::PathBuf {
         .join(&session.id)
 }
 
+/// Item 787: `chat`'s cache has gone cold — the hour its newest reply (or
+/// a ping, or an aside's read since) bought is over, or nothing is known
+/// of it. The registry's reading first; for a chat it holds nothing of,
+/// the open log's newest reply.
+pub fn cold(app: &AppHandle, chat: &str, session: Option<&Session>) -> bool {
+    let now = now_ms();
+    let policy = policy();
+    let held = app
+        .try_state::<Holder>()
+        .and_then(|h| h.0.status(chat, None, &policy, now).warm_until_ms);
+    let until = held.or_else(|| {
+        session
+            .and_then(keep_warm::reply_of)
+            .map(|r| keep_warm::warm_until(&r, None, false, &policy))
+    });
+    until.is_none_or(|t| t <= now)
+}
+
 /// Now, unix ms — for a caller outside this file (an aside's send).
 pub fn now() -> i64 {
     now_ms()

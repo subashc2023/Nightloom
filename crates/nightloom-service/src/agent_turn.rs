@@ -489,6 +489,9 @@ async fn turn_body(
     // that never returns is said at the turn's end, never silently lost.
     // With each, why (item 783): his word, nobody answering, or nobody there.
     let mut set_aside: Vec<(crate::agent::DeferredCall, Aside)> = Vec::new();
+    // Calls already set aside unattended this turn (item 788): the same
+    // call again is set aside without a second push.
+    let mut pushed_aside: Vec<(String, serde_json::Value)> = Vec::new();
     loop {
         while let Ok(outcome) = &result
             && let Some(call) = outcome.deferred.clone()
@@ -543,12 +546,18 @@ async fn turn_body(
             let answer = if let Some(a) = preanswer {
                 Some(a)
             } else if unattended {
-                env.nudge(&ApprovalNudge {
-                    id: &call.id,
-                    name: &call.name,
-                    chat: Some(chat_id),
-                    stage: crate::agent::ask::Nudge::Unattended,
-                });
+                let again = pushed_aside
+                    .iter()
+                    .any(|(n, i)| *n == call.name && *i == call.input);
+                if !again {
+                    pushed_aside.push((call.name.clone(), call.input.clone()));
+                    env.nudge(&ApprovalNudge {
+                        id: &call.id,
+                        name: &call.name,
+                        chat: Some(chat_id),
+                        stage: crate::agent::ask::Nudge::Unattended,
+                    });
+                }
                 aside = Some(Aside::Unattended);
                 Some(Answer::Deny {
                     reason: crate::agent::ask::UNATTENDED_REASON.into(),
@@ -799,6 +808,23 @@ async fn turn_body(
         if let Ok(o) = &mut result {
             // The interrupt's own line is not his Stop.
             o.notices.retain(|n| !n.starts_with("interrupted"));
+        }
+        // Item 788: the same call refused again and again, and nobody there
+        // to press the card — waiting would hold a job "running" to its
+        // six-hour mark for nothing. The run ends here with its record and
+        // the line that says why; the refusals' own push (one, item 788's
+        // `pushed_aside`) and the run's end push are what he gets. A run
+        // somebody can answer keeps the card below.
+        if trip.refused() && env.unattended() {
+            on_event(TurnEvent::TextDelta {
+                text: format!("\n\n{}", crate::runaway::ended_line(&trip)),
+            });
+            if let Ok(o) = &mut result {
+                o.notices
+                    .push("ended — the same call was refused, nobody to answer".into());
+                o.deferred = None;
+            }
+            break;
         }
         let id = format!("{}-{}", crate::runaway::STUCK_TOOL, uuid::Uuid::new_v4());
         let rx = ask.wait(&id);
@@ -1760,9 +1786,16 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
         cards: std::sync::Mutex<Vec<(String, Option<&'static str>, bool)>>,
         nudges: std::sync::Mutex<Vec<(String, crate::agent::ask::Nudge)>>,
         unattended: bool,
+        /// He has left (the runaway guard applies), item 788's tests.
+        left: bool,
     }
 
     impl CardEnv {
+        fn left_alone(mut self) -> Self {
+            self.left = true;
+            self
+        }
+
         fn new(ask: Arc<AskGate>, answers: Vec<Answer>, unattended: bool) -> Self {
             Self {
                 ask,
@@ -1770,6 +1803,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
                 cards: Default::default(),
                 nudges: Default::default(),
                 unattended,
+                left: false,
             }
         }
     }
@@ -1799,6 +1833,9 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
         fn unattended(&self) -> bool {
             self.unattended
         }
+        fn unwatched(&self, _chat: &str) -> bool {
+            self.left
+        }
         async fn grant_to_project(&self, _dir: &Path) -> ProjectGrant {
             ProjectGrant::NoProject
         }
@@ -1811,12 +1848,25 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
         tool: &str,
         env: &CardEnv,
     ) -> (Result<AgentTurnEnd, String>, PathBuf) {
+        read_only_turn_by(root, tool, env, stand_in_deferring)
+            .await
+            .0
+    }
+
+    /// [`read_only_turn`] with its stand-in `claude` made by `stand_in`;
+    /// the turn's log too.
+    async fn read_only_turn_by(
+        root: &Path,
+        tool: &str,
+        env: &CardEnv,
+        stand_in: fn(&Path, &Path, &str) -> String,
+    ) -> ((Result<AgentTurnEnd, String>, PathBuf), Vec<SessionEvent>) {
         let logs = root.join("sessions");
         std::fs::create_dir_all(&logs).unwrap();
         let mut session = Session::start(&logs, ChatMode::Normal, ChatKind::Build).unwrap();
         let ask_dir = root.join("ask").join(&session.id);
         let mut spec = AgentSpec::new(root);
-        spec.binary = stand_in_deferring(root, &ask_dir, tool);
+        spec.binary = stand_in(root, &ask_dir, tool);
         spec.chat_policy = true;
         let mut agent = ClaudeCodeAgent::new(spec);
         agent.set_ask_dir(ask_dir.clone());
@@ -1839,7 +1889,149 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
         )
         .await
         .map_err(|e| format!("{e:?}"));
-        (end, ask_dir)
+        ((end, ask_dir), session.events().to_vec())
+    }
+
+    /// Item 788's stand-in `claude`: makes the same call, is refused,
+    /// makes it again — five times over, each a deferral like
+    /// [`stand_in_deferring`]'s and each refusal the result the CLI hands
+    /// back for a denied call — then ends. Each process notes the result
+    /// count it reached in `<root>/refused`.
+    fn stand_in_refusing(root: &Path, _ask_dir: &Path, tool: &str) -> String {
+        let reason = crate::agent::ask::UNATTENDED_REASON;
+        let body = format!(
+            r##"#!/bin/sh
+D="{d}"
+printf '%s\n' '{{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"claude-haiku-4-5","permissionMode":"default","session_id":"s-1"}}'
+N=$(cat "$D/n" 2>/dev/null || echo 0)
+if [ "$N" -gt 0 ]; then
+  printf '%s\n' '{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"toolu_'"$N"'","content":"{reason}","is_error":true}}]}},"parent_tool_use_id":null}}'
+  echo "$N" > "$D/refused"
+fi
+if [ "$N" -ge 5 ]; then
+  printf '%s\n' '{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"gave up"}}]}},"parent_tool_use_id":null}}'
+  printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"gave up","session_id":"s-1","stop_reason":"end_turn","usage":{{"input_tokens":3,"output_tokens":2}}}}'
+  exit 0
+fi
+M=$((N+1))
+echo "$M" > "$D/n"
+printf '%s\n' '{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"toolu_'"$M"'","name":"{t}","input":{{"id":"r-7"}}}}]}},"parent_tool_use_id":null}}'
+printf '%s\n' '{{"type":"result","subtype":"success","stop_reason":"tool_deferred","terminal_reason":"tool_deferred","is_error":false,"num_turns":1,"result":"","permission_denials":[],"session_id":"s-1","deferred_tool_use":{{"id":"toolu_'"$M"'","name":"{t}","input":{{"id":"r-7"}}}}}}'
+"##,
+            d = root.display(),
+            t = tool,
+        );
+        let path = root.join("claude-refused");
+        std::fs::write(&path, body).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    fn turn_text(log: &[SessionEvent]) -> String {
+        log.iter()
+            .filter_map(|e| match e {
+                SessionEvent::AssistantMessage { blocks, .. } => Some(blocks),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Item 788: an unattended run (a job's at night: nobody at the Mac, no
+    /// phone connected) whose read-only connector call is refused three
+    /// times the same way ends — its record and the line that says why,
+    /// one push (the first set-aside's), no stuck card and no wait.
+    #[tokio::test]
+    async fn an_unattended_run_refused_three_times_ends_with_one_push() {
+        let root = std::env::temp_dir().join(format!("nightloom-788-{}", uuid::Uuid::new_v4()));
+        let tool = "mcp__claude_ai_Acme__inspect_record";
+        let ask = Arc::new(AskGate::new().with_rules_home(root.join("home")));
+        let env = CardEnv::new(ask.clone(), Vec::new(), true).left_alone();
+        let started = std::time::Instant::now();
+        let ((end, _), log) = read_only_turn_by(&root, tool, &env, stand_in_refusing).await;
+        let Ok(AgentTurnEnd::Done { outcome, .. }) = end else {
+            panic!("{:?}", end.err());
+        };
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "no wait"
+        );
+        assert!(
+            env.cards.lock().unwrap().is_empty(),
+            "no card, stuck or other"
+        );
+        assert_eq!(
+            *env.nudges.lock().unwrap(),
+            [("toolu_1".to_string(), crate::agent::ask::Nudge::Unattended)],
+            "one push"
+        );
+        let refused = std::fs::read_to_string(root.join("refused")).unwrap_or_default();
+        assert_eq!(refused.trim(), "3", "ended at the third refusal");
+        let results = log
+            .iter()
+            .filter(|e| matches!(e, SessionEvent::ToolResult { .. }))
+            .count();
+        // The three refusals, and the fourth call's cut-off result the log
+        // keeps so the transcript replays (that call was never refused).
+        assert_eq!(results, 4, "the record is kept");
+        let text = turn_text(&log);
+        assert!(text.contains("was refused 3 times in a row"), "{text}");
+        assert!(text.contains(crate::runaway::STOPPED_PREFIX), "{text}");
+        assert!(outcome.deferred.is_none());
+        assert!(
+            outcome
+                .notices
+                .iter()
+                .any(|n| *n == unattended_notice(tool)),
+            "{:?}",
+            outcome.notices
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The other side (item 788): he has left the Mac but his phone is
+    /// connected, so somebody can press the card — the run keeps it.
+    #[tokio::test]
+    async fn a_refused_loop_somebody_can_answer_keeps_the_stuck_card() {
+        let root = std::env::temp_dir().join(format!("nightloom-788w-{}", uuid::Uuid::new_v4()));
+        let tool = "mcp__claude_ai_Acme__inspect_record";
+        let ask = Arc::new(AskGate::new().with_rules_home(root.join("home")));
+        let deny = || Answer::Deny {
+            reason: "no".into(),
+        };
+        // A Deny for every card it may show: the connector's, each time, and
+        // the stuck card's (his Stop).
+        let env = CardEnv::new(ask.clone(), (0..6).map(|_| deny()).collect(), false).left_alone();
+        let ((end, _), log) = read_only_turn_by(&root, tool, &env, stand_in_refusing).await;
+        assert!(
+            matches!(end, Ok(AgentTurnEnd::Done { .. })),
+            "{:?}",
+            end.err()
+        );
+        let cards = env.cards.lock().unwrap().clone();
+        let stuck = cards
+            .iter()
+            .filter(|c| c.0.starts_with(crate::runaway::STUCK_TOOL))
+            .count();
+        assert_eq!(stuck, 1, "{cards:?}");
+        assert!(
+            cards
+                .last()
+                .unwrap()
+                .0
+                .starts_with(crate::runaway::STUCK_TOOL),
+            "{cards:?}"
+        );
+        // His Stop on the card: the Stop line, not the unattended end's.
+        let text = turn_text(&log);
+        assert!(text.contains("you chose Stop"), "{text}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Item 783's finish (the spec's step 3): *Allow always* on a
@@ -1913,12 +2105,10 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
         // Well inside the 3:30 set-aside: nothing waited.
         assert!(started.elapsed() < std::time::Duration::from_secs(30));
         assert!(env.cards.lock().unwrap().is_empty(), "no card is shown");
+        // The same call set aside again is not pushed again (item 788).
         assert_eq!(
             *env.nudges.lock().unwrap(),
-            [
-                ("toolu_1".to_string(), Nudge::Unattended),
-                ("toolu_2".to_string(), Nudge::Unattended)
-            ]
+            [("toolu_1".to_string(), Nudge::Unattended)]
         );
         for n in [1, 2] {
             let d: serde_json::Value = serde_json::from_slice(
