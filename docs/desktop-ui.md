@@ -2246,6 +2246,8 @@ here asks the model to judge; all of it is read from the chat's log
   *Continue in a new chat* send no carry; what a shell command *wrote* is not
   attributed to a file beyond the path being named in the command.
 
+**The wrap-up message, every piece with a reason (nightshift item 760, 2026-11-16).** The built-in `WRAP_UP` (`handoff.svelte.ts`) was rewritten so each step carries its reason in the comment beside it: finish the half-done edit and wait for any subagent still running; fix facts this chat made outdated in CLAUDE.md and other .md files (his own line, kept); run `mdcheck.py` and queue its FLAGs, no trimming; a new `## STATE AS OF` section with 747's sub-headings, plus measurements, subagent cost and questions waiting on him; the code close; the prompt after its Goal line; stop. A Settings wrap-up carrying September's stale parts (overwrite HANDOFF.md, the `start-prompt` fence; `isStaleWrapUp`) gives way to the built-in once at launch, kept in `replaced`; Settings says so and offers *Restore my old message* while the box holds the built-in. Before/after with reasons: nightshift-code `notes/runner-design/760-wrapup-message-2026-11-16.md`.
+
 **Every hand-off is logged for scoring (nightshift item 757, 2026-11-16).**
 `<config>/logs/handoffs.jsonl` (`~/.nightloom/logs/`, or under
 `NIGHTLOOM_HOME`), one JSON object per line, built in the window
