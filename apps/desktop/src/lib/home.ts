@@ -194,6 +194,54 @@ export function handOffTip(h: Pick<HandOff, "context" | "reason">): string {
   return `${kTokens(h.context)} of context → a fresh start\n${h.reason === "hard" ? "At the hard limit" : "At a quiet moment"} · click for the brief`;
 }
 
+/** One run-log entry a hand-off carried (items 789 and 791: `chain.rs` writes them as `### <stamp> · <who>`). */
+export interface CarriedEntry {
+  /** When it was written, ISO; null when the heading carries no stamp (he edited it). */
+  at: string | null;
+  /** "by the model", "run failed · by code", … */
+  who: string;
+  body: string;
+}
+
+/** The run-log entries a hand-off's brief carried, oldest first; none for a brief from before the run log. */
+export function carriedEntries(brief: string): CarriedEntry[] {
+  const out: CarriedEntry[] = [];
+  let inLog = false;
+  let cur: CarriedEntry | null = null;
+  for (const line of brief.split("\n")) {
+    if (line.startsWith("## ")) {
+      inLog = line.startsWith("## Run log");
+      cur = null;
+      continue;
+    }
+    if (!inLog) continue;
+    if (line.startsWith("### ")) {
+      const head = line.slice(4).trim();
+      const m = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) UTC(?: · (.*))?$/.exec(head);
+      cur = { at: m ? `${m[1]}T${m[2]}Z` : null, who: m ? (m[3] ?? "") : head, body: "" };
+      out.push(cur);
+      continue;
+    }
+    // The section's closing note ("(3 older entries …)") is not part of an entry.
+    if (cur && !/^\(\d+ older entr/.test(line)) cur.body += (cur.body ? "\n" : "") + line;
+  }
+  for (const e of out) e.body = e.body.trim();
+  return out;
+}
+
+/** The newest entry a hand-off carried — what happened in the slice above its divider. */
+export function lastCarried(brief: string): CarriedEntry | null {
+  const all = carriedEntries(brief);
+  return all.length ? all[all.length - 1] : null;
+}
+
+/** "Run log · 8:03 AM" or "Run failed · 8:03 AM": the divider's label for that entry. */
+export function carriedLabel(e: CarriedEntry): string {
+  const t = e.at ? clock(e.at) : "";
+  const what = /failed/.test(e.who) ? "Run failed" : "Run log";
+  return t ? `${what} · ${t}` : what;
+}
+
 /** The `hand_off` events of a log, with their places. */
 export function handOffsOf(evs: readonly SessionEvent[]): HandOff[] {
   const out: HandOff[] = [];

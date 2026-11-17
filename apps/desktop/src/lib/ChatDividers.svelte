@@ -7,7 +7,7 @@
    */
   import { tip } from "./tip";
   import { keptOpen } from "./keptFolds.svelte";
-  import { handOffLine, handOffTip, type Divider } from "./home";
+  import { carriedLabel, handOffLine, handOffTip, lastCarried, type Divider } from "./home";
 
   let {
     dividers,
@@ -29,12 +29,19 @@
       <span class="day-line"></span>
     </div>
   {:else}
+    {@const entry = lastCarried(d.brief)}
     <details class="hand-off" class:classic data-hand-off={d.index} use:keptOpen={{ key: foldKey(d.index) }}>
       <summary use:tip={handOffTip(d)}>
-        <span class="ho-line"></span>
-        <span class="ho-label">{handOffLine(d)}</span>
-        <span class="ho-chev" aria-hidden="true">▾</span>
-        <span class="ho-line"></span>
+        <span class="ho-row">
+          <span class="ho-line"></span>
+          <span class="ho-label">{handOffLine(d)}</span>
+          <span class="ho-chev" aria-hidden="true">▾</span>
+          <span class="ho-line"></span>
+        </span>
+        {#if entry}
+          <!-- Items 789 + 791: the run log's newest entry — the slice above, in its own words — folded or not. -->
+          <span class="ho-entry" data-run-entry><span class="ho-entry-head">{carriedLabel(entry)}</span>{entry.body}</span>
+        {/if}
       </summary>
       <div class="ho-brief">
         <div class="ho-head">What the fresh start was given</div>{d.brief || "No brief was recorded."}
@@ -45,7 +52,7 @@
 
 <style>
   .day-rule,
-  .hand-off summary {
+  .ho-row {
     display: flex;
     align-items: center;
     gap: 12px;
@@ -81,6 +88,7 @@
   .hand-off summary {
     list-style: none;
     cursor: pointer;
+    display: block;
   }
   .hand-off summary::-webkit-details-marker {
     display: none;
@@ -125,6 +133,39 @@
     word-break: break-word;
     max-height: 22rem;
     overflow-y: auto;
+  }
+  .ho-entry {
+    margin: 8px 0 0;
+    padding: 0 12px;
+    border-left: 2px solid color-mix(in srgb, var(--accent-ink) 45%, transparent);
+    font-size: 12.5px;
+    line-height: 1.45;
+    color: var(--ink2);
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    -webkit-box-orient: vertical;
+  }
+  .hand-off[open] .ho-entry {
+    -webkit-line-clamp: unset;
+    line-clamp: unset;
+  }
+  .ho-entry-head {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--dim);
+    margin-right: 8px;
+  }
+  .classic .ho-entry-head {
+    font-family: var(--sans);
+    font-size: 12px;
+    letter-spacing: 0;
+    text-transform: none;
   }
   .ho-head {
     font-family: var(--mono);

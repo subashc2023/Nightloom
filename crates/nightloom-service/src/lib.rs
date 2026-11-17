@@ -16,6 +16,7 @@ pub mod attach;
 pub mod cache_miss;
 pub mod capture;
 pub mod centre;
+pub mod chain;
 pub mod chat_name;
 pub mod chat_ops;
 pub mod claude_browser;

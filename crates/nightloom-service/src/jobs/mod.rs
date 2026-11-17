@@ -1482,6 +1482,19 @@ impl Jobs {
         // alone; every other end is a `job_done` / `job_failed` row.
         if let Some(config) = self.config_dir() {
             let ok = outcome == Outcome::Done;
+            // Item 789: a run in a chat with a hand-off chain that wrote no
+            // run-log entry of its own gets one from code — a failure in
+            // words, or the start of its reply.
+            let logs = crate::chain::log_dir_for(&config, job.project.as_deref());
+            let _ = crate::chain::close_run(
+                &logs,
+                chat,
+                mark.started,
+                now,
+                ok,
+                &summary_line,
+                full_reply.as_deref(),
+            );
             let mut scanned = false;
             if job.id == crate::home::SCAN_JOB_ID
                 && ok

@@ -214,6 +214,10 @@ const OWN_EFFECTS: &[(&str, Effect)] = &[
     ("mark_file", Effect::Session),
     // The message's usage cap (item 538): written to the chat's own ledger.
     (crate::agent::budget::TOOL_NAME, Effect::Session),
+    // A hand-off chain's run log and state file (items 789, 791): this
+    // chat's own two files.
+    (crate::chain::LOG_TOOL, Effect::Session),
+    (crate::chain::STATE_TOOL, Effect::Session),
     // Runs a command of the model's (nightshift item 430): what Bash is.
     ("preview", Effect::Mutating),
     // The note organisers (item 472), served with `--notes`.
@@ -1125,6 +1129,12 @@ pub async fn serve(
     // `set_budget` (item 538): served when the desktop named the chat's
     // directory, where the turn's budget ledger is — never to a dream.
     if let (Some(dir), None) = (&args.budget_dir, &args.dream) {
+        // `log_run` and `write_state` (items 789, 791): for a chat that
+        // hands off in place and so has a chain beside its log
+        // (`<logs>/ask/<chat>` is the budget dir), and writes.
+        if let (Some(logs), true) = (dir.parent().and_then(Path::parent), args.remember) {
+            tools.extend(crate::chain::tools(logs, args.current_chat().as_deref()));
+        }
         tools.push(Box::new(crate::agent::budget::SetBudget::new(dir.clone())));
         // `add_folder` (nightshift item 613): beside it, for a chat that
         // writes — the grant is kept on the chat's log or the project's
@@ -2765,6 +2775,8 @@ mod tests {
             config.clone(),
         )));
         served.push(Box::new(crate::tools::AddFolder::new(config.clone(), None)));
+        crate::chain::ensure(&config, "c").unwrap();
+        served.extend(crate::chain::tools(&config, Some("c")));
         for tool in &served {
             let name = tool.def().name;
             assert_eq!(

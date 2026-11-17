@@ -1082,6 +1082,13 @@ pub fn decide_under(dir: &Path, home: Option<&Path>, stdin_json: &str, side: boo
     if input.tool_name == crate::mcp_server::mcp_name(super::budget::TOOL_NAME) {
         return HookReply::allow(None);
     }
+    // A hand-off chain's run log and state file (items 789, 791) are this
+    // chat's own two files, capped by the tools themselves: no card.
+    if input.tool_name == crate::mcp_server::mcp_name(crate::chain::LOG_TOOL)
+        || input.tool_name == crate::mcp_server::mcp_name(crate::chain::STATE_TOOL)
+    {
+        return HookReply::allow(None);
+    }
     if input.agent_id.as_deref().is_some_and(|id| !id.is_empty()) {
         // A subagent's question goes back to the parent (backlog 294,
         // blocker 1031), whatever the switch says.
