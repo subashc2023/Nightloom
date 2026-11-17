@@ -12,6 +12,7 @@ import {
   usd,
   cacheEstimate,
   turnMissToast,
+  coldToast,
 } from "./cacheCost";
 import { pingMissToast } from "./keepWarm.svelte";
 import type { CacheKey, SessionEvent, Usage } from "./types";
@@ -136,5 +137,33 @@ describe("item 699: each event's toast", () => {
     const p = { chat: "c1", sent_ms: 0, context: 100_000, cache_read: 79_000, cache_write: 21_000, cost_usd: 0.35, plan_est: null, model: "m" };
     expect(pingMissToast(p, "Notes")).toBe("Cache missed on the keep-warm ping in “Notes” (read 79%) — re-wrote 21k · ≈ $0.35 API");
     expect(pingMissToast({ ...p, cache_read: 80_000 }, "Notes")).toBeNull();
+  });
+});
+
+describe("item 699 price fix (2026-11-16): the price shows wherever the cache does", () => {
+  const rates = { read: 0.2, write: 16, from: "test" };
+  it("the cold toast says what the next send now costs", () => {
+    const evs = [user(), reply(u(269_343, 0, 269_343))];
+    expect(coldToast(evs, rates)).toBe(
+      "Prompt cache cold — edits to the history now cost nothing extra · the next send re-writes 270k ≈ $4.32 API",
+    );
+    // No rates (a harness, a failed read): the old words, never a guess.
+    expect(coldToast(evs, null)).toBe("Prompt cache cold — edits to the history now cost nothing extra");
+  });
+  it("a one-rate fit's rates still give the chip a figure, and say where the ratio came from", () => {
+    const r = ratesFromWire({
+      model: "claude-fable-5-2",
+      read: 0.2,
+      write_1h: 16,
+      write_5m: 10,
+      source: "pings_ratio",
+      pings: 2,
+      ratio_from: "claude-fable-5-1",
+    });
+    expect(r).not.toBeNull();
+    expect(r!.from).toContain("2 keep-warm pings on claude-fable-5-2");
+    expect(r!.from).toContain("read : write ratio of claude-fable-5-1");
+    const est = cacheEstimate([user(), reply(u(269_343, 0, 269_343))], r, false);
+    expect(est?.line).toBe("next ≈ $4.32");
   });
 });

@@ -6,7 +6,7 @@
  * read is no figure, never a guess.
  */
 import * as api from "./api";
-import { ratesFromWire, type ChipRates } from "./cacheCost";
+import { ratesFromPrice, ratesFromWire, type ChipRates } from "./cacheCost";
 
 const byModel = $state<Record<string, ChipRates | null>>({});
 const readAt: Record<string, number> = {};
@@ -26,4 +26,22 @@ export async function loadCacheRates(model: string | null | undefined): Promise<
   } catch {
     // Not in the app (a harness), or the read failed: no figure.
   }
+}
+
+/**
+ * The rates for the open chat's newest reply (item 699's price fix,
+ * 2026-11-16): Claude Code's per-model store, else the API engine's
+ * connection price — one rule for the composer's chip, the rail's cache
+ * row and the top bars' cold toast. Starts a read when the model's rates
+ * are not in yet; the figure appears when it lands.
+ */
+export function ratesForChat(
+  model: string | null | undefined,
+  connection: { engine?: string | null; price?: Parameters<typeof ratesFromPrice>[0] } | null | undefined,
+): ChipRates | null {
+  if (connection?.engine === "claude-code") {
+    if (model) void loadCacheRates(model);
+    return cacheRatesOf(model);
+  }
+  return ratesFromPrice(connection?.price);
 }
