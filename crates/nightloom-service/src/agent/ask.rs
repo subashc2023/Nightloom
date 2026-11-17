@@ -338,6 +338,11 @@ pub enum Answer {
 /// when to ask again.
 pub const LATER_REASON: &str = "The user answered \"Not now — carry on\" to this call. It is set aside: not approved, not refused, and it did not run. Do not run it another way, and do not ask again yet. Carry on with all the other work of this task that does not depend on it. When that other work is done, make this same call again as your last step — the user is asked again then. If nothing else can be done without it, make the call again now.";
 
+/// What the model reads when nobody answered the card in time (item 783):
+/// [`LATER_REASON`]'s instructions — the same call again as the last step
+/// — said truthfully: he did not answer, he did not say "not now".
+pub const AUTO_LATER_REASON: &str = "The user has not answered this call's approval card yet (they may be away), so it is set aside for now: not approved, not refused, and it did not run. Do not run it another way, and do not ask again yet. Carry on with all the other work of this task that does not depend on it. When that other work is done, make this same call again as your last step — the user is asked again then, and the turn waits for them. If nothing else can be done without it, make the call again now.";
+
 /// What the model reads when he replied instead of answering (item 522).
 pub fn reply_reason(text: &str) -> String {
     format!(
@@ -1094,6 +1099,96 @@ pub fn decide_under(dir: &Path, home: Option<&Path>, stdin_json: &str, side: boo
     }
 }
 
+/// The hook's flag in a read-only chat (nightshift item 783): the entry on
+/// [`super::connector_writes::CARD_MATCHER`] runs the same binary with
+/// this after the directory, and [`decide_read_only`] answers.
+pub const READ_ONLY_ARG: &str = "--read-only";
+
+/// What a subagent (or a side process) reads when its call needs the
+/// read-only chat's card: no card can wait on either.
+pub const READ_ONLY_NO_CARD: &str = "This chat is read-only, so this action needs the user's approval, and only the main conversation can ask for it — make the call from there, or report what you would have done.";
+
+/// The kind of card a read-only chat shows for `tool` (item 783), if it
+/// shows one of its own: `connector` — a connector action that is not a
+/// known read and that he has not allowed for good (blocker 2033: Allow
+/// once / Allow always / Deny) — or `remember` — Nightloom's `remember`,
+/// a proposal he approves (blocker 2032). `None` for everything else.
+pub fn read_only_card(home: Option<&Path>, tool: &str) -> Option<&'static str> {
+    if tool == crate::mcp_server::mcp_name(super::connector_writes::REMEMBER) {
+        return Some("remember");
+    }
+    (super::connector_writes::asks(tool) && !crate::approval_rules::is_read(home, tool))
+        .then_some("connector")
+}
+
+/// The hook's decision in a read-only chat for the calls the plain refusal
+/// used to cover (item 783; [`super::connector_writes::CARD_MATCHER`]): a
+/// connector action that is not a known read, and `remember`.
+///
+/// In order: a **block** rule of his refuses it; a connector action he
+/// answered *Allow always* to counts as a read — the Ask and Plan
+/// positions then decide it as they decide any connector read
+/// ([`decide_under`]), every other position stands aside; a subagent's or
+/// a side process's call is refused in words (no card can wait on
+/// either); this very call's answer is honoured and consumed; anything
+/// else **defers**, which is the card. No standing allow is read: an
+/// "Allow for this chat" made while the chat could act must not run a
+/// write now that it is read-only.
+pub fn decide_read_only(
+    dir: &Path,
+    home: Option<&Path>,
+    stdin_json: &str,
+    side: bool,
+) -> HookReply {
+    use crate::approval_rules::{self, Action};
+    let input: HookInput = match serde_json::from_str(stdin_json) {
+        Ok(i) => i,
+        // Not a call anyone can answer, and this entry replaced a refusal.
+        Err(_) => return HookReply::deny(super::connector_writes::REASON.into()),
+    };
+    let blocked = approval_rules::verdict(
+        &approval_rules::Places {
+            all: home.map(Path::to_path_buf),
+            chat: Some(dir.to_path_buf()),
+        },
+        &input.tool_name,
+        &input.tool_input,
+    )
+    .filter(|r| r.action == Action::Block);
+    if let Some(rule) = blocked {
+        return HookReply::deny(approval_rules::blocked_message(&rule));
+    }
+    if read_only_card(home, &input.tool_name).is_none() {
+        return if matches!(input.permission_mode.as_str(), "default" | "plan") {
+            decide_under(dir, home, stdin_json, side)
+        } else {
+            HookReply::pass()
+        };
+    }
+    if side || input.agent_id.as_deref().is_some_and(|id| !id.is_empty()) {
+        return HookReply::deny(READ_ONLY_NO_CARD.into());
+    }
+    let path = dir.join(DECISION_FILE);
+    let decision: Option<Decision> = std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok());
+    match decision {
+        Some(d) if d.tool_use_id == input.tool_use_id => {
+            let _ = std::fs::remove_file(&path);
+            if d.decision == "allow" {
+                HookReply::allow(d.updated_input)
+            } else {
+                HookReply::deny(
+                    d.reason
+                        .filter(|r| !r.trim().is_empty())
+                        .unwrap_or_else(|| "the user declined this call".into()),
+                )
+            }
+        }
+        _ => HookReply::defer(),
+    }
+}
+
 /// An `add_folder` call (nightshift item 613), in order: this call's own
 /// answer (consumed); a subagent's or a side process's call refused in
 /// words (no card can wait on either); a path that is not a folder refused
@@ -1223,7 +1318,11 @@ pub fn run_hook(args: &[String]) -> std::io::Result<()> {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input)?;
     let home = crate::project::config_dir();
-    let reply = decide_under(&dir, home.as_deref(), &input, side);
+    let reply = if args.iter().skip(1).any(|a| a == READ_ONLY_ARG) {
+        decide_read_only(&dir, home.as_deref(), &input, side)
+    } else {
+        decide_under(&dir, home.as_deref(), &input, side)
+    };
     let mut out = std::io::stdout().lock();
     out.write_all(serde_json::to_string(&reply)?.as_bytes())?;
     out.write_all(b"\n")?;
@@ -1265,6 +1364,19 @@ pub fn settings_json_matching(hook: &[String], dir: &Path, matcher: &str) -> Str
     .to_string()
 }
 
+/// One `PreToolUse` entry for the hook on `matcher`, with `flags` after
+/// the directory ([`READ_ONLY_ARG`]). Fails closed like the rest.
+pub fn hook_entry(hook: &[String], dir: &Path, matcher: &str, flags: &[&str]) -> Value {
+    let mut words: Vec<String> = hook.iter().map(|w| shell_quote(w)).collect();
+    words.push(shell_quote(&dir.to_string_lossy()));
+    words.extend(flags.iter().map(|f| shell_quote(f)));
+    words.push(FAIL_CLOSED.to_string());
+    serde_json::json!({
+        "matcher": matcher,
+        "hooks": [{ "type": "command", "command": words.join(" ") }]
+    })
+}
+
 pub(super) fn shell_quote(word: &str) -> String {
     format!("'{}'", word.replace('\'', "'\\''"))
 }
@@ -1280,11 +1392,119 @@ pub(super) fn shell_quote(word: &str) -> String {
 #[derive(Debug, Default)]
 pub struct AskGate {
     pending: std::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<Answer>>>,
+    /// How long an approval waits before the reminder and the set-aside
+    /// (item 783); `None` is [`APPROVAL_TIMES`].
+    times: Option<ApprovalTimes>,
+    /// Where the every-chat rules are, when not the config directory (a
+    /// test's).
+    rules_home: Option<PathBuf>,
+}
+
+/// When an unanswered approval is nudged and set aside (nightshift item
+/// 783, blocker 2029, his words 2026-11-17: "at least two notifications
+/// … another one, maybe two minutes, thirty seconds after, and then
+/// after thirty seconds to a minute of silence, maybe three minutes
+/// thirty, this should happen"). Counted from the moment the card shows,
+/// which is also when the first push goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApprovalTimes {
+    /// The second push: "still waiting".
+    pub remind: std::time::Duration,
+    /// The call is set aside — never run, asked again at the reply's end
+    /// — and a short push says so.
+    pub set_aside: std::time::Duration,
+}
+
+/// **The one place the approval timings live.** 0:00 the card and the
+/// first push; 2:30 the reminder; 3:30 set aside.
+pub const APPROVAL_TIMES: ApprovalTimes = ApprovalTimes {
+    remind: std::time::Duration::from_secs(150),
+    set_aside: std::time::Duration::from_secs(210),
+};
+
+/// What the turn tells its host about a card nobody has answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Nudge {
+    /// [`ApprovalTimes::remind`] passed: push the phone again.
+    Remind,
+    /// [`ApprovalTimes::set_aside`] passed: the card is withdrawn, the
+    /// call set aside; say so.
+    SetAside,
+}
+
+/// How a wait on a card ended.
+#[derive(Debug, PartialEq)]
+pub enum Waited {
+    Answer(Answer),
+    /// Stopped, or the gate let go of the call.
+    Gone,
+    /// Nobody answered within [`ApprovalTimes::set_aside`].
+    SetAside,
+}
+
+/// Wait for the card's answer on `rx`. With `times`, `on_remind` is called
+/// once when the reminder is due, and the wait ends as [`Waited::SetAside`]
+/// when the set-aside is; an answer (or a Stop) at any moment before ends
+/// it there and nothing later fires. Without `times` it waits for as long
+/// as it takes — a question, a plan, or a call that was set aside once
+/// already and has come back.
+pub async fn wait_for_answer(
+    rx: tokio::sync::oneshot::Receiver<Answer>,
+    cancel: &tokio_util::sync::CancellationToken,
+    times: Option<ApprovalTimes>,
+    mut on_remind: impl FnMut(),
+) -> Waited {
+    let Some(times) = times else {
+        return tokio::select! {
+            _ = cancel.cancelled() => Waited::Gone,
+            a = rx => a.map(Waited::Answer).unwrap_or(Waited::Gone),
+        };
+    };
+    let start = tokio::time::Instant::now();
+    let remind = tokio::time::sleep_until(start + times.remind);
+    let aside = tokio::time::sleep_until(start + times.set_aside);
+    tokio::pin!(rx, remind, aside);
+    let mut reminded = false;
+    loop {
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Waited::Gone,
+            a = &mut rx => return a.map(Waited::Answer).unwrap_or(Waited::Gone),
+            _ = &mut aside => return Waited::SetAside,
+            _ = &mut remind, if !reminded => {
+                reminded = true;
+                on_remind();
+            }
+        }
+    }
 }
 
 impl AskGate {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A gate whose approvals wait `times` (a test's clock).
+    pub fn with_times(mut self, times: ApprovalTimes) -> Self {
+        self.times = Some(times);
+        self
+    }
+
+    /// A gate whose turns read the every-chat rules in `home`.
+    pub fn with_rules_home(mut self, home: PathBuf) -> Self {
+        self.rules_home = Some(home);
+        self
+    }
+
+    pub fn times(&self) -> ApprovalTimes {
+        self.times.unwrap_or(APPROVAL_TIMES)
+    }
+
+    /// Where the every-chat rules are: the config directory, unless a test
+    /// named another.
+    pub fn rules_home(&self) -> Option<PathBuf> {
+        self.rules_home.clone().or_else(crate::project::config_dir)
     }
 
     /// Register `id` and get the receiver its answer will arrive on.
@@ -2288,6 +2508,302 @@ mod tests {
     use crate::approval_rules::{self, Edit, Places};
 
     /// A Bash call's stdin line, a subagent's when `agent`.
+    fn mcp_stdin(id: &str, tool: &str, mode: &str, agent: Option<&str>) -> String {
+        let mut v = json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": tool,
+            "tool_input": {"to": "someone@example.com", "text": "likes oolong"},
+            "tool_use_id": id,
+            "permission_mode": mode,
+        });
+        if let Some(a) = agent {
+            v["agent_id"] = json!(a);
+        }
+        v.to_string()
+    }
+
+    /// Item 783 (blocker 2033): in a read-only chat a connector action
+    /// under a verb that is not a known read is a card, not a refusal;
+    /// Allow once runs that one call; Allow always keeps it — the next
+    /// call does not ask as a read-only matter, on this host's rules and
+    /// (through the shared set) the other's — and it can be removed where
+    /// the rules are listed.
+    #[test]
+    fn an_unknown_connector_verb_in_a_read_only_chat_is_a_card_and_allow_always_keeps_it() {
+        let root = std::env::temp_dir().join(format!("nightloom-783-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
+        let dir = home.join("sessions/ask/chat1");
+        std::fs::create_dir_all(&dir).unwrap();
+        let tool = "mcp__claude_ai_Acme__inspect_record";
+        assert_eq!(read_only_card(Some(&home), tool), Some("connector"));
+        // The card, in every position — never the old refusal.
+        for mode in ["default", "auto", "plan", "bypassPermissions"] {
+            let r = decide_read_only(&dir, Some(&home), &mcp_stdin("t1", tool, mode, None), false);
+            assert_eq!(r.decision(), "defer", "{mode}");
+        }
+        // A known read is not this entry's to ask about.
+        assert_eq!(
+            read_only_card(Some(&home), "mcp__claude_ai_Acme__get_record"),
+            None
+        );
+        // No card can wait on a subagent or a side process: said in words.
+        let r = decide_read_only(
+            &dir,
+            Some(&home),
+            &mcp_stdin("t1", tool, "auto", Some("a1")),
+            false,
+        );
+        assert_eq!(r.decision(), "deny");
+        assert_eq!(r.reason(), Some(READ_ONLY_NO_CARD));
+        let r = decide_read_only(
+            &dir,
+            Some(&home),
+            &mcp_stdin("t1", tool, "auto", None),
+            true,
+        );
+        assert_eq!(r.decision(), "deny");
+        // A standing "Allow for this chat" from before the chat was
+        // read-only does not answer it.
+        let ask = AskDir::new(&dir);
+        ask.allow_tool(tool).unwrap();
+        let r = decide_read_only(
+            &dir,
+            Some(&home),
+            &mcp_stdin("t1", tool, "default", None),
+            false,
+        );
+        assert_eq!(r.decision(), "defer");
+        ask.disallow_tool(tool).unwrap();
+        // Allow once: this call runs, the next asks again.
+        let call = DeferredCall {
+            id: "t1".into(),
+            name: tool.into(),
+            input: json!({}),
+        };
+        ask.write(
+            &call,
+            &Answer::Allow {
+                updated_input: None,
+                plan_then: None,
+                grant: None,
+            },
+        )
+        .unwrap();
+        let r = decide_read_only(
+            &dir,
+            Some(&home),
+            &mcp_stdin("t1", tool, "auto", None),
+            false,
+        );
+        assert_eq!(r.decision(), "allow");
+        let r = decide_read_only(
+            &dir,
+            Some(&home),
+            &mcp_stdin("t2", tool, "auto", None),
+            false,
+        );
+        assert_eq!(r.decision(), "defer");
+        // Deny: refused in his words.
+        ask.write(
+            &DeferredCall {
+                id: "t2".into(),
+                ..call.clone()
+            },
+            &Answer::Deny {
+                reason: "not that one".into(),
+            },
+        )
+        .unwrap();
+        let r = decide_read_only(
+            &dir,
+            Some(&home),
+            &mcp_stdin("t2", tool, "auto", None),
+            false,
+        );
+        assert_eq!((r.decision(), r.reason()), ("deny", Some("not that one")));
+        // Allow always: kept in the every-chat file (what the turn does
+        // with the card's "always"), so it survives the process…
+        crate::approval_rules::allow_read(&home, tool).unwrap();
+        assert_eq!(read_only_card(Some(&home), tool), None);
+        // …on Auto the call is no longer this entry's business, and on Ask
+        // it asks as any connector read asks there.
+        let r = decide_read_only(
+            &dir,
+            Some(&home),
+            &mcp_stdin("t3", tool, "auto", None),
+            false,
+        );
+        assert_eq!(r.decision(), "pass");
+        let r = decide_read_only(
+            &dir,
+            Some(&home),
+            &mcp_stdin("t3", tool, "default", None),
+            false,
+        );
+        assert_eq!(r.decision(), "defer");
+        // …it is listed where the rules are, and removable there.
+        let places = Places {
+            all: Some(home.clone()),
+            chat: Some(dir.clone()),
+        };
+        let listed = crate::approval_rules::list(&places);
+        let row = listed.rules.iter().find(|r| r.source == "read").unwrap();
+        assert_eq!((row.tool.as_str(), row.scope), (tool, "all"));
+        crate::approval_rules::edit(
+            &places,
+            crate::approval_rules::Edit::Remove { id: row.id.clone() },
+        )
+        .unwrap();
+        assert_eq!(read_only_card(Some(&home), tool), Some("connector"));
+        // A block rule of his still wins over the card.
+        rule(&places, "all", "block", "mcp__claude_ai_Acme__*", "");
+        let r = decide_read_only(
+            &dir,
+            Some(&home),
+            &mcp_stdin("t4", tool, "auto", None),
+            false,
+        );
+        assert_eq!(r.decision(), "deny");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Item 783 (blocker 2032): `remember` in a read-only chat is a
+    /// proposal — a card each time, whatever was allowed before.
+    #[test]
+    fn remember_in_a_read_only_chat_is_a_proposal_each_time() {
+        let root = std::env::temp_dir().join(format!("nightloom-783-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
+        let dir = home.join("sessions/ask/chat1");
+        std::fs::create_dir_all(&dir).unwrap();
+        let tool = "mcp__nightloom__remember";
+        assert_eq!(read_only_card(Some(&home), tool), Some("remember"));
+        // Nightloom's other writers there are not asked about (blocker 2032).
+        for kept in ["mcp__nightloom__send_file", "mcp__nightloom__mark_file"] {
+            assert_eq!(read_only_card(Some(&home), kept), None);
+        }
+        AskDir::new(&dir).allow_tool(tool).unwrap();
+        crate::approval_rules::allow_read(&home, tool).unwrap();
+        for id in ["r1", "r2"] {
+            let r = decide_read_only(&dir, Some(&home), &mcp_stdin(id, tool, "auto", None), false);
+            assert_eq!(r.decision(), "defer");
+            AskDir::new(&dir)
+                .write(
+                    &DeferredCall {
+                        id: id.into(),
+                        name: tool.into(),
+                        input: json!({}),
+                    },
+                    &Answer::Allow {
+                        updated_input: None,
+                        plan_then: None,
+                        grant: None,
+                    },
+                )
+                .unwrap();
+            let r = decide_read_only(&dir, Some(&home), &mcp_stdin(id, tool, "auto", None), false);
+            assert_eq!(r.decision(), "allow");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Item 783, his timings (2026-11-17): the card's own push is the
+    /// first; a second at 2:30; set aside at 3:30; an answer at any point
+    /// cancels what is left.
+    #[tokio::test(start_paused = true)]
+    async fn an_unanswered_approval_is_reminded_at_two_thirty_and_set_aside_at_three_thirty() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::time::Duration;
+        assert_eq!(APPROVAL_TIMES.remind, Duration::from_secs(150));
+        assert_eq!(APPROVAL_TIMES.set_aside, Duration::from_secs(210));
+        let cancel = tokio_util::sync::CancellationToken::new();
+
+        // Nobody answers: one reminder at 2:30, the set-aside at 3:30.
+        let gate = AskGate::new();
+        let reminders = std::sync::Arc::new(AtomicU32::new(0));
+        let start = tokio::time::Instant::now();
+        let at = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let (r, a) = (reminders.clone(), at.clone());
+        let waited = wait_for_answer(gate.wait("c1"), &cancel, Some(gate.times()), move || {
+            r.fetch_add(1, Ordering::SeqCst);
+            *a.lock().unwrap() = Some(start.elapsed());
+        })
+        .await;
+        assert_eq!(waited, Waited::SetAside);
+        assert_eq!(start.elapsed(), Duration::from_secs(210));
+        assert_eq!(reminders.load(Ordering::SeqCst), 1);
+        assert_eq!(*at.lock().unwrap(), Some(Duration::from_secs(150)));
+
+        // Answered at 2:45: the reminder went at 2:30, and the set-aside
+        // never happens — the answer is his, not a skip.
+        let gate = std::sync::Arc::new(AskGate::new());
+        let reminders = std::sync::Arc::new(AtomicU32::new(0));
+        let rx = gate.wait("c2");
+        let g = gate.clone();
+        let answerer = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(165)).await;
+            assert!(g.answer(
+                "c2",
+                Answer::Allow {
+                    updated_input: None,
+                    plan_then: None,
+                    grant: None
+                }
+            ));
+        });
+        let start = tokio::time::Instant::now();
+        let r = reminders.clone();
+        let waited = wait_for_answer(rx, &cancel, Some(gate.times()), move || {
+            r.fetch_add(1, Ordering::SeqCst);
+        })
+        .await;
+        answerer.await.unwrap();
+        assert!(
+            matches!(waited, Waited::Answer(Answer::Allow { .. })),
+            "{waited:?}"
+        );
+        assert_eq!(start.elapsed(), Duration::from_secs(165));
+        assert_eq!(reminders.load(Ordering::SeqCst), 1);
+        // Well past 3:30 nothing more has fired.
+        tokio::time::sleep(Duration::from_secs(600)).await;
+        assert_eq!(reminders.load(Ordering::SeqCst), 1);
+
+        // Answered at 1:00: no reminder at all.
+        let gate = std::sync::Arc::new(AskGate::new());
+        let reminders = std::sync::Arc::new(AtomicU32::new(0));
+        let rx = gate.wait("c3");
+        let g = gate.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            g.answer(
+                "c3",
+                Answer::Deny {
+                    reason: "no".into(),
+                },
+            );
+        });
+        let r = reminders.clone();
+        let waited = wait_for_answer(rx, &cancel, Some(gate.times()), move || {
+            r.fetch_add(1, Ordering::SeqCst);
+        })
+        .await;
+        assert!(matches!(waited, Waited::Answer(Answer::Deny { .. })));
+        tokio::time::sleep(Duration::from_secs(600)).await;
+        assert_eq!(reminders.load(Ordering::SeqCst), 0);
+
+        // A question, a plan, or a call that is back after a set-aside
+        // (no times): it waits for as long as it takes.
+        let gate = std::sync::Arc::new(AskGate::new());
+        let rx = gate.wait("c4");
+        let g = gate.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(86_400)).await;
+            g.answer("c4", Answer::Later);
+        });
+        let waited =
+            wait_for_answer(rx, &cancel, None, || panic!("no reminder without times")).await;
+        assert_eq!(waited, Waited::Answer(Answer::Later));
+    }
+
     fn bash_stdin(id: &str, command: &str, mode: &str, agent: Option<&str>) -> String {
         let mut v = json!({
             "hook_event_name": "PreToolUse",

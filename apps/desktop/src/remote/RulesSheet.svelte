@@ -59,6 +59,13 @@
 
   function open(row: RuleRow) {
     problem = null;
+    // Item 783: an action allowed in read-only chats has nothing to change —
+    // the row goes straight to the remove confirm.
+    if (row.source === "read") {
+      onform(null);
+      removing = removing === row.id ? null : row.id;
+      return;
+    }
     removing = null;
     onform(form?.id === row.id ? null : formOf(row, tools));
   }
@@ -136,7 +143,7 @@
 {/snippet}
 
 <div class="ru-title">Approval rules</div>
-<div class="ru-sub">{title ? `For “${title}” and for every chat on ${where}.` : `For every chat on ${where}. Open a chat to see and make its own.`}</div>
+<div class="ru-sub">{title ? `For “${title}” and for every chat. Shown from ${where}; every-chat rules are the same on the Mac and Away.` : `For every chat, the same on the Mac and Away (shown from ${where}). Open a chat to see and make its own.`}</div>
 
 {#if missing}
   <p class="ru-note">{missing}</p>
@@ -157,6 +164,17 @@
     </div>
   {/if}
 
+  {#if listing.notes?.length}
+    <div class="ru-confirm" role="status" data-rule-notes>
+      <div class="ru-confirm-head">Changed in two places</div>
+      {#each listing.notes as n (n)}<p class="ru-note">{n}</p>{/each}
+      <div class="ru-actions">
+        <span class="ru-grow"></span>
+        <button class="ru-btn" disabled={busy} data-act="rule-notes-ok" onclick={() => run({ op: "dismiss" })}>Got it</button>
+      </div>
+    </div>
+  {/if}
+
   {#if groups.length === 0}
     <p class="ru-note">No rules of your own yet. Every call below asks or runs by the built-in defaults.</p>
   {/if}
@@ -170,7 +188,7 @@
             <span class="ru-line">{ruleLine(r)}</span>
             <small>{scopeLabel(r)}</small>
           </span>
-          <span class="ru-edit">{form?.id === r.id ? "Close" : "Change"}</span>
+          <span class="ru-edit">{r.source === "read" ? "Remove" : form?.id === r.id ? "Close" : "Change"}</span>
         </button>
         {#if form && form.id === r.id}{@render editor(form)}{/if}
       {/each}

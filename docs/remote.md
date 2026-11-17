@@ -327,3 +327,21 @@ items.
   a second Vite entry of the same build.
 - `src/lib/state.svelte.ts` (`init`) — the three `remote-*` listeners;
   `SettingsModal.svelte` — the Remote card.
+
+
+## Approval follow-ups (nightshift item 783)
+
+- **One rule set for both hosts.** The every-chat rules (`approval-rules.json` in the config directory) are the same
+  on the Mac and the away server: the Mac's sync pass (`away.rs`) merges the two three-way against the last synced
+  set (`approval-rules.synced.json`, Mac only) over `GET`/`PUT /api/sync/rules`
+  (`approval_rules/shared.rs`). A rule both hosts changed is kept twice and the sheet says so (`notes`, dismissed
+  with `{op: "dismiss"}`). Every-chat rule ids are `a-<uuid>`; older `a<n>` ids are replaced on first list or sync.
+- **Read-only chats ask instead of refusing.** Where the Ask hook is registered, a connector action that is not a
+  known read, and Nightloom's `remember`, go to the hook with `--read-only` (`ask::decide_read_only`,
+  `connector_writes::CARD_MATCHER`) and defer: `tool-approval` carries `kind: "connector" | "remember"`. On a
+  `connector` card `decision: "always"` adds the tool to the every-chat file's `reads` (listed as `source: "read"`,
+  removable as `read:<tool>`); on `remember` it is a plain allow.
+- **Unanswered approvals** (`ask::APPROVAL_TIMES`): the card's push at 0:00, `approval-nudge {stage: "remind"}` and
+  a second push at 2:30, `{stage: "set_aside"}` at 3:30 — the call is refused with `ask::AUTO_LATER_REASON` (never
+  run), its card withdrawn, a short push sent; the same call comes back at the reply's end with `back: true` and then
+  waits without a timer. Questions, plans and folder cards are never timed.

@@ -58,6 +58,43 @@ macro_rules! write_body {
     };
 }
 
+/// What follows `mcp__` in a call a read-only chat *asks him about*
+/// instead of refusing (item 783): a connector action that is not a known
+/// read (blocker 2033), and Nightloom's `remember` (blocker 2032).
+macro_rules! card_body {
+    () => {
+        concat!(
+            "nightloom__remember$|(?!nightloom__|claude-in-chrome__|playwright__)(?:(?!__).)+__(?!(?:[a-z0-9]+-)?(?:",
+            read_verbs!(),
+            ")(?:[_A-Z-]|$))"
+        )
+    };
+}
+
+/// Nightloom's `remember`, by its own name.
+pub const REMEMBER: &str = "remember";
+
+/// The matcher of the read-only chat's asking entry (item 783): the hook
+/// with [`super::ask::READ_ONLY_ARG`] decides these — a card, not a
+/// refusal. Registered only where a card can show (a chat with the Ask
+/// hook); elsewhere [`MATCHER`]'s refusal stands as before.
+pub const CARD_MATCHER: &str = concat!("^mcp__(?:", card_body!(), ".*)");
+
+/// Nightloom's own writes, refused in a read-only chat whether or not a
+/// card can show: the part of [`MATCHER`] [`CARD_MATCHER`] does not take.
+pub const NIGHTLOOM_MATCHER: &str = concat!("^mcp__nightloom__(?:", nightloom_writes!(), ")$");
+
+/// [`ASK_EXCLUSION`] with `remember` — what the Ask hook's own `mcp__`
+/// alternative leaves out where [`CARD_MATCHER`] is registered, so one
+/// call never meets two deciders.
+pub const ASK_EXCLUSION_WITH_CARD: &str = concat!("nightloom__remember$|", write_body!());
+
+/// Whether a read-only chat asks about `name` by verb — [`writes`] less
+/// Nightloom's own (the same rule as [`CARD_MATCHER`], `remember` aside).
+pub fn asks(name: &str) -> bool {
+    writes(name) && !name.starts_with("mcp__nightloom__")
+}
+
 /// The read verbs, as words.
 pub const READ_VERBS: &str = read_verbs!();
 

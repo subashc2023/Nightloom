@@ -273,6 +273,26 @@ impl Client {
             .map_err(|e| format!("the away server's answer was not understood: {e}"))
     }
 
+    /// `PUT /api/sync/rules` (item 783): `Ok(false)` when the server's
+    /// rules changed since the revision the body names (409).
+    pub(crate) async fn put_rules(
+        &self,
+        body: &crate::approval_rules::shared::Put,
+    ) -> Result<bool, String> {
+        let resp = self
+            .http
+            .put(self.url("rules"))
+            .bearer_auth(&self.token)
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| self.unreachable(e))?;
+        if resp.status().as_u16() == 409 {
+            return Ok(false);
+        }
+        self.checked(resp).await.map(|_| true)
+    }
+
     pub(crate) async fn get_bytes(&self, path: &str) -> Result<Vec<u8>, String> {
         let resp = self
             .http

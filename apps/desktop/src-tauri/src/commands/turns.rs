@@ -648,6 +648,13 @@ impl TurnEnv for DesktopTurnEnv<'_> {
         let _ = self.app.emit("tool-approval", prompt);
     }
 
+    fn nudge(&self, nudge: &nightloom_service::agent_turn::ApprovalNudge<'_>) {
+        // 783: the window pushes the phone (it knows the chat's name) and,
+        // on a set-aside, takes the card down; the phone's stream carries
+        // the same event.
+        let _ = self.app.emit("approval-nudge", nudge);
+    }
+
     fn timing(&self) -> Option<Arc<nightloom_service::turn_timing::TurnTiming>> {
         Some(self.timing.clone())
     }

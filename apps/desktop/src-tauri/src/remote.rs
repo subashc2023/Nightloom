@@ -59,9 +59,11 @@ const RELAY_CAPACITY: usize = 256;
 /// out under the same name, re-shaped by [`aside_delta_event`].
 /// `pass-event` (wave 5) is the window's word on a dream or a capture the
 /// phone started: `{kind, state: started|done|failed, text}`.
-const RELAYED: [&str; 5] = [
+const RELAYED: [&str; 6] = [
     "turn-event",
     "tool-approval",
+    // 783: an unanswered card's reminder and set-aside.
+    "approval-nudge",
     "turn-notice",
     "aside-event",
     "pass-event",
@@ -205,6 +207,18 @@ impl DesktopHost {
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
                         .insert(id.to_string(), v.clone());
+                }
+                // 783: a card set aside for want of an answer is no longer
+                // one a phone that opens later should be shown.
+                if name == "approval-nudge"
+                    && let Ok(v) = serde_json::from_str::<serde_json::Value>(ev.payload())
+                    && v.get("stage").and_then(|s| s.as_str()) == Some("set_aside")
+                    && let Some(id) = v.get("id").and_then(|i| i.as_str())
+                {
+                    host.seen
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .remove(id);
                 }
                 // No subscriber is not an error: nothing is listening until
                 // a phone opens the stream.

@@ -83,6 +83,28 @@ pub struct ApprovalPrompt<'a> {
     /// card shows (nightshift backlog 367). Only on a Playwright call.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// The card a read-only chat shows for this call (item 783):
+    /// `connector` — Allow once / Allow always / Deny, where *always* adds
+    /// the action to the reads he allows in read-only chats — or
+    /// `remember` — a proposal he approves. `None`: the ordinary card.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<&'static str>,
+    /// The call was set aside earlier in this reply and is back for its
+    /// answer (items 743, 783): this time the card waits for him.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub back: bool,
+}
+
+/// A card nobody has answered (item 783), as the window and the phone
+/// hear of it (`approval-nudge`): the reminder is due, or the call was set
+/// aside and its card goes.
+#[derive(Serialize, Clone)]
+pub struct ApprovalNudge<'a> {
+    pub id: &'a str,
+    pub name: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chat: Option<&'a str>,
+    pub stage: crate::agent::ask::Nudge,
 }
 
 /// Playwright's *Allow once* and *Deny* last for one reply (nightshift
@@ -133,6 +155,13 @@ pub trait TurnEnv: Send + Sync {
     /// Ask about a deferred call (`tool-approval`). The answer comes back
     /// through the [`AskGate`] the turn was given.
     fn approval(&self, prompt: &ApprovalPrompt<'_>);
+    /// A card nobody answered (item 783): at
+    /// [`crate::agent::ask::ApprovalTimes::remind`] push the phone again;
+    /// at `set_aside` the call was set aside — withdraw the card and say
+    /// so. The first push is `approval`'s own.
+    fn nudge(&self, nudge: &ApprovalNudge<'_>) {
+        let _ = nudge;
+    }
     /// Keep `dir` on the turn's project (the card's *let the project see
     /// it*).
     async fn grant_to_project(&self, dir: &Path) -> ProjectGrant;
@@ -411,7 +440,8 @@ async fn turn_body(
     // Calls he answered "Not now — carry on" (item 743) that have not come
     // back yet. The model is told to make the call again at the end; one
     // that never returns is said at the turn's end, never silently lost.
-    let mut set_aside: Vec<crate::agent::DeferredCall> = Vec::new();
+    // With each, whether nobody answered (item 783) rather than he said so.
+    let mut set_aside: Vec<(crate::agent::DeferredCall, bool)> = Vec::new();
     while let Ok(outcome) = &result
         && let Some(call) = outcome.deferred.clone()
     {
@@ -419,7 +449,17 @@ async fn turn_body(
             break;
         };
         // The same call again is the one set aside, back for its answer.
-        set_aside.retain(|c| !(c.name == call.name && c.input == call.input));
+        let before = set_aside.len();
+        set_aside.retain(|(c, _)| !(c.name == call.name && c.input == call.input));
+        let back = set_aside.len() != before;
+        // A read-only chat's own cards (item 783): a connector action that
+        // is not a known read, and `remember`.
+        let rules_home = ask.rules_home();
+        let card_kind = agent
+            .spec()
+            .refuses_mcp_writers()
+            .then(|| crate::agent::ask::read_only_card(rules_home.as_deref(), &call.name))
+            .flatten();
         let session_id = outcome.session_id.clone();
         let ask_files = AskDir::new(dir);
         // On disk while the card waits (item 522): a launch after a quit
@@ -447,6 +487,7 @@ async fn turn_body(
             _ => None,
         };
         let answered_here = preanswer.is_some();
+        let mut auto_aside = false;
         let answer = if let Some(a) = preanswer {
             Some(a)
         } else {
@@ -455,7 +496,17 @@ async fn turn_body(
                 Some(Ok(d)) => Some(d.clone()),
                 _ => outside_folder(&call.input, &trees),
             };
+            // An Allow or a Deny that nobody gives is reminded of and then
+            // set aside (item 783) — once: a call that is back after a
+            // set-aside waits for him, or a reply would never end. A
+            // question, a plan and a folder are answers only he can give.
+            let times = (!back
+                && folder_ask.is_none()
+                && crate::push::What::for_prompt(&call.name) == crate::push::What::Approval)
+                .then(|| ask.times());
             env.approval(&ApprovalPrompt {
+                kind: card_kind,
+                back,
                 id: &call.id,
                 name: &call.name,
                 input: &call.input,
@@ -468,10 +519,49 @@ async fn turn_body(
                     .then(|| reason.lock().ok().and_then(|r| r.reason()))
                     .flatten(),
             });
-            tokio::select! {
-                _ = cancel.cancelled() => None,
-                a = rx => a.ok(),
+            let nudge = |stage| {
+                env.nudge(&ApprovalNudge {
+                    id: &call.id,
+                    name: &call.name,
+                    chat: Some(chat_id),
+                    stage,
+                });
+            };
+            use crate::agent::ask::{Nudge, Waited, wait_for_answer};
+            match wait_for_answer(rx, cancel, times, || nudge(Nudge::Remind)).await {
+                Waited::Answer(a) => Some(a),
+                Waited::Gone => None,
+                Waited::SetAside => {
+                    // Nobody answered: the card goes, the call is set
+                    // aside — never run — and comes back at the end.
+                    ask.abandon(&call.id);
+                    nudge(Nudge::SetAside);
+                    auto_aside = true;
+                    Some(Answer::Deny {
+                        reason: crate::agent::ask::AUTO_LATER_REASON.into(),
+                    })
+                }
             }
+        };
+        // The read-only chat's cards (item 783): *Allow always* on a
+        // connector action makes it a read he allows — on this host now,
+        // on the other at the next sync — and never a standing allow in
+        // the chat's own list; a `remember` is approved one at a time.
+        let answer = match (card_kind, answer) {
+            (Some(kind), Some(Answer::AllowForChat { updated_input })) => {
+                if kind == "connector"
+                    && let Some(home) = &rules_home
+                    && let Err(e) = crate::approval_rules::allow_read(home, &call.name)
+                {
+                    env.notice(format!("could not keep that as always allowed: {e}"));
+                }
+                Some(Answer::Allow {
+                    updated_input,
+                    plan_then: None,
+                    grant: None,
+                })
+            }
+            (_, a) => a,
         };
         // His *Allow* on an `add_folder` card is the grant the call asked
         // for, at the model's scope unless his button named one; *Allow for
@@ -534,8 +624,8 @@ async fn turn_body(
         if let Some(id) = &session_id {
             agent.set_resume(Some(id.clone()));
         }
-        if matches!(answer, Answer::Later) {
-            set_aside.push(call.clone());
+        if matches!(answer, Answer::Later) || auto_aside {
+            set_aside.push((call.clone(), auto_aside));
         }
         if let Answer::Allow {
             grant: Some(grant), ..
@@ -625,8 +715,12 @@ async fn turn_body(
     if let Ok(o) = &mut result
         && !cancel.is_cancelled()
     {
-        for c in &set_aside {
-            o.notices.push(set_aside_notice(&c.name));
+        for (c, auto) in &set_aside {
+            o.notices.push(if *auto {
+                unanswered_notice(&c.name)
+            } else {
+                set_aside_notice(&c.name)
+            });
         }
     }
 
@@ -1283,6 +1377,201 @@ printf '%s\n' '{{"type":"result","subtype":"success","stop_reason":"tool_deferre
         path.to_string_lossy().into_owned()
     }
 
+    // ---- item 783: an approval nobody answers is set aside, never run ------
+
+    /// A stand-in `claude` whose task needs one gated `Bash` call: it
+    /// defers it; on the first resume it reads the refusal, "does the
+    /// rest" and makes the same call again as its last step (a new id);
+    /// on the second resume it ends. Each resume keeps the decision it was
+    /// handed, and a call that was allowed leaves `ran-<n>`.
+    fn publishing_stand_in(root: &Path, ask_dir: &Path) -> String {
+        let body = format!(
+            r##"#!/bin/sh
+D="{d}"
+A="{a}"
+INIT='{{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"claude-haiku-4-5","permissionMode":"default","session_id":"s-1"}}'
+defer() {{
+  printf '%s\n' '{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"'"$1"'","name":"Bash","input":{{"command":"./publish.sh"}}}}]}},"parent_tool_use_id":null}}'
+  printf '%s\n' '{{"type":"result","subtype":"success","stop_reason":"tool_deferred","terminal_reason":"tool_deferred","is_error":false,"num_turns":1,"result":"","permission_denials":[],"session_id":"s-1","deferred_tool_use":{{"id":"'"$1"'","name":"Bash","input":{{"command":"./publish.sh"}}}}}}'
+}}
+N=$(cat "$D/n" 2>/dev/null || echo 0)
+printf '%s\n' "$INIT"
+if [ "$N" = 0 ]; then
+  echo 1 > "$D/n"
+  defer toolu_1
+  exit 0
+fi
+cp "$A/decision.json" "$D/decision-$N.json" 2>/dev/null
+if grep -q '"decision":"allow"' "$D/decision-$N.json" 2>/dev/null; then touch "$D/ran-$N"; fi
+if [ "$N" = 1 ]; then
+  echo 2 > "$D/n"
+  printf '%s\n' '{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"toolu_1","content":"set aside","is_error":true}}]}},"parent_tool_use_id":null}}'
+  defer toolu_2
+  exit 0
+fi
+printf '%s\n' '{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"toolu_2","content":"published","is_error":false}}]}},"parent_tool_use_id":null}}'
+printf '%s\n' '{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"all done"}}]}},"parent_tool_use_id":null}}'
+printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"all done","session_id":"s-1","stop_reason":"end_turn","usage":{{"input_tokens":3,"output_tokens":2}}}}'
+"##,
+            d = root.display(),
+            a = ask_dir.display(),
+        );
+        let path = root.join("claude-publishing");
+        std::fs::write(&path, body).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    /// Keeps every card and nudge; answers Allow only to a card that is
+    /// back after a set-aside, and only after `answer_after`.
+    struct AwayEnv {
+        ask: Arc<AskGate>,
+        cards: std::sync::Mutex<Vec<(String, bool)>>,
+        nudges: std::sync::Mutex<Vec<(String, crate::agent::ask::Nudge)>>,
+        answer_after: std::time::Duration,
+    }
+
+    #[async_trait::async_trait]
+    impl TurnEnv for AwayEnv {
+        fn event(&self, _chat: &str, _event: &TurnEvent) {}
+        fn notice(&self, _text: String) {}
+        fn approval(&self, prompt: &ApprovalPrompt<'_>) {
+            self.cards
+                .lock()
+                .unwrap()
+                .push((prompt.id.to_string(), prompt.back));
+            if prompt.back {
+                let (ask, id, after) = (self.ask.clone(), prompt.id.to_string(), self.answer_after);
+                tokio::spawn(async move {
+                    tokio::time::sleep(after).await;
+                    ask.answer(
+                        &id,
+                        Answer::Allow {
+                            updated_input: None,
+                            plan_then: None,
+                            grant: None,
+                        },
+                    );
+                });
+            }
+        }
+        fn nudge(&self, nudge: &ApprovalNudge<'_>) {
+            self.nudges
+                .lock()
+                .unwrap()
+                .push((nudge.id.to_string(), nudge.stage));
+        }
+        async fn grant_to_project(&self, _dir: &Path) -> ProjectGrant {
+            ProjectGrant::NoProject
+        }
+    }
+
+    /// Item 783 (blocker 2029, his timings of 2026-11-17, here on a short
+    /// clock — the 2:30 and 3:30 themselves are
+    /// `ask::tests::an_unanswered_approval_is_reminded_…`'s, on a paused
+    /// one): an approval nobody answers gets its reminder, is then set
+    /// aside — **never run** — the turn carries on, and the same call is
+    /// asked again at the end, where it waits for him however long he
+    /// takes and runs only on his Allow.
+    #[tokio::test]
+    async fn an_approval_left_unanswered_is_set_aside_never_run_and_asked_again_at_the_end() {
+        use crate::agent::ask::{AUTO_LATER_REASON, ApprovalTimes, Nudge};
+        use std::time::Duration;
+        let root = std::env::temp_dir().join(format!("nightloom-783-{}", uuid::Uuid::new_v4()));
+        let logs = root.join("sessions");
+        std::fs::create_dir_all(&logs).unwrap();
+        let mut session = Session::start(&logs, ChatMode::Normal, ChatKind::Build).unwrap();
+        let ask_dir = root.join("ask").join(&session.id);
+        let mut spec = AgentSpec::new(&root);
+        spec.binary = publishing_stand_in(&root, &ask_dir);
+        let mut agent = ClaudeCodeAgent::new(spec);
+        agent.set_ask_dir(ask_dir.clone());
+        let times = ApprovalTimes {
+            remind: Duration::from_millis(60),
+            set_aside: Duration::from_millis(150),
+        };
+        let ask = Arc::new(
+            AskGate::new()
+                .with_times(times)
+                .with_rules_home(root.join("home")),
+        );
+        let env = AwayEnv {
+            ask: ask.clone(),
+            cards: Default::default(),
+            nudges: Default::default(),
+            // Four times the set-aside: a card that is back is not set
+            // aside a second time.
+            answer_after: Duration::from_millis(600),
+        };
+        let chat = session.id.clone();
+        let cancel = CancellationToken::new();
+        let started = std::time::Instant::now();
+        let end = run_agent_turn(
+            AgentTurnRun {
+                agent: &mut agent,
+                session: &mut session,
+                chat_id: &chat,
+                input: TurnInput::from("publish it"),
+                spoken: false,
+                wire_note: None,
+                council: None,
+                cancel: &cancel,
+                ask_dir: Some(ask_dir.clone()),
+                ask: &ask,
+            },
+            &env,
+        )
+        .await;
+        let Ok(AgentTurnEnd::Done { outcome, .. }) = end else {
+            panic!("{:?}", end.err());
+        };
+        // Two cards: the first, and the same call back at the end.
+        assert_eq!(
+            *env.cards.lock().unwrap(),
+            [
+                ("toolu_1".to_string(), false),
+                ("toolu_2".to_string(), true)
+            ]
+        );
+        // The first card: reminded, then set aside. The second: neither.
+        assert_eq!(
+            *env.nudges.lock().unwrap(),
+            [
+                ("toolu_1".to_string(), Nudge::Remind),
+                ("toolu_1".to_string(), Nudge::SetAside)
+            ]
+        );
+        // Set aside is a skip, in words that say so — and the call did not run.
+        let first: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("decision-1.json")).unwrap()).unwrap();
+        assert_eq!(first["tool_use_id"], "toolu_1");
+        assert_eq!(first["decision"], "deny");
+        assert_eq!(first["reason"], AUTO_LATER_REASON);
+        assert!(
+            !root.join("ran-1").exists(),
+            "a set-aside call must never run"
+        );
+        // Asked again at the end, it waited for him (past the set-aside
+        // time) and ran on his Allow.
+        assert!(started.elapsed() >= times.set_aside + env.answer_after);
+        let second: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("decision-2.json")).unwrap()).unwrap();
+        assert_eq!(
+            (&second["tool_use_id"], &second["decision"]),
+            (&serde_json::json!("toolu_2"), &serde_json::json!("allow"))
+        );
+        assert!(root.join("ran-2").exists());
+        // It came back, so the reply ends with no "did not run" notice.
+        assert!(
+            !outcome.notices.iter().any(|n| n.contains("set aside")),
+            "{:?}",
+            outcome.notices
+        );
+        assert!(!ask.has("toolu_1") && !ask.has("toolu_2"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Answers the card the moment it is shown, and keeps the turn's events.
     struct AskEnv {
         timing: Arc<TurnTiming>,
@@ -1581,6 +1870,13 @@ printf '%s\n' '{{"type":"result","subtype":"success","stop_reason":"tool_deferre
 pub fn set_aside_notice(tool: &str) -> String {
     format!(
         "You set {tool} aside and the reply ended without that same call coming back, so it did not run. Ask for it when you want it."
+    )
+}
+
+/// The same for a call set aside because nobody answered (item 783).
+pub fn unanswered_notice(tool: &str) -> String {
+    format!(
+        "{tool} waited for your answer, was set aside, and the reply ended without that same call coming back, so it did not run. Ask for it when you want it."
     )
 }
 

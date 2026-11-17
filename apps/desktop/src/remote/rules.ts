@@ -15,8 +15,10 @@ export interface RuleRow {
   tool: string;
   text: string;
   scope: RuleScope;
-  /** `grant`: the card's "Allow for this chat", listed as an allow rule. */
-  source: "rule" | "grant";
+  /** `grant`: the card's "Allow for this chat", listed as an allow rule.
+   *  `read` (item 783): a connector action he answered "Allow always" to in
+   *  a read-only chat — it runs there without asking; it can only be removed. */
+  source: "rule" | "grant" | "read";
 }
 
 export interface RulesListing {
@@ -28,12 +30,16 @@ export interface RulesListing {
   /** Whether a chat was named: "this chat" is offered only then. */
   chat: boolean;
   subagents_auto?: boolean;
+  /** Item 783: what the last sync between the Mac and the away server had
+   *  to say — a rule both changed, kept twice. Absent when nothing. */
+  notes?: string[];
 }
 
 export type RuleEdit =
   | { op: "add"; scope: RuleScope; action: RuleAction; tool: string; text: string }
   | { op: "change"; id: string; action: RuleAction; tool: string; text: string }
-  | { op: "remove"; id: string };
+  | { op: "remove"; id: string }
+  | { op: "dismiss" };
 
 /** The form, for a new rule (`id` null) or one being changed. */
 export interface RuleForm {
@@ -119,7 +125,9 @@ export function ruleLine(r: Pick<RuleRow, "tool" | "text">): string {
 
 export function scopeLabel(r: Pick<RuleRow, "scope" | "source">): string {
   if (r.source === "grant") return "This chat · from “Allow for this chat”";
-  return r.scope === "chat" ? "This chat" : "Every chat";
+  if (r.source === "read") return "Read-only chats · from “Allow always”";
+  // Item 783: one set for both hosts.
+  return r.scope === "chat" ? "This chat" : "Every chat · Mac and Away";
 }
 
 /** The rows under each head, in the order the host decides them; a head
@@ -131,6 +139,7 @@ export function grouped(rules: RuleRow[]): { head: string; action: RuleAction; r
 /** What removing a rule does, for the confirm. */
 export function removeWords(r: RuleRow): string {
   const what = r.text.trim() ? `${r.tool} calls naming “${r.text.trim()}”` : `${r.tool} calls`;
+  if (r.source === "read") return `${what} will ask you again in read-only chats, on the Mac and Away.`;
   switch (r.action) {
     case "block":
       return `${what} will no longer be blocked — they go back to asking you, or to another rule that names them.`;
@@ -139,6 +148,15 @@ export function removeWords(r: RuleRow): string {
     case "allow":
       return `${what} will ask you again${r.scope === "chat" ? " in this chat" : ""}.`;
   }
+}
+
+/** A connector tool's name as he would say it (item 783):
+ *  `mcp__claude_ai_Gmail__send_message` → `Gmail · send message`. */
+export function connectorWords(name: string): string {
+  const m = /^mcp__(.+?)__(.+)$/.exec(name);
+  if (!m) return name;
+  const server = m[1].replace(/^claude_ai_/, "").replace(/_/g, " ");
+  return `${server} · ${m[2].replace(/[_-]/g, " ")}`;
 }
 
 /** The card a set-aside call is remembered by: its tool and its input. */

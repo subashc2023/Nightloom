@@ -55,7 +55,7 @@ import {
 } from "./chatChoice";
 import { madeChatRow } from "./afterWrite";
 import { runLaunch } from "./launch.svelte";
-import { chatName, notifyNeedsYou, postHeldNeedsYou } from "./notify";
+import { chatName, notifyNeedsYou, notifyNudge, postHeldNeedsYou } from "./notify";
 import { onAway, watchPresence } from "./away.svelte";
 import { RESUME_TEXT, SleepWatch, loadSleepPrefs, pushPowerPrefs, type Woke } from "./sleep";
 import { type CouncilRequest } from "./council";
@@ -110,6 +110,7 @@ import type {
   PlanUsage,
   PlanPace,
   ApprovalDecision,
+  ApprovalNudge,
   ApprovalRequest,
   AsideDelta,
   BlockerList,
@@ -1017,6 +1018,19 @@ export async function init(): Promise<void> {
     // The needs-you banner (backlog 079): the turn waits on him, and if the
     // window is behind something else nothing on screen says so.
     void notifyNeedsYou(bannerChat(), e.payload);
+  });
+  // Item 783: a card nobody answered. At 2:30 the phone is pushed again;
+  // at 3:30 the call was set aside (not run) — its card goes, the phone is
+  // told, and the same call comes back at the end of the reply.
+  await listen<ApprovalNudge>("approval-nudge", (e) => {
+    const n = e.payload;
+    const bg = eventHost(app.background, n.chat);
+    const name = bg ? backgroundName(bg.session) : bannerChat();
+    notifyNudge(name, n);
+    if (n.stage !== "set_aside") return;
+    if (bg) bg.approvals = bg.approvals.filter((r) => r.id !== n.id);
+    else app.pendingApprovals = app.pendingApprovals.filter((r) => r.id !== n.id);
+    addToast(`No answer, so ${n.name} was set aside. It asks again when the rest is done.`);
   });
   // A card that landed while he looked posts its banner when he leaves with
   // it still waiting (nightshift backlog 373).
