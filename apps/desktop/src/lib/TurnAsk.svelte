@@ -18,6 +18,8 @@
    * "send" does (the desktop: his next message + an answered blocker; the phone: his next message).
    */
   import AskQuestions from "./AskQuestions.svelte";
+  import AskLock from "./AskLock.svelte";
+  import { flyAnswer } from "./askMotion";
   import { answerText, isAnswered } from "./askQuestions";
   import type { Ask } from "./askTag";
   import type { AskQuestion } from "./types";
@@ -62,16 +64,29 @@
     others[i] = value;
     if (value.trim()) picks[i] = [];
   }
+  let shell = $state<HTMLDivElement | null>(null);
+
+  /** The picked answer's row, by its label (the click that picked it has not redrawn the card yet). */
+  function pickedRow(): HTMLElement | null {
+    const label = picks[0]?.[0];
+    if (!label || !shell) return null;
+    return [...shell.querySelectorAll<HTMLElement>(".aq-opt")].find((o) => o.querySelector(".aq-ol")?.textContent === label) ?? null;
+  }
+
   function onquick() {
     if (sending) return;
     const answer = answerText(picks[0], others[0], notes[0]);
     if (!answer) return;
     drafts.delete(idBase);
+    // Wave K (his pick, blocker 2031): the answer is carried down a thread into the message box and the card
+    // folds to a receipt — a copy over the page; the real card goes as it always did.
+    flyAnswer(shell, pickedRow(), answer);
     onsend(answer);
   }
 </script>
 
-<div class="turn-ask" class:sending data-turn-ask={idBase} aria-busy={sending}>
+<div class="turn-ask lk-shell" class:sending data-turn-ask={idBase} aria-busy={sending} bind:this={shell}>
+  <AskLock />
   <AskQuestions
     {questions}
     {idBase}

@@ -1676,6 +1676,233 @@ mark.find-hit {
   --motion-ink-hi: var(--signal-ink, var(--signal));
 }
 
+/* ---- ask lock-on (items 713 + 753, wave K; his pick, blocker 2031) ----------
+
+   "I like lock-on, but I like the answer animation (in the left screens) from
+   the option B". The "Claude asks you" card — the mid-turn question card and
+   the turn-end card — and the Needs-you view carry `lk-shell` and draw
+   AskLock.svelte inside: four corner brackets (`--bracket`: transparent under
+   calm and Classic), a scanline, and a veil in the shell's own colour that
+   lifts behind it. Only Jarvis with motion allowed animates; Classic gets a
+   calm 200 ms rise; reduce motion gets nothing. The answer's thread and
+   receipt are askMotion.ts (`flyAnswer`), styled at the end of this block. */
+.lk-shell {
+  position: relative;
+}
+.lk {
+  position: absolute;
+  pointer-events: none;
+}
+.lk-veil,
+.lk-scan {
+  display: none;
+}
+.lk-br {
+  width: 14px;
+  height: 14px;
+  box-sizing: border-box;
+  border: 2px solid var(--bracket, transparent);
+  z-index: 5;
+}
+[data-layout="classic"] .lk-br {
+  display: none;
+}
+.lk-br.tl {
+  left: 0;
+  top: 0;
+  border-right: 0;
+  border-bottom: 0;
+  border-top-left-radius: 7px;
+}
+.lk-br.tr {
+  right: 0;
+  top: 0;
+  border-left: 0;
+  border-bottom: 0;
+  border-top-right-radius: 7px;
+}
+.lk-br.bl {
+  left: 0;
+  bottom: 0;
+  border-right: 0;
+  border-top: 0;
+  border-bottom-left-radius: 7px;
+}
+.lk-br.br {
+  right: 0;
+  bottom: 0;
+  border-left: 0;
+  border-top: 0;
+  border-bottom-right-radius: 7px;
+}
+:root:not([data-layout="classic"]) .lk-br {
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--bracket, transparent) 60%, transparent));
+}
+/* The header's decode: an overlay holding the scrambled words, over the
+   header's own (untouched) text, while `data-decode` is set. */
+[data-decode] {
+  position: relative;
+}
+[data-decode]::after {
+  content: attr(data-decode);
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--dec-x, 0px);
+  right: 0;
+  display: flex;
+  align-items: center;
+  white-space: pre;
+  background: var(--aq-bg, var(--sheet));
+}
+.aq-one[data-decode] {
+  --dec-x: 26px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  :root:not([data-layout="classic"]) .lk-veil {
+    display: block;
+    inset: 0;
+    z-index: 4;
+    background: inherit;
+    border-radius: inherit;
+    animation: lk-veil 720ms 180ms cubic-bezier(0.3, 0.6, 0.3, 1) both;
+  }
+  :root:not([data-layout="classic"]) .lk-scan {
+    display: block;
+    left: 0;
+    right: 0;
+    height: 2px;
+    z-index: 6;
+    background: linear-gradient(90deg, transparent, var(--accent-ink, var(--accent)) 20%, var(--accent-ink, var(--accent)) 80%, transparent);
+    box-shadow: var(--glow-accent, none);
+    animation: lk-scan 720ms 180ms cubic-bezier(0.3, 0.6, 0.3, 1) both;
+  }
+  :root:not([data-layout="classic"]) .lk-br.tl {
+    animation:
+      lk-tl 450ms cubic-bezier(0.2, 0.9, 0.25, 1.25) both,
+      lk-breathe 2.4s ease-in-out 900ms infinite;
+  }
+  :root:not([data-layout="classic"]) .lk-br.tr {
+    animation:
+      lk-tr 450ms cubic-bezier(0.2, 0.9, 0.25, 1.25) both,
+      lk-breathe 2.4s ease-in-out 900ms infinite;
+  }
+  :root:not([data-layout="classic"]) .lk-br.bl {
+    animation:
+      lk-bl 450ms cubic-bezier(0.2, 0.9, 0.25, 1.25) both,
+      lk-breathe 2.4s ease-in-out 900ms infinite;
+  }
+  :root:not([data-layout="classic"]) .lk-br.br {
+    animation:
+      lk-br 450ms cubic-bezier(0.2, 0.9, 0.25, 1.25) both,
+      lk-breathe 2.4s ease-in-out 900ms infinite;
+  }
+  [data-layout="classic"] .lk-shell {
+    animation: lk-calm 200ms ease-out both;
+  }
+}
+@keyframes lk-veil {
+  from {
+    clip-path: inset(0 0 0 0);
+  }
+  to {
+    clip-path: inset(100% 0 0 0);
+  }
+}
+@keyframes lk-scan {
+  0% {
+    top: 0;
+    opacity: 1;
+  }
+  90% {
+    opacity: 1;
+  }
+  100% {
+    top: 100%;
+    opacity: 0;
+  }
+}
+@keyframes lk-tl {
+  from {
+    transform: translate(-18px, -18px);
+    opacity: 0;
+  }
+}
+@keyframes lk-tr {
+  from {
+    transform: translate(18px, -18px);
+    opacity: 0;
+  }
+}
+@keyframes lk-bl {
+  from {
+    transform: translate(-18px, 18px);
+    opacity: 0;
+  }
+}
+@keyframes lk-br {
+  from {
+    transform: translate(18px, 18px);
+    opacity: 0;
+  }
+}
+@keyframes lk-breathe {
+  50% {
+    opacity: 0.45;
+  }
+}
+@keyframes lk-calm {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+/* The answer's copy (askMotion.ts `flyAnswer`): fixed over the page; its
+   own CSS motion off (it would replay the arrival), the receipt on top. */
+.ask-ghost,
+.ask-ghost * {
+  animation: none !important;
+  transition: none !important;
+}
+.ask-ghost .lk-veil,
+.ask-ghost .lk-scan {
+  display: none !important;
+}
+.ask-receipt {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink2);
+  white-space: nowrap;
+  overflow: hidden;
+  z-index: 6;
+}
+.ask-stamp {
+  flex: none;
+  color: var(--done);
+  border: 1px solid color-mix(in srgb, var(--done) 50%, transparent);
+  border-radius: 4px;
+  padding: 2px 6px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-size: 11px;
+}
+.ask-rt {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--accent-ink, var(--ink));
+}
+
+
 /* ---- what can be selected (item 646) ----------------------------------------
 
    His words: "i dont like that u can like highlight in this way" — a drag

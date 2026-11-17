@@ -106,7 +106,9 @@ export const TRANSCRIPT_PIECES: Record<string, Where> = {
  * it in `TRANSCRIPT_FEATURES`, then update the count.
  */
 export const KIND_GUARDS = {
-  isChat: 16,
+  // 17 since the merge of nightshift d5e4063b into dk-needs-you: each side added one chat-only guard
+  // (TurnAskHost, SessionCutNotice), both classified above.
+  isChat: 17,
   inPane: 8,
   inAside: 7,
   "src.chatActions": 10,

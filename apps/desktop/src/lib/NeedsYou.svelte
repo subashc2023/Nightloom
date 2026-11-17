@@ -17,6 +17,8 @@
   import { withNote } from "./askQuestions";
   import { NEED_EMPTY, groupNeeds, type NeedRow } from "./needsYou";
   import { needs, needsNow, refreshBoard, replyTo, setDraft, setFold } from "./needsBoard.svelte";
+  import AskLock from "./AskLock.svelte";
+  import { look } from "./askMotion";
 
   const groups = $derived(groupNeeds(needsNow()));
   let listEl = $state<HTMLElement | null>(null);
@@ -53,10 +55,26 @@
     el.style.height = "auto";
     el.style.height = `${el.scrollHeight}px`;
   }
+  /** Wave K (Lock-on): a row that leaves — answered, decided, sent — turns green and folds away in Jarvis,
+   *  fades in Classic, and simply goes under reduce motion. */
+  function rowOut(node: HTMLElement): { duration: number; css?: (t: number) => string } {
+    const kind = look();
+    if (kind === "none") return { duration: 0 };
+    if (kind === "classic") return { duration: 160, css: (t) => `opacity: ${t}` };
+    const h = node.offsetHeight;
+    return {
+      duration: 420,
+      css: (t) => {
+        const e = t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
+        return `height: ${(e * h).toFixed(1)}px; padding-top: ${(9 * e).toFixed(2)}px; padding-bottom: ${(9 * e).toFixed(2)}px; overflow: hidden; opacity: ${Math.min(1, e * 1.6).toFixed(3)}; box-shadow: inset 2px 0 0 var(--done); background: linear-gradient(90deg, color-mix(in srgb, var(--done) 14%, transparent), transparent 70%);`;
+      },
+    };
+  }
   const when = (at: number | null) => (at ? relativeTime(new Date(at).toISOString()) : "");
 </script>
 
-<div class="modal" role="dialog" aria-label="Needs you">
+<div class="modal lk-shell" role="dialog" aria-label="Needs you">
+  <AskLock header=".pane-title" />
   <header class="pane-head">
     <h2 class="pane-title">Needs you</h2>
     <span class="slug">every project · answer in place</span>
@@ -80,9 +98,9 @@
           {#if g.rows.length === 0}
             <div class="empty">{NEED_EMPTY[g.state]}</div>
           {/if}
-          {#each g.rows as row (row.id)}
+          {#each g.rows as row, k (row.id)}
             {@const busy = !!needs.sending[row.id]}
-            <div class="row" class:busy data-kind={row.kind}>
+            <div class="row" class:busy class:asks={!!row.ask} data-kind={row.kind} style:--i={k} out:rowOut>
               <span class="tag">{row.tag}</span>
               <div class="main">
                 <div class="title">{row.title}</div>
@@ -330,6 +348,62 @@
     .where,
     .when {
       display: none;
+    }
+  }
+
+  /* Wave K, Lock-on (his pick, blocker 2031; his words on the first look: "i like needs you functionally, tho
+     same on making it more within theme"): in Jarvis the view arrives like the card — brackets, scanline,
+     its title decoding — wears the lit edge, brackets its group heads, marks what waits on him with an
+     amber edge, and scans its rows in. Classic keeps the rules above. */
+  :global(:where(:root:not([data-layout="classic"]))) .modal {
+    border-color: color-mix(in srgb, var(--accent) 30%, var(--line2));
+    box-shadow:
+      0 12px 40px rgba(0, 0, 0, 0.5),
+      var(--glow-main, 0 0 0 transparent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .pane-title {
+    font-family: var(--mono);
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .group-head {
+    letter-spacing: 0.16em;
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .group-name::before {
+    content: "[ ";
+    color: var(--bracket, transparent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .count::after {
+    content: " ]";
+    color: var(--bracket, transparent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .group[data-state="waiting"] .row {
+    box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 55%, transparent);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .row.asks {
+    box-shadow: inset 2px 0 0 var(--accent);
+    background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 7%, transparent), transparent 60%);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .row:hover {
+    background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 6%, transparent), transparent 60%);
+  }
+  :global(:where(:root:not([data-layout="classic"]))) .answer:hover:not(:disabled) {
+    box-shadow: var(--glow-accent, none);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    :global(:where(:root:not([data-layout="classic"]))) .row {
+      animation: ny-row 0.5s cubic-bezier(0.3, 0.6, 0.3, 1) both;
+      animation-delay: calc(300ms + var(--i, 0) * 60ms);
+    }
+  }
+  @keyframes ny-row {
+    0% {
+      clip-path: inset(0 0 100% 0);
+    }
+    100% {
+      clip-path: inset(0 0 0 0);
     }
   }
 </style>
