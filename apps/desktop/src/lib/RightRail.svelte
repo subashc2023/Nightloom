@@ -24,8 +24,10 @@
   import { touchedUntil } from "./keepWarm";
   import { keepWarm } from "./keepWarm.svelte";
   import { cacheState, nextTickMs, remainingText } from "./cache";
-  import { cacheEstimate, lastReply, ratesFromPrice, usd as usdShort } from "./cacheCost";
+  import { cacheEstimate, ratesFromPrice, usd as usdShort } from "./cacheCost";
   import { cacheRatesOf, loadCacheRates } from "./cacheRates.svelte";
+  import { nextSendModel, pendingChangeCost } from "./changeCost";
+  import { modelSeen } from "./modelSeen.svelte";
   import {
     clockText,
     freshIn,
@@ -147,13 +149,34 @@
   const cacheLeft = $derived(cache ? remainingText(cache.remainingMs) : null);
   /** Item 699's price fix (2026-11-16): the next send's API-price estimate,
    *  as the composer's chip gives it — the column's cache row had none. */
-  const nextModel = $derived(cache ? (lastReply(app.events)?.model ?? null) : null);
+  // Item 777: a pending model switch is priced at the new model (cold too).
+  const nextModel = $derived(cache ? nextSendModel(app.events, app.draft.agentModel, modelSeen.byAlias) : null);
   $effect(() => {
     if (nextModel && app.connection?.engine === "claude-code") void loadCacheRates(nextModel);
   });
-  const nextEst = $derived(
-    cache ? cacheEstimate(app.events, app.connection?.engine === "claude-code" ? cacheRatesOf(nextModel) : ratesFromPrice(app.connection?.price), cache.warm) : null,
+  /** Item 777: with a change pending on a warm cache, the price with it
+   *  (the composer's bar gives both), so the two never disagree. */
+  const pendingCost = $derived(
+    cache?.warm
+      ? pendingChangeCost({
+          events: app.events,
+          draft: app.draft,
+          connection: app.connection,
+          seen: modelSeen.byAlias,
+          warm: true,
+          rates: (m) => {
+            if (m && app.connection?.engine === "claude-code") void loadCacheRates(m);
+            return cacheRatesOf(m);
+          },
+        })
+      : null,
   );
+  const nextEst = $derived.by(() => {
+    if (!cache) return null;
+    const p = pendingCost?.price.with;
+    if (p != null) return { usd: p, title: `With the pending change: ${pendingCost!.title}` };
+    return cacheEstimate(app.events, app.connection?.engine === "claude-code" ? cacheRatesOf(nextModel) : ratesFromPrice(app.connection?.price), cache.warm);
+  });
 
   /**
    * Item 654 (his pick B3, blocker 1962): the column's dial moves with a
