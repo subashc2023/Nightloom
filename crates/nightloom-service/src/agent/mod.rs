@@ -1030,9 +1030,26 @@ impl AgentSpec {
         let mut spec = self.clone();
         spec.fork_session = true;
         spec.no_session_persistence = true;
-        spec.permission_mode = Some("dontAsk".into());
+        // An Auto chat's aside (and keep-warm ping) stays on `auto`, as its
+        // checkpoint fork does ([`AskMode::AutoFork`]): the permission mode
+        // is part of the cached prefix. Measured 2026-11-16 (CLI 2.1.326,
+        // Opus 5.5, requests captured against a closed local port, no
+        // model call): `auto`, `plan` and `bypassPermissions` send one Bash
+        // tool description, `default` and `dontAsk` another (two sentences
+        // more), so a `dontAsk` aside of an Auto chat read 0 of 53,579 and
+        // wrote it all (cache-miss.jsonl, 5:43 PM). On Fable 5.2 the two
+        // modes sent the same text. ~~An aside of an Auto chat is `dontAsk`
+        // (backlog 294)~~ — superseded by this measurement.
+        let auto = spec.ask.as_ref().is_some_and(|a| a.mode.is_auto());
+        if !auto {
+            spec.permission_mode = Some("dontAsk".into());
+        }
         if let Some(ask) = &mut spec.ask {
-            ask.mode = AskMode::Aside;
+            ask.mode = if auto {
+                AskMode::AutoFork
+            } else {
+                AskMode::Aside
+            };
         }
         // No brief either: the aside is one question on the warm cache,
         // and its settings carry no hook (the test below pins that).
@@ -5174,22 +5191,53 @@ mod tests {
         );
     }
 
-    /// An aside of an Auto chat (backlog 294): as an aside of an Ask chat —
-    /// `dontAsk`, no hook of any kind — with the prompt tool still named,
-    /// so the offered tools, and the cached prefix, are the chat's.
+    /// The CLI's tool text by permission mode (CLI 2.1.326, Opus 5.5,
+    /// measured 2026-11-16): two classes. A side process must stay in its
+    /// chat's class, or its first request reads none of the chat's cache.
+    fn tool_text_class(mode: &str) -> u8 {
+        match mode {
+            "default" | "dontAsk" => 1,
+            "auto" | "plan" | "bypassPermissions" => 2,
+            other => panic!("unmeasured mode {other}"),
+        }
+    }
+
+    /// An aside of an Auto chat (backlog 294; item 758's follow-up,
+    /// 2026-11-16): ~~`dontAsk`, no hook of any kind~~ — `auto`, as the
+    /// chat's checkpoint fork, since `dontAsk` sends other tool text and
+    /// the aside read none of the cache. Still no Ask hook (a question has
+    /// no card waiting), the prompt tool still named, the plan refusal
+    /// kept; the same for the keep-warm ping, which is an aside.
     #[test]
     fn an_aside_of_an_auto_chat_asks_nothing() {
         let mut s = asking(AskMode::Auto);
         s.resume = Some("sess-1".into());
-        let a = s.aside().unwrap().args("q");
-        assert_eq!(mode_of(&a), "dontAsk");
-        assert!(a.iter().any(|x| x == "--permission-prompt-tool"), "{a:?}");
-        assert!(pre_tool_use(&a).is_empty(), "{:?}", pre_tool_use(&a));
-        // And the Ask chat's aside is as it was.
+        let chat = s.args("turn");
+        for side in [s.aside().unwrap(), s.keep_warm_ping().unwrap()] {
+            assert_eq!(side.ask.as_ref().unwrap().mode, AskMode::AutoFork);
+            let a = side.args("q");
+            assert_eq!(mode_of(&a), "auto");
+            assert_eq!(
+                tool_text_class(&mode_of(&a)),
+                tool_text_class(&mode_of(&chat))
+            );
+            assert!(a.iter().any(|x| x == "--permission-prompt-tool"), "{a:?}");
+            let entries = pre_tool_use(&a);
+            assert!(
+                !entries.iter().any(|(_, c)| c.contains("--permission-hook")),
+                "{entries:?}"
+            );
+            assert!(entries.iter().any(|(m, _)| m == ask::PLAN_TOOLS_MATCHER));
+        }
+        // And the Ask chat's aside is as it was — in the chat's class.
         let mut s = asking(AskMode::Ask);
         s.resume = Some("sess-1".into());
         let a = s.aside().unwrap().args("q");
         assert_eq!(mode_of(&a), "dontAsk");
+        assert_eq!(
+            tool_text_class(&mode_of(&a)),
+            tool_text_class(&mode_of(&s.args("turn")))
+        );
         assert!(pre_tool_use(&a).is_empty());
     }
 
