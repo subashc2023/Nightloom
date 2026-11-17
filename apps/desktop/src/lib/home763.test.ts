@@ -146,7 +146,8 @@ describe("Done since you looked (H2)", () => {
 import { paletteKeys, HOME_MODEL, HOME_EFFORT } from "./home";
 import { applyHomeEffort, homeChoice, loadChoices, saveChoices, type ChatChoices } from "./chatChoice";
 import { defaultDraft } from "./catalog";
-import { readFileSync } from "node:fs";
+import paletteSrc from "./Palette.svelte?raw";
+import connectionSrc from "./state/connection.svelte.ts?raw";
 
 describe("763 finish — the palette keeps his number keys", () => {
   const a = { id: "a", source: null };
@@ -166,7 +167,7 @@ describe("763 finish — the palette keeps his number keys", () => {
     expect(keys.get("h")).toBe("");
   });
   it("the palette reads its numbers from paletteKeys, Home still listed first", () => {
-    const src = readFileSync(new URL("./Palette.svelte", import.meta.url), "utf8");
+    const src = paletteSrc;
     expect(src).toContain("paletteKeys(app.projects)");
     expect(src).toContain("homeFirst(app.projects).map((p) =>");
     expect(src).not.toContain("key: i < 9 ? String(i + 1) : \"\",\n      group: \"Projects");
@@ -205,7 +206,7 @@ describe("763 finish — Home's chat defaults to Opus 5.5 at low effort", () => 
     expect(d.agentEffort).toBe("");
   });
   it("restoreChatChoice and the connect use them", () => {
-    const src = readFileSync(new URL("./state/connection.svelte.ts", import.meta.url), "utf8");
+    const src = connectionSrc;
     expect(src).toContain("homeChoice(wanted ?? choiceOf(app.draft))");
     expect(src).toContain("applyHomeEffort(chatChoice.choices, app.draft, inHome)");
     expect(src).toContain("if (!(inHome && chat === null)) noteConnected");
