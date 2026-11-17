@@ -200,6 +200,8 @@ const OWN_EFFECTS: &[(&str, Effect)] = &[
     ("search_chats", Effect::ReadOnly),
     ("read_chat", Effect::ReadOnly),
     ("remember", Effect::Session),
+    // Feedback to the agent (item 805): one new item in his backlog.
+    (crate::feedback::TOOL_NAME, Effect::Session),
     ("fetch_page", Effect::Mutating),
     ("context_status", Effect::ReadOnly),
     ("memory_where", Effect::ReadOnly),
@@ -257,6 +259,12 @@ fn instructions_for(tools: &[Box<dyn Tool>]) -> String {
     };
     if remembers {
         out.push_str(REMEMBER_INSTRUCTION);
+    }
+    if tools
+        .iter()
+        .any(|t| t.def().name == crate::feedback::TOOL_NAME)
+    {
+        out.push_str(crate::feedback::INSTRUCTION);
     }
     if sends {
         out.push_str(SEND_FILE_INSTRUCTION);
@@ -364,7 +372,10 @@ pub fn tools_in_chat(
         Box::new(ReadChat::new(chats)),
     ];
     if remember {
-        tools.push(Box::new(Remember::new(config.to_path_buf(), source)));
+        tools.push(Box::new(Remember::new(
+            config.to_path_buf(),
+            source.clone(),
+        )));
     }
     // A chat that writes nothing keeps its pages out of the config dir
     // (nightshift backlog 186): a scratch folder removed when this server
@@ -387,6 +398,17 @@ pub fn tools_in_chat(
     // read only when a call needs one — a server that read the keychain at
     // start would do it on every turn. Nothing here can write to Notion.
     tools.extend(crate::notion::tools(crate::notion::Notion::from_store()));
+    // Feedback to the agent (item 805): a chat that writes, only — it
+    // files into his backlog, which an incognito or ephemeral chat
+    // promised not to touch. Last, so the tools above keep their places.
+    if remember {
+        tools.push(Box::new(crate::feedback::SendFeedbackTool::new(
+            config.to_path_buf(),
+            project_id.map(str::to_string),
+            source,
+            current.map(str::to_string),
+        )));
+    }
     Ok(tools)
 }
 
@@ -2016,7 +2038,8 @@ mod tests {
                 "memory_where",
                 "notion_search",
                 "notion_read_page",
-                "notion_list_children"
+                "notion_list_children",
+                "send_feedback"
             ]
         );
         // The MCP spelling, not the trait's: a host reads `inputSchema`.
@@ -2434,7 +2457,8 @@ mod tests {
                 "memory_where",
                 "notion_search",
                 "notion_read_page",
-                "notion_list_children"
+                "notion_list_children",
+                "send_feedback"
             ]
         );
         assert_eq!(

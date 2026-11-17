@@ -984,6 +984,8 @@ export async function init(): Promise<void> {
   startCliClock();
   // Claude Code's memory and its sessions outside Nightloom (item 751).
   startMemoryClock();
+  // Feedback saved while a shift was live goes in now (item 805).
+  void import("./feedback.svelte").then((f) => f.flushFeedback());
   // The Refresh-now banner's click (nightshift backlog 116): Rust has
   // already brought the window forward; this opens Settings on Usage.
   await listen("usage-banner-clicked", () => {

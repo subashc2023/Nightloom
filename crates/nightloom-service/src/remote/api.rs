@@ -95,6 +95,8 @@ pub mod feature {
     /// itself, only while the host has jobs ([`super::super::Host::jobs`]);
     /// not in [`ALL`].
     pub const JOBS: &str = "jobs";
+    /// `POST /api/feedback` (item 805): the phone's feedback sheet.
+    pub const FEEDBACK: &str = "feedback";
     /// Every name, for a host that serves the lot and for tests.
     pub const ALL: &[&str] = &[
         ACT,
@@ -123,6 +125,7 @@ pub mod feature {
         RESUME_LIMIT,
         RULES,
         LATER,
+        FEEDBACK,
     ];
 }
 

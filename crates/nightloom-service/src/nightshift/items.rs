@@ -143,6 +143,21 @@ pub fn new_item_with_body(
     kind: &str,
     body: &str,
 ) -> Result<String, String> {
+    new_item_from(root, title, kind, body, "manual", &[])
+}
+
+/// [`new_item_with_body`] with the `source` field named and extra front
+/// matter lines after it (item 805: `source: feedback`, `feedback_at`,
+/// `feedback_from`, which `backlogctl.py index` reads for the "New feedback
+/// from him" list). An extra value is written quoted.
+pub fn new_item_from(
+    root: &Path,
+    title: &str,
+    kind: &str,
+    body: &str,
+    source: &str,
+    extra: &[(&str, &str)],
+) -> Result<String, String> {
     launch::ensure_not_live(root)?;
     let title = title.trim();
     if title.is_empty() {
@@ -184,8 +199,15 @@ pub fn new_item_with_body(
     let today = chrono_date();
     let quoted = title.replace('"', "\\\"");
     let body = body.trim_end();
+    let extra: String = extra
+        .iter()
+        .map(|(k, v)| {
+            let v = v.replace('\n', " ").replace('"', "\\\"");
+            format!("{k}: \"{v}\"\n")
+        })
+        .collect();
     let text = format!(
-        "---\nid: \"{id}\"\ntitle: \"{quoted}\"\nkind: {kind}\nstatus: todo\ncreated: {today}\nsource: manual\nmax_passes: 3\n---\n\n{body}\n\n\n## Progress\n"
+        "---\nid: \"{id}\"\ntitle: \"{quoted}\"\nkind: {kind}\nstatus: todo\ncreated: {today}\nsource: {source}\n{extra}max_passes: 3\n---\n\n{body}\n\n\n## Progress\n"
     );
     super::write_atomic(&path, &text)?;
     let mut order = load_order(root);

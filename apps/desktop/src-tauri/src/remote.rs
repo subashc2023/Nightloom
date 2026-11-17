@@ -1060,7 +1060,7 @@ const RAIL_WAIT: Duration = Duration::from_secs(30);
 /// What this host serves of §4 (item 246 design), for `/api/state`'s
 /// `features`: the phone greys out what a host lacks. (`nightshift` the
 /// listener adds itself, while a project has it.)
-pub const FEATURES: [&str; 25] = [
+pub const FEATURES: [&str; 26] = [
     "act",
     "context",
     "layers",
@@ -1092,6 +1092,8 @@ pub const FEATURES: [&str; 25] = [
     "later",
     // Wave O: `GET /api/cache-rates`, the cache chip's price.
     "cache_rates",
+    // Item 805: `POST /api/feedback`, the phone's feedback sheet.
+    "feedback",
 ];
 
 /// The phone's note deletes go here, never gone (the never-lose-work

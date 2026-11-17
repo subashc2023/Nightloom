@@ -2535,6 +2535,14 @@ impl Host for ServeHost {
             feature::CACHE_RATES,
         ]
         .into_iter()
+        // Item 805: feedback only where it can be filed — this server's
+        // own Nightshift checkout; without one the phone says "on the Mac".
+        .chain(
+            self.cfg
+                .nightshift_root
+                .is_some()
+                .then_some(feature::FEEDBACK),
+        )
         .map(String::from)
         .collect()
     }

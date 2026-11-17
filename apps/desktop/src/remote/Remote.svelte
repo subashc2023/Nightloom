@@ -117,6 +117,7 @@
   import SpeechTest from "./voice/SpeechTest.svelte";
   import NotesSheet from "./NotesSheet.svelte";
   import NightshiftSheet from "./NightshiftSheet.svelte";
+  import FeedbackSheet from "./FeedbackSheet.svelte";
   import AsideSheet from "./AsideSheet.svelte";
   import CouncilSheet from "./CouncilSheet.svelte";
   import ChangesSheet from "./ChangesSheet.svelte";
@@ -327,6 +328,7 @@
     | "speech"
     | "changes"
     | "rules"
+    | "feedback"
   >(null);
   /** Item 743: the rule form he left open in the rules sheet, by chat
    *  (`""` with no chat open) — kept while the page lives, so a dismissed
@@ -1305,6 +1307,9 @@
         break;
       case "nightshift":
         openNightshift();
+        break;
+      case "feedback":
+        openFeedback();
         break;
       case "newproject":
         openNewProject();
@@ -2336,6 +2341,13 @@
       );
     sheetTall = false;
     sheet = "notes";
+  }
+
+  // ---- item 805: his feedback to the agent ----
+  function openFeedback() {
+    drawer = false;
+    sheetTall = false;
+    sheet = "feedback";
   }
 
   // ---- wave 3 B1: the Nightshift sheet, the Mac's dream and capture passes ----
@@ -3581,6 +3593,8 @@
           {#if hasFeature(remote, "nightshift")}
             <button class="new-row quiet" onclick={openNightshift}>{@render icon("moon")} Nightshift</button>
           {/if}
+          <!-- Item 805: always offered; the sheet says where it cannot be filed. -->
+          <button class="new-row quiet" onclick={openFeedback}>{@render icon("note")} Send feedback</button>
           {#if hasFeature(remote, "dream")}
             <button class="new-row quiet" onclick={() => startPass("dream")}>{@render icon("pulse")} Dream</button>
           {/if}
@@ -3801,6 +3815,8 @@
           <PushRow hosts={pushHosts} />
         {:else if sheet === "notes" && client}
           <NotesSheet {client} where={hostName(active ?? "mac")} host={remote.host} available={hasFeature(remote, "notes")} start={notesStart} onnote={note} ontall={(t) => (sheetTall = t)} project={notesPid} projectLabel={notesPid === null ? null : notesPid === NO_PROJECT ? "No project" : (projects.find((x) => x.id === notesPid)?.name ?? null)} resume={notesResume} onview={(v) => (notesPlace = v)} />
+        {:else if sheet === "feedback" && client}
+          <FeedbackSheet {client} available={hasFeature(remote, "feedback")} host={remote.host} chat={chatId} chatTitle={chatId ? title : null} project={projects.find((x) => x.id === chatProject)?.name ?? null} onnote={note} />
         {:else if sheet === "nightshift" && client}
           <NightshiftSheet {client} host={remote.host} available={hasFeature(remote, "nightshift")} onnote={note} ontall={(t) => (sheetTall = t)} />
         {:else if sheet === "aside" && chatId}

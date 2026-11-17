@@ -61,6 +61,8 @@ mod draft_count;
 /// An AppKit exception in event dispatch is logged, not fatal (item 486).
 #[cfg(target_os = "macos")]
 mod event_guard;
+/// The feedback box (nightshift item 805).
+mod feedback;
 /// A file card's Open as a tab: which paths may be read, and reading them
 /// (nightshift backlog 161).
 mod filetab;
@@ -1066,6 +1068,9 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     let settings = MenuItemBuilder::with_id("settings", "Settings…")
         .accelerator("CmdOrCtrl+,")
         .build(app)?;
+    // Item 805: his own feedback box, from any screen (no key: ⌘⇧F is
+    // Fable's).
+    let feedback = MenuItemBuilder::with_id("feedback", "Send Feedback…").build(app)?;
     // The two kinds of chat (nightshift backlog 102, 2026-09-16, his
     // review of boards 8a/8b): ⌘N is a Claude Code chat — the folder, every
     // tool — and ⌥⌘N a Chat, reads only and no folder. ⌥⌘N was free:
@@ -1174,6 +1179,7 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
         .about(Some(about))
         .separator()
         .item(&settings)
+        .item(&feedback)
         .separator()
         .services()
         .separator()
@@ -1800,6 +1806,9 @@ fn main() {
             terminal::terminal_resize,
             terminal::terminal_close,
             terminal::terminal_ack,
+            feedback::feedback_send,
+            feedback::feedback_targets,
+            feedback::feedback_flush,
             nightshift::nightshift_projects,
             nightshift::nightshift_project,
             nightshift::nightshift_enable,
