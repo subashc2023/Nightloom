@@ -1119,8 +1119,13 @@ impl AgentSpec {
                 }
             }
             None => {
-                spec.permission_mode =
-                    Some(Self::side_permission_mode(self.permission_mode.as_deref()).into());
+                spec.permission_mode = Some(
+                    Self::side_permission_mode(
+                        self.permission_mode.as_deref(),
+                        self.model.as_deref(),
+                    )
+                    .into(),
+                );
             }
         }
         // No brief either: the aside is one question on the warm cache,
@@ -1148,6 +1153,18 @@ impl AgentSpec {
         if let Some(m) = model {
             let m = m.trim();
             spec.model = (!m.is_empty()).then(|| m.to_string());
+            // The mode follows the model he picked (item 802): Haiku under
+            // `plan` runs Sonnet, so a no-hook chat's Haiku aside keeps
+            // `dontAsk`.
+            if self.ask.is_none() {
+                spec.permission_mode = Some(
+                    Self::side_permission_mode(
+                        self.permission_mode.as_deref(),
+                        spec.model.as_deref(),
+                    )
+                    .into(),
+                );
+            }
         }
         if let Some(e) = effort {
             let e = e.trim();
@@ -1189,9 +1206,22 @@ impl AgentSpec {
     /// edits nothing; every other chat — the CLI's default included, and
     /// any mode not measured — keeps `dontAsk`, which refuses anything
     /// that would prompt.
-    pub fn side_permission_mode(chat: Option<&str>) -> &'static str {
+    ///
+    /// **Haiku** (item 802, wave O's finding, 2026-11-17): `--model haiku`
+    /// runs `claude-haiku-5-5` under `default`, `dontAsk`, `auto` and
+    /// `bypassPermissions` — one tool text, one system prompt — but
+    /// **Sonnet 5.5 under `plan`** (the request's model, CLI 2.1.326,
+    /// measured). So a Haiku chat in `auto` or `bypassPermissions` keeps
+    /// its aside in `dontAsk`, which runs Haiku and reads the chat's
+    /// cache; `plan` would run another model and read none of it. A Haiku
+    /// chat that itself runs `plan` runs Sonnet already, so its aside
+    /// stays in `plan`. The model is matched by name (`haiku` in the alias
+    /// or the full id), since the swap is the CLI's per model family.
+    pub fn side_permission_mode(chat: Option<&str>, model: Option<&str>) -> &'static str {
+        let haiku = model.is_some_and(|m| m.to_ascii_lowercase().contains("haiku"));
         match chat {
-            Some("auto" | "bypassPermissions" | "plan") => "plan",
+            Some("plan") => "plan",
+            Some("auto" | "bypassPermissions") if !haiku => "plan",
             _ => "dontAsk",
         }
     }
@@ -5559,6 +5589,100 @@ mod tests {
         let side = s.aside().unwrap();
         assert_eq!(side.ask.as_ref().unwrap().mode, AskMode::PlanAside);
         assert!(!ClaudeCodeAgent::new(side).planning());
+    }
+
+    /// The model the CLI runs for `--model <m>` in a mode (CLI 2.1.326,
+    /// measured 2026-11-17, wave O): Haiku runs as Sonnet 5.5 under `plan`
+    /// and as itself in every other mode.
+    fn runs_as(model: Option<&str>, mode: &str) -> String {
+        match model {
+            Some(m) if m.to_ascii_lowercase().contains("haiku") && mode == "plan" => {
+                "sonnet".into()
+            }
+            Some(m) => m.into(),
+            None => "default".into(),
+        }
+    }
+
+    /// A Haiku chat's aside runs the chat's model (item 802): `--model
+    /// haiku` under `plan` runs Sonnet 5.5, so an approval-off or no-hook
+    /// Auto Haiku chat's aside keeps `dontAsk` (Haiku) rather than taking
+    /// `plan` (Sonnet, none of the chat's cache); a Haiku chat that runs
+    /// `plan` itself keeps a `plan` aside. Other models are unchanged.
+    #[test]
+    fn a_haiku_chats_aside_runs_haiku() {
+        for model in ["haiku", "claude-haiku-5-5", "Haiku"] {
+            for (mode, want) in [
+                (None, "dontAsk"),
+                (Some("default"), "dontAsk"),
+                (Some("dontAsk"), "dontAsk"),
+                (Some("auto"), "dontAsk"),
+                (Some("bypassPermissions"), "dontAsk"),
+                (Some("plan"), "plan"),
+            ] {
+                let mut s = spec();
+                s.model = Some(model.into());
+                s.permission_mode = mode.map(Into::into);
+                s.resume = Some("sess-1".into());
+                let chat = s.args("turn");
+                let a = s.aside().unwrap().args("q");
+                assert_eq!(mode_of(&a), want, "{model} {mode:?}");
+                assert_eq!(
+                    runs_as(Some(model), &mode_of(&a)),
+                    runs_as(Some(model), &mode_or_default(&chat)),
+                    "{model} {mode:?}"
+                );
+            }
+            // Ask-hook chats: each side process runs the chat's model.
+            for mode in [
+                AskMode::Ask,
+                AskMode::Plan,
+                AskMode::Auto,
+                AskMode::ExitingToAuto,
+            ] {
+                let mut s = asking(mode);
+                s.model = Some(model.into());
+                s.resume = Some("sess-1".into());
+                let chat = s.args("turn");
+                let a = s.aside().unwrap().args("q");
+                assert_eq!(
+                    runs_as(Some(model), &mode_of(&a)),
+                    runs_as(Some(model), &mode_or_default(&chat)),
+                    "{model} {mode:?}"
+                );
+            }
+        }
+        // An aside he points at Haiku from an approval-off Opus chat runs
+        // Haiku too, and one pointed at Opus from a Haiku chat takes `plan`.
+        let mut s = spec();
+        s.model = Some("opus".into());
+        s.permission_mode = Some("bypassPermissions".into());
+        s.resume = Some("sess-1".into());
+        assert_eq!(
+            mode_of(&s.aside_with(Some("haiku"), None).unwrap().args("q")),
+            "dontAsk"
+        );
+        assert_eq!(
+            mode_of(&s.aside_with(None, None).unwrap().args("q")),
+            "plan"
+        );
+        s.model = Some("haiku".into());
+        assert_eq!(
+            mode_of(&s.aside_with(Some("opus"), None).unwrap().args("q")),
+            "plan"
+        );
+        // Not Haiku: as 2037 set it.
+        for model in [None, Some("opus"), Some("claude-fable-5-2")] {
+            assert_eq!(AgentSpec::side_permission_mode(Some("auto"), model), "plan");
+            assert_eq!(
+                AgentSpec::side_permission_mode(Some("bypassPermissions"), model),
+                "plan"
+            );
+            assert_eq!(
+                AgentSpec::side_permission_mode(Some("default"), model),
+                "dontAsk"
+            );
+        }
     }
 
     /// A checkpoint fork of an Auto chat stays on `auto` (as before 294),
