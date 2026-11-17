@@ -407,6 +407,8 @@ impl Drop for TurnGuard {
 /// turn brings is its start; every one closes the turns that ended before
 /// it was taken.
 pub fn reading(key: Option<&Path>, r: Reading) {
+    // Item 769: every reading is the pace's history too.
+    crate::pace::record(&r);
     let fit_path = crate::project::config_dir().map(|d| d.join(FIT_FILE));
     tracker().reading(key, r, fit_path);
 }

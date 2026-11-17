@@ -45,6 +45,7 @@ pub mod note_edit;
 pub mod notion;
 pub mod observe;
 pub mod outside;
+pub mod pace;
 pub mod pass_lock;
 pub mod plan_usage;
 pub mod preview;
