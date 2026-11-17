@@ -374,6 +374,7 @@ mod tests {
             label: Some(format!("Chat {chat}")),
             project: Some("p1".into()),
             at_the_mac,
+            detail: None,
         };
         use crate::push::What;
         push.notify(note("c1", What::Question, false)).await;
@@ -424,6 +425,7 @@ mod tests {
             label: None,
             project: None,
             at_the_mac: false,
+            detail: None,
         };
         push.notify(note("c1")).await;
         push.notify(note("c2")).await;

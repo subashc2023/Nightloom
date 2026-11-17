@@ -125,6 +125,7 @@
   import { chatSheetSub, fitVisual } from "./sheetLayout";
   import Hosts from "./Hosts.svelte";
   import { PLAYWRIGHT_BUTTONS, PLAYWRIGHT_DECLINED, playwrightAction } from "../lib/playwright";
+  import { stuckView } from "../lib/stuck";
   // Item 300 (wave 8B F1): the drawer follows the finger; Recents and Projects.
   import { dragAxis, drawerX, fingerSpeed, settleOpen } from "./client";
   import { UNFILED, lastActive as chatWhen, projectSummaries, recentRows } from "./recents";
@@ -3218,6 +3219,23 @@
               <button class="btn accent" onclick={() => answer(req, "allow", req.input, planThen[req.id] ?? "ask")}>Approve</button>
               <button class="btn" onclick={() => answer(req, "deny", undefined, undefined, KEEP_PLANNING)}>Keep planning</button>
             </div>
+          {:else if kind === "stuck"}
+            <!-- 784: a run nobody watched repeated itself and was paused; the Mac's card. -->
+            {@const sv = stuckView(req.input, req.reason)}
+            <div class="card-head">{sv.sentence}</div>
+            <p class="card-note">
+              {#if sv.job}The job <b>{sv.job}</b> ran with nobody watching, so it stopped here. Nothing is being spent.{:else}This chat ran with nobody
+                watching, so it stopped here. Nothing is being spent.{/if}
+            </p>
+            <div class="args">
+              {#if sv.ran}<div class="arg"><span class="key">it ran</span><pre>{sv.ran}</pre></div>{/if}
+              {#if sv.result}<div class="arg"><span class="key">{sv.error ? "and got this error" : "and got this"} each time</span><pre>{sv.result}</pre></div>{/if}
+            </div>
+            <div class="actions">
+              <button class="btn accent" data-act="continue" onclick={() => answer(req, "allow")}>Continue</button>
+              <button class="btn danger" data-act="stop" onclick={() => answer(req, "deny", undefined, undefined, "stopped: it looked stuck")}>Stop</button>
+            </div>
+            <p class="card-note">{sv.then} Stop: the run ends; what it did stays in the chat.</p>
           {:else if kind === "playwright"}
             <!-- 367: Playwright, Claude's own browser — the desktop's card. -->
             {@const act = playwrightAction(req.name, req.input)}

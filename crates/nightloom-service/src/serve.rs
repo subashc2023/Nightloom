@@ -451,6 +451,17 @@ impl ServeHost {
     /// the name is read from the chat list and the sends go out in a task.
     /// The away server cannot know he is at the Mac, so it always sends.
     fn push_note(&self, what: crate::push::What, chat: &str, project: Option<&str>) {
+        self.push_note_with(what, chat, project, None);
+    }
+
+    /// [`Self::push_note`] with a stuck run's line (item 784).
+    fn push_note_with(
+        &self,
+        what: crate::push::What,
+        chat: &str,
+        project: Option<&str>,
+        detail: Option<String>,
+    ) {
         // (Item 741: `notify` is reached with no phone subscribed too — it
         // keeps the home screen's feed row and then sends nothing.)
         let Some(me) = self.me.upgrade() else {
@@ -470,6 +481,7 @@ impl ServeHost {
                     label,
                     project,
                     at_the_mac: false,
+                    detail,
                 })
                 .await;
         });
@@ -1666,13 +1678,27 @@ impl TurnEnv for ServeEnv<'_> {
             self.host.emit("tool-approval", v.to_string());
             // 739: a card waits on him.
             if let Some(chat) = prompt.chat {
-                self.host.push_note(
+                self.host.push_note_with(
                     crate::push::What::for_prompt(prompt.name),
                     chat,
                     self.project.as_deref(),
+                    // Item 784: a stuck run's push says what it ran.
+                    (prompt.name == crate::runaway::STUCK_TOOL)
+                        .then(|| prompt.reason.clone())
+                        .flatten(),
                 );
             }
         }
+    }
+
+    /// Item 784: nobody watches the away server's turn when no phone is
+    /// connected to its event stream.
+    fn unattended(&self, _chat: &str) -> bool {
+        self.host.tx.receiver_count() == 0
+    }
+
+    fn job_of(&self, chat: &str) -> Option<crate::runaway::JobUsual> {
+        self.host.jobs.usual_for_chat(chat)
     }
 
     async fn grant_to_project(&self, dir: &Path) -> ProjectGrant {

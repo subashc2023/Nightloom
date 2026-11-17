@@ -1919,6 +1919,9 @@ pub fn push_note(
     chat: Option<String>,
     label: Option<String>,
     project: Option<String>,
+    // Item 784: a stuck run's line ("Looks stuck: ran `…` 3 times, same
+    // result"); the push carries it for that kind alone.
+    detail: Option<String>,
 ) {
     let Some(push) = remote.host.push.clone() else {
         return;
@@ -1931,9 +1934,26 @@ pub fn push_note(
             label,
             project,
             at_the_mac,
+            detail,
         })
         .await;
     });
+}
+
+/// Item 784: the job `chat` runs for, from the jobs store — its name and
+/// its recent runs' tool calls, for the runaway guard.
+pub fn job_usual(app: &AppHandle, chat: &str) -> Option<nightloom_service::runaway::JobUsual> {
+    app.try_state::<Remote>()?
+        .host
+        .jobs
+        .as_ref()?
+        .usual_for_chat(chat)
+}
+
+/// Item 784: he has left the Mac — no key, mouse or trackpad for
+/// [`AT_THE_MAC`] — so nobody watches a running chat here.
+pub fn away_from_mac() -> bool {
+    crate::wake::idle_seconds().is_some_and(|s| s >= AT_THE_MAC.as_secs_f64())
 }
 
 /// The Mac's push state, for the away pass to hand its key to the away

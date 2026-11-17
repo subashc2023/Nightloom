@@ -310,6 +310,8 @@ pub enum Outcome {
     Failed,
     /// Still listed as running after [`RUN_MAX_SECS`]; no longer watched.
     Unfinished,
+    /// The runaway guard paused it and he chose Stop (item 784).
+    Stopped,
 }
 
 /// A job's last run, for the list.
@@ -328,6 +330,9 @@ pub struct LastRun {
     /// The weekly figure after the run, percent.
     #[serde(default)]
     pub week_after: Option<u8>,
+    /// Tool calls the run made, read from its chat's log (item 784).
+    #[serde(default)]
+    pub calls: Option<u32>,
 }
 
 /// What a job has cost of the weekly window since it last reset.
@@ -395,6 +400,10 @@ pub struct Job {
     pub note: Option<String>,
     #[serde(default)]
     pub runs: u32,
+    /// Tool calls of its recent finished runs, oldest first (item 784):
+    /// the runaway guard's measure of a run far above its usual.
+    #[serde(default)]
+    pub recent_calls: Vec<u32>,
 }
 
 /// A job as `/api/jobs` lists it: the job, its schedule in words, and
@@ -543,6 +552,13 @@ pub fn reply_in(events: &[serde_json::Value], text: &str) -> Option<String> {
         })
 }
 
+/// The guard's Stop line in a run's reply (item 784): from its prefix on.
+fn stopped_reply(reply: &str) -> Option<&str> {
+    reply
+        .find(crate::runaway::STOPPED_PREFIX)
+        .map(|at| &reply[at..])
+}
+
 fn cut(text: &str) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut out: String = flat.chars().take(SUMMARY_MAX).collect();
@@ -676,6 +692,7 @@ impl Jobs {
             week: WeekCost::default(),
             note: None,
             runs: 0,
+            recent_calls: Vec::new(),
         };
         jobs.push(job.clone());
         self.save(&jobs)?;
@@ -742,6 +759,18 @@ impl Jobs {
     }
 
     /// One run at the next tick, whatever its schedule says.
+    /// The job whose chat is `chat` (item 784): its name and its recent
+    /// runs' tool calls, for the runaway guard.
+    pub fn usual_for_chat(&self, chat: &str) -> Option<crate::runaway::JobUsual> {
+        self.lock()
+            .iter()
+            .find(|j| j.chat.as_deref() == Some(chat))
+            .map(|j| crate::runaway::JobUsual {
+                title: j.title.clone(),
+                recent_calls: j.recent_calls.clone(),
+            })
+    }
+
     pub fn run_now(&self, id: &str) -> Result<JobView, String> {
         let job = self.change(id, |job| {
             if job.running.is_none() {
@@ -865,6 +894,7 @@ impl Jobs {
         if listed && age < RUN_MAX_SECS {
             return;
         }
+        let mut calls = None;
         let (outcome, summary) = if listed {
             (
                 Outcome::Unfinished,
@@ -877,7 +907,13 @@ impl Jobs {
                         .iter()
                         .filter_map(|e| serde_json::to_value(e).ok())
                         .collect();
+                    calls = crate::runaway::calls_in(&events, &job.text);
                     match reply_in(&events, &job.text) {
+                        // Item 784: he chose Stop on the guard's card.
+                        Some(reply) if stopped_reply(&reply).is_some() => (
+                            Outcome::Stopped,
+                            cut(stopped_reply(&reply).unwrap_or_default()),
+                        ),
                         Some(reply) => (Outcome::Done, cut(&reply)),
                         None => (
                             Outcome::Failed,
@@ -909,7 +945,18 @@ impl Jobs {
                 summary,
                 week_points: points,
                 week_after: after.as_ref().and_then(|a| a.seven_day),
+                calls,
             });
+            // A finished run is the measure of the next one's ceiling; a
+            // stopped one is not (it was the runaway).
+            if let (Some(n), Outcome::Done) = (calls, outcome) {
+                j.recent_calls.push(n);
+                let over = j
+                    .recent_calls
+                    .len()
+                    .saturating_sub(crate::runaway::USUAL_KEEP);
+                j.recent_calls.drain(..over);
+            }
         });
     }
 }

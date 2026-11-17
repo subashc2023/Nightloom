@@ -60,6 +60,8 @@ const SAME_END: Duration = Duration::from_secs(10);
 const DEFAULT_SUBJECT: &str = "mailto:push@nightloom.invalid";
 /// The longest chat name a push carries.
 const NAME_MAX: usize = 80;
+/// The most of a stuck run's line a push carries (item 784).
+const DETAIL_MAX: usize = 120;
 
 /// What [`Push::subscribe`] answers when the page subscribed with another
 /// host's key (the phone page shows it; it clears after the Mac's next sync).
@@ -79,6 +81,8 @@ pub enum What {
     Approval,
     /// A question (or a plan) waits for his answer.
     Question,
+    /// The runaway guard paused a run: Continue or Stop (item 784).
+    Stuck,
 }
 
 impl What {
@@ -90,6 +94,7 @@ impl What {
             What::Limit => "Paused by the usage limit",
             What::Approval => "Waiting for your approval",
             What::Question => "Has a question for you",
+            What::Stuck => "Looks stuck — Continue or Stop?",
         }
     }
 
@@ -98,6 +103,7 @@ impl What {
     pub fn for_prompt(tool: &str) -> Self {
         match tool {
             "AskUserQuestion" | "ExitPlanMode" => What::Question,
+            crate::runaway::STUCK_TOOL => What::Stuck,
             _ => What::Approval,
         }
     }
@@ -119,6 +125,11 @@ pub struct Note {
     /// He is at the Mac: nothing is sent, and the chat stops waiting.
     #[serde(default)]
     pub at_the_mac: bool,
+    /// The second line in place of [`What::words`], for a stuck run only
+    /// (item 784): "Looks stuck: ran `cargo test` 3 times, same result".
+    /// Every other kind says only its state, never the reply.
+    #[serde(default)]
+    pub detail: Option<String>,
 }
 
 /// What became of one [`Push::notify`].
@@ -574,9 +585,13 @@ impl Push {
         } else {
             name.to_string()
         };
+        let body = match (note.what, note.detail.as_deref().map(str::trim)) {
+            (What::Stuck, Some(d)) if !d.is_empty() => d.chars().take(DETAIL_MAX).collect(),
+            _ => note.what.words().to_string(),
+        };
         serde_json::json!({
             "title": title,
-            "body": note.what.words(),
+            "body": body,
             "tag": note.chat.as_deref().unwrap_or("nightloom"),
             "chat": note.chat,
             "project": note.project,

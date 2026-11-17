@@ -208,6 +208,39 @@ tell me what failed" in any chat (the form opens filled; nothing is sent).
   `apps/desktop/src-tauri/src/jobs.rs`, `remoteHandlers.ts` (`runJob`),
   `src/remote/jobs.ts`, `JobsSheet.svelte`.
 
+## The runaway guard (item 784, 2026-11-17)
+
+A run nobody is watching pauses when it looks stuck, and asks him.
+
+- **Stuck** is the same tool call (same tool, same input, exactly) returning
+  the same result (same text, same error flag) three times in a row, counted
+  per thread (the main chat and each subagent apart). Anything in between —
+  another call, a changed output — starts the count again, so a poll whose
+  output changes is never stopped. A job's run also pauses past a calls
+  ceiling: 200 on its first two runs, then three times its largest recent
+  run (at least 60); the count of each finished run is kept on the job
+  (`recent_calls`, read from its chat's log).
+- **Nobody watching**: a job's run always; on the Mac, no input for two
+  minutes (the push's "at the Mac" rule); on the away server, no phone on
+  its event stream. Asked at the moment it trips (`TurnEnv::unattended`).
+- **The pause** (`agent_turn.rs`, both hosts): the CLI is interrupted as
+  Stop interrupts it (item 074: the CLI closes the turn in its session), so
+  nothing more is spent; a card named `nightloom_stuck` goes out on the
+  approval channel — the Mac's `StuckCard.svelte`, the phone's card, and a
+  push whose body says what ran ("Looks stuck: ran `cargo test` 3 times,
+  same result"). **Continue** resumes the same CLI session with a note, and
+  the guard then needs twice the repeats (and twice the calls) before it
+  pauses again. **Stop** ends the run; everything it did stays on the log,
+  with one line saying why, and the Jobs list shows the run as "stopped,
+  looked stuck".
+- Not covered: nightshift nights (`claude -p --output-format json`, no
+  event stream; the equivalent is a `PostToolUse` hook, a patch note in
+  nightshift's `wave-m-784-report-2026-11-17.md`).
+- Code: `crates/nightloom-service/src/runaway.rs` (the guard, pure),
+  `agent_turn.rs` (the pause), `push` (`What::Stuck`, `Note::detail`),
+  `jobs` (`recent_calls`, `Outcome::Stopped`), `src/lib/stuck.ts`,
+  `StuckCard.svelte`, the phone's `cardKind`.
+
 ## Siri and the Action Button (item 744, 2026-11-16)
 
 Two routes are shaped for Apple's Shortcuts app, so a Shortcut — run by

@@ -8,10 +8,12 @@
 export interface JobLast {
   started: string;
   ended: string;
-  outcome: "done" | "failed" | "unfinished";
+  outcome: "done" | "failed" | "unfinished" | "stopped";
   summary: string;
   week_points: number | null;
   week_after: number | null;
+  /** Tool calls the run made (item 784). */
+  calls?: number | null;
 }
 
 export interface Job {
@@ -124,7 +126,9 @@ export function costText(points: number | null): string {
 export function lastText(j: Job, now = new Date()): string {
   const l = j.last;
   if (!l) return "Has not run yet";
-  const how = l.outcome === "done" ? "finished" : l.outcome === "failed" ? "failed" : "did not finish";
+  // Item 784: "stopped" is his Stop on a run that looked stuck.
+  const how =
+    l.outcome === "done" ? "finished" : l.outcome === "failed" ? "failed" : l.outcome === "stopped" ? "stopped, looked stuck" : "did not finish";
   return `Last run ${whenText(l.ended, now)} — ${how} · ${costText(l.week_points)}`;
 }
 

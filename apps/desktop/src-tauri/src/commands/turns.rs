@@ -652,6 +652,15 @@ impl TurnEnv for DesktopTurnEnv<'_> {
         Some(self.timing.clone())
     }
 
+    /// Item 784: he has left the Mac.
+    fn unattended(&self, _chat: &str) -> bool {
+        crate::remote::away_from_mac()
+    }
+
+    fn job_of(&self, chat: &str) -> Option<nightloom_service::runaway::JobUsual> {
+        crate::remote::job_usual(self.app, chat)
+    }
+
     async fn grant_to_project(&self, dir: &Path) -> ProjectGrant {
         let mut guard = self.state.workspaces.lock().await;
         let written = self

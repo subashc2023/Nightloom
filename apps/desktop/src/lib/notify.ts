@@ -22,6 +22,7 @@ import { fmtTokens } from "./tokens";
 import * as api from "./api";
 import { nameLine } from "./chatLabel";
 import { extractAsk } from "./askTag";
+import { isStuck } from "./stuck";
 
 /** A chat's turn ended (item 753): what the Needs-you view keeps of it. */
 export interface TurnEnded {
@@ -173,15 +174,17 @@ export function pushWhatForEnd(t: { error: string | null; cliError?: boolean; li
 /** What it says of a waiting call: a question form and a plan are answers
  *  he writes; the rest an Allow or a Deny. */
 export function pushWhatForCall(req: Pick<ApprovalRequest, "name">): api.PushWhat {
+  // Item 784: the runaway guard paused a run.
+  if (isStuck(req.name)) return "stuck";
   return req.name === "AskUserQuestion" || req.name === "ExitPlanMode" ? "question" : "approval";
 }
 
 /** Hand the phone's push to the backend (item 739). Apart from the banner's
  *  two rules — the window's focus and the Settings switches are about the
  *  Mac's own banner; whether he is at the Mac is the backend's to judge. */
-function pushToPhone(what: api.PushWhat, chat: string | null, label: string, project: string | null): void {
+function pushToPhone(what: api.PushWhat, chat: string | null, label: string, project: string | null, detail: string | null = null): void {
   try {
-    void api.pushNote(what, chat, label, project).catch(() => {});
+    void api.pushNote(what, chat, label, project, detail).catch(() => {});
   } catch {
     // Outside the app (a test, a harness): nothing to tell.
   }
@@ -190,7 +193,9 @@ function pushToPhone(what: api.PushWhat, chat: string | null, label: string, pro
 /** `<chat> — Run Bash?`; a question and a plan by what they are. */
 export function needsYouTitle(chat: string, req: Pick<ApprovalRequest, "name">): string {
   const what =
-    req.name === "AskUserQuestion"
+    isStuck(req.name)
+      ? "Looks stuck — Continue or Stop?"
+      : req.name === "AskUserQuestion"
       ? "Claude asks a question"
       : req.name === "ExitPlanMode"
         ? "Approve the plan?"
@@ -200,6 +205,11 @@ export function needsYouTitle(chat: string, req: Pick<ApprovalRequest, "name">):
 
 /** `<the argument> · waits until you answer`. */
 export function needsYouBody(req: Pick<ApprovalRequest, "name" | "input">): string {
+  // Item 784: what it ran, and that it waits.
+  if (isStuck(req.name)) {
+    const r = (req as Pick<ApprovalRequest, "reason">).reason;
+    return r ? `${r} · waits for Continue or Stop` : "waits for Continue or Stop";
+  }
   const arg = req.name === "AskUserQuestion" || req.name === "ExitPlanMode" ? "" : toolInputSummary(req.input);
   return arg ? `${arg.slice(0, 100)} · waits until you answer` : "waits until you answer";
 }
@@ -295,7 +305,7 @@ const HELD_MAX = 32;
  *  focused window received is held for `postHeldNeedsYou`. */
 export async function notifyNeedsYou(chat: string, req: ApprovalRequest, prefs?: NotifyPrefs): Promise<void> {
   // Item 739: the phone hears of every waiting call (unless he is at the Mac).
-  pushToPhone(pushWhatForCall(req), req.chat ?? null, chat, null);
+  pushToPhone(pushWhatForCall(req), req.chat ?? null, chat, null, isStuck(req.name) ? (req.reason ?? null) : null);
   const p = prefs ?? loadNotifyPrefs();
   if (!p.needsYou) return;
   if (windowFocused()) {

@@ -1707,9 +1707,10 @@ export function notify(title: string, body: string): Promise<null> {
 /** Tell the subscribed phones what happened in a chat (item 739): the
  *  backend sends nothing while he is at the Mac, and nothing of the reply
  *  is passed — the chat's name and the state are all a push says. */
-export type PushWhat = "done" | "failed" | "limit" | "approval" | "question";
-export function pushNote(what: PushWhat, chat: string | null, label: string | null, project: string | null): Promise<null> {
-  return invoke("push_note", { what, chat, label, project });
+export type PushWhat = "done" | "failed" | "limit" | "approval" | "question" | "stuck";
+/** `detail`: a stuck run's line (item 784), the one push that says what ran. */
+export function pushNote(what: PushWhat, chat: string | null, label: string | null, project: string | null, detail: string | null = null): Promise<null> {
+  return invoke("push_note", { what, chat, label, project, detail });
 }
 
 /** The Refresh-now banner (backlog 116): its click comes back as the
