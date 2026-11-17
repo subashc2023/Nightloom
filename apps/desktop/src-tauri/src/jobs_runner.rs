@@ -110,11 +110,19 @@ fn install() -> Result<(), String> {
             .args(["bootout", &target])
             .status();
     }
-    let ok = std::process::Command::new("/bin/launchctl")
-        .args(["bootstrap", &domain, &path.to_string_lossy()])
-        .status()
-        .map_err(|e| e.to_string())?
-        .success();
+    // Straight after a bootout launchd can refuse the bootstrap for a
+    // moment (item 803): tried again, a little later each time.
+    let ok = runner::bootstrap_retrying(
+        || {
+            std::process::Command::new("/bin/launchctl")
+                .args(["bootstrap", &domain, &path.to_string_lossy()])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
+        },
+        |n| std::thread::sleep(std::time::Duration::from_millis(500 * u64::from(n))),
+    );
     if ok {
         Ok(())
     } else {

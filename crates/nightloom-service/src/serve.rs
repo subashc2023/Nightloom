@@ -2395,7 +2395,7 @@ impl Host for ServeHost {
         if self.mac_runner {
             let projects = lock(&self.registry).projects();
             if let Some(away) = crate::sync::lease::MacAway::load(&self.cfg.home, &projects) {
-                return away.claim(job, due).await;
+                return away.claim(job, due, now).await;
             }
         }
         crate::sync::lease::Claim::Granted

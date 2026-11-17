@@ -734,12 +734,13 @@ impl Host for DesktopHost {
 
     /// Item 781: a job the away server keeps a copy of runs here only once
     /// the server's lease says the Mac has it (the server may have run it
-    /// while the Mac slept); any failure to ask runs it (the Mac goes first).
+    /// while the Mac slept); a failed ask waits a short window, then runs it
+    /// (the Mac goes first; item 803).
     async fn job_claim(
         &self,
         job: &nightloom_service::jobs::Job,
         due: chrono::DateTime<chrono::Utc>,
-        _now: chrono::DateTime<chrono::Utc>,
+        now: chrono::DateTime<chrono::Utc>,
     ) -> nightloom_service::sync::lease::Claim {
         let Some(config) = nightloom_service::project::config_dir() else {
             return nightloom_service::sync::lease::Claim::Granted;
@@ -750,7 +751,7 @@ impl Host for DesktopHost {
             ws.registry.projects()
         };
         match nightloom_service::sync::lease::MacAway::load(&config, &projects) {
-            Some(away) => away.claim(job, due).await,
+            Some(away) => away.claim(job, due, now).await,
             None => nightloom_service::sync::lease::Claim::Granted,
         }
     }

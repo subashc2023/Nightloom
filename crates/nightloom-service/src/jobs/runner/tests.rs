@@ -302,6 +302,57 @@ fn the_agent_runs_the_apps_own_binary_every_minute_and_only_from_an_installed_ap
     ));
 }
 
+/// Item 803 (merge round P): a `bootstrap` launchd refuses straight after
+/// the `bootout` (its race) is tried again, and the install succeeds; one
+/// that keeps failing stops after the tries, with pauses between.
+#[test]
+fn a_bootstrap_refused_right_after_a_bootout_is_tried_again() {
+    let mut calls = 0;
+    let mut pauses = Vec::new();
+    assert!(bootstrap_retrying(
+        || {
+            calls += 1;
+            calls >= 3
+        },
+        |n| pauses.push(n),
+    ));
+    assert_eq!((calls, pauses), (3, vec![1, 2]));
+    let mut calls = 0;
+    let mut pauses = Vec::new();
+    assert!(!bootstrap_retrying(
+        || {
+            calls += 1;
+            false
+        },
+        |n| pauses.push(n),
+    ));
+    assert_eq!(calls, BOOTSTRAP_TRIES);
+    assert_eq!(pauses.len() as u32, BOOTSTRAP_TRIES - 1);
+}
+
+/// Item 803 (merge round P): an app opened from a DMG, from Downloads, or
+/// from macOS's translocated copy never points the agent at itself; his
+/// own `~/Applications` does.
+#[test]
+fn the_agent_installs_only_from_an_applications_folder_never_a_dmg_or_downloads() {
+    let mac = "Nightloom.app/Contents/MacOS/nightloom-desktop";
+    for away in [
+        format!("/Volumes/Nightloom/{mac}"),
+        format!("/Users/x/Downloads/{mac}"),
+        format!("/Users/x/Desktop/{mac}"),
+        format!("/private/var/folders/ab/xyz/T/AppTranslocation/1234/d/{mac}"),
+        format!("/Volumes/Nightloom/Applications/{mac}"),
+    ] {
+        assert!(!installs_from(Path::new(&away), false), "{away}");
+    }
+    for home in [
+        format!("/Applications/{mac}"),
+        format!("/Users/x/Applications/{mac}"),
+    ] {
+        assert!(installs_from(Path::new(&home), false), "{home}");
+    }
+}
+
 /// Item 781 (b): the away server stays up while a job is due or running
 /// and while it is used; the bare `GET /` of Fly's health check is not use.
 #[test]

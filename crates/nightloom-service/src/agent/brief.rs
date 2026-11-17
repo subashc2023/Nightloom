@@ -92,6 +92,9 @@ const BRIEF_CLOSE: &str = "</nightloom-subagent-brief>";
 pub const SPAWN_CAP: usize = 6;
 /// The per-turn spawn count, beside the brief.
 pub const SPAWNS_FILE: &str = "subagent-spawns.txt";
+/// What a subagent's `log_run` / `write_state` call is refused with (803):
+/// the chain's two files are the main chat's, like its budget.
+pub const SUBAGENT_CHAIN_DENIED: &str = "Not run: only the main chat writes the run log and the state file. Put what you found in your report and carry on with your task.";
 
 /// The refusal the model reads when the cap is reached — his wording.
 /// ~~"The limit is set beside \"Subagents run on auto\""~~ — struck
@@ -2935,6 +2938,15 @@ pub(super) fn decide_holding(
             "Not run: only the main chat sets the budget. Carry on with your task.".into(),
         );
     }
+    // A hand-off chain's run log and state file (items 789, 791; 803) are
+    // the main chat's: a helper's write would replace the state file whole
+    // or log a run that is not the chat's. Its findings go in its report.
+    if subagent
+        && (input.tool_name == crate::mcp_server::mcp_name(crate::chain::LOG_TOOL)
+            || input.tool_name == crate::mcp_server::mcp_name(crate::chain::STATE_TOOL))
+    {
+        return HookReply::deny(SUBAGENT_CHAIN_DENIED.into());
+    }
     // The usage line for this call, when due (backlog 249): read after the
     // verdict, so the ledger it quotes is the one this call just updated.
     let line = if show {
@@ -3419,6 +3431,38 @@ mod tests {
         assert!(r.reason().is_some_and(|s| s.contains("do it yourself")));
         super::reset_spawns(&dir);
         assert_eq!(super::decide_with(&dir, call, None).decision(), "allow");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Item 803 (merge round P): a helper cannot write the chain's run log
+    /// or replace its state file; the main chat still can.
+    #[test]
+    fn a_subagents_log_run_and_write_state_are_refused_and_the_main_chats_run() {
+        let dir =
+            std::env::temp_dir().join(format!("nightloom-chain-sub-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        super::write(
+            &dir,
+            "<nightloom-subagent-brief>x</nightloom-subagent-brief>",
+        )
+        .unwrap();
+        for tool in [crate::chain::LOG_TOOL, crate::chain::STATE_TOOL] {
+            let name = crate::mcp_server::mcp_name(tool);
+            let sub = format!(
+                r#"{{"tool_name":"{name}","tool_input":{{"text":"x"}},"agent_id":"a1","tool_use_id":"t1"}}"#
+            );
+            let r = super::decide_with(&dir, &sub, None);
+            assert_eq!(r.decision(), "deny", "{tool}");
+            assert_eq!(r.reason(), Some(super::SUBAGENT_CHAIN_DENIED), "{tool}");
+            let main = format!(
+                r#"{{"tool_name":"{name}","tool_input":{{"text":"x"}},"tool_use_id":"t2"}}"#
+            );
+            assert_ne!(
+                super::decide_with(&dir, &main, None).decision(),
+                "deny",
+                "{tool}"
+            );
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

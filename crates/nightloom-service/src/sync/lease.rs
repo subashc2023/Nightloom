@@ -20,8 +20,11 @@
 //! [`AWAY_GRACE_MINUTES`] past due and the Mac has been silent (no sync, no
 //! lease ask) for [`MAC_SILENT_MINUTES`] ([`away_may_claim`]); an awake
 //! Mac's runner asks within a minute of the time. When the Mac cannot reach
-//! the server it runs the job anyway — the one case two runs are possible
-//! is a Mac with no network whose job the server also ran.
+//! the server it asks again on each tick for [`MAC_ASK_MINUTES`] from the
+//! first failed ask, then runs the job anyway (item 803: a server Fly is
+//! still starting answers within that window, so its lease sees the Mac's
+//! claim) — the one case two runs are possible is a Mac with no network
+//! whose job the server also ran.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -36,6 +39,11 @@ use crate::jobs::Job;
 pub const AWAY_GRACE_MINUTES: i64 = 3;
 /// … and only when the Mac has said nothing for this long.
 pub const MAC_SILENT_MINUTES: i64 = 20;
+
+/// How long the Mac keeps asking a server that did not answer before it
+/// runs the job anyway (item 803), counted from its first failed ask of
+/// that run. A Fly machine starts in seconds; this is the margin.
+pub const MAC_ASK_MINUTES: i64 = 2;
 
 /// The holders' names in the lease.
 pub const MAC: &str = "mac";
@@ -166,6 +174,7 @@ pub fn read_mac_jobs(home: &Path) -> Option<Vec<Job>> {
 /// only here), the token file and the registry's "available away" marks.
 #[derive(Debug, Clone)]
 pub struct MacAway {
+    config: PathBuf,
     url: String,
     token: String,
     marked: std::collections::HashSet<String>,
@@ -191,6 +200,7 @@ impl MacAway {
             return None;
         }
         Some(Self {
+            config: config.to_path_buf(),
             url: file.url,
             token: super::read_away_token(config)?,
             marked: projects
@@ -221,8 +231,10 @@ impl MacAway {
     }
 
     /// May the Mac run this run? Granted for a job the server has no copy
-    /// of, and whenever the server cannot be asked (the Mac goes first).
-    pub async fn claim(&self, job: &Job, due: DateTime<Utc>) -> Claim {
+    /// of; when the server cannot be asked, [`Claim::Wait`] for
+    /// [`MAC_ASK_MINUTES`] from the first failed ask, then granted (the Mac
+    /// goes first).
+    pub async fn claim(&self, job: &Job, due: DateTime<Utc>, now: DateTime<Utc>) -> Claim {
         if !self.covers(job) {
             return Claim::Granted;
         }
@@ -238,16 +250,70 @@ impl MacAway {
             job: job.id.clone(),
             due,
         };
-        match client.lease(&req).await {
-            Ok(Claim::Taken { by, at }) => Claim::Taken { by, at },
-            Ok(_) => {
-                remember_granted(&job.id, due);
-                Claim::Granted
-            }
-            // Not remembered: the next retry asks again.
-            Err(_) => Claim::Granted,
-        }
+        let answer = client.lease(&req).await;
+        settle_ask(&self.config, &job.id, due, now, answer)
     }
+}
+
+/// The Mac's first failed ask of each run, by job (`<config>/away-lease-
+/// waits.json`, the Mac's own file): on disk, since the background runner
+/// is a new process every minute.
+const ASK_WAITS_FILE: &str = "away-lease-waits.json";
+
+/// What the Mac does with the server's answer to its lease ask (item 803).
+/// An answer clears the run's wait; a failed ask is [`Claim::Wait`] until
+/// [`MAC_ASK_MINUTES`] past the first failed ask of the run, then granted.
+/// Not remembered as granted: a later ask still asks the server.
+pub fn settle_ask(
+    config: &Path,
+    job: &str,
+    due: DateTime<Utc>,
+    now: DateTime<Utc>,
+    answer: Result<Claim, String>,
+) -> Claim {
+    let path = config.join(ASK_WAITS_FILE);
+    let mut waits: std::collections::BTreeMap<String, Lease> = std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    let claim = match answer {
+        Ok(Claim::Taken { by, at }) => Claim::Taken { by, at },
+        Ok(_) => {
+            remember_granted(job, due);
+            Claim::Granted
+        }
+        Err(_) => {
+            let first = match waits.get(job) {
+                Some(w) if w.due == due => w.at,
+                _ => {
+                    waits.insert(
+                        job.to_string(),
+                        Lease {
+                            due,
+                            by: MAC.into(),
+                            at: now,
+                        },
+                    );
+                    // Unkept, the wait would never end: run it, as before.
+                    if write_json(&path, &waits).is_err() {
+                        return Claim::Granted;
+                    }
+                    now
+                }
+            };
+            return if now - first >= Duration::minutes(MAC_ASK_MINUTES) {
+                waits.remove(job);
+                let _ = write_json(&path, &waits);
+                Claim::Granted
+            } else {
+                Claim::Wait
+            };
+        }
+    };
+    if waits.remove(job).is_some() {
+        let _ = write_json(&path, &waits);
+    }
+    claim
 }
 
 /// The runs this process was granted, by job (the Mac's side).
@@ -347,6 +413,80 @@ mod tests {
         );
         assert_eq!(claim(&h, "j2", due, AWAY, now), Claim::Granted);
         let _ = std::fs::remove_dir_all(&h);
+    }
+
+    /// Item 803 (merge round P): Fly is still starting the server when the
+    /// Mac asks, the app is quit, and the server last heard from the Mac
+    /// over 20 min ago. The Mac waits rather than running at once; its ask
+    /// a minute on reaches the woken server, whose lease then keeps the
+    /// server from a second run. A server that never answers is given up
+    /// on after the window, and the Mac runs it.
+    #[test]
+    fn a_failed_lease_ask_waits_for_a_starting_server_and_no_run_is_doubled() {
+        let mac = home("ask-mac");
+        let away = home("ask-away");
+        std::fs::create_dir_all(&mac).unwrap();
+        let due = at("2026-11-17T16:00:00Z");
+        mac_seen(&away, at("2026-11-17T15:30:00Z"));
+        let cold: Result<Claim, String> = Err("502 while the machine starts".into());
+        // First ask fails: wait, not run.
+        assert_eq!(
+            settle_ask(&mac, "j9", due, at("2026-11-17T16:00:20Z"), cold.clone()),
+            Claim::Wait
+        );
+        // The next tick's ask reaches the woken server (the Mac is heard).
+        let now = at("2026-11-17T16:01:05Z");
+        mac_seen(&away, now);
+        let answer = Ok(claim(&away, "j9", due, MAC, now));
+        assert_eq!(settle_ask(&mac, "j9", due, now, answer), Claim::Granted);
+        // At its grace the server finds the Mac's lease: no second run.
+        let later = at("2026-11-17T16:25:00Z");
+        assert!(matches!(
+            away_claim(&away, &stand_in("j9"), due, later),
+            Claim::Taken { by, .. } if by == MAC
+        ));
+        // A server that never answers: wait for the window, then run.
+        let due2 = at("2026-11-18T16:00:00Z");
+        let t = |m: i64, s: i64| due2 + Duration::minutes(m) + Duration::seconds(s);
+        assert_eq!(
+            settle_ask(&mac, "j9", due2, t(0, 10), cold.clone()),
+            Claim::Wait
+        );
+        assert_eq!(
+            settle_ask(&mac, "j9", due2, t(1, 10), cold.clone()),
+            Claim::Wait
+        );
+        assert_eq!(
+            settle_ask(&mac, "j9", due2, t(2, 10), cold.clone()),
+            Claim::Granted
+        );
+        // The window is per run: the next run waits afresh.
+        let due3 = at("2026-11-19T16:00:00Z");
+        assert_eq!(settle_ask(&mac, "j9", due3, due3, cold), Claim::Wait);
+        let _ = std::fs::remove_dir_all(&mac);
+        let _ = std::fs::remove_dir_all(&away);
+    }
+
+    /// A stand-in copy of a job with id `id` (only the id is read here).
+    fn stand_in(id: &str) -> Job {
+        let h = home(&format!("job-{id}"));
+        let jobs = crate::jobs::Jobs::open_in(crate::jobs::Jobs::dir_under(&h), None);
+        let mut j = jobs
+            .create(
+                crate::jobs::NewJob {
+                    every: "every day at 8am".into(),
+                    text: "check the CI".into(),
+                    tz: Some("UTC".into()),
+                    ..Default::default()
+                },
+                at("2026-11-17T00:00:00Z"),
+            )
+            .unwrap()
+            .job;
+        let _ = std::fs::remove_dir_all(&h);
+        j.id = id.into();
+        j.stand_in = true;
+        j
     }
 
     #[test]
