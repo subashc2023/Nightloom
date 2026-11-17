@@ -109,6 +109,8 @@
   import ContextSheet from "./ContextSheet.svelte";
   import RunningSheet from "./RunningSheet.svelte";
   import JobsSheet from "./JobsSheet.svelte";
+  // Item 763 H8: Home, the phone's first screen.
+  import HomeFirst from "./HomeFirst.svelte";
   import JobChatCard from "./JobChatCard.svelte";
   import { parseRepeat } from "./jobs";
   import UsageLine from "./UsageLine.svelte";
@@ -164,7 +166,7 @@
     type Tried,
   } from "./hosts";
   import { halvesFromHash, keepStored, manifestHref, setManifest } from "./homeScreen";
-  import { heldTap, joinDraft, loadPlace, placeFromHash, placeHash, plainError, samePlace, savePlace, triable, type Place } from "./place";
+  import { HOME_PLACE, heldTap, joinDraft, loadPlace, placeFromHash, placeHash, plainError, samePlace, savePlace, triable, type Place } from "./place";
   import { NO_PROJECT, callProject, notesProject, openedProject, placeProject, resolveAsk, unresolvedAsk } from "./screenProject";
   import { LATE_NOTICE_MS, NEW_CHAT_TURN, noticeFor, turnEndedFor, type EndedTurn } from "./turnNotice";
   import { unsavedDrafts, writesInFlight } from "./client";
@@ -281,6 +283,13 @@
   let pendingNew = $state<{ before: string | null } | null>(null);
   /** Set once he picks a screen, so the first state read does not move him. */
   let chose = false;
+  /** Item 763 H8: Home, the phone's first screen, is showing (over the chat). */
+  let home = $state(false);
+  /** The page's URL named no place when it opened (an icon launch, a
+   *  pairing link): it opens on Home. A reload keeps the chat it was on. */
+  let startHome = false;
+  /** The chat he was in before Home, for its "Back to" row. */
+  let homeResume = $state<{ chat: string; project: string | null; label: string | null } | null>(null);
   let events = $state<SessionEvent[]>([]);
   let live = $state<LiveTurn | null>(null);
   /** The chat whose turn the page started (300 A16/B2): the turn-end toast
@@ -778,6 +787,17 @@
     await refreshChats();
     const back = startPlace;
     startPlace = null;
+    if (!chose && chatId === null && !pendingNew && (startHome || back?.home)) {
+      // Item 763 H8: the first screen is Home; the chat he was in is its
+      // "Back to" row.
+      startHome = false;
+      if (back?.chat) homeResume = { chat: back.chat, project: back.project, label: Object.values(chatsBy).flat().find((c) => c.id === back.chat)?.label ?? null };
+      chose = true;
+      home = true;
+      place(true);
+      await applyResume();
+      return;
+    }
     if (!chose && chatId === null && !pendingNew && back) {
       // Item 300 (A21, A37): the screen he was on — a reload, a
       // home-screen launch — not the host's last chat.
@@ -1125,6 +1145,7 @@
     // Where he was (A21): the hash's place on a reload, the stored one on
     // a launch — read before the token's hash is cleared.
     startPlace = (fromHash ? null : placeFromHash(location.hash)) ?? loadPlace();
+    startHome = fromHash !== null || placeFromHash(location.hash) === null;
     // Item 302: what the page kept when it reloaded for a scheme change.
     pendingResume = fromHash ? null : takeResume(Date.now());
     window.addEventListener("popstate", onPopState);
@@ -1379,7 +1400,9 @@
   /** Item 300 (A21, A37): the screen in the URL's hash — a history entry
    *  per chat, so Back returns to the chat before — and in storage. */
   function place(replace = false) {
-    const p: Place = chatId
+    const p: Place = home
+      ? HOME_PLACE
+      : chatId
       ? { chat: chatId, project: (asked?.chat === chatId ? asked.project : null) ?? placeProject(chatPid, projects.length > 0), host: chatHost }
       : { chat: null, project: newProject ?? (activePid || null), host: null };
     savePlace(p);
@@ -1401,7 +1424,8 @@
     if (!p || !client) return;
     navigating = true;
     try {
-      if (p.chat) void openChat(p.chat, p.project, p.host && clients[p.host] ? p.host : active);
+      if (p.home) openHome();
+      else if (p.chat) void openChat(p.chat, p.project, p.host && clients[p.host] ? p.host : active);
       else startNew(p.project);
     } finally {
       navigating = false;
@@ -1435,7 +1459,12 @@
   async function openChat(id: string, project: string | null = null, host: HostRole | null = active) {
     chose = true;
     drawer = false;
-    if (id === chatId && project === chatProject && chatHost === host) return;
+    const fromHome = home;
+    home = false;
+    if (id === chatId && project === chatProject && chatHost === host) {
+      if (fromHome) place();
+      return;
+    }
     chatId = id;
     // Listed by the host answering now: it is that host's chat — or, an
     // Undo of a delete, the host it was deleted on (132 f), set before the
@@ -1465,6 +1494,7 @@
   function startNew(project: string | null = null) {
     chose = true;
     drawer = false;
+    home = false;
     sheet = null;
     chatId = null;
     chatHost = null;
@@ -1480,6 +1510,23 @@
     draft = loadDraft(draftKey(null, newProject));
     void grow();
     requestAnimationFrame(() => box?.focus());
+  }
+
+  /** Item 763 H8: show Home; the chat he was in stays one tap away. */
+  function openHome() {
+    const was = placeFromHash(location.hash);
+    if (was?.chat && !was.home) homeResume = { chat: was.chat, project: was.project, label: chatLabel };
+    chose = true;
+    drawer = false;
+    sheet = null;
+    home = true;
+    place();
+  }
+
+  /** A message Home's boxes could not hand over: the page's queue holds it. */
+  function holdFromHome(chat: string, text: string, project: string | null, nonce: string) {
+    queue = [...queue, newQueued(chat, text, new Date(), project, active, nonce)];
+    saveQueue(queue);
   }
 
   function openDrawer() {
@@ -3109,6 +3156,24 @@
       </div>
     {/if}
 
+    {#if home && client && active}
+      <!-- Item 763 H8: Home, the first screen, over the chat page. -->
+      <HomeFirst
+        {client}
+        {active}
+        macPaired={!!hosts.mac}
+        {remote}
+        openLabel={(chatsBy[activePid] ?? []).find((c) => c.id === remote.active_chat)?.label ?? null}
+        {fil}
+        resume={homeResume}
+        queued={queue.length}
+        onopen={(chat, project) => void openChat(chat, project, active)}
+        onjobs={() => openJobs()}
+        ondrawer={openDrawer}
+        onnew={() => startNew(null)}
+        onhold={holdFromHome}
+      />
+    {/if}
     {#if paired.length > 0 && !drawer && !sheet}
       <!-- Wave 2C: a swipe right from the left edge opens the drawer. -->
       <div class="edge" use:drag={edgeDrag} aria-hidden="true"></div>
@@ -3557,6 +3622,8 @@
     >
         <div class="drawer-head">
           <span class="drawer-title">Nightloom</span>
+          <!-- Item 763 H8: back to Home, the first screen. -->
+          <button class="btn small drawer-home" class:on={home} onclick={openHome} data-act="home">Home</button>
           <button class="icon-btn" onclick={() => (drawer = false)} aria-label="Close">{@render icon("x")}</button>
         </div>
         <label class="search">

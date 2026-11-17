@@ -9,7 +9,8 @@
   import { app, canLeaveProject } from "./state.svelte";
   import { needsNow } from "./needsBoard.svelte";
   import { waitingCount } from "./needsYou";
-  import { homeCount, isHome } from "./home";
+  import { homeCount, homeTip, isHome, todayFigure } from "./home";
+  import * as api from "./api";
   import { home, homeProject, openHome, refreshHome } from "./home.svelte";
   import Icon from "./Icon.svelte";
 
@@ -22,6 +23,16 @@
   $effect(() => {
     if (project) untrack(() => void refreshHome());
   });
+  // Item 763 H6: today's spend of Home's unattended runs, read with Home's info and each minute.
+  let today = $state<api.HomeToday | null>(null);
+  $effect(() => {
+    if (!project) return;
+    const read = () => void api.homeToday().then((t) => (today = t), () => (today = null));
+    read();
+    const t = setInterval(read, 60_000);
+    return () => clearInterval(t);
+  });
+  const fig = $derived(todayFigure(today));
 </script>
 
 {#if project}
@@ -32,10 +43,11 @@
     aria-current={here ? "true" : undefined}
     disabled={!canLeaveProject()}
     onclick={() => void openHome()}
-    use:tip={home.info?.scan_words ? `Morning scan ${home.info.scan_words}` : "Today's Home chat"}
+    use:tip={homeTip(home.info?.scan_words, today)}
   >
     <span class="glyph"><Icon name="home" size={classic ? 14 : 15} /></span>
     <span class="name">{project.name}</span>
+    {#if fig.paused}<span class="today paused" data-home-today>paused</span>{:else if fig.text}<span class="today" data-home-today>{fig.text}</span>{/if}
     {#if count}<span class="need" aria-label={count}>{count}</span>{/if}
   </button>
 {/if}
@@ -71,6 +83,15 @@
   .home-row:disabled {
     cursor: default;
     opacity: 0.6;
+  }
+  .today {
+    flex: none;
+    font-size: 11px;
+    color: var(--ink2);
+    font-variant-numeric: tabular-nums;
+  }
+  .today.paused {
+    color: var(--warn, var(--accent-ink));
   }
   .glyph {
     display: inline-flex;

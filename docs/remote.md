@@ -304,6 +304,60 @@ the Tailscale app so it connects by itself), or the call fails with "could
 not connect". *Unmeasured in this build:* the Lock Screen run on his
 iPhone — the routes are tested on loopback only.
 
+## Home, the phone's first screen (item 763 H8 / item 741, 2026-11-17)
+
+The page opens on **Home** when its address names no place — the Home
+Screen icon, a pairing link — and a reload keeps whatever screen it was on.
+The drawer's **Home** button and Back from a chat opened there return to it.
+In order (design §7's, the default until his layout pick, blocker 2084):
+
+1. **Header** — "Home · 3 need you · today 0.3% of the week": the count of
+   the rows below and, from `GET /api/home/today`, the share of the week
+   Home's own unattended runs used today (left off when the host has no such
+   route). When those runs are stopped, one line under it says why.
+2. **Needs you** — each chat whose last news waits on him (`/api/push/feed`:
+   an approval, a question, a stuck run), each job whose read-only run wanted
+   changes (`/api/jobs`, the Jobs list's own approval card), each held
+   blocker (`GET /api/home/held`, answered with the Nightshift sheet's own
+   box). An open-chat approval has **Allow / Deny**; a question asked at a
+   turn's end has a **reply box** (its text is that chat's own composer
+   draft); the rest **Open** their chat, where the card is.
+3. **Today's scan** — `GET /api/home/scan`: `scans/<today>.md`, else the
+   newest page ("from 2026-11-16"); "ran 8:00 AM"; a skipped scan says why
+   (the page's `Skipped: …` line) above its code-only page. Open on the
+   first look at a day's page, folded on the next.
+4. **Done since you looked** — `GET /api/home/feed` (Home's `feed.jsonl`,
+   newest first) after `seen.json`'s time; each row opens its chat; **Mark
+   all seen** is `POST /api/home/seen`.
+5. **Running** — `/api/running`, with each chat's context size
+   (`Running.contexts`, tokens by chat id).
+6. **Tell Home…** — sends into today's Home chat (the scan job's chat, else
+   Home's newest), or starts Home's first chat. The draft is kept on every
+   keystroke under that chat's own composer key; a host that does not answer
+   holds it in the page's queue, as the composer does. Then the **Jobs** row
+   (count, the next run) opens the Jobs sheet.
+7. **Home on this Mac** — Messages, Contacts, Reminders, Calendar (item
+   808's panel), when present.
+
+Its scroll and folds are kept (`nightloom.remote.home` in the page's
+storage). Both hosts serve the same routes from their own config folder: the
+away server's copy is the synced one, and the page says "The Mac is not
+answering · as of 11:40 PM" (the feed file's time) when only it answers.
+
+**"What needs me?" for Siri** — `GET /api/shortcut/needs`, plain text like
+the other two: "Nothing needs you.", or "Three things need you: an approval
+in Scorer review, a question from Home, one held blocker." (four named at
+most, then "and 2 more"). The Shortcut, by hand as above:
+1. New Shortcut "What needs me" (the name Siri hears).
+2. **Get Contents of URL**: `<base>/api/shortcut/needs`, Method **GET**,
+   Headers `Authorization` = `Bearer <token>`.
+3. **Speak Text** with *Contents of URL*.
+
+"Tell Home …" needs no new route: the *Send to Nightloom* Shortcut above
+with `chat` fixed to `Home` (the name match takes the newest chat whose name
+starts with "Home"). *Unmeasured in this build:* both on his iPhone — the
+routes are tested on loopback only.
+
 ## Approval rules and "Not now — carry on" (item 743, 2026-11-16)
 
 - **Rules.** The chat's ⋯ sheet → More → *Approval rules* (and *Rules* on an

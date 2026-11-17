@@ -225,7 +225,8 @@
   // Item 768: wrap up while the cache is warm; the cold-return chip.
   import { MODES as WARM_MODES, modeLabel as warmModeLabel, isMode as isWarmMode } from "./warmWrap";
   import { setWarmMinTokens, setWarmMode, warmWrap } from "./warmWrap.svelte";
-  import { checkReach, home, homeProject, refreshHome, refreshReach, saveBrief, setBriefDraft, setReach } from "./home.svelte";
+  import { allowSource, checkReach, home, homeProject, refreshHome, refreshReach, refreshSources, saveBrief, setBriefDraft, setReach, setSource } from "./home.svelte";
+  import { MESSAGES_STEP, isRead, sourceButton, sourceStatusWords, sourcesSummary } from "./homeSources";
   import { REACH_GROUPS, reachName, reachNote, reachStatusWords, reachSummary } from "./home";
   import { revealFolder } from "./state.svelte";
 
@@ -763,7 +764,38 @@
         void refreshHome();
         // Item 804: what Home can reach, from the last check.
         void refreshReach();
+        // Item 808: the Mac's own stores, status only.
+        void refreshSources();
       });
+  });
+  // Item 808: a status changes in System Settings or in macOS's dialog, so
+  // the rows are re-read whenever the window comes back to the front.
+  $effect(() => {
+    if (selected !== "home") return;
+    const again = () => {
+      if (document.visibilityState === "visible") void refreshSources();
+    };
+    window.addEventListener("focus", again);
+    document.addEventListener("visibilitychange", again);
+    return () => {
+      window.removeEventListener("focus", again);
+      document.removeEventListener("visibilitychange", again);
+    };
+  });
+  // Item 808: the phone asked while Settings was already open — go to Home
+  // and bring the asked row into view.
+  $effect(() => {
+    const want = app.settingsOpenOn;
+    if (want === null) return;
+    untrack(() => {
+      selected = want;
+      app.settingsOpenOn = null;
+    });
+  });
+  $effect(() => {
+    const id = home.sourceAsked;
+    if (selected !== "home" || id === null || home.sources === null) return;
+    requestAnimationFrame(() => document.getElementById(`home-source-${id}`)?.scrollIntoView({ block: "center" }));
   });
 
   /** Which of the key card's states a provider is in. */
@@ -3417,6 +3449,8 @@
             {#if home.reach.accounts.length === 0 && !home.checking}
               <p class="note small">Claude Code listed no connectors. Add them at claude.ai, under Settings, Connectors, then check again.</p>
             {/if}
+            <!-- Item 808: empty since the four have their own "On this Mac" group below (an older backend still lists them). -->
+            {#if home.reach.locals.length > 0 && home.sources === null}
             <div class="reach-group">
               <div class="reach-title">On this Mac, not reachable</div>
               {#each home.reach.locals as l (l.name)}
@@ -3431,7 +3465,55 @@
                 </div>
               {/each}
             </div>
+            {/if}
             <p class="note small">The next morning scan uses a change here; an open Home chat, the next time you open it. An account's address shows once a scan has read it.</p>
+          {/if}
+          <!-- Item 808: Messages, Contacts, Reminders and the Calendar app — each read only once he allows it here. -->
+          {#if home.sources !== null}
+            <div class="reach-group" data-testid="home-sources">
+              <div class="reach-title">On this Mac</div>
+              <p class="note small src-lead">{sourcesSummary(home.sources)} Nothing here is read until you allow it, and Home only reads: it never adds, changes or sends.</p>
+              {#each home.sources as s (s.id)}
+                {@const button = sourceButton(s)}
+                <div class="reach-row" class:off={!isRead(s)} class:asked={home.sourceAsked === s.id} id={`home-source-${s.id}`}>
+                  <span class="reach-dot" class:ok={isRead(s)} class:warn={s.status === "denied" || s.status === "write_only"}></span>
+                  <div class="reach-main">
+                    <div class="reach-name">{s.name}</div>
+                    <div class="reach-note">{s.why}</div>
+                    {#if home.sourceAsked === s.id && s.status !== "allowed"}
+                      <div class="reach-note src-step">Your phone asked for this.</div>
+                    {/if}
+                    {#if s.id === "messages" && home.messagesOpened && s.status !== "allowed"}
+                      <div class="reach-note src-step">{MESSAGES_STEP}</div>
+                    {/if}
+                  </div>
+                  <span class="sub-tag">{sourceStatusWords(s.status)}</span>
+                  {#if button}
+                    <button
+                      class="ns-btn ghost src-allow"
+                      disabled={home.sourceBusy !== null}
+                      onclick={() => {
+                        home.sourceAsked = null;
+                        void allowSource(s.id);
+                      }}>{button}</button
+                    >
+                  {:else if s.status === "allowed"}
+                    <label class="reach-switch">
+                      <input
+                        type="checkbox"
+                        checked={s.on}
+                        disabled={home.sourceBusy !== null}
+                        aria-label={`Let Home read ${s.name}`}
+                        onchange={(e) => void setSource(s.id, e.currentTarget.checked)}
+                      />
+                      <span>{s.on ? "On" : "Off"}</span>
+                    </label>
+                  {:else}
+                    <span class="reach-switch" aria-hidden="true"></span>
+                  {/if}
+                </div>
+              {/each}
+            </div>
           {/if}
         </section>
         <section class="card">
@@ -5617,6 +5699,20 @@
     border-bottom-left-radius: 0;
     border-left: 1px solid rgba(0, 0, 0, 0.18);
     margin-left: -1px;
+  }
+  /* Item 808: the Mac's own stores, in the reach card. */
+  .src-lead {
+    margin: 0 0 4px;
+  }
+  .src-step {
+    color: var(--accent);
+  }
+  .src-allow {
+    flex: none;
+  }
+  .reach-row.asked {
+    background: color-mix(in srgb, var(--accent) 9%, transparent);
+    border-radius: 6px;
   }
   /* Item 804: what Home can reach. */
   .reach-when {

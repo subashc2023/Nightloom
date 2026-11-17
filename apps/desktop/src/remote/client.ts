@@ -5,6 +5,7 @@
  * while the Mac is unreachable. Nothing here touches the DOM, so all of it
  * is under `client.test.ts`; `Remote.svelte` is the screen over it.
  */
+import type { HomeSource, SourceId } from "../lib/homeSources";
 import type { Job, JobPatch, JobsReply, NewJob } from "./jobs";
 import type { ApprovalRequest, DocumentInput, ImageInput, SessionEvent, TurnEvent } from "../lib/types";
 import type { RuleEdit, RulesListing } from "./rules";
@@ -202,6 +203,8 @@ export interface Running {
   asides?: unknown[];
   dream?: unknown | null;
   capture?: unknown | null;
+  /** Item 741 (763 H8): each running chat's context now, in tokens, by chat id. */
+  contexts?: Record<string, number>;
 }
 
 /** The plan's windows (`PlanUsage` in the service crate): percent used. */
@@ -773,6 +776,62 @@ export async function countedFetch(url: string, init: RequestInit): Promise<Resp
   }
 }
 
+// ---- item 763 H8: what the phone's Home reads ---------------------------------
+
+/** `GET /api/home/today` (built by 763's H6): `points` is the percent of
+ *  the week Home's unattended runs used today, `cap` its daily cap,
+ *  `stop` why those runs are stopped now. */
+export interface HomeTodayWire {
+  points: number;
+  cap: number;
+  week: number | null;
+  five_hour: number | null;
+  stop: string | null;
+}
+
+/** One row of Home's feed (`home/feed.jsonl`). */
+export interface HomeFeedRowWire {
+  at: string;
+  kind: string;
+  label?: string | null;
+  chat?: string | null;
+  project?: string | null;
+  line: string;
+}
+
+export interface HomeFeedWire {
+  rows: HomeFeedRowWire[];
+  seen_at: string | null;
+  /** When the feed was last written, unix ms. */
+  as_of: number | null;
+  home: { project: string | null; chat: string | null };
+}
+
+export interface HomeScanWire {
+  date: string;
+  text: string;
+  ran_at: number | null;
+  today: boolean;
+  skipped: string | null;
+}
+
+export interface HeldBlockerWire {
+  project: string;
+  project_name: string;
+  id: string;
+  item: string;
+  question: string;
+}
+
+/** One row of `/push/feed`: the last thing in a chat he has not opened. */
+export interface PushFeedWire {
+  what: string;
+  chat: string;
+  label?: string | null;
+  project?: string | null;
+  at: number;
+}
+
 export class Client {
   /** `base`: the host's origin (`hosts.ts`); empty is the page's own. */
   constructor(
@@ -884,6 +943,58 @@ export class Client {
    *  no figure (the `cache_rates` feature). */
   async cacheRates(model: string): Promise<CacheRatesWire | null> {
     return (await this.call(`/cache-rates?model=${encodeURIComponent(model)}`)).json();
+  }
+
+  // ---- item 763 H8: the phone's Home screen (`homeFirst.ts`) ----
+
+  /** Today's spend for Home's own runs (the parent's `/home/today`);
+   *  null when this host has no such route yet — the header then goes
+   *  without the percent, never an error. */
+  async homeToday(): Promise<HomeTodayWire | null> {
+    try {
+      return (await this.call("/home/today")).json();
+    } catch (e) {
+      if (e instanceof ApiError && (e.status === 404 || e.status === 501)) return null;
+      throw e;
+    }
+  }
+
+  async homeFeed(): Promise<HomeFeedWire> {
+    return (await this.call("/home/feed")).json();
+  }
+
+  async homeSeen(): Promise<{ seen_at: string }> {
+    return (await this.call("/home/seen", { method: "POST" })).json();
+  }
+
+  async homeScan(): Promise<{ scan: HomeScanWire | null }> {
+    return (await this.call("/home/scan")).json();
+  }
+
+  async homeHeld(): Promise<{ blockers: HeldBlockerWire[] }> {
+    return (await this.call("/home/held")).json();
+  }
+
+  /** Item 808: Messages, Contacts, Reminders and the Calendar app as the
+   *  Mac reads them now; null when this host has no such route yet. */
+  async homeSources(): Promise<HomeSource[] | null> {
+    try {
+      return (await this.call("/home/sources")).json();
+    } catch (e) {
+      if (e instanceof ApiError && (e.status === 404 || e.status === 501)) return null;
+      throw e;
+    }
+  }
+
+  /** Item 808: ask the Mac for a source — Settings → Home opens there at
+   *  its row; the macOS dialog waits for his press on the Mac. */
+  async homeSourceAsk(id: SourceId): Promise<{ said: string }> {
+    return (await this.call(`/home/sources/${id}/ask`, { method: "POST" })).json();
+  }
+
+  /** Item 741: the last note of every chat he has not opened since. */
+  async pushFeed(): Promise<{ rows: PushFeedWire[] }> {
+    return (await this.call("/push/feed")).json();
   }
 
   // ---- item 746: recurring jobs (`jobs.ts`, `JobsSheet.svelte`) ----

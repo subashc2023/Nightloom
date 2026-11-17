@@ -987,3 +987,95 @@ async fn a_runs_calls_are_kept_and_a_stopped_run_is_listed_as_stopped() {
     );
     assert!(h.jobs.usual_for_chat("other").is_none());
 }
+
+/// A host whose jobs live under `<config>/remote/jobs`, so Home's files go
+/// to a folder of the test's own.
+fn home_host() -> (Arc<FakeHost>, PathBuf) {
+    let cfg = std::env::temp_dir().join(format!("nightloom-home-guard-{}", uuid::Uuid::new_v4()));
+    let (tx, _) = broadcast::channel(8);
+    let h = Arc::new(FakeHost {
+        jobs: Jobs::open_in(cfg.join("remote").join("jobs"), None),
+        tx,
+        preps: Mutex::default(),
+        sends: Mutex::default(),
+        running: Mutex::default(),
+        refuse: Mutex::default(),
+        week: Mutex::new(Some(40)),
+        five: Mutex::new(Some(10)),
+        log: Mutex::default(),
+    });
+    (h, cfg)
+}
+
+/// Item 763 H6: each stop of the spend guard — the 5-hour window at 80%,
+/// the weekly window at 80%, today's cap — skips Home's scan before it is
+/// prepared, says why on its row, moves it to its next time and writes the
+/// code-only page; a job outside Home runs at the same figures.
+#[tokio::test]
+async fn homes_scan_stops_at_80_percent_or_the_daily_cap_and_says_why() {
+    let (h, cfg) = home_host();
+    let t0 = at(2026, 11, 17, 15, 0);
+    assert!(h.jobs.ensure_home_scan("home-p", t0));
+    let other = h.jobs.create(new_job("every hour"), t0).unwrap().job.id;
+    let scan = crate::home::SCAN_JOB_ID;
+    let row = |id: &str| {
+        h.jobs
+            .list()
+            .into_iter()
+            .find(|j| j.job.id == id)
+            .unwrap()
+            .job
+    };
+
+    *h.five.lock().unwrap() = Some(82);
+    h.jobs.run_now(scan).unwrap();
+    h.jobs.run_now(&other).unwrap();
+    let t1 = at(2026, 11, 17, 16, 0);
+    h.jobs.tick(h.as_ref(), t1).await;
+    let j = row(scan);
+    let last = j.last.clone().unwrap();
+    assert_eq!(last.outcome, Outcome::Skipped);
+    assert_eq!(last.summary, "skipped — the 5-hour window is at 82%");
+    assert!(!j.run_now && j.next_run > t1 && j.retry_at.is_none());
+    assert_eq!(
+        h.preps.lock().unwrap().len(),
+        1,
+        "only the other job was prepared"
+    );
+    assert!(row(&other).running.is_some(), "a job outside Home runs");
+    let date = super::local_date(t1, &j.zone()).unwrap();
+    let page = std::fs::read_to_string(
+        crate::home::dir_in(&cfg)
+            .join("scans")
+            .join(format!("{date}.md")),
+    )
+    .unwrap();
+    assert!(page.contains("Skipped: the 5-hour window is at 82%\n"));
+
+    *h.five.lock().unwrap() = Some(10);
+    *h.week.lock().unwrap() = Some(80);
+    h.jobs.run_now(scan).unwrap();
+    h.jobs.tick(h.as_ref(), t1 + Duration::minutes(1)).await;
+    assert_eq!(
+        row(scan).last.unwrap().summary,
+        "skipped — the weekly window is at 80%"
+    );
+
+    *h.week.lock().unwrap() = Some(40);
+    crate::home::guard::record(&cfg, date, Some(1));
+    h.jobs.run_now(scan).unwrap();
+    h.jobs.tick(h.as_ref(), t1 + Duration::minutes(2)).await;
+    assert_eq!(
+        row(scan).last.unwrap().summary,
+        "skipped — Home has used today's 1% of the week"
+    );
+    assert_eq!(h.preps.lock().unwrap().len(), 1, "never prepared");
+
+    // Under every stop it runs.
+    std::fs::write(crate::home::dir_in(&cfg).join("guard.json"), r#"{"cap":2}"#).unwrap();
+    h.jobs.run_now(scan).unwrap();
+    h.jobs.tick(h.as_ref(), t1 + Duration::minutes(3)).await;
+    assert_eq!(h.preps.lock().unwrap().len(), 2);
+    assert!(row(scan).running.is_some());
+    let _ = std::fs::remove_dir_all(&cfg);
+}

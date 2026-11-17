@@ -403,3 +403,20 @@ export const FEED_TAG: Record<FeedKind, string> = {
 export function feedTag(kind: string): string {
   return (FEED_TAG as Record<string, string>)[kind] ?? kind.replace(/_/g, " ");
 }
+
+/** Item 763 H6: the Home row's figure, "0.3%" of the week today; "" before
+ *  any spend. `paused` when the spend guard holds its runs. Pure. */
+export function todayFigure(t: { points: number; stop: string | null } | null): { text: string; paused: boolean } {
+  if (!t) return { text: "", paused: false };
+  const text = t.points > 0 ? `${Math.round(t.points * 10) / 10}%` : "";
+  return { text, paused: t.stop != null };
+}
+
+/** The Home row's tooltip: the scan's time, then today's spend — two short lines. */
+export function homeTip(scanWords: string | null | undefined, t: { points: number; cap: number; stop: string | null } | null): string {
+  const first = scanWords ? `Morning scan ${scanWords}` : "Today's Home chat";
+  if (!t) return first;
+  const pct = (n: number) => `${Math.round(n * 10) / 10}%`;
+  const second = t.stop ? `Runs paused: ${t.stop}` : `Today ${pct(t.points)} of the week, cap ${pct(t.cap)}`;
+  return `${first}\n${second}`;
+}

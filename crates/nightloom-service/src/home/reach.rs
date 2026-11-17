@@ -19,10 +19,12 @@
 //!   here.
 //! - **The scan reads mail and calendar** from every account that is
 //!   connected and on ([`scan_accounts`], `home::scan_message`).
-//! - **macOS's own stores** (Messages, Contacts, Reminders, Calendar) are
+//! - ~~**macOS's own stores** (Messages, Contacts, Reminders, Calendar) are
 //!   listed as not reachable, with the reason ([`locals`]): each sits
 //!   behind a macOS permission dialog only he can answer, and nothing here
-//!   may raise one.
+//!   may raise one.~~ (2026-11-17, item 808: they have their own "On this
+//!   Mac" group with an Allow button each — `home::sources`; [`locals`] is
+//!   empty.)
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -362,28 +364,12 @@ pub struct Local {
     pub why: &'static str,
 }
 
-/// macOS's own stores, each with why Home cannot read it. Stated, never
-/// probed: reading any of them raises (or silently needs) a macOS
-/// permission only he can give.
+/// macOS's stores Home cannot read. ~~Messages, Contacts, Reminders and
+/// the Calendar app, each with why~~ — empty since item 808 (2026-11-17):
+/// those four are `home::sources`, each allowed from Settings → Home. Kept
+/// so an older window's panel still reads.
 pub fn locals() -> Vec<Local> {
-    vec![
-        Local {
-            name: "Messages",
-            why: "Needs Full Disk Access for Nightloom, which only you can grant in System Settings.",
-        },
-        Local {
-            name: "Contacts",
-            why: "macOS asks for permission with a dialog; Home never raises one by itself.",
-        },
-        Local {
-            name: "Reminders",
-            why: "macOS asks for permission with a dialog; Home never raises one by itself.",
-        },
-        Local {
-            name: "Calendar app",
-            why: "Same dialog. Your Google calendars are read through their connectors instead.",
-        },
-    ]
+    Vec::new()
 }
 
 /// A chat of Home's project (`source`) gets his connectors, less the ones

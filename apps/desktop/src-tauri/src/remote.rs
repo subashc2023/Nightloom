@@ -726,6 +726,20 @@ impl Host for DesktopHost {
         self.jobs.clone()
     }
 
+    /// Item 808: the Mac's four stores as Settings → Home shows them.
+    async fn home_sources(&self) -> Vec<nightloom_service::home::sources::Row> {
+        crate::mac_sources::rows().await.unwrap_or_default()
+    }
+
+    /// Item 808: the phone asked — Settings → Home opens at the row; the
+    /// macOS dialog waits for his press on the Mac.
+    async fn home_source_ask(
+        &self,
+        source: nightloom_service::home::sources::Source,
+    ) -> Result<String, String> {
+        crate::mac_sources::ask_from_phone(&self.app, source)
+    }
+
     /// He touched the Mac within [`AT_THE_MAC`] (item 780): a job's push
     /// is held, as the turn-end ones are, and the chat's card shows it.
     fn at_the_mac(&self) -> bool {

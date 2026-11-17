@@ -8,6 +8,7 @@
 import * as api from "./api";
 import { app, addToast, canLeaveProject, openRun, useProject } from "./state.svelte";
 import { doneSince, isHome, type FeedRow, type HomeInfo, type HomeReach } from "./home";
+import type { HomeSource, SourceId } from "./homeSources";
 
 export const BRIEF_DRAFT_KEY = "nightloom.home.briefDraft";
 
@@ -39,6 +40,14 @@ export const home = $state({
   checking: false,
   /** The connector whose switch is being saved. */
   switching: null as string | null,
+  /** Item 808: Messages, Contacts, Reminders, Calendar app; null before read. */
+  sources: null as HomeSource[] | null,
+  /** The source whose Allow or switch is being sent. */
+  sourceBusy: null as SourceId | null,
+  /** The row the phone asked for (highlighted until he acts or leaves). */
+  sourceAsked: null as SourceId | null,
+  /** Messages' Allow was pressed: the one line of what to do in System Settings shows. */
+  messagesOpened: false,
 });
 
 /** The Home project in the list, when the backend has made one. */
@@ -167,4 +176,56 @@ export async function setReach(connector: string, on: boolean): Promise<void> {
   } finally {
     home.switching = null;
   }
+}
+
+// ---- Item 808: what macOS keeps on this Mac ----
+
+/** Re-read the four rows (status only; never a dialog). */
+export async function refreshSources(): Promise<void> {
+  try {
+    home.sources = await api.homeSources();
+  } catch {
+    // An older backend: the group says it is not available.
+  }
+}
+
+/** His Allow: macOS asks (Contacts, Reminders, Calendar app) or System
+ *  Settings opens (Messages, or one he turned down before). */
+export async function allowSource(id: SourceId): Promise<void> {
+  if (home.sourceBusy) return;
+  home.sourceBusy = id;
+  try {
+    home.sources = await api.homeSourceAllow(id);
+    if (id === "messages") home.messagesOpened = true;
+  } catch (e) {
+    addToast(`Could not ask for that — ${String(e)}`);
+  } finally {
+    home.sourceBusy = null;
+  }
+}
+
+/** His On/Off switch on an allowed source. */
+export async function setSource(id: SourceId, on: boolean): Promise<void> {
+  if (home.sourceBusy) return;
+  home.sourceBusy = id;
+  try {
+    home.sources = await api.homeSourceSet(id, on);
+  } catch (e) {
+    addToast(`Could not change that — ${String(e)}`);
+  } finally {
+    home.sourceBusy = null;
+  }
+}
+
+/** The Mac's two events (item 808): the phone asked for `id` — Settings
+ *  opens on Home with the row marked; macOS answered an Allow — re-read. */
+export async function listenSources(): Promise<void> {
+  const { listen } = await import("@tauri-apps/api/event");
+  await listen<string>("home-source-asked", (e) => {
+    home.sourceAsked = e.payload as SourceId;
+    app.settingsOpenOn = "home";
+    app.showSettings = true;
+    void refreshSources();
+  });
+  await listen("home-sources-changed", () => void refreshSources());
 }

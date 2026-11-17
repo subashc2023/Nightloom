@@ -24,6 +24,7 @@
     answerPatch,
     approvalBadge,
     everyText,
+    homeTodayText,
     phoneTz,
     type Answer,
     lastText,
@@ -52,6 +53,8 @@
   let { api, prefill = null, project = null, projectName = null, fromChat = null, where = "the Mac", onmade, onopen }: Props = $props();
 
   let jobs = $state<Job[] | null>(null);
+  // Item 763 H6: Home's spend today, under the title.
+  let homeLine = $state("");
   let problem = $state<string | null>(null);
   let busy = $state<string | null>(null);
   /** The row open for its details, and the confirm showing in it. */
@@ -82,6 +85,7 @@
     try {
       jobs = (await api.jobs()).jobs;
       problem = null;
+      void api.homeToday?.().then((t) => (homeLine = homeTodayText(t)), () => (homeLine = ""));
       const here = phoneTz();
       for (const j of jobs) {
         if (here && j.tz === null && !zoned.has(j.id)) {
@@ -150,6 +154,7 @@
     <button class="jb-link" data-act="job-new" onclick={() => (adding = true)}>New job</button>
   {/if}
 </div>
+{#if homeLine}<p class="jb-note" data-home-today>{homeLine}</p>{/if}
 
 {#if adding}
   <div class="jb-form" data-job-form>
