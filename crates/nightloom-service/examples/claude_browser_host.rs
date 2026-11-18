@@ -53,10 +53,6 @@ async fn main() {
             "{}",
             serde_json::json!({"event": "dialog", "chat": chat, "kind": kind, "message": message})
         ),
-        Event::Pick { id, line } => println!(
-            "{}",
-            serde_json::json!({"event": "pick", "chat": chat, "id": id, "line": line})
-        ),
     }));
     let socket = browsers
         .endpoint(chat, &ask_dir)

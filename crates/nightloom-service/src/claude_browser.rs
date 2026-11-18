@@ -94,9 +94,6 @@ pub enum Event {
     Status(BrowserStatus),
     /// `alert`, `confirm`, `prompt` or `file`.
     Dialog { kind: String, message: String },
-    /// Item 797: what is at a point he picked in the tab — the helper's
-    /// line whole (`id`, and `info` or `error`), for the window's chip.
-    Pick { id: u64, line: Value },
 }
 
 /// Told of every event of a chat's browser. Called with no lock held.
@@ -510,13 +507,6 @@ impl Browsers {
                     message: v["message"].as_str().unwrap_or_default().to_string(),
                 },
             ),
-            Some("pick") => self.emit(
-                &entry.chat,
-                &Event::Pick {
-                    id: v["id"].as_u64().unwrap_or(0),
-                    line: v.clone(),
-                },
-            ),
             Some("error") => eprintln!("nightloom: Claude's browser: {}", v["message"]),
             _ => {}
         }
@@ -624,20 +614,6 @@ impl Browsers {
         }
         e.touch();
         self.send(&e, json!({"op": "input", "input": input})).await;
-        Ok(())
-    }
-
-    /// Item 797: what is at page point (`x`, `y`) in CSS px, answered as an
-    /// [`Event::Pick`] with `id`. Reading the page never takes the browser
-    /// from the model, and moves nothing in it.
-    pub async fn pick(&self, chat: &str, id: u64, x: f64, y: f64) -> Result<(), String> {
-        let e = self.live_entry(chat)?;
-        if !(x.is_finite() && y.is_finite()) {
-            return Err("no point to pick".into());
-        }
-        e.touch();
-        self.send(&e, json!({"op": "pick", "id": id, "x": x, "y": y}))
-            .await;
         Ok(())
     }
 
@@ -1185,33 +1161,6 @@ cat >> "$0/received""#;
         b.hold("chat-1", false).await.unwrap();
         b.watch("chat-1", false).await;
         assert!(!ask.held_by_user());
-        let _ = std::fs::remove_dir_all(&r.dir);
-    }
-
-    /// Item 797: a pick goes to the helper as one line with its id and
-    /// point, never takes the browser from the model, and the helper's
-    /// answer reaches the window whole as `Event::Pick`.
-    #[tokio::test]
-    async fn a_pick_asks_the_helper_without_taking_the_browser_and_its_answer_reaches_the_window() {
-        let r = rig("pick", Duration::from_secs(60));
-        let b = &r.browsers;
-        let socket = b.endpoint("chat-1", &r.ask).unwrap();
-        assert_eq!(one_turn(&socket, "a").await, "a");
-        let ask = AskDir::new(&r.ask);
-        b.pick("chat-1", 7, 120.0, 44.5).await.unwrap();
-        assert!(received(&r.dir, r#"{"id":7,"op":"pick","x":120.0,"y":44.5}"#).await);
-        assert!(!ask.held_by_user(), "a pick never takes the browser");
-        assert!(b.pick("chat-1", 8, f64::NAN, 1.0).await.is_err());
-        assert!(b.pick("no-such-chat", 9, 1.0, 1.0).await.is_err());
-        let e = b.get("chat-1").unwrap();
-        let line = json!({"ev": "pick", "id": 7, "info": {"selector": "a.more", "tag": "a"}});
-        b.on_helper_line(&e, &line);
-        assert!(
-            r.events
-                .lock()
-                .unwrap()
-                .contains(&Event::Pick { id: 7, line })
-        );
         let _ = std::fs::remove_dir_all(&r.dir);
     }
 

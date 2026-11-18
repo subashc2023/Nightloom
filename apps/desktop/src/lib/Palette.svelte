@@ -420,17 +420,6 @@
           ]
         : []),
       {
-        // Item 797: point at it — the next clicks pick elements into the
-        // message box last typed in.
-        id: "pick",
-        label: "Pick an element",
-        meta: "point at what you mean; it lands in the message box",
-        icon: "pick",
-        key: "",
-        group: "Go",
-        run: () => go(() => void import("./pick.svelte").then((p) => p.startPick())),
-      },
-      {
         id: "feedback",
         label: "Send feedback",
         meta: "to the agent that builds Nightloom",

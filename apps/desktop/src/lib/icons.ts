@@ -64,8 +64,6 @@ export const ICONS = {
   code: '<path d="m7 6-4 4 4 4M13 6l4 4-4 4"/>',
   table: '<rect x="3" y="4" width="14" height="12" rx="1.5"/><path d="M3 8h14M3 12h14M7.7 4v12M12.3 4v12"/>',
   image: '<rect x="3" y="4" width="14" height="12" rx="1.5"/><circle cx="7.5" cy="8" r="1.3"/><path d="m3.5 14.5 4-4 3 3 2-2 4 4"/>',
-  /* Point at it (item 797): a pointer over a dashed frame. */
-  pick: '<path d="M3 7V4.5A1.5 1.5 0 0 1 4.5 3H7M11 3h1.5M3 11v1.5M16 7V4.5A1.5 1.5 0 0 0 14.5 3"/><path d="m9 9 7.5 2.8-3.2 1.3-1.3 3.2z"/>',
   checklist: '<path d="m3 5.5 1.5 1.5L7 4.5M3 12.5 4.5 14 7 11.5M10 6h7M10 13h7"/>',
   markdown: '<path d="m6.5 6-3.5 4 3.5 4M13.5 6l3.5 4-3.5 4M11 4.5l-2 11"/>',
 } as const;

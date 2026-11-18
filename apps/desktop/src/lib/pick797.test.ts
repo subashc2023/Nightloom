@@ -157,27 +157,6 @@ describe("item 797: the drafts store keeps a pick", () => {
   });
 });
 
-describe("item 797: a pick in Claude's browser", () => {
-  it("is the page's answer, with its address and page scale, and no component", async () => {
-    const { browserPickInfo } = await import("./pick.svelte");
-    const p = browserPickInfo({
-      selector: "main > a.more",
-      tag: "a",
-      text: "Read more",
-      label: "",
-      rect: { x: 10, y: 20, w: 90, h: 18 },
-      viewport: { w: 1280, h: 800 },
-      scale: 1,
-      url: "https://example.com/page",
-    });
-    expect(p.where).toBe("browser");
-    expect(p.components).toEqual([]);
-    expect(p.zoom).toBe("page scale 100%");
-    expect(pickLine(p)).toBe("page · a · 90×18");
-    expect(pickText(p, 1)).toContain("page: https://example.com/page");
-  });
-});
-
 describe("item 797: what a click means", () => {
   /** A stand-in with `closest` over tag names and roles. */
   function node(tag: string, parent: Element | null = null, role = ""): Element {
