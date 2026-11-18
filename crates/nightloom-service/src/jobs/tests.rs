@@ -141,6 +141,9 @@ fn the_cost_is_the_weekly_figures_move_within_one_window() {
         writable: false,
         week_before: Some(41),
         resets_at: Some("w1".into()),
+        five_before: None,
+        five_resets_at: None,
+        forced: false,
     };
     let plan = |pct: Option<u8>, resets: &str| PlanUsage {
         seven_day: pct,
@@ -1043,14 +1046,20 @@ async fn homes_scan_stops_at_80_percent_or_the_daily_cap_and_says_why() {
         "only the other job was prepared"
     );
     assert!(row(&other).running.is_some(), "a job outside Home runs");
+    // Item 812: a pressed run asks (the Run anyway card) instead of
+    // writing the code-only page; a scheduled skip writes it (below, in
+    // `a_scheduled_home_run_is_still_refused_after_run_anyway`).
+    assert_eq!(
+        j.confirm.as_ref().map(|c| c.why.as_str()),
+        Some("the 5-hour window is at 82%")
+    );
     let date = super::local_date(t1, &j.zone()).unwrap();
-    let page = std::fs::read_to_string(
-        crate::home::dir_in(&cfg)
+    assert!(
+        !crate::home::dir_in(&cfg)
             .join("scans")
-            .join(format!("{date}.md")),
-    )
-    .unwrap();
-    assert!(page.contains("Skipped: the 5-hour window is at 82%\n"));
+            .join(format!("{date}.md"))
+            .is_file()
+    );
 
     *h.five.lock().unwrap() = Some(10);
     *h.week.lock().unwrap() = Some(80);
@@ -1077,5 +1086,221 @@ async fn homes_scan_stops_at_80_percent_or_the_daily_cap_and_says_why() {
     h.jobs.tick(h.as_ref(), t1 + Duration::minutes(3)).await;
     assert_eq!(h.preps.lock().unwrap().len(), 2);
     assert!(row(scan).running.is_some());
+    let _ = std::fs::remove_dir_all(&cfg);
+}
+
+/// Item 812: the job's row on a Home host.
+fn home_row(h: &FakeHost, id: &str) -> Job {
+    h.jobs
+        .list()
+        .into_iter()
+        .find(|j| j.job.id == id)
+        .unwrap()
+        .job
+}
+
+/// Item 812: one finished run of Home's scan — started at `t`, its plan
+/// figures moved to `week` / `five`, ended two minutes later.
+async fn one_scan_run(h: &FakeHost, t: DateTime<Utc>, week: u8, five: u8) {
+    let scan = crate::home::SCAN_JOB_ID;
+    h.jobs.tick(h, t).await;
+    assert!(home_row(h, scan).running.is_some(), "the run started");
+    *h.running.lock().unwrap() = None;
+    *h.week.lock().unwrap() = Some(week);
+    *h.five.lock().unwrap() = Some(five);
+    let text = home_row(h, scan).text;
+    *h.log.lock().unwrap() = said(&text, "three things today");
+    h.jobs.tick(h, t + Duration::seconds(120)).await;
+    assert!(home_row(h, scan).running.is_none(), "the run ended");
+}
+
+/// Item 812: his Run now on a Home job the spend guard refuses is skipped
+/// at once — nothing prepared, no code-only page — and carries the Run
+/// anyway card: the guard's reason, the mean cost of its last runs, and
+/// his 5-hour and weekly figures at the press.
+#[tokio::test]
+async fn run_now_past_the_spend_guard_skips_and_asks_with_the_estimate() {
+    let (h, cfg) = home_host();
+    let t0 = at(2026, 11, 17, 15, 0);
+    let scan = crate::home::SCAN_JOB_ID;
+    assert!(h.jobs.ensure_home_scan("home-p", t0));
+    // A first run measures 2% of the week and 5% of the 5-hour window —
+    // and uses today's 1% cap.
+    h.jobs.run_now(scan).unwrap();
+    one_scan_run(&h, at(2026, 11, 17, 16, 0), 42, 15).await;
+    let j = home_row(&h, scan);
+    assert_eq!(
+        j.recent_cost,
+        vec![RunCost {
+            week: 2,
+            five: Some(5)
+        }]
+    );
+    assert!(!j.last.as_ref().unwrap().forced);
+
+    let t1 = at(2026, 11, 17, 17, 0);
+    let v = h.jobs.press_run(h.as_ref(), scan, t1).await.unwrap();
+    let c = v.job.confirm.clone().expect("the card asks");
+    assert_eq!(c.why, "Home has used today's 1% of the week");
+    assert_eq!(
+        (c.est_week, c.est_five, c.est_runs),
+        (Some(2.0), Some(5.0), 1)
+    );
+    assert_eq!((c.five_hour, c.week, c.stale), (Some(15), Some(42), false));
+    let last = v.job.last.clone().unwrap();
+    assert_eq!(last.outcome, Outcome::Skipped);
+    assert_eq!(
+        last.summary,
+        "skipped — Home has used today's 1% of the week"
+    );
+    assert!(!v.job.run_now && !v.job.force_once);
+    assert_eq!(h.preps.lock().unwrap().len(), 1, "nothing more prepared");
+    let date = super::local_date(t1, &v.job.zone()).unwrap();
+    let page = crate::home::dir_in(&cfg)
+        .join("scans")
+        .join(format!("{date}.md"));
+    assert!(
+        std::fs::read_to_string(page).map_or(true, |p| !p.contains("Skipped:")),
+        "a pressed run writes no skipped page"
+    );
+    // The tick after starts nothing.
+    h.jobs.tick(h.as_ref(), t1 + Duration::minutes(1)).await;
+    assert_eq!(h.preps.lock().unwrap().len(), 1);
+    // A job outside Home runs at once from the same press.
+    let other = h.jobs.create(new_job("every hour"), t0).unwrap().job.id;
+    let v = h.jobs.press_run(h.as_ref(), &other, t1).await.unwrap();
+    assert!(v.job.confirm.is_none() && v.job.run_now);
+    let _ = std::fs::remove_dir_all(&cfg);
+}
+
+/// Item 812: Run anyway starts the job once, past the guard, and its run
+/// row says `forced`; a second press while it waits is the same run.
+#[tokio::test]
+async fn run_anyway_starts_one_run_marked_forced() {
+    let (h, cfg) = home_host();
+    let t0 = at(2026, 11, 17, 15, 0);
+    let scan = crate::home::SCAN_JOB_ID;
+    assert!(h.jobs.ensure_home_scan("home-p", t0));
+    *h.five.lock().unwrap() = Some(82);
+    let v = h.jobs.press_run(h.as_ref(), scan, t0).await.unwrap();
+    assert!(v.job.confirm.is_some());
+
+    let anyway = JobPatch {
+        run_anyway: Some(true),
+        ..JobPatch::default()
+    };
+    let v = h.jobs.patch(scan, anyway.clone(), t0).unwrap();
+    assert!(v.job.confirm.is_none() && v.job.run_now && v.job.force_once);
+    h.jobs.patch(scan, anyway.clone(), t0).unwrap();
+    // A Run now pressed meanwhile does not ask again: it is the same run.
+    let v = h.jobs.press_run(h.as_ref(), scan, t0).await.unwrap();
+    assert!(v.job.confirm.is_none() && v.job.force_once);
+
+    one_scan_run(&h, t0 + Duration::minutes(1), 41, 86).await;
+    assert_eq!(h.preps.lock().unwrap().len(), 1, "one run");
+    assert_eq!(h.sends.lock().unwrap().len(), 1);
+    let j = home_row(&h, scan);
+    let last = j.last.clone().unwrap();
+    assert_eq!(last.outcome, Outcome::Done);
+    assert!(last.forced, "the run row says forced");
+    assert_eq!((last.week_points, last.five_points), (Some(1), Some(4)));
+    assert!(!j.force_once && !j.run_now && j.confirm.is_none());
+    let row = serde_json::to_value(&last).unwrap();
+    assert_eq!(row["forced"], true);
+    // The next tick starts nothing more.
+    h.jobs.tick(h.as_ref(), t0 + Duration::minutes(5)).await;
+    assert_eq!(h.preps.lock().unwrap().len(), 1);
+    let _ = std::fs::remove_dir_all(&cfg);
+}
+
+/// Item 812: Cancel on the card starts nothing; the row stays skipped with
+/// its reason. A first run has no estimate yet.
+#[tokio::test]
+async fn cancel_on_the_run_anyway_card_starts_nothing() {
+    let (h, cfg) = home_host();
+    let t0 = at(2026, 11, 17, 15, 0);
+    let scan = crate::home::SCAN_JOB_ID;
+    assert!(h.jobs.ensure_home_scan("home-p", t0));
+    *h.week.lock().unwrap() = Some(91);
+    let v = h.jobs.press_run(h.as_ref(), scan, t0).await.unwrap();
+    let c = v.job.confirm.unwrap();
+    assert_eq!(c.why, "the weekly window is at 91%");
+    assert_eq!((c.est_week, c.est_five, c.est_runs), (None, None, 0));
+
+    let v = h
+        .jobs
+        .patch(
+            scan,
+            JobPatch {
+                dismiss_confirm: Some(true),
+                ..JobPatch::default()
+            },
+            t0,
+        )
+        .unwrap();
+    assert!(v.job.confirm.is_none() && !v.job.run_now && !v.job.force_once);
+    assert_eq!(
+        v.job.last.unwrap().summary,
+        "skipped — the weekly window is at 91%"
+    );
+    h.jobs.tick(h.as_ref(), t0 + Duration::minutes(1)).await;
+    assert!(h.preps.lock().unwrap().is_empty(), "nothing started");
+    let _ = std::fs::remove_dir_all(&cfg);
+}
+
+/// Item 812: the guard still refuses Home's scheduled runs, as before —
+/// after a Run anyway too — and a scheduled skip raises no card.
+#[tokio::test]
+async fn a_scheduled_home_run_is_still_refused_after_run_anyway() {
+    let (h, cfg) = home_host();
+    let t0 = at(2026, 11, 17, 15, 0);
+    let scan = crate::home::SCAN_JOB_ID;
+    assert!(h.jobs.ensure_home_scan("home-p", t0));
+    *h.five.lock().unwrap() = Some(82);
+    h.jobs.press_run(h.as_ref(), scan, t0).await.unwrap();
+    h.jobs
+        .patch(
+            scan,
+            JobPatch {
+                run_anyway: Some(true),
+                ..JobPatch::default()
+            },
+            t0,
+        )
+        .unwrap();
+    one_scan_run(&h, t0 + Duration::minutes(1), 41, 85).await;
+    assert_eq!(h.preps.lock().unwrap().len(), 1);
+
+    let due = home_row(&h, scan).next_run;
+    assert!(due > t0);
+    h.jobs.tick(h.as_ref(), due + Duration::minutes(1)).await;
+    let j = home_row(&h, scan);
+    let last = j.last.clone().unwrap();
+    assert_eq!(last.outcome, Outcome::Skipped);
+    assert_eq!(last.summary, "skipped — the 5-hour window is at 85%");
+    assert!(!last.forced);
+    assert!(j.confirm.is_none(), "a scheduled skip does not ask");
+    // That day's page is the forced run's (never written over); the next
+    // scheduled skip, on a day with no page, writes its code-only page.
+    let page = |at: DateTime<Utc>| {
+        let date = super::local_date(at, &j.zone()).unwrap();
+        std::fs::read_to_string(
+            crate::home::dir_in(&cfg)
+                .join("scans")
+                .join(format!("{date}.md")),
+        )
+        .unwrap()
+    };
+    assert!(page(due).contains("three things today"));
+    let next = j.next_run;
+    assert!(next > due);
+    h.jobs.tick(h.as_ref(), next + Duration::minutes(1)).await;
+    assert!(page(next).contains("Skipped: the 5-hour window is at 85%\n"));
+    assert!(home_row(&h, scan).confirm.is_none());
+    assert_eq!(
+        h.preps.lock().unwrap().len(),
+        1,
+        "the scheduled run did not start"
+    );
     let _ = std::fs::remove_dir_all(&cfg);
 }

@@ -10,7 +10,9 @@
 //! - `POST /jobs/{id}` — pause or resume, new words or a new time, and
 //!   `approve_plan`: `true` lets its runs write from now, `false` makes it
 //!   read-only again.
-//! - `POST /jobs/{id}/run` — one run now.
+//! - `POST /jobs/{id}/run` — one run now; a Home job the spend guard
+//!   refuses is skipped and carries the Run anyway card (item 812), which
+//!   `POST /jobs/{id}` answers with `run_anyway` or `dismiss_confirm`.
 //! - `DELETE /jobs/{id}` — to the trash file; the page confirms first.
 //!
 //! All behind the bearer check like every `/api` route; a host with no
@@ -90,7 +92,11 @@ async fn patch(
 
 async fn run(State(shared): State<Arc<Shared>>, Path(id): Path<String>) -> Response {
     match jobs(&shared) {
-        Some(j) => said(j.run_now(&id)),
+        // Item 812: a Home job past the spend guard asks first.
+        Some(j) => said(
+            j.press_run(shared.host.as_ref(), &id, chrono::Utc::now())
+                .await,
+        ),
         None => no_jobs(),
     }
 }

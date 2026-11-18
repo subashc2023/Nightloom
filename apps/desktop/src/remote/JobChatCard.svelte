@@ -9,7 +9,8 @@
    * chat changes; an answer reads again at once.
    */
   import JobApproval from "./JobApproval.svelte";
-  import { answerPatch, approvalBadge, type Answer, type Job, type JobPatch } from "./jobs";
+  import JobRunConfirm from "./JobRunConfirm.svelte";
+  import { confirmPatch, answerPatch, approvalBadge, type Answer, type Job, type JobPatch } from "./jobs";
 
   interface Props {
     chat: string | null;
@@ -58,6 +59,13 @@
   }
 </script>
 
+{#if job?.confirm}
+  <!-- Item 812: his Run now past Home's spend guard asks here too (the Mac's chat and the phone's). -->
+  <div class="jc" data-job-chat-card>
+    <JobRunConfirm {job} {busy} onanswer={(run) => void act(confirmPatch(run))} />
+    {#if problem}<p class="jc-problem" role="alert">{problem}</p>{/if}
+  </div>
+{/if}
 {#if job?.wanted}
   <div class="jc" data-job-chat-card>
     <JobApproval {job} {busy} {where} named onanswer={(how: Answer) => void act(answerPatch(how))} />

@@ -19,10 +19,12 @@
    */
   import { untrack } from "svelte";
   import JobApproval from "./JobApproval.svelte";
+  import JobRunConfirm from "./JobRunConfirm.svelte";
   import {
     EVERY_PRESETS,
     answerPatch,
     approvalBadge,
+    confirmPatch,
     everyText,
     homeTodayText,
     phoneTz,
@@ -198,6 +200,10 @@
       <span class="jb-line">{lastText(j)}</span>
       {#if weekText(j)}<span class="jb-line">{weekText(j)}</span>{/if}
     </button>
+    {#if j.confirm}
+      <!-- Item 812: his Run now past Home's spend guard asks first. -->
+      <div class="jb-card"><JobRunConfirm job={j} busy={busy === j.id} onanswer={(run) => void act(j, () => api.jobPatch(j.id, confirmPatch(run)))} /></div>
+    {/if}
     {#if j.wanted}
       <div class="jb-card"><JobApproval job={j} busy={busy === j.id} onanswer={(how) => answer(j, how)} /></div>
     {/if}
@@ -217,7 +223,7 @@
         {:else}
           <div class="jb-row wrap">
             <button class="jb-btn" data-act="job-pause" disabled={busy === j.id} onclick={() => act(j, () => api.jobPatch(j.id, { paused: !j.paused }))}>{j.paused ? "Resume" : "Pause"}</button>
-            <button class="jb-btn" data-act="job-run" disabled={busy === j.id || j.running !== null} onclick={() => act(j, () => api.jobRun(j.id))}>Run now</button>
+            <button class="jb-btn" data-act="job-run" disabled={busy === j.id || j.running !== null || !!j.confirm} onclick={() => act(j, () => api.jobRun(j.id))}>Run now</button>
             {#if j.chat}
               <button class="jb-btn" data-act="job-open" onclick={() => onopen(j.chat ?? "", j.project)}>Open its chat</button>
             {/if}

@@ -254,7 +254,7 @@ pub fn job_for_chat(app: AppHandle, chat: String) -> Option<nightloom_service::j
 
 /// An answer on the Mac's card (item 780), as the phone's `/api/jobs/{id}`
 /// takes it: `approve` "once", "always" or "ask" (take back), or
-/// `dismiss_wanted` (Keep read-only).
+/// `dismiss_wanted` (Keep read-only); item 812's `run_anyway` / `dismiss_confirm`.
 #[tauri::command]
 pub fn job_answer(
     app: AppHandle,
@@ -266,6 +266,9 @@ pub fn job_answer(
     let patch = nightloom_service::jobs::JobPatch {
         approve: patch.approve,
         dismiss_wanted: patch.dismiss_wanted,
+        // Item 812: the spend guard's Run anyway / Cancel card.
+        run_anyway: patch.run_anyway,
+        dismiss_confirm: patch.dismiss_confirm,
         ..Default::default()
     };
     jobs.patch(&id, patch, chrono::Utc::now())
