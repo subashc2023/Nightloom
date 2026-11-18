@@ -1,9 +1,11 @@
 //! `POST /api/feedback` (nightshift item 805): the phone page's feedback
-//! sheet. `{text, chat?, chat_title?, project?, about?, nonce?}` →
+//! sheet. `{text, chat?, chat_title?, project?, nonce?}` →
 //! [`crate::feedback::Sent`] — the same `feedback::send` the Mac's box and
 //! the chats' `send_feedback` tool call, so a note from the phone is the
-//! same item. Filed in the host's Nightshift projects
-//! ([`super::Host::nightshift_roots`]); saved first under the host's
+//! same item. Filed in Nightloom's own backlog, picked from the host's
+//! Nightshift projects ([`super::Host::nightshift_roots`]) by
+//! `feedback::pick`; an `about` an older page sends is ignored (item 816:
+//! feedback is only for Nightloom's development). Saved first under the host's
 //! [`super::Host::feedback_home`]. A host with neither answers 501.
 
 use std::sync::Arc;
@@ -28,8 +30,6 @@ struct FeedbackRequest {
     chat_title: Option<String>,
     #[serde(default)]
     project: Option<String>,
-    #[serde(default)]
-    about: Option<String>,
     #[serde(default)]
     nonce: Option<String>,
 }
@@ -83,7 +83,7 @@ async fn send(State(shared): State<Arc<Shared>>, Json(req): Json<FeedbackRequest
         chat: req.chat,
         chat_title: req.chat_title,
         project: req.project,
-        about: req.about,
+        about: None,
         model_note: None,
         model_wording: None,
         words_unchecked: false,

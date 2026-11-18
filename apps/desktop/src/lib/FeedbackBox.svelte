@@ -20,11 +20,6 @@
   });
 
   const ctx = $derived(feedbackContext());
-  const target = $derived(
-    feedback.targets.find((t) => t.id === feedback.draft.about) ??
-      feedback.targets.find((t) => t.default) ??
-      null,
-  );
 
   function key(e: KeyboardEvent) {
     if (feedback.confirmDiscard) return;
@@ -73,21 +68,8 @@
     ></textarea>
     <div class="facts">
       <span class="ns-k">goes to</span>
-      <span>
-        {#if feedback.targets.length > 1}
-          <select
-            bind:value={feedback.draft.about}
-            onchange={keepDraft}
-            aria-label="Which project it is about"
-          >
-            {#each feedback.targets as t (t.id)}
-              <option value={t.default ? "" : t.id}>{t.name}{t.default ? " (Nightloom)" : ""}</option>
-            {/each}
-          </select>
-        {:else}
-          {target ? target.name : "nightshift-code"}
-        {/if}
-      </span>
+      <!-- Always Nightloom's own backlog: feedback is only for Nightloom's development (item 816). -->
+      <span>Nightloom</span>
       <span class="ns-k">attached</span>
       <span class="attached">
         {ctx.chat_title ? `the chat “${ctx.chat_title}”` : ctx.chat ? "the open chat" : "no chat"}{ctx.project
@@ -214,14 +196,6 @@
   .attached {
     color: var(--ink2);
     overflow-wrap: anywhere;
-  }
-  select {
-    font: inherit;
-    color: var(--ink);
-    background: transparent;
-    border: 1px solid var(--line2);
-    border-radius: 4px;
-    padding: 2px 6px;
   }
   .problem {
     margin: 0;

@@ -1,11 +1,10 @@
 //! The feedback box's commands (nightshift item 805). The work is
 //! `nightloom_service::feedback`, which the chats' `send_feedback` tool and
 //! the phone's `POST /api/feedback` share: his words become one backlog
-//! item in the Nightshift repo (or the project he picks), saved first under
-//! the config dir so nothing he sends is lost.
+//! item in Nightloom's own backlog (the Nightshift repo, always: item 816),
+//! saved first under the config dir so nothing he sends is lost.
 
 use nightloom_service::feedback::{self, FiledAs, Note, Sent};
-use serde::Serialize;
 
 use crate::blocking;
 
@@ -21,38 +20,10 @@ pub async fn feedback_send(note: Note) -> Result<Sent, String> {
     blocking(move || {
         let mut note = note;
         note.via = "box".into();
+        // No project picker any more (item 816); an old draft's pick is dropped.
+        note.about = None;
         let targets = feedback::targets_in(&config);
         feedback::send(Some(&config), &targets, note)
-    })
-    .await
-}
-
-/// One project the box's "About" picker offers.
-#[derive(Serialize)]
-pub struct FeedbackTarget {
-    pub id: String,
-    pub name: String,
-    /// The one a note goes to when he picks nothing (Nightloom's own).
-    pub default: bool,
-}
-
-/// The projects feedback can be filed in, the default first.
-#[tauri::command]
-pub async fn feedback_targets() -> Result<Vec<FeedbackTarget>, String> {
-    let config = config()?;
-    blocking(move || {
-        let targets = feedback::targets_in(&config);
-        let default = feedback::pick(&targets, None).ok().map(|t| t.id.clone());
-        let mut out: Vec<FeedbackTarget> = targets
-            .iter()
-            .map(|t| FeedbackTarget {
-                id: t.id.clone(),
-                name: t.name.clone(),
-                default: Some(&t.id) == default.as_ref(),
-            })
-            .collect();
-        out.sort_by_key(|t| !t.default);
-        Ok::<_, String>(out)
     })
     .await
 }

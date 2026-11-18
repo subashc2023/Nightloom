@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { afterSend, feedbackSurface } from "./feedbackText";
+import { afterSend, feedbackSurface, parseDraft } from "./feedbackText";
 import { FEEDBACK_PHONE_KEY, loadPhoneFeedback, savePhoneFeedback, sentSentence } from "../remote/feedbackDraft";
 import { keptSheet } from "../remote/schemeReload";
 
@@ -9,6 +9,12 @@ describe("feedback (item 805)", () => {
     expect(afterSend("hello", "hello")).toBe("");
     expect(afterSend("hello\nand more", "hello")).toBe("and more");
     expect(afterSend("rewritten", "hello")).toBe("rewritten");
+  });
+
+  it("reads an old draft that picked another project as its words alone (item 816)", () => {
+    expect(parseDraft(JSON.stringify({ text: "half typed", about: "vg" }))).toEqual({ text: "half typed" });
+    expect(parseDraft(null)).toEqual({ text: "" });
+    expect(parseDraft("not json")).toEqual({ text: "" });
   });
 
   it("names where it was sent from in plain words", () => {
