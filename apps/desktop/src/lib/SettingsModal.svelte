@@ -179,6 +179,7 @@
     subagentsSummary,
     updatesSummary,
     cacheSummary,
+    bitwardenSummary,
     type GroupId as SubGroupId,
   } from "./settings/subscriptionPane";
   import { keepWarm, loadKeepWarmDefault, setKeepWarmDefault } from "./keepWarm.svelte";
@@ -1123,6 +1124,9 @@
       setPaneFilter("subscription", "");
     }
   }
+  // Item 766 part 2: the Bitwarden group's rules and session (read below).
+  let bwRules = $state<api.BitwardenRule[] | null>(null);
+  let bwSession = $state(false);
   const subSummaries = $derived({
     handoff: handoffSummary({
       pct: handoffDefaultPct,
@@ -1142,7 +1146,30 @@
       layersAtCold: app.layerPrefs.autoAtCold,
     }),
     cache: cacheSummary(keepWarm.defaultOn),
+    bitwarden: bitwardenSummary(bwRules?.length ?? null, bwSession),
   });
+  // Item 766 part 2: the secret card's "always" rules, read once the pane
+  // opens (a file read; `bw` is not run).
+  $effect(() => {
+    void api
+      .bitwardenRules()
+      .then((r) => {
+        bwRules = r.rules;
+        bwSession = r.session;
+      })
+      .catch(() => (bwRules = []));
+  });
+  async function removeBwRule(id: string): Promise<void> {
+    try {
+      bwRules = await api.bitwardenRemoveRule(id);
+    } catch (e) {
+      addToast(`Bitwarden: ${String(e)}`);
+    }
+  }
+  async function forgetBwSession(): Promise<void> {
+    await api.bitwardenForgetSession();
+    bwSession = false;
+  }
   // Item 608: the keep-warm default, read once the pane opens.
   $effect(() => {
     void loadKeepWarmDefault();
@@ -2904,6 +2931,47 @@
             close the chat's tab or delete the chat. The ♨ switch under the
             message box turns one chat off, or on while this is off; that
             choice is kept for the chat.
+          {/snippet}
+        </SettingRow>
+      </SettingsGroup>
+      <!-- Item 766 part 2: "Always for this command" from a secret card —
+           which Bitwarden item answers which secret for which command, each
+           removable; and the session he pasted, forgettable now. -->
+      <SettingsGroup fold="subscription/bitwarden" title={subTitle("bitwarden")} summary={subSummaries.bitwarden} filtering={subFiltering} matches={subMatches("bitwarden")}>
+        <SettingRow fold="subscription/bitwarden-always" shown={subShown("bitwarden-always")} stack>
+          {#snippet label()}<span>Always allowed</span>{/snippet}
+          {#snippet control()}
+            {#if bwRules === null}
+              <p class="note small">Reading…</p>
+            {:else if bwRules.length === 0}
+              <p class="note small">None yet. “Always for this command” on a secret card adds one.</p>
+            {:else}
+              <ul class="bw-rules" aria-label="Bitwarden always rules">
+                {#each bwRules as r (r.id)}
+                  <li>
+                    <span><b class="sub-mono">{r.name}</b> from {r.item_name} · {r.field.startsWith("field:") ? r.field.slice(6) : r.field}, for <code>{r.prefix}</code></span>
+                    <button class="ns-btn ghost small" aria-label={`Remove ${r.name} for ${r.prefix}`} onclick={() => void removeBwRule(r.id)}>Remove</button>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          {/snippet}
+          {#snippet help()}
+            A chat that asks for one of these secrets and names a command that
+            starts with these words gets the value from that Bitwarden item
+            without a card, while Bitwarden is unlocked in Nightloom. Any other
+            command, or a locked vault, asks on the card again.
+          {/snippet}
+        </SettingRow>
+        <SettingRow fold="subscription/bitwarden-session" shown={subShown("bitwarden-session")}>
+          {#snippet label()}<span>Session {bwSession ? "held" : "not held"}</span>{/snippet}
+          {#snippet control()}
+            <button class="ns-btn ghost small" disabled={!bwSession} onclick={() => void forgetBwSession()}>Forget now</button>
+          {/snippet}
+          {#snippet help()}
+            The key you pasted from bw unlock --raw, kept in Nightloom's memory
+            only — never on disk — and forgotten after 30 idle minutes or when
+            Nightloom quits.
           {/snippet}
         </SettingRow>
       </SettingsGroup>
@@ -5523,6 +5591,26 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  /* Item 766 part 2: the Bitwarden always rules. */
+  .bw-rules {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .bw-rules li {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    justify-content: space-between;
+    font-size: 13px;
+  }
+  .bw-rules code {
+    font-family: var(--mono);
+    font-size: 12px;
   }
   /* Backlog 291: the default subagent rules box. */
   .rules-default {

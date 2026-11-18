@@ -4,18 +4,26 @@
   // types is this component's state alone — never a draft, never
   // localStorage — handed to `onuse`, which keeps it on the chat's host
   // and then answers a bare Allow; emptied once sent and when the card goes.
-  import { SECRET_WHERE_PHONE, secretView } from "../lib/secret";
+  import { SECRET_WHERE_PHONE, secretCommand, secretView, type BwApi } from "../lib/secret";
+  import BitwardenPick from "../lib/BitwardenPick.svelte";
 
   let {
     input,
     onuse,
     ondecline,
+    bw = null,
+    onstored = async () => null,
   }: {
     input: unknown;
     /** Keep it on the host, then Allow; the error to show, or null. */
     onuse: (name: string, value: string) => Promise<string | null>;
     ondecline: () => void;
+    /** Item 766 part 2: "From Bitwarden" on the chat's host, when connected. */
+    bw?: BwApi | null;
+    /** The host stored it from Bitwarden: Allow; the error to show, or null. */
+    onstored?: () => Promise<string | null>;
   } = $props();
+  const command = $derived(secretCommand(input));
 
   const view = $derived(secretView(input));
   let value = $state("");
@@ -58,6 +66,9 @@
     <button class="sa-btn primary" data-act="secret-use" disabled={busy || !value} onclick={() => void use()}>Use it</button>
     <button class="sa-btn" data-act="secret-decline" disabled={busy} onclick={decline}>Decline</button>
   </div>
+  {#if bw}
+    <div class="sa-bw"><BitwardenPick api={bw} name={view.name} {command} where="phone" disabled={busy} {onstored} /></div>
+  {/if}
 </div>
 
 <style>
@@ -140,5 +151,8 @@
   }
   .sa-btn:disabled {
     opacity: 0.5;
+  }
+  .sa-bw {
+    margin-top: 10px;
   }
 </style>

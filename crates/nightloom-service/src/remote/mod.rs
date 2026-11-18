@@ -860,6 +860,10 @@ fn router(shared: Arc<Shared>) -> Router {
         )
         .route("/approve", post(approve))
         .route("/secret", post(store_secret))
+        // Item 766 part 2: the phone's "From Bitwarden", read on this host.
+        .route("/bitwarden/ready", get(bitwarden_ready))
+        .route("/bitwarden/search", post(bitwarden_search))
+        .route("/bitwarden/store", post(bitwarden_store))
         .route("/cancel", post(cancel))
         .route("/chats/{id}/cancel", post(cancel_chat))
         .route("/events", get(events))
@@ -1347,6 +1351,67 @@ async fn store_secret(Json(req): Json<SecretRequest>) -> Response {
     match crate::secret::Store::default().put(&req.chat, &req.name, &req.value) {
         Ok(_) => StatusCode::OK.into_response(),
         Err(e) => bad(format!("not kept: {e}")),
+    }
+}
+
+/// Item 766 part 2: whether this host can read from Bitwarden (`bw
+/// status` only). The phone cannot hand a session over: a locked vault is
+/// unlocked on the Mac's card.
+async fn bitwarden_ready() -> Response {
+    let vault = crate::bitwarden::Vault::global();
+    let ready = tokio::task::spawn_blocking(move || vault.ready())
+        .await
+        .unwrap_or(crate::bitwarden::Ready::Missing);
+    Json(serde_json::json!({ "ready": ready })).into_response()
+}
+
+#[derive(Deserialize)]
+struct BitwardenSearch {
+    query: String,
+}
+
+/// Items matching the phone's search: names, a host, field names — never
+/// a value.
+async fn bitwarden_search(Json(req): Json<BitwardenSearch>) -> Response {
+    let vault = crate::bitwarden::Vault::global();
+    match tokio::task::spawn_blocking(move || vault.search(&req.query)).await {
+        Ok(Ok(items)) => Json(serde_json::json!({ "items": items })).into_response(),
+        Ok(Err(e)) => bad(e),
+        Err(e) => bad(e.to_string()),
+    }
+}
+
+#[derive(Deserialize)]
+struct BitwardenStore {
+    chat: String,
+    name: String,
+    item_id: String,
+    field: String,
+    #[serde(default)]
+    always_for: Option<String>,
+}
+
+/// The phone card's *Use once* / *Always*: the value goes from `bw` to its
+/// 0600 file on this host and is never in the answer.
+async fn bitwarden_store(Json(req): Json<BitwardenStore>) -> Response {
+    let vault = crate::bitwarden::Vault::global();
+    let done = tokio::task::spawn_blocking(move || {
+        crate::bitwarden::store_from_item(
+            &vault,
+            &crate::secret::Store::default(),
+            crate::project::config_dir().as_deref(),
+            &req.chat,
+            &req.name,
+            &req.item_id,
+            &req.field,
+            req.always_for.as_deref(),
+        )
+    })
+    .await;
+    match done {
+        Ok(Ok(())) => StatusCode::OK.into_response(),
+        Ok(Err(e)) => bad(e),
+        Err(e) => bad(e.to_string()),
     }
 }
 

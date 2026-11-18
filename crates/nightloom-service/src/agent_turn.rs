@@ -193,6 +193,11 @@ pub trait TurnEnv: Send + Sync {
     fn job_of(&self, _chat: &str) -> Option<crate::runaway::JobUsual> {
         None
     }
+    /// Item 766 part 2: the `bw` the secret card's "always" rules are read
+    /// through, and the session he pasted. A test gives its stand-in.
+    fn bitwarden(&self) -> Arc<crate::bitwarden::Vault> {
+        crate::bitwarden::Vault::global()
+    }
 }
 
 /// One turn's inputs besides the environment.
@@ -583,9 +588,49 @@ async fn turn_body(
             // refused here; any other asks him on its card.
             let secret_ask = (call.name == crate::mcp_server::mcp_name(crate::secret::TOOL_NAME))
                 .then(|| crate::secret::requested_name(&call.input));
+            // Item 766 part 2: "Always for this command" from Bitwarden — a
+            // rule for this name whose prefix the named command starts
+            // with, and a session he pasted still open, stores the value
+            // and needs no card. Any other command, or a locked vault, asks.
+            let by_rule = match &secret_ask {
+                Some(Ok(name)) => {
+                    let vault = env.bitwarden();
+                    let store = secrets.clone();
+                    let home = ask.rules_home();
+                    let (chat, name) = (chat_id.to_string(), name.clone());
+                    let command = crate::bitwarden::requested_command(&call.input);
+                    tokio::task::spawn_blocking(move || {
+                        crate::bitwarden::answer_by_rule(
+                            &vault,
+                            &store,
+                            home.as_deref(),
+                            &chat,
+                            &name,
+                            command.as_deref(),
+                        )
+                    })
+                    .await
+                    .ok()
+                    .flatten()
+                }
+                _ => None,
+            };
+            if let (Some(rule), Some(Ok(name))) = (&by_rule, &secret_ask) {
+                env.notice(format!(
+                    "{name} from Bitwarden ({} · {}): you allowed it always for `{}`. Settings → Subscription → Bitwarden lists and removes it.",
+                    rule.item_name,
+                    rule.field.strip_prefix("field:").unwrap_or(&rule.field),
+                    rule.prefix
+                ));
+            }
             let trees = agent_trees(agent);
             let preanswer = match (&folder_ask, &secret_ask) {
                 (_, Some(Err(e))) => Some(Answer::Deny { reason: e.clone() }),
+                (_, Some(Ok(_))) if by_rule.is_some() => Some(Answer::Allow {
+                    updated_input: None,
+                    plan_then: None,
+                    grant: None,
+                }),
                 (folder_ask, _) => match folder_ask {
                     Some(Err(e)) => Some(Answer::Deny { reason: e.clone() }),
                     Some(Ok(d)) if add_folder::inside(d, &trees) => {
@@ -740,7 +785,8 @@ async fn turn_body(
             // value reached the store first (the card's `store_secret`, the
             // phone's `/api/secret`): the tool is told the path, and the
             // value joins the scrub. An Allow with nothing stored is his
-            // refusal. Never a standing rule: each secret is its own card.
+            // refusal. Never a chat approval rule: each secret is its own card
+            // (Bitwarden's "always", above, is its own list, item 766 part 2).
             let answer = match (&secret_ask, answer) {
                 (Some(Ok(name)), Some(Answer::Allow { .. } | Answer::AllowForChat { .. })) => {
                     Some(match secrets.get(chat_id, name) {

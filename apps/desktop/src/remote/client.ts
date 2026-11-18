@@ -14,7 +14,7 @@ import type { WireView } from "../lib/types";
 import type { CacheRatesWire } from "../lib/cachePrice";
 import type { ContextReply, LayerChange } from "./ContextSheet.svelte";
 import { isCouncilBlock } from "../lib/council";
-import { isSecretRequest } from "../lib/secret";
+import { isSecretRequest, type BwItem, type BwReady } from "../lib/secret";
 import { parseSubagentBlock } from "../lib/subagent";
 import { cleanPassage, shownText, splitAttachNote } from "../lib/keep";
 import { isSendFile, parseSentFile, sentFileRoute, type SentFile } from "../lib/sentFiles";
@@ -1179,6 +1179,26 @@ export class Client {
    *  this host, before the card's Allow. The body goes nowhere else. */
   async storeSecret(chat: string, name: string, value: string): Promise<void> {
     await this.call("/secret", { method: "POST", body: JSON.stringify({ chat, name, value }) });
+  }
+
+  /** Item 766 part 2: whether this host can read from Bitwarden. */
+  async bitwardenReady(): Promise<BwReady> {
+    const r = await this.call("/bitwarden/ready");
+    return ((await r.json()) as { ready: BwReady }).ready;
+  }
+
+  /** Vault items matching `query` on this host: names and field names only. */
+  async bitwardenSearch(query: string): Promise<BwItem[]> {
+    const r = await this.call("/bitwarden/search", { method: "POST", body: JSON.stringify({ query }) });
+    return ((await r.json()) as { items: BwItem[] }).items;
+  }
+
+  /** Read one item's field into the chat's private file on this host. */
+  async bitwardenStore(chat: string, name: string, itemId: string, field: string, alwaysFor: string | null): Promise<void> {
+    await this.call("/bitwarden/store", {
+      method: "POST",
+      body: JSON.stringify({ chat, name, item_id: itemId, field, always_for: alwaysFor }),
+    });
   }
 
   /** Stop `chat`'s turn — the chat this page shows, which need not be the
