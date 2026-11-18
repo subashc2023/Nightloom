@@ -1695,6 +1695,7 @@ fn main() {
             commands::turns::bitwarden_store,
             commands::turns::bitwarden_rules,
             commands::turns::bitwarden_remove_rule,
+            commands::turns::bitwarden_clear_dropped,
             commands::system::playwright_for_chat,
             commands::projects::pick_folder,
             commands::projects::pick_export,

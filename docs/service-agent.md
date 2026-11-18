@@ -1322,9 +1322,37 @@ The session: he pastes the key that `bw unlock --raw` prints, once, on the Mac's
 reaches `bw` as `BW_SESSION`, never as an argument. It is forgotten after 30 minutes without use, on *Forget now*, or
 at quit. Nightloom never runs `bw unlock` or `bw login`, and runs `bw status` only when a card is drawn. When the
 card cannot use Bitwarden, it says why in one line, with what to do: not installed (`brew install bitwarden-cli`),
-signed out (`bw login`), or locked (`bw unlock --raw`, then paste; the phone says to do it on the Mac). Not enforced:
+signed out (`bw login`), or locked (`bw unlock --raw`, then paste; the phone says to do it on the Mac). ~~Not enforced:
 the `command` is only what the model declared, and once the file exists any command in that chat can read it during
-its day.
+its day.~~ (struck 2026-11-17: item 825 enforces it, below.)
+
+### Always, enforced where the command runs (item 825)
+
+The declared `command` now only *finds* the rule. A rule's answer is **held** (`Store::hold`): the value waits in
+`<store>/<chat>/.held/<NAME>` (0600), the file the model is told of stays empty, and the chat's folder gets
+`secrets-held.json` (the two paths and the rule's prefix, never a value). The tool's reply says the file is filled only
+while a command that starts with the prefix runs.
+
+The brief hook (`brief::decide_holding`), which runs on every call of every process in the turn, asks
+`secret::release_gate` first (`secret_release.rs`):
+
+- Every call first takes back a copy an earlier call was given (`rehold`); the card loop and the turn's end do too.
+- A call that names the file, the held copy, a `.held` folder or the note is refused with the reason, unless it is the
+  main chat's foreground Bash command that runs the rule (`runs_rule`): one plain command (no unquoted `;`, `&`, `|`,
+  parentheses or line break, no backtick or other `$(`), reading the file only as `"$(cat '<path>')"`, with no
+  assignment in front but `NAME="$(cat '<path>')"`, whose program is no wrapper and whose program words start with
+  the prefix word for word.
+- That command alone gets the value copied into the file just before it runs (`release`).
+
+Wrappers (`bitwarden::WRAPPERS`: shells, `env`, `sudo`, `xargs`, `eval`, `exec`, `command`, `nohup`, `time`, …, and
+`bitwarden::INTERPRETERS` alone: `python3`, `node`, `perl`, `npx`, …) cannot be kept as Always: `add_rule` refuses,
+and the card greys the button with one line (`wrapperRefusal` in `lib/secret.ts`). A rule kept before is dropped when
+the rules are read (`read_rules`), rewritten out of the file and noted in its `dropped` list. Settings shows the note
+until OK (`bitwarden_clear_dropped`), and a turn whose read dropped one says so in the chat.
+
+Not stopped, said plainly: a command that reaches the file by a name the gate cannot read (built at run time, encoded)
+in the same moment as the released command, and a program found first on `PATH` under the rule's name. A chat with
+the preamble off has no brief hook, so its held value is never released (it fails closed).
 
 ## What `--append-system-prompt` carries
 

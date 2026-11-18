@@ -14,6 +14,7 @@ import {
   isSecretRequest,
   secretCommand,
   secretView,
+  wrapperRefusal,
 } from "./secret";
 
 describe("the secret-request card (item 766)", () => {
@@ -74,5 +75,34 @@ describe("From Bitwarden on the secret card (item 766 part 2)", () => {
       expect(lines.length).toBeLessThanOrEqual(2);
       for (const l of lines) expect(l.length).toBeLessThanOrEqual(48);
     }
+  });
+
+  it("never offers Always for a wrapper (item 825), as bitwarden::wrapper_refusal", () => {
+    for (const cmd of [
+      "bash -c 'gh release create v1'",
+      "sh -c x",
+      "env GH_TOKEN=x gh",
+      "sudo gh release create",
+      "xargs gh",
+      "eval gh",
+      "exec gh",
+      "command gh",
+      "nohup gh release",
+      "time gh release",
+      "/usr/bin/env gh",
+      "python3 -c 'print(1)'",
+      "python3.12 -c x",
+      "node -e x",
+      "perl -e x",
+      "npx --yes x",
+    ]) {
+      const why = wrapperRefusal(commandPrefix(cmd));
+      expect(why, cmd).toMatch(/^Not for `/);
+      expect(why!.length).toBeLessThan(70);
+    }
+    expect(wrapperRefusal("gh release create")).toBeNull();
+    expect(wrapperRefusal("python3 deploy.py prod")).toBeNull();
+    expect(wrapperRefusal("./deploy.sh prod")).toBeNull();
+    expect(wrapperRefusal(null)).toBeNull();
   });
 });

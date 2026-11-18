@@ -521,8 +521,26 @@ export interface BitwardenRule {
 }
 
 /** The "always" rules, and whether a session is held. */
-export function bitwardenRules(): Promise<{ rules: BitwardenRule[]; session: boolean }> {
+/** A rule dropped on load because its prefix is a wrapper (item 825). */
+export interface BitwardenDropped {
+  name: string;
+  item_name: string;
+  prefix: string;
+  why: string;
+  when: string;
+}
+
+export function bitwardenRules(): Promise<{
+  rules: BitwardenRule[];
+  dropped?: BitwardenDropped[];
+  session: boolean;
+}> {
   return invoke("bitwarden_rules");
+}
+
+/** He pressed OK on the dropped-rule notes (item 825). */
+export function bitwardenClearDropped(): Promise<void> {
+  return invoke("bitwarden_clear_dropped");
 }
 
 /** Remove one "always" rule. */

@@ -2845,6 +2845,45 @@ pub(super) fn decide_holding(
     poll_ms: u64,
     senses: &Senses,
 ) -> HookReply {
+    // Item 825: a Bitwarden "always" value is released here, at run time,
+    // only into a command that runs its rule — never from what the model
+    // declared. Every call first takes back a copy an earlier one was given.
+    crate::secret::rehold(dir);
+    let gate = serde_json::from_str::<HookInput>(stdin_json)
+        .ok()
+        .filter(|i| i.hook_event_name != PROMPT_EVENT)
+        .map(|i| {
+            let main = i.agent_id.as_deref().is_none_or(str::is_empty);
+            crate::secret::release_gate(dir, &i.tool_name, &i.tool_input, main)
+        })
+        .unwrap_or(crate::secret::Gate::Pass);
+    if let crate::secret::Gate::Deny(reason) = gate {
+        return HookReply::deny(reason);
+    }
+    let reply = decide_holding_unheld(dir, stdin_json, gauge, week, hold_ms, poll_ms, senses);
+    if let crate::secret::Gate::Release(notes) = gate
+        && reply.decision() != "deny"
+    {
+        for note in &notes {
+            // A copy that cannot be made leaves the command without it:
+            // it fails as a missing file would, and nothing else is told.
+            let _ = crate::secret::release(note);
+        }
+    }
+    reply
+}
+
+/// [`decide_holding`] past the held-secret gate: the brief, the caps, the
+/// usage line.
+fn decide_holding_unheld(
+    dir: &Path,
+    stdin_json: &str,
+    gauge: Option<WindowReading>,
+    week: Option<u8>,
+    hold_ms: i64,
+    poll_ms: u64,
+    senses: &Senses,
+) -> HookReply {
     let Ok(input) = serde_json::from_str::<HookInput>(stdin_json) else {
         return HookReply::pass();
     };

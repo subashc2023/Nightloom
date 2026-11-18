@@ -559,6 +559,8 @@ async fn turn_body(
             let Some(dir) = ask_dir.clone() else {
                 break;
             };
+            // Item 825: a copy a call was given goes back while the card waits.
+            crate::secret::rehold(&dir);
             // The same call again is the one set aside, back for its answer.
             let before = set_aside.len();
             set_aside.retain(|(c, _)| !(c.name == call.name && c.input == call.input));
@@ -599,8 +601,8 @@ async fn turn_body(
                     let home = ask.rules_home();
                     let (chat, name) = (chat_id.to_string(), name.clone());
                     let command = crate::bitwarden::requested_command(&call.input);
-                    tokio::task::spawn_blocking(move || {
-                        crate::bitwarden::answer_by_rule(
+                    let (rule, dropped) = tokio::task::spawn_blocking(move || {
+                        crate::bitwarden::answer_by_rule_noting(
                             &vault,
                             &store,
                             home.as_deref(),
@@ -610,8 +612,13 @@ async fn turn_body(
                         )
                     })
                     .await
-                    .ok()
-                    .flatten()
+                    .unwrap_or_default();
+                    // Item 825: a wrapper rule saved before is dropped on
+                    // this read, and he is told here as well as in Settings.
+                    for d in &dropped {
+                        env.notice(crate::bitwarden::dropped_notice(d));
+                    }
+                    rule
                 }
                 _ => None,
             };
@@ -788,6 +795,42 @@ async fn turn_body(
             // refusal. Never a chat approval rule: each secret is its own card
             // (Bitwarden's "always", above, is its own list, item 766 part 2).
             let answer = match (&secret_ask, answer) {
+                // Item 825: a rule's answer is held, not stored where the
+                // model reads — the hook releases it for a command that
+                // runs the rule's words. The held value joins the scrub.
+                (Some(Ok(name)), Some(Answer::Allow { .. })) if by_rule.is_some() => {
+                    let prefix = by_rule
+                        .as_ref()
+                        .map(|r| r.prefix.clone())
+                        .unwrap_or_default();
+                    Some(match secrets.held(chat_id, name) {
+                        Some(value) => {
+                            let note = crate::secret::HeldNote {
+                                path: secrets.path(chat_id, name),
+                                held: secrets.held_path(chat_id, name),
+                                prefix,
+                            };
+                            match crate::secret::note_held(ask_files.path(), name, &note) {
+                                Ok(()) => {
+                                    scrub.add(value);
+                                    Answer::Allow {
+                                        updated_input: None,
+                                        plan_then: None,
+                                        grant: None,
+                                    }
+                                }
+                                Err(e) => Answer::Deny {
+                                    reason: format!(
+                                        "Not stored: Nightloom could not note it ({e})."
+                                    ),
+                                },
+                            }
+                        }
+                        None => Answer::Deny {
+                            reason: crate::secret::DECLINED.into(),
+                        },
+                    })
+                }
                 (Some(Ok(name)), Some(Answer::Allow { .. } | Answer::AllowForChat { .. })) => {
                     Some(match secrets.get(chat_id, name) {
                         Some(value) => {
@@ -1118,6 +1161,10 @@ async fn turn_body(
                 (_, false, None) => "end_turn".to_string(),
             };
             recorder.finish(Some(&reason));
+            // Item 825: no released copy outlives the turn.
+            if let Some(dir) = ask_dir.as_deref() {
+                crate::secret::rehold(dir);
+            }
             // Item 766: the CLI's own record of the session, now its last
             // process has exited — rewritten only where a value is in it.
             // A process that ended before naming its session (stopped
@@ -1215,6 +1262,10 @@ async fn turn_body(
             // Whatever streamed before the failure is still what happened;
             // `finish` closes the calls a killed round left open.
             recorder.finish(Some("error"));
+            // Item 825: no released copy outlives the turn.
+            if let Some(dir) = ask_dir.as_deref() {
+                crate::secret::rehold(dir);
+            }
             // Item 766: a turn that failed still wrote the CLI's session
             // file up to there — scrubbed as a finished turn's is, or a
             // value a command printed before the failure stayed in it past
