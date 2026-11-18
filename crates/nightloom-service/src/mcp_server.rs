@@ -2867,6 +2867,9 @@ mod tests {
         )));
         served.push(Box::new(crate::tools::AddFolder::new(config.clone(), None)));
         served.push(Box::new(crate::secret::RequestSecret::new(config.clone())));
+        served.push(Box::new(crate::evidence::EvidenceTable::new(
+            crate::evidence::Places::in_root(config.clone(), None),
+        )));
         crate::chain::ensure(&config, "c").unwrap();
         served.extend(crate::chain::tools(&config, Some("c")));
         served.extend(crate::home::route::tools(&config, None));
