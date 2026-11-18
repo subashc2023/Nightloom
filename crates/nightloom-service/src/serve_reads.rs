@@ -251,12 +251,19 @@ pub async fn usage() -> Result<UsageReply, String> {
         let plan = crate::plan_usage::read();
         let mut ledger =
             serde_json::to_value(crate::usage::summary()).map_err(|e| e.to_string())?;
-        if let Some(note) = plan_note(&plan)
+        let note = plan_note(&plan);
+        if let Some(note) = note
             && let Some(map) = ledger.as_object_mut()
         {
             map.insert("plan_note".into(), note.into());
         }
-        Ok(UsageReply { plan, ledger })
+        // Item 824: the pace beside the reading, for the phone's dials.
+        let pace = if note.is_none() {
+            serde_json::to_value(crate::pace::read()).unwrap_or_default()
+        } else {
+            serde_json::Value::Null
+        };
+        Ok(UsageReply { plan, ledger, pace })
     })
     .await
 }

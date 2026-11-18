@@ -1363,14 +1363,16 @@ impl DesktopHost {
             .await
     }
 
-    /// `{ plan, ledger }`: the plan window (5 h, week, resets) and the
-    /// ledger's summary, read off disk.
+    /// `{ plan, ledger, pace }`: the plan window (5 h, week, resets), the
+    /// ledger's summary, read off disk, and (item 824) the plan's pace for
+    /// the phone's dials — the Mac's own `plan_pace`.
     pub async fn usage(&self) -> Result<serde_json::Value, String> {
         let plan =
             crate::blocking(|| Ok::<_, String>(nightloom_service::plan_usage::read())).await?;
         let ledger =
             crate::blocking(|| Ok::<_, String>(nightloom_service::usage::summary())).await?;
-        Ok(serde_json::json!({ "plan": plan, "ledger": ledger }))
+        let pace = crate::blocking(|| Ok::<_, String>(nightloom_service::pace::read())).await?;
+        Ok(serde_json::json!({ "plan": plan, "ledger": ledger, "pace": pace }))
     }
 
     /// A new project by name (its folder under the projects folder, as

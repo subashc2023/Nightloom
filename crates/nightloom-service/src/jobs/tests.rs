@@ -277,6 +277,7 @@ impl Host for FakeHost {
                 ..PlanUsage::default()
             },
             ledger: serde_json::Value::Null,
+            pace: serde_json::Value::Null,
         })
     }
 }

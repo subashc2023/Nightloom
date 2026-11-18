@@ -2278,6 +2278,7 @@ mod tests {
                     ..Default::default()
                 },
                 ledger: serde_json::Value::Null,
+                pace: serde_json::Value::Null,
             })
         }
         async fn cache_rates(
