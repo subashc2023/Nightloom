@@ -295,6 +295,22 @@ export function columnWithoutRow(colH: number, rowH: number, gap = 10): number {
   return rowH > 0 ? Math.max(0, colH - rowH - gap) : colH;
 }
 
+/**
+ * Item 839 (his bug, 2026-11-18: the page kept "getting more zoomed out"):
+ * the column the dial is sized against, with the message box at rest. The
+ * box grows with his text (to its cap) and with each attachment; sizing
+ * the dial on the measured column shrank the dial, its title and the
+ * ground's camera with every line he typed — 382 px to 211 px over four
+ * lines at 1440 × 900. The box's growth past the smallest height it has
+ * had on this page is taken back out, so typing never rescales the hero;
+ * the page scrolls instead (`.page` is the scroller). `slotMin` is the
+ * smallest box height seen (Infinity before the first measure).
+ */
+export function columnAtRest(colH: number, slotH: number, slotMin: number): number {
+  if (!(slotH > 0) || !Number.isFinite(slotMin) || slotMin > slotH) return colH;
+  return Math.max(0, colH - (slotH - slotMin));
+}
+
 /** A thread's `touched` (YYYY-MM-DD) as the list's right-hand date: "today", "Nov 8". */
 export function threadWhen(touched: string | null, now: Date = new Date()): string {
   if (!touched) return "";

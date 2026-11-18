@@ -28,6 +28,7 @@ import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
 import { addToast } from "./state.svelte";
 import { keepPlacesAcross } from "./zoomAnchor";
+import { zoomNow } from "./zoomLevel.svelte";
 
 /** Chrome's presets as labels, ascending; 1 is Actual Size ("100%"). */
 export const ZOOM_STEPS = [
@@ -39,6 +40,29 @@ export const ZOOM_BASE = 1.1;
 export const ZOOM_KEY = "nightloom.zoom";
 /** Since item 619: the level (the label ÷ 100). */
 export const ZOOM_LEVEL_KEY = "nightloom.zoom.level";
+/**
+ * Item 839: the last changes, newest last — when, from, to, and what asked
+ * (`menu`: the View menu or its ⌘= / ⌘− / ⌘0; `key`: the app's own key
+ * handler; `chip`: the top bar's chip). His stored level drifted to 90 %
+ * with no record of what moved it; the next drift says.
+ */
+export const ZOOM_LOG_KEY = "nightloom.zoom.log";
+export type ZoomVia = "menu" | "key" | "chip";
+export type ZoomLogEntry = { at: string; from: number; to: number; via: ZoomVia };
+const LOG_MAX = 20;
+
+/** The log with one more entry, capped (pure). */
+export function appendZoomLog(raw: string | null, e: ZoomLogEntry): ZoomLogEntry[] {
+  let list: ZoomLogEntry[] = [];
+  try {
+    const v = raw ? JSON.parse(raw) : [];
+    if (Array.isArray(v)) list = v.filter((x) => x && typeof x === "object");
+  } catch {
+    list = [];
+  }
+  list.push(e);
+  return list.slice(-LOG_MAX);
+}
 
 /** The page-zoom factor a level draws at. */
 export function zoomFactor(level: number): number {
@@ -149,6 +173,7 @@ export function currentZoom(): number {
 /** Scale the window to level `level`: the webview's page zoom, else CSS `zoom`. */
 async function apply(level: number): Promise<void> {
   current = level;
+  zoomNow.level = level;
   const f = zoomFactor(level);
   try {
     await api.setZoom(f);
@@ -166,14 +191,31 @@ async function apply(level: number): Promise<void> {
 /** `zoom_in`, `zoom_out`, `zoom_reset` — the menu ids and the key handler's. */
 export async function runZoom(
   id: "zoom_in" | "zoom_out" | "zoom_reset",
+  via: ZoomVia = "menu",
 ): Promise<void> {
+  // Item 839: one change at a time — a second press waits for the first,
+  // so it steps from the level the first left, never from a stale one.
+  const run = queue.then(() => step(id, via));
+  queue = run.catch(() => {});
+  return run;
+}
+let queue: Promise<void> = Promise.resolve();
+async function step(id: "zoom_in" | "zoom_out" | "zoom_reset", via: ZoomVia): Promise<void> {
+  const from = current;
   const next =
     id === "zoom_reset" ? 1 : stepZoom(current, id === "zoom_in" ? 1 : -1);
   if (next === current) return;
   // Item 672: every scrolled view keeps the line it was on.
   await keepPlacesAcross(() => apply(next));
   saveZoom(next);
-  addToast(zoomLabel(next));
+  try {
+    const log = appendZoomLog(localStorage.getItem(ZOOM_LOG_KEY), { at: new Date().toISOString(), from, to: next, via });
+    localStorage.setItem(ZOOM_LOG_KEY, JSON.stringify(log));
+  } catch {
+    // best-effort
+  }
+  // Item 839: never silent — every change says the level and the way back.
+  addToast(next === 1 ? zoomLabel(next) : `${zoomLabel(next)} · ⌘0 for 100%`);
 }
 
 /**
@@ -181,14 +223,21 @@ export async function runZoom(
  * is for a change), and the View menu's three ids listened for. Anything
  * else on the `menu` channel is `runMenuCommand`'s and ignored here.
  */
+let unlistenMenu: (() => void) | null = null;
 export async function initZoom(): Promise<void> {
   // Every level applies now, 100 % too: its factor is 1.1, not the webview's 1.
   await apply(loadZoom());
-  await listen<string>("menu", (e) => {
+  // Item 839: one listener, ever — a second `initZoom` (a remount, a dev
+  // reload) would else step the level twice per ⌘−.
+  unlistenMenu?.();
+  unlistenMenu = null;
+  const un = await listen<string>("menu", (e) => {
     const id = e.payload;
     if (id === "zoom_in" || id === "zoom_out" || id === "zoom_reset")
-      void runZoom(id);
+      void runZoom(id, "menu");
   });
+  (unlistenMenu as (() => void) | null)?.(); // a call that raced this one registered too: keep only ours
+  unlistenMenu = un;
 }
 
 /**

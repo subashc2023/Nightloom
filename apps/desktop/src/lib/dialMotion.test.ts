@@ -137,7 +137,8 @@ describe("the motion rules (581; 574b's rules for ContextDial stand unchanged)",
     // The big dial and the short pane's 84 px one.
     expect(welcomeSrc.match(/<DialMotion/g)?.length).toBe(2);
     // His keys reach it without touching the Composer: input events bubble to the slot.
-    expect(welcomeSrc).toContain('<div class="composer-slot" oninput={() => typed++}>');
+    // (Item 839 added the slot's height and the keep-in-view to the same handler.)
+    expect(welcomeSrc).toMatch(/<div class="composer-slot"[^>]*oninput=\{\(\) => \{ typed\+\+;/);
   });
 });
 
