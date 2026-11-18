@@ -6,7 +6,7 @@
   import ChapterRule from "./ChapterRule.svelte";
   import ChapterContents from "./ChapterContents.svelte";
   import { CONTENTS_CLEAR, chaptersOf, placeChapters } from "./chapters";
-  import { editsFor, withEdits, type ShownChapter } from "./chapterEdits.svelte";
+  import { editsFor, syncChapterEdits, withEdits, type ShownChapter } from "./chapterEdits.svelte";
   import { peekChapterJump, takeChapterJump } from "./chapterJump.svelte";
   import ScanCard from "./ScanCard.svelte";
   import { handOffsOf, isScanMessage, placeDividers } from "./home";
@@ -501,9 +501,12 @@
   // plan approved, a helper wave, a turn's commits; hand-offs have their own
   // line above) and the contents list at the top right that jumps to them.
   const chapterList: ShownChapter[] = $derived(
-    chatId ? withEdits(chaptersOf(evs, liveFlags(evs)), editsFor(chatId)) : [],
+    chatId ? withEdits(chaptersOf(evs, liveFlags(evs)), editsFor(chatId, evs)) : [],
   );
   const chapterPlaces = $derived(placeChapters(items, chapterList.filter((c) => !c.removed)));
+  // Item 842: his edits live in the chat's log (the phone reads them there);
+  // an edit this window holds that the log does not say yet is sent to it.
+  $effect(() => syncChapterEdits(chatId, evs));
 
   // ~~`findCallIn`~~ moved to `subagent.ts` with the placing (backlog 330).
   /** The assistant messages already projected, newest first — a

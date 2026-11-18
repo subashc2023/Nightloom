@@ -6,7 +6,7 @@
   import ChapterRule from "./ChapterRule.svelte";
   import ChapterContents from "./ChapterContents.svelte";
   import { CONTENTS_CLEAR, chaptersOf, placeChapters } from "./chapters";
-  import { editsFor, withEdits, type ShownChapter } from "./chapterEdits.svelte";
+  import { editsFor, syncChapterEdits, withEdits, type ShownChapter } from "./chapterEdits.svelte";
   import { peekChapterJump, takeChapterJump } from "./chapterJump.svelte";
   import ScanCard from "./ScanCard.svelte";
   import { handOffsOf, isScanMessage, placeDividers } from "./home";
@@ -521,9 +521,12 @@
   // Kept per chat — a pane's chat too — and an aside by its own fold name.
   const chapterScope = $derived(inAside ? (src.foldChat ?? null) : chatId);
   const chapterList: ShownChapter[] = $derived(
-    chapterScope ? withEdits(chaptersOf(evs, liveFlags(evs)), editsFor(chapterScope)) : [],
+    chapterScope ? withEdits(chaptersOf(evs, liveFlags(evs)), editsFor(chapterScope, evs)) : [],
   );
   const chapterPlaces = $derived(placeChapters(items, chapterList.filter((c) => !c.removed)));
+  // Item 842: his edits live in the chat's log (the phone reads them there);
+  // an edit this window holds that the log does not say yet is sent to it.
+  $effect(() => syncChapterEdits(chapterScope, evs));
 
   // ~~`findCallIn`~~ moved to `subagent.ts` with the placing (backlog 330).
   /** The assistant messages already projected, newest first — a

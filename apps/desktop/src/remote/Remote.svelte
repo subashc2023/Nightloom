@@ -100,6 +100,7 @@
   import { aimAction, liveSegments, retryStopping, sentOf } from "./client";
   import { retryText } from "../lib/retryLine";
   import { parseRan } from "../lib/shellRun";
+  import { KIND_WORD, chaptersOf, logEdits, placeOnRows, withEdits, type ShownChapter } from "../lib/chapters";
   /** Item 515: a file card's badge on the phone, as the Mac's. */
   const fileBadgeOf = (name: string) => extOf(name).slice(0, 5).toUpperCase() || "FILE";
   import { sentExt, type SentFile } from "../lib/sentFiles";
@@ -481,6 +482,17 @@
    *  project is open (300 review 1): read-only, no "new chat there". */
   const unaddressable = $derived(chatProject === NO_PROJECT && !listsUnfiled);
   const rows = $derived(transcriptRows(events));
+  // Item 842: the chat's chapters (item 799's marks), with the names he gave
+  // them on the Mac — read from the chat's log, so both say the same — drawn
+  // as dividers between rows (`placeOnRows`); a removed one is not drawn.
+  const chapterRows = $derived.by(() => {
+    if (!chatId) return { before: new Map<number, ShownChapter[]>(), tail: [] as ShownChapter[] };
+    const shown = withEdits(chaptersOf(events, liveFlags(events)), logEdits(events)).filter((c) => !c.removed);
+    const ranges = rows.map((r) =>
+      r.kind === "user" ? { first: r.index, last: r.index } : r.kind === "assistant" ? { first: r.indexes[0], last: r.indexes[r.indexes.length - 1] } : null,
+    );
+    return placeOnRows(ranges, shown);
+  });
   const currentChat = $derived.by(() => {
     if (!chatId) return null;
     const list = chatsBy[chatProject ?? activePid] ?? [];
@@ -3054,6 +3066,17 @@
   const toolCount = (tools: ToolRow[]): number => tools.reduce((n, t) => n + 1 + toolCount(t.children), 0);
 </script>
 
+{#snippet chapterLines(list: readonly ShownChapter[])}
+  <!-- Item 842: a chapter's divider (the Mac's ChapterRule, without its Rename and Remove: those are the Mac's). -->
+  {#each list as c (c.key)}
+    <div class="chapter-line" data-chapter={c.key} role="separator" aria-label={`Chapter: ${c.shown}`}>
+      <span class="cl-rule"></span>
+      <span class="cl-label"><span class="cl-kind">{KIND_WORD[c.kind] ?? "Chapter"}</span>{c.shown}</span>
+      <span class="cl-rule"></span>
+    </div>
+  {/each}
+{/snippet}
+
 {#snippet icon(name: "menu" | "new" | "more" | "up" | "stop" | "chev" | "x" | "search" | "check" | "mac" | "pencil" | "sliders" | "plus" | "trash" | "play" | "swap" | "pulse" | "note" | "aside" | "council" | "folder" | "compact" | "flag" | "moon")}
   <svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
     {#if name === "menu"}<path d="M4 7h16M4 12h16M4 17h10" />
@@ -3349,6 +3372,7 @@
         {/if}
       {/if}
       {#each rows as r, i (i)}
+        {#if chapterRows.before.has(i)}{@render chapterLines(chapterRows.before.get(i) ?? [])}{/if}
         {#if r.kind === "user"}
           <!-- Item 503: a block he ran at the Mac, its output folded as there. -->
           {@const ran = parseRan(r.said)}
@@ -3390,6 +3414,7 @@
           <div class="turn note" data-row={i}>{r.text}</div>
         {/if}
       {/each}
+      {#if chapterRows.tail.length > 0}{@render chapterLines(chapterRows.tail)}{/if}
       {#if liveHere && live}
         <div class="turn reply live" class:enter={!still}>
           {#if fil}
@@ -4677,6 +4702,54 @@
   .turn.reply {
     align-self: stretch;
     font-size: 16px;
+  }
+  /* Item 842: a chapter's divider, as the Mac's ChapterRule draws it: a thin
+     rule, the kind word small and upper-case in mono, the name; Classic in sans. */
+  .chapter-line {
+    align-self: stretch;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 10px 0 2px;
+    min-width: 0;
+  }
+  .cl-rule {
+    flex: 1;
+    min-width: 16px;
+    height: 1px;
+    background: var(--line2);
+  }
+  .cl-label {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--ink2);
+    min-width: 0;
+    max-width: calc(100% - 52px);
+    /* The phone is narrow: a long name takes two lines, centred, then is cut. */
+    text-align: center;
+    line-height: 1.45;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+  }
+  .cl-kind {
+    font-size: 10.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--dim);
+    margin-right: 8px;
+  }
+  :global(:root[data-layout="classic"]) .cl-label {
+    font-family: var(--sans);
+    font-size: 12.5px;
+  }
+  :global(:root[data-layout="classic"]) .cl-kind {
+    font-size: 11.5px;
+    letter-spacing: 0;
+    text-transform: none;
   }
   .turn.note {
     align-self: center;

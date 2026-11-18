@@ -80,7 +80,7 @@
     chain
       .map((c) => {
         const log = earlierLogs[c.id];
-        const list = Array.isArray(log) ? withEdits(chaptersOf(log, liveFlags(log)), editsFor(c.id)).filter((x) => !x.removed) : [];
+        const list = Array.isArray(log) ? withEdits(chaptersOf(log, liveFlags(log)), editsFor(c.id, log)).filter((x) => !x.removed) : [];
         return { ...c, chapters: list, failed: log === "failed", loading: log === "loading" || log === undefined };
       })
       .reverse(),
@@ -216,7 +216,7 @@
                     <button class="ct-act" aria-label={`Reset name of ${c.shown}`} use:tip={`Reset name\n${c.title}`} onclick={() => chat && renameChapter(chat, c, "")}>↺</button>
                   {/if}
                   {#if c.kind !== "start"}
-                    <button class="ct-act" aria-label={`Remove ${c.shown}`} use:tip={"Remove\nRestore it under Removed"} onclick={() => chat && setChapterRemoved(chat, c.key, true)}>×</button>
+                    <button class="ct-act" aria-label={`Remove ${c.shown}`} use:tip={"Remove\nRestore it under Removed"} onclick={() => chat && setChapterRemoved(chat, c, true)}>×</button>
                   {/if}
                 </span>
               {/if}
@@ -228,7 +228,7 @@
           {#each removed as c (c.key)}
             <div class="ct-item gone">
               <span class="ct-title">{c.shown}</span>
-              <button class="ct-restore" onclick={() => chat && setChapterRemoved(chat, c.key, false)}>Restore</button>
+              <button class="ct-restore" onclick={() => chat && setChapterRemoved(chat, c, false)}>Restore</button>
             </div>
           {/each}
         {/if}

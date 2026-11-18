@@ -213,3 +213,85 @@ export function currentChapter(tops: readonly (number | null)[], top: number): n
   });
   return at;
 }
+
+// ---- his edits, from the chat's log (item 842) -----------------------------
+
+/** His edit of one chapter: a name of his, or removed. */
+export interface ChapterEdit {
+  title?: string;
+  removed?: boolean;
+}
+
+/** A chapter as he sees it: his title if renamed, and whether he removed it. */
+export interface ShownChapter extends Chapter {
+  shown: string;
+  renamed: boolean;
+  removed: boolean;
+}
+
+/**
+ * His chapter edits as the chat's log holds them (item 842): the latest
+ * `chapter_edit` line per key, over the whole log — a name is not
+ * conversation, so a rewind does not undo it. A line with neither a title
+ * nor a removal clears the key (the code's name, shown).
+ */
+export function logEdits(evs: readonly SessionEvent[]): Record<string, ChapterEdit> {
+  const out: Record<string, ChapterEdit> = {};
+  for (const e of evs) {
+    if (e.event !== "chapter_edit" || typeof e.key !== "string") continue;
+    const edit: ChapterEdit = {};
+    const t = typeof e.title === "string" ? e.title.trim() : "";
+    if (t) edit.title = t;
+    if (e.removed) edit.removed = true;
+    if (edit.title === undefined && !edit.removed) delete out[e.key];
+    else out[e.key] = edit;
+  }
+  return out;
+}
+
+export function withEdits(chapters: readonly Chapter[], edits: Record<string, ChapterEdit>): ShownChapter[] {
+  return chapters.map((c) => {
+    const e = edits[c.key];
+    return { ...c, shown: e?.title ?? c.title, renamed: !!e?.title, removed: !!e?.removed };
+  });
+}
+
+/** The kind word a divider shows before the name. */
+export const KIND_WORD: Record<ChapterKind, string> = { plan: "Plan", wave: "Helpers", commit: "Commit", hand_off: "Hand-off", start: "Start" };
+
+/**
+ * Where the phone draws chapters (item 842). The phone joins a turn's
+ * replies into one row, so a divider can only sit between rows: a helper
+ * wave goes above its row when its first launch opens the row (it starts
+ * there); every other mark inside a row — a plan, a commit, a wave launched
+ * mid-turn — goes below that row, in reading order, so the dividers keep
+ * the Mac's order (a wave above a joined reply would sit before the plan
+ * that reply approved, seen in the first 390 px shot). The phone has no hand-off line of its own (the Mac's 763 line),
+ * so a hand-off is drawn here too; the start is the top of the chat and is
+ * not. `ranges` are each row's first and last log index, `null` for a row
+ * with none (a note). A mark in no row (a hand-off line, a removed row) goes
+ * above the first row past it.
+ */
+export function placeOnRows<C extends Chapter>(
+  ranges: readonly ({ first: number; last: number } | null)[],
+  chapters: readonly C[],
+): { before: Map<number, C[]>; tail: C[] } {
+  const before = new Map<number, C[]>();
+  const tail: C[] = [];
+  const put = (p: number, c: C) => {
+    if (p >= ranges.length) tail.push(c);
+    else before.set(p, [...(before.get(p) ?? []), c]);
+  };
+  const shown = chapters.filter((c) => c.kind !== "start").sort((a, b) => a.anchor - b.anchor || a.index - b.index);
+  for (const c of shown) {
+    const inRow = ranges.findIndex((r) => r !== null && r.first <= c.index && c.index <= r.last);
+    if (inRow >= 0) {
+      const r = ranges[inRow];
+      put(c.kind === "wave" && r !== null && r.first === c.index ? inRow : inRow + 1, c);
+      continue;
+    }
+    const next = ranges.findIndex((r) => r !== null && r.first >= c.anchor);
+    put(next >= 0 ? next : ranges.length, c);
+  }
+  return { before, tail };
+}

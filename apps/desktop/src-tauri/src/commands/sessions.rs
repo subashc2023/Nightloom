@@ -141,6 +141,37 @@ pub(crate) async fn rename_session(
     Ok(())
 }
 
+/// Write his edit of one chapter (item 799's dividers) to the chat's log
+/// (item 842): a `chapter_edit` line, so the phone and every window read
+/// the same name. The same rules as [`rename_session`]: a held chat is
+/// written through its one writer and refused while its turn holds it (the
+/// window keeps the edit and writes it once the turn ends); any other chat
+/// is a file no one is writing. Never creates a log.
+#[tauri::command]
+pub(crate) async fn set_chapter_edit(
+    state: State<'_, AppState>,
+    id: String,
+    key: String,
+    title: Option<String>,
+    removed: bool,
+) -> Result<(), String> {
+    if let Some((_, log)) = state.chats.find(&id) {
+        return match log.try_lock() {
+            Ok(mut open) => {
+                open.record_chapter_edit(&key, title, removed);
+                Ok(())
+            }
+            Err(_) => {
+                Err("that chat is running a turn — the chapter is saved when the turn ends".into())
+            }
+        };
+    }
+    let path = store::find_by_prefix(&state.log_dir().await, &id).map_err(|e| e.to_string())?;
+    let mut session = Session::load(&path).map_err(|e| e.to_string())?;
+    session.record_chapter_edit(&key, title, removed);
+    Ok(())
+}
+
 /// Leave the open chat and say what kind the next one will be — an ordinary
 /// one when `mode` is absent, which is what every caller before 2026-09-15
 /// meant.
