@@ -88,6 +88,10 @@
     type Try,
   } from "./client";
   import { renderMarkdown } from "../lib/markdown";
+  // Item 820: pictures and video a reply names, under its text.
+  import ReplyMedia from "../lib/ReplyMedia.svelte";
+  import { mediaCandidates, mediaKindOf } from "../lib/replyMedia";
+  import { setMediaLoader } from "../lib/replyMediaStore.svelte";
   import AskQuestions from "../lib/AskQuestions.svelte";
   // Wave 8B F2 (item 300): replies in order, code blocks, the keyboard.
   import { aimAction, liveSegments, retryStopping, sentOf } from "./client";
@@ -479,6 +483,17 @@
   const readOnly = $derived(unaddressable || (chatProject !== null && chatProject !== activePid && !hasFeature(remote, "send_project")));
   /** A host from before wave 1 would drop a photo without a word. */
   const canPhoto = $derived(hasFeature(remote, "images"));
+  // Item 820: the Mac reads the file; a host without the route shows none.
+  const canMedia = $derived(hasFeature(remote, "reply_media"));
+  $effect(() => {
+    const c = client;
+    if (!c) return;
+    setMediaLoader(async (path, chat) => {
+      if (!chat) throw new Error("no chat");
+      const m = await c.replyMedia(chat, path);
+      return { kind: mediaKindOf(path) ?? "image", mediaType: m.mediaType, size: m.bytes.size, bytes: m.bytes };
+    });
+  });
   /** And one that takes documents (item 277): PDFs, text, office files. */
   const canFile = $derived(hasFeature(remote, "documents"));
   /** The chat's project to send with when the Mac has another open. */
@@ -3297,7 +3312,8 @@
               {:else if s.part.removed}
                 <div class="part-gone" use:press={() => openMenu(r, s.part)}>[text removed]</div>
               {:else if s.part.text}
-                <div class="md" use:press={() => openMenu(r, s.part)} use:codeBlocks={copy}>{@html renderMarkdown(s.part.text, { breaks: true })}</div>
+                <div class="md" use:press={() => openMenu(r, s.part)} use:codeBlocks={copy}>{@html renderMarkdown(s.part.text, { breaks: true, localImagesAsText: true })}</div>
+                {#if canMedia}<ReplyMedia items={mediaCandidates(s.part.text, [])} chat={chatId} />{/if}
               {/if}
             {/each}
             {@render sentChips(sentOf(r.tools))}
@@ -3325,7 +3341,7 @@
           {/if}
           {#each liveSegments(live) as s, k (k)}
             {#if s.kind === "tools"}{@render toolBox(s.tools, `live${k}`, true)}
-            {:else}<div class="md" use:codeBlocks={copy}>{@html renderMarkdown(s.text, { breaks: true })}</div>{/if}
+            {:else}<div class="md" use:codeBlocks={copy}>{@html renderMarkdown(s.text, { breaks: true, localImagesAsText: true })}</div>{/if}
           {/each}
           {@render sentChips(sentOf(live.tools))}
           {#if live.retry}
@@ -3930,6 +3946,7 @@
             chat={chatId}
             {title}
             available={hasFeature(remote, "aside")}
+            media={canMedia}
             host={remote.host}
             aside={asides[chatId] ?? null}
             past={asidePast}

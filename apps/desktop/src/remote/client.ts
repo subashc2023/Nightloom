@@ -872,6 +872,15 @@ export class Client {
     return (await this.call("/feedback", { method: "POST", body: JSON.stringify(body) })).json();
   }
 
+  /** Item 820: a picture or a video a reply names, read by the Mac under
+   *  its own rules; the type rides in `x-media-type` (the body is always
+   *  `application/octet-stream`), and the blob is built with it. */
+  async replyMedia(chat: string, path: string): Promise<{ mediaType: string; bytes: Blob }> {
+    const r = await this.call(`/chats/${encodeURIComponent(chat)}/media`, { method: "POST", body: JSON.stringify({ path }) });
+    const mediaType = r.headers.get("x-media-type") ?? "application/octet-stream";
+    return { mediaType, bytes: new Blob([await r.blob()], { type: mediaType }) };
+  }
+
   /** A file a reply sent (backlog 343), with the bearer like every call. */
   async sentFile(f: Pick<SentFile, "id" | "name">): Promise<Blob> {
     return (await this.call(sentFileRoute(f))).blob();

@@ -101,6 +101,10 @@
   import { SpeedMeter, barOf, fmtSecs, sparkPoints, stepKeys, traceBook, type TraceRecord } from "./turnTiming";
   // Item 495 part 2: the folds kept past a chat switch.
   import { decodeOverride, encodeOverride, foldKey, keptGet, keptOpen, keptSet, type FoldScope } from "./keptFolds.svelte";
+  // Item 820: pictures and video the reply names, drawn under its text.
+  import ReplyMedia from "./ReplyMedia.svelte";
+  import { mediaCandidates } from "./replyMedia";
+  import "./replyMediaMac";
 
   interface Footer {
     model: string;
@@ -1273,6 +1277,11 @@
         <!-- Item 452: patched in place (liveHtml), not replaced whole per
              streamed delta, so a selection in its written part survives. -->
         <div class="markdown" use:liveHtml={renderReply(streaming ? streamingTail(g.seg.text) : g.seg.text)} use:memoryRefs={{ hits: memHits, text: g.seg.text }} use:codeCopy={runBlocks(g.seg.text)} use:handoffGo={nextChat}></div>
+        {#if !streaming}
+          <!-- Item 820: a picture or a video this text names, right under it
+               (once the reply has stopped: a half-typed path is not a file). -->
+          <ReplyMedia items={mediaCandidates(g.seg.text, roots)} chat={app.activeSessionId} label={(c) => displayPath(c.path, roots)} onopen={(p, e) => void openFile(p, e)} />
+        {/if}
       {/if}
     {:else if g.seg.kind === "removed_tool" || g.seg.kind === "removed_text"}
       {@const seg = g.seg}

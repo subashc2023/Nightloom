@@ -97,6 +97,9 @@ pub mod feature {
     pub const JOBS: &str = "jobs";
     /// `POST /api/feedback` (item 805): the phone's feedback sheet.
     pub const FEEDBACK: &str = "feedback";
+    /// `POST /api/chats/{id}/media` (item 820): a picture or a video a
+    /// reply names, drawn under the reply.
+    pub const REPLY_MEDIA: &str = "reply_media";
     /// Every name, for a host that serves the lot and for tests.
     pub const ALL: &[&str] = &[
         ACT,
@@ -126,6 +129,7 @@ pub mod feature {
         RULES,
         LATER,
         FEEDBACK,
+        REPLY_MEDIA,
     ];
 }
 

@@ -12,6 +12,9 @@
   import { onMount } from "svelte";
   import { takeBlockKey } from "../lib/codeBlockKeys";
   import { renderMarkdown } from "../lib/markdown";
+  // Item 820: pictures an aside's answer names, as under a chat's reply.
+  import ReplyMedia from "../lib/ReplyMedia.svelte";
+  import { mediaCandidates } from "../lib/replyMedia";
   import { COPIED_MS, copyIconSvg } from "../lib/copyIcon";
   import { loadDraft, saveDraft, type Aside, type PastAside } from "./client";
   import { missingSentence } from "./hosts";
@@ -21,6 +24,8 @@
     title: string;
     /** The host serves asides (`features`). */
     available: boolean;
+    /** Item 820: the host serves `/api/chats/{id}/media` (`reply_media`). */
+    media?: boolean;
     /** `/api/state`'s `host`, for the sentence when it does not. */
     host?: string | null;
     /** The aside asked from this page on this chat, if any. */
@@ -37,7 +42,7 @@
     onstop: () => void;
     oncopy: (text: string) => void;
   }
-  let { chat, title, available, host = undefined, aside, past, problem, cache = null, price = null, onask, onstop, oncopy }: Props = $props();
+  let { chat, title, available, media = false, host = undefined, aside, past, problem, cache = null, price = null, onask, onstop, oncopy }: Props = $props();
 
   const key = $derived(`aside:${chat}`);
   let text = $state("");
@@ -82,7 +87,8 @@
     <div class="as-card">
       <div class="as-q">{aside.question}</div>
       {#if aside.answer}
-        <div class="as-md">{@html renderMarkdown(aside.answer)}</div>
+        <div class="as-md">{@html renderMarkdown(aside.answer, { localImagesAsText: true })}</div>
+        {#if media && !asking}<ReplyMedia items={mediaCandidates(aside.answer, [])} {chat} />{/if}
       {:else if asking}
         <span class="as-thinking"><i></i><i></i><i></i></span>
       {/if}
@@ -124,7 +130,8 @@
         <details>
           <summary>{p.question}</summary>
           <small class="as-thread">{p.thread}</small>
-          <div class="as-md">{@html renderMarkdown(p.answer)}</div>
+          <div class="as-md">{@html renderMarkdown(p.answer, { localImagesAsText: true })}</div>
+          {#if media}<ReplyMedia items={mediaCandidates(p.answer, [])} {chat} />{/if}
         </details>
       {/each}
     </div>

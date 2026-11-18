@@ -1789,6 +1789,7 @@ fn main() {
             sent_files::save_sent_file,
             sent_files::drag_sent_file,
             commands::system::read_file_tab,
+            commands::system::read_reply_media,
             latex::render_latex,
             commands::system::open_url,
             commands::system::notify,
