@@ -2452,6 +2452,9 @@ export interface FeedbackNote {
   chat?: string | null;
   chat_title?: string | null;
   project?: string | null;
+  /** Item 815: the images he attached, base64; the service saves them
+   *  beside the item under `backlog/shots/`. */
+  attach?: { data: string; kind: "paste" | "page" }[];
 }
 export interface FeedbackFiled {
   project: string;
@@ -2471,6 +2474,11 @@ export function feedbackSend(note: FeedbackNote): Promise<FeedbackSent> {
 /** File what was saved but not filed (a shift was live); at launch. */
 export function feedbackFlush(): Promise<FeedbackFiled[]> {
   return invoke("feedback_flush");
+}
+/** Item 815: a PNG (base64) of the page as WebKit renders it — no screen
+ *  capture, so no permission dialog. */
+export function feedbackPageShot(): Promise<string> {
+  return invoke("feedback_page_shot");
 }
 
 // ---- the image tool that is not built yet (nightshift item 823) -------------

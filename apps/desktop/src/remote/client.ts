@@ -868,6 +868,8 @@ export class Client {
     chat_title?: string | null;
     project?: string | null;
     nonce?: string;
+    /** Item 815 (`feedback_images`): photos or pasted screenshots, base64. */
+    images?: { data: string; kind: "paste" }[];
   }): Promise<FeedbackSent> {
     return (await this.call("/feedback", { method: "POST", body: JSON.stringify(body) })).json();
   }

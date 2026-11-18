@@ -4355,6 +4355,52 @@ mod tests {
         server.stop().await;
     }
 
+    /// Item 815: the phone's photo button — an image with no words files
+    /// as an item with the image beside it; a big body is refused by size.
+    #[tokio::test]
+    async fn phone_feedback_takes_an_image() {
+        use base64::Engine as _;
+        let (server, host, _tx, token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let jpeg = [0xFFu8, 0xD8, 0xFF, 0xE0, 1, 2, 3, 4];
+        let data = base64::engine::general_purpose::STANDARD.encode(jpeg);
+        let (status, sent) = post_json(
+            &c,
+            format!("{base}/api/feedback"),
+            &token,
+            serde_json::json!({"text": "", "images": [{"data": data, "kind": "paste"}]}),
+        )
+        .await;
+        assert_eq!(status, 201, "{sent}");
+        let file = sent["filed"]["file"].as_str().unwrap().to_string();
+        let item = std::fs::read_to_string(host.nightshift.join(&file)).unwrap();
+        let at = item.find("](shots/").expect("linked") + 2;
+        let rel = &item[at..at + item[at..].find(')').unwrap()];
+        assert_eq!(
+            std::fs::read(host.nightshift.join("backlog").join(rel)).unwrap(),
+            jpeg
+        );
+        let (status, why) = post_json(
+            &c,
+            format!("{base}/api/feedback"),
+            &token,
+            serde_json::json!({"text": "x", "images": [{"data": "PHN2Zz4="}]}),
+        )
+        .await;
+        assert_eq!(status, 409, "{why}");
+        let huge = "A".repeat(60 * 1024 * 1024);
+        let r = c
+            .post(format!("{base}/api/feedback"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({"text": "x", "images": [{"data": huge}]}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 413);
+        server.stop().await;
+    }
+
     #[tokio::test]
     async fn nightshift_routes_read_the_queue_mornings_and_blockers_and_take_an_answer() {
         let (server, host, _tx, token) = up().await;

@@ -8,7 +8,14 @@
     discardFeedback,
     sendFeedback,
     feedbackContext,
+    feedbackImages,
+    hasFeedback,
+    addFeedbackImage,
+    removeFeedbackImage,
+    pastedImages,
+    attachPageShot,
   } from "./feedback.svelte";
+  import { MAX_FEEDBACK_IMAGES } from "./feedbackText";
 
   /**
    * His feedback to the agent (nightshift item 805): his words, what will
@@ -20,6 +27,19 @@
   });
 
   const ctx = $derived(feedbackContext());
+  const images = $derived(feedbackImages());
+  const any = $derived(hasFeedback());
+
+  /** Item 815: ⌘V of a screenshot attaches it. Words on the clipboard
+   *  still paste as words; only image files are taken here. */
+  async function paste(e: ClipboardEvent) {
+    const files = Array.from(e.clipboardData?.files ?? []).filter((f) => f.type.startsWith("image/"));
+    if (!files.length) return;
+    if (!e.clipboardData?.getData("text/plain")) e.preventDefault();
+    for (const img of await pastedImages(files)) {
+      if (!(await addFeedbackImage(img.data, img.type, "paste"))) break;
+    }
+  }
 
   function key(e: KeyboardEvent) {
     if (feedback.confirmDiscard) return;
@@ -37,12 +57,20 @@
 
 <div
   class="scrim"
+  class:capturing={feedback.capturing}
   role="presentation"
   onclick={(e) => {
     if (e.target === e.currentTarget) closeFeedback();
   }}
 >
-  <div class="ns-card dialog" role="dialog" aria-modal="true" aria-labelledby="feedback-title" tabindex="-1">
+  <div
+    class="ns-card dialog"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="feedback-title"
+    tabindex="-1"
+    onpaste={(e) => void paste(e)}
+  >
     <div class="head">
       <span class="mark"><Icon name="send" size={18} /></span>
       <h2 id="feedback-title">Send feedback</h2>
@@ -66,6 +94,36 @@
       rows="7"
       spellcheck="true"
     ></textarea>
+    {#if images.length}
+      <div class="shots" role="list" aria-label="Attached images">
+        {#each images as img, i (img.stash)}
+          <div class="shot" role="listitem">
+            {#if feedback.imageData[img.stash]}
+              <img
+                src={`data:${img.media_type};base64,${feedback.imageData[img.stash]}`}
+                alt={img.kind === "page" ? `Shot of the page (image ${i + 1})` : `Pasted image ${i + 1}`}
+              />
+            {:else}
+              <span class="shot-wait">…</span>
+            {/if}
+            {#if img.kind === "page"}<span class="shot-tag">page</span>{/if}
+            <button class="shot-x" aria-label={`Remove image ${i + 1}`} onclick={() => removeFeedbackImage(img.stash)}>
+              <Icon name="x" size={10} />
+            </button>
+          </div>
+        {/each}
+      </div>
+    {/if}
+    <div class="attach-row">
+      <button
+        class="ns-btn ghost"
+        disabled={feedback.capturing || images.length >= MAX_FEEDBACK_IMAGES}
+        onclick={() => void attachPageShot()}
+      >
+        <Icon name="image" size={13} /> Attach a shot of this page
+      </button>
+      <span class="hint">or ⌘V a screenshot</span>
+    </div>
     <div class="facts">
       <span class="ns-k">goes to</span>
       <!-- Always Nightloom's own backlog: feedback is only for Nightloom's development (item 816). -->
@@ -74,7 +132,7 @@
       <span class="attached">
         {ctx.chat_title ? `the chat “${ctx.chat_title}”` : ctx.chat ? "the open chat" : "no chat"}{ctx.project
           ? ` in ${ctx.project}`
-          : ""} · this build · the time · {ctx.surface}
+          : ""}{images.length ? ` · ${images.length === 1 ? "1 image" : `${images.length} images`}` : ""} · this build · the time · {ctx.surface}
       </span>
     </div>
     {#if feedback.problem}<p class="problem" role="alert">{feedback.problem}</p>{/if}
@@ -82,14 +140,14 @@
     <div class="actions">
       <button
         class="ns-btn ghost"
-        disabled={!feedback.draft.text || feedback.sending}
+        disabled={!(feedback.draft.text || images.length) || feedback.sending}
         onclick={() => (feedback.confirmDiscard = true)}>Discard</button
       >
       <span class="spacer"></span>
       <button class="ns-btn" onclick={closeFeedback}>Close</button>
       <button
         class="ns-btn accent"
-        disabled={!feedback.draft.text.trim() || feedback.sending}
+        disabled={!any || feedback.sending}
         onclick={() => void sendFeedback()}
       >
         {feedback.sending ? "Sending…" : "Send"} <span class="kbd">⌘↩</span>
@@ -101,8 +159,11 @@
 {#if feedback.confirmDiscard}
   <ConfirmDialog
     title="Discard this feedback?"
-    lead="The words in the box go; nothing was sent."
-    facts={[["starts", feedback.draft.text.trim().slice(0, 80) + (feedback.draft.text.trim().length > 80 ? "…" : "")]]}
+    lead={images.length ? "The words and images in the box go; nothing was sent." : "The words in the box go; nothing was sent."}
+    facts={[
+      ["starts", feedback.draft.text.trim().slice(0, 80) + (feedback.draft.text.trim().length > 80 ? "…" : "")],
+      ...(images.length ? [["images", images.length === 1 ? "1 attached" : `${images.length} attached`] as [string, string]] : []),
+    ]}
     confirmLabel="Discard"
     danger
     onconfirm={discardFeedback}
@@ -111,6 +172,9 @@
 {/if}
 
 <style>
+  .scrim.capturing {
+    visibility: hidden;
+  }
   .scrim {
     position: fixed;
     inset: 0;
@@ -184,6 +248,77 @@
   textarea:focus {
     outline: none;
     border-color: var(--accent-ink);
+  }
+  .shots {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .shot {
+    position: relative;
+    width: 84px;
+    height: 60px;
+    border: 1px solid var(--line2);
+    border-radius: 6px;
+    overflow: hidden;
+    background: var(--well, rgba(255, 255, 255, 0.04));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .shot img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+  .shot-wait {
+    color: var(--ink2);
+  }
+  .shot-tag {
+    position: absolute;
+    left: 4px;
+    bottom: 4px;
+    font: 500 9px var(--mono);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 1px 4px;
+    border-radius: 3px;
+    background: rgba(0, 0, 0, 0.6);
+    color: #fff;
+  }
+  .shot-x {
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 0;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.65);
+    color: #fff;
+    cursor: pointer;
+  }
+  .shot-x:hover {
+    background: rgba(0, 0, 0, 0.85);
+  }
+  .attach-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+  }
+  .attach-row .ns-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .hint {
+    color: var(--ink2);
   }
   .facts {
     display: grid;

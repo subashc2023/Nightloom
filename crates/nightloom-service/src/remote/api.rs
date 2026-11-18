@@ -97,6 +97,9 @@ pub mod feature {
     pub const JOBS: &str = "jobs";
     /// `POST /api/feedback` (item 805): the phone's feedback sheet.
     pub const FEEDBACK: &str = "feedback";
+    /// `POST /api/feedback` takes `images` (item 815): the sheet's photo
+    /// button. Listed beside [`FEEDBACK`] wherever it is.
+    pub const FEEDBACK_IMAGES: &str = "feedback_images";
     /// `POST /api/chats/{id}/media` (item 820): a picture or a video a
     /// reply names, drawn under the reply.
     pub const REPLY_MEDIA: &str = "reply_media";
@@ -129,6 +132,7 @@ pub mod feature {
         RULES,
         LATER,
         FEEDBACK,
+        FEEDBACK_IMAGES,
         REPLY_MEDIA,
     ];
 }

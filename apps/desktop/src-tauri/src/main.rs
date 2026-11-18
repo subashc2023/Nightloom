@@ -1843,6 +1843,7 @@ fn main() {
             terminal::terminal_ack,
             feedback::feedback_send,
             feedback::feedback_flush,
+            feedback::feedback_page_shot,
             image_calls::image_tool_calls,
             nightshift::nightshift_projects,
             nightshift::nightshift_project,

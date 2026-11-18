@@ -83,6 +83,106 @@ pub struct Note {
     /// or its log unreadable): the item says so rather than vouch for them.
     #[serde(default)]
     pub words_unchecked: bool,
+    /// Images he attached (item 815), as the box or the phone sends them.
+    /// [`send`] moves each to a file beside the record and empties this:
+    /// a record never holds image bytes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attach: Vec<Attachment>,
+    /// The images [`send`] saved, under `<home>/feedback/` (item 815). Set
+    /// only by `send`: what a sender puts here is dropped.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<SavedImage>,
+}
+
+/// An image as a sender gives it (item 815): base64 bytes (a `data:` URL's
+/// prefix is allowed and dropped) and how it came — `paste` (⌘V, a drop,
+/// the phone's photo button) or `page` (the box's shot of the page).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attachment {
+    pub data: String,
+    #[serde(default)]
+    pub kind: String,
+}
+
+/// One image saved with a record: its file name under `<home>/feedback/`
+/// (and, once filed, under `backlog/shots/` as `feedback-<file>`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedImage {
+    pub file: String,
+    #[serde(default)]
+    pub kind: String,
+}
+
+/// One image's cap, decoded: the composer's image cap (10 MB of base64,
+/// `MAX_IMAGE_BASE64`), so what a chat could take a note can too.
+pub const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024 / 4 * 3;
+/// At most this many images on one note.
+pub const MAX_IMAGES: usize = 8;
+/// The folder under a project's `backlog/` the images are filed in.
+pub const SHOTS_DIR: &str = "shots";
+
+/// The file extension for an image's bytes — PNG, JPEG, WebP or GIF,
+/// judged by the bytes, never the sender's word — or `None`.
+pub fn image_ext(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("png")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("jpg")
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("webp")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("gif")
+    } else {
+        None
+    }
+}
+
+/// The attachments' bytes and extensions, checked: at most [`MAX_IMAGES`],
+/// each a known image type under [`MAX_IMAGE_BYTES`]. An error names the
+/// image (1-based) and why, before anything is saved.
+pub fn decode_images(attach: &[Attachment]) -> Result<Vec<(Vec<u8>, &'static str)>, String> {
+    use base64::Engine as _;
+    if attach.len() > MAX_IMAGES {
+        return Err(format!(
+            "a note takes at most {MAX_IMAGES} images; this one has {}",
+            attach.len()
+        ));
+    }
+    attach
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            let n = i + 1;
+            let raw = a.data.trim();
+            let raw = match raw.find(";base64,") {
+                Some(at) if raw.starts_with("data:") => &raw[at + 8..],
+                _ => raw,
+            };
+            // A cheap bound before decoding: base64 is 4 chars per 3 bytes.
+            if raw.len() / 4 * 3 > MAX_IMAGE_BYTES + 3 {
+                return Err(format!("image {n} is over the 10 MB limit"));
+            }
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(raw)
+                .map_err(|_| format!("image {n} could not be read (not base64)"))?;
+            if bytes.len() > MAX_IMAGE_BYTES {
+                return Err(format!("image {n} is over the 10 MB limit"));
+            }
+            let ext = image_ext(&bytes)
+                .ok_or_else(|| format!("image {n} is not a PNG, JPEG, WebP or GIF"))?;
+            Ok((bytes, ext))
+        })
+        .collect()
+}
+
+/// A saved image's name is one plain file name — never a path (a record
+/// edited by hand must not copy some other file into the backlog).
+fn plain_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('.')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 /// Where a note was filed.
@@ -199,9 +299,33 @@ pub fn pick(targets: &[Target]) -> Result<&Target, String> {
 pub fn send(home: Option<&Path>, targets: &[Target], note: Note) -> Result<Sent, String> {
     let mut note = note;
     note.text = note.text.trim_end().to_string();
-    if note.text.trim().is_empty() {
+    // Item 815: images ride along; only `send` names saved ones.
+    let attach = std::mem::take(&mut note.attach);
+    note.images.clear();
+    let decoded = decode_images(&attach)?;
+    if note.text.trim().is_empty() && decoded.is_empty() {
         return Err("there is nothing to send: the feedback is empty".into());
     }
+    let stem = format!(
+        "{}-{:04x}",
+        chrono::Local::now().format("%Y%m%d-%H%M%S"),
+        std::process::id() as u16 ^ (chrono::Utc::now().timestamp_subsec_nanos() as u16)
+    );
+    note.images = decoded
+        .iter()
+        .zip(&attach)
+        .enumerate()
+        .map(|(i, ((_, ext), a))| SavedImage {
+            file: format!("{stem}-{}.{ext}", i + 1),
+            kind: a.kind.clone(),
+        })
+        .collect();
+    let bytes: Vec<(String, Vec<u8>)> = note
+        .images
+        .iter()
+        .zip(decoded)
+        .map(|(s, (b, _))| (s.file.clone(), b))
+        .collect();
     let record = Record {
         at: chrono::Local::now().to_rfc3339(),
         build: BUILD.map(str::to_string),
@@ -210,7 +334,7 @@ pub fn send(home: Option<&Path>, targets: &[Target], note: Note) -> Result<Sent,
         pending_why: None,
     };
     let Some(home) = home else {
-        let filed = file(targets, &record)?;
+        let filed = file(targets, &record, &bytes)?;
         return Ok(Sent {
             filed: Some(filed),
             pending_why: None,
@@ -220,11 +344,11 @@ pub fn send(home: Option<&Path>, targets: &[Target], note: Note) -> Result<Sent,
     };
     let dir = home.join(DIR);
     fs::create_dir_all(&dir).map_err(|e| format!("could not make {}: {e}", dir.display()))?;
-    let path = dir.join(format!(
-        "{}-{:04x}.json",
-        chrono::Local::now().format("%Y%m%d-%H%M%S"),
-        std::process::id() as u16 ^ (chrono::Utc::now().timestamp_subsec_nanos() as u16)
-    ));
+    let path = dir.join(format!("{stem}.json"));
+    // The images first: a record on disk names only files that are there.
+    for (name, b) in &bytes {
+        write_atomic(&dir.join(name), b)?;
+    }
     nightshift::write_json_atomic(&path, &record)?;
     let mut filed = flush(home, targets);
     let mine = filed.iter().position(|(p, _)| *p == path);
@@ -268,7 +392,8 @@ pub fn flush(home: &Path, targets: &[Target]) -> Vec<(PathBuf, FiledAs)> {
         return out;
     }
     for (path, mut rec) in pending(home) {
-        match file(targets, &rec) {
+        let images = saved_images(&dir, &rec);
+        match file(targets, &rec, &images) {
             Ok(f) => {
                 rec.filed = Some(f.clone());
                 rec.pending_why = None;
@@ -307,22 +432,61 @@ fn read_record(path: &Path) -> Option<Record> {
     serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
 }
 
-/// Write the item and its INDEX line.
-fn file(targets: &[Target], rec: &Record) -> Result<FiledAs, String> {
+/// Write `bytes` to `path` whole or not at all (a temp file, then a rename).
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let tmp = path.with_extension("part");
+    fs::write(&tmp, bytes)
+        .and_then(|_| fs::rename(&tmp, path))
+        .map_err(|e| format!("could not save {}: {e}", path.display()))
+}
+
+/// A record's saved images, read back from `dir` (item 815). One that is
+/// gone, or whose name is not a plain file name, is left out; the item
+/// says so.
+fn saved_images(dir: &Path, rec: &Record) -> Vec<(String, Vec<u8>)> {
+    rec.note
+        .images
+        .iter()
+        .filter(|i| plain_name(&i.file))
+        .filter_map(|i| Some((i.file.clone(), fs::read(dir.join(&i.file)).ok()?)))
+        .collect()
+}
+
+/// Write the item and its INDEX line; then its images under
+/// `backlog/shots/` (item 815), named in the item already.
+fn file(targets: &[Target], rec: &Record, images: &[(String, Vec<u8>)]) -> Result<FiledAs, String> {
     let target = pick(targets)?;
     let root = &target.root.root;
     let when = sent_at(&rec.at);
-    let title = title_of(&rec.note.text);
+    let title = if rec.note.text.trim().is_empty() {
+        match rec.note.images.len() {
+            1 => "Feedback: a screenshot".to_string(),
+            n => format!("Feedback: {n} screenshots"),
+        }
+    } else {
+        title_of(&rec.note.text)
+    };
     let from = rec.note.surface.trim();
     let from = if from.is_empty() { "Nightloom" } else { from };
     let id = items::new_item_from(
         root,
         &title,
         "build",
-        &body(rec, root),
+        &body(rec, root, images),
         "feedback",
         &[("feedback_at", &when), ("feedback_from", from)],
     )?;
+    // The item exists: its images go beside it. Best-effort per image — the
+    // item already holds his words, and a copy that failed stays in the
+    // record's folder.
+    if !images.is_empty() {
+        let shots = root.join("backlog").join(SHOTS_DIR);
+        if fs::create_dir_all(&shots).is_ok() {
+            for (name, b) in images {
+                let _ = write_atomic(&shots.join(format!("feedback-{name}")), b);
+            }
+        }
+    }
     let file = items::item_files(root)
         .get(&id)
         .and_then(|p| {
@@ -372,7 +536,7 @@ pub fn index_line(id: &str, title: &str, when: &str, from: &str, file: &str) -> 
 }
 
 /// The item's body: his words, what the sender added, the context.
-fn body(rec: &Record, root: &Path) -> String {
+fn body(rec: &Record, root: &Path, images: &[(String, Vec<u8>)]) -> String {
     let n = &rec.note;
     let mut inferred = Vec::new();
     if let Some(m) = n.model_note.as_deref().filter(|m| !m.trim().is_empty()) {
@@ -441,9 +605,35 @@ fn body(rec: &Record, root: &Path) -> String {
         })
         .unwrap_or_else(|| "not known".into());
     pointers.push(format!("- Nightloom build: {build}"));
+    // Item 815: each image he attached, linked from beside the item.
+    for (i, img) in n.images.iter().enumerate() {
+        let what = match img.kind.as_str() {
+            "page" => "a shot of the page he was on (taken by Nightloom when he asked)",
+            _ => "an image he pasted",
+        };
+        if images.iter().any(|(name, _)| *name == img.file) {
+            pointers.push(format!(
+                "- Image {}: {what} — ![image {}]({SHOTS_DIR}/feedback-{})",
+                i + 1,
+                i + 1,
+                img.file
+            ));
+        } else {
+            pointers.push(format!(
+                "- Image {}: {what} — its file `{}` was not found when this was filed",
+                i + 1,
+                img.file
+            ));
+        }
+    }
+    let words = if n.text.trim().is_empty() {
+        "(no words — only the attached images, under Pointers)"
+    } else {
+        n.text.trim_end()
+    };
     format!(
         "## What Swaraag said\n{}\n\n## What the agent inferred\n{}\n\n## Definition of done\n\n\n## Pointers\n{}\n\n## Not to do\n",
-        n.text.trim_end(),
+        words,
         inferred.join("\n\n"),
         pointers.join("\n"),
     )
@@ -654,6 +844,7 @@ impl SendFeedbackTool {
             model_note: context.map(str::to_string),
             model_wording,
             words_unchecked: unchecked,
+            ..Note::default()
         }
     }
 }
@@ -812,6 +1003,157 @@ mod tests {
         let a = index.find("- **805**").unwrap();
         let b = index.find("- **806**").unwrap();
         assert!(a < b && b < index.find("| order |").unwrap());
+    }
+
+    /// A 1×1 PNG, the smallest real image.
+    const PNG: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,
+        0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x60,
+        0x00, 0x02, 0x00, 0x00, 0x05, 0x00, 0x01, 0xE9, 0xFA, 0xDC, 0xD8, 0x00, 0x00, 0x00, 0x00,
+        0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ];
+
+    fn b64(b: &[u8]) -> String {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(b)
+    }
+
+    /// Item 815: a note with a pasted image and a page shot round-trips —
+    /// saved beside the record (never inside it), filed under
+    /// `backlog/shots/` byte for byte, and linked from the item.
+    #[test]
+    fn a_note_with_images_files_them_beside_the_item_and_links_them() {
+        let home = scratch("home815");
+        let ns = scratch("ns815");
+        let t = repo(&ns);
+        let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xE0];
+        jpeg.extend_from_slice(b"rest of a jpeg");
+        let sent = send(
+            Some(&home),
+            &[t],
+            Note {
+                text: "The chip overlaps.".into(),
+                attach: vec![
+                    Attachment {
+                        data: format!("data:image/png;base64,{}", b64(PNG)),
+                        kind: "paste".into(),
+                    },
+                    Attachment {
+                        data: b64(&jpeg),
+                        kind: "page".into(),
+                    },
+                ],
+                // A sender cannot name saved files: dropped.
+                images: vec![SavedImage {
+                    file: "../../etc/passwd".into(),
+                    kind: "paste".into(),
+                }],
+                ..Note::default()
+            },
+        )
+        .unwrap();
+        let f = sent.filed.expect("filed");
+        let saved = PathBuf::from(sent.saved.unwrap());
+        let raw = fs::read_to_string(&saved).unwrap();
+        assert!(!raw.contains(&b64(PNG)), "no bytes in the record");
+        let rec = read_record(&saved).unwrap();
+        assert_eq!(rec.note.images.len(), 2);
+        assert!(rec.note.attach.is_empty());
+        let (a, b) = (&rec.note.images[0], &rec.note.images[1]);
+        assert!(
+            a.file.ends_with("-1.png") && b.file.ends_with("-2.jpg"),
+            "{a:?} {b:?}"
+        );
+        assert_eq!(fs::read(home.join(DIR).join(&a.file)).unwrap(), PNG);
+        assert_eq!(
+            fs::read(
+                ns.join("backlog/shots")
+                    .join(format!("feedback-{}", a.file))
+            )
+            .unwrap(),
+            PNG
+        );
+        assert_eq!(
+            fs::read(
+                ns.join("backlog/shots")
+                    .join(format!("feedback-{}", b.file))
+            )
+            .unwrap(),
+            jpeg
+        );
+        let item = fs::read_to_string(ns.join(&f.file)).unwrap();
+        assert!(item.contains("## What Swaraag said\nThe chip overlaps.\n"));
+        assert!(item.contains(&format!(
+            "- Image 1: an image he pasted — ![image 1](shots/feedback-{})",
+            a.file
+        )));
+        assert!(item.contains("- Image 2: a shot of the page he was on"));
+        assert!(!item.contains("passwd"));
+    }
+
+    /// Item 815: a screenshot alone is feedback; it waits like words do
+    /// when it cannot be filed, and files with its image later.
+    #[test]
+    fn an_image_alone_is_sent_and_waits_with_its_image() {
+        let home = scratch("home815b");
+        let sent = send(
+            Some(&home),
+            &[],
+            Note {
+                attach: vec![Attachment {
+                    data: b64(PNG),
+                    kind: "paste".into(),
+                }],
+                ..Note::default()
+            },
+        )
+        .unwrap();
+        assert!(sent.filed.is_none());
+        let ns = scratch("ns815b");
+        let filed = flush(&home, &[repo(&ns)]);
+        assert_eq!(filed.len(), 1);
+        let item = fs::read_to_string(ns.join(&filed[0].1.file)).unwrap();
+        assert!(
+            item.contains("title: \"Feedback: a screenshot\"")
+                || item.contains("title: Feedback: a screenshot"),
+            "{item}"
+        );
+        assert!(item.contains("(no words — only the attached images, under Pointers)"));
+        assert!(item.contains("![image 1](shots/feedback-"));
+    }
+
+    /// Item 815: what is not an image, or too many, is refused before
+    /// anything is saved.
+    #[test]
+    fn a_bad_image_is_refused_before_saving() {
+        let home = scratch("home815c");
+        let bad = |attach: Vec<Attachment>| {
+            send(
+                Some(&home),
+                &[],
+                Note {
+                    text: "words".into(),
+                    attach,
+                    ..Note::default()
+                },
+            )
+            .unwrap_err()
+        };
+        let one = |data: String| Attachment {
+            data,
+            kind: "paste".into(),
+        };
+        assert!(bad(vec![one(b64(b"<svg></svg>"))]).contains("not a PNG, JPEG, WebP or GIF"));
+        assert!(bad(vec![one("%%%".into())]).contains("not base64"));
+        assert!(bad(vec![one(b64(PNG)); MAX_IMAGES + 1]).contains("at most"));
+        let mut big = PNG.to_vec();
+        big.resize(MAX_IMAGE_BYTES + 1, 0);
+        assert!(bad(vec![one(b64(&big))]).contains("10 MB"));
+        assert!(pending(&home).is_empty());
+        assert!(fs::read_dir(home.join(DIR)).map(|d| d.count()).unwrap_or(0) == 0);
+        assert_eq!(image_ext(b"RIFF\0\0\0\0WEBPVP8 "), Some("webp"));
+        assert_eq!(image_ext(b"GIF89a.."), Some("gif"));
     }
 
     fn repo_again(dir: &Path) -> Target {
