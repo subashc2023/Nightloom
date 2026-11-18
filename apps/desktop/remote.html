@@ -10,6 +10,10 @@
          the keyboard; iOS ignores it, and viewport.ts fits the page there. -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
     <meta name="color-scheme" content="dark light" />
+    <!-- Item 819: no frame here may load a URL or a data: document. An HTML
+         file is drawn in a sandboxed srcdoc frame (lib/htmlPage.ts), which
+         this keeps from navigating itself out of its policy. -->
+    <meta http-equiv="Content-Security-Policy" content="frame-src 'none'" />
     <meta name="theme-color" content="#1b1916" media="(prefers-color-scheme: dark)" />
     <meta name="theme-color" content="#f6f2ea" media="(prefers-color-scheme: light)" />
     <meta name="apple-mobile-web-app-capable" content="yes" />

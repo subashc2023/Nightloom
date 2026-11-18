@@ -1565,7 +1565,8 @@ export function dragSentFile(path: string): Promise<null> {
  *  outside `chat`'s folders unless its own tools wrote it. */
 export interface FileTabData {
   path: string;
-  kind: "text" | "markdown" | "image" | "pdf" | "other";
+  /** `html` (item 819): text, drawn as a sandboxed page with a Source switch. */
+  kind: "text" | "markdown" | "html" | "image" | "pdf" | "other";
   media_type: string;
   size: number;
   text: string | null;

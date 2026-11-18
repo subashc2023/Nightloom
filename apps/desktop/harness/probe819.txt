@@ -1,0 +1,31 @@
+<!doctype html><html><head><title>probe</title></head><body style="font:13px ui-monospace,monospace;color:#ccc">
+<h3>Item 819 probe: what a page in the sandbox can reach</h3><pre id="o"></pre>
+<img src="https://example.com/x.png" alt="remote image">
+<script>
+var r = [];
+function say(k, v) { r.push(k + " = " + v); }
+try { var d = parent.document; say("parent.document", d ? "READ" : "null"); } catch (e) { say("parent.document", "blocked (" + e.name + ")"); }
+try { say("parent.__TAURI_INTERNALS__", typeof parent.__TAURI_INTERNALS__); } catch (e) { say("parent.__TAURI_INTERNALS__", "blocked (" + e.name + ")"); }
+say("window.__TAURI_INTERNALS__", typeof window.__TAURI_INTERNALS__);
+say("window.__TAURI__", typeof window.__TAURI__);
+try { localStorage.length; say("localStorage", "READ"); } catch (e) { say("localStorage", "blocked (" + e.name + ")"); }
+try { say("document.cookie", "read " + JSON.stringify(document.cookie)); } catch (e) { say("document.cookie", "blocked (" + e.name + ")"); }
+say("origin", String(self.origin));
+say("prefers dark", matchMedia("(prefers-color-scheme: dark)").matches);
+function done() {
+  parent.postMessage({ probe: r.join(" | ") }, "*");
+  document.getElementById("o").textContent = r.join("\n");
+  setTimeout(function () { try { location.href = "data:text/html,<script>parent.postMessage({probe:'ESCAPED: a data: document ran'},'*')<\/script>"; } catch (e) { parent.postMessage({ probe: "data: navigation threw " + e.name }, "*"); } }, 200);
+  setTimeout(function () { try { location.href = "https://example.com/"; } catch (e) { parent.postMessage({ probe: "https navigation threw " + e.name }, "*"); } }, 500);
+  setTimeout(function () { parent.postMessage({ probe: "still on " + location.href + " after both navigation attempts" }, "*"); }, 1500);
+}
+fetch("http://127.0.0.1:" + 5819 + "/").then(function () { say("fetch to the harness server", "GOT A RESPONSE"); }, function (e) { say("fetch", "failed (" + e.name + ")"); }).then(function () {
+  try {
+    var x = new XMLHttpRequest();
+    x.open("GET", "https://example.com/");
+    x.onerror = function () { say("XHR", "failed"); done(); };
+    x.onload = function () { say("XHR", "GOT A RESPONSE"); done(); };
+    x.send();
+  } catch (e) { say("XHR", "threw " + e.name); done(); }
+});
+</script></body></html>

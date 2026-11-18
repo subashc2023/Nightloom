@@ -4,6 +4,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark" />
+    <!-- Item 819: no frame here may load a URL or a data: document. An HTML
+         file is drawn in a sandboxed srcdoc frame (lib/htmlPage.ts), which
+         this keeps from navigating itself out of its policy. -->
+    <meta http-equiv="Content-Security-Policy" content="frame-src 'none'" />
     <title>Nightloom</title>
   </head>
   <body>
