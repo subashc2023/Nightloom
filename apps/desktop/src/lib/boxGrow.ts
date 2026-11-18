@@ -131,3 +131,34 @@ export function saveBoxHeight(key: string, n: number | null): void {
 export function roomForBox(limit: number, frame: number, above: number, below: number, min: number): number {
   return Math.max(min, Math.floor(limit - frame - above - below));
 }
+
+/**
+ * The height a box sized to its text is set to (827's side finding, item
+ * 827): `scrollHeight` is the text and the padding but not the border, so
+ * under the app's `box-sizing: border-box` a box set to it alone is short
+ * by its top and bottom borders and overflows by them — a scroll bar on
+ * every key once the text passes the box's minimum. `frame` is those two
+ * borders (0 under `content-box`); the result is capped at `cap`. Pure.
+ */
+export function fitHeight(scrollHeight: number, frame: number, cap = Infinity): number {
+  return Math.min(scrollHeight + frame, cap);
+}
+
+/**
+ * A textarea sized to its text: measured with no scroll bar showing (a bar
+ * would narrow the text and change what is measured, item 827), set to
+ * `fitHeight`, and given its stylesheet's `overflow-y` back only when the
+ * text really overflows at `cap` (`overflows`: a pixel of rounding is not
+ * overflow). `start` is the height it is measured from: `auto`, or `0px`
+ * for a box whose `rows` floor must not hold it up.
+ */
+export function fitToText(el: HTMLElement, cap = Infinity, start = "auto"): void {
+  el.style.overflowY = "hidden";
+  el.style.height = start;
+  const cs = getComputedStyle(el);
+  const frame = cs.boxSizing === "border-box" ? (parseFloat(cs.borderTopWidth) || 0) + (parseFloat(cs.borderBottomWidth) || 0) : 0;
+  const need = el.scrollHeight + frame;
+  const h = fitHeight(el.scrollHeight, frame, cap);
+  el.style.height = `${h}px`;
+  el.style.overflowY = overflows(need, h) ? "" : "hidden";
+}

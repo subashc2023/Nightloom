@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fitToText } from "./boxGrow";
   // The model's questions (`AskUserQuestion`), backlog 354 — his pick of 2026-10-13: "have the tabs at the top
   // and after each question there should be a next button, but then you can also just scroll and once you scroll
   // to like the next question, then it just goes to the next tab. I like the structure of inline in terms of how
@@ -62,8 +63,7 @@
 
   /** Typing a comment picks its option: the comment is about that answer. */
   function typeNote(i: number, label: string, multi: boolean, el: HTMLTextAreaElement) {
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight}px`;
+    fitToText(el);
     if (el.value.trim() !== "" && !(picks[i] ?? []).includes(label)) ontoggle(i, label, multi);
     onnote?.(i, label, el.value);
   }
@@ -306,8 +306,7 @@
                   value={others[i] ?? ""}
                   oninput={(e) => {
                     const el = e.currentTarget;
-                    el.style.height = "auto";
-                    el.style.height = `${el.scrollHeight}px`;
+                    fitToText(el);
                     onother(i, el.value);
                   }}
                   bind:this={otherEls[i]}

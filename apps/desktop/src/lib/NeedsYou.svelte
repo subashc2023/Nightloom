@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fitToText } from "./boxGrow";
   /**
    * Needs you (nightshift item 753, 2026-11-16): one view of every chat, helper, blocker and shipped item
    * in every project, grouped by state — Waiting on you, Ready for review, Working — and answerable in
@@ -70,8 +71,7 @@
     void send(row, withNote(label, needs.drafts[row.id]));
   }
   function grow(el: HTMLTextAreaElement): void {
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight}px`;
+    fitToText(el);
   }
   /** Wave K (Lock-on): a row that leaves — answered, decided, sent — turns green and folds away in Jarvis,
    *  fades in Classic, and simply goes under reduce motion. */

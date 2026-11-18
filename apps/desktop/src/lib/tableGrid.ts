@@ -19,6 +19,7 @@ import { Decoration, EditorView, WidgetType, keymap } from "@codemirror/view";
 import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import { redo as cmRedo, undo as cmUndo, isolateHistory } from "@codemirror/commands";
 import { findMath, renderMath } from "./math";
+import { fitToText } from "./boxGrow";
 import { addRowChange, cellChange, narrowChange, columnPx, gridCols, gridValues, parseTable, type MdTable } from "./mdTable";
 
 /** A table's lines in the box: `[from, to)` from its first line's start to its last line's end. */
@@ -182,8 +183,7 @@ function syncMath(ta: HTMLTextAreaElement): void {
 }
 
 function fit(ta: HTMLTextAreaElement): void {
-  ta.style.height = "0px";
-  ta.style.height = `${ta.scrollHeight}px`;
+  fitToText(ta, Infinity, "0px");
 }
 
 /**
