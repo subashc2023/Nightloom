@@ -1054,6 +1054,8 @@ export async function init(): Promise<void> {
   // in `remoteHandlers.ts`; loaded here so it imports this module after
   // it has finished evaluating.
   await (await import("./remoteHandlers")).installRemoteHandlers();
+  // Item 795: Quick Entry — his shortcut registered, the box's targets kept, its sends run.
+  await (await import("./quickEntry.svelte")).installQuickEntry();
   // A chat's first turn names its chat as it starts (backlog 192; review
   // 2026-09-23 finding 4): the budget meter and stop card follow it now,
   // not only once the turn has ended.
