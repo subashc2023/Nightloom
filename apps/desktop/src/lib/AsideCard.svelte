@@ -32,6 +32,8 @@
   import { COPIED_MS } from "./copyIcon";
   // Backlog 283: the chat's composer and the chat's message pieces.
   import Composer from "./Composer.svelte";
+  import StartCards from "./StartCards.svelte";
+  import { isHome } from "./home";
   import AsideThread from "./AsideThread.svelte";
   // Item 674: the thread is the chat's transcript; Classic keeps AsideThread.
   import AsideTranscript from "./AsideTranscript.svelte";
@@ -674,6 +676,8 @@
        question of a draft, every follow-up, chips, the model and effort
        pickers; in another chat's panel it types and its line says to open
        the chat (238's rule for the tab). -->
+  <!-- Item 763 H5 (asides mirror the main chat): Home's Start cards over an aside's box too. -->
+  {#if isHome(app.project)}<div class="aside-start-cards"><StartCards /></div>{/if}
   <div class="aside-card-foot" class:draft={aside.draft && !panel}>
     <Composer {aside} asideChat={owner} compact={!panel} />
   </div>
@@ -1042,5 +1046,13 @@
   :global(:where(:root:not([data-layout="classic"]))) .aside-card.folded .aside-card-head {
     border-radius: var(--r2);
     border-bottom: none;
+  }
+  /* Item 763 H5: Home's Start cards in an aside — at most a third of the card, scrolling inside. */
+  .aside-start-cards {
+    flex: 0 1 auto;
+    min-height: 0;
+    max-height: 34vh;
+    overflow-y: auto;
+    padding: 0 10px;
   }
 </style>

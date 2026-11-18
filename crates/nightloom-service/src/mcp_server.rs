@@ -220,6 +220,11 @@ const OWN_EFFECTS: &[(&str, Effect)] = &[
     // chat's own two files.
     (crate::chain::LOG_TOOL, Effect::Session),
     (crate::chain::STATE_TOOL, Effect::Session),
+    // Home's routing (item 763 H5): one line in Home's own ledger; the
+    // app starts nothing that may write without his tap.
+    (crate::home::route::START_TOOL, Effect::Session),
+    (crate::home::route::SEND_TOOL, Effect::Session),
+    (crate::home::route::STATUS_TOOL, Effect::ReadOnly),
     // Runs a command of the model's (nightshift item 430): what Bash is.
     ("preview", Effect::Mutating),
     // The note organisers (item 472), served with `--notes`.
@@ -299,6 +304,13 @@ fn instructions_for(tools: &[Box<dyn Tool>]) -> String {
     {
         out.push_str(crate::secret::INSTRUCTION);
     }
+    // Item 763 H5: Home's chats only.
+    if tools
+        .iter()
+        .any(|t| t.def().name == crate::home::route::START_TOOL)
+    {
+        out.push_str(crate::home::route::INSTRUCTION);
+    }
     // Item 472: present only when the organisers are served.
     if tools
         .iter()
@@ -354,12 +366,14 @@ pub fn tools_in_chat(
             dir: d.dir,
         })
         .collect();
+    let mut is_home = false;
     let (active, source, workspace) = match project_id {
         Some(id) => {
             let registry = Registry::load_in(config);
             let project = registry
                 .find(id)
                 .ok_or_else(|| format!("no project with id {id:?} in {}", config.display()))?;
+            is_home = project.source.as_deref() == Some(crate::home::SOURCE);
             (
                 config
                     .join(PROJECTS_DIR)
@@ -421,6 +435,12 @@ pub fn tools_in_chat(
             source,
             current.map(str::to_string),
         )));
+    }
+    // Home's routing (item 763 H5): the three chat tools, for a chat of
+    // Home's project that writes — never another project's chat, so no
+    // chat but Home can start chats. (An incognito server drops them.)
+    if is_home && remember {
+        tools.extend(crate::home::route::tools(config, current));
     }
     // The image tool that is not built yet (item 823, stage 1): every
     // chat, incognito too — it only counts the call, and a chat that
@@ -2833,6 +2853,7 @@ mod tests {
         served.push(Box::new(crate::secret::RequestSecret::new(config.clone())));
         crate::chain::ensure(&config, "c").unwrap();
         served.extend(crate::chain::tools(&config, Some("c")));
+        served.extend(crate::home::route::tools(&config, None));
         for tool in &served {
             let name = tool.def().name;
             assert_eq!(

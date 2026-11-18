@@ -107,6 +107,34 @@ pub(crate) fn home_mark_seen() -> Result<String, String> {
     Ok(now.to_rfc3339())
 }
 
+/// Item 763 H5: the Start cards waiting for his tap, and the chats Home
+/// started (the sidebar's mark).
+#[tauri::command]
+pub(crate) async fn home_routes(
+    app: tauri::AppHandle,
+) -> Result<nightloom_service::remote::RoutesReply, String> {
+    crate::remote::home_routes(&app).await
+}
+
+/// His tap on a Start card: the prompt as he left it, and his pick
+/// (`new` | `into`) on a cold card.
+#[tauri::command]
+pub(crate) async fn home_route_start(
+    app: tauri::AppHandle,
+    id: String,
+    prompt: Option<String>,
+    pick: Option<home::route::Pick>,
+) -> Result<home::route::Route, String> {
+    crate::remote::home_route_start(&app, &id, prompt.as_deref(), pick).await
+}
+
+/// His Dismiss on a Start card: nothing starts; the ledger keeps the line.
+#[tauri::command]
+pub(crate) fn home_route_dismiss(id: String) -> Result<home::route::Route, String> {
+    let config = project::config_dir().ok_or("no Nightloom home")?;
+    home::route::dismiss(&config, &id, chrono::Utc::now())
+}
+
 /// Save his brief from Settings → Home.
 #[tauri::command]
 pub(crate) fn home_save_brief(text: String) -> Result<(), String> {

@@ -33,6 +33,8 @@ use serde::{Deserialize, Serialize};
 
 pub mod guard;
 pub mod reach;
+/// Item 763 H5: routing work into project chats.
+pub mod route;
 /// Item 808: Messages, Contacts, Reminders and the Calendar app, read once he allows them.
 pub mod sources;
 
@@ -155,6 +157,8 @@ pub fn push_is_a_row(note: &crate::push::Note) -> bool {
     match note.what {
         What::Scan => false,
         What::Done | What::Failed => !note.chat.as_deref().is_some_and(is_job_run),
+        // H5: a Start card's push; the card's own `route_waiting` row covers it.
+        What::Approval => note.detail.as_deref() != Some(route::CARD_PUSH),
         _ => true,
     }
 }
@@ -164,7 +168,8 @@ pub fn push_is_a_row(note: &crate::push::Note) -> bool {
 pub struct FeedRow {
     pub at: DateTime<Utc>,
     /// `done`, `failed`, `limit`, `question`, `approval`, `changes`,
-    /// `stuck`, `job_done`, `job_failed`, `scan`, `hand_off`.
+    /// `stuck`, `job_done`, `job_failed`, `scan`, `hand_off`; H5's
+    /// `route_waiting`, `route_started`, `route_done`, `route_failed`.
     pub kind: String,
     #[serde(default)]
     pub label: Option<String>,

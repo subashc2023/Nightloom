@@ -762,7 +762,7 @@ pub struct Prep {
 }
 
 /// A title from the message when he gave none: its first line, cut.
-fn title_from(text: &str) -> String {
+pub(crate) fn title_from(text: &str) -> String {
     let line = text
         .lines()
         .find(|l| !l.trim().is_empty())
@@ -1856,6 +1856,8 @@ pub async fn run_loop(
 ) {
     loop {
         jobs.tick(host.as_ref(), Utc::now()).await;
+        // Item 763 H5: Home's routes start and finish on the same clock.
+        crate::home::route::tick(host.as_ref(), Utc::now()).await;
         tokio::select! {
             _ = closing.cancelled() => return,
             _ = tokio::time::sleep(TICK) => {}

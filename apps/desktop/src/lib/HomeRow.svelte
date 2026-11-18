@@ -18,7 +18,8 @@
 
   const project = $derived(homeProject());
   const here = $derived(isHome(app.project));
-  const n = $derived(waitingCount(needsNow()));
+  // 763 H5's review: Start cards wait on him too.
+  const n = $derived(waitingCount(needsNow()) + home.cards.length);
   const count = $derived(homeCount(n));
   $effect(() => {
     if (project) untrack(() => void refreshHome());

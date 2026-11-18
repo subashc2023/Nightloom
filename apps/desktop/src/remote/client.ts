@@ -5,6 +5,7 @@
  * while the Mac is unreachable. Nothing here touches the DOM, so all of it
  * is under `client.test.ts`; `Remote.svelte` is the screen over it.
  */
+import type { HomeRoute, RoutePick, RoutesReply } from "../lib/homeRoutes";
 import type { HomeSource, SourceId } from "../lib/homeSources";
 import type { Job, JobPatch, JobsReply, NewJob } from "./jobs";
 import type { ApprovalRequest, DocumentInput, ImageInput, SessionEvent, TurnEvent } from "../lib/types";
@@ -969,6 +970,25 @@ export class Client {
       if (e instanceof ApiError && (e.status === 404 || e.status === 501)) return null;
       throw e;
     }
+  }
+
+  /** Item 763 H5: Home's Start cards; an older host has none. */
+  async homeRoutes(): Promise<RoutesReply> {
+    try {
+      return (await this.call("/home/routes")).json();
+    } catch (e) {
+      if (e instanceof ApiError && (e.status === 404 || e.status === 501)) return { cards: [], held: [], started: [] };
+      throw e;
+    }
+  }
+
+  /** His tap on a Start card: the prompt as he left it, his pick on a cold card. */
+  async homeRouteStart(id: string, prompt: string | null, pick: RoutePick | null): Promise<HomeRoute> {
+    return (await this.call(`/home/routes/${encodeURIComponent(id)}/start`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt, pick }) })).json();
+  }
+
+  async homeRouteDismiss(id: string): Promise<HomeRoute> {
+    return (await this.call(`/home/routes/${encodeURIComponent(id)}/dismiss`, { method: "POST" })).json();
   }
 
   async homeFeed(): Promise<HomeFeedWire> {

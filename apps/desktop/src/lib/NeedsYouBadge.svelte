@@ -8,9 +8,17 @@
   import { app } from "./state.svelte";
   import { needsNow, refreshBoard } from "./needsBoard.svelte";
   import { badgeWords } from "./needsYou";
+  import { home } from "./home.svelte";
 
   const rows = $derived(needsNow());
-  const badge = $derived(badgeWords(rows));
+  // 763 H5's review: Home's Start cards wait on him too, so the badge counts them.
+  const badge = $derived.by(() => {
+    const b = badgeWords(rows);
+    const cards = home.cards.length;
+    if (!cards) return b;
+    const n = (b?.waiting ? b.n : 0) + cards;
+    return { n, word: n === 1 ? "needs you" : "need you", waiting: true };
+  });
   const title = $derived(
     [
       "Needs you — what waits on you, what is ready for review, what is working, in every project",

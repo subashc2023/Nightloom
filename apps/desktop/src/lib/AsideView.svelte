@@ -8,6 +8,8 @@
   import { untrack } from "svelte";
   // Backlog 283: the chat's composer and message pieces.
   import Composer from "./Composer.svelte";
+  import StartCards from "./StartCards.svelte";
+  import { isHome } from "./home";
   import AsideThread from "./AsideThread.svelte";
   import { asideScrollKey, putBack, recallScroll, rememberScroll, returnEntry } from "./scroll.svelte";
   import { asideLabel } from "./asides";
@@ -458,6 +460,8 @@
           </p>
         {/if}
         <!-- Since backlog 283 the chat's composer, in the aside's frame. -->
+        <!-- Item 763 H5 (asides mirror the main chat): Home's Start cards over the aside tab's box. -->
+        {#if isHome(app.project)}<div class="aside-start-cards"><StartCards /></div>{/if}
         <Composer {aside} asideChat={session} takeFocus />
       </div>
     </div>
@@ -991,4 +995,12 @@
   }
   /* ~~`.aside-view-q` / `-a` / `-wait`~~ — `AsideThread.svelte` since
      backlog 283 (Classic only since item 674); the box is the chat's composer. */
+  /* Item 763 H5: Home's Start cards in an aside — at most a third of the card, scrolling inside. */
+  .aside-start-cards {
+    flex: 0 1 auto;
+    min-height: 0;
+    max-height: 34vh;
+    overflow-y: auto;
+    padding: 0 10px;
+  }
 </style>
