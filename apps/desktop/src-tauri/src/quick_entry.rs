@@ -371,31 +371,18 @@ mod panel {
     }
 }
 
-/// The app's registrar (macOS: Carbon), made at setup.
+/// The app's registrar (macOS: Carbon). Empty at launch: nothing of Quick
+/// Entry runs until he has a shortcut — the Carbon handler is installed and
+/// the registrar made on the first `quick_entry_set_shortcut` that names
+/// one; the box's window and its panel swap wait for the first press.
 #[cfg(target_os = "macos")]
 pub struct QuickEntry(pub Mutex<Option<Registrar<carbon::Carbon>>>);
 #[cfg(not(target_os = "macos"))]
 pub struct QuickEntry(pub Mutex<Option<()>>);
 
-/// Setup: install the press handler (nothing is registered until the main
-/// window hands over his saved shortcut).
-pub fn install<R: tauri::Runtime>(app: &tauri::App<R>) -> QuickEntry {
-    #[cfg(target_os = "macos")]
-    {
-        let handle = app.handle().clone();
-        match carbon::Carbon::install(move || show(&handle)) {
-            Ok(c) => QuickEntry(Mutex::new(Some(Registrar::new(c)))),
-            Err(e) => {
-                eprintln!("quick entry: {e}");
-                QuickEntry(Mutex::new(None))
-            }
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = app;
-        QuickEntry(Mutex::new(None))
-    }
+/// Setup: an empty slot only — no Carbon, AppKit or window call at launch.
+pub fn install() -> QuickEntry {
+    QuickEntry(Mutex::new(None))
 }
 
 /// Show the box (made the first time), its page told so it re-reads the
@@ -457,6 +444,31 @@ fn open_box<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     let _ = win.set_focus();
 }
 
+/// The main-thread half of `quick_entry_set_shortcut`. Off and never on:
+/// returns at once, no system call made. A first pick installs Carbon's
+/// handler (only after it parses) and makes the registrar.
+#[cfg(target_os = "macos")]
+fn set_held(
+    held: &mut Option<Registrar<carbon::Carbon>>,
+    handle: &tauri::AppHandle,
+    shortcut: Option<String>,
+) -> Result<Option<String>, String> {
+    let wanted = shortcut.filter(|s| !s.trim().is_empty());
+    if held.is_none() {
+        let Some(w) = wanted.as_deref() else {
+            return Ok(None);
+        };
+        parse(w)?;
+        let press = handle.clone();
+        let c = carbon::Carbon::install(move || show(&press))?;
+        *held = Some(Registrar::new(c));
+    }
+    match held.as_mut() {
+        Some(r) => r.set(wanted.as_deref()).map(|_| wanted.clone()),
+        None => Err("Quick Entry could not start on this Mac".to_string()),
+    }
+}
+
 /// The main window hands over his saved shortcut at launch and on every
 /// change in Settings; `None` (or "") turns Quick Entry off. Returns the
 /// shortcut held, or why none is.
@@ -482,12 +494,7 @@ pub async fn quick_entry_set_shortcut(
         let state = handle.state::<QuickEntry>();
         let mut held = state.0.lock().unwrap_or_else(|e| e.into_inner());
         #[cfg(target_os = "macos")]
-        let out = match held.as_mut() {
-            Some(r) => r
-                .set(shortcut.as_deref())
-                .map(|_| shortcut.clone().filter(|s| !s.trim().is_empty())),
-            None => Err("Quick Entry could not start on this Mac".to_string()),
-        };
+        let out = set_held(&mut held, &handle, shortcut.clone());
         #[cfg(not(target_os = "macos"))]
         let out = {
             let _ = (&mut held, &shortcut);

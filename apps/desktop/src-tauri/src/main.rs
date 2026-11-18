@@ -1464,12 +1464,10 @@ fn main() {
             // Item 808: Home's scan and the phone read the Mac's own stores
             // through this reader (status only until he allows one).
             mac_sources::install();
-            // Item 795: Quick Entry's press handler; the shortcut itself is
-            // registered when the main window hands over his pick.
-            {
-                let qe = quick_entry::install(app);
-                app.manage(qe);
-            }
+            // Item 795: Quick Entry's empty slot — nothing of it runs at
+            // launch; the handler, the shortcut and the box all wait for his
+            // pick (`quick_entry_set_shortcut`) and its first press.
+            app.manage(quick_entry::install());
             // Item 486: an exception AppKit raises while dispatching an event
             // is logged instead of aborting the app through tao's `extern "C"`
             // `sendEvent:` (the 11:27 AM 2026-10-30 crash).
