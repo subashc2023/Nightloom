@@ -1036,6 +1036,11 @@ export class LiveBoxHandle implements ComposerBox {
   get clientHeight(): number {
     return this.view.dom.clientHeight;
   }
+  /** Item 827: the element that scrolls — CodeMirror's scroller, inside
+   *  `element` — where the box's scroll-bar rule is set. */
+  get scroller(): HTMLElement {
+    return this.view.scrollDOM;
+  }
   get scrollTop(): number {
     return this.view.scrollDOM.scrollTop;
   }
