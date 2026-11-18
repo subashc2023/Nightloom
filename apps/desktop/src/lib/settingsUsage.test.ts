@@ -36,9 +36,15 @@ describe("Usage & Cost: two tabs under one category (backlog 206)", () => {
       "Web search",
       "Appearance",
       "Remote",
+      "System",
     ]);
-    expect(groups.map((g) => groupKey(groups, g.title))).toEqual(["⌘1", "⌘2", "⌘3", "⌘4", "⌘5", "⌘6", "⌘7", "⌘8"]);
+    expect(groups.map((g) => groupKey(groups, g.title))).toEqual(["⌘1", "⌘2", "⌘3", "⌘4", "⌘5", "⌘6", "⌘7", "⌘8", "⌘9"]);
     expect(groupKey(groups, "Cost")).toBe("");
+  });
+
+  it("gives Quick Entry, Notifications and Sleep their own System panes, last (item 848)", () => {
+    expect(groups.at(-1)).toEqual({ title: "System", panes: ["quick-entry", "notifications", "sleep"] });
+    expect(groups.find((g) => g.title === "Appearance")?.panes).toEqual(["appearance", "animations"]);
   });
 
   it("carries the providers and backends as panes", () => {

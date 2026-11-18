@@ -254,6 +254,9 @@
   import HomeJobs from "./HomeJobs.svelte";
   // Item 795: Quick Entry's shortcut recorder.
   import QuickEntrySetting from "./QuickEntrySetting.svelte";
+  // Item 848: the System → Quick Entry row says the shortcut.
+  import { shortcutLabel } from "./quickEntry";
+  import { quickEntry } from "./quickEntry.svelte";
   import { revealFolder } from "./state.svelte";
 
   /**
@@ -965,6 +968,8 @@
   // localStorage when the modal opens, written on each change; `notify.ts`
   // reads the store again at each turn, so nothing here needs to be live.
   let notifyPrefs = $state<NotifyPrefs>(loadNotifyPrefs());
+  /** Item 848: how many of the three banners are on, for the nav row. */
+  const notifyOn = $derived([notifyPrefs.turnEnd, notifyPrefs.needsYou, notifyPrefs.usageRefresh].filter(Boolean).length);
   function setNotify(key: keyof NotifyPrefs, on: boolean) {
     notifyPrefs = { ...notifyPrefs, [key]: on };
     saveNotifyPrefs(notifyPrefs);
@@ -1727,6 +1732,41 @@
         {away?.url ? "on" : "off"}
       </span>
     </button>
+    <!-- Item 848: Quick Entry, Notifications and Sleep, each its own row. -->
+    <div class="nav-title">System<Kbd keys={keyOf("System")} dim /></div>
+    <button
+      class="nav-item"
+      class:active={selected === "quick-entry"}
+      onclick={() => select("quick-entry")}
+    >
+      <span class="nav-label">Quick Entry</span>
+      <span class="st">
+        <span class="dot" class:ok={!!quickEntry.shortcut}></span>
+        {quickEntry.shortcut ? shortcutLabel(quickEntry.shortcut) : "off"}
+      </span>
+    </button>
+    <button
+      class="nav-item"
+      class:active={selected === "notifications"}
+      onclick={() => select("notifications")}
+    >
+      <span class="nav-label">Notifications</span>
+      <span class="st">
+        <span class="dot" class:ok={notifyOn > 0}></span>
+        {notifyOn === 0 ? "off" : `${notifyOn} of 3`}
+      </span>
+    </button>
+    <button
+      class="nav-item"
+      class:active={selected === "sleep"}
+      onclick={() => select("sleep")}
+    >
+      <span class="nav-label">Sleep</span>
+      <span class="st">
+        <span class="dot" class:ok={sleepPrefs.keepAwake}></span>
+        {sleepPrefs.keepAwake ? "kept awake" : "off"}
+      </span>
+    </button>
     <div class="nav-spacer"></div>
     <div class="nav-foot">Esc or click outside to close</div>
   </nav>
@@ -2081,7 +2121,38 @@
           <span>Show pages as a one-line card until I click Show</span>
         </label>
       </section>
-
+    </div>
+  <!-- Item 848 (his words: "gang i dont see a notifications section bro"):
+       Notifications, Quick Entry and Sleep were three cards at the foot of
+       Appearance → Palette, where he did not look. Each is its own pane now,
+       under a System group of the nav (⌘9), the cards unchanged. -->
+  {:else if selected === "quick-entry"}
+    <div class="pane" use:tabPlace={"settings:" + selected}>
+      <div class="pane-head">
+        <h2 class="pane-title">Quick Entry</h2>
+        <span class="spacer"></span>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
+      </div>
+      <!-- Item 795: Quick Entry — a system-wide shortcut opens a small box
+           (quick_entry.rs, quick/QuickEntry.svelte). Off until he picks one. -->
+      <section class="card">
+        <div class="ch"><span class="t">Quick Entry</span></div>
+        <p class="note small">
+          A shortcut that works from any app: it opens a small box over what you are in, without bringing Nightloom
+          forward. Send goes to the chat you last used, a new chat in a project, or an aside on the last chat; the box
+          remembers which. It takes typing, dictation and ⌘V (the clipboard only, so macOS asks for no permission).
+          Closing it keeps what you typed. It works only while Nightloom is running.
+        </p>
+        <QuickEntrySetting />
+      </section>
+    </div>
+  {:else if selected === "notifications"}
+    <div class="pane" use:tabPlace={"settings:" + selected}>
+      <div class="pane-head">
+        <h2 class="pane-title">Notifications</h2>
+        <span class="spacer"></span>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
+      </div>
       <!-- The turn-end banner (nightshift backlog 079): two switches, one
            per kind. The rule they cannot change is the focus one — a
            window in front is never notified. -->
@@ -2118,20 +2189,14 @@
           <span>When Usage & Cost → Refresh now finishes — the figures; clicking it opens that page. Never for the automatic refresh</span>
         </label>
       </section>
-
-      <!-- Item 795: Quick Entry — a system-wide shortcut opens a small box
-           (quick_entry.rs, quick/QuickEntry.svelte). Off until he picks one. -->
-      <section class="card">
-        <div class="ch"><span class="t">Quick Entry</span></div>
-        <p class="note small">
-          A shortcut that works from any app: it opens a small box over what you are in, without bringing Nightloom
-          forward. Send goes to the chat you last used, a new chat in a project, or an aside on the last chat; the box
-          remembers which. It takes typing, dictation and ⌘V (the clipboard only, so macOS asks for no permission).
-          Closing it keeps what you typed. It works only while Nightloom is running.
-        </p>
-        <QuickEntrySetting />
-      </section>
-
+    </div>
+  {:else if selected === "sleep"}
+    <div class="pane" use:tabPlace={"settings:" + selected}>
+      <div class="pane-head">
+        <h2 class="pane-title">Sleep</h2>
+        <span class="spacer"></span>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
+      </div>
       <!-- Sleep-safe turns (nightshift backlog 101): his `caffeinate -dis`
            made automatic while anything runs, and the turn a closed lid
            cut off resumed on wake. Here, under Notifications, per blocker
@@ -2429,7 +2494,7 @@
             disabled={remoteBusy}
             onchange={(e) => void remoteRun(() => api.remoteSetKeepAwake(e.currentTarget.checked))}
           />
-          <span>Keep the Mac awake while remote is on (needs Palette → Sleep's first switch; a closed lid on battery still sleeps it)</span>
+          <span>Keep the Mac awake while remote is on (needs System → Sleep's first switch; a closed lid on battery still sleeps it)</span>
         </label>
         <div class="remote-actions">
           <button class="ns-btn" disabled={selfTesting || !remote?.on} onclick={() => void runSelfTest()}>
