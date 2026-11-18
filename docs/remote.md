@@ -358,6 +358,22 @@ with `chat` fixed to `Home` (the name match takes the newest chat whose name
 starts with "Home"). *Unmeasured in this build:* both on his iPhone — the
 routes are tested on loopback only.
 
+## Saved prompts in the phone's boxes (item 800, 2026-11-18)
+
+- **What.** Typing `/word` in the chat's box, an aside's or a job's prompt
+  shows the saved prompts whose names start with it, in a strip above the
+  box (`remote/promptBox.ts`, a `use:promptBox` action). A tap puts the
+  prompt in place of the `/word` with `{clipboard}` (Safari's own paste
+  read), `{date}` and `{selection}` filled and the first blank selected;
+  while blanks are left the strip shows ‹ and **Next blank ›** (a hardware
+  keyboard's Tab / ⇧Tab do the same).
+- **Route.** `GET /api/saved-prompts` → `{ "prompts": [{ "name", "body" }] }`,
+  the live prompts in Settings' order, read from `<config>/saved-prompts.json`
+  (`saved_prompts.rs`). Read only: the Mac's Settings → Saved prompts edits
+  them. The page reads it on connect and when it comes back to the front.
+  The away server answers from its own config directory, so it offers only
+  what was saved on that machine (not synced).
+
 ## Approval rules and "Not now — carry on" (item 743, 2026-11-16)
 
 - **Rules.** The chat's ⋯ sheet → More → *Approval rules* (and *Rules* on an

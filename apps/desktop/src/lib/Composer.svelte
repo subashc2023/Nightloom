@@ -67,6 +67,10 @@
   import { LiveBoxHandle, boxElement, type ComposerBox } from "./composerEditor";
   import { applyToField, codeBlockEdit, type BlockEdit } from "./codeBlockKeys";
   import LiveBox from "./LiveBox.svelte";
+  // Item 800: saved message prompts with blanks, offered after a `/`.
+  import { insertAt, matching, nextBlank, slashToken, type MessagePrompt } from "./savedPrompts";
+  import { filledBody, loadSaved, saved } from "./savedPromptsStore.svelte";
+  import { watchSelection } from "./selectionMemory";
   import { isMac } from "./platform";
   import { BoxHistory, editKind, historyInput, historyKey } from "./boxHistory";
   import TypedMathBar from "./TypedMathBar.svelte";
@@ -834,21 +838,70 @@
   });
   let slashDismissed = $state(false);
   let slashIndex = $state(0);
-  const slashOpen = $derived(
-    slashNames.length > 0 && /^\/[A-Za-z0-9_-]*$/.test(text) && !slashDismissed,
-  );
+  /*
+   * Item 800: saved message prompts join the list — on either engine and
+   * before the first turn, since they are only text — wherever a `/word`
+   * ends the box (its start, a line's start, or after a space), and come
+   * first. Picking one puts its body in place of the `/word`, with
+   * {clipboard}, {date} and {selection} filled and the first blank left
+   * selected; Tab then steps through the blanks (⇧Tab back).
+   */
+  void loadSaved();
+  watchSelection();
+  const savedToken = $derived(saved.list.length ? slashToken(text, text.length) : null);
+  const savedMatches = $derived(savedToken ? matching(saved.list, savedToken.query) : []);
+  const wholeSlash = $derived(slashNames.length > 0 && /^\/[A-Za-z0-9_-]*$/.test(text));
+  const slashOpen = $derived((wholeSlash || savedMatches.length > 0) && !slashDismissed);
   const slashMatches = $derived.by(() => {
     if (!slashOpen) return [];
+    const mine = savedMatches.map((p) => ({ name: p.name, kind: "saved prompt", prompt: p as MessagePrompt | null }));
+    if (!wholeSlash) return mine;
     const q = text.slice(1).toLowerCase();
-    return slashNames.filter((s) => s.name.toLowerCase().startsWith(q)).slice(0, 12);
+    const taken = new Set(mine.map((m) => m.name.toLowerCase()));
+    const theirs = slashNames
+      .filter((s) => s.name.toLowerCase().startsWith(q) && !taken.has(s.name.toLowerCase()))
+      .map((s) => ({ ...s, prompt: null as MessagePrompt | null }));
+    return [...mine, ...theirs].slice(0, 12);
   });
+  const savedShown = $derived(slashMatches.some((m) => m.prompt));
+  /** A saved prompt went in and its blanks are Tab's until the box empties. */
+  let blanksLive = $state(false);
+  $effect(() => {
+    if (!text) blanksLive = false;
+  });
+  /** Select `[start, end]` in whichever box is showing. */
+  function selectIn(start: number, end: number): void {
+    if (!ta) return;
+    ta.focus();
+    ta.selectionStart = start;
+    ta.selectionEnd = end;
+  }
+  async function pickSaved(p: MessagePrompt): Promise<void> {
+    const token = savedToken;
+    if (!token) return;
+    const before = text;
+    const body = await filledBody(p);
+    // He typed on while the clipboard was read: the token moved; leave it.
+    if (text !== before) return;
+    const put = insertAt(text, token, body);
+    setDraftText(key, put.text);
+    slashDismissed = true;
+    blanksLive = nextBlank(put.text, 0, 0) !== null;
+    await tick();
+    selectIn(put.select.start, put.select.end);
+    autogrow();
+  }
   $effect(() => {
     // A fresh box (no leading slash) re-arms the picker; typing resets the row.
     void text;
     if (!/^\//.test(text)) slashDismissed = false;
     slashIndex = 0;
   });
-  function pickSlash(name: string): void {
+  function pickSlash(name: string, prompt: MessagePrompt | null = null): void {
+    if (prompt) {
+      void pickSaved(prompt);
+      return;
+    }
     setDraftText(key, `/${name} `);
     slashDismissed = true;
     ta?.focus();
@@ -1526,7 +1579,7 @@
       }
       if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
         e.preventDefault();
-        pickSlash(slashMatches[slashIndex].name);
+        pickSlash(slashMatches[slashIndex].name, slashMatches[slashIndex].prompt);
         return;
       }
       if (e.key === "Escape") {
@@ -1534,6 +1587,17 @@
         slashDismissed = true;
         return;
       }
+    }
+    // Item 800: a saved prompt's blanks — Tab selects the next, ⇧Tab the
+    // one before; with none left Tab is the box's own again.
+    if (blanksLive && e.key === "Tab" && !e.metaKey && !e.ctrlKey && !e.altKey && ta) {
+      const b = nextBlank(ta.value, ta.selectionStart, ta.selectionEnd, e.shiftKey);
+      if (b) {
+        e.preventDefault();
+        selectIn(b.start, b.end);
+        return;
+      }
+      blanksLive = false;
     }
     // Item 318: Esc while the long-paste offer is up dismisses it; the
     // paste stays in the box as text.
@@ -3705,7 +3769,7 @@
     <ClipPanel entries={clips.ring} index={clipIndex} onpick={pickClip} />
   {/if}
   {#if slashOpen}
-    <div class="slash hud-m" role="listbox" aria-label="Skills and slash commands" in:hudIn|global out:hudOut|global>
+    <div class="slash hud-m" role="listbox" aria-label={savedShown ? "Saved prompts, skills and slash commands" : "Skills and slash commands"} in:hudIn|global out:hudOut|global>
       {#if slashMatches.length === 0}
         <div class="slash-row dim">No skill or command starts with “{text.slice(1)}” — ↵ sends the text as typed</div>
       {:else}
@@ -3717,13 +3781,17 @@
             class:on={i === slashIndex}
             aria-selected={i === slashIndex}
             onmousedown={(e) => e.preventDefault()}
-            onclick={() => pickSlash(m.name)}
+            onclick={() => pickSlash(m.name, m.prompt)}
           >
             <span class="mono">/{m.name}</span>
             <span class="dim">{m.kind}</span>
           </button>
         {/each}
-        <div class="slash-row dim">↑↓ move · ↵ or Tab insert · Esc close · the CLI runs a skill named in the message</div>
+        {#if savedShown}
+          <div class="slash-row dim">↑↓ move · ↵ or Tab insert · Esc close · a saved prompt's blanks: Tab to the next</div>
+        {:else}
+          <div class="slash-row dim">↑↓ move · ↵ or Tab insert · Esc close · the CLI runs a skill named in the message</div>
+        {/if}
       {/if}
     </div>
   {/if}

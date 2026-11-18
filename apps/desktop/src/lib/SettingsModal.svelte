@@ -171,6 +171,22 @@
   import CliUpdateActions from "./CliUpdateActions.svelte";
   import SettingsGroup from "./settings/SettingsGroup.svelte";
   import SettingRow from "./settings/SettingRow.svelte";
+  // Item 800: saved message prompts with blanks.
+  import { blankWords, AUTO_BLANKS } from "./savedPrompts";
+  import {
+    saved as savedPrompts,
+    loadSaved,
+    startEdit as startPromptEdit,
+    setDraft as setPromptDraft,
+    draftDirty as promptDraftDirty,
+    draftProblem as promptDraftProblem,
+    saveDraft as savePromptDraft,
+    discardDraft as discardPromptDraft,
+    trashPrompt,
+    untrashPrompt,
+    restorePromptVersion,
+    movePrompt,
+  } from "./savedPromptsStore.svelte";
   import {
     CONTROLS as SUB_CONTROLS,
     GROUPS as SUB_GROUPS,
@@ -747,6 +763,14 @@
     if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
     return `${bytes} B`;
   }
+
+  // Item 800: the saved-prompts pane's own folds and confirms.
+  void loadSaved();
+  const livePrompts = $derived(savedPrompts.list.filter((p) => !p.deleted));
+  const trashedPrompts = $derived(savedPrompts.list.filter((p) => !!p.deleted));
+  let promptDiscardArmed = $state(false);
+  let promptDeleteArmed = $state<string | null>(null);
+  let promptVersionsOpen = $state<string | null>(null);
 
   function select(kind: string) {
     selected = canonicalPane(kind);
@@ -1591,6 +1615,18 @@
       <span class="st">
         <span class="dot" class:ok={modelFiles.length > 0}></span>
         {modelFiles.length === 0 ? "none" : `${modelFiles.length} model${modelFiles.length === 1 ? "" : "s"}`}
+      </span>
+    </button>
+    <!-- Item 800: message prompts /name puts in any box (not system prompts). -->
+    <button
+      class="nav-item"
+      class:active={selected === "saved-prompts"}
+      onclick={() => select("saved-prompts")}
+    >
+      <span class="nav-label">Saved prompts</span>
+      <span class="st">
+        <span class="dot" class:ok={livePrompts.length > 0}></span>
+        {savedPrompts.draft ? "unsaved" : `${livePrompts.length}`}
       </span>
     </button>
     <div class="nav-title">Projects<Kbd keys={keyOf("Projects")} dim /></div>
@@ -3980,6 +4016,151 @@
         </div>
       </section>
     </div>
+  {:else if selected === "saved-prompts"}
+    <div class="pane" use:tabPlace={"settings:" + selected}>
+      <div class="pane-head">
+        <h2 class="pane-title">Saved prompts</h2>
+        <span class="slug">/name</span>
+        <span class="spacer"></span>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /><span class="done4" aria-hidden="true">Done<kbd>esc</kbd></span></button>
+      </div>
+      <p class="note">
+        Messages you send often, under a short name. Type <code>/name</code> in a chat's box, an aside's, the phone's
+        or a job's prompt and pick it: the text goes in, and <kbd>Tab</kbd> steps through its <code>{"{blanks}"}</code>
+        (<kbd>⇧Tab</kbd> back). <code>{"{clipboard}"}</code>, <code>{"{date}"}</code> and <code>{"{selection}"}</code>
+        (the text you selected in the transcript) fill themselves. They are only message text — nothing here goes into
+        a system prompt; those are the prompt library's.
+      </p>
+      {#if savedPrompts.error}
+        <p class="note small sp-bad">{savedPrompts.error}</p>
+      {/if}
+      {#if savedPrompts.draft}
+        {@const d = savedPrompts.draft}
+        {@const problem = promptDraftProblem()}
+        <section class="card" data-testid="saved-prompt-edit">
+          <div class="ch">
+            <span class="t">{d.id === null ? "New prompt" : `Edit /${savedPrompts.list.find((p) => p.id === d.id)?.name ?? d.name}`}</span>
+            {#if promptDraftDirty()}<span class="sub-tag">not saved</span>{/if}
+          </div>
+          <label class="sp-label" for="sp-name">Name — what you type after the slash</label>
+          <input
+            id="sp-name"
+            class="sp-name"
+            value={d.name}
+            placeholder="wrapup"
+            autocapitalize="off"
+            autocomplete="off"
+            spellcheck="false"
+            oninput={(e) => setPromptDraft({ name: (e.currentTarget as HTMLInputElement).value })}
+          />
+          <label class="sp-label" for="sp-body">Text — a word in braces is a blank</label>
+          <textarea
+            id="sp-body"
+            class="home-brief"
+            rows="9"
+            spellcheck="true"
+            value={d.body}
+            placeholder={"Review {file} for {what}, as of {date}."}
+            oninput={(e) => setPromptDraft({ body: (e.currentTarget as HTMLTextAreaElement).value })}
+          ></textarea>
+          {#if blankWords(d.body).length > 0}
+            <div class="sp-blanks">
+              {#each blankWords(d.body) as w (w)}
+                <span class="sub-tag" class:sp-auto={(AUTO_BLANKS as readonly string[]).includes(w)}>{w}{(AUTO_BLANKS as readonly string[]).includes(w) ? " · fills itself" : ""}</span>
+              {/each}
+            </div>
+          {/if}
+          {#if problem && promptDraftDirty()}<p class="note small sp-bad">{problem}</p>{/if}
+          <div class="kf">
+            <button class="ns-btn accent" disabled={!!problem || !promptDraftDirty()} onclick={() => void savePromptDraft()}>Save</button>
+            <button
+              class="ns-btn ghost"
+              onclick={() => {
+                if (promptDraftDirty() && !promptDiscardArmed) {
+                  promptDiscardArmed = true;
+                  return;
+                }
+                promptDiscardArmed = false;
+                discardPromptDraft();
+              }}
+              onmouseleave={() => (promptDiscardArmed = false)}
+              >{!promptDraftDirty() ? "Close" : promptDiscardArmed ? "Discard your changes? Click again" : "Discard changes"}</button
+            >
+          </div>
+        </section>
+      {/if}
+      <section class="card" data-testid="saved-prompts">
+        <div class="ch">
+          <span class="t">Prompts</span>
+          <span class="spacer"></span>
+          <button class="ns-btn ghost" disabled={!!savedPrompts.draft} use:tip={savedPrompts.draft ? "Save or discard the edit above first" : "A new saved prompt"} onclick={() => startPromptEdit(null)}>New prompt</button>
+        </div>
+        {#if !savedPrompts.loaded}
+          <p class="note small">Reading…</p>
+        {:else if livePrompts.length === 0}
+          <p class="note small">None yet. New prompt makes one.</p>
+        {/if}
+        {#each livePrompts as p, i (p.id)}
+          <div class="sp-row" data-testid="saved-prompt-row">
+            <div class="sp-main">
+              <div class="sp-title"><code>/{p.name}</code>
+                {#each blankWords(p.body) as w (w)}<span class="sub-tag" class:sp-auto={(AUTO_BLANKS as readonly string[]).includes(w)}>{w}</span>{/each}
+              </div>
+              <div class="sp-preview">{p.body.length > 160 ? p.body.slice(0, 160) + "…" : p.body}</div>
+              {#if p.versions.length > 0}
+                <button class="sp-link" onclick={() => (promptVersionsOpen = promptVersionsOpen === p.id ? null : p.id)}
+                  >{promptVersionsOpen === p.id ? "Hide" : "Show"} {p.versions.length} earlier version{p.versions.length === 1 ? "" : "s"}</button
+                >
+                {#if promptVersionsOpen === p.id}
+                  {#each p.versions as v, vi (v.at + ":" + vi)}
+                    <div class="sp-version">
+                      <span class="sp-when">{exactTime(new Date(v.at).toISOString())}{v.name !== p.name ? ` · was /${v.name}` : ""}</span>
+                      <span class="sp-preview">{v.body.length > 120 ? v.body.slice(0, 120) + "…" : v.body}</span>
+                      <button class="ns-btn ghost small" disabled={!!savedPrompts.draft} onclick={() => void restorePromptVersion(p.id, vi)}>Restore</button>
+                    </div>
+                  {/each}
+                {/if}
+              {/if}
+            </div>
+            <div class="sp-acts">
+              <button class="ns-btn ghost small" aria-label={`Move /${p.name} up`} disabled={i === 0} onclick={() => void movePrompt(p.id, -1)}>↑</button>
+              <button class="ns-btn ghost small" aria-label={`Move /${p.name} down`} disabled={i === livePrompts.length - 1} onclick={() => void movePrompt(p.id, 1)}>↓</button>
+              <button class="ns-btn ghost small" disabled={!!savedPrompts.draft} onclick={() => startPromptEdit(p.id)}>Edit</button>
+              <button
+                class="ns-btn ghost small"
+                disabled={savedPrompts.draft?.id === p.id}
+                onclick={() => {
+                  if (promptDeleteArmed !== p.id) {
+                    promptDeleteArmed = p.id;
+                    return;
+                  }
+                  promptDeleteArmed = null;
+                  void trashPrompt(p.id);
+                }}
+                onmouseleave={() => (promptDeleteArmed = null)}>{promptDeleteArmed === p.id ? "Delete? Click again" : "Delete"}</button
+              >
+            </div>
+          </div>
+        {/each}
+      </section>
+      {#if trashedPrompts.length > 0}
+        <section class="card" data-testid="saved-prompts-trash">
+          <div class="ch"><span class="t">Deleted</span></div>
+          <p class="note small">Kept here until you restore them.</p>
+          {#each trashedPrompts as p (p.id)}
+            <div class="sp-row">
+              <div class="sp-main">
+                <div class="sp-title"><code>/{p.name}</code></div>
+                <div class="sp-preview">{p.body.length > 120 ? p.body.slice(0, 120) + "…" : p.body}</div>
+              </div>
+              <div class="sp-acts">
+                <button class="ns-btn ghost small" onclick={() => void untrashPrompt(p.id)}>Restore</button>
+              </div>
+            </div>
+          {/each}
+        </section>
+      {/if}
+    </div>
   {:else if selected === "models"}
     <div class="pane" use:tabPlace={"settings:" + selected}>
       <div class="pane-head">
@@ -5985,6 +6166,91 @@
     }
   }
   /* Item 763: Home's brief editor. */
+  /* Item 800: the saved-prompts pane. */
+  .sp-label {
+    display: block;
+    font-size: 12px;
+    color: var(--dim);
+    margin: 8px 0 2px;
+  }
+  .sp-name {
+    font-family: var(--mono);
+    font-size: 13px;
+    padding: 5px 8px;
+    width: 16em;
+    box-sizing: border-box;
+  }
+  .sp-blanks {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 6px;
+  }
+  .sp-auto {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+  .sp-bad {
+    color: var(--red, #c0392b);
+  }
+  .sp-row {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    padding: 8px 0;
+    border-top: 1px solid var(--line2);
+  }
+  .sp-row:first-of-type {
+    border-top: 0;
+  }
+  .sp-main {
+    flex: 1;
+    min-width: 0;
+  }
+  .sp-title {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+  }
+  .sp-preview {
+    font-size: 12.5px;
+    color: var(--dim);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    margin-top: 2px;
+    max-height: 4.5em;
+    overflow: hidden;
+  }
+  .sp-acts {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+  .sp-link {
+    background: none;
+    border: 0;
+    padding: 0;
+    margin-top: 4px;
+    color: var(--accent);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .sp-version {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 8px;
+    align-items: start;
+    margin-top: 4px;
+    padding-left: 8px;
+    border-left: 2px solid var(--line2);
+  }
+  .sp-when {
+    font-size: 11.5px;
+    color: var(--dim);
+    white-space: nowrap;
+  }
   .home-brief {
     width: 100%;
     box-sizing: border-box;

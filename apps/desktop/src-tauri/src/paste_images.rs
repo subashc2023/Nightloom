@@ -311,6 +311,19 @@ fn pasteboard_image(url: &str) -> Option<PastedImage> {
     find_in_webarchive(&pasteboard_data("com.apple.webarchive")?, url)
 }
 
+/// The general pasteboard's plain text (item 800's `{clipboard}` blank).
+#[cfg(target_os = "macos")]
+pub fn pasteboard_text() -> Option<String> {
+    let bytes = pasteboard_data("public.utf8-plain-text")?;
+    String::from_utf8(bytes).ok().filter(|t| !t.is_empty())
+}
+
+/// No pasteboard to read off the Mac; the page falls back to its own.
+#[cfg(not(target_os = "macos"))]
+pub fn pasteboard_text() -> Option<String> {
+    None
+}
+
 /// The general pasteboard's data of one type, copied out.
 #[cfg(target_os = "macos")]
 fn pasteboard_data(kind: &str) -> Option<Vec<u8>> {

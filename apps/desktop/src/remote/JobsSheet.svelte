@@ -18,6 +18,7 @@
    *   or Discard, whatever closes the sheet.
    */
   import { untrack } from "svelte";
+  import { promptBox } from "./promptBox"; // Item 800: saved prompts after a `/`.
   import JobApproval from "./JobApproval.svelte";
   import JobRunConfirm from "./JobRunConfirm.svelte";
   import {
@@ -168,7 +169,7 @@
       {/each}
     </div>
     <label class="jb-label" for="jb-text">The message it sends each time</label>
-    <textarea id="jb-text" class="jb-input" rows="3" bind:value={text} placeholder="Check CI on main and tell me what failed"></textarea>
+    <textarea id="jb-text" class="jb-input" rows="3" use:promptBox bind:value={text} placeholder="Check CI on main and tell me what failed"></textarea>
     <label class="jb-label" for="jb-name">Name (optional)</label>
     <input id="jb-name" class="jb-input" bind:value={title} placeholder="From the message" />
     <p class="jb-note">

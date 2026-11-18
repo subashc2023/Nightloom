@@ -1970,6 +1970,30 @@ slash commands from the same init line, filtered by what follows the slash;
 inserts text only — the CLI runs a skill named in the message when Send
 goes. Nothing on the other engine, and nothing before the first turn.
 
+**Saved prompts** (item 800, 2026-11-18): messages he sends often, under a
+short name, in Settings → Knowledge → *Saved prompts* — separate from the
+system-prompt library and never part of a system prompt. They live on the
+host as `<config>/saved-prompts.json` (`nightloom_service::saved_prompts`,
+read and written whole by `saved_prompts_read` / `saved_prompts_write`) so
+the phone reads the same list. In the composer (chat and asides alike, one
+component) a `/word` that ends the box — at its start, a line's start or
+after a space — lists the matching saved prompts first in the `/` picker,
+on either engine and before the first turn. Picking one replaces the
+`/word` with the body: `{date}` (2026-11-18), `{selection}` (the text last
+selected outside a text box, kept ten minutes — `selectionMemory.ts`) and
+`{clipboard}` (the pasteboard read natively, `clipboard_text`) fill
+themselves, an empty one stays a blank; the first blank left is selected,
+Tab selects the next and ⇧Tab the one before, and with none left Tab is the
+box's own again. A blank is `{word}` — letters, digits, space, `_`, `-`, so
+JSON's braces are not blanks. Settings: New prompt, Edit (name and text,
+the blanks listed as chips, the self-filling ones in the accent), ↑ ↓ to
+reorder, Delete (click twice) to a *Deleted* list with Restore; every edit
+keeps the version it replaced (up to 20, newest first, each restorable). The
+open edit is kept in app state and local storage until Save or Discard. A
+file that never existed starts with `/wrapup` (the Settings wrap-up message,
+else the built-in) and `/spec` (a spec launch); a list he emptied stays
+empty. Pure rules: `savedPrompts.ts`; Mac store: `savedPromptsStore.svelte.ts`.
+
 **Restyled to the approved boards (2026-09-16 afternoon, nightshift
 `claude-code-ui-design-2026-09-16/Session.dc.html` and `Layers.dc.html`).**
 *This session*: an MCP server's row is the board's grid — status dot (green
