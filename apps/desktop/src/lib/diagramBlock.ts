@@ -99,8 +99,9 @@ export function stripSvgActive(svg: string): string {
       s = s.replace(new RegExp(`<${tag}\\b[^>]*>`, "gi"), "");
       s = s.replace(new RegExp(`<\\/${tag}\\s*>`, "gi"), "");
     }
-    s = s.replace(/\s(?:on[a-z]+|formaction)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "");
-    s = s.replace(/\s((?:xlink:)?href)\s*=\s*("([^"]*)"|'([^']*)'|[^\s>]+)/gi, (all, _n: string, _v: string, a?: string, b?: string) => {
+    // `/` separates attributes too (`<svg/onload=…>`).
+    s = s.replace(/[\s/](?:on[a-z]+|formaction)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "");
+    s = s.replace(/[\s/]((?:xlink:)?href)\s*=\s*("([^"]*)"|'([^']*)'|[^\s>]+)/gi, (all, _n: string, _v: string, a?: string, b?: string) => {
       const v = (a ?? b ?? _v).trim();
       return /^#[\w.:-]*$/.test(v) || /^data:image\/(png|jpeg|gif|webp);/i.test(v) ? all : "";
     });

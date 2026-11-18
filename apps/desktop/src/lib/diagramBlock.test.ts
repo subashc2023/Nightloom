@@ -12,6 +12,9 @@ import remoteMainSrc from "../remote/main.ts?raw";
 import markdownSrc from "./markdown.ts?raw";
 import promptSrc from "../../../../crates/nightloom-service/src/prompt.rs?raw";
 import { mermaidConfig, FALLBACK_THEME } from "./pageKit";
+import { placeholdersIn } from "./diagrams";
+import diagramsSrc from "./diagrams.ts?raw";
+import noteEditorSrc from "./noteEditor.ts?raw";
 
 const md = new Marked();
 md.use(diagramBlock);
@@ -96,6 +99,11 @@ describe("SVG sanitising: nothing in a block runs", () => {
     expect(p.width).toBe(120);
     expect(p.height).toBe(60);
   });
+  it("an attribute after `/` (`<svg/onload=…>`, `<use/href=…>`) is stripped too (review)", () => {
+    const out = stripSvgActive(`<svg/onload=alert(1) width="4"><use/href="https://example.com/x.svg#a"/><use/xlink:href='//evil/y'/></svg>`);
+    expect(out).not.toMatch(/onload|example\.com|evil/);
+    expect(out).toContain('width="4"');
+  });
   it("a block with no <svg> is not a picture; a missing namespace is put back", () => {
     expect(sanitizeSvg("<p>no</p>")).toBeNull();
     expect(sanitizeSvg('<svg viewBox="0 0 10 10"><circle r="4"/></svg>')).toMatch(/^<svg xmlns="http:\/\/www.w3.org\/2000\/svg"/);
@@ -163,5 +171,35 @@ describe("wiring (the whole class)", () => {
     const note = /pub const DIAGRAM_NOTE: &str = "([^\n]*)";/.exec(promptSrc)![1];
     expect(note).toContain("```mermaid");
     expect(note).toContain("```svg");
+  });
+});
+
+describe("the watcher costs nothing where there is no diagram (review)", () => {
+  /** A stand-in node: its type, classes and the placeholders under it. */
+  const node = (type: number, cls: string[] = [], under: string[] = [], kids = under.length > 0) =>
+    ({
+      nodeType: type,
+      classList: { contains: (c: string) => cls.includes(c) },
+      firstElementChild: kids ? {} : null,
+      getElementsByClassName: (c: string) => (c === "md-diagram" ? under : []),
+    }) as unknown as Node;
+  it("text (a streaming chunk, a keystroke) and elements with no placeholder give none", () => {
+    expect(placeholdersIn([node(3), node(3)])).toEqual([]);
+    expect(placeholdersIn([node(1, ["md-diagram-mount"], [], true), node(1, ["ta-mirror"])])).toEqual([]);
+  });
+  it("a placeholder added, or inside what was added, is found", () => {
+    const ph = node(1, ["md-diagram"]);
+    expect(placeholdersIn([ph])).toEqual([ph]);
+    expect(placeholdersIn([node(1, ["markdown"], ["a", "b"] as unknown as string[])])).toEqual(["a", "b"]);
+  });
+  it("a mutation draws only what arrived; the document is scanned at start and on a theme change only", () => {
+    expect(diagramsSrc).toContain("placeholdersIn(r.addedNodes)");
+    expect(diagramsSrc.match(/dressAll\(document, opts\)/g)?.length).toBe(1);
+  });
+  it("a slow or stopped renderer is not kept as the block's answer", () => {
+    expect(diagramsSrc).toContain("drawn.delete(drawKey)");
+  });
+  it("the note editor measures again when a drawn block changes height", () => {
+    expect(noteEditorSrc).toContain("new ResizeObserver(() => view.requestMeasure())");
   });
 });

@@ -98,6 +98,16 @@ if (q.get("phone") === "1") {
   mount(Reply, { target: root, props: { segs: [{ kind: "text", text }], streaming: !!stream, headed: false, since: Date.now() } as never });
 }
 
+if (q.get("late") === "1") {
+  // Review: a block added a second after the page settled (a reply arriving later) is found by the watcher.
+  setTimeout(() => {
+    const d = document.createElement("div");
+    d.className = "body markdown";
+    d.innerHTML = renderMarkdown("Added late:\n\n" + FLOW);
+    root.appendChild(d);
+  }, 1000);
+}
+
 setTimeout(() => {
   const blocks = Array.from(document.querySelectorAll<HTMLElement>(".md-diagram"));
   const w = window as unknown as { __svgRan?: string };

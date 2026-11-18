@@ -201,12 +201,24 @@ export class DiagramWidget extends WidgetType {
       view.dispatch({ selection: EditorSelection.cursor(Math.min(view.state.doc.length, view.posAtDOM(el))) });
       view.focus();
     });
+    // The drawing arrives after the widget is placed (and Source / Diagram changes its height): the editor
+    // measures again, so a click or the cursor below the block lands where it is shown.
+    if (typeof ResizeObserver === "function") {
+      const ro = new ResizeObserver(() => view.requestMeasure());
+      ro.observe(el);
+      diagramObservers.set(el, ro);
+    }
     return el;
+  }
+  destroy(dom: HTMLElement): void {
+    diagramObservers.get(dom)?.disconnect();
+    diagramObservers.delete(dom);
   }
   ignoreEvent(): boolean {
     return true;
   }
 }
+const diagramObservers = new WeakMap<HTMLElement, ResizeObserver>();
 
 /** `[[target|alias]]` inside a drawn table: shown as its alias (or target),
  *  styled as a link, the way the editor draws one outside a table. */

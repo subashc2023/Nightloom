@@ -27,7 +27,8 @@ export const DIAGRAM_TAG = "nightloom-diagram-821";
 /** How long a drawing may take before the block shows its source and says so. */
 export const DRAW_TIMEOUT_MS = 15_000;
 
-type Drawn = { picture: Picture } | { error: string };
+/** `transient`: the renderer failed or was slow, not the block — not kept, so the next look draws it again. */
+type Drawn = { picture: Picture } | { error: string; transient?: true };
 
 /** What the Mermaid frame runs: one drawing at a time, on request, answered by id. */
 const RENDERER = `(function(){var TAG=${JSON.stringify(DIAGRAM_TAG)};
@@ -107,18 +108,28 @@ function drawMermaid(src: string, theme: KitTheme): Promise<Drawn> {
     try {
       await rendererReady();
     } catch (e) {
-      return { error: `Mermaid could not be loaded (${e instanceof Error ? e.message : String(e)})` };
+      return { error: `Mermaid could not be loaded (${e instanceof Error ? e.message : String(e)})`, transient: true };
     }
     const id = nextId++;
+    const win = frame?.isConnected ? frame.contentWindow : null;
+    if (!win) {
+      // The frame was taken out of the document: make it again on the next drawing.
+      frame?.remove();
+      frame = null;
+      ready = null;
+      return { error: "The diagram renderer stopped", transient: true };
+    }
+    let slow = false;
     const got = await new Promise<{ svg?: string; error?: string }>((resolve) => {
       const timer = setTimeout(() => {
         waiting.delete(id);
+        slow = true;
         resolve({ error: "The diagram took too long to draw" });
       }, DRAW_TIMEOUT_MS);
       waiting.set(id, { resolve, timer });
-      frame!.contentWindow!.postMessage({ tag: DIAGRAM_TAG, id, src, config: mermaidConfig(theme, false, true) }, "*");
+      win.postMessage({ tag: DIAGRAM_TAG, id, src, config: mermaidConfig(theme, false, true) }, "*");
     });
-    if (got.error !== undefined) return { error: mermaidError(got.error) };
+    if (got.error !== undefined) return slow ? { error: got.error, transient: true } : { error: mermaidError(got.error) };
     const picture = svgPicture(got.svg ?? "");
     return picture ? { picture } : { error: "Mermaid drew nothing for this block" };
   };
@@ -284,9 +295,25 @@ export function dress(el: Element, opts: DiagramOptions = {}): void {
   const p = hit ?? drawMermaid(d.src, theme);
   if (!hit) {
     remember(drawKey, p);
-    void p.then((r) => remember(drawKey, r));
+    void p.then((r) => ("transient" in r && r.transient ? drawn.delete(drawKey) : remember(drawKey, r)));
   }
   void p.then(fill);
+}
+
+/**
+ * The placeholders among (or inside) nodes just added to the page. Text nodes — a streaming chunk, a keystroke —
+ * and elements holding no placeholder (the drawing's own head and picture among them) give none, so the watcher
+ * does no work for them: no document-wide query per chunk or per keystroke.
+ */
+export function placeholdersIn(nodes: Iterable<Node>): Element[] {
+  const out: Element[] = [];
+  for (const n of nodes) {
+    if (n.nodeType !== 1) continue;
+    const el = n as Element;
+    if (el.classList.contains(DIAGRAM_CLASS)) out.push(el);
+    else if (el.firstElementChild) out.push(...Array.from(el.getElementsByClassName(DIAGRAM_CLASS)));
+  }
+  return out;
 }
 
 /** Draw every placeholder under `root` that is not drawn for the current theme. */
@@ -305,10 +332,21 @@ let themeEpoch = 0;
 export function installDiagrams(opts: DiagramOptions = {}): void {
   if (installed || typeof document === "undefined" || typeof MutationObserver === "undefined") return;
   installed = true;
+  // Only placeholders that just arrived are drawn; the whole document is scanned once at start and on a theme change.
+  let all = false;
+  const due = new Set<Element>();
   let queued = false;
   const scan = () => {
     queued = false;
-    dressAll(document, opts);
+    if (all) {
+      all = false;
+      due.clear();
+      dressAll(document, opts);
+      return;
+    }
+    const els = Array.from(due);
+    due.clear();
+    for (const el of els) if (el.isConnected && !el.closest(SKIP)) dress(el, opts);
   };
   const soon = () => {
     if (queued) return;
@@ -318,17 +356,19 @@ export function installDiagrams(opts: DiagramOptions = {}): void {
   const start = () => {
     new MutationObserver((records) => {
       for (const r of records) {
-        if (r.type === "attributes" || r.addedNodes.length) {
-          soon();
-          return;
-        }
+        if (r.type === "attributes") due.add(r.target as Element);
+        else for (const el of placeholdersIn(r.addedNodes)) due.add(el);
       }
+      if (due.size) soon();
     }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-diagram-src"] });
-    // A palette, look or light/dark change: the Mermaid drawings are drawn again in the new colours.
+    // A palette, look or light/dark change: the Mermaid drawings are drawn again in the new colours. Only the
+    // theme attributes are watched, and drawing never writes them, so a redraw cannot set off another.
     new MutationObserver(() => {
       themeEpoch++;
+      all = true;
       soon();
     }).observe(document.documentElement, { attributes: true, attributeFilter: ["data-scheme", "data-palette", "data-layout", "class"] });
+    all = true;
     scan();
   };
   if (document.body) start();
