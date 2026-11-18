@@ -29,6 +29,9 @@
   import { pickMotion as pickSlide } from "./settings/pickMotion";
   import { COMPOSER_ROWS, composerRow, setComposerRow } from "./composerRow.svelte";
   import { CACHE_LOOKS, cacheLook, setCacheLook } from "./cacheLook.svelte";
+  // Item 826: Touch ID unlock and the pre-arm card.
+  import BitwardenTouch from "./BitwardenTouch.svelte";
+  import BitwardenPreArm from "./BitwardenPreArm.svelte";
   import CacheLookPreview from "./CacheLookPreview.svelte";
   // Item 589: the running step's motion in the turn trace.
   import { STEP_MOTIONS, stepMotion, setStepMotion, type StepMotion } from "./stepMotion.svelte";
@@ -1130,6 +1133,17 @@
   // Item 825: rules dropped on load because their prefix was a wrapper.
   let bwDropped = $state<api.BitwardenDropped[]>([]);
   let bwSession = $state(false);
+  // Item 826: Touch ID unlock and the pre-arm (a marker read; no Keychain, no bw).
+  let bwTouch = $state<api.BitwardenTouchStatus | null>(null);
+  function loadBwTouch(): void {
+    void api
+      .bitwardenTouchStatus()
+      .then((t) => {
+        bwTouch = t;
+        bwSession = t.session;
+      })
+      .catch(() => (bwTouch = { stored: false, session: false, armed: null }));
+  }
   const subSummaries = $derived({
     handoff: handoffSummary({
       pct: handoffDefaultPct,
@@ -1162,6 +1176,7 @@
         bwSession = r.session;
       })
       .catch(() => (bwRules = []));
+    loadBwTouch();
   });
   async function removeBwRule(id: string): Promise<void> {
     try {
@@ -1181,6 +1196,7 @@
   async function forgetBwSession(): Promise<void> {
     await api.bitwardenForgetSession();
     bwSession = false;
+    loadBwTouch();
   }
   // Item 608: the keep-warm default, read once the pane opens.
   $effect(() => {
@@ -2988,15 +3004,43 @@
             run any command.
           {/snippet}
         </SettingRow>
+        <!-- Item 826: Touch ID unlock, and the pre-arm card for a run. -->
+        <SettingRow fold="subscription/bitwarden-touch" shown={subShown("bitwarden-touch")} stack>
+          {#snippet label()}<span>Touch ID unlock</span>{/snippet}
+          {#snippet control()}
+            <BitwardenTouch status={bwTouch} onchange={loadBwTouch} />
+          {/snippet}
+          {#snippet help()}
+            One press and Touch ID (or your login password) open Bitwarden for
+            Nightloom, with no Terminal and no paste. It stays open until
+            Nightloom quits, the Mac sleeps or the screen locks. The master
+            password is typed once here or on a secret card, and kept only
+            once Bitwarden accepts it.
+          {/snippet}
+        </SettingRow>
+        <SettingRow fold="subscription/bitwarden-prearm" shown={subShown("bitwarden-prearm")} stack>
+          {#snippet label()}<span>Pre-arm for a run</span>{/snippet}
+          {#snippet control()}
+            <BitwardenPreArm rules={bwRules} status={bwTouch} onchange={loadBwTouch} />
+          {/snippet}
+          {#snippet help()}
+            Before an overnight or away run: tick the secrets it may need and
+            an end time. One Touch ID fetches only those, holds them for chats
+            and jobs until that time — a screen lock does not end it — and the
+            vault locks again at once. Each still goes only to its rule's
+            command.
+          {/snippet}
+        </SettingRow>
         <SettingRow fold="subscription/bitwarden-session" shown={subShown("bitwarden-session")}>
           {#snippet label()}<span>Session {bwSession ? "held" : "not held"}</span>{/snippet}
           {#snippet control()}
             <button class="ns-btn ghost small" disabled={!bwSession} onclick={() => void forgetBwSession()}>Forget now</button>
           {/snippet}
           {#snippet help()}
-            The key you pasted from bw unlock --raw, kept in Nightloom's memory
-            only — never on disk — and forgotten after 30 idle minutes or when
-            Nightloom quits.
+            The open session, kept in Nightloom's memory only — never on disk.
+            One opened by Touch ID lasts until quit, sleep or screen lock; a key
+            you pasted from bw unlock --raw is forgotten after 30 idle minutes
+            or when Nightloom quits.
           {/snippet}
         </SettingRow>
       </SettingsGroup>

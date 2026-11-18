@@ -65,6 +65,12 @@ export interface BwApi {
   ready(): Promise<BwReady>;
   /** The key `bw unlock --raw` printed (the Mac only). */
   useSession?(key: string): Promise<BwReady>;
+  /** Item 826, the Mac only: Touch ID unlock — whether it is set up, the one-time set-up, and the press. */
+  touch?: {
+    stored(): Promise<boolean>;
+    setup(password: string): Promise<BwReady>;
+    unlock(): Promise<BwReady>;
+  };
   search(query: string): Promise<BwItem[]>;
   /** Read the value into the chat's private file; `alwaysFor` keeps the rule. */
   store(itemId: string, field: string, alwaysFor: string | null): Promise<void>;
@@ -185,6 +191,18 @@ export function bwNotReady(ready: BwReady, where: "mac" | "phone"): string | nul
 export const BW_ONCE_TIP = "Reads it for this card only.\nClaude sees only where it is.";
 export const BW_ALWAYS_TIP = "This item, for this command, without asking.\nGiven only while that command runs.";
 export const BW_NO_COMMAND_TIP = "Claude named no command,\nso there is nothing to allow it for.";
+
+/** Item 826: the locked line when Touch ID unlock is there (set up or not). */
+export function bwTouchLine(stored: boolean): string {
+  return stored
+    ? "Bitwarden is locked for Nightloom."
+    : "Bitwarden is locked. Set up Touch ID unlock once: type the master password below.";
+}
+
+/** Item 826: the Touch ID button's tip and where the master password goes. */
+export const BW_TOUCH_TIP = "Touch ID, or your login password.\nOpen until quit, sleep or screen lock.";
+export const BW_MASTER_WHERE =
+  "Kept in the Keychain, released only after Touch ID (or your login password). Never in a file, a log or Claude's view.";
 
 /** Where the pasted session key goes. */
 export const BW_KEY_WHERE = "Kept in Nightloom's memory only, forgotten after 30 idle minutes or at quit.";

@@ -7,7 +7,16 @@
   // when the card goes. Shaped like the Playwright and stuck cards beside it.
   import { tip } from "./tip";
   import { app, resolveApproval } from "./state.svelte";
-  import { bitwardenReady, bitwardenSearch, bitwardenStore, bitwardenUseSession, storeSecret } from "./api";
+  import {
+    bitwardenReady,
+    bitwardenSearch,
+    bitwardenStore,
+    bitwardenTouchSetup,
+    bitwardenTouchStatus,
+    bitwardenTouchUnlock,
+    bitwardenUseSession,
+    storeSecret,
+  } from "./api";
   import BitwardenPick from "./BitwardenPick.svelte";
   import { trackCard } from "./waitingNotice.svelte";
   import { DECLINE_TIP, SECRET_DECLINED, SECRET_WHERE, USE_TIP, secretCommand, secretView, type BwApi } from "./secret";
@@ -23,6 +32,12 @@
   const bw: BwApi = {
     ready: () => bitwardenReady(),
     useSession: (key) => bitwardenUseSession(key),
+    // Item 826: Touch ID unlock.
+    touch: {
+      stored: async () => (await bitwardenTouchStatus()).stored,
+      setup: (pw) => bitwardenTouchSetup(pw),
+      unlock: () => bitwardenTouchUnlock(),
+    },
     search: (q) => bitwardenSearch(q),
     store: async (itemId, field, alwaysFor) => {
       await bitwardenStore(chatOf(), view.name, itemId, field, alwaysFor);

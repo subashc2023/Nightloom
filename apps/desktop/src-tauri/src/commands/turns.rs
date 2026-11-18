@@ -885,6 +885,93 @@ pub(crate) fn bitwarden_rules() -> serde_json::Value {
     })
 }
 
+/// Item 826: Touch ID unlock set up or not, the session, the pre-arm.
+#[tauri::command]
+pub(crate) fn bitwarden_touch_status() -> nightloom_service::bitwarden_unlock::TouchStatus {
+    let home = nightloom_service::project::config_dir();
+    nightloom_service::bitwarden_unlock::status(
+        &nightloom_service::bitwarden::Vault::global(),
+        home.as_deref(),
+    )
+}
+
+/// Item 826, set up once: `bw unlock` with the password he typed; kept in
+/// the Keychain only if `bw` accepts it. The password is never logged.
+#[tauri::command]
+pub(crate) async fn bitwarden_touch_setup(
+    password: String,
+) -> Result<nightloom_service::bitwarden::Ready, String> {
+    let home =
+        nightloom_service::project::config_dir().ok_or_else(|| "no settings folder".to_string())?;
+    tokio::task::spawn_blocking(move || {
+        nightloom_service::bitwarden_unlock::set_up(
+            &nightloom_service::bitwarden::Vault::global(),
+            &nightloom_service::bitwarden_unlock::KeychainMaster,
+            &home,
+            &password,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Item 826: *Unlock with Touch ID*.
+#[tauri::command]
+pub(crate) async fn bitwarden_touch_unlock() -> Result<nightloom_service::bitwarden::Ready, String>
+{
+    tokio::task::spawn_blocking(|| {
+        nightloom_service::bitwarden_unlock::unlock(
+            &nightloom_service::bitwarden::Vault::global(),
+            &crate::bitwarden_touch::TouchId,
+            &nightloom_service::bitwarden_unlock::KeychainMaster,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Item 826: forget the stored master password (Settings).
+#[tauri::command]
+pub(crate) fn bitwarden_touch_forget() -> Result<(), String> {
+    let home =
+        nightloom_service::project::config_dir().ok_or_else(|| "no settings folder".to_string())?;
+    nightloom_service::bitwarden_unlock::forget(
+        &nightloom_service::bitwarden_unlock::KeychainMaster,
+        &home,
+    )
+}
+
+/// Item 826, the pre-arm: the Always rules picked, until `until` (RFC 3339).
+#[tauri::command]
+pub(crate) async fn bitwarden_arm(
+    rule_ids: Vec<String>,
+    until: String,
+) -> Result<nightloom_service::bitwarden::ArmView, String> {
+    let home =
+        nightloom_service::project::config_dir().ok_or_else(|| "no settings folder".to_string())?;
+    let until = chrono::DateTime::parse_from_rfc3339(&until)
+        .map_err(|_| "That end time could not be read.".to_string())?;
+    let until: std::time::SystemTime = until.with_timezone(&chrono::Utc).into();
+    tokio::task::spawn_blocking(move || {
+        nightloom_service::bitwarden_unlock::arm(
+            &nightloom_service::bitwarden::Vault::global(),
+            &crate::bitwarden_touch::TouchId,
+            &nightloom_service::bitwarden_unlock::KeychainMaster,
+            &home,
+            &rule_ids,
+            until,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Item 826: *End now* on a pre-arm.
+#[tauri::command]
+pub(crate) fn bitwarden_disarm() {
+    nightloom_service::bitwarden::Vault::global().disarm();
+}
+
 /// He pressed OK on the dropped-rule notes (item 825).
 #[tauri::command]
 pub(crate) fn bitwarden_clear_dropped() -> Result<(), String> {

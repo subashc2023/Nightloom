@@ -14,6 +14,7 @@ pub mod approval_rules;
 pub mod aside_changes;
 pub mod attach;
 pub mod bitwarden;
+pub mod bitwarden_unlock;
 pub mod cache_miss;
 pub mod capture;
 pub mod centre;
