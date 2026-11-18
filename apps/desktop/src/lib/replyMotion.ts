@@ -350,6 +350,9 @@ function indexOf(el: HTMLElement): Index {
   return { nodes, starts, len, trimmed: text.trimEnd().length };
 }
 
+/** How far past a table row's right end its reveal edge (and the shuttle) sits, px. */
+const ROW_EDGE_PAST = 12;
+
 /** The reveal edge in viewport px: its line's top and height, and x. Null when no character there has a box. */
 function edgeOf(ix: Index, r: number, target: number): { top: number; h: number; x: number } | null {
   if (!ix.nodes.length || target <= 0) return null;
@@ -373,6 +376,14 @@ function edgeOf(ix: Index, r: number, target: number): { top: number; h: number;
       ni--;
       if (ni < 0) return null;
       continue;
+    }
+    // Item 837 (his 836): a table row reveals whole. The mask is a paragraph's — everything above the edge's line,
+    // and that line up to x — and in a table the "line" was one cell's: the row was cut through its middle and the
+    // shuttle sat on the formula in the cell being revealed. The row is the line; the edge is just past its right end.
+    const row = n.parentElement?.closest("tr");
+    if (row) {
+      const b = row.getBoundingClientRect();
+      if (b.width > 0 || b.height > 0) return { top: b.top, h: b.height, x: b.right + ROW_EDGE_PAST };
     }
     // A formula reveals whole: its box, edge at its right.
     const kx = n.parentElement?.closest(".katex");

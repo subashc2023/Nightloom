@@ -278,3 +278,50 @@ export function installMathCopy(): void {
   installed = true;
   document.addEventListener("copy", onMathCopy);
 }
+
+/**
+ * Item 838 (his "highlighting is broken", 2026-11-18): a selection across a
+ * rendered formula was painted glyph by glyph — KaTeX draws a formula as
+ * nested inline boxes of different heights, and the browser highlights each
+ * box: patchy blocks, gaps between, a display formula's parts boxed apart.
+ * Here a formula the selection touches is highlighted as one box
+ * (`.math-sel`, `mathBase.css`) and its glyphs' own highlight is switched
+ * off (`:root.math-sel-on .katex *::selection`). The selection itself — and
+ * what a copy takes — is the browser's, unchanged.
+ *
+ * `formulasIn` is the rule, pure over a range; the listener applies it once
+ * per frame. The desktop only: a phone draws its own selection handles and
+ * ignores `::selection`.
+ */
+export function formulasIn(range: Range | null): Element[] {
+  if (!range || range.collapsed) return [];
+  const root = range.commonAncestorContainer;
+  const scope = root instanceof Element ? root : root.parentElement;
+  if (!scope) return [];
+  const inside = scope.closest(".katex");
+  const all = inside ? [inside] : Array.from(scope.querySelectorAll(".katex"));
+  return all.filter((el) => range.intersectsNode(el));
+}
+
+let selInstalled = false;
+export function installMathSelection(): void {
+  if (selInstalled || typeof document === "undefined") return;
+  selInstalled = true;
+  document.documentElement.classList.add("math-sel-on");
+  let marked: Element[] = [];
+  let queued = false;
+  const apply = () => {
+    queued = false;
+    const sel = document.getSelection();
+    const next = sel && sel.rangeCount > 0 ? formulasIn(sel.getRangeAt(0)) : [];
+    const keep = new Set(next);
+    for (const el of marked) if (!keep.has(el)) el.classList.remove("math-sel");
+    for (const el of next) el.classList.add("math-sel");
+    marked = next;
+  };
+  document.addEventListener("selectionchange", () => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(apply);
+  });
+}

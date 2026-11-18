@@ -159,7 +159,9 @@ describe("item 626 — a streaming reply is prefix-consistent at every delta", (
     expect(streamingTail("**Tier 1** and `x` then **bo")).toBe("**Tier 1** and `x` then **bo**");
     expect(streamingTail("since the [last report](https://exa")).toBe("since the last report");
     expect(streamingTail("text\n\n| Tier | Passed |\n|---")).toBe("text\n");
-    expect(streamingTail("| a | b |\n|---|---|\n| 1 | 2")).toBe("| a | b |\n|---|---|\n| 1 | 2");
+    // Item 837 (836): a body row waits until it is whole, so a row never grows cell by cell.
+    expect(streamingTail("| a | b |\n|---|---|\n| 1 | 2")).toBe("| a | b |\n|---|---|\n");
+    expect(streamingTail("| a | b |\n|---|---|\n| 1 | 2 |\n")).toBe("| a | b |\n|---|---|\n| 1 | 2 |\n");
     expect(streamingTail("```bash\ncd **x")).toBe("```bash\ncd **x");
     expect(streamingTail("Done. **All** of it.")).toBe("Done. **All** of it.");
   });

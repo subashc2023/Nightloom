@@ -1,7 +1,7 @@
 import { askTag } from "./askTag";
 import { Marked, marked, Renderer, type Tokens } from "marked";
 import DOMPurify from "dompurify";
-import { math, renderMath } from "./math";
+import { math, openMathAt, renderMath } from "./math";
 import { tilde } from "./tilde";
 import { emphasisLines } from "./emphasisLines";
 import { cite } from "./cite";
@@ -9,6 +9,8 @@ import { proseBlocks } from "./proseBlock";
 import { handoffTag } from "./handoffTag";
 import { isRunFence, markRunFence } from "./shellRun";
 import "katex/dist/katex.min.css";
+// Item 837: a formula keeps its case and spacing under any parent (desktop and phone both load this file).
+import "./mathBase.css";
 import { isLocalTarget } from "./replyMedia";
 
 marked.use(math);
@@ -169,9 +171,13 @@ export function renderMathHtml(tex: string, display: boolean): string {
  * nothing follows them yet); a trailing table that has no complete separator row yet is held back a line or two.
  * The settled reply never goes through this.
  */
-export function streamingTail(src: string): string {
-  const fences = src.match(/^ {0,3}(```|~~~)/gm);
-  if (fences && fences.length % 2 === 1) return src;
+export function streamingTail(whole: string): string {
+  const fences = whole.match(/^ {0,3}(```|~~~)/gm);
+  if (fences && fences.length % 2 === 1) return whole;
+  // Item 837 (his 836): a formula that has opened and not closed yet is held back whole — `$\frac{x-1}{\` showed as
+  // those raw characters until its `$` arrived. It appears typeset, in one step, when it closes (`openMathAt`).
+  const open = openMathAt(whole);
+  const src = open < 0 ? whole : whole.slice(0, open);
   // A table still being typed: its header (and half a separator) wait for the separator row.
   const lines = src.split("\n");
   let k = lines.length;
@@ -179,8 +185,17 @@ export function streamingTail(src: string): string {
   if (k < lines.length) {
     const block = lines.slice(k);
     const sep = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
-    const cells = (l: string) => l.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").length;
-    const ready = block.length >= 2 && sep.test(block[1]) && cells(block[1]) === cells(block[0]) && (block.length >= 3 || src.endsWith("\n"));
+    // Cells by the pipes that are not escaped (`\|` is a cell's own bar, as in `$P(A \| B)$`).
+    const cells = (l: string) => l.trim().replace(/^\|/, "").replace(/(?<!\\)\|$/, "").split(/(?<!\\)\|/).length;
+    // Item 837: a table renders row-complete. A body row still arriving — its line not ended, and not yet as many
+    // cells as the header with its closing pipe — waits; before, a row grew cell by cell, its last cell half a word.
+    const table = block.length >= 2 && sep.test(block[1]) && cells(block[1]) === cells(block[0]);
+    if (table && block.length >= 3 && !src.endsWith("\n")) {
+      const last = block[block.length - 1];
+      const done = open < 0 && /(?<!\\)\|\s*$/.test(last) && cells(last) >= cells(block[0]);
+      if (!done) return lines.slice(0, -1).join("\n") + "\n";
+    }
+    const ready = table && (block.length >= 3 || src.endsWith("\n"));
     if (!ready) return lines.slice(0, k).join("\n");
   }
   const cut = src.lastIndexOf("\n") + 1;

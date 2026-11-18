@@ -23,7 +23,7 @@ import { markdownLanguage } from "@codemirror/lang-markdown";
 import { history, historyKeymap, insertNewline, isolateHistory, standardKeymap } from "@codemirror/commands";
 import { findFences } from "./codeDetect";
 import { LANGUAGES, segments } from "./codeHighlight";
-import { findMath, type MathSpan } from "./math";
+import { findMath, typedMathOk, type MathSpan } from "./math";
 import { renderMathHtml, renderReply } from "./markdown";
 import { quoteLine, quoteNeedsRender, quoteRuns } from "./replyQuote.svelte";
 import { crossesLine } from "./emphasisLines";
@@ -103,24 +103,17 @@ function onLines(state: EditorState, from: number, to: number): boolean {
   return false;
 }
 
-const WORD = /[A-Za-z0-9_]/;
-
 /**
  * The composer's extra rule over the replies' `$…$` guards (`math.ts`): a
  * one-dollar span whose closing `$` runs straight into a word, or whose
  * opening one follows a word, is shell, not math — `$HOME/bin:$PATH`,
  * `echo $USER$HOST`, `a$b$c`. The replies' renderer keeps its own rules;
- * a message being typed meets far more shell than a reply does.
+ * a message being typed meets far more shell than a reply does. Since item
+ * 837 the rule lives in `math.ts` (`typedMathOk`), where his sent message
+ * reads it too.
  */
 export function composerMathOk(text: string, m: MathSpan): boolean {
-  if (m.display || m.openLen !== 1) return true;
-  const before = m.from > 0 ? text[m.from - 1] : "";
-  const after = m.to < text.length ? text[m.to] : "";
-  // A `$` touching another `$` is part of a `$$` run, never a one-dollar
-  // delimiter: `$$abc$` is a display formula half typed, not a `$` and
-  // then `$abc$` (his first bug, 2026-10-01), and `$a$$` is not `$a$`.
-  if (before === "$" || after === "$") return false;
-  return !WORD.test(before) && !WORD.test(after);
+  return typedMathOk(text, m);
 }
 
 /** What a stretch of the box is drawn as — the testable shape of the decorations. */

@@ -26,12 +26,14 @@ import "./cacheLook.css";
 import "./modelFamily.css";
 import { app as state, applyPalette } from "./lib/state.svelte";
 import { applyLayout } from "./lib/layout.svelte";
-import { installMathCopy } from "./lib/mathCopy";
+import { installMathCopy, installMathSelection } from "./lib/mathCopy";
 import { installFieldUndo } from "./lib/fieldUndo";
 import { installSelectScope } from "./lib/selectScope";
 
 // Item 352: copying a rendered formula gives its TeX.
 installMathCopy();
+// Item 838: a selected formula highlights as one box.
+installMathSelection();
 
 // Item 421: ⌘Z in a plain field undoes that field, never another box.
 installFieldUndo();

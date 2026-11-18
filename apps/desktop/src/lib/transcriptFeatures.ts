@@ -87,6 +87,8 @@ export const TRANSCRIPT_PIECES: Record<string, Where> = {
   AssistantMessage: shared,
   WaitingMoon: shared,
   UserBubble: shared,
+  // Item 837: his words typeset (the adopted agent's prompt here; his bubbles in UserBubble).
+  MathText: shared,
   Icon: shared,
   Navigator: shared,
   PendingBubbles: TRANSCRIPT_FEATURES["pending bubbles (a message held mid-answer)"]!,
