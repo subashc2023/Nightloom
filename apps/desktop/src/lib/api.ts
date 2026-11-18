@@ -1320,6 +1320,27 @@ export function sessionFigures(agentSession: string, earlier: string[] = []): Pr
   return invoke("session_figures", { agentSession, earlier });
 }
 
+/** Item 796: the no-model digest of a chat's Claude Code transcript, and
+ *  the review pass's question built on it. Reads only. */
+export interface RetroDigest {
+  markdown: string;
+  prompt: string;
+  issues: number;
+  corrections: number;
+  misses: number;
+  miss_cost_usd: number;
+}
+
+export function retroDigest(agentSession: string): Promise<RetroDigest> {
+  return invoke("retro_digest", { agentSession });
+}
+
+/** Item 796: keep a review page under the chat's thread (or the project's
+ *  `retrospectives/`), a new file each time; resolves to its path. */
+export function retroSave(chat: string, title: string, thread: string | null, review: string, reviewCost: number | null, digest: string): Promise<string> {
+  return invoke("retro_save", { chat, title, thread, review, reviewCost, digest });
+}
+
 /** Claude Code's version against the release feed, with the models the
  *  newer release adds (nightshift backlog 182). Zero tokens. `binary` is
  *  the connected chat's resolved CLI, or null for `claude` resolved. */

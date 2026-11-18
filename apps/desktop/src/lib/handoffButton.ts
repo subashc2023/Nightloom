@@ -23,6 +23,15 @@ import { hasHiddenChars } from "./shellRun";
 import { foldMotion } from "./foldMotion";
 import type { SessionMeta } from "./types";
 import type { HandoffOpened } from "./handoffLog";
+import { REVIEW_TIP, reviewBusy, reviewLabel, reviewLine, type ReviewState } from "./chatReview.svelte";
+
+/** Item 796: "Review this chat" on the card — where its review stands, and
+ *  the two things the button does (start one; open the saved page). */
+export interface ReviewHook {
+  state: ReviewState;
+  start: () => void;
+  open: (path: string) => void;
+}
 
 export const CONTINUE_LABEL = "Continue with this prompt";
 export const CONTINUED_LABEL = "Continued";
@@ -51,6 +60,9 @@ export interface NextChat {
   /** Item 756: a minimize or a restore done on the card, with its inverse,
    *  for the chat's undo stack (⌘Z restores what a minimize folded). */
   onFold?: (minimized: boolean, undo: () => void, redo: () => void) => void;
+  /** Item 796: the retrospective; absent (no button) for a chat with no
+   *  Claude Code session, which has no transcript to digest. */
+  review?: ReviewHook | null;
 }
 
 // ---- item 747: the goal he typed and the messages he ticked, per card ----
@@ -377,6 +389,55 @@ function goRow(next: NextChat, read: () => NextChat | null | undefined): HTMLEle
   return row;
 }
 
+/** Item 796: the button and its line, in the row before *Continue*. */
+export const REVIEW_CLASS = "handoff-review";
+export const REVIEW_LINE_CLASS = "handoff-review-line";
+
+function syncReview(row: HTMLElement, next: NextChat, read: () => NextChat | null | undefined): void {
+  let b = row.querySelector<HTMLButtonElement>(`:scope > button.${REVIEW_CLASS}`);
+  let line = row.querySelector<HTMLElement>(`:scope > .${REVIEW_LINE_CLASS}`);
+  const hook = next.review;
+  if (!hook) {
+    b?.remove();
+    line?.remove();
+    return;
+  }
+  if (!b) {
+    b = el("button", `ns-btn ghost small ${REVIEW_CLASS}`);
+    b.type = "button";
+    const btn = b;
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const now = read()?.review;
+      if (!now || btn.disabled) return;
+      if (now.state.phase === "saved" && now.state.path) now.open(now.state.path);
+      else if (!reviewBusy(now.state)) now.start();
+    });
+    const go = row.querySelector(":scope > button.handoff-continue");
+    if (go) go.before(btn);
+    else row.append(btn);
+  }
+  if (!line) {
+    line = el("div", REVIEW_LINE_CLASS);
+    line.setAttribute("aria-live", "polite");
+    row.append(line);
+  }
+  const s = hook.state;
+  const label = reviewLabel(s);
+  if (b.textContent !== label) b.textContent = label;
+  // A review waits for a running turn as an aside would; it is not started under one.
+  const blocked = s.phase !== "saved" && next.blocked !== null;
+  const off = reviewBusy(s) || blocked;
+  if (b.disabled !== off) b.disabled = off;
+  const tip = s.phase === "saved" ? (s.path ?? "") : blocked ? (next.blocked ?? "") : REVIEW_TIP;
+  if (b.title !== tip) b.title = tip;
+  const text = reviewLine(s);
+  if (line.textContent !== text) line.textContent = text;
+  line.hidden = !text;
+  line.classList.toggle("handoff-warn", s.phase === "error");
+}
+
 /** The card's key attribute, so an undo finds the card it folded wherever it is drawn now. */
 const CARD_KEY = "handoffKey";
 
@@ -492,6 +553,7 @@ export function addContinueControls(root: HTMLElement, read: () => NextChat | nu
     after.after(row);
   }
   syncCarry(row, next, read);
+  syncReview(row, next, read);
   if (card) syncMinimize(card, next, read);
   const details = row.querySelector<HTMLDetailsElement>(":scope > details.handoff-order");
   const body = row.querySelector(":scope > .handoff-order > .handoff-order-text");
