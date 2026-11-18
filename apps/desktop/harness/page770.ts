@@ -20,6 +20,8 @@ const q = new URLSearchParams(location.hash.slice(1));
 const which = q.get("case") ?? "vega";
 const root = document.getElementById("root")!;
 const cap = document.getElementById("cap")!;
+// 770 review: &capfix=1 pins the caption to the window's top, so a window-sized shot shows what was counted.
+if (q.get("capfix") === "1") cap.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:99";
 const say = (s: string) => (cap.textContent += (cap.textContent ? "\n" : "") + s);
 const CASES: Record<string, string> = {
   vega,

@@ -50,7 +50,10 @@
     if (!ready) return null;
     const uses = needs.names.length > 0 || needs.unknown.length > 0;
     const body = uses ? withKit(html, kit, readKitTheme(null, scheme)) : html;
-    return pageDocument(body, scheme, { kit: uses, head });
+    // 770 review: 'unsafe-eval' only when a kit library is written in; a page naming only an unknown or failed
+    // library gets its error line under 819's policy, unwidened.
+    const inlined = needs.names.some((n) => !!kit[n]);
+    return pageDocument(body, scheme, { kit: inlined, head });
   });
   let blocked = $state(0);
   let lastBlocked = $state("");

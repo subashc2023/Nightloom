@@ -63,6 +63,11 @@
 
   let card = $state<HTMLElement | null>(null);
   let near = $state(false);
+  // 770 review: on screen now (no margin). Only these are never put to sleep; a card put to sleep while still
+  // near (`dozed`) waits until it is on screen, or leaves and comes back, so two near cards never wake each
+  // other in turn. Before this, every card within the 900 px band stayed live: 9 of 12 small pages at 1000 tall.
+  let seen = $state(false);
+  let dozed = $state(false);
   let awake = $state(false);
   let reloads = $state(0);
   let big = $state(false);
@@ -70,28 +75,39 @@
   let cap = $state(640);
 
   const me: LivePage = {
-    near: () => near,
+    near: () => seen,
     distance: () => {
       if (!card) return Infinity;
       const r = card.getBoundingClientRect();
       return Math.abs((r.top + r.bottom) / 2 - window.innerHeight / 2);
     },
-    sleep: () => (awake = false),
+    sleep: () => {
+      awake = false;
+      dozed = true;
+    },
   };
 
   // The frame is made when the card nears the viewport (two screens' margin), and kept until another needs its place.
   $effect(() => {
     if (!card || typeof IntersectionObserver === "undefined") {
       near = true;
+      seen = true;
       return;
     }
     const io = new IntersectionObserver((all) => (near = all[all.length - 1].isIntersecting), { rootMargin: "900px 0px" });
+    const on = new IntersectionObserver((all) => (seen = all[all.length - 1].isIntersecting));
     io.observe(card);
-    return () => io.disconnect();
+    on.observe(card);
+    return () => {
+      io.disconnect();
+      on.disconnect();
+    };
   });
   const wants = $derived(open && !source);
   $effect(() => {
-    if (wants && near && !awake) {
+    if (!near && dozed) dozed = false;
+    if (wants && near && !awake && (!dozed || seen)) {
+      dozed = false;
       awake = true;
       cap = Math.max(240, Math.min(640, Math.round(window.innerHeight * 0.7)));
       untrack(() => wake(me));
@@ -316,6 +332,15 @@
   @media (max-width: 520px) {
     .rp-kit {
       display: none;
+    }
+    /* 770 review: on a phone the title keeps its own line and the buttons sit under it (five buttons beside
+       it left "Formula s…" at 390 wide). */
+    .rp-head {
+      flex-wrap: wrap;
+      row-gap: 2px;
+    }
+    .rp-head .rp-title {
+      flex: 1 1 calc(100% - 24px);
     }
   }
 </style>

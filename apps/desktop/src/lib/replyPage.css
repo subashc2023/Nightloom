@@ -29,8 +29,8 @@
   background: var(--sheet, var(--bg));
   border-bottom: 1px solid var(--line, var(--border));
 }
-/* The first lines, at one capped height, while the page is written (pinning the last lines in view did not hold
-   in WebKit — 770 report, left). */
+/* The last lines, at one capped height, while the page is written: the code sits at the box's foot and what does
+   not fit leaves at the top (770 review; a scroll pin did not hold in WebKit, flex end alignment does). */
 .md-page-writing > pre,
 .markdown .md-page-writing > pre,
 .md-page-writing .code-box,
@@ -48,4 +48,17 @@
   font-size: 11.5px;
   line-height: 1.5;
   opacity: 0.75;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+.md-page-writing > pre > code {
+  flex: none;
+}
+/* No scroll bar in a box that is only a glimpse: its lines wrap (770 review). */
+.md-page-writing > pre > code.language-html,
+.markdown .md-page-writing > pre > code.language-html {
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
