@@ -155,6 +155,7 @@
   import { queuedElsewhereToast } from "./browse";
   import {
     addAttachment,
+    bumpDraft,
     clearDraft,
     draftKey,
     draftSelection,
@@ -228,7 +229,7 @@
   // Item 694: the passage highlighted before he came to the box.
   import { boxAsideArgs, dropHeld, dropHeldOnPaste, heldChip, heldFor, heldLabel } from "./heldPassage.svelte";
   import { quoteLabel } from "./asideQuote";
-  import { composerFocus } from "./rewindDraft.svelte";
+  import { composerFocus, dismissRewoundOffer, rewoundOffer, takeOffered } from "./rewindDraft.svelte";
   import { CaretKeeper, clampSel, mayAutoFocus } from "./composerCaret";
   import { ScrollHold } from "./boxPlace";
   import { FocusThroughLock, boxLocked } from "./boxLock";
@@ -3017,6 +3018,59 @@
       },
     })),
   );
+  /**
+   * Item 724: the rewound message, offered alone just above the drafts
+   * button when a rewind found his draft in the box — the drafts list's
+   * own look, with one row. A click swaps it in (his text to the drafts);
+   * a click anywhere else, or another menu, closes it; the drafts button
+   * still lists it with the rest.
+   */
+  const offerRows = $derived.by((): MenuRow[] =>
+    rewoundOffer.key === key && rewoundOffer.text
+      ? [
+          {
+            id: `rewound:${rewoundOffer.seq}`,
+            label: firstLine(rewoundOffer.text) || "(no first line)",
+            detail: `rewound · ${rewoundOffer.text.length.toLocaleString()} chars`,
+            title: "Put the rewound message in the box — what you typed goes to drafts",
+            run: takeRewound,
+          },
+        ]
+      : [],
+  );
+  function takeRewound(): void {
+    const t = rewoundOffer.text;
+    dismissRewoundOffer(key);
+    const swap = takeOffered(readDraft(key).text, t);
+    if (swap.toDrafts) bumpDraft(key, swap.toDrafts);
+    setDraftText(key, swap.box);
+    void tick().then(() => {
+      if (!ta) return;
+      ta.focus();
+      ta.selectionStart = ta.selectionEnd = ta.value.length;
+      autogrow();
+    });
+  }
+  // A new offer for this box opens it, without taking the focus from the
+  // box he is typing in. Only an offer made while mounted.
+  let offerSeen = untrack(() => rewoundOffer.seq);
+  $effect(() => {
+    const seq = rewoundOffer.seq;
+    if (seq === offerSeen) return;
+    offerSeen = seq;
+    if (rewoundOffer.key !== key) return;
+    void tick().then(() => {
+      if (rewoundOffer.key === key && historyBtn) menu = "rewound";
+    });
+  });
+  // The popover gone any way (a click elsewhere, another menu, a chat
+  // switch): the offer goes with it — the message stays in the drafts.
+  let offerShown = false;
+  $effect(() => {
+    const on = menu === "rewound";
+    if (offerShown && !on) untrack(() => dismissRewoundOffer());
+    offerShown = on;
+  });
   function whenLabel(at: string): string {
     const t = Date.parse(at);
     if (Number.isNaN(t)) return "earlier";
@@ -3084,7 +3138,7 @@
     refoldRow();
   });
 
-  let menu = $state<"model" | "effort" | "history" | null>(null);
+  let menu = $state<"model" | "effort" | "history" | "rewound" | null>(null);
   let menuEl = $state<HTMLElement | null>(null);
   let modelBtn = $state<HTMLElement | null>(null);
   let effortBtn = $state<HTMLElement | null>(null);
@@ -3100,10 +3154,12 @@
           : effortRows
         : menu === "history"
           ? historyRows
-          : [],
+          : menu === "rewound"
+            ? offerRows
+            : [],
   );
   function menuButton(): HTMLElement | null {
-    return menu === "model" ? modelBtn : menu === "effort" ? effortBtn : menu === "history" ? historyBtn : null;
+    return menu === "model" ? modelBtn : menu === "effort" ? effortBtn : menu === "history" || menu === "rewound" ? historyBtn : null;
   }
   function openMenu(which: "model" | "effort" | "history") {
     menu = menu === which ? null : which;
@@ -4132,6 +4188,9 @@
           </button>
           {#if menu === "history"}
             {@render pickMenu("Earlier drafts", "newest first · a click puts one back in the box")}
+          {:else if menu === "rewound" && offerRows.length > 0}
+            <!-- Item 724: the rewound message alone, the drafts list's look. -->
+            {@render pickMenu("Rewound message", "a click swaps it into the box")}
           {/if}
         </span>
       {/if}

@@ -1,9 +1,9 @@
 // Moved out of state.svelte.ts by item 641 (pure move; state.svelte.ts re-exports every name it exported).
 import * as api from "../api";
 import { noteRewound } from "../handoff.svelte";
-import { nextAttachmentId, readDraft, recordDraft, setDraftAttachments, setDraftText } from "../drafts.svelte";
+import { bumpDraft, nextAttachmentId, readDraft, recordDraft, setDraftAttachments, setDraftText } from "../drafts.svelte";
 import { indexOfAim } from "../aim";
-import { requestComposerFocus, rewoundMessage, swapIn, untouched, type BoxSwap } from "../rewindDraft.svelte";
+import { dismissRewoundOffer, keepIn, keepsBox, offerRewound, requestComposerFocus, rewoundMessage, swapIn, untouched, type BoxSwap } from "../rewindDraft.svelte";
 import { rewoundWrites, setAsideFiles } from "../rewoundFiles";
 import type { Attachment, SessionEvent } from "../types";
 import { chatScope, pushUndo, undoToast, contextUsed } from "./edits.svelte";
@@ -45,7 +45,9 @@ export async function rewindTo(to: number, aim: boolean | string = false): Promi
       // He opened another chat meanwhile: the rewind is on disk in this
       // one; its message goes back in its own box, and nothing here (the
       // view, the size, the files card, the undo) is the chat now open.
-      if (back) fillBox(key, back);
+      // Item 724: no popover in a box he is not looking at; a toast says
+      // where the message went when that box kept his draft.
+      if (back && fillBox(key, back, false).kept && back.text.trim()) addToast("Rewound — the message is in that chat's drafts");
       return;
     }
     app.error = null;
@@ -74,6 +76,8 @@ export async function rewindTo(to: number, aim: boolean | string = false): Promi
     undo: async () => {
       if (!(await adoptOpen(() => api.unrewind(marker)))) return;
       refill();
+      // Item 724: the message is back in the thread; its offer goes.
+      dismissRewoundOffer(key);
       // The turn is back; its files were left alone unless he set them
       // aside, and then the card says where they went.
       if (app.rewoundWrites && app.rewoundWrites.done === null) app.rewoundWrites = null;
@@ -91,7 +95,16 @@ export async function rewindTo(to: number, aim: boolean | string = false): Promi
       if (back) swap = fillBox(key, back);
     },
   });
-  undoToast(back ? "Rewound — your message is back in the box" : "Rewound to here", handle);
+  undoToast(
+    !back
+      ? "Rewound to here"
+      : swap?.kept
+        ? back.text.trim()
+          ? "Rewound — your draft stayed; the message is in drafts, above the box"
+          : "Rewound — your draft stayed; the message's files joined it"
+        : "Rewound — your message is back in the box",
+    handle,
+  );
 }
 
 /**
@@ -121,8 +134,20 @@ export function keepRewound(): void {
 /** A rewound message into the box (backlog 247, blocker 581): what was
  *  half-typed goes to the top of the draft history, with a toast saying
  *  so; its chips stay after the message's own. */
-function fillBox(key: string, back: { text: string; attachments: Attachment[] }): BoxSwap {
-  const swap = swapIn(readDraft(key), back);
+function fillBox(key: string, back: { text: string; attachments: Attachment[] }, offer = true): BoxSwap {
+  const box = readDraft(key);
+  // Item 724: a draft in the box stays there; the message goes to the
+  // drafts, offered alone above the drafts button, and its chips join his.
+  if (keepsBox(box)) {
+    const kept = keepIn(box, back);
+    if (back.attachments.length > 0) setDraftAttachments(key, kept.after.attachments);
+    if (back.text.trim()) {
+      bumpDraft(key, back.text);
+      if (offer) offerRewound(key, back.text);
+    }
+    return kept;
+  }
+  const swap = swapIn(box, back);
   if (swap.stashed) {
     recordDraft(key, swap.before.text, undefined, 1);
     addToast("Your half-typed message is in drafts, under the box");

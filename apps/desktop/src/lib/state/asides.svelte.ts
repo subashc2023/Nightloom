@@ -2,7 +2,8 @@
 import * as api from "../api";
 import { noteChatProject } from "../handoff.svelte";
 import type { AsideFold, FoldRecord } from "../asideFold";
-import { nextAttachmentId, readDraft, setDraftAttachments, setDraftText, hasDraft, discardDraft } from "../drafts.svelte";
+import { bumpDraft, nextAttachmentId, readDraft, setDraftAttachments, setDraftText, hasDraft, discardDraft } from "../drafts.svelte";
+import { keepsBox, offerRewound } from "../rewindDraft.svelte";
 import { asideFollowUp, asideQuestion, type AsideQuote } from "../asideQuote";
 import { type AsideAnchor, MAX_OPEN_ASIDES, foldTheOldest } from "../asideCard";
 import type { AsideRead } from "../cache";
@@ -585,7 +586,12 @@ export function rewindAside(a: Aside, index: number, intoBox = true): AsideTurn[
     const key = asideDraftKey(a);
     const now = readDraft(key).text;
     const q = first.question;
-    setAsideUnsent(a, q ? (now ? `${q}\n${now}` : q) : now);
+    // Item 724: a draft in the box stays there; the question goes to the
+    // box's drafts, offered alone above its drafts button.
+    if (q && keepsBox({ text: now })) {
+      bumpDraft(key, q);
+      offerRewound(key, q);
+    } else setAsideUnsent(a, q ? (now ? `${q}\n${now}` : q) : now);
     const chips = (first.attachments ?? []).filter((c) => c.data).map((c) => ({ ...c, id: nextAttachmentId() }));
     if (chips.length > 0) setDraftAttachments(key, [...readDraft(key).attachments, ...chips]);
   }

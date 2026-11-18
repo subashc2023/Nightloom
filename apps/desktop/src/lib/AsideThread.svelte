@@ -34,6 +34,7 @@
   import { requestReply } from "./replyQuote.svelte";
   import { selectionText } from "./asideQuote";
   import { asideDraftKey } from "./asides";
+  import { dismissRewoundOffer, rewoundOffer } from "./rewindDraft.svelte";
   import type { FoldScope } from "./keptFolds.svelte";
   import { changesLine } from "./asideNotes";
   import { noteWaiting } from "./asideNotes.svelte";
@@ -214,6 +215,7 @@
     const before = aside.unsent ?? "";
     // The chat's rewind motion (item 396, his pick), over this thread.
     const m = prepareRewind(scrollBox(threadEl), i, { row: `.aside-q[data-turn="${i}"]` });
+    const offered = rewoundOffer.seq;
     const gone = rewindAside(aside, i);
     if (gone.length === 0) {
       m?.cancel();
@@ -223,9 +225,12 @@
     scheduleAsideSave();
     const after = aside.unsent ?? "";
     const n = gone.length;
-    addToast(n === 1 ? "Rewound 1 exchange — the question is back in the box" : `Rewound ${n} exchanges — the question is back in the box`, {
+    // Item 724: a draft in the box stayed; the question is in its drafts.
+    const where = rewoundOffer.seq !== offered ? "your draft stayed; the question is in drafts, above the box" : "the question is back in the box";
+    addToast(n === 1 ? `Rewound 1 exchange — ${where}` : `Rewound ${n} exchanges — ${where}`, {
       label: "Undo",
       run: () => {
+        dismissRewoundOffer(asideDraftKey(aside));
         if (!restoreAsideTurns(aside, i, gone)) {
           addToast("Not undone — the aside has moved on since");
           return;
