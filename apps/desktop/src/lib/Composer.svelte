@@ -2409,7 +2409,10 @@
     const chips = attachments.map((c) => $state.snapshot(c) as Attachment);
     // Item 694: about the passage the box holds, anchored to it, as the
     // pill's Ask aside would ask; none held, about nothing, as before.
-    const { quote, anchor } = held ? boxAsideArgs(sendKey) : { quote: null, anchor: null };
+    // Merge round U review (item 814): only a passage whose chip shows — an aside sent with files
+    // alone from a box he has not written in was about a passage he could not see; it is dropped.
+    const { quote, anchor } = heldShown ? boxAsideArgs(sendKey) : { quote: null, anchor: null };
+    if (held && !heldShown) dropHeld(sendKey);
     // The words fly from the box into the aside's card (backlog 194).
     launch("aside", boxElement(ta));
     clearDraft(key);
