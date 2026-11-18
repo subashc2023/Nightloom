@@ -26,6 +26,8 @@ export default defineConfig({
       input: {
         main: "index.html",
         remote: "remote.html",
+        // Item 795: the Quick Entry box, a third entry (`quick_entry.rs` opens it).
+        quick: "quick.html",
       },
     },
   },

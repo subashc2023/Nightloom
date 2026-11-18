@@ -118,6 +118,8 @@ mod preview;
 /// A changed prompt layer waits for the chat's cold moment (backlog 174).
 mod prompt_hold;
 /// Quitting while work runs asks first (nightshift backlog 308).
+// Item 795: Quick Entry — a system-wide shortcut opens a small box.
+mod quick_entry;
 mod quit_guard;
 /// The phone page over the tailnet (nightshift backlog 091, Shape B).
 mod remote;
@@ -1462,6 +1464,12 @@ fn main() {
             // Item 808: Home's scan and the phone read the Mac's own stores
             // through this reader (status only until he allows one).
             mac_sources::install();
+            // Item 795: Quick Entry's press handler; the shortcut itself is
+            // registered when the main window hands over his pick.
+            {
+                let qe = quick_entry::install(app);
+                app.manage(qe);
+            }
             // Item 486: an exception AppKit raises while dispatching an event
             // is logged instead of aborting the app through tao's `extern "C"`
             // `sendEvent:` (the 11:27 AM 2026-10-30 crash).
@@ -1819,6 +1827,8 @@ fn main() {
             commands::saved_prompts::saved_prompts_read,
             commands::saved_prompts::saved_prompts_write,
             commands::saved_prompts::clipboard_text,
+            quick_entry::quick_entry_set_shortcut,
+            quick_entry::quick_entry_hide,
             sent_files::save_sent_file,
             sent_files::drag_sent_file,
             commands::system::read_file_tab,

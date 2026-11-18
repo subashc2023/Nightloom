@@ -252,6 +252,8 @@
   import { MESSAGES_STEP, isRead, sourceButton, sourceStatusWords, sourcesSummary } from "./homeSources";
   import { REACH_GROUPS, reachName, reachNote, reachStatusWords, reachSummary } from "./home";
   import HomeJobs from "./HomeJobs.svelte";
+  // Item 795: Quick Entry's shortcut recorder.
+  import QuickEntrySetting from "./QuickEntrySetting.svelte";
   import { revealFolder } from "./state.svelte";
 
   /**
@@ -2115,6 +2117,19 @@
           />
           <span>When Usage & Cost → Refresh now finishes — the figures; clicking it opens that page. Never for the automatic refresh</span>
         </label>
+      </section>
+
+      <!-- Item 795: Quick Entry — a system-wide shortcut opens a small box
+           (quick_entry.rs, quick/QuickEntry.svelte). Off until he picks one. -->
+      <section class="card">
+        <div class="ch"><span class="t">Quick Entry</span></div>
+        <p class="note small">
+          A shortcut that works from any app: it opens a small box over what you are in, without bringing Nightloom
+          forward. Send goes to the chat you last used, a new chat in a project, or an aside on the last chat; the box
+          remembers which. It takes typing, dictation and ⌘V (the clipboard only, so macOS asks for no permission).
+          Closing it keeps what you typed. It works only while Nightloom is running.
+        </p>
+        <QuickEntrySetting />
       </section>
 
       <!-- Sleep-safe turns (nightshift backlog 101): his `caffeinate -dis`
