@@ -270,6 +270,8 @@ fn kind_by_ext(path: &Path) -> Option<(&'static str, &'static str)> {
         "svg" => ("image", "image/svg+xml"),
         "pdf" => ("pdf", "application/pdf"),
         "md" | "markdown" => ("markdown", "text/markdown"),
+        // Item 819: text, drawn as a sandboxed page (`HtmlPage.svelte`).
+        "html" | "htm" => ("html", "text/html"),
         _ => return None,
     })
 }
@@ -554,6 +556,23 @@ mod tests {
         assert_eq!(tab.size, 8);
         assert!(tab.data.is_none() && tab.text.is_none());
         assert!(read_not_text(&dir.join("gone.pdf")).is_err());
+    }
+
+    /// Item 819: an `.html` (or `.htm`) file reads as the `html` kind, with
+    /// its text, so the tab draws it as a page; it is never a binary card.
+    #[test]
+    fn an_html_file_reads_as_the_html_kind() {
+        let dir = scratch("html");
+        let page = dir.join("visuals.html");
+        std::fs::write(&page, "<!doctype html><svg><title>x</title></svg>").unwrap();
+        let tab = read(&page, Via::Folder).unwrap();
+        assert_eq!(tab.kind, "html");
+        assert_eq!(tab.media_type, "text/html");
+        assert!(tab.text.as_deref().unwrap().starts_with("<!doctype html>"));
+        assert!(tab.data.is_none());
+        let upper = dir.join("OLD.HTM");
+        std::fs::write(&upper, "<p>hi</p>").unwrap();
+        assert_eq!(read(&upper, Via::Folder).unwrap().kind, "html");
     }
 
     #[test]

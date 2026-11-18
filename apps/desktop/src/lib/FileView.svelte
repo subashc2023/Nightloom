@@ -21,6 +21,7 @@
   import { fileSegments } from "./codeHighlight";
   import { firstTexError, isTexPath } from "./latexLog";
   import { viewGet, viewSet } from "./viewState";
+  import HtmlPage from "./HtmlPage.svelte";
 
   let { content }: { content: Extract<TabContent, { kind: "file" }> } = $props();
 
@@ -132,6 +133,15 @@
       </span>
     {/if}
     <span class="spacer"></span>
+    {#if file?.kind === "html"}
+      <!-- Item 819: Page (the default) or Source, kept by the file's path as
+           Plain/Formatted is; `plain` is Source. -->
+      <button
+        class="ns-btn ghost small"
+        onclick={() => (plain = !plain)}
+        use:tip={plain ? "Draw the page" : "Show the HTML source"}>{plain ? "Page" : "Source"}</button
+      >
+    {/if}
     {#if file?.kind === "markdown"}
       <button class="ns-btn ghost small" onclick={() => (plain = !plain)} use:tip={"Show the Markdown source or the formatted text"}
         >{plain ? "Formatted" : "Plain"}</button
@@ -172,6 +182,8 @@
     <div class="media">
       <embed class="pdf" {src} type={file.media_type} title={content.path} />
     </div>
+  {:else if file.kind === "html" && !plain}
+    <HtmlPage html={file.text ?? ""} place={`file:${content.path}`} title={content.path} />
   {:else if file.kind === "markdown" && !plain}
     <div class="body markdown">{@html renderMarkdown(file.text ?? "")}</div>
   {:else if tex && !render?.missing_tex}
@@ -199,7 +211,7 @@
         </div>
       </div>
     </div>
-  {:else if file.kind === "markdown" || file.kind === "text"}
+  {:else if file.kind === "markdown" || file.kind === "text" || file.kind === "html"}
     {#if tex && render?.missing_tex}
       <p class="tex-note">No TeX is installed on this Mac (Nightloom looks in /Library/TeX/texbin, where MacTeX puts it), so only the source is shown.</p>
     {/if}

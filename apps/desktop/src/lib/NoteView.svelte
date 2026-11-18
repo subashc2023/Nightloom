@@ -37,6 +37,8 @@
   import { baseOf, parentOf, renamedTo } from "./notesTree";
   import { floatMenu } from "./floatMenu";
   import { viewGet, viewSet } from "./viewState";
+  import HtmlPage from "./HtmlPage.svelte";
+  import { isHtmlPath } from "./htmlPage";
   import { splitExt, whoFoldKey } from "./noteHead";
   import { exactTime, relativeTime } from "./time";
 
@@ -88,6 +90,23 @@
   const dirty = $derived(text !== saved);
   const open = $derived(note ?? app.openNote);
   const isVault = $derived(open?.scope === "knowledge");
+  /**
+   * Item 819: an `.html` note opens as its page (a sandboxed frame,
+   * `HtmlPage.svelte`) with Source a click away — Source is the editor as
+   * before. Kept per note past this view (item 495). The page draws the
+   * buffer, so a draft shows as it would save.
+   */
+  const isHtml = $derived(!!open && isHtmlPath(open.name));
+  const htmlKey = $derived(open ? `note.html.source:${open.scope}:${open.name}` : "");
+  let htmlSource = $state(false);
+  $effect.pre(() => {
+    htmlSource = htmlKey ? viewGet(htmlKey, false) : false;
+  });
+  $effect(() => {
+    const k = untrack(() => htmlKey);
+    if (k) viewSet(k, htmlSource, false);
+  });
+  const pageShown = $derived(isHtml && !media && !htmlSource);
   /**
    * Item 565: the head's facts line under Filament IV (f4-notes.png) —
    * when the note was last saved (from the notes list the panel already
@@ -650,7 +669,7 @@
    * an image, the proposal review, a read error and "Reading…" keep the head
    * in the flow above them instead (`overlay` false).
    */
-  const overlay = $derived(!media && !reviewing && !error && !loading);
+  const overlay = $derived(!media && !reviewing && !error && !loading && !pageShown);
   /** The editor is what shows (item 498: the toolbar is only over it). */
   const editorShown = $derived(overlay && !streamed && !marks && !!open);
   /* Blocker 1649 (answered by his pick): the large name always shows, and
@@ -749,6 +768,15 @@
     </button>
     <span class="spacer"></span>
     <div class="tools">
+      {#if isHtml && !media}
+        <button
+          class="seg"
+          aria-pressed={htmlSource}
+          use:tip={htmlSource ? "Draw the page" : "Show and edit the HTML source"}
+          onclick={() => (htmlSource = !htmlSource)}>{htmlSource ? "Page" : "Source"}</button
+        >
+        <span class="vr"></span>
+      {/if}
       {#if !media}
         <!-- Item 498: no Plain / Formatted / Preview — the note opens
              formatted, and the toolbar below carries the Markdown switch. -->
@@ -967,6 +995,10 @@
         >
       </div>
     </div>
+  {:else if pageShown}
+    <div class="page-wrap">
+      <HtmlPage html={text} place={`note:${open?.scope}:${open?.name}`} title={open?.name ?? ""} />
+    </div>
   {:else}
     {#key `${bufferKey}#${jump}`}
       <NoteEditor
@@ -1082,6 +1114,13 @@
   .main {
     flex: 1;
     min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  /* Item 819: an HTML note's page fills the column under the head. */
+  .page-wrap {
+    flex: 1;
     min-height: 0;
     display: flex;
     flex-direction: column;
