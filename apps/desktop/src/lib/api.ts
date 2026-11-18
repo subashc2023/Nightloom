@@ -1830,27 +1830,6 @@ export function claudeBrowserNav(session: string, action: BrowserNav, url?: stri
 export function claudeBrowserHold(session: string, held: boolean): Promise<BrowserStatus> {
   return invoke("claude_browser_hold", { session, held });
 }
-/** Item 797: what is at page point (x, y); answered by a
- *  `claude-browser-pick` event with `id`. Never takes the hold. */
-export function claudeBrowserPick(session: string, id: number, x: number, y: number): Promise<null> {
-  return invoke("claude_browser_pick", { session, id, x, y });
-}
-/** The helper's answer to a pick: `info` (the page's fields) or `error`. */
-export interface BrowserPickEvent {
-  session: string;
-  id: number;
-  line: { info?: BrowserPickInfo; error?: string };
-}
-export interface BrowserPickInfo {
-  selector: string;
-  tag: string;
-  text: string;
-  label: string;
-  rect: { x: number; y: number; w: number; h: number };
-  viewport: { w: number; h: number };
-  scale: number;
-  url: string;
-}
 export function forYouFiles(): Promise<ForYouRow[]> {
   return invoke("for_you_files");
 }

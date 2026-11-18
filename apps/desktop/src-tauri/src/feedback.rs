@@ -83,6 +83,7 @@ pub async fn feedback_page_shot(webview: tauri::Webview) -> Result<String, Strin
 #[cfg(target_os = "macos")]
 mod shot {
     use objc2::msg_send;
+    use objc2::rc::{Retained, autoreleasepool};
     use objc2::runtime::{AnyClass, AnyObject};
     use std::sync::{Arc, Mutex};
     use tokio::sync::oneshot::Sender;
@@ -95,7 +96,62 @@ mod shot {
         }
     }
 
-    /// The page as WebKit renders it, as PNG bytes, to `tx`.
+    /// WebKit's NSImage, handed to the thread that makes it a PNG. Nothing
+    /// else holds it once the completion handler returns (WebKit is done
+    /// with it), and NSImage may be used off the main thread by one thread
+    /// at a time.
+    struct Shot(Retained<AnyObject>);
+    // SAFETY: see the type's comment — one owner, one thread at a time.
+    unsafe impl Send for Shot {}
+
+    impl Shot {
+        /// Encode on the calling thread, in its own autorelease pool.
+        fn png(self) -> Result<Vec<u8>, String> {
+            autoreleasepool(|_| png_of(&self.0))
+        }
+    }
+
+    /// The shot as PNG bytes. Heavy on a large window (a TIFF of the whole
+    /// 2× page, read back, then a PNG): item 843 moved it off the main
+    /// thread, where it stalled the window for each shot.
+    fn png_of(img: &AnyObject) -> Result<Vec<u8>, String> {
+        // SAFETY: every message below is public AppKit/Foundation, sent to
+        // objects of the classes named.
+        unsafe {
+            let tiff: *mut AnyObject = msg_send![img, TIFFRepresentation];
+            let (Some(rep_cls), Some(dict_cls)) = (
+                AnyClass::get(c"NSBitmapImageRep"),
+                AnyClass::get(c"NSDictionary"),
+            ) else {
+                return Err("AppKit is missing".into());
+            };
+            if tiff.is_null() {
+                return Err("the shot had no image data".into());
+            }
+            let rep: *mut AnyObject = msg_send![rep_cls, imageRepWithData: tiff];
+            if rep.is_null() {
+                return Err("the shot had no bitmap".into());
+            }
+            let props: *mut AnyObject = msg_send![dict_cls, dictionary];
+            // NSBitmapImageFileTypePNG = 4.
+            let data: *mut AnyObject =
+                msg_send![&*rep, representationUsingType: 4usize, properties: props];
+            if data.is_null() {
+                return Err("the shot could not be made a PNG".into());
+            }
+            let len: usize = msg_send![&*data, length];
+            let ptr: *const u8 = msg_send![&*data, bytes];
+            if ptr.is_null() || len == 0 {
+                return Err("the shot was empty".into());
+            }
+            Ok(std::slice::from_raw_parts(ptr, len).to_vec())
+        }
+    }
+
+    /// The page as WebKit renders it, as PNG bytes, to `tx`. WebKit draws
+    /// it in the web process and calls back on the main thread; the
+    /// callback only keeps the image and hands it to a worker thread, so
+    /// the main thread is never held for the encode (item 843).
     pub unsafe fn take(wk: *mut AnyObject, tx: Reply) {
         if wk.is_null() {
             answer(&tx, Err("no page to take a shot of".into()));
@@ -103,48 +159,22 @@ mod shot {
         }
         let reply = tx.clone();
         let done = block2::RcBlock::new(move |img: *mut AnyObject, _err: *mut AnyObject| {
-            if img.is_null() {
+            // SAFETY: WebKit passes a live NSImage or nil.
+            let Some(img) = (unsafe { Retained::retain(img) }) else {
                 answer(&reply, Err("WebKit returned no image".into()));
                 return;
-            }
-            // SAFETY: WebKit calls this on the main thread with a live
-            // NSImage; every message below is public AppKit/Foundation.
-            let png = unsafe {
-                let img: &AnyObject = &*img;
-                let tiff: *mut AnyObject = msg_send![img, TIFFRepresentation];
-                let (Some(rep_cls), Some(dict_cls)) = (
-                    AnyClass::get(c"NSBitmapImageRep"),
-                    AnyClass::get(c"NSDictionary"),
-                ) else {
-                    answer(&reply, Err("AppKit is missing".into()));
-                    return;
-                };
-                if tiff.is_null() {
-                    answer(&reply, Err("the shot had no image data".into()));
-                    return;
-                }
-                let rep: *mut AnyObject = msg_send![rep_cls, imageRepWithData: tiff];
-                if rep.is_null() {
-                    answer(&reply, Err("the shot had no bitmap".into()));
-                    return;
-                }
-                let props: *mut AnyObject = msg_send![dict_cls, dictionary];
-                // NSBitmapImageFileTypePNG = 4.
-                let data: *mut AnyObject =
-                    msg_send![&*rep, representationUsingType: 4usize, properties: props];
-                if data.is_null() {
-                    answer(&reply, Err("the shot could not be made a PNG".into()));
-                    return;
-                }
-                let len: usize = msg_send![&*data, length];
-                let ptr: *const u8 = msg_send![&*data, bytes];
-                if ptr.is_null() || len == 0 {
-                    answer(&reply, Err("the shot was empty".into()));
-                    return;
-                }
-                std::slice::from_raw_parts(ptr, len).to_vec()
             };
-            answer(&reply, Ok(png));
+            let shot = Shot(img);
+            let to = reply.clone();
+            let spawned = std::thread::Builder::new()
+                .name("page-shot".into())
+                .spawn(move || answer(&to, shot.png()));
+            if let Err(e) = spawned {
+                answer(
+                    &reply,
+                    Err(format!("could not start the shot's encoder: {e}")),
+                );
+            }
         });
         // SAFETY: the caller's; WebKit copies the block before returning.
         unsafe {

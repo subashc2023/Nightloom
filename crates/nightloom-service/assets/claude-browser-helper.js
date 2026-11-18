@@ -237,66 +237,6 @@ async function close() {
 
 // One command at a time, in the order they arrived.
 let chain = Promise.resolve();
-// Item 797: what is at page point (x, y), for the window's pick chip —
-// read in the page, nothing moved or clicked. The same fields as a pick
-// in Nightloom's own window (desktop `pick.ts`), less the component.
-async function pickAt(id, x, y) {
-  const page = active;
-  if (!page) return out({ ev: 'pick', id, error: 'no page is shown' });
-  try {
-    const info = await page.evaluate(
-      ([x, y]) => {
-        const el = document.elementFromPoint(x, y);
-        if (!el) return null;
-        const sq = (s) => String(s || '').replace(/\s+/g, ' ').trim();
-        const esc = (s) => s.replace(/[^\w-]/g, (c) => '\\' + c);
-        const step = (e) => {
-          let s = e.tagName.toLowerCase();
-          if (e.id) return s + '#' + esc(e.id);
-          for (const c of Array.from(e.classList).slice(0, 3)) s += '.' + esc(c);
-          const aria = e.getAttribute('aria-label');
-          if (aria && aria.length <= 40) s += '[aria-label="' + aria.replace(/"/g, '\\"') + '"]';
-          return s;
-        };
-        const parts = [];
-        for (let e = el; e && parts.length < 5; e = e.parentElement) {
-          if (e.tagName === 'BODY' || e.tagName === 'HTML') break;
-          parts.unshift(step(e));
-          if (e.id) break;
-        }
-        const raw = el.value !== undefined && typeof el.value === 'string' ? el.value || el.placeholder : el.innerText || el.textContent;
-        let text = sq(raw);
-        if (text.length > 240) text = text.slice(0, 239) + '…';
-        let label = '';
-        for (const a of ['aria-label', 'title', 'alt', 'placeholder']) {
-          const v = el.getAttribute(a);
-          if (v) {
-            label = a + '="' + sq(v).slice(0, 80) + '"';
-            break;
-          }
-        }
-        const role = el.getAttribute('role');
-        if (role) label = (label ? label + ' ' : '') + 'role=' + role;
-        const r = el.getBoundingClientRect();
-        return {
-          selector: parts.join(' > '),
-          tag: el.tagName.toLowerCase(),
-          text,
-          label,
-          rect: { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) },
-          viewport: { w: innerWidth, h: innerHeight },
-          scale: (window.visualViewport && visualViewport.scale) || 1,
-        };
-      },
-      [Number(x) || 0, Number(y) || 0],
-    );
-    if (!info) return out({ ev: 'pick', id, error: 'nothing is there' });
-    out({ ev: 'pick', id, info: { ...info, url: page.url() } });
-  } catch (e) {
-    out({ ev: 'pick', id, error: String((e && e.message) || e) });
-  }
-}
-
 function handle(line) {
   let m;
   try {
@@ -316,9 +256,6 @@ function handle(line) {
           break;
         case 'nav':
           await nav(m.action, m.url);
-          break;
-        case 'pick':
-          await pickAt(m.id, m.x, m.y);
           break;
         case 'dialogs':
           autoDialogs = !!m.auto;

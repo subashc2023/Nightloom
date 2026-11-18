@@ -44,14 +44,6 @@ struct Dialog<'a> {
     message: &'a str,
 }
 
-/// `claude-browser-pick` (item 797): the helper's answer to a pick, whole.
-#[derive(Clone, serde::Serialize)]
-struct Pick<'a> {
-    session: &'a str,
-    id: u64,
-    line: &'a serde_json::Value,
-}
-
 /// At setup: the browsers as managed state, their events as window events,
 /// and the idle watch. No browser is started here, or for any chat that
 /// never uses Playwright.
@@ -85,14 +77,6 @@ pub fn setup(app: &AppHandle) {
                     session,
                     kind,
                     message,
-                },
-            ),
-            Event::Pick { id, line } => handle.emit(
-                "claude-browser-pick",
-                Pick {
-                    session,
-                    id: *id,
-                    line,
                 },
             ),
         };
@@ -178,20 +162,6 @@ pub async fn claude_browser_nav(
 ) -> Result<(), String> {
     let browsers = Arc::clone(&host.browsers);
     browsers.nav(&session, &action, url.as_deref()).await
-}
-
-/// Item 797: what is at page point (`x`, `y`); the answer comes as a
-/// `claude-browser-pick` event with `id`. Never takes the hold.
-#[tauri::command]
-pub async fn claude_browser_pick(
-    host: tauri::State<'_, Host>,
-    session: String,
-    id: u64,
-    x: f64,
-    y: f64,
-) -> Result<(), String> {
-    let browsers = Arc::clone(&host.browsers);
-    browsers.pick(&session, id, x, y).await
 }
 
 /// Take over (`true`) or Give back (`false`).

@@ -247,7 +247,6 @@
   } from "./state.svelte";
   import { asideDraftKey } from "./asides";
   import { composerShows } from "./asideControls";
-  import { noteBox, pick, togglePick } from "./pick.svelte";
   import { pickText } from "./pick";
   import { scheduleAsideSave } from "./asides.svelte";
   import {
@@ -311,11 +310,6 @@
    * `send`). Sending clears the entry, and nothing else does.
    */
   const key = $derived(aside ? asideDraftKey(aside) : draftKey(app.activeSessionId, app.project?.id, app.pendingMode, app.pendingThread));
-  // Item 797: the palette's "Pick an element" picks into the box he last
-  // typed in — the chat's, as it changes, until he clicks into an aside's.
-  $effect(() => {
-    if (!aside) noteBox(key);
-  });
   /** The pick chip whose contents are open under the strip (item 797). */
   let pickShown = $state<number | null>(null);
   /*
@@ -3471,7 +3465,6 @@
 
 <div
   bind:this={root}
-  onfocusin={() => noteBox(key)}
   class="composer"
   class:floating
   class:aside={aside !== null}
@@ -4061,18 +4054,6 @@
         onclick={() => picker?.click()}
       >
         <Icon name="plus" /><span class="fold-word">Attach</span>
-      </button>
-      <!-- Item 797 (point at it): pick elements on screen into this box;
-           Escape or Done leaves pick mode. -->
-      <button
-        class="ns-btn ghost small attach element-pick"
-        class:on={pick.active && pick.key === key}
-        aria-label="Pick an element"
-        aria-pressed={pick.active && pick.key === key}
-        use:tip={"Pick an element on screen — each click adds it here as a chip"}
-        onclick={() => togglePick(key)}
-      >
-        <Icon name="pick" /><span class="fold-word">Pick</span>
       </button>
       <!-- The model and effort buttons (backlog 112, board 10's A): each
            opens its menu above; the top bar's chip no longer names the
@@ -5130,10 +5111,6 @@
     background: var(--accent);
     color: var(--on-accent, #000);
     letter-spacing: 0.04em;
-  }
-  .element-pick.on {
-    color: var(--accent);
-    box-shadow: inset 0 0 0 1px var(--accent);
   }
   .pick-detail {
     max-width: 760px;

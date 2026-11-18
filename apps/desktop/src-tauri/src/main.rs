@@ -1947,7 +1947,6 @@ fn main() {
             claude_browser::claude_browser_input,
             claude_browser::claude_browser_nav,
             claude_browser::claude_browser_hold,
-            claude_browser::claude_browser_pick,
         ]))
         .build(tauri::generate_context!())
         .expect("error while building Nightloom")
