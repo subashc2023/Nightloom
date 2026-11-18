@@ -1132,7 +1132,8 @@
     width: 100%;
     box-sizing: border-box;
     margin: 0 auto;
-    padding: 0 16px;
+    /* The review: the cards' edges on the box's (they sat 16 px inside it). */
+    padding: 0;
     max-height: 50vh;
     overflow-y: auto;
   }

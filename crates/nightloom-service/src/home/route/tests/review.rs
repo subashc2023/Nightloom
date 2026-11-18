@@ -59,7 +59,7 @@ async fn a_send_planned_read_only_into_a_chat_that_now_writes_waits() {
     let s = w.chat(&w.shift, ChatKind::Chat, 40_000, Duration::minutes(5));
     let (id, path) = (s.id.clone(), s.log_path().unwrap().to_path_buf());
     drop(s);
-    let route = plan_send(&w.config, &id, "And the tests?", None, Utc::now()).unwrap();
+    let route = plan_send(&w.config, &id, "And the tests?", Some(&w.typed), Utc::now()).unwrap();
     assert_eq!(route.state, State::Queued);
     record(&w.config, &route).unwrap();
     crate::jobs::hold_on_disk(&path, ChatKind::Build, None).unwrap();
@@ -70,7 +70,7 @@ async fn a_send_planned_read_only_into_a_chat_that_now_writes_waits() {
     assert_eq!((card.hold, card.write), (Some(Hold::Write), true));
     // And when Home asks again: the chat is read as it is now, not as it
     // was made (the list's summary keeps only the kind at creation).
-    let again = plan_send(&w.config, &id, "And now?", None, Utc::now()).unwrap();
+    let again = plan_send(&w.config, &id, "And now?", Some(&w.typed), Utc::now()).unwrap();
     assert_eq!((again.state, again.write), (State::Waiting, true));
     // The other way: a chat made write-capable and then held read-only
     // (every chat Home starts read-only is made so) is written into alone.
@@ -78,7 +78,7 @@ async fn a_send_planned_read_only_into_a_chat_that_now_writes_waits() {
     let (held_id, path) = (s.id.clone(), s.log_path().unwrap().to_path_buf());
     drop(s);
     crate::jobs::hold_on_disk(&path, ChatKind::Chat, None).unwrap();
-    let alone = plan_send(&w.config, &held_id, "Status?", None, Utc::now()).unwrap();
+    let alone = plan_send(&w.config, &held_id, "Status?", Some(&w.typed), Utc::now()).unwrap();
     assert_eq!((alone.state, alone.write), (State::Queued, false));
 }
 
@@ -91,7 +91,7 @@ async fn a_chat_that_went_cold_while_queued_waits_for_his_pick() {
     let s = w.chat(&w.shift, ChatKind::Chat, 300_000, Duration::minutes(10));
     let id = s.id.clone();
     drop(s);
-    let route = plan_send(&w.config, &id, "And the tests?", None, Utc::now()).unwrap();
+    let route = plan_send(&w.config, &id, "And the tests?", Some(&w.typed), Utc::now()).unwrap();
     assert_eq!(route.state, State::Queued, "warm now");
     record(&w.config, &route).unwrap();
     tick(h.as_ref(), Utc::now() + Duration::hours(3)).await;
@@ -211,10 +211,12 @@ async fn two_taps_at_once_start_one_chat() {
 async fn a_forged_target_is_refused_at_the_start() {
     let w = world("forge-target");
     let h = host(&w.config);
-    let mut into_home = plan_start(&w.config, "Nightloom", "hello", false, None, t0()).unwrap();
+    let mut into_home =
+        plan_start(&w.config, "Nightloom", "hello", false, Some(&w.typed), t0()).unwrap();
     into_home.project = Some(w.home.clone());
     record(&w.config, &into_home).unwrap();
-    let mut no_chat = plan_start(&w.config, "Nightloom", "hello", false, None, t0()).unwrap();
+    let mut no_chat =
+        plan_start(&w.config, "Nightloom", "hello", false, Some(&w.typed), t0()).unwrap();
     no_chat.kind = Kind::Send;
     no_chat.chat = Some("not-a-chat-of-his".into());
     record(&w.config, &no_chat).unwrap();
@@ -222,7 +224,8 @@ async fn a_forged_target_is_refused_at_the_start() {
     let s = w.chat(&w.loom, ChatKind::Build, 40_000, Duration::minutes(5));
     let theirs = s.id.clone();
     drop(s);
-    let mut borrowed = plan_start(&w.config, "Nightloom", "hello", false, None, t0()).unwrap();
+    let mut borrowed =
+        plan_start(&w.config, "Nightloom", "hello", false, Some(&w.typed), t0()).unwrap();
     borrowed.chat = Some(theirs);
     record(&w.config, &borrowed).unwrap();
     tick(h.as_ref(), t0()).await;
@@ -335,4 +338,78 @@ async fn a_waiting_route_does_not_call_itself_a_job() {
     let note = after.note.unwrap();
     assert!(!note.contains("job"), "{note}");
     assert!(note.contains("it starts when it is"), "{note}");
+}
+
+/// Blocker 2130's default: a route planned while no one is typing — the
+/// scan's turn, a job's — waits for his tap even when read-only (text a
+/// scan read in his mail must not start a chat that reads a repo). A
+/// reply to a message he typed still starts read-only alone.
+#[tokio::test]
+async fn a_route_planned_by_a_scan_waits_and_one_from_his_typed_message_starts_alone() {
+    let w = world("unattended");
+    let h = host(&w.config);
+    let scan = home_chat(
+        &w.config,
+        &w.home,
+        &format!(
+            "{}\n\nCollected at 8:00 AM by code:\n- a mail",
+            crate::home::SCAN_LINE
+        ),
+    );
+    let reply = call_from(
+        &w,
+        &scan,
+        START_TOOL,
+        json!({"project": "Nightshift", "prompt": "Read the repo and summarise it."}),
+    )
+    .await
+    .unwrap();
+    assert!(reply.starts_with("Not started"), "{reply}");
+    tick(h.as_ref(), t0()).await;
+    assert!(
+        h.preps.lock().unwrap().is_empty(),
+        "nothing without his tap"
+    );
+    let card = cards(&w.config).remove(0);
+    assert_eq!((card.hold, card.write), (Some(Hold::Unattended), false));
+
+    // A send into a read-only chat from the scan waits as well.
+    let s = w.chat(&w.shift, ChatKind::Chat, 40_000, Duration::minutes(5));
+    let ro = s.id.clone();
+    drop(s);
+    let sent = plan_send(&w.config, &ro, "status?", Some(&scan), Utc::now()).unwrap();
+    assert_eq!(sent.hold, Some(Hold::Unattended));
+    // No chat named, or one that cannot be read: not known to be his.
+    let unknown = plan_start(&w.config, "Nightshift", "x", false, None, t0()).unwrap();
+    assert_eq!(unknown.hold, Some(Hold::Unattended));
+
+    // A line that drops the hold is a card again, not a start.
+    let mut forged = card.clone();
+    forged.state = State::Queued;
+    forged.tapped_at = Some(t0());
+    record(&w.config, &forged).unwrap();
+    tick(h.as_ref(), t0()).await;
+    assert!(h.preps.lock().unwrap().is_empty());
+
+    // His tap starts it, read-only.
+    let after = confirm_and_run(h.as_ref(), &card.id, None, None, t0())
+        .await
+        .unwrap();
+    assert_eq!(after.state, State::Started);
+    assert_eq!(
+        *h.preps.lock().unwrap(),
+        vec![(Some(w.shift.clone()), None, true)]
+    );
+
+    // From a message he typed: alone, as before.
+    let reply = call(
+        &w,
+        START_TOOL,
+        json!({"project": "Nightshift", "prompt": "Find why CI is red."}),
+    )
+    .await
+    .unwrap();
+    assert!(reply.starts_with("Queued"), "{reply}");
+    tick(h.as_ref(), t0() + Duration::seconds(1)).await;
+    assert_eq!(h.preps.lock().unwrap().len(), 2);
 }

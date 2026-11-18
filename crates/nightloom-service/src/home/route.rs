@@ -116,6 +116,9 @@ pub enum Hold {
     Write,
     /// The target is a big chat whose cache is cold.
     Cold,
+    /// Home asked while no one was typing (a scan's turn, a job's): it
+    /// waits for him even when read-only (blocker 2130's default).
+    Unattended,
 }
 
 /// His pick on a cold card.
@@ -465,6 +468,56 @@ fn check_prompt(prompt: &str) -> Result<String, String> {
     Ok(p.to_string())
 }
 
+/// Whether Home's turn in chat `from` answers a message he typed. Not
+/// his: no chat named, a log that cannot be read, a last message that is
+/// the morning scan's, a job running in that chat now, or a last message
+/// that is a job's own text (blocker 2130's default: a route planned
+/// while no one is typing waits for his tap even when read-only — a scan
+/// reads his mail, and words in a mail must not start a chat that reads
+/// a repo). A message sent from the phone, by Siri or on a schedule he
+/// set is his.
+pub fn typed_by_him(config: &Path, from: Option<&str>) -> bool {
+    let Some(from) =
+        from.filter(|f| !f.is_empty() && f.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+    else {
+        return false;
+    };
+    let registry = Registry::load_in(config);
+    let Some(home) = registry.find_by_source(super::SOURCE) else {
+        return false;
+    };
+    let log = sessions_of(config, Some(home)).join(format!("{from}.jsonl"));
+    let Ok(session) = Session::load(&log) else {
+        return false;
+    };
+    let last = session
+        .live_events()
+        .into_iter()
+        .rev()
+        .find_map(|(_, e)| match e {
+            nightloom_core::SessionEvent::UserMessage { text, .. } => Some(text.clone()),
+            _ => None,
+        });
+    let Some(last) = last else {
+        return false;
+    };
+    let last = last.trim();
+    if last.starts_with(super::SCAN_LINE) {
+        return false;
+    }
+    // The jobs' store, read as it lies: a job running in this chat, or
+    // one whose text is this message, is not him typing.
+    let jobs: Vec<Value> = std::fs::read(crate::jobs::Jobs::dir_under(config).join("jobs.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    !jobs.iter().any(|j| {
+        let here = j["chat"].as_str() == Some(from);
+        let text = j["text"].as_str().map(str::trim).unwrap_or("");
+        (here && !j["running"].is_null()) || (!text.is_empty() && last.starts_with(text))
+    })
+}
+
 /// `start_chat`: a new chat in `project`. Read-only is queued; one that
 /// may write waits for his tap. Never Home itself.
 pub fn plan_start(
@@ -483,6 +536,13 @@ pub fn plan_start(
             "Home does not start work in itself — name the project the work belongs to".into(),
         );
     }
+    let hold = if write {
+        Some(Hold::Write)
+    } else if !typed_by_him(config, from) {
+        Some(Hold::Unattended)
+    } else {
+        None
+    };
     Ok(Route {
         id: new_id(now),
         at: now,
@@ -493,8 +553,12 @@ pub fn plan_start(
         label: None,
         prompt,
         write,
-        state: if write { State::Waiting } else { State::Queued },
-        hold: write.then_some(Hold::Write),
+        state: if hold.is_some() {
+            State::Waiting
+        } else {
+            State::Queued
+        },
+        hold,
         cold: None,
         pick: None,
         note: None,
@@ -650,6 +714,8 @@ pub fn plan_send(
         Some(Hold::Cold)
     } else if write {
         Some(Hold::Write)
+    } else if !typed_by_him(config, from) {
+        Some(Hold::Unattended)
     } else {
         None
     };
@@ -696,6 +762,10 @@ pub fn planned_words(route: &Route) -> String {
                 route.project_name
             )
         }
+        (State::Waiting, Some(Hold::Unattended)) => format!(
+            "Not started. This turn does not answer a message he typed, so nothing starts by itself: a Start card (route {id}) shows him the prompt for {} and waits for his tap. Say in one line that the card is waiting; do not call again for this.",
+            route.place()
+        ),
         (State::Waiting, _) => format!(
             "Not started. {} may write, so a Start card (route {id}) shows him the prompt and waits for his tap. Tell him in one line that the card is waiting; do not call again for this.",
             route.place()
@@ -884,6 +954,10 @@ pub fn clear(config: &Path, route: &Route, book: &taps::Book, now: DateTime<Utc>
         };
         (write, hold, cold)
     };
+    // Planned while no one was typing: his tap, read-only or not. (This
+    // one is the line's own word — whether he was typing is not a fact
+    // that can be read again later.)
+    let hold = hold.or((route.hold == Some(Hold::Unattended)).then_some(Hold::Unattended));
     let Some(hold) = hold else {
         return Clear::Go { write };
     };
@@ -946,6 +1020,9 @@ async fn start(host: &dyn Host, config: &Path, mut route: Route, now: DateTime<U
                 match hold {
                     Hold::Cold => "its cache went cold before this could start",
                     Hold::Write => "this is not what was tapped — it needs your tap as it is now",
+                    Hold::Unattended => {
+                        "Home asked for this while no one was typing — it needs your tap"
+                    }
                 }
                 .to_string(),
             );
@@ -1131,6 +1208,7 @@ async fn push_card(host: &dyn Host, config: &Path, route: Route, now: DateTime<U
         route.place(),
         match route.hold {
             Some(Hold::Cold) => "cold chat, your pick",
+            Some(Hold::Unattended) => "asked while no one was typing, your tap",
             _ => "may write, your tap",
         }
     );

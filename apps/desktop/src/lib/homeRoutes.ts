@@ -19,7 +19,7 @@ export interface HomeRoute {
   prompt: string;
   write: boolean;
   state: "waiting" | "queued" | "started" | "finished" | "failed" | "dismissed";
-  hold: "write" | "cold" | null;
+  hold: "write" | "cold" | "unattended" | null;
   cold: { tokens: number; into_usd: number | null; new_usd: number | null } | null;
   note: string | null;
 }
@@ -44,6 +44,7 @@ const usd = (n: number | null) => (n == null ? "" : ` ≈ $${n < 1 ? n.toFixed(2
 /** Why the card waits, in one line. */
 export function routeWhy(r: HomeRoute): string {
   if (r.hold === "cold" && r.cold) return `${k(r.cold.tokens)} and its cache is cold — sending re-writes all of it`;
+  if (r.hold === "unattended") return "Home asked for this while no one was typing (a scan or a job), so it starts only when you tap";
   return "This chat may edit files and run commands, so it starts only when you tap";
 }
 

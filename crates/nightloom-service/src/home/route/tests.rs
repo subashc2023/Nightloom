@@ -32,6 +32,9 @@ struct World {
     home: String,
     loom: String,
     shift: String,
+    /// A chat of Home's whose last message he typed: where the tools are
+    /// called from unless a test says otherwise.
+    typed: String,
 }
 
 fn world(tag: &str) -> World {
@@ -40,12 +43,23 @@ fn world(tag: &str) -> World {
     let home = crate::home::ensure_project(&mut r, &config).unwrap();
     let loom = r.create("Nightloom", None, None).unwrap().id;
     let shift = r.create("Nightshift", None, None).unwrap().id;
+    let typed = home_chat(&config, &home, "Start the 778 fix in Nightshift.");
     World {
         config,
         home,
         loom,
         shift,
+        typed,
     }
+}
+
+/// A chat in Home's project whose last message is `text`; its id.
+fn home_chat(config: &Path, home: &str, text: &str) -> String {
+    let dir = config.join(PROJECTS_DIR).join(home).join(SESSIONS_DIR);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = Session::start(dir, ChatMode::Normal, ChatKind::Chat).unwrap();
+    s.record_user_message(text, vec![], vec![], false);
+    s.id.clone()
 }
 
 impl World {
@@ -229,7 +243,13 @@ fn said(text: &str, reply: &str) -> Vec<SessionEvent> {
 /// Home's model calls a tool as the MCP server would serve it to Home's
 /// chat; the reply is what the model reads.
 async fn call(w: &World, tool: &str, input: Value) -> Result<String, String> {
-    let served = crate::mcp_server::tools_in_chat(&w.config, Some(&w.home), true, None).unwrap();
+    call_from(w, &w.typed, tool, input).await
+}
+
+/// The same, from the chat of Home's named.
+async fn call_from(w: &World, chat: &str, tool: &str, input: Value) -> Result<String, String> {
+    let served =
+        crate::mcp_server::tools_in_chat(&w.config, Some(&w.home), true, Some(chat)).unwrap();
     let t = served
         .iter()
         .find(|t| t.def().name == tool)
@@ -544,7 +564,7 @@ async fn a_send_follows_the_hand_off_chain_to_its_newest_chat() {
     assert_eq!(route.chat.as_deref(), Some(c.as_str()), "two hand-offs on");
     assert!(route.note.as_deref().unwrap().contains("handed off"));
     // A short id finds it too.
-    let route = plan_send(&w.config, &a[..8], "x", None, t0()).unwrap();
+    let route = plan_send(&w.config, &a[..8], "x", Some(&w.typed), t0()).unwrap();
     assert_eq!(route.chat.as_deref(), Some(c.as_str()));
 }
 
