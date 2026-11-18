@@ -425,6 +425,9 @@
         src={frame.src}
         alt={status?.title ? `Claude's browser: ${status.title}` : "Claude's browser"}
         draggable="false"
+        data-pick-browser={session}
+        data-page-w={pw}
+        data-page-h={phh}
         style:left="{pic.x}px"
         style:top="{pic.y}px"
         style:width="{pic.w}px"

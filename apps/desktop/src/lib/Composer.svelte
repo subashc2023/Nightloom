@@ -247,6 +247,8 @@
   } from "./state.svelte";
   import { asideDraftKey } from "./asides";
   import { composerShows } from "./asideControls";
+  import { noteBox, pick, togglePick } from "./pick.svelte";
+  import { pickText } from "./pick";
   import { scheduleAsideSave } from "./asides.svelte";
   import {
     prewarmAfterTurn,
@@ -309,6 +311,13 @@
    * `send`). Sending clears the entry, and nothing else does.
    */
   const key = $derived(aside ? asideDraftKey(aside) : draftKey(app.activeSessionId, app.project?.id, app.pendingMode, app.pendingThread));
+  // Item 797: the palette's "Pick an element" picks into the box he last
+  // typed in — the chat's, as it changes, until he clicks into an aside's.
+  $effect(() => {
+    if (!aside) noteBox(key);
+  });
+  /** The pick chip whose contents are open under the strip (item 797). */
+  let pickShown = $state<number | null>(null);
   /*
    * Item 694: the passage he highlighted before clicking into the box (the
    * transcript holds it as the selection gives way to the box,
@@ -3462,6 +3471,7 @@
 
 <div
   bind:this={root}
+  onfocusin={() => noteBox(key)}
   class="composer"
   class:floating
   class:aside={aside !== null}
@@ -3572,9 +3582,15 @@
                    sent one does (UserBubble's), zooming from here. -->
               <button
                 class="image-open"
-                use:tip={"Open in front"}
-                aria-label="open {a.name}"
+                class:picked={!!a.pick}
+                use:tip={a.pick ? `${a.label ?? "picked element"} — click to see what it holds` : "Open in front"}
+                aria-label={a.pick ? `show picked element ${a.name}` : `open ${a.name}`}
+                aria-expanded={a.pick ? pickShown === a.id : undefined}
                 onclick={(e) => {
+                  if (a.pick) {
+                    pickShown = pickShown === a.id ? null : a.id;
+                    return;
+                  }
                   const el = e.currentTarget.querySelector("img");
                   openAttachment(
                     draftImageContent(key, a.id, a.name),
@@ -3584,6 +3600,7 @@
                 }}
               >
                 <img src={`data:${a.media_type};base64,${a.data}`} alt={a.name} />
+                {#if a.pick}<span class="pick-mark mono" aria-hidden="true">PICK</span>{/if}
               </button>
             {:else}
               {@const kept = keepStateOf(keepKey(a.name, a.data)).phase === "kept"}
@@ -3637,6 +3654,30 @@
         </div>
       {/each}
     </div>
+    <!-- Item 797: a pick chip opened — the crop and every word the model
+         is sent about it. -->
+    {@const shown = attachments.find((x) => x.id === pickShown && x.pick)}
+    {#if shown?.pick}
+      <div class="pick-detail" role="region" aria-label="picked element">
+        {#if shown.kind === "image"}
+          <button
+            class="image-open"
+            use:tip={"Open in front"}
+            aria-label="open {shown.name}"
+            onclick={(e) => {
+              const el = e.currentTarget.querySelector("img");
+              openAttachment(
+                draftImageContent(key, shown.id, shown.name),
+                e.currentTarget.getBoundingClientRect(),
+                el && el.naturalWidth > 0 ? { width: el.naturalWidth, height: el.naturalHeight } : null,
+              );
+            }}><img class="pick-crop" src={`data:${shown.media_type};base64,${shown.data}`} alt={shown.name} /></button
+          >
+        {/if}
+        <pre class="pick-words mono">{pickText(shown.pick, null)}</pre>
+        <button class="lost-paste-x" aria-label="close" use:tip={"Close"} onclick={() => (pickShown = null)}>×</button>
+      </div>
+    {/if}
   {/if}
   {#if lostPaste && lostPaste.key === key}
     <div class="lost-paste" role="status">
@@ -4020,6 +4061,18 @@
         onclick={() => picker?.click()}
       >
         <Icon name="plus" /><span class="fold-word">Attach</span>
+      </button>
+      <!-- Item 797 (point at it): pick elements on screen into this box;
+           Escape or Done leaves pick mode. -->
+      <button
+        class="ns-btn ghost small attach element-pick"
+        class:on={pick.active && pick.key === key}
+        aria-label="Pick an element"
+        aria-pressed={pick.active && pick.key === key}
+        use:tip={"Pick an element on screen — each click adds it here as a chip"}
+        onclick={() => togglePick(key)}
+      >
+        <Icon name="pick" /><span class="fold-word">Pick</span>
       </button>
       <!-- The model and effort buttons (backlog 112, board 10's A): each
            opens its menu above; the top bar's chip no longer names the
@@ -5060,6 +5113,58 @@
     cursor: zoom-in;
     display: block;
     border-radius: 8px;
+  }
+  /* Item 797: a pick chip's mark, and its opened contents. */
+  .image-open.picked {
+    position: relative;
+    cursor: pointer;
+  }
+  .pick-mark {
+    position: absolute;
+    left: 3px;
+    bottom: 3px;
+    font-size: 8.5px;
+    line-height: 12px;
+    padding: 0 3px;
+    border-radius: 3px;
+    background: var(--accent);
+    color: var(--on-accent, #000);
+    letter-spacing: 0.04em;
+  }
+  .element-pick.on {
+    color: var(--accent);
+    box-shadow: inset 0 0 0 1px var(--accent);
+  }
+  .pick-detail {
+    max-width: 760px;
+    margin: 0 auto 0.5rem;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.6rem;
+    padding: 0.5rem 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--well, transparent);
+  }
+
+  .pick-crop {
+    width: auto;
+    height: auto;
+    max-width: 220px;
+    max-height: 140px;
+    object-fit: contain;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    display: block;
+  }
+  .pick-words {
+    flex: 1;
+    margin: 0;
+    font-size: 11px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text);
   }
   .image-open:focus-visible {
     outline: 2px solid var(--accent);

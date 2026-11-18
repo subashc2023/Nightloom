@@ -1216,6 +1216,10 @@ export interface Attachment {
    *  `stash_draft_file` id), so a relaunch keeps a chip too big for the
    *  drafts store. */
   stash?: string;
+  /** A picked element (item 797): the crop is this image; what it is —
+   *  component, selector, text, size, zoom, theme — goes with the turn as
+   *  a text block (`pickDocuments`), so the model can name the file. */
+  pick?: import("./pick").PickInfo;
 }
 
 /** A file for the Claude Code engine (item 277), as `send_agent` takes it. */

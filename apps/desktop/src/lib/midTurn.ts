@@ -4,6 +4,7 @@
  * suite.
  */
 import { pdfRoute } from "./attachKinds";
+import { pickDocuments } from "./pick";
 import type { Attachment, DocumentInput, ImageInput } from "./types";
 
 /**
@@ -19,7 +20,10 @@ export function midTurnWire(chips: readonly Attachment[]): { images: ImageInput[
   if (chips.some((c) => c.pending || !c.data || c.kind === "file" || pdfRoute(c, "claude-code") === "path")) return null;
   return {
     images: chips.filter((c) => c.kind === "image").map(({ media_type, data }) => ({ media_type, data })),
-    documents: chips.filter((c) => c.kind === "document").map(({ media_type, name, data }) => ({ media_type, name, data })),
+    documents: chips
+      .filter((c) => c.kind === "document")
+      .map(({ media_type, name, data }) => ({ media_type, name, data }))
+      .concat(pickDocuments(chips)),
   };
 }
 

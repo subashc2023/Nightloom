@@ -97,6 +97,7 @@
   import NewProject from "./lib/NewProject.svelte";
   import Palette from "./lib/Palette.svelte";
   import FeedbackBox from "./lib/FeedbackBox.svelte";
+  import PickLayer from "./lib/PickLayer.svelte";
   import { feedback } from "./lib/feedback.svelte";
   import NightshiftSurface from "./lib/NightshiftSurface.svelte";
   import { isKeptKind, keptBox, keptIn } from "./lib/keptTabs.svelte";
@@ -1098,6 +1099,8 @@
     <Palette />
     <!-- His feedback to the agent (item 805): the draft outlives the box. -->
     {#if feedback.open}<FeedbackBox />{/if}
+    <!-- Item 797: pick mode's layer, over everything while it is on. -->
+    <PickLayer />
     <!-- The wrap-up's aside picker (nightshift item 285). -->
     <WrapAsidesDialog />
     <!-- Closing an aside with unsent text (backlog 228, practices §7):
