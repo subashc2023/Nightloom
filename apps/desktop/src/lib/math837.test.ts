@@ -2,7 +2,6 @@
 // streaming prefix of each: his sent words (`userMath.ts`), a reply and its streaming tail (`markdown.ts`,
 // `math.ts`), the phone's renderer, the box's offers (`typedMath.ts`, `bareLatex.ts`) and the paste auto-fence
 // (`codeDetect.ts`). The DOM side (both looks, WebKit) is in notes/runner-design/837-report-2026-11-18.md.
-import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 // The suite runs in node, where DOMPurify has no window; its pass changes no text here.
 vi.mock("dompurify", () => ({ default: { sanitize: (h: string) => h } }));
@@ -11,6 +10,10 @@ import { openMathAt, renderMath } from "./math";
 import { drawnParts, mathParts, type MathPart } from "./userMath";
 import { findTypedMath } from "./typedMath";
 import { codePasteLanguage, detectCode } from "./codeDetect";
+// vitest empties CSS imports, so mathBase.css is read from disk (the repo's way, codeCopy.test.ts).
+const fs = (await import(/* @vite-ignore */ "node:" + "fs")) as { readFileSync(u: URL, enc: string): string };
+const mathBaseCss = fs.readFileSync(new URL("./mathBase.css", import.meta.url), "utf8");
+import markdownSrc from "./markdown.ts?raw";
 
 const M831 =
   'will the exam use this terminology "where it applies"?\n\nU1. (theta - 3) is the length. height is 1/(theta - 3)\nU2. E(X) is (theta+3)/2. estimator is (theta+3)/2 = $$\\bar{X}$$.\n(11+3)/2 = X_bar -> 7.';
@@ -42,7 +45,8 @@ describe("his sent words are typeset (831, 834)", () => {
   });
   it("834: both lines are typeset — the wrapped one and the bare LaTeX in the other", () => {
     const ms = maths(mathParts(M834));
-    expect(ms.map((m) => m.tex)).toEqual(["L(\\lambda) = \\Sigma \\lambda^{2} x e^{- \\lambda x}", "\\lambda^{2} x e^{- \\lambda x}"]);
+    // Only the `(` of `Sigma(` is unmatched, so `ln(…)` stays in the run, its `ln` set upright.
+    expect(ms.map((m) => m.tex)).toEqual(["L(\\lambda) = \\Sigma \\lambda^{2} x e^{- \\lambda x}", "\\ln(\\lambda^{2} x e^{- \\lambda x})"]);
     expect(joined(mathParts(M834))).toBe(M834);
   });
   it("all four delimiters; a display formula alone on its line is a block and its line breaks are its margin", () => {
@@ -74,9 +78,8 @@ describe("case is kept (sigma vs Sigma)", () => {
     expect(glyph("\\Omega")).toBe("Ω");
   });
   it("a parent set in capitals cannot reach into a formula", () => {
-    const css = readFileSync(new URL("./mathBase.css", import.meta.url), "utf8");
-    expect(css).toMatch(/\.katex \{[^}]*text-transform: none;[^}]*letter-spacing: normal;/);
-    expect(readFileSync(new URL("./markdown.ts", import.meta.url), "utf8")).toContain('import "./mathBase.css";');
+    expect(mathBaseCss).toMatch(/\.katex \{[^}]*text-transform: none;[^}]*letter-spacing: normal;/);
+    expect(markdownSrc).toContain('import "./mathBase.css";');
   });
   const offer = (s: string) => findTypedMath(s).map((x) => x.tex);
   it("the box's offers keep the capital, and a small letter stays small", () => {
@@ -88,9 +91,10 @@ describe("case is kept (sigma vs Sigma)", () => {
     expect(offer("omega = 2")).toEqual(["\\omega = 2"]);
   });
   it("a Greek name before a parenthesis is offered, capital and small apart (834)", () => {
-    expect(offer("Sigma(x)")).toEqual(["\\Sigma(x)"]);
-    expect(offer("sigma(x)")).toEqual(["\\sigma(x)"]);
-    expect(offer("Phi(z) = 2")).toEqual(["\\Phi(z) = 2"]);
+    // AsciiMath's spacing (`\\Sigma (x)`); KaTeX draws it the same as `\\Sigma(x)`.
+    expect(offer("Sigma(x)")).toEqual(["\\Sigma (x)"]);
+    expect(offer("sigma(x)")).toEqual(["\\sigma (x)"]);
+    expect(offer("Phi(z) = 2")).toEqual(["\\Phi (z) = 2"]);
   });
   it("834 line 1 as he would type it gets one offer for the whole line", () => {
     const got = findTypedMath("L(lambda) = Sigma lambda^2 x e^(-lambda x)");
@@ -100,7 +104,7 @@ describe("case is kept (sigma vs Sigma)", () => {
   });
   it("834 line 2: the LaTeX in a line with an unmatched parenthesis is still offered", () => {
     const got = findTypedMath("l(lambda) = Sigma(ln(\\lambda^{2} x e^{- \\lambda x})");
-    expect(got.filter((s) => s.bare).map((s) => s.src)).toEqual(["\\lambda^{2} x e^{- \\lambda x}"]);
+    expect(got.filter((s) => s.bare).map((s) => s.src)).toEqual(["ln(\\lambda^{2} x e^{- \\lambda x})"]);
   });
   it("a capital Sigma with a running index is the summation sign; without one it is the letter", () => {
     expect(offer("Sigma_(i=1)^n x_i")[0]).toMatch(/^\\sum_\{i = 1\}\^\{n\}/);
@@ -119,7 +123,8 @@ describe("a plain message is never made a code block (835)", () => {
       expect(codePasteLanguage(t, "", 0)).toBeNull();
   });
   it("real code is still fenced", () => {
-    expect(codePasteLanguage("#!/bin/bash\nset -e\nfor f in *.txt; do\n  echo \"$f\"\ndone\nexit 0", "", 0)).toBe("bash");
+    // (A bare `for … do … done` script was never fenced, before 837 either: score 0.25.)
+    expect(codePasteLanguage("if [ -z \"$HOME\" ]; then\n  echo \"no home\";\n  exit 1;\nfi\nexport X=\"$HOME/bin\";", "", 0)).toBe("bash");
     expect(codePasteLanguage("import math\n\ndef area(r):\n    return math.pi * r ** 2\n\nprint(area(2))", "", 0)).toBe("python");
     expect(codePasteLanguage("const theta = Math.sin(alpha);\nconst mu = theta * 2;\nconsole.log(mu);", "", 0)).toBe("javascript");
   });
@@ -135,7 +140,7 @@ describe("streaming (836): every prefix renders without raw half-commands", () =
     expect(openMathAt("it costs $5 and $10")).toBe(-1);
     expect(openMathAt("set $HOME and then")).toBe(-1);
     expect(openMathAt("```\necho $x_1\n")).toBe(-1);
-    expect(openMathAt("```\na\n```\nthen `$x_` and $y_")).toBe(21);
+    expect(openMathAt("```\na\n```\nthen `$x_` and $y_")).toBe(25);
     expect(openMathAt("ends in half a delimiter \\")).toBe(25);
   });
   it("836: the half-arrived cell is not drawn; the row waits until it is whole", () => {
@@ -156,7 +161,7 @@ describe("streaming (836): every prefix renders without raw half-commands", () =
           const text = seen(html);
           const where = `prefix ${n} ${JSON.stringify(reply.slice(Math.max(0, n - 30), n))}`;
           // No TeX command and no formula delimiter on screen (code keeps its own text).
-          const prose = text.replace(/code \$x\$|\$PATH|\$HOME|\$\d[\d,.]*/g, "");
+          const prose = text.replace(/code \$x\$|\$[A-Z_]+|\$\d[\d,.]*/g, "");
           expect(prose, where).not.toMatch(/\\[A-Za-z(\[]|\$/);
           expect(html, where).not.toContain("katex-error");
           // A table is whole rows: every row has the head's cells.

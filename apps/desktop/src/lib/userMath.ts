@@ -40,6 +40,13 @@ export function mathParts(text: string): MathPart[] {
   return parts;
 }
 
+/** In a bare-LaTeX run of his (no delimiters), a function
+ *  name before its argument is set upright as the box would (`ln(` → `\ln(`);
+ *  KaTeX would draw `ln` as the product l·n. The drawn TeX only; his text is kept. */
+function uprightFunctions(tex: string): string {
+  return tex.replace(/(?<![\\A-Za-z])(ln|log|exp|sin|cos|tan)(?=\s*[({\\])/g, "\\$1");
+}
+
 function mathPartsUncached(text: string): MathPart[] {
   const code: [number, number][] = [];
   for (const m of text.matchAll(/`[^`\n]*`/g)) code.push([m.index, m.index + m[0].length]);
@@ -51,7 +58,7 @@ function mathPartsUncached(text: string): MathPart[] {
   }
   const taken = (a: number, b: number) => spans.some((s) => a < s.to && b > s.from);
   const bare = findBareLatex(text, protectedRanges(text)).filter((b) => !taken(b.from, b.to));
-  for (const b of bare) spans.push({ from: b.from, to: b.to, tex: b.src, display: b.display });
+  for (const b of bare) spans.push({ from: b.from, to: b.to, tex: uprightFunctions(b.src), display: b.display });
   if (spans.length === 0) return [{ kind: "text", text }];
   spans.sort((a, b) => a.from - b.from);
   const out: MathPart[] = [];
