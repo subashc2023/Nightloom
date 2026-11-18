@@ -38,6 +38,7 @@ import {
 } from "./drafts.svelte";
 import type { Attachment } from "./types";
 import { scheduledFileIds } from "./scheduled.svelte";
+import { FEEDBACK_DRAFT_KEY, feedbackFileIdsIn } from "./feedbackText";
 
 // Anthropic rejects a base64 image over ~10 MB and a PDF over ~32 MB, and
 // nothing checks either before the wire, so the refusal has to happen here.
@@ -146,6 +147,12 @@ export async function pruneDraftCopies(): Promise<void> {
   if (keep === null) return;
   // A scheduled message's files live in the same folder (backlog 531).
   keep.push(...scheduledFileIds());
+  // And the feedback box's images (item 815), kept the same way.
+  try {
+    keep.push(...feedbackFileIdsIn(localStorage.getItem(FEEDBACK_DRAFT_KEY)));
+  } catch {
+    // no localStorage: no feedback draft
+  }
   await pruneDraftFiles(keep).catch(() => {});
 }
 
