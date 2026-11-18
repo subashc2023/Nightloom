@@ -1094,7 +1094,7 @@ const RAIL_WAIT: Duration = Duration::from_secs(30);
 /// What this host serves of §4 (item 246 design), for `/api/state`'s
 /// `features`: the phone greys out what a host lacks. (`nightshift` the
 /// listener adds itself, while a project has it.)
-pub const FEATURES: [&str; 27] = [
+pub const FEATURES: [&str; 28] = [
     "act",
     "context",
     "layers",
@@ -1128,6 +1128,8 @@ pub const FEATURES: [&str; 27] = [
     "cache_rates",
     // Item 805: `POST /api/feedback`, the phone's feedback sheet.
     "feedback",
+    // Item 815: `POST /api/feedback` takes `images`.
+    "feedback_images",
     // Item 820: `POST /api/chats/{id}/media`, pictures under a reply.
     "reply_media",
 ];

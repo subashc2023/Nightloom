@@ -2541,7 +2541,9 @@ impl Host for ServeHost {
             self.cfg
                 .nightshift_root
                 .is_some()
-                .then_some(feature::FEEDBACK),
+                .then_some([feature::FEEDBACK, feature::FEEDBACK_IMAGES])
+                .into_iter()
+                .flatten(),
         )
         .map(String::from)
         .collect()

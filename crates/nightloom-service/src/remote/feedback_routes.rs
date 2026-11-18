@@ -1,5 +1,5 @@
 //! `POST /api/feedback` (nightshift item 805): the phone page's feedback
-//! sheet. `{text, chat?, chat_title?, project?, nonce?}` →
+//! sheet. `{text, chat?, chat_title?, project?, nonce?, images?}` →
 //! [`crate::feedback::Sent`] — the same `feedback::send` the Mac's box and
 //! the chats' `send_feedback` tool call, so a note from the phone is the
 //! same item. Filed in Nightloom's own backlog, picked from the host's
@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
@@ -19,11 +19,22 @@ use serde::Deserialize;
 
 use super::Shared;
 use super::api::NOT_AVAILABLE;
-use crate::feedback::{self, Note, Target};
+use crate::feedback::{self, Attachment, Note, Target};
+
+/// The body cap: four full-size images and the words (item 815; the
+/// phone's sheet takes at most [`PHONE_IMAGES`]). A note
+/// with more or bigger images is refused by its size, not read whole.
+/// At most this many images from the phone's sheet (item 815).
+pub const PHONE_IMAGES: usize = 4;
+const BODY_LIMIT: usize = PHONE_IMAGES * (feedback::MAX_IMAGE_BYTES / 3 * 4) + 512 * 1024;
 
 #[derive(Debug, Deserialize)]
 struct FeedbackRequest {
+    #[serde(default)]
     text: String,
+    /// Item 815: photos or pasted screenshots, base64 (`feature::FEEDBACK_IMAGES`).
+    #[serde(default)]
+    images: Vec<Attachment>,
     #[serde(default)]
     chat: Option<String>,
     #[serde(default)]
@@ -35,11 +46,14 @@ struct FeedbackRequest {
 }
 
 pub(super) fn router() -> Router<Arc<Shared>> {
-    Router::new().route("/feedback", post(send))
+    Router::new().route(
+        "/feedback",
+        post(send).layer(DefaultBodyLimit::max(BODY_LIMIT)),
+    )
 }
 
 async fn send(State(shared): State<Arc<Shared>>, Json(req): Json<FeedbackRequest>) -> Response {
-    if req.text.trim().is_empty() {
+    if req.text.trim().is_empty() && req.images.is_empty() {
         return (StatusCode::BAD_REQUEST, "there is nothing to send").into_response();
     }
     let home = shared.host.feedback_home();
@@ -87,6 +101,8 @@ async fn send(State(shared): State<Arc<Shared>>, Json(req): Json<FeedbackRequest
         model_note: None,
         model_wording: None,
         words_unchecked: false,
+        attach: req.images,
+        images: Vec::new(),
     };
     let sent = tokio::task::spawn_blocking(move || feedback::send(home.as_deref(), &targets, note))
         .await
