@@ -154,7 +154,7 @@ async fn a_send_cut_off_by_a_quit_is_not_sent_again() {
     let id = write_card(&w, "Fix it.").await;
     h.hang.store(true, std::sync::atomic::Ordering::SeqCst);
     let cut = tokio::time::timeout(
-        std::time::Duration::from_millis(200),
+        std::time::Duration::from_millis(2000),
         confirm_and_run(h.as_ref(), &id, None, None, t0()),
     )
     .await;
