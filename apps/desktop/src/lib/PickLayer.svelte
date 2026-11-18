@@ -8,8 +8,9 @@
    * Nothing under the layer gets the click, the hover or the key: the page
    * does not change while he points at it.
    */
-  import { componentsOf } from "./pick";
-  import { pick, stopPick, takePick } from "./pick.svelte";
+  import { componentsOf, pickTarget } from "./pick";
+  import { pick, stopPick, takeBrowserPick, takePick } from "./pick.svelte";
+  import { frames } from "./claudeBrowser.svelte";
 
   let layer = $state<HTMLDivElement | null>(null);
   let bar = $state<HTMLDivElement | null>(null);
@@ -21,7 +22,7 @@
     for (const el of document.elementsFromPoint(x, y)) {
       if (layer?.contains(el) || bar?.contains(el)) continue;
       if (el === document.documentElement || el === document.body) return null;
-      return el;
+      return pickTarget(el);
     }
     return null;
   }
@@ -31,6 +32,13 @@
     target = el;
     if (!el) {
       hover = null;
+      return;
+    }
+    const shot = browserPicture(el);
+    if (shot) {
+      // Over Claude's browser: the page is picked, not the picture.
+      const r = shot.getBoundingClientRect();
+      hover = { x: r.left, y: r.top, w: r.width, h: r.height, line: "Claude's browser · click what you mean in the page" };
       return;
     }
     const r = el.getBoundingClientRect();
@@ -44,11 +52,30 @@
     };
   }
 
+  /** Claude's browser picture `el` is (in), or null. */
+  function browserPicture(el: Element): HTMLElement | null {
+    return el.closest<HTMLElement>("[data-pick-browser]");
+  }
+
   function onclick(e: MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
     const el = under(e.clientX, e.clientY) ?? target;
-    if (el) void takePick(el);
+    if (!el) return;
+    const shot = browserPicture(el);
+    if (shot) {
+      const session = shot.dataset.pickBrowser ?? "";
+      const pw = Number(shot.dataset.pageW) || 1280;
+      const ph = Number(shot.dataset.pageH) || 800;
+      const r = shot.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0 || !session) return;
+      const x = Math.min(pw - 1, Math.max(0, ((e.clientX - r.left) / r.width) * pw));
+      const y = Math.min(ph - 1, Math.max(0, ((e.clientY - r.top) / r.height) * ph));
+      const f = frames[session];
+      void takeBrowserPick(session, x, y, f ? { src: f.src, w: f.w } : null, pw);
+      return;
+    }
+    void takePick(el);
   }
 
   $effect(() => {

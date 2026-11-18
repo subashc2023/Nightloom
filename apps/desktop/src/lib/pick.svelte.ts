@@ -139,3 +139,106 @@ export async function takePick(el: Element): Promise<void> {
   addPickChip(key, info, png);
   pick.made += 1;
 }
+
+/*
+ * Pick in Claude's browser tab (item 797): the tab's picture is the
+ * page's JPEG frames, so the layer's click there is mapped to a page
+ * point, the browser's helper reads what is at it (`claude_browser_pick`,
+ * never taking the browser from the model), and the crop comes out of the
+ * newest frame — no shot of the window at all.
+ */
+let pickSeq = 0;
+const waiting = new Map<number, (line: api.BrowserPickEvent["line"]) => void>();
+let listening: Promise<void> | null = null;
+
+function listenPicks(): Promise<void> {
+  listening ??= import("@tauri-apps/api/event")
+    .then(({ listen }) =>
+      listen<api.BrowserPickEvent>("claude-browser-pick", (e) => {
+        const done = waiting.get(e.payload.id);
+        if (done) {
+          waiting.delete(e.payload.id);
+          done(e.payload.line);
+        }
+      }),
+    )
+    .then(() => {})
+    .catch(() => {});
+  return listening;
+}
+
+/** The page's answer as a pick. Pure; exported for the suite. */
+export function browserPickInfo(i: api.BrowserPickInfo): PickInfo {
+  return {
+    where: "browser",
+    components: [],
+    selector: i.selector,
+    tag: i.tag,
+    text: i.text,
+    label: i.label,
+    rect: i.rect,
+    viewport: i.viewport,
+    zoom: `page scale ${Math.round((i.scale || 1) * 100)}%`,
+    theme: "",
+    url: i.url,
+  };
+}
+
+/** The element's crop out of a frame (`src` a data: URL; the frame is
+ *  `frameW` px wide for a page `pageW` CSS px wide). */
+async function cropFromFrame(src: string, frameW: number, pageW: number, info: PickInfo): Promise<string> {
+  const img = await loadImage(src);
+  const scale = (frameW || img.naturalWidth) / Math.max(1, pageW);
+  const b = cropBox(info.rect, scale, { w: img.naturalWidth, h: img.naturalHeight });
+  const fit = Math.min(1, 1600 / Math.max(b.sw, b.sh));
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, Math.round(b.sw * fit));
+  c.height = Math.max(1, Math.round(b.sh * fit));
+  c.getContext("2d")?.drawImage(img, b.sx, b.sy, b.sw, b.sh, 0, 0, c.width, c.height);
+  const url = c.toDataURL("image/png");
+  return url.slice(url.indexOf(",") + 1);
+}
+
+/** He clicked Claude's browser picture at page point (x, y) in pick mode. */
+export async function takeBrowserPick(
+  session: string,
+  x: number,
+  y: number,
+  frame: { src: string; w: number } | null,
+  pageW: number,
+): Promise<void> {
+  if (pick.shooting) return;
+  const key = pick.key;
+  pick.shooting = true;
+  try {
+    await listenPicks();
+    const id = ++pickSeq;
+    const answer = new Promise<api.BrowserPickEvent["line"]>((res) => {
+      waiting.set(id, res);
+      setTimeout(() => {
+        if (waiting.delete(id)) res({ error: "the browser did not answer" });
+      }, 5000);
+    });
+    await api.claudeBrowserPick(session, id, x, y);
+    const line = await answer;
+    if (!line.info) {
+      addToast(`Nothing picked in Claude's browser — ${line.error ?? "no answer"}`);
+      return;
+    }
+    const info = browserPickInfo(line.info);
+    let png: string | null = null;
+    if (frame) {
+      try {
+        png = await cropFromFrame(frame.src, frame.w, pageW, info);
+      } catch {
+        png = null;
+      }
+    }
+    addPickChip(key, info, png);
+    pick.made += 1;
+  } catch (e) {
+    addToast(`Nothing picked in Claude's browser — ${String(e)}`);
+  } finally {
+    pick.shooting = false;
+  }
+}

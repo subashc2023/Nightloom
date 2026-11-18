@@ -4065,7 +4065,7 @@
       <!-- Item 797 (point at it): pick elements on screen into this box;
            Escape or Done leaves pick mode. -->
       <button
-        class="ns-btn ghost small attach pick-btn"
+        class="ns-btn ghost small attach element-pick"
         class:on={pick.active && pick.key === key}
         aria-label="Pick an element"
         aria-pressed={pick.active && pick.key === key}
@@ -5131,7 +5131,7 @@
     color: var(--on-accent, #000);
     letter-spacing: 0.04em;
   }
-  .pick-btn.on {
+  .element-pick.on {
     color: var(--accent);
     box-shadow: inset 0 0 0 1px var(--accent);
   }

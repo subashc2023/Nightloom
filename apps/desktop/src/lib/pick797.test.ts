@@ -10,6 +10,7 @@ import {
   pickDocuments,
   pickLine,
   pickName,
+  pickTarget,
   pickText,
   selectorOf,
   themeOf,
@@ -64,7 +65,7 @@ describe("item 797: the selector", () => {
     const root = el("div", ["composer", "svelte-aa1-Composer"]);
     const row = el("div", ["row", "svelte-aa1-Composer"], {}, root);
     const btn = el("button", ["ns-btn", "attach", "svelte-aa1-Composer"], { "aria-label": "Attach files" }, row);
-    expect(selectorOf(btn)).toBe('div.composer > div.row > button.ns-btn.attach[aria-label="Attach files"]');
+    expect(selectorOf(btn)).toBe('div.composer > div.row > button.attach.ns-btn[aria-label="Attach files"]');
   });
   it("stops at an id", () => {
     const app = el("div", [], { id: "root" });
@@ -153,5 +154,64 @@ describe("item 797: the drafts store keeps a pick", () => {
     const a = back.k.attachments[0];
     expect(isPickInfo(a.pick)).toBe(true);
     expect(a.pick?.components).toEqual(["Composer", "ChatView"]);
+  });
+});
+
+describe("item 797: a pick in Claude's browser", () => {
+  it("is the page's answer, with its address and page scale, and no component", async () => {
+    const { browserPickInfo } = await import("./pick.svelte");
+    const p = browserPickInfo({
+      selector: "main > a.more",
+      tag: "a",
+      text: "Read more",
+      label: "",
+      rect: { x: 10, y: 20, w: 90, h: 18 },
+      viewport: { w: 1280, h: 800 },
+      scale: 1,
+      url: "https://example.com/page",
+    });
+    expect(p.where).toBe("browser");
+    expect(p.components).toEqual([]);
+    expect(p.zoom).toBe("page scale 100%");
+    expect(pickLine(p)).toBe("page · a · 90×18");
+    expect(pickText(p, 1)).toContain("page: https://example.com/page");
+  });
+});
+
+describe("item 797: what a click means", () => {
+  /** A stand-in with `closest` over tag names and roles. */
+  function node(tag: string, parent: Element | null = null, role = ""): Element {
+    const e = {
+      tagName: tag.toUpperCase(),
+      parentElement: parent,
+      getAttribute: (n: string) => (n === "role" ? role || null : null),
+      closest(sel: string): Element | null {
+        const tags = sel.split(",").map((s) => s.trim());
+        for (let x: Element | null = e as unknown as Element; x; x = x.parentElement) {
+          const t = x.tagName.toLowerCase();
+          if (tags.some((s) => s === t || (s === "a[href]" && t === "a") || (s.startsWith("[role=") && s.includes(`"${x.getAttribute("role")}"`)))) return x;
+        }
+        return null;
+      },
+    };
+    return e as unknown as Element;
+  }
+  it("an icon's path is its button", () => {
+    const btn = node("button");
+    const svg = node("svg", btn);
+    expect(pickTarget(node("path", svg))).toBe(btn);
+  });
+  it("a label span inside a button is the button; plain text stays itself", () => {
+    const btn = node("button");
+    expect(pickTarget(node("span", btn))).toBe(btn);
+    const p = node("p", node("div"));
+    expect(pickTarget(p)).toBe(p);
+  });
+});
+
+describe("item 797: the selector puts his own classes before the shared look", () => {
+  it("names .attach before ns-btn ghost small", () => {
+    const btn = el("button", ["ns-btn", "ghost", "small", "attach", "svelte-aa1-Composer"]);
+    expect(selectorOf(btn)).toBe("button.attach.ns-btn.ghost");
   });
 });

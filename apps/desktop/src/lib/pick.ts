@@ -44,6 +44,8 @@ export const TEXT_MAX = 240;
 const STEPS = 5;
 const SCOPE = /^svelte-[a-z0-9]+-([A-Za-z_$][\w$]*)$/;
 const BARE_SCOPE = /^svelte-[a-z0-9]+$/;
+/** The app's shared look classes (`ns-btn ghost small`, `mono`, …). */
+const UTILITY = /^(ns-[\w-]+|ghost|small|mono|primary|on|active)$/;
 
 /** The component a scoping class names, or null. */
 export function componentOfClass(c: string): string | null {
@@ -70,7 +72,9 @@ function cssIdent(s: string): string {
 function step(e: Element): string {
   let s = e.tagName.toLowerCase();
   if (e.id && !/\d{4,}/.test(e.id)) return `${s}#${cssIdent(e.id)}`;
-  const own = Array.from(e.classList).filter((c) => !SCOPE.test(c) && !BARE_SCOPE.test(c));
+  // His shared button and text classes say little; the rest come first.
+  const all = Array.from(e.classList).filter((c) => !SCOPE.test(c) && !BARE_SCOPE.test(c));
+  const own = [...all.filter((c) => !UTILITY.test(c)), ...all.filter((c) => UTILITY.test(c))];
   for (const c of own.slice(0, 3)) s += `.${cssIdent(c)}`;
   const aria = e.getAttribute("aria-label");
   if (aria && aria.length <= 40) s += `[aria-label="${aria.replace(/"/g, '\\"')}"]`;
@@ -149,6 +153,20 @@ export function describe(
     zoom: at.zoom,
     theme: themeOf(at.root),
   };
+}
+
+/** What a click on `el` means: out of an icon's SVG to what holds it, and
+ *  up to the control it is part of (a button's label or icon is the
+ *  button) — the thing he would name, not a 8-px path. */
+export function pickTarget(el: Element): Element {
+  let e: Element = el;
+  const svg = e.closest("svg");
+  if (svg) {
+    let top: Element = svg;
+    for (let p = svg.parentElement?.closest("svg"); p; p = p.parentElement?.closest("svg")) top = p;
+    e = top.parentElement ?? top;
+  }
+  return e.closest('button, a[href], [role="button"], [role="tab"], [role="menuitem"], label, input, textarea, select') ?? e;
 }
 
 /** The chip's short line: "Composer · button · 32×28". */
