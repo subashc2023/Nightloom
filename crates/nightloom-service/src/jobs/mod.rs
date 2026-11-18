@@ -426,6 +426,51 @@ pub struct LastRun {
     /// Tool calls the run made, read from its chat's log (item 784).
     #[serde(default)]
     pub calls: Option<u32>,
+    /// Item 812: he pressed Run anyway past Home's spend guard.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub forced: bool,
+    /// Percent of the 5-hour window the run moved the plan's figure by
+    /// (item 812), like [`week_points`](Self::week_points).
+    #[serde(default)]
+    pub five_points: Option<u8>,
+}
+
+/// What one finished run cost (item 812): the measure of the next run's
+/// estimate on the Run anyway card.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct RunCost {
+    pub week: u8,
+    #[serde(default)]
+    pub five: Option<u8>,
+}
+
+/// Finished runs kept for the estimate (item 812).
+pub const COST_KEEP: usize = 5;
+
+/// Item 812: his Run now on a Home job that the spend guard refused — the
+/// card asks Run anyway / Cancel with what Home estimates the run costs
+/// and where his windows are. The figures are those read at the press.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunConfirm {
+    pub at: DateTime<Utc>,
+    /// The guard's reason, in his words.
+    pub why: String,
+    /// Mean percent of the week of its last runs; `None`: no estimate yet.
+    #[serde(default)]
+    pub est_week: Option<f64>,
+    /// Mean percent of the 5-hour window, when runs measured it.
+    #[serde(default)]
+    pub est_five: Option<f64>,
+    /// How many runs the estimate is the mean of.
+    #[serde(default)]
+    pub est_runs: u32,
+    #[serde(default)]
+    pub five_hour: Option<u8>,
+    #[serde(default)]
+    pub week: Option<u8>,
+    /// The usage reading was old (or missing) at the press.
+    #[serde(default)]
+    pub stale: bool,
 }
 
 /// What a job has cost of the weekly window since it last reset.
@@ -449,6 +494,14 @@ pub struct RunMark {
     pub week_before: Option<u8>,
     #[serde(default)]
     pub resets_at: Option<String>,
+    /// Item 812: the 5-hour figure and its reset at the start.
+    #[serde(default)]
+    pub five_before: Option<u8>,
+    #[serde(default)]
+    pub five_resets_at: Option<String>,
+    /// Item 812: started by Run anyway, past Home's spend guard.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub forced: bool,
 }
 
 /// One recurring job.
@@ -513,6 +566,16 @@ pub struct Job {
     /// the runaway guard's measure of a run far above its usual.
     #[serde(default)]
     pub recent_calls: Vec<u32>,
+    /// What its recent finished runs cost, oldest first (item 812).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_cost: Vec<RunCost>,
+    /// Item 812: his Run now that Home's spend guard refused; the card asks.
+    #[serde(default)]
+    pub confirm: Option<RunConfirm>,
+    /// Item 812: he pressed Run anyway — the next Run now start passes the
+    /// guard once (a scheduled start never does).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub force_once: bool,
     /// Item 781: the away server's copy of one of the Mac's jobs (the Mac
     /// sends its away jobs with each sync, [`Jobs::take_mac_jobs`]). Run
     /// only under the lease ([`crate::sync::lease`]); never listed to the
@@ -614,6 +677,13 @@ pub struct JobPatch {
     /// `true`: "Keep read-only" on that card — it stops asking.
     #[serde(default)]
     pub dismiss_wanted: Option<bool>,
+    /// Item 812: Run anyway on the spend guard's card — one run at the
+    /// next tick, past Home's spend guard (the plan's 100% still waits).
+    #[serde(default)]
+    pub run_anyway: Option<bool>,
+    /// Item 812: Cancel on that card — it stays skipped, the card goes.
+    #[serde(default)]
+    pub dismiss_confirm: Option<bool>,
     #[serde(default)]
     pub offset_min: Option<i32>,
     /// The phone's IANA zone: kept only on a job with none yet (one saved
@@ -809,6 +879,57 @@ pub fn week_points(mark: &RunMark, after: &PlanUsage) -> Option<u8> {
     Some(now - before)
 }
 
+/// The run's cost in whole percents of the 5-hour window (item 812), as
+/// [`week_points`] reads the week. Pure.
+pub fn five_points(mark: &RunMark, after: &PlanUsage) -> Option<u8> {
+    let (before, now) = (mark.five_before?, after.five_hour?);
+    if mark.five_resets_at != after.five_hour_resets_at || now < before {
+        return None;
+    }
+    Some(now - before)
+}
+
+/// Item 812: what Home estimates the next run of `job` costs — the mean
+/// of its last finished runs ([`Job::recent_cost`]), else of this week's
+/// runs ([`Job::week`]) — as (week, 5-hour, runs). Pure.
+pub fn estimate(job: &Job) -> (Option<f64>, Option<f64>, u32) {
+    let mean = |v: &[f64]| (!v.is_empty()).then(|| v.iter().sum::<f64>() / v.len() as f64);
+    if !job.recent_cost.is_empty() {
+        let week: Vec<f64> = job.recent_cost.iter().map(|c| f64::from(c.week)).collect();
+        let five: Vec<f64> = job
+            .recent_cost
+            .iter()
+            .filter_map(|c| c.five.map(f64::from))
+            .collect();
+        return (mean(&week), mean(&five), job.recent_cost.len() as u32);
+    }
+    if job.week.runs > 0 {
+        let w = f64::from(job.week.points) / f64::from(job.week.runs);
+        return (Some(w), None, job.week.runs);
+    }
+    (None, None, 0)
+}
+
+/// Item 812: the Run anyway card's figures at his press. Pure.
+pub fn run_confirm(
+    job: &Job,
+    why: &str,
+    plan: Option<&PlanUsage>,
+    now: DateTime<Utc>,
+) -> RunConfirm {
+    let (est_week, est_five, est_runs) = estimate(job);
+    RunConfirm {
+        at: now,
+        why: why.to_string(),
+        est_week,
+        est_five,
+        est_runs,
+        five_hour: plan.and_then(|p| p.five_hour),
+        week: plan.and_then(|p| p.seven_day),
+        stale: plan.is_none_or(|p| p.stale),
+    }
+}
+
 /// Give every job with no zone `zone` when `zone` had its offset the day
 /// it was made; the next run is read again on it (one already due stays
 /// due). Whether any changed.
@@ -967,6 +1088,15 @@ impl Jobs {
         jobs.into_iter().map(JobView::from).collect()
     }
 
+    /// Item 2105: Home's jobs — the morning scan and any job in Home's
+    /// project — in [`list`](Self::list)'s order, for the Mac's job rows.
+    pub fn home_list(&self) -> Vec<JobView> {
+        self.list()
+            .into_iter()
+            .filter(|v| self.is_home_job(&v.job))
+            .collect()
+    }
+
     /// A new job, read-only, its first run at the schedule's next time.
     pub fn create(&self, req: NewJob, now: DateTime<Utc>) -> Result<JobView, String> {
         let text = req.text.trim().to_string();
@@ -1011,6 +1141,9 @@ impl Jobs {
             note: None,
             runs: 0,
             recent_calls: Vec::new(),
+            recent_cost: Vec::new(),
+            confirm: None,
+            force_once: false,
             stand_in: false,
         };
         jobs.push(job.clone());
@@ -1121,6 +1254,17 @@ impl Jobs {
             if patch.dismiss_wanted == Some(true) || approve.as_deref() == Some("ask") {
                 job.wanted = None;
             }
+            if patch.dismiss_confirm == Some(true) {
+                job.confirm = None;
+            }
+            // A second press (or the other device's) while the forced run
+            // is waiting or running changes nothing.
+            if patch.run_anyway == Some(true) && job.running.is_none() {
+                job.confirm = None;
+                job.run_now = true;
+                job.force_once = true;
+                job.retry_at = None;
+            }
             if let Some(paused) = patch.paused {
                 // Resumed: from its next time, not the ones it sat out.
                 if job.paused && !paused && job.next_run <= now {
@@ -1160,6 +1304,41 @@ impl Jobs {
             return Err("it is running now".into());
         }
         Ok(job.into())
+    }
+
+    /// Item 812: his Run now press (`POST /api/jobs/{id}/run`). A Home job
+    /// the spend guard would refuse is skipped at once and carries the
+    /// Run anyway card ([`Job::confirm`]); any other is [`run_now`](Self::run_now).
+    pub async fn press_run(
+        &self,
+        host: &dyn Host,
+        id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<JobView, String> {
+        let job = self
+            .lock()
+            .iter()
+            .find(|j| j.id == id)
+            .cloned()
+            .ok_or_else(|| "that job is gone".to_string())?;
+        if job.running.is_some() {
+            return Err("it is running now".into());
+        }
+        // A Run anyway already waiting: the press is the same run.
+        if !job.force_once && self.is_home_job(&job) {
+            let plan = host.usage().await.ok().map(|u| u.plan);
+            if !plan.as_ref().is_some_and(limited)
+                && let Some(why) = self.home_guard(&job, plan.as_ref(), now)
+            {
+                self.skip(&job, &why, plan.as_ref(), true, now);
+                return self
+                    .list()
+                    .into_iter()
+                    .find(|j| j.job.id == id)
+                    .ok_or_else(|| "that job is gone".to_string());
+            }
+        }
+        self.run_now(id)
     }
 
     /// Delete job `id`: it leaves the list for `trash.json` (its chat and
@@ -1279,6 +1458,8 @@ impl Jobs {
                         retry_at: None,
                         run_now: false,
                         note: None,
+                        confirm: None,
+                        force_once: false,
                         // The Mac's chat: mirrored, so the first run here
                         // forks it into a chat of the server's own.
                         chat,
@@ -1320,8 +1501,10 @@ impl Jobs {
             );
         }
         // Item 763 H6: Home's unattended runs stop short of his limits.
-        if let Some(why) = self.home_guard(job, plan.as_ref(), now) {
-            return self.skip(job, &why, now);
+        // Item 812: his Run anyway passes once; his Run now asks.
+        let forced = job.run_now && job.force_once;
+        if !forced && let Some(why) = self.home_guard(job, plan.as_ref(), now) {
+            return self.skip(job, &why, plan.as_ref(), job.run_now, now);
         }
         let chat = match host
             .job_prepare(Prep {
@@ -1365,8 +1548,13 @@ impl Jobs {
                         writable: job.writable(),
                         week_before: plan.as_ref().and_then(|p| p.seven_day),
                         resets_at: plan.as_ref().and_then(|p| p.seven_day_resets_at.clone()),
+                        five_before: plan.as_ref().and_then(|p| p.five_hour),
+                        five_resets_at: plan.as_ref().and_then(|p| p.five_hour_resets_at.clone()),
+                        forced,
                     });
                     j.run_now = false;
+                    j.force_once = false;
+                    j.confirm = None;
                     j.retry_at = None;
                     j.note = None;
                     j.runs += 1;
@@ -1424,8 +1612,16 @@ impl Jobs {
 
     /// A Home run the guard stopped: its row says why, its next time is
     /// the next one (no retry each minute), and a skipped scan writes its
-    /// code-only page.
-    fn skip(&self, job: &Job, why: &str, now: DateTime<Utc>) {
+    /// code-only page. Item 812: a run he pressed (`pressed`) carries the
+    /// Run anyway card instead of the page.
+    fn skip(
+        &self,
+        job: &Job,
+        why: &str,
+        plan: Option<&PlanUsage>,
+        pressed: bool,
+        now: DateTime<Utc>,
+    ) {
         let summary = format!("skipped — {why}");
         let _ = self.change(&job.id, |j| {
             j.last = Some(LastRun {
@@ -1436,7 +1632,12 @@ impl Jobs {
                 week_points: None,
                 week_after: None,
                 calls: None,
+                forced: false,
+                five_points: None,
             });
+            if pressed {
+                j.confirm = Some(run_confirm(j, why, plan, now));
+            }
             j.note = Some(summary.clone());
             j.run_now = false;
             j.retry_at = None;
@@ -1444,7 +1645,8 @@ impl Jobs {
                 j.next_run = j.next_after(now);
             }
         });
-        if job.id == crate::home::SCAN_JOB_ID
+        if !pressed
+            && job.id == crate::home::SCAN_JOB_ID
             && let Some(config) = self.config_dir()
         {
             let date = local_date(now, &job.zone()).unwrap_or_else(|| now.date_naive());
@@ -1520,6 +1722,7 @@ impl Jobs {
         };
         let after = host.usage().await.ok().map(|u| u.plan);
         let points = after.as_ref().and_then(|a| week_points(mark, a));
+        let five = after.as_ref().and_then(|a| five_points(mark, a));
         let wants = !refused.is_empty();
         let summary_line = summary.clone();
         let _ = self.change(&job.id, |j| {
@@ -1550,7 +1753,15 @@ impl Jobs {
                 week_points: points,
                 week_after: after.as_ref().and_then(|a| a.seven_day),
                 calls,
+                forced: mark.forced,
+                five_points: five,
             });
+            // Item 812: a finished run's cost is the next estimate's measure.
+            if let (Some(week), Outcome::Done) = (points, outcome) {
+                j.recent_cost.push(RunCost { week, five });
+                let over = j.recent_cost.len().saturating_sub(COST_KEEP);
+                j.recent_cost.drain(..over);
+            }
             // A finished run is the measure of the next one's ceiling; a
             // stopped one is not (it was the runaway).
             if let (Some(n), Outcome::Done) = (calls, outcome) {

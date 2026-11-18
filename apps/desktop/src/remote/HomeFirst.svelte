@@ -39,8 +39,9 @@
     type RemoteState,
     type Running,
   } from "./client";
-  import { answerPatch, type Answer, type Job } from "./jobs";
+  import { answerPatch, confirmPatch, type Answer, type Job } from "./jobs";
   import JobApproval from "./JobApproval.svelte";
+  import JobRunConfirm from "./JobRunConfirm.svelte";
   import BlockerAnswer from "./BlockerAnswer.svelte";
   import { NightshiftClient, type NsBlocker } from "./nightshiftClient";
   import {
@@ -247,6 +248,20 @@
       await load();
     } catch (e) {
       onnote(e instanceof ApiError ? e.message : "Could not answer the job — try again");
+    } finally {
+      busyKey = null;
+    }
+  }
+
+  /** Item 812: Run anyway / Cancel on the spend guard's card. Not queued while the host is out of reach: a
+   *  run must not start later on its own, so an unsent press says so and the card stays. */
+  async function confirmJob(job: Job, run: boolean) {
+    busyKey = `run:${job.id}`;
+    try {
+      await client.jobPatch(job.id, confirmPatch(run));
+      await load();
+    } catch (e) {
+      onnote(e instanceof ApiError ? e.message : run ? "Could not start the job — try again" : "Could not cancel — try again");
     } finally {
       busyKey = null;
     }
@@ -465,6 +480,8 @@
               <button class="h-btn" disabled={busyKey === row.key} onclick={() => decide(row, "deny")}>Deny</button>
               {#if row.chat}<button class="h-btn quiet" onclick={() => onopen(row.chat!, row.project)}>Open</button>{/if}
             </div>
+          {:else if row.kind === "job" && row.job && row.confirm}
+            <JobRunConfirm job={row.job} busy={busyKey === row.key} onanswer={(run) => confirmJob(row.job!, run)} />
           {:else if row.kind === "job" && row.job}
             <JobApproval job={row.job} busy={busyKey === row.key} onanswer={(how) => answerJob(row.job!, how)} />
           {:else if row.kind === "blocker" && row.blocker}

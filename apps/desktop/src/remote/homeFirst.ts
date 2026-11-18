@@ -60,6 +60,8 @@ export interface NeedRow {
   at: number | null;
   /** A job that wants changes (its approval card). */
   job?: Job;
+  /** Item 812: the job's Run anyway card instead (its Run now was refused). */
+  confirm?: boolean;
   /** A held blocker (its answer box). */
   blocker?: HeldBlockerWire;
 }
@@ -100,6 +102,10 @@ export function needRows(
     });
   }
   for (const j of jobs) {
+    // Item 812: his Run now the spend guard refused asks Run anyway / Cancel.
+    if (j.confirm) {
+      out.push({ key: `run:${j.id}`, kind: "job", title: j.title, line: "Your Run now was stopped by Home's spend guard", chat: j.chat ?? null, project: j.project ?? null, at: Date.parse(j.confirm.at) || null, job: j, confirm: true });
+    }
     if (!j.wanted) continue;
     out.push({ key: `job:${j.id}`, kind: "job", title: j.title, line: "Its read-only run wanted to make changes", chat: j.chat ?? null, project: j.project ?? null, at: Date.parse(j.wanted.at) || null, job: j });
   }

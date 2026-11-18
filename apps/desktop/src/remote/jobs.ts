@@ -15,6 +15,24 @@ export interface JobLast {
   week_after: number | null;
   /** Tool calls the run made (item 784). */
   calls?: number | null;
+  /** Item 812: he pressed Run anyway past Home's spend guard. */
+  forced?: boolean;
+  five_points?: number | null;
+}
+
+/** Item 812: his Run now that Home's spend guard refused — the Run anyway card. */
+export interface RunConfirm {
+  at: string;
+  /** The guard's reason, in his words. */
+  why: string;
+  /** Mean percent of the week of its last runs; null: no estimate yet. */
+  est_week: number | null;
+  est_five: number | null;
+  est_runs: number;
+  five_hour: number | null;
+  week: number | null;
+  /** The usage reading was old or missing at the press. */
+  stale: boolean;
 }
 
 export interface Job {
@@ -40,6 +58,10 @@ export interface Job {
   /** The last read-only run was stopped from making changes: the card asks. */
   wanted?: { at: string; what: string[] } | null;
   run_now?: boolean;
+  /** Item 812: the spend guard refused his Run now; the card asks. */
+  confirm?: RunConfirm | null;
+  /** Item 812: Run anyway pressed; its run has not started yet. */
+  force_once?: boolean;
 }
 
 export type Approval = "ask" | "once" | "always";
@@ -69,6 +91,10 @@ export interface JobPatch {
   approve_plan?: boolean;
   approve?: Approval;
   dismiss_wanted?: boolean;
+  /** Item 812: Run anyway on the spend guard's card. */
+  run_anyway?: boolean;
+  /** Item 812: Cancel on that card. */
+  dismiss_confirm?: boolean;
   tz?: string;
 }
 
@@ -139,6 +165,39 @@ export function answerPatch(how: Answer): JobPatch {
   return how === "keep" ? { dismiss_wanted: true } : { approve: how };
 }
 
+// ---- item 812: Run now past Home's spend guard ----
+
+/** "~2%", "~0.5%", "under 1%" for a mean under half a percent. */
+function about(p: number): string {
+  if (p < 0.5) return "under 1%";
+  const r = Math.round(p * 10) / 10;
+  return `~${Number.isInteger(r) ? r.toFixed(0) : r.toFixed(1)}%`;
+}
+
+/** The guard's reason as the card's last line: "Stopped because the weekly window is at 91%." (a name keeps its capital). */
+function reasonLine(why: string): string {
+  const w = /^Home\b/.test(why) ? why : `${why.charAt(0).toLowerCase()}${why.slice(1)}`;
+  return `Stopped because ${w}.`;
+}
+
+/** The Run anyway card's words (same shape as the approval card's): title, the estimate and where he is, the guard's reason. */
+export function confirmAsk(j: Job): { title: string; body: string; reason: string } | null {
+  const c = j.confirm;
+  if (!c) return null;
+  const pct = (n: number | null) => (n == null ? "?" : `${n}%`);
+  const at = c.stale || (c.five_hour == null && c.week == null) ? "your usage reading is out of date" : `you're at ${pct(c.five_hour)} / ${pct(c.week)}`;
+  let est: string;
+  if (c.est_week == null) est = "No estimate yet — first run";
+  else if (c.est_five == null) est = `Home estimates ${about(c.est_week)} of the week`;
+  else est = `Home estimates ${about(c.est_five)} of your 5h window (${about(c.est_week)} of the week)`;
+  return { title: `Run ${j.title} anyway?`, body: `${est}; ${at}.`, reason: reasonLine(c.why) };
+}
+
+/** The patch each button on the Run anyway card sends. */
+export function confirmPatch(run: boolean): JobPatch {
+  return run ? { run_anyway: true } : { dismiss_confirm: true };
+}
+
 /** The schedules offered as taps; anything else is typed. */
 export const EVERY_PRESETS = ["every hour", "every morning", "every evening", "every weekday at 9am", "every Monday at 9am"] as const;
 
@@ -206,7 +265,8 @@ export function lastText(j: Job, now = new Date()): string {
   if (l.outcome === "skipped") return `Skipped ${whenText(l.ended, now)} — ${l.summary.replace(/^skipped — /, "")}`;
   const how =
     l.outcome === "done" ? "finished" : l.outcome === "failed" ? "failed" : l.outcome === "stopped" ? "stopped, looked stuck" : "did not finish";
-  return `Last run ${whenText(l.ended, now)} — ${how} · ${costText(l.week_points)}`;
+  // Item 812: a run he forced past the spend guard says so.
+  return `Last run ${whenText(l.ended, now)} — ${how}${l.forced ? " (run anyway)" : ""} · ${costText(l.week_points)}`;
 }
 
 /** What it has cost since the weekly window last reset. */

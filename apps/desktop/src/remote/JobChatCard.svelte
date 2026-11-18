@@ -7,9 +7,17 @@
    * approved job carries its mark ("Always may make changes") with Take
    * back. Nothing shows for any other chat. Read every 20 s and when the
    * chat changes; an answer reads again at once.
+   *
+   * Item 2105: on the Mac (`press` given) the job's line carries Run now —
+   * the phone's press (`job_run_now` → `Jobs::press_run`, item 812), which
+   * past Home's spend guard raises the Run anyway card above it. The phone
+   * passes no `press`: its Run now is on the Jobs list.
    */
   import JobApproval from "./JobApproval.svelte";
-  import { answerPatch, approvalBadge, type Answer, type Job, type JobPatch } from "./jobs";
+  import JobRunConfirm from "./JobRunConfirm.svelte";
+  import { confirmPatch, answerPatch, approvalBadge, lastText, type Answer, type Job, type JobPatch } from "./jobs";
+  import { rowState, runNowButton } from "../lib/homeJobs";
+  import { tip } from "../lib/tip";
 
   interface Props {
     chat: string | null;
@@ -17,8 +25,10 @@
     load: (chat: string) => Promise<Job | null>;
     send: (id: string, patch: JobPatch) => Promise<unknown>;
     where?: string;
+    /** Item 2105: the Mac's Run now (none on the phone). */
+    press?: (id: string) => Promise<unknown>;
   }
-  let { chat, load, send, where = "its project" }: Props = $props();
+  let { chat, load, send, where = "its project", press }: Props = $props();
 
   let job = $state<Job | null>(null);
   let busy = $state(false);
@@ -42,12 +52,13 @@
     return () => clearInterval(t);
   });
 
-  async function act(patch: JobPatch) {
+  async function act(patch: JobPatch | "run") {
     const j = job;
-    if (!j) return;
+    if (!j || busy) return;
     busy = true;
     try {
-      await send(j.id, patch);
+      if (patch === "run") await press?.(j.id);
+      else await send(j.id, patch);
       problem = null;
     } catch (e) {
       problem = String(e instanceof Error ? e.message : e);
@@ -58,17 +69,33 @@
   }
 </script>
 
+{#if job?.confirm}
+  <!-- Item 812: his Run now past Home's spend guard asks here too (the Mac's chat and the phone's). -->
+  <div class="jc" data-job-chat-card>
+    <JobRunConfirm {job} {busy} onanswer={(run) => void act(confirmPatch(run))} />
+    {#if problem}<p class="jc-problem" role="alert">{problem}</p>{/if}
+  </div>
+{/if}
 {#if job?.wanted}
   <div class="jc" data-job-chat-card>
     <JobApproval {job} {busy} {where} named onanswer={(how: Answer) => void act(answerPatch(how))} />
     {#if problem}<p class="jc-problem" role="alert">{problem}</p>{/if}
   </div>
-{:else if job && !job.read_only}
+{:else if job && (!job.read_only || press)}
+  {@const b = runNowButton(job, busy)}
   <div class="jc-mark" data-job-chat-mark>
-    <span class="jc-badge" class:always={job.approval === "always"}>{approvalBadge(job)}</span>
-    <span class="jc-name">{job.title}</span>
-    <button class="jc-link" data-act="job-take-back" disabled={busy} onclick={() => void act({ approve: "ask" })}>Take back</button>
+    {#if !job.read_only}<span class="jc-badge" class:always={job.approval === "always"}>{approvalBadge(job)}</span>{/if}
+    <span class="jc-name">{job.title}{press ? ` · ${rowState(job, lastText(job))}` : ""}</span>
+    {#if press}
+      <span class="jc-tip" use:tip={b.tip}
+        ><button class="jc-link" data-act="job-run" disabled={b.disabled} onclick={() => void act("run")}>Run now</button></span
+      >
+    {/if}
+    {#if !job.read_only}
+      <button class="jc-link" data-act="job-take-back" disabled={busy} onclick={() => void act({ approve: "ask" })}>Take back</button>
+    {/if}
   </div>
+  {#if press && problem}<p class="jc-problem" role="alert">{problem}</p>{/if}
 {/if}
 
 <style>
@@ -108,6 +135,14 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .jc-tip {
+    flex: none;
+    display: inline-flex;
+  }
+  .jc-link:disabled {
+    color: var(--dim);
+    cursor: default;
   }
   .jc-link {
     flex: none;

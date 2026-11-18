@@ -254,7 +254,7 @@ pub fn job_for_chat(app: AppHandle, chat: String) -> Option<nightloom_service::j
 
 /// An answer on the Mac's card (item 780), as the phone's `/api/jobs/{id}`
 /// takes it: `approve` "once", "always" or "ask" (take back), or
-/// `dismiss_wanted` (Keep read-only).
+/// `dismiss_wanted` (Keep read-only); item 812's `run_anyway` / `dismiss_confirm`.
 #[tauri::command]
 pub fn job_answer(
     app: AppHandle,
@@ -266,7 +266,29 @@ pub fn job_answer(
     let patch = nightloom_service::jobs::JobPatch {
         approve: patch.approve,
         dismiss_wanted: patch.dismiss_wanted,
+        // Item 812: the spend guard's Run anyway / Cancel card.
+        run_anyway: patch.run_anyway,
+        dismiss_confirm: patch.dismiss_confirm,
         ..Default::default()
     };
     jobs.patch(&id, patch, chrono::Utc::now())
+}
+
+/// Item 2105: Home's jobs for the Mac's job rows (Settings → Home, and
+/// the job's own chat), the phone's Jobs list scoped to Home.
+#[tauri::command]
+pub fn job_home_list(app: AppHandle) -> Vec<nightloom_service::jobs::JobView> {
+    crate::remote::jobs_store(&app)
+        .map(|j| j.home_list())
+        .unwrap_or_default()
+}
+
+/// Item 2105: Run now on a Mac job row — the phone's press (item 812):
+/// past Home's spend guard it skips and the row carries the Run anyway card.
+#[tauri::command]
+pub async fn job_run_now(
+    app: AppHandle,
+    id: String,
+) -> Result<nightloom_service::jobs::JobView, String> {
+    crate::remote::press_job(&app, &id).await
 }
