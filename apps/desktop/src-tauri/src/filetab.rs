@@ -376,9 +376,147 @@ pub fn read_not_text(target: &Path) -> Result<FileTab, String> {
     })
 }
 
+/// The largest image drawn inside a reply (item 820); past it the strip
+/// says the size and the card's Open/Reveal still work.
+pub const MAX_REPLY_IMAGE: u64 = 16 * 1024 * 1024;
+/// The largest video played inside a reply (item 820).
+pub const MAX_REPLY_VIDEO: u64 = 32 * 1024 * 1024;
+
+/// A picture or a video a reply names, by extension (item 820): `(kind,
+/// media type)` with kind `image` or `video`; `None` for anything else.
+pub fn media_kind(path: &Path) -> Option<(&'static str, &'static str)> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())?;
+    Some(match ext.as_str() {
+        "mp4" | "m4v" => ("video", "video/mp4"),
+        "mov" => ("video", "video/quicktime"),
+        "webm" => ("video", "video/webm"),
+        _ => match kind_by_ext(path) {
+            Some(("image", media)) => ("image", media),
+            _ => return None,
+        },
+    })
+}
+
+/// The system's temp folders (item 820): where a script a chat runs —
+/// matplotlib's `savefig`, a render — usually saves, and which no Write
+/// call records. Read only for a picture or a video drawn in a reply.
+pub fn temp_trees() -> Vec<PathBuf> {
+    let mut out = vec![PathBuf::from("/tmp"), PathBuf::from("/private/tmp")];
+    let t = std::env::temp_dir();
+    if !out.contains(&t) {
+        out.push(t);
+    }
+    out
+}
+
+/// A picture or a video as a reply draws it (item 820).
+#[derive(Debug, Serialize)]
+pub struct ReplyMedia {
+    pub path: String,
+    /// `image` or `video`.
+    pub kind: &'static str,
+    pub media_type: String,
+    pub size: u64,
+    /// Base64 bytes; `None` when the file is past the reply's limit.
+    pub data: Option<String>,
+}
+
+/// Whether `target` may be drawn in a reply: what a tab may read, or a
+/// picture or a video under a temp folder. Anything not a picture or a
+/// video is refused here whatever its folder.
+pub fn media_permitted(
+    target: &Path,
+    trees: &[PathBuf],
+    written: &[PathBuf],
+) -> Result<Via, String> {
+    if media_kind(target).is_none() {
+        return Err(format!("{} is not a picture or a video", target.display()));
+    }
+    match permitted(target, trees, written) {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            let shown = target.to_string_lossy();
+            let in_temp = temp_trees()
+                .into_iter()
+                .any(|t| Root::new(t).resolve(&shown).is_ok());
+            if in_temp { Ok(Via::Folder) } else { Err(e) }
+        }
+    }
+}
+
+/// Read a permitted picture or video for a reply (item 820).
+pub fn read_media(target: &Path) -> Result<ReplyMedia, String> {
+    let Some((kind, media)) = media_kind(target) else {
+        return Err(format!("{} is not a picture or a video", target.display()));
+    };
+    let meta = std::fs::metadata(target)
+        .map_err(|_| format!("{} is no longer on disk", target.display()))?;
+    if !meta.is_file() {
+        return Err(format!("{} is not a file", target.display()));
+    }
+    let size = meta.len();
+    let limit = if kind == "video" {
+        MAX_REPLY_VIDEO
+    } else {
+        MAX_REPLY_IMAGE
+    };
+    let data = if size > limit {
+        None
+    } else {
+        let bytes = std::fs::read(target).map_err(|e| e.to_string())?;
+        Some(base64::engine::general_purpose::STANDARD.encode(bytes))
+    };
+    Ok(ReplyMedia {
+        path: target.to_string_lossy().into_owned(),
+        kind,
+        media_type: media.into(),
+        size,
+        data,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reply_reads_pictures_and_video_only() {
+        assert_eq!(
+            media_kind(Path::new("/x/plot.PNG")),
+            Some(("image", "image/png"))
+        );
+        assert_eq!(
+            media_kind(Path::new("/x/a.svg")),
+            Some(("image", "image/svg+xml"))
+        );
+        assert_eq!(
+            media_kind(Path::new("/x/clip.mp4")),
+            Some(("video", "video/mp4"))
+        );
+        assert_eq!(media_kind(Path::new("/x/notes.md")), None);
+        assert_eq!(media_kind(Path::new("/x/a.pdf")), None);
+        assert!(media_permitted(Path::new("/tmp/secret.txt"), &[], &[]).is_err());
+    }
+
+    #[test]
+    fn a_picture_in_a_temp_folder_is_drawn_and_one_elsewhere_is_not() {
+        let dir = scratch("media");
+        let png = dir.join("plot.png");
+        std::fs::write(&png, [0x89, b'P', b'N', b'G']).unwrap();
+        // `scratch` is under the temp folder: allowed with no trees.
+        assert_eq!(media_permitted(&png, &[], &[]), Ok(Via::Folder));
+        let m = read_media(&png).unwrap();
+        assert_eq!((m.kind, m.media_type.as_str()), ("image", "image/png"));
+        assert_eq!(m.data.as_deref(), Some("iVBORw=="));
+        // A picture outside every tree and every temp folder is refused.
+        assert!(media_permitted(Path::new("/Users/nobody/Pictures/a.png"), &[], &[]).is_err());
+        std::fs::remove_file(&png).unwrap();
+        assert!(read_media(&png).unwrap_err().contains("no longer on disk"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// A reply as the log line reads, so the test needs no clock type.
     fn reply(blocks: Vec<serde_json::Value>) -> SessionEvent {

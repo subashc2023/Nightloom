@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="120" onload="parent.document.title='SVG-ONLOAD-RAN';try{top.document.body.style.background='red'}catch(e){}">
+  <script>try{top.document.title='SVG-SCRIPT-RAN';top.document.body.style.background='red';top.__svgRan=1}catch(e){}</script>
+  <rect width="320" height="120" fill="#eee"/>
+  <text x="12" y="66" font-size="18" fill="#333">SVG with a script inside</text>
+  <image href="https://example.com/x.png" width="10" height="10"/>
+</svg>

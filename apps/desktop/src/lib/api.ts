@@ -1649,6 +1649,21 @@ export function readFileTab(path: string, chat: string | null): Promise<FileTabD
   return invoke("read_file_tab", { path, chat });
 }
 
+/** A picture or a video a reply names, for the strip under it (item 820):
+ *  base64 bytes, or none past the reply's size limit (16 MB a picture,
+ *  32 MB a video). Refused like `readFileTab`, except that a picture or a
+ *  video under a temp folder (where a script's plot is saved) is read. */
+export interface ReplyMediaData {
+  path: string;
+  kind: "image" | "video";
+  media_type: string;
+  size: number;
+  data: string | null;
+}
+export function readReplyMedia(path: string, chat: string | null): Promise<ReplyMediaData> {
+  return invoke("read_reply_media", { path, chat });
+}
+
 /** A `.tex` tab's rendered side (nightshift backlog 381): the PDF (base64)
  *  on success; else the TeX log and/or a message; `missing_tex` when this
  *  Mac has no TeX. Refused like `readFileTab`. */

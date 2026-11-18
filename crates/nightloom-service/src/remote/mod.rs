@@ -477,6 +477,13 @@ pub trait Host: Send + Sync + 'static {
     async fn context(&self, _chat: &str) -> Result<ContextReply, String> {
         Err(NOT_AVAILABLE.into())
     }
+    /// Item 820: a picture or a video `chat`'s reply names, by the path
+    /// the reply wrote (a relative one against the chat's folder), as
+    /// `(media type, bytes)` — read under the same rules as the Mac's own
+    /// reply strip; `Err` with the sentence when it would not draw it.
+    async fn reply_media(&self, _chat: &str, _path: &str) -> Result<(String, Vec<u8>), String> {
+        Err(NOT_AVAILABLE.into())
+    }
     /// Hide or show items of `chat`'s context; the answer is the new view.
     async fn edit_context(
         &self,
@@ -870,6 +877,7 @@ fn router(shared: Arc<Shared>) -> Router {
         // Item 246, wave 1: the ONE API (design §4; types in `api`).
         .route("/chats/{id}/act", post(act))
         .route("/chats/{id}/context", get(context).post(edit_context))
+        .route("/chats/{id}/media", post(reply_media))
         .route("/chats/{id}/layers", post(layers))
         .route("/chats/{id}/aside", post(aside))
         .route("/chats/{id}/aside/cancel", post(aside_cancel))
@@ -1445,6 +1453,51 @@ async fn act(
         return bad(e);
     }
     answer::<ActReply>(shared.host.act(&id, action).await)
+}
+
+#[derive(Deserialize)]
+struct MediaRequest {
+    path: String,
+}
+
+/// Item 820: a picture or a video a reply names, for the phone's strip
+/// under the reply. Always bytes as `application/octet-stream`, an
+/// attachment, `nosniff` and a sandbox policy — the type the page builds
+/// its blob with rides in `x-media-type` — so the URL opened on its own
+/// renders nothing and runs nothing (an SVG among them); the page draws
+/// it through `<img>` or `<video>`, which never runs a script.
+async fn reply_media(
+    State(shared): State<Arc<Shared>>,
+    Path(id): Path<String>,
+    Json(req): Json<MediaRequest>,
+) -> Response {
+    match shared.host.reply_media(&id, &req.path).await {
+        Ok((kind, bytes)) => {
+            let mut resp = bytes.into_response();
+            let h = resp.headers_mut();
+            h.insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/octet-stream"),
+            );
+            h.insert(
+                header::HeaderName::from_static("x-content-type-options"),
+                HeaderValue::from_static("nosniff"),
+            );
+            h.insert(
+                header::CONTENT_DISPOSITION,
+                HeaderValue::from_static("attachment"),
+            );
+            h.insert(
+                header::CONTENT_SECURITY_POLICY,
+                HeaderValue::from_static("sandbox; default-src 'none'"),
+            );
+            if let Ok(v) = HeaderValue::from_str(&kind) {
+                h.insert(header::HeaderName::from_static("x-media-type"), v);
+            }
+            resp
+        }
+        Err(e) => refused(e),
+    }
 }
 
 async fn context(State(shared): State<Arc<Shared>>, Path(id): Path<String>) -> Response {

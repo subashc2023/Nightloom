@@ -6,6 +6,10 @@
   import type { ApprovalRequest, Usage } from "./types";
   // Item 626: while streaming, the unfinished tail renders as it will once finished (streamingTail).
   import { renderReply, streamingTail } from "./markdown";
+  // Item 820: pictures and video the reply names, drawn under its text.
+  import ReplyMedia from "./ReplyMedia.svelte";
+  import { mediaCandidates } from "./replyMedia";
+  import "./replyMediaMac";
   import { liveHtml } from "./liveHtml";
   import { codeCopy, type RunBlocks } from "./codeCopy";
   import { handoffGo, type NextChat } from "./handoffButton";
@@ -977,6 +981,10 @@
         <!-- Item 452: patched in place (liveHtml), not replaced whole per
              streamed delta, so a selection in its written part survives. -->
         <div class="markdown" use:liveHtml={renderReply(streaming ? streamingTail(g.seg.text) : g.seg.text)} use:memoryRefs={{ hits: memHits, text: g.seg.text }} use:codeCopy={runBlocks(g.seg.text)} use:handoffGo={nextChat}></div>
+        {#if !streaming}
+          <!-- Item 820: a picture or a video this text names, right under it. -->
+          <ReplyMedia items={mediaCandidates(g.seg.text, roots)} chat={app.activeSessionId} label={(c) => displayPath(c.path, roots)} onopen={(p, e) => void openFile(p, e)} />
+        {/if}
       {/if}
     {:else if g.seg.kind === "removed_tool" || g.seg.kind === "removed_text"}
       {@const seg = g.seg}

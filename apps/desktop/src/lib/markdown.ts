@@ -9,6 +9,7 @@ import { proseBlocks } from "./proseBlock";
 import { handoffTag } from "./handoffTag";
 import { isRunFence, markRunFence } from "./shellRun";
 import "katex/dist/katex.min.css";
+import { isLocalTarget } from "./replyMedia";
 
 marked.use(math);
 marked.use(tilde);
@@ -42,12 +43,37 @@ export function markdownOptions(opts: { breaks?: boolean } = {}): { async: false
   return { async: false, gfm: true, breaks: opts.breaks === true };
 }
 
+/**
+ * Item 820: a markdown image whose target is a file on this Mac
+ * (`![plot](plot.png)`) drew a broken-image box — the webview resolves it
+ * against the app's own origin. In a reply it is its alt text instead, and
+ * the picture itself is drawn under the text by `ReplyMedia`, read through
+ * the Mac's rules. A web image (`https:`, `data:`) renders as before.
+ */
+const escapeHtml = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+export const localImageAsText = {
+  renderer: {
+    image(token: Tokens.Image) {
+      if (!isLocalTarget(token.href)) return false;
+      const name = token.href.slice(token.href.lastIndexOf("/") + 1);
+      return `<em class="md-local-img">${escapeHtml(token.text || name)}</em>`;
+    },
+  },
+};
+
+/** The phone's replies (item 820): `renderMarkdown`'s, with a local image as its alt text. */
+const phoneMarked = new Marked();
+phoneMarked.use(math);
+phoneMarked.use(tilde);
+phoneMarked.use(localImageAsText);
+
 /** Render assistant markdown to sanitized HTML. `breaks` keeps a single
  *  newline as a line break (the phone's replies, nightshift 300 A32: a
  *  list of numbers one per line ran together as one paragraph); the
  *  desktop's callers leave it off and render exactly as before. */
-export function renderMarkdown(src: string, opts: { breaks?: boolean } = {}): string {
-  const html = marked.parse(src, markdownOptions(opts));
+export function renderMarkdown(src: string, opts: { breaks?: boolean; localImagesAsText?: boolean } = {}): string {
+  // Item 820: the phone's replies draw a local image's picture under the text.
+  const html = (opts.localImagesAsText ? phoneMarked : marked).parse(src, markdownOptions(opts)) as string;
   return DOMPurify.sanitize(html, SANITIZE);
 }
 
@@ -69,6 +95,8 @@ replyMarked.use(proseBlocks);
 replyMarked.use(handoffTag);
 // Item 753: an `<ask>` block shows as the turn's question box.
 replyMarked.use(askTag);
+// Item 820: a local image is its alt text; the picture is drawn under the reply.
+replyMarked.use(localImageAsText);
 // Item 503: a real shell fence is told apart from raw HTML shaped like one.
 const plainBlock = new Renderer();
 replyMarked.use({

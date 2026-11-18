@@ -853,6 +853,25 @@ impl Host for DesktopHost {
         from_json(DesktopHost::context(self, chat).await?)
     }
 
+    /// Item 820: the Mac's own reply-strip read (`reply_media_in`); past
+    /// the reply's size limit a refusal that names the size.
+    async fn reply_media(&self, chat: &str, path: &str) -> Result<(String, Vec<u8>), String> {
+        use base64::Engine as _;
+        let state = self.state_of();
+        let m = crate::commands::system::reply_media_in(&state, path, Some(chat)).await?;
+        let Some(data) = m.data else {
+            return Err(format!(
+                "{} is {} MB — too large to show in a reply",
+                m.path,
+                m.size / (1024 * 1024)
+            ));
+        };
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .map_err(|e| e.to_string())?;
+        Ok((m.media_type, bytes))
+    }
+
     async fn edit_context(
         &self,
         chat: &str,
@@ -1075,7 +1094,7 @@ const RAIL_WAIT: Duration = Duration::from_secs(30);
 /// What this host serves of §4 (item 246 design), for `/api/state`'s
 /// `features`: the phone greys out what a host lacks. (`nightshift` the
 /// listener adds itself, while a project has it.)
-pub const FEATURES: [&str; 26] = [
+pub const FEATURES: [&str; 27] = [
     "act",
     "context",
     "layers",
@@ -1109,6 +1128,8 @@ pub const FEATURES: [&str; 26] = [
     "cache_rates",
     // Item 805: `POST /api/feedback`, the phone's feedback sheet.
     "feedback",
+    // Item 820: `POST /api/chats/{id}/media`, pictures under a reply.
+    "reply_media",
 ];
 
 /// The phone's note deletes go here, never gone (the never-lose-work
@@ -2615,6 +2636,7 @@ mod tests {
             "images",
             "aside",
             "cache_rates",
+            "reply_media",
         ] {
             assert!(FEATURES.contains(&f), "{f}");
         }
