@@ -1826,7 +1826,6 @@ fn main() {
             terminal::terminal_close,
             terminal::terminal_ack,
             feedback::feedback_send,
-            feedback::feedback_targets,
             feedback::feedback_flush,
             nightshift::nightshift_projects,
             nightshift::nightshift_project,

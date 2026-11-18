@@ -14,29 +14,22 @@ import { app, addToast } from "./state.svelte";
 import { classic } from "./layout.svelte";
 import { chatLabel } from "./chatLabel";
 import { isHome } from "./home";
-import { afterSend, feedbackSurface, type FeedbackDraft } from "./feedbackText";
+import { afterSend, feedbackSurface, parseDraft, type FeedbackDraft } from "./feedbackText";
 
 export const FEEDBACK_DRAFT_KEY = "nightloom.feedback.draft";
 
 function readDraft(): FeedbackDraft {
   try {
-    const raw = localStorage.getItem(FEEDBACK_DRAFT_KEY);
-    if (raw) {
-      const v = JSON.parse(raw);
-      if (v && typeof v.text === "string") {
-        return { text: v.text, about: typeof v.about === "string" ? v.about : "" };
-      }
-    }
+    return parseDraft(localStorage.getItem(FEEDBACK_DRAFT_KEY));
   } catch {
-    // a bad entry reads as no draft
+    // no localStorage: no draft
+    return { text: "" };
   }
-  return { text: "", about: "" };
 }
 
 export const feedback = $state({
   open: false,
   draft: readDraft(),
-  targets: [] as api.FeedbackTarget[],
   sending: false,
   /** The last send's sentence, shown in the box until he types again. */
   last: null as string | null,
@@ -48,7 +41,7 @@ export const feedback = $state({
 /** Keep the draft (every keystroke). */
 export function keepDraft(): void {
   try {
-    if (!feedback.draft.text && !feedback.draft.about) localStorage.removeItem(FEEDBACK_DRAFT_KEY);
+    if (!feedback.draft.text) localStorage.removeItem(FEEDBACK_DRAFT_KEY);
     else localStorage.setItem(FEEDBACK_DRAFT_KEY, JSON.stringify(feedback.draft));
   } catch {
     // best-effort; the state still holds it this session
@@ -58,17 +51,6 @@ export function keepDraft(): void {
 export function openFeedback(): void {
   feedback.open = true;
   feedback.problem = null;
-  void api
-    .feedbackTargets()
-    .then((t) => {
-      feedback.targets = t;
-      // A pick of a project no longer here would fail every send (review of 805).
-      if (feedback.draft.about && !t.some((x) => x.id === feedback.draft.about)) {
-        feedback.draft.about = "";
-        keepDraft();
-      }
-    })
-    .catch(() => (feedback.targets = []));
 }
 
 /** Close the box; the draft stays. */
@@ -79,7 +61,7 @@ export function closeFeedback(): void {
 
 /** Discard, after the box's confirm: the draft goes. */
 export function discardFeedback(): void {
-  feedback.draft = { text: "", about: "" };
+  feedback.draft = { text: "" };
   keepDraft();
   feedback.confirmDiscard = false;
   feedback.last = null;
@@ -98,7 +80,6 @@ export function feedbackContext(): api.FeedbackNote {
     chat: open?.id ?? null,
     chat_title: open ? chatLabel(open, "") || null : null,
     project: app.project?.name ?? null,
-    about: feedback.draft.about || null,
   };
 }
 
@@ -113,7 +94,7 @@ export async function sendFeedback(): Promise<boolean> {
     feedback.last = line;
     // Only what was sent goes (review of 805): words typed while it was
     // sending stay in the box.
-    feedback.draft = { text: afterSend(feedback.draft.text, note.text), about: feedback.draft.about };
+    feedback.draft = { text: afterSend(feedback.draft.text, note.text) };
     keepDraft();
     addToast(line);
     return true;

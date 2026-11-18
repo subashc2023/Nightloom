@@ -18,11 +18,6 @@ root.style.setProperty("--w", "100vw");
 root.style.setProperty("--h", "100vh");
 const words = "The aside's close button is too small on the phone, and when I tap it the half-typed question goes.\n\nIt should ask first, like the main chat does.";
 (window as unknown as { __stub: (c: string) => Promise<unknown> }).__stub = async (cmd) => {
-  if (cmd === "feedback_targets")
-    return [
-      { id: "ns", name: "nightshift-code", default: true },
-      { id: "hc", name: "HopecraftAI", default: false },
-    ];
   return null;
 };
 if ((q.get("v") ?? "mac") === "mac") {
@@ -30,12 +25,8 @@ if ((q.get("v") ?? "mac") === "mac") {
   app.sessions = [{ id: "a1b2c3d4", path: "/x", title: "Asides on the phone", first_user: "", user_turns: 4, modified: new Date().toISOString() }] as never;
   app.activeSessionId = "a1b2c3d4";
   app.project = { id: "nl", name: "Nightloom" } as never;
-  feedback.draft = { text: q.get("empty") ? "" : words, about: "" };
+  feedback.draft = { text: q.get("empty") ? "" : words };
   keepDraft();
-  feedback.targets = [
-    { id: "ns", name: "nightshift-code", default: true },
-    { id: "hc", name: "HopecraftAI", default: false },
-  ];
   if (q.get("sent")) feedback.last = "Feedback sent — item 807 in nightshift-code.";
   feedback.open = true;
   feedback.confirmDiscard = !!q.get("discard");

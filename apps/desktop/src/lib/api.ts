@@ -2366,8 +2366,6 @@ export interface FeedbackNote {
   chat?: string | null;
   chat_title?: string | null;
   project?: string | null;
-  /** A Nightshift project's id; absent is Nightloom (the nightshift repo). */
-  about?: string | null;
 }
 export interface FeedbackFiled {
   project: string;
@@ -2380,18 +2378,9 @@ export interface FeedbackSent {
   saved: string | null;
   also_filed: FeedbackFiled[];
 }
-export interface FeedbackTarget {
-  id: string;
-  name: string;
-  default: boolean;
-}
 /** File his feedback as a backlog item (saved first, so nothing is lost). */
 export function feedbackSend(note: FeedbackNote): Promise<FeedbackSent> {
   return invoke("feedback_send", { note });
-}
-/** The projects feedback can go to, the default (Nightloom's own) first. */
-export function feedbackTargets(): Promise<FeedbackTarget[]> {
-  return invoke("feedback_targets");
 }
 /** File what was saved but not filed (a shift was live); at launch. */
 export function feedbackFlush(): Promise<FeedbackFiled[]> {

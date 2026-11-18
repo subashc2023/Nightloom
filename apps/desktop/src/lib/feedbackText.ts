@@ -1,9 +1,23 @@
 /** Plain helpers for the feedback box (item 805), kept pure for tests. */
 
+/** The box's draft: his words. Feedback always goes to Nightloom's own
+ *  backlog (item 816), so there is no project to pick; a draft saved by an
+ *  older build with an `about` reads as its text alone. */
 export interface FeedbackDraft {
   text: string;
-  /** A Nightshift project's id; "" is Nightloom. */
-  about: string;
+}
+
+/** A kept draft, from its localStorage entry; anything unreadable is no draft. */
+export function parseDraft(raw: string | null): FeedbackDraft {
+  try {
+    if (raw) {
+      const v = JSON.parse(raw);
+      if (v && typeof v.text === "string") return { text: v.text };
+    }
+  } catch {
+    // a bad entry reads as no draft
+  }
+  return { text: "" };
 }
 
 /** Where it was sent from, in plain words, as the item records it. */

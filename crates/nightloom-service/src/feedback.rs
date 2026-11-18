@@ -2,8 +2,9 @@
 //!
 //! From any chat ("send feedback: …", the `send_feedback` tool) or by his
 //! own hand (the feedback box on the Mac, the phone page's sheet), his words
-//! become **one backlog item** in the project they are about — the Nightshift
-//! repo (nightshift-code) unless he names another — with his words verbatim
+//! become **one backlog item** in Nightloom's own backlog — the Nightshift
+//! repo (nightshift-code), always: feedback is only for Nightloom's
+//! development (item 816, blocker 2109) — with his words verbatim
 //! under `What Swaraag said` and the context (chat, build, time, where it was
 //! sent from) under `Pointers`. A line under "New feedback from him" at the
 //! top of that project's `backlog/INDEX.md` is what the next session start
@@ -65,8 +66,9 @@ pub struct Note {
     /// The project that chat is in, by name.
     #[serde(default)]
     pub project: Option<String>,
-    /// Which project it is about, by id or name; `None` is Nightloom itself,
-    /// filed in the Nightshift repo.
+    /// Ignored (item 816): feedback always goes to Nightloom's own backlog.
+    /// Kept so a record saved, or a draft sent, by an older build — which
+    /// may name another project here — still reads and files, to Nightloom.
     #[serde(default)]
     pub about: Option<String>,
     /// What the model that sent it adds (the tool's `context`), kept apart
@@ -175,42 +177,11 @@ pub fn targets_in(config: &Path) -> Vec<Target> {
         .collect()
 }
 
-/// The project a note goes to. `about` empty, "nightloom" or "nightshift"
-/// is the Nightshift repo: the root that carries its own runner script, else
-/// the only target there is.
-pub fn pick<'a>(targets: &'a [Target], about: Option<&str>) -> Result<&'a Target, String> {
-    let about = about.map(str::trim).filter(|a| !a.is_empty());
-    let is_default = about.is_none_or(|a| {
-        let a = a.to_lowercase();
-        a == "nightloom" || a == "nightshift"
-    });
-    if !is_default {
-        let a = about.unwrap_or_default().to_lowercase();
-        if let Some(t) = targets
-            .iter()
-            .find(|t| t.id.to_lowercase() == a || t.name.to_lowercase() == a)
-        {
-            return Ok(t);
-        }
-        if let Some(t) = targets.iter().find(|t| {
-            t.root
-                .root
-                .file_name()
-                .is_some_and(|n| n.to_string_lossy().to_lowercase() == a)
-        }) {
-            return Ok(t);
-        }
-        let names: Vec<&str> = targets.iter().map(|t| t.name.as_str()).collect();
-        return Err(format!(
-            "no Nightshift project called {:?} here; the ones there are: {}",
-            about.unwrap_or_default(),
-            if names.is_empty() {
-                "none".to_string()
-            } else {
-                names.join(", ")
-            }
-        ));
-    }
+/// The project every note goes to: Nightloom's own backlog, the Nightshift
+/// repo — the root that carries its own runner script, else the only target
+/// there is. Feedback is only for Nightloom's development (item 816, his
+/// words in blocker 2109), so a note's `about` never picks another project.
+pub fn pick(targets: &[Target]) -> Result<&Target, String> {
     targets
         .iter()
         .find(|t| t.root.root.join(launch::RUNNER).is_file())
@@ -230,11 +201,6 @@ pub fn send(home: Option<&Path>, targets: &[Target], note: Note) -> Result<Sent,
     note.text = note.text.trim_end().to_string();
     if note.text.trim().is_empty() {
         return Err("there is nothing to send: the feedback is empty".into());
-    }
-    // A named project that is not here is the sender's mistake to fix now,
-    // before anything is saved.
-    if note.about.as_deref().is_some_and(|a| !a.trim().is_empty()) {
-        pick(targets, note.about.as_deref())?;
     }
     let record = Record {
         at: chrono::Local::now().to_rfc3339(),
@@ -343,7 +309,7 @@ fn read_record(path: &Path) -> Option<Record> {
 
 /// Write the item and its INDEX line.
 fn file(targets: &[Target], rec: &Record) -> Result<FiledAs, String> {
-    let target = pick(targets, rec.note.about.as_deref())?;
+    let target = pick(targets)?;
     let root = &target.root.root;
     let when = sent_at(&rec.at);
     let title = title_of(&rec.note.text);
@@ -624,8 +590,8 @@ pub const TOOL_NAME: &str = "send_feedback";
 
 /// The sentence `initialize` adds when the tool is served.
 pub const INSTRUCTION: &str = " When the user asks to send feedback (to the agent that \
-     builds Nightloom, or about one of their Nightshift projects), call send_feedback with \
-     their words copied exactly; it files them as a backlog item.";
+     builds Nightloom), call send_feedback with their words copied exactly; it files them as \
+     a backlog item in Nightloom's backlog.";
 
 /// `send_feedback`, served to a chat that writes (not incognito, not
 /// ephemeral). Its words are checked against his messages in this chat.
@@ -667,7 +633,7 @@ impl SendFeedbackTool {
     }
 
     /// The note the tool files, his words checked.
-    pub fn note(&self, words: &str, context: Option<&str>, about: Option<&str>) -> Note {
+    pub fn note(&self, words: &str, context: Option<&str>) -> Note {
         let (check, title) = match self.chat.as_deref() {
             Some(chat) => check_words(&self.log_dir(), chat, words),
             None => (Words::Unchecked, None),
@@ -684,7 +650,7 @@ impl SendFeedbackTool {
             chat: self.chat.clone(),
             chat_title: title,
             project: self.project_name.clone(),
-            about: about.map(str::to_string),
+            about: None,
             model_note: context.map(str::to_string),
             model_wording,
             words_unchecked: unchecked,
@@ -701,21 +667,19 @@ impl nightloom_core::tool::Tool for SendFeedbackTool {
     fn def(&self) -> nightloom_core::ToolDef {
         nightloom_core::ToolDef {
             name: TOOL_NAME.into(),
-            description: "Send the user's feedback to the agent that builds Nightloom (or to \
-                 one of their Nightshift projects): it becomes a new backlog item with their \
-                 words verbatim, this chat's id, the build and the time, and the next work \
+            description: "Send the user's feedback to the agent that builds Nightloom: it \
+                 becomes a new item in Nightloom's backlog with their words verbatim, this chat's id, the build and the time, and the next work \
                  session sees it first. Call it when the user says to send feedback. `words` \
                  must be the user's own words, copied exactly from their message (the part \
                  that is the feedback) — never a summary; if they are not found in their \
                  messages, their message closest to them is filed instead. Put anything you add in \
-                 `context`. Leave `project` out for feedback about Nightloom."
+                 `context`."
                 .into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "words": {"type": "string", "description": "The user's feedback, verbatim."},
-                    "context": {"type": "string", "description": "Optional: what you add (what they were looking at, what went wrong). Filed apart from their words."},
-                    "project": {"type": "string", "description": "Optional: the Nightshift project it is about, by name. Default: Nightloom (the nightshift repo)."}
+                    "context": {"type": "string", "description": "Optional: what you add (what they were looking at, what went wrong). Filed apart from their words."}
                 },
                 "required": ["words"]
             }),
@@ -734,8 +698,8 @@ impl nightloom_core::tool::Tool for SendFeedbackTool {
             .ok_or("words is required: the user's feedback, verbatim")?
             .to_string();
         let context = input["context"].as_str().map(str::to_string);
-        let about = input["project"].as_str().map(str::to_string);
-        let note = self.note(&words, context.as_deref(), about.as_deref());
+        // A `project` an older prompt still passes is ignored (item 816).
+        let note = self.note(&words, context.as_deref());
         let config = self.config.clone();
         let sent = tokio::task::spawn_blocking(move || {
             let targets = targets_in(&config);
@@ -911,7 +875,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_feedback_and_an_unknown_project_are_refused_before_saving() {
+    fn empty_feedback_is_refused_before_saving() {
         let home = scratch("home4");
         assert!(
             send(
@@ -924,18 +888,76 @@ mod tests {
             )
             .is_err()
         );
-        let err = send(
+        assert!(pending(&home).is_empty());
+    }
+
+    /// Item 816: feedback is only for Nightloom's development. A note naming
+    /// another Nightshift project (Value Generalization) — from an older
+    /// box's draft, the phone, or a record saved before — files into
+    /// Nightloom's own backlog, never that project's.
+    #[test]
+    fn a_note_about_another_project_files_into_nightloom() {
+        let home = scratch("home816");
+        let ns = scratch("ns816");
+        let nightloom = repo(&ns);
+        let vg_dir = scratch("vg816");
+        fs::create_dir_all(vg_dir.join("nightshift")).unwrap();
+        fs::create_dir_all(vg_dir.join("nightshift/backlog")).unwrap();
+        fs::write(
+            vg_dir.join("nightshift/nightshift.json"),
+            r#"{"version": 2, "name": "value-gen", "kind": "research"}"#,
+        )
+        .unwrap();
+        let vg = Target {
+            id: "vg".into(),
+            name: "Value Generalization".into(),
+            root: nightshift::detect(&vg_dir).expect("detected"),
+        };
+        let vg_root = vg.root.root.clone();
+        let targets = [vg, nightloom];
+        let sent = send(
             Some(&home),
-            &[],
+            &targets,
             Note {
-                text: "x".into(),
-                about: Some("Nope".into()),
+                text: "About value gen, filed anyway.".into(),
+                about: Some("Value Generalization".into()),
                 ..Note::default()
             },
         )
-        .unwrap_err();
-        assert!(err.contains("no Nightshift project called"));
-        assert!(pending(&home).is_empty());
+        .unwrap();
+        let f = sent.filed.expect("filed");
+        assert_eq!(f.project, "nightshift-code");
+        assert!(ns.join(&f.file).is_file());
+        // A record an older build saved with `about` naming that project's
+        // id, still pending, files into Nightloom too.
+        let old = Record {
+            at: chrono::Local::now().to_rfc3339(),
+            build: None,
+            note: Note {
+                text: "Saved before 816.".into(),
+                about: Some("vg".into()),
+                ..Note::default()
+            },
+            filed: None,
+            pending_why: Some("a shift was live".into()),
+        };
+        nightshift::write_json_atomic(&home.join(DIR).join("00000000-old.json"), &old).unwrap();
+        let filed = flush(&home, &targets);
+        assert_eq!(filed.len(), 1);
+        assert_eq!(filed[0].1.project, "nightshift-code");
+        let item = fs::read_to_string(ns.join(&filed[0].1.file)).unwrap();
+        assert!(item.contains("## What Swaraag said\nSaved before 816.\n"));
+        // Nothing went to Value Generalization's backlog.
+        assert_eq!(
+            fs::read_dir(vg_root.join("backlog")).unwrap().count(),
+            0,
+            "value gen's backlog stays empty"
+        );
+        // The chat tool no longer offers a project to pick.
+        let tool = SendFeedbackTool::new(home.clone(), None, None, None);
+        let def = nightloom_core::tool::Tool::def(&tool);
+        assert!(def.input_schema["properties"].get("project").is_none());
+        assert!(!def.description.contains("Nightshift projects"));
     }
 
     #[test]
@@ -964,13 +986,12 @@ mod tests {
         let ok = tool.note(
             "the aside close button is too small on the phone",
             Some("He was on the phone page."),
-            None,
         );
         assert_eq!(ok.text, "the aside close button is too small on the phone");
         assert_eq!(ok.model_wording, None);
         assert_eq!(ok.chat_title.as_deref(), Some("Phone asides"));
         assert_eq!(ok.via, "tool");
-        let para = tool.note("The user finds the close control undersized.", None, None);
+        let para = tool.note("The user finds the close control undersized.", None);
         assert_eq!(
             para.text,
             "send feedback: the   aside close button is\ntoo small on the phone"
@@ -1006,11 +1027,7 @@ mod tests {
         s.record_user("the aside close button is too small on the phone, send that as feedback");
         s.record_user("yes, send it");
         let tool = SendFeedbackTool::new(config.clone(), None, None, Some(s.id.clone()));
-        let n = tool.note(
-            "The aside close button is undersized on phones.",
-            None,
-            None,
-        );
+        let n = tool.note("The aside close button is undersized on phones.", None);
         assert_eq!(
             n.text,
             "the aside close button is too small on the phone, send that as feedback"
@@ -1018,7 +1035,7 @@ mod tests {
         assert!(!n.words_unchecked);
         // No chat to check against: filed, and the item says unchecked.
         let blind = SendFeedbackTool::new(config.clone(), None, None, None);
-        let b = blind.note("words", None, None);
+        let b = blind.note("words", None);
         assert!(b.words_unchecked);
         let ns = scratch("closest-ns");
         let sent = send(Some(&config), &[repo(&ns)], b).unwrap();
