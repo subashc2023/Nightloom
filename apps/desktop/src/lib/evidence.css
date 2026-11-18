@@ -1,0 +1,138 @@
+/* Evidence tables in replies (nightshift item 798): evidenceTables.ts mounts the table first inside the
+   block's placeholder; the block's own code (the table's path) stays for a surface that does not draw it. */
+.md-evidence.ev-drawn > pre {
+  display: none;
+}
+.md-evidence {
+  margin: 10px 0 14px;
+}
+.md-evidence-mount {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--sheet);
+  overflow: hidden;
+}
+.md-evidence-mount .ev-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12.5px;
+}
+.md-evidence-mount .ev-title {
+  font-weight: 600;
+}
+.md-evidence-mount .ev-totals {
+  color: var(--dim);
+}
+.md-evidence-mount .ev-bad,
+.md-evidence-mount .ev-fail .ev-mark {
+  color: var(--del-fg);
+}
+.md-evidence-mount .ev-files {
+  margin-left: auto;
+  display: flex;
+  gap: 10px;
+}
+.md-evidence-mount .ev-file {
+  font-size: 12px;
+}
+.md-evidence-mount .ev-scroll {
+  overflow-x: auto;
+}
+.md-evidence-mount table.ev-table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0;
+  font-size: 12.5px;
+  table-layout: auto;
+}
+.md-evidence-mount .ev-table th,
+.md-evidence-mount .ev-table td {
+  border: none;
+  border-top: 1px solid var(--line);
+  border-left: 1px solid var(--line);
+  padding: 7px 10px;
+  vertical-align: top;
+  text-align: left;
+  min-width: 150px;
+  max-width: 340px;
+}
+.md-evidence-mount .ev-table thead th {
+  border-top: none;
+  font-weight: 500;
+  color: var(--dim);
+}
+.md-evidence-mount .ev-table tr > :first-child {
+  border-left: none;
+  min-width: 120px;
+}
+.md-evidence-mount .ev-qn,
+.md-evidence-mount .ev-id {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+}
+.md-evidence-mount .ev-src {
+  font-weight: 500;
+}
+.md-evidence-mount .ev-src-err {
+  display: block;
+  margin-top: 4px;
+  font-weight: 400;
+  font-size: 11.5px;
+  color: var(--del-fg);
+}
+.md-evidence-mount .ev-empty {
+  color: var(--dim);
+}
+.md-evidence-mount .ev-cell + .ev-cell {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+}
+.md-evidence-mount .ev-cell[data-ev-text] {
+  cursor: pointer;
+  border-radius: 4px;
+}
+.md-evidence-mount .ev-cell[data-ev-text]:hover,
+.md-evidence-mount .ev-cell[data-ev-text]:focus-visible {
+  background: var(--well);
+  outline: none;
+}
+.md-evidence-mount .ev-quote {
+  margin-top: 3px;
+  font-style: italic;
+  color: var(--dim);
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.md-evidence-mount .ev-meta {
+  margin-top: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  font-size: 11.5px;
+}
+.md-evidence-mount .ev-loc {
+  color: var(--dim);
+}
+.md-evidence-mount .ev-ok .ev-mark {
+  color: var(--done);
+}
+.md-evidence-mount .ev-fail {
+  background: color-mix(in srgb, var(--del-bg) 55%, transparent);
+  border-radius: 4px;
+}
+.ev-error {
+  font-size: 12px;
+  color: var(--dim);
+}
+/* The quote a cell opened, marked in the file tab (FileView, CSS Custom Highlight API). */
+::highlight(evidence-quote) {
+  background-color: color-mix(in srgb, var(--accent) 38%, transparent);
+}

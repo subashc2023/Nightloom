@@ -30,6 +30,7 @@ pub mod council;
 pub mod credentials;
 pub mod credits;
 pub mod dream;
+pub mod evidence;
 pub mod feedback;
 pub mod flat_canary;
 pub mod grounding;

@@ -22,6 +22,8 @@
   import { firstTexError, isTexPath } from "./latexLog";
   import { viewGet, viewSet } from "./viewState";
   import HtmlPage from "./HtmlPage.svelte";
+  import { fileFind } from "./fileFind.svelte";
+  import { utf16Range } from "./evidenceBlock";
 
   let { content }: { content: Extract<TabContent, { kind: "file" }> } = $props();
 
@@ -105,6 +107,51 @@
   });
   const pdfSrc = $derived(render?.pdf ? `data:application/pdf;base64,${render.pdf}` : null);
   const texError = $derived(render && !render.pdf && render.log ? firstTexError(render.log) : null);
+
+  // Item 798: an evidence table's cell opens its source's stored text here,
+  // scrolled to the quote and marked — once per request, so a later visit
+  // to the tab keeps its own scroll.
+  let textPre = $state<HTMLElement | null>(null);
+  let foundSeq = 0;
+  $effect(() => {
+    const t = fileFind.target;
+    const pre = textPre;
+    const text = file?.text;
+    if (!t || t.path !== content.path || !pre || text == null || t.seq === foundSeq) return;
+    foundSeq = t.seq;
+    const [a, b] = utf16Range(text, t.start, t.end);
+    queueMicrotask(() => markRange(pre, a, b));
+  });
+  function markRange(pre: HTMLElement, a: number, b: number): void {
+    const walk = document.createTreeWalker(pre, NodeFilter.SHOW_TEXT);
+    const range = document.createRange();
+    let at = 0;
+    let started = false;
+    for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+      const len = n.nodeValue?.length ?? 0;
+      if (!started && a <= at + len) {
+        range.setStart(n, Math.max(0, a - at));
+        started = true;
+      }
+      if (started && b <= at + len) {
+        range.setEnd(n, Math.max(0, b - at));
+        break;
+      }
+      at += len;
+    }
+    if (!started) return;
+    const hl = (globalThis as { Highlight?: new (r: Range) => unknown }).Highlight;
+    const reg = (CSS as unknown as { highlights?: Map<string, unknown> }).highlights;
+    if (hl && reg) reg.set("evidence-quote", new hl(range));
+    else {
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+    }
+    const r = range.getBoundingClientRect();
+    const box = pre.getBoundingClientRect();
+    pre.scrollTop += r.top - box.top - pre.clientHeight / 3;
+  }
 
   async function reveal(): Promise<void> {
     try {
@@ -215,7 +262,7 @@
     {#if tex && render?.missing_tex}
       <p class="tex-note">No TeX is installed on this Mac (Nightloom looks in /Library/TeX/texbin, where MacTeX puts it), so only the source is shown.</p>
     {/if}
-    <pre class="body text mono"><code>{#each segs as sg, j (j)}<span class={sg.cls}>{sg.text}</span>{/each}</code></pre>
+    <pre class="body text mono" bind:this={textPre}><code>{#each segs as sg, j (j)}<span class={sg.cls}>{sg.text}</span>{/each}</code></pre>
   {:else}
     <div class="note-card">
       <p>Nightloom does not draw this kind of file. Its own application can open it.</p>

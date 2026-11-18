@@ -30,6 +30,7 @@ import { installMathCopy, installMathSelection } from "./lib/mathCopy";
 import { installFieldUndo } from "./lib/fieldUndo";
 import { installSelectScope } from "./lib/selectScope";
 import { installDiagrams } from "./lib/diagrams";
+import { installEvidence } from "./lib/evidenceTables";
 import { copyText } from "./lib/clipRing.svelte";
 
 // Item 352: copying a rendered formula gives its TeX.
@@ -42,6 +43,8 @@ installFieldUndo();
 
 // Item 821: a ```mermaid or ```svg block draws as its diagram, wherever markdown is shown.
 installDiagrams({ copy: (t) => void copyText(t) });
+// Item 798: evidence tables in replies, notes and file tabs.
+installEvidence();
 
 // Item 646: ⌘A outside a text box selects the pane he is in, never the whole app.
 installSelectScope();
