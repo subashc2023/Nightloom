@@ -19,7 +19,7 @@
  * The transcript → composer channel follows `replyQuote.svelte.ts`'s
  * `replyRequest` (the pill's Reply): shared `$state`, the composer reads.
  */
-import type { AsideQuote } from "./asideQuote";
+import { quoteSummary, type AsideQuote } from "./asideQuote";
 import type { AsideAnchor } from "./asideCard";
 
 export interface HeldPassage {
@@ -60,8 +60,8 @@ export function takeHeld(key: string): HeldPassage | null {
 /** The chip's words: the passage's first ~60 characters on one line. */
 export const HELD_CHARS = 60;
 export function heldLabel(q: AsideQuote, max = HELD_CHARS): string {
-  const one = q.text.replace(/\s+/g, " ").trim();
-  return one.length > max ? `${one.slice(0, max).trimEnd()}…` : one;
+  // Item 814: a table as "Table · z, .00, .05 · 8 rows", no raw `$…$` (`quoteSummary`).
+  return quoteSummary(q.text, max);
 }
 
 /** What `askAside` takes from the box (its quote and the anchor ridden in
@@ -82,4 +82,20 @@ export function boxAsideArgs(key: string): { quote: AsideQuote | null; anchor: A
 export function focusIsMainBox(active: Element | null): boolean {
   if (!active) return false;
   return active.closest('[data-drop-box="main"] .ta-wrap') !== null;
+}
+
+/**
+ * Item 814 (his report, 2026-11-17: "i didnt open an aside from it i copied the text and put it into
+ * my textbox. and suddenly there's this aside thing"): the held passage's chip shows only once he
+ * has written in the box — the question 694's Ask aside is for. A click into the box to paste what
+ * he copied (the selection gives way to the box, so it is held) shows nothing. Blocker 2108.
+ */
+export function heldChip(h: HeldPassage | null, boxText: string): HeldPassage | null {
+  return h && boxText.trim() !== "" ? h : null;
+}
+
+/** Item 814: a paste into the box drops its held passage — he brought the words in himself; a
+ *  paste inserts what was copied and never adds a chip. */
+export function dropHeldOnPaste(key: string): void {
+  dropHeld(key);
 }

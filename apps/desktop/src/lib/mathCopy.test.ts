@@ -45,8 +45,11 @@ describe("mathCopyText", () => {
     expect(mathCopyText(html)).toBe("line one\nline two\n\nline four a b\n\nso $2^4$");
   });
 
-  it("a table cell after a formula's cell: a tab, no stray space (review 2026-10-12)", () => {
+  // ~~"a table cell after a formula's cell: a tab, no stray space" — `a\tb\n$x_1$\t2`~~ (review
+  // 2026-10-12). Superseded 2026-11-17 by item 814: a table with a formula in it copies as a
+  // Markdown table, as every other table has since item 684 — the tab-parted lines were his bug.
+  it("a table with a formula's cell: a Markdown table, no stray space (item 814)", () => {
     const html = `<table><tr><th>a</th><th>b</th></tr><tr><td>${inl("x_1")}</td><td>2</td></tr></table>`;
-    expect(mathCopyText(html)).toBe("a\tb\n$x_1$\t2");
+    expect(mathCopyText(html)).toBe("| a | b |\n|---|---|\n| $x_1$ | 2 |");
   });
 });

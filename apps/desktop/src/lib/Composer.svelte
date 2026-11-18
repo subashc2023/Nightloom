@@ -222,7 +222,7 @@
   import { composerConnectHint, launch as launchState } from "./launch.svelte";
   import { insertQuote, replyRequest, takeReply } from "./replyQuote.svelte";
   // Item 694: the passage highlighted before he came to the box.
-  import { boxAsideArgs, dropHeld, heldFor, heldLabel } from "./heldPassage.svelte";
+  import { boxAsideArgs, dropHeld, dropHeldOnPaste, heldChip, heldFor, heldLabel } from "./heldPassage.svelte";
   import { quoteLabel } from "./asideQuote";
   import { composerFocus } from "./rewindDraft.svelte";
   import { CaretKeeper, clampSel, mayAutoFocus } from "./composerCaret";
@@ -326,6 +326,8 @@
   });
   const draft = $derived(readDraft(key));
   const text = $derived(draft.text);
+  // Item 814: the chip only once he has written here, and a paste drops the passage (`onpaste`).
+  const heldShown = $derived(heldChip(held, text));
   /*
    * Item 754: comments on passages — chips over the chat's box, each a
    * passage he highlighted and his words about it (`passageComments.ts`).
@@ -1593,6 +1595,8 @@
   }
 
   function onpaste(e: ClipboardEvent) {
+    // Item 814: a paste never brings the passage chip with it.
+    if (held) dropHeldOnPaste(key);
     const pastedText = e.clipboardData?.getData("text/plain") ?? "";
     const files = Array.from(e.clipboardData?.files ?? []);
     // Item 348: math copied from a web page (KaTeX, MathJax) comes as its
@@ -3764,16 +3768,16 @@
       onclose={() => (dropAsk = null)}
     />
   {/if}
-  {#if held}
+  {#if heldShown}
     <!-- Item 694: the passage his Ask aside is about; × drops it. -->
     <div class="held-wrap" class:plain={classic()} data-held-passage>
       <span
         class="held-chip"
-        use:tip={`Ask aside asks about this passage from ${quoteLabel(held.quote, "card")}, as the selection's Ask aside does. Send does not take it; × or Esc in an empty box drops it.`}
+        use:tip={`Ask aside asks about this passage from ${quoteLabel(heldShown.quote, "card")}, as the selection's Ask aside does. Send does not take it; × or Esc in an empty box drops it.`}
       >
         {#if !classic()}<FilamentMark kind="aside" />{/if}
         <span class="held-k">About:</span>
-        <span class="held-q">“{heldLabel(held.quote)}”</span>
+        <span class="held-q">“{heldLabel(heldShown.quote)}”</span>
         <button
           type="button"
           class="held-x"

@@ -15,6 +15,7 @@
   import * as tabs from "./tabs";
   import Icon from "./Icon.svelte";
   import AsideNameEdit from "./AsideNameEdit.svelte";
+  import { quoteSummary } from "./asideQuote";
   import { tip } from "./tip";
   import { asideLabel } from "./asides";
   import { renameAside } from "./asides.svelte";
@@ -82,7 +83,7 @@
         onclick={() => void openAsideTab(session, a.id)}
         ondblclick={() => (naming = a.id)}
         oncontextmenu={(e) => openMenu(e, a, false)}
-        use:tip={a.quote ? `About: ${a.quote.text.slice(0, 160)}` : "An aside asked from the composer"}
+        use:tip={a.quote ? `About: ${quoteSummary(a.quote.text, 160)}` : "An aside asked from the composer"}
       >
         <span class="snippet"
           ><span class="glyph" aria-hidden="true"><Icon name="think" size={11} /></span>{asideLabel(a)}</span
