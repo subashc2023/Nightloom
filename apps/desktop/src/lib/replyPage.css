@@ -1,0 +1,51 @@
+/* Item 770: a page inside a reply, before its card is mounted and while its block is still being written
+   (replyPage.ts). The card itself is ReplyPage.svelte. The Mac and the phone both load this file. */
+.md-page {
+  display: block;
+}
+/* Not mounted (a live reply on the phone; a surface with no pages): say what it is rather than nothing. */
+.md-page:empty::before {
+  content: "Page — shows when the reply is finished";
+  display: block;
+  margin: 0.8em 0;
+  padding: 6px 10px;
+  border: 1px solid var(--line, var(--border));
+  border-radius: 8px;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+.md-page-writing {
+  position: relative;
+  margin: 0.8em 0;
+  border: 1px solid var(--line, var(--border));
+  border-radius: 8px;
+  background: var(--term, var(--well));
+  overflow: hidden;
+}
+.md-page-writing-head {
+  padding: 5px 10px;
+  font-size: 11.5px;
+  color: var(--dim);
+  background: var(--sheet, var(--bg));
+  border-bottom: 1px solid var(--line, var(--border));
+}
+/* The first lines, at one capped height, while the page is written (pinning the last lines in view did not hold
+   in WebKit — 770 report, left). */
+.md-page-writing > pre,
+.markdown .md-page-writing > pre,
+.md-page-writing .code-box,
+.md-page-writing .code-body > pre {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+.md-page-writing > pre,
+.markdown .md-page-writing > pre {
+  max-height: 7.5em;
+  overflow: hidden;
+  padding: 8px 10px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  opacity: 0.75;
+}

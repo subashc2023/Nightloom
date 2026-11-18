@@ -13,6 +13,8 @@
   // Item 820: pictures and video the reply names, drawn under its text.
   import ReplyMedia from "./ReplyMedia.svelte";
   import { mediaCandidates } from "./replyMedia";
+  // Item 770: a page a reply wrote, drawn where its block stands.
+  import { replyPages } from "./replyPages";
   import "./replyMediaMac";
   import { liveHtml } from "./liveHtml";
   import { codeCopy, type RunBlocks } from "./codeCopy";
@@ -992,7 +994,7 @@
       {:else}
         <!-- Item 452: patched in place (liveHtml), not replaced whole per
              streamed delta, so a selection in its written part survives. -->
-        <div class="markdown" use:liveHtml={streaming ? renderStreamingParts(g.seg.text) : renderReply(g.seg.text)} use:memoryRefs={{ hits: memHits, text: g.seg.text }} use:codeCopy={runBlocks(g.seg.text)} use:handoffGo={nextChat}></div>
+        <div class="markdown" use:replyPages={{ copy: (t) => void copyText(t) }} use:liveHtml={streaming ? renderStreamingParts(g.seg.text) : renderReply(g.seg.text)} use:memoryRefs={{ hits: memHits, text: g.seg.text }} use:codeCopy={runBlocks(g.seg.text)} use:handoffGo={nextChat}></div>
         {#if !streaming}
           <!-- Item 820: a picture or a video this text names, right under it. -->
           <ReplyMedia items={mediaCandidates(g.seg.text, roots)} chat={app.activeSessionId} label={(c) => displayPath(c.path, roots)} onopen={(p, e) => void openFile(p, e)} />

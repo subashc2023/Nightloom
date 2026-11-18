@@ -9,3 +9,13 @@ declare namespace svelteHTML {
     autocorrect?: "on" | "off";
   }
 }
+
+// Item 770: a kit library's source as one string, made at build time by `kit-plugin.js`.
+declare module "virtual:nightloom-kit/versions" {
+  const versions: Record<"vega-lite" | "vega" | "vega-embed" | "mermaid" | "katex" | "three", string>;
+  export default versions;
+}
+declare module "virtual:nightloom-kit/*" {
+  const source: string;
+  export default source;
+}

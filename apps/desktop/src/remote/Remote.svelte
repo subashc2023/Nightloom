@@ -103,6 +103,8 @@
   const fileBadgeOf = (name: string) => extOf(name).slice(0, 5).toUpperCase() || "FILE";
   import { sentExt, type SentFile } from "../lib/sentFiles";
   import { codeBlocks } from "./codeBlocks";
+  // Item 770: a page a reply wrote, drawn where its block stands (a settled reply; a live one says it is coming).
+  import { replyPages } from "../lib/replyPages";
   import { trackViewport } from "./viewport";
   import { subagentCalls } from "../lib/subagent";
   import { arrive, launch, reducedMotion } from "../lib/sendMotion";
@@ -3314,7 +3316,7 @@
               {:else if s.part.removed}
                 <div class="part-gone" use:press={() => openMenu(r, s.part)}>[text removed]</div>
               {:else if s.part.text}
-                <div class="md" use:press={() => openMenu(r, s.part)} use:codeBlocks={copy}>{@html renderMarkdown(s.part.text, { breaks: true, localImagesAsText: true })}</div>
+                <div class="md" use:press={() => openMenu(r, s.part)} use:codeBlocks={copy} use:replyPages={{ copy }}>{@html renderMarkdown(s.part.text, { breaks: true, localImagesAsText: true })}</div>
                 {#if canMedia}<ReplyMedia items={mediaCandidates(s.part.text, [])} chat={chatId} />{/if}
               {/if}
             {/each}
