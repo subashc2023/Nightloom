@@ -760,11 +760,16 @@
     // sizing to its text.
     const min = floating ? 0 : Math.min(max, sentSinceDrag.floor(key, floorPx) ?? 0);
     ta.style.maxHeight = max + "px";
+    // Item 827: the formatted box's scroller measured with no bar (`settleScroller`).
+    const scroller = ta instanceof LiveBoxHandle ? ta.scroller : null;
+    const scrolled = scroller?.scrollTop ?? 0;
+    if (scroller) scroller.style.overflowY = "hidden";
     // Item 469: the measure holds the composer's height (`measureHeld`),
     // so a key typed in a full box no longer scrolls the chat up.
     measureHeld(ta, root, (need) => growHeight(need, min, max) + "px");
     // Backlog 360: a pixel of rounding is not overflow (as the aside boxes).
     ta.style.overflowY = overflows(ta.scrollHeight, ta.clientHeight) ? "auto" : "hidden";
+    settleScroller(scroller, scrolled);
     // Backlog 355: a switched-to draft's place, once its height is right.
     putScrollBack();
     // Item 469: a caret at the very end of a full box is at its foot. WebKit
@@ -777,6 +782,23 @@
       caretAtEnd(ta.selectionStart, ta.selectionEnd, ta.value.length)
     )
       ta.scrollTop = ta.scrollHeight;
+  }
+
+  /*
+   * Item 827 (his bug): the formatted box scrolls inside CodeMirror's
+   * scroller, which backlog 360's rule in `autogrow` never reached. The
+   * scroller kept `overflow-y: auto`, so at his 99% zoom a box sized to its
+   * text (heights in whole pixels, its lines in fractions) overflowed by
+   * under a pixel and showed the 10px bar; the text rewrapped round the bar,
+   * a word at the edge dropped to a line scrolled out of view with the
+   * caret, and the next measure took the bar away again — every few keys.
+   * `autogrow` measures the scroller with no bar; here it gets one only for
+   * a real overflow, and its place in the text is kept across the measure.
+   */
+  function settleScroller(scroller: HTMLElement | null, scrolled: number): void {
+    if (!scroller) return;
+    scroller.style.overflowY = overflows(scroller.scrollHeight, scroller.clientHeight) ? "auto" : "hidden";
+    if (scroller.scrollTop !== scrolled) scroller.scrollTop = scrolled;
   }
 
   // A resized window moves the 40% line.

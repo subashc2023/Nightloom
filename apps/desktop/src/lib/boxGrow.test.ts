@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { caretAtEnd, growHeight, linesHeight, measureHeld, overflows, roomForBox } from "./boxGrow";
+import { caretAtEnd, fitHeight, growHeight, linesHeight, measureHeld, overflows, roomForBox } from "./boxGrow";
 
 /**
  * The aside box's grow rule (backlog 226, his "three or four lines max
@@ -138,5 +138,26 @@ describe("caretAtEnd (item 469)", () => {
     expect(caretAtEnd(10, 10, 10)).toBe(true);
     expect(caretAtEnd(9, 9, 10)).toBe(false);
     expect(caretAtEnd(4, 10, 10)).toBe(false);
+  });
+});
+
+/**
+ * Item 827's side finding: a textarea sized to `scrollHeight` alone under
+ * `box-sizing: border-box` is short by its borders and shows a scroll bar
+ * on every key. The height counts the borders, and is capped.
+ */
+describe("fitHeight", () => {
+  it("adds the top and bottom borders, so the text fits with no overflow", () => {
+    const h = fitHeight(96, 2);
+    expect(h).toBe(98);
+    expect(overflows(96 + 2, h)).toBe(false);
+  });
+  it("is the scroll height alone under content-box (no frame)", () => {
+    expect(fitHeight(96, 0)).toBe(96);
+  });
+  it("stops at the cap, where real overflow shows a bar", () => {
+    const h = fitHeight(600, 2, 420);
+    expect(h).toBe(420);
+    expect(overflows(602, h)).toBe(true);
   });
 });

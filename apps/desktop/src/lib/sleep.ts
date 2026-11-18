@@ -21,6 +21,8 @@
  */
 import * as api from "./api";
 import { installWebviewFit } from "./webviewFit";
+import { installCursorKeep } from "./cursorKeep";
+import { isMac } from "./platform";
 
 export interface SleepPrefs {
   /** Hold a power assertion while a turn, dream, capture or aside runs. */
@@ -90,6 +92,8 @@ export async function pushPowerPrefs(p?: SleepPrefs): Promise<void> {
   // The start-up call (no argument) also puts in the page's half of the
   // wake refit (backlog 324): the page drawn in a corner after a wake.
   if (!p) installWebviewFit();
+  // And the cursor the page asks for kept on screen (item 828).
+  if (!p && isMac) installCursorKeep();
   const prefs = p ?? loadSleepPrefs();
   try {
     await api.setPowerPrefs({

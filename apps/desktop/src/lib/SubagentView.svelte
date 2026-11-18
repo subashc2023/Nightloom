@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fitToText } from "./boxGrow";
   import { isImeKey } from "./imeKey";
   import { tip } from "./tip";
   /**
@@ -125,8 +126,7 @@
   // scrolls; re-measured when the draft changes from outside (a Take back).
   function grow(node: HTMLTextAreaElement, _value: string) {
     const fit = () => {
-      node.style.height = "auto";
-      node.style.height = `${Math.min(node.scrollHeight, 200)}px`;
+      fitToText(node, 200);
     };
     fit();
     return { update: fit };

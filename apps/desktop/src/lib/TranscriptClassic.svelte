@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fitToText } from "./boxGrow";
   // Item 703: where a turn's end cut running agents.
   import SessionCutNotice from "./SessionCutNotice.svelte";
   import ChatDividers from "./ChatDividers.svelte";
@@ -830,8 +831,7 @@
     const els = el ? [el] : [editorEl, ...editorEls];
     for (const e of els) {
       if (!e) continue;
-      e.style.height = "auto";
-      e.style.height = `${Math.min(e.scrollHeight, 420)}px`;
+      fitToText(e, 420);
     }
   }
   /**
