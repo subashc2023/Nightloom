@@ -8,7 +8,7 @@
 import type { HomeRoute, RoutePick, RoutesReply } from "../lib/homeRoutes";
 import type { HomeSource, SourceId } from "../lib/homeSources";
 import type { Job, JobPatch, JobsReply, NewJob } from "./jobs";
-import type { ApprovalRequest, DocumentInput, ImageInput, SessionEvent, TurnEvent } from "../lib/types";
+import type { ApprovalRequest, DocumentInput, ImageInput, PlanPace, SessionEvent, TurnEvent } from "../lib/types";
 import type { RuleEdit, RulesListing } from "./rules";
 import type { SubagentLimits } from "../lib/catalog";
 import type { WireView } from "../lib/types";
@@ -223,6 +223,9 @@ export interface PlanUsage {
 export interface Usage {
   plan: PlanUsage;
   ledger?: unknown;
+  /** Item 824: the plan's pace (`pace::read`), for the dials' projected
+   *  mark; absent from an older host or one with no reading history. */
+  pace?: PlanPace | null;
 }
 
 /** A council turn's request (the desktop's `CouncilRequest`, council.ts). */

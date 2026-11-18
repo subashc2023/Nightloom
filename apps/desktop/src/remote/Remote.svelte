@@ -125,6 +125,9 @@
   import JobChatCard from "./JobChatCard.svelte";
   import { parseRepeat } from "./jobs";
   import UsageLine from "./UsageLine.svelte";
+  // Item 824: the Context and Plan card (design B, Dials) as a bottom sheet.
+  import PlanDials from "../lib/PlanDials.svelte";
+  import { dialWindow, staleTag, stopLine, type DialFigures } from "../lib/planDials";
   import MicButton from "./voice/MicButton.svelte";
   // Item 334: the speech test panel, behind a link in the Hosts sheet.
   import SpeechTest from "./voice/SpeechTest.svelte";
@@ -362,6 +365,7 @@
     | "changes"
     | "rules"
     | "feedback"
+    | "dials"
   >(null);
   /** Item 743: the rule form he left open in the rules sheet, by chat
    *  (`""` with no chat open) — kept while the page lives, so a dismissed
@@ -2345,6 +2349,34 @@
   }
 
   // ---- wave 1C: the rail, running tasks, usage ---------------------------------
+  /** Item 824: the Mac's Context and Plan card as a sheet, from the
+   *  header's dial or the context row: context, 5 h, week, his stop line
+   *  (the rail's limits), Itemise opening the Context sheet. The reading
+   *  and the rail are refreshed as it opens; what is missing is left out. */
+  function openDials() {
+    sheet = "dials";
+    void refreshUsage();
+    if (!rail && client && hasFeature(remote, "rail")) {
+      void client
+        .rail()
+        .then((r) => (rail = r))
+        .catch(() => {
+          // No tick until the rail is read.
+        });
+    }
+  }
+  const dialFigures = $derived.by((): DialFigures => {
+    const p = usage?.plan && usage.plan.source !== "none" ? usage.plan : null;
+    return {
+      head: "Context & plan",
+      stale: p ? staleTag(p, now) : null,
+      ctx: ctxLine.used !== null ? { used: ctxLine.used, limit: ctxLimit, estimated: false, agents: 0 } : null,
+      five: p ? dialWindow(p.five_hour, p.five_hour_resets_at, usage?.pace?.five_hour, now) : null,
+      week: p ? dialWindow(p.seven_day, p.seven_day_resets_at, usage?.pace?.seven_day, now) : null,
+      stop: stopLine(rail?.limits),
+      spend: null,
+    };
+  });
   async function openRail() {
     sheet = "rail";
     if (!client) return;
@@ -3147,7 +3179,7 @@
       <Hosts mode="chip" {hosts} {active} {link} onopen={() => (sheet = "hosts")} />
       {#if fil && chatId && ctxLimit && ctxLine.used !== null}
         <!-- Item 572: the context dial, once the window is known. -->
-        <button class="hdr-dial" onclick={() => (contextOn = true)} aria-label="Context: {kTokens(ctxLine.used)} of {kTokens(ctxLimit)}">
+        <button class="hdr-dial" onclick={openDials} aria-label="Context: {kTokens(ctxLine.used)} of {kTokens(ctxLimit)}">
           <ContextDial size={30} stroke={3} pad={5} minor={40} major={8} share={ctxLine.used / ctxLimit} mark={Math.min(1, 300_000 / ctxLimit)} value={String(Math.round((ctxLine.used / ctxLimit) * 100))} label="Context used" />
         </button>
       {/if}
@@ -3171,9 +3203,9 @@
         class="ctx-row"
         onclick={(e) => {
           if ((e.target as Element | null)?.closest?.(".ctx-cache")) showChipTip();
-          else if (hasFeature(remote, "context")) contextOn = true;
+          else openDials();
         }}
-        aria-label="Context"
+        aria-label="Context and plan"
       >
         {#if ctxLine.used !== null}
           <span class="ctx-k">Context</span>
@@ -3958,6 +3990,20 @@
             oncopy={copy}
             onwhole={() => menuOn && (menuOn = { row: menuOn.row, part: null, tool: null })}
             onclose={() => ((sheet = null), (menuOn = null))}
+          />
+        {:else if sheet === "dials"}
+          <PlanDials
+            figures={dialFigures}
+            variant="sheet"
+            itemise={chatId && hasFeature(remote, "context")
+              ? {
+                  label: "Itemise",
+                  onclick: () => {
+                    closeSheet();
+                    contextOn = true;
+                  },
+                }
+              : null}
           />
         {:else if sheet === "rail"}
           <RailSheet {rail} problem={railProblem} busy={remote.busy} onpatch={patchRail} {look} onlook={setLook} />

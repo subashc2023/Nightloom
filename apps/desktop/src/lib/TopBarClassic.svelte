@@ -1,6 +1,8 @@
 <script lang="ts">
-  import { resetText as resetTextAt } from "./resetTime";
-  import { paceCardLine, paceWarn, WARN_PCT } from "./pace";
+  import { paceWarn, WARN_PCT } from "./pace";
+  // Item 824: the Context and Plan card is design B, Dials (Classic's style).
+  import PlanDials from "./PlanDials.svelte";
+  import { dialWindow, staleTag, stopLine, type DialFigures } from "./planDials";
   import {
     addToast,
     app,
@@ -263,33 +265,24 @@
     if (a < 3600) return `${Math.round(a / 60)}m`;
     return `${Math.round(a / 3600)}h`;
   });
-  const planAgeText = $derived(
-    planAgeSeconds == null
-      ? "age unknown"
-      : planAgeSeconds < 90
-        ? "sampled just now"
-        : `sampled ${Math.round(planAgeSeconds / 60)} min ago`,
-  );
-  const planWhere = $derived(
-    !plan
-      ? ""
-      : plan.source === "turn"
-        ? "this chat's last turn (the CLI's rate-limit event)"
-        : plan.source === "desktop"
-          ? "the Claude app's sample"
-          : plan.source === "cli-usage"
-            ? "the CLI's /usage, run live (zero tokens)"
-            : "the CLI's /usage cache",
-  );
-  /** A reset time for the gauge card (board d): `9:40 PM` today, `Thu
-   *  9:00 AM` on another day — 12-hour (blocker 1812), from `resetTime.ts`. */
-  function resetText(iso: string | null): string {
-    return resetTextAt(iso, now);
-  }
+  // ~~`planAgeText`, `planWhere`, `resetText` (the card's rows and source
+  // foot)~~ — item 824: the dials; the stale tag in the head carries the age.
   /** Item 769: the pace lines (tighter window first) and the 80% warning
    *  — his stop line — from the reading itself, either window. */
   const warn = $derived(plan ? paceWarn(plan) : null);
   const weekHot = $derived(plan?.seven_day != null && plan.seven_day >= WARN_PCT);
+
+  /** Item 824: the card's figures, as the Jarvis bar's (`TopBar`). */
+  const dialFigures = $derived.by((): DialFigures => ({
+    head: "Context & plan",
+    stale: staleTag(plan, now),
+    ctx: gauge ? { used: gauge.used, limit: gauge.limit, estimated: false, agents: agents.rows.length > 0 ? agents.tokens : 0 } : null,
+    five: plan ? dialWindow(plan.five_hour, plan.five_hour_resets_at, app.planPace?.five_hour, now) : null,
+    week: plan ? dialWindow(plan.seven_day, plan.seven_day_resets_at, app.planPace?.seven_day, now) : null,
+    stop: stopLine(app.draft.agentLimits),
+    spend: spend ? { text: spend.text, complete: spend.complete } : null,
+  }));
+  const spendTip = $derived(!spend ? "" : spend.complete ? "This chat so far" : "At least: a model has no price");
 
   function tokens(n: number): string {
     if (n >= 1_000_000) return `${parseFloat((n / 1_000_000).toFixed(2))}M`;
@@ -713,85 +706,13 @@
       class="gauge-card"
       role="dialog"
       aria-label="Context and plan"
+      data-card="dials"
       bind:this={gaugePopEl}
       use:portal
       style="top: {gaugePos.top}px; left: {gaugePos.left}px; width: {GAUGE_WIDTH}px"
     >
-      <div class="gc-head">Context and plan</div>
-      <div class="gc-row">
-        <span class="gc-label">Context</span>
-        <span class="gc-val">
-          {#if gauge}
-            {#if gauge.ratio != null}
-              <span class="gc-bar {level}"><span class="fill" style:width="{gauge.ratio * 100}%"></span></span>
-            {/if}
-            <span class="gc-fig"
-              >{gauge.used.toLocaleString()}{" "}{#if gauge.limit}of {gauge.limit.toLocaleString()} · {Math.round(
-                  (gauge.ratio ?? 0) * 100,
-                )}%{:else}tokens — window size unknown{/if}</span
-            >
-            {#if agents.rows.length > 0}
-              <span class="gc-note"
-                >+ subagents: {agents.tokens.toLocaleString()} tokens ({agents.rows.length}, not in the window)</span
-              >
-            {/if}
-          {:else}
-            <span class="gc-fig sans">nothing sent yet</span>
-          {/if}
-        </span>
-      </div>
-      {#if plan}
-        <div class="gc-row">
-          <span class="gc-label">Plan, 5 h</span>
-          <span class="gc-val">
-            <span class="gc-bar"><span class="fill plan-fill" style:width="{Math.min(plan.five_hour ?? 0, 100)}%"></span></span>
-            <span class="gc-fig">{plan.five_hour}% · {resetText(plan.five_hour_resets_at)}</span>
-            {#if paceCardLine(app.planPace?.five_hour, now)}
-              <span class="gc-note pace-note" data-pace="five_hour">{paceCardLine(app.planPace?.five_hour, now)}</span>
-            {/if}
-          </span>
-        </div>
-        {#if plan.seven_day != null}
-          <div class="gc-row">
-            <span class="gc-label">Plan, week</span>
-            <span class="gc-val">
-              <span class="gc-bar"><span class="fill plan-fill" style:width="{Math.min(plan.seven_day, 100)}%"></span></span>
-              <span class="gc-fig">{plan.seven_day}% · {resetText(plan.seven_day_resets_at)}</span>
-              {#if paceCardLine(app.planPace?.seven_day, now)}
-                <span class="gc-note pace-note" data-pace="seven_day">{paceCardLine(app.planPace?.seven_day, now)}</span>
-              {/if}
-            </span>
-          </div>
-        {/if}
-      {/if}
-      {#if spend}
-        <div class="gc-row">
-          <span class="gc-label">Spent</span>
-          <span class="gc-val">
-            <span
-              class="gc-fig"
-              class:partial={!spend.complete}
-              use:tip={spend.agent
-                ? spend.complete
-                  ? "This chat's cost so far at API prices (Claude Code's estimate, subagents and rewinds in)"
-                  : "At least this much · one of this chat's models has no price"
-                : spend.complete
-                  ? "Session cost so far, each exchange at its price then"
-                  : "At least this much · some exchanges ran on a model with no verified price"}
-              >{spend.complete ? "" : "at least "}{spend.text}</span
-            >
-          </span>
-        </div>
-      {/if}
-      {#if plan}
-        <p class="gc-foot" class:stale={plan.stale}>
-          Plan {planAgeText.replace(/^sampled /, "read ")} from {planWhere}; account-wide, every surface.{#if plan.stale}
-            Stale: past 20 minutes, may be behind.{/if} Refreshed at each turn end.
-        </p>
-      {/if}
-      <div class="gc-actions">
-        <button class="ns-btn ghost small" onclick={itemise}>Itemise the context <span class="gc-key">⌘⇧C</span></button>
-      </div>
+      <!-- Item 824: design B, Dials, in Classic's flat style. -->
+      <PlanDials figures={dialFigures} {spendTip} itemise={{ label: "Itemise", key: "⌘⇧C", onclick: itemise }} />
     </div>
   {/if}
   <!-- The Context page is no longer a popover here: it opens as a centre
@@ -1026,8 +947,7 @@
     background: var(--line2);
     overflow: hidden;
   }
-  .gbar .fill,
-  .gc-bar .fill {
+  .gbar .fill {
     display: block;
   }
   .gauge .plan-age {
@@ -1068,74 +988,6 @@
     box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
     font-size: 12.5px;
     color: var(--ink2);
-  }
-  .gc-head {
-    font-size: 10.5px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--dim);
-  }
-  .gc-row {
-    display: grid;
-    grid-template-columns: 72px minmax(0, 1fr);
-    gap: 8px;
-    align-items: start;
-  }
-  .gc-label {
-    color: var(--ink);
-  }
-  .gc-val {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    min-width: 0;
-  }
-  .gc-bar {
-    display: block;
-    height: 4px;
-    margin-top: 6px;
-    border-radius: 2px;
-    background: var(--line2);
-    overflow: hidden;
-  }
-  .gc-bar.warm .fill {
-    background: var(--partial);
-  }
-  .gc-bar.hot .fill {
-    background: var(--failed);
-  }
-  .gc-fig {
-    font-family: var(--mono);
-    font-size: 11.5px;
-    font-variant-numeric: tabular-nums;
-  }
-  .gc-fig.sans {
-    font-family: var(--sans);
-    color: var(--dim);
-  }
-  .gc-fig.partial {
-    font-style: italic;
-  }
-  .gc-note {
-    color: var(--dim);
-    font-size: 11.5px;
-  }
-  .gc-foot {
-    margin: 0;
-    color: var(--dim);
-    font-size: 11.5px;
-    line-height: 1.4;
-  }
-  .gc-foot.stale {
-    color: var(--partial);
-  }
-  .gc-actions {
-    display: flex;
-    justify-content: flex-end;
-  }
-  .gc-key {
-    color: var(--dim);
-    margin-left: 4px;
   }
   /* The cache chip's and the toggles' rules went with them to
      `Composer.svelte` (backlog 112). */

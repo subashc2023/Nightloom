@@ -520,6 +520,11 @@ pub struct UsageReply {
     pub plan: PlanUsage,
     #[serde(default)]
     pub ledger: serde_json::Value,
+    /// Item 824: the plan's pace (`pace::read`, the Mac's `plan_pace`),
+    /// for the phone's dials (the projected percent at the reset). Null
+    /// with no plan reading (the away server); absent from an older host.
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub pace: serde_json::Value,
 }
 
 /// `GET /api/search?q=&scope=`: this chat's project, every project, or
