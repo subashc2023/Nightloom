@@ -227,6 +227,8 @@
   } from "./messageMotion";
   import { REMOVED_PLACEHOLDER } from "./edit";
   import { setTypedMathOn, typedMathPrefs } from "./typedMathPrefs.svelte";
+  import { replyPagePrefs, setPagesCollapsed } from "./replyPagePrefs.svelte";
+  import { KIT_NAMES } from "./pageKit";
   // Item 768: wrap up while the cache is warm; the cold-return chip.
   import { MODES as WARM_MODES, modeLabel as warmModeLabel, isMode as isWarmMode } from "./warmWrap";
   import { setWarmMinTokens, setWarmMode, warmWrap } from "./warmWrap.svelte";
@@ -2016,6 +2018,29 @@
             onchange={(e) => setTypedMathOn(e.currentTarget.checked)}
           />
           <span>Offer typed maths as formulas</span>
+        </label>
+      </section>
+
+      <!-- Item 770: a page a reply writes (a chart, a diagram, a table to
+           click through) is drawn inside the reply; this turns every page
+           down to a one-line card with Show. A page he opened or folded
+           himself keeps that. -->
+      <section class="card">
+        <div class="ch"><span class="t">Pages in replies</span></div>
+        <p class="note small">
+          A reply can hold a small interactive page — a chart, a diagram, a
+          table with controls — drawn where the reply wrote it. A page runs
+          in a sandbox with no network and nothing of the app; its libraries
+          ({KIT_NAMES.join(", ")}) come from inside Nightloom. Each page has
+          Hide, Source and Copy on its card.
+        </p>
+        <label class="dream-auto">
+          <input
+            type="checkbox"
+            checked={replyPagePrefs.collapsed}
+            onchange={(e) => setPagesCollapsed(e.currentTarget.checked)}
+          />
+          <span>Show pages as a one-line card until I click Show</span>
         </label>
       </section>
 

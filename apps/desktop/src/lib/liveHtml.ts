@@ -30,6 +30,8 @@ function extra(n: Node): boolean {
   // Item 756: the card's – button and the one line it minimizes to.
   if (n.tagName === "DIV" && n.classList.contains("handoff-mini")) return true;
   if (n.tagName === "BUTTON" && n.classList.contains("handoff-min")) return true;
+  // Item 770: the card mounted inside a reply page's placeholder (replyPages.ts).
+  if (n.tagName === "DIV" && n.classList.contains("md-page-mount")) return true;
   return n.tagName === "BUTTON" && (n.classList.contains("code-copy") || n.classList.contains("code-run"));
 }
 

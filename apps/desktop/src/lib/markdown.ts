@@ -12,6 +12,7 @@ import "katex/dist/katex.min.css";
 // Item 837: a formula keeps its case and spacing under any parent (desktop and phone both load this file).
 import "./mathBase.css";
 import { isLocalTarget } from "./replyMedia";
+import { replyPage } from "./replyPage";
 
 marked.use(math);
 marked.use(tilde);
@@ -68,6 +69,8 @@ const phoneMarked = new Marked();
 phoneMarked.use(math);
 phoneMarked.use(tilde);
 phoneMarked.use(localImageAsText);
+// Item 770: a ```html page block is a page, drawn where it stands (replyPages.ts mounts it).
+phoneMarked.use(replyPage);
 
 /** Render assistant markdown to sanitized HTML. `breaks` keeps a single
  *  newline as a line break (the phone's replies, nightshift 300 A32: a
@@ -108,6 +111,8 @@ replyMarked.use({
     },
   },
 });
+// Item 770: a ```html page block is a page, drawn where it stands (replyPages.ts mounts it).
+replyMarked.use(replyPage);
 
 export function renderReply(src: string): string {
   // Item 454: a tab switch remounts the whole transcript, and every reply
