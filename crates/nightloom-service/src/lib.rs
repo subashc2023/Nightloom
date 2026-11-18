@@ -64,6 +64,7 @@ pub mod push;
 pub mod rail_store;
 pub mod remote;
 pub mod runaway;
+pub mod saved_prompts;
 pub mod secret;
 pub mod serve;
 pub mod serve_reads;

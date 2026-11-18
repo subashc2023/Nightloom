@@ -11,6 +11,7 @@
    */
   import { onMount } from "svelte";
   import { takeBlockKey } from "../lib/codeBlockKeys";
+  import { promptBox } from "./promptBox"; // Item 800: saved prompts after a `/`.
   import { renderMarkdown } from "../lib/markdown";
   import MathText from "../lib/MathText.svelte";
   // Item 820: pictures an aside's answer names, as under a chat's reply.
@@ -115,6 +116,7 @@
   <textarea
     class="as-box"
     data-kept
+    use:promptBox
     rows="3"
     placeholder={asking ? "Wait for this answer…" : "A quick question, beside the chat…"}
     bind:value={text}

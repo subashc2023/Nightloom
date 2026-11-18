@@ -59,7 +59,7 @@ export function settingsGroups(providerKinds: string[], searchBackendNames: stri
   return [
     { title: USAGE_COST_GROUP, panes: [USAGE_PANE, COST_PANE] },
     { title: "Subscription", panes: ["claude-code", "council"] },
-    { title: "Knowledge", panes: ["knowledge", "models"] },
+    { title: "Knowledge", panes: ["knowledge", "models", "saved-prompts"] },
     { title: "Projects", panes: ["home", "projects"] },
     { title: "Providers", panes: [...providerKinds] },
     { title: "Web search", panes: searchBackendNames.map((n) => "search:" + n) },

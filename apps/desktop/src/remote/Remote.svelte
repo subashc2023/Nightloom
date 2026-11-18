@@ -118,6 +118,8 @@
   import ContextSheet from "./ContextSheet.svelte";
   import RunningSheet from "./RunningSheet.svelte";
   import JobsSheet from "./JobsSheet.svelte";
+  // Item 800: saved prompts after a `/` in the chat's, an aside's and a job's box.
+  import { promptBox, setPhonePrompts } from "./promptBox";
   // Item 763 H8: Home, the phone's first screen.
   import HomeFirst from "./HomeFirst.svelte";
   import JobChatCard from "./JobChatCard.svelte";
@@ -239,6 +241,17 @@
   }
   /** The active host's client. */
   const client = $derived(active ? (clients[active] ?? null) : null);
+  // Item 800: the host's saved prompts, read on connect and when the page
+  // comes back (he may have added one on the Mac meanwhile).
+  $effect(() => {
+    const c = client;
+    if (!c) return;
+    const read = () => void c.savedPrompts().then(setPhonePrompts).catch(() => setPhonePrompts([]));
+    read();
+    const back = () => document.visibilityState === "visible" && read();
+    document.addEventListener("visibilitychange", back);
+    return () => document.removeEventListener("visibilitychange", back);
+  });
   /** `online` while the event stream is open; `off` after every paired
    *  host answered 401 (the token is wrong — a new scan is the way back). */
   let link = $state<"connecting" | "online" | "offline" | "off">("connecting");
@@ -3619,6 +3632,7 @@
           <textarea
             data-kept
             bind:this={box}
+            use:promptBox
             rows="1"
             placeholder={chatId ? "Reply…" : fil ? "What are we making?" : `Message ${projectName(newProject)}…`}
             bind:value={draft}

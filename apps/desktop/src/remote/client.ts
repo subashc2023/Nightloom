@@ -1182,6 +1182,13 @@ export class Client {
     return parseSendReply(await r.text());
   }
 
+  /** Item 800: the saved message prompts `/name` offers in the boxes —
+   *  name and body, in Settings' order. Read only: the Mac edits them. */
+  async savedPrompts(): Promise<{ name: string; body: string }[]> {
+    const r = (await (await this.call("/saved-prompts")).json()) as { prompts?: { name: string; body: string }[] };
+    return Array.isArray(r.prompts) ? r.prompts : [];
+  }
+
   /** Item 743: the approval rules in force — every chat's, and `chat`'s
    *  when one is named (`project` as `act`'s). */
   async rules(chat: string | null, project: string | null = null): Promise<RulesListing> {

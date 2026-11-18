@@ -39,6 +39,7 @@ pub mod nightshift_routes;
 mod push_routes;
 pub mod resent;
 mod rules_routes;
+mod saved_prompt_routes;
 mod shortcut_routes;
 pub mod sync_routes;
 pub mod tailnet;
@@ -335,6 +336,13 @@ pub trait Host: Send + Sync + 'static {
     /// config directory, which is also where the hook reads them. A test's
     /// host names a folder of its own.
     fn rules_home(&self) -> Option<std::path::PathBuf> {
+        crate::project::config_dir()
+    }
+    /// Where the saved message prompts live (item 800,
+    /// [`saved_prompt_routes`]): `<this>/saved-prompts.json`, the file the
+    /// Mac's Settings writes. The config directory; a test's host names its
+    /// own.
+    fn saved_prompts_home(&self) -> Option<std::path::PathBuf> {
         crate::project::config_dir()
     }
     /// Where feedback from the phone is saved before it is filed (item
@@ -903,6 +911,7 @@ fn router(shared: Arc<Shared>) -> Router {
         .merge(home_routes::router())
         .merge(push_routes::router())
         .merge(rules_routes::router())
+        .merge(saved_prompt_routes::router())
         .merge(job_routes::router())
         // Item 744: Siri / Action Button Shortcuts (plain-text answers).
         .merge(shortcut_routes::router())
@@ -2106,6 +2115,10 @@ mod tests {
         /// Item 763 H8: never his real Home folder.
         fn home_config(&self) -> Option<std::path::PathBuf> {
             Some(self.nightshift.join("home-config"))
+        }
+        /// Item 800: never his real saved prompts.
+        fn saved_prompts_home(&self) -> Option<std::path::PathBuf> {
+            Some(self.nightshift.join("saved-prompts-home"))
         }
         async fn nightshift_roots(&self) -> Vec<NightshiftProject> {
             crate::nightshift::detect(&self.nightshift)
@@ -4297,6 +4310,43 @@ mod tests {
             .map(|i| start + 2 + i + 1)
             .unwrap_or(body.len());
         (fm, format!("{}{}", &body[..start], &body[end..]))
+    }
+
+    /// Item 800: the phone reads the live saved prompts, name and body, in
+    /// the file's order — none before the Mac wrote any, never a trashed one.
+    #[tokio::test]
+    async fn phone_reads_the_live_saved_prompts() {
+        let (server, host, _tx, token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let (status, empty) = get_json(&c, format!("{base}/api/saved-prompts"), &token).await;
+        assert_eq!(status, 200);
+        assert_eq!(empty, serde_json::json!({ "prompts": [] }));
+        let dir = host.saved_prompts_home().unwrap();
+        let doc = crate::saved_prompts::Doc {
+            prompts: vec![
+                crate::saved_prompts::Prompt {
+                    id: "a".into(),
+                    name: "spec".into(),
+                    body: "Launch {item}".into(),
+                    ..Default::default()
+                },
+                crate::saved_prompts::Prompt {
+                    id: "b".into(),
+                    name: "gone".into(),
+                    body: "x".into(),
+                    deleted: Some(1),
+                    ..Default::default()
+                },
+            ],
+        };
+        crate::saved_prompts::write(&dir, &doc).unwrap();
+        let (status, listed) = get_json(&c, format!("{base}/api/saved-prompts"), &token).await;
+        assert_eq!(status, 200);
+        assert_eq!(
+            listed,
+            serde_json::json!({ "prompts": [{ "name": "spec", "body": "Launch {item}" }] })
+        );
     }
 
     /// Item 805: the phone's feedback is one backlog item, his words
